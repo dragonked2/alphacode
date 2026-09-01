@@ -4,6 +4,11 @@
 //! the base -> app-core -> tui spine. The binary's composition root registers
 //! [`AntigravityProvider`] with `crate::alphacode_base::provider::external` at startup.
 
+/// Maximum number of retry attempts for a single Antigravity generateContent
+/// call when the upstream returns 429 / RESOURCE_EXHAUSTED. Matches the
+/// budget used by the Anthropic provider runtime.
+const MAX_RETRIES: u32 = 3;
+
 use anyhow::{Context, Result};
 use async_trait::async_trait;
 use crate::alphacode_base::auth::antigravity as antigravity_auth;
@@ -359,14 +364,70 @@ impl AntigravityProvider {
             .await
             .context("Failed to send Antigravity generateContent request")?;
 
-        if !response.status().is_success() {
-            let status = response.status();
-            let body = crate::alphacode_base::util::http_error_body(response, "HTTP error").await;
-            anyhow::bail!(
-                "Antigravity generateContent failed (HTTP {}): {}",
-                status,
-                body.trim()
-            );
+        // Retry-After aware loop for 429 / RESOURCE_EXHAUSTED. We only retry
+        // transient quota failures (the upstream's free-tier daily cap or a
+        // burst-rate cooldown). Any other HTTP error is a hard failure and
+        // is surfaced immediately so the user sees a real diagnosis. When
+        // the upstream sends a `Retry-After` header, that hint replaces the
+        // jittered exponential backoff so we honour the server's own pacing
+        // rather than guessing.
+        let mut attempt: u32 = 0;
+        let mut response = response;
+        loop {
+            if !response.status().is_success() {
+                let status = response.status();
+                let headers = response.headers().clone();
+                let body =
+                    crate::alphacode_base::util::http_error_body(response, "HTTP error").await;
+                let body_trimmed = body.trim().to_string();
+                let is_quota =
+                    status.as_u16() == 429 || body_trimmed.contains("RESOURCE_EXHAUSTED");
+                if !is_quota || attempt + 1 >= MAX_RETRIES {
+                    return Err(
+                        crate::alphacode_provider_core::retry_after::error_with_retry_after(
+                            format!(
+                                "Antigravity generateContent failed (HTTP {}): {}",
+                                status, body_trimmed
+                            ),
+                            crate::alphacode_provider_core::retry_after::retry_after(&headers),
+                        ),
+                    );
+                }
+                let server_hint =
+                    crate::alphacode_provider_core::retry_after::retry_after(&headers);
+                let delay = crate::alphacode_provider_core::retry_after::retry_delay(
+                    attempt + 1,
+                    1_000,
+                    server_hint,
+                );
+                crate::alphacode_base::logging::info(&format!(
+                    "Antigravity quota exhausted (HTTP {}); retrying in {:?} (attempt {}/{}))",
+                    status,
+                    delay,
+                    attempt + 2,
+                    MAX_RETRIES,
+                ));
+                tokio::time::sleep(delay).await;
+                attempt += 1;
+                response = self
+                    .client
+                    .post(GENERATE_CONTENT_API_URL)
+                    .bearer_auth(&tokens.access_token)
+                    .header(reqwest::header::CONTENT_TYPE, "application/json")
+                    .header(reqwest::header::USER_AGENT, antigravity_user_agent())
+                    .header("x-goog-api-client", X_GOOG_API_CLIENT)
+                    .header(
+                        "x-goog-request-params",
+                        format!("project={}", request.project),
+                    )
+                    .header("x-goog-client-metadata", client_metadata_header())
+                    .json(&request)
+                    .send()
+                    .await
+                    .context("Failed to send Antigravity generateContent request")?;
+                continue;
+            }
+            break;
         }
 
         response
