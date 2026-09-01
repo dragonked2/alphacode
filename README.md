@@ -1,7 +1,7 @@
 # Alphacode
 
 <p align="center">
-  <img src="https://raw.githubusercontent.com/dragonked2/alphacode/main/assets/logo.png" alt="Alphacode" width="180">
+  <img src="logo.png" alt="Alphacode" width="180">
 </p>
 
 <h1 align="center">Alphacode</h1>
