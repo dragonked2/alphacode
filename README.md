@@ -69,7 +69,7 @@ cargo build --release
 ./target/release/alphacode --version
 ```
 
-Requirements: **Rust 1.88+** (edition 2024) and a C toolchain matching your
+Requirements: **Rust 1.91+** (edition 2024) and a C toolchain matching your
 platform. The default build skips heavy optional stacks (Bedrock, embeddings,
 PDF, Mermaid) so cold builds stay fast. Opt in when you need them:
 

@@ -13,7 +13,7 @@ cargo test --lib
 cargo clippy --lib -- -D warnings
 ```
 
-Requirements: **Rust 1.88+** (edition 2024) and a C toolchain matching your platform.
+Requirements: **Rust 1.91+** (edition 2024) and a C toolchain matching your platform.
 
 ## Project layout
 
