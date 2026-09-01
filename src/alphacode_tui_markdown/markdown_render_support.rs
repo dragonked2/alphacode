@@ -207,10 +207,10 @@ pub(super) fn render_table_aligned(
     // Pre-allocate result lines
     let estimated_lines = rows.len() + rows.len() / 2; // rough estimate including separators
     let mut lines = Vec::with_capacity(estimated_lines);
-    let separator_style = Style::default().fg(table_color());
-    let header_style = Style::default().fg(bold_color()).bold();
+    let separator_style = Style::default().fg(rgb(100, 120, 160));
+    let header_style = Style::default().fg(rgb(180, 200, 240)).add_modifier(ratatui::style::Modifier::BOLD | ratatui::style::Modifier::UNDERLINED);
     let cell_style = Style::default().fg(text_color());
-    let sep_span_style = Style::default().fg(table_color());
+    let sep_span_style = Style::default().fg(rgb(80, 95, 130));
 
     for (row_idx, row) in rows.iter().enumerate() {
         let wrapped_cells: Vec<Vec<String>> = row

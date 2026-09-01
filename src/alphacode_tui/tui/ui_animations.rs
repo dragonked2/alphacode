@@ -480,10 +480,10 @@ fn render_idle_wordmark(buf: &mut Buffer, area: Rect) {
     let accent_color = role_color(Role::Accent);
     let muted_color = role_color(Role::Dim);
 
-    // Two lines: a wordmark, and a short "type a prompt to begin" hint. Keep
+    // Two lines: a wordmark, and a short welcoming hint. Keep
     // them short so a narrow reservation still fits the whole decoration.
-    let wordmark = "alphacode";
-    let hint = "type a prompt to begin  \u{2022}  / for commands";
+    let wordmark = "\u{2728} alphacode";
+    let hint = "type a message below to get started  \u{2022}  / for commands";
 
     let area_top = area.y;
     let area_h = area.height as usize;

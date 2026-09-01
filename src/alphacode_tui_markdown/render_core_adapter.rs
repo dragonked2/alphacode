@@ -13,6 +13,7 @@ use crate::alphacode_render_core::{
 };
 use ratatui::layout::Alignment;
 use ratatui::style::{Modifier, Style};
+use crate::alphacode_tui_workspace::color_support::rgb;
 use ratatui::text::{Line, Span};
 
 use crate::alphacode_tui_markdown::{
@@ -40,7 +41,7 @@ fn push_code_block(
         Some(lang) if !lang.is_empty() => format!("┌─ {lang}"),
         _ => "┌─".to_string(),
     };
-    lines.push(Line::from(Span::styled(header, dim)));
+    lines.push(Line::from(Span::styled(header, Style::default().fg(rgb(100, 140, 200)))));
     for sl in &block.lines {
         let mut spans = vec![Span::styled("│ ".to_string(), dim)];
         spans.extend(sl.spans.iter().map(|s| styled_span_to_span(s, &block.kind)));
@@ -53,7 +54,7 @@ fn push_code_block(
 /// per source line, and a closing `└─`.
 fn push_math_display(lines: &mut Vec<Line<'static>>, block: &crate::alphacode_render_core::Block) {
     let dim = Style::default().fg(md_dim_color());
-    lines.push(Line::from(Span::styled("┌─ math ".to_string(), dim)).left_aligned());
+    lines.push(Line::from(Span::styled("┌─ math ".to_string(), Style::default().fg(rgb(100, 140, 200)))).left_aligned());
     for sl in &block.lines {
         let text = sl.plain_text();
         lines.push(

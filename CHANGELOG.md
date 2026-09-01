@@ -4,6 +4,39 @@ All notable changes to Alphacode are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project
 adheres to [Semantic Versioning](https://semver.org/).
 
+## [1.0.2] — 2026-09-01
+
+Patch release. Polishes the TUI / markdown rendering and the bash
+destructive-command gate. No user-facing config or protocol changes.
+
+### Changed
+
+- **Splash screen copy**: "AI-Powered Coding Assistant" → "Your AI
+  coding companion"; "Ready when you are" → "Type to get started";
+  the ready-state pill now reads "is ready ✨". The idle wordmark
+  gained the same ✨ glyph and the hint text is slightly longer.
+- **Splash feature chips**: replaced `doctor / vuln / tokio` with
+  `memory / multi / open` to match the framing in the README.
+- **Markdown palette**: code blocks, math, links, headings, and dim
+  text are re-tuned for higher contrast on dark backgrounds. Code
+  separators, blockquote gutters, and `┌─ math` headers are now
+  blue-tinted instead of generic dim grey.
+- **Markdown tables**: separators and cell dividers use a dedicated
+  blue-grey tone (was sharing `table_color`); headers are underlined
+  bold for clearer scan.
+- **Bash destructive gate**: log lines for denied / confirmation
+  commands are summarized at 512 chars to keep long pipelines from
+  flooding the log; the JSON schema is reformatted without changing
+  any field.
+
+### Fixed
+
+- Removed two pieces of dead code that produced `#[warn(dead_code)]`
+  on non-test builds: the unused `MATH_INLINE_FOREGROUND` constant
+  and the unused `table_color()` helper in the markdown renderer.
+- `bash_destructive_gate.rs` no longer ends without a trailing
+  newline.
+
 ## [1.0.1] — 2026-09-01
 
 Patch release. Ships the new coding-quality contract and the

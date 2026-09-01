@@ -492,59 +492,58 @@ fn rendered_rule_width(max_width: Option<usize>) -> usize {
 use crate::alphacode_tui_workspace::color_support::rgb;
 
 const MATH_FOREGROUND: (u8, u8, u8) = (100, 185, 255);
-const MATH_INLINE_FOREGROUND: (u8, u8, u8) = (175, 210, 245);
 
 /// Code block background — deep blue-gray for visual separation.
 pub fn code_bg() -> Color {
-    rgb(26, 30, 46)
+    rgb(22, 26, 40)
 }
 /// Code block foreground — high-contrast light gray.
 pub fn code_fg() -> Color {
-    rgb(215, 220, 230)
+    rgb(218, 224, 236)
 }
 /// Display math foreground — vivid blue for mathematical expressions.
 pub fn math_fg() -> Color {
-    rgb(MATH_FOREGROUND.0, MATH_FOREGROUND.1, MATH_FOREGROUND.2)
+    rgb(120, 195, 255)
 }
 /// Inline math foreground — softer blue, blended with text.
 pub fn math_inline_fg() -> Color {
-    rgb(MATH_INLINE_FOREGROUND.0, MATH_INLINE_FOREGROUND.1, MATH_INLINE_FOREGROUND.2)
+    rgb(180, 215, 250)
 }
 /// Link foreground — bright cyan for clickable elements.
 pub fn link_fg() -> Color {
-    rgb(115, 200, 255)
+    rgb(100, 210, 255)
 }
 /// HTML block foreground — muted for non-executable content.
 pub fn html_fg() -> Color {
-    rgb(135, 140, 165)
+    rgb(130, 138, 162)
 }
 /// Primary text color — slightly blue-tinted white for warmth.
 pub fn text_color() -> Color {
-    rgb(230, 234, 244)
+    rgb(228, 232, 242)
 }
 /// Bold/emphasized text — near-white for maximum contrast.
 pub fn bold_color() -> Color {
-    rgb(248, 250, 255)
+    rgb(250, 252, 255)
 }
 /// H1 heading — warm gold for top-level emphasis.
 pub fn heading_h1_color() -> Color {
-    rgb(255, 200, 95)
+    rgb(255, 210, 80)
 }
 /// H2 heading — amber for second-level emphasis.
 pub fn heading_h2_color() -> Color {
-    rgb(240, 180, 80)
+    rgb(245, 185, 65)
 }
 /// H3 heading — muted amber for third-level emphasis.
 pub fn heading_h3_color() -> Color {
-    rgb(220, 160, 60)
+    rgb(225, 165, 55)
 }
 /// Default heading color (H4+) — dark amber for lower hierarchy.
 pub fn heading_color() -> Color {
-    rgb(200, 140, 50)
+    rgb(205, 145, 45)
 }
 /// Dim/muted text — for meta-content, borders, separators.
 pub fn md_dim_color() -> Color {
-    rgb(105, 112, 135)
+    rgb(95, 105, 130)
 }
 const RULE_LEN: usize = 24;
 
@@ -603,10 +602,10 @@ pub fn line_is_mermaid_pending_placeholder(line: &Line<'_>) -> bool {
 
 fn apply_inline_decorations(mut style: Style, strike: bool, in_link: bool) -> Style {
     if strike {
-        style = style.crossed_out();
+        style = style.crossed_out().fg(rgb(160, 160, 175));
     }
     if in_link {
-        style = style.fg(link_fg()).underlined();
+        style = style.fg(link_fg()).add_modifier(Modifier::UNDERLINED);
     }
     style
 }
@@ -622,7 +621,7 @@ fn ensure_blockquote_prefix(current_spans: &mut Vec<Span<'static>>, blockquote_d
     for _ in 0..blockquote_depth {
         prefix.push_str("│ ");
     }
-    current_spans.push(Span::styled(prefix, Style::default().fg(md_dim_color())));
+    current_spans.push(Span::styled(prefix, Style::default().fg(rgb(100, 140, 200))));
 }
 
 /// Add blockquote gutter prefix to a line.
@@ -639,7 +638,7 @@ fn with_blockquote_prefix(line: Line<'static>, blockquote_depth: usize) -> Line<
     for _ in 0..blockquote_depth {
         prefix.push_str("│ ");
     }
-    spans.push(Span::styled(prefix, Style::default().fg(md_dim_color())));
+    spans.push(Span::styled(prefix, Style::default().fg(rgb(100, 140, 200))));
     let alignment = line.alignment;
     spans.extend(line.spans);
     let line = Line::from(spans);
@@ -1013,7 +1012,7 @@ fn math_display_lines(math: &str) -> Vec<Line<'static>> {
     // Estimate capacity: header + body lines + footer
     let body_line_count = math.lines().count();
     let mut out = Vec::with_capacity(body_line_count + 2);
-    out.push(Line::from(Span::styled("┌─ math ", dim)).left_aligned());
+    out.push(Line::from(Span::styled("┌─ math ", Style::default().fg(rgb(100, 140, 200)))).left_aligned());
     for line in crate::alphacode_render_core::render_display_latex(math) {
         out.push(
             Line::from(vec![Span::styled("│ ", dim), Span::styled(line, math_style)])
@@ -1030,7 +1029,7 @@ fn raw_math_display_lines(math: &str) -> Vec<Line<'static>> {
     let math_style = Style::default().fg(math_fg());
     let body_line_count = math.lines().count();
     let mut out = Vec::with_capacity(body_line_count + 4);
-    out.push(Line::from(Span::styled("┌─ math (raw) ", dim)).left_aligned());
+    out.push(Line::from(Span::styled("┌─ math (raw) ", Style::default().fg(rgb(100, 140, 200)))).left_aligned());
     out.push(Line::from(vec![Span::styled("│ ", dim), Span::styled("$$", math_style)]));
     for line in math.lines() {
         out.push(
@@ -1058,9 +1057,6 @@ fn latex_image_lines(
             None
         }
     }
-}
-fn table_color() -> Color {
-    rgb(150, 150, 150)
 }
 
 /// Render markdown text to styled ratatui Lines

@@ -668,7 +668,7 @@ impl SplashScreen {
                     Style::default().fg(BrandTheme::gradient_color(2)).add_modifier(Modifier::BOLD),
                 ),
                 Span::styled(
-                    "AI-Powered Coding Assistant",
+                    "Your AI coding companion",
                     Style::default().fg(BrandTheme::accent()).add_modifier(Modifier::ITALIC),
                 ),
                 Span::styled(
@@ -676,7 +676,7 @@ impl SplashScreen {
                     Style::default().fg(BrandTheme::dim()),
                 ),
                 Span::styled(
-                    "Ready when you are",
+                    "Type to get started",
                     Style::default().fg(BrandTheme::dim_bright()),
                 ),
                 Span::styled(
@@ -691,7 +691,7 @@ impl SplashScreen {
                     Style::default().fg(BrandTheme::gradient_color(2)).add_modifier(Modifier::BOLD),
                 ),
                 Span::styled(
-                    "Ready when you are",
+                    "Type to get started",
                     Style::default().fg(BrandTheme::dim_bright()).add_modifier(Modifier::ITALIC),
                 ),
                 Span::styled(
@@ -717,7 +717,7 @@ impl SplashScreen {
                 Style::default().fg(BrandTheme::accent()).add_modifier(Modifier::BOLD),
             ),
             Span::styled(
-                " ready",
+                " is ready ✨",
                 Style::default().fg(BrandTheme::success()),
             ),
         ])
@@ -731,9 +731,9 @@ impl SplashScreen {
         let chips: &[(&str, &str)] = &[
             ("45+", "tools"),
             ("swarm", "agents"),
-            ("doctor", "health"),
-            ("vuln", "security"),
-            ("tokio", "async"),
+            ("memory", "context"),
+            ("multi", "model"),
+            ("open", "source"),
         ];
         let gradient = BrandTheme::gradient();
         let mut spans: Vec<Span<'static>> = Vec::with_capacity(chips.len() * 3 + 2);
