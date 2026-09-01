@@ -81,6 +81,13 @@ crossterm = { version = "0.29", features = ["event-stream"] }
 ratatui-image = { version = "10.0.6", default-features = false, features = ["crossterm"] }
 terminal-colorsaurus = "1.0"
 
+# Platform-specific bindings (macOS-only CoreGraphics for synthetic mouse +
+# keyboard input via `tool::computer`). The crate's API matches what
+# `src/alphacode_app_core/tool/computer/input.rs` already uses. Other targets
+# never pull this in because the consumer is gated behind `cfg(target_os)`.
+[target.'cfg(target_os = "macos")'.dependencies]
+core-graphics = "0.23"
+
 # Unicode
 unicode-width = "0.2"
 unicode-segmentation = "1"

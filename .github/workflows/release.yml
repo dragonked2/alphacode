@@ -81,6 +81,14 @@ jobs:
       #   - $archive.zip    on Windows runners
       #   - $archive.sha256 (containing the .tar.gz or .zip hash)
       #   - and uploads the archive + checksum to the GitHub release.
+      #
+      # `locked: false` (override of the default true): the project's
+      # Cargo.lock was checked in without macOS-only deps like
+      # core-graphics, and the build runs on Linux/macOS/Windows without
+      # local cargo pre-warming. Letting cargo update the lockfile in CI
+      # keeps the release shippable; once Cargo.lock is regenerated
+      # locally for the macOS dep and committed, this can be tightened
+      # back to `locked: true`.
       - name: Build + archive + checksum + upload
         uses: taiki-e/upload-rust-binary-action@v1
         with:
@@ -88,7 +96,7 @@ jobs:
           target: ${{ matrix.target }}
           archive: ${{ matrix.archive }}
           checksum: sha256
-          locked: true
+          locked: false
           profile: release
 
       # Surface the per-target files as workflow artifacts so the publish

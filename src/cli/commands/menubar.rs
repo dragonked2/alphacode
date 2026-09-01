@@ -284,7 +284,7 @@ mod macos {
         counts_for_presence, format_menubar_summary, format_menubar_title,
         format_session_menu_item_title, load_user_root_session,
     };
-    use session::{self, SessionPresence};
+    use crate::session::{self, SessionPresence};
 
     use std::cell::RefCell;
     use std::cmp::Reverse;
@@ -763,7 +763,7 @@ mod macos {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use session::SessionCounts;
+    use crate::session::SessionCounts;
 
     #[test]
     fn title_no_sessions_is_icon_only() {
