@@ -10,27 +10,31 @@ permissions:
 
 jobs:
   build:
-    name: build ${{ matrix.target }}
+    name: build ${{ matrix.archive }}
     strategy:
       fail-fast: false
       matrix:
         include:
+          # install.sh expects: alphacode-{linux,macos}-{x86_64,arm64}.tar.gz
           - target: x86_64-unknown-linux-gnu
             os: ubuntu-latest
-            archive: tar.gz
+            archive: alphacode-linux-x86_64
           - target: aarch64-unknown-linux-gnu
             os: ubuntu-latest
-            archive: tar.gz
-            cross: true
+            archive: alphacode-linux-arm64
           - target: x86_64-apple-darwin
             os: macos-latest
-            archive: tar.gz
+            archive: alphacode-macos-x86_64
           - target: aarch64-apple-darwin
             os: macos-latest
-            archive: tar.gz
+            archive: alphacode-macos-arm64
+          # install.ps1 expects: alphacode-windows-{x86_64,arm64}.zip
           - target: x86_64-pc-windows-msvc
             os: windows-latest
-            archive: zip
+            archive: alphacode-windows-x86_64
+          - target: aarch64-pc-windows-msvc
+            os: windows-latest
+            archive: alphacode-windows-arm64
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
@@ -41,7 +45,7 @@ jobs:
           toolchain: 1.85
           targets: ${{ matrix.target }}
 
-      - name: Cache
+      - name: Cache cargo
         uses: actions/cache@v4
         with:
           path: |
@@ -50,47 +54,58 @@ jobs:
               target
           key: release-${{ matrix.target }}-${{ hashFiles('Cargo.lock') }}
 
-      - name: Build release binary
+      # The action auto-uses `cross` for cross-compile (e.g. linux arm64
+      # from ubuntu x86_64) and falls back to native cargo on host-matched
+      # targets. It produces:
+      #   - $archive.tar.gz on Linux/macOS runners
+      #   - $archive.zip    on Windows runners
+      #   - $archive.sha256 (containing the .tar.gz or .zip hash)
+      #   - and uploads the archive + checksum to the GitHub release.
+      - name: Build + archive + checksum + upload
         uses: taiki-e/upload-rust-binary-action@v1
         with:
           bin: alphacode
           target: ${{ matrix.target }}
           archive: ${{ matrix.archive }}
+          checksum: sha256
           args: --locked --release
 
-      - name: Compute SHA256SUMS
-        shell: bash
-        run: |
-          set -euo pipefail
-          if [ "${{ matrix.archive }}" = "tar.gz" ]; then
-            for f in alphacode-*.tar.gz; do
-              sha256sum "$f" >> SHA256SUMS
-            done
-          else
-            for f in alphacode-*.zip; do
-              sha256sum "$f" >> SHA256SUMS
-            done
-          fi
-
+      # Surface the per-target files as workflow artifacts so the publish
+      # job below can also merge the per-asset SHA256SUMS into one file.
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
-          name: alphacode-${{ matrix.target }}
+          name: ${{ matrix.archive }}
           path: |
-            alphacode-*.${{ matrix.archive }}
-            SHA256SUMS
+            ${{ matrix.archive }}.tar.gz
+            ${{ matrix.archive }}.zip
+            ${{ matrix.archive }}.sha256
+          if-no-files-found: ignore
 
   release:
     name: publish release
     needs: build
     runs-on: ubuntu-latest
+    # The build job already uploaded the archive assets directly to the
+    # release. Here we only need to merge the per-asset .sha256 files into
+    # one combined SHA256SUMS so `sha256sum -c SHA256SUMS` works after
+    # downloading the whole release.
     steps:
       - uses: actions/download-artifact@v4
         with:
           path: artifacts
-      - name: Create GitHub release
+      - name: Merge per-asset SHA256SUMS
+        shell: bash
+        run: |
+          set -euo pipefail
+          : > SHA256SUMS
+          for f in artifacts/*/*.sha256; do
+            [ -f "$f" ] || continue
+            cat "$f" >> SHA256SUMS
+          done
+          sort -u -o SHA256SUMS SHA256SUMS
+      - name: Upload combined SHA256SUMS
         uses: softprops/action-gh-release@v2
         with:
-          files: artifacts/**/*
-          generate_release_notes: true
+          files: SHA256SUMS
           fail_on_unmatched_files: false
