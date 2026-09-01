@@ -79,13 +79,14 @@ done
 # Fallback: no release artifact for this platform/arch. Clone the repo, build
 # with cargo, and copy the resulting binary into $BIN_DIR.
 #
-# Requires: git, cargo, rustc >= 1.85, and a working C toolchain. This can
+# Requires: git, cargo, rustc >= 1.88, and a working C toolchain. This can
 # take 5-30 minutes on a first build.
 build_from_source() {
   command -v git   >/dev/null 2>&1 || fail "git is required to build from source"
   command -v cargo >/dev/null 2>&1 || fail "cargo is required to build from source (install Rust from https://rustup.rs)"
 
-  # Make sure the toolchain is new enough for edition = "2024".
+  # Make sure the toolchain is new enough for edition = "2024" and the
+  # current dependency MSRV (darling, globset, icu_collections require 1.88).
   local rust_ver
   rust_ver="$(rustc --version 2>/dev/null | awk '{print $2}')" || true
   if [ -n "$rust_ver" ]; then
@@ -93,8 +94,8 @@ build_from_source() {
     local major minor
     major="${rust_ver%%.*}"
     minor="$(echo "$rust_ver" | awk -F. '{print $2}')"
-    if [ "${major:-0}" -lt 1 ] || { [ "${major:-0}" -eq 1 ] && [ "${minor:-0}" -lt 85 ]; }; then
-      fail "rustc $rust_ver is too old; need >= 1.85 (update via 'rustup update')"
+    if [ "${major:-0}" -lt 1 ] || { [ "${major:-0}" -eq 1 ] && [ "${minor:-0}" -lt 88 ]; }; then
+      fail "rustc $rust_ver is too old; need >= 1.88 (update via 'rustup update')"
     fi
   fi
 

@@ -26,7 +26,7 @@ jobs:
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
         with:
-          toolchain: 1.85
+          toolchain: 1.88
           components: clippy, rustfmt
 
       - name: Cache cargo registry & target
@@ -58,7 +58,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
-        with: { toolchain: 1.85, components: clippy }
+        with: { toolchain: 1.88, components: clippy }
       - uses: actions/setup-cache@v4
         with:
           path: |
@@ -75,7 +75,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
-        with: { toolchain: 1.85, components: clippy }
+        with: { toolchain: 1.88, components: clippy }
       - uses: actions/setup-cache@v4
         with:
           path: |

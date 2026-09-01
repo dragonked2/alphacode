@@ -10,7 +10,7 @@
 #
 # By default, tries to download a prebuilt release asset. If no release is
 # published (or there is no asset for this OS/arch), it falls back to
-# building from source. Requires: git, cargo, rustc >= 1.85.
+# building from source. Requires: git, cargo, rustc >= 1.88.
 
 [CmdletBinding()]
 param(
@@ -43,18 +43,18 @@ function Fail ([string]$msg) { Write-Host "[fail] $msg" -ForegroundColor Red; ex
 # Fallback: no release artifact for this platform/arch. Clone the repo, build
 # with cargo, and copy the resulting binary into $BinDir.
 #
-# Requires: git, cargo, rustc >= 1.85, and a working C toolchain. This can
+# Requires: git, cargo, rustc >= 1.88, and a working C toolchain. This can
 # take 5-30 minutes on a first build.
 function Build-FromSource {
   if (-not (Get-Command git   -ErrorAction SilentlyContinue)) { Fail "git is required to build from source" }
   if (-not (Get-Command cargo -ErrorAction SilentlyContinue)) { Fail "cargo is required to build from source (install Rust from https://rustup.rs)" }
 
-  # rustc >= 1.85 (edition 2024) check.
+  # rustc >= 1.88 (edition 2024 + current dependency MSRV) check.
   $rv = (& rustc --version) 2>$null
   if ($rv -match 'rustc\s+(\d+)\.(\d+)') {
     $major = [int]$Matches[1]; $minor = [int]$Matches[2]
-    if ($major -lt 1 -or ($major -eq 1 -and $minor -lt 85)) {
-      Fail "rustc $($Matches[0]) is too old; need >= 1.85 (update via 'rustup update')"
+    if ($major -lt 1 -or ($major -eq 1 -and $minor -lt 88)) {
+      Fail "rustc $($Matches[0]) is too old; need >= 1.88 (update via 'rustup update')"
     }
   }
 
