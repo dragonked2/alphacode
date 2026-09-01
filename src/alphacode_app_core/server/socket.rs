@@ -330,6 +330,7 @@ pub async fn spawn_server_notify(cmd: &mut std::process::Command) -> Result<std:
 /// with an already-running one: the spawn's stderr matches the existing-
 /// server fingerprint, so we wait briefly for the live daemon to answer
 /// and treat startup as successful rather than reporting a failure.
+#[cfg(unix)]
 pub(super) async fn wait_for_existing_server(
     path: &std::path::Path,
     timeout: Duration,

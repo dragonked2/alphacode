@@ -9,8 +9,25 @@ permissions:
   contents: write
 
 jobs:
+  create-release:
+    name: create github release
+    runs-on: ubuntu-latest
+    # The build jobs below attach their archives + checksums to the release
+    # this job creates. Doing it here (instead of in each parallel build job)
+    # avoids a race where all six jobs try to create the same release at once.
+    steps:
+      - uses: actions/checkout@v4
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.ref_name }}
+          generate_release_notes: true
+          draft: true
+          fail_on_unmatched_files: false
+
   build:
     name: build ${{ matrix.archive }}
+    needs: create-release
     strategy:
       fail-fast: false
       matrix:
