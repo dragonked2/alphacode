@@ -1,0 +1,38 @@
+/target
+**/*.rs.bk
+*.pdb
+*.swp
+*.swo
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+*.iml
+*.log
+logs/
+
+# Cargo
+.cargo-ok
+.cargo/
+
+# Local build artifacts
+target/
+build/
+
+# Environment
+.env
+.env.local
+
+# Logs and traces
+*.log
+*.trace
+*.stackdump
+
+# Editor
+*~
+\#*\#
+.\#*
+
+# CI/CD caches
+.cache/
+dist/

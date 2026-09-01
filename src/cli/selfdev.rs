@@ -1,0 +1,231 @@
+#![cfg_attr(test, allow(clippy::await_holding_lock))]
+
+use anyhow::Result;
+use std::path::PathBuf;
+use std::process::Command;
+
+use crate::{build, logging, session, startup_profile};
+
+use super::output;
+use super::provider_init::ProviderChoice;
+
+pub use crate::alphacode_selfdev_types::CLIENT_SELFDEV_ENV;
+pub use crate::alphacode_selfdev_types::client_selfdev_requested;
+
+const ALPHACODE_REPO_URL: &str = "https://github.com/dragonked2/alphacode.git";
+
+fn selfdev_clone_dir() -> Result<PathBuf> {
+    Ok(crate::storage::alphacode_dir()?.join("source").join("alphacode"))
+}
+
+fn resolve_or_clone_repo_dir() -> Result<PathBuf> {
+    if let Some(repo_dir) = build::get_repo_dir() {
+        return Ok(repo_dir);
+    }
+
+    let repo_dir = selfdev_clone_dir()?;
+    if repo_dir.exists() {
+        if build::is_alphacode_repo(&repo_dir) {
+            return Ok(repo_dir);
+        }
+
+        anyhow::bail!(
+            "Self-dev source directory exists but is not a alphacode repository: {}\n\
+             Move it aside or clone {} there, then retry.",
+            repo_dir.display(),
+            ALPHACODE_REPO_URL
+        );
+    }
+
+    let parent = repo_dir
+        .parent()
+        .ok_or_else(|| anyhow::anyhow!("Invalid self-dev clone path: {}", repo_dir.display()))?;
+    std::fs::create_dir_all(parent)?;
+
+    output::stderr_info(format!(
+        "No local alphacode checkout found; cloning self-dev source into {}...",
+        repo_dir.display()
+    ));
+
+    let status = Command::new("git")
+        .arg("clone")
+        .arg(ALPHACODE_REPO_URL)
+        .arg(&repo_dir)
+        .status()
+        .map_err(|e| anyhow::anyhow!("Failed to run git clone for self-dev source: {e}"))?;
+
+    if !status.success() {
+        anyhow::bail!(
+            "Failed to clone self-dev source from {} into {} (git exited with {}).\n\
+             Clone it manually with: git clone {} {}",
+            ALPHACODE_REPO_URL,
+            repo_dir.display(),
+            status,
+            ALPHACODE_REPO_URL,
+            repo_dir.display()
+        );
+    }
+
+    if !build::is_alphacode_repo(&repo_dir) {
+        anyhow::bail!(
+            "Cloned self-dev source is not a valid alphacode repository: {}",
+            repo_dir.display()
+        );
+    }
+
+    Ok(repo_dir)
+}
+
+async fn wait_for_reloading_server() -> bool {
+    match crate::alphacode_app_core::server::await_reload_handoff(
+        &crate::alphacode_app_core::server::socket_path(),
+        std::time::Duration::from_secs(30),
+    )
+    .await
+    {
+        crate::alphacode_app_core::server::ReloadWaitStatus::Ready => true,
+        crate::alphacode_app_core::server::ReloadWaitStatus::Failed(detail) => {
+            logging::warn(&format!(
+                "Reload handoff failed while resuming self-dev session on {}: {}; recent_state={}",
+                crate::alphacode_app_core::server::socket_path().display(),
+                detail.unwrap_or_else(|| "unknown reload failure".to_string()),
+                crate::alphacode_app_core::server::reload_state_summary(std::time::Duration::from_secs(60))
+            ));
+            false
+        }
+        crate::alphacode_app_core::server::ReloadWaitStatus::Idle => false,
+        crate::alphacode_app_core::server::ReloadWaitStatus::Waiting { .. } => false,
+    }
+}
+
+pub async fn run_self_dev(should_build: bool, resume_session: Option<String>) -> Result<()> {
+    startup_profile::mark("run_self_dev_enter");
+    crate::alphacode_core::env::set_var(CLIENT_SELFDEV_ENV, "1");
+
+    let repo_dir = resolve_or_clone_repo_dir()?;
+    crate::alphacode_core::env::set_var("ALPHACODE_REPO_DIR", &repo_dir);
+
+    startup_profile::mark("selfdev_session_create");
+    let is_resume = resume_session.is_some();
+    let session_id = if let Some(id) = resume_session {
+        if let Ok(mut session) = session::Session::load(&id)
+            && !session.is_canary
+        {
+            session.set_canary("self-dev");
+            let _ = session.save();
+        }
+        id
+    } else {
+        let mut session =
+            session::Session::create(None, Some("Self-development session".to_string()));
+        session.set_canary("self-dev");
+        session.id.clone()
+    };
+
+    crate::alphacode_base::process_title::set_client_session_title(&session_id, true);
+
+    if should_build {
+        let source = build::current_source_state(&repo_dir)?;
+        let build = build::selfdev_build_command(&repo_dir);
+        output::stderr_info(format!("Building with {}...", build.display));
+
+        build::run_selfdev_build(&repo_dir)?;
+        build::ensure_source_state_matches(&repo_dir, &source)?;
+
+        build::publish_local_current_build_for_source(&repo_dir, &source)?;
+
+        output::stderr_info("✓ Build complete; updated current launcher");
+    }
+
+    let target_binary = build::client_update_candidate(true)
+        .map(|(path, _)| path)
+        .or_else(|| build::find_dev_binary(&repo_dir))
+        .unwrap_or_else(|| build::release_binary_path(&repo_dir));
+
+    if !target_binary.exists() {
+        anyhow::bail!(
+            "No binary found at {:?}\n\
+             Run 'alphacode self-dev --build' first, or build with '{}' and then publish current.",
+            target_binary,
+            build::selfdev_build_command(&repo_dir).display,
+        );
+    }
+
+    let hash = build::current_git_hash(&repo_dir)?;
+    startup_profile::mark("selfdev_git_hash");
+
+    if !is_resume {
+        output::stderr_info(format!("Starting self-dev session with {}...", hash));
+    } else {
+        logging::info(&format!("Resuming self-dev session with {}...", hash));
+    }
+
+    if is_resume {
+        crate::alphacode_core::env::set_var("ALPHACODE_RESUMING", "1");
+    }
+
+    let mut server_running = super::dispatch::server_is_running().await;
+    if !server_running && std::env::var("ALPHACODE_RESUMING").is_ok() {
+        if let Some(state) = crate::alphacode_app_core::server::recent_reload_state(std::time::Duration::from_secs(30))
+        {
+            match state.phase {
+                crate::alphacode_app_core::server::ReloadPhase::Starting => {
+                    logging::info(
+                        "Reload state=starting while resuming self-dev session; waiting for existing server to come back",
+                    );
+                    server_running = wait_for_reloading_server().await;
+                }
+                crate::alphacode_app_core::server::ReloadPhase::Failed => {
+                    if let Ok(Some(version)) =
+                        build::rollback_pending_activation_for_session(&session_id)
+                    {
+                        logging::warn(&format!(
+                            "Rolled back failed pending activation for build {} while resuming self-dev session",
+                            version
+                        ));
+                    }
+                    logging::warn(&format!(
+                        "Reload state=failed while resuming self-dev session on {}: {}; recent_state={}",
+                        crate::alphacode_app_core::server::socket_path().display(),
+                        state
+                            .detail
+                            .unwrap_or_else(|| "unknown reload failure".to_string()),
+                        crate::alphacode_app_core::server::reload_state_summary(std::time::Duration::from_secs(60))
+                    ));
+                }
+                crate::alphacode_app_core::server::ReloadPhase::SocketReady => {}
+            }
+        }
+
+        if !server_running {
+            server_running = super::dispatch::wait_for_resuming_server(
+                "self-dev resume without reload marker",
+                std::time::Duration::from_secs(5),
+            )
+            .await;
+        }
+    }
+
+    if server_running
+        && let Ok(Some(version)) = build::complete_pending_activation_for_session(&session_id)
+    {
+        logging::info(&format!(
+            "Marked pending self-dev activation as successful for build {}",
+            version
+        ));
+    }
+
+    if !server_running {
+        super::dispatch::maybe_prompt_server_bootstrap_login(&ProviderChoice::Auto).await?;
+        super::dispatch::spawn_server(&ProviderChoice::Auto, None, None).await?;
+    }
+
+    if std::env::var("ALPHACODE_RESUMING").is_err() && server_running {
+        output::stderr_info("Connecting to shared server...");
+    }
+
+    output::stderr_info("Starting self-dev TUI...");
+
+    super::tui_launch::run_tui_client(Some(session_id), None, !server_running, false, None, false)
+        .await
+}

@@ -1,0 +1,96 @@
+name: release
+
+on:
+  push:
+    tags: ["v*.*.*"]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    name: build ${{ matrix.target }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: x86_64-unknown-linux-gnu
+            os: ubuntu-latest
+            archive: tar.gz
+          - target: aarch64-unknown-linux-gnu
+            os: ubuntu-latest
+            archive: tar.gz
+            cross: true
+          - target: x86_64-apple-darwin
+            os: macos-latest
+            archive: tar.gz
+          - target: aarch64-apple-darwin
+            os: macos-latest
+            archive: tar.gz
+          - target: x86_64-pc-windows-msvc
+            os: windows-latest
+            archive: zip
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: 1.85
+          targets: ${{ matrix.target }}
+
+      - name: Cache
+        uses: actions/cache@v4
+        with:
+          path: |
+              ~/.cargo/registry
+              ~/.cargo/git
+              target
+          key: release-${{ matrix.target }}-${{ hashFiles('Cargo.lock') }}
+
+      - name: Build release binary
+        uses: taiki-e/upload-rust-binary-action@v1
+        with:
+          bin: alphacode
+          target: ${{ matrix.target }}
+          archive: ${{ matrix.archive }}
+          args: --locked --release
+
+      - name: Compute SHA256SUMS
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [ "${{ matrix.archive }}" = "tar.gz" ]; then
+            for f in alphacode-*.tar.gz; do
+              sha256sum "$f" >> SHA256SUMS
+            done
+          else
+            for f in alphacode-*.zip; do
+              sha256sum "$f" >> SHA256SUMS
+            done
+          fi
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: alphacode-${{ matrix.target }}
+          path: |
+            alphacode-*.${{ matrix.archive }}
+            SHA256SUMS
+
+  release:
+    name: publish release
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+      - name: Create GitHub release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: artifacts/**/*
+          generate_release_notes: true
+          fail_on_unmatched_files: false

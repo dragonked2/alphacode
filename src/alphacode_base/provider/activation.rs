@@ -1,0 +1,323 @@
+use anyhow::Result;
+use crate::alphacode_provider_core::{ActiveProvider, provider_key};
+
+/// Stable product/runtime identity selected by login or provider initialization.
+///
+/// This intentionally differs from the lower-level [`ActiveProvider`] execution slot.
+/// For example Azure OpenAI currently reuses the OpenAI-compatible/OpenRouter HTTP
+/// transport, but its runtime identity is still Azure OpenAI.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum RuntimeProviderId {
+    Alphacode,
+    Claude,
+    ClaudeApiKey,
+    OpenAi,
+    OpenAiApiKey,
+    OpenRouter,
+    OpenAiCompatible,
+    AzureOpenAi,
+    Bedrock,
+    Cursor,
+    Copilot,
+    Gemini,
+    Antigravity,
+    AutoImport,
+}
+
+impl RuntimeProviderId {
+    pub const fn key(self) -> &'static str {
+        match self {
+            Self::Alphacode => "alphacode",
+            Self::Claude => "claude",
+            Self::ClaudeApiKey => "claude-api",
+            Self::OpenAi => "openai",
+            Self::OpenAiApiKey => "openai-api",
+            Self::OpenRouter => "openrouter",
+            Self::OpenAiCompatible => "openai-compatible",
+            Self::AzureOpenAi => "azure-openai",
+            Self::Bedrock => "bedrock",
+            Self::Cursor => "cursor",
+            Self::Copilot => "copilot",
+            Self::Gemini => "gemini",
+            Self::Antigravity => "antigravity",
+            Self::AutoImport => "auto-import",
+        }
+    }
+
+    pub const fn label(self) -> &'static str {
+        match self {
+            Self::Alphacode => "Alphacode Subscription",
+            Self::Claude => "Anthropic/Claude",
+            Self::ClaudeApiKey => "Anthropic API",
+            Self::OpenAi => "OpenAI",
+            Self::OpenAiApiKey => "OpenAI API",
+            Self::OpenRouter => "OpenRouter",
+            Self::OpenAiCompatible => "OpenAI-compatible",
+            Self::AzureOpenAi => "Azure OpenAI",
+            Self::Bedrock => "AWS Bedrock",
+            Self::Cursor => "Cursor",
+            Self::Copilot => "GitHub Copilot",
+            Self::Gemini => "Gemini",
+            Self::Antigravity => "Antigravity",
+            Self::AutoImport => "Auto Import",
+        }
+    }
+}
+
+/// How model routing should be represented in the current process.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum RuntimeSelection {
+    /// Select the initial execution slot without restricting later model switches.
+    Initial(ActiveProvider),
+    /// Do not select a specific route. Optionally set an active provider hint for UI/session context.
+    Unlocked { active_hint: Option<ActiveProvider> },
+    /// Leave existing routing env untouched.
+    Unchanged,
+}
+
+impl RuntimeSelection {
+    fn log_value(self) -> &'static str {
+        match self {
+            Self::Initial(_) => "initial",
+            Self::Unlocked { .. } => "unlocked",
+            Self::Unchanged => "unchanged",
+        }
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct RuntimeModelHint {
+    pub env_key: &'static str,
+    pub model: String,
+}
+
+impl RuntimeModelHint {
+    pub fn new(env_key: &'static str, model: impl Into<String>) -> Self {
+        Self {
+            env_key,
+            model: model.into(),
+        }
+    }
+}
+
+/// Typed activation plan shared by CLI, TUI, and bootstrap code.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ProviderActivation {
+    pub runtime_id: RuntimeProviderId,
+    pub selection: RuntimeSelection,
+    pub model_hint: Option<RuntimeModelHint>,
+}
+
+impl ProviderActivation {
+    pub fn new(runtime_id: RuntimeProviderId, selection: RuntimeSelection) -> Self {
+        Self {
+            runtime_id,
+            selection,
+            model_hint: None,
+        }
+    }
+
+    pub fn with_model_hint(mut self, env_key: &'static str, model: impl Into<String>) -> Self {
+        self.model_hint = Some(RuntimeModelHint::new(env_key, model));
+        self
+    }
+
+    pub fn initial(runtime_id: RuntimeProviderId, active_provider: ActiveProvider) -> Self {
+        Self::new(runtime_id, RuntimeSelection::Initial(active_provider))
+    }
+
+    pub fn unlocked(runtime_id: RuntimeProviderId, active_hint: Option<ActiveProvider>) -> Self {
+        Self::new(runtime_id, RuntimeSelection::Unlocked { active_hint })
+    }
+
+    pub fn azure_openai(model: Option<String>) -> Self {
+        let activation = Self::initial(RuntimeProviderId::AzureOpenAi, ActiveProvider::OpenRouter);
+        if let Some(model) = model.filter(|value| !value.trim().is_empty()) {
+            activation.with_model_hint("ALPHACODE_OPENROUTER_MODEL", model)
+        } else {
+            activation
+        }
+    }
+
+    pub fn openai_compatible(model: Option<String>) -> Self {
+        let activation = Self::initial(
+            RuntimeProviderId::OpenAiCompatible,
+            ActiveProvider::OpenRouter,
+        );
+        if let Some(model) = model.filter(|value| !value.trim().is_empty()) {
+            activation.with_model_hint("ALPHACODE_OPENROUTER_MODEL", model)
+        } else {
+            activation
+        }
+    }
+
+    pub fn alphacode_subscription(model: impl Into<String>) -> Self {
+        Self::initial(RuntimeProviderId::Alphacode, ActiveProvider::OpenRouter)
+            .with_model_hint("ALPHACODE_OPENROUTER_MODEL", model)
+    }
+
+    pub fn apply_env(&self) -> Result<()> {
+        crate::alphacode_core::env::set_var("ALPHACODE_RUNTIME_PROVIDER", self.runtime_id.key());
+        match self.runtime_id {
+            RuntimeProviderId::Alphacode => {
+                crate::alphacode_core::env::set_var("ALPHACODE_OPENROUTER_TRANSPORT_STATE", "alphacode-subscription")
+            }
+            RuntimeProviderId::OpenRouter => {
+                crate::alphacode_core::env::set_var("ALPHACODE_OPENROUTER_TRANSPORT_STATE", "openrouter-api-key")
+            }
+            RuntimeProviderId::AzureOpenAi => {
+                crate::alphacode_core::env::set_var("ALPHACODE_OPENROUTER_TRANSPORT_STATE", "direct-api-key")
+            }
+            RuntimeProviderId::OpenAiCompatible => {
+                if std::env::var_os("ALPHACODE_OPENROUTER_TRANSPORT_STATE").is_none() {
+                    crate::alphacode_core::env::set_var("ALPHACODE_OPENROUTER_TRANSPORT_STATE", "direct-api-key");
+                }
+            }
+            _ => {
+                crate::alphacode_core::env::remove_var("ALPHACODE_OPENROUTER_TRANSPORT_STATE");
+            }
+        }
+
+        let mut active_key_for_log = "";
+        match self.selection {
+            RuntimeSelection::Initial(active_provider) => {
+                active_key_for_log = provider_key(active_provider);
+                crate::alphacode_core::env::set_var("ALPHACODE_ACTIVE_PROVIDER", active_key_for_log);
+                crate::alphacode_core::env::set_var("ALPHACODE_INITIAL_PROVIDER_EXPLICIT", "1");
+            }
+            RuntimeSelection::Unlocked { active_hint } => {
+                crate::alphacode_core::env::remove_var("ALPHACODE_INITIAL_PROVIDER_EXPLICIT");
+                if let Some(active_provider) = active_hint {
+                    active_key_for_log = provider_key(active_provider);
+                    crate::alphacode_core::env::set_var("ALPHACODE_ACTIVE_PROVIDER", active_key_for_log);
+                } else {
+                    crate::alphacode_core::env::remove_var("ALPHACODE_ACTIVE_PROVIDER");
+                }
+            }
+            RuntimeSelection::Unchanged => {}
+        }
+
+        if let Some(model_hint) = &self.model_hint {
+            crate::alphacode_core::env::set_var(model_hint.env_key, &model_hint.model);
+        }
+
+        let model_env = self
+            .model_hint
+            .as_ref()
+            .map(|hint| hint.env_key)
+            .unwrap_or("");
+        crate::logging::auth_event(
+            "runtime_activation",
+            self.runtime_id.key(),
+            &[
+                ("label", self.runtime_id.label()),
+                ("selection", self.selection.log_value()),
+                ("active_provider", active_key_for_log),
+                ("model_env", model_env),
+            ],
+        );
+        Ok(())
+    }
+}
+
+/// Select the provider used when a new multi-provider runtime starts.
+/// Later model switches remain free to select any configured provider.
+pub fn select_initial_runtime_provider_key(provider_key_raw: &str) {
+    crate::alphacode_core::env::set_var("ALPHACODE_ACTIVE_PROVIDER", provider_key_raw);
+    crate::alphacode_core::env::set_var("ALPHACODE_INITIAL_PROVIDER_EXPLICIT", "1");
+    crate::logging::auth_event(
+        "runtime_activation_initial_provider",
+        provider_key_raw,
+        &[("selection", "initial")],
+    );
+}
+
+pub fn clear_initial_runtime_provider() {
+    crate::alphacode_core::env::remove_var("ALPHACODE_ACTIVE_PROVIDER");
+    crate::alphacode_core::env::remove_var("ALPHACODE_INITIAL_PROVIDER_EXPLICIT");
+    crate::logging::auth_event(
+        "runtime_activation_clear_initial_provider",
+        "runtime",
+        &[("selection", "auto")],
+    );
+}
+
+pub fn apply_azure_openai_runtime() -> Result<Option<String>> {
+    crate::alphacode_base::auth::azure::apply_runtime_env()?;
+    let model = crate::alphacode_base::auth::azure::load_model();
+    ProviderActivation::azure_openai(model.clone()).apply_env()?;
+    Ok(model)
+}
+
+pub fn apply_openai_compatible_runtime(default_model: Option<String>) -> Result<()> {
+    ProviderActivation::openai_compatible(default_model).apply_env()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    struct EnvGuard {
+        saved: Vec<(&'static str, Option<String>)>,
+    }
+
+    impl EnvGuard {
+        fn new(keys: &[&'static str]) -> Self {
+            let saved = keys
+                .iter()
+                .map(|key| (*key, std::env::var(key).ok()))
+                .collect();
+            for key in keys {
+                crate::alphacode_core::env::remove_var(key);
+            }
+            Self { saved }
+        }
+    }
+
+    impl Drop for EnvGuard {
+        fn drop(&mut self) {
+            for (key, value) in self.saved.drain(..) {
+                if let Some(value) = value {
+                    crate::alphacode_core::env::set_var(key, value);
+                } else {
+                    crate::alphacode_core::env::remove_var(key);
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn azure_activation_preserves_identity_while_using_openrouter_slot() {
+        // Serialize with every other test that mutates provider env vars
+        // (e.g. anthropic_tests sets ALPHACODE_RUNTIME_PROVIDER=claude); without
+        // this lock the assertions below race parallel tests.
+        let _lock = crate::storage::lock_test_env();
+        let _guard = EnvGuard::new(&[
+            "ALPHACODE_RUNTIME_PROVIDER",
+            "ALPHACODE_ACTIVE_PROVIDER",
+            "ALPHACODE_INITIAL_PROVIDER_EXPLICIT",
+            "ALPHACODE_OPENROUTER_MODEL",
+        ]);
+
+        ProviderActivation::azure_openai(Some("gpt-4.1-mini".to_string()))
+            .apply_env()
+            .unwrap();
+
+        assert_eq!(
+            std::env::var("ALPHACODE_RUNTIME_PROVIDER").as_deref(),
+            Ok("azure-openai")
+        );
+        assert_eq!(
+            std::env::var("ALPHACODE_ACTIVE_PROVIDER").as_deref(),
+            Ok("openrouter")
+        );
+        assert_eq!(
+            std::env::var("ALPHACODE_INITIAL_PROVIDER_EXPLICIT").as_deref(),
+            Ok("1")
+        );
+        assert_eq!(
+            std::env::var("ALPHACODE_OPENROUTER_MODEL").as_deref(),
+            Ok("gpt-4.1-mini")
+        );
+    }
+}

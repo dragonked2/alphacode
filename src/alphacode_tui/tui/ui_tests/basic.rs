@@ -1,0 +1,17 @@
+use super::*;
+use crate::alphacode_tui::tui::ui::{
+    FlickerFrameSample, FramePerfStats, SlowFrameSample, clear_flicker_frame_history_for_tests,
+    clear_slow_frame_history_for_tests, copy_badge_reserved_width, expand_badge_reserved_width,
+    idle_donut_reserved_height, pick_copy_badge_line, record_flicker_frame_sample,
+    record_slow_frame_sample, reserve_copy_badge_margins, truncate_copy_badge_line_to_width,
+    truncate_line_for_copy_badge,
+};
+
+include!("basic/frame_flicker.rs");
+include!("basic/interaction_links.rs");
+include!("basic/body_cache.rs");
+include!("basic/image_regions.rs");
+include!("basic/input_layout.rs");
+include!("basic/idle_animation_partial.rs");
+include!("basic/redraw_cadence.rs");
+

@@ -1,0 +1,780 @@
+use super::*;
+use std::path::PathBuf;
+
+impl Config {
+    /// Create a default config file with comments
+    pub fn create_default_config_file() -> anyhow::Result<PathBuf> {
+        let path = Self::path().ok_or_else(|| anyhow::anyhow!("No config path"))?;
+
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+
+        std::fs::write(&path, Self::default_config_file_contents())?;
+        Ok(path)
+    }
+
+    /// The commented config template written by [`Self::create_default_config_file`].
+    ///
+    /// Exposed separately so tests can check that the template we ship actually
+    /// parses and documents the options it claims to.
+    pub fn default_config_file_contents() -> String {
+        let default_content = r##"# alphacode configuration file
+# Location: ~/.alphacode/config.toml
+#
+# Environment variables override these settings.
+# Run `/config` in alphacode to see current settings.
+
+[keybindings]
+# Scroll keys (vim-style by default)
+# Supports: ctrl, alt, shift modifiers + any key
+# Examples: "ctrl+k", "alt+j", "ctrl+shift+up", "pageup"
+scroll_up = "ctrl+k"
+scroll_down = "ctrl+j"
+scroll_page_up = "alt+u"
+scroll_page_down = "alt+d"
+
+# Model switching
+model_switch_next = "ctrl+tab"
+model_switch_prev = "ctrl+shift+tab"
+
+# Reasoning effort switching (OpenAI models)
+# Defaults: cmd+right / cmd+left on macOS, alt+right / alt+left elsewhere.
+# Alt/Option+Left/Right move by word in the input box.
+effort_increase = "@EFFORT_INCREASE@"
+effort_decrease = "@EFFORT_DECREASE@"
+
+# Centered mode toggle key
+centered_toggle = "alt+c"
+
+# Jump between user prompts
+# Ctrl+1..4 resizes the pinned side panel to 25/50/75/100%.
+# Ctrl+5..9 jumps by recency rank (5 = 5th most recent).
+scroll_prompt_up = "ctrl+["
+scroll_prompt_down = "ctrl+]"
+
+# Scroll bookmark toggle (stash position, jump to bottom, press again to return)
+scroll_bookmark = "ctrl+g"
+
+# Optional fallback scroll bindings (useful on macOS terminals that forward Command)
+# Leave unset by default; on macOS Cmd+K / Cmd+J move up / down by prompt instead.
+scroll_up_fallback = ""
+scroll_down_fallback = ""
+
+# Workspace navigation (Niri-style)
+# Comma-separate multiple bindings to add aliases.
+workspace_left = "alt+h"
+workspace_down = "alt+j"
+workspace_up = "alt+k"
+workspace_right = "alt+l"
+
+# Pane / mode toggles
+side_panel_toggle = "alt+m"
+copy_selection_toggle = "alt+y"
+diagram_pane_toggle = "alt+t"
+typing_scroll_lock_toggle = "alt+s"
+diff_mode_cycle = "alt+g"
+info_widget_toggle = "alt+i"
+# Focus the inline swarm panel (list of agents this session manages). Press
+# again to cycle agents. While focused: alt+↑/↓ select, alt+o pops the agent
+# out to a new terminal, esc exits. Plain typing still goes to the chat input.
+# Active only with agents.swarm_spawn_mode = "inline".
+swarm_panel_focus = "alt+n"
+
+# Spawn a fresh alphacode session in a new terminal window, reusing the current
+# session's working directory. Companion to the system-wide launch hotkeys.
+# `alphacode setup-hotkey` installs these three global launch hotkeys on macOS,
+# Linux niri/Hyprland/sway/i3, and Windows. The Cmd modifier maps to Super on
+# Linux and Alt on Windows. Windows also adds the physical Copilot key:
+#   Cmd+;        new alphacode in your home directory
+#   Cmd+'        new alphacode in your last project directory
+#   Cmd+Shift+'  new alphacode self-dev session (last alphacode repo)
+# Default: Cmd+Shift+; on macOS, Alt+Shift+; elsewhere. Set "" to disable.
+# Note: some macOS terminals intercept Cmd combos; if so, pick another binding.
+# new_terminal = "cmd+shift+;"
+
+# Open the /resume session picker.
+# Default: Cmd+B on macOS, Alt+R on Windows/Linux. Set "" to disable.
+# open_resume = "cmd+b"
+
+# /resume picker Enter behavior. Options: "current-terminal" or "new-terminal".
+# By default Enter resumes in this terminal; Ctrl+Enter performs the alternate action.
+session_picker_enter = "current-terminal"
+
+[dictation]
+# External speech-to-text command.
+# The command should record/transcribe speech and print the final transcript to stdout.
+# You can include any tool-specific flags here too, for example a grammar target.
+# Examples:
+# command = "~/.local/bin/my-whisper-script"
+# command = "~/.local/bin/my-whisper-script --grammar-target code"
+command = ""
+
+# How to apply the transcript inside alphacode: insert|append|replace|send
+mode = "send"
+
+# Optional in-app hotkey to trigger dictation. Set to "off" to disable.
+# Example: "alt+;"
+key = "off"
+
+# Max seconds to wait for the dictation command to finish (0 = no timeout)
+timeout_secs = 90
+
+[display]
+# Diff display mode: "off", "inline" (default), "full-inline", "pinned" (dedicated pane), or "file"
+diff_mode = "inline"
+
+# Center all content by default (default: false)
+centered = false
+
+# Pin read images to a side pane (default: true)
+pin_images = true
+
+# Pin the full session todo list to the top of the chat transcript while it
+# scrolls, like the sticky previous-prompt preview (default: false)
+# pin_todos = false
+
+# Wrap long lines in the pinned diff pane (default: true)
+# Set to false for horizontal scrolling instead of wrapping
+diff_line_wrap = true
+
+# Queue mode: wait until assistant is done before sending next message
+queue_mode = false
+
+# Automatically reload the remote server when a newer server binary is detected (default: true)
+auto_server_reload = true
+
+# Capture mouse events (enables scroll wheel; disables terminal text selection)
+mouse_capture = true
+
+# Enable debug socket for external control/testing (default: false)
+debug_socket = false
+
+# Render emoji in terminal-facing TUI and CLI output (default: true).
+# Set false here or set ALPHACODE_NO_EMOJI=1 for ASCII fallbacks.
+emoji = true
+
+# Show thinking/reasoning content (default: false)
+show_thinking = false
+
+# How to display reasoning/thinking content: "off", "full", or "current".
+#   off     - never show reasoning
+#   full    - keep every reasoning trace in the transcript
+#   current - show only the live reasoning; collapse it once the model commits
+#             an assistant message or runs a tool, then show the next one
+# When unset, falls back to show_thinking (true => full, false => off).
+reasoning_display = "off"
+
+# Markdown spacing style: "compact" (chat/TUI) or "document" (docs-like)
+# markdown_spacing = "compact"
+
+# LaTeX rendering: "none" (show source), "unicode" (terminal text), or "image" (typeset PNG, default).
+# Image mode uses `latex` + `dvipng`, or `pdflatex` + `pdftocairo` as a fallback.
+latex_rendering = "image"
+# Show a small decorative idle decoration before the first prompt (default: false).
+#
+# When true, a calm, stable wordmark ("alphacode" + a short hint) is drawn
+# below the composer on an empty idle screen. The historical 3D ASCII
+# donut/orbit-rings animation is no longer the default -- it redrew a
+# subpixel glyph grid every animation tick and read as fuzzy / glitchy in
+# many terminals. Leave this off for the cleanest experience; set it to
+# true if you want the wordmark in addition to the empty-screen chrome.
+idle_animation = false
+# Show idle animation before first prompt (default: false)
+idle_animation = false
+
+# Briefly animate a user prompt line when it enters the viewport (default: true)
+prompt_entry_animation = true
+
+# Render swarm/file-activity notifications in a compact single-line form
+# instead of the full multi-line card with diff preview (default: false)
+# compact_notifications = false
+
+# Show the full agentgrep tool output inline in the transcript instead of just
+# the one-line summary (default: false). Useful when you want to read search
+# results directly in the chat.
+# show_agentgrep_output = false
+
+# Show the dimmed technical detail (command, file path, args) next to the
+# model-provided intent on tool rows (default: false). When false, tool rows
+# with an intent show just the intent; rows without an intent still show the
+# technical detail.
+# tool_call_details = false
+
+# Occasionally surface a "learn this keybinding" nudge (in a distinct color)
+# when you keep doing something the slow way (e.g. /resume) instead of using
+# its configured shortcut. Set false to disable all such hints (default: true).
+# keybinding_hints = true
+
+# Active sessions manager: pressing Left arrow on an empty input opens a
+# picker scoped to live (open) sessions, showing which are still working on a
+# response and which are ready for input (default: false). The /active
+# command is always available regardless of this setting.
+# active_sessions_manager = false
+
+# Include transcripts from other agent CLIs (Claude Code, Codex, Pi, OpenCode,
+# Cursor) in the session picker so they can be resumed or imported
+# (default: true). Set false to list only alphacode's own sessions.
+# external_sessions = true
+
+# Disable specific animation variants by name.
+# Examples: ["donut"] or ["donut", "orbit_rings"] or ["static_logo"]
+# Legacy aliases such as "three_rings" and "gyroscope" are still accepted.
+# disabled_animations = []
+#
+# The default decoration is a calm, static wordmark with no per-frame work,
+
+# Disable specific animation variants by name.
+# Examples: ["donut"] or ["donut", "orbit_rings"]
+# Legacy aliases such as "three_rings" and "gyroscope" are still accepted.
+#
+# The default decoration is a calm, static wordmark with no per-frame work,
+# so `animation_fps` only matters when you have re-enabled the historical
+# 3D animations (e.g. by adding them back via a future config knob, or via
+# the in-app /settings UI). The shipped default is 20 FPS for any
+# animation you do enable -- smooth enough for the eye, well below the
+# frame rate where the 3D samplers would dominate idle CPU.
+# animation_fps = 20
+# full = all animations enabled
+# reduced = skip idle animations, keep spinners
+# minimal = disable all animations, slower redraw rate
+# performance = "auto"
+
+# Animation FPS (idle animation): 1-120 (default: 60)
+# Runtime policy may cap this lower on slower environments such as WSL/Windows Terminal.
+# animation_fps = 60
+
+# Active redraw FPS (processing, streaming, spinners): 1-120 (default: 60)
+# Runtime policy may cap this lower on slower environments such as WSL/Windows Terminal.
+# redraw_fps = 60
+
+# Label shown for the Alt/Option modifier in copy badges.
+# Empty = auto ("⌥" on macOS, "Alt" elsewhere). Examples: "Option", "Alt", "⌥".
+# copy_badge_alt_label = ""
+
+# Color theme: "auto" (query the terminal background), "dark", or "light".
+# theme = "auto"
+
+# Built-in color theme. Supplies a complete, coherent palette so you do not have
+# to hand-write all 39 roles below. Run `/theme` to see the list with previews of
+# what each one is for. Empty = alphacode's built-in palette.
+# preset = "tokyo-night"
+
+# Per-role color overrides. Every color the TUI renders is configurable: the
+# named roles below are substituted directly, and the ad hoc shades individual
+# widgets use follow whichever role they belong to. These win over `preset`, so
+# you can pick a theme and still retune individual roles.
+#
+# Easiest path: run `/colors generate #8ab4f8` to derive a whole harmonious
+# palette from one color you like, then `/colors harmony` to score it and see
+# exactly what to fix. `/colors` lists every role, and `/colors export` prints
+# this section for you.
+#
+# [display.colors]
+# user = "#8ab4f8"
+# ai = "#81c784"
+# accent = "#ba8bff"
+# success = "#64c864"
+# warning = "#ffc864"
+# error = "#ff6464"
+
+[features]
+# Memory: retrieval + extraction sidecar features
+memory = true
+# Swarm: multi-session coordination features
+swarm = true
+# Mermaid: render Mermaid code blocks and tell the model that diagrams are supported
+mermaid = true
+# Auto-poke: automatically nudge the model to continue when it stops with
+# incomplete todos. /poke on and /poke off still override this per session.
+auto_poke = true
+# Inject timestamps into user messages and tool results sent to the model
+message_timestamps = true
+# Persist memory injections into session history instead of sending them as request-only ephemeral context
+persist_memory_injections = false
+# Show an in-chat warning when a request misses the KV cache for a harness-caused
+# (avoidable) reason: system prompt, tool set, or message prefix changed. These
+# should essentially never happen and indicate a prefix-cache bug.
+kv_cache_miss_notices = true
+# Update channel: "stable" (releases only) or "main" (latest commits on push)
+# Set to "main" for bleeding edge updates every time code is pushed
+update_channel = "stable"
+
+[websearch]
+# Preferred websearch engine: "duckduckgo", "bing", or "searxng".
+engine = "duckduckgo"
+# Keyless HTML engines to try if the preferred engine fails. Default falls back to Bing HTML.
+fallback_engines = ["bing"]
+# Bring your own Bing Search API key for primary Bing searches. Prefer using an env var.
+# Fallback Bing searches intentionally use keyless HTML search.
+# bing_api_key_env = "ALPHACODE_BING_API_KEY"
+# bing_api_key = ""
+# Bing market/region, for example "en-US" or "zh-CN".
+bing_market = "en-US"
+# SearXNG instance for the "searxng" engine. On some hosts (commonly Linux),
+# DuckDuckGo and Bing block scraped requests via TLS fingerprinting / IP
+# reputation and return an anti-bot page with no results. Pointing at a SearXNG
+# instance (self-hosted or trusted public) with the JSON format enabled avoids
+# this. Configure here or via the ALPHACODE_SEARXNG_URL environment variable, then
+# set engine = "searxng" or add it to fallback_engines.
+# searxng_url = "https://searx.example.org"
+
+[tools]
+# Controls which built-in tools are sent to the model.
+# Profiles: "full" (default), "acp", "minimal"/"lite", or "none".
+# acp keeps core coding tools plus batch for generic ACP clients.
+# minimal keeps core coding tools only: bash, read, write, edit, multiedit,
+# apply_patch, patch, agentgrep, glob, grep, and ls.
+profile = "full"
+# Explicit allow-list. When non-empty, only these tools are exposed.
+# enabled = ["bash", "read", "write", "apply_patch", "agentgrep", "ls"]
+# All built-in tools, including gmail, are exposed by the full profile.
+# Use enabled = ["*"] to explicitly select the unrestricted full toolset.
+# Hide selected tools after applying the profile/allow-list.
+# disabled = ["browser", "gmail", "swarm"]
+# Disable all built-in tools unless enabled is set.
+disable_base_tools = false
+
+[acp]
+# Agent Client Protocol adapter compatibility profile: standard, extended, or full.
+# standard emits only spec-compatible ACP messages.
+# extended/full additionally emit ignorable _alphacode/* extension notifications.
+profile = "standard"
+# Tool profile requested when `alphacode acp` starts the daemon itself.
+# Existing daemons keep their current server-wide tool config.
+tool_profile = "acp"
+
+[provider]
+# Default model (optional, uses provider default if not set)
+# Set via /model picker with Ctrl+B to save as default
+# default_model = "claude-opus-5"
+# Default provider (optional: claude|anthropic-api|openai|openai-api|copilot|openrouter|...)
+# When set, this provider is preferred on startup if available.
+#   claude        = Claude via OAuth/subscription (token in ~/.alphacode/auth.json)
+#   anthropic-api = Claude via direct Anthropic API key (ANTHROPIC_API_KEY env
+#                   or ~/.config/alphacode/anthropic.env). API-key mode does NOT fall
+#                   back to OAuth; configure the key first.
+# `claude` and `anthropic-api` are distinct providers with distinct credentials.
+# See docs/AUTH_CREDENTIAL_SOURCES.md for where each credential lives.
+# default_provider = "copilot"
+# OpenAI reasoning effort (none|minimal|low|medium|high|xhigh|max)
+openai_reasoning_effort = "medium"
+# Anthropic reasoning effort for Claude reasoning models (none|low|medium|high|xhigh|max)
+# xhigh needs Opus 4.7/4.8 or Fable 5; max needs an output_config effort model (Opus/Sonnet 4.6+).
+# Defaults to xhigh for Claude Opus 4.7/4.8 (high on older Opus) when unset; other models keep their own default.
+# anthropic_reasoning_effort = "medium"
+# OpenAI transport mode (auto|websocket|https)
+# openai_transport = "auto"
+# OpenAI service tier override (priority|flex|off)
+# Defaults to `priority` to match Codex /fast behavior for OpenAI OAuth
+# (higher speed, higher usage). Set to "off" (or "standard") to disable.
+openai_service_tier = "priority"
+# Preserve provider-native reasoning/thinking for future-turn context when supported.
+# Applies to OpenRouter, Anthropic, and OpenAI native reasoning replay. Display is separate.
+preserve_reasoning_context = true
+# Cross-provider failover when the same prompt would be resent elsewhere.
+# countdown = 3-second countdown before retrying on another provider; press Esc to cancel (default)
+# manual = show a notice and let you switch yourself
+# cross_provider_failover = "manual"
+# Try another account on the same provider before switching providers (default: true)
+# same_provider_account_failover = false
+cross_provider_failover = "countdown"
+# Copilot premium mode: "normal" (default), "one" (first msg only), "zero" (all free)
+# Set to "zero" if you have premium Copilot and want free requests
+# copilot_premium = "zero"
+# Only list these providers in the /model picker (issue #460). Entries match
+# provider labels ("openai", "anthropic", "copilot", "openrouter", ...), route
+# api methods ("claude-oauth", "openai-compatible:myprofile"), or bare
+# openai-compatible profile ids ("myprofile"). The active model's routes always
+# stay visible. Unset or empty = show everything.
+# model_picker_providers = ["myprofile", "openrouter"]
+# Max seconds to wait for streaming data before timing out a request with no
+# data received. Raise this for slow reasoning models (e.g. DeepSeek) that think
+# silently for minutes before emitting tokens. Default: 180.
+# Applies to every streaming provider path (OpenAI native, Anthropic, Copilot,
+# OpenRouter/OpenAI-compatible). The TUI's client-side stall guard also extends
+# to match this value. Also overridable per-launch via ALPHACODE_STREAM_IDLE_TIMEOUT_SECS.
+# This is the base budget: high reasoning efforts scale it up automatically
+# (high 2x, xhigh 3x, max/swarm 4x) since they think silently for much longer.
+# stream_idle_timeout_secs = 600
+
+[agents]
+# Defaults for spawned helper agents (swarm workers, subagents, sidecars).
+# All keys are optional; the values below are the built-in defaults.
+#
+# Default model for spawned swarm/subagent sessions.
+# Leave unset (or "inherit"/"coordinator") so workers inherit the model of the
+# session that spawned them. Set a concrete model only to pin every worker to it.
+# Env override: ALPHACODE_SWARM_MODEL
+# swarm_model = "inherit"
+#
+# How swarm-created agents are spawned:
+#   "inline"   - in-process (no window), shown as a live gallery viewport in the coordinator (default)
+#   "visible"  - open a headed terminal window (alias: "headed")
+#   "headless" - create the worker in-process with no terminal window
+#   "auto"     - try visible first, fall back to headless if no window can open
+# The swarm tool's per-call `spawn_mode` overrides this when set.
+# Env override: ALPHACODE_SWARM_SPAWN_MODE
+swarm_spawn_mode = "inline"
+#
+# Max live swarm worker agents in one swarm. This RAM-safety budget applies to
+# recursive ad hoc spawning and deep-mode run_plan parallelism. Completed/stopped
+# workers free their slots. 0 disables this guard and leaves only the absolute
+# per-swarm hard cap of 1000. Light mode uses a smaller fixed fan-out.
+# Env override: ALPHACODE_SWARM_MAX_CONCURRENT_AGENTS
+swarm_max_concurrent_agents = 32
+#
+# Max percentage (1-90) of the chat height the inline swarm gallery band may use.
+# Unset = built-in default (40%). Lower values keep more transcript visible; set
+# near the minimum to collapse the gallery to a thin strip.
+# swarm_gallery_max_pct = 40
+#
+# Layout of the inline swarm strip above the status line:
+#   "vertical"   - one agent per row (session icon + status + task), capped to
+#                  a few rows with a "+N more" overflow marker (default)
+#   "horizontal" - all agents packed as chips on a single row
+# Env override: ALPHACODE_SWARM_STRIP_LAYOUT
+# swarm_strip_layout = "vertical"
+#
+# Model for the memory sidecar (relevance/extraction). Unset = sidecar auto-select
+# (OpenAI defaults to gpt-5.6-luna with reasoning effort "none").
+# Env override: ALPHACODE_MEMORY_MODEL
+# memory_model = "gpt-5.6-luna"
+#
+# Whether the memory sidecar (LLM precision judge) handles relevance/extraction.
+# Default true: the LLM precision-judge path is the only reliably productive
+# memory mode. Set false only to opt into the lower-precision no-LLM hybrid path.
+# When this is true but no LLM backend is reachable (logged out), memory goes
+# dormant instead of degrading to the no-LLM path. Env: ALPHACODE_MEMORY_SIDECAR_ENABLED
+# memory_sidecar_enabled = true
+#
+# Minimum turns between Mode-2 memory reranks (cadence floor). The expensive
+# listwise LLM rerank runs at most once per this many turns; skipped turns fall
+# back to hybrid-ordered surfacing. A topic change always forces a rerank. Set 1
+# to rerank every turn. Default 3.
+# memory_rerank_cadence = 3
+#
+# High-precision consensus rerank: run N independent LLM judges per fired rerank
+# and inject only memories that >= memory_rerank_min_agree of them agree on.
+# Default 2 judges / 2 agreement -> injection precision ~1.0 with ~100% clean
+# (zero memory) on no-memory turns, at 2 LLM calls per fired turn. Set votes=1
+# for the cheaper single-judge path (precision ~0.77).
+# memory_rerank_votes = 2
+# memory_rerank_min_agree = 2
+#
+# Embedding backend for memory dense-retrieval. "local" (default) uses the
+# bundled all-MiniLM-L6-v2 ONNX model (no network); "openai" uses a remote
+# OpenAI / OpenAI-compatible /v1/embeddings endpoint (requires OPENAI_API_KEY;
+# silently falls back to local when no key is found). Vectors from different
+# models live in separate spaces and are never compared, so switching is safe.
+# Env override: ALPHACODE_MEMORY_EMBEDDING_BACKEND
+# memory_embedding_backend = "local"
+# memory_embedding_model = "text-embedding-3-small"
+# memory_embedding_base_url = "https://api.openai.com/v1"
+# memory_embedding_dim = 1536
+
+[terminal]
+# Without a hook, clients inside tmux automatically use a right-side pane.
+# Set ALPHACODE_TERMINAL to force a supported terminal emulator instead.
+# External command that takes over headed session spawns (swarm agents,
+# resume-in-new-terminal, self-dev windows, restart restores).
+#
+# When set, alphacode runs `<spawn_hook> <alphacode-binary> <args...>` instead of
+# opening a terminal emulator itself. The hook receives ALPHACODE_SPAWN_* env vars
+# describing the spawn so multiplexers/wrappers can decide where it appears:
+#   ALPHACODE_SPAWN_KIND        - "swarm-agent", "resume", "selfdev", "restart", ...
+#   ALPHACODE_SPAWN_SESSION_ID  - session the window will run
+#   ALPHACODE_SPAWN_TITLE       - suggested window/tab title
+#   ALPHACODE_SPAWN_CWD         - session working directory (also the hook's cwd)
+#   ALPHACODE_SPAWN_PROGRAM     - alphacode binary path
+#   ALPHACODE_SPAWN_COMMAND     - full shell-escaped command line
+#   ALPHACODE_SPAWN_SWARM_ID / ALPHACODE_SPAWN_COORDINATOR_SESSION_ID (swarm spawns)
+# If the hook fails to start, alphacode falls back to built-in terminal detection.
+# Env override: ALPHACODE_SPAWN_HOOK (set empty to disable a config hook).
+#
+# Examples:
+#   spawn_hook = "tmux new-window"                # tmux window per agent
+#   spawn_hook = "kitty @ launch --type=tab --"   # kitty tab per agent
+#   spawn_hook = "~/bin/alphacode-spawn-router"       # custom placement script
+# spawn_hook = ""
+#
+# External command used to focus/raise an existing session window, replacing
+# the built-in wmctrl/xdotool title search. Receives ALPHACODE_FOCUS_SESSION_ID
+# and ALPHACODE_FOCUS_TITLE env vars. Pair with spawn_hook so the program that
+# placed the window also brings it to the front.
+# Env override: ALPHACODE_FOCUS_HOOK (set empty to disable a config hook).
+#
+# Example:
+#   focus_hook = "~/bin/alphacode-focus-router"
+# focus_hook = ""
+#
+# macOS only: terminal that the Cmd+; launch hotkey and in-app session spawns
+# open alphacode into. One of: ghostty, iterm2, wezterm, warp, alacritty, vscode,
+# terminal (Apple Terminal). Preferred over the legacy
+# ~/.alphacode/preferred_terminal.json file. After changing this, re-run
+# `alphacode setup-hotkey` so the generated launcher script (Cmd+;) picks it up.
+# preferred = "ghostty"
+
+[notifications]
+# Desktop notifications for interactive sessions (macOS Notification Center /
+# Linux notify-send). Separate from [safety], which covers ambient-mode
+# ntfy/email/channel notifications.
+#
+# Notify when an agent turn finishes. Fires only for long turns and, by
+# default, only while the terminal window is unfocused. The notification is a
+# compact summary: session name, duration, todo progress, and a snippet of the
+# final assistant message.
+# turn_complete = true
+# Minimum turn duration (seconds) before notifying (default: 120)
+# turn_complete_min_secs = 120
+# Lower threshold (seconds) when the session has todos, since todos indicate
+# task-style work worth reporting sooner (default: 30)
+# turn_complete_todo_min_secs = 30
+# Only notify while the terminal window is unfocused (default: true)
+# turn_complete_only_when_unfocused = true
+# macOS Notification Center sound played on completion (e.g. "Glass", "Ping",
+# "Hero"). Empty string disables the sound. Ignored on non-macOS. (default: "Glass")
+# turn_complete_sound = "Glass"
+
+[hooks]
+# Lifecycle hooks: external commands alphacode runs at well-defined points so other
+# programs can observe or gate agent behavior. Commands are parsed shell-style
+# (quotes work) but executed directly, with ALPHACODE_HOOK_* env vars describing
+# the event:
+#   ALPHACODE_HOOK_EVENT       - "turn_start", "turn_end", "session_start",
+#                            "session_end", "pre_tool", "post_tool"
+#   ALPHACODE_HOOK_SESSION_ID  - the session the event belongs to
+#   ALPHACODE_HOOK_CWD         - session working directory (also the hook's cwd)
+#   ALPHACODE_HOOK_PAYLOAD     - JSON mirror of all fields
+# Hook processes get ALPHACODE_HOOKS_DISABLED=1 so nested alphacode calls don't recurse.
+#
+# All hooks except pre_tool are observers: detached, fire-and-forget, failures
+# only logged. Env overrides: ALPHACODE_HOOK_TURN_START, ALPHACODE_HOOK_TURN_END,
+# ALPHACODE_HOOK_SESSION_START, ALPHACODE_HOOK_SESSION_END, ALPHACODE_HOOK_PRE_TOOL,
+# ALPHACODE_HOOK_POST_TOOL (set empty to disable a config hook).
+#
+# Runs when an agent turn begins, before the model starts generating and before
+# the first pre_tool. Lets integrations detect the agent is working during the
+# think/stream window before any tool call. Extra fields: ALPHACODE_HOOK_MODEL,
+# ALPHACODE_HOOK_SOURCE ("chat"/"resume"/"ambient").
+# turn_start = "~/bin/alphacode-turn-start"
+#
+# Runs when an agent turn completes. Extra fields: ALPHACODE_HOOK_STATUS
+# ("ok"/"error"), ALPHACODE_HOOK_DURATION_MS, ALPHACODE_HOOK_MODEL,
+# ALPHACODE_HOOK_LAST_ASSISTANT_TEXT (first 4000 chars), ALPHACODE_HOOK_ERROR.
+# turn_end = "~/bin/alphacode-turn-notify"
+#
+# Runs when a session becomes active. Extra: ALPHACODE_HOOK_SOURCE
+# ("create"/"attach"/"resume").
+# session_start = ""
+#
+# Runs when a session closes normally. Extra: ALPHACODE_HOOK_SOURCE ("close").
+# session_end = ""
+#
+# Gate hook before every tool call. Receives ALPHACODE_HOOK_TOOL_NAME and the tool
+# input JSON on stdin (truncated copy in ALPHACODE_HOOK_TOOL_INPUT). Exit 0 allows
+# the call; exit 2 blocks it and stderr is shown to the model as the error;
+# any other outcome (other exits, timeout, missing binary) fails open.
+# pre_tool = "~/bin/alphacode-tool-policy"
+#
+# Max milliseconds to wait for pre_tool before failing open (default: 5000).
+# pre_tool_timeout_ms = 5000
+#
+# Runs after each tool call. Extra fields: ALPHACODE_HOOK_TOOL_NAME,
+# ALPHACODE_HOOK_STATUS, ALPHACODE_HOOK_DURATION_MS, ALPHACODE_HOOK_OUTPUT_BYTES,
+# ALPHACODE_HOOK_ERROR.
+# post_tool = ""
+
+[ambient]
+# Ambient mode: background agent that maintains your codebase
+# Enable ambient mode (default: false)
+enabled = false
+# Provider override (default: auto-select based on available credentials)
+# provider = "claude"
+# Model override (default: provider's strongest)
+# model = "claude-sonnet-4-20250514"
+# Allow API key usage (default: false, only OAuth to avoid surprise costs)
+allow_api_keys = false
+# Daily token budget when using API keys (optional)
+# api_daily_budget = 100000
+# Minimum interval between cycles in minutes
+min_interval_minutes = 5
+# Maximum interval between cycles in minutes
+max_interval_minutes = 120
+# Pause ambient when user has active session
+pause_on_active_session = true
+# Enable proactive work (new features, refactoring) vs garden-only (lint, format, deps)
+proactive_work = true
+# Branch prefix for proactive work
+work_branch_prefix = "ambient/"
+# Show ambient cycle in a terminal window (default: true)
+# visible = true
+
+[gateway]
+# Enable WebSocket gateway for iOS/web clients
+enabled = false
+# TCP port for gateway listener
+port = 7643
+# Bind address (0.0.0.0 for LAN/Tailscale reachability)
+bind_addr = "0.0.0.0"
+
+[power]
+# Prevent automatic system sleep while any alphacode session is actively working.
+# Linux also blocks lid-switch suspend. Windows still respects explicit lid-close
+# and power-button actions from your active power plan. The display may sleep.
+# The guard is held only for as long as work is in flight. (default: true)
+# Set ALPHACODE_DISABLE_POWER_INHIBIT=1 to force-disable regardless of this setting.
+prevent_sleep_while_streaming = true
+
+[safety]
+# Notification settings for ambient mode events
+
+# ntfy.sh push notifications (free, phone app: https://ntfy.sh)
+# ntfy_topic = "alphacode-ambient-your-secret-topic"
+# ntfy_server = "https://ntfy.sh"
+
+# Desktop notifications via notify-send (default: true)
+desktop_notifications = true
+
+# Email notifications via SMTP
+# email_enabled = false
+# email_to = "you@example.com"
+# email_from = "alphacode@example.com"
+# email_smtp_host = "smtp.gmail.com"
+# email_smtp_port = 587
+# Password via env: ALPHACODE_SMTP_PASSWORD (preferred) or config below
+# email_password = ""
+
+# IMAP for email replies (reply to ambient emails to send directives)
+# email_reply_enabled = false
+# email_imap_host = "imap.gmail.com"
+# email_imap_port = 993
+
+# Telegram notifications via Bot API (free, https://telegram.org)
+# telegram_enabled = false
+# telegram_bot_token = ""  # From @BotFather (prefer ALPHACODE_TELEGRAM_BOT_TOKEN env var)
+# telegram_chat_id = ""    # Your user/chat ID
+# telegram_reply_enabled = false  # Reply to bot messages to send directives
+
+# Discord notifications via Bot API (https://discord.com/developers)
+# discord_enabled = false
+# discord_bot_token = ""     # From Discord Developer Portal (prefer ALPHACODE_DISCORD_BOT_TOKEN env var)
+# discord_channel_id = ""    # Channel ID to post in
+# discord_bot_user_id = ""   # Bot's user ID (for filtering own messages)
+# discord_reply_enabled = false  # Messages in channel become agent directives
+
+# Jade cloud relay (outbound-only long polling, disabled by default).
+# Prefer environment variables for secrets:
+# ALPHACODE_JADE_RELAY_API_BASE, ALPHACODE_JADE_RELAY_TOKEN, ALPHACODE_JADE_RELAY_TOKEN_ID,
+# ALPHACODE_JADE_RELAY_USER_ID, ALPHACODE_JADE_RELAY_SESSION_ID.
+# jade_relay_enabled = false
+# jade_relay_reply_enabled = false   # Deliver cloud prompts to one configured live session.
+# jade_relay_launch_enabled = false  # Allow cloud device commands to open headed local sessions.
+# jade_relay_launch_working_dir = "" # Optional default cwd for launched sessions.
+
+# [sponsors] # Legacy config section name retained for compatibility.
+# Integration discovery (enabled by default; set enabled = false to opt out).
+# When enabled, the agent gains a `discover_tools` tool listing third-party
+# developer tools from Alphacode's hosted integration directory. Some providers
+# may share revenue with Alphacode when a referred user becomes a customer, but
+# partnership status never influences recommendations.
+# See https://alphacode.sh/discovery-tools
+# enabled = true
+# endpoint = "https://api.alphacode.sh/v1/discovery"
+	"##;
+
+        // Substitute platform-specific defaults from the keybinding registry.
+        let p = crate::alphacode_config_types::KeybindingPlatform::current();
+        let effort_increase =
+            crate::alphacode_config_types::default_binding("effort_increase", p).unwrap_or("alt+right");
+        let effort_decrease =
+            crate::alphacode_config_types::default_binding("effort_decrease", p).unwrap_or("alt+left");
+        default_content
+            .replace("@EFFORT_INCREASE@", effort_increase)
+            .replace("@EFFORT_DECREASE@", effort_decrease)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The shipped template is a hand-maintained string, so a typo in it ships
+    /// a config file that alphacode itself cannot read. Parse it here.
+    #[test]
+    fn default_config_template_parses() {
+        let template = Config::default_config_file_contents();
+        toml::from_str::<Config>(&template).expect("the shipped config template must parse");
+    }
+    /// The shipped defaults must be calm: the 3D ASCII decoration that used to
+    /// ship on by default is *off*, and the per-frame animation rate is well
+    /// below the historical 60 FPS so any animation the user does re-enable
+    /// cannot dominate idle CPU. This is a regression gate: a future change
+    /// that flips `idle_animation` back to `true` or raises `animation_fps`
+    /// above the budget the comment claims will trip this test and force a
+    /// conscious decision in code review.
+    #[test]
+    fn shipped_display_defaults_are_calm() {
+        let display = crate::config::DisplayConfig::default();
+        assert!(
+            !display.idle_animation,
+            "idle_animation must default to false (the calm wordmark is opt-in)"
+        );
+        assert!(
+            display.animation_fps <= 30,
+            "animation_fps default must be calm (got {})",
+            display.animation_fps
+        );
+    }
+
+    /// Colors are only discoverable if the template mentions them, since most
+    /// users read the generated config rather than the docs.
+    #[test]
+    fn default_config_template_documents_colors() {
+        let template = Config::default_config_file_contents();
+        assert!(
+            template.contains("[display.colors]"),
+            "the template should show how to configure colors"
+        );
+        assert!(
+            template.contains("/colors"),
+            "the template should point at the /colors command"
+        );
+    }
+
+    /// Uncommenting the documented color example must actually work, which is
+    /// the thing a user will literally do.
+    #[test]
+    fn documented_color_example_is_valid_when_uncommented() {
+        let template = Config::default_config_file_contents();
+        let start = template
+            .find("# [display.colors]")
+            .expect("template documents a colors section");
+        let example: String = template[start..]
+            .lines()
+            .take_while(|line| line.starts_with("# ") || line == &"#")
+            .map(|line| {
+                format!(
+                    "{}\n",
+                    line.trim_start_matches("# ").trim_start_matches('#')
+                )
+            })
+            .collect();
+
+        let parsed: Config = toml::from_str(&example).expect("uncommented example must parse");
+        assert!(
+            !parsed.display.colors.is_empty(),
+            "the example should set some colors, got {:?}",
+            parsed.display.colors
+        );
+        for (role, value) in &parsed.display.colors {
+            assert!(
+                crate::alphacode_config_types::DisplayConfig::default()
+                    .colors
+                    .is_empty(),
+                "colors should default to empty"
+            );
+            assert_eq!(value.len(), 7, "{role} example should be #rrggbb: {value}");
+        }
+    }
+}

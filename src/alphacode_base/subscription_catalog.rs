@@ -1,0 +1,748 @@
+use crate::provider_catalog;
+
+pub const ALPHACODE_API_KEY_ENV: &str = "ALPHACODE_API_KEY";
+pub const ALPHACODE_API_BASE_ENV: &str = "ALPHACODE_API_BASE";
+pub const ALPHACODE_ACCOUNT_ID_ENV: &str = "ALPHACODE_ACCOUNT_ID";
+pub const ALPHACODE_ACCOUNT_EMAIL_ENV: &str = "ALPHACODE_ACCOUNT_EMAIL";
+pub const ALPHACODE_TIER_ENV: &str = "ALPHACODE_TIER";
+pub const ALPHACODE_ENV_FILE: &str = "alphacode-subscription.env";
+pub const ALPHACODE_CACHE_NAMESPACE: &str = "alphacode-subscription";
+pub const ALPHACODE_SUBSCRIPTION_ACTIVE_ENV: &str = "ALPHACODE_SUBSCRIPTION_ACTIVE";
+pub const DEFAULT_ALPHACODE_API_BASE: &str = "https://api.alphacode.sh/v1";
+pub const ALPHACODE_PRICING_URL: &str = "https://alphacode.sh/pricing";
+pub const ALPHACODE_ACCOUNT_URL: &str = "https://alphacode.sh/account";
+pub const ALPHACODE_PROVIDER_DISPLAY_NAME: &str = "Alphacode Subscription";
+pub const ALPHACODE_ROUTE_API_METHOD: &str = "alphacode-subscription";
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub enum AlphacodeTier {
+    Plus,
+    Pro,
+    Max,
+    Ultra,
+    Flagship,
+}
+
+impl AlphacodeTier {
+    pub const ALL: &'static [AlphacodeTier] = &[
+        AlphacodeTier::Plus,
+        AlphacodeTier::Pro,
+        AlphacodeTier::Max,
+        AlphacodeTier::Ultra,
+        AlphacodeTier::Flagship,
+    ];
+
+    pub fn retail_price_usd(self) -> u32 {
+        match self {
+            Self::Plus => 10,
+            Self::Pro => 20,
+            Self::Max => 100,
+            Self::Ultra => 200,
+            Self::Flagship => 1000,
+        }
+    }
+
+    pub fn usable_budget_usd(self) -> f64 {
+        match self {
+            Self::Plus => 18.00,
+            Self::Pro => 40.00,
+            Self::Max => 225.00,
+            Self::Ultra => 500.00,
+            Self::Flagship => 3000.00,
+        }
+    }
+
+    pub fn display_name(self) -> &'static str {
+        match self {
+            Self::Plus => "Plus",
+            Self::Pro => "Pro",
+            Self::Max => "Max",
+            Self::Ultra => "Ultra",
+            Self::Flagship => "Solo",
+        }
+    }
+
+    /// Stable machine identifier used for wire values and local persistence.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Plus => "plus",
+            Self::Pro => "pro",
+            Self::Max => "max",
+            Self::Ultra => "ultra",
+            Self::Flagship => "flagship",
+        }
+    }
+
+    /// Parse a tier from a wire/persisted value (case-insensitive).
+    pub fn parse(value: &str) -> Option<Self> {
+        match value.trim().to_ascii_lowercase().as_str() {
+            "plus" => Some(Self::Plus),
+            "pro" => Some(Self::Pro),
+            "max" => Some(Self::Max),
+            "ultra" => Some(Self::Ultra),
+            "flagship" | "solo" => Some(Self::Flagship),
+            _ => None,
+        }
+    }
+
+    /// Whether an account on this tier may use a model gated at `required`.
+    pub fn allows(self, required: AlphacodeTier) -> bool {
+        self >= required
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum UpstreamRoutingPolicy {
+    /// Routing is decided server-side by the alphacode router (model -> provider +
+    /// org key). The client does not pick upstreams; this is the only policy for
+    /// the managed subscription.
+    ServerManaged,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct CuratedModel {
+    pub id: &'static str,
+    pub display_name: &'static str,
+    pub aliases: &'static [&'static str],
+    pub default_enabled: bool,
+    pub routing_policy: UpstreamRoutingPolicy,
+    /// Minimum subscription tier that may use this model.
+    pub min_tier: AlphacodeTier,
+    pub note: &'static str,
+}
+
+pub const CURATED_MODELS: &[CuratedModel] = &[
+    CuratedModel {
+        id: "claude-opus-4-8",
+        display_name: "Claude Opus 4.8",
+        aliases: &["claude-opus-4-8", "opus-4-8", "opus 4.8", "claude opus 4.8"],
+        default_enabled: true,
+        routing_policy: UpstreamRoutingPolicy::ServerManaged,
+        min_tier: AlphacodeTier::Plus,
+        note: "Frontier model; routed server-side to Anthropic by the alphacode router.",
+    },
+    CuratedModel {
+        id: "claude-sonnet-4-6",
+        display_name: "Claude Sonnet 4.6",
+        aliases: &[
+            "claude-sonnet-4-6",
+            "sonnet-4-6",
+            "sonnet 4.6",
+            "claude sonnet 4.6",
+        ],
+        default_enabled: false,
+        routing_policy: UpstreamRoutingPolicy::ServerManaged,
+        min_tier: AlphacodeTier::Plus,
+        note: "Frontier model; routed server-side to Amazon Bedrock by the alphacode router.",
+    },
+    CuratedModel {
+        id: "gpt-5.5",
+        display_name: "GPT-5.5",
+        aliases: &["gpt-5.5", "gpt-5-5", "gpt 5.5"],
+        default_enabled: false,
+        routing_policy: UpstreamRoutingPolicy::ServerManaged,
+        min_tier: AlphacodeTier::Plus,
+        note: "Frontier model; routed server-side to OpenAI by the alphacode router.",
+    },
+    CuratedModel {
+        id: "claude-fable-5",
+        display_name: "Claude Fable 5",
+        aliases: &["claude-fable-5", "fable-5", "fable 5", "claude fable 5"],
+        default_enabled: false,
+        routing_policy: UpstreamRoutingPolicy::ServerManaged,
+        min_tier: AlphacodeTier::Ultra,
+        note: "Ultra-tier model; routed server-side to Anthropic by the alphacode router.",
+    },
+    CuratedModel {
+        id: "gpt-5.6-sol",
+        display_name: "GPT-5.6 Sol",
+        aliases: &["gpt-5.6-sol", "gpt 5.6 sol", "sol"],
+        default_enabled: false,
+        routing_policy: UpstreamRoutingPolicy::ServerManaged,
+        min_tier: AlphacodeTier::Plus,
+        note: "Frontier model; routed server-side to OpenAI by the alphacode router.",
+    },
+    CuratedModel {
+        id: "qwen3-coder-next",
+        display_name: "Qwen3 Coder Next",
+        aliases: &["qwen3-coder-next", "qwen 3 coder next", "qwen3 coder next"],
+        default_enabled: false,
+        routing_policy: UpstreamRoutingPolicy::ServerManaged,
+        min_tier: AlphacodeTier::Plus,
+        note: "Open-weight coding model; routed server-side to Amazon Bedrock by the alphacode router.",
+    },
+    CuratedModel {
+        id: "devstral-2-123b",
+        display_name: "Devstral 2 123B",
+        aliases: &[
+            "devstral-2-123b",
+            "devstral 2 123b",
+            "mistral devstral 2 123b",
+        ],
+        default_enabled: false,
+        routing_policy: UpstreamRoutingPolicy::ServerManaged,
+        min_tier: AlphacodeTier::Plus,
+        note: "Open-weight coding model; routed server-side to Amazon Bedrock by the alphacode router.",
+    },
+    CuratedModel {
+        id: "deepseek-v3.2",
+        display_name: "DeepSeek V3.2",
+        aliases: &["deepseek-v3.2", "deepseek v3.2", "deepseek 3.2"],
+        default_enabled: false,
+        routing_policy: UpstreamRoutingPolicy::ServerManaged,
+        min_tier: AlphacodeTier::Plus,
+        note: "Open-weight reasoning and coding model; routed server-side to Amazon Bedrock by the alphacode router.",
+    },
+    CuratedModel {
+        id: "nova-2-lite",
+        display_name: "Amazon Nova 2 Lite",
+        aliases: &["nova-2-lite", "nova 2 lite", "amazon nova 2 lite"],
+        default_enabled: false,
+        routing_policy: UpstreamRoutingPolicy::ServerManaged,
+        min_tier: AlphacodeTier::Plus,
+        note: "Recent efficient multimodal model; routed server-side to Amazon Bedrock by the alphacode router.",
+    },
+    CuratedModel {
+        id: "minimax-m2.5",
+        display_name: "MiniMax M2.5",
+        aliases: &["minimax-m2.5", "minimax m2.5", "minimax m2 5"],
+        default_enabled: false,
+        routing_policy: UpstreamRoutingPolicy::ServerManaged,
+        min_tier: AlphacodeTier::Plus,
+        note: "Recent reasoning and coding model; routed server-side to Amazon Bedrock by the alphacode router.",
+    },
+    CuratedModel {
+        id: "mistral-large-3",
+        display_name: "Mistral Large 3",
+        aliases: &["mistral-large-3", "mistral large 3"],
+        default_enabled: false,
+        routing_policy: UpstreamRoutingPolicy::ServerManaged,
+        min_tier: AlphacodeTier::Plus,
+        note: "Open-weight general and coding model; routed server-side to Amazon Bedrock by the alphacode router.",
+    },
+    CuratedModel {
+        id: "kimi-k2.5",
+        display_name: "Kimi K2.5",
+        aliases: &["kimi-k2.5", "kimi k2.5", "kimi k2 5"],
+        default_enabled: false,
+        routing_policy: UpstreamRoutingPolicy::ServerManaged,
+        min_tier: AlphacodeTier::Plus,
+        note: "Recent reasoning and agentic model; routed server-side to Amazon Bedrock by the alphacode router.",
+    },
+    CuratedModel {
+        id: "kimi-k2-thinking",
+        display_name: "Kimi K2 Thinking",
+        aliases: &["kimi-k2-thinking", "kimi k2 thinking"],
+        default_enabled: false,
+        routing_policy: UpstreamRoutingPolicy::ServerManaged,
+        min_tier: AlphacodeTier::Plus,
+        note: "Reasoning-focused model; routed server-side to Amazon Bedrock by the alphacode router.",
+    },
+    CuratedModel {
+        id: "nemotron-nano-3-30b",
+        display_name: "Nemotron Nano 3 30B",
+        aliases: &[
+            "nemotron-nano-3-30b",
+            "nemotron nano 3 30b",
+            "nvidia nemotron nano 3 30b",
+        ],
+        default_enabled: false,
+        routing_policy: UpstreamRoutingPolicy::ServerManaged,
+        min_tier: AlphacodeTier::Plus,
+        note: "Efficient open-weight reasoning model; routed server-side to Amazon Bedrock by the alphacode router.",
+    },
+    CuratedModel {
+        id: "gpt-oss-120b",
+        display_name: "GPT-OSS 120B",
+        aliases: &["gpt-oss-120b", "gpt oss 120b", "openai gpt oss 120b"],
+        default_enabled: false,
+        routing_policy: UpstreamRoutingPolicy::ServerManaged,
+        min_tier: AlphacodeTier::Plus,
+        note: "Large open-weight reasoning model; routed server-side to Amazon Bedrock by the alphacode router.",
+    },
+    CuratedModel {
+        id: "gpt-oss-20b",
+        display_name: "GPT-OSS 20B",
+        aliases: &["gpt-oss-20b", "gpt oss 20b", "openai gpt oss 20b"],
+        default_enabled: false,
+        routing_policy: UpstreamRoutingPolicy::ServerManaged,
+        min_tier: AlphacodeTier::Plus,
+        note: "Efficient open-weight reasoning model; routed server-side to Amazon Bedrock by the alphacode router.",
+    },
+    CuratedModel {
+        id: "qwen3-next-80b",
+        display_name: "Qwen3 Next 80B A3B",
+        aliases: &["qwen3-next-80b", "qwen3 next 80b", "qwen 3 next 80b a3b"],
+        default_enabled: false,
+        routing_policy: UpstreamRoutingPolicy::ServerManaged,
+        min_tier: AlphacodeTier::Plus,
+        note: "Open-weight general and coding model; routed server-side to Amazon Bedrock by the alphacode router.",
+    },
+    CuratedModel {
+        id: "glm-5",
+        display_name: "GLM-5",
+        aliases: &["glm-5", "glm 5", "zai glm 5"],
+        default_enabled: false,
+        routing_policy: UpstreamRoutingPolicy::ServerManaged,
+        min_tier: AlphacodeTier::Plus,
+        note: "Recent general and coding model; routed server-side to Amazon Bedrock by the alphacode router.",
+    },
+    CuratedModel {
+        id: "glm-4.7-flash",
+        display_name: "GLM 4.7 Flash",
+        aliases: &["glm-4.7-flash", "glm 4.7 flash", "zai glm 4.7 flash"],
+        default_enabled: false,
+        routing_policy: UpstreamRoutingPolicy::ServerManaged,
+        min_tier: AlphacodeTier::Plus,
+        note: "Efficient recent general model; routed server-side to Amazon Bedrock by the alphacode router.",
+    },
+];
+
+pub fn curated_models() -> &'static [CuratedModel] {
+    CURATED_MODELS
+}
+
+pub fn default_model() -> &'static CuratedModel {
+    CURATED_MODELS
+        .iter()
+        .find(|model| model.default_enabled)
+        .unwrap_or(&CURATED_MODELS[0])
+}
+
+/// Normalize a model id for curated-catalog matching: strips any `@provider`
+/// routing suffix, the `[1m]` long-context suffix, and lowercases.
+fn normalize_model_key(model: &str) -> String {
+    let base = model.trim().split('@').next().unwrap_or("").trim();
+    crate::alphacode_provider_core::model_id::canonical(base)
+}
+
+pub fn find_curated_model(model: &str) -> Option<&'static CuratedModel> {
+    let normalized = normalize_model_key(model);
+    CURATED_MODELS.iter().find(|candidate| {
+        candidate.id.eq_ignore_ascii_case(&normalized)
+            || candidate
+                .aliases
+                .iter()
+                .any(|alias| alias.eq_ignore_ascii_case(&normalized))
+    })
+}
+
+pub fn canonical_model_id(model: &str) -> Option<&'static str> {
+    find_curated_model(model).map(|model| model.id)
+}
+
+pub fn is_curated_model(model: &str) -> bool {
+    canonical_model_id(model).is_some()
+}
+
+/// The effective subscription tier for gating decisions.
+///
+/// `/v1/me` is the source of truth; the last-known tier is persisted to
+/// `alphacode-subscription.env` (`ALPHACODE_TIER`). Unknown/absent tier behaves like
+/// Plus for backward compatibility.
+pub fn effective_tier() -> AlphacodeTier {
+    cached_tier().unwrap_or(AlphacodeTier::Plus)
+}
+
+/// The last tier reported by the backend, if any was persisted.
+pub fn cached_tier() -> Option<AlphacodeTier> {
+    provider_catalog::load_env_value_from_env_or_config(ALPHACODE_TIER_ENV, ALPHACODE_ENV_FILE)
+        .as_deref()
+        .and_then(AlphacodeTier::parse)
+}
+
+/// Persist the last-known tier reported by the backend (`None` clears it).
+pub fn store_cached_tier(tier: Option<AlphacodeTier>) -> anyhow::Result<()> {
+    provider_catalog::save_env_value_to_env_file(
+        ALPHACODE_TIER_ENV,
+        ALPHACODE_ENV_FILE,
+        tier.map(AlphacodeTier::as_str),
+    )
+}
+
+/// Whether the current (cached) tier is allowed to use `model`.
+/// Non-curated models return `false`.
+pub fn is_model_allowed_for_current_tier(model: &str) -> bool {
+    find_curated_model(model)
+        .map(|curated| effective_tier().allows(curated.min_tier))
+        .unwrap_or(false)
+}
+
+pub fn routing_policy_detail(model: &CuratedModel) -> String {
+    match model.routing_policy {
+        UpstreamRoutingPolicy::ServerManaged => {
+            "alphacode subscription routing · managed server-side".to_string()
+        }
+    }
+}
+
+pub fn configured_api_key() -> Option<String> {
+    provider_catalog::load_env_value_from_env_or_config(ALPHACODE_API_KEY_ENV, ALPHACODE_ENV_FILE)
+}
+
+pub fn configured_api_base() -> Option<String> {
+    provider_catalog::load_env_value_from_env_or_config(ALPHACODE_API_BASE_ENV, ALPHACODE_ENV_FILE)
+}
+
+pub fn has_credentials() -> bool {
+    configured_api_key().is_some()
+}
+
+/// Persist an account API key and its non-secret account metadata in alphacode's
+/// owner-only subscription file.
+pub fn persist_account_credentials(
+    api_key: &str,
+    account_id: Option<&str>,
+    email: Option<&str>,
+    tier: Option<&str>,
+) -> anyhow::Result<()> {
+    let api_key = api_key.trim();
+    if api_key.is_empty() {
+        anyhow::bail!("refusing to persist an empty alphacode account API key");
+    }
+
+    for (key, value) in [
+        (ALPHACODE_API_KEY_ENV, Some(api_key)),
+        (ALPHACODE_ACCOUNT_ID_ENV, nonempty(account_id)),
+        (ALPHACODE_ACCOUNT_EMAIL_ENV, nonempty(email)),
+        (ALPHACODE_TIER_ENV, nonempty(tier)),
+    ] {
+        provider_catalog::save_env_value_to_env_file(key, ALPHACODE_ENV_FILE, value)?;
+    }
+    ensure_account_credential_permissions()
+}
+
+/// Remove the local account credential and cached account identity/tier. The
+/// configured API base is intentionally retained because it is endpoint
+/// configuration, not an authorization credential.
+pub fn clear_account_credentials() -> anyhow::Result<()> {
+    for key in [
+        ALPHACODE_API_KEY_ENV,
+        ALPHACODE_ACCOUNT_ID_ENV,
+        ALPHACODE_ACCOUNT_EMAIL_ENV,
+        ALPHACODE_TIER_ENV,
+    ] {
+        provider_catalog::save_env_value_to_env_file(key, ALPHACODE_ENV_FILE, None)?;
+    }
+    clear_runtime_env();
+    ensure_account_credential_permissions()
+}
+
+fn nonempty(value: Option<&str>) -> Option<&str> {
+    value.map(str::trim).filter(|value| !value.is_empty())
+}
+
+pub fn account_credential_path() -> anyhow::Result<std::path::PathBuf> {
+    Ok(crate::storage::app_config_dir()?.join(ALPHACODE_ENV_FILE))
+}
+
+/// Re-harden and verify the subscription file after every credential mutation.
+/// This is deliberately an explicit postcondition even though the shared secret
+/// writer also applies owner-only permissions.
+pub fn ensure_account_credential_permissions() -> anyhow::Result<()> {
+    let path = account_credential_path()?;
+    if !path.exists() {
+        return Ok(());
+    }
+    crate::storage::harden_secret_file_permissions(&path);
+
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let mode = std::fs::metadata(&path)?.permissions().mode() & 0o777;
+        if mode & 0o077 != 0 {
+            anyhow::bail!(
+                "alphacode account credential file has unsafe permissions {:03o}; expected owner-only access",
+                mode
+            );
+        }
+    }
+    Ok(())
+}
+
+pub fn has_router_base() -> bool {
+    configured_api_base().is_some()
+}
+
+pub fn is_runtime_mode_enabled() -> bool {
+    std::env::var(ALPHACODE_SUBSCRIPTION_ACTIVE_ENV)
+        .ok()
+        .map(|value| {
+            matches!(
+                value.trim().to_ascii_lowercase().as_str(),
+                "1" | "true" | "yes"
+            )
+        })
+        .unwrap_or(false)
+}
+
+pub fn apply_runtime_env() {
+    crate::alphacode_core::env::set_var(ALPHACODE_SUBSCRIPTION_ACTIVE_ENV, "1");
+    crate::alphacode_core::env::set_var(
+        "ALPHACODE_OPENROUTER_API_BASE",
+        configured_api_base().unwrap_or_else(|| DEFAULT_ALPHACODE_API_BASE.to_string()),
+    );
+    crate::alphacode_core::env::set_var("ALPHACODE_OPENROUTER_API_KEY_NAME", ALPHACODE_API_KEY_ENV);
+    crate::alphacode_core::env::set_var("ALPHACODE_OPENROUTER_ENV_FILE", ALPHACODE_ENV_FILE);
+    crate::alphacode_core::env::set_var("ALPHACODE_OPENROUTER_CACHE_NAMESPACE", ALPHACODE_CACHE_NAMESPACE);
+    crate::alphacode_core::env::set_var("ALPHACODE_OPENROUTER_PROVIDER_FEATURES", "0");
+    crate::alphacode_core::env::set_var("ALPHACODE_OPENROUTER_TRANSPORT_STATE", "alphacode-subscription");
+    crate::alphacode_core::env::remove_var("ALPHACODE_OPENROUTER_ALLOW_NO_AUTH");
+    crate::alphacode_core::env::remove_var("ALPHACODE_OPENROUTER_PROVIDER");
+    crate::alphacode_core::env::remove_var("ALPHACODE_OPENROUTER_NO_FALLBACK");
+}
+
+pub fn clear_runtime_env() {
+    crate::alphacode_core::env::remove_var(ALPHACODE_SUBSCRIPTION_ACTIVE_ENV);
+    crate::alphacode_core::env::remove_var("ALPHACODE_OPENROUTER_API_BASE");
+    crate::alphacode_core::env::remove_var("ALPHACODE_OPENROUTER_API_KEY_NAME");
+    crate::alphacode_core::env::remove_var("ALPHACODE_OPENROUTER_ENV_FILE");
+    crate::alphacode_core::env::remove_var("ALPHACODE_OPENROUTER_CACHE_NAMESPACE");
+    crate::alphacode_core::env::remove_var("ALPHACODE_OPENROUTER_PROVIDER_FEATURES");
+    crate::alphacode_core::env::remove_var("ALPHACODE_OPENROUTER_TRANSPORT_STATE");
+    crate::alphacode_core::env::remove_var("ALPHACODE_OPENROUTER_ALLOW_NO_AUTH");
+    crate::alphacode_core::env::remove_var("ALPHACODE_OPENROUTER_PROVIDER");
+    crate::alphacode_core::env::remove_var("ALPHACODE_OPENROUTER_NO_FALLBACK");
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const EXPECTED_PLUS_MODELS: &[&str] = &[
+        "claude-opus-4-8",
+        "claude-sonnet-4-6",
+        "gpt-5.5",
+        "gpt-5.6-sol",
+        "qwen3-coder-next",
+        "devstral-2-123b",
+        "deepseek-v3.2",
+        "nova-2-lite",
+        "minimax-m2.5",
+        "mistral-large-3",
+        "kimi-k2.5",
+        "kimi-k2-thinking",
+        "nemotron-nano-3-30b",
+        "gpt-oss-120b",
+        "gpt-oss-20b",
+        "qwen3-next-80b",
+        "glm-5",
+        "glm-4.7-flash",
+    ];
+
+    #[test]
+    fn curated_model_aliases_resolve_to_canonical_ids() {
+        assert_eq!(canonical_model_id("opus 4.8"), Some("claude-opus-4-8"));
+        assert_eq!(
+            canonical_model_id("Claude Opus 4.8"),
+            Some("claude-opus-4-8")
+        );
+        assert_eq!(canonical_model_id("gpt-5.5"), Some("gpt-5.5"));
+        assert_eq!(canonical_model_id("GPT 5.5"), Some("gpt-5.5"));
+        assert_eq!(
+            canonical_model_id("Claude Sonnet 4.6"),
+            Some("claude-sonnet-4-6")
+        );
+        assert_eq!(canonical_model_id("sonnet 4.6"), Some("claude-sonnet-4-6"));
+        assert_eq!(canonical_model_id("fable-5"), Some("claude-fable-5"));
+        assert_eq!(canonical_model_id("Claude Fable 5"), Some("claude-fable-5"));
+        assert_eq!(canonical_model_id("sol"), Some("gpt-5.6-sol"));
+        assert_eq!(canonical_model_id("GPT 5.6 Sol"), Some("gpt-5.6-sol"));
+        assert_eq!(
+            canonical_model_id("Qwen 3 Coder Next"),
+            Some("qwen3-coder-next")
+        );
+        assert_eq!(
+            canonical_model_id("Mistral Devstral 2 123B"),
+            Some("devstral-2-123b")
+        );
+        assert_eq!(canonical_model_id("DeepSeek 3.2"), Some("deepseek-v3.2"));
+        for (alias, expected) in [
+            ("Amazon Nova 2 Lite", "nova-2-lite"),
+            ("MiniMax M2.5", "minimax-m2.5"),
+            ("Mistral Large 3", "mistral-large-3"),
+            ("Kimi K2.5", "kimi-k2.5"),
+            ("Kimi K2 Thinking", "kimi-k2-thinking"),
+            ("NVIDIA Nemotron Nano 3 30B", "nemotron-nano-3-30b"),
+            ("OpenAI GPT OSS 120B", "gpt-oss-120b"),
+            ("OpenAI GPT OSS 20B", "gpt-oss-20b"),
+            ("Qwen 3 Next 80B A3B", "qwen3-next-80b"),
+            ("ZAI GLM 5", "glm-5"),
+            ("ZAI GLM 4.7 Flash", "glm-4.7-flash"),
+        ] {
+            assert_eq!(canonical_model_id(alias), Some(expected), "alias {alias}");
+        }
+        assert_eq!(canonical_model_id("NVIDIA Nemotron Super 3 120B"), None);
+        assert_eq!(canonical_model_id("unknown-model"), None);
+    }
+
+    #[test]
+    fn curated_model_lookup_ignores_provider_pin_suffix() {
+        assert_eq!(
+            canonical_model_id("claude-opus-4-8@anthropic"),
+            Some("claude-opus-4-8")
+        );
+        assert_eq!(canonical_model_id("gpt-5.5@openai"), Some("gpt-5.5"));
+    }
+
+    #[test]
+    fn default_model_is_opus() {
+        assert_eq!(default_model().id, "claude-opus-4-8");
+    }
+
+    #[test]
+    fn curated_catalog_has_exact_paid_and_ultra_sets() {
+        assert_eq!(
+            CURATED_MODELS
+                .iter()
+                .filter(|model| model.min_tier == AlphacodeTier::Plus)
+                .map(|model| model.id)
+                .collect::<Vec<_>>(),
+            EXPECTED_PLUS_MODELS
+        );
+        assert_eq!(
+            CURATED_MODELS
+                .iter()
+                .filter(|model| model.min_tier == AlphacodeTier::Ultra)
+                .map(|model| model.id)
+                .collect::<Vec<_>>(),
+            vec!["claude-fable-5"]
+        );
+        assert!(
+            CURATED_MODELS
+                .iter()
+                .all(|model| model.min_tier != AlphacodeTier::Flagship)
+        );
+        assert_eq!(CURATED_MODELS.len(), 19);
+        assert!(find_curated_model("magistral-small-1.2").is_none());
+        assert!(find_curated_model("gemma-3-27b").is_none());
+        assert!(find_curated_model("llama-4-maverick").is_none());
+        assert!(find_curated_model("llama-4-scout").is_none());
+        assert!(find_curated_model("nemotron-super-3-120b").is_none());
+    }
+
+    #[test]
+    fn tier_pricing_matches_launched_plans() {
+        let expected = [
+            (AlphacodeTier::Plus, "plus", "Plus", 10, 18.00),
+            (AlphacodeTier::Pro, "pro", "Pro", 20, 40.00),
+            (AlphacodeTier::Max, "max", "Max", 100, 225.00),
+            (AlphacodeTier::Ultra, "ultra", "Ultra", 200, 500.00),
+            (AlphacodeTier::Flagship, "flagship", "Solo", 1000, 3000.00),
+        ];
+
+        assert_eq!(AlphacodeTier::ALL, expected.map(|(tier, ..)| tier));
+        for (tier, id, display_name, retail_price, usable_budget) in expected {
+            assert_eq!(tier.as_str(), id);
+            assert_eq!(tier.display_name(), display_name);
+            assert_eq!(tier.retail_price_usd(), retail_price);
+            assert_eq!(tier.usable_budget_usd(), usable_budget);
+        }
+    }
+
+    #[test]
+    fn tier_parse_round_trips() {
+        for tier in AlphacodeTier::ALL {
+            assert_eq!(AlphacodeTier::parse(tier.as_str()), Some(*tier));
+        }
+        assert_eq!(AlphacodeTier::parse("PLUS"), Some(AlphacodeTier::Plus));
+        assert_eq!(AlphacodeTier::parse(" Pro "), Some(AlphacodeTier::Pro));
+        assert_eq!(AlphacodeTier::parse("MAX"), Some(AlphacodeTier::Max));
+        assert_eq!(AlphacodeTier::parse(" ultra "), Some(AlphacodeTier::Ultra));
+        assert_eq!(AlphacodeTier::parse(" Flagship "), Some(AlphacodeTier::Flagship));
+        assert_eq!(AlphacodeTier::parse(" Solo "), Some(AlphacodeTier::Flagship));
+        assert_eq!(AlphacodeTier::parse("starter"), None);
+    }
+
+    #[test]
+    fn tier_gating_follows_catalog_order() {
+        for (account_index, account_tier) in AlphacodeTier::ALL.iter().copied().enumerate() {
+            for (required_index, required_tier) in AlphacodeTier::ALL.iter().copied().enumerate() {
+                assert_eq!(
+                    account_tier.allows(required_tier),
+                    account_index >= required_index,
+                    "{} gating {}",
+                    account_tier.display_name(),
+                    required_tier.display_name()
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn model_entitlements_match_paid_tiers() {
+        for model in CURATED_MODELS {
+            match model.id {
+                "claude-fable-5" => assert_eq!(model.min_tier, AlphacodeTier::Ultra),
+                _ => assert_eq!(model.min_tier, AlphacodeTier::Plus),
+            }
+        }
+
+        for tier in AlphacodeTier::ALL {
+            for model in EXPECTED_PLUS_MODELS {
+                assert!(tier.allows(find_curated_model(model).unwrap().min_tier));
+            }
+            assert_eq!(
+                tier.allows(find_curated_model("claude-fable-5").unwrap().min_tier),
+                matches!(tier, AlphacodeTier::Ultra | AlphacodeTier::Flagship)
+            );
+        }
+    }
+
+    #[test]
+    fn effective_tier_defaults_to_plus_when_unknown() {
+        let _guard = crate::storage::lock_test_env();
+        crate::alphacode_core::env::remove_var(ALPHACODE_TIER_ENV);
+        let temp = tempfile::tempdir().expect("temp home");
+        crate::alphacode_core::env::set_var("ALPHACODE_HOME", temp.path().to_string_lossy().to_string());
+
+        assert_eq!(cached_tier(), None);
+        assert_eq!(effective_tier(), AlphacodeTier::Plus);
+        for model in EXPECTED_PLUS_MODELS {
+            assert!(is_model_allowed_for_current_tier(model));
+        }
+        assert!(!is_model_allowed_for_current_tier("claude-fable-5"));
+
+        crate::alphacode_core::env::set_var(ALPHACODE_TIER_ENV, "mystery");
+        assert_eq!(cached_tier(), None);
+        assert_eq!(effective_tier(), AlphacodeTier::Plus);
+
+        for tier in [AlphacodeTier::Pro, AlphacodeTier::Max] {
+            crate::alphacode_core::env::set_var(ALPHACODE_TIER_ENV, tier.as_str());
+            assert_eq!(effective_tier(), tier);
+            for model in EXPECTED_PLUS_MODELS {
+                assert!(is_model_allowed_for_current_tier(model));
+            }
+            assert!(!is_model_allowed_for_current_tier("claude-fable-5"));
+        }
+
+        crate::alphacode_core::env::set_var(ALPHACODE_TIER_ENV, AlphacodeTier::Ultra.as_str());
+        assert_eq!(effective_tier(), AlphacodeTier::Ultra);
+        assert!(is_model_allowed_for_current_tier("claude-fable-5"));
+
+        crate::alphacode_core::env::remove_var(ALPHACODE_TIER_ENV);
+        store_cached_tier(Some(AlphacodeTier::Flagship)).expect("persist tier");
+        assert_eq!(cached_tier(), Some(AlphacodeTier::Flagship));
+        assert!(is_model_allowed_for_current_tier("claude-fable-5"));
+        assert!(is_model_allowed_for_current_tier("gpt-5.6-sol"));
+
+        store_cached_tier(None).expect("clear tier");
+        assert_eq!(cached_tier(), None);
+
+        crate::alphacode_core::env::remove_var("ALPHACODE_HOME");
+        crate::alphacode_core::env::remove_var(ALPHACODE_TIER_ENV);
+    }
+
+    #[test]
+    fn runtime_mode_flag_tracks_subscription_activation() {
+        let _guard = crate::storage::lock_test_env();
+        clear_runtime_env();
+        assert!(!is_runtime_mode_enabled());
+
+        apply_runtime_env();
+        assert!(is_runtime_mode_enabled());
+
+        clear_runtime_env();
+        assert!(!is_runtime_mode_enabled());
+    }
+}

@@ -1,0 +1,101 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: short
+  RUSTFLAGS: "-D warnings"
+
+jobs:
+  build:
+    name: build (${{ matrix.os }} / ${{ matrix.profile }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+        profile: [dev]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: 1.85
+          components: clippy, rustfmt
+
+      - name: Cache cargo registry & target
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: cargo-${{ matrix.os }}-${{ matrix.profile }}-${{ hashFiles('Cargo.lock', '.cargo/config.toml') }}
+          restore-keys: |
+            cargo-${{ matrix.os }}-${{ matrix.profile }}-
+            cargo-${{ matrix.os }}-
+
+      - name: cargo fmt --check
+        run: cargo fmt --all -- --check
+
+      - name: cargo build --release
+        run: cargo build --release --locked
+
+  test:
+    name: test (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    needs: build
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with: { toolchain: 1.85, components: clippy }
+      - uses: actions/setup-cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: cargo-test-${{ matrix.os }}-${{ hashFiles('Cargo.lock') }}
+      - run: cargo test --lib --locked
+
+  lint:
+    name: clippy
+    runs-on: ubuntu-latest
+    needs: build
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with: { toolchain: 1.85, components: clippy }
+      - uses: actions/setup-cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: cargo-lint-${{ hashFiles('Cargo.lock') }}
+      - run: cargo clippy --lib --all-targets --locked -- -D warnings
+
+  installer-smoke:
+    name: installer smoke
+    runs-on: ubuntu-latest
+    needs: build
+      # Sanity-check the install scripts' bash syntax without actually
+      # downloading a release (we don't have one in CI).
+    steps:
+      - uses: actions/checkout@v4
+      - name: bash -n scripts/install.sh
+        run: bash -n scripts/install.sh
+      - name: bash -n scripts/uninstall.sh
+        run: bash -n scripts/uninstall.sh
+      - name: pwsh -NoProfile -Command "$null = [System.Management.Automation.PSParser]::Tokenize((Get-Content -Raw scripts/install.ps1), [ref]$null)"
+        shell: pwsh

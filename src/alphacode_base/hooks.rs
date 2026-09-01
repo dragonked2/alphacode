@@ -1,0 +1,517 @@
+//! User-configurable lifecycle hooks.
+//!
+//! Hooks are external commands that alphacode runs at well-defined lifecycle
+//! points so other programs can observe or gate agent behavior without
+//! forking alphacode. They are configured in `[hooks]` in config.toml (or
+//! `ALPHACODE_HOOK_*` env vars) and follow the same command-line conventions as
+//! `[terminal] spawn_hook`: the command is parsed shell-style but executed
+//! directly (no shell), with `ALPHACODE_HOOK_*` metadata env vars describing the
+//! event.
+//!
+//! Two dispatch styles:
+//!
+//! - **Observers** (`turn_start`, `turn_end`, `session_start`, `session_end`,
+//!   `post_tool`): spawned detached, fire-and-forget. Failures are logged and
+//!   never affect the agent.
+//! - **Gate** (`pre_tool`): alphacode waits (with a timeout) for the hook to
+//!   exit. Exit 0 allows the tool call, exit 2 blocks it and the hook's
+//!   stderr is fed back to the model as the tool error. Any other outcome
+//!   (other exit codes, timeout, spawn failure) fails open with a warning.
+//!
+//! Hook processes get `ALPHACODE_HOOKS_DISABLED=1` in their environment so a
+//! hook that itself invokes alphacode does not recursively trigger hooks.
+
+use std::path::PathBuf;
+
+/// Maximum bytes of JSON payload exported via `ALPHACODE_HOOK_PAYLOAD`.
+const PAYLOAD_ENV_LIMIT: usize = 16 * 1024;
+/// Maximum bytes of tool input JSON exported to the pre_tool gate.
+const TOOL_INPUT_ENV_LIMIT: usize = 16 * 1024;
+/// Maximum chars of hook stderr used as a block reason.
+const BLOCK_REASON_LIMIT: usize = 2000;
+
+/// Decision returned by the `pre_tool` gate hook.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum GateDecision {
+    Allow,
+    Block { reason: String },
+}
+
+/// A lifecycle event to deliver to a hook.
+#[derive(Debug, Clone)]
+pub struct HookEvent {
+    /// Event name: "turn_start", "turn_end", "session_start", "session_end",
+    /// "post_tool".
+    pub event: &'static str,
+    pub session_id: Option<String>,
+    pub cwd: Option<String>,
+    /// Extra env fields. Keys are suffixes: ("STATUS", "ok") becomes
+    /// `ALPHACODE_HOOK_STATUS=ok` and `"status": "ok"` in the JSON payload.
+    pub fields: Vec<(&'static str, String)>,
+}
+
+impl HookEvent {
+    pub fn new(event: &'static str) -> Self {
+        Self {
+            event,
+            session_id: None,
+            cwd: None,
+            fields: Vec::new(),
+        }
+    }
+
+    pub fn session_id(mut self, session_id: impl Into<String>) -> Self {
+        self.session_id = Some(session_id.into());
+        self
+    }
+
+    pub fn cwd(mut self, cwd: impl Into<String>) -> Self {
+        self.cwd = Some(cwd.into());
+        self
+    }
+
+    pub fn field(mut self, key: &'static str, value: impl Into<String>) -> Self {
+        self.fields.push((key, value.into()));
+        self
+    }
+}
+
+/// The configured command for `event`, if any.
+pub fn hook_command(event: &str) -> Option<String> {
+    if hooks_suppressed() {
+        return None;
+    }
+    let hooks = &crate::config::config().hooks;
+    let raw = match event {
+        "turn_start" => hooks.turn_start.as_deref(),
+        "turn_end" => hooks.turn_end.as_deref(),
+        "session_start" => hooks.session_start.as_deref(),
+        "session_end" => hooks.session_end.as_deref(),
+        "pre_tool" => hooks.pre_tool.as_deref(),
+        "post_tool" => hooks.post_tool.as_deref(),
+        _ => None,
+    };
+    raw.map(str::trim)
+        .filter(|command| !command.is_empty())
+        .map(str::to_string)
+}
+
+/// Whether a hook is configured for `event`. Cheap; used by hot paths to
+/// skip payload construction entirely when no hook is set.
+pub fn hook_configured(event: &str) -> bool {
+    hook_command(event).is_some()
+}
+
+/// True when running inside a hook process (recursion guard).
+fn hooks_suppressed() -> bool {
+    std::env::var_os("ALPHACODE_HOOKS_DISABLED").is_some()
+}
+
+fn expand_home(program: &str) -> PathBuf {
+    if let Some(rest) = program.strip_prefix("~/")
+        && let Some(home) = dirs::home_dir()
+    {
+        return home.join(rest);
+    }
+    PathBuf::from(program)
+}
+
+fn truncate_bytes(value: &str, limit: usize) -> &str {
+    if value.len() <= limit {
+        return value;
+    }
+    let mut end = limit;
+    while end > 0 && !value.is_char_boundary(end) {
+        end -= 1;
+    }
+    &value[..end]
+}
+
+/// JSON payload mirroring the env fields, exported as `ALPHACODE_HOOK_PAYLOAD`.
+fn payload_json(event: &HookEvent) -> String {
+    let mut map = serde_json::Map::new();
+    map.insert(
+        "event".to_string(),
+        serde_json::Value::String(event.event.to_string()),
+    );
+    if let Some(session_id) = &event.session_id {
+        map.insert(
+            "session_id".to_string(),
+            serde_json::Value::String(session_id.clone()),
+        );
+    }
+    if let Some(cwd) = &event.cwd {
+        map.insert("cwd".to_string(), serde_json::Value::String(cwd.clone()));
+    }
+    for (key, value) in &event.fields {
+        map.insert(
+            key.to_ascii_lowercase(),
+            serde_json::Value::String(value.clone()),
+        );
+    }
+    let payload = serde_json::Value::Object(map).to_string();
+    truncate_bytes(&payload, PAYLOAD_ENV_LIMIT).to_string()
+}
+
+fn apply_event_env(cmd: &mut std::process::Command, event: &HookEvent) {
+    cmd.env("ALPHACODE_HOOKS_DISABLED", "1");
+    cmd.env("ALPHACODE_HOOK_EVENT", event.event);
+    if let Some(session_id) = &event.session_id {
+        cmd.env("ALPHACODE_HOOK_SESSION_ID", session_id);
+    }
+    if let Some(cwd) = &event.cwd {
+        cmd.env("ALPHACODE_HOOK_CWD", cwd);
+    }
+    for (key, value) in &event.fields {
+        cmd.env(format!("ALPHACODE_HOOK_{key}"), value);
+    }
+    cmd.env("ALPHACODE_HOOK_PAYLOAD", payload_json(event));
+}
+
+fn build_hook_process(
+    command_line: &str,
+    event: &HookEvent,
+) -> anyhow::Result<std::process::Command> {
+    let parts = crate::terminal_launch::parse_hook_command(command_line)?;
+    let (program, args) = parts
+        .split_first()
+        .expect("parse_hook_command guarantees at least one part");
+    let mut cmd = std::process::Command::new(expand_home(program));
+    cmd.args(args);
+    if let Some(cwd) = event.cwd.as_deref().filter(|cwd| !cwd.is_empty())
+        && std::path::Path::new(cwd).is_dir()
+    {
+        cmd.current_dir(cwd);
+    }
+    apply_event_env(&mut cmd, event);
+    Ok(cmd)
+}
+
+/// Fire an observer hook for `event` if one is configured.
+///
+/// Detached and fire-and-forget: failures are logged, never propagated, and
+/// the hook process cannot block the agent.
+pub fn dispatch_observer(event: HookEvent) {
+    let Some(command_line) = hook_command(event.event) else {
+        return;
+    };
+    let event_name = event.event;
+    match build_hook_process(&command_line, &event) {
+        Ok(mut cmd) => {
+            cmd.stdin(std::process::Stdio::null())
+                .stdout(std::process::Stdio::null())
+                .stderr(std::process::Stdio::null());
+            match crate::platform::spawn_detached(&mut cmd) {
+                Ok(_) => crate::logging::debug(&format!(
+                    "Hook '{event_name}' dispatched to '{command_line}' (session={:?})",
+                    event.session_id
+                )),
+                Err(error) => crate::logging::warn(&format!(
+                    "Hook '{event_name}' command '{command_line}' failed to start: {error}"
+                )),
+            }
+        }
+        Err(error) => crate::logging::warn(&format!(
+            "Hook '{event_name}' command '{command_line}' is invalid: {error}"
+        )),
+    }
+}
+
+/// Run the `pre_tool` gate hook for a tool call, if configured.
+///
+/// The hook receives `ALPHACODE_HOOK_TOOL_NAME` plus the full tool input JSON on
+/// stdin (and truncated in `ALPHACODE_HOOK_TOOL_INPUT`). Contract:
+///
+/// - exit 0: allow the tool call
+/// - exit 2: block it; stderr becomes the error shown to the model
+/// - anything else (other exits, timeout, spawn failure): fail open
+pub async fn run_pre_tool_gate(
+    session_id: &str,
+    working_dir: Option<&str>,
+    tool_name: &str,
+    tool_input_json: &str,
+) -> GateDecision {
+    let Some(command_line) = hook_command("pre_tool") else {
+        return GateDecision::Allow;
+    };
+
+    let mut event = HookEvent::new("pre_tool")
+        .session_id(session_id)
+        .field("TOOL_NAME", tool_name)
+        .field(
+            "TOOL_INPUT",
+            truncate_bytes(tool_input_json, TOOL_INPUT_ENV_LIMIT),
+        );
+    if let Some(cwd) = working_dir {
+        event = event.cwd(cwd);
+    }
+
+    let std_cmd = match build_hook_process(&command_line, &event) {
+        Ok(cmd) => cmd,
+        Err(error) => {
+            crate::logging::warn(&format!(
+                "Hook 'pre_tool' command '{command_line}' is invalid: {error} (allowing tool call)"
+            ));
+            return GateDecision::Allow;
+        }
+    };
+
+    let mut cmd = tokio::process::Command::from(std_cmd);
+    cmd.stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::piped())
+        .kill_on_drop(true);
+
+    let mut child = match cmd.spawn() {
+        Ok(child) => child,
+        Err(error) => {
+            crate::logging::warn(&format!(
+                "Hook 'pre_tool' command '{command_line}' failed to start: {error} (allowing tool call)"
+            ));
+            return GateDecision::Allow;
+        }
+    };
+
+    if let Some(mut stdin) = child.stdin.take() {
+        use tokio::io::AsyncWriteExt;
+        let _ = stdin.write_all(tool_input_json.as_bytes()).await;
+        // Closing stdin signals EOF to hooks that read the whole input.
+        drop(stdin);
+    }
+
+    let timeout =
+        std::time::Duration::from_millis(crate::config::config().hooks.pre_tool_timeout_ms.max(1));
+    let output = match tokio::time::timeout(timeout, child.wait_with_output()).await {
+        Ok(Ok(output)) => output,
+        Ok(Err(error)) => {
+            crate::logging::warn(&format!(
+                "Hook 'pre_tool' command '{command_line}' failed: {error} (allowing tool call)"
+            ));
+            return GateDecision::Allow;
+        }
+        Err(_elapsed) => {
+            crate::logging::warn(&format!(
+                "Hook 'pre_tool' command '{command_line}' timed out after {}ms (allowing tool call)",
+                timeout.as_millis()
+            ));
+            return GateDecision::Allow;
+        }
+    };
+
+    match output.status.code() {
+        Some(0) => GateDecision::Allow,
+        Some(2) => {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            let reason = stderr.trim();
+            let reason = if reason.is_empty() {
+                "blocked by pre_tool hook".to_string()
+            } else {
+                truncate_bytes(reason, BLOCK_REASON_LIMIT).to_string()
+            };
+            crate::logging::info(&format!(
+                "Hook 'pre_tool' blocked tool '{tool_name}' for session {session_id}: {reason}"
+            ));
+            GateDecision::Block { reason }
+        }
+        other => {
+            crate::logging::warn(&format!(
+                "Hook 'pre_tool' command '{command_line}' exited with {other:?} (expected 0=allow or 2=block; allowing tool call)"
+            ));
+            GateDecision::Allow
+        }
+    }
+}
+
+#[cfg(test)]
+#[allow(clippy::await_holding_lock)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn payload_json_includes_event_and_lowercased_fields() {
+        let event = HookEvent::new("turn_end")
+            .session_id("ses_x")
+            .cwd("/work")
+            .field("STATUS", "ok")
+            .field("DURATION_MS", "1200");
+        let payload: serde_json::Value = serde_json::from_str(&payload_json(&event)).unwrap();
+        assert_eq!(payload["event"], "turn_end");
+        assert_eq!(payload["session_id"], "ses_x");
+        assert_eq!(payload["cwd"], "/work");
+        assert_eq!(payload["status"], "ok");
+        assert_eq!(payload["duration_ms"], "1200");
+    }
+
+    #[test]
+    fn truncate_bytes_respects_char_boundaries() {
+        let text = "héllo wörld";
+        let truncated = truncate_bytes(text, 3);
+        assert!(truncated.len() <= 3);
+        assert!(text.starts_with(truncated));
+        assert_eq!(truncate_bytes("short", 100), "short");
+    }
+
+    #[cfg(unix)]
+    fn write_executable_script(dir: &std::path::Path, name: &str, body: &str) -> PathBuf {
+        use std::os::unix::fs::PermissionsExt;
+        let path = dir.join(name);
+        std::fs::write(&path, body).expect("write script");
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755))
+            .expect("chmod script");
+        path
+    }
+
+    #[cfg(unix)]
+    fn gate_test_config(hook: &str, timeout_ms: u64) -> impl Drop + use<> {
+        struct EnvReset(Vec<(&'static str, Option<std::ffi::OsString>)>);
+        impl Drop for EnvReset {
+            fn drop(&mut self) {
+                for (key, previous) in self.0.drain(..) {
+                    match previous {
+                        Some(value) => crate::alphacode_core::env::set_var(key, value),
+                        None => crate::alphacode_core::env::remove_var(key),
+                    }
+                }
+            }
+        }
+        let reset = EnvReset(vec![
+            (
+                "ALPHACODE_HOOK_PRE_TOOL",
+                std::env::var_os("ALPHACODE_HOOK_PRE_TOOL"),
+            ),
+            (
+                "ALPHACODE_HOOK_PRE_TOOL_TIMEOUT_MS",
+                std::env::var_os("ALPHACODE_HOOK_PRE_TOOL_TIMEOUT_MS"),
+            ),
+        ]);
+        crate::alphacode_core::env::set_var("ALPHACODE_HOOK_PRE_TOOL", hook);
+        crate::alphacode_core::env::set_var("ALPHACODE_HOOK_PRE_TOOL_TIMEOUT_MS", timeout_ms.to_string());
+        reset
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn pre_tool_gate_allows_on_exit_zero_and_blocks_on_exit_two() {
+        let _guard = crate::storage::lock_test_env();
+        let temp = tempfile::TempDir::new().expect("temp dir");
+
+        // Blocking hook: reads stdin, writes a reason to stderr, exits 2.
+        let block = write_executable_script(
+            temp.path(),
+            "block.sh",
+            "#!/bin/sh\ncat > /dev/null\necho \"dangerous tool: $ALPHACODE_HOOK_TOOL_NAME\" >&2\nexit 2\n",
+        );
+        {
+            let _env = gate_test_config(&block.to_string_lossy(), 5000);
+            let decision =
+                run_pre_tool_gate("ses_g", None, "bash", r#"{"command":"rm -rf /"}"#).await;
+            assert_eq!(
+                decision,
+                GateDecision::Block {
+                    reason: "dangerous tool: bash".to_string()
+                }
+            );
+        }
+
+        // Allowing hook: exit 0.
+        let allow = write_executable_script(temp.path(), "allow.sh", "#!/bin/sh\nexit 0\n");
+        {
+            let _env = gate_test_config(&allow.to_string_lossy(), 5000);
+            let decision = run_pre_tool_gate("ses_g", None, "read", "{}").await;
+            assert_eq!(decision, GateDecision::Allow);
+        }
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn pre_tool_gate_fails_open_on_timeout_and_odd_exits() {
+        let _guard = crate::storage::lock_test_env();
+        let temp = tempfile::TempDir::new().expect("temp dir");
+
+        // Hook that hangs: must fail open after the timeout.
+        let hang = write_executable_script(temp.path(), "hang.sh", "#!/bin/sh\nsleep 30\n");
+        {
+            let _env = gate_test_config(&hang.to_string_lossy(), 200);
+            let decision = run_pre_tool_gate("ses_g", None, "bash", "{}").await;
+            assert_eq!(decision, GateDecision::Allow);
+        }
+
+        // Hook with an unexpected exit code: fail open.
+        let odd = write_executable_script(temp.path(), "odd.sh", "#!/bin/sh\nexit 7\n");
+        {
+            let _env = gate_test_config(&odd.to_string_lossy(), 5000);
+            let decision = run_pre_tool_gate("ses_g", None, "bash", "{}").await;
+            assert_eq!(decision, GateDecision::Allow);
+        }
+
+        // Missing hook binary: fail open.
+        {
+            let _env = gate_test_config("/nonexistent/hook-binary", 5000);
+            let decision = run_pre_tool_gate("ses_g", None, "bash", "{}").await;
+            assert_eq!(decision, GateDecision::Allow);
+        }
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn pre_tool_gate_receives_input_on_stdin() {
+        let _guard = crate::storage::lock_test_env();
+        let temp = tempfile::TempDir::new().expect("temp dir");
+        let record = temp.path().join("stdin.txt");
+        let script = write_executable_script(
+            temp.path(),
+            "record.sh",
+            &format!(
+                "#!/bin/sh\ncat > {}\nexit 0\n",
+                crate::terminal_launch::sh_escape(&record.to_string_lossy())
+            ),
+        );
+        let _env = gate_test_config(&script.to_string_lossy(), 5000);
+        let input = r#"{"file_path":"/tmp/x","content":"hello"}"#;
+        let decision = run_pre_tool_gate("ses_g", None, "write", input).await;
+        assert_eq!(decision, GateDecision::Allow);
+        let recorded = std::fs::read_to_string(&record).expect("stdin should be recorded");
+        assert_eq!(recorded, input);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn observer_dispatch_runs_hook_with_event_env() {
+        let _guard = crate::storage::lock_test_env();
+        let temp = tempfile::TempDir::new().expect("temp dir");
+        let record = temp.path().join("event.txt");
+        let script = write_executable_script(
+            temp.path(),
+            "observe.sh",
+            &format!(
+                "#!/bin/sh\nprintf '%s|%s|%s|%s' \"$ALPHACODE_HOOK_EVENT\" \"$ALPHACODE_HOOK_SESSION_ID\" \"$ALPHACODE_HOOK_STATUS\" \"$ALPHACODE_HOOKS_DISABLED\" > {}\n",
+                crate::terminal_launch::sh_escape(&record.to_string_lossy())
+            ),
+        );
+
+        let prev = std::env::var_os("ALPHACODE_HOOK_TURN_END");
+        crate::alphacode_core::env::set_var("ALPHACODE_HOOK_TURN_END", script.to_string_lossy().to_string());
+
+        dispatch_observer(
+            HookEvent::new("turn_end")
+                .session_id("ses_obs")
+                .field("STATUS", "ok"),
+        );
+
+        let mut recorded = String::new();
+        for _ in 0..100 {
+            if let Ok(data) = std::fs::read_to_string(&record)
+                && !data.is_empty()
+            {
+                recorded = data;
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(20));
+        }
+        match prev {
+            Some(value) => crate::alphacode_core::env::set_var("ALPHACODE_HOOK_TURN_END", value),
+            None => crate::alphacode_core::env::remove_var("ALPHACODE_HOOK_TURN_END"),
+        }
+        assert_eq!(recorded, "turn_end|ses_obs|ok|1");
+    }
+}
