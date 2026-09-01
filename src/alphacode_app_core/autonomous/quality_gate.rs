@@ -14,7 +14,7 @@
 use super::QualityGateResult;
 
 /// Configuration for adaptive quality gate behavior.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub struct QualityGateConfig {
     /// Number of consecutive phase failures — higher values tighten the gate.
     pub consecutive_failures: u32,
@@ -24,17 +24,6 @@ pub struct QualityGateConfig {
     pub long_running: bool,
     /// Estimated remaining phases.
     pub estimated_remaining: u32,
-}
-
-impl Default for QualityGateConfig {
-    fn default() -> Self {
-        Self {
-            consecutive_failures: 0,
-            completed_phases: 0,
-            long_running: false,
-            estimated_remaining: 0,
-        }
-    }
 }
 
 impl QualityGateConfig {
@@ -85,6 +74,7 @@ pub fn evaluate(
 /// For long-running sessions, this relaxes documentation requirements
 /// after the first few phases while adding extra scrutiny when
 /// consecutive failures indicate regression.
+#[allow(clippy::too_many_arguments)]
 pub fn evaluate_with_config(
     config: &QualityGateConfig,
     implementation_check: impl Fn() -> (bool, String),

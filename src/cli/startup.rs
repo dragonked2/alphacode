@@ -129,14 +129,21 @@ pub async fn run() -> Result<()> {
     health::register_subsystem("tui_render");
     health::register_subsystem("ambient");
     health::register_subsystem("swarm");
+    crate::session_watchdog::init();
     std::thread::Builder::new()
         .name("alphacode-health-reporter".to_string())
         .spawn(|| loop {
             std::thread::sleep(health::REPORT_INTERVAL);
             if let Some(rss) = health::current_rss_bytes() {
                 health::record_rss_sample(rss);
+                crate::session_watchdog::record_rss(rss);
             }
             health::report();
+            // Run watchdog health check periodically.
+            let action = crate::session_watchdog::check_health();
+            if action != crate::session_watchdog::RecoveryAction::None {
+                crate::session_watchdog::record_recovery(action);
+            }
         })
         .ok();
     startup_profile::mark("health_init");

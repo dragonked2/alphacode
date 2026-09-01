@@ -93,6 +93,8 @@ const COMPLEXITY_RAISERS: &[&str] = &[
     "rearchitect", "redesign", "rewrite", "refactor entire", "parallel",
     "distributed", "end-to-end", "pipeline", "concurrency", "thread-safe",
     "multi-thread", "system-wide", "replace the", "database", "schema",
+    "month-long", "long-running", "continuous", "autonomous", "self-healing",
+    "watchdog", "recovery", "multi-agent", "orchestrate", "coordinate",
 ];
 
 /// Signals that make a task *easier*: mechanical edits with no design work.
@@ -189,11 +191,84 @@ pub fn suggest_phases(objective: &str, complexity: TaskComplexity) -> Vec<Sugges
     let build_task = lower.contains("build")
         || lower.contains("implement")
         || lower.contains("create");
+    let is_long_running = lower.contains("month")
+        || lower.contains("long-running")
+        || lower.contains("autonomous")
+        || lower.contains("continuous")
+        || lower.contains("self-healing")
+        || lower.contains("watchdog");
 
     // Small tasks execute directly: splitting into architecture + documentation
     // phases would spawn extra agents for zero benefit (tokens + latency).
     if complexity <= TaskComplexity::Low {
         return vec![focused_implementation_phase(objective)];
+    }
+
+    // Long-running autonomous tasks get a comprehensive pipeline.
+    if is_long_running && complexity >= TaskComplexity::High {
+        return vec![
+            SuggestedPhase {
+                name: "analysis".into(),
+                objective: format!("Analyze requirements and design resilience strategy for: {objective}"),
+                required_files: Vec::new(),
+                constraints: vec![
+                    "Design for months of continuous operation.".into(),
+                    "Identify failure modes and recovery strategies.".into(),
+                ],
+                acceptance_criteria: vec![
+                    "Failure modes documented".into(),
+                    "Recovery strategy defined".into(),
+                ],
+            },
+            SuggestedPhase {
+                name: "architecture".into(),
+                objective: format!("Design the architecture for: {objective}"),
+                required_files: Vec::new(),
+                constraints: vec![
+                    "Design for resilience and self-healing.".into(),
+                    "Include health monitoring and adaptive throttling.".into(),
+                ],
+                acceptance_criteria: vec!["Architecture document exists".into()],
+            },
+            SuggestedPhase {
+                name: "implementation".into(),
+                objective: format!("Implement core functionality for: {objective}"),
+                required_files: Vec::new(),
+                constraints: vec!["Follow the architecture from the previous phase.".into()],
+                acceptance_criteria: vec![
+                    "Core functionality implemented".into(),
+                    "No obvious bugs".into(),
+                ],
+            },
+            SuggestedPhase {
+                name: "resilience".into(),
+                objective: format!("Add self-healing, watchdog, and crash recovery for: {objective}"),
+                required_files: Vec::new(),
+                constraints: vec![
+                    "Must handle months of continuous operation.".into(),
+                    "Include memory leak detection and resource monitoring.".into(),
+                ],
+                acceptance_criteria: vec![
+                    "Self-healing implemented".into(),
+                    "Watchdog configured".into(),
+                    "Crash recovery tested".into(),
+                ],
+            },
+            SuggestedPhase {
+                name: "testing".into(),
+                objective: format!("Write tests for: {objective}"),
+                required_files: Vec::new(),
+                constraints: vec!["Cover edge cases and failure modes.".into()],
+                acceptance_criteria: vec!["All tests pass".into()],
+            },
+            SuggestedPhase {
+                name: "documentation".into(),
+                objective: format!("Document: {objective}"),
+                required_files: Vec::new(),
+                constraints: Vec::new(),
+                acceptance_criteria: vec!["Documentation is complete and clear".into()],
+            },
+        ];
     }
 
     if build_task {

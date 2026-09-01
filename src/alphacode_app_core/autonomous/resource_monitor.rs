@@ -85,7 +85,6 @@ impl ResourceMonitor {
     fn classify_pressure(&self, snapshot: &ResourceSnapshot) -> MemoryPressure {
         if let Some(disk) = snapshot.disk_free_bytes {
             // Disk pressure — less RAM available suggests system-wide pressure.
-            let gb = 1_000_000_000;
             if disk < 500_000_000 {
                 return MemoryPressure::Critical;
             }
