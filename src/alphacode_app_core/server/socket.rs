@@ -323,6 +323,27 @@ pub async fn spawn_server_notify(cmd: &mut std::process::Command) -> Result<std:
     Ok(child)
 }
 
+/// Poll the given socket path until the existing server responds to a ping
+/// or `timeout` elapses. Returns `true` if a server became ready in time.
+///
+/// This is a minimal recovery path used when a fresh daemon spawn races
+/// with an already-running one: the spawn's stderr matches the existing-
+/// server fingerprint, so we wait briefly for the live daemon to answer
+/// and treat startup as successful rather than reporting a failure.
+pub(super) async fn wait_for_existing_server(
+    path: &std::path::Path,
+    timeout: Duration,
+) -> bool {
+    let start = Instant::now();
+    while start.elapsed() < timeout {
+        if is_server_ready(path).await {
+            return true;
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    false
+}
+
 /// Wait until a server socket is connectable and responds to a ping.
 pub async fn wait_for_server_ready(path: &std::path::Path, timeout: Duration) -> Result<()> {
     let start = Instant::now();

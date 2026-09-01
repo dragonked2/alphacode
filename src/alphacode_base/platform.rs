@@ -185,6 +185,19 @@ pub fn set_permissions_executable(path: &Path) -> std::io::Result<()> {
 /// launched from a shell with a conservative `ulimit -n` like 1024.
 pub fn raise_nofile_limit_best_effort(minimum_soft_limit: u64) {
     #[cfg(unix)]
+    fn desired_nofile_soft_limit(current: u64, hard: u64, minimum_soft_limit: u64) -> Option<u64> {
+        // Pick the smallest raise that satisfies the caller's minimum, capped
+        // at the hard limit. If we're already at or above the minimum, return
+        // None so the caller can skip the syscall entirely.
+        let target = minimum_soft_limit.max(current).min(hard);
+        if target <= current || target == hard {
+            None
+        } else {
+            Some(target)
+        }
+    }
+
+    #[cfg(unix)]
     {
         let mut limit = libc::rlimit {
             rlim_cur: 0,
