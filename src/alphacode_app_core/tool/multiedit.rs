@@ -35,7 +35,7 @@ impl Tool for MultiEditTool {
     }
 
     fn description(&self) -> &str {
-        "Apply multiple edits to one file."
+        "Apply multiple edits to one file in a single call. Each edit must specify a unique `old_string` (matched in order from top to bottom of the file as currently written). Use this only when you genuinely need several distinct changes to the same file in one round-trip — do not use it as a substitute for sequential `edit` calls when edits could fail and need retrying. Always read the file first to confirm current contents. If any edit's `old_string` does not match exactly, the whole batch fails; prefer smaller batches so a failure is easy to diagnose."
     }
 
     fn parameters_schema(&self) -> Value {

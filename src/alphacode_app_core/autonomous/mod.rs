@@ -621,9 +621,9 @@ mod tests {
     #[test]
     fn test_agent_limits_default() {
         let l = AgentLimits::default();
-        assert_eq!(l.max_child_agents, 8);
-        assert_eq!(l.max_depth, 3);
-        assert_eq!(l.max_parallel_tasks, 4);
+        assert_eq!(l.max_child_agents, 16);
+        assert_eq!(l.max_depth, 5);
+        assert_eq!(l.max_parallel_tasks, 12);
     }
 
     #[test]

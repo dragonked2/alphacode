@@ -33,7 +33,7 @@ impl Tool for EditTool {
     }
 
     fn description(&self) -> &str {
-        "Replace exact text in a file. Provide the old_string (exact text to find) and new_string (replacement). The old_string must match exactly including whitespace. Use this for targeted changes to existing files. Prefer this over write for modifying existing files."
+        "Replace exact text in a file. Provide old_string (exact text to find) and new_string (replacement). old_string must match exactly including whitespace; use a unique enough fragment to avoid accidental multi-match (set replace_all=true only when every occurrence is intended). Prefer this over `write` for modifying existing files. Always read the file first to confirm current contents — guessing at text causes silent no-ops. Make the smallest change that solves the problem: do not bundle unrelated edits into the same call."
     }
 
     fn parameters_schema(&self) -> Value {

@@ -20,7 +20,6 @@ use crate::alphacode_tui::tui::color_support::rgb;
 use ratatui::{prelude::*, widgets::Paragraph};
 
 const DONUT_HEIGHT: u16 = 18;
-const TELEMETRY_LINES: u16 = 4;
 const GAP: u16 = 1;
 
 /// Accent color for the welcome title.
@@ -356,30 +355,15 @@ fn import_two_column_lines(prompt: &crate::alphacode_tui::tui::LoginImportPrompt
     out
 }
 
-/// Grayed telemetry notice shown at the very top of the onboarding screen.
-fn telemetry_header_lines(width: u16) -> Vec<Line<'static>> {
-    let align = Alignment::Center;
-    let dim = Style::default().fg(dim_color());
-    let lines = vec![
-        "alphacode collects anonymous usage statistics (version, OS, session",
-        "activity, and crash reasons). No code, prompts, or personal data.",
-        "Change anytime: /telemetry (or export ALPHACODE_NO_TELEMETRY=1)",
-    ];
-    lines
-        .into_iter()
-        .map(|text| {
-            // Truncate defensively on very narrow terminals.
-            let text = if (text.chars().count() as u16) > width.saturating_sub(2) {
-                text.chars()
-                    .take(width.saturating_sub(3) as usize)
-                    .collect::<String>()
-                    + "…"
-            } else {
-                text.to_string()
-            };
-            Line::from(Span::styled(text, dim)).alignment(align)
-        })
-        .collect()
+/// Compact telemetry notice — shown as a subtle one-liner below the body
+/// instead of a prominent header. Keeps first-run clean while still
+/// informing the user.
+fn telemetry_footer_line() -> Line<'static> {
+    Line::from(Span::styled(
+        "Anonymous usage stats only · /telemetry to change",
+        Style::default().fg(dim_color()).add_modifier(Modifier::ITALIC),
+    ))
+    .alignment(Alignment::Center)
 }
 
 /// Welcome title line, rendered just above the donut.
@@ -395,19 +379,58 @@ fn welcome_title_line() -> Line<'static> {
                 .fg(welcome_accent())
                 .add_modifier(Modifier::BOLD),
         ),
+        Span::styled(
+            " ✨",
+            Style::default().fg(welcome_accent()),
+        ),
     ])
     .alignment(Alignment::Center)
 }
 
-/// Short keyboard hint rendered just below the donut on guided phases. Replaces
-/// the old multi-line instruction prose: the interactive pills/rows already show
-/// what is selectable, so a one-liner is enough.
+/// Warm subtitle shown below the donut on first run.
+fn welcome_subtitle_line() -> Line<'static> {
+    Line::from(vec![
+        Span::styled(
+            "Your AI coding companion ",
+            Style::default()
+                .fg(rgb(180, 200, 220))
+                .add_modifier(Modifier::ITALIC),
+        ),
+        Span::styled(
+            "— ready when you are",
+            Style::default().fg(dim_color()),
+        ),
+    ])
+    .alignment(Alignment::Center)
+}
+
+/// Short keyboard hint rendered just below the donut on guided phases.
 fn keyboard_hint_line() -> Line<'static> {
     Line::from(vec![
-        Span::styled(" ", Style::default()),
         Span::styled(
-            "Use your keyboard to navigate.",
+            "Type a message below or press a number for a quick start",
             Style::default().fg(rgb(120, 130, 150)).add_modifier(Modifier::ITALIC),
+        ),
+    ])
+    .alignment(Alignment::Center)
+}
+
+/// Trust line shown on the Suggestions phase (after login). Telegraphs the
+/// guarantees a user can hold Alphacode to: smallest possible change, every
+/// claim backed by evidence, and regressions surfaced immediately. Reinforces
+/// the rules in `system_prompt.md` (Smallest Change / Anti-Regression /
+/// Self-Critique) so the UI and the prompt tell the same story.
+fn quality_guarantees_line() -> Line<'static> {
+    Line::from(vec![
+        Span::styled(
+            "Smallest change  ",
+            Style::default()
+                .fg(welcome_accent())
+                .add_modifier(Modifier::BOLD),
+        ),
+        Span::styled(
+            "•  Verified, not assumed  •  No silent regressions",
+            Style::default().fg(rgb(150, 160, 178)),
         ),
     ])
     .alignment(Alignment::Center)
@@ -634,6 +657,13 @@ fn welcome_body_lines(app: &dyn TuiState) -> Vec<Line<'static>> {
         OnboardingWelcomeKind::Suggestions => {}
     }
 
+    // Quality-guarantees trust line: only on the Suggestions phase (i.e. when
+    // login is settled and the user is choosing a first prompt). It lands above
+    // the suggestion chips so it reads as a contract for the work that follows,
+    // not as chrome.
+    lines.push(Line::from(""));
+    lines.push(quality_guarantees_line());
+
     let suggestions = app.suggestion_prompts();
     if !suggestions.is_empty() {
         lines.push(Line::from(""));
@@ -693,39 +723,38 @@ pub(super) fn draw_onboarding_welcome(frame: &mut Frame, app: &dyn TuiState, are
         return;
     }
 
-    let telemetry = telemetry_header_lines(area.width);
     let body = welcome_body_lines(app);
-    let telemetry_h = (telemetry.len() as u16).min(TELEMETRY_LINES);
     let body_h = body.len() as u16;
-    // Title above the donut, keyboard hint below it. Both are single lines and
-    // only shown when there is room for the donut treatment.
+    // Title above the donut, subtitle + keyboard hint below it.
     const TITLE_H: u16 = 1;
+    const SUBTITLE_H: u16 = 1;
     const HINT_H: u16 = 1;
+    const FOOTER_H: u16 = 1;
 
-    // Donut shrinks if the area is short so the welcome text always fits. The
-    // title + hint lines that hug the donut are part of the reserved chrome.
+    // Donut shrinks if the area is short so the welcome text always fits.
     let donut_h = DONUT_HEIGHT.min(
         area.height
-            .saturating_sub(telemetry_h + TITLE_H + HINT_H + body_h + GAP * 2 + 1),
+            .saturating_sub(TITLE_H + SUBTITLE_H + HINT_H + GAP + body_h + FOOTER_H + 2),
     );
     let show_donut_block = donut_h > 0;
 
     let used = if show_donut_block {
-        telemetry_h + GAP + TITLE_H + donut_h + HINT_H + GAP + body_h
+        TITLE_H + SUBTITLE_H + donut_h + HINT_H + GAP + body_h + FOOTER_H
     } else {
-        telemetry_h + GAP + body_h
+        body_h + FOOTER_H
     };
     let pad_top = area.height.saturating_sub(used) / 2;
 
-    let mut constraints = vec![Constraint::Length(pad_top), Constraint::Length(telemetry_h)];
+    let mut constraints = vec![Constraint::Length(pad_top)];
     if show_donut_block {
-        constraints.push(Constraint::Length(GAP));
         constraints.push(Constraint::Length(TITLE_H));
+        constraints.push(Constraint::Length(SUBTITLE_H));
         constraints.push(Constraint::Length(donut_h));
         constraints.push(Constraint::Length(HINT_H));
     }
     constraints.push(Constraint::Length(GAP));
     constraints.push(Constraint::Length(body_h));
+    constraints.push(Constraint::Length(FOOTER_H));
     constraints.push(Constraint::Min(0));
 
     let chunks = Layout::default()
@@ -733,21 +762,19 @@ pub(super) fn draw_onboarding_welcome(frame: &mut Frame, app: &dyn TuiState, are
         .constraints(constraints)
         .split(area);
 
-    // chunks[0] = top pad, [1] = telemetry, then optional gap/title/donut/hint,
-    // gap, body.
-    frame.render_widget(
-        Paragraph::new(telemetry).alignment(Alignment::Center),
-        chunks[1],
-    );
-
-    let mut idx = 2;
+    // chunks[0] = top pad, then optional title/subtitle/donut/hint, gap, body, footer.
+    let mut idx = 1;
     if show_donut_block {
-        idx += 1; // skip gap chunk
         frame.render_widget(
             Paragraph::new(welcome_title_line()).alignment(Alignment::Center),
             chunks[idx],
         );
-        idx += 1; // title -> donut
+        idx += 1; // title -> subtitle
+        frame.render_widget(
+            Paragraph::new(welcome_subtitle_line()).alignment(Alignment::Center),
+            chunks[idx],
+        );
+        idx += 1; // subtitle -> donut
         animations::draw_idle_animation(frame, app, chunks[idx]);
         idx += 1; // donut -> hint
         frame.render_widget(
@@ -759,6 +786,11 @@ pub(super) fn draw_onboarding_welcome(frame: &mut Frame, app: &dyn TuiState, are
     idx += 1; // skip gap chunk
     frame.render_widget(
         Paragraph::new(body).alignment(Alignment::Center),
+        chunks[idx],
+    );
+    idx += 1; // body -> footer
+    frame.render_widget(
+        Paragraph::new(telemetry_footer_line()).alignment(Alignment::Center),
         chunks[idx],
     );
 }
