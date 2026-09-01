@@ -68,7 +68,8 @@ jobs:
           target: ${{ matrix.target }}
           archive: ${{ matrix.archive }}
           checksum: sha256
-          args: --locked --release
+          locked: true
+          profile: release
 
       # Surface the per-target files as workflow artifacts so the publish
       # job below can also merge the per-asset SHA256SUMS into one file.
