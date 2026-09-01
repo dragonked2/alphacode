@@ -86,11 +86,24 @@ jobs:
       # Cargo.lock was checked in without macOS-only deps like
       # core-graphics, and the build runs on Linux/macOS/Windows without
       # local cargo pre-warming. Letting cargo update the lockfile in CI
-      # keeps the release shippable; once Cargo.lock is regenerated
       # locally for the macOS dep and committed, this can be tightened
       # back to `locked: true`.
+      #
+      # `env: ALPHACODE_RELEASE_BUILD=1` makes the embedded version string
+      # the clean `v{version} ({git_hash})` form (see build.rs::emit_build_environment)
+      # instead of the dev-tagged `v{version}-dev ({git_hash}, dirty)` form.
+      # Without this, a tagged release still embedded `-dev` and `(dirty)` into
+      # the binary, so `alphacode --version` reported e.g.
+      #   `v1.0.2-dev (579910d, dirty)` on a real release.
+      # `ALPHACODE_BUILD_GIT_DIRTY=0` is belt-and-suspenders: the build script
+      # also auto-detects dirtiness via `git status --porcelain`, and we don't
+      # want a stray untracked file in the build checkout to leak into the
+      # version string even after the release flag is set.
       - name: Build + archive + checksum + upload
         uses: taiki-e/upload-rust-binary-action@v1
+        env:
+          ALPHACODE_RELEASE_BUILD: "1"
+          ALPHACODE_BUILD_GIT_DIRTY: "0"
         with:
           bin: alphacode
           target: ${{ matrix.target }}
