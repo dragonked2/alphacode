@@ -97,5 +97,8 @@ jobs:
         run: bash -n scripts/install.sh
       - name: bash -n scripts/uninstall.sh
         run: bash -n scripts/uninstall.sh
-      - name: pwsh -NoProfile -Command "$null = [System.Management.Automation.PSParser]::Tokenize((Get-Content -Raw scripts/install.ps1), [ref]$null)"
+      - name: pwsh syntax check on scripts/install.ps1
         shell: pwsh
+        run: >-
+          $null = [System.Management.Automation.PSParser]::Tokenize(
+          (Get-Content -Raw scripts/install.ps1), [ref]$null)
