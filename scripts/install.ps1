@@ -73,7 +73,13 @@ function Build-FromSource {
     }
 
     Print "Compiling alphacode (this can take 5-30 minutes on a first build) ..."
-    & cargo build --release --locked --manifest-path "$srcDir\src\Cargo.toml"
+    # NOTE: no --locked on purpose. The committed Cargo.lock does not list
+    # platform-conditional deps for every target triple, and CI itself runs
+    # without `--locked` (see .github/workflows/release.yml: `locked: false`).
+    # If we passed --locked here, a fresh source build on a platform the
+    # lockfile wasn't regenerated for would fail with
+    # "Cargo.lock needs to be updated".
+    & cargo build --release --manifest-path "$srcDir\src\Cargo.toml"
     if ($LASTEXITCODE -ne 0) { Fail "cargo build failed" }
 
     $builtExe = Join-Path "$srcDir\src\target\release" 'alphacode.exe'

@@ -115,7 +115,13 @@ build_from_source() {
   fi
 
   print "Compiling alphacode (this can take 5-30 minutes on a first build) …"
-  ( cd "$src_dir/src" && cargo build --release --locked ) \
+  # NOTE: no --locked on purpose. The committed Cargo.lock does not list
+  # platform-conditional deps (e.g. macOS-only core-graphics on a Linux user,
+  # or vice-versa) for every target triple, and CI itself runs without
+  # `--locked` (see .github/workflows/release.yml: `locked: false`). If we
+  # passed --locked here, a fresh source build on a platform the lockfile
+  # wasn't regenerated for would fail with "Cargo.lock needs to be updated".
+  ( cd "$src_dir/src" && cargo build --release ) \
     || fail "cargo build failed"
 
   local built
