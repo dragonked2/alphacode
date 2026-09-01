@@ -167,7 +167,9 @@ if [ "$VERSION" = "latest" ]; then
   # got SIGPIPE on its next write → exit 23 (Failure writing output to
   # destination). The script then *incorrectly* thought no release existed
   # and fell through to a 5-30 minute source build. Buffering avoids the race.
-  local _api_tmp
+  # NOTE: no `local` here — this block runs at the top level of the script
+  # and bash only allows `local` inside a function. The variable name
+  # (_api_tmp) is unique enough that global scope is harmless.
   _api_tmp="$(mktemp)"
   if curl -fsSL -o "$_api_tmp" "https://api.github.com/repos/$REPO/releases/latest"; then
     VERSION="$(grep -m1 '"tag_name"' "$_api_tmp" \
