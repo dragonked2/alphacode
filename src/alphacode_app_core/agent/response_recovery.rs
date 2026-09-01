@@ -571,12 +571,14 @@ pub(crate) fn extract_retry_after_secs(error: &str) -> Option<u64> {
 /// the rate-limit budget on retries.
 ///
 /// Backoff schedules:
-/// - Rate-limit (429): 10s, 20s, 40s, 80s, 160s, 300s (capped)
-/// - Other transient:  5s, 10s, 20s, 40s, 80s, 160s (capped)
+/// - Rate-limit (429): 10s, 20s, 40s, 80s, 160s, 180s (capped)
+/// - Other transient:  5s, 10s, 20s, 40s, 80s, 160s (capped at 180s)
 pub(crate) fn retry_delay_for_error(error: &str, attempt: u32) -> u64 {
     if let Some(secs) = extract_retry_after_secs(error) {
-        // Provider told us how long to wait. Respect it but cap at 300s.
-        return secs.min(300);
+        // Provider told us how long to wait. Respect it but cap at 180s so a
+        // single misbehaving provider can't park the agent for several
+        // minutes per retry.
+        return secs.min(180);
     }
     use rand::Rng;
     let is_rate_limit = {
@@ -591,7 +593,7 @@ pub(crate) fn retry_delay_for_error(error: &str, attempt: u32) -> u64 {
     let base_secs: u64 = if is_rate_limit { 10 } else { 5 };
     let base = base_secs.saturating_mul(1u64 << attempt.min(5));
     let jittered = (base as f64 * rand::rng().random_range(0.8..1.2)) as u64;
-    jittered.max(base_secs).min(300)
+    jittered.max(base_secs).min(180)
 }
 
 #[cfg(test)]
