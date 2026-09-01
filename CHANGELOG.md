@@ -4,9 +4,69 @@ All notable changes to Alphacode are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project
 adheres to [Semantic Versioning](https://semver.org/).
 
+## [1.0.1] — 2026-09-01
+
+Patch release. Ships the new coding-quality contract and the
+repo-polish pass without disturbing the existing v1.0.0 install base.
+
+### Coding-quality contract
+
+The agent's prompt is hardened with four guardrails on every
+code-changing turn:
+
+1. **Smallest Change** — never bundle unrelated edits; report deeper
+   issues separately instead of fixing them silently.
+2. **Anti-Regression** — every change must leave previously-passing
+   tests in a passing state; new warnings are treated as failures.
+3. **Self-Critique Loop** — a 5-point checklist runs before any task
+   is reported complete (objective covered, evidence-backed, no
+   regressions, scoped diff, edge cases considered).
+4. **Structured Output After Tool Calls** — every state-changing turn
+   ends with *What changed / What was verified / What remains*.
+
+The tool descriptions for `edit`, `write`, `multiedit`, and `bash`
+were tightened in the same change so the prompts the user sees
+reinforce the prompt the agent runs on. The system prompt also gains
+a *Tool-Use Best Practices* table and three worked examples
+(good-vs-bad shape) for the most common coding-task patterns.
+
+Source of truth:
+[`src/alphacode_base/prompt/system_prompt.md`](src/alphacode_base/prompt/system_prompt.md).
+
+### Added
+
+- Onboarding trust line (`quality_guarantees_line`) shown on the
+  Suggestions phase so first-run users see the contract they can
+  hold Alphacode to.
+- `rust-toolchain.toml` pinning Rust 1.91 (matches the CI matrix).
+- `docs/configuration.md`, `docs/architecture.md`, `CODE_OF_CONDUCT.md`.
+- `src/alphacode_app_core/session_watchdog.rs` — Session Health
+  Watchdog for stall detection, memory-leak mitigation, connection
+  refresh, and crash recovery.
+- `src/cli/args/tests.rs` — CLI arg parsing tests.
+
+### Changed
+
+- README: new tagline; honest Performance section (no marketing
+  benchmarks); new **Coding-quality contract** section.
+- CONTRIBUTING: fixed broken `IMPROVEMENTS.md` reference; updated
+  module table to match the actual 90+ crates; links to
+  `docs/architecture.md`.
+- Cargo.toml: package description aligned with the new tone.
+- `.gitignore`: ignores `scripts/.[a-zA-Z0-9_-]*.ps1` (local
+  hardcoded debug helpers).
+
+### Fixed
+
+- `autonomous/mod.rs`: stale test assertion (8/3/4 → 16/5/12) so
+  `cargo test` matches the current `AgentLimits::default`.
+
 ## [1.0.0] — 2026-09-01
 
-The first stable release. Ready for daily driving.
+The first stable release. Ready for daily driving. The binaries
+tagged `v1.0.0` contain the original v1.0.0 code; users on
+`v1.0.0` who want the coding-quality contract should upgrade to
+`v1.0.1` (the install script does this automatically).
 
 ### Highlights
 
