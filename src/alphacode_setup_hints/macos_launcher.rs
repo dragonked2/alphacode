@@ -10,7 +10,7 @@ const MACOS_APP_ICON_FILE_NAME: &str = "Alphacode.icns";
 #[cfg(target_os = "macos")]
 const MACOS_APP_ICON_BYTES: &[u8] = include_bytes!(concat!(
     env!("CARGO_MANIFEST_DIR"),
-    "/../../assets/app-icons/Alphacode.icns"
+    "/assets/app-icons/Alphacode.icns"
 ));
 #[cfg(not(target_os = "macos"))]
 const MACOS_APP_ICON_BYTES: &[u8] = &[];
