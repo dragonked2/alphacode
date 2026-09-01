@@ -394,7 +394,8 @@ impl AntigravityProvider {
                     );
                 }
                 let server_hint =
-                    crate::alphacode_provider_core::retry_after::retry_after(&headers);
+                    crate::alphacode_provider_core::retry_after::retry_after(&headers)
+                        .map(|hint| hint.remaining());
                 let delay = crate::alphacode_provider_core::retry_after::retry_delay(
                     attempt + 1,
                     1_000,

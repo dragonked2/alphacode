@@ -539,6 +539,14 @@ pub(crate) async fn run_main(mut args: Args) -> Result<()> {
         Some(Command::Menubar { once, json }) => {
             commands::run_menubar_command(once, json)?;
         }
+        #[cfg(unix)]
+        Some(Command::ApiBridge { .. }) => {
+            // Placeholder: the api-bridge subcommand is declared in
+            // cli/args but its dispatch is wired up incrementally.
+            // Until the real handler lands we surface a clear error
+            // rather than silently falling through to the default TUI.
+            anyhow::bail!("alphacode api-bridge is not implemented yet");
+        }
         None => run_default_command(args).await?,
     }
 

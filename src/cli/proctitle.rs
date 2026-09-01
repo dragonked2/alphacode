@@ -62,6 +62,7 @@ pub(crate) fn initial_title(args: &Args) -> String {
         Some(Command::Restart { .. }) => "alphacode restart".to_string(),
         Some(Command::Menubar { .. }) => "alphacode menubar".to_string(),
         Some(Command::SetupLauncher) => "alphacode setup-launcher".to_string(),
+        #[cfg(unix)]
         Some(Command::ApiBridge { .. }) => "alphacode api-bridge".to_string(),
         None => {
             if let Some(resume) = args.resume.as_deref().filter(|resume| !resume.is_empty()) {
