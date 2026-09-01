@@ -250,14 +250,25 @@ fn render_labeled_bar(
     let filled = (((used_pct as f32 / 100.0) * bar_width as f32).round() as usize).min(bar_width);
     let empty = bar_width.saturating_sub(filled);
 
-    // Use smoother block characters for better visual appeal
-    let bar_filled = "█".repeat(filled);
+    // Gradient-filled bar: lower blocks on the left, full block on the right
+    // for a smoother, more premium visual feel.
+    let gradient_blocks = ['▁', '▂', '▃', '▄', '▅', '▆', '▇', '█'];
+    let bar_filled: String = if filled > 0 {
+        let mut chars = String::with_capacity(filled);
+        for i in 0..filled {
+            let level = if filled == 1 { 7 } else { ((i as f32 / (filled - 1) as f32) * 7.0).round() as usize };
+            chars.push(gradient_blocks[level.min(7)]);
+        }
+        chars
+    } else {
+        String::new()
+    };
     let bar_empty = "░".repeat(empty);
 
     Line::from(vec![
         Span::styled(padded_label, Style::default().fg(rgb(140, 140, 150))),
         Span::styled(bar_filled, Style::default().fg(color)),
-        Span::styled(bar_empty, Style::default().fg(rgb(40, 42, 50))),
+        Span::styled(bar_empty, Style::default().fg(rgb(35, 38, 48))),
         Span::styled(suffix, Style::default().fg(color)),
     ])
 }

@@ -16,36 +16,36 @@ pub(super) fn render_git_widget(data: &InfoWidgetData, inner: Rect) -> Vec<Line<
     let mut lines: Vec<Line> = Vec::new();
 
     let mut parts: Vec<Span> = Vec::new();
-    parts.push(Span::styled(" ", Style::default().fg(rgb(240, 160, 60))));
+    parts.push(Span::styled(" \u{2442} ", Style::default().fg(rgb(240, 160, 60))));
 
     // Measure what gets pushed, not what was counted in `char`s. The stats are
     // ASCII today, but budgeting in columns keeps the invariant uniform.
     let mut stats_width = 0usize;
     let mut stat_spans = Vec::new();
     if info.ahead > 0 {
-        let text = format!(" ↑{}", info.ahead);
+        let text = format!(" \u{2191}{}", info.ahead);
         stats_width += text.width();
-        stat_spans.push((text, rgb(100, 200, 100)));
+        stat_spans.push((text, rgb(100, 220, 140)));
     }
     if info.behind > 0 {
-        let text = format!(" ↓{}", info.behind);
+        let text = format!(" \u{2193}{}", info.behind);
         stats_width += text.width();
-        stat_spans.push((text, rgb(255, 140, 100)));
+        stat_spans.push((text, rgb(255, 150, 110)));
     }
     if info.modified > 0 {
         let text = format!(" ~{}", info.modified);
         stats_width += text.width();
-        stat_spans.push((text, rgb(240, 200, 80)));
+        stat_spans.push((text, rgb(255, 200, 80)));
     }
     if info.staged > 0 {
         let text = format!(" +{}", info.staged);
         stats_width += text.width();
-        stat_spans.push((text, rgb(100, 200, 100)));
+        stat_spans.push((text, rgb(130, 230, 160)));
     }
     if info.untracked > 0 {
         let text = format!(" ?{}", info.untracked);
         stats_width += text.width();
-        stat_spans.push((text, rgb(140, 140, 150)));
+        stat_spans.push((text, rgb(150, 155, 170)));
     }
 
     let branch_budget = w.saturating_sub(2 + stats_width);

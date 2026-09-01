@@ -18,6 +18,8 @@ pub(super) fn render_model_widget(data: &InfoWidgetData, inner: Rect) -> Vec<Lin
         Some("anthropic") | Some("claude") => ("\u{25c6} ", rgb(255, 168, 128)),
         Some("openai") | Some("codex") => ("\u{25c8} ", rgb(108, 218, 188)),
         Some("gemini") => ("\u{25c7} ", rgb(108, 188, 255)),
+        Some("openrouter") => ("\u{29bf} ", rgb(180, 160, 255)),
+        Some("copilot") => ("\u{25cf} ", rgb(110, 200, 140)),
         _ => ("\u{26a1} ", rgb(148, 188, 255)),
     };
 
@@ -71,7 +73,7 @@ pub(super) fn render_model_widget(data: &InfoWidgetData, inner: Rect) -> Vec<Lin
             Span::styled("\u{250c} ", Style::default().fg(rgb(148, 188, 255))),
             Span::styled(
                 truncate_smart(&display, max_len.saturating_sub(2)),
-                Style::default().fg(rgb(128, 138, 158)),
+                Style::default().fg(rgb(138, 148, 168)),
             ),
         ];
         if let Some(branch) = data

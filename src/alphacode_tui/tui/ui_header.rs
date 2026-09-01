@@ -971,15 +971,6 @@ fn build_model_line(
     let mut spans: Vec<Span> = Vec::new();
     let mut len = nice_model.chars().count();
 
-    if !model_is_placeholder {
-        push_if_fits(
-            &mut spans,
-            &mut len,
-            fit_width,
-            "\u{2500} /model to switch \u{00b7} ".to_string(),
-            Style::default().fg(rgb(88, 95, 118)),
-        );
-    }
     if !provider_label.is_empty() {
         push_if_fits(
             &mut spans,
@@ -989,6 +980,20 @@ fn build_model_line(
             Style::default().fg(rgb(88, 95, 118)),
         );
     }
+
+    // Subtle connection status dot before the model name
+    let status_dot_color = if app.is_processing() {
+        rgb(255, 204, 128) // amber for active
+    } else {
+        rgb(134, 233, 180) // green for ready
+    };
+    push_if_fits(
+        &mut spans,
+        &mut len,
+        fit_width,
+        "\u{25cf} ".to_string(),
+        Style::default().fg(status_dot_color),
+    );
 
     spans.push(Span::styled(
         nice_model.to_string(),
@@ -1004,6 +1009,22 @@ fn build_model_line(
             fit_width,
             format!(" \u{2192} {}", upstream),
             Style::default().fg(rgb(88, 95, 118)),
+        );
+    }
+    if !model_is_placeholder {
+        push_if_fits(
+            &mut spans,
+            &mut len,
+            fit_width,
+            " \u{00b7} ".to_string(),
+            Style::default().fg(rgb(60, 65, 80)),
+        );
+        push_if_fits(
+            &mut spans,
+            &mut len,
+            fit_width,
+            "/model to switch".to_string(),
+            Style::default().fg(rgb(70, 78, 100)).add_modifier(Modifier::ITALIC),
         );
     }
 
