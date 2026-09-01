@@ -1,7 +1,8 @@
 # Alphacode
 
-> **Possibly the greatest coding agent ever built.**
-> Blazing-fast terminal UI, multi-model orchestration, intelligent swarm coordination, and 40+ tools working together.
+> **A coding agent for the terminal.** Multi-model orchestration, intelligent
+> swarm coordination, and 40+ tools working together — built so the changes
+> it makes are the *smallest* ones that solve the problem.
 
 <p align="center">
   <a href="#install">Install</a> · <a href="#quick-start">Quick start</a> · <a href="#what-can-it-do">Features</a> · <a href="#commands">Commands</a> · <a href="docs/">Docs</a> · <a href="CONTRIBUTING.md">Contributing</a>
@@ -227,18 +228,50 @@ Everything else is documented in `docs/configuration.md`.
 
 ## Performance
 
-The release build is tuned for speed:
+Alphacode is built for fast cold start and low steady-state RAM so it
+stays usable on a laptop while you also have a browser, an IDE, and a
+Docker daemon open.
 
-- `opt-level = 3`, `lto = "thin"`, `codegen-units = 16` keeps cold build time
-  fast while keeping hot runtime paths fast.
-- Hot third-party crates (reqwest, hyper, tokio, rustls, ratatui, crossterm)
-  compile as a single codegen unit so cross-crate inlining + LTO can fold them
-  tightly into the binary.
-- The HTTP client pool uses 2 idle connections per host — enough for
-  sequential chat completions plus one parallel background catalog refresh,
-  but it stops free-tier providers from burning rate-limit budget.
-- `cargo test --lib` is the only required test lane; full integration tests
-  are opt-in to keep CI fast.
+- **`opt-level = 3` + `lto = "thin"` + `codegen-units = 16`** keeps cold
+  build time fast while keeping hot runtime paths fast.
+- Hot third-party crates (`reqwest`, `hyper`, `tokio`, `rustls`, `ratatui`,
+  `crossterm`) compile as a single codegen unit so cross-crate inlining
+  + LTO can fold them tightly into the binary.
+- The HTTP client pool uses **2 idle connections per host** — enough for
+  sequential chat completions plus one parallel background catalog
+  refresh, but it stops free-tier providers from burning rate-limit
+  budget.
+- The session transcript is **persisted to disk**, not held in memory, so
+  a week-long session does not bloat the process.
+- `cargo test --lib` is the only required test lane; full integration
+  tests are opt-in to keep CI fast.
+
+We do not publish marketing benchmarks. Performance regressions show up
+in the wild before they show up in a benchmark, and a number on a
+README is the easiest thing in the world to fudge. If you care about a
+specific scenario, the binary is one `cargo install` away — measure it.
+
+## Coding-quality contract
+
+The agent's system prompt enforces four guardrails on every code-changing
+turn:
+
+1. **Smallest change** — never bundle unrelated edits into the same call;
+   report deeper issues separately instead of fixing them silently.
+2. **Anti-regression** — every change must leave previously-passing tests
+   in a passing state; new warnings are treated as failures.
+3. **Self-critique** — a 5-point checklist runs before any task is reported
+   complete (objective covered, evidence-backed, no regressions, scoped
+   diff, edge cases considered).
+4. **Structured output** — every state-changing turn ends with
+   *What changed / What was verified / What remains*.
+
+The source of truth is
+[`src/alphacode_base/prompt/system_prompt.md`](src/alphacode_base/prompt/system_prompt.md);
+the tool descriptions in
+[`src/alphacode_app_core/tool/`](src/alphacode_app_core/tool/) reinforce
+the same rules so the prompts the user sees match the prompt the agent
+runs on.
 
 ---
 

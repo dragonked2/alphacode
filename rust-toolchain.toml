@@ -1,0 +1,12 @@
+# Pinned Rust toolchain for Alphacode contributors.
+#
+# Having this in the repo means `cargo build`, `cargo test`, `cargo clippy`,
+# and `cargo fmt` all run on the same Rust version CI uses, with no manual
+# `rustup install 1.91` step. The CI matrix also pins 1.91, so any divergence
+# is caught here rather than at PR time.
+#
+# Bumping this: edit this file *and* the `with: toolchain:` lines in
+# `.github/workflows/ci.yml` in the same commit.
+[toolchain]
+channel = "1.91"
+components = ["clippy", "rustfmt"]

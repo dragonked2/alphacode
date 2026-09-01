@@ -18,17 +18,25 @@ Requirements: **Rust 1.91+** (edition 2024) and a C toolchain matching your plat
 ## Project layout
 
 All first-party code lives under `src/`. The crate is intentionally monolithic
-(fewer workspace rebuilds) and is split into focused module trees:
+(fewer workspace rebuilds) and is split into focused module trees. The
+naming convention is `alphacode_<area>_<role>` so contributors can navigate
+by file path.
 
 | Module | Responsibility |
 | --- | --- |
-| `alphacode_base` | Sessions, config, providers, memory, protocol |
-| `alphacode_app_core` | Agent runtime, tools, server/protocol layer |
+| `alphacode_core` | Provider-agnostic trait types and shared state |
+| `alphacode_base` | System prompt, prompt builder, capability enum |
+| `alphacode_app_core` | Agent loop, tools, autonomous layer, server protocol |
 | `alphacode_tui*` | Terminal UI: rendering, widgets, style, animations |
+| `alphacode_tool_core` / `alphacode_tool_types` | The `Tool` trait and shared tool types |
 | `alphacode_provider_*` | Per-provider runtimes (Anthropic, OpenAI, Gemini, …) |
-| `alphacode_swarm_core` | Multi-agent coordination |
-| `alphacode_modules` | High-level autonomous modules (planner, main_brain, …) |
+| `alphacode_auth_*` | Per-provider OAuth flows |
+| `alphacode_swarm_core` | Multi-agent coordination (task DAG, deep/light modes) |
+| `alphacode_modules` | High-level autonomous modules (Main Brain, planner, …) |
 | `cli` | Command-line entrypoint + subcommand dispatch |
+
+For a deeper tour of how the pieces fit together, see
+[`docs/architecture.md`](docs/architecture.md).
 
 ## Pull request checklist
 
@@ -37,7 +45,8 @@ All first-party code lives under `src/`. The crate is intentionally monolithic
 - [ ] `cargo clippy --lib -- -D warnings` is clean.
 - [ ] Public APIs have rustdoc comments.
 - [ ] No new dependencies unless justified in the PR description.
-- [ ] User-visible changes are documented in `IMPROVEMENTS.md`.
+- [ ] User-visible changes are documented in `CHANGELOG.md` (add an
+      entry under "Unreleased" or the version you're targeting).
 
 ## Style
 

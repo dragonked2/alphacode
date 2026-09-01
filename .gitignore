@@ -36,3 +36,8 @@ build/
 # CI/CD caches
 .cache/
 dist/
+
+# Local PowerShell debug helpers (hardcoded to the author's machine,
+# not portable — never commit). Dot-prefixed names keep them out of
+# casual `ls` and out of the repo.
+scripts/.[a-zA-Z0-9_-]*.ps1
