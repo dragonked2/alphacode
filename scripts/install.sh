@@ -161,10 +161,21 @@ fi
 
 if [ "$VERSION" = "latest" ]; then
   print "Resolving latest release from $REPO …"
-  VERSION="$(curl -fsSL "https://api.github.com/repos/$REPO/releases/latest" \
-    | grep -m1 '"tag_name"' \
-    | sed -E 's/.*"tag_name":[[:space:]]*"([^"]+)".*/\1/')" \
-    || VERSION=""
+  # NOTE: download the API response to a tempfile first, then parse it.
+  # The previous `curl … | grep -m1 … | sed …` pipeline would race: as soon
+  # as `grep -m1` matched `"tag_name"` and exited, the pipe closed and curl
+  # got SIGPIPE on its next write → exit 23 (Failure writing output to
+  # destination). The script then *incorrectly* thought no release existed
+  # and fell through to a 5-30 minute source build. Buffering avoids the race.
+  local _api_tmp
+  _api_tmp="$(mktemp)"
+  if curl -fsSL -o "$_api_tmp" "https://api.github.com/repos/$REPO/releases/latest"; then
+    VERSION="$(grep -m1 '"tag_name"' "$_api_tmp" \
+      | sed -E 's/.*"tag_name":[[:space:]]*"([^"]+)".*/\1/')" || VERSION=""
+  else
+    VERSION=""
+  fi
+  rm -f "$_api_tmp"
   if [ -z "$VERSION" ]; then
     if [ -n "$SOURCE_ONLY" ]; then
       fail "no release found for $REPO and --source-only is set"
