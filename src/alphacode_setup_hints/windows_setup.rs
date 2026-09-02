@@ -685,7 +685,10 @@ fn install_alacritty() -> Result<()> {
     }
 }
 
-#[allow(dead_code, reason = "kept for explicit alphacode setup-hotkey flow restoration")]
+#[allow(
+    dead_code,
+    reason = "kept for explicit alphacode setup-hotkey flow restoration"
+)]
 fn nudge_hotkey(state: &mut SetupHintsState) -> bool {
     let terminal = detect_terminal();
     let using_alacritty = terminal == "alacritty" || is_alacritty_installed();
@@ -756,7 +759,10 @@ fn nudge_hotkey(state: &mut SetupHintsState) -> bool {
     }
 }
 
-#[allow(dead_code, reason = "kept for explicit alphacode setup-hotkey flow restoration")]
+#[allow(
+    dead_code,
+    reason = "kept for explicit alphacode setup-hotkey flow restoration"
+)]
 fn nudge_alacritty(state: &mut SetupHintsState) -> bool {
     let terminal = detect_terminal();
 

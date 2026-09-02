@@ -25,78 +25,76 @@
 ///
 /// `references` are merged into the skill's `reference_files` map keyed
 /// by the subskill directory name (e.g. `hunt-sqli`).
-pub(super) const BUNDLED_SKILLS: &[BundledSkill] = &[
-    BundledSkill {
-        name: "bugbounty",
-        body: include_str!("bundled_skills/bugbounty/SKILL.md"),
-        references: &[
-            (
-                "advanced-techniques",
-                include_str!("bundled_skills/bugbounty/advanced-techniques/SKILL.md"),
-            ),
-            (
-                "client-reverse",
-                include_str!("bundled_skills/bugbounty/client-reverse/SKILL.md"),
-            ),
-            (
-                "credential-attack",
-                include_str!("bundled_skills/bugbounty/credential-attack/SKILL.md"),
-            ),
-            (
-                "hunt-api",
-                include_str!("bundled_skills/bugbounty/hunt-api/SKILL.md"),
-            ),
-            (
-                "hunt-graphql",
-                include_str!("bundled_skills/bugbounty/hunt-graphql/SKILL.md"),
-            ),
-            (
-                "hunt-idor",
-                include_str!("bundled_skills/bugbounty/hunt-idor/SKILL.md"),
-            ),
-            (
-                "hunt-memory",
-                include_str!("bundled_skills/bugbounty/hunt-memory/SKILL.md"),
-            ),
-            (
-                "hunt-oauth",
-                include_str!("bundled_skills/bugbounty/hunt-oauth/SKILL.md"),
-            ),
-            (
-                "hunt-sqli",
-                include_str!("bundled_skills/bugbounty/hunt-sqli/SKILL.md"),
-            ),
-            (
-                "hunt-ssrf",
-                include_str!("bundled_skills/bugbounty/hunt-ssrf/SKILL.md"),
-            ),
-            (
-                "hunt-xss",
-                include_str!("bundled_skills/bugbounty/hunt-xss/SKILL.md"),
-            ),
-            (
-                "llm-redteam",
-                include_str!("bundled_skills/bugbounty/llm-redteam/SKILL.md"),
-            ),
-            (
-                "recon",
-                include_str!("bundled_skills/bugbounty/recon/SKILL.md"),
-            ),
-            (
-                "report",
-                include_str!("bundled_skills/bugbounty/report/SKILL.md"),
-            ),
-            (
-                "security-arsenal",
-                include_str!("bundled_skills/bugbounty/security-arsenal/SKILL.md"),
-            ),
-            (
-                "web3-audit",
-                include_str!("bundled_skills/bugbounty/web3-audit/SKILL.md"),
-            ),
-        ],
-    },
-];
+pub(super) const BUNDLED_SKILLS: &[BundledSkill] = &[BundledSkill {
+    name: "bugbounty",
+    body: include_str!("bundled_skills/bugbounty/SKILL.md"),
+    references: &[
+        (
+            "advanced-techniques",
+            include_str!("bundled_skills/bugbounty/advanced-techniques/SKILL.md"),
+        ),
+        (
+            "client-reverse",
+            include_str!("bundled_skills/bugbounty/client-reverse/SKILL.md"),
+        ),
+        (
+            "credential-attack",
+            include_str!("bundled_skills/bugbounty/credential-attack/SKILL.md"),
+        ),
+        (
+            "hunt-api",
+            include_str!("bundled_skills/bugbounty/hunt-api/SKILL.md"),
+        ),
+        (
+            "hunt-graphql",
+            include_str!("bundled_skills/bugbounty/hunt-graphql/SKILL.md"),
+        ),
+        (
+            "hunt-idor",
+            include_str!("bundled_skills/bugbounty/hunt-idor/SKILL.md"),
+        ),
+        (
+            "hunt-memory",
+            include_str!("bundled_skills/bugbounty/hunt-memory/SKILL.md"),
+        ),
+        (
+            "hunt-oauth",
+            include_str!("bundled_skills/bugbounty/hunt-oauth/SKILL.md"),
+        ),
+        (
+            "hunt-sqli",
+            include_str!("bundled_skills/bugbounty/hunt-sqli/SKILL.md"),
+        ),
+        (
+            "hunt-ssrf",
+            include_str!("bundled_skills/bugbounty/hunt-ssrf/SKILL.md"),
+        ),
+        (
+            "hunt-xss",
+            include_str!("bundled_skills/bugbounty/hunt-xss/SKILL.md"),
+        ),
+        (
+            "llm-redteam",
+            include_str!("bundled_skills/bugbounty/llm-redteam/SKILL.md"),
+        ),
+        (
+            "recon",
+            include_str!("bundled_skills/bugbounty/recon/SKILL.md"),
+        ),
+        (
+            "report",
+            include_str!("bundled_skills/bugbounty/report/SKILL.md"),
+        ),
+        (
+            "security-arsenal",
+            include_str!("bundled_skills/bugbounty/security-arsenal/SKILL.md"),
+        ),
+        (
+            "web3-audit",
+            include_str!("bundled_skills/bugbounty/web3-audit/SKILL.md"),
+        ),
+    ],
+}];
 
 /// One bundled skill: a name, the top-level SKILL.md body, and any
 /// nested subskill references that should be merged into the skill's
