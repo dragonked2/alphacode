@@ -55,6 +55,7 @@ pub mod test_harness;
 pub mod theme_detect;
 mod ui;
 mod ui_diff;
+pub mod ui_frame_chrome;
 pub(crate) mod ui_todo_suppress;
 pub mod usage_overlay;
 pub mod visual_debug;
