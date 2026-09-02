@@ -4,6 +4,27 @@ All notable changes to Alphacode are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project
 adheres to [Semantic Versioning](https://semver.org/).
 
+## [1.0.4] — 2026-09-02
+
+Patch release. Removes the only production `unwrap()` in the codebase
+that could fire from a real user action, found during a 1,157-call
+`unwrap` audit. No user-facing config, protocol, or behavior changes.
+
+### Fixed
+
+- `MemoryManager` no longer implements `Default`. The previous impl
+  called `Self::new(".").unwrap()`, and `MemoryManager::new` runs
+  `Path::canonicalize()` and `fs::create_dir_all()` — both of which
+  can fail on a read-only filesystem, a missing parent directory, or
+  in any environment where `"."` is not writable. A blanket
+  `Default::default()` would have panicked on any of those failure
+  modes the first time anything reached for a default
+  `MemoryManager`. There were zero callers in production, so the
+  safest fix was to drop the impl and force callers to be explicit
+  about the path they want. A short comment stands in for the
+  removed impl so a future contributor who reaches for
+  `Default::default()` understands why it is not there.
+
 ## [1.0.2] — 2026-09-01
 
 Patch release. Polishes the TUI / markdown rendering and the bash
