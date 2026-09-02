@@ -4,6 +4,67 @@ All notable changes to Alphacode are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project
 adheres to [Semantic Versioning](https://semver.org/).
 
+## [1.0.7] - 2026-09-02
+
+Patch release. TUI polish round: the idle splash now renders the
+`alphacode` wordmark with a per-character gradient over a breathing
+box-drawing separator, the tip header swaps to a ✨ sparkle, the
+todo-changes widget shows a percent-aware progress bar with clearer
+status glyphs (✔, ✖), and the OpenRouter/gmicloud active-provider
+fallback in `MultiProvider::resolve_active` now also consults the
+config's `default_provider` key (not just the env-var-driven display
+name). Also includes a one-off rustfmt sweep against five files
+whose layout had drifted from the 1.91 toolchain.
+
+### Added
+
+- **Gradient idle wordmark** (`ui_animations.rs::render_idle_wordmark`):
+  each character of the splash wordmark is now colored from a 7-stop
+  gradient (`HeaderIcon → Info → Accent → ModelName → Warning →
+  Success → HeaderIcon`) with `Modifier::BOLD` applied per cell, so
+  the splash reads as a single visual unit instead of a flat string.
+- **Breathing separator** (`ui_animations.rs`): a third splash line
+  composed of varied box-drawing characters (─ ┄ ─ ┈ ─) cycled to
+  reservation width, gradient-blended teal → blue → purple across
+  the row. Hidden on reservations `<= 2` rows tall to preserve the
+  wordmark's vertical center.
+
+### Changed
+
+- **Tip header glyph** (`info_widget_tips.rs`): the splash tip header
+  now uses ✨ (U+2728) and the brand-gradient index `gradient[7]`
+  instead of 💡 (U+1F4A1) at `gradient[9]`. Body text color bumped
+  one step warmer (`rgb(175,180,200)` from `rgb(165,170,190)`).
+- **Todo-change progress** (`ui_todo_changes.rs::progress_span`): the
+  `(completed/total)` span now appends a five-cell bar
+  (`░░░░░ NN%`) and a percent-aware foreground color
+  (green `rgb(120,230,160)` at 100%, blue `rgb(148,188,255)` at
+  50%+, purple `rgb(200,170,255)` below).
+- **Todo-change status icons** (`ui_todo_changes.rs::status_icon`):
+  `completed` glyph bumped from `✓` (U+2713) to `✔` (U+2714),
+  `cancelled` glyph bumped from `✗` (U+2717) to `✖` (U+2716); all
+  four palette colors lightened for better contrast against the
+  default TUI background.
+
+### Fixed
+
+- **OpenRouter/gmicloud takeover** (`provider/startup.rs`): the
+  fallback that promotes `OpenRouter` to the active provider when
+  Claude is otherwise selected and the gmicloud endpoint is the
+  configured OpenAI-compatible target now also triggers when
+  `provider_state.default_provider_key()` returns `gmicloud` —
+  previously only the env-var-driven display name was checked,
+  which missed shells that set env vars in a different order than
+  `apply_openai_compatible_profile_env` does.
+
+### Housekeeping
+
+- **rustfmt sweep** (`chore(fmt)`): re-runs rustfmt against
+  `bundled_skills.rs`, `alphacode_base/mod.rs`, `skill.rs`,
+  `alphacode_setup_hints/mod.rs`, and `windows_setup.rs`, whose
+  layout had drifted from the 1.91 toolchain. No semantic changes;
+  `cargo fmt --check` is clean.
+
 ## [1.0.6] - 2026-09-02
 
 Patch release. Bundles the `bugbounty` skill directly into the binary so
