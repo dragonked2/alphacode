@@ -4,6 +4,39 @@ All notable changes to Alphacode are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project
 adheres to [Semantic Versioning](https://semver.org/).
 
+## [1.0.5] — 2026-09-02
+
+Patch release. TUI polish round: new commands, smarter model picker,
+and tightened markdown rendering. No user-facing config, protocol, or
+behavior changes.
+
+### Added
+
+- **New TUI commands** in `src/alphacode_tui/tui/app/commands.rs`
+  (+127 LOC): additional slash commands the agent can call inline.
+  See the in-TUI `/help` for the current list.
+- **Smart model picker** (`smart_model_picker.rs`, +80 LOC): the
+  model picker now ranks models by recency of use and groups by
+  provider, so the model you actually use most is the one you
+  reach for with the fewest keystrokes.
+- **Info widget tip rotation** (`info_widget_tips.rs`): the splash
+  hint line now rotates through a small set of tips instead of
+  pinning one.
+
+### Changed
+
+- **Markdown rendering** (`markdown_render_full.rs`, +50 LOC):
+  table styling, inline-interactive prompts, and message layout
+  re-tuned. The renderer's visible behavior matches the v1.0.2
+  palette commitments (high-contrast code/math/links/headings on
+  dark backgrounds) but with sharper edges and a tighter
+  per-message rhythm.
+- **Inline-interactive prompts** (`ui_inline_interactive.rs`):
+  the prompt chrome around inline choices is simpler and easier
+  to skim.
+- **Menubar** (`cli/commands/menubar.rs`): one minor behavioral
+  fix and a small status-item update.
+
 ## [1.0.4] — 2026-09-02
 
 Patch release. Removes the only production `unwrap()` in the codebase
@@ -24,6 +57,52 @@ that could fire from a real user action, found during a 1,157-call
   about the path they want. A short comment stands in for the
   removed impl so a future contributor who reaches for
   `Default::default()` understands why it is not there.
+
+## [1.0.3] — 2026-09-02
+
+Patch release. Fixes three install-script failures and cleans the
+embedded `alphacode --version` string on tagged releases. No
+user-facing config or protocol changes.
+
+### Fixed
+
+- **install.sh / install.ps1**: drop `--locked` from the source-build
+  fallback. The committed `Cargo.lock` does not list every
+  platform-conditional dep (e.g. `core-graphics` for macOS), and
+  CI itself builds with `locked: false` — the installer was
+  diverging from CI and would `error: ... Cargo.lock needs to be
+  updated to use it` on first run for any platform that wasn't
+  pre-warmed. The flag is gone, with a comment so the next person
+  doesn't add it back.
+- **install.sh**: `curl | grep | sed` race against the GitHub
+  `/releases/latest` API. As soon as `grep -m1` matched `tag_name`
+  and exited, the pipe closed and `curl` got `SIGPIPE` (exit 23,
+  "Failure writing output to destination") on its next write. The
+  ~15 KB JSON got cut off mid-stream, and on a slow / rate-limited
+  connection the captured fragment could be missing `tag_name`
+  entirely — so `VERSION` ended up empty and the script fell
+  through to a 5–30 minute source build even though a release was
+  right there. Fix: download the API response to a tempfile, then
+  parse.
+- **install.sh**: the previous fix used `local _api_tmp` at the
+  top level of the script, which bash correctly rejects with
+  `bash: line N: local: can only be used in a function`. The
+  `local` is gone; the variable name is unique enough that global
+  scope is harmless.
+
+### Changed
+
+- `.github/workflows/release.yml`: set `ALPHACODE_RELEASE_BUILD=1`
+  and `ALPHACODE_BUILD_GIT_DIRTY=0` on the build step. Without
+  these, the embedded version string took the dev-tagged form
+  `v{version}-dev ({git_hash}, dirty)` even on a tagged release —
+  `alphacode --version` reported e.g. `v1.0.2-dev (579910d, dirty)`
+  on the v1.0.2 release binaries. With both env vars set, tagged
+  releases embed the clean `v{version} ({git_hash})` form.
+- `Cargo.toml`: bump version 1.0.2 → 1.0.3.
+- `Cargo.lock`: `1.0.1` → `1.0.3` in the `alphacode` package entry
+  (was previously drifted in the working tree but not committed; now
+  matches `Cargo.toml`).
 
 ## [1.0.2] — 2026-09-01
 
