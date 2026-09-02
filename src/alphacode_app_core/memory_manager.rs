@@ -457,11 +457,13 @@ impl MemoryManager {
     }
 }
 
-impl Default for MemoryManager {
-    fn default() -> Self {
-        Self::new(".").unwrap()
-    }
-}
+// Note: `Default` is intentionally not implemented for `MemoryManager`.
+// `MemoryManager::new(root)` resolves the path with `canonicalize()` and
+// creates the storage directory with `create_dir_all`, both of which can
+// fail (read-only filesystem, missing parent, etc.). A blanket
+// `Default::default() -> Self { Self::new(".").unwrap() }` would panic on
+// any of those failure modes, so we leave construction explicit and let
+// callers handle the `Result`.
 
 #[cfg(test)]
 mod tests {
