@@ -18,7 +18,9 @@ use ratatui::{
 };
 
 use crate::alphacode_tui_style::palette::{Role, role_color};
-use crate::alphacode_tui_style::tokens::{Frame as FrameToken, Radius, ResolvedFrame, tokens_for};
+#[cfg(test)]
+use crate::alphacode_tui_style::tokens::Radius;
+use crate::alphacode_tui_style::tokens::{Frame as FrameToken, ResolvedFrame, tokens_for};
 
 /// Bundle the chrome for a surface. Returned by the helpers so a caller
 /// that wants to draw a title bar or footer can build on the same block

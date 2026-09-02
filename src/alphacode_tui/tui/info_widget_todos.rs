@@ -676,22 +676,20 @@ pub(super) fn render_todos_widget(data: &InfoWidgetData, inner: Rect) -> Vec<Lin
     push_todo_pips(&mut header, data, pip_budget);
     push_aggregate_confidence_suffix(&mut header, aggregate_todo_confidence(&data.todos));
 
-    // Only add a progress bar when the widget is tall enough.
-    // The bar takes 2 extra lines (empty line + bar line), so we need at least 3 lines total.
-    let progress_bar_width = inner.width.saturating_sub(2) as usize;
-    if progress_bar_width >= 4 && inner.height >= 5 {
-        lines.push(Line::from(vec![Span::styled("  ", Style::default())]));
-        let mut bar_spans = vec![Span::styled("  ", Style::default())];
-        push_todo_progress_bar(&mut bar_spans, data, progress_bar_width);
-        lines.push(Line::from(bar_spans));
-    }
-
     let available_lines = inner.height.saturating_sub(1) as usize; // Account for header
     let budget = available_lines.clamp(1, 5);
 
     // Grouped layout when any todo declares a group; otherwise the flat list.
     if let Some(groups) = grouped_todos(&data.todos) {
         lines.push(Line::from(header));
+        // Progress bar after header
+        let progress_bar_width = inner.width.saturating_sub(2) as usize;
+        if progress_bar_width >= 4 && inner.height >= 5 {
+            lines.push(Line::from(vec![Span::styled("  ", Style::default())]));
+            let mut bar_spans = vec![Span::styled("  ", Style::default())];
+            push_todo_progress_bar(&mut bar_spans, data, progress_bar_width);
+            lines.push(Line::from(bar_spans));
+        }
         let (group_lines, shown) =
             render_grouped_todo_lines(&groups, &data.todo_goals, inner, false, budget);
         lines.extend(group_lines);
@@ -710,6 +708,15 @@ pub(super) fn render_todos_widget(data: &InfoWidgetData, inner: Rect) -> Vec<Lin
         push_goal_loop_suffix(&mut header, goal);
     }
     lines.push(Line::from(header));
+
+    // Progress bar after header
+    let progress_bar_width = inner.width.saturating_sub(2) as usize;
+    if progress_bar_width >= 4 && inner.height >= 5 {
+        lines.push(Line::from(vec![Span::styled("  ", Style::default())]));
+        let mut bar_spans = vec![Span::styled("  ", Style::default())];
+        push_todo_progress_bar(&mut bar_spans, data, progress_bar_width);
+        lines.push(Line::from(bar_spans));
+    }
 
     // Sort todos: in_progress first, then pending, then completed
     let mut sorted_todos: Vec<&crate::todo::TodoItem> = data.todos.iter().collect();
