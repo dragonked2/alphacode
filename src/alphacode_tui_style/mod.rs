@@ -1,5 +1,6 @@
 pub mod color;
 pub mod harmony;
+pub mod icons;
 pub mod palette;
 pub mod presets;
 pub mod role;
@@ -9,6 +10,7 @@ pub mod tokens;
 
 pub use color::{ColorCapability, clear_buf, color_capability, has_truecolor, indexed_to_rgb, rgb};
 pub use harmony::{Criterion, HarmonyReport, Oklab, analyze as analyze_harmony, analyze_active};
+pub use icons::{Icon, TerminalClass, force_terminal_class, terminal_class};
 pub use palette::{ALL_ROLES, Palette, Role, palette, role_color, set_palette};
 pub use presets::{PRESETS, ThemeSeed, preset_by_id, preset_palette};
 pub use role::{
