@@ -4,6 +4,7 @@ pub mod palette;
 pub mod presets;
 pub mod theme;
 pub mod theme_mode;
+pub mod tokens;
 
 pub use color::{ColorCapability, clear_buf, color_capability, has_truecolor, indexed_to_rgb, rgb};
 pub use harmony::{Criterion, HarmonyReport, Oklab, analyze as analyze_harmony, analyze_active};
