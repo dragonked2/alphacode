@@ -264,13 +264,22 @@ impl MultiProvider {
         // is active (has API key, either configured or built-in fallback),
         // prefer it over other providers so sessions boot with a working
         // model immediately.
-        if matches!(active, ActiveProvider::Claude)
-            && availability.openrouter
-            && crate::provider_catalog::active_openai_compatible_display_name()
-                .as_deref()
-                .is_some_and(|name| name.eq_ignore_ascii_case("gmicloud"))
-        {
-            active = ActiveProvider::OpenRouter;
+        //
+        // The check is twofold: first try the env-var-based display name
+        // (reliable when apply_openai_compatible_profile_env ran), then fall
+        // back to the config's default_provider key so shells that set env
+        // vars in a different order still resolve correctly.
+        if matches!(active, ActiveProvider::Claude) && availability.openrouter {
+            let display_is_gmicloud =
+                crate::provider_catalog::active_openai_compatible_display_name()
+                    .as_deref()
+                    .is_some_and(|name| name.eq_ignore_ascii_case("gmicloud"));
+            let config_prefers_gmicloud = provider_state
+                .default_provider_key()
+                .is_some_and(|p| p.eq_ignore_ascii_case("gmicloud"));
+            if display_is_gmicloud || config_prefers_gmicloud {
+                active = ActiveProvider::OpenRouter;
+            }
         }
 
         if copilot_premium_zero && matches!(active, ActiveProvider::Copilot) {

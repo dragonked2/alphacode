@@ -128,9 +128,9 @@ pub(super) fn render_tips_widget(inner: Rect) -> Vec<Line<'static>> {
 
     let gradient = crate::alphacode_tui::tui::brand_ux::BrandTheme::gradient();
     let mut lines: Vec<Line<'static>> = Vec::new();
-    // Gradient-accented tip header
+    // Gradient-accented tip header with sparkle
     lines.push(Line::from(vec![
-        Span::styled("\u{1f4a1} ", Style::default().fg(gradient[9])),
+        Span::styled("\u{2728} ", Style::default().fg(gradient[7])),
         Span::styled(
             "Tip",
             Style::default()
@@ -144,7 +144,7 @@ pub(super) fn render_tips_widget(inner: Rect) -> Vec<Line<'static>> {
     for line_text in wrapped {
         lines.push(Line::from(vec![
             Span::raw("  "),
-            Span::styled(line_text, Style::default().fg(rgb(165, 170, 190))),
+            Span::styled(line_text, Style::default().fg(rgb(175, 180, 200))),
         ]));
     }
 

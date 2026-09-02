@@ -158,21 +158,21 @@ fn compute_diff(prev: Option<&[TodoItem]>, next: &[TodoItem]) -> TodoDiff {
 
 fn status_icon(status: &str, blocked: bool) -> (&'static str, Color) {
     if blocked && status != "completed" {
-        return ("⊳", rgb(180, 140, 100));
+        return ("⊳", rgb(200, 160, 120));
     }
     match status {
-        "completed" => ("✓", rgb(100, 180, 100)),
-        "in_progress" => ("▶", rgb(255, 200, 100)),
-        "cancelled" => ("✗", rgb(150, 90, 90)),
-        _ => ("○", rgb(120, 120, 130)),
+        "completed" => ("✔", rgb(120, 230, 160)),
+        "in_progress" => ("▶", rgb(255, 210, 120)),
+        "cancelled" => ("✖", rgb(255, 130, 130)),
+        _ => ("○", rgb(130, 135, 155)),
     }
 }
 
 /// Leading marker (glyph + color) and the text color used for a change line.
 fn change_marker(kind: &TodoChangeKind) -> (&'static str, Color, Color) {
     match kind {
-        TodoChangeKind::Added => ("+", rgb(100, 180, 100), rgb(190, 200, 195)),
-        TodoChangeKind::Removed => ("-", rgb(200, 110, 100), rgb(120, 120, 125)),
+        TodoChangeKind::Added => ("+", rgb(120, 230, 160), rgb(200, 215, 205)),
+        TodoChangeKind::Removed => ("-", rgb(255, 130, 130), rgb(130, 130, 135)),
         TodoChangeKind::StatusChanged { to, blocked } => {
             let (icon, color) = status_icon(to, *blocked);
             let text = if to == "completed" || to == "cancelled" {
@@ -220,9 +220,24 @@ fn summary_text(diff: &TodoDiff) -> String {
 }
 
 fn progress_span(diff: &TodoDiff) -> Span<'static> {
+    let pct = if diff.total > 0 {
+        diff.completed * 100 / diff.total
+    } else {
+        0
+    };
+    let color = if pct >= 100 {
+        rgb(120, 230, 160) // green - all done
+    } else if pct >= 50 {
+        rgb(148, 188, 255) // blue - halfway
+    } else {
+        rgb(200, 170, 255) // purple - starting
+    };
     Span::styled(
-        format!("  ({}/{})", diff.completed, diff.total),
-        Style::default().fg(rgb(120, 120, 135)),
+        format!(
+            "  ({}/{}) \u{2591}\u{2591}\u{2591}\u{2591}\u{2591} {}%",
+            diff.completed, diff.total, pct
+        ),
+        Style::default().fg(color),
     )
 }
 

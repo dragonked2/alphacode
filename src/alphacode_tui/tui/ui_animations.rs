@@ -468,6 +468,7 @@ fn blit_idle(
 /// pace redraws on it. (See `idle_donut_paces_redraws` for the gating logic
 /// and the regression tests below for the static invariants.)
 fn render_idle_wordmark(buf: &mut Buffer, area: Rect) {
+    use crate::alphacode_tui_style::theme::blend_color;
     use crate::alphacode_tui_style::{Role, role_color};
     use ratatui::style::Style;
     use ratatui::text::{Line, Span};
@@ -479,45 +480,92 @@ fn render_idle_wordmark(buf: &mut Buffer, area: Rect) {
     // theme has been loaded (very early boot, minimal config, tests).
     let accent_color = role_color(Role::Accent);
     let muted_color = role_color(Role::Dim);
+    let ai_color = role_color(Role::Ai);
+    let header_icon = role_color(Role::HeaderIcon);
+    let model_name = role_color(Role::ModelName);
 
-    // Two lines: a wordmark, and a short welcoming hint. Keep
-    // them short so a narrow reservation still fits the whole decoration.
+    // Three lines: a gradient wordmark, a breathing separator, and a hint.
+    // The wordmark uses per-character gradient coloring for a premium feel.
     let wordmark = "\u{2728} alphacode";
     let hint = "type a message below to get started  \u{2022}  / for commands";
+
+    // Build a breathing separator using varied line-drawing characters
+    let sep_chars = ['\u{2500}', '\u{2504}', '\u{2500}', '\u{2508}', '\u{2500}'];
+    let separator: String = sep_chars
+        .iter()
+        .cycle()
+        .take((area.width as usize).min(60))
+        .collect();
 
     let area_top = area.y;
     let area_h = area.height as usize;
     let area_w = area.width as usize;
 
-    // Centre the lines vertically. With only one wordmark line + one hint
-    // line, we have at most 2 rows; place them in the middle of the
-    // reservation so they read as a unit even when the reservation is tall.
+    // Centre the lines vertically. With wordmark + separator + hint,
+    // we have at most 3 rows; place them in the middle.
     let start_row_offset: u16 = match area_h {
         0..=4 => 0,
         5..=14 => (area_h as u16 / 2).saturating_sub(1),
         _ => (area_h as u16 / 2).saturating_sub(1),
     };
 
-    let lines: [&str; 2] = [wordmark, hint];
-    let colors = [accent_color, muted_color];
+    // Gradient colors for the wordmark characters
+    let gradient = [
+        role_color(Role::HeaderIcon), // cyan
+        role_color(Role::Info),       // blue
+        role_color(Role::Accent),     // purple
+        role_color(Role::ModelName),  // pink
+        role_color(Role::Warning),    // amber
+        role_color(Role::Success),    // green
+        role_color(Role::HeaderIcon), // cyan
+    ];
 
-    for (idx, text) in lines.iter().enumerate() {
-        let row = start_row_offset.saturating_add(idx as u16);
-        if row >= area_h as u16 {
-            break;
+    // Render wordmark with per-character gradient
+    let wordmark_row = start_row_offset;
+    if wordmark_row < area_h as u16 && wordmark.chars().count() <= area_w {
+        let char_w = area_w.min(wordmark.chars().count());
+        let center_offset = (area.width as usize).saturating_sub(char_w) / 2;
+        for (i, ch) in wordmark.chars().enumerate() {
+            let x = area.x + (center_offset + i) as u16;
+            let y = area_top + wordmark_row;
+            if x < area.x + area.width {
+                let color = gradient[i % gradient.len()];
+                let cell = &mut buf[(x, y)];
+                cell.set_char(ch)
+                    .set_fg(color)
+                    .set_style(Style::default().fg(color).add_modifier(Modifier::BOLD));
+            }
         }
-        // Skip the hint on very short reservations so the wordmark stays
-        // visible and centred without overlapping a truncated second row.
-        if idx == 1 && area_h <= 3 {
-            break;
+    }
+
+    // Render breathing separator
+    let sep_row = start_row_offset.saturating_add(1);
+    if sep_row < area_h as u16 && !separator.is_empty() && area_h > 2 {
+        let center_offset = (area.width as usize).saturating_sub(separator.len()) / 2;
+        for (i, ch) in separator.chars().enumerate() {
+            let x = area.x + (center_offset + i) as u16;
+            let y = area_top + sep_row;
+            if x < area.x + area.width {
+                // Gradient across the separator: teal → blue → purple
+                let t = i as f32 / separator.len().max(1) as f32;
+                let color = if t < 0.33 {
+                    blend_color(header_icon, ai_color, t * 3.0)
+                } else if t < 0.66 {
+                    blend_color(ai_color, accent_color, (t - 0.33) * 3.0)
+                } else {
+                    blend_color(accent_color, model_name, (t - 0.66) * 3.0)
+                };
+                let cell = &mut buf[(x, y)];
+                cell.set_char(ch).set_fg(color);
+            }
         }
-        // Skip lines that would not fit horizontally either, so the
-        // Paragraph does not emit truncated glyphs that look glitchy.
-        if text.chars().count() > area_w {
-            continue;
-        }
-        let line = Line::from(Span::styled(*text, Style::default().fg(colors[idx])));
-        let rect = Rect::new(area.x, area_top + row, area.width, 1);
+    }
+
+    // Render hint
+    let hint_row = start_row_offset.saturating_add(2);
+    if hint_row < area_h as u16 && hint.chars().count() <= area_w && area_h > 3 {
+        let rect = Rect::new(area.x, area_top + hint_row, area.width, 1);
+        let line = Line::from(Span::styled(hint, Style::default().fg(muted_color)));
         Paragraph::new(line)
             .alignment(ratatui::layout::Alignment::Center)
             .render(rect, buf);
