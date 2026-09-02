@@ -261,6 +261,7 @@ impl SetupHintsState {
 
     /// Whether we are still allowed to show a terminal/setup nudge. Once we have
     /// shown the prompt `MAX_TERMINAL_NUDGES` times we stop asking entirely.
+#[cfg_attr(any(windows, target_os = "macos"), allow(dead_code, reason = "only used by nudge code paths we no longer call on first run"))]
     #[cfg(any(test, windows, target_os = "macos"))]
     fn nudge_budget_remaining(&self) -> bool {
         self.terminal_nudge_count < MAX_TERMINAL_NUDGES
@@ -271,8 +272,8 @@ impl SetupHintsState {
     /// platforms it compiles but has no caller.
     #[cfg(any(test, windows, target_os = "macos"))]
     #[cfg_attr(
-        not(any(windows, target_os = "macos")),
-        allow(dead_code, reason = "only called on Windows/macOS nudge paths")
+        any(windows, target_os = "macos"),
+        allow(dead_code, reason = "nudge code paths no longer called from first-run flow")
     )]
     fn record_nudge_shown(&mut self) {
         self.terminal_nudge_count = self.terminal_nudge_count.saturating_add(1);

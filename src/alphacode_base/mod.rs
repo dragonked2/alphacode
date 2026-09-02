@@ -75,6 +75,7 @@ pub mod session_list_cache;
 pub mod session_metrics;
 pub mod side_panel;
 pub mod sidecar;
+pub mod bundled_skills;
 pub mod skill;
 pub mod soft_interrupt_store;
 pub mod sponsors;

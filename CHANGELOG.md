@@ -4,6 +4,55 @@ All notable changes to Alphacode are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project
 adheres to [Semantic Versioning](https://semver.org/).
 
+## [1.0.6] - 2026-09-02
+
+Patch release. Bundles the `bugbounty` skill directly into the binary so
+`/bugbounty` (and its 16 subskill references) is always available,
+regardless of the working directory or `$HOME`. Also removes the first-run
+"Set up global keys to launch alphacode?" and "Alacritty: the fastest
+terminal for alphacode" prompts, and fixes the macOS build that previously
+errored on unused `libproc` constants.
+
+### Added
+
+- **Bundled `bugbounty` skill** (`src/alphacode_base/bundled_skills/`):
+  the full bug-bounty methodology skill - including its 16 subskills
+  (recon, hunt-sqli, hunt-xss, hunt-ssrf, hunt-idor, hunt-graphql,
+  hunt-oauth, hunt-api, hunt-memory, llm-redteam, web3-audit,
+  credential-attack, client-reverse, security-arsenal,
+  advanced-techniques, report) - is now embedded at compile time via
+  `include_str!`. The top-level `SKILL.md` is registered as `/bugbounty`;
+  the subskill bodies are exposed as named `reference_files` so they
+  remain available contextually when the skill is invoked. Users can
+  still override the embedded copy by placing a same-named skill in
+  `~/.alphacode/skills/` or `./.alphacode/skills/` - the on-disk overlay
+  always wins, mirroring the historical load order. As a result,
+  `/bugbounty` now shows up identically whether the user launches
+  `alphacode` from a fresh shell with cwd outside the project tree or
+  from inside the repo.
+
+### Removed
+
+- **First-run Windows setup nudges** (`windows_setup.rs`): the
+  "Set up global keys to launch alphacode?" and "Alacritty: the fastest
+  terminal for alphacode" prompts no longer interrupt the first launches
+  of every Windows user. Users who still want either setup can run
+  `alphacode setup-hotkey` (existing explicit path) or
+  `alphacode setup-launcher`. The underlying helpers are retained
+  (`#[allow(dead_code)]`) so future re-enablement is a one-line change.
+
+### Fixed
+
+- **macOS dead-code errors** (`stdin_detect.rs`): the `libproc`
+  constants `PROC_PIDFDVNODEPATHINFO`, `PROC_PIDFDSOCKETINFO`, and
+  `PROC_PIDFDPIPEINFO`, plus the `proc_pidfdinfo` FFI binding, are now
+  annotated with `#[allow(dead_code)]` so `cargo check` no longer fails
+  with `error: constant ... is never used` on macOS targets.
+- **`RELOAD_HANDOFF_EVENT_POLL_MS` cfg gate** (`reload_state.rs`):
+  scoped the constant to `#[cfg(target_os = "linux")]` (it is only
+  consumed from the Linux-gated `wait_for_reload_handoff_event_blocking`
+  helper). macOS no longer sees an unused-symbol warning.
+
 ## [1.0.5] — 2026-09-02
 
 Patch release. TUI polish round: new commands, smarter model picker,

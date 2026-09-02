@@ -685,6 +685,7 @@ fn install_alacritty() -> Result<()> {
     }
 }
 
+#[allow(dead_code, reason = "kept for explicit alphacode setup-hotkey flow restoration")]
 fn nudge_hotkey(state: &mut SetupHintsState) -> bool {
     let terminal = detect_terminal();
     let using_alacritty = terminal == "alacritty" || is_alacritty_installed();
@@ -755,6 +756,7 @@ fn nudge_hotkey(state: &mut SetupHintsState) -> bool {
     }
 }
 
+#[allow(dead_code, reason = "kept for explicit alphacode setup-hotkey flow restoration")]
 fn nudge_alacritty(state: &mut SetupHintsState) -> bool {
     let terminal = detect_terminal();
 
@@ -876,50 +878,10 @@ pub(super) fn maybe_show_windows_setup_hints(
     state: &mut SetupHintsState,
     startup_hints: Option<StartupHints>,
 ) -> Option<StartupHints> {
-    if !state.launch_count.is_multiple_of(3) {
-        return startup_hints;
-    }
-
-    if std::env::var_os("ALPHACODE_NO_STARTUP_HINTS").is_some() {
-        return startup_hints;
-    }
-
-    let terminal = detect_terminal();
-    let already_using_alacritty = terminal == "alacritty";
-
-    if already_using_alacritty {
-        state.alacritty_configured = true;
-        state.alacritty_dismissed = true;
-        let _ = state.save();
-    }
-
-    let wants_hotkey_nudge = !state.hotkey_configured && !state.hotkey_dismissed;
-    let wants_alacritty_nudge =
-        !state.alacritty_configured && !state.alacritty_dismissed && !already_using_alacritty;
-
-    // Stop pestering the user once we have shown the nudge prompt enough times,
-    // even if they never explicitly chose "Don't ask again".
-    if (wants_hotkey_nudge || wants_alacritty_nudge) && !state.nudge_budget_remaining() {
-        return startup_hints;
-    }
-
-    let mut did_setup_hotkey = false;
-    let mut did_install_alacritty = false;
-
-    if wants_hotkey_nudge {
-        state.record_nudge_shown();
-        did_setup_hotkey = nudge_hotkey(state);
-    }
-
-    if wants_alacritty_nudge {
-        state.record_nudge_shown();
-        did_install_alacritty = nudge_alacritty(state);
-    }
-
-    if did_setup_hotkey || (did_install_alacritty && state.hotkey_configured) {
-        prompt_try_it_out(did_install_alacritty);
-    }
-
+    // Setup nudge prompts (global hotkey + Alacritty install) have been removed
+    // from the first-run experience. Users can still opt in explicitly via
+    // `alphacode setup-hotkey` or `alphacode setup-launcher`.
+    let _ = state;
     startup_hints
 }
 

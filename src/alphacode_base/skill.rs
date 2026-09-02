@@ -267,6 +267,10 @@ impl SkillRegistry {
         {
             registry.load_from_dir(&agents_skills)?;
         }
+        // Load bundled skills embedded at compile time so they are always
+        // available regardless of cwd, $HOME, or any on-disk install.
+        Self::load_bundled_skills(&mut registry);
+
 
         Ok(registry)
     }
@@ -514,6 +518,75 @@ impl SkillRegistry {
             allowed_tools,
             content: body,
             path: path.to_path_buf(),
+            search_text,
+            reference_files,
+        })
+    }
+/// Load skills embedded at compile time into the binary.
+    ///
+    /// Each top-level bundled skill becomes a single [`Skill`] entry in
+    /// the registry, identified by its directory name. Nested subskill
+    /// `SKILL.md` files are merged into the parent skill as reference
+    /// files keyed by the subskill directory name so they are available
+    /// when the skill is invoked, without exposing them as separate
+    /// slash commands.
+    ///
+    /// Embedded skills always load (no filesystem dependencies), and
+    /// the on-disk project overlay still wins over same-named bundled
+    /// skills, matching the historical load order.
+    fn load_bundled_skills(registry: &mut Self) {
+        use crate::alphacode_base::bundled_skills::BUNDLED_SKILLS;
+        for skill in BUNDLED_SKILLS {
+            match Self::parse_embedded_skill(skill.name, skill.body, skill.references) {
+                Ok(parsed) => {
+                    // Project-local overlay still wins over bundled, so use
+                    // the entry API: only insert if no on-disk skill of the
+                    // same name was already loaded.
+                    registry
+                        .skills
+                        .entry(parsed.name.clone())
+                        .or_insert(parsed);
+                }
+                Err(err) => {
+                    crate::alphacode_logging::warn(&format!(
+                        "failed to parse bundled skill {}: {}",
+                        skill.name, err
+                    ));
+                }
+            }
+        }
+    }
+
+    /// Parse an embedded SKILL.md body into a [`Skill`] without any
+    /// filesystem reads. Returns the parsed skill, including subskill
+    /// references merged into `reference_files`.
+    fn parse_embedded_skill(
+        name: &str,
+        body: &str,
+        references: &[(&str, &str)],
+    ) -> Result<Skill> {
+        let (frontmatter, body) = Self::parse_frontmatter(body)?;
+        let SkillFrontmatter {
+            name: frontmatter_name,
+            description,
+            allowed_tools,
+            auto_invoke: _,
+            aliases: _,
+        } = frontmatter;
+        let allowed_tools = allowed_tools
+            .map(|s| s.split(',').map(|t| t.trim().to_string()).collect());
+        let search_text =
+            build_skill_search_text(&frontmatter_name, &description, &body);
+        let mut reference_files: HashMap<String, String> = HashMap::new();
+        for (key, content) in references {
+            reference_files.insert((*key).to_string(), (*content).to_string());
+        }
+        Ok(Skill {
+            name: frontmatter_name,
+            description,
+            allowed_tools,
+            content: body,
+            path: PathBuf::from(format!("<embedded:{name}>")),
             search_text,
             reference_files,
         })

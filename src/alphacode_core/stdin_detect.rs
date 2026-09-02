@@ -214,6 +214,7 @@ mod macos {
     use std::mem;
 
     // libproc bindings
+    #[allow(dead_code)]
     unsafe extern "C" {
         fn proc_pidinfo(
             pid: i32,
@@ -231,9 +232,13 @@ mod macos {
         ) -> i32;
     }
 
+    #[allow(dead_code)]
     const PROC_PIDLISTFDS: i32 = 1;
+    #[allow(dead_code)]
     const PROC_PIDFDVNODEPATHINFO: i32 = 2;
+    #[allow(dead_code)]
     const PROC_PIDFDSOCKETINFO: i32 = 3;
+    #[allow(dead_code)]
     const PROC_PIDFDPIPEINFO: i32 = 6;
 
     #[repr(C)]
