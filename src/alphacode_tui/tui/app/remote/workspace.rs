@@ -86,8 +86,12 @@ pub(super) async fn handle_workspace_command(
         "/workspace add" | "/workspace add right" => {
             Some(crate::alphacode_tui::tui::workspace_client::WorkspaceSplitTarget::Right)
         }
-        "/workspace add up" => Some(crate::alphacode_tui::tui::workspace_client::WorkspaceSplitTarget::Up),
-        "/workspace add down" => Some(crate::alphacode_tui::tui::workspace_client::WorkspaceSplitTarget::Down),
+        "/workspace add up" => {
+            Some(crate::alphacode_tui::tui::workspace_client::WorkspaceSplitTarget::Up)
+        }
+        "/workspace add down" => {
+            Some(crate::alphacode_tui::tui::workspace_client::WorkspaceSplitTarget::Down)
+        }
         _ => None,
     };
 
@@ -115,4 +119,3 @@ pub(super) async fn handle_workspace_command(
     ));
     Ok(true)
 }
-

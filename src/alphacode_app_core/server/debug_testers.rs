@@ -329,4 +329,3 @@ async fn execute_tester_subcommand(
         tokio::time::sleep(std::time::Duration::from_millis(50)).await;
     }
 }
-

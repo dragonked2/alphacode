@@ -36,4 +36,3 @@ impl App {
         local::process_turn_with_input(self, terminal, event_stream, bus_receiver).await;
     }
 }
-

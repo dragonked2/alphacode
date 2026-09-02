@@ -16,10 +16,10 @@
 // silence dead_code only for that specific build shape instead of deleting them.
 #![cfg_attr(all(test, not(target_os = "macos")), allow(dead_code))]
 
+use crate::alphacode_storage as storage;
 #[cfg(any(target_os = "macos", target_os = "linux"))]
 use anyhow::Context;
 use anyhow::Result;
-use crate::alphacode_storage as storage;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::io::{self, IsTerminal};
@@ -52,7 +52,8 @@ use macos_terminal::load_preferred_macos_terminal;
 #[cfg(any(test, target_os = "macos"))]
 use macos_terminal::{
     MacTerminalKind, effective_macos_terminal, escape_applescript_text, escape_shell_single_quotes,
-    launch_command_for_macos_terminal, paused_alphacode_shell_command, save_preferred_macos_terminal,
+    launch_command_for_macos_terminal, paused_alphacode_shell_command,
+    save_preferred_macos_terminal,
 };
 #[cfg(windows)]
 use windows_setup::{
@@ -343,7 +344,9 @@ pub fn record_launch_dirs(dir: &std::path::Path, repo_dir: Option<&std::path::Pa
     #[cfg(any(target_os = "macos", target_os = "linux", windows))]
     {
         if let Err(err) = record_launch_dirs_inner(dir, repo_dir) {
-            crate::alphacode_logging::warn(&format!("failed to record launch dirs for hotkeys: {err}"));
+            crate::alphacode_logging::warn(&format!(
+                "failed to record launch dirs for hotkeys: {err}"
+            ));
         }
     }
     #[cfg(not(any(target_os = "macos", target_os = "linux", windows)))]
@@ -447,7 +450,8 @@ pub fn launch_alphacode_in_macos_terminal(extra_args: &[String]) -> Result<()> {
     let terminal = effective_macos_terminal();
     let exe = std::env::current_exe()?;
     let exe_path = exe.to_string_lossy().into_owned();
-    let shell_command = macos_terminal::paused_alphacode_shell_command_with_args(&exe_path, extra_args);
+    let shell_command =
+        macos_terminal::paused_alphacode_shell_command_with_args(&exe_path, extra_args);
 
     let command = match macos_terminal::no_automation_launch(terminal, &shell_command) {
         macos_terminal::NoAutomationLaunch::Shell(command) => command,
@@ -629,7 +633,8 @@ fn macos_terminal_notice(
     let message = "The built-in macOS Terminal.app renders alphacode poorly (slow, limited colors, no inline images). Consider a modern terminal such as Ghostty, iTerm2, or Alacritty for a much better experience.".to_string();
 
     Some(StartupHints::with_status_and_display(
-        "Tip: Terminal.app renders alphacode poorly. Try Ghostty, iTerm2, or Alacritty.".to_string(),
+        "Tip: Terminal.app renders alphacode poorly. Try Ghostty, iTerm2, or Alacritty."
+            .to_string(),
         "Terminal",
         message,
     ))
@@ -696,7 +701,9 @@ pub fn run_setup_hotkey(
                 eprintln!();
                 eprintln!("  Press these anywhere, system-wide:");
                 eprintln!("    \x1b[1mCmd+;\x1b[0m       new alphacode in your home directory");
-                eprintln!("    \x1b[1mCmd+'\x1b[0m       new alphacode in your last project directory");
+                eprintln!(
+                    "    \x1b[1mCmd+'\x1b[0m       new alphacode in your last project directory"
+                );
                 eprintln!(
                     "    \x1b[1mCmd+Shift+'\x1b[0m new alphacode self-dev session (last alphacode repo)"
                 );
@@ -960,8 +967,8 @@ mod macos_run_loop {
 
 #[cfg(target_os = "macos")]
 fn run_macos_hotkey_listener() -> Result<()> {
-    use global_hotkey::{GlobalHotKeyEvent, GlobalHotKeyManager, HotKeyState};
     use crate::alphacode_terminal_launch::{TerminalCommand, spawn_command_in_new_terminal_with};
+    use global_hotkey::{GlobalHotKeyEvent, GlobalHotKeyManager, HotKeyState};
 
     // `global-hotkey` on macOS registers a Carbon hotkey (`RegisterEventHotKey`)
     // whose events are dispatched through the application's Carbon event target,
@@ -1297,7 +1304,9 @@ pub fn maybe_show_setup_hints() -> Option<StartupHints> {
                 Ok(()) => {
                     state.launch_hotkey_tracking_version = LAUNCH_HOTKEY_TRACKING_VERSION;
                     let _ = state.save();
-                    crate::alphacode_logging::info("Migrated Windows launch hotkeys to usage tracking");
+                    crate::alphacode_logging::info(
+                        "Migrated Windows launch hotkeys to usage tracking",
+                    );
                 }
                 Err(err) => crate::alphacode_logging::warn(&format!(
                     "failed to migrate Windows launch hotkeys to usage tracking: {err}"
@@ -1534,9 +1543,8 @@ fn linux_hotkeys_installed(comp: linux_env::LinuxCompositor) -> bool {
     use linux_env::LinuxCompositor;
     match comp {
         LinuxCompositor::Gnome => gnome_keybinding_list().contains("/alphacode-launch-"),
-        LinuxCompositor::Cinnamon => {
-            dconf_read("/org/cinnamon/desktop/keybindings/custom-list").contains("alphacode-launch-")
-        }
+        LinuxCompositor::Cinnamon => dconf_read("/org/cinnamon/desktop/keybindings/custom-list")
+            .contains("alphacode-launch-"),
         LinuxCompositor::Mate => {
             dconf_list("/org/mate/desktop/keybindings/").contains("alphacode-launch-")
         }
@@ -2167,7 +2175,9 @@ fn reload_compositor_config(comp: linux_env::LinuxCompositor) {
             "{} exited with {status} while reloading hotkey binds",
             cmd[0]
         )),
-        Err(err) => crate::alphacode_logging::warn(&format!("failed to run {} reload: {err}", cmd[0])),
+        Err(err) => {
+            crate::alphacode_logging::warn(&format!("failed to run {} reload: {err}", cmd[0]))
+        }
     }
 }
 
@@ -2527,8 +2537,11 @@ fn uninstall_macos_hotkey_listener() -> Result<()> {
     let _ = std::process::Command::new("launchctl")
         .args(["unload", plist_path.to_string_lossy().as_ref()])
         .status();
-    std::fs::remove_file(&plist_path).context("failed to remove alphacode hotkey LaunchAgent plist")?;
-    crate::alphacode_logging::info("Removed macOS launch-hotkey LaunchAgent (launch_hotkeys.enabled = false)");
+    std::fs::remove_file(&plist_path)
+        .context("failed to remove alphacode hotkey LaunchAgent plist")?;
+    crate::alphacode_logging::info(
+        "Removed macOS launch-hotkey LaunchAgent (launch_hotkeys.enabled = false)",
+    );
     Ok(())
 }
 
@@ -2599,7 +2612,9 @@ pub fn reinstall_launch_hotkeys_after_config_change() {
                 "Reinstalled launch hotkeys after config change for {}",
                 terminal.label()
             )),
-            Err(err) => crate::alphacode_logging::warn(&format!("failed to reinstall launch hotkeys: {err}")),
+            Err(err) => crate::alphacode_logging::warn(&format!(
+                "failed to reinstall launch hotkeys: {err}"
+            )),
         }
     }
 
@@ -2629,4 +2644,3 @@ pub fn reinstall_launch_hotkeys_after_config_change() {
         }
     }
 }
-

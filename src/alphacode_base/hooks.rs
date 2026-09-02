@@ -385,7 +385,10 @@ mod tests {
             ),
         ]);
         crate::alphacode_core::env::set_var("ALPHACODE_HOOK_PRE_TOOL", hook);
-        crate::alphacode_core::env::set_var("ALPHACODE_HOOK_PRE_TOOL_TIMEOUT_MS", timeout_ms.to_string());
+        crate::alphacode_core::env::set_var(
+            "ALPHACODE_HOOK_PRE_TOOL_TIMEOUT_MS",
+            timeout_ms.to_string(),
+        );
         reset
     }
 
@@ -490,7 +493,10 @@ mod tests {
         );
 
         let prev = std::env::var_os("ALPHACODE_HOOK_TURN_END");
-        crate::alphacode_core::env::set_var("ALPHACODE_HOOK_TURN_END", script.to_string_lossy().to_string());
+        crate::alphacode_core::env::set_var(
+            "ALPHACODE_HOOK_TURN_END",
+            script.to_string_lossy().to_string(),
+        );
 
         dispatch_observer(
             HookEvent::new("turn_end")

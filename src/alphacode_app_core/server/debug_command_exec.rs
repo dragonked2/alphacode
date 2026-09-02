@@ -2,11 +2,11 @@
 
 use super::debug_jobs::{DebugJob, maybe_start_async_debug_job};
 use super::{ServerIdentity, SessionControlHandle, SessionInterruptQueues};
+use crate::alphacode_agent_runtime::{InterruptSignal, SoftInterruptSource};
 use crate::alphacode_app_core::agent::Agent;
 use crate::alphacode_app_core::build;
 use crate::alphacode_app_core::mcp::McpConfig;
 use anyhow::Result;
-use crate::alphacode_agent_runtime::{InterruptSignal, SoftInterruptSource};
 use std::collections::{BTreeMap, HashMap};
 use std::sync::Arc;
 use std::time::Duration;
@@ -633,12 +633,12 @@ pub(super) async fn execute_debug_command(
 #[cfg(test)]
 mod tests {
     use super::{DebugInterruptContext, execute_debug_command};
+    use crate::alphacode_agent_runtime::InterruptSignal;
     use crate::alphacode_app_core::agent::Agent;
     use crate::alphacode_app_core::provider::{EventStream, Provider};
     use crate::alphacode_app_core::tool::Registry;
     use anyhow::Result;
     use async_trait::async_trait;
-    use crate::alphacode_agent_runtime::InterruptSignal;
     use std::collections::HashMap;
     use std::ffi::OsString;
     use std::sync::Arc;

@@ -4,7 +4,9 @@ use serde::{Deserialize, Serialize};
 use std::hash::{Hash, Hasher};
 use std::path::{Path, PathBuf};
 
-pub use crate::alphacode_task_types::{Goal, GoalMilestone, GoalScope, GoalStatus, GoalStep, GoalUpdate};
+pub use crate::alphacode_task_types::{
+    Goal, GoalMilestone, GoalScope, GoalStatus, GoalStep, GoalUpdate,
+};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum GoalDisplayMode {
@@ -520,11 +522,16 @@ fn goal_file(goal: &Goal, working_dir: Option<&Path>) -> Result<PathBuf> {
 }
 
 fn goal_file_in_dir(dir: &Path, id: &str) -> PathBuf {
-    dir.join(format!("{}.json", crate::alphacode_task_types::sanitize_goal_id(id)))
+    dir.join(format!(
+        "{}.json",
+        crate::alphacode_task_types::sanitize_goal_id(id)
+    ))
 }
 
 fn global_goals_dir() -> Result<PathBuf> {
-    Ok(crate::storage::alphacode_dir()?.join("goals").join("global"))
+    Ok(crate::storage::alphacode_dir()?
+        .join("goals")
+        .join("global"))
 }
 
 fn project_goals_dir(working_dir: Option<&Path>) -> Result<Option<PathBuf>> {
@@ -590,7 +597,11 @@ fn next_available_goal_id(
     let mut candidate = crate::alphacode_task_types::sanitize_goal_id(base);
     let mut idx = 2;
     while load_goal(&candidate, Some(scope), working_dir)?.is_some() {
-        candidate = format!("{}-{}", crate::alphacode_task_types::sanitize_goal_id(base), idx);
+        candidate = format!(
+            "{}-{}",
+            crate::alphacode_task_types::sanitize_goal_id(base),
+            idx
+        );
         idx += 1;
     }
     Ok(candidate)
@@ -708,4 +719,3 @@ fn goal_memory_content(goal: &Goal) -> String {
     }
     out
 }
-

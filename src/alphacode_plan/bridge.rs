@@ -8,7 +8,9 @@
 //! engine op, then lower the result back. This keeps a single source of truth and
 //! reuses the existing persistence/broadcast/scheduler machinery.
 
-use crate::alphacode_plan::dag::{HandoffArtifact, Mode, NodeKind, NodeOrigin, NodeStatus, TaskGraph, TaskNode};
+use crate::alphacode_plan::dag::{
+    HandoffArtifact, Mode, NodeKind, NodeOrigin, NodeStatus, TaskGraph, TaskNode,
+};
 use crate::alphacode_plan::{NodeMeta, PlanItem, VersionedPlan};
 
 /// Parse a mode string ("deep"/"light"); unknown values fall back to light.

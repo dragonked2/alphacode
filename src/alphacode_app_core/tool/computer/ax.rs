@@ -10,8 +10,8 @@
 //! these paths; the action verbs accept them.
 
 use super::osa;
-use anyhow::{Result, bail};
 use crate::alphacode_tool_types::ToolOutput;
+use anyhow::{Result, bail};
 use serde::Deserialize;
 use serde_json::json;
 use std::time::Duration;

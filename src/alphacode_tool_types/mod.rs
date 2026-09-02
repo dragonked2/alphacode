@@ -91,9 +91,9 @@ pub fn resolve_tool_name(name: &str) -> &str {
         // grep mode accepts `pattern` as an alias for `query`, so these calls
         // work as-is.
         "grep" | "file_grep" => "agentgrep",
-"skill" | "Skill" => "skill_manage",
-"todoread" | "todowrite" | "todo_read" | "todo_write" | "todos" => "todo",
-"diagnose" | "health" | "diagnostics" => "doctor",
+        "skill" | "Skill" => "skill_manage",
+        "todoread" | "todowrite" | "todo_read" | "todo_write" | "todos" => "todo",
+        "diagnose" | "health" | "diagnostics" => "doctor",
         // The Anthropic OAuth surface advertises PascalCase tool names and
         // reverse-maps them provider-side for top-level calls, but nested
         // `batch` subcall names bypass that mapping and resolve here (issue

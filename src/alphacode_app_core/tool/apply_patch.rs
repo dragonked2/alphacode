@@ -1,5 +1,5 @@
-use super::{Tool, ToolContext, ToolOutput};
 use super::diff_utils::{build_file_touch_preview, generate_diff_summary};
+use super::{Tool, ToolContext, ToolOutput};
 use crate::alphacode_app_core::bus::{Bus, BusEvent, FileOp, FileTouch};
 use anyhow::Result;
 use async_trait::async_trait;
@@ -112,8 +112,9 @@ impl Tool for ApplyPatchTool {
                     // cover this path, so apply the same absolute deny here
                     // (#604). Only the catastrophic tier: ordinary file deletes
                     // are this tool's normal job.
-                    let risk_ctx =
-                        crate::alphacode_command_risk::RiskContext::from_env(ctx.working_dir.clone());
+                    let risk_ctx = crate::alphacode_command_risk::RiskContext::from_env(
+                        ctx.working_dir.clone(),
+                    );
                     if crate::alphacode_command_risk::is_catastrophic_target(&resolved, &risk_ctx) {
                         results.push(format!(
                             "✗ {}: refused, this path is protected and must never \
@@ -266,8 +267,6 @@ fn publish_file_touch(
     let _ = display_path;
 }
 
-
-
 async fn apply_update_chunks(path: &Path, chunks: &[UpdateFileChunk]) -> Result<(String, String)> {
     let original_contents = tokio::fs::read_to_string(path).await?;
     let mut original_lines: Vec<String> = original_contents.split('\n').map(String::from).collect();
@@ -284,8 +283,6 @@ async fn apply_update_chunks(path: &Path, chunks: &[UpdateFileChunk]) -> Result<
     }
     Ok((original_contents, new_lines.join("\n")))
 }
-
-
 
 fn compute_replacements(
     original_lines: &[String],
@@ -588,4 +585,3 @@ fn parse_apply_patch(input: &str) -> Result<Vec<PatchHunk>> {
 
     Ok(hunks)
 }
-

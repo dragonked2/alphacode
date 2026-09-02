@@ -524,13 +524,13 @@ impl SkillRegistry {
     /// Returns a map of relative path -> file content.
     fn load_reference_files(skill_dir: &Path) -> HashMap<String, String> {
         let mut refs = HashMap::new();
-        
+
         // Load files from references/ subdirectory
         let references_dir = skill_dir.join("references");
         if references_dir.is_dir() {
             Self::collect_md_files(&references_dir, skill_dir, &mut refs);
         }
-        
+
         // Load .md files from skill root (not SKILL.md itself)
         if let Ok(entries) = std::fs::read_dir(skill_dir) {
             for entry in entries.flatten() {
@@ -545,10 +545,10 @@ impl SkillRegistry {
                 }
             }
         }
-        
+
         refs
     }
-    
+
     /// Recursively collect .md files from a directory
     fn collect_md_files(dir: &Path, base: &Path, out: &mut HashMap<String, String>) {
         if let Ok(entries) = std::fs::read_dir(dir) {
@@ -1075,7 +1075,7 @@ impl Skill {
             "# Skill: {}\n\n{}\n\n{}",
             self.name, self.description, self.content
         );
-        
+
         // Append reference files if any exist
         if !self.reference_files.is_empty() {
             prompt.push_str("\n\n---\n\n## Reference Files\n\n");
@@ -1085,7 +1085,7 @@ impl Skill {
                 prompt.push_str(&format!("- `{}`\n", name));
             }
         }
-        
+
         prompt
     }
 
@@ -1093,7 +1093,7 @@ impl Skill {
     pub fn get_reference(&self, name: &str) -> Option<&str> {
         self.reference_files.get(name).map(|s| s.as_str())
     }
-    
+
     /// List all available reference file names
     pub fn list_references(&self) -> Vec<&str> {
         self.reference_files.keys().map(|s| s.as_str()).collect()
@@ -1113,7 +1113,7 @@ impl Skill {
         let file_path = skill_dir.join(filename);
         Ok(std::fs::read_to_string(file_path)?)
     }
-    
+
     /// Resolve dynamic context injection markers (!`command`) in skill content.
     /// Returns the content with markers replaced by command output.
     /// Commands that fail are replaced with a warning comment.
@@ -1121,7 +1121,7 @@ impl Skill {
         let mut result = self.content.clone();
         let mut remaining = result.clone();
         result.clear();
-        
+
         const MARKER: &str = "!\u{60}"; // !` — backtick is one codepoint but the literal form
         // collides with the closing delimiter; use the unicode escape so the
         // string is unambiguous and not parsed as a multi-codepoint char
@@ -1157,7 +1157,9 @@ impl Skill {
                         let stderr = String::from_utf8_lossy(&output.stderr);
                         result.push_str(&format!(
                             "<!-- Command '{}' failed (exit {}): {} -->",
-                            command, output.status, stderr.trim()
+                            command,
+                            output.status,
+                            stderr.trim()
                         ));
                     }
                     Err(e) => {
@@ -1172,7 +1174,7 @@ impl Skill {
                 result.push_str("!`");
             }
         }
-        
+
         result.push_str(&remaining);
         result
     }

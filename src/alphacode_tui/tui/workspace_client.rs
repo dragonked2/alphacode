@@ -292,4 +292,3 @@ mod tests {
         assert!(summary.contains("Workspace mode: on"));
     }
 }
-

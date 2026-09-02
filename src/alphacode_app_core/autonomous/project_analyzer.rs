@@ -206,7 +206,14 @@ fn index_rust(content: &str) -> Vec<IndexedSymbol> {
         }
         // impl blocks (just record the type name)
         else if let Some(rest) = trimmed.strip_prefix("impl ") {
-            let name = rest.split('<').next().unwrap_or("").trim().trim_end_matches('{').trim().to_string();
+            let name = rest
+                .split('<')
+                .next()
+                .unwrap_or("")
+                .trim()
+                .trim_end_matches('{')
+                .trim()
+                .to_string();
             if !name.is_empty() {
                 symbols.push(IndexedSymbol {
                     name,
@@ -224,7 +231,8 @@ fn extract_rust_symbol(line: &str, prefix: &str) -> Option<String> {
     let after = line.find(prefix)?;
     let rest = &line[after + prefix.len()..];
     let name = rest
-        .split(|c: char| c.is_whitespace() || c == '<' || c == '(' || c == '{').find(|s| !s.is_empty())?;
+        .split(|c: char| c.is_whitespace() || c == '<' || c == '(' || c == '{')
+        .find(|s| !s.is_empty())?;
     let name = name.trim_start_matches("pub ");
     let name = name.trim_start_matches("async ");
     if name.is_empty() || name.contains(',') || name == "pub" {
@@ -248,7 +256,14 @@ fn index_python(content: &str) -> Vec<IndexedSymbol> {
                 });
             }
         } else if let Some(rest) = trimmed.strip_prefix("class ") {
-            let name = rest.split('(').next().unwrap_or("").split(':').next().unwrap_or("").trim();
+            let name = rest
+                .split('(')
+                .next()
+                .unwrap_or("")
+                .split(':')
+                .next()
+                .unwrap_or("")
+                .trim();
             if !name.is_empty() {
                 symbols.push(IndexedSymbol {
                     name: name.to_string(),
@@ -261,12 +276,7 @@ fn index_python(content: &str) -> Vec<IndexedSymbol> {
     symbols
 }
 
-fn collect_source_files(
-    dir: &Path,
-    out: &mut Vec<PathBuf>,
-    _root: &Path,
-    depth: usize,
-) {
+fn collect_source_files(dir: &Path, out: &mut Vec<PathBuf>, _root: &Path, depth: usize) {
     if depth > 15 {
         return;
     }

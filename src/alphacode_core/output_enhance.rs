@@ -136,38 +136,73 @@ pub const RESET: &str = "\x1b[0m";
 /// "UTF-8" or "utf8" we use Unicode, otherwise ASCII.
 pub mod box_chars {
     pub struct Chars {
-        pub h: char, pub v: char,
-        pub tl: char, pub tr: char, pub bl: char, pub br: char,
-        pub t_down: char, pub t_up: char, pub t_left: char, pub t_right: char,
-        pub h_thick: char, pub v_thick: char,
-        pub block_full: char, pub block_light: char,
+        pub h: char,
+        pub v: char,
+        pub tl: char,
+        pub tr: char,
+        pub bl: char,
+        pub br: char,
+        pub t_down: char,
+        pub t_up: char,
+        pub t_left: char,
+        pub t_right: char,
+        pub h_thick: char,
+        pub v_thick: char,
+        pub block_full: char,
+        pub block_light: char,
     }
 
     const UNICODE: Chars = Chars {
-        h: '─', v: '│',
-        tl: '┌', tr: '┐', bl: '└', br: '┘',
-        t_down: '┬', t_up: '┴', t_left: '┤', t_right: '├',
-        h_thick: '━', v_thick: '┃',
-        block_full: '█', block_light: '░',
+        h: '─',
+        v: '│',
+        tl: '┌',
+        tr: '┐',
+        bl: '└',
+        br: '┘',
+        t_down: '┬',
+        t_up: '┴',
+        t_left: '┤',
+        t_right: '├',
+        h_thick: '━',
+        v_thick: '┃',
+        block_full: '█',
+        block_light: '░',
     };
 
     const ASCII: Chars = Chars {
-        h: '-', v: '|',
-        tl: '+', tr: '+', bl: '+', br: '+',
-        t_down: '+', t_up: '+', t_left: '+', t_right: '+',
-        h_thick: '=', v_thick: '#',
-        block_full: '#', block_light: '.',
+        h: '-',
+        v: '|',
+        tl: '+',
+        tr: '+',
+        bl: '+',
+        br: '+',
+        t_down: '+',
+        t_up: '+',
+        t_left: '+',
+        t_right: '+',
+        h_thick: '=',
+        v_thick: '#',
+        block_full: '#',
+        block_light: '.',
     };
 
     pub fn pick() -> &'static Chars {
         use std::sync::OnceLock;
         static CACHE: OnceLock<&'static Chars> = OnceLock::new();
         CACHE.get_or_init(|| {
-            let unicode = std::env::var("LANG").map(|s| s.to_lowercase().contains("utf")).unwrap_or(false)
-                || std::env::var("LC_ALL").map(|s| s.to_lowercase().contains("utf")).unwrap_or(false)
-                || std::env::var("LC_CTYPE").map(|s| s.to_lowercase().contains("utf")).unwrap_or(false)
-                || std::env::var("TERM").map(|s| s.to_lowercase().contains("utf")).unwrap_or(false)
-                || cfg!(windows);  // Windows console renders box chars fine
+            let unicode = std::env::var("LANG")
+                .map(|s| s.to_lowercase().contains("utf"))
+                .unwrap_or(false)
+                || std::env::var("LC_ALL")
+                    .map(|s| s.to_lowercase().contains("utf"))
+                    .unwrap_or(false)
+                || std::env::var("LC_CTYPE")
+                    .map(|s| s.to_lowercase().contains("utf"))
+                    .unwrap_or(false)
+                || std::env::var("TERM")
+                    .map(|s| s.to_lowercase().contains("utf"))
+                    .unwrap_or(false)
+                || cfg!(windows); // Windows console renders box chars fine
             if unicode { &UNICODE } else { &ASCII }
         })
     }
@@ -221,19 +256,29 @@ pub struct StatusPrefix {
 }
 
 pub const PREFIX_OK: StatusPrefix = StatusPrefix {
-    emoji: "✓", ascii: "[OK]", token: PaletteToken::Success,
+    emoji: "✓",
+    ascii: "[OK]",
+    token: PaletteToken::Success,
 };
 pub const PREFIX_WARN: StatusPrefix = StatusPrefix {
-    emoji: "⚠", ascii: "[WARN]", token: PaletteToken::Warn,
+    emoji: "⚠",
+    ascii: "[WARN]",
+    token: PaletteToken::Warn,
 };
 pub const PREFIX_ERROR: StatusPrefix = StatusPrefix {
-    emoji: "✗", ascii: "[ERR]", token: PaletteToken::Error,
+    emoji: "✗",
+    ascii: "[ERR]",
+    token: PaletteToken::Error,
 };
 pub const PREFIX_INFO: StatusPrefix = StatusPrefix {
-    emoji: "ℹ", ascii: "[INFO]", token: PaletteToken::Info,
+    emoji: "ℹ",
+    ascii: "[INFO]",
+    token: PaletteToken::Info,
 };
 pub const PREFIX_DEBUG: StatusPrefix = StatusPrefix {
-    emoji: "·", ascii: "[DBG]", token: PaletteToken::Muted,
+    emoji: "·",
+    ascii: "[DBG]",
+    token: PaletteToken::Muted,
 };
 
 /// Render a status line: `prefix message`. Respects emoji mode and
@@ -241,7 +286,11 @@ pub const PREFIX_DEBUG: StatusPrefix = StatusPrefix {
 pub fn status_line(prefix: StatusPrefix, message: &str) -> String {
     let (r, g, b) = pick_for_terminal_bg(prefix.token);
     let color = rgb_escape(r, g, b, true);
-    let glyph = if emoji_enabled() { prefix.emoji } else { prefix.ascii };
+    let glyph = if emoji_enabled() {
+        prefix.emoji
+    } else {
+        prefix.ascii
+    };
     format!("{}{}{} {}", color, glyph, RESET, terminal_text(message))
 }
 
@@ -402,7 +451,11 @@ pub const SPINNER_ASCII: &[&str] = &["-", "\\", "|", "/"];
 
 /// Return the current spinner frame for the given tick.
 pub fn spinner_frame(tick: usize) -> &'static str {
-    let frames = if emoji_enabled() { SPINNER_EMOJI } else { SPINNER_ASCII };
+    let frames = if emoji_enabled() {
+        SPINNER_EMOJI
+    } else {
+        SPINNER_ASCII
+    };
     frames[tick % frames.len()]
 }
 

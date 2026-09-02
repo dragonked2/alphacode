@@ -484,9 +484,15 @@ pub fn apply_runtime_env() {
     );
     crate::alphacode_core::env::set_var("ALPHACODE_OPENROUTER_API_KEY_NAME", ALPHACODE_API_KEY_ENV);
     crate::alphacode_core::env::set_var("ALPHACODE_OPENROUTER_ENV_FILE", ALPHACODE_ENV_FILE);
-    crate::alphacode_core::env::set_var("ALPHACODE_OPENROUTER_CACHE_NAMESPACE", ALPHACODE_CACHE_NAMESPACE);
+    crate::alphacode_core::env::set_var(
+        "ALPHACODE_OPENROUTER_CACHE_NAMESPACE",
+        ALPHACODE_CACHE_NAMESPACE,
+    );
     crate::alphacode_core::env::set_var("ALPHACODE_OPENROUTER_PROVIDER_FEATURES", "0");
-    crate::alphacode_core::env::set_var("ALPHACODE_OPENROUTER_TRANSPORT_STATE", "alphacode-subscription");
+    crate::alphacode_core::env::set_var(
+        "ALPHACODE_OPENROUTER_TRANSPORT_STATE",
+        "alphacode-subscription",
+    );
     crate::alphacode_core::env::remove_var("ALPHACODE_OPENROUTER_ALLOW_NO_AUTH");
     crate::alphacode_core::env::remove_var("ALPHACODE_OPENROUTER_PROVIDER");
     crate::alphacode_core::env::remove_var("ALPHACODE_OPENROUTER_NO_FALLBACK");
@@ -649,8 +655,14 @@ mod tests {
         assert_eq!(AlphacodeTier::parse(" Pro "), Some(AlphacodeTier::Pro));
         assert_eq!(AlphacodeTier::parse("MAX"), Some(AlphacodeTier::Max));
         assert_eq!(AlphacodeTier::parse(" ultra "), Some(AlphacodeTier::Ultra));
-        assert_eq!(AlphacodeTier::parse(" Flagship "), Some(AlphacodeTier::Flagship));
-        assert_eq!(AlphacodeTier::parse(" Solo "), Some(AlphacodeTier::Flagship));
+        assert_eq!(
+            AlphacodeTier::parse(" Flagship "),
+            Some(AlphacodeTier::Flagship)
+        );
+        assert_eq!(
+            AlphacodeTier::parse(" Solo "),
+            Some(AlphacodeTier::Flagship)
+        );
         assert_eq!(AlphacodeTier::parse("starter"), None);
     }
 
@@ -694,7 +706,10 @@ mod tests {
         let _guard = crate::storage::lock_test_env();
         crate::alphacode_core::env::remove_var(ALPHACODE_TIER_ENV);
         let temp = tempfile::tempdir().expect("temp home");
-        crate::alphacode_core::env::set_var("ALPHACODE_HOME", temp.path().to_string_lossy().to_string());
+        crate::alphacode_core::env::set_var(
+            "ALPHACODE_HOME",
+            temp.path().to_string_lossy().to_string(),
+        );
 
         assert_eq!(cached_tier(), None);
         assert_eq!(effective_tier(), AlphacodeTier::Plus);

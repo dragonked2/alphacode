@@ -81,7 +81,8 @@ pub(crate) fn format_menubar_summary(counts: SessionCounts) -> String {
 /// display title explains the work. Do not repeat the generated animal name.
 #[cfg(any(test, target_os = "macos"))]
 pub(crate) fn format_session_menu_item_title(session_id: &str, streaming: bool) -> String {
-    let display_title = crate::alphacode_base::process_title::terminal_display_title_for_id(session_id);
+    let display_title =
+        crate::alphacode_base::process_title::terminal_display_title_for_id(session_id);
     format_session_menu_item_title_with_display(session_id, display_title.as_deref(), streaming)
 }
 
@@ -93,7 +94,12 @@ fn format_session_menu_item_title_with_display(
 ) -> String {
     let display = crate::id::extract_session_name(session_id).unwrap_or(session_id);
     let icon = crate::id::session_icon(display);
-    let label = crate::alphacode_base::process_title::terminal_window_title(icon, display_title, None, false);
+    let label = crate::alphacode_base::process_title::terminal_window_title(
+        icon,
+        display_title,
+        None,
+        false,
+    );
     if streaming {
         format!("{label} · streaming")
     } else {
@@ -232,7 +238,9 @@ fn running_in_menubar_sandbox() -> bool {
         env_truthy("ALPHACODE_TEST_SESSION"),
         env_truthy("ALPHACODE_TEMP_SERVER"),
         std::env::var_os("ALPHACODE_HOME").as_deref(),
-        dirs::home_dir().map(|home| home.join(".alphacode")).as_deref(),
+        dirs::home_dir()
+            .map(|home| home.join(".alphacode"))
+            .as_deref(),
     )
 }
 
@@ -440,7 +448,8 @@ mod macos {
         // to spawn from sandboxes) plus the global singleton lock below, but a
         // stray `alphacode menubar` invoked directly inside a test harness should
         // still never realize a status item.
-        if super::env_truthy("ALPHACODE_TEST_SESSION") || super::env_truthy("ALPHACODE_TEMP_SERVER") {
+        if super::env_truthy("ALPHACODE_TEST_SESSION") || super::env_truthy("ALPHACODE_TEMP_SERVER")
+        {
             return;
         }
 

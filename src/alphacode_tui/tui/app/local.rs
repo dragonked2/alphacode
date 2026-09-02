@@ -220,7 +220,9 @@ pub(super) fn handle_bus_event(
             app.session.model = Some(model.clone());
             let _ = app.session.save();
             if !app.auth_catalog_refresh_pending {
-                app.push_display_message(crate::alphacode_tui::tui::DisplayMessage::system(message));
+                app.push_display_message(crate::alphacode_tui::tui::DisplayMessage::system(
+                    message,
+                ));
             }
             app.set_status_notice(format!("Model → {}", model));
             if open_picker {
@@ -518,4 +520,3 @@ pub(super) fn finish_turn(app: &mut App) {
     }
     let _ = super::commands::maybe_begin_pending_local_transfer(app);
 }
-

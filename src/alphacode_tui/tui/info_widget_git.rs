@@ -16,7 +16,10 @@ pub(super) fn render_git_widget(data: &InfoWidgetData, inner: Rect) -> Vec<Line<
     let mut lines: Vec<Line> = Vec::new();
 
     let mut parts: Vec<Span> = Vec::new();
-    parts.push(Span::styled(" \u{2442} ", Style::default().fg(rgb(240, 160, 60))));
+    parts.push(Span::styled(
+        " \u{2442} ",
+        Style::default().fg(rgb(240, 160, 60)),
+    ));
 
     // Measure what gets pushed, not what was counted in `char`s. The stats are
     // ASCII today, but budgeting in columns keeps the invariant uniform.
@@ -221,8 +224,10 @@ mod tests {
         let text = line_text(&render_git_compact(&clean, 40));
         assert!(text.contains("~1"));
         for absent in ["↑", "↓", "+", "?"] {
-            assert!(!text.contains(absent), "{absent} should not render: {text:?}");
+            assert!(
+                !text.contains(absent),
+                "{absent} should not render: {text:?}"
+            );
         }
     }
 }
-

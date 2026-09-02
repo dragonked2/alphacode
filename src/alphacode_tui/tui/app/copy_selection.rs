@@ -30,13 +30,17 @@ impl App {
         }
     }
 
-    pub(super) fn current_copy_selection_pane(&self) -> Option<crate::alphacode_tui::tui::CopySelectionPane> {
+    pub(super) fn current_copy_selection_pane(
+        &self,
+    ) -> Option<crate::alphacode_tui::tui::CopySelectionPane> {
         self.copy_selection_cursor
             .or(self.copy_selection_anchor)
             .map(|point| point.pane)
     }
 
-    pub(super) fn normalized_copy_selection(&self) -> Option<crate::alphacode_tui::tui::CopySelectionRange> {
+    pub(super) fn normalized_copy_selection(
+        &self,
+    ) -> Option<crate::alphacode_tui::tui::CopySelectionRange> {
         let anchor = self.copy_selection_anchor?;
         let cursor = self.copy_selection_cursor?;
         if anchor.pane != cursor.pane {
@@ -60,7 +64,10 @@ impl App {
         crate::alphacode_tui::tui::ui::copy_selection_text(range)
     }
 
-    fn line_text(pane: crate::alphacode_tui::tui::CopySelectionPane, abs_line: usize) -> Option<String> {
+    fn line_text(
+        pane: crate::alphacode_tui::tui::CopySelectionPane,
+        abs_line: usize,
+    ) -> Option<String> {
         match pane {
             crate::alphacode_tui::tui::CopySelectionPane::Chat => {
                 crate::alphacode_tui::tui::ui::copy_viewport_line_text(abs_line)
@@ -68,19 +75,30 @@ impl App {
             crate::alphacode_tui::tui::CopySelectionPane::SidePane => {
                 crate::alphacode_tui::tui::ui::side_pane_line_text(abs_line)
             }
-            crate::alphacode_tui::tui::CopySelectionPane::Input => crate::alphacode_tui::tui::ui::input_pane_line_text(abs_line),
+            crate::alphacode_tui::tui::CopySelectionPane::Input => {
+                crate::alphacode_tui::tui::ui::input_pane_line_text(abs_line)
+            }
         }
     }
 
-    fn line_width(pane: crate::alphacode_tui::tui::CopySelectionPane, abs_line: usize) -> Option<usize> {
+    fn line_width(
+        pane: crate::alphacode_tui::tui::CopySelectionPane,
+        abs_line: usize,
+    ) -> Option<usize> {
         Self::line_text(pane, abs_line).map(|text| UnicodeWidthStr::width(text.as_str()))
     }
 
     fn line_count(pane: crate::alphacode_tui::tui::CopySelectionPane) -> Option<usize> {
         match pane {
-            crate::alphacode_tui::tui::CopySelectionPane::Chat => crate::alphacode_tui::tui::ui::copy_viewport_line_count(),
-            crate::alphacode_tui::tui::CopySelectionPane::SidePane => crate::alphacode_tui::tui::ui::side_pane_line_count(),
-            crate::alphacode_tui::tui::CopySelectionPane::Input => crate::alphacode_tui::tui::ui::input_pane_line_count(),
+            crate::alphacode_tui::tui::CopySelectionPane::Chat => {
+                crate::alphacode_tui::tui::ui::copy_viewport_line_count()
+            }
+            crate::alphacode_tui::tui::CopySelectionPane::SidePane => {
+                crate::alphacode_tui::tui::ui::side_pane_line_count()
+            }
+            crate::alphacode_tui::tui::CopySelectionPane::Input => {
+                crate::alphacode_tui::tui::ui::input_pane_line_count()
+            }
         }
     }
 
@@ -118,8 +136,14 @@ impl App {
             .or(self.copy_selection_anchor)
             .and_then(Self::clamp_point)
             .or_else(|| Self::first_visible_copy_point(self.preferred_copy_pane()))
-            .or_else(|| Self::first_visible_copy_point(crate::alphacode_tui::tui::CopySelectionPane::Chat))
-            .or_else(|| Self::first_visible_copy_point(crate::alphacode_tui::tui::CopySelectionPane::SidePane))
+            .or_else(|| {
+                Self::first_visible_copy_point(crate::alphacode_tui::tui::CopySelectionPane::Chat)
+            })
+            .or_else(|| {
+                Self::first_visible_copy_point(
+                    crate::alphacode_tui::tui::CopySelectionPane::SidePane,
+                )
+            })
     }
 
     fn note_copy_selection_activity(&mut self, pane: crate::alphacode_tui::tui::CopySelectionPane) {
@@ -156,7 +180,11 @@ impl App {
         self.copy_selection_goal_column = Some(point.column);
     }
 
-    fn update_selection_with_point(&mut self, point: crate::alphacode_tui::tui::CopySelectionPoint, extend: bool) {
+    fn update_selection_with_point(
+        &mut self,
+        point: crate::alphacode_tui::tui::CopySelectionPoint,
+        extend: bool,
+    ) {
         let Some(point) = Self::clamp_point(point) else {
             return;
         };
@@ -299,10 +327,11 @@ impl App {
     }
 
     pub(super) fn select_chat_viewport_context(&mut self) -> bool {
-        let (visible_start, visible_end) = match crate::alphacode_tui::tui::ui::copy_viewport_visible_range() {
-            Some(range) => range,
-            None => return false,
-        };
+        let (visible_start, visible_end) =
+            match crate::alphacode_tui::tui::ui::copy_viewport_visible_range() {
+                Some(range) => range,
+                None => return false,
+            };
         let Some(line_count) = crate::alphacode_tui::tui::ui::copy_viewport_line_count() else {
             return false;
         };
@@ -443,7 +472,9 @@ impl App {
             return false;
         }
         // Extend the selection to the current edge line, then scroll once more.
-        if let Some(point) = crate::alphacode_tui::tui::ui::copy_pane_autoscroll_edge_point(pane, upward) {
+        if let Some(point) =
+            crate::alphacode_tui::tui::ui::copy_pane_autoscroll_edge_point(pane, upward)
+        {
             self.update_selection_with_point(point, true);
         }
         self.scroll_copy_selection_pane(pane, upward);
@@ -534,7 +565,11 @@ impl App {
                 // like dragging a selection past the edge of a browser window.
                 if let Some(pane) = active_pane
                     && let Some((edge_point, upward)) =
-                        crate::alphacode_tui::tui::ui::copy_pane_vertical_edge_point(pane, mouse.column, mouse.row)
+                        crate::alphacode_tui::tui::ui::copy_pane_vertical_edge_point(
+                            pane,
+                            mouse.column,
+                            mouse.row,
+                        )
                 {
                     self.update_selection_with_point(edge_point, true);
                     self.scroll_copy_selection_pane(pane, upward);
@@ -548,7 +583,11 @@ impl App {
                 // in-bounds line edge so the boundary line is fully selected,
                 // just like native terminal/browser selection.
                 let resolved = active_pane.and_then(|pane| {
-                    crate::alphacode_tui::tui::ui::copy_pane_drag_point(pane, mouse.column, mouse.row)
+                    crate::alphacode_tui::tui::ui::copy_pane_drag_point(
+                        pane,
+                        mouse.column,
+                        mouse.row,
+                    )
                 });
                 if let Some(point) = resolved.filter(|point| Some(point.pane) == active_pane) {
                     self.update_selection_with_point(point, true);
@@ -578,7 +617,11 @@ impl App {
                 self.copy_selection_dragging = false;
                 let release_pane = self.current_copy_selection_pane();
                 let resolved = release_pane.and_then(|pane| {
-                    crate::alphacode_tui::tui::ui::copy_pane_drag_point(pane, mouse.column, mouse.row)
+                    crate::alphacode_tui::tui::ui::copy_pane_drag_point(
+                        pane,
+                        mouse.column,
+                        mouse.row,
+                    )
                 });
                 if let Some(point) = resolved.filter(|point| Some(point.pane) == release_pane) {
                     self.update_selection_with_point(point, true);
@@ -601,7 +644,9 @@ impl App {
                 // The composer is not wheel-scrollable: let wheel events over it
                 // fall through to the normal chat scroll handling.
                 point
-                    .filter(|point| point.pane != crate::alphacode_tui::tui::CopySelectionPane::Input)
+                    .filter(|point| {
+                        point.pane != crate::alphacode_tui::tui::CopySelectionPane::Input
+                    })
                     .map(|point| self.scroll_copy_selection_pane(point.pane, true))
                     .or_else(|| {
                         self.copy_selection_dragging
@@ -618,7 +663,9 @@ impl App {
                     return None;
                 }
                 point
-                    .filter(|point| point.pane != crate::alphacode_tui::tui::CopySelectionPane::Input)
+                    .filter(|point| {
+                        point.pane != crate::alphacode_tui::tui::CopySelectionPane::Input
+                    })
                     .map(|point| self.scroll_copy_selection_pane(point.pane, false))
                     .or_else(|| {
                         self.copy_selection_dragging
@@ -631,4 +678,3 @@ impl App {
         }
     }
 }
-

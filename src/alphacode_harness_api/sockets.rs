@@ -99,7 +99,10 @@ mod tests {
     #[test]
     fn socket_names_are_stable() {
         assert_eq!(
-            runtime_dir().join("alphacode-api.sock").file_name().unwrap(),
+            runtime_dir()
+                .join("alphacode-api.sock")
+                .file_name()
+                .unwrap(),
             "alphacode-api.sock"
         );
     }

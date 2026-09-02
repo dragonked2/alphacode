@@ -147,8 +147,10 @@ pub(super) fn present_swarm_notification(
         let tldr = tldr.trim();
         if !tldr.is_empty() && !presentation.message.trim().is_empty() {
             presentation.status_notice = format!("{} · {}", presentation.status_notice, tldr);
-            presentation.message =
-                crate::alphacode_tui_messages::encode_collapsible_swarm_content(tldr, &presentation.message);
+            presentation.message = crate::alphacode_tui_messages::encode_collapsible_swarm_content(
+                tldr,
+                &presentation.message,
+            );
         }
     }
     presentation
@@ -344,8 +346,9 @@ mod tests {
             false,
         );
 
-        let parsed = crate::alphacode_tui_messages::parse_collapsible_swarm_content(&presentation.message)
-            .expect("tldr message should encode collapsible content");
+        let parsed =
+            crate::alphacode_tui_messages::parse_collapsible_swarm_content(&presentation.message)
+                .expect("tldr message should encode collapsible content");
         assert!(!parsed.expanded);
         assert_eq!(parsed.tldr, "fixed the flaky test");
         assert!(parsed.body.contains("race in the setup helper"));
@@ -369,7 +372,8 @@ mod tests {
             false,
         );
         assert!(
-            crate::alphacode_tui_messages::parse_collapsible_swarm_content(&presentation.message).is_none()
+            crate::alphacode_tui_messages::parse_collapsible_swarm_content(&presentation.message)
+                .is_none()
         );
         assert_eq!(presentation.message, "short note");
     }
@@ -508,8 +512,9 @@ mod tests {
         );
 
         assert_eq!(presentation.title, "File activity · moss");
-        let parsed = crate::alphacode_tui_messages::parse_collapsible_swarm_content(&presentation.message)
-            .expect("file activity with details should be collapsible");
+        let parsed =
+            crate::alphacode_tui_messages::parse_collapsible_swarm_content(&presentation.message)
+                .expect("file activity with details should be collapsible");
         assert_eq!(
             parsed.tldr,
             "…/alphacode/src/tool/communicate.rs · Edited lines 323-348 (1 occurrence)"
@@ -542,8 +547,9 @@ mod tests {
         );
 
         assert_eq!(presentation.title, "File activity · moss");
-        let parsed = crate::alphacode_tui_messages::parse_collapsible_swarm_content(&presentation.message)
-            .expect("compact mode should retain collapsible details");
+        let parsed =
+            crate::alphacode_tui_messages::parse_collapsible_swarm_content(&presentation.message)
+                .expect("compact mode should retain collapsible details");
         assert_eq!(
             parsed.tldr,
             "…/alphacode/src/tool/communicate.rs · Edited lines 323-348 (1 occurrence)"
@@ -556,4 +562,3 @@ mod tests {
         );
     }
 }
-

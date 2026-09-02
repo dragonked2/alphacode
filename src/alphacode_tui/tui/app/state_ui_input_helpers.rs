@@ -42,7 +42,10 @@ const REGISTERED_COMMANDS: &[RegisteredCommand] = &[
     RegisteredCommand::public("/commands", "Alias for /help"),
     RegisteredCommand::public("/model", "List or switch models"),
     RegisteredCommand::public("/models", "Alias for /model"),
-    RegisteredCommand::public("/set model", "Switch model (e.g. /set model qwen/qwen3.8-max-free)"),
+    RegisteredCommand::public(
+        "/set model",
+        "Switch model (e.g. /set model qwen/qwen3.8-max-free)",
+    ),
     RegisteredCommand::public(
         "/provider-test-coverage",
         "Show live-test evidence for the current provider/model",
@@ -1372,7 +1375,9 @@ impl App {
     /// the active guided flow phase. Defaults to the starter suggestion cards.
     pub fn onboarding_welcome_kind(&self) -> crate::alphacode_tui::tui::OnboardingWelcomeKind {
         use crate::alphacode_tui::tui::OnboardingWelcomeKind;
-        use crate::alphacode_tui::tui::app::onboarding_flow::{OnboardingPhase, SummaryPill, TelemetryLevel};
+        use crate::alphacode_tui::tui::app::onboarding_flow::{
+            OnboardingPhase, SummaryPill, TelemetryLevel,
+        };
         match self.onboarding_phase() {
             Some(OnboardingPhase::Login { import }) => {
                 let prompt = import.as_ref().map(|review| {
@@ -1392,14 +1397,26 @@ impl App {
                         continue_focused: review.continue_focused,
                         choosing: review.choosing,
                         summary_pill: match review.summary_pill {
-                            SummaryPill::Continue => crate::alphacode_tui::tui::ImportSummaryPill::Continue,
-                            SummaryPill::ImportLess => crate::alphacode_tui::tui::ImportSummaryPill::ImportLess,
-                            SummaryPill::Telemetry => crate::alphacode_tui::tui::ImportSummaryPill::Telemetry,
+                            SummaryPill::Continue => {
+                                crate::alphacode_tui::tui::ImportSummaryPill::Continue
+                            }
+                            SummaryPill::ImportLess => {
+                                crate::alphacode_tui::tui::ImportSummaryPill::ImportLess
+                            }
+                            SummaryPill::Telemetry => {
+                                crate::alphacode_tui::tui::ImportSummaryPill::Telemetry
+                            }
                         },
                         telemetry: review.telemetry.map(|level| match level {
-                            TelemetryLevel::Everything => crate::alphacode_tui::tui::TelemetryChoice::Everything,
-                            TelemetryLevel::NoContent => crate::alphacode_tui::tui::TelemetryChoice::NoContent,
-                            TelemetryLevel::Nothing => crate::alphacode_tui::tui::TelemetryChoice::Nothing,
+                            TelemetryLevel::Everything => {
+                                crate::alphacode_tui::tui::TelemetryChoice::Everything
+                            }
+                            TelemetryLevel::NoContent => {
+                                crate::alphacode_tui::tui::TelemetryChoice::NoContent
+                            }
+                            TelemetryLevel::Nothing => {
+                                crate::alphacode_tui::tui::TelemetryChoice::Nothing
+                            }
                         }),
                         telemetry_env_forced_off: crate::telemetry::opt_out_forced_by_env(),
                         checked_count: review.checked_count(),
@@ -1429,7 +1446,8 @@ impl App {
                 yes_highlighted,
                 shown_at,
             }) => {
-                let total = crate::alphacode_tui::tui::app::onboarding_flow::DECISION_TIMEOUT.as_secs();
+                let total =
+                    crate::alphacode_tui::tui::app::onboarding_flow::DECISION_TIMEOUT.as_secs();
                 let seconds_left = total.saturating_sub(shown_at.elapsed().as_secs());
                 OnboardingWelcomeKind::ContinuePrompt {
                     cli_label: cli.label().to_string(),
@@ -1971,7 +1989,10 @@ mod external_cli_suggestion_tests {
         let candidate = suggestion_candidate_from_jsonl(&path, "Codex", SystemTime::UNIX_EPOCH)
             .expect("candidate");
         assert_eq!(candidate.session_id.as_deref(), Some("sid"));
-        assert_eq!(candidate.working_dir.as_deref(), Some("/home/jeremy/alphacode"));
+        assert_eq!(
+            candidate.working_dir.as_deref(),
+            Some("/home/jeremy/alphacode")
+        );
         assert_eq!(candidate.context.as_deref(), Some("check in on alphacode"));
     }
 
@@ -2043,4 +2064,3 @@ mod external_cli_suggestion_tests {
         }
     }
 }
-

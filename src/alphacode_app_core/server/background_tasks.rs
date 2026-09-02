@@ -4,11 +4,11 @@ use super::{
     SessionAgents, SessionInterruptQueues, SwarmMember, fanout_session_event,
     queue_soft_interrupt_for_session,
 };
+use crate::alphacode_agent_runtime::SoftInterruptSource;
 use crate::alphacode_app_core::message::{
     format_background_task_notification_markdown, format_background_task_progress_markdown,
 };
 use crate::alphacode_app_core::protocol::{NotificationType, ServerEvent};
-use crate::alphacode_agent_runtime::SoftInterruptSource;
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::sync::Arc;
 use std::sync::atomic::AtomicU64;

@@ -43,7 +43,11 @@ pub(super) fn shorten_model_name(model: &str) -> String {
     if model.contains('/') {
         // Slashed ids (e.g. qwen/qwen3.8-max-free): show a compact form
         // like `qwen3.8max` instead of the full path.
-        return model.split('/').next_back().unwrap_or(model).replace('-', "");
+        return model
+            .split('/')
+            .next_back()
+            .unwrap_or(model)
+            .replace('-', "");
     }
     if model.contains("opus") {
         if model.contains("4-5") || model.contains("4.5") {

@@ -118,7 +118,8 @@ impl App {
         let include_samples = cfg.include_samples.unwrap_or(true);
 
         let saved_state = ScrollTestState::capture(self);
-        let saved_diagram_override = crate::alphacode_tui::tui::markdown::get_diagram_mode_override();
+        let saved_diagram_override =
+            crate::alphacode_tui::tui::markdown::get_diagram_mode_override();
         let saved_active_diagrams = crate::alphacode_tui::tui::mermaid::snapshot_active_diagrams();
         let was_visual_debug = crate::alphacode_tui::tui::visual_debug::is_enabled();
         crate::alphacode_tui::tui::visual_debug::enable();
@@ -312,7 +313,10 @@ impl App {
         }
     }
 
-    pub(in crate::alphacode_tui::tui::app) fn run_mermaid_ui_bench(&mut self, raw: Option<&str>) -> String {
+    pub(in crate::alphacode_tui::tui::app) fn run_mermaid_ui_bench(
+        &mut self,
+        raw: Option<&str>,
+    ) -> String {
         let cfg: MermaidUiBenchConfig = if let Some(raw) = raw {
             if raw.trim().is_empty() {
                 MermaidUiBenchConfig {
@@ -357,7 +361,8 @@ impl App {
         let sleep_between_frames_ms = cfg.sleep_between_frames_ms.unwrap_or(0).min(1_000);
 
         let saved_state = ScrollTestState::capture(self);
-        let saved_diagram_override = crate::alphacode_tui::tui::markdown::get_diagram_mode_override();
+        let saved_diagram_override =
+            crate::alphacode_tui::tui::markdown::get_diagram_mode_override();
         let saved_active_diagrams = crate::alphacode_tui::tui::mermaid::snapshot_active_diagrams();
         let was_visual_debug = crate::alphacode_tui::tui::visual_debug::is_enabled();
         crate::alphacode_tui::tui::visual_debug::enable();
@@ -418,7 +423,8 @@ impl App {
             let mut terminal = Terminal::new(backend)
                 .map_err(|e| format!("mermaid:ui-bench terminal error: {}", e))?;
 
-            let protocol = crate::alphacode_tui::tui::mermaid::protocol_type().map(|p| format!("{:?}", p));
+            let protocol =
+                crate::alphacode_tui::tui::mermaid::protocol_type().map(|p| format!("{:?}", p));
             let protocol_supported = protocol.is_some();
 
             let mut samples = Vec::with_capacity(frames.saturating_sub(warmup_frames));
@@ -572,7 +578,9 @@ impl App {
         let (frame_id, anomalies, image_regions, normalized_frame) = match frame {
             Some(ref frame) => {
                 let normalized = if include_frames {
-                    Some(crate::alphacode_tui::tui::visual_debug::normalize_frame(frame))
+                    Some(crate::alphacode_tui::tui::visual_debug::normalize_frame(
+                        frame,
+                    ))
                 } else {
                     None
                 };
@@ -594,7 +602,8 @@ impl App {
         };
 
         let mermaid_stats = crate::alphacode_tui::tui::mermaid::debug_stats_json();
-        let mermaid_state = serde_json::to_value(crate::alphacode_tui::tui::mermaid::debug_image_state()).ok();
+        let mermaid_state =
+            serde_json::to_value(crate::alphacode_tui::tui::mermaid::debug_image_state()).ok();
         let active_diagrams = crate::alphacode_tui::tui::mermaid::get_active_diagrams();
 
         let (diagram_area_capture, diagram_widget_present, diagram_mode_label) = match frame {
@@ -712,7 +721,10 @@ impl App {
         }))
     }
 
-    pub(in crate::alphacode_tui::tui::app) fn run_scroll_test(&mut self, raw: Option<&str>) -> String {
+    pub(in crate::alphacode_tui::tui::app) fn run_scroll_test(
+        &mut self,
+        raw: Option<&str>,
+    ) -> String {
         let cfg: ScrollTestConfig = if let Some(raw) = raw {
             if raw.trim().is_empty() {
                 ScrollTestConfig {
@@ -779,7 +791,8 @@ impl App {
         let diagram_override = cfg.diagram.as_deref();
 
         let saved_state = ScrollTestState::capture(self);
-        let saved_diagram_override = crate::alphacode_tui::tui::markdown::get_diagram_mode_override();
+        let saved_diagram_override =
+            crate::alphacode_tui::tui::markdown::get_diagram_mode_override();
         let saved_active_diagrams = crate::alphacode_tui::tui::mermaid::snapshot_active_diagrams();
         let was_visual_debug = crate::alphacode_tui::tui::visual_debug::is_enabled();
         crate::alphacode_tui::tui::visual_debug::enable();
@@ -829,7 +842,9 @@ impl App {
             Ok(t) => t,
             Err(e) => {
                 saved_state.restore(self);
-                crate::alphacode_tui::tui::markdown::set_diagram_mode_override(saved_diagram_override);
+                crate::alphacode_tui::tui::markdown::set_diagram_mode_override(
+                    saved_diagram_override,
+                );
                 crate::alphacode_tui::tui::mermaid::restore_active_diagrams(saved_active_diagrams);
                 if !was_visual_debug {
                     crate::alphacode_tui::tui::visual_debug::disable();
@@ -1005,7 +1020,10 @@ impl App {
         serde_json::to_string_pretty(&report).unwrap_or_else(|_| "{}".to_string())
     }
 
-    pub(in crate::alphacode_tui::tui::app) fn run_scroll_suite(&mut self, raw: Option<&str>) -> String {
+    pub(in crate::alphacode_tui::tui::app) fn run_scroll_suite(
+        &mut self,
+        raw: Option<&str>,
+    ) -> String {
         let cfg: ScrollSuiteConfig = if let Some(raw) = raw {
             if raw.trim().is_empty() {
                 ScrollSuiteConfig {
@@ -1132,7 +1150,10 @@ impl App {
     /// transcript. Renders the live app over an offscreen backend, advances the
     /// scroll position one content line at a time, captures the resulting widget
     /// placements, and runs the shared stability analyzer.
-    pub(in crate::alphacode_tui::tui::app) fn run_widget_stability(&mut self, raw: Option<&str>) -> String {
+    pub(in crate::alphacode_tui::tui::app) fn run_widget_stability(
+        &mut self,
+        raw: Option<&str>,
+    ) -> String {
         use crate::alphacode_tui::tui::info_widget_stability::{PlacedRect, intern_kind};
         use ratatui::Terminal;
         use ratatui::backend::TestBackend;
@@ -1205,25 +1226,26 @@ impl App {
                 break;
             }
             scroll_tops_abs.push(crate::alphacode_tui::tui::ui::last_resolved_chat_scroll() as i64);
-            let placed: Vec<PlacedRect> = match crate::alphacode_tui::tui::visual_debug::latest_frame() {
-                Some(frame) => frame
-                    .info_widgets
-                    .as_ref()
-                    .map(|info| {
-                        info.placements
-                            .iter()
-                            .map(|p| PlacedRect {
-                                kind: intern_kind(&p.kind),
-                                x: p.rect.x,
-                                y: p.rect.y,
-                                width: p.rect.width,
-                                height: p.rect.height,
-                            })
-                            .collect()
-                    })
-                    .unwrap_or_default(),
-                None => Vec::new(),
-            };
+            let placed: Vec<PlacedRect> =
+                match crate::alphacode_tui::tui::visual_debug::latest_frame() {
+                    Some(frame) => frame
+                        .info_widgets
+                        .as_ref()
+                        .map(|info| {
+                            info.placements
+                                .iter()
+                                .map(|p| PlacedRect {
+                                    kind: intern_kind(&p.kind),
+                                    x: p.rect.x,
+                                    y: p.rect.y,
+                                    width: p.rect.width,
+                                    height: p.rect.height,
+                                })
+                                .collect()
+                        })
+                        .unwrap_or_default(),
+                    None => Vec::new(),
+                };
             if include_frames {
                 frame_payloads.push(serde_json::json!({
                     "scroll_top": scroll_top,
@@ -1282,4 +1304,3 @@ impl App {
         serde_json::to_string_pretty(&out).unwrap_or_else(|_| "{}".to_string())
     }
 }
-

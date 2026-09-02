@@ -1,9 +1,9 @@
-use anyhow::Result;
-use chrono::Utc;
-use crossterm::event::{self, Event, KeyCode, KeyEventKind, KeyModifiers};
 use crate::alphacode_base::safety::{self, PermissionRequest, Urgency};
 use crate::alphacode_core::util::truncate_str;
 use crate::alphacode_tui_style::rgb;
+use anyhow::Result;
+use chrono::Utc;
+use crossterm::event::{self, Event, KeyCode, KeyEventKind, KeyModifiers};
 use ratatui::{
     Frame,
     layout::{Constraint, Direction, Layout, Rect},

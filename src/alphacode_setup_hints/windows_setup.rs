@@ -1,9 +1,9 @@
 use super::{SetupHintsState, StartupHints, read_choice};
-use crate::alphacode_setup_hints::windows_hotkeys::{self, WindowsHotkey};
-use anyhow::{Context, Result};
 use crate::alphacode_config_types::{LaunchHotkeyEntry, LaunchHotkeysConfig};
-use crate::{terminal_eprint as eprint, terminal_eprintln as eprintln};
+use crate::alphacode_setup_hints::windows_hotkeys::{self, WindowsHotkey};
 use crate::alphacode_storage as storage;
+use crate::{terminal_eprint as eprint, terminal_eprintln as eprintln};
+use anyhow::{Context, Result};
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 
@@ -88,20 +88,22 @@ fn resolve_windows_hotkeys() -> Vec<WindowsHotkey> {
     let last_repo = super::mac_hotkey_last_repo_file()
         .map(|p| p.to_string_lossy().into_owned())
         .unwrap_or_default();
-    crate::alphacode_setup_hints::launch_hotkeys::resolve_launch_hotkeys(&config, &exe_path, &last_dir, &last_repo)
-        .into_iter()
-        .filter_map(|entry| {
-            let chord = crate::alphacode_setup_hints::keymap::KeyChord::parse(&entry.chord)?;
-            let win_modifier = windows_hotkeys::raw_chord_uses_win_modifier(&entry.chord);
-            Some(WindowsHotkey {
-                chord,
-                win_modifier,
-                dir: entry.dir,
-                self_dev: entry.args.iter().any(|a| a == "self-dev"),
-                label: entry.label,
-            })
+    crate::alphacode_setup_hints::launch_hotkeys::resolve_launch_hotkeys(
+        &config, &exe_path, &last_dir, &last_repo,
+    )
+    .into_iter()
+    .filter_map(|entry| {
+        let chord = crate::alphacode_setup_hints::keymap::KeyChord::parse(&entry.chord)?;
+        let win_modifier = windows_hotkeys::raw_chord_uses_win_modifier(&entry.chord);
+        Some(WindowsHotkey {
+            chord,
+            win_modifier,
+            dir: entry.dir,
+            self_dev: entry.args.iter().any(|a| a == "self-dev"),
+            label: entry.label,
         })
-        .collect()
+    })
+    .collect()
 }
 
 pub(super) fn primary_hotkey_display() -> Option<(String, String)> {
@@ -307,7 +309,9 @@ fn launch_windows_hotkey(entry: &WindowsHotkey) -> Result<()> {
     let last_repo = super::mac_hotkey_last_repo_file()?
         .to_string_lossy()
         .into_owned();
-    let cwd = crate::alphacode_setup_hints::launch_hotkeys::resolve_target_dir(&entry.dir, &last_dir, &last_repo);
+    let cwd = crate::alphacode_setup_hints::launch_hotkeys::resolve_target_dir(
+        &entry.dir, &last_dir, &last_repo,
+    );
     let mut args = Vec::new();
     if entry.self_dev {
         args.push("self-dev".to_string());
@@ -317,10 +321,11 @@ fn launch_windows_hotkey(entry: &WindowsHotkey) -> Result<()> {
         .fresh_spawn()
         .kind("launch-hotkey");
 
-    let launched =
-        crate::alphacode_terminal_launch::spawn_command_in_new_terminal_with(&command, &cwd, |cmd| {
-            cmd.spawn().map(|_| ())
-        })?;
+    let launched = crate::alphacode_terminal_launch::spawn_command_in_new_terminal_with(
+        &command,
+        &cwd,
+        |cmd| cmd.spawn().map(|_| ()),
+    )?;
     if !launched {
         anyhow::bail!("no terminal found to launch alphacode");
     }
@@ -460,7 +465,9 @@ fn windows_native_hotkey_loop(entries: Vec<WindowsHotkey>) -> Result<()> {
             CloseHandle(mutex);
         }
         if retry_count >= 40 {
-            crate::alphacode_logging::warn("previous Windows launch-hotkey listener is still exiting");
+            crate::alphacode_logging::warn(
+                "previous Windows launch-hotkey listener is still exiting",
+            );
             return Ok(());
         }
         retry_count += 1;
@@ -608,7 +615,9 @@ pub(super) fn windows_launch_hotkeys_notice(state: &SetupHintsState) -> Option<S
         .into_iter()
         .filter(|hk| windows_hotkeys::hotkey_to_win32(hk).is_some())
         .map(|hk| {
-            let cwd = crate::alphacode_setup_hints::launch_hotkeys::resolve_target_dir(&hk.dir, &last_dir, &last_repo);
+            let cwd = crate::alphacode_setup_hints::launch_hotkeys::resolve_target_dir(
+                &hk.dir, &last_dir, &last_repo,
+            );
             super::LaunchHotkeyRow {
                 chord: hk.chord.canonical(),
                 display: windows_hotkeys::display_windows_hotkey(&hk),
@@ -641,7 +650,9 @@ pub(super) fn reinstall_windows_launch_hotkeys() {
         return;
     }
     match refresh_windows_launch_hotkeys() {
-        Ok(()) => crate::alphacode_logging::info("Reinstalled Windows launch hotkeys after config change"),
+        Ok(()) => {
+            crate::alphacode_logging::info("Reinstalled Windows launch hotkeys after config change")
+        }
         Err(err) => crate::alphacode_logging::warn(&format!(
             "failed to reinstall Windows launch hotkeys: {err}"
         )),
@@ -1100,7 +1111,10 @@ mod tests {
 
     #[test]
     fn powershell_single_quote_escapes_embedded_quotes() {
-        assert_eq!(ps_single_quote(r"C:\O'Hara\alphacode"), r"'C:\O''Hara\alphacode'");
+        assert_eq!(
+            ps_single_quote(r"C:\O'Hara\alphacode"),
+            r"'C:\O''Hara\alphacode'"
+        );
     }
 
     #[test]

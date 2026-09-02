@@ -236,7 +236,10 @@ pub fn start() {
     let _ = process_start();
     beat("startup");
 
-    let stall = Duration::from_secs(env_secs("ALPHACODE_WATCHDOG_STALL_SECS", DEFAULT_STALL_SECS));
+    let stall = Duration::from_secs(env_secs(
+        "ALPHACODE_WATCHDOG_STALL_SECS",
+        DEFAULT_STALL_SECS,
+    ));
     let heartbeat = Duration::from_secs(env_secs(
         "ALPHACODE_WATCHDOG_HEARTBEAT_SECS",
         DEFAULT_HEARTBEAT_SECS,

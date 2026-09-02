@@ -558,7 +558,9 @@ fn test_light_theme_adapted_frame_has_readable_contrast() {
     fn channel_lum(c: ratatui::style::Color) -> Option<f32> {
         let (r, g, b) = match c {
             ratatui::style::Color::Rgb(r, g, b) => (r, g, b),
-            ratatui::style::Color::Indexed(n) => crate::alphacode_tui::tui::color_support::indexed_to_rgb(n),
+            ratatui::style::Color::Indexed(n) => {
+                crate::alphacode_tui::tui::color_support::indexed_to_rgb(n)
+            }
             _ => return None,
         };
         // Perceived luminance approximation.
@@ -722,4 +724,3 @@ fn test_configured_palette_recolors_a_real_rendered_frame() {
         "the default palette must be a no-op on the rendered frame"
     );
 }
-

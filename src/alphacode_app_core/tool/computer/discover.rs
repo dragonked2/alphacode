@@ -1,8 +1,8 @@
 //! Progressive disclosure: return full specs for advanced actions on demand,
 //! so the always-on tool schema stays small.
 
-use anyhow::Result;
 use crate::alphacode_tool_types::ToolOutput;
+use anyhow::Result;
 
 const MOUSE: &str = "\
 mouse actions (visible coordinate input; moves the real cursor):

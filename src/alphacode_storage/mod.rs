@@ -244,14 +244,17 @@ pub fn harden_user_config_permissions() {
         if let Some(config_dir) = dirs::config_dir() {
             let alphacode_config_dir = config_dir.join("alphacode");
             if alphacode_config_dir.exists() {
-                let _ = crate::alphacode_core::fs::set_directory_permissions_owner_only(&alphacode_config_dir);
+                let _ = crate::alphacode_core::fs::set_directory_permissions_owner_only(
+                    &alphacode_config_dir,
+                );
             }
         }
 
         if let Ok(alphacode_home) = alphacode_dir()
             && alphacode_home.exists()
         {
-            let _ = crate::alphacode_core::fs::set_directory_permissions_owner_only(&alphacode_home);
+            let _ =
+                crate::alphacode_core::fs::set_directory_permissions_owner_only(&alphacode_home);
         }
     }
 }
@@ -351,13 +354,14 @@ fn run_windows_hardening_worker() {
 
         let mut directory_results = Vec::with_capacity(directories.len());
         for path in &directories {
-            let succeeded = crate::alphacode_core::fs::set_directory_permissions_owner_only(path).is_ok();
+            let succeeded =
+                crate::alphacode_core::fs::set_directory_permissions_owner_only(path).is_ok();
             directory_results.push((path.clone(), succeeded));
         }
         let mut file_results = Vec::with_capacity(files.len());
         for path in &files {
-            let succeeded =
-                !path.exists() || crate::alphacode_core::fs::set_permissions_owner_only(path).is_ok();
+            let succeeded = !path.exists()
+                || crate::alphacode_core::fs::set_permissions_owner_only(path).is_ok();
             file_results.push((path.clone(), succeeded));
         }
 

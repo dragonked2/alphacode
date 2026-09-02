@@ -77,9 +77,9 @@ impl GeneratedImagePanelInfo {
         let mut title = format!("Image · {}", self.file_label);
         if let Some((width, height)) = self.dimensions {
             title.push_str(" · ");
-            title.push_str(&crate::alphacode_terminal_image::metadata::format_dimensions(
-                width, height,
-            ));
+            title.push_str(
+                &crate::alphacode_terminal_image::metadata::format_dimensions(width, height),
+            );
         }
         title
     }
@@ -87,17 +87,13 @@ impl GeneratedImagePanelInfo {
     fn summary_parts(&self) -> Vec<String> {
         let mut parts = Vec::new();
         if let Some((width, height)) = self.dimensions {
-            parts.push(crate::alphacode_terminal_image::metadata::format_dimensions(
-                width, height,
-            ));
+            parts.push(crate::alphacode_terminal_image::metadata::format_dimensions(width, height));
         }
-        parts.push(crate::alphacode_terminal_image::metadata::compact_image_format(
-            &self.output_format,
-        ));
+        parts.push(
+            crate::alphacode_terminal_image::metadata::compact_image_format(&self.output_format),
+        );
         if let Some(byte_count) = self.byte_count {
-            parts.push(crate::alphacode_terminal_image::metadata::format_byte_count(
-                byte_count,
-            ));
+            parts.push(crate::alphacode_terminal_image::metadata::format_byte_count(byte_count));
         }
         if let Some(source) = self.source_summary() {
             parts.push(source);
@@ -137,24 +133,29 @@ impl GeneratedImagePanelInfo {
         markdown.push_str("## Details\n\n");
         markdown.push_str(&format!("- File: {}\n", markdown_code(&self.path)));
         if let Some((width, height)) = self.dimensions {
-            let mut dimensions = crate::alphacode_terminal_image::metadata::format_dimensions(width, height);
-            if let Some(ratio) = crate::alphacode_terminal_image::metadata::aspect_ratio(width, height) {
+            let mut dimensions =
+                crate::alphacode_terminal_image::metadata::format_dimensions(width, height);
+            if let Some(ratio) =
+                crate::alphacode_terminal_image::metadata::aspect_ratio(width, height)
+            {
                 dimensions.push_str(&format!(" ({ratio})"));
             }
             markdown.push_str(&format!("- Dimensions: {}\n", markdown_code(&dimensions)));
         }
         markdown.push_str(&format!(
             "- Format: {}\n",
-            markdown_code(&crate::alphacode_terminal_image::metadata::compact_image_format(
-                &self.output_format,
-            ))
+            markdown_code(
+                &crate::alphacode_terminal_image::metadata::compact_image_format(
+                    &self.output_format,
+                )
+            )
         ));
         if let Some(byte_count) = self.byte_count {
             markdown.push_str(&format!(
                 "- Bytes: {}\n",
-                markdown_code(&crate::alphacode_terminal_image::metadata::format_byte_count(
-                    byte_count
-                ))
+                markdown_code(
+                    &crate::alphacode_terminal_image::metadata::format_byte_count(byte_count)
+                )
             ));
         }
         if let Some(metadata_path) = self.metadata_path.as_deref() {

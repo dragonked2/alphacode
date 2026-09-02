@@ -404,7 +404,9 @@ async fn handle_remote_key_internal(
                 app.set_status_notice("Swarm view closed");
             }
             app_mod::tui_state::SwarmPanelView::Controls => {
-                app.set_status_notice(crate::alphacode_tui::tui::keybind::swarm_view_hint("full page"));
+                app.set_status_notice(crate::alphacode_tui::tui::keybind::swarm_view_hint(
+                    "full page",
+                ));
             }
             app_mod::tui_state::SwarmPanelView::FullPage => {
                 app.set_status_notice(crate::alphacode_tui::tui::keybind::swarm_page_hint());
@@ -425,12 +427,16 @@ async fn handle_remote_key_internal(
         return Ok(());
     }
     if let Some(direction) = app.model_switch_keys.direction_for(code, modifiers) {
-        app.record_keybinding_fast(crate::alphacode_tui::tui::app::shortcut_hints::LearnableAction::ModelSwitch);
+        app.record_keybinding_fast(
+            crate::alphacode_tui::tui::app::shortcut_hints::LearnableAction::ModelSwitch,
+        );
         remote.cycle_model(direction).await?;
         return Ok(());
     }
     if let Some(direction) = app.effort_switch_keys.direction_for(code, modifiers) {
-        app.record_keybinding_fast(crate::alphacode_tui::tui::app::shortcut_hints::LearnableAction::EffortCycle);
+        app.record_keybinding_fast(
+            crate::alphacode_tui::tui::app::shortcut_hints::LearnableAction::EffortCycle,
+        );
         apply_remote_effort_direction(app, remote, direction).await?;
         return Ok(());
     }
@@ -452,7 +458,9 @@ async fn handle_remote_key_internal(
         return Ok(());
     }
     if app.centered_toggle_keys.matches(code, modifiers) {
-        app.record_keybinding_fast(crate::alphacode_tui::tui::app::shortcut_hints::LearnableAction::Alignment);
+        app.record_keybinding_fast(
+            crate::alphacode_tui::tui::app::shortcut_hints::LearnableAction::Alignment,
+        );
         app.toggle_centered_mode();
         return Ok(());
     }
@@ -569,7 +577,9 @@ async fn handle_remote_key_internal(
     }
 
     if app.centered_toggle_keys.matches(code, modifiers) {
-        app.record_keybinding_fast(crate::alphacode_tui::tui::app::shortcut_hints::LearnableAction::Alignment);
+        app.record_keybinding_fast(
+            crate::alphacode_tui::tui::app::shortcut_hints::LearnableAction::Alignment,
+        );
         app.toggle_centered_mode();
         return Ok(());
     }
@@ -1336,8 +1346,10 @@ async fn handle_remote_key_internal(
                     return Ok(());
                 }
 
-                if crate::alphacode_tui::tui::app::auth::handle_account_command_remote(app, trimmed, remote)
-                    .await?
+                if crate::alphacode_tui::tui::app::auth::handle_account_command_remote(
+                    app, trimmed, remote,
+                )
+                .await?
                 {
                     return Ok(());
                 }
@@ -2613,4 +2625,3 @@ async fn handle_remote_key_internal(
 
     Ok(())
 }
-

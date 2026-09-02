@@ -207,8 +207,12 @@ pub(super) fn rapid_insertion_active() -> bool {
     let last = RAPID_LAST_INSERT.with(|c| c.get());
     let window_start = RAPID_WINDOW_START.with(|c| c.get());
     let bytes = RAPID_BYTES_IN_WINDOW.with(|c| c.get());
-    let Some(last) = last else { return false; };
-    let Some(window_start) = window_start else { return false; };
+    let Some(last) = last else {
+        return false;
+    };
+    let Some(window_start) = window_start else {
+        return false;
+    };
     now.duration_since(last) <= RAPID_INSERT_GAP
         && now.duration_since(window_start) <= RAPID_INSERT_WINDOW
         && bytes >= RAPID_INSERT_MIN_BYTES

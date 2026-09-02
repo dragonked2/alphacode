@@ -175,7 +175,8 @@ impl App {
                 && let Some(area) = layout.diff_pane_area
             {
                 let viewport = area.height as usize;
-                let content_length = crate::alphacode_tui::tui::ui::pinned_pane_total_lines().max(viewport);
+                let content_length =
+                    crate::alphacode_tui::tui::ui::pinned_pane_total_lines().max(viewport);
                 panes.push(PaneState {
                     kind: PaneKind::SidePanel,
                     x: area.x,
@@ -453,4 +454,3 @@ mod bridge_tests {
         let _ = std::fs::remove_file(socket_path);
     }
 }
-

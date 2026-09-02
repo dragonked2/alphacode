@@ -3,8 +3,7 @@ use clap::Parser;
 use std::process::Command as ProcessCommand;
 
 use crate::{
-    build, health, logging, perf, server, setup_hints, startup_profile, storage, telemetry,
-    update,
+    build, health, logging, perf, server, setup_hints, startup_profile, storage, telemetry, update,
 };
 
 use super::{
@@ -132,17 +131,19 @@ pub async fn run() -> Result<()> {
     crate::session_watchdog::init();
     std::thread::Builder::new()
         .name("alphacode-health-reporter".to_string())
-        .spawn(|| loop {
-            std::thread::sleep(health::REPORT_INTERVAL);
-            if let Some(rss) = health::current_rss_bytes() {
-                health::record_rss_sample(rss);
-                crate::session_watchdog::record_rss(rss);
-            }
-            health::report();
-            // Run watchdog health check periodically.
-            let action = crate::session_watchdog::check_health();
-            if action != crate::session_watchdog::RecoveryAction::None {
-                crate::session_watchdog::record_recovery(action);
+        .spawn(|| {
+            loop {
+                std::thread::sleep(health::REPORT_INTERVAL);
+                if let Some(rss) = health::current_rss_bytes() {
+                    health::record_rss_sample(rss);
+                    crate::session_watchdog::record_rss(rss);
+                }
+                health::report();
+                // Run watchdog health check periodically.
+                let action = crate::session_watchdog::check_health();
+                if action != crate::session_watchdog::RecoveryAction::None {
+                    crate::session_watchdog::record_recovery(action);
+                }
             }
         })
         .ok();
@@ -178,7 +179,11 @@ pub fn register_external_provider_runtimes() {
     );
     crate::provider::external::register_external_provider(
         crate::provider::external::ANTIGRAVITY_RUNTIME,
-        || std::sync::Arc::new(crate::alphacode_provider_antigravity_runtime::AntigravityProvider::new()),
+        || {
+            std::sync::Arc::new(
+                crate::alphacode_provider_antigravity_runtime::AntigravityProvider::new(),
+            )
+        },
     );
     crate::provider::external::register_external_provider(
         crate::provider::external::CLAUDE_CLI_RUNTIME,
@@ -186,14 +191,18 @@ pub fn register_external_provider_runtimes() {
     );
     crate::provider::external::register_external_provider(
         crate::provider::external::ANTHROPIC_RUNTIME,
-        || std::sync::Arc::new(crate::alphacode_provider_anthropic_runtime::AnthropicProvider::new()),
+        || {
+            std::sync::Arc::new(
+                crate::alphacode_provider_anthropic_runtime::AnthropicProvider::new(),
+            )
+        },
     );
     // OpenRouter serves several identities (aggregator, pinned API-key
     // runtime, direct OpenAI-compatible profiles, named config profiles)
     // through one concrete type, so it registers a parameterized factory.
     crate::provider::external::register_openrouter_factory(|spec| {
-        use crate::provider::external::OpenRouterRuntimeSpec;
         use crate::alphacode_provider_openrouter_runtime::OpenRouterProvider;
+        use crate::provider::external::OpenRouterRuntimeSpec;
         let provider: std::sync::Arc<dyn crate::provider::Provider> = match spec {
             OpenRouterRuntimeSpec::Default => std::sync::Arc::new(OpenRouterProvider::new()?),
             OpenRouterRuntimeSpec::OpenRouterApiKey => {
@@ -221,8 +230,12 @@ pub fn register_external_provider_runtimes() {
         crate::provider::external::OPENAI_RUNTIME,
         || {
             let provider = match crate::alphacode_base::auth::codex::load_credentials() {
-                Ok(credentials) => crate::alphacode_provider_openai_runtime::OpenAIProvider::new(credentials),
-                Err(_) => crate::alphacode_provider_openai_runtime::OpenAIProvider::new_browser_only(),
+                Ok(credentials) => {
+                    crate::alphacode_provider_openai_runtime::OpenAIProvider::new(credentials)
+                }
+                Err(_) => {
+                    crate::alphacode_provider_openai_runtime::OpenAIProvider::new_browser_only()
+                }
             };
             Some(std::sync::Arc::new(provider) as std::sync::Arc<dyn crate::provider::Provider>)
         },
@@ -312,7 +325,9 @@ fn spawn_background_update_check(args: &Args) {
 
     if update::is_release_build() {
         std::thread::spawn(move || {
-            use crate::alphacode_base::bus::{Bus, BusEvent, ClientMaintenanceAction, SessionUpdateStatus};
+            use crate::alphacode_base::bus::{
+                Bus, BusEvent, ClientMaintenanceAction, SessionUpdateStatus,
+            };
             match update::check_and_maybe_update(auto_update) {
                 update::UpdateCheckResult::UpdateAvailable {
                     current, latest, ..
@@ -440,11 +455,15 @@ fn report_main_error(error: &anyhow::Error) {
     for cause in error.chain().skip(1) {
         let msg = cause.to_string();
         if msg.contains("connection refused") || msg.contains("connect") {
-            output::stderr_info("\x1b[33mHint: Check that the server is running and accessible.\x1b[0m");
+            output::stderr_info(
+                "\x1b[33mHint: Check that the server is running and accessible.\x1b[0m",
+            );
             break;
         }
         if msg.contains("No such file") || msg.contains("not found") {
-            output::stderr_info("\x1b[33mHint: Verify the file path exists and is readable.\x1b[0m");
+            output::stderr_info(
+                "\x1b[33mHint: Verify the file path exists and is readable.\x1b[0m",
+            );
             break;
         }
         if msg.contains("permission denied") || msg.contains("Permission denied") {
@@ -452,7 +471,9 @@ fn report_main_error(error: &anyhow::Error) {
             break;
         }
         if msg.contains("rate limit") || msg.contains("429") {
-            output::stderr_info("\x1b[33mHint: Rate limited. Wait a moment and try again, or switch models.\x1b[0m");
+            output::stderr_info(
+                "\x1b[33mHint: Rate limited. Wait a moment and try again, or switch models.\x1b[0m",
+            );
             break;
         }
         if msg.contains("auth") || msg.contains("unauthorized") || msg.contains("401") {
@@ -567,5 +588,3 @@ fn gmicloud_fallback_key(env_key: &str) -> Option<String> {
         None
     }
 }
-
-

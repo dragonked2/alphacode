@@ -221,13 +221,15 @@ mod tests {
             expiry_confidence: AuthExpiryConfidence::Exact,
             refresh_support: AuthRefreshSupport::Automatic,
             validation_method: AuthValidationMethod::TimestampCheck,
-            last_validation: Some(crate::alphacode_base::auth::validation::ProviderValidationRecord {
-                checked_at_ms: chrono::Utc::now().timestamp_millis(),
-                success: true,
-                provider_smoke_ok: Some(true),
-                tool_smoke_ok: Some(true),
-                summary: "tool_smoke: ok".to_string(),
-            }),
+            last_validation: Some(
+                crate::alphacode_base::auth::validation::ProviderValidationRecord {
+                    checked_at_ms: chrono::Utc::now().timestamp_millis(),
+                    success: true,
+                    provider_smoke_ok: Some(true),
+                    tool_smoke_ok: Some(true),
+                    summary: "tool_smoke: ok".to_string(),
+                },
+            ),
             last_refresh: None,
         }
     }
@@ -235,12 +237,14 @@ mod tests {
     #[test]
     fn refresh_failure_marks_available_provider_as_needing_attention() {
         let mut assessment = base_assessment();
-        assessment.last_refresh = Some(crate::alphacode_base::auth::refresh_state::ProviderRefreshRecord {
-            last_attempt_ms: chrono::Utc::now().timestamp_millis(),
-            last_success_ms: Some(chrono::Utc::now().timestamp_millis() - 1000),
-            last_error: Some("invalid_grant: refresh token invalid".to_string()),
-            rejected_refresh_fingerprint: None,
-        });
+        assessment.last_refresh = Some(
+            crate::alphacode_base::auth::refresh_state::ProviderRefreshRecord {
+                last_attempt_ms: chrono::Utc::now().timestamp_millis(),
+                last_success_ms: Some(chrono::Utc::now().timestamp_millis() - 1000),
+                last_error: Some("invalid_grant: refresh token invalid".to_string()),
+                rejected_refresh_fingerprint: None,
+            },
+        );
 
         assert!(needs_attention(&assessment, None));
         assert!(
@@ -266,13 +270,17 @@ mod tests {
     #[test]
     fn stale_validation_marks_provider_as_needing_attention() {
         let mut assessment = base_assessment();
-        assessment.last_validation = Some(crate::alphacode_base::auth::validation::ProviderValidationRecord {
-            checked_at_ms: chrono::Utc::now().timestamp_millis() - VALIDATION_STALE_AFTER_MS - 1,
-            success: true,
-            provider_smoke_ok: Some(true),
-            tool_smoke_ok: Some(true),
-            summary: "tool_smoke: ok".to_string(),
-        });
+        assessment.last_validation = Some(
+            crate::alphacode_base::auth::validation::ProviderValidationRecord {
+                checked_at_ms: chrono::Utc::now().timestamp_millis()
+                    - VALIDATION_STALE_AFTER_MS
+                    - 1,
+                success: true,
+                provider_smoke_ok: Some(true),
+                tool_smoke_ok: Some(true),
+                summary: "tool_smoke: ok".to_string(),
+            },
+        );
 
         assert!(needs_attention(&assessment, None));
         assert!(

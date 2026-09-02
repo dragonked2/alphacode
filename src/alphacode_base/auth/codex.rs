@@ -60,7 +60,10 @@ const ACCOUNT_LABEL_PREFIX: &str = "openai";
 /// Set the runtime override for the active account label.
 /// This allows `/account switch <label>` to take effect without rewriting the file.
 pub fn set_active_account_override(label: Option<String>) {
-    crate::alphacode_base::auth::account_store::set_runtime_active_override(ACCOUNT_LABEL_PREFIX, label);
+    crate::alphacode_base::auth::account_store::set_runtime_active_override(
+        ACCOUNT_LABEL_PREFIX,
+        label,
+    );
 }
 
 pub fn get_active_account_override() -> Option<String> {
@@ -73,21 +76,25 @@ pub fn primary_account_label() -> String {
 
 pub fn next_account_label() -> Result<String> {
     let auth = load_auth_file()?;
-    Ok(crate::alphacode_base::auth::account_store::next_account_label(
-        ACCOUNT_LABEL_PREFIX,
-        auth.openai_accounts.len(),
-    ))
+    Ok(
+        crate::alphacode_base::auth::account_store::next_account_label(
+            ACCOUNT_LABEL_PREFIX,
+            auth.openai_accounts.len(),
+        ),
+    )
 }
 
 pub fn login_target_label(requested: Option<&str>) -> Result<String> {
     let auth = load_auth_file()?;
-    Ok(crate::alphacode_base::auth::account_store::login_target_label(
-        ACCOUNT_LABEL_PREFIX,
-        requested,
-        auth.active_openai_account,
-        &auth.openai_accounts,
-        |account| account.label.as_str(),
-    ))
+    Ok(
+        crate::alphacode_base::auth::account_store::login_target_label(
+            ACCOUNT_LABEL_PREFIX,
+            requested,
+            auth.active_openai_account,
+            &auth.openai_accounts,
+            |account| account.label.as_str(),
+        ),
+    )
 }
 
 fn relabel_accounts(auth: &mut AlphacodeOpenAiAuthFile) -> bool {
@@ -581,4 +588,3 @@ pub(crate) fn expires_at_from_access_token(access_token: &str) -> Option<i64> {
 fn resolve_expires_at(explicit: Option<i64>, access_token: &str) -> Option<i64> {
     explicit.or_else(|| expires_at_from_access_token(access_token))
 }
-

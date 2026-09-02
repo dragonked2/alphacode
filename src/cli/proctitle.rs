@@ -5,8 +5,8 @@
 //! (`compact_process_title`, `session_name`, `set_title`) live in the
 //! `process_title` core module.
 
-use crate::cli::args::{AmbientCommand, Args, Command};
 use crate::alphacode_base::process_title::{compact_process_title, session_name, set_title};
+use crate::cli::args::{AmbientCommand, Args, Command};
 
 pub(crate) fn initial_title(args: &Args) -> String {
     match &args.command {
@@ -56,7 +56,9 @@ pub(crate) fn initial_title(args: &Args) -> String {
         Some(Command::Browser { .. }) => "alphacode browser".to_string(),
         Some(Command::Replay { .. }) => "alphacode replay".to_string(),
         Some(Command::Model(_)) => "alphacode model".to_string(),
-        Some(Command::ProviderTestCoverage { .. }) => "alphacode provider-test-coverage".to_string(),
+        Some(Command::ProviderTestCoverage { .. }) => {
+            "alphacode provider-test-coverage".to_string()
+        }
         Some(Command::ProviderDoctor { .. }) => "alphacode provider-doctor".to_string(),
         Some(Command::AuthTest { .. }) => "alphacode auth-test".to_string(),
         Some(Command::Restart { .. }) => "alphacode restart".to_string(),

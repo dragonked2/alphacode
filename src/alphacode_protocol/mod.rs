@@ -17,7 +17,9 @@ pub use notifications::{FeatureToggle, NotificationType};
 
 use crate::alphacode_batch_types::BatchProgress;
 use crate::alphacode_message_types::{InputShellResult, ToolCall};
-use crate::alphacode_plan::{PlanItem, VersionedPlan, next_runnable_item_ids, summarize_plan_graph};
+use crate::alphacode_plan::{
+    PlanItem, VersionedPlan, next_runnable_item_ids, summarize_plan_graph,
+};
 use crate::alphacode_side_panel_types::{SidePanelSnapshot, snapshot_is_empty};
 use std::collections::BTreeMap;
 
@@ -731,4 +733,3 @@ fn decode_legacy_set_route_model(line: &str) -> Option<Request> {
     let id = obj.get("id").and_then(|v| v.as_u64()).unwrap_or(0);
     Some(Request::SetModel { id, model })
 }
-

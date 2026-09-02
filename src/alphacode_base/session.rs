@@ -42,13 +42,13 @@ mod model;
 mod persistence;
 mod render;
 mod storage_paths;
-pub use crash::{
-    CrashedSessionsInfo, detect_crashed_sessions, find_recent_crashed_sessions,
-    find_session_by_name_or_id, recover_crashed_sessions, recover_crashed_sessions_by_ids,
-};
 pub use crate::alphacode_session_types::{
     EnvSnapshot, GitState, SessionImproveMode, SessionStatus, StoredCompactionState,
     StoredDisplayRole, StoredMemoryInjection, StoredMessage, StoredTokenUsage,
+};
+pub use crash::{
+    CrashedSessionsInfo, detect_crashed_sessions, find_recent_crashed_sessions,
+    find_session_by_name_or_id, recover_crashed_sessions, recover_crashed_sessions_by_ids,
 };
 use journal::{PersistVectorMode, SessionJournalMeta, SessionPersistState};
 pub use maintenance::prune_old_session_backups;

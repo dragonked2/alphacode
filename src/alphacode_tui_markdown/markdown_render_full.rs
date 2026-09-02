@@ -496,9 +496,20 @@ pub fn render_markdown_with_width(text: &str, max_width: Option<usize>) -> Vec<L
                     } else {
                         lines.push(
                             Line::from(vec![
-                                Span::styled("┌─ ", Style::default().fg(frame_color).add_modifier(Modifier::DIM)),
-                                Span::styled(lang_label.to_string(), Style::default().fg(frame_color).add_modifier(Modifier::BOLD)),
-                                Span::styled(" ", Style::default().fg(frame_color).add_modifier(Modifier::DIM)),
+                                Span::styled(
+                                    "┌─ ",
+                                    Style::default().fg(frame_color).add_modifier(Modifier::DIM),
+                                ),
+                                Span::styled(
+                                    lang_label.to_string(),
+                                    Style::default()
+                                        .fg(frame_color)
+                                        .add_modifier(Modifier::BOLD),
+                                ),
+                                Span::styled(
+                                    " ",
+                                    Style::default().fg(frame_color).add_modifier(Modifier::DIM),
+                                ),
                             ])
                             .left_aligned(),
                         );
@@ -506,16 +517,21 @@ pub fn render_markdown_with_width(text: &str, max_width: Option<usize>) -> Vec<L
 
                     // Add code lines
                     for hl_line in highlighted {
-                        let mut spans =
-                            vec![Span::styled("│ ", Style::default().fg(frame_color).add_modifier(Modifier::DIM))];
+                        let mut spans = vec![Span::styled(
+                            "│ ",
+                            Style::default().fg(frame_color).add_modifier(Modifier::DIM),
+                        )];
                         spans.extend(hl_line.spans);
                         lines.push(Line::from(spans).left_aligned());
                     }
 
                     // Add footer
                     lines.push(
-                        Line::from(Span::styled("└─", Style::default().fg(frame_color).add_modifier(Modifier::DIM)))
-                            .left_aligned(),
+                        Line::from(Span::styled(
+                            "└─",
+                            Style::default().fg(frame_color).add_modifier(Modifier::DIM),
+                        ))
+                        .left_aligned(),
                     );
                 }
                 exit_centered_structured_block(&mut centered_blocks, lines.len());
@@ -563,7 +579,9 @@ pub fn render_markdown_with_width(text: &str, max_width: Option<usize>) -> Vec<L
                     match latex_mode {
                         LatexRenderingMode::None => current_cell.push_str(&format!("${math}$")),
                         LatexRenderingMode::Unicode | LatexRenderingMode::Image => {
-                            current_cell.push_str(&crate::alphacode_render_core::render_inline_latex(&math));
+                            current_cell.push_str(
+                                &crate::alphacode_render_core::render_inline_latex(&math),
+                            );
                         }
                     }
                 } else {
@@ -603,7 +621,9 @@ pub fn render_markdown_with_width(text: &str, max_width: Option<usize>) -> Vec<L
                     match latex_mode {
                         LatexRenderingMode::None => current_cell.push_str(&format!("$${math}$$")),
                         LatexRenderingMode::Unicode | LatexRenderingMode::Image => {
-                            current_cell.push_str(&crate::alphacode_render_core::render_inline_latex(&math));
+                            current_cell.push_str(
+                                &crate::alphacode_render_core::render_inline_latex(&math),
+                            );
                         }
                     }
                 } else {
@@ -659,7 +679,8 @@ pub fn render_markdown_with_width(text: &str, max_width: Option<usize>) -> Vec<L
                     // The sentinel can appear at the start and/or end of the line
                     // (and smart-punctuation may split it across events), so latch
                     // on its presence anywhere and strip every occurrence.
-                    let has_sentinel = text.contains(crate::alphacode_tui_markdown::REASONING_SENTINEL);
+                    let has_sentinel =
+                        text.contains(crate::alphacode_tui_markdown::REASONING_SENTINEL);
                     if has_sentinel {
                         // Latch for the rest of this emphasis span so smart-
                         // punctuation splits keep the dim/italic styling.
@@ -668,7 +689,8 @@ pub fn render_markdown_with_width(text: &str, max_width: Option<usize>) -> Vec<L
                     let is_reasoning = reasoning_emphasis;
                     let stripped;
                     let text: &str = if has_sentinel {
-                        stripped = text.replace(crate::alphacode_tui_markdown::REASONING_SENTINEL, "");
+                        stripped =
+                            text.replace(crate::alphacode_tui_markdown::REASONING_SENTINEL, "");
                         &stripped
                     } else {
                         &text
@@ -900,8 +922,12 @@ pub fn render_markdown_with_width(text: &str, max_width: Option<usize>) -> Vec<L
                 table_alignments = aligns
                     .iter()
                     .map(|align| match align {
-                        pulldown_cmark::Alignment::Right => crate::alphacode_render_core::Alignment::Right,
-                        pulldown_cmark::Alignment::Center => crate::alphacode_render_core::Alignment::Center,
+                        pulldown_cmark::Alignment::Right => {
+                            crate::alphacode_render_core::Alignment::Right
+                        }
+                        pulldown_cmark::Alignment::Center => {
+                            crate::alphacode_render_core::Alignment::Center
+                        }
                         _ => crate::alphacode_render_core::Alignment::Left,
                     })
                     .collect();

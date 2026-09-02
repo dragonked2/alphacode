@@ -101,7 +101,10 @@ const ACCOUNT_LABEL_PREFIX: &str = "claude";
 /// Set the runtime override for the active account label.
 /// This allows `/account switch <label>` to take effect without rewriting the file.
 pub fn set_active_account_override(label: Option<String>) {
-    crate::alphacode_base::auth::account_store::set_runtime_active_override(ACCOUNT_LABEL_PREFIX, label);
+    crate::alphacode_base::auth::account_store::set_runtime_active_override(
+        ACCOUNT_LABEL_PREFIX,
+        label,
+    );
 }
 
 pub fn get_active_account_override() -> Option<String> {
@@ -114,21 +117,25 @@ pub fn primary_account_label() -> String {
 
 pub fn next_account_label() -> Result<String> {
     let auth = load_auth_file()?;
-    Ok(crate::alphacode_base::auth::account_store::next_account_label(
-        ACCOUNT_LABEL_PREFIX,
-        auth.anthropic_accounts.len(),
-    ))
+    Ok(
+        crate::alphacode_base::auth::account_store::next_account_label(
+            ACCOUNT_LABEL_PREFIX,
+            auth.anthropic_accounts.len(),
+        ),
+    )
 }
 
 pub fn login_target_label(requested: Option<&str>) -> Result<String> {
     let auth = load_auth_file()?;
-    Ok(crate::alphacode_base::auth::account_store::login_target_label(
-        ACCOUNT_LABEL_PREFIX,
-        requested,
-        auth.active_anthropic_account,
-        &auth.anthropic_accounts,
-        |account| account.label.as_str(),
-    ))
+    Ok(
+        crate::alphacode_base::auth::account_store::login_target_label(
+            ACCOUNT_LABEL_PREFIX,
+            requested,
+            auth.active_anthropic_account,
+            &auth.anthropic_accounts,
+            |account| account.label.as_str(),
+        ),
+    )
 }
 
 fn relabel_accounts(auth: &mut AlphacodeAuthFile) -> bool {
@@ -922,12 +929,14 @@ pub fn load_opencode_credentials() -> Result<ClaudeCredentials> {
             subscription_type: Some("max".to_string()),
         })
         .or_else(|| {
-            crate::alphacode_base::auth::external::load_anthropic_oauth_tokens().map(|tokens| ClaudeCredentials {
-                access_token: tokens.access_token,
-                refresh_token: tokens.refresh_token,
-                expires_at: tokens.expires_at,
-                scopes: Vec::new(),
-                subscription_type: Some("max".to_string()),
+            crate::alphacode_base::auth::external::load_anthropic_oauth_tokens().map(|tokens| {
+                ClaudeCredentials {
+                    access_token: tokens.access_token,
+                    refresh_token: tokens.refresh_token,
+                    expires_at: tokens.expires_at,
+                    scopes: Vec::new(),
+                    subscription_type: Some("max".to_string()),
+                }
             })
         })
         .context("No anthropic OAuth credentials in OpenCode auth file")?;
@@ -940,4 +949,3 @@ pub fn load_opencode_credentials() -> Result<ClaudeCredentials> {
 
     Ok(anthropic)
 }
-

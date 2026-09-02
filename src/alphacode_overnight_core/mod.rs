@@ -946,4 +946,3 @@ pub fn preflight_summary(preflight: &OvernightPreflight) -> String {
         git_summary(&preflight.git),
     )
 }
-

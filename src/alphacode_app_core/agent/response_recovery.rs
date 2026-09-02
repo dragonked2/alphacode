@@ -485,7 +485,10 @@ impl Agent {
 /// versions like "gpt-5" or "claude-3-5" do not register as status codes.
 fn contains_5xx_status(lower: &str) -> bool {
     let bytes = lower.as_bytes();
-    let want: &[&[u8]] = &[b"500", b"501", b"502", b"503", b"504", b"507", b"520", b"521", b"522", b"523", b"524", b"525", b"526", b"527", b"529"];
+    let want: &[&[u8]] = &[
+        b"500", b"501", b"502", b"503", b"504", b"507", b"520", b"521", b"522", b"523", b"524",
+        b"525", b"526", b"527", b"529",
+    ];
     for needle in want {
         for (start, _) in lower.match_indices(std::str::from_utf8(needle).unwrap()) {
             let before_ok = start == 0 || !bytes[start - 1].is_ascii_digit();
@@ -553,9 +556,11 @@ pub(crate) fn extract_retry_after_secs(error: &str) -> Option<u64> {
             // Parse the digits
             let digits: String = after.chars().take_while(|c| c.is_ascii_digit()).collect();
             if let Ok(secs) = digits.parse::<u64>()
-                && secs > 0 && secs <= 300 {
-                    return Some(secs);
-                }
+                && secs > 0
+                && secs <= 300
+            {
+                return Some(secs);
+            }
         }
     }
     None
@@ -608,7 +613,10 @@ mod provider_error_tests {
             "status: 503 service unavailable",
             "status: 504 gateway timeout",
         ] {
-            assert!(Agent::is_transient_provider_error(s), "{s} should be transient");
+            assert!(
+                Agent::is_transient_provider_error(s),
+                "{s} should be transient"
+            );
         }
     }
 
@@ -646,8 +654,12 @@ mod provider_error_tests {
 
     #[test]
     fn recognises_overloaded_and_retry_shortly() {
-        assert!(Agent::is_transient_provider_error("anthropic: model overloaded"));
-        assert!(Agent::is_transient_provider_error("please try again shortly"));
+        assert!(Agent::is_transient_provider_error(
+            "anthropic: model overloaded"
+        ));
+        assert!(Agent::is_transient_provider_error(
+            "please try again shortly"
+        ));
     }
 
     #[test]
@@ -700,9 +712,15 @@ mod provider_error_tests {
 
     #[test]
     fn contains_429_with_rate_limit_matches_common_patterns() {
-        assert!(contains_429_with_rate_limit("status: 429 too many requests"));
-        assert!(contains_429_with_rate_limit("status: 429 rate limit exceeded"));
-        assert!(contains_429_with_rate_limit("status: 429 temporarily rate-limited"));
+        assert!(contains_429_with_rate_limit(
+            "status: 429 too many requests"
+        ));
+        assert!(contains_429_with_rate_limit(
+            "status: 429 rate limit exceeded"
+        ));
+        assert!(contains_429_with_rate_limit(
+            "status: 429 temporarily rate-limited"
+        ));
         assert!(contains_429_with_rate_limit("status: 429 throttled"));
         assert!(contains_429_with_rate_limit("status: 429 quota exceeded"));
         assert!(!contains_429_with_rate_limit("status: 429 moderation hit"));

@@ -120,4 +120,3 @@ fn reflection_prompt(assessment: &RiskAssessment) -> String {
         assessment.explanation()
     )
 }
-

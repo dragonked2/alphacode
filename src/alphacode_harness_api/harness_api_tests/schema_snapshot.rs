@@ -1,7 +1,7 @@
 //! Schema snapshot tests: fail if the wire shape changes accidentally.
 
-use crate::*;
 use crate::alphacode_harness_api::{HarnessClient, PermissionDecision};
+use crate::*;
 
 #[test]
 fn client_frame_wire_shape() {

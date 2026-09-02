@@ -296,7 +296,8 @@ fn swarm_strip_full_draw_writes_chips_row_above_status_line() {
         .draw(|frame| crate::alphacode_tui::tui::ui::draw(frame, &state))
         .expect("full draw with inline swarm strip should not panic");
 
-    let status_area = crate::alphacode_tui::tui::ui::last_status_area().expect("status area recorded");
+    let status_area =
+        crate::alphacode_tui::tui::ui::last_status_area().expect("status area recorded");
     assert!(status_area.y > 0, "status line should not be the top row");
     let rows = buffer_rows(&terminal);
     // Vertical strip (default layout): one agent per row directly above the
@@ -398,9 +399,10 @@ fn swarm_strip_paragraph_never_writes_outside_target_area() {
         strip_member("s1", "深度搜索エージェント", "running"),
         strip_member("s2", "reviewer-with-a-long-name", "completed"),
     ];
-    let gallery_lines = crate::alphacode_tui::tui::info_widget::swarm_gallery::render_swarm_strip_lines(
-        &members, 0, true, "ctrl+t", 3, 80, 16,
-    );
+    let gallery_lines =
+        crate::alphacode_tui::tui::info_widget::swarm_gallery::render_swarm_strip_lines(
+            &members, 0, true, "ctrl+t", 3, 80, 16,
+        );
     assert!(!gallery_lines.is_empty(), "expected focused strip lines");
 
     let backend = TestBackend::new(40, 6);
@@ -463,7 +465,8 @@ fn notification_full_draw_survives_overwide_swarm_plan_notice() {
                 panic!("over-wide notification draw failed at {width}x{height}: {e}");
             });
 
-        let status_area = crate::alphacode_tui::tui::ui::last_status_area().expect("status area recorded");
+        let status_area =
+            crate::alphacode_tui::tui::ui::last_status_area().expect("status area recorded");
         let rows = buffer_rows(&terminal);
         let notification_row = &rows[(status_area.y + 1) as usize];
         assert!(
@@ -547,7 +550,8 @@ fn swarm_strip_stands_down_through_dock_blinks() {
         terminal
             .draw(|frame| crate::alphacode_tui::tui::ui::draw(frame, &state))
             .expect("draw with engaged dock should not panic");
-        let status_area = crate::alphacode_tui::tui::ui::last_status_area().expect("status area recorded");
+        let status_area =
+            crate::alphacode_tui::tui::ui::last_status_area().expect("status area recorded");
         let rows = buffer_rows(&terminal);
         let above_status = rows[..status_area.y as usize]
             .iter()
@@ -626,8 +630,11 @@ fn swarm_dock_widget_full_render_writes_agent_rows_in_margin() {
     let mut dock_rect: Option<Rect> = None;
     terminal
         .draw(|frame| {
-            let placements =
-                crate::alphacode_tui::tui::info_widget::calculate_placements(messages_area, &margins, &data);
+            let placements = crate::alphacode_tui::tui::info_widget::calculate_placements(
+                messages_area,
+                &margins,
+                &data,
+            );
             dock_rect = placements
                 .iter()
                 .find(|p| p.kind == crate::alphacode_tui::tui::info_widget::WidgetKind::SwarmStatus)
@@ -705,4 +712,3 @@ fn draw_notification_clips_overwide_notice_at_area_width() {
         "expected clipped notice text inside area, got: {inside:?}"
     );
 }
-

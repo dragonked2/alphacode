@@ -359,4 +359,3 @@ impl Tool for InitiativeTool {
         })
     }
 }
-

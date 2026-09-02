@@ -1,6 +1,4 @@
-use super::{
-    OpenAIUsageData, PROVIDER_USAGE_CACHE_TTL, ProviderUsage, UsageData,
-};
+use super::{OpenAIUsageData, PROVIDER_USAGE_CACHE_TTL, ProviderUsage, UsageData};
 use std::time::Instant;
 
 pub(super) fn reset_timestamp_passed(timestamp: Option<&str>) -> bool {

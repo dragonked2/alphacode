@@ -161,7 +161,9 @@ fn copy_dir_recursive(src: &Path, dst: &Path) -> std::io::Result<()> {
     Ok(())
 }
 
-pub use crate::alphacode_core::fs::{set_directory_permissions_owner_only, set_permissions_owner_only};
+pub use crate::alphacode_core::fs::{
+    set_directory_permissions_owner_only, set_permissions_owner_only,
+};
 
 /// Set file permissions to owner read/write/execute (0o755).
 /// No-op on Windows (executability is determined by file extension).
@@ -465,4 +467,3 @@ pub fn replace_process(cmd: &mut std::process::Command) -> std::io::Error {
         }
     }
 }
-

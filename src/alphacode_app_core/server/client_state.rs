@@ -445,7 +445,8 @@ fn infer_persisted_session_interrupted_by_reload(session_id: &str) -> bool {
         .last()
         .map(|message| message.role == Role::User)
         .unwrap_or(false);
-    let marker_active = crate::alphacode_app_core::server::reload_marker_active(RELOAD_RESTORE_MARKER_MAX_AGE);
+    let marker_active =
+        crate::alphacode_app_core::server::reload_marker_active(RELOAD_RESTORE_MARKER_MAX_AGE);
     let interrupted = matches!(session.status, SessionStatus::Crashed { .. })
         || (matches!(session.status, SessionStatus::Active) && last_is_user && marker_active)
         || (matches!(session.status, SessionStatus::Closed) && last_is_user && marker_active)
@@ -922,4 +923,3 @@ mod tests {
         );
     }
 }
-

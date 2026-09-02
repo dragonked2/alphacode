@@ -90,4 +90,3 @@ pub fn read_secret_line() -> Result<String> {
 
     Ok(input.trim().to_string())
 }
-

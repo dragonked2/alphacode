@@ -1,8 +1,8 @@
-use crate::logging;
-use base64::Engine as _;
 use crate::alphacode_background_types::{
     BackgroundTaskCompleted, BackgroundTaskProgressEvent, BackgroundTaskStatus,
 };
+use crate::logging;
+use base64::Engine as _;
 use regex::Regex;
 use std::collections::HashSet;
 use std::path::Path;
@@ -361,7 +361,9 @@ pub fn generated_image_rendered_image(
         source: crate::alphacode_session_types::RenderedImageSource::ToolResult {
             tool_name: GENERATED_IMAGE_TOOL_NAME.to_string(),
         },
-        anchor: Some(crate::alphacode_session_types::RenderedImageAnchor::ToolCall { id: id.to_string() }),
+        anchor: Some(
+            crate::alphacode_session_types::RenderedImageAnchor::ToolCall { id: id.to_string() },
+        ),
     })
 }
 

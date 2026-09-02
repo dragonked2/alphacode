@@ -1102,5 +1102,3 @@ pub(super) enum RefactorCommand {
 // `include!`), where the `create_test_app` harness is in scope. A second
 // `#[path]`-based inclusion here used to compile the same file into an
 // isolated module without that harness, which broke the test build.
-
-

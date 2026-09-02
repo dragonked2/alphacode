@@ -649,13 +649,12 @@ impl UsageOverlay {
                             Style::default().fg(Color::White).bold(),
                         ))
                     } else if let Some(rest) = line.strip_prefix("• ") {
-                        let bullet_color = if rest.starts_with("Error:")
-                            || rest.contains("Hard limit")
-                        {
-                            Color::Rgb(232, 134, 134)
-                        } else {
-                            MUTED
-                        };
+                        let bullet_color =
+                            if rest.starts_with("Error:") || rest.contains("Hard limit") {
+                                Color::Rgb(232, 134, 134)
+                            } else {
+                                MUTED
+                            };
                         Line::from(vec![
                             Span::styled("  • ", Style::default().fg(MUTED_DARK)),
                             Span::styled(rest.to_string(), Style::default().fg(bullet_color)),
@@ -1024,7 +1023,10 @@ mod tests {
             last_used_unix_secs: None,
         };
         let overlay = UsageOverlay::from_provider_reports(&[report], false, 1, 1, false);
-        assert_eq!(overlay.selected_item().and_then(|i| i.usage_percent), Some(100.0));
+        assert_eq!(
+            overlay.selected_item().and_then(|i| i.usage_percent),
+            Some(100.0)
+        );
     }
 
     #[test]

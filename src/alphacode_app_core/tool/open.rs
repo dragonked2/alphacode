@@ -734,4 +734,3 @@ fn focus_browser_window_niri(ctx: &BrowserFocusContext) {
         }
     }
 }
-

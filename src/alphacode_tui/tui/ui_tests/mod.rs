@@ -438,7 +438,9 @@ impl crate::alphacode_tui::tui::TuiState for TestState {
     fn diff_line_wrap(&self) -> bool {
         true
     }
-    fn inline_interactive_state(&self) -> Option<&crate::alphacode_tui::tui::InlineInteractiveState> {
+    fn inline_interactive_state(
+        &self,
+    ) -> Option<&crate::alphacode_tui::tui::InlineInteractiveState> {
         self.inline_interactive_state.as_ref()
     }
     fn inline_view_state(&self) -> Option<&crate::alphacode_tui::tui::InlineViewState> {
@@ -530,4 +532,3 @@ mod rendering;
 mod swarm_buffer;
 #[path = "tools.rs"]
 mod tools;
-

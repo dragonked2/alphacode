@@ -110,8 +110,9 @@ fn test_binary_version_hash_mismatch_rejects_publish_candidate() {
         git_hash: Some("oldhash".to_string()),
     };
 
-    let error = validate_binary_version_matches_source_report(&report, Path::new("alphacode"), &source)
-        .expect_err("mismatched git hash should be rejected");
+    let error =
+        validate_binary_version_matches_source_report(&report, Path::new("alphacode"), &source)
+            .expect_err("mismatched git hash should be rejected");
 
     assert!(
         error

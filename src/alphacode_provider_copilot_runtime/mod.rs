@@ -5,9 +5,6 @@
 //! root registers [`CopilotApiProvider`] with `crate::alphacode_base::provider::external`
 //! at startup.
 
-use anyhow::Result;
-use async_trait::async_trait;
-use chrono::Utc;
 use crate::alphacode_base::auth::copilot as copilot_auth;
 use crate::alphacode_message_types::{
     ContentBlock, Message as ChatMessage, Role, StreamEvent, ToolDefinition,
@@ -20,6 +17,9 @@ use crate::alphacode_provider_copilot::{
 use crate::alphacode_provider_copilot::{DEFAULT_MODEL, FALLBACK_MODELS};
 pub use crate::alphacode_provider_core::PremiumMode;
 use crate::alphacode_provider_core::{EventStream, Provider};
+use anyhow::Result;
+use async_trait::async_trait;
+use chrono::Utc;
 use serde_json::{Value, json};
 use std::sync::{Arc, RwLock};
 use tokio::sync::mpsc;
@@ -279,7 +279,10 @@ impl CopilotApiProvider {
         self.premium_mode
             .store(mode as u8, std::sync::atomic::Ordering::Relaxed);
         if mode != PremiumMode::Normal {
-            crate::alphacode_base::logging::info(&format!("Copilot premium mode set to {:?}", mode));
+            crate::alphacode_base::logging::info(&format!(
+                "Copilot premium mode set to {:?}",
+                mode
+            ));
         }
     }
 
@@ -573,7 +576,8 @@ impl CopilotApiProvider {
             }
 
             if !status.is_success() {
-                let body_text = crate::alphacode_base::util::http_error_body(resp, "HTTP error").await;
+                let body_text =
+                    crate::alphacode_base::util::http_error_body(resp, "HTTP error").await;
                 let error_str =
                     format!("Copilot API error (HTTP {}): {}", status, body_text).to_lowercase();
                 if is_retryable_error(&error_str) && attempt + 1 < MAX_RETRIES {
@@ -1038,8 +1042,11 @@ impl Provider for CopilotApiProvider {
     }
 
     fn context_window(&self) -> usize {
-        crate::alphacode_provider_core::context_limit_for_model_with_provider(&self.model(), Some(self.name()))
-            .unwrap_or(128_000)
+        crate::alphacode_provider_core::context_limit_for_model_with_provider(
+            &self.model(),
+            Some(self.name()),
+        )
+        .unwrap_or(128_000)
     }
 
     fn fork(&self) -> Arc<dyn Provider> {
@@ -1100,4 +1107,3 @@ impl Provider for CopilotApiProvider {
         }
     }
 }
-

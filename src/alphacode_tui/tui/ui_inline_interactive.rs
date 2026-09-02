@@ -95,7 +95,8 @@ fn picker_entry_display_name(entry: &crate::alphacode_tui::tui::PickerEntry) -> 
 fn picker_entry_pretty_name(entry: &crate::alphacode_tui::tui::PickerEntry) -> String {
     if !matches!(
         entry.action,
-        crate::alphacode_tui::tui::PickerAction::Model | crate::alphacode_tui::tui::PickerAction::AgentModelChoice { .. }
+        crate::alphacode_tui::tui::PickerAction::Model
+            | crate::alphacode_tui::tui::PickerAction::AgentModelChoice { .. }
     ) {
         return entry.name.clone();
     }
@@ -175,7 +176,9 @@ fn selected_route_notice_text(
     None
 }
 
-fn model_picker_top_hint(picker: &crate::alphacode_tui::tui::InlineInteractiveState) -> Option<&'static str> {
+fn model_picker_top_hint(
+    picker: &crate::alphacode_tui::tui::InlineInteractiveState,
+) -> Option<&'static str> {
     let is_swarm_agent_model_picker = picker.kind == crate::alphacode_tui::tui::PickerKind::Model
         && picker.entries.iter().any(|entry| {
             matches!(
@@ -209,7 +212,9 @@ fn model_picker_top_hint(picker: &crate::alphacode_tui::tui::InlineInteractiveSt
     }
 }
 
-fn account_picker_shows_provider_badge(picker: &crate::alphacode_tui::tui::InlineInteractiveState) -> bool {
+fn account_picker_shows_provider_badge(
+    picker: &crate::alphacode_tui::tui::InlineInteractiveState,
+) -> bool {
     let mut providers: Vec<&str> = Vec::new();
     for &fi in &picker.filtered {
         let entry = &picker.entries[fi];
@@ -248,11 +253,16 @@ fn account_picker_entry_title(
     (format!("{}{}", provider_prefix, display_name), prefix_chars)
 }
 
-fn account_inline_interactive_state_label(entry: &crate::alphacode_tui::tui::PickerEntry) -> &'static str {
+fn account_inline_interactive_state_label(
+    entry: &crate::alphacode_tui::tui::PickerEntry,
+) -> &'static str {
     entry.account_state_label().unwrap_or("-")
 }
 
-fn picker_render_width(picker: &crate::alphacode_tui::tui::InlineInteractiveState, max_width: usize) -> usize {
+fn picker_render_width(
+    picker: &crate::alphacode_tui::tui::InlineInteractiveState,
+    max_width: usize,
+) -> usize {
     let marker_width = 3usize;
     let is_preview = picker.preview;
     const WIDTH_SCAN_LIMIT: usize = 200;
@@ -440,7 +450,9 @@ pub(super) fn draw_inline_interactive(frame: &mut Frame, app: &dyn TuiState, are
                 Span::styled(" ", Style::default()),
                 Span::styled(
                     truncate_display(hint, area.width.saturating_sub(1) as usize),
-                    Style::default().fg(gradient[3]).add_modifier(Modifier::ITALIC), // sky blue hint
+                    Style::default()
+                        .fg(gradient[3])
+                        .add_modifier(Modifier::ITALIC), // sky blue hint
                 ),
             ])),
             hint_area,
@@ -650,15 +662,15 @@ pub(super) fn draw_inline_interactive(frame: &mut Frame, app: &dyn TuiState, are
         ));
         let display_name = picker_entry_display_name(entry);
         let account_action_color = match &entry.action {
-            crate::alphacode_tui::tui::PickerAction::Account(crate::alphacode_tui::tui::AccountPickerAction::Add { .. }) => {
-                Some(rgb(140, 220, 170))
-            }
-            crate::alphacode_tui::tui::PickerAction::Account(crate::alphacode_tui::tui::AccountPickerAction::Replace {
-                ..
-            }) => Some(rgb(240, 200, 120)),
-            crate::alphacode_tui::tui::PickerAction::Account(crate::alphacode_tui::tui::AccountPickerAction::OpenCenter {
-                ..
-            }) => Some(rgb(150, 190, 255)),
+            crate::alphacode_tui::tui::PickerAction::Account(
+                crate::alphacode_tui::tui::AccountPickerAction::Add { .. },
+            ) => Some(rgb(140, 220, 170)),
+            crate::alphacode_tui::tui::PickerAction::Account(
+                crate::alphacode_tui::tui::AccountPickerAction::Replace { .. },
+            ) => Some(rgb(240, 200, 120)),
+            crate::alphacode_tui::tui::PickerAction::Account(
+                crate::alphacode_tui::tui::AccountPickerAction::OpenCenter { .. },
+            ) => Some(rgb(150, 190, 255)),
             _ => None,
         };
         // Gradient-colored model name styling based on state
@@ -669,9 +681,13 @@ pub(super) fn draw_inline_interactive(frame: &mut Frame, app: &dyn TuiState, are
         } else if let Some(color) = account_action_color {
             Style::default().fg(color).bold()
         } else if entry.is_current {
-            Style::default().fg(gradient[5]).add_modifier(Modifier::BOLD) // teal for current
+            Style::default()
+                .fg(gradient[5])
+                .add_modifier(Modifier::BOLD) // teal for current
         } else if entry.is_favorite {
-            Style::default().fg(gradient[12]).add_modifier(Modifier::BOLD) // rose for favorites
+            Style::default()
+                .fg(gradient[12])
+                .add_modifier(Modifier::BOLD) // rose for favorites
         } else if entry.recommended {
             Style::default().fg(gradient[9]) // amber for recommended
         } else if entry.old {
@@ -816,21 +832,22 @@ pub(super) fn draw_inline_interactive(frame: &mut Frame, app: &dyn TuiState, are
         let provider_display = format!(" {}", pad_left_display(provider_label.as_str(), pw));
         // Provider-aware gradient coloring: different providers get different hues
         let provider_lower = provider_label.to_lowercase();
-        let provider_color = if provider_lower.contains("anthropic") || provider_lower.contains("claude") {
-            gradient[2] // blue for Anthropic
-        } else if provider_lower.contains("openai") || provider_lower.contains("gpt") {
-            gradient[7] // green for OpenAI
-        } else if provider_lower.contains("gmi") {
-            gradient[4] // teal for GMI Cloud
-        } else if provider_lower.contains("openrouter") {
-            gradient[14] // purple for OpenRouter
-        } else if provider_lower.contains("gemini") {
-            gradient[9] // amber for Gemini
-        } else if provider_lower.contains("copilot") {
-            gradient[11] // peach for Copilot
-        } else {
-            rgb(140, 180, 255) // default blue
-        };
+        let provider_color =
+            if provider_lower.contains("anthropic") || provider_lower.contains("claude") {
+                gradient[2] // blue for Anthropic
+            } else if provider_lower.contains("openai") || provider_lower.contains("gpt") {
+                gradient[7] // green for OpenAI
+            } else if provider_lower.contains("gmi") {
+                gradient[4] // teal for GMI Cloud
+            } else if provider_lower.contains("openrouter") {
+                gradient[14] // purple for OpenRouter
+            } else if provider_lower.contains("gemini") {
+                gradient[9] // amber for Gemini
+            } else if provider_lower.contains("copilot") {
+                gradient[11] // peach for Copilot
+            } else {
+                rgb(140, 180, 255) // default blue
+            };
         let provider_style = if unavailable {
             Style::default().fg(rgb(80, 80, 80))
         } else if is_row_selected && col == 1 {
@@ -952,7 +969,9 @@ mod tests {
         }
     }
 
-    fn sample_account_picker(mixed_providers: bool) -> crate::alphacode_tui::tui::InlineInteractiveState {
+    fn sample_account_picker(
+        mixed_providers: bool,
+    ) -> crate::alphacode_tui::tui::InlineInteractiveState {
         let mut models = vec![crate::alphacode_tui::tui::PickerEntry {
             name: "work".to_string(),
             options: vec![crate::alphacode_tui::tui::PickerOption {
@@ -962,10 +981,12 @@ mod tests {
                 detail: String::new(),
                 estimated_reference_cost_micros: None,
             }],
-            action: crate::alphacode_tui::tui::PickerAction::Account(crate::alphacode_tui::tui::AccountPickerAction::Switch {
-                provider_id: "claude".to_string(),
-                label: "work".to_string(),
-            }),
+            action: crate::alphacode_tui::tui::PickerAction::Account(
+                crate::alphacode_tui::tui::AccountPickerAction::Switch {
+                    provider_id: "claude".to_string(),
+                    label: "work".to_string(),
+                },
+            ),
             selected_option: 0,
             is_current: true,
             is_default: false,
@@ -1035,7 +1056,9 @@ mod tests {
                     detail: "/agents swarm".to_string(),
                     estimated_reference_cost_micros: None,
                 }],
-                action: crate::alphacode_tui::tui::PickerAction::AgentTarget(crate::alphacode_tui::tui::AgentModelTarget::Swarm),
+                action: crate::alphacode_tui::tui::PickerAction::AgentTarget(
+                    crate::alphacode_tui::tui::AgentModelTarget::Swarm,
+                ),
                 selected_option: 0,
                 is_current: false,
                 is_default: false,
@@ -1297,4 +1320,3 @@ mod tests {
         assert!(!picker.shows_default_shortcut_hint());
     }
 }
-

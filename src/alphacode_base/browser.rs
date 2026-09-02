@@ -943,4 +943,3 @@ pub async fn run_setup_command() -> Result<()> {
 
     Ok(())
 }
-

@@ -462,7 +462,9 @@ impl LoginPicker {
                     Span::styled(
                         if selected { "▸ " } else { "  " },
                         if selected {
-                            row_style.fg(rgb(130, 224, 215)).add_modifier(Modifier::BOLD)
+                            row_style
+                                .fg(rgb(130, 224, 215))
+                                .add_modifier(Modifier::BOLD)
                         } else {
                             row_style.fg(MUTED_DARK)
                         },
@@ -495,7 +497,8 @@ impl LoginPicker {
 
         let Some(item) = self.selected_item() else {
             frame.render_widget(
-                Paragraph::new("No provider selected").style(Style::default().fg(rgb(100, 110, 130))),
+                Paragraph::new("No provider selected")
+                    .style(Style::default().fg(rgb(100, 110, 130))),
                 inner,
             );
             return;
@@ -594,7 +597,12 @@ impl LoginPicker {
         lines.push(Line::from(""));
         lines.push(Line::from(vec![
             Span::styled(" ", Style::default()),
-            Span::styled("Enter ", Style::default().fg(rgb(130, 224, 215)).add_modifier(Modifier::BOLD)),
+            Span::styled(
+                "Enter ",
+                Style::default()
+                    .fg(rgb(130, 224, 215))
+                    .add_modifier(Modifier::BOLD),
+            ),
             Span::styled("to begin login", Style::default().fg(rgb(140, 155, 175))),
         ]));
 
@@ -616,7 +624,10 @@ fn estimate_item_bytes(item: &LoginPickerItem) -> usize {
 }
 
 fn hotkey(text: &'static str) -> Span<'static> {
-    Span::styled(text, Style::default().fg(rgb(210, 220, 230)).bg(rgb(55, 60, 75)))
+    Span::styled(
+        text,
+        Style::default().fg(rgb(210, 220, 230)).bg(rgb(55, 60, 75)),
+    )
 }
 
 fn metric_span(label: &'static str, value: usize, color: Color) -> Span<'static> {
@@ -707,7 +718,8 @@ fn claude_account_lines() -> Vec<Line<'static>> {
         return lines;
     }
 
-    let active = active_label.unwrap_or_else(crate::alphacode_base::auth::claude::primary_account_label);
+    let active =
+        active_label.unwrap_or_else(crate::alphacode_base::auth::claude::primary_account_label);
     lines.push(Line::from(vec![Span::styled(
         format!("{} saved · active: {}", accounts.len(), active),
         Style::default().fg(MUTED),
@@ -782,7 +794,8 @@ fn openai_account_lines() -> Vec<Line<'static>> {
         return lines;
     }
 
-    let active = active_label.unwrap_or_else(crate::alphacode_base::auth::codex::primary_account_label);
+    let active =
+        active_label.unwrap_or_else(crate::alphacode_base::auth::codex::primary_account_label);
     lines.push(Line::from(vec![Span::styled(
         format!("{} saved · active: {}", accounts.len(), active),
         Style::default().fg(MUTED),

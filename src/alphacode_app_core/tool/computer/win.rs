@@ -1,8 +1,8 @@
 //! Tier 2: application and window management via System Events / NSWorkspace.
 
 use super::osa;
-use anyhow::Result;
 use crate::alphacode_tool_types::ToolOutput;
+use anyhow::Result;
 
 pub fn list_apps() -> Result<ToolOutput> {
     let script = "tell application \"System Events\" to get name of every application process whose background only is false";

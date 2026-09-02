@@ -119,4 +119,3 @@ pub(crate) fn generate_unified_diff(old: &str, new: &str, file_path: &str) -> St
 
     output
 }
-

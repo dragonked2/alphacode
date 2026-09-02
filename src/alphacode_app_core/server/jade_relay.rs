@@ -4,10 +4,10 @@ use super::state::{
     session_event_fanout_sender,
 };
 use super::{SessionAgents, SwarmMember};
+use crate::alphacode_agent_runtime::{InterruptSignal, SoftInterruptSource};
 use crate::alphacode_app_core::config::SafetyConfig;
 use crate::alphacode_app_core::session::Session;
 use anyhow::{Context, Result};
-use crate::alphacode_agent_runtime::{InterruptSignal, SoftInterruptSource};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;

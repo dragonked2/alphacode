@@ -315,7 +315,8 @@ impl App {
 
         // Surface the streak as an explicit auth_failed telemetry event to
         // distinguish "breaker tripped on a dead credential" from blips.
-        let reason = crate::alphacode_base::auth::login_diagnostics::classify_auth_failure_message(message);
+        let reason =
+            crate::alphacode_base::auth::login_diagnostics::classify_auth_failure_message(message);
         let provider = self.provider_name().to_string();
         crate::telemetry::record_auth_failed_reason(&provider, "session", reason.label());
 
@@ -735,7 +736,8 @@ impl App {
             usage_report_refreshing: false,
             productivity_refreshing: false,
             last_overnight_card_refresh: None,
-            workspace_client: crate::alphacode_tui::tui::workspace_client::WorkspaceClientState::default(),
+            workspace_client:
+                crate::alphacode_tui::tui::workspace_client::WorkspaceClientState::default(),
             prompt_history_search: None,
             persisted_prompt_history: None,
         };
@@ -1174,7 +1176,8 @@ impl App {
             usage_report_refreshing: false,
             productivity_refreshing: false,
             last_overnight_card_refresh: None,
-            workspace_client: crate::alphacode_tui::tui::workspace_client::WorkspaceClientState::default(),
+            workspace_client:
+                crate::alphacode_tui::tui::workspace_client::WorkspaceClientState::default(),
             prompt_history_search: None,
             persisted_prompt_history: None,
         };
@@ -1235,7 +1238,9 @@ impl App {
             let (rendered_messages, rendered_images) =
                 crate::session::render_messages_and_images(&session);
             let display_messages =
-                crate::alphacode_tui_messages::display_messages_from_rendered_messages(rendered_messages);
+                crate::alphacode_tui_messages::display_messages_from_rendered_messages(
+                    rendered_messages,
+                );
             self.replace_display_messages(display_messages);
             self.remote_side_pane_images = rendered_images;
             self.invalidate_side_pane_images_signature();
@@ -1330,4 +1335,3 @@ impl App {
         self.remote_startup_phase_started = Some(Instant::now());
     }
 }
-

@@ -2,7 +2,9 @@ use super::*;
 
 impl App {
     pub(crate) fn open_account_center(&mut self, provider_filter: Option<&str>) {
-        use crate::alphacode_tui::tui::account_picker::{AccountPicker, AccountPickerCommand, AccountPickerItem};
+        use crate::alphacode_tui::tui::account_picker::{
+            AccountPicker, AccountPickerCommand, AccountPickerItem,
+        };
 
         crate::telemetry::record_setup_step_once("account_center_opened");
 
@@ -33,8 +35,10 @@ impl App {
         };
 
         let provider_scope = provider_filter.map(|value| value.to_string());
-        let claude_accounts = crate::alphacode_base::auth::claude::list_accounts().unwrap_or_default();
-        let openai_accounts = crate::alphacode_base::auth::codex::list_accounts().unwrap_or_default();
+        let claude_accounts =
+            crate::alphacode_base::auth::claude::list_accounts().unwrap_or_default();
+        let openai_accounts =
+            crate::alphacode_base::auth::codex::list_accounts().unwrap_or_default();
         let add_replace_scope_supports_multi_account = match provider_scope.as_deref() {
             None => true,
             Some("claude" | "anthropic" | "openai") => true,
@@ -102,7 +106,11 @@ impl App {
             match provider.id {
                 "claude" => summary.named_account_count += claude_accounts.len(),
                 "openai" => summary.named_account_count += openai_accounts.len(),
-                _ if !matches!(auth_state, crate::alphacode_base::auth::AuthState::NotConfigured) => {
+                _ if !matches!(
+                    auth_state,
+                    crate::alphacode_base::auth::AuthState::NotConfigured
+                ) =>
+                {
                     summary.named_account_count += 1;
                 }
                 _ => {}
@@ -114,7 +122,10 @@ impl App {
                 crate::alphacode_base::auth::AuthState::NotConfigured => "setup needed",
             };
 
-            if !matches!(auth_state, crate::alphacode_base::auth::AuthState::NotConfigured) {
+            if !matches!(
+                auth_state,
+                crate::alphacode_base::auth::AuthState::NotConfigured
+            ) {
                 items.push(AccountPickerItem::action(
                     provider.id,
                     provider.display_name,
@@ -318,7 +329,9 @@ impl App {
     }
 
     pub(crate) fn open_account_add_replace_flow(&mut self, provider_filter: Option<&str>) {
-        use crate::alphacode_tui::tui::account_picker::{AccountPicker, AccountPickerCommand, AccountPickerItem};
+        use crate::alphacode_tui::tui::account_picker::{
+            AccountPicker, AccountPickerCommand, AccountPickerItem,
+        };
 
         let mut items = vec![AccountPickerItem::action(
             "account-flow",
@@ -342,7 +355,8 @@ impl App {
                 "Create the next numbered Claude account",
                 AccountPickerCommand::SubmitInput("/account claude add".to_string()),
             ));
-            for account in crate::alphacode_base::auth::claude::list_accounts().unwrap_or_default() {
+            for account in crate::alphacode_base::auth::claude::list_accounts().unwrap_or_default()
+            {
                 let label = account.label.clone();
                 items.push(AccountPickerItem::action(
                     "claude",
@@ -468,9 +482,13 @@ impl App {
         }
     }
 
-    fn build_all_inline_account_picker(&self) -> (Vec<crate::alphacode_tui::tui::PickerEntry>, usize) {
-        let claude_accounts = crate::alphacode_base::auth::claude::list_accounts().unwrap_or_default();
-        let openai_accounts = crate::alphacode_base::auth::codex::list_accounts().unwrap_or_default();
+    fn build_all_inline_account_picker(
+        &self,
+    ) -> (Vec<crate::alphacode_tui::tui::PickerEntry>, usize) {
+        let claude_accounts =
+            crate::alphacode_base::auth::claude::list_accounts().unwrap_or_default();
+        let openai_accounts =
+            crate::alphacode_base::auth::codex::list_accounts().unwrap_or_default();
         let claude_active = crate::alphacode_base::auth::claude::active_account_label()
             .unwrap_or_else(crate::alphacode_base::auth::claude::primary_account_label);
         let openai_active = crate::alphacode_base::auth::codex::active_account_label()
@@ -600,9 +618,11 @@ impl App {
                 detail: format!("create {}", next_claude),
                 estimated_reference_cost_micros: None,
             }],
-            action: crate::alphacode_tui::tui::PickerAction::Account(crate::alphacode_tui::tui::AccountPickerAction::Add {
-                provider_id: "claude".to_string(),
-            }),
+            action: crate::alphacode_tui::tui::PickerAction::Account(
+                crate::alphacode_tui::tui::AccountPickerAction::Add {
+                    provider_id: "claude".to_string(),
+                },
+            ),
             selected_option: 0,
             is_current: false,
             is_default: false,
@@ -624,9 +644,11 @@ impl App {
                 detail: format!("create {}", next_openai),
                 estimated_reference_cost_micros: None,
             }],
-            action: crate::alphacode_tui::tui::PickerAction::Account(crate::alphacode_tui::tui::AccountPickerAction::Add {
-                provider_id: "openai".to_string(),
-            }),
+            action: crate::alphacode_tui::tui::PickerAction::Account(
+                crate::alphacode_tui::tui::AccountPickerAction::Add {
+                    provider_id: "openai".to_string(),
+                },
+            ),
             selected_option: 0,
             is_current: false,
             is_default: false,
@@ -658,10 +680,12 @@ impl App {
                 },
                 estimated_reference_cost_micros: None,
             }],
-            action: crate::alphacode_tui::tui::PickerAction::Account(crate::alphacode_tui::tui::AccountPickerAction::Replace {
-                provider_id: "claude".to_string(),
-                label: replace_claude,
-            }),
+            action: crate::alphacode_tui::tui::PickerAction::Account(
+                crate::alphacode_tui::tui::AccountPickerAction::Replace {
+                    provider_id: "claude".to_string(),
+                    label: replace_claude,
+                },
+            ),
             selected_option: 0,
             is_current: false,
             is_default: false,
@@ -693,10 +717,12 @@ impl App {
                 },
                 estimated_reference_cost_micros: None,
             }],
-            action: crate::alphacode_tui::tui::PickerAction::Account(crate::alphacode_tui::tui::AccountPickerAction::Replace {
-                provider_id: "openai".to_string(),
-                label: replace_openai,
-            }),
+            action: crate::alphacode_tui::tui::PickerAction::Account(
+                crate::alphacode_tui::tui::AccountPickerAction::Replace {
+                    provider_id: "openai".to_string(),
+                    label: replace_openai,
+                },
+            ),
             selected_option: 0,
             is_current: false,
             is_default: false,
@@ -741,7 +767,9 @@ impl App {
         (models, selected)
     }
 
-    fn build_claude_inline_account_picker(&self) -> (Vec<crate::alphacode_tui::tui::PickerEntry>, usize) {
+    fn build_claude_inline_account_picker(
+        &self,
+    ) -> (Vec<crate::alphacode_tui::tui::PickerEntry>, usize) {
         let accounts = crate::alphacode_base::auth::claude::list_accounts().unwrap_or_default();
         let active_label = crate::alphacode_base::auth::claude::active_account_label()
             .unwrap_or_else(crate::alphacode_base::auth::claude::primary_account_label);
@@ -809,9 +837,11 @@ impl App {
                 detail: format!("create {}", next_label),
                 estimated_reference_cost_micros: None,
             }],
-            action: crate::alphacode_tui::tui::PickerAction::Account(crate::alphacode_tui::tui::AccountPickerAction::Add {
-                provider_id: "claude".to_string(),
-            }),
+            action: crate::alphacode_tui::tui::PickerAction::Account(
+                crate::alphacode_tui::tui::AccountPickerAction::Add {
+                    provider_id: "claude".to_string(),
+                },
+            ),
             selected_option: 0,
             is_current: false,
             is_default: false,
@@ -843,10 +873,12 @@ impl App {
                 },
                 estimated_reference_cost_micros: None,
             }],
-            action: crate::alphacode_tui::tui::PickerAction::Account(crate::alphacode_tui::tui::AccountPickerAction::Replace {
-                provider_id: "claude".to_string(),
-                label: replace_target,
-            }),
+            action: crate::alphacode_tui::tui::PickerAction::Account(
+                crate::alphacode_tui::tui::AccountPickerAction::Replace {
+                    provider_id: "claude".to_string(),
+                    label: replace_target,
+                },
+            ),
             selected_option: 0,
             is_current: false,
             is_default: false,
@@ -891,7 +923,9 @@ impl App {
         (models, selected)
     }
 
-    fn build_openai_inline_account_picker(&self) -> (Vec<crate::alphacode_tui::tui::PickerEntry>, usize) {
+    fn build_openai_inline_account_picker(
+        &self,
+    ) -> (Vec<crate::alphacode_tui::tui::PickerEntry>, usize) {
         let accounts = crate::alphacode_base::auth::codex::list_accounts().unwrap_or_default();
         let active_label = crate::alphacode_base::auth::codex::active_account_label()
             .unwrap_or_else(crate::alphacode_base::auth::codex::primary_account_label);
@@ -959,9 +993,11 @@ impl App {
                 detail: format!("create {}", next_label),
                 estimated_reference_cost_micros: None,
             }],
-            action: crate::alphacode_tui::tui::PickerAction::Account(crate::alphacode_tui::tui::AccountPickerAction::Add {
-                provider_id: "openai".to_string(),
-            }),
+            action: crate::alphacode_tui::tui::PickerAction::Account(
+                crate::alphacode_tui::tui::AccountPickerAction::Add {
+                    provider_id: "openai".to_string(),
+                },
+            ),
             selected_option: 0,
             is_current: false,
             is_default: false,
@@ -993,10 +1029,12 @@ impl App {
                 },
                 estimated_reference_cost_micros: None,
             }],
-            action: crate::alphacode_tui::tui::PickerAction::Account(crate::alphacode_tui::tui::AccountPickerAction::Replace {
-                provider_id: "openai".to_string(),
-                label: replace_target,
-            }),
+            action: crate::alphacode_tui::tui::PickerAction::Account(
+                crate::alphacode_tui::tui::AccountPickerAction::Replace {
+                    provider_id: "openai".to_string(),
+                    label: replace_target,
+                },
+            ),
             selected_option: 0,
             is_current: false,
             is_default: false,
@@ -1093,7 +1131,9 @@ impl App {
             crate::alphacode_tui::tui::account_picker::AccountProviderKind::Anthropic => {
                 ("claude", "Anthropic/Claude")
             }
-            crate::alphacode_tui::tui::account_picker::AccountProviderKind::OpenAi => ("openai", "OpenAI"),
+            crate::alphacode_tui::tui::account_picker::AccountProviderKind::OpenAi => {
+                ("openai", "OpenAI")
+            }
         };
         self.push_display_message(DisplayMessage::system(format!(
             "Enter a label for the new {} account, then press Enter. Use /cancel to abort.",
@@ -1194,7 +1234,8 @@ impl App {
         &mut self,
         code: KeyCode,
         modifiers: KeyModifiers,
-    ) -> anyhow::Result<Option<crate::alphacode_tui::tui::account_picker::AccountPickerCommand>> {
+    ) -> anyhow::Result<Option<crate::alphacode_tui::tui::account_picker::AccountPickerCommand>>
+    {
         use crate::alphacode_tui::tui::account_picker::OverlayAction;
 
         let action = {
@@ -1218,4 +1259,3 @@ impl App {
         }
     }
 }
-

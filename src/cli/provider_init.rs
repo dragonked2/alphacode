@@ -3,14 +3,14 @@ use std::io::{self, Write};
 use std::sync::Arc;
 
 use crate::alphacode_base::auth;
-use crate::provider;
-use crate::provider::Provider;
 use crate::alphacode_base::provider_catalog::{
     LoginProviderDescriptor, LoginProviderTarget, OpenAiCompatibleProfile,
     apply_openai_compatible_profile_env, force_apply_openai_compatible_profile_env,
     is_safe_env_file_name, is_safe_env_key_name, resolve_login_selection,
     resolve_openai_compatible_profile,
 };
+use crate::provider;
+use crate::provider::Provider;
 use crate::tool;
 
 use super::login::run_login_provider;
@@ -1235,7 +1235,9 @@ fn disable_subscription_runtime_mode_preserving_active_provider_profile() {
     if std::env::var_os("ALPHACODE_PROVIDER_PROFILE_ACTIVE").is_some()
         || std::env::var_os("ALPHACODE_NAMED_PROVIDER_PROFILE").is_some()
     {
-        crate::alphacode_core::env::remove_var(crate::subscription_catalog::ALPHACODE_SUBSCRIPTION_ACTIVE_ENV);
+        crate::alphacode_core::env::remove_var(
+            crate::subscription_catalog::ALPHACODE_SUBSCRIPTION_ACTIVE_ENV,
+        );
     } else {
         disable_subscription_runtime_mode();
     }
@@ -1577,7 +1579,8 @@ async fn init_provider_with_options(
                 force_apply_openai_compatible_profile_env(Some(profile));
             }
             let mut runtime_model_hint = None;
-            let display_name = if let Ok(named) = std::env::var("ALPHACODE_NAMED_PROVIDER_PROFILE") {
+            let display_name = if let Ok(named) = std::env::var("ALPHACODE_NAMED_PROVIDER_PROFILE")
+            {
                 if let Some(profile) = crate::config::config().providers.get(&named) {
                     runtime_model_hint = profile.default_model.clone();
                 }
@@ -1774,7 +1777,10 @@ async fn init_provider_with_options(
                     "Using {} (use /model to switch models)",
                     multi.name()
                 ));
-                crate::alphacode_core::env::set_var("ALPHACODE_ACTIVE_PROVIDER", multi.name().to_lowercase());
+                crate::alphacode_core::env::set_var(
+                    "ALPHACODE_ACTIVE_PROVIDER",
+                    multi.name().to_lowercase(),
+                );
                 Arc::new(multi)
             } else {
                 let non_interactive = std::env::var("ALPHACODE_NON_INTERACTIVE").is_ok();
@@ -1792,7 +1798,10 @@ async fn init_provider_with_options(
                         "No credentials configured; booting deferred-auth MultiProvider for in-TUI onboarding login",
                     );
                     let multi = provider::MultiProvider::from_auth_status(availability.auth_status);
-                    crate::alphacode_core::env::set_var("ALPHACODE_ACTIVE_PROVIDER", multi.name().to_lowercase());
+                    crate::alphacode_core::env::set_var(
+                        "ALPHACODE_ACTIVE_PROVIDER",
+                        multi.name().to_lowercase(),
+                    );
                     Arc::new(multi)
                 } else if non_interactive {
                     anyhow::bail!(

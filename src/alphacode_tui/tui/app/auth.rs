@@ -113,7 +113,8 @@ impl App {
             } else {
                 ""
             };
-            let tier_suffix = if model.min_tier == crate::subscription_catalog::AlphacodeTier::Plus {
+            let tier_suffix = if model.min_tier == crate::subscription_catalog::AlphacodeTier::Plus
+            {
                 String::new()
             } else {
                 format!(" [{}]", model.min_tier.display_name())
@@ -130,7 +131,10 @@ impl App {
         }
 
         message.push_str("\nTiers\n\n");
-        for tier in crate::subscription_catalog::AlphacodeTier::ALL.iter().copied() {
+        for tier in crate::subscription_catalog::AlphacodeTier::ALL
+            .iter()
+            .copied()
+        {
             message.push_str(&format!(
                 "  - {} - ${}/mo retail, about ${:.2} usable inference budget\n",
                 tier.display_name(),
@@ -879,14 +883,21 @@ impl App {
         let (auth_url, redirect_uri) = match callback_port {
             Some(port) if callback_available => {
                 let redirect_uri = format!("http://localhost:{}/callback", port);
-                let auth_url =
-                    crate::alphacode_base::auth::oauth::claude_auth_url(&redirect_uri, &challenge, &verifier);
+                let auth_url = crate::alphacode_base::auth::oauth::claude_auth_url(
+                    &redirect_uri,
+                    &challenge,
+                    &verifier,
+                );
                 (auth_url, redirect_uri)
             }
             _ => {
-                let redirect_uri = crate::alphacode_base::auth::oauth::claude::REDIRECT_URI.to_string();
-                let auth_url =
-                    crate::alphacode_base::auth::oauth::claude_auth_url(&redirect_uri, &challenge, &verifier);
+                let redirect_uri =
+                    crate::alphacode_base::auth::oauth::claude::REDIRECT_URI.to_string();
+                let auth_url = crate::alphacode_base::auth::oauth::claude_auth_url(
+                    &redirect_uri,
+                    &challenge,
+                    &verifier,
+                );
                 (auth_url, redirect_uri)
             }
         };
@@ -992,7 +1003,9 @@ impl App {
         // Claude uses the PKCE verifier as the OAuth `state` value.
         let code = tokio::time::timeout(
             std::time::Duration::from_secs(300),
-            crate::alphacode_base::auth::oauth::wait_for_callback_async_on_listener(listener, &verifier),
+            crate::alphacode_base::auth::oauth::wait_for_callback_async_on_listener(
+                listener, &verifier,
+            ),
         )
         .await
         .map_err(|_| "Login timed out after 5 minutes. Please try again.".to_string())?
@@ -1170,7 +1183,8 @@ impl App {
         .map(|section| format!("\n\n{section}"))
         .unwrap_or_default();
 
-        let callback_listener = crate::alphacode_base::auth::oauth::bind_callback_listener(port).ok();
+        let callback_listener =
+            crate::alphacode_base::auth::oauth::bind_callback_listener(port).ok();
         let callback_available = callback_listener.is_some();
         let browser_opened = Self::open_auth_browser(&auth_url);
         let label_owned = label.to_string();
@@ -1266,7 +1280,10 @@ impl App {
         let redirect_uri = crate::alphacode_base::auth::oauth::openai::redirect_uri(port);
         let code = tokio::time::timeout(
             std::time::Duration::from_secs(300),
-            crate::alphacode_base::auth::oauth::wait_for_callback_async_on_listener(listener, &expected_state),
+            crate::alphacode_base::auth::oauth::wait_for_callback_async_on_listener(
+                listener,
+                &expected_state,
+            ),
         )
         .await
         .map_err(|_| "Login timed out after 5 minutes. Please try again.".to_string())?
@@ -1292,9 +1309,13 @@ impl App {
             .await
             .map_err(|e| e.to_string())?
         } else {
-            crate::alphacode_base::auth::oauth::exchange_openai_code(&input, &verifier, redirect_uri)
-                .await
-                .map_err(|e| e.to_string())?
+            crate::alphacode_base::auth::oauth::exchange_openai_code(
+                &input,
+                &verifier,
+                redirect_uri,
+            )
+            .await
+            .map_err(|e| e.to_string())?
         };
 
         let label = label.unwrap_or_else(crate::alphacode_base::auth::codex::primary_account_label);
@@ -1319,8 +1340,12 @@ impl App {
 
         let auth_setup: anyhow::Result<(String, Option<String>, String)> =
             if let Some(redirect_uri) = maybe_redirect_uri {
-                crate::alphacode_base::auth::gemini::build_web_auth_url(&redirect_uri, &challenge, &state)
-                    .map(|auth_url| (auth_url, Some(state.clone()), redirect_uri))
+                crate::alphacode_base::auth::gemini::build_web_auth_url(
+                    &redirect_uri,
+                    &challenge,
+                    &state,
+                )
+                .map(|auth_url| (auth_url, Some(state.clone()), redirect_uri))
             } else {
                 crate::alphacode_base::auth::gemini::build_manual_auth_url(
                     "https://codeassist.google.com/authcode",
@@ -1678,17 +1703,18 @@ impl App {
         tokio::spawn(async move {
             let client = crate::provider::shared_http_client();
 
-            let device_resp = match crate::alphacode_base::auth::copilot::initiate_device_flow(&client).await {
-                Ok(resp) => resp,
-                Err(e) => {
-                    Bus::global().publish(BusEvent::LoginCompleted(LoginCompleted {
-                        provider: "copilot".to_string(),
-                        success: false,
-                        message: format!("Copilot device flow failed: {}", e),
-                    }));
-                    return;
-                }
-            };
+            let device_resp =
+                match crate::alphacode_base::auth::copilot::initiate_device_flow(&client).await {
+                    Ok(resp) => resp,
+                    Err(e) => {
+                        Bus::global().publish(BusEvent::LoginCompleted(LoginCompleted {
+                            provider: "copilot".to_string(),
+                            success: false,
+                            message: format!("Copilot device flow failed: {}", e),
+                        }));
+                        return;
+                    }
+                };
 
             let user_code = device_resp.user_code.clone();
             let verification_uri = device_resp.verification_uri.clone();
@@ -1742,9 +1768,10 @@ impl App {
                 }
             };
 
-            let username = crate::alphacode_base::auth::copilot::fetch_github_username(&client, &token)
-                .await
-                .unwrap_or_else(|_| "unknown".to_string());
+            let username =
+                crate::alphacode_base::auth::copilot::fetch_github_username(&client, &token)
+                    .await
+                    .unwrap_or_else(|_| "unknown".to_string());
 
             match crate::alphacode_base::auth::copilot::save_github_token(&token, &username) {
                 Ok(()) => {
@@ -1804,7 +1831,8 @@ impl App {
         .map(|section| format!("\n\n{section}"))
         .unwrap_or_default();
 
-        let callback_listener = crate::alphacode_base::auth::oauth::bind_callback_listener(port).ok();
+        let callback_listener =
+            crate::alphacode_base::auth::oauth::bind_callback_listener(port).ok();
         let callback_available = callback_listener.is_some();
         let browser_opened = Self::open_auth_browser(&auth_url);
 
@@ -1925,8 +1953,12 @@ impl App {
                 )
                 .await
             } else {
-                crate::alphacode_base::auth::antigravity::exchange_callback_code(trimmed, &verifier, &redirect_uri)
-                    .await
+                crate::alphacode_base::auth::antigravity::exchange_callback_code(
+                    trimmed,
+                    &verifier,
+                    &redirect_uri,
+                )
+                .await
             }
             .map_err(|e| e.to_string())?;
 
@@ -2311,7 +2343,10 @@ impl App {
                                 "bedrock",
                             );
                             if let Some(default_model) = default_model.as_deref() {
-                                crate::alphacode_core::env::set_var("ALPHACODE_BEDROCK_MODEL", default_model);
+                                crate::alphacode_core::env::set_var(
+                                    "ALPHACODE_BEDROCK_MODEL",
+                                    default_model,
+                                );
                             }
                         }
 
@@ -2325,7 +2360,8 @@ impl App {
                             );
                         }
 
-                        let guidance = if key_name == crate::subscription_catalog::ALPHACODE_API_KEY_ENV
+                        let guidance = if key_name
+                            == crate::subscription_catalog::ALPHACODE_API_KEY_ENV
                         {
                             format!(
                                 "Use /login alphacode to access curated models via your router. If the model list looks stale, run /refresh-model-list.\nDocs: {}",
@@ -2336,7 +2372,8 @@ impl App {
                             // paste prompt above, so the post-save message only
                             // needs one short line about what happens next.
                             if resolved.requires_api_key {
-                                "Fetching the model catalog. Switch models anytime with /model.".to_string()
+                                "Fetching the model catalog. Switch models anytime with /model."
+                                    .to_string()
                             } else {
                                 format!(
                                     "Local endpoint configured at {}. Fetching the model catalog. Switch models anytime with /model.",
@@ -2446,7 +2483,9 @@ impl App {
             }
             PendingLogin::AzureEndpoint => {
                 let endpoint_raw = input.trim();
-                let Some(endpoint) = crate::alphacode_base::auth::azure::normalize_endpoint(endpoint_raw) else {
+                let Some(endpoint) =
+                    crate::alphacode_base::auth::azure::normalize_endpoint(endpoint_raw)
+                else {
                     self.push_display_message(DisplayMessage::error(
                         "Invalid Azure OpenAI endpoint. Use https://<resource>.openai.azure.com or the full /openai/v1 URL."
                             .to_string(),
@@ -2791,14 +2830,19 @@ impl App {
             });
         } else {
             let activation = crate::alphacode_base::auth::lifecycle::activate_auth_change(
-                &crate::alphacode_base::auth::lifecycle::AuthActivationRequest::new(provider_hint, None),
+                &crate::alphacode_base::auth::lifecycle::AuthActivationRequest::new(
+                    provider_hint,
+                    None,
+                ),
             );
             provider.on_auth_changed();
             if select_local_model && activation.provider_id.is_some() {
                 let routes = provider.model_routes();
                 if prefer_strongest {
                     if let Some(route) =
-                        crate::alphacode_base::auth::lifecycle::globally_preferred_default_route(&routes)
+                        crate::alphacode_base::auth::lifecycle::globally_preferred_default_route(
+                            &routes,
+                        )
                     {
                         let selection = crate::provider::RouteSelection::from_model_route(&route);
                         let model_request = selection.routed_model_spec();
@@ -2808,11 +2852,13 @@ impl App {
                     }
                 } else {
                     let current_model = provider.model();
-                    if let Some(model) = crate::alphacode_base::auth::lifecycle::provider_model_to_select_after_auth(
-                        &activation,
-                        Some(&current_model),
-                        &routes,
-                    ) {
+                    if let Some(model) =
+                        crate::alphacode_base::auth::lifecycle::provider_model_to_select_after_auth(
+                            &activation,
+                            Some(&current_model),
+                            &routes,
+                        )
+                    {
                         let model_request =
                             activation.model_switch_request(provider.name(), &model);
                         if provider.set_model(&model_request).is_ok() {
@@ -3132,7 +3178,9 @@ impl App {
                 crate::telemetry::record_auth_success(&provider, &method);
             } else {
                 let reason =
-                    crate::alphacode_base::auth::login_diagnostics::classify_auth_failure_message(&login.message);
+                    crate::alphacode_base::auth::login_diagnostics::classify_auth_failure_message(
+                        &login.message,
+                    );
                 crate::telemetry::record_auth_failed_reason(&provider, &method, reason.label());
             }
         }
@@ -3177,10 +3225,11 @@ impl App {
             // install, walk them through model selection -> continue/suggestions.
             self.maybe_begin_onboarding_flow_after_login();
         } else {
-            let message = crate::alphacode_base::auth::login_diagnostics::augment_auth_error_message(
-                &login.provider,
-                &login.message,
-            );
+            let message =
+                crate::alphacode_base::auth::login_diagnostics::augment_auth_error_message(
+                    &login.provider,
+                    &login.message,
+                );
             // During onboarding we route the failure to the recovery screen
             // (which explains next steps) instead of dumping a raw error message
             // and a status notice the user can miss.
@@ -3203,34 +3252,41 @@ impl App {
         label: &str,
         redirect_uri: Option<String>,
     ) -> Result<String, String> {
-        let fallback_redirect_uri =
-            redirect_uri.unwrap_or_else(|| crate::alphacode_base::auth::oauth::claude::REDIRECT_URI.to_string());
-        let redirect_uri =
-            crate::alphacode_base::auth::oauth::claude_redirect_uri_for_input(input.trim(), &fallback_redirect_uri);
-        let oauth_tokens =
-            crate::alphacode_base::auth::oauth::exchange_claude_code(&verifier, input.trim(), &redirect_uri)
-                .await
-                .map_err(|e| e.to_string())?;
+        let fallback_redirect_uri = redirect_uri.unwrap_or_else(|| {
+            crate::alphacode_base::auth::oauth::claude::REDIRECT_URI.to_string()
+        });
+        let redirect_uri = crate::alphacode_base::auth::oauth::claude_redirect_uri_for_input(
+            input.trim(),
+            &fallback_redirect_uri,
+        );
+        let oauth_tokens = crate::alphacode_base::auth::oauth::exchange_claude_code(
+            &verifier,
+            input.trim(),
+            &redirect_uri,
+        )
+        .await
+        .map_err(|e| e.to_string())?;
 
         crate::alphacode_base::auth::oauth::save_claude_tokens_for_account(&oauth_tokens, label)
             .map_err(|e| format!("Failed to save tokens: {}", e))?;
 
-        let profile_suffix = match crate::alphacode_base::auth::oauth::update_claude_account_profile(
-            label,
-            &oauth_tokens.access_token,
-        )
-        .await
-        {
-            Ok(Some(email)) => format!(" (email: {})", mask_email(&email)),
-            Ok(None) => String::new(),
-            Err(e) => {
-                crate::logging::warn(&format!(
-                    "Claude login [{}] profile fetch failed: {}",
-                    label, e
-                ));
-                String::new()
-            }
-        };
+        let profile_suffix =
+            match crate::alphacode_base::auth::oauth::update_claude_account_profile(
+                label,
+                &oauth_tokens.access_token,
+            )
+            .await
+            {
+                Ok(Some(email)) => format!(" (email: {})", mask_email(&email)),
+                Ok(None) => String::new(),
+                Err(e) => {
+                    crate::logging::warn(&format!(
+                        "Claude login [{}] profile fetch failed: {}",
+                        label, e
+                    ));
+                    String::new()
+                }
+            };
 
         Ok(format!(
             "Successfully logged in to Claude! (account: {}){}",
@@ -3332,4 +3388,3 @@ fn looks_like_oauth_callback_input(input: &str) -> bool {
 fn antigravity_input_requires_state_validation(input: &str, expected_state: Option<&str>) -> bool {
     expected_state.is_some() && looks_like_oauth_callback_input(input)
 }
-

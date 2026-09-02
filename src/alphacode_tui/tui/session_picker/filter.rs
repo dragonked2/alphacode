@@ -132,7 +132,10 @@ impl SessionPicker {
     }
 
     pub(super) fn session_is_codex(session: &SessionInfo) -> bool {
-        crate::alphacode_tui_session_picker::session_is_codex(session.source, session.model.as_deref())
+        crate::alphacode_tui_session_picker::session_is_codex(
+            session.source,
+            session.model.as_deref(),
+        )
     }
 
     pub(super) fn session_is_pi(session: &SessionInfo) -> bool {
@@ -151,7 +154,10 @@ impl SessionPicker {
     }
 
     pub(super) fn session_is_cursor(session: &SessionInfo) -> bool {
-        crate::alphacode_tui_session_picker::session_is_cursor(session.source, session.provider_key.as_deref())
+        crate::alphacode_tui_session_picker::session_is_cursor(
+            session.source,
+            session.provider_key.as_deref(),
+        )
     }
 
     fn session_matches_filter_mode(

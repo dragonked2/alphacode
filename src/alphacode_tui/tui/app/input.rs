@@ -618,18 +618,18 @@ where
 }
 
 pub(in crate::alphacode_tui::tui::app) mod newline;
-mod paste_guard;
 mod paste_buffer;
-#[cfg(test)]
-pub(in crate::alphacode_tui::tui::app) use paste_guard::expire_for_test as paste_guard_expire_for_test;
+mod paste_guard;
 #[cfg(test)]
 #[allow(unused_imports)]
 pub(in crate::alphacode_tui::tui::app) use paste_buffer::expire_for_test as paste_buffer_expire_for_test;
-use paste_guard::image_media_type;
 use paste_buffer::{
-    PasteBurstState, check_enter_burst, insert_paste_newline, note_text_inserted,
-    placeholder_for, rapid_insertion_active, reset_burst,
+    PasteBurstState, check_enter_burst, insert_paste_newline, note_text_inserted, placeholder_for,
+    rapid_insertion_active, reset_burst,
 };
+#[cfg(test)]
+pub(in crate::alphacode_tui::tui::app) use paste_guard::expire_for_test as paste_guard_expire_for_test;
+use paste_guard::image_media_type;
 
 pub(super) fn handle_paste(app: &mut App, text: String) {
     paste_guard::note_paste();
@@ -2226,7 +2226,9 @@ pub(super) fn handle_pre_control_shortcuts(
                 app.set_status_notice("Swarm view closed");
             }
             super::tui_state::SwarmPanelView::Controls => {
-                app.set_status_notice(crate::alphacode_tui::tui::keybind::swarm_view_hint("full page"));
+                app.set_status_notice(crate::alphacode_tui::tui::keybind::swarm_view_hint(
+                    "full page",
+                ));
             }
             super::tui_state::SwarmPanelView::FullPage => {
                 app.set_status_notice(crate::alphacode_tui::tui::keybind::swarm_page_hint());
@@ -2312,7 +2314,10 @@ pub(super) fn handle_visible_copy_shortcut(
     let explicit_shift = modifiers.contains(KeyModifiers::SHIFT);
     let implicit_shift = c.is_ascii_uppercase();
     let macos_option_shift =
-        crate::alphacode_tui::tui::keybind::shortcut_char_for_macos_option_shift_key(code, modifiers).is_some();
+        crate::alphacode_tui::tui::keybind::shortcut_char_for_macos_option_shift_key(
+            code, modifiers,
+        )
+        .is_some();
     if !explicit_shift && !implicit_shift && !macos_option_shift {
         // Some terminals report Alt+Shift+E as Alt+lowercase `e` with no
         // explicit SHIFT modifier. Keep the relaxed fallback scoped to the
@@ -2349,9 +2354,9 @@ pub(super) fn handle_visible_copy_shortcut(
 }
 
 fn visible_copy_shortcut_key(code: KeyCode, modifiers: KeyModifiers) -> Option<char> {
-    if let Some(key) =
-        crate::alphacode_tui::tui::keybind::shortcut_char_for_macos_option_shift_key(code, modifiers)
-    {
+    if let Some(key) = crate::alphacode_tui::tui::keybind::shortcut_char_for_macos_option_shift_key(
+        code, modifiers,
+    ) {
         return Some(key);
     }
 
@@ -2409,7 +2414,8 @@ fn handle_expand_edit_badge_shortcut(app: &mut App, key: char) -> bool {
     app.record_copy_badge_key_press('e');
     app.copy_badge_ui.expand_feedback_until =
         Some(std::time::Instant::now() + std::time::Duration::from_millis(1100));
-    app.copy_badge_ui.expand_feedback_line = crate::alphacode_tui::tui::ui::visible_expand_edit_badge_line();
+    app.copy_badge_ui.expand_feedback_line =
+        crate::alphacode_tui::tui::ui::visible_expand_edit_badge_line();
     app.set_status_notice(format!(
         "Expanded edit diffs · Diffs: {}",
         app.diff_mode.label()
@@ -2673,7 +2679,8 @@ pub(super) fn handle_basic_key(app: &mut App, code: KeyCode) -> bool {
         KeyCode::Char(c) => handle_text_input(app, &c.to_string()),
         KeyCode::Backspace => {
             if app.cursor_pos > 0 {
-                let prev = crate::alphacode_tui::tui::core::prev_char_boundary(&app.input, app.cursor_pos);
+                let prev =
+                    crate::alphacode_tui::tui::core::prev_char_boundary(&app.input, app.cursor_pos);
                 app.remember_input_undo_state();
                 app.input.drain(prev..app.cursor_pos);
                 app.cursor_pos = prev;
@@ -2684,7 +2691,8 @@ pub(super) fn handle_basic_key(app: &mut App, code: KeyCode) -> bool {
         }
         KeyCode::Delete => {
             if app.cursor_pos < app.input.len() {
-                let next = crate::alphacode_tui::tui::core::next_char_boundary(&app.input, app.cursor_pos);
+                let next =
+                    crate::alphacode_tui::tui::core::next_char_boundary(&app.input, app.cursor_pos);
                 app.remember_input_undo_state();
                 app.input.drain(app.cursor_pos..next);
                 app.reset_tab_completion();
@@ -2694,7 +2702,8 @@ pub(super) fn handle_basic_key(app: &mut App, code: KeyCode) -> bool {
         }
         KeyCode::Left => {
             if app.cursor_pos > 0 {
-                app.cursor_pos = crate::alphacode_tui::tui::core::prev_char_boundary(&app.input, app.cursor_pos);
+                app.cursor_pos =
+                    crate::alphacode_tui::tui::core::prev_char_boundary(&app.input, app.cursor_pos);
             } else {
                 // Opt-in: Left on an empty input opens the active sessions
                 // manager (no-op unless display.active_sessions_manager).
@@ -2704,7 +2713,8 @@ pub(super) fn handle_basic_key(app: &mut App, code: KeyCode) -> bool {
         }
         KeyCode::Right => {
             if app.cursor_pos < app.input.len() {
-                app.cursor_pos = crate::alphacode_tui::tui::core::next_char_boundary(&app.input, app.cursor_pos);
+                app.cursor_pos =
+                    crate::alphacode_tui::tui::core::next_char_boundary(&app.input, app.cursor_pos);
             }
             true
         }
@@ -3175,11 +3185,12 @@ impl App {
     }
 
     pub(super) fn record_copy_badge_feedback(&mut self, key: char, success: bool) {
-        self.copy_badge_ui.copied_feedback = Some(crate::alphacode_tui::tui::app::CopyBadgeFeedback {
-            key,
-            success,
-            expires_at: std::time::Instant::now() + std::time::Duration::from_millis(1100),
-        });
+        self.copy_badge_ui.copied_feedback =
+            Some(crate::alphacode_tui::tui::app::CopyBadgeFeedback {
+                key,
+                success,
+                expires_at: std::time::Instant::now() + std::time::Duration::from_millis(1100),
+            });
     }
 
     pub(super) fn prune_copy_badge_ui(&mut self) {
@@ -4057,4 +4068,3 @@ mod terminal_control_sequence_tests {
         ));
     }
 }
-

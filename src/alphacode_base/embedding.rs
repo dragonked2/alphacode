@@ -5,8 +5,8 @@
 //! builds. This module keeps alphacode's process-wide cache, stats, and local path /
 //! logging integration stable.
 
-use anyhow::Result;
 use crate::alphacode_embedding as backend;
+use anyhow::Result;
 use serde::Serialize;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex, OnceLock};

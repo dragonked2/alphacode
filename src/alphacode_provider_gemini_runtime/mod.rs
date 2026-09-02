@@ -4,9 +4,6 @@
 //! spine. The binary's composition root registers [`GeminiProvider`] with
 //! `crate::alphacode_base::provider::external` at startup.
 
-use anyhow::{Context, Result};
-use async_trait::async_trait;
-use chrono::Utc;
 use crate::alphacode_base::auth::gemini as gemini_auth;
 use crate::alphacode_message_types::{ConnectionPhase, Message, StreamEvent, ToolDefinition};
 use crate::alphacode_provider_core::{EventStream, Provider};
@@ -24,6 +21,9 @@ pub use crate::alphacode_provider_gemini::{
     ineligible_or_project_error, is_gemini_model_id, load_code_assist_request,
     merge_gemini_model_lists, validate_load_code_assist_response,
 };
+use anyhow::{Context, Result};
+use async_trait::async_trait;
+use chrono::Utc;
 use serde::Serialize;
 use serde::de::DeserializeOwned;
 use serde_json::{Value, json};
@@ -98,7 +98,8 @@ impl GeminiProvider {
     }
 
     pub fn new() -> Self {
-        let model = std::env::var("ALPHACODE_GEMINI_MODEL").unwrap_or_else(|_| DEFAULT_MODEL.into());
+        let model =
+            std::env::var("ALPHACODE_GEMINI_MODEL").unwrap_or_else(|_| DEFAULT_MODEL.into());
         let provider = Self {
             client: gemini_http_client(),
             model: Arc::new(RwLock::new(model)),
@@ -608,42 +609,40 @@ impl GeminiProvider {
                     response: Some(response),
                 })
             }
-            GeminiAuthMode::Oauth => {
-                match self.post_json("generateContent", &request).await {
-                    Ok(response) => Ok(response),
-                    Err(err) if is_gemini_code_assist_unsupported_error(&err) => {
-                        if let Some(api_key) = gemini_auth::api_key() {
-                            crate::alphacode_base::logging::warn(
-                                "Gemini Code Assist is no longer supported for this account; \
+            GeminiAuthMode::Oauth => match self.post_json("generateContent", &request).await {
+                Ok(response) => Ok(response),
+                Err(err) if is_gemini_code_assist_unsupported_error(&err) => {
+                    if let Some(api_key) = gemini_auth::api_key() {
+                        crate::alphacode_base::logging::warn(
+                            "Gemini Code Assist is no longer supported for this account; \
                                  falling back to the Gemini Developer API key path",
-                            );
-                            let mut inner = request.request;
-                            inner.session_id = None;
-                            let url = format!(
-                                "{}/models/{}:generateContent",
-                                Self::developer_api_base_url(),
-                                model
-                            );
-                            let response: VertexGenerateContentResponse = self
-                                .post_json_api_key(&url, &api_key, &inner, "generateContent")
-                                .await
-                                .context("Gemini generateContent (API key fallback) failed")?;
-                            Ok(CodeAssistGenerateResponse {
-                                trace_id: None,
-                                response: Some(response),
-                            })
-                        } else {
-                            Err(err).context(
-                                "Gemini Code Assist is no longer supported for individual \
+                        );
+                        let mut inner = request.request;
+                        inner.session_id = None;
+                        let url = format!(
+                            "{}/models/{}:generateContent",
+                            Self::developer_api_base_url(),
+                            model
+                        );
+                        let response: VertexGenerateContentResponse = self
+                            .post_json_api_key(&url, &api_key, &inner, "generateContent")
+                            .await
+                            .context("Gemini generateContent (API key fallback) failed")?;
+                        Ok(CodeAssistGenerateResponse {
+                            trace_id: None,
+                            response: Some(response),
+                        })
+                    } else {
+                        Err(err).context(
+                            "Gemini Code Assist is no longer supported for individual \
                                  Google accounts. Set GEMINI_API_KEY with a Gemini Developer \
                                  API key (from https://aistudio.google.com/apikey) or use \
                                  the 'gemini-api' provider profile.",
-                            )
-                        }
+                        )
                     }
-                    Err(err) => Err(err).context("Gemini generateContent failed"),
                 }
-            }
+                Err(err) => Err(err).context("Gemini generateContent failed"),
+            },
         }
     }
 }
@@ -895,7 +894,8 @@ impl Provider for GeminiProvider {
                                 .id
                                 .clone()
                                 .unwrap_or_else(|| Uuid::new_v4().to_string());
-                            let call_id = crate::alphacode_message_types::sanitize_tool_id(&raw_call_id);
+                            let call_id =
+                                crate::alphacode_message_types::sanitize_tool_id(&raw_call_id);
                             let _ = tx
                                 .send(Ok(StreamEvent::ToolUseStart {
                                     id: call_id,
@@ -950,7 +950,10 @@ impl Provider for GeminiProvider {
                             .as_deref()
                             .filter(|msg| !msg.trim().is_empty())
                             .map(|msg| {
-                                format!(": {}", crate::alphacode_base::util::truncate_str(msg.trim(), 300))
+                                format!(
+                                    ": {}",
+                                    crate::alphacode_base::util::truncate_str(msg.trim(), 300)
+                                )
                             })
                             .unwrap_or_default();
                         let _ = tx
@@ -1115,7 +1118,5 @@ fn is_gemini_model_not_found_error(err: &anyhow::Error) -> bool {
 /// provider profile.
 fn is_gemini_code_assist_unsupported_error(err: &anyhow::Error) -> bool {
     let lower = format!("{err:#}").to_ascii_lowercase();
-    lower.contains("no longer supported")
-        && lower.contains("gemini code assist")
+    lower.contains("no longer supported") && lower.contains("gemini code assist")
 }
-

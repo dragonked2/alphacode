@@ -191,7 +191,7 @@ impl CronTool {
             None => {
                 return Ok(ToolOutput::new(
                     "Error: 'name' is required for create.".to_string(),
-                ))
+                ));
             }
         };
         let schedule = match input.get("schedule").and_then(|v| v.as_str()) {
@@ -199,7 +199,7 @@ impl CronTool {
             None => {
                 return Ok(ToolOutput::new(
                     "Error: 'schedule' is required for create.".to_string(),
-                ))
+                ));
             }
         };
         let prompt = match input.get("prompt").and_then(|v| v.as_str()) {
@@ -207,7 +207,7 @@ impl CronTool {
             None => {
                 return Ok(ToolOutput::new(
                     "Error: 'prompt' is required for create.".to_string(),
-                ))
+                ));
             }
         };
 

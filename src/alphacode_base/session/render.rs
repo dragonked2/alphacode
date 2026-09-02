@@ -1,10 +1,10 @@
 use super::{Session, StoredDisplayRole};
-use crate::message::{ContentBlock, Role, ToolCall};
 use crate::alphacode_config_types::ReasoningDisplayMode;
 pub use crate::alphacode_session_types::{
     RenderedCompactedHistoryInfo, RenderedImage, RenderedImageAnchor, RenderedImageSource,
     RenderedMessage,
 };
+use crate::message::{ContentBlock, Role, ToolCall};
 use std::collections::HashMap;
 
 /// Number of compacted historical messages shown by default in the UI.

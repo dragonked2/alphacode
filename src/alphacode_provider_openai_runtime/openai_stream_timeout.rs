@@ -27,7 +27,9 @@ pub(crate) fn request_reasoning_effort(request: &Value) -> Option<&str> {
 
 /// Idle budget between HTTPS/SSE events for this request.
 pub(crate) fn effective_https_idle_timeout(request: &Value) -> std::time::Duration {
-    crate::alphacode_base::provider::stream_idle_timeout_for_effort(request_reasoning_effort(request))
+    crate::alphacode_base::provider::stream_idle_timeout_for_effort(request_reasoning_effort(
+        request,
+    ))
 }
 
 /// Effective websocket completion budget in seconds.
@@ -38,9 +40,9 @@ pub(crate) fn effective_https_idle_timeout(request: &Value) -> std::time::Durati
 /// request's reasoning effort.
 pub(crate) fn effective_ws_completion_timeout_secs(request: &Value) -> u64 {
     let multiplier = u64::from(
-        crate::alphacode_base::provider::stream_idle_timeout_multiplier_for_effort(request_reasoning_effort(
-            request,
-        )),
+        crate::alphacode_base::provider::stream_idle_timeout_multiplier_for_effort(
+            request_reasoning_effort(request),
+        ),
     );
     crate::alphacode_provider_openai::websocket_health::WEBSOCKET_COMPLETION_TIMEOUT_SECS
         .max(crate::alphacode_base::provider::stream_idle_timeout().as_secs())

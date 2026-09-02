@@ -278,7 +278,9 @@ fn is_noise(line: &str) -> bool {
     if trimmed.is_empty() {
         return true;
     }
-    NOISE_PATTERNS.iter().any(|pattern| trimmed.starts_with(pattern))
+    NOISE_PATTERNS
+        .iter()
+        .any(|pattern| trimmed.starts_with(pattern))
 }
 
 /// Normalize a line for deduplication (collapse whitespace, lowercase).
@@ -318,7 +320,9 @@ mod tests {
 
     #[test]
     fn large_output_filtered() {
-        let output: String = (0..500).map(|i| format!("Line {} some content here\n", i)).collect();
+        let output: String = (0..500)
+            .map(|i| format!("Line {} some content here\n", i))
+            .collect();
         let result = filter_output("bash", &output);
         assert!(result.was_filtered);
         assert!(result.filtered_lines < 500);

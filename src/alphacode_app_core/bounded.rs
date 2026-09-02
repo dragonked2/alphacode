@@ -159,13 +159,11 @@ mod tests {
 
     #[tokio::test]
     async fn completed_within_deadline() {
-        let out: BoundedOutcome<i32> = run(
-            "fast",
-            Duration::from_millis(200),
-            None::<fn()>,
-            async { 42 },
-        )
-        .await;
+        let out: BoundedOutcome<i32> =
+            run("fast", Duration::from_millis(200), None::<fn()>, async {
+                42
+            })
+            .await;
         match out {
             BoundedOutcome::Completed(v) => assert_eq!(v, 42),
             _ => panic!("expected Completed"),
@@ -174,16 +172,12 @@ mod tests {
 
     #[tokio::test]
     async fn timed_out_returns_partial_none() {
-        let out: BoundedOutcome<i32> = run(
-            "slow",
-            Duration::from_millis(50),
-            None::<fn()>,
-            async {
+        let out: BoundedOutcome<i32> =
+            run("slow", Duration::from_millis(50), None::<fn()>, async {
                 tokio::time::sleep(Duration::from_millis(200)).await;
                 99
-            },
-        )
-        .await;
+            })
+            .await;
         match out {
             BoundedOutcome::TimedOut { partial } => assert!(partial.is_none()),
             _ => panic!("expected TimedOut"),
@@ -192,8 +186,8 @@ mod tests {
 
     #[tokio::test]
     async fn cancel_handle_runs_on_timeout() {
-        use std::sync::atomic::{AtomicBool, Ordering};
         use std::sync::Arc;
+        use std::sync::atomic::{AtomicBool, Ordering};
         let cancelled = Arc::new(AtomicBool::new(false));
         let c2 = Arc::clone(&cancelled);
         let out: BoundedOutcome<()> = run(

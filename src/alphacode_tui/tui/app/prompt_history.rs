@@ -277,7 +277,8 @@ impl App {
                     // Free-form matcher: the query may match anywhere in the
                     // prompt (the slash-command scorer requires an anchored
                     // start and misses mid-prompt words).
-                    crate::alphacode_fuzzy::fuzzy_score(&query, &prompt).map(|score| (score, recency, prompt))
+                    crate::alphacode_fuzzy::fuzzy_score(&query, &prompt)
+                        .map(|score| (score, recency, prompt))
                 })
                 .collect();
             // Best fuzzy score first; ties broken by recency (newest first).
@@ -380,7 +381,9 @@ impl App {
     }
 
     /// Render-friendly snapshot of the search overlay for the UI layer.
-    pub(crate) fn prompt_history_search_view(&self) -> Option<crate::alphacode_tui::tui::PromptHistorySearchView> {
+    pub(crate) fn prompt_history_search_view(
+        &self,
+    ) -> Option<crate::alphacode_tui::tui::PromptHistorySearchView> {
         let state = self.prompt_history_search.as_ref()?;
         Some(crate::alphacode_tui::tui::PromptHistorySearchView {
             query: state.query.clone(),
@@ -393,4 +396,3 @@ impl App {
         })
     }
 }
-

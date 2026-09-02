@@ -20,7 +20,10 @@ impl Provider for OpenAIProvider {
         self.credential_mode_snapshot()
     }
 
-    fn set_credential_mode(&self, mode: crate::alphacode_provider_core::CredentialMode) -> anyhow::Result<()> {
+    fn set_credential_mode(
+        &self,
+        mode: crate::alphacode_provider_core::CredentialMode,
+    ) -> anyhow::Result<()> {
         OpenAIProvider::set_credential_mode(self, mode)
     }
 
@@ -227,7 +230,9 @@ impl Provider for OpenAIProvider {
                     // and then fails falls through to a fresh-connection replay
                     // from the top, which must roll the partial output back.
                     let (attempt_tx, attempt_guard) =
-                        crate::alphacode_provider_core::attempt_tracker::track_attempt_output(tx.clone());
+                        crate::alphacode_provider_core::attempt_tracker::track_attempt_output(
+                            tx.clone(),
+                        );
                     let continuation_result = try_persistent_ws_continuation(
                         &persistent_ws,
                         &request,
@@ -407,7 +412,9 @@ impl Provider for OpenAIProvider {
                     // output back on the consumer before the retry (or HTTPS
                     // fallback) replays the response from the top.
                     let (attempt_tx, attempt_guard) =
-                        crate::alphacode_provider_core::attempt_tracker::track_attempt_output(tx.clone());
+                        crate::alphacode_provider_core::attempt_tracker::track_attempt_output(
+                            tx.clone(),
+                        );
                     let result = if use_websocket {
                         stream_response_websocket_persistent(
                             Arc::clone(&credentials),
@@ -708,9 +715,10 @@ impl Provider for OpenAIProvider {
             && availability.state
                 == crate::alphacode_base::provider::AccountModelAvailabilityState::Unavailable
         {
-            let detail =
-                crate::alphacode_base::provider::format_account_model_availability_detail(&availability)
-                    .unwrap_or_else(|| "not available for your account".to_string());
+            let detail = crate::alphacode_base::provider::format_account_model_availability_detail(
+                &availability,
+            )
+            .unwrap_or_else(|| "not available for your account".to_string());
             anyhow::bail!(
                 "The '{}' model is not available for your account right now ({}). \
                  Use /model to see available models.",
@@ -768,8 +776,8 @@ impl Provider for OpenAIProvider {
         if self.is_browser_only() {
             return vec![CHATGPT_WEB_MODEL.to_string()];
         }
-        let mut models =
-            crate::alphacode_base::provider::cached_openai_model_ids().unwrap_or_else(|| vec![self.model()]);
+        let mut models = crate::alphacode_base::provider::cached_openai_model_ids()
+            .unwrap_or_else(|| vec![self.model()]);
         if !models.iter().any(|model| model == CHATGPT_WEB_MODEL) {
             models.insert(0, CHATGPT_WEB_MODEL.to_string());
         }
@@ -843,7 +851,8 @@ impl Provider for OpenAIProvider {
                 Err(err) => return Err(err),
             }
         } else {
-            crate::alphacode_base::provider::fetch_openai_api_key_model_catalog(&access_token).await?
+            crate::alphacode_base::provider::fetch_openai_api_key_model_catalog(&access_token)
+                .await?
         };
         let current_credential_identity = {
             let credentials = self.credentials.read().await;
@@ -945,7 +954,9 @@ impl Provider for OpenAIProvider {
         if let Some(advertised) = advertised {
             let mut efforts: Vec<&'static str> = advertised
                 .iter()
-                .filter_map(|effort| crate::alphacode_provider_core::canonical_reasoning_effort(effort))
+                .filter_map(|effort| {
+                    crate::alphacode_provider_core::canonical_reasoning_effort(effort)
+                })
                 .collect();
             efforts.extend(["swarm", "swarm-deep"]);
             return efforts;
@@ -1160,8 +1171,11 @@ impl Provider for OpenAIProvider {
 
     fn context_window(&self) -> usize {
         let model = self.model();
-        crate::alphacode_provider_core::context_limit_for_model_with_provider(&model, Some(self.name()))
-            .unwrap_or(crate::alphacode_provider_core::DEFAULT_CONTEXT_LIMIT)
+        crate::alphacode_provider_core::context_limit_for_model_with_provider(
+            &model,
+            Some(self.name()),
+        )
+        .unwrap_or(crate::alphacode_provider_core::DEFAULT_CONTEXT_LIMIT)
     }
 
     fn fork(&self) -> Arc<dyn Provider> {

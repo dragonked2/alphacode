@@ -128,4 +128,3 @@ pub(super) fn image_media_type(path: &std::path::Path) -> Option<&'static str> {
         _ => None,
     }
 }
-

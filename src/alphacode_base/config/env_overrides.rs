@@ -443,7 +443,10 @@ impl Config {
         }
         hook_env_override(&mut self.hooks.turn_start, "ALPHACODE_HOOK_TURN_START");
         hook_env_override(&mut self.hooks.turn_end, "ALPHACODE_HOOK_TURN_END");
-        hook_env_override(&mut self.hooks.session_start, "ALPHACODE_HOOK_SESSION_START");
+        hook_env_override(
+            &mut self.hooks.session_start,
+            "ALPHACODE_HOOK_SESSION_START",
+        );
         hook_env_override(&mut self.hooks.session_end, "ALPHACODE_HOOK_SESSION_END");
         hook_env_override(&mut self.hooks.pre_tool, "ALPHACODE_HOOK_PRE_TOOL");
         hook_env_override(&mut self.hooks.post_tool, "ALPHACODE_HOOK_POST_TOOL");

@@ -1833,7 +1833,9 @@ pub fn run_pair_command(list: bool, revoke: Option<String>) -> Result<()> {
     let gw_config = &crate::config::config().gateway;
 
     if !gw_config.enabled {
-        eprintln!("\x1b[33m⚠\x1b[0m  Gateway is disabled. Enable it in ~/.alphacode/config.toml:\n");
+        eprintln!(
+            "\x1b[33m⚠\x1b[0m  Gateway is disabled. Enable it in ~/.alphacode/config.toml:\n"
+        );
         eprintln!("    \x1b[2m[gateway]\x1b[0m");
         eprintln!("    \x1b[2menabled = true\x1b[0m");
         eprintln!("    \x1b[2mport = {}\x1b[0m\n", gw_config.port);
@@ -2173,7 +2175,8 @@ pub async fn run_server_reload_command(force: bool, emit_json: bool) -> Result<(
     // Wait (bounded) for the freshly exec'd server to take over the socket so
     // callers know the upgrade actually landed.
     let handoff_ready = matches!(
-        crate::alphacode_app_core::server::await_reload_handoff(&socket, Duration::from_secs(30)).await,
+        crate::alphacode_app_core::server::await_reload_handoff(&socket, Duration::from_secs(30))
+            .await,
         crate::alphacode_app_core::server::ReloadWaitStatus::Ready
     );
 
@@ -2294,7 +2297,8 @@ Re-run with `--force` if you really want to stop the server.";
         #[cfg(unix)]
         let mut escalated = false;
         loop {
-            let listener_gone = !crate::alphacode_app_core::server::has_live_listener(&socket).await;
+            let listener_gone =
+                !crate::alphacode_app_core::server::has_live_listener(&socket).await;
             let process_gone = signaled_pid
                 .map(|pid| !crate::platform::is_process_running(pid))
                 .unwrap_or(true);

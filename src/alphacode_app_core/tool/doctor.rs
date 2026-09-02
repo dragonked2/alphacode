@@ -91,7 +91,9 @@ impl DoctorTool {
     ) -> system_diagnostics::DiagnosticReport {
         if let Some(cat) = category {
             let cat_lower = cat.to_lowercase();
-            let filtered: Vec<_> = report.checks.into_iter()
+            let filtered: Vec<_> = report
+                .checks
+                .into_iter()
                 .filter(|c| c.category.to_lowercase().contains(&cat_lower))
                 .collect();
             system_diagnostics::DiagnosticReport::from_checks(filtered)
@@ -225,9 +227,7 @@ async fn attempt_fix(check_name: &str, work_dir: Option<&Path>) -> Result<String
         "rustc version" | "cargo version" => {
             Err("Rust toolchain must be installed manually via rustup".to_string())
         }
-        "clippy" => {
-            Err("Install clippy: rustup component add clippy".to_string())
-        }
+        "clippy" => Err("Install clippy: rustup component add clippy".to_string()),
         _ => Err(format!("No auto-fix available for '{}'", check_name)),
     }
 }
@@ -290,7 +290,9 @@ mod tests {
     #[tokio::test]
     async fn doctor_category_filter() {
         let tool = DoctorTool;
-        let result = tool.execute(json!({"action": "check", "category": "Rust"}), test_ctx()).await;
+        let result = tool
+            .execute(json!({"action": "check", "category": "Rust"}), test_ctx())
+            .await;
         assert!(result.is_ok());
         let output = result.unwrap();
         // Should only show Rust-related checks

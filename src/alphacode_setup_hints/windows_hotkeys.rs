@@ -413,7 +413,12 @@ mod tests {
     #[test]
     fn listener_script_registers_each_entry_and_dispatches_dirs() {
         let entries = vec![
-            hk("win+shift+f23", "C:\\Users\\u\\alphacode", "alphacode", false),
+            hk(
+                "win+shift+f23",
+                "C:\\Users\\u\\alphacode",
+                "alphacode",
+                false,
+            ),
             hk("cmd+'", "$HOME", "home", false),
             hk("cmd+shift+'", "$LAST_REPO", "self-dev", true),
         ];
@@ -436,7 +441,9 @@ mod tests {
         assert!(script.contains("Win+Shift+F23"));
         assert!(script.contains("Resolve-AlphacodeFixedDir 'C:\\Users\\u\\alphacode'"));
         assert!(script.contains("Resolve-AlphacodeDir $null"));
-        assert!(script.contains("Resolve-AlphacodeDir 'C:\\Users\\u\\.alphacode\\hotkey\\last_repo'"));
+        assert!(
+            script.contains("Resolve-AlphacodeDir 'C:\\Users\\u\\.alphacode\\hotkey\\last_repo'")
+        );
 
         // Self-dev entry passes the subcommand; others do not.
         assert_eq!(script.matches("self-dev").count(), 2); // label + args

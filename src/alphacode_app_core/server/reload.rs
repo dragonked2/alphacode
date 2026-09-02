@@ -1,8 +1,8 @@
+use crate::alphacode_agent_runtime::InterruptSignal;
 use crate::alphacode_app_core::agent::Agent;
 use crate::alphacode_app_core::server::reload_recovery::ReloadRecoveryRole;
 use crate::alphacode_app_core::server::{SwarmEvent, SwarmEventType, SwarmMember};
 use crate::alphacode_app_core::tool::selfdev::ReloadContext;
-use crate::alphacode_agent_runtime::InterruptSignal;
 use std::collections::HashMap;
 use std::process::Stdio;
 use std::sync::Arc;
@@ -139,7 +139,9 @@ pub(super) async fn await_reload_signal(
             "Server: graceful shutdown completed for reload request={} after {}ms state={}",
             signal.request_id,
             reload_started.elapsed().as_millis(),
-            crate::alphacode_app_core::server::reload_state_summary(std::time::Duration::from_secs(60))
+            crate::alphacode_app_core::server::reload_state_summary(
+                std::time::Duration::from_secs(60)
+            )
         ));
         super::reload_trace::record_value(
             &signal.request_id,
@@ -183,7 +185,9 @@ pub(super) async fn await_reload_signal(
                     binary,
                     socket,
                     reload_started.elapsed().as_millis(),
-                    crate::alphacode_app_core::server::reload_state_summary(std::time::Duration::from_secs(60))
+                    crate::alphacode_app_core::server::reload_state_summary(
+                        std::time::Duration::from_secs(60)
+                    )
                 ));
                 super::reload_trace::record_value(
                     &signal.request_id,
@@ -530,4 +534,3 @@ async fn graceful_shutdown_sessions_with_timeout(
         }
     }
 }
-

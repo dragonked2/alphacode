@@ -1,7 +1,9 @@
 use anyhow::Result;
 use std::process::Command as ProcessCommand;
 
-pub use crate::alphacode_app_core::session_rebuild::{hot_rebuild, spawn_background_session_rebuild};
+pub use crate::alphacode_app_core::session_rebuild::{
+    hot_rebuild, spawn_background_session_rebuild,
+};
 
 use crate::{build, tui::RunResult, update};
 
@@ -418,7 +420,10 @@ pub fn run_update() -> Result<()> {
     let repo_dir =
         get_repo_dir().ok_or_else(|| anyhow::anyhow!("Could not find alphacode repository"))?;
 
-    update::print_centered(&format!("Updating alphacode from {}...", repo_dir.display()));
+    update::print_centered(&format!(
+        "Updating alphacode from {}...",
+        repo_dir.display()
+    ));
 
     update::print_centered("Pulling latest changes (fast-forward only)...");
     update::run_git_pull_ff_only(&repo_dir, true)?;

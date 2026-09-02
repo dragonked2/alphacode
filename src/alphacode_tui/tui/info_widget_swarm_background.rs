@@ -188,4 +188,3 @@ fn background_summary(info: &BackgroundInfo) -> Option<String> {
 
     Some(format!("Background · {} running", info.running_count))
 }
-

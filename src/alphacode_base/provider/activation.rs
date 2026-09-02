@@ -1,5 +1,5 @@
-use anyhow::Result;
 use crate::alphacode_provider_core::{ActiveProvider, provider_key};
+use anyhow::Result;
 
 /// Stable product/runtime identity selected by login or provider initialization.
 ///
@@ -159,18 +159,24 @@ impl ProviderActivation {
     pub fn apply_env(&self) -> Result<()> {
         crate::alphacode_core::env::set_var("ALPHACODE_RUNTIME_PROVIDER", self.runtime_id.key());
         match self.runtime_id {
-            RuntimeProviderId::Alphacode => {
-                crate::alphacode_core::env::set_var("ALPHACODE_OPENROUTER_TRANSPORT_STATE", "alphacode-subscription")
-            }
-            RuntimeProviderId::OpenRouter => {
-                crate::alphacode_core::env::set_var("ALPHACODE_OPENROUTER_TRANSPORT_STATE", "openrouter-api-key")
-            }
-            RuntimeProviderId::AzureOpenAi => {
-                crate::alphacode_core::env::set_var("ALPHACODE_OPENROUTER_TRANSPORT_STATE", "direct-api-key")
-            }
+            RuntimeProviderId::Alphacode => crate::alphacode_core::env::set_var(
+                "ALPHACODE_OPENROUTER_TRANSPORT_STATE",
+                "alphacode-subscription",
+            ),
+            RuntimeProviderId::OpenRouter => crate::alphacode_core::env::set_var(
+                "ALPHACODE_OPENROUTER_TRANSPORT_STATE",
+                "openrouter-api-key",
+            ),
+            RuntimeProviderId::AzureOpenAi => crate::alphacode_core::env::set_var(
+                "ALPHACODE_OPENROUTER_TRANSPORT_STATE",
+                "direct-api-key",
+            ),
             RuntimeProviderId::OpenAiCompatible => {
                 if std::env::var_os("ALPHACODE_OPENROUTER_TRANSPORT_STATE").is_none() {
-                    crate::alphacode_core::env::set_var("ALPHACODE_OPENROUTER_TRANSPORT_STATE", "direct-api-key");
+                    crate::alphacode_core::env::set_var(
+                        "ALPHACODE_OPENROUTER_TRANSPORT_STATE",
+                        "direct-api-key",
+                    );
                 }
             }
             _ => {
@@ -182,14 +188,20 @@ impl ProviderActivation {
         match self.selection {
             RuntimeSelection::Initial(active_provider) => {
                 active_key_for_log = provider_key(active_provider);
-                crate::alphacode_core::env::set_var("ALPHACODE_ACTIVE_PROVIDER", active_key_for_log);
+                crate::alphacode_core::env::set_var(
+                    "ALPHACODE_ACTIVE_PROVIDER",
+                    active_key_for_log,
+                );
                 crate::alphacode_core::env::set_var("ALPHACODE_INITIAL_PROVIDER_EXPLICIT", "1");
             }
             RuntimeSelection::Unlocked { active_hint } => {
                 crate::alphacode_core::env::remove_var("ALPHACODE_INITIAL_PROVIDER_EXPLICIT");
                 if let Some(active_provider) = active_hint {
                     active_key_for_log = provider_key(active_provider);
-                    crate::alphacode_core::env::set_var("ALPHACODE_ACTIVE_PROVIDER", active_key_for_log);
+                    crate::alphacode_core::env::set_var(
+                        "ALPHACODE_ACTIVE_PROVIDER",
+                        active_key_for_log,
+                    );
                 } else {
                     crate::alphacode_core::env::remove_var("ALPHACODE_ACTIVE_PROVIDER");
                 }

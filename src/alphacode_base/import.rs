@@ -3,10 +3,6 @@
 //! This module handles discovering, parsing, and converting Claude Code sessions
 //! so they can be resumed within alphacode.
 
-use crate::message::{ContentBlock, Role};
-use crate::session::{Session, SessionStatus, StoredMessage};
-use anyhow::{Context, Result};
-use chrono::{DateTime, Utc};
 pub use crate::alphacode_import_core::repo_ranking;
 use crate::alphacode_import_core::{
     ClaudeCodeContent, ClaudeCodeContentBlock, ClaudeCodeEntry, ClaudeCodeSessionInfo,
@@ -23,6 +19,10 @@ pub use crate::alphacode_import_core::{
     imported_claude_code_session_id, imported_codex_session_id, imported_cursor_session_id,
     imported_opencode_session_id, imported_pi_session_id, is_cursor_subagent_transcript,
 };
+use crate::message::{ContentBlock, Role};
+use crate::session::{Session, SessionStatus, StoredMessage};
+use anyhow::{Context, Result};
+use chrono::{DateTime, Utc};
 use std::collections::HashSet;
 use std::fs::File;
 use std::io::{BufRead, BufReader};
@@ -594,7 +594,9 @@ pub fn imported_session_id_for_target(
     target: &crate::alphacode_session_types::ResumeTarget,
 ) -> Option<String> {
     match target {
-        crate::alphacode_session_types::ResumeTarget::AlphacodeSession { session_id } => Some(session_id.clone()),
+        crate::alphacode_session_types::ResumeTarget::AlphacodeSession { session_id } => {
+            Some(session_id.clone())
+        }
         crate::alphacode_session_types::ResumeTarget::ClaudeCodeSession { session_id, .. } => {
             Some(imported_claude_code_session_id(session_id))
         }
@@ -1479,4 +1481,3 @@ pub fn import_cursor_session_from_path(
     session.title = title.or_else(|| Some(format!("Cursor session {}", session_id)));
     finalize_imported_session(session, created_at, Some(created_at))
 }
-

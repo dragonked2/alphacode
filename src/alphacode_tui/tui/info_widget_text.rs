@@ -174,7 +174,11 @@ mod tests {
     fn wide_characters_are_measured_in_columns() {
         let out = truncate_smart("日本語のテキスト", 10);
         assert_eq!(out, "日本語...");
-        assert_eq!(out.width(), 9, "never splits a wide glyph to hit the budget");
+        assert_eq!(
+            out.width(),
+            9,
+            "never splits a wide glyph to hit the budget"
+        );
     }
 
     /// A wide glyph that would straddle the boundary is dropped rather than

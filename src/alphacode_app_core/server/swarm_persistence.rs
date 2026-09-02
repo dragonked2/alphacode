@@ -69,10 +69,9 @@ fn dormant_plan_retention() -> Duration {
 
 fn persisted_plan_is_dormant(plan: &PersistedVersionedPlan) -> bool {
     plan.items.is_empty()
-        || plan
-            .items
-            .iter()
-            .all(|item| item.assigned_to.is_none() && !crate::alphacode_plan::is_active_status(&item.status))
+        || plan.items.iter().all(|item| {
+            item.assigned_to.is_none() && !crate::alphacode_plan::is_active_status(&item.status)
+        })
 }
 
 fn persisted_plan_is_expired(
@@ -646,4 +645,3 @@ pub(super) fn remove_swarm_state_if_version(
     }
     remove_snapshot_files(swarm_id)
 }
-

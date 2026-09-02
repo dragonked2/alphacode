@@ -15,17 +15,19 @@ use chrono::Utc;
 use std::collections::HashMap;
 use std::path::Path;
 
-use super::{
-    detect_file_conflicts, AgentLimits, AgentReport, AgentSpec, Checkpoint, FileConflict,
-    PlanPhase, PhaseStatus, QualityGateResult, ReviewResult, TaskComplexity,
-};
 use super::checkpoint_manager::{CheckpointManager, CheckpointTrigger};
 use super::project_analyzer::ProjectAnalyzer;
 use super::prompt_builder::PromptBuilder;
 use super::resource_monitor::ResourceMonitor;
 use super::self_review;
 use super::task_decomposition;
-use crate::alphacode_app_core::memory_manager::{MemoryManager, ProjectIndex, ProjectState, ProjectStatistics};
+use super::{
+    AgentLimits, AgentReport, AgentSpec, Checkpoint, FileConflict, PhaseStatus, PlanPhase,
+    QualityGateResult, ReviewResult, TaskComplexity, detect_file_conflicts,
+};
+use crate::alphacode_app_core::memory_manager::{
+    MemoryManager, ProjectIndex, ProjectState, ProjectStatistics,
+};
 
 /// The Main Brain — orchestrates the entire autonomous agent system.
 ///
@@ -69,8 +71,8 @@ impl MainBrain {
     /// Create a new MainBrain rooted at the given directory.
     pub fn new(root: impl AsRef<Path>) -> Result<Self> {
         let root = root.as_ref();
-        let memory = MemoryManager::new(root)
-            .with_context(|| "MainBrain: creating MemoryManager")?;
+        let memory =
+            MemoryManager::new(root).with_context(|| "MainBrain: creating MemoryManager")?;
         let checkpoints = CheckpointManager::new(memory.clone())
             .with_context(|| "MainBrain: creating CheckpointManager")?;
         let analyzer = ProjectAnalyzer::new(root);
@@ -117,7 +119,8 @@ impl MainBrain {
             s.completed_phases.clear();
             s.statistics = ProjectStatistics::default();
         })?;
-        self.memory.save_goals(&format!("# Project Goal\n\n{objective}\n"))?;
+        self.memory
+            .save_goals(&format!("# Project Goal\n\n{objective}\n"))?;
 
         // Index the project to estimate file count.
         self.index = self.analyzer.index_all().unwrap_or_default();
@@ -136,7 +139,11 @@ impl MainBrain {
                 id: format!("phase-{i}"),
                 name: node.spec.label.clone(),
                 description: node.spec.objective.clone(),
-                status: if i == 0 { PhaseStatus::Active } else { PhaseStatus::Pending },
+                status: if i == 0 {
+                    PhaseStatus::Active
+                } else {
+                    PhaseStatus::Pending
+                },
                 milestones: Vec::new(),
                 agent_ids: Vec::new(),
                 created_at: Utc::now(),
@@ -167,7 +174,8 @@ impl MainBrain {
     pub fn next_agent_specs(&self) -> Vec<AgentSpec> {
         let state = self.memory.load_state().unwrap_or_default();
         let complexity = self.estimate_current_complexity(&state);
-        let decomposition = task_decomposition::decompose(&state.objective, complexity, &self.limits);
+        let decomposition =
+            task_decomposition::decompose(&state.objective, complexity, &self.limits);
         task_decomposition::flatten(&decomposition)
             .into_iter()
             .take(self.resources.current_concurrency().max(1))
@@ -176,12 +184,14 @@ impl MainBrain {
 
     /// Record that an agent has been dispatched.
     pub fn register_agent(&mut self, spec: AgentSpec) {
-        self.memory.update_state(|s| {
-            if !s.active_agents.contains(&spec.id) {
-                s.active_agents.push(spec.id.clone());
-                s.statistics.agents_spawned += 1;
-            }
-        }).ok();
+        self.memory
+            .update_state(|s| {
+                if !s.active_agents.contains(&spec.id) {
+                    s.active_agents.push(spec.id.clone());
+                    s.statistics.agents_spawned += 1;
+                }
+            })
+            .ok();
         self.active_agents.insert(spec.id.clone(), spec);
     }
 
@@ -209,7 +219,12 @@ impl MainBrain {
             &report.summary,
             &[],
             &report.recommendations,
-            &report.files_modified.iter().chain(report.files_created.iter()).cloned().collect::<Vec<_>>(),
+            &report
+                .files_modified
+                .iter()
+                .chain(report.files_created.iter())
+                .cloned()
+                .collect::<Vec<_>>(),
             &[],
         )?;
 
@@ -230,12 +245,18 @@ impl MainBrain {
     ///
     /// Runs the quality gate before accepting the phase.  If the gate
     /// fails, the phase stays open and follow-up tasks are returned.
-    pub fn complete_phase(&mut self, quality_gate_result: QualityGateResult) -> Result<PhaseAdvance> {
+    pub fn complete_phase(
+        &mut self,
+        quality_gate_result: QualityGateResult,
+    ) -> Result<PhaseAdvance> {
         if !quality_gate_result.all_pass() {
             return Ok(PhaseAdvance::Blocked(quality_gate_result.failed_checks));
         }
 
-        let current_idx = self.plan.iter().position(|p| p.status == PhaseStatus::Active);
+        let current_idx = self
+            .plan
+            .iter()
+            .position(|p| p.status == PhaseStatus::Active);
         let Some(idx) = current_idx else {
             return Ok(PhaseAdvance::NoActivePhase);
         };
@@ -260,15 +281,16 @@ impl MainBrain {
 
         // Advance to next pending phase or finish.
         if let Some(next) = self.plan.get_mut(idx + 1)
-            && next.status == PhaseStatus::Pending {
-                next.status = PhaseStatus::Active;
-                next.updated_at = Utc::now();
-                self.memory.update_state(|s| {
-                    s.active_phase = Some(next.name.clone());
-                })?;
-                self.save_plan_to_disk()?;
-                return Ok(PhaseAdvance::Advanced);
-            }
+            && next.status == PhaseStatus::Pending
+        {
+            next.status = PhaseStatus::Active;
+            next.updated_at = Utc::now();
+            self.memory.update_state(|s| {
+                s.active_phase = Some(next.name.clone());
+            })?;
+            self.save_plan_to_disk()?;
+            return Ok(PhaseAdvance::Advanced);
+        }
 
         self.memory.update_state(|s| {
             s.active_phase = None;
@@ -280,7 +302,12 @@ impl MainBrain {
     // ── Checkpoints & Recovery ──────────────────────────────────────────
 
     /// Create a checkpoint at the current state.
-    pub fn checkpoint(&self, phase: &str, summary: &str, trigger: CheckpointTrigger) -> Result<Checkpoint> {
+    pub fn checkpoint(
+        &self,
+        phase: &str,
+        summary: &str,
+        trigger: CheckpointTrigger,
+    ) -> Result<Checkpoint> {
         self.checkpoints.create(phase, summary, trigger)
     }
 
@@ -299,7 +326,11 @@ impl MainBrain {
     // ── Self-Review ───────────────────────────────────────────────────────
 
     /// Run a self-review pass on a completed task.
-    pub fn run_review(&self, item: &str, checks: Vec<(super::ReviewCategory, bool, String)>) -> ReviewResult {
+    pub fn run_review(
+        &self,
+        item: &str,
+        checks: Vec<(super::ReviewCategory, bool, String)>,
+    ) -> ReviewResult {
         let result = self_review::run_review(item, checks);
         // If problems found, compress them as bugs.
         for task in &result.tasks_created {
@@ -334,19 +365,37 @@ impl MainBrain {
     }
 
     /// Build a recovery prompt.
-    pub fn build_recovery_prompt(&self, checkpoint_summary: &str) -> Result<super::prompt_builder::AgentPrompt> {
-        self.prompt_builder.build_recovery_prompt(checkpoint_summary)
+    pub fn build_recovery_prompt(
+        &self,
+        checkpoint_summary: &str,
+    ) -> Result<super::prompt_builder::AgentPrompt> {
+        self.prompt_builder
+            .build_recovery_prompt(checkpoint_summary)
     }
 
     // ── Accessors ─────────────────────────────────────────────────────────
 
-    pub fn memory(&self) -> &MemoryManager { &self.memory }
-    pub fn checkpoints(&self) -> &CheckpointManager { &self.checkpoints }
-    pub fn analyzer(&self) -> &ProjectAnalyzer { &self.analyzer }
-    pub fn limits(&self) -> &AgentLimits { &self.limits }
-    pub fn plan(&self) -> &[PlanPhase] { &self.plan }
-    pub fn completed_reports(&self) -> &[AgentReport] { &self.completed_reports }
-    pub fn index(&self) -> &ProjectIndex { &self.index }
+    pub fn memory(&self) -> &MemoryManager {
+        &self.memory
+    }
+    pub fn checkpoints(&self) -> &CheckpointManager {
+        &self.checkpoints
+    }
+    pub fn analyzer(&self) -> &ProjectAnalyzer {
+        &self.analyzer
+    }
+    pub fn limits(&self) -> &AgentLimits {
+        &self.limits
+    }
+    pub fn plan(&self) -> &[PlanPhase] {
+        &self.plan
+    }
+    pub fn completed_reports(&self) -> &[AgentReport] {
+        &self.completed_reports
+    }
+    pub fn index(&self) -> &ProjectIndex {
+        &self.index
+    }
 
     // ── Internal Helpers ──────────────────────────────────────────────────
 
@@ -543,7 +592,13 @@ mod tests {
     fn test_recover_from_crash() {
         let (_dir, mut brain) = make_brain();
         brain.set_objective("Build app").unwrap();
-        brain.checkpoint("phase-0", "work in progress", CheckpointTrigger::PhaseCompleted).unwrap();
+        brain
+            .checkpoint(
+                "phase-0",
+                "work in progress",
+                CheckpointTrigger::PhaseCompleted,
+            )
+            .unwrap();
 
         let recovered = brain.recover_from_crash().unwrap();
         assert!(recovered.is_some());
@@ -580,9 +635,11 @@ mod tests {
 
         let result = brain.run_review(
             "src/main.rs",
-            vec![
-                (super::super::ReviewCategory::Security, false, "eval injection".into()),
-            ],
+            vec![(
+                super::super::ReviewCategory::Security,
+                false,
+                "eval injection".into(),
+            )],
         );
         assert!(!result.overall_pass);
         let bugs = brain.memory().load_bugs().unwrap();
@@ -600,7 +657,10 @@ mod tests {
     #[test]
     fn test_custom_limits() {
         let (_dir, brain) = make_brain();
-        let limits = AgentLimits { max_child_agents: 16, ..Default::default() };
+        let limits = AgentLimits {
+            max_child_agents: 16,
+            ..Default::default()
+        };
         let brain = brain.with_limits(limits);
         assert_eq!(brain.limits().max_child_agents, 16);
     }

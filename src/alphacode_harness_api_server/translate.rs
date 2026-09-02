@@ -1,8 +1,8 @@
 //! Pure JSON-to-JSON translation between the harness API and the legacy
 //! internal protocol. Kept side-effect free so it is trivially unit-testable.
 
-use crate::alphacode_harness_api_server::background_progress::parse_background_notification;
 use crate::alphacode_harness_api::{ApiEvent, ErrorCode, HistoryMessage, ServerFrame, SessionInfo};
+use crate::alphacode_harness_api_server::background_progress::parse_background_notification;
 
 /// Default number of messages a `peek_session` returns. A preview is a glance,
 /// so this is a tail rather than a transcript: enough to recognise which
@@ -607,4 +607,3 @@ impl BridgeState {
         Some(self.pending_simple.remove(index).1)
     }
 }
-

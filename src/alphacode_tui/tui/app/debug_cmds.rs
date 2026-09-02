@@ -270,9 +270,13 @@ impl App {
                 Some(pair) => pair,
                 None => return "image-click-target error: expected <col>,<row>".to_string(),
             };
-            let image_id = crate::alphacode_tui::tui::ui::inline_image_expand_target_from_screen(col, row);
-            let body_id =
-                crate::alphacode_tui::tui::ui::inline_image_body_target_from_screen(col, row, self.centered);
+            let image_id =
+                crate::alphacode_tui::tui::ui::inline_image_expand_target_from_screen(col, row);
+            let body_id = crate::alphacode_tui::tui::ui::inline_image_body_target_from_screen(
+                col,
+                row,
+                self.centered,
+            );
             let link = crate::alphacode_tui::tui::ui::link_target_from_screen(col, row);
             serde_json::json!({
                 "col": col,
@@ -730,7 +734,9 @@ impl App {
                 .and_then(|v| v.parse().ok())
                 .unwrap_or(600usize);
             let visible = parts.next().and_then(|v| v.parse().ok()).unwrap_or(3usize);
-            let result = crate::alphacode_tui::tui::mermaid::debug_image_scroll_benchmark(images, frames, visible);
+            let result = crate::alphacode_tui::tui::mermaid::debug_image_scroll_benchmark(
+                images, frames, visible,
+            );
             serde_json::to_string_pretty(&result).unwrap_or_else(|_| "{}".to_string())
         } else if cmd.starts_with("mermaid:flicker-bench ") {
             let raw_steps = cmd
@@ -947,7 +953,8 @@ impl App {
             format!("OK: test bundle '{}' started", name)
         } else if cmd == "bundle-save" {
             use crate::alphacode_tui::tui::test_harness::TestBundle;
-            let name = std::env::var("ALPHACODE_TEST_BUNDLE").unwrap_or_else(|_| "unnamed".to_string());
+            let name =
+                std::env::var("ALPHACODE_TEST_BUNDLE").unwrap_or_else(|_| "unnamed".to_string());
             let bundle = TestBundle::new(&name);
             let path = TestBundle::default_path(&name);
             match bundle.save(&path) {
@@ -1166,4 +1173,3 @@ fn attach_redraw_schedule_debug(payload: &mut serde_json::Value, app: &App) {
         }),
     );
 }
-

@@ -485,7 +485,10 @@ mod tests {
             DRAGONMETA_LOGIN_PROVIDER.auth_kind,
             LoginProviderAuthKind::Local
         );
-        assert_eq!(DRAGONMETA_LOGIN_PROVIDER.auth_status_method, "local endpoint");
+        assert_eq!(
+            DRAGONMETA_LOGIN_PROVIDER.auth_status_method,
+            "local endpoint"
+        );
         assert!(matches!(
             DRAGONMETA_LOGIN_PROVIDER.target,
             LoginProviderTarget::OpenAiCompatible(profile) if profile.id == "dragonmeta"

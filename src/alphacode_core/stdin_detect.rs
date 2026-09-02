@@ -381,4 +381,3 @@ mod windows {
         StdinState::Unknown
     }
 }
-

@@ -118,7 +118,8 @@ fn configured_server_name_normalizes_operator_labels() {
 fn server_identity_uses_configured_name() {
     let _guard = crate::storage::lock_test_env();
     let _server_name_guard = ScopedEnvVar::set("ALPHACODE_SERVER_NAME", "env-name");
-    let _server_display_name_guard = ScopedEnvVar::set("ALPHACODE_SERVER_DISPLAY_NAME", "display-name");
+    let _server_display_name_guard =
+        ScopedEnvVar::set("ALPHACODE_SERVER_DISPLAY_NAME", "display-name");
 
     let server = Server::new_with_name(
         Arc::new(StreamingMockProvider::default()),
@@ -892,7 +893,8 @@ async fn startup_ready_signal_is_not_blocked_by_headless_recovery_delay() -> Res
     let _storage_guard = crate::storage::lock_test_env();
     let temp = tempfile::TempDir::new()?;
     let _env = configure_test_env(&temp);
-    let _delay_guard = ScopedEnvVar::set("ALPHACODE_TEST_HEADLESS_STARTUP_RECOVERY_DELAY_MS", "500");
+    let _delay_guard =
+        ScopedEnvVar::set("ALPHACODE_TEST_HEADLESS_STARTUP_RECOVERY_DELAY_MS", "500");
 
     let mut headless =
         crate::session::Session::create(None, Some("headless-ready-delay".to_string()));

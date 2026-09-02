@@ -45,4 +45,3 @@ pub(super) fn announce_existing_api_key(resolved: &ResolvedOpenAiCompatibleProfi
         eprintln!("{}", notice);
     }
 }
-

@@ -26,6 +26,7 @@ use crate::logging;
 mod auth;
 pub mod control;
 mod registry;
+pub use crate::alphacode_gateway_types::{PairedDevice, PairingCode};
 use auth::{
     AuthorizedDevice, WsAuth, WsAuthSource, authorize_ws_device, extract_ws_auth, ws_error_response,
 };
@@ -33,7 +34,6 @@ pub use control::{
     PairingInvite, RemoteCommand, RemoteStatus, ToggleOutcome, create_pairing_invite,
     parse_remote_command, revoke_device, set_gateway_enabled,
 };
-pub use crate::alphacode_gateway_types::{PairedDevice, PairingCode};
 pub use registry::DeviceRegistry;
 
 /// Default gateway port ("jc" on phone keypad = 52, but we use 7643)
@@ -611,4 +611,3 @@ fn system_hostname() -> Option<String> {
         }
     }
 }
-

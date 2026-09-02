@@ -1,5 +1,7 @@
 use crate::alphacode_tui::tui::app::App;
-use crate::alphacode_tui::tui::{AccountPickerAction, InlineInteractiveState, PickerAction, PickerKind};
+use crate::alphacode_tui::tui::{
+    AccountPickerAction, InlineInteractiveState, PickerAction, PickerKind,
+};
 
 pub(super) enum InlinePickerPreviewRequest {
     Model {
@@ -92,4 +94,3 @@ pub(super) fn picker_account_provider_scope(picker: &InlineInteractiveState) -> 
         | PickerAction::AgentModelChoice { .. } => None,
     })
 }
-

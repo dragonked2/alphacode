@@ -6,7 +6,9 @@
 //! [`BusEvent::ProductivityReportReady`].
 
 use super::*;
-use crate::alphacode_tui::bus::{Bus, BusEvent, ProductivityReportPayload, ProductivityReportReady};
+use crate::alphacode_tui::bus::{
+    Bus, BusEvent, ProductivityReportPayload, ProductivityReportReady,
+};
 use std::io::Write;
 use std::path::Path;
 

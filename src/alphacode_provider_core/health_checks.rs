@@ -98,7 +98,8 @@ impl ContextLimitRefreshState {
 }
 
 /// Process-global context limit refresh state.
-static CONTEXT_LIMIT_REFRESH_STATE: OnceLock<RwLock<HashMap<String, ContextLimitRefreshState>>> = OnceLock::new();
+static CONTEXT_LIMIT_REFRESH_STATE: OnceLock<RwLock<HashMap<String, ContextLimitRefreshState>>> =
+    OnceLock::new();
 
 fn context_limit_state() -> &'static RwLock<HashMap<String, ContextLimitRefreshState>> {
     CONTEXT_LIMIT_REFRESH_STATE.get_or_init(|| RwLock::new(HashMap::new()))
@@ -110,11 +111,13 @@ const CONTEXT_LIMIT_REFRESH_TTL: Duration = Duration::from_secs(10 * 60);
 /// Record a context limit refresh for a model.
 pub fn record_context_limit_refresh(model: &str) {
     if let Ok(mut state) = context_limit_state().write() {
-        let entry = state.entry(model.to_string()).or_insert_with(|| ContextLimitRefreshState {
-            model: model.to_string(),
-            last_refreshed: Instant::now(),
-            refresh_count: 0,
-        });
+        let entry = state
+            .entry(model.to_string())
+            .or_insert_with(|| ContextLimitRefreshState {
+                model: model.to_string(),
+                last_refreshed: Instant::now(),
+                refresh_count: 0,
+            });
         entry.last_refreshed = Instant::now();
         entry.refresh_count += 1;
     }

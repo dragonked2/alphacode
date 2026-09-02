@@ -39,4 +39,3 @@ pub(super) fn apply_side_selection_highlight(
         }
     }
 }
-

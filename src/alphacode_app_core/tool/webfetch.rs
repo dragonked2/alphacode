@@ -472,7 +472,6 @@ fn html_to_markdown(html: &str) -> String {
     md.trim().to_string()
 }
 
-
 #[cfg(test)]
 mod tests {
     use super::*;

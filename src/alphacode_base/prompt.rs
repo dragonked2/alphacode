@@ -491,8 +491,14 @@ pub fn looks_like_trivial_chat(text: &str) -> bool {
     // and must reach the model.
     if lower.contains('?') {
         const WORKSPACE_QUESTION_WORDS: &[&str] = &[
-            "where ", "what is", "what does", "how does", "how do",
-            "which ", "why ", "when ",
+            "where ",
+            "what is",
+            "what does",
+            "how does",
+            "how do",
+            "which ",
+            "why ",
+            "when ",
         ];
         if WORKSPACE_QUESTION_WORDS.iter().any(|w| lower.contains(w)) {
             return false;
@@ -523,13 +529,54 @@ pub fn looks_like_trivial_chat(text: &str) -> bool {
     }
     // Action verbs that strongly suggest tool use.
     const ACTION_VERBS: &[&str] = &[
-        "fix", "build", "run", "edit", "read", "write", "search", "find",
-        "grep", "show", "open", "create", "delete", "remove", "add", "test",
-        "check", "debug", "deploy", "install", "update", "commit", "push",
-        "pull", "merge", "refactor", "rename", "move", "copy", "make", "list",
-        "explain", "describe", "compare", "analyze", "review", "implement",
-        "generate", "compile", "render", "draw", "design", "plan", "draft",
-        "write a", "add a", "remove a", "give me",
+        "fix",
+        "build",
+        "run",
+        "edit",
+        "read",
+        "write",
+        "search",
+        "find",
+        "grep",
+        "show",
+        "open",
+        "create",
+        "delete",
+        "remove",
+        "add",
+        "test",
+        "check",
+        "debug",
+        "deploy",
+        "install",
+        "update",
+        "commit",
+        "push",
+        "pull",
+        "merge",
+        "refactor",
+        "rename",
+        "move",
+        "copy",
+        "make",
+        "list",
+        "explain",
+        "describe",
+        "compare",
+        "analyze",
+        "review",
+        "implement",
+        "generate",
+        "compile",
+        "render",
+        "draw",
+        "design",
+        "plan",
+        "draft",
+        "write a",
+        "add a",
+        "remove a",
+        "give me",
     ];
     for verb in ACTION_VERBS {
         if lower.starts_with(verb) || lower.contains(&format!(" {verb} ")) {
@@ -693,7 +740,8 @@ impl SelfDevProductContext {
         };
 
         let path = working_dir.to_string_lossy().replace('\\', "/");
-        if path.contains("/crates/alphacode-desktop") || path.ends_with("crates/alphacode-desktop2") {
+        if path.contains("/crates/alphacode-desktop") || path.ends_with("crates/alphacode-desktop2")
+        {
             Self::Desktop2
         } else {
             Self::Tui
@@ -975,8 +1023,10 @@ pub fn load_agents_md_files_from_dir(working_dir: Option<&Path>) -> (Option<Stri
 
     // ~/.alphacode/ALPHACODE.md - global user preferences
     if let Ok(global_ac_md) = crate::storage::user_home_path(".alphacode/ALPHACODE.md")
-        && let Some((content, size)) =
-            load_file(&global_ac_md, "User Preferences (~/.alphacode/ALPHACODE.md)")
+        && let Some((content, size)) = load_file(
+            &global_ac_md,
+            "User Preferences (~/.alphacode/ALPHACODE.md)",
+        )
     {
         info.has_global_agents_md = true;
         info.global_agents_md_chars += size;
@@ -1016,7 +1066,8 @@ fn load_prompt_overlay_files_from_dir(working_dir: Option<&Path>) -> (Option<Str
         contents.push(content);
     }
 
-    if let Ok(global_overlay) = crate::storage::alphacode_dir().map(|dir| dir.join("prompt-overlay.md"))
+    if let Ok(global_overlay) =
+        crate::storage::alphacode_dir().map(|dir| dir.join("prompt-overlay.md"))
         && let Some((content, size)) = load_file(
             &global_overlay,
             "Global Prompt Overlay (~/.alphacode/prompt-overlay.md)",

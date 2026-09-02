@@ -435,7 +435,6 @@ fn copy_to_clipboard_osc52(text: &str) -> bool {
     out.write_all(seq.as_bytes()).is_ok() && out.flush().is_ok()
 }
 
-
 pub(super) fn effort_display_label(effort: &str) -> &str {
     match effort {
         "swarm" => "Swarm (light fan-out) [Beta]",
@@ -598,7 +597,10 @@ pub(super) fn build_resume_command(
             let exe = launch_client_executable();
             let imported_id = crate::import::imported_codex_session_id(session_id);
             let args = resume_invocation_args(&imported_id, socket);
-            let title = format!("🧠 Codex {}", crate::alphacode_core::util::truncate_str(session_id, 8));
+            let title = format!(
+                "🧠 Codex {}",
+                crate::alphacode_core::util::truncate_str(session_id, 8)
+            );
             (exe, args, title)
         }
         ResumeTarget::PiSession { session_path } => {
@@ -628,7 +630,10 @@ pub(super) fn build_resume_command(
             let exe = launch_client_executable();
             let imported_id = crate::import::imported_cursor_session_id(session_id);
             let args = resume_invocation_args(&imported_id, socket);
-            let title = format!("▮ Cursor {}", crate::alphacode_core::util::truncate_str(session_id, 8));
+            let title = format!(
+                "▮ Cursor {}",
+                crate::alphacode_core::util::truncate_str(session_id, 8)
+            );
             (exe, args, title)
         }
     }
@@ -697,11 +702,13 @@ pub(super) fn spawn_fresh_session_in_new_terminal(cwd: &Path) -> anyhow::Result<
 fn resumed_window_title(session_id: &str) -> String {
     let session_name = crate::alphacode_base::process_title::session_name(session_id);
     let icon = crate::id::session_icon(&session_name);
-    let display_title = crate::alphacode_base::process_title::terminal_display_title_for_id(session_id);
-    let session_label = crate::alphacode_base::process_title::terminal_session_label(&session_name, None);
-    let fallback_label = if let Some(server_info) =
-        crate::registry::find_server_by_socket_sync(&crate::alphacode_app_core::server::socket_path())
-    {
+    let display_title =
+        crate::alphacode_base::process_title::terminal_display_title_for_id(session_id);
+    let session_label =
+        crate::alphacode_base::process_title::terminal_session_label(&session_name, None);
+    let fallback_label = if let Some(server_info) = crate::registry::find_server_by_socket_sync(
+        &crate::alphacode_app_core::server::socket_path(),
+    ) {
         format!("alphacode/{} {}", server_info.name, session_label)
     } else {
         format!("alphacode {}", session_label)
@@ -735,7 +742,6 @@ pub(super) fn spawn_in_new_terminal(
 ) -> anyhow::Result<bool> {
     Ok(false)
 }
-
 
 /// Try to get an image from the system clipboard.
 ///
@@ -1432,4 +1438,3 @@ fn gather_git_info_inner() -> Option<GitInfo> {
         dirty_files,
     })
 }
-

@@ -931,4 +931,3 @@ mod tests {
         assert_eq!(App::experimental_feature_key_for_tool(&tool), None);
     }
 }
-

@@ -1,6 +1,6 @@
 use super::*;
-use crate::provider_catalog::{LoginProviderDescriptor, LoginProviderTarget};
 pub(super) use crate::alphacode_provider_core::{ActiveProvider, ProviderAvailability};
+use crate::provider_catalog::{LoginProviderDescriptor, LoginProviderTarget};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum ConfigProviderSelection {
@@ -395,7 +395,9 @@ impl MultiProvider {
         // spells the OAuth routes out (`claude-oauth` / `openai-oauth`) rather
         // than reusing the bare provider name.
         if let Some(route) =
-            crate::alphacode_provider_core::AuthRoute::parse_explicit_credential_prefix(provider_key)
+            crate::alphacode_provider_core::AuthRoute::parse_explicit_credential_prefix(
+                provider_key,
+            )
         {
             return format!("{}:{model}", route.model_prefix());
         }
@@ -492,7 +494,8 @@ impl MultiProvider {
         // OAuth-vs-API routing decision it encodes is silently dropped.
         Self::parse_provider_hint(trimmed)
             .or_else(|| {
-                crate::alphacode_provider_core::AuthRoute::parse(trimmed).map(|route| route.active_provider())
+                crate::alphacode_provider_core::AuthRoute::parse(trimmed)
+                    .map(|route| route.active_provider())
             })
             .map(ConfigProviderSelection::BuiltIn)
     }
@@ -712,7 +715,8 @@ mod tests {
 
             let (prefix, _) = request.split_once(':').expect("prefixed request");
             assert!(
-                crate::alphacode_provider_core::AuthRoute::parse_explicit_credential_prefix(prefix).is_none(),
+                crate::alphacode_provider_core::AuthRoute::parse_explicit_credential_prefix(prefix)
+                    .is_none(),
                 "{prefix} must stay non-pinning so auto OAuth->API-key fallback survives"
             );
         }

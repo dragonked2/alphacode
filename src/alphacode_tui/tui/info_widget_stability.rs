@@ -594,4 +594,3 @@ pub fn intern_kind(kind: &str) -> &'static str {
     }
     "other"
 }
-

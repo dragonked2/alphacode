@@ -333,7 +333,9 @@ impl StatusSpinnerRenderer {
             self.last_full_frame_at.map(|at| at.elapsed()),
         );
         if !allowed {
-            crate::alphacode_tui::tui::ui::note_idle_animation_fast_path_blocked("chrome_full_frame_due");
+            crate::alphacode_tui::tui::ui::note_idle_animation_fast_path_blocked(
+                "chrome_full_frame_due",
+            );
         }
         allowed
     }
@@ -484,16 +486,19 @@ impl StatusSpinnerRenderer {
         if sync {
             let _ = crossterm::execute!(terminal.backend_mut(), EndSynchronizedUpdate);
         }
-        crate::alphacode_tui::tui::ui::record_draw_call_attribution(crate::alphacode_tui::tui::ui::DrawCallAttribution {
-            timestamp_ms: crate::alphacode_tui::tui::ui::wall_clock_ms(),
-            total_ms: total_elapsed.as_secs_f64() * 1000.0,
-            render_ms: render_elapsed.as_secs_f64() * 1000.0,
-            backend_flush_ms: total_elapsed.saturating_sub(render_elapsed).as_secs_f64() * 1000.0,
-            changed_cells,
-            total_cells,
-            force_full_redraw,
-            input: crate::alphacode_tui::tui::ui::frame_input_attribution_snapshot(),
-        });
+        crate::alphacode_tui::tui::ui::record_draw_call_attribution(
+            crate::alphacode_tui::tui::ui::DrawCallAttribution {
+                timestamp_ms: crate::alphacode_tui::tui::ui::wall_clock_ms(),
+                total_ms: total_elapsed.as_secs_f64() * 1000.0,
+                render_ms: render_elapsed.as_secs_f64() * 1000.0,
+                backend_flush_ms: total_elapsed.saturating_sub(render_elapsed).as_secs_f64()
+                    * 1000.0,
+                changed_cells,
+                total_cells,
+                force_full_redraw,
+                input: crate::alphacode_tui::tui::ui::frame_input_attribution_snapshot(),
+            },
+        );
         if crate::alphacode_tui::tui::ui::last_idle_animation_area().is_some() {
             crate::alphacode_tui::tui::ui::note_idle_animation_full_repaint();
         }
@@ -579,9 +584,9 @@ impl StatusSpinnerRenderer {
 fn render_status_spinner_into_buffer(buffer: &Buffer, area: Rect, symbol: &str) -> bool {
     area.width > 0
         && area.height > 0
-        && buffer
-            .cell((area.x, area.y))
-            .is_some_and(|cell| crate::alphacode_tui_style::theme::is_activity_indicator_frame(cell.symbol()))
+        && buffer.cell((area.x, area.y)).is_some_and(|cell| {
+            crate::alphacode_tui_style::theme::is_activity_indicator_frame(cell.symbol())
+        })
         && !symbol.is_empty()
 }
 
@@ -1333,4 +1338,3 @@ mod tests {
         );
     }
 }
-

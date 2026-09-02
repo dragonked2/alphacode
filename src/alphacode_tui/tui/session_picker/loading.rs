@@ -1,7 +1,9 @@
 use crate::alphacode_tui::id::{extract_session_name, session_icon};
 use crate::alphacode_tui::message::Role;
 use crate::alphacode_tui::registry::{self, ServerInfo};
-use crate::alphacode_tui::session::{self, CrashedSessionsInfo, Session, SessionStatus, StoredDisplayRole};
+use crate::alphacode_tui::session::{
+    self, CrashedSessionsInfo, Session, SessionStatus, StoredDisplayRole,
+};
 use crate::alphacode_tui::storage;
 use anyhow::Result;
 use serde::de::{DeserializeSeed, IgnoredAny, MapAccess, SeqAccess, Visitor};
@@ -1637,7 +1639,10 @@ fn load_external_claude_code_sessions(scan_limit: usize) -> Vec<SessionInfo> {
                 .and_then(|name| name.to_str())
                 .map(|name| name.to_string())
                 .unwrap_or_else(|| {
-                    format!("claude {}", crate::alphacode_core::util::truncate_str(&session_id, 8))
+                    format!(
+                        "claude {}",
+                        crate::alphacode_core::util::truncate_str(&session_id, 8)
+                    )
                 });
             // Keep /resume startup focused on cheap metadata. Transcript-backed
             // search text is intentionally loaded lazily through preview loading;
@@ -1792,7 +1797,10 @@ fn load_codex_session_stub(path: &Path) -> Result<Option<SessionInfo>> {
         .get("cwd")
         .and_then(|v| v.as_str())
         .map(|s| s.to_string());
-    let short_name = format!("codex {}", crate::alphacode_core::util::truncate_str(&session_id, 8));
+    let short_name = format!(
+        "codex {}",
+        crate::alphacode_core::util::truncate_str(&session_id, 8)
+    );
     let title = format!(
         "Codex session {}",
         crate::alphacode_core::util::truncate_str(&session_id, 8)
@@ -1989,7 +1997,10 @@ fn load_pi_session_stub(path: &Path) -> Result<Option<SessionInfo>> {
         .get("cwd")
         .and_then(|v| v.as_str())
         .map(|s| s.to_string());
-    let short_name = format!("pi {}", crate::alphacode_core::util::truncate_str(&session_id, 8));
+    let short_name = format!(
+        "pi {}",
+        crate::alphacode_core::util::truncate_str(&session_id, 8)
+    );
     let title = format!(
         "Pi session {}",
         crate::alphacode_core::util::truncate_str(&session_id, 8)
@@ -2147,7 +2158,10 @@ fn load_pi_session_info(path: &Path) -> Result<Option<SessionInfo>> {
         return Ok(None);
     }
 
-    let short_name = format!("pi {}", crate::alphacode_core::util::truncate_str(&session_id, 8));
+    let short_name = format!(
+        "pi {}",
+        crate::alphacode_core::util::truncate_str(&session_id, 8)
+    );
     let title = title.unwrap_or_else(|| {
         format!(
             "Pi session {}",
@@ -2582,7 +2596,12 @@ fn load_cursor_session_stub(path: &Path) -> Result<Option<SessionInfo>> {
         .and_then(|dir| Path::new(dir).file_name())
         .and_then(|name| name.to_str())
         .map(|name| name.to_string())
-        .unwrap_or_else(|| format!("cursor {}", crate::alphacode_core::util::truncate_str(&session_id, 8)));
+        .unwrap_or_else(|| {
+            format!(
+                "cursor {}",
+                crate::alphacode_core::util::truncate_str(&session_id, 8)
+            )
+        });
     let title = first_user_text
         .as_deref()
         .map(|text| truncate_title_text(text, 72))
@@ -2703,5 +2722,3 @@ pub fn load_sessions_grouped() -> Result<(Vec<ServerGroup>, Vec<SessionInfo>)> {
 
     Ok((groups, orphan_sessions))
 }
-
-

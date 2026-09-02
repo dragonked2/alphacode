@@ -233,7 +233,8 @@ fn read_manual_callback_code(expected_state: &str) -> Result<String> {
         anyhow::bail!("No callback URL entered.");
     }
 
-    let (code, callback_state) = crate::alphacode_base::auth::oauth::parse_callback_input_with_state(trimmed)?;
+    let (code, callback_state) =
+        crate::alphacode_base::auth::oauth::parse_callback_input_with_state(trimmed)?;
     if callback_state != expected_state {
         anyhow::bail!("OAuth state mismatch. Start login again and use the latest callback URL.");
     }
@@ -248,7 +249,8 @@ pub async fn exchange_callback_input(
     redirect_uri: &str,
     tier: GmailAccessTier,
 ) -> Result<GoogleTokens> {
-    let (code, callback_state) = crate::alphacode_base::auth::oauth::parse_callback_input_with_state(input)?;
+    let (code, callback_state) =
+        crate::alphacode_base::auth::oauth::parse_callback_input_with_state(input)?;
     if callback_state != expected_state {
         anyhow::bail!("OAuth state mismatch. Start login again and use the latest callback URL.");
     }
@@ -357,7 +359,10 @@ async fn refresh_tokens_uncoordinated(tokens: &GoogleTokens) -> Result<GoogleTok
             let _ = crate::alphacode_base::auth::refresh_state::record_success("google");
         }
         Err(err) => {
-            let _ = crate::alphacode_base::auth::refresh_state::record_failure("google", err.to_string());
+            let _ = crate::alphacode_base::auth::refresh_state::record_failure(
+                "google",
+                err.to_string(),
+            );
         }
     }
 

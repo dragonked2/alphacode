@@ -109,4 +109,3 @@ impl SettlementTracker {
         SettledMargins { right, left }
     }
 }
-

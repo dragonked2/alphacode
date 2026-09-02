@@ -1971,7 +1971,8 @@ mod tests {
             "{request}"
         );
         assert!(
-            lower.contains("x-alphacode-discovery-request-id: aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee"),
+            lower
+                .contains("x-alphacode-discovery-request-id: aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee"),
             "{request}"
         );
         assert!(

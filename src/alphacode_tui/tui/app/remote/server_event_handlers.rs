@@ -96,4 +96,3 @@ pub(super) fn handle_generated_image(
     app.status = ProcessingStatus::Streaming;
     true
 }
-

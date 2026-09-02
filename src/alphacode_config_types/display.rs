@@ -131,7 +131,10 @@ pub struct DisplayConfig {
     /// When to show the overscroll status line below the input
     /// (off/on/overscroll, default: overscroll). "overscroll" is the elastic
     /// reveal when scrolling past the bottom, "on" keeps it always visible.
-    #[serde(default, deserialize_with = "crate::alphacode_config_types::serde_lenient::lenient_enum")]
+    #[serde(
+        default,
+        deserialize_with = "crate::alphacode_config_types::serde_lenient::lenient_enum"
+    )]
     pub overscroll_status: OverscrollStatusMode,
 }
 impl Default for DisplayConfig {

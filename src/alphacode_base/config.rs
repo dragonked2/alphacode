@@ -721,8 +721,6 @@ mod default_file;
 mod display_summary;
 mod env_overrides;
 
-
-
 /// Whether integration discovery settings carry no information beyond the shipped
 /// default, so `[sponsors]` can be left out of written config files.
 ///

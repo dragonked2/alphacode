@@ -7,10 +7,10 @@ use super::{
     VersionedPlan, broadcast_swarm_plan, persist_swarm_state_for, queue_soft_interrupt_for_session,
     record_swarm_event, summarize_plan_items,
 };
+use crate::alphacode_agent_runtime::SoftInterruptSource;
 use crate::alphacode_app_core::agent::Agent;
 use crate::alphacode_app_core::plan::PlanItem;
 use crate::alphacode_app_core::protocol::{NotificationType, ServerEvent};
-use crate::alphacode_agent_runtime::SoftInterruptSource;
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use std::time::Instant;
@@ -679,7 +679,6 @@ pub(super) async fn handle_comm_reject_plan(
     )
     .await;
 }
-
 
 async fn require_coordinator_swarm(
     id: u64,

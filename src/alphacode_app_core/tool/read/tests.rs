@@ -254,7 +254,9 @@ async fn read_tool_continuation_hint_matches_start_line_style() {
         .expect("read execution should succeed");
 
     assert!(
-        output.output.contains("Use `start_line=4` to read the next chunk."),
+        output
+            .output
+            .contains("Use `start_line=4` to read the next chunk."),
         "output={:?}",
         output.output
     );
@@ -295,7 +297,9 @@ async fn read_tool_supports_start_line_with_limit() {
         output.output
     );
     assert!(
-        output.output.contains("Use `start_line=4` to read the next chunk."),
+        output
+            .output
+            .contains("Use `start_line=4` to read the next chunk."),
         "output={:?}",
         output.output
     );
@@ -337,7 +341,9 @@ async fn read_tool_prefers_end_line_over_limit() {
         output.output
     );
     assert!(
-        output.output.contains("Use `start_line=4` to read the next chunk."),
+        output
+            .output
+            .contains("Use `start_line=4` to read the next chunk."),
         "output={:?}",
         output.output
     );

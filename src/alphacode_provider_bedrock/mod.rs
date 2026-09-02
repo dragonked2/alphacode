@@ -1,4 +1,13 @@
 #[cfg(feature = "aws-sdk")]
+use crate::alphacode_message_types::{ContentBlock as JContentBlock, Role as JRole, StreamEvent};
+use crate::alphacode_message_types::{Message as JMessage, ToolDefinition};
+#[cfg(feature = "aws-sdk")]
+use crate::alphacode_provider_core::summarize_model_catalog_refresh;
+use crate::alphacode_provider_core::{
+    DEFAULT_CONTEXT_LIMIT, EventStream, ModelCatalogRefreshSummary, ModelRoute, Provider,
+    RouteCheapnessEstimate, RouteCostConfidence, RouteCostSource,
+};
+#[cfg(feature = "aws-sdk")]
 use anyhow::Context;
 use anyhow::Result;
 use async_trait::async_trait;
@@ -23,15 +32,6 @@ use aws_smithy_types::Blob;
 use base64::Engine;
 #[cfg(feature = "aws-sdk")]
 use base64::engine::general_purpose::STANDARD as BASE64;
-#[cfg(feature = "aws-sdk")]
-use crate::alphacode_message_types::{ContentBlock as JContentBlock, Role as JRole, StreamEvent};
-use crate::alphacode_message_types::{Message as JMessage, ToolDefinition};
-#[cfg(feature = "aws-sdk")]
-use crate::alphacode_provider_core::summarize_model_catalog_refresh;
-use crate::alphacode_provider_core::{
-    DEFAULT_CONTEXT_LIMIT, EventStream, ModelCatalogRefreshSummary, ModelRoute, Provider,
-    RouteCheapnessEstimate, RouteCostConfidence, RouteCostSource,
-};
 use serde::{Deserialize, Serialize};
 #[cfg(feature = "aws-sdk")]
 use serde_json::{Value, json};
@@ -243,7 +243,8 @@ impl BedrockProvider {
     }
 
     fn configured_profile() -> Option<String> {
-        Self::env_or_config("ALPHACODE_BEDROCK_PROFILE").or_else(|| Self::env_or_config("AWS_PROFILE"))
+        Self::env_or_config("ALPHACODE_BEDROCK_PROFILE")
+            .or_else(|| Self::env_or_config("AWS_PROFILE"))
     }
 
     pub fn configured_bearer_token() -> Option<String> {
@@ -263,7 +264,9 @@ impl BedrockProvider {
             .ok()
             .map(|v| v.trim().to_string())
             .filter(|v| !v.is_empty())
-            .or_else(|| crate::alphacode_provider_env::load_env_value_from_env_or_config(name, ENV_FILE))
+            .or_else(|| {
+                crate::alphacode_provider_env::load_env_value_from_env_or_config(name, ENV_FILE)
+            })
     }
 
     fn persisted_catalog_path() -> Result<std::path::PathBuf> {
@@ -1611,13 +1614,21 @@ mod tests {
         }
 
         assert!(!BedrockProvider::has_credentials());
-        crate::alphacode_provider_env::save_env_value_to_env_file(API_KEY_ENV, ENV_FILE, Some("test-key"))
-            .unwrap();
+        crate::alphacode_provider_env::save_env_value_to_env_file(
+            API_KEY_ENV,
+            ENV_FILE,
+            Some("test-key"),
+        )
+        .unwrap();
         crate::alphacode_core::env::remove_var(API_KEY_ENV);
         assert!(!BedrockProvider::has_credentials());
 
-        crate::alphacode_provider_env::save_env_value_to_env_file(REGION_ENV, ENV_FILE, Some("us-east-2"))
-            .unwrap();
+        crate::alphacode_provider_env::save_env_value_to_env_file(
+            REGION_ENV,
+            ENV_FILE,
+            Some("us-east-2"),
+        )
+        .unwrap();
         crate::alphacode_core::env::remove_var(REGION_ENV);
 
         assert_eq!(
@@ -1657,8 +1668,12 @@ mod tests {
             Some("expired-bearer-token"),
         )
         .unwrap();
-        crate::alphacode_provider_env::save_env_value_to_env_file(REGION_ENV, ENV_FILE, Some("us-east-2"))
-            .unwrap();
+        crate::alphacode_provider_env::save_env_value_to_env_file(
+            REGION_ENV,
+            ENV_FILE,
+            Some("us-east-2"),
+        )
+        .unwrap();
         crate::alphacode_provider_env::save_env_value_to_env_file(
             "ALPHACODE_BEDROCK_PROFILE",
             ENV_FILE,

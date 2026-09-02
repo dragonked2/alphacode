@@ -13,9 +13,9 @@ use crate::alphacode_app_core::protocol::{
     format_comm_plan_status, format_comm_status_snapshot, format_comm_tool_summary,
     latest_assistant_comm_report, resolve_optional_comm_target_session,
 };
+use crate::alphacode_swarm_core::validate_swarm_tldr;
 use anyhow::Result;
 use async_trait::async_trait;
-use crate::alphacode_swarm_core::validate_swarm_tldr;
 use serde::Deserialize;
 use serde_json::{Value, json};
 use std::collections::{HashMap, HashSet};
@@ -1629,7 +1629,10 @@ fn plan_status_budget_line(summary: &PlanGraphStatus, deep_cap: usize) -> Option
     }
     let budget = resolve_run_plan_concurrency(None, true, deep_cap);
     let budget_label = if budget == usize::MAX {
-        format!("{} (member cap)", crate::alphacode_swarm_core::MAX_SWARM_MEMBERS)
+        format!(
+            "{} (member cap)",
+            crate::alphacode_swarm_core::MAX_SWARM_MEMBERS
+        )
     } else {
         budget.to_string()
     };
@@ -1663,7 +1666,6 @@ fn plan_status_budget_line(summary: &PlanGraphStatus, deep_cap: usize) -> Option
 fn format_context_history(target: &str, messages: &[HistoryMessage]) -> ToolOutput {
     ToolOutput::new(format_comm_context_history(target, messages))
 }
-
 
 fn latest_assistant_report(messages: &[HistoryMessage]) -> Option<String> {
     latest_assistant_comm_report(messages)
@@ -3337,4 +3339,3 @@ impl Tool for CommunicateTool {
         }
     }
 }
-

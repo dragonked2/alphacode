@@ -107,4 +107,3 @@ fn onboarding_welcome_centers_within_tall_area() {
         "content should be vertically padded from the top:\n{text}"
     );
 }
-

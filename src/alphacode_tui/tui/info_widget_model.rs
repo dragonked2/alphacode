@@ -27,7 +27,9 @@ pub(super) fn render_model_widget(data: &InfoWidgetData, inner: Rect) -> Vec<Lin
         Span::styled(model_icon, Style::default().fg(model_color)),
         Span::styled(
             truncate_smart(&short_name, max_len.saturating_sub(2)),
-            Style::default().fg(rgb(255, 148, 205)).add_modifier(ratatui::style::Modifier::BOLD),
+            Style::default()
+                .fg(rgb(255, 148, 205))
+                .add_modifier(ratatui::style::Modifier::BOLD),
         ),
     ];
 
@@ -175,10 +177,7 @@ pub(super) fn render_model_widget(data: &InfoWidgetData, inner: Rect) -> Vec<Lin
         };
         lines.push(Line::from(vec![
             Span::styled("⚡ ", Style::default().fg(rgb(140, 180, 255))),
-            Span::styled(
-                format!("{:.1} t/s", tps),
-                Style::default().fg(tps_color),
-            ),
+            Span::styled(format!("{:.1} t/s", tps), Style::default().fg(tps_color)),
         ]));
     }
 
@@ -475,4 +474,3 @@ mod tests {
         assert!(overview.contains("[fast]"));
     }
 }
-

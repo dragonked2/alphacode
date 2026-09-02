@@ -12,7 +12,9 @@
 //! debug commands `smoothness` and `smoothness:reset`, so live sessions and
 //! offscreen replays (`alphacode replay`) can both be benchmarked.
 
-use crate::alphacode_tui_core::anchor_stability::{AnchorFrame, AnchorStabilityRecorder, BLANK_ROW_HASH};
+use crate::alphacode_tui_core::anchor_stability::{
+    AnchorFrame, AnchorStabilityRecorder, BLANK_ROW_HASH,
+};
 use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
 use std::sync::{Mutex, OnceLock};

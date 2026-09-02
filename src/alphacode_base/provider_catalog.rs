@@ -58,10 +58,7 @@ pub fn resolve_openai_compatible_profile_with_api_key_hint(
             .is_some_and(|m| m.contains('/'));
         if !dominated_default_is_explicit
             && let Some(newest_model) =
-                newest_released_model_for_resolved_openai_compatible_profile(
-                    profile.id,
-                    &resolved,
-                )
+                newest_released_model_for_resolved_openai_compatible_profile(profile.id, &resolved)
         {
             resolved.default_model = Some(newest_model);
         }
@@ -109,7 +106,9 @@ pub fn resolve_openai_compatible_profile_with_api_key_hint(
         resolved.default_model = Some(model);
     }
 
-    if api_base_uses_localhost(&resolved.api_base) || env_override("ALPHACODE_OPENAI_COMPAT_API_BASE").is_some() {
+    if api_base_uses_localhost(&resolved.api_base)
+        || env_override("ALPHACODE_OPENAI_COMPAT_API_BASE").is_some()
+    {
         resolved.requires_api_key = false;
     }
 
@@ -127,7 +126,8 @@ fn newest_released_model_for_resolved_openai_compatible_profile(
     resolved: &ResolvedOpenAiCompatibleProfile,
 ) -> Option<String> {
     openai_compatible_profile_by_id(profile_id)?;
-    let cache = crate::alphacode_provider_openrouter::load_disk_cache_entry_for_namespace(&resolved.id)?;
+    let cache =
+        crate::alphacode_provider_openrouter::load_disk_cache_entry_for_namespace(&resolved.id)?;
 
     let source_matches = cache
         .source_api_base
@@ -613,7 +613,8 @@ fn apply_openai_compatible_profile_env_impl(
     profile: Option<OpenAiCompatibleProfile>,
     respect_named_profile_lock: bool,
 ) {
-    if respect_named_profile_lock && std::env::var_os("ALPHACODE_PROVIDER_PROFILE_ACTIVE").is_some() {
+    if respect_named_profile_lock && std::env::var_os("ALPHACODE_PROVIDER_PROFILE_ACTIVE").is_some()
+    {
         return;
     }
 
@@ -645,7 +646,10 @@ fn apply_openai_compatible_profile_env_impl(
     if let Some(profile) = profile {
         let resolved = resolve_openai_compatible_profile(profile);
         crate::alphacode_core::env::set_var("ALPHACODE_OPENROUTER_API_BASE", &resolved.api_base);
-        crate::alphacode_core::env::set_var("ALPHACODE_OPENROUTER_API_KEY_NAME", &resolved.api_key_env);
+        crate::alphacode_core::env::set_var(
+            "ALPHACODE_OPENROUTER_API_KEY_NAME",
+            &resolved.api_key_env,
+        );
         crate::alphacode_core::env::set_var("ALPHACODE_OPENROUTER_ENV_FILE", &resolved.env_file);
         crate::alphacode_core::env::set_var("ALPHACODE_OPENROUTER_CACHE_NAMESPACE", &resolved.id);
         crate::alphacode_core::env::set_var("ALPHACODE_OPENROUTER_PROVIDER_FEATURES", "0");
@@ -653,14 +657,23 @@ fn apply_openai_compatible_profile_env_impl(
         if static_models.is_empty() {
             crate::alphacode_core::env::remove_var("ALPHACODE_OPENROUTER_STATIC_MODELS");
         } else {
-            crate::alphacode_core::env::set_var("ALPHACODE_OPENROUTER_STATIC_MODELS", static_models.join("\n"));
+            crate::alphacode_core::env::set_var(
+                "ALPHACODE_OPENROUTER_STATIC_MODELS",
+                static_models.join("\n"),
+            );
         }
         if resolved.requires_api_key {
             crate::alphacode_core::env::remove_var("ALPHACODE_OPENROUTER_ALLOW_NO_AUTH");
-            crate::alphacode_core::env::set_var("ALPHACODE_OPENROUTER_TRANSPORT_STATE", "direct-api-key");
+            crate::alphacode_core::env::set_var(
+                "ALPHACODE_OPENROUTER_TRANSPORT_STATE",
+                "direct-api-key",
+            );
         } else {
             crate::alphacode_core::env::set_var("ALPHACODE_OPENROUTER_ALLOW_NO_AUTH", "1");
-            crate::alphacode_core::env::set_var("ALPHACODE_OPENROUTER_TRANSPORT_STATE", "direct-no-auth");
+            crate::alphacode_core::env::set_var(
+                "ALPHACODE_OPENROUTER_TRANSPORT_STATE",
+                "direct-no-auth",
+            );
         }
     }
 }
@@ -752,13 +765,19 @@ pub fn apply_named_provider_profile_env_from_config(
         .filter(|id| !id.is_empty())
         .collect::<Vec<_>>();
     if !static_models.is_empty() {
-        crate::alphacode_core::env::set_var("ALPHACODE_OPENROUTER_STATIC_MODELS", static_models.join("\n"));
+        crate::alphacode_core::env::set_var(
+            "ALPHACODE_OPENROUTER_STATIC_MODELS",
+            static_models.join("\n"),
+        );
     }
 
     match profile.auth {
         crate::config::NamedProviderAuth::None => {
             crate::alphacode_core::env::set_var("ALPHACODE_OPENROUTER_ALLOW_NO_AUTH", "1");
-            crate::alphacode_core::env::set_var("ALPHACODE_OPENROUTER_TRANSPORT_STATE", "direct-no-auth");
+            crate::alphacode_core::env::set_var(
+                "ALPHACODE_OPENROUTER_TRANSPORT_STATE",
+                "direct-no-auth",
+            );
         }
         crate::config::NamedProviderAuth::Bearer | crate::config::NamedProviderAuth::Header => {
             let key_env = profile
@@ -811,26 +830,44 @@ pub fn apply_named_provider_profile_env_from_config(
                 .unwrap_or(!api_base_uses_localhost(&api_base));
             if !requires_key {
                 crate::alphacode_core::env::set_var("ALPHACODE_OPENROUTER_ALLOW_NO_AUTH", "1");
-                crate::alphacode_core::env::set_var("ALPHACODE_OPENROUTER_TRANSPORT_STATE", "direct-no-auth");
+                crate::alphacode_core::env::set_var(
+                    "ALPHACODE_OPENROUTER_TRANSPORT_STATE",
+                    "direct-no-auth",
+                );
             } else if provider_is_openrouter {
-                crate::alphacode_core::env::set_var("ALPHACODE_OPENROUTER_TRANSPORT_STATE", "openrouter-api-key");
+                crate::alphacode_core::env::set_var(
+                    "ALPHACODE_OPENROUTER_TRANSPORT_STATE",
+                    "openrouter-api-key",
+                );
             } else {
-                crate::alphacode_core::env::set_var("ALPHACODE_OPENROUTER_TRANSPORT_STATE", "direct-api-key");
+                crate::alphacode_core::env::set_var(
+                    "ALPHACODE_OPENROUTER_TRANSPORT_STATE",
+                    "direct-api-key",
+                );
             }
 
             match profile.auth {
                 crate::config::NamedProviderAuth::Bearer => {
-                    crate::alphacode_core::env::set_var("ALPHACODE_OPENROUTER_AUTH_HEADER", "bearer");
+                    crate::alphacode_core::env::set_var(
+                        "ALPHACODE_OPENROUTER_AUTH_HEADER",
+                        "bearer",
+                    );
                 }
                 crate::config::NamedProviderAuth::Header => {
-                    crate::alphacode_core::env::set_var("ALPHACODE_OPENROUTER_AUTH_HEADER", "api-key");
+                    crate::alphacode_core::env::set_var(
+                        "ALPHACODE_OPENROUTER_AUTH_HEADER",
+                        "api-key",
+                    );
                     if let Some(header) = profile
                         .auth_header
                         .as_deref()
                         .map(str::trim)
                         .filter(|v| !v.is_empty())
                     {
-                        crate::alphacode_core::env::set_var("ALPHACODE_OPENROUTER_AUTH_HEADER_NAME", header);
+                        crate::alphacode_core::env::set_var(
+                            "ALPHACODE_OPENROUTER_AUTH_HEADER_NAME",
+                            header,
+                        );
                     }
                 }
                 crate::config::NamedProviderAuth::None => {}
@@ -908,7 +945,9 @@ pub fn openai_compatible_profile_is_configured(profile: OpenAiCompatibleProfile)
         return true;
     }
 
-    if profile.id == OPENAI_COMPAT_PROFILE.id && env_override("ALPHACODE_OPENAI_COMPAT_API_BASE").is_some() {
+    if profile.id == OPENAI_COMPAT_PROFILE.id
+        && env_override("ALPHACODE_OPENAI_COMPAT_API_BASE").is_some()
+    {
         return true;
     }
 

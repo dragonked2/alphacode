@@ -107,8 +107,10 @@ static COMPACTION_TOKENS_SAVED: AtomicU64 = AtomicU64::new(0);
 /// single-threaded today but tests may drive it from multiple tasks).
 pub fn record_api_call(duration: Duration, input_tokens: u64, output_tokens: u64) {
     API.calls.fetch_add(1, Ordering::Relaxed);
-    API.total_input_tokens.fetch_add(input_tokens, Ordering::Relaxed);
-    API.total_output_tokens.fetch_add(output_tokens, Ordering::Relaxed);
+    API.total_input_tokens
+        .fetch_add(input_tokens, Ordering::Relaxed);
+    API.total_output_tokens
+        .fetch_add(output_tokens, Ordering::Relaxed);
     let us = duration.as_micros().min(u64::MAX as u128) as u64;
     API.total_duration_us.fetch_add(us, Ordering::Relaxed);
     update_max(&API.max_duration_us, us);
@@ -118,8 +120,10 @@ pub fn record_api_call(duration: Duration, input_tokens: u64, output_tokens: u64
 /// `record_api_call` because some providers do not emit cache telemetry on
 /// every call.
 pub fn record_cache_tokens(cache_read: u64, cache_creation: u64) {
-    API.total_cache_read.fetch_add(cache_read, Ordering::Relaxed);
-    API.total_cache_creation.fetch_add(cache_creation, Ordering::Relaxed);
+    API.total_cache_read
+        .fetch_add(cache_read, Ordering::Relaxed);
+    API.total_cache_creation
+        .fetch_add(cache_creation, Ordering::Relaxed);
 }
 
 /// Record a completed tool call.  `success = false` records a failure.
@@ -262,10 +266,7 @@ pub fn record_tool_call_named(name: &str, duration: Duration, success: bool) {
 
 /// Per-tool call counts.  Returns (calls, successes, failures, total_ms).
 pub fn per_tool() -> HashMap<String, (u64, u64, u64, u64)> {
-    PER_TOOL
-        .lock()
-        .map(|g| g.clone())
-        .unwrap_or_default()
+    PER_TOOL.lock().map(|g| g.clone()).unwrap_or_default()
 }
 
 #[cfg(test)]

@@ -931,7 +931,9 @@ pub(super) fn draw_messages(
             let image_end = region.end_line;
             let is_fit = region.render == crate::alphacode_tui_messages::ImageRegionRender::Fit;
 
-            if let Some(native_latex) = crate::alphacode_tui::tui::markdown::handterm_native_latex_for_hash(hash) {
+            if let Some(native_latex) =
+                crate::alphacode_tui::tui::markdown::handterm_native_latex_for_hash(hash)
+            {
                 // Native math writes real terminal cells rather than an overlay,
                 // so draw it only when the complete reserved region is visible.
                 // The ordinary paragraph pass has already cleared every cell in
@@ -1521,4 +1523,3 @@ mod tests {
         assert_eq!(super::copy_badge_alt_label_from_config("⌥"), "⌥");
     }
 }
-

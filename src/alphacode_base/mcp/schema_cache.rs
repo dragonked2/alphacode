@@ -84,7 +84,9 @@ pub fn fingerprint_config(config: &McpServerConfig) -> String {
 }
 
 fn cache_path() -> Option<PathBuf> {
-    crate::storage::alphacode_dir().ok().map(|d| d.join(CACHE_FILE))
+    crate::storage::alphacode_dir()
+        .ok()
+        .map(|d| d.join(CACHE_FILE))
 }
 
 impl McpSchemaCache {
@@ -200,4 +202,3 @@ fn tool_defs_equal(a: &[McpToolDef], b: &[McpToolDef]) -> bool {
     b_keys.sort();
     a_keys == b_keys
 }
-

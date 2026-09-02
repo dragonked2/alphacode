@@ -1,11 +1,11 @@
-use crate::message::ToolCall;
-use crate::side_panel::SidePanelSnapshot;
-use crate::todo::TodoItem;
 pub use crate::alphacode_background_types::{
     BackgroundTaskCompleted, BackgroundTaskProgress, BackgroundTaskProgressEvent,
     BackgroundTaskProgressKind, BackgroundTaskProgressSource, BackgroundTaskStatus,
 };
 pub use crate::alphacode_batch_types::{BatchProgress, BatchSubcallProgress, BatchSubcallState};
+use crate::message::ToolCall;
+use crate::side_panel::SidePanelSnapshot;
+use crate::todo::TodoItem;
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 use std::sync::{Mutex, OnceLock};
@@ -185,7 +185,8 @@ pub struct ClipboardPasteCompleted {
 #[derive(Clone, Debug)]
 pub struct ModelRefreshCompleted {
     pub session_id: String,
-    pub result: std::result::Result<crate::alphacode_provider_core::ModelCatalogRefreshSummary, String>,
+    pub result:
+        std::result::Result<crate::alphacode_provider_core::ModelCatalogRefreshSummary, String>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

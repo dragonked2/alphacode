@@ -553,4 +553,3 @@ fn add_region_rects(
         rects.push((start as u16, region_height as u16, min_w));
     }
 }
-

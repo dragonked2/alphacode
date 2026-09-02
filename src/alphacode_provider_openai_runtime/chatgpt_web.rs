@@ -1,6 +1,6 @@
-use anyhow::{Context, Result};
 use crate::alphacode_message_types::{ContentBlock, Message, Role, StreamEvent, ToolDefinition};
 use crate::alphacode_provider_core::EventStream;
+use anyhow::{Context, Result};
 use serde_json::{Value, json};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -110,7 +110,11 @@ impl ChatGptWebState {
         let _turn_guard = self.turn_lock.lock().await;
         let (tab_id, fork_name) = open_chatgpt_tab().await?;
         let result = async {
-            send_phase(tx, crate::alphacode_message_types::ConnectionPhase::Authenticating).await?;
+            send_phase(
+                tx,
+                crate::alphacode_message_types::ConnectionPhase::Authenticating,
+            )
+            .await?;
 
             wait_for_editor(tab_id).await?;
             prepare_chatgpt_page(tab_id).await?;
@@ -119,7 +123,11 @@ impl ChatGptWebState {
                 anyhow::bail!("ChatGPT web response consumer was closed before submission");
             }
 
-            send_phase(tx, crate::alphacode_message_types::ConnectionPhase::SendingRequest).await?;
+            send_phase(
+                tx,
+                crate::alphacode_message_types::ConnectionPhase::SendingRequest,
+            )
+            .await?;
             if tx.is_closed() {
                 anyhow::bail!("ChatGPT web response consumer was closed before submission");
             }
@@ -131,7 +139,11 @@ impl ChatGptWebState {
             .await
             .context("Failed to submit the prompt in ChatGPT")?;
 
-            send_phase(tx, crate::alphacode_message_types::ConnectionPhase::WaitingForResponse).await?;
+            send_phase(
+                tx,
+                crate::alphacode_message_types::ConnectionPhase::WaitingForResponse,
+            )
+            .await?;
 
             poll_for_response(tab_id, tx).await
         }
@@ -482,7 +494,11 @@ return { text, busy, terminal, alert, model: message ? message.dataset.messageMo
         }
 
         if !text.is_empty() && !streaming_emitted {
-            send_phase(tx, crate::alphacode_message_types::ConnectionPhase::Streaming).await?;
+            send_phase(
+                tx,
+                crate::alphacode_message_types::ConnectionPhase::Streaming,
+            )
+            .await?;
             streaming_emitted = true;
         }
 

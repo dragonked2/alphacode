@@ -1119,7 +1119,11 @@ pub fn format_provider_test_coverage_report(
         "Tested with: alphacode {} ({}){}\n\n",
         entry.alphacode_version,
         entry.alphacode_git_hash,
-        if entry.alphacode_git_dirty { ", dirty" } else { "" }
+        if entry.alphacode_git_dirty {
+            ", dirty"
+        } else {
+            ""
+        }
     ));
 
     out.push_str("## Checkpoints\n\n");
@@ -1863,7 +1867,9 @@ pub fn format_strict_live_provider_model_coverage_summary(
         summary.coverage_percent,
         stage_count,
     ));
-    out.push_str("A pair is READY only after every stage below passes in a real Alphacode runtime.\n");
+    out.push_str(
+        "A pair is READY only after every stage below passes in a real Alphacode runtime.\n",
+    );
     out.push_str("Anything short of READY is work-in-progress, not necessarily broken -- the\n");
     out.push_str("list below shows exactly how far each pair got and what to run next.\n\n");
 

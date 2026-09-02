@@ -100,7 +100,8 @@ fn main() {
         let gt = s.spawn(|| resolve_git_tag(&repo_root, &metadata));
         let gdt = s.spawn(|| resolve_git_dirty(&repo_root, &metadata));
         (
-            bv.join().unwrap_or_else(|_| default_build_version(base_version)),
+            bv.join()
+                .unwrap_or_else(|_| default_build_version(base_version)),
             gh.join().unwrap_or_else(|_| UNKNOWN.to_string()),
             gd.join().unwrap_or_else(|_| UNKNOWN.to_string()),
             gt.join().unwrap_or_default(),
@@ -159,13 +160,10 @@ fn explicit_build_version() -> Option<String> {
 fn commits_since_base_tag(base: Version, repo_root: &Path) -> Option<u32> {
     let tag = base.tag();
 
-    git_output(
-        repo_root,
-        &["rev-list", "--count", &format!("{tag}..HEAD")],
-    )?
-    .trim()
-    .parse()
-    .ok()
+    git_output(repo_root, &["rev-list", "--count", &format!("{tag}..HEAD")])?
+        .trim()
+        .parse()
+        .ok()
 }
 
 // -----------------------------------------------------------------------------
@@ -257,12 +255,7 @@ fn resolve_changelog(repo_root: &Path, metadata: &BuildMetadata) -> String {
     let raw = env::var(ENV_CHANGELOG)
         .ok()
         .or_else(|| metadata.get("changelog_raw").map(str::to_owned))
-        .or_else(|| {
-            git_output(
-                repo_root,
-                &["log", "-700", "--format=%h|%ct|%D|%s"],
-            )
-        })
+        .or_else(|| git_output(repo_root, &["log", "-700", "--format=%h|%ct|%D|%s"]))
         .unwrap_or_default();
 
     parse_changelog(&raw)
@@ -293,9 +286,7 @@ fn parse_changelog_entry(line: &str) -> Option<String> {
         })
         .unwrap_or_default();
 
-    Some(format!(
-        "{hash}\x1e{tag}\x1e{timestamp}\x1e{subject}"
-    ))
+    Some(format!("{hash}\x1e{tag}\x1e{timestamp}\x1e{subject}"))
 }
 
 // -----------------------------------------------------------------------------
@@ -367,20 +358,11 @@ fn parse_metadata(data: &str) -> std::collections::HashMap<String, String> {
 
 fn emit_build_environment(info: &BuildInfo) {
     let version = if info.release {
-        format!(
-            "v{} ({})",
-            info.build_version, info.git_hash
-        )
+        format!("v{} ({})", info.build_version, info.git_hash)
     } else if info.git_dirty {
-        format!(
-            "v{}-dev ({}, dirty)",
-            info.build_version, info.git_hash
-        )
+        format!("v{}-dev ({}, dirty)", info.build_version, info.git_hash)
     } else {
-        format!(
-            "v{}-dev ({})",
-            info.build_version, info.git_hash
-        )
+        format!("v{}-dev ({})", info.build_version, info.git_hash)
     };
 
     let base_semver = info.base_version.as_string();
@@ -460,10 +442,7 @@ fn configure_rerun_rules(repo_root: &Path) {
 
     // If a metadata file exists, Cargo should rebuild when it changes.
     if let Some(path) = env::var_os(ENV_METADATA) {
-        println!(
-            "cargo:rerun-if-changed={}",
-            PathBuf::from(path).display()
-        );
+        println!("cargo:rerun-if-changed={}", PathBuf::from(path).display());
     }
 }
 
@@ -481,15 +460,9 @@ fn watch_git_state(repo_root: &Path) {
         None => return,
     };
 
-    println!(
-        "cargo:rerun-if-changed={}",
-        git_dir.join("HEAD").display()
-    );
+    println!("cargo:rerun-if-changed={}", git_dir.join("HEAD").display());
 
-    println!(
-        "cargo:rerun-if-changed={}",
-        git_dir.join("index").display()
-    );
+    println!("cargo:rerun-if-changed={}", git_dir.join("index").display());
 
     if let Ok(head) = fs::read_to_string(git_dir.join("HEAD"))
         && let Some(reference) = head.trim().strip_prefix("ref: ")

@@ -16,6 +16,7 @@ use super::{
     persist_swarm_state_for, queue_soft_interrupt_for_session, record_swarm_event,
     set_member_task_label, truncate_detail, update_member_status, update_member_status_with_report,
 };
+use crate::alphacode_agent_runtime::SoftInterruptSource;
 use crate::alphacode_app_core::agent::Agent;
 use crate::alphacode_app_core::plan::{
     TaskControlAction, assignment_affinities_for_task, assignment_loads,
@@ -24,7 +25,6 @@ use crate::alphacode_app_core::plan::{
     task_control_target_item_id,
 };
 use crate::alphacode_app_core::protocol::{NotificationType, PlanGraphStatus, ServerEvent};
-use crate::alphacode_agent_runtime::SoftInterruptSource;
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use tokio::sync::{Mutex, RwLock, broadcast, mpsc, watch};
@@ -299,7 +299,6 @@ fn turn_end_disposition(
     TurnEndDisposition::AutoComplete
 }
 
-
 /// Assignment content for a (re-)dispatched node.
 ///
 /// For a re-woken composite (`is_composite_synthesis`), the node's original
@@ -560,8 +559,6 @@ async fn task_id_for_target_session(
     };
     task_control_target_item_id(&plan.items, target_session, action)
 }
-
-
 
 /// Like [`crate::plan::next_unassigned_runnable_item_id`], but when no unassigned runnable
 /// item exists, look for a runnable item *stranded* on a dead assignee (a
@@ -1583,8 +1580,11 @@ async fn handle_comm_assign_task_with_mode(
                 .unwrap_or(false);
             let effective_content =
                 composite_synthesis_content(&item_id, &raw_content, is_composite_synthesis);
-            let hydrated =
-                crate::alphacode_plan::bridge::hydrate_assignment(plan, &item_id, &effective_content);
+            let hydrated = crate::alphacode_plan::bridge::hydrate_assignment(
+                plan,
+                &item_id,
+                &effective_content,
+            );
             let content =
                 deep_mode_assignment_content(plan, &item_id, is_composite_synthesis, &hydrated);
 
@@ -2502,7 +2502,6 @@ pub(super) async fn handle_comm_task_control(
     }
 }
 
-
 pub(super) async fn handle_client_debug_command(
     id: u64,
     client_event_tx: &mpsc::UnboundedSender<ServerEvent>,
@@ -2576,7 +2575,8 @@ async fn require_plan_driver_swarm(
         plans
             .get(&swarm_id)
             .map(|plan| {
-                crate::alphacode_plan::bridge::parse_mode(&plan.mode) == crate::alphacode_plan::dag::Mode::Deep
+                crate::alphacode_plan::bridge::parse_mode(&plan.mode)
+                    == crate::alphacode_plan::dag::Mode::Deep
                     && plan.participants.contains(req_session_id)
             })
             .unwrap_or(false)

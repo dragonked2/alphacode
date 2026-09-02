@@ -42,10 +42,7 @@ impl Tool for ClipboardTool {
 
         match action {
             "copy" => {
-                let text = input
-                    .get("text")
-                    .and_then(|v| v.as_str())
-                    .unwrap_or("");
+                let text = input.get("text").and_then(|v| v.as_str()).unwrap_or("");
 
                 if text.is_empty() {
                     return Ok(ToolOutput::new(
@@ -58,9 +55,7 @@ impl Tool for ClipboardTool {
                         "Copied {} characters to clipboard.",
                         text.len()
                     ))),
-                    Err(e) => Ok(ToolOutput::new(format!(
-                        "Failed to copy to clipboard: {e}"
-                    ))),
+                    Err(e) => Ok(ToolOutput::new(format!("Failed to copy to clipboard: {e}"))),
                 }
             }
             "paste" => match paste_from_clipboard() {

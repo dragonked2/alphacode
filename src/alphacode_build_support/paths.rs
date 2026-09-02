@@ -3,9 +3,9 @@ use super::{
     read_current_version, read_shared_server_version, read_stable_version,
     shared_server_binary_is_strictly_older_than, shared_server_binary_path, stable_binary_path,
 };
+use crate::alphacode_storage as storage;
 use anyhow::Result;
 use chrono::{DateTime, Utc};
-use crate::alphacode_storage as storage;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::time::SystemTime;
@@ -377,7 +377,9 @@ fn update_launcher_symlink(target: &Path) -> Result<PathBuf> {
             std::process::id()
         ));
 
-    crate::alphacode_build_support::platform_support::atomic_symlink_swap(target, &launcher, &temp)?;
+    crate::alphacode_build_support::platform_support::atomic_symlink_swap(
+        target, &launcher, &temp,
+    )?;
     Ok(launcher)
 }
 
@@ -608,8 +610,11 @@ mod tests {
     fn repo_fixture(git_file: bool) -> tempfile::TempDir {
         let temp = tempfile::TempDir::new().expect("temp repo");
         if git_file {
-            std::fs::write(temp.path().join(".git"), "gitdir: /tmp/alphacode-test-git\n")
-                .expect("git file");
+            std::fs::write(
+                temp.path().join(".git"),
+                "gitdir: /tmp/alphacode-test-git\n",
+            )
+            .expect("git file");
         } else {
             std::fs::create_dir_all(temp.path().join(".git")).expect("git dir");
         }
@@ -780,9 +785,7 @@ mod tests {
         #[cfg(not(unix))]
         {
             std::fs::copy(&wrapper, &link).map(|_| ()).expect("copy");
-            expected_payload = channel_dir.join(
-                payload.file_name().expect("payload file name"),
-            );
+            expected_payload = channel_dir.join(payload.file_name().expect("payload file name"));
             std::fs::copy(&payload, &expected_payload).expect("copy payload");
         }
         assert_eq!(
@@ -819,7 +822,8 @@ mod tests {
     #[test]
     fn resolve_binary_payload_refuses_ambiguous_payloads() {
         let (temp, wrapper, _payload) = release_install_fixture();
-        std::fs::write(temp.path().join("alphacode-macos-aarch64.bin"), [0u8; 8]).expect("second bin");
+        std::fs::write(temp.path().join("alphacode-macos-aarch64.bin"), [0u8; 8])
+            .expect("second bin");
         assert_eq!(
             resolve_binary_payload(&wrapper),
             std::fs::canonicalize(&wrapper).expect("canonical wrapper")

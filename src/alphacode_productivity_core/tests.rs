@@ -1,5 +1,7 @@
 use crate::alphacode_productivity_core::model::SessionSummary;
-use crate::alphacode_productivity_core::{render_markdown, render_png, render_svg, report_from_summaries};
+use crate::alphacode_productivity_core::{
+    render_markdown, render_png, render_svg, report_from_summaries,
+};
 use std::collections::BTreeMap;
 
 fn summary(project: &str, user: u32, asst: u32, tools: &[(&str, u32)]) -> SessionSummary {

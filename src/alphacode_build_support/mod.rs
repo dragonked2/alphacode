@@ -26,9 +26,9 @@ pub use storage_helpers::{
     version_binary_path, write_build_progress,
 };
 
+use crate::alphacode_storage as storage;
 use anyhow::Result;
 use chrono::Utc;
-use crate::alphacode_storage as storage;
 use serde::{Deserialize, Serialize};
 #[cfg(unix)]
 use std::io::{BufRead, BufReader, Write};
@@ -649,7 +649,9 @@ fn update_channel_symlink(channel: &str, version: &str) -> Result<PathBuf> {
         channel,
         std::process::id()
     ));
-    crate::alphacode_build_support::platform_support::atomic_symlink_swap(&target, &link_path, &temp)?;
+    crate::alphacode_build_support::platform_support::atomic_symlink_swap(
+        &target, &link_path, &temp,
+    )?;
 
     Ok(link_path)
 }

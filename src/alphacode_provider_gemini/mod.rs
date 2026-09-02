@@ -1,5 +1,5 @@
-use anyhow::Result;
 use crate::alphacode_message_types::{ContentBlock, Message, Role, ToolCall, ToolDefinition};
+use anyhow::Result;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use std::collections::HashSet;

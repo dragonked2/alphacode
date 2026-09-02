@@ -156,9 +156,13 @@ during first-run onboarding. Please fix the login for the user.\n\n",
 
     brief.push_str("Diagnose (machine-readable, exit/JSON tells you what's wrong):\n");
     if provider_hint.is_some() {
-        brief.push_str(&format!("  alphacode auth-test --provider {provider} --json\n",));
+        brief.push_str(&format!(
+            "  alphacode auth-test --provider {provider} --json\n",
+        ));
     } else {
-        brief.push_str("  alphacode auth-test --all-configured --json   # which provider is broken?\n");
+        brief.push_str(
+            "  alphacode auth-test --all-configured --json   # which provider is broken?\n",
+        );
     }
     brief.push_str("  alphacode auth doctor   # human-readable, structured recovery steps\n\n");
 
@@ -256,7 +260,10 @@ mod tests {
             brief.contains("alphacode auth-test --provider openai --json"),
             "{brief}"
         );
-        assert!(brief.contains("alphacode login --provider openai"), "{brief}");
+        assert!(
+            brief.contains("alphacode login --provider openai"),
+            "{brief}"
+        );
         assert!(brief.contains("--api-key-stdin"), "{brief}");
         assert!(brief.contains("alphacode provider add"), "{brief}");
         // Points at the logs.

@@ -77,9 +77,11 @@ fn generated_image_rendered_image_uses_inline_tool_anchor() {
     );
     assert_eq!(
         image.anchor,
-        Some(crate::alphacode_session_types::RenderedImageAnchor::ToolCall {
-            id: "image_call_123".to_string(),
-        })
+        Some(
+            crate::alphacode_session_types::RenderedImageAnchor::ToolCall {
+                id: "image_call_123".to_string(),
+            }
+        )
     );
     assert!(
         !base64::engine::general_purpose::STANDARD

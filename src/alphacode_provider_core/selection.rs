@@ -407,7 +407,10 @@ mod tests {
             cli_provider_arg_for_session_key("anthropic-api-key"),
             Some("anthropic-api")
         );
-        assert_eq!(cli_provider_arg_for_session_key("claude-api"), Some("anthropic-api"));
+        assert_eq!(
+            cli_provider_arg_for_session_key("claude-api"),
+            Some("anthropic-api")
+        );
         // Anthropic OAuth -> claude.
         assert_eq!(
             cli_provider_arg_for_session_key("claude-oauth"),

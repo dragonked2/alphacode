@@ -140,7 +140,9 @@ pub use render_support::extract_copy_targets_from_rendered_lines;
 /// `alphacode-tui-*` crate. Re-exported here so existing
 /// `crate::alphacode_tui_markdown::{reasoning_line_markup, reasoning_partial_markup,
 /// REASONING_SENTINEL}` paths keep working.
-pub use crate::alphacode_render_core::{REASONING_SENTINEL, reasoning_line_markup, reasoning_partial_markup};
+pub use crate::alphacode_render_core::{
+    REASONING_SENTINEL, reasoning_line_markup, reasoning_partial_markup,
+};
 
 /// One-line collapsed reasoning summary markup (e.g. `▸ thought (3 lines)`).
 ///
@@ -621,7 +623,10 @@ fn ensure_blockquote_prefix(current_spans: &mut Vec<Span<'static>>, blockquote_d
     for _ in 0..blockquote_depth {
         prefix.push_str("│ ");
     }
-    current_spans.push(Span::styled(prefix, Style::default().fg(rgb(100, 140, 200))));
+    current_spans.push(Span::styled(
+        prefix,
+        Style::default().fg(rgb(100, 140, 200)),
+    ));
 }
 
 /// Add blockquote gutter prefix to a line.
@@ -638,7 +643,10 @@ fn with_blockquote_prefix(line: Line<'static>, blockquote_depth: usize) -> Line<
     for _ in 0..blockquote_depth {
         prefix.push_str("│ ");
     }
-    spans.push(Span::styled(prefix, Style::default().fg(rgb(100, 140, 200))));
+    spans.push(Span::styled(
+        prefix,
+        Style::default().fg(rgb(100, 140, 200)),
+    ));
     let alignment = line.alignment;
     spans.extend(line.spans);
     let line = Line::from(spans);
@@ -1012,11 +1020,20 @@ fn math_display_lines(math: &str) -> Vec<Line<'static>> {
     // Estimate capacity: header + body lines + footer
     let body_line_count = math.lines().count();
     let mut out = Vec::with_capacity(body_line_count + 2);
-    out.push(Line::from(Span::styled("┌─ math ", Style::default().fg(rgb(100, 140, 200)))).left_aligned());
+    out.push(
+        Line::from(Span::styled(
+            "┌─ math ",
+            Style::default().fg(rgb(100, 140, 200)),
+        ))
+        .left_aligned(),
+    );
     for line in crate::alphacode_render_core::render_display_latex(math) {
         out.push(
-            Line::from(vec![Span::styled("│ ", dim), Span::styled(line, math_style)])
-                .left_aligned(),
+            Line::from(vec![
+                Span::styled("│ ", dim),
+                Span::styled(line, math_style),
+            ])
+            .left_aligned(),
         );
     }
     out.push(Line::from(Span::styled("└─", dim)).left_aligned());
@@ -1029,15 +1046,30 @@ fn raw_math_display_lines(math: &str) -> Vec<Line<'static>> {
     let math_style = Style::default().fg(math_fg());
     let body_line_count = math.lines().count();
     let mut out = Vec::with_capacity(body_line_count + 4);
-    out.push(Line::from(Span::styled("┌─ math (raw) ", Style::default().fg(rgb(100, 140, 200)))).left_aligned());
-    out.push(Line::from(vec![Span::styled("│ ", dim), Span::styled("$$", math_style)]));
+    out.push(
+        Line::from(Span::styled(
+            "┌─ math (raw) ",
+            Style::default().fg(rgb(100, 140, 200)),
+        ))
+        .left_aligned(),
+    );
+    out.push(Line::from(vec![
+        Span::styled("│ ", dim),
+        Span::styled("$$", math_style),
+    ]));
     for line in math.lines() {
         out.push(
-            Line::from(vec![Span::styled("│ ", dim), Span::styled(line.to_string(), math_style)])
-                .left_aligned(),
+            Line::from(vec![
+                Span::styled("│ ", dim),
+                Span::styled(line.to_string(), math_style),
+            ])
+            .left_aligned(),
         );
     }
-    out.push(Line::from(vec![Span::styled("│ ", dim), Span::styled("$$", math_style)]));
+    out.push(Line::from(vec![
+        Span::styled("│ ", dim),
+        Span::styled("$$", math_style),
+    ]));
     out.push(Line::from(Span::styled("└─", dim)).left_aligned());
     out
 }

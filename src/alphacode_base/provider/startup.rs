@@ -100,8 +100,14 @@ impl MultiProvider {
                     pref, cfg,
                 ) {
                     Ok(profile_name) => {
-                        crate::alphacode_core::env::set_var("ALPHACODE_PROVIDER_PROFILE_NAME", &profile_name);
-                        crate::alphacode_core::env::set_var("ALPHACODE_PROVIDER_PROFILE_ACTIVE", "1");
+                        crate::alphacode_core::env::set_var(
+                            "ALPHACODE_PROVIDER_PROFILE_NAME",
+                            &profile_name,
+                        );
+                        crate::alphacode_core::env::set_var(
+                            "ALPHACODE_PROVIDER_PROFILE_ACTIVE",
+                            "1",
+                        );
                         default_named_provider_profile = Some(profile_name);
                     }
                     Err(err) => crate::logging::warn(&format!(

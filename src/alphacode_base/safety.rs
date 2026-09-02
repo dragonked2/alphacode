@@ -333,7 +333,9 @@ impl SafetySystem {
 
     /// Persist a transcript to ~/.alphacode/ambient/transcripts/{timestamp}.json
     pub fn save_transcript(&self, transcript: &AmbientTranscript) -> Result<()> {
-        let dir = storage::alphacode_dir()?.join("ambient").join("transcripts");
+        let dir = storage::alphacode_dir()?
+            .join("ambient")
+            .join("transcripts");
         storage::ensure_dir(&dir)?;
 
         let filename = transcript.started_at.format("%Y-%m-%d-%H%M%S").to_string();
@@ -357,7 +359,9 @@ fn queue_path() -> Result<std::path::PathBuf> {
 }
 
 fn history_path() -> Result<std::path::PathBuf> {
-    Ok(storage::alphacode_dir()?.join("safety").join("history.json"))
+    Ok(storage::alphacode_dir()?
+        .join("safety")
+        .join("history.json"))
 }
 
 fn persist_queue(queue: &[PermissionRequest]) -> Result<()> {

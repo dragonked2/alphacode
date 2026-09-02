@@ -165,4 +165,3 @@ fn parse_percent(summary: &str) -> Option<f32> {
         .ok()
         .map(|percent| percent.clamp(0.0, 100.0))
 }
-

@@ -4,7 +4,9 @@ use super::await_members_state::{
 };
 use super::{AwaitMembersRuntime, SwarmEvent, SwarmMember};
 use crate::alphacode_app_core::bus::{Bus, BusEvent, SwarmAwaitCompleted, UiActivity};
-use crate::alphacode_app_core::protocol::{AwaitedMemberStatus, ServerEvent, format_comm_awaited_members_with_reports};
+use crate::alphacode_app_core::protocol::{
+    AwaitedMemberStatus, ServerEvent, format_comm_awaited_members_with_reports,
+};
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};

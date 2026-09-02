@@ -191,10 +191,11 @@ pub fn persisted_background_tasks_note(session_id: &str) -> String {
     // Background awaits auto-resume on the new server and report via
     // notify/wake, so they need no agent action. Only blocking awaits, whose
     // socket waiter dies with the old process, must be rerun by the agent.
-    let pending_awaits: Vec<_> = crate::alphacode_app_core::server::pending_await_members_for_session(session_id)
-        .into_iter()
-        .filter(|state| !state.background)
-        .collect();
+    let pending_awaits: Vec<_> =
+        crate::alphacode_app_core::server::pending_await_members_for_session(session_id)
+            .into_iter()
+            .filter(|state| !state.background)
+            .collect();
     if !pending_awaits.is_empty() {
         let await_list = pending_awaits
             .iter()

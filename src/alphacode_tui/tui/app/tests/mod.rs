@@ -2,43 +2,42 @@
 #[allow(clippy::module_inception)]
 pub mod tests {
 
-    use crate::alphacode_tui::tui::app::App;
     use crate::alphacode_provider_core::Provider;
-    use crate::alphacode_tui::tui::app::SessionPickerMode;
-    use crate::alphacode_tui::tui::app::commands;
-    use crate::alphacode_tui::tui::app::input;
-    use crate::alphacode_tui::tui::app::remote;
-    use crate::alphacode_tui::tui::app::Session;
-    use crate::alphacode_tui::tui::app::PendingCatchupResume;
     use crate::alphacode_tui::tui::DisplayMessage;
-    use crate::alphacode_tui::tui::app::local;
-    use crate::alphacode_tui::tui::app::auth;
-    use crate::alphacode_tui::tui::app::model_context;
-    use crate::alphacode_tui::tui::app::MouseScrollTarget;
-    use crate::alphacode_tui::tui::app::handterm_native_scroll;
-    use crate::alphacode_tui::tui::app::helpers;
-    use crate::alphacode_tui::tui::app::ProcessingStatus;
-    use crate::alphacode_tui::tui::app::ImproveMode;
-    use crate::alphacode_tui::tui::app::Role;
+    use crate::alphacode_tui::tui::app::App;
     use crate::alphacode_tui::tui::app::ContentBlock;
-    use crate::alphacode_tui::tui::app::SendAction;
     use crate::alphacode_tui::tui::app::CopyBadgeUiState;
+    use crate::alphacode_tui::tui::app::ImproveMode;
+    use crate::alphacode_tui::tui::app::MouseScrollTarget;
+    use crate::alphacode_tui::tui::app::PendingCatchupResume;
     use crate::alphacode_tui::tui::app::PendingLogin;
     use crate::alphacode_tui::tui::app::PendingReloadReconnectStatus;
     use crate::alphacode_tui::tui::app::PendingRemoteMessage;
-    use crate::alphacode_tui::tui::app::run_shell;
-    use crate::alphacode_tui::tui::app::helpers::mask_email;
+    use crate::alphacode_tui::tui::app::ProcessingStatus;
+    use crate::alphacode_tui::tui::app::Role;
+    use crate::alphacode_tui::tui::app::SendAction;
+    use crate::alphacode_tui::tui::app::Session;
+    use crate::alphacode_tui::tui::app::SessionPickerMode;
+    use crate::alphacode_tui::tui::app::auth;
+    use crate::alphacode_tui::tui::app::commands;
+    use crate::alphacode_tui::tui::app::handterm_native_scroll;
+    use crate::alphacode_tui::tui::app::helpers;
     use crate::alphacode_tui::tui::app::helpers::is_context_limit_error;
     use crate::alphacode_tui::tui::app::helpers::is_request_payload_too_large_error;
-    
-    
+    use crate::alphacode_tui::tui::app::helpers::mask_email;
+    use crate::alphacode_tui::tui::app::input;
+    use crate::alphacode_tui::tui::app::local;
+    use crate::alphacode_tui::tui::app::model_context;
+    use crate::alphacode_tui::tui::app::remote;
+    use crate::alphacode_tui::tui::app::run_shell;
+
     // MouseEvent is available via super::* from app.rs (crossterm::event::MouseEvent)
 
     use anyhow::Result;
-    use crossterm::event::{KeyCode, KeyModifiers, MouseButton, MouseEventKind};
     use crossterm::event::MouseEvent;
-    use std::sync::atomic::{AtomicBool, Ordering};
+    use crossterm::event::{KeyCode, KeyModifiers, MouseButton, MouseEventKind};
     use std::sync::Arc;
+    use std::sync::atomic::{AtomicBool, Ordering};
     use std::time::Duration;
 
     // Stub implementations for test helpers that no longer exist but are still
@@ -60,8 +59,12 @@ pub mod tests {
             ) -> Result<crate::alphacode_provider_core::EventStream> {
                 unimplemented!("StubProvider")
             }
-            fn name(&self) -> &str { "stub" }
-            fn model(&self) -> String { "stub-model".to_string() }
+            fn name(&self) -> &str {
+                "stub"
+            }
+            fn model(&self) -> String {
+                "stub-model".to_string()
+            }
             fn fork(&self) -> Arc<dyn crate::alphacode_provider_core::Provider> {
                 Arc::new(Self)
             }
@@ -75,13 +78,19 @@ pub mod tests {
         app
     }
 
-    fn create_fast_test_app() -> App { create_test_app_inner() }
-    fn create_switchable_test_app(_provider: &str) -> (App, std::sync::Arc<std::sync::Mutex<String>>) {
+    fn create_fast_test_app() -> App {
+        create_test_app_inner()
+    }
+    fn create_switchable_test_app(
+        _provider: &str,
+    ) -> (App, std::sync::Arc<std::sync::Mutex<String>>) {
         let app = create_test_app_inner();
         let active = std::sync::Arc::new(std::sync::Mutex::new(_provider.to_string()));
         (app, active)
     }
-    fn create_gemini_test_app() -> App { create_test_app_inner() }
+    fn create_gemini_test_app() -> App {
+        create_test_app_inner()
+    }
 
     fn write_test_config(_contents: &str) {}
     fn failover_error_message(prompt: &crate::provider::ProviderFailoverPrompt) -> String {
@@ -111,8 +120,12 @@ pub mod tests {
             ) -> Result<crate::alphacode_provider_core::EventStream> {
                 unimplemented!("FailingSwitchProvider")
             }
-            fn name(&self) -> &str { "failing-switch" }
-            fn model(&self) -> String { "failing-model".to_string() }
+            fn name(&self) -> &str {
+                "failing-switch"
+            }
+            fn model(&self) -> String {
+                "failing-model".to_string()
+            }
             fn fork(&self) -> Arc<dyn crate::alphacode_provider_core::Provider> {
                 Arc::new(Self)
             }
@@ -154,8 +167,12 @@ pub mod tests {
             ) -> Result<crate::alphacode_provider_core::EventStream> {
                 unimplemented!("AuthRefreshProvider")
             }
-            fn name(&self) -> &str { "auth-refresh" }
-            fn model(&self) -> String { "auth-refresh-model".to_string() }
+            fn name(&self) -> &str {
+                "auth-refresh"
+            }
+            fn model(&self) -> String {
+                "auth-refresh-model".to_string()
+            }
             fn fork(&self) -> Arc<dyn crate::alphacode_provider_core::Provider> {
                 Arc::new(Self)
             }
@@ -187,8 +204,12 @@ pub mod tests {
             ) -> Result<crate::alphacode_provider_core::EventStream> {
                 unimplemented!("AntigravityProvider")
             }
-            fn name(&self) -> &str { "antigravity" }
-            fn model(&self) -> String { "antigravity-model".to_string() }
+            fn name(&self) -> &str {
+                "antigravity"
+            }
+            fn model(&self) -> String {
+                "antigravity-model".to_string()
+            }
             fn fork(&self) -> Arc<dyn crate::alphacode_provider_core::Provider> {
                 Arc::new(Self)
             }
@@ -230,8 +251,12 @@ pub mod tests {
             ) -> Result<crate::alphacode_provider_core::EventStream> {
                 unimplemented!("LoginSmokeProvider")
             }
-            fn name(&self) -> &str { "login-smoke" }
-            fn model(&self) -> String { "login-smoke-model".to_string() }
+            fn name(&self) -> &str {
+                "login-smoke"
+            }
+            fn model(&self) -> String {
+                "login-smoke-model".to_string()
+            }
             fn fork(&self) -> Arc<dyn crate::alphacode_provider_core::Provider> {
                 Arc::new(Self)
             }
@@ -271,10 +296,16 @@ pub mod tests {
         ) -> Result<crate::alphacode_provider_core::EventStream> {
             unimplemented!("AuthRefreshingMockProvider")
         }
-        fn name(&self) -> &str { "auto-import" }
-        fn model(&self) -> String { "test-model".to_string() }
+        fn name(&self) -> &str {
+            "auto-import"
+        }
+        fn model(&self) -> String {
+            "test-model".to_string()
+        }
         fn fork(&self) -> Arc<dyn crate::alphacode_provider_core::Provider> {
-            Arc::new(Self { logged_in: Arc::clone(&self.logged_in) })
+            Arc::new(Self {
+                logged_in: Arc::clone(&self.logged_in),
+            })
         }
         // The hot provider-init path calls `on_auth_changed` (not
         // `refresh_model_catalog`) for non-OpenAI-compatible providers, so this
@@ -315,8 +346,12 @@ pub mod tests {
         ) -> Result<crate::alphacode_provider_core::EventStream> {
             unimplemented!("AsyncAuthRefreshingMockProvider")
         }
-        fn name(&self) -> &str { "auto-import" }
-        fn model(&self) -> String { "test-model".to_string() }
+        fn name(&self) -> &str {
+            "auto-import"
+        }
+        fn model(&self) -> String {
+            "test-model".to_string()
+        }
         fn fork(&self) -> Arc<dyn crate::alphacode_provider_core::Provider> {
             Arc::new(Self {
                 started: Arc::clone(&self.started),

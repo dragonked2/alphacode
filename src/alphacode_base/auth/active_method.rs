@@ -80,9 +80,11 @@ pub fn resolve_dual_credential_auth(
     // pins OAuth or API key for *this* provider. This replaces the per-provider
     // hand-written alias matches that used to drift apart.
     let forced =
-        crate::alphacode_provider_core::pinned_mode_for(dual, runtime_provider).map(|mode| match mode {
-            crate::alphacode_provider_core::AuthMode::Oauth => ActiveCredential::OAuth,
-            crate::alphacode_provider_core::AuthMode::ApiKey => ActiveCredential::ApiKey,
+        crate::alphacode_provider_core::pinned_mode_for(dual, runtime_provider).map(|mode| {
+            match mode {
+                crate::alphacode_provider_core::AuthMode::Oauth => ActiveCredential::OAuth,
+                crate::alphacode_provider_core::AuthMode::ApiKey => ActiveCredential::ApiKey,
+            }
         });
 
     let (has_oauth, has_api_key) = match dual {

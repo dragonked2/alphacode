@@ -524,4 +524,3 @@ mod tests {
         assert!(matches!(scheduled[3].1, ReplayEvent::Server(_)));
     }
 }
-

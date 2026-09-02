@@ -88,7 +88,9 @@ impl StatusBar {
         let gradient = BrandTheme::gradient();
         spans.push(Span::styled(
             "◆",
-            Style::default().fg(gradient[0]).add_modifier(Modifier::BOLD),
+            Style::default()
+                .fg(gradient[0])
+                .add_modifier(Modifier::BOLD),
         ));
 
         // Model name (truncated if needed, Unicode-safe)
@@ -102,7 +104,9 @@ impl StatusBar {
         };
         spans.push(Span::styled(
             format!(" {}", model_display),
-            Style::default().fg(BrandTheme::model()).add_modifier(Modifier::BOLD),
+            Style::default()
+                .fg(BrandTheme::model())
+                .add_modifier(Modifier::BOLD),
         ));
 
         // Provider (only when there's room and it adds value)
@@ -166,11 +170,10 @@ impl StatusBar {
             .sum();
         if used_width < width {
             let remaining = width - used_width;
-            let fill: String = std::iter::repeat_n("· ", remaining / 2 + 1).take(remaining).collect();
-            spans.push(Span::styled(
-                fill,
-                Style::default().fg(BrandTheme::dim()),
-            ));
+            let fill: String = std::iter::repeat_n("· ", remaining / 2 + 1)
+                .take(remaining)
+                .collect();
+            spans.push(Span::styled(fill, Style::default().fg(BrandTheme::dim())));
         }
 
         Line::from(spans)
@@ -196,7 +199,9 @@ impl StatusBar {
         // Model
         spans.push(Span::styled(
             format!(" {}", model),
-            Style::default().fg(BrandTheme::model()).add_modifier(Modifier::BOLD),
+            Style::default()
+                .fg(BrandTheme::model())
+                .add_modifier(Modifier::BOLD),
         ));
 
         // TPS — color-coded by throughput tier
@@ -218,7 +223,11 @@ impl StatusBar {
         if !history.values().is_empty() {
             let spark_width = 12.min(width.saturating_sub(60));
             spans.push(Span::styled(" ", Style::default()));
-            spans.extend(BrandTheme::sparkline(history.values(), history.peak(), spark_width));
+            spans.extend(BrandTheme::sparkline(
+                history.values(),
+                history.peak(),
+                spark_width,
+            ));
         }
 
         // Total tokens (compact)
@@ -252,7 +261,9 @@ impl StatusBar {
         // Model
         spans.push(Span::styled(
             format!(" {}", model),
-            Style::default().fg(BrandTheme::model()).add_modifier(Modifier::BOLD),
+            Style::default()
+                .fg(BrandTheme::model())
+                .add_modifier(Modifier::BOLD),
         ));
 
         // TPS
@@ -295,7 +306,9 @@ impl StatusBar {
         // Tool name
         spans.push(Span::styled(
             tool_name.to_string(),
-            Style::default().fg(BrandTheme::tool()).add_modifier(Modifier::BOLD),
+            Style::default()
+                .fg(BrandTheme::tool())
+                .add_modifier(Modifier::BOLD),
         ));
 
         // Progress bar if available
@@ -349,9 +362,7 @@ impl StatusBadge {
     pub fn render(text: &str, color: Color) -> Span<'static> {
         Span::styled(
             format!(" {} ", text),
-            Style::default()
-                .fg(color)
-                .add_modifier(Modifier::BOLD),
+            Style::default().fg(color).add_modifier(Modifier::BOLD),
         )
     }
 
@@ -399,18 +410,21 @@ mod tests {
         let line = StatusBar::render("model", "p", 1500, 1234567, None, "", 80);
         // Token counts should be compact (1.5k, 1.2M) not raw numbers
         let text: String = line.spans.iter().map(|s| s.content.as_ref()).collect();
-        assert!(text.contains("1.5k"), "expected compact token format, got: {}", text);
-        assert!(text.contains("1.2M"), "expected compact token format, got: {}", text);
+        assert!(
+            text.contains("1.5k"),
+            "expected compact token format, got: {}",
+            text
+        );
+        assert!(
+            text.contains("1.2M"),
+            "expected compact token format, got: {}",
+            text
+        );
     }
 
     #[test]
     fn test_streaming_status() {
-        let line = StatusBar::streaming_status(
-            "claude-3-opus",
-            45.5,
-            1234,
-            Duration::from_secs(3),
-        );
+        let line = StatusBar::streaming_status("claude-3-opus", 45.5, 1234, Duration::from_secs(3));
         assert!(!line.spans.is_empty());
     }
 

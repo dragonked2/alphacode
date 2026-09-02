@@ -244,4 +244,3 @@ pub fn find_server_by_socket_sync(socket: &std::path::Path) -> Option<ServerInfo
         .find(|info| info.socket == socket)
         .cloned()
 }
-

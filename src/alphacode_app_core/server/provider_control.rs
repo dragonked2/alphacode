@@ -3,7 +3,9 @@
 use crate::alphacode_app_core::agent::Agent;
 use crate::alphacode_app_core::auth::lifecycle::{AuthActivationRequest, AuthActivationResult};
 use crate::alphacode_app_core::protocol::{AuthChanged, NotificationType, ServerEvent};
-use crate::alphacode_app_core::provider::{ModelCatalogRefreshSummary, ModelRoute, Provider, RouteSelection};
+use crate::alphacode_app_core::provider::{
+    ModelCatalogRefreshSummary, ModelRoute, Provider, RouteSelection,
+};
 use crate::alphacode_provider_core::ModelCatalogSnapshot;
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -99,9 +101,8 @@ fn format_auth_catalog_refresh_complete(
     // Only surface the raw diff when something was added or a route changed;
     // a refresh that just dropped stale entries (e.g. "models +0/-1") reads as
     // churn, not news, so it collapses to a quiet ready line.
-    let meaningful = summary.models_added > 0
-        || summary.routes_added > 0
-        || summary.routes_changed > 0;
+    let meaningful =
+        summary.models_added > 0 || summary.routes_added > 0 || summary.routes_changed > 0;
     let catalog_status = if has_warning {
         if changed {
             format!("{provider_label} catalog changed; some routes missing. Use `/model`.")
@@ -1043,7 +1044,8 @@ pub(super) async fn handle_notify_auth_changed(
         if !auth_refresh_is_current(&session_id, auth_refresh_generation) {
             return;
         }
-        let activation = crate::alphacode_base::auth::lifecycle::activate_auth_change(&activation_request);
+        let activation =
+            crate::alphacode_base::auth::lifecycle::activate_auth_change(&activation_request);
         // Snapshot which providers alphacode now believes are configured right after
         // an auth change activates. This is the cornerstone for diagnosing
         // "logged in but model picker still empty / only OpenAI+Anthropic" and
@@ -1175,9 +1177,11 @@ pub(super) async fn handle_notify_auth_changed(
             ));
         } else {
             if prefer_strongest {
-                if let Some(route) = crate::alphacode_base::auth::lifecycle::globally_preferred_default_route(
-                    &latest_snapshot.model_routes,
-                ) {
+                if let Some(route) =
+                    crate::alphacode_base::auth::lifecycle::globally_preferred_default_route(
+                        &latest_snapshot.model_routes,
+                    )
+                {
                     apply_auth_route_to_agent(
                         &route,
                         &agent_clone,
@@ -1212,11 +1216,12 @@ pub(super) async fn handle_notify_auth_changed(
             before_snapshot.model_routes,
             latest_snapshot.model_routes.clone(),
         );
-        let catalog_invariants = crate::alphacode_base::auth::lifecycle::validate_catalog_invariants(
-            &activation,
-            latest_snapshot.provider_model.as_deref(),
-            &latest_snapshot.model_routes,
-        );
+        let catalog_invariants =
+            crate::alphacode_base::auth::lifecycle::validate_catalog_invariants(
+                &activation,
+                latest_snapshot.provider_model.as_deref(),
+                &latest_snapshot.model_routes,
+            );
         let catalog_warning = catalog_invariants.warning_message();
         let catalog_message = format_auth_catalog_refresh_complete(
             activation
@@ -1251,7 +1256,6 @@ pub(super) async fn handle_notify_auth_changed(
     });
     let _ = client_event_tx.send(ServerEvent::Done { id });
 }
-
 
 pub(super) async fn handle_switch_anthropic_account(
     id: u64,

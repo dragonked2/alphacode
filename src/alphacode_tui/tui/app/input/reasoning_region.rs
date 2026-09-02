@@ -88,7 +88,8 @@ impl App {
             self.streaming.streaming_text.push_str(&committed);
         }
         // Re-append the live tail for the in-progress (partial) line.
-        let partial = crate::alphacode_tui_markdown::reasoning_partial_markup(&self.reasoning_pending_line);
+        let partial =
+            crate::alphacode_tui_markdown::reasoning_partial_markup(&self.reasoning_pending_line);
         self.reasoning_partial_len = partial.len();
         self.streaming.streaming_text.push_str(&partial);
         self.refresh_split_view_if_needed();
@@ -97,7 +98,10 @@ impl App {
     /// Promote the live partial line to a committed line and end the region. The
     /// `_footer` argument is ignored (the "Thought for Xs" footer was removed);
     /// it is kept for call-site compatibility.
-    pub(in crate::alphacode_tui::tui::app) fn close_reasoning_region(&mut self, _footer: Option<String>) {
+    pub(in crate::alphacode_tui::tui::app) fn close_reasoning_region(
+        &mut self,
+        _footer: Option<String>,
+    ) {
         if !self.reasoning_streaming {
             return;
         }
@@ -105,9 +109,9 @@ impl App {
         self.strip_reasoning_partial_tail();
         let pending = std::mem::take(&mut self.reasoning_pending_line);
         if !pending.is_empty() {
-            self.streaming
-                .streaming_text
-                .push_str(&crate::alphacode_tui_markdown::reasoning_line_markup(&pending));
+            self.streaming.streaming_text.push_str(
+                &crate::alphacode_tui_markdown::reasoning_line_markup(&pending),
+            );
         }
         self.reasoning_streaming = false;
 
@@ -208,4 +212,3 @@ impl App {
         }
     }
 }
-

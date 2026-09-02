@@ -104,7 +104,9 @@ pub fn load_api_key_from_env_or_config(env_key: &str, file_name: &str) -> Option
         return Some(key);
     }
 
-    let config_path = crate::alphacode_storage::app_config_dir().ok()?.join(file_name);
+    let config_path = crate::alphacode_storage::app_config_dir()
+        .ok()?
+        .join(file_name);
     crate::alphacode_storage::harden_secret_file_permissions(&config_path);
     let content = std::fs::read_to_string(config_path).ok()?;
     let prefix = format!("{}=", env_key);
@@ -190,7 +192,9 @@ pub fn load_env_value_from_config_file(env_key: &str, file_name: &str) -> Option
         return None;
     }
 
-    let config_path = crate::alphacode_storage::app_config_dir().ok()?.join(file_name);
+    let config_path = crate::alphacode_storage::app_config_dir()
+        .ok()?
+        .join(file_name);
     crate::alphacode_storage::harden_secret_file_permissions(&config_path);
     let content = std::fs::read_to_string(config_path).ok()?;
     let prefix = format!("{}=", env_key);
@@ -285,8 +289,11 @@ mod tests {
         crate::alphacode_core::env::set_var("ALPHACODE_PROVIDER_ENV_TEST_KEY", "env-key");
 
         assert_eq!(
-            load_api_key_from_env_or_config("ALPHACODE_PROVIDER_ENV_TEST_KEY", "provider-env-test.env")
-                .as_deref(),
+            load_api_key_from_env_or_config(
+                "ALPHACODE_PROVIDER_ENV_TEST_KEY",
+                "provider-env-test.env"
+            )
+            .as_deref(),
             Some("env-key")
         );
     }
@@ -396,7 +403,10 @@ mod tests {
         let _guard = EnvGuard::new(&["ALPHACODE_HOME", "ALPHACODE_PROVIDER_BAR_API_KEY"]);
         crate::alphacode_core::env::set_var("ALPHACODE_HOME", temp.path());
         // NBSP + BOM padding around the env-provided key.
-        crate::alphacode_core::env::set_var("ALPHACODE_PROVIDER_BAR_API_KEY", "\u{00A0}sk-env-key\u{FEFF}");
+        crate::alphacode_core::env::set_var(
+            "ALPHACODE_PROVIDER_BAR_API_KEY",
+            "\u{00A0}sk-env-key\u{FEFF}",
+        );
 
         assert_eq!(
             load_api_key_from_env_or_config("ALPHACODE_PROVIDER_BAR_API_KEY", "provider-bar.env")

@@ -1,5 +1,5 @@
-use crate::alphacode_tui_messages::DisplayMessage;
 use crate::alphacode_config_types::{DiagramDisplayMode, DiffDisplayMode};
+use crate::alphacode_tui_messages::DisplayMessage;
 use ratatui::layout::Alignment;
 use ratatui::text::{Line, Span};
 use std::collections::{HashMap, VecDeque};

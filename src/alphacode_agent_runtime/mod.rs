@@ -254,7 +254,11 @@ where
             // not even start the tool — its caller asked to stop and starting
             // it would be wasted work.
             if cancel.is_set() {
-                return (idx, Err("cancelled before start".to_string()), start.elapsed());
+                return (
+                    idx,
+                    Err("cancelled before start".to_string()),
+                    start.elapsed(),
+                );
             }
             // Race the tool future against the cancel signal. Whichever
             // finishes first wins; on cancel we report the cancel reason.
@@ -274,24 +278,34 @@ where
             && let Some(joined) = join_set.join_next().await
             && let Ok((idx, result, elapsed)) = joined
         {
-            out[idx] = Some(ParallelResult { index: idx, result, elapsed });
+            out[idx] = Some(ParallelResult {
+                index: idx,
+                result,
+                elapsed,
+            });
         }
     }
 
     // Drain anything still running.
     while let Some(joined) = join_set.join_next().await {
         if let Ok((idx, result, elapsed)) = joined {
-            out[idx] = Some(ParallelResult { index: idx, result, elapsed });
+            out[idx] = Some(ParallelResult {
+                index: idx,
+                result,
+                elapsed,
+            });
         }
     }
 
     out.into_iter()
         .enumerate()
-        .map(|(i, slot)| slot.unwrap_or_else(|| ParallelResult {
-            index: i,
-            result: Err("cancelled before start".to_string()),
-            elapsed: std::time::Duration::ZERO,
-        }))
+        .map(|(i, slot)| {
+            slot.unwrap_or_else(|| ParallelResult {
+                index: i,
+                result: Err("cancelled before start".to_string()),
+                elapsed: std::time::Duration::ZERO,
+            })
+        })
         .collect()
 }
 

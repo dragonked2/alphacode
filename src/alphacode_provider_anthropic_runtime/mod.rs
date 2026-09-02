@@ -22,9 +22,6 @@ fn oauth_beta_headers(model: &str) -> &'static str {
     crate::alphacode_provider_core::anthropic_oauth_beta_headers(model)
 }
 
-use anyhow::{Context, Result};
-use async_trait::async_trait;
-use futures::StreamExt;
 use crate::alphacode_base::provider::anthropic::{
     AVAILABLE_MODELS, AnthropicCredentialMode, CLAUDE_CLI_USER_AGENT,
     apply_oauth_attribution_headers, is_cache_ttl_1h, load_anthropic_api_key,
@@ -38,6 +35,9 @@ use crate::alphacode_provider_core::{
     anthropic_map_tool_name_from_oauth as map_tool_name_from_oauth,
     anthropic_strip_1m_suffix as strip_1m_suffix,
 };
+use anyhow::{Context, Result};
+use async_trait::async_trait;
+use futures::StreamExt;
 use reqwest::Client;
 use serde::Serialize;
 use serde_json::{Value, json};
@@ -426,10 +426,14 @@ impl AnthropicProvider {
         // exactly like the runtime's own prefetch.
         crate::alphacode_base::provider::persist_anthropic_model_catalog(&catalog);
         if !catalog.context_limits.is_empty() {
-            crate::alphacode_base::provider::populate_context_limits(catalog.context_limits.clone());
+            crate::alphacode_base::provider::populate_context_limits(
+                catalog.context_limits.clone(),
+            );
         }
         if !catalog.available_models.is_empty() {
-            crate::alphacode_base::provider::populate_anthropic_models(catalog.available_models.clone());
+            crate::alphacode_base::provider::populate_anthropic_models(
+                catalog.available_models.clone(),
+            );
         }
         Ok(catalog.available_models)
     }
@@ -657,8 +661,9 @@ impl AnthropicProvider {
     /// otherwise the model's published maximum. A flat default would clamp
     /// 128K-output models to 32K and truncate long agentic turns mid-tool-call.
     fn max_tokens_for(&self, model: &str) -> u32 {
-        self.max_tokens_override
-            .unwrap_or_else(|| crate::alphacode_provider_core::anthropic::anthropic_max_output_tokens(model))
+        self.max_tokens_override.unwrap_or_else(|| {
+            crate::alphacode_provider_core::anthropic::anthropic_max_output_tokens(model)
+        })
     }
 
     fn manual_thinking_budget(effort: &str, max_tokens: u32) -> Option<u32> {
@@ -682,7 +687,9 @@ impl AnthropicProvider {
         // `display.show_thinking` is a request to *see* the model's reasoning.
         // Anthropic only streams thinking summaries when a thinking request is
         // present, so opting into the display must also opt into generating it.
-        let show_thinking = crate::alphacode_base::config::config().display.show_thinking;
+        let show_thinking = crate::alphacode_base::config::config()
+            .display
+            .show_thinking;
         self.build_reasoning_request_parts_inner(model, is_oauth, show_thinking)
     }
 
@@ -848,7 +855,10 @@ impl AnthropicProvider {
                     return Ok((refreshed.access_token, true));
                 }
                 Err(e) => {
-                    crate::alphacode_base::logging::error(&format!("OAuth token refresh failed: {}", e));
+                    crate::alphacode_base::logging::error(&format!(
+                        "OAuth token refresh failed: {}",
+                        e
+                    ));
                     // A still-unexpired token may remain usable until its
                     // actual expiry even when a proactive refresh fails. Once
                     // expired, however, returning it only guarantees a 401 and
@@ -901,8 +911,13 @@ impl AnthropicProvider {
         // choice so UI surfaces (model picker, header widget) report the auth
         // method that requests will actually use, instead of inferring it from
         // credential presence. `Auto` leaves the existing identity untouched.
-        if let Some(route) = mode.auth_route(crate::alphacode_provider_core::DualAuthProvider::Anthropic) {
-            crate::alphacode_base::env::set_var("ALPHACODE_RUNTIME_PROVIDER", route.runtime_provider_key());
+        if let Some(route) =
+            mode.auth_route(crate::alphacode_provider_core::DualAuthProvider::Anthropic)
+        {
+            crate::alphacode_base::env::set_var(
+                "ALPHACODE_RUNTIME_PROVIDER",
+                route.runtime_provider_key(),
+            );
         }
         // Drop any cached auth snapshot so surfaces that still consult the cheap
         // cached probe (auto-mode resolution, usage availability, account labels)
@@ -1092,7 +1107,10 @@ impl Provider for AnthropicProvider {
         self.credential_mode_snapshot()
     }
 
-    fn set_credential_mode(&self, mode: crate::alphacode_provider_core::CredentialMode) -> Result<()> {
+    fn set_credential_mode(
+        &self,
+        mode: crate::alphacode_provider_core::CredentialMode,
+    ) -> Result<()> {
         AnthropicProvider::set_credential_mode(self, mode)
     }
 
@@ -1269,7 +1287,8 @@ impl Provider for AnthropicProvider {
         }
 
         let catalog = if is_oauth {
-            match crate::alphacode_base::provider::fetch_anthropic_model_catalog_oauth(&token).await {
+            match crate::alphacode_base::provider::fetch_anthropic_model_catalog_oauth(&token).await
+            {
                 Ok(catalog) => Ok(catalog),
                 Err(err) if is_oauth_catalog_auth_error(&err.to_string()) => {
                     crate::alphacode_base::logging::info(
@@ -1277,8 +1296,10 @@ impl Provider for AnthropicProvider {
                     );
                     let refreshed_token =
                         force_refresh_oauth_token(Arc::clone(&self.credentials)).await?;
-                    crate::alphacode_base::provider::fetch_anthropic_model_catalog_oauth(&refreshed_token)
-                        .await
+                    crate::alphacode_base::provider::fetch_anthropic_model_catalog_oauth(
+                        &refreshed_token,
+                    )
+                    .await
                 }
                 Err(err) => Err(err),
             }
@@ -1651,9 +1672,13 @@ async fn run_stream_with_retries(
                             }))
                             .await;
                     } else {
-                        crate::alphacode_base::logging::info(&format!("Transient error, will retry: {}", e));
+                        crate::alphacode_base::logging::info(&format!(
+                            "Transient error, will retry: {}",
+                            e
+                        ));
                     }
-                    next_retry_delay = crate::alphacode_provider_core::retry_after::retry_after_from_error(&e);
+                    next_retry_delay =
+                        crate::alphacode_provider_core::retry_after::retry_after_from_error(&e);
                     last_error = Some(e);
                     continue;
                 }
@@ -1821,12 +1846,15 @@ async fn stream_response(
 
     if !response.status().is_success() {
         let status = response.status();
-        let retry_after = crate::alphacode_provider_core::retry_after::retry_after(response.headers());
+        let retry_after =
+            crate::alphacode_provider_core::retry_after::retry_after(response.headers());
         let error_text = crate::alphacode_base::util::http_error_body(response, "HTTP error").await;
-        return Err(crate::alphacode_provider_core::retry_after::error_with_retry_after(
-            format!("Anthropic API error ({}): {}", status, error_text),
-            retry_after,
-        ));
+        return Err(
+            crate::alphacode_provider_core::retry_after::error_with_retry_after(
+                format!("Anthropic API error ({}): {}", status, error_text),
+                retry_after,
+            ),
+        );
     }
 
     let _ = tx
@@ -2181,7 +2209,10 @@ fn process_sse_event(
                 // Log it so we can confirm there was no silent server-side
                 // substitution (and surface it under ALPHACODE_LOG_SERVED_MODEL).
                 if let Some(served) = parsed.message.model.as_deref() {
-                    crate::alphacode_base::logging::info(&format!("Anthropic served model={}", served));
+                    crate::alphacode_base::logging::info(&format!(
+                        "Anthropic served model={}",
+                        served
+                    ));
                     if std::env::var("ALPHACODE_LOG_SERVED_MODEL").is_ok() {
                         eprintln!("[anthropic] served model={served}");
                     }
@@ -2324,7 +2355,10 @@ fn process_sse_event(
             });
         }
         "error" => {
-            crate::alphacode_base::logging::error(&format!("Anthropic stream error: {}", event.data));
+            crate::alphacode_base::logging::error(&format!(
+                "Anthropic stream error: {}",
+                event.data
+            ));
             events.push(StreamEvent::Error {
                 message: event.data.clone(),
                 retry_after_secs: None,
@@ -2360,7 +2394,11 @@ fn build_system_param_split(
 }
 
 fn format_messages_with_identity(messages: Vec<ApiMessage>, is_oauth: bool) -> Vec<ApiMessage> {
-    crate::alphacode_provider_anthropic::format_messages_with_identity(messages, is_oauth, is_cache_ttl_1h())
+    crate::alphacode_provider_anthropic::format_messages_with_identity(
+        messages,
+        is_oauth,
+        is_cache_ttl_1h(),
+    )
 }
 
 mod sse_types;
@@ -2370,4 +2408,3 @@ use sse_types::{
 };
 
 mod context_window;
-

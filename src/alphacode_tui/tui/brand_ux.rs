@@ -80,9 +80,9 @@ impl BrandTheme {
     /// twice, which made narrow spans look stuttery.
     pub fn gradient() -> [Color; 16] {
         [
-            rgb(118,  92, 226), //  0  violet
-            rgb(96,  132, 245), //  1  indigo
-            rgb(88,  166, 255), //  2  bright blue
+            rgb(118, 92, 226),  //  0  violet
+            rgb(96, 132, 245),  //  1  indigo
+            rgb(88, 166, 255),  //  2  bright blue
             rgb(110, 198, 255), //  3  sky
             rgb(121, 220, 240), //  4  light cyan
             rgb(130, 224, 215), //  5  teal
@@ -123,22 +123,42 @@ impl BrandTheme {
     }
 
     /// Accent colors for interactive elements
-    pub fn accent() -> Color { rgb(130, 224, 215) }
-    pub fn success() -> Color { rgb(134, 233, 180) }
-    pub fn warning() -> Color { rgb(255, 204, 128) }
-    pub fn error() -> Color { rgb(255, 130, 130) }
-    pub fn info() -> Color { rgb(121, 192, 255) }
+    pub fn accent() -> Color {
+        rgb(130, 224, 215)
+    }
+    pub fn success() -> Color {
+        rgb(134, 233, 180)
+    }
+    pub fn warning() -> Color {
+        rgb(255, 204, 128)
+    }
+    pub fn error() -> Color {
+        rgb(255, 130, 130)
+    }
+    pub fn info() -> Color {
+        rgb(121, 192, 255)
+    }
 
     /// Dim colors for secondary text
-    pub fn dim() -> Color { rgb(100, 110, 130) }
-    pub fn dim_bright() -> Color { rgb(140, 150, 170) }
+    pub fn dim() -> Color {
+        rgb(100, 110, 130)
+    }
+    pub fn dim_bright() -> Color {
+        rgb(140, 150, 170)
+    }
 
     /// Model name color
-    pub fn model() -> Color { rgb(255, 170, 220) }
+    pub fn model() -> Color {
+        rgb(255, 170, 220)
+    }
     /// Provider color
-    pub fn provider() -> Color { rgb(130, 224, 215) }
+    pub fn provider() -> Color {
+        rgb(130, 224, 215)
+    }
     /// Tool color
-    pub fn tool() -> Color { rgb(255, 204, 128) }
+    pub fn tool() -> Color {
+        rgb(255, 204, 128)
+    }
 
     /// Brand gradient for a character at a given index.
     ///
@@ -287,7 +307,9 @@ impl BrandTheme {
                 let ch = chars[run_start % chars.len()];
                 spans.push(Span::styled(
                     std::iter::repeat_n(ch, n).collect::<String>(),
-                    Style::default().fg(colors[run_start]).add_modifier(Modifier::DIM),
+                    Style::default()
+                        .fg(colors[run_start])
+                        .add_modifier(Modifier::DIM),
                 ));
                 run_start = i;
             }
@@ -334,10 +356,7 @@ impl ProgressBar {
                     continue;
                 }
                 let color = gradient[seg % gradient.len()];
-                spans.push(Span::styled(
-                    "█".repeat(n),
-                    Style::default().fg(color),
-                ));
+                spans.push(Span::styled("█".repeat(n), Style::default().fg(color)));
             }
         }
 
@@ -352,7 +371,9 @@ impl ProgressBar {
         // Right bracket with gradient end
         spans.push(Span::styled(
             "╢",
-            Style::default().fg(gradient[gradient.len() - 1]).add_modifier(Modifier::DIM),
+            Style::default()
+                .fg(gradient[gradient.len() - 1])
+                .add_modifier(Modifier::DIM),
         ));
 
         // Percentage with smooth color transition
@@ -488,20 +509,26 @@ impl StatusBar {
         // Brand marker with animated gradient
         spans.push(Span::styled(
             " ◆ ",
-            Style::default().fg(BrandTheme::gradient_color(0)).add_modifier(Modifier::BOLD),
+            Style::default()
+                .fg(BrandTheme::gradient_color(0))
+                .add_modifier(Modifier::BOLD),
         ));
 
         // Model name with provider accent
         spans.push(Span::styled(
             model.to_string(),
-            Style::default().fg(BrandTheme::model()).add_modifier(Modifier::BOLD),
+            Style::default()
+                .fg(BrandTheme::model())
+                .add_modifier(Modifier::BOLD),
         ));
 
         // Provider with subtle styling
         if !provider.is_empty() {
             spans.push(Span::styled(
                 format!(" ({})", provider),
-                Style::default().fg(BrandTheme::provider()).add_modifier(Modifier::ITALIC),
+                Style::default()
+                    .fg(BrandTheme::provider())
+                    .add_modifier(Modifier::ITALIC),
             ));
         }
 
@@ -531,7 +558,9 @@ impl StatusBar {
             };
             spans.push(Span::styled(
                 format!(" ({:.0}%)", ratio * 100.0),
-                Style::default().fg(ratio_color).add_modifier(Modifier::ITALIC),
+                Style::default()
+                    .fg(ratio_color)
+                    .add_modifier(Modifier::ITALIC),
             ));
         }
 
@@ -548,7 +577,9 @@ impl StatusBar {
             };
             spans.push(Span::styled(
                 format!("{:.1}s", elapsed_secs),
-                Style::default().fg(speed_color).add_modifier(Modifier::BOLD),
+                Style::default()
+                    .fg(speed_color)
+                    .add_modifier(Modifier::BOLD),
             ));
             // Tokens per second
             if elapsed_secs > 0.0 && output_tokens > 0 {
@@ -574,7 +605,9 @@ impl StatusBar {
             };
             spans.push(Span::styled(
                 status.to_string(),
-                Style::default().fg(status_color).add_modifier(Modifier::ITALIC),
+                Style::default()
+                    .fg(status_color)
+                    .add_modifier(Modifier::ITALIC),
             ));
         }
 
@@ -586,9 +619,7 @@ impl StatusBar {
     pub fn badge(text: &str, color: Color) -> Span<'static> {
         Span::styled(
             format!(" {} ", text),
-            Style::default()
-                .fg(color)
-                .add_modifier(Modifier::BOLD),
+            Style::default().fg(color).add_modifier(Modifier::BOLD),
         )
     }
 }
@@ -665,38 +696,47 @@ impl SplashScreen {
             vec![
                 Span::styled(
                     "  ✦ ",
-                    Style::default().fg(BrandTheme::gradient_color(2)).add_modifier(Modifier::BOLD),
+                    Style::default()
+                        .fg(BrandTheme::gradient_color(2))
+                        .add_modifier(Modifier::BOLD),
                 ),
                 Span::styled(
                     "Your AI coding companion",
-                    Style::default().fg(BrandTheme::accent()).add_modifier(Modifier::ITALIC),
+                    Style::default()
+                        .fg(BrandTheme::accent())
+                        .add_modifier(Modifier::ITALIC),
                 ),
-                Span::styled(
-                    " · ",
-                    Style::default().fg(BrandTheme::dim()),
-                ),
+                Span::styled(" · ", Style::default().fg(BrandTheme::dim())),
                 Span::styled(
                     "Type to get started",
                     Style::default().fg(BrandTheme::dim_bright()),
                 ),
                 Span::styled(
                     " ✦",
-                    Style::default().fg(BrandTheme::gradient_color(5)).add_modifier(Modifier::BOLD),
+                    Style::default()
+                        .fg(BrandTheme::gradient_color(5))
+                        .add_modifier(Modifier::BOLD),
                 ),
             ]
         } else {
             vec![
                 Span::styled(
                     "  ✦ ",
-                    Style::default().fg(BrandTheme::gradient_color(2)).add_modifier(Modifier::BOLD),
+                    Style::default()
+                        .fg(BrandTheme::gradient_color(2))
+                        .add_modifier(Modifier::BOLD),
                 ),
                 Span::styled(
                     "Type to get started",
-                    Style::default().fg(BrandTheme::dim_bright()).add_modifier(Modifier::ITALIC),
+                    Style::default()
+                        .fg(BrandTheme::dim_bright())
+                        .add_modifier(Modifier::ITALIC),
                 ),
                 Span::styled(
                     " ✦",
-                    Style::default().fg(BrandTheme::gradient_color(5)).add_modifier(Modifier::BOLD),
+                    Style::default()
+                        .fg(BrandTheme::gradient_color(5))
+                        .add_modifier(Modifier::BOLD),
                 ),
             ]
         };
@@ -710,16 +750,17 @@ impl SplashScreen {
         Line::from(vec![
             Span::styled(
                 "◆ ",
-                Style::default().fg(BrandTheme::gradient_color(0)).add_modifier(Modifier::BOLD),
+                Style::default()
+                    .fg(BrandTheme::gradient_color(0))
+                    .add_modifier(Modifier::BOLD),
             ),
             Span::styled(
                 "alphacode",
-                Style::default().fg(BrandTheme::accent()).add_modifier(Modifier::BOLD),
+                Style::default()
+                    .fg(BrandTheme::accent())
+                    .add_modifier(Modifier::BOLD),
             ),
-            Span::styled(
-                " is ready ✨",
-                Style::default().fg(BrandTheme::success()),
-            ),
+            Span::styled(" is ready ✨", Style::default().fg(BrandTheme::success())),
         ])
     }
 
@@ -737,10 +778,7 @@ impl SplashScreen {
         ];
         let gradient = BrandTheme::gradient();
         let mut spans: Vec<Span<'static>> = Vec::with_capacity(chips.len() * 3 + 2);
-        spans.push(Span::styled(
-            "  ",
-            Style::default().fg(BrandTheme::dim()),
-        ));
+        spans.push(Span::styled("  ", Style::default().fg(BrandTheme::dim())));
         for (i, (label, sub)) in chips.iter().enumerate() {
             let color = gradient[(i * 3 + 1) % gradient.len()];
             spans.push(Span::styled(
@@ -758,10 +796,7 @@ impl SplashScreen {
                     .add_modifier(Modifier::BOLD),
             ));
             if i + 1 < chips.len() {
-                spans.push(Span::styled(
-                    "  ",
-                    Style::default().fg(BrandTheme::dim()),
-                ));
+                spans.push(Span::styled("  ", Style::default().fg(BrandTheme::dim())));
             }
         }
         Line::from(spans)
@@ -827,7 +862,11 @@ mod tests {
     #[test]
     fn test_brand_theme_gradient() {
         let colors = BrandTheme::gradient();
-        assert_eq!(colors.len(), 16, "16-stop brand gradient for smoother sweeps");
+        assert_eq!(
+            colors.len(),
+            16,
+            "16-stop brand gradient for smoother sweeps"
+        );
     }
 
     #[test]
@@ -862,7 +901,11 @@ mod tests {
     fn test_splash_screen_banner_fits_width() {
         for width in [30usize, 40, 55, 75, 80, 120] {
             let lines = SplashScreen::banner(width);
-            assert!(!lines.is_empty(), "banner should produce output at width {}", width);
+            assert!(
+                !lines.is_empty(),
+                "banner should produce output at width {}",
+                width
+            );
             // Every rendered row must fit within the terminal width
             for line in &lines {
                 let w: usize = line
@@ -881,14 +924,13 @@ mod tests {
         // The feature row is rendered on banners wide enough to hold it.
         // We just check that *some* chip label appears among the lines.
         let has_chip = lines.iter().any(|line| {
-            let text: String = line
-                .spans
-                .iter()
-                .map(|s| s.content.as_ref())
-                .collect();
+            let text: String = line.spans.iter().map(|s| s.content.as_ref()).collect();
             text.contains("tools") || text.contains("agents") || text.contains("themes")
         });
-        assert!(has_chip, "wide banner should include at least one feature chip");
+        assert!(
+            has_chip,
+            "wide banner should include at least one feature chip"
+        );
     }
 
     #[test]
@@ -897,14 +939,13 @@ mod tests {
         // The chip strip mentions "tools", "agents", or "themes"; it should
         // not appear when features are disabled.
         let has_chip = lines.iter().any(|line| {
-            let text: String = line
-                .spans
-                .iter()
-                .map(|s| s.content.as_ref())
-                .collect();
+            let text: String = line.spans.iter().map(|s| s.content.as_ref()).collect();
             text.contains("tools") || text.contains("agents") || text.contains("themes")
         });
-        assert!(!has_chip, "without features, the chip strip should be absent");
+        assert!(
+            !has_chip,
+            "without features, the chip strip should be absent"
+        );
     }
 
     #[test]
@@ -933,7 +974,10 @@ mod tests {
         let values = vec![10, 20, 30, 40, 50, 40, 30, 20, 10, 5];
         let spans = BrandTheme::sparkline(&values, 50, 10);
         // Should have at least 1 span, total width should be 10
-        let total: usize = spans.iter().map(|s| unicode_width::UnicodeWidthStr::width(s.content.as_ref())).sum();
+        let total: usize = spans
+            .iter()
+            .map(|s| unicode_width::UnicodeWidthStr::width(s.content.as_ref()))
+            .sum();
         assert_eq!(total, 10);
     }
 
@@ -975,7 +1019,11 @@ mod tests {
     fn test_breathing_separator() {
         let line = BrandTheme::breathing_separator(20, 0.5);
         // Total width should be 20
-        let total: usize = line.spans.iter().map(|s| unicode_width::UnicodeWidthStr::width(s.content.as_ref())).sum();
+        let total: usize = line
+            .spans
+            .iter()
+            .map(|s| unicode_width::UnicodeWidthStr::width(s.content.as_ref()))
+            .sum();
         assert_eq!(total, 20);
     }
 
@@ -1011,7 +1059,10 @@ mod tests {
         let base = BrandTheme::gradient();
         let wide = BrandTheme::gradient_wide(base.len());
         for (i, c) in wide.iter().enumerate() {
-            assert_eq!(*c, base[i], "wide gradient should fall back to the base palette at index {i}");
+            assert_eq!(
+                *c, base[i],
+                "wide gradient should fall back to the base palette at index {i}"
+            );
         }
     }
 
@@ -1021,7 +1072,10 @@ mod tests {
         assert_eq!(wide.len(), 32);
         // The endpoints should equal the base palette's first and last stops.
         assert_eq!(wide[0], BrandTheme::gradient()[0]);
-        assert_eq!(*wide.last().unwrap(), *BrandTheme::gradient().last().unwrap());
+        assert_eq!(
+            *wide.last().unwrap(),
+            *BrandTheme::gradient().last().unwrap()
+        );
     }
 
     #[test]
@@ -1060,9 +1114,16 @@ mod tests {
         let mut seen: Vec<&'static str> = Vec::new();
         for style in styles {
             let (frames, _divisor) = style.frames();
-            assert!(!frames.is_empty(), "spinner style {:?} should have frames", style);
+            assert!(
+                !frames.is_empty(),
+                "spinner style {:?} should have frames",
+                style
+            );
             for f in frames {
-                assert!(!seen.contains(f), "duplicate frame {f} across spinner styles");
+                assert!(
+                    !seen.contains(f),
+                    "duplicate frame {f} across spinner styles"
+                );
                 seen.push(f);
             }
         }
@@ -1080,7 +1141,11 @@ mod tests {
         ] {
             for frame in 0..32 {
                 let spans = ProgressBar::spinner_styled(style, frame);
-                assert!(!spans.is_empty(), "style {:?} frame {frame} should produce a span", style);
+                assert!(
+                    !spans.is_empty(),
+                    "style {:?} frame {frame} should produce a span",
+                    style
+                );
             }
         }
     }
@@ -1098,6 +1163,9 @@ mod tests {
             SpinnerStyle::Bar.bias(),
         ];
         let unique: std::collections::HashSet<_> = biases.iter().copied().collect();
-        assert!(unique.len() >= 4, "spinner styles should have varied biases, got {biases:?}");
+        assert!(
+            unique.len() >= 4,
+            "spinner styles should have varied biases, got {biases:?}"
+        );
     }
 }

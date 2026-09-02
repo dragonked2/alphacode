@@ -31,7 +31,8 @@ impl CachedModelCapability {
 }
 
 /// Process-global cache of model capabilities with staleness tracking.
-static MODEL_CAPABILITY_CACHE: OnceLock<RwLock<HashMap<String, CachedModelCapability>>> = OnceLock::new();
+static MODEL_CAPABILITY_CACHE: OnceLock<RwLock<HashMap<String, CachedModelCapability>>> =
+    OnceLock::new();
 
 fn capability_cache() -> &'static RwLock<HashMap<String, CachedModelCapability>> {
     MODEL_CAPABILITY_CACHE.get_or_init(|| RwLock::new(HashMap::new()))
@@ -109,7 +110,10 @@ pub fn capability_cache_summary() -> CapabilityCacheSummary {
     };
 
     let total = cache.len();
-    let stale = cache.values().filter(|e| e.is_stale(DEFAULT_CAPABILITY_CACHE_TTL)).count();
+    let stale = cache
+        .values()
+        .filter(|e| e.is_stale(DEFAULT_CAPABILITY_CACHE_TTL))
+        .count();
     let fresh = total - stale;
 
     CapabilityCacheSummary {
@@ -151,10 +155,7 @@ pub fn validate_model_context_window(
                 actual / 1000,
                 expected / 1000
             ));
-            ValidationResult::Mismatch {
-                actual,
-                expected,
-            }
+            ValidationResult::Mismatch { actual, expected }
         }
         (Some(_), None) => ValidationResult::Valid,
         (None, Some(expected)) => {
@@ -163,9 +164,7 @@ pub fn validate_model_context_window(
                 model,
                 expected / 1000
             ));
-            ValidationResult::Missing {
-                expected,
-            }
+            ValidationResult::Missing { expected }
         }
         (None, None) => ValidationResult::Unknown,
     }
@@ -205,21 +204,13 @@ mod tests {
 
     #[test]
     fn validation_result_matching() {
-        let result = validate_model_context_window(
-            "gpt-5.4",
-            Some(1_000_000),
-            Some(1_000_000),
-        );
+        let result = validate_model_context_window("gpt-5.4", Some(1_000_000), Some(1_000_000));
         assert_eq!(result, ValidationResult::Valid);
     }
 
     #[test]
     fn validation_result_mismatch() {
-        let result = validate_model_context_window(
-            "gpt-5.4",
-            Some(200_000),
-            Some(1_000_000),
-        );
+        let result = validate_model_context_window("gpt-5.4", Some(200_000), Some(1_000_000));
         assert!(matches!(result, ValidationResult::Mismatch { .. }));
     }
 }

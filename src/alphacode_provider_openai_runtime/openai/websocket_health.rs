@@ -5,4 +5,3 @@ pub(super) use crate::alphacode_provider_openai::websocket_health::{
     record_websocket_success, summarize_websocket_fallback_reason, websocket_activity_timeout_kind,
     websocket_cooldown_remaining, websocket_next_activity_timeout_secs_with_completion,
 };
-

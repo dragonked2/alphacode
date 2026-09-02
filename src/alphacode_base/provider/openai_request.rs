@@ -4,14 +4,16 @@ pub use crate::alphacode_provider_openai::{
     openai_encrypted_content_is_sendable,
 };
 
-use crate::message::Message as ChatMessage;
 use crate::alphacode_provider_openai::OpenAiRequestLogLevel;
+use crate::message::Message as ChatMessage;
 use serde_json::Value;
 
 pub fn build_responses_input(messages: &[ChatMessage]) -> Vec<Value> {
-    crate::alphacode_provider_openai::build_responses_input_with_logger(messages, |level, message| match level
-    {
-        OpenAiRequestLogLevel::Info => crate::logging::info(message),
-        OpenAiRequestLogLevel::Warn => crate::logging::warn(message),
-    })
+    crate::alphacode_provider_openai::build_responses_input_with_logger(
+        messages,
+        |level, message| match level {
+            OpenAiRequestLogLevel::Info => crate::logging::info(message),
+            OpenAiRequestLogLevel::Warn => crate::logging::warn(message),
+        },
+    )
 }

@@ -69,7 +69,9 @@ pub(in crate::alphacode_tui::tui::app) fn restore_prepared_remote_input(
     app.pending_images = prepared.images;
 }
 
-pub(in crate::alphacode_tui::tui::app) fn history_matches_pending_startup_prompt(app: &App) -> bool {
+pub(in crate::alphacode_tui::tui::app) fn history_matches_pending_startup_prompt(
+    app: &App,
+) -> bool {
     if !app.submit_input_on_startup || !app.pending_images.is_empty() || app.input.trim().is_empty()
     {
         return false;
@@ -521,7 +523,10 @@ pub(in crate::alphacode_tui::tui::app) async fn apply_remote_transcript_event(
 /// one, an unknown skill fallback, a staged prompt) would otherwise set a flag
 /// nobody dispatches, freezing the client in "Sending" forever. Queueing hands
 /// the turn to `process_remote_followups`, which also echoes the user message.
-pub(in crate::alphacode_tui::tui::app) fn stage_turn_for_remote_tick_loop(app: &mut App, input: &str) -> bool {
+pub(in crate::alphacode_tui::tui::app) fn stage_turn_for_remote_tick_loop(
+    app: &mut App,
+    input: &str,
+) -> bool {
     if !app.is_remote {
         return false;
     }
@@ -534,4 +539,3 @@ pub(in crate::alphacode_tui::tui::app) fn stage_turn_for_remote_tick_loop(app: &
     app.pending_images.clear();
     true
 }
-

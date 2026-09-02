@@ -33,8 +33,8 @@
 //! small false-negative rate for bounded memory growth in month-long
 //! sessions.
 
-use std::collections::hash_map::DefaultHasher;
 use std::collections::VecDeque;
+use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash, Hasher};
 use std::sync::Mutex;
 use std::time::Instant;
@@ -146,11 +146,12 @@ pub fn should_dedup(tool_name: &str, body: &str) -> Option<String> {
     }
 
     if let Some(&idx) = cache.by_hash.get(&hash)
-        && let Some(entry) = cache.entries.get_mut(idx) {
-            entry.last_seen_turn = cache.turn;
-            entry.bytes_seen = entry.bytes_seen.saturating_add(body.len() as u64);
-            return Some(entry.placeholder.clone());
-        }
+        && let Some(entry) = cache.entries.get_mut(idx)
+    {
+        entry.last_seen_turn = cache.turn;
+        entry.bytes_seen = entry.bytes_seen.saturating_add(body.len() as u64);
+        return Some(entry.placeholder.clone());
+    }
 
     let placeholder = format!(
         "[{}_output_dedup_{}: repeated below; call the tool again if you need the full body]",

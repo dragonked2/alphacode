@@ -2,10 +2,10 @@ pub(super) use super::commands_improve::{
     build_improve_prompt, build_improve_resume_prompt, build_refactor_prompt,
     build_refactor_resume_prompt, format_improve_status, format_refactor_status,
     handle_improve_command_local, handle_refactor_command_local, improve_launch_notice,
-    improve_mode_for, improve_stop_notice, improve_stop_prompt, parse_improve_command,
-    parse_refactor_command, refactor_launch_notice, refactor_mode_for, refactor_stop_notice,
-    refactor_stop_prompt, restore_improve_mode, session_improve_mode_for,
-    interrupt_and_queue_synthetic_message, start_synthetic_user_turn,
+    improve_mode_for, improve_stop_notice, improve_stop_prompt,
+    interrupt_and_queue_synthetic_message, parse_improve_command, parse_refactor_command,
+    refactor_launch_notice, refactor_mode_for, refactor_stop_notice, refactor_stop_prompt,
+    restore_improve_mode, session_improve_mode_for, start_synthetic_user_turn,
 };
 pub(super) use super::commands_plan::{
     build_plan_prompt, handle_plan_command_local, parse_plan_command, plan_launch_notice,
@@ -24,7 +24,9 @@ pub(super) use super::commands_review::{
 };
 pub(super) use super::todos_view::handle_todos_view_command;
 use super::{App, DisplayMessage, LocalRewindUndoSnapshot, ProcessingStatus};
-use crate::alphacode_tui::bus::{Bus, BusEvent, GitStatusCompleted, ManualToolCompleted, ToolEvent, ToolStatus};
+use crate::alphacode_tui::bus::{
+    Bus, BusEvent, GitStatusCompleted, ManualToolCompleted, ToolEvent, ToolStatus,
+};
 use crate::alphacode_tui::id;
 use crate::alphacode_tui::message::{ContentBlock, Message, Role};
 use std::path::PathBuf;
@@ -747,7 +749,8 @@ fn handle_subagent_model_command(app: &mut App, trimmed: &str) -> bool {
 
     if app.is_remote {
         app.push_display_message(DisplayMessage::error(
-            "/subagent-model requires a live alphacode server connection in remote mode.".to_string(),
+            "/subagent-model requires a live alphacode server connection in remote mode."
+                .to_string(),
         ));
         return true;
     }
@@ -1348,7 +1351,9 @@ pub(super) fn fork_session_with_prompt_local(app: &mut App, prompt: Option<&str>
     }
 }
 
-fn load_catchup_candidates(app: &App) -> Vec<crate::alphacode_tui::tui::session_picker::SessionInfo> {
+fn load_catchup_candidates(
+    app: &App,
+) -> Vec<crate::alphacode_tui::tui::session_picker::SessionInfo> {
     let current_session_id = active_session_id(app);
     crate::alphacode_tui::tui::session_picker::load_sessions()
         .unwrap_or_default()
@@ -2887,7 +2892,9 @@ fn parse_agents_target(raw: &str) -> Option<crate::alphacode_tui::tui::AgentMode
         "judge" | "judging" | "execution-judge" | "autojudge" => {
             Some(crate::alphacode_tui::tui::AgentModelTarget::Judge)
         }
-        "memory" | "memories" | "sidecar" => Some(crate::alphacode_tui::tui::AgentModelTarget::Memory),
+        "memory" | "memories" | "sidecar" => {
+            Some(crate::alphacode_tui::tui::AgentModelTarget::Memory)
+        }
         "ambient" => Some(crate::alphacode_tui::tui::AgentModelTarget::Ambient),
         _ => None,
     }
@@ -2945,16 +2952,17 @@ pub(super) fn handle_swarm_prompt_command(app: &mut App, trimmed: &str) -> bool 
             return true;
         }
     };
-    let path = match ensure_swarm_prompt_edit_path(app.session.working_dir.as_deref(), &alphacode_dir) {
-        Ok(path) => path,
-        Err(error) => {
-            app.push_display_message(DisplayMessage::error(format!(
-                "Failed to prepare the swarm prompt file: {}",
-                error
-            )));
-            return true;
-        }
-    };
+    let path =
+        match ensure_swarm_prompt_edit_path(app.session.working_dir.as_deref(), &alphacode_dir) {
+            Ok(path) => path,
+            Err(error) => {
+                app.push_display_message(DisplayMessage::error(format!(
+                    "Failed to prepare the swarm prompt file: {}",
+                    error
+                )));
+                return true;
+            }
+        };
 
     let editor = std::env::var("VISUAL")
         .or_else(|_| std::env::var("EDITOR"))
@@ -3530,7 +3538,11 @@ fn handle_doctor_command(app: &mut App) {
     let message_count = TuiState::display_user_message_count(app);
     lines.push(format!("  Session: {} user messages", message_count));
     if let Some((input, output)) = TuiState::total_session_tokens(app) {
-        lines.push(format!("  Tokens: {}k in, {}k out", input / 1000, output / 1000));
+        lines.push(format!(
+            "  Tokens: {}k in, {}k out",
+            input / 1000,
+            output / 1000
+        ));
     }
     lines.push(String::new());
     let mcps = TuiState::mcp_servers(app);
@@ -3565,12 +3577,28 @@ fn handle_context_command(app: &mut App) {
         let bar_width: usize = 30;
         let filled = (usage_pct / 100.0 * bar_width as f64) as usize;
         let empty = bar_width.saturating_sub(filled);
-        let bar_color = if usage_pct > 80.0 { "\u{1f534}" } else if usage_pct > 50.0 { "\u{1f7e0}" } else { "\u{1f7e2}" };
-        lines.push(format!("  {}{}{} {}", bar_color, "\u{2588}".repeat(filled), "\u{2591}".repeat(empty), format!("{:.1}%", usage_pct)));
+        let bar_color = if usage_pct > 80.0 {
+            "\u{1f534}"
+        } else if usage_pct > 50.0 {
+            "\u{1f7e0}"
+        } else {
+            "\u{1f7e2}"
+        };
+        lines.push(format!(
+            "  {}{}{} {}",
+            bar_color,
+            "\u{2588}".repeat(filled),
+            "\u{2591}".repeat(empty),
+            format!("{:.1}%", usage_pct)
+        ));
         lines.push(String::new());
         lines.push(format!("  Input tokens:  {}k", input / 1000));
         lines.push(format!("  Output tokens: {}k", output / 1000));
-        lines.push(format!("  Total:         {}k / {}k", total / 1000, context_limit / 1000));
+        lines.push(format!(
+            "  Total:         {}k / {}k",
+            total / 1000,
+            context_limit / 1000
+        ));
     } else {
         lines.push("  Token usage: not available".to_string());
     }
@@ -3591,7 +3619,9 @@ fn handle_verify_command(app: &mut App) {
             "Running verification...".to_string(),
         );
     } else {
-        app.push_display_message(DisplayMessage::system("Running verification...".to_string()));
+        app.push_display_message(DisplayMessage::system(
+            "Running verification...".to_string(),
+        ));
         start_synthetic_user_turn(app, prompt);
     }
 }
@@ -3610,7 +3640,9 @@ fn handle_init_command(app: &mut App) {
             "Initializing project configuration...".to_string(),
         );
     } else {
-        app.push_display_message(DisplayMessage::system("Initializing project configuration...".to_string()));
+        app.push_display_message(DisplayMessage::system(
+            "Initializing project configuration...".to_string(),
+        ));
         start_synthetic_user_turn(app, prompt);
     }
 }

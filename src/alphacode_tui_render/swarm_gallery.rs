@@ -11,7 +11,9 @@ use ratatui::prelude::*;
 
 use crate::alphacode_tui_style::color::rgb;
 
-use crate::alphacode_tui_render::swarm_tiles::{SwarmGalleryConfig, SwarmTile, render_swarm_gallery};
+use crate::alphacode_tui_render::swarm_tiles::{
+    SwarmGalleryConfig, SwarmTile, render_swarm_gallery,
+};
 
 /// Accent color for a member lifecycle status.
 pub fn status_accent(status: &str) -> Color {

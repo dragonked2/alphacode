@@ -15,8 +15,8 @@
 //! has no side effects. The Claude CLI path is the exception (the CLI executes
 //! tools live mid-stream) and keeps its no-retry-after-output guard instead.
 
-use anyhow::Result;
 use crate::alphacode_message_types::StreamEvent;
+use anyhow::Result;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use tokio::sync::mpsc;

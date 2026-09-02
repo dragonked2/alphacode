@@ -17,8 +17,8 @@
 
 use std::collections::HashMap;
 
-use crossterm::event::{KeyCode, KeyModifiers};
 use crate::alphacode_tui_core::keybind::format_binding;
+use crossterm::event::{KeyCode, KeyModifiers};
 use serde::{Deserialize, Serialize};
 
 use super::App;
@@ -698,7 +698,9 @@ impl App {
         let registry = self.hotkey_registry(self.is_remote);
         let usage = self.hotkey_usage.get_or_insert_with(load_state);
         let listing = render_hotkeys_listing(&registry, usage, now_unix());
-        self.push_display_message(crate::alphacode_tui_messages::DisplayMessage::system(listing));
+        self.push_display_message(crate::alphacode_tui_messages::DisplayMessage::system(
+            listing,
+        ));
         true
     }
 
@@ -1138,4 +1140,3 @@ mod tests {
         }
     }
 }
-

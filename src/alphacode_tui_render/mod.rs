@@ -7,8 +7,7 @@ pub mod swarm_tiles;
 use ratatui::prelude::{Color, Line, Span, Style};
 
 /// Border character sets for rendered boxes.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[derive(Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum BoxCharset {
     /// Rounded corners with light horizontal/vertical lines.
     #[default]
@@ -18,7 +17,6 @@ pub enum BoxCharset {
     /// Thick lines with square corners.
     Thick,
 }
-
 
 impl BoxCharset {
     pub const fn corners(&self) -> (&'static str, &'static str, &'static str, &'static str) {

@@ -8,13 +8,13 @@
 //! `crate::alphacode_base::provider::cursor` because base's model-routing logic needs it
 //! without a runtime.
 
-use anyhow::{Context, Result};
-use async_trait::async_trait;
-use chrono::Utc;
 use crate::alphacode_base::auth::cursor as cursor_auth;
 use crate::alphacode_base::provider::cursor::{AVAILABLE_MODELS, DEFAULT_MODEL};
 use crate::alphacode_message_types::{ContentBlock, Message, Role, StreamEvent, ToolDefinition};
 use crate::alphacode_provider_core::{EventStream, Provider};
+use anyhow::{Context, Result};
+use async_trait::async_trait;
+use chrono::Utc;
 use serde::Deserialize;
 use serde::Serialize;
 use serde_json::{Value, json};
@@ -224,7 +224,8 @@ impl CursorCliProvider {
     }
 
     pub fn new() -> Self {
-        let model = std::env::var("ALPHACODE_CURSOR_MODEL").unwrap_or_else(|_| DEFAULT_MODEL.into());
+        let model =
+            std::env::var("ALPHACODE_CURSOR_MODEL").unwrap_or_else(|_| DEFAULT_MODEL.into());
         let provider = Self {
             client: crate::alphacode_provider_core::shared_http_client(),
             model: Arc::new(RwLock::new(model)),
@@ -404,9 +405,13 @@ async fn run_native_text_command(
     // paced bidirectional Connect/HTTP2 stream. The old
     // `ChatService/StreamUnifiedChatWithTools` endpoint was decommissioned for
     // API-key / CLI tokens and now returns "Update Required"/payment errors.
-    let first_result =
-        crate::alphacode_provider_cursor_runtime::agent_transport::run_agent_turn(&tokens.access_token, prompt, model, tx.clone())
-            .await;
+    let first_result = crate::alphacode_provider_cursor_runtime::agent_transport::run_agent_turn(
+        &tokens.access_token,
+        prompt,
+        model,
+        tx.clone(),
+    )
+    .await;
 
     match first_result {
         Ok(()) => Ok(()),
@@ -416,9 +421,14 @@ async fn run_native_text_command(
                 .with_context(|| {
                     format!("Cursor token was rejected and refresh also failed after: {err:#}")
                 })?;
-            crate::alphacode_provider_cursor_runtime::agent_transport::run_agent_turn(&refreshed.access_token, prompt, model, tx).await
+            crate::alphacode_provider_cursor_runtime::agent_transport::run_agent_turn(
+                &refreshed.access_token,
+                prompt,
+                model,
+                tx,
+            )
+            .await
         }
         Err(err) => Err(err),
     }
 }
-

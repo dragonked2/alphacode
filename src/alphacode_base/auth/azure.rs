@@ -84,8 +84,14 @@ pub fn apply_runtime_env() -> Result<()> {
     crate::alphacode_core::env::set_var("ALPHACODE_OPENROUTER_MODEL_CATALOG", "0");
 
     if uses_entra_id() {
-        crate::alphacode_core::env::set_var("ALPHACODE_OPENROUTER_AUTH_HEADER", "authorization-bearer");
-        crate::alphacode_core::env::set_var("ALPHACODE_OPENROUTER_DYNAMIC_BEARER_PROVIDER", "azure");
+        crate::alphacode_core::env::set_var(
+            "ALPHACODE_OPENROUTER_AUTH_HEADER",
+            "authorization-bearer",
+        );
+        crate::alphacode_core::env::set_var(
+            "ALPHACODE_OPENROUTER_DYNAMIC_BEARER_PROVIDER",
+            "azure",
+        );
     } else {
         crate::alphacode_core::env::set_var("ALPHACODE_OPENROUTER_AUTH_HEADER", "api-key");
         crate::alphacode_core::env::remove_var("ALPHACODE_OPENROUTER_DYNAMIC_BEARER_PROVIDER");

@@ -1,4 +1,4 @@
-﻿//! Cross-session search tool - RAG across all past sessions
+//! Cross-session search tool - RAG across all past sessions
 //!
 //! The tool is optimized for agent recall rather than raw grep output:
 //! - current session, system reminders, and tool-only messages are hidden by default
@@ -9,11 +9,10 @@
 use super::session_search_index::{self, IndexFileSpec};
 use super::{Tool, ToolContext, ToolOutput};
 use crate::alphacode_app_core::message::ContentBlock;
-use crate::alphacode_app_core::session::{Session, StoredMessage, session_journal_path_from_snapshot};
+use crate::alphacode_app_core::session::{
+    Session, StoredMessage, session_journal_path_from_snapshot,
+};
 use crate::alphacode_app_core::storage;
-use anyhow::Result;
-use async_trait::async_trait;
-use chrono::{DateTime, NaiveDate, Utc};
 use crate::alphacode_import_core::{
     ExternalMessageRecord, ExternalSessionRecord, ImportCoreResult, collect_recent_files_recursive,
     load_claude_external_messages, load_codex_external_session, load_cursor_external_session,
@@ -33,6 +32,9 @@ use crate::alphacode_session_types::{
     session_search_truncate_title_text as truncate_title_text,
     session_search_working_dir_matches as working_dir_matches,
 };
+use anyhow::Result;
+use async_trait::async_trait;
+use chrono::{DateTime, NaiveDate, Utc};
 use serde::Deserialize;
 use serde_json::{Value, json};
 use std::cmp::Reverse;
@@ -214,8 +216,7 @@ struct SearchOptions {
     exhaustive: bool,
 }
 
-impl SearchOptions {
-}
+impl SearchOptions {}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum RoleFilter {
@@ -1303,7 +1304,10 @@ fn external_path_or_raw_matches_query(path: &Path, query: &QueryProfile) -> bool
 }
 
 fn external_text_matches_query(text: &str, query: &QueryProfile) -> bool {
-    crate::alphacode_session_types::normalized_session_search_text_matches(&text.to_lowercase(), query)
+    crate::alphacode_session_types::normalized_session_search_text_matches(
+        &text.to_lowercase(),
+        query,
+    )
 }
 
 fn collect_opencode_external_sessions(
@@ -1860,5 +1864,3 @@ fn format_results(query: &str, report: &SearchReport, options: &SearchOptions) -
 fn no_results_message(query: &str, options: &SearchOptions) -> String {
     format_session_search_no_results(query, &render_options(options))
 }
-
-

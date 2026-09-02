@@ -329,7 +329,8 @@ mod tests {
             .iter()
             .find(|route| route.model == "gpt-5.5")
             .expect("Plus tier includes GPT-5.5");
-        let route_selection = crate::alphacode_provider_core::RouteSelection::from_model_route(gpt_route);
+        let route_selection =
+            crate::alphacode_provider_core::RouteSelection::from_model_route(gpt_route);
         let flagship_routes = AlphacodeProvider::model_routes_for(AlphacodeTier::Flagship);
         let expected_models = vec![
             "claude-opus-4-8",

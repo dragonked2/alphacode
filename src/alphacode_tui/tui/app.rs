@@ -18,6 +18,7 @@ use crate::alphacode_tui::session::{Session, StoredMessage};
 use crate::alphacode_tui::skill::SkillRegistry;
 use crate::alphacode_tui::tool::selfdev::ReloadContext;
 use crate::alphacode_tui::tool::{Registry, ToolContext};
+use crate::alphacode_tui_messages::DisplayMessage;
 use anyhow::Result;
 use auth::PendingLogin;
 use crossterm::event::{
@@ -27,7 +28,6 @@ use crossterm::event::{
 use debug::DebugTrace;
 use futures::StreamExt;
 use helpers::*;
-use crate::alphacode_tui_messages::DisplayMessage;
 use ratatui::DefaultTerminal;
 use std::cell::RefCell;
 use std::collections::HashSet;
@@ -1873,9 +1873,10 @@ impl App {
             {
                 return false;
             }
-            let Some(ttl_secs) =
-                crate::alphacode_tui::tui::cache_ttl_for_provider_model(&baseline.provider, Some(&baseline.model))
-            else {
+            let Some(ttl_secs) = crate::alphacode_tui::tui::cache_ttl_for_provider_model(
+                &baseline.provider,
+                Some(&baseline.model),
+            ) else {
                 return false;
             };
             if baseline.completed_at.elapsed().as_secs() < ttl_secs {
@@ -1906,9 +1907,10 @@ impl App {
         baseline: &KvCacheBaseline,
         trigger: ColdCacheWarningTrigger,
     ) -> bool {
-        let Some(ttl_secs) =
-            crate::alphacode_tui::tui::cache_ttl_for_provider_model(&baseline.provider, Some(&baseline.model))
-        else {
+        let Some(ttl_secs) = crate::alphacode_tui::tui::cache_ttl_for_provider_model(
+            &baseline.provider,
+            Some(&baseline.model),
+        ) else {
             return false;
         };
         let age_secs = baseline.completed_at.elapsed().as_secs();
@@ -1965,11 +1967,12 @@ impl App {
         // cache-read can be compared against everything that just became cacheable.
         // For split-accounting providers (Anthropic) bare `input` is only the
         // uncached remainder, so the reusable prefix is input + read + creation.
-        let effective_prompt_tokens = crate::alphacode_tui::tui::info_widget::effective_prompt_tokens(
-            self.streaming.streaming_input_tokens,
-            self.streaming.streaming_cache_read_tokens.unwrap_or(0),
-            self.streaming.streaming_cache_creation_tokens.unwrap_or(0),
-        );
+        let effective_prompt_tokens =
+            crate::alphacode_tui::tui::info_widget::effective_prompt_tokens(
+                self.streaming.streaming_input_tokens,
+                self.streaming.streaming_cache_read_tokens.unwrap_or(0),
+                self.streaming.streaming_cache_creation_tokens.unwrap_or(0),
+            );
         self.token_accounting.cache_next_optimal_input_tokens = Some(effective_prompt_tokens);
 
         let request = self
@@ -2094,7 +2097,10 @@ impl App {
         let missed_tokens =
             baseline_input_tokens.map(|baseline| baseline.saturating_sub(read_tokens));
         let ttl_secs = request.baseline.as_ref().and_then(|baseline| {
-            crate::alphacode_tui::tui::cache_ttl_for_provider_model(&baseline.provider, Some(&baseline.model))
+            crate::alphacode_tui::tui::cache_ttl_for_provider_model(
+                &baseline.provider,
+                Some(&baseline.model),
+            )
         });
         let ttl_remaining_secs = ttl_secs
             .zip(baseline_age_secs)
@@ -2371,9 +2377,10 @@ impl App {
             return KvCacheMissReason::UpstreamSwitch;
         }
 
-        if let Some(ttl_secs) =
-            crate::alphacode_tui::tui::cache_ttl_for_provider_model(&baseline.provider, Some(&baseline.model))
-            && baseline.completed_at.elapsed() >= Duration::from_secs(ttl_secs)
+        if let Some(ttl_secs) = crate::alphacode_tui::tui::cache_ttl_for_provider_model(
+            &baseline.provider,
+            Some(&baseline.model),
+        ) && baseline.completed_at.elapsed() >= Duration::from_secs(ttl_secs)
         {
             return KvCacheMissReason::Expired;
         }
@@ -2527,4 +2534,3 @@ fn ratio_pct(numerator: u64, denominator: u64) -> u8 {
 
 #[cfg(test)]
 mod tests;
-

@@ -8,7 +8,9 @@
 //! It is intentionally provider-agnostic and side-effect free so it can be unit
 //! tested exhaustively and reused by both the local and remote TUI paths.
 
-use crate::alphacode_provider_core::{ModelRoute, ModelRouteApiMethod, model_route_provider_labels_match};
+use crate::alphacode_provider_core::{
+    ModelRoute, ModelRouteApiMethod, model_route_provider_labels_match,
+};
 
 /// Whether an api_method authenticates via an OAuth / subscription login rather
 /// than a metered API key. Subscription logins are preferred as fallbacks: they

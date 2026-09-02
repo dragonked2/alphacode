@@ -255,7 +255,10 @@ fn run_agentgrep_blocking(params: &AgentGrepInput, ctx: &ToolContext) -> Result<
         // session spawned without a working dir would reject any path
         // the agent supplied on Windows builds.
         let normalized = explicit_path.map(normalize_agentgrep_path_arg);
-        if normalized.as_deref().is_none_or(|path| !Path::new(path).is_absolute()) {
+        if normalized
+            .as_deref()
+            .is_none_or(|path| !Path::new(path).is_absolute())
+        {
             anyhow::bail!(
                 "agentgrep requires a session working directory unless an absolute path is provided"
             );
@@ -368,9 +371,9 @@ fn resolve_path_arg(ctx: &ToolContext, path: &str) -> PathBuf {
 /// the wrong platform still fails loudly (better than silently dropping
 /// the search).
 pub(crate) fn normalize_agentgrep_path_arg(path: &str) -> String {
-    let trimmed = path.trim().trim_matches(|c: char| {
-        c.is_whitespace() || c == '"' || c == '\''
-    });
+    let trimmed = path
+        .trim()
+        .trim_matches(|c: char| c.is_whitespace() || c == '"' || c == '\'');
     if trimmed.is_empty() {
         return String::new();
     }
@@ -486,4 +489,3 @@ fn normalized_agentgrep_glob_owned(glob: Option<&str>) -> Option<String> {
 fn is_match_all_glob(glob: &str) -> bool {
     matches!(glob, "*" | "**" | "**/*" | "./*" | "./**" | "./**/*")
 }
-

@@ -235,4 +235,3 @@ pub fn restore_command_display(exe: &Path, session: &RestartSnapshotSession) -> 
         format!("{} --resume {}", exe, session.session_id)
     }
 }
-

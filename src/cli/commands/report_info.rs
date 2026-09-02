@@ -296,12 +296,17 @@ async fn build_auth_doctor_report(
             &assessment,
             validation_result.as_deref(),
         );
-        let diagnostics =
-            crate::alphacode_base::auth::doctor::diagnostics(provider, &assessment, validation_result.as_deref());
+        let diagnostics = crate::alphacode_base::auth::doctor::diagnostics(
+            provider,
+            &assessment,
+            validation_result.as_deref(),
+        );
         let method = assessment.method_detail.clone();
         let health = assessment.health_summary();
-        let needs_attention =
-            crate::alphacode_base::auth::doctor::needs_attention(&assessment, validation_result.as_deref());
+        let needs_attention = crate::alphacode_base::auth::doctor::needs_attention(
+            &assessment,
+            validation_result.as_deref(),
+        );
 
         reports.push(AuthDoctorProviderReport {
             id: provider.id.to_string(),
@@ -654,7 +659,8 @@ mod tests {
 
     #[tokio::test]
     async fn cli_auth_status_doctor_and_login_lifecycle_uses_fresh_sandbox() {
-        let sandbox = crate::alphacode_base::auth::test_sandbox::AuthTestSandbox::new().expect("sandbox");
+        let sandbox =
+            crate::alphacode_base::auth::test_sandbox::AuthTestSandbox::new().expect("sandbox");
         let provider = crate::provider_catalog::CEREBRAS_LOGIN_PROVIDER;
         let profile = crate::provider_catalog::CEREBRAS_PROFILE;
         let resolved = crate::provider_catalog::resolve_openai_compatible_profile(profile);
@@ -683,7 +689,10 @@ mod tests {
         assert_eq!(before_doctor_provider.status, "not_configured");
         assert!(before_doctor_provider.needs_attention);
         assert!(before_doctor_provider.diagnostics.iter().any(|line| {
-            line == &format!("{} is not configured for alphacode yet.", provider.display_name)
+            line == &format!(
+                "{} is not configured for alphacode yet.",
+                provider.display_name
+            )
         }));
         assert!(
             before_doctor_provider

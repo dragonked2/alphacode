@@ -768,7 +768,10 @@ pub(super) fn scriptable_resume_command(provider: &str, input_kind: &str) -> Str
                 provider
             )
         }
-        "auth_code" => format!("alphacode login --provider {} --auth-code '<code>'", provider),
+        "auth_code" => format!(
+            "alphacode login --provider {} --auth-code '<code>'",
+            provider
+        ),
         "complete" => format!("alphacode login --provider {} --complete", provider),
         _ => format!(
             "alphacode login --provider {} --callback-url '<url>'  # or --auth-code '<code>'",

@@ -791,13 +791,14 @@ mod tests {
         // export each var both natively (overriding the spawned process's
         // inherited/stale value) and under a `ALPHACODE_CLIENT_*` alias so hooks can
         // distinguish the client's terminal from the server's.
-        let command = TerminalCommand::new("/usr/local/bin/alphacode", vec!["--resume".to_string()])
-            .kind("swarm-agent")
-            .session_id("ses_405")
-            .client_terminal_env(vec![
-                ("ZELLIJ_SESSION_NAME".to_string(), "sessionB".to_string()),
-                ("DISPLAY".to_string(), ":1".to_string()),
-            ]);
+        let command =
+            TerminalCommand::new("/usr/local/bin/alphacode", vec!["--resume".to_string()])
+                .kind("swarm-agent")
+                .session_id("ses_405")
+                .client_terminal_env(vec![
+                    ("ZELLIJ_SESSION_NAME".to_string(), "sessionB".to_string()),
+                    ("DISPLAY".to_string(), ":1".to_string()),
+                ]);
         let env = spawn_metadata_env(&command, Path::new("/tmp/work"));
 
         let lookup = |key: &str| {
@@ -815,14 +816,18 @@ mod tests {
         assert_eq!(lookup("DISPLAY").as_deref(), Some(":1"));
         assert_eq!(lookup("ALPHACODE_CLIENT_DISPLAY").as_deref(), Some(":1"));
         // The first-class spawn metadata still flows through.
-        assert_eq!(lookup("ALPHACODE_SPAWN_KIND").as_deref(), Some("swarm-agent"));
+        assert_eq!(
+            lookup("ALPHACODE_SPAWN_KIND").as_deref(),
+            Some("swarm-agent")
+        );
     }
 
     #[test]
     fn spawn_metadata_env_without_client_env_has_no_client_keys() {
-        let command = TerminalCommand::new("/usr/local/bin/alphacode", vec!["--resume".to_string()])
-            .kind("resume")
-            .session_id("ses_plain");
+        let command =
+            TerminalCommand::new("/usr/local/bin/alphacode", vec!["--resume".to_string()])
+                .kind("resume")
+                .session_id("ses_plain");
         let env = spawn_metadata_env(&command, Path::new("/tmp/work"));
         assert!(
             !env.iter().any(|(k, _)| k.starts_with("ALPHACODE_CLIENT_")),
@@ -1191,7 +1196,10 @@ mod tests {
             env_value(&cmd, "ALPHACODE_SPAWN_SWARM_ID").as_deref(),
             Some("swarm-1")
         );
-        assert_eq!(env_value(&cmd, "ALPHACODE_FRESH_SPAWN").as_deref(), Some("1"));
+        assert_eq!(
+            env_value(&cmd, "ALPHACODE_FRESH_SPAWN").as_deref(),
+            Some("1")
+        );
     }
 
     #[test]

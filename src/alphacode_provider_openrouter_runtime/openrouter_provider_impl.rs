@@ -1,6 +1,8 @@
 use super::openrouter_sse_stream::run_stream_with_retries;
 use super::*;
-use crate::alphacode_base::provider::{ModelCatalogRefreshSummary, summarize_model_catalog_refresh};
+use crate::alphacode_base::provider::{
+    ModelCatalogRefreshSummary, summarize_model_catalog_refresh,
+};
 
 #[async_trait]
 impl Provider for OpenRouterProvider {
@@ -380,7 +382,8 @@ impl Provider for OpenRouterProvider {
         let (model_id, provider) = if self.supports_provider_features {
             let (model_id, provider) = parse_model_spec(trimmed);
             let model_id = if provider.is_some() {
-                crate::alphacode_base::provider::openrouter_catalog_model_id(&model_id).unwrap_or(model_id)
+                crate::alphacode_base::provider::openrouter_catalog_model_id(&model_id)
+                    .unwrap_or(model_id)
             } else {
                 model_id
             };
@@ -447,9 +450,7 @@ impl Provider for OpenRouterProvider {
 
     fn set_reasoning_effort(&self, effort: &str) -> Result<()> {
         if !self.supports_any_reasoning_effort() {
-            anyhow::bail!(
-                "Reasoning effort is not supported by this model/profile."
-            );
+            anyhow::bail!("Reasoning effort is not supported by this model/profile.");
         }
         let requested = effort.trim().to_ascii_lowercase();
         let mut accepted = self.available_efforts().contains(&requested.as_str());
@@ -739,8 +740,11 @@ impl Provider for OpenRouterProvider {
         {
             return limit;
         }
-        crate::alphacode_provider_core::context_limit_for_model_with_provider(&model_id, Some(self.name()))
-            .unwrap_or(crate::alphacode_provider_core::DEFAULT_CONTEXT_LIMIT)
+        crate::alphacode_provider_core::context_limit_for_model_with_provider(
+            &model_id,
+            Some(self.name()),
+        )
+        .unwrap_or(crate::alphacode_provider_core::DEFAULT_CONTEXT_LIMIT)
     }
 
     fn fork(&self) -> Arc<dyn Provider> {
@@ -812,7 +816,9 @@ impl OpenRouterProvider {
     ) -> Option<crate::alphacode_provider_openrouter::DiskCache> {
         match self.foreground_cache_namespace() {
             Some(namespace) => {
-                crate::alphacode_provider_openrouter::load_disk_cache_entry_for_namespace(&namespace)
+                crate::alphacode_provider_openrouter::load_disk_cache_entry_for_namespace(
+                    &namespace,
+                )
             }
             None => crate::alphacode_provider_openrouter::load_disk_cache_entry(),
         }

@@ -2209,4 +2209,3 @@ pub(super) fn handle_info_command(app: &mut App, trimmed: &str) -> bool {
 
     false
 }
-

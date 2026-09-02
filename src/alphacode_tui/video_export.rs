@@ -592,7 +592,9 @@ fn find_mermaid_regions(buf: &Buffer) -> Vec<MermaidRegion> {
             }
 
             // Look up cached PNG
-            if let Some((png_path, img_w, img_h)) = crate::alphacode_tui::tui::mermaid::get_cached_png(hash) {
+            if let Some((png_path, img_w, img_h)) =
+                crate::alphacode_tui::tui::mermaid::get_cached_png(hash)
+            {
                 regions.push(MermaidRegion {
                     start_row: y,
                     height: region_height,
@@ -1194,4 +1196,3 @@ mod tests {
         assert!((swarm_export_font_size(9.0, 4, 4, 1) - 8.0).abs() < f64::EPSILON);
     }
 }
-

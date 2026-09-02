@@ -217,7 +217,8 @@ impl App {
             "{effort_keys}",
             &crate::alphacode_tui::tui::keybind::effort_switch_keys_label(),
         );
-        let resume_shortcut = match crate::alphacode_tui::tui::keybind::load_open_resume_key().label {
+        let resume_shortcut = match crate::alphacode_tui::tui::keybind::load_open_resume_key().label
+        {
             Some(label) => format!(" You can also press {label} to open it directly."),
             None => String::new(),
         };
@@ -230,4 +231,3 @@ impl App {
         Some(help)
     }
 }
-

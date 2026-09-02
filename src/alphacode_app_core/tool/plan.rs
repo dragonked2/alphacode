@@ -66,10 +66,7 @@ impl Tool for PlanModeTool {
 
         match action {
             "read_file" => {
-                let path = input
-                    .get("path")
-                    .and_then(|v| v.as_str())
-                    .unwrap_or(".");
+                let path = input.get("path").and_then(|v| v.as_str()).unwrap_or(".");
                 let full_path = if std::path::Path::new(path).is_absolute() {
                     std::path::PathBuf::from(path)
                 } else {
@@ -102,10 +99,7 @@ impl Tool for PlanModeTool {
                 }
             }
             "list_dir" => {
-                let path = input
-                    .get("path")
-                    .and_then(|v| v.as_str())
-                    .unwrap_or(".");
+                let path = input.get("path").and_then(|v| v.as_str()).unwrap_or(".");
                 let full_path = if std::path::Path::new(path).is_absolute() {
                     std::path::PathBuf::from(path)
                 } else {
@@ -162,10 +156,7 @@ impl Tool for PlanModeTool {
                 }
             }
             "search" => {
-                let pattern = input
-                    .get("pattern")
-                    .and_then(|v| v.as_str())
-                    .unwrap_or("");
+                let pattern = input.get("pattern").and_then(|v| v.as_str()).unwrap_or("");
                 if pattern.is_empty() {
                     return Ok(ToolOutput::new("Error: 'pattern' required.".to_string()));
                 }
@@ -242,7 +233,9 @@ impl Tool for PlanModeTool {
                 }
 
                 output.push_str(&format!("\nQuery: {query}"));
-                output.push_str("\n\nNote: This is a read-only analysis. Use other tools to make changes.");
+                output.push_str(
+                    "\n\nNote: This is a read-only analysis. Use other tools to make changes.",
+                );
 
                 Ok(ToolOutput::new(output))
             }

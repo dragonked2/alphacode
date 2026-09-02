@@ -116,15 +116,23 @@ pub async fn run_tui_client(
                 is_selfdev,
             );
         } else {
-            crate::alphacode_base::process_title::set_client_display_title(&session_name, is_selfdev);
+            crate::alphacode_base::process_title::set_client_display_title(
+                &session_name,
+                is_selfdev,
+            );
         }
         let _ = crossterm::execute!(
             std::io::stdout(),
             crossterm::terminal::SetTitle(resumed_window_title(session_id))
         );
     } else {
-        crate::alphacode_base::process_title::set_client_generic_title(super::selfdev::client_selfdev_requested());
-        let _ = crossterm::execute!(std::io::stdout(), crossterm::terminal::SetTitle("alphacode"));
+        crate::alphacode_base::process_title::set_client_generic_title(
+            super::selfdev::client_selfdev_requested(),
+        );
+        let _ = crossterm::execute!(
+            std::io::stdout(),
+            crossterm::terminal::SetTitle("alphacode")
+        );
     }
     startup_profile::mark("terminal_title");
 
@@ -249,7 +257,10 @@ pub async fn run_replay_command(
                         }
                     })
                     .collect::<String>();
-                std::path::PathBuf::from(format!("alphacode_swarm_replay_{}_{}.mp4", safe_name, date))
+                std::path::PathBuf::from(format!(
+                    "alphacode_swarm_replay_{}_{}.mp4",
+                    safe_name, date
+                ))
             } else {
                 std::path::PathBuf::from(output)
             };
@@ -447,14 +458,19 @@ pub fn list_sessions() -> Result<()> {
                 exe.to_path_buf(),
                 vec!["--resume".to_string(), session_id.clone()],
             ),
-            crate::alphacode_tui_session_picker::ResumeTarget::ClaudeCodeSession { session_id, .. } => (
+            crate::alphacode_tui_session_picker::ResumeTarget::ClaudeCodeSession {
+                session_id,
+                ..
+            } => (
                 exe.to_path_buf(),
                 vec![
                     "--resume".to_string(),
                     crate::import::imported_claude_code_session_id(session_id),
                 ],
             ),
-            crate::alphacode_tui_session_picker::ResumeTarget::CodexSession { session_id, .. } => (
+            crate::alphacode_tui_session_picker::ResumeTarget::CodexSession {
+                session_id, ..
+            } => (
                 exe.to_path_buf(),
                 vec![
                     "--resume".to_string(),
@@ -468,14 +484,19 @@ pub fn list_sessions() -> Result<()> {
                     crate::import::imported_pi_session_id(session_path),
                 ],
             ),
-            crate::alphacode_tui_session_picker::ResumeTarget::OpenCodeSession { session_id, .. } => (
+            crate::alphacode_tui_session_picker::ResumeTarget::OpenCodeSession {
+                session_id,
+                ..
+            } => (
                 exe.to_path_buf(),
                 vec![
                     "--resume".to_string(),
                     crate::import::imported_opencode_session_id(session_id),
                 ],
             ),
-            crate::alphacode_tui_session_picker::ResumeTarget::CursorSession { session_id, .. } => (
+            crate::alphacode_tui_session_picker::ResumeTarget::CursorSession {
+                session_id, ..
+            } => (
                 exe.to_path_buf(),
                 vec![
                     "--resume".to_string(),
@@ -502,10 +523,15 @@ pub fn list_sessions() -> Result<()> {
             crate::alphacode_tui_session_picker::ResumeTarget::AlphacodeSession { session_id } => {
                 resumed_window_title(session_id)
             }
-            crate::alphacode_tui_session_picker::ResumeTarget::ClaudeCodeSession { session_id, .. } => {
+            crate::alphacode_tui_session_picker::ResumeTarget::ClaudeCodeSession {
+                session_id,
+                ..
+            } => {
                 format!("🧵 Claude Code {}", &session_id[..session_id.len().min(8)])
             }
-            crate::alphacode_tui_session_picker::ResumeTarget::CodexSession { session_id, .. } => {
+            crate::alphacode_tui_session_picker::ResumeTarget::CodexSession {
+                session_id, ..
+            } => {
                 format!("🧠 Codex {}", &session_id[..session_id.len().min(8)])
             }
             crate::alphacode_tui_session_picker::ResumeTarget::PiSession { session_path } => {
@@ -517,10 +543,15 @@ pub fn list_sessions() -> Result<()> {
                         .unwrap_or("session")
                 )
             }
-            crate::alphacode_tui_session_picker::ResumeTarget::OpenCodeSession { session_id, .. } => {
+            crate::alphacode_tui_session_picker::ResumeTarget::OpenCodeSession {
+                session_id,
+                ..
+            } => {
                 format!("◌ OpenCode {}", &session_id[..session_id.len().min(8)])
             }
-            crate::alphacode_tui_session_picker::ResumeTarget::CursorSession { session_id, .. } => {
+            crate::alphacode_tui_session_picker::ResumeTarget::CursorSession {
+                session_id, ..
+            } => {
                 format!("▮ Cursor {}", &session_id[..session_id.len().min(8)])
             }
         };
@@ -564,8 +595,9 @@ pub fn list_sessions() -> Result<()> {
                 let target = &targets[0];
                 let resolved_target = crate::import::resolve_resume_target_to_alphacode(target)?;
                 let mut session_cwd = cwd.clone();
-                if let crate::alphacode_tui_session_picker::ResumeTarget::AlphacodeSession { session_id } =
-                    &resolved_target
+                if let crate::alphacode_tui_session_picker::ResumeTarget::AlphacodeSession {
+                    session_id,
+                } = &resolved_target
                     && let Ok(sess) = session::Session::load(session_id)
                     && let Some(dir) = sess.working_dir.as_deref()
                     && std::path::Path::new(dir).is_dir()
@@ -594,8 +626,9 @@ pub fn list_sessions() -> Result<()> {
                             }
                         };
                     let mut session_cwd = cwd.clone();
-                    if let crate::alphacode_tui_session_picker::ResumeTarget::AlphacodeSession { session_id } =
-                        &resolved_target
+                    if let crate::alphacode_tui_session_picker::ResumeTarget::AlphacodeSession {
+                        session_id,
+                    } = &resolved_target
                         && let Ok(sess) = session::Session::load(session_id)
                         && let Some(dir) = sess.working_dir.as_deref()
                         && std::path::Path::new(dir).is_dir()
@@ -640,16 +673,18 @@ pub fn list_sessions() -> Result<()> {
             let mut warned_no_terminal = false;
 
             for target in targets {
-                let resolved_target = match crate::import::resolve_resume_target_to_alphacode(&target) {
-                    Ok(target) => target,
-                    Err(e) => {
-                        eprintln!("Failed to import selected session: {}", e);
-                        continue;
-                    }
-                };
+                let resolved_target =
+                    match crate::import::resolve_resume_target_to_alphacode(&target) {
+                        Ok(target) => target,
+                        Err(e) => {
+                            eprintln!("Failed to import selected session: {}", e);
+                            continue;
+                        }
+                    };
                 let mut session_cwd = cwd.clone();
-                if let crate::alphacode_tui_session_picker::ResumeTarget::AlphacodeSession { session_id } =
-                    &resolved_target
+                if let crate::alphacode_tui_session_picker::ResumeTarget::AlphacodeSession {
+                    session_id,
+                } = &resolved_target
                     && let Ok(sess) = session::Session::load(session_id)
                     && let Some(dir) = sess.working_dir.as_deref()
                     && std::path::Path::new(dir).is_dir()
@@ -748,5 +783,3 @@ pub fn list_sessions() -> Result<()> {
         }
     }
 }
-
-

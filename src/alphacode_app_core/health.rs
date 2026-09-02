@@ -341,9 +341,10 @@ pub fn snapshot() -> HealthSnapshot {
             rss_peak_bytes = Some(peak);
         }
         if let (Some(cur), Some(peak)) = (rss_bytes, rss_peak_bytes)
-            && peak > 0 {
-                rss_growth_ratio = Some(cur as f64 / peak as f64);
-            }
+            && peak > 0
+        {
+            rss_growth_ratio = Some(cur as f64 / peak as f64);
+        }
     }
 
     let mut slow_ops_top: Vec<SlowOp> = Vec::new();
@@ -498,7 +499,6 @@ mod process_stats {
     #[cfg(not(any(target_os = "linux", target_os = "macos", target_os = "windows")))]
     pub fn rss_bytes() -> Option<u64> {
         None
-
     }
 
     #[cfg(target_os = "linux")]
@@ -510,7 +510,6 @@ mod process_stats {
     #[cfg(not(target_os = "linux"))]
     pub fn open_fds() -> Option<usize> {
         None
-
     }
 
     #[cfg(target_os = "linux")]
@@ -522,7 +521,6 @@ mod process_stats {
             }
         }
         None
-
     }
 
     #[cfg(target_os = "macos")]
@@ -544,13 +542,11 @@ mod process_stats {
     #[cfg(target_os = "windows")]
     pub fn thread_count() -> Option<usize> {
         None
-
     }
 
     #[cfg(not(any(target_os = "linux", target_os = "macos", target_os = "windows")))]
     pub fn thread_count() -> Option<usize> {
         None
-
     }
 }
 

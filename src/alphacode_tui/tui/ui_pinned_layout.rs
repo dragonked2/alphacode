@@ -398,4 +398,3 @@ pub(super) fn clamp_side_panel_image_rows(
 
     estimated_rows.min(max_rows.saturating_sub(1).max(min_rows))
 }
-

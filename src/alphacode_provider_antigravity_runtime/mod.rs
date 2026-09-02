@@ -9,8 +9,6 @@
 /// budget used by the Anthropic provider runtime.
 const MAX_RETRIES: u32 = 3;
 
-use anyhow::{Context, Result};
-use async_trait::async_trait;
 use crate::alphacode_base::auth::antigravity as antigravity_auth;
 use crate::alphacode_message_types::{ConnectionPhase, Message, StreamEvent, ToolDefinition};
 use crate::alphacode_provider_antigravity::{
@@ -24,6 +22,8 @@ use crate::alphacode_provider_gemini::{
     CodeAssistGenerateRequest, CodeAssistGenerateResponse, GeminiFunctionCallingConfig,
     GeminiToolConfig, VertexGenerateContentRequest,
 };
+use anyhow::{Context, Result};
+use async_trait::async_trait;
 use serde_json::{Value, json};
 use std::sync::{Arc, RwLock};
 use tokio::sync::mpsc;
@@ -285,10 +285,11 @@ impl AntigravityProvider {
                     messages,
                     signature_policy,
                 ),
-                system_instruction: crate::alphacode_provider_gemini::build_system_instruction_with_tool_guard(
-                    system,
-                    !tools_is_empty,
-                ),
+                system_instruction:
+                    crate::alphacode_provider_gemini::build_system_instruction_with_tool_guard(
+                        system,
+                        !tools_is_empty,
+                    ),
                 tools,
                 tool_config: if tools_is_empty {
                     None
@@ -491,7 +492,8 @@ impl Provider for AntigravityProvider {
             // fields: on that specific error, retry once with tool calls
             // downgraded to plain text. Content is preserved, the turn completes,
             // and the model re-signs its new calls.
-            let mut signature_policy = crate::alphacode_provider_gemini::SignaturePolicy::ReplayCarriedForward;
+            let mut signature_policy =
+                crate::alphacode_provider_gemini::SignaturePolicy::ReplayCarriedForward;
             let response = match provider
                 .generate_content(
                     &model,
@@ -506,8 +508,9 @@ impl Provider for AntigravityProvider {
             {
                 Ok(response) => response,
                 Err(err) => {
-                    if !crate::alphacode_provider_gemini::is_missing_thought_signature_error(&err.to_string())
-                    {
+                    if !crate::alphacode_provider_gemini::is_missing_thought_signature_error(
+                        &err.to_string(),
+                    ) {
                         let _ = tx.send(Err(err)).await;
                         return;
                     }
@@ -631,7 +634,8 @@ impl Provider for AntigravityProvider {
                             .id
                             .clone()
                             .unwrap_or_else(|| Uuid::new_v4().to_string());
-                        let call_id = crate::alphacode_message_types::sanitize_tool_id(&raw_call_id);
+                        let call_id =
+                            crate::alphacode_message_types::sanitize_tool_id(&raw_call_id);
                         let _ = tx
                             .send(Ok(StreamEvent::ToolUseStart {
                                 id: call_id,
@@ -688,7 +692,12 @@ impl Provider for AntigravityProvider {
                         .finish_message
                         .as_deref()
                         .filter(|msg| !msg.trim().is_empty())
-                        .map(|msg| format!(": {}", crate::alphacode_base::util::truncate_str(msg.trim(), 300)))
+                        .map(|msg| {
+                            format!(
+                                ": {}",
+                                crate::alphacode_base::util::truncate_str(msg.trim(), 300)
+                            )
+                        })
                         .unwrap_or_default();
                     let _ = tx
                         .send(Err(anyhow::anyhow!(
@@ -846,4 +855,3 @@ impl Provider for AntigravityProvider {
         })
     }
 }
-

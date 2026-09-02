@@ -4,7 +4,9 @@ use crate::alphacode_app_core::ambient::{
     ScheduleTarget, ScheduledItem,
 };
 use crate::alphacode_app_core::ambient_runner::AmbientRunnerHandle;
-use crate::alphacode_app_core::safety::{self, PermissionRequest, PermissionResult, SafetySystem, Urgency};
+use crate::alphacode_app_core::safety::{
+    self, PermissionRequest, PermissionResult, SafetySystem, Urgency,
+};
 use anyhow::Result;
 use async_trait::async_trait;
 use chrono::Utc;

@@ -589,7 +589,8 @@ fn cleanup_old_logs_in(log_dir: &std::path::Path, now: chrono::DateTime<Local>) 
         // Only consider our own date-stamped log files.
         let name = entry.file_name();
         let Some(name) = name.to_str() else { continue };
-        let is_alphacode_log = (name.starts_with("alphacode-") || name.starts_with("alphacode-desktop-"))
+        let is_alphacode_log = (name.starts_with("alphacode-")
+            || name.starts_with("alphacode-desktop-"))
             && name.ends_with(".log");
         if !is_alphacode_log {
             continue;
@@ -611,7 +612,10 @@ fn cleanup_old_logs_in(log_dir: &std::path::Path, now: chrono::DateTime<Local>) 
 
 fn truncate(s: &str, max_len: usize) -> String {
     if s.len() > max_len {
-        format!("{}...", crate::alphacode_core::util::truncate_str(s, max_len))
+        format!(
+            "{}...",
+            crate::alphacode_core::util::truncate_str(s, max_len)
+        )
     } else {
         s.to_string()
     }

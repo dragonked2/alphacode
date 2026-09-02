@@ -322,7 +322,10 @@ async fn refresh_tokens_uncoordinated(tokens: &GeminiTokens) -> Result<GeminiTok
             let _ = crate::alphacode_base::auth::refresh_state::record_success("gemini");
         }
         Err(err) => {
-            let _ = crate::alphacode_base::auth::refresh_state::record_failure("gemini", err.to_string());
+            let _ = crate::alphacode_base::auth::refresh_state::record_failure(
+                "gemini",
+                err.to_string(),
+            );
         }
     }
 
@@ -451,7 +454,8 @@ fn resolve_callback_or_manual_code(input: &str, expected_state: Option<&str>) ->
     if let Some(expected_state) = expected_state
         && looks_like_callback_input(trimmed)
     {
-        let (code, callback_state) = crate::alphacode_base::auth::oauth::parse_callback_input_with_state(trimmed)?;
+        let (code, callback_state) =
+            crate::alphacode_base::auth::oauth::parse_callback_input_with_state(trimmed)?;
         if callback_state != expected_state {
             anyhow::bail!(
                 "OAuth state mismatch. Start Gemini login again and use the latest callback URL."
@@ -657,4 +661,3 @@ fn parse_command_spec(raw: &str) -> Option<Vec<String>> {
 
     if parts.is_empty() { None } else { Some(parts) }
 }
-

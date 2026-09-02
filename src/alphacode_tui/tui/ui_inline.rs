@@ -15,11 +15,9 @@ pub(super) fn inline_ui_height(app: &dyn TuiState) -> u16 {
             // rendered ABOVE the box (outside its border). Shown for runtime model
             // pickers in both focused and preview modes.
             let hint_rows: u16 = if picker.kind == crate::alphacode_tui::tui::PickerKind::Model
-                && picker
-                    .entries
-                    .iter()
-                    .any(|entry| matches!(entry.action, crate::alphacode_tui::tui::PickerAction::Model))
-            {
+                && picker.entries.iter().any(|entry| {
+                    matches!(entry.action, crate::alphacode_tui::tui::PickerAction::Model)
+                }) {
                 1
             } else {
                 0
@@ -40,7 +38,9 @@ pub(super) fn draw_inline_ui(frame: &mut Frame, app: &dyn TuiState, area: Rect) 
         Some(crate::alphacode_tui::tui::InlineUiStateRef::Interactive(_)) => {
             super::inline_interactive_ui::draw_inline_interactive(frame, app, area)
         }
-        Some(crate::alphacode_tui::tui::InlineUiStateRef::View(view)) => draw_inline_view(frame, app, view, area),
+        Some(crate::alphacode_tui::tui::InlineUiStateRef::View(view)) => {
+            draw_inline_view(frame, app, view, area)
+        }
         None => {}
     }
 }
@@ -112,4 +112,3 @@ fn draw_inline_view(
 
     frame.render_widget(Paragraph::new(lines), inner);
 }
-

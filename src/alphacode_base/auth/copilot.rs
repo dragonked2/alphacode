@@ -65,7 +65,9 @@ impl ExternalCopilotAuthSource {
             Self::ConfigJson => COPILOT_CONFIG_JSON_SOURCE_ID,
             Self::HostsJson => COPILOT_HOSTS_AUTH_SOURCE_ID,
             Self::AppsJson => COPILOT_APPS_AUTH_SOURCE_ID,
-            Self::OpenCodeAuth => crate::alphacode_base::auth::external::OPENCODE_AUTH_JSON_SOURCE_ID,
+            Self::OpenCodeAuth => {
+                crate::alphacode_base::auth::external::OPENCODE_AUTH_JSON_SOURCE_ID
+            }
             Self::PiAuth => crate::alphacode_base::auth::external::PI_AUTH_JSON_SOURCE_ID,
         }
     }
@@ -85,9 +87,11 @@ impl ExternalCopilotAuthSource {
             Self::ConfigJson => copilot_cli_dir().join("config.json"),
             Self::HostsJson => legacy_copilot_config_dir().join("hosts.json"),
             Self::AppsJson => legacy_copilot_config_dir().join("apps.json"),
-            Self::OpenCodeAuth => crate::alphacode_base::auth::external::ExternalAuthSource::OpenCode
-                .path()
-                .unwrap_or_default(),
+            Self::OpenCodeAuth => {
+                crate::alphacode_base::auth::external::ExternalAuthSource::OpenCode
+                    .path()
+                    .unwrap_or_default()
+            }
             Self::PiAuth => crate::alphacode_base::auth::external::ExternalAuthSource::Pi
                 .path()
                 .unwrap_or_default(),
@@ -393,12 +397,14 @@ pub fn preferred_external_auth_source() -> Option<ExternalCopilotAuthSource> {
 pub fn has_unconsented_external_auth() -> Option<ExternalCopilotAuthSource> {
     let source = preferred_external_auth_source()?;
     let allowed = match source {
-        ExternalCopilotAuthSource::OpenCodeAuth => crate::alphacode_base::auth::external::source_allowed(
-            crate::alphacode_base::auth::external::ExternalAuthSource::OpenCode,
-        ),
-        ExternalCopilotAuthSource::PiAuth => {
-            crate::alphacode_base::auth::external::source_allowed(crate::alphacode_base::auth::external::ExternalAuthSource::Pi)
+        ExternalCopilotAuthSource::OpenCodeAuth => {
+            crate::alphacode_base::auth::external::source_allowed(
+                crate::alphacode_base::auth::external::ExternalAuthSource::OpenCode,
+            )
         }
+        ExternalCopilotAuthSource::PiAuth => crate::alphacode_base::auth::external::source_allowed(
+            crate::alphacode_base::auth::external::ExternalAuthSource::Pi,
+        ),
         _ => crate::config::Config::external_auth_source_allowed_for_path(
             source.source_id(),
             &source.path(),
@@ -970,4 +976,3 @@ pub async fn fetch_github_username(client: &reqwest::Client, token: &str) -> Res
     let user: GithubUser = resp.json().await.context("Failed to parse GitHub user")?;
     Ok(user.login)
 }
-

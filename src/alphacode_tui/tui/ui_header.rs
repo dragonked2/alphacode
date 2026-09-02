@@ -1,14 +1,11 @@
 use super::box_utils::render_double_rounded_box;
 use super::changelog::get_unseen_changelog_entries;
-use super::{
-    TuiState, accent_color, dim_color, header_name_color,
-    shorten_model_name,
-};
+use super::{TuiState, accent_color, dim_color, header_name_color, shorten_model_name};
 #[cfg(test)]
 use super::{semver, warning_color};
-use crate::alphacode_tui::auth::AuthStatus;
 #[cfg(test)]
 use crate::alphacode_tui::auth::AuthState;
+use crate::alphacode_tui::auth::AuthStatus;
 use crate::alphacode_tui_style::rgb;
 use ratatui::prelude::*;
 #[cfg(test)]
@@ -116,7 +113,11 @@ fn prettify_slashed_model_name(model: &str) -> String {
 
     match matched_prefix {
         Some(prefix) => {
-            let display_prefix = if *prefix == "gpt" { "GPT".to_string() } else { capitalize(prefix) };
+            let display_prefix = if *prefix == "gpt" {
+                "GPT".to_string()
+            } else {
+                capitalize(prefix)
+            };
             let inner = &stem[prefix.len()..];
             if inner.is_empty() {
                 display_prefix
@@ -151,7 +152,11 @@ fn format_gpt_name(short: &str) -> String {
 /// "OpenRouter" when no provider name is known.
 fn label_slashed_model(short: &str, provider_name: &str) -> String {
     let trimmed = provider_name.trim();
-    let label = if trimmed.is_empty() { "OpenRouter" } else { trimmed };
+    let label = if trimmed.is_empty() {
+        "OpenRouter"
+    } else {
+        trimmed
+    };
     format!("{}: {}", label, prettify_slashed_model_name(short))
 }
 
@@ -221,9 +226,7 @@ fn is_snapshot_date_segment(part: &str) -> bool {
 fn title_case_segment(part: &str) -> String {
     let mut chars = part.chars();
     match chars.next() {
-        Some(first) if first.is_ascii_alphabetic() => {
-            first.to_uppercase().chain(chars).collect()
-        }
+        Some(first) if first.is_ascii_alphabetic() => first.to_uppercase().chain(chars).collect(),
         Some(first) => first.to_string() + chars.as_str(),
         None => String::new(),
     }
@@ -259,7 +262,11 @@ fn prettify_model_id(model: &str) -> String {
         })
         .collect();
 
-    if parts.is_empty() { stripped.to_string() } else { parts.join(" ") }
+    if parts.is_empty() {
+        stripped.to_string()
+    } else {
+        parts.join(" ")
+    }
 }
 
 /// Extract the version from a Claude model id, e.g. "claude-opus-4-6" -> "4.6",
@@ -383,7 +390,8 @@ impl ActiveCredentialOverrides {
         Self {
             anthropic: app
                 .active_dual_credential(crate::alphacode_provider_core::ActiveProvider::Claude),
-            openai: app.active_dual_credential(crate::alphacode_provider_core::ActiveProvider::OpenAI),
+            openai: app
+                .active_dual_credential(crate::alphacode_provider_core::ActiveProvider::OpenAI),
         }
     }
 
@@ -488,7 +496,11 @@ pub(super) fn build_auth_status_lines(
         .filter(|(_, state)| *state != AuthState::NotConfigured)
         .cloned()
         .collect();
-    let shown = if configured.is_empty() { specs } else { configured };
+    let shown = if configured.is_empty() {
+        specs
+    } else {
+        configured
+    };
 
     shown
         .into_iter()
@@ -557,13 +569,19 @@ fn header_provider_auth_tag(
             let compat = crate::provider_catalog::resolve_openai_compatible_profile(
                 crate::provider_catalog::OPENAI_COMPAT_PROFILE,
             );
-            if compat.requires_api_key { "api-key" } else { "local" }
+            if compat.requires_api_key {
+                "api-key"
+            } else {
+                "local"
+            }
         }
         other
             if crate::provider_catalog::resolve_openai_compatible_profile_selection(other)
                 .is_some()
-                || crate::provider_catalog::openai_compatible_profile_id_for_display_name(other)
-                    .is_some() =>
+                || crate::provider_catalog::openai_compatible_profile_id_for_display_name(
+                    other,
+                )
+                .is_some() =>
         {
             "api-key"
         }
@@ -659,7 +677,11 @@ fn choose_header_candidate(width: usize, candidates: Vec<String>) -> String {
 
 #[cfg(test)]
 fn semver_core() -> String {
-    semver().split('-').next().unwrap_or_else(semver).to_string()
+    semver()
+        .split('-')
+        .next()
+        .unwrap_or_else(semver)
+        .to_string()
 }
 
 #[cfg(test)]
@@ -785,7 +807,12 @@ const BANNER_MONOSPACE: &[&str] = &[r"A L P H A C O D E"];
 
 const BANNER_MINIMAL: &[&str] = &[r"‹ alphacode ›"];
 
-const ALPHA_BANNERS: [&[&str]; 4] = [BANNER_BLOCK, BANNER_COMPACT, BANNER_MONOSPACE, BANNER_MINIMAL];
+const ALPHA_BANNERS: [&[&str]; 4] = [
+    BANNER_BLOCK,
+    BANNER_COMPACT,
+    BANNER_MONOSPACE,
+    BANNER_MINIMAL,
+];
 
 /// Build the ASCII-art "ALPHACODE" wordmark for the header, or an empty vec when
 /// even the narrowest variant cannot fit.
@@ -873,7 +900,10 @@ fn build_brand_line(app: &dyn TuiState, align: Alignment, show_wordmark: bool) -
     }
     if app.is_canary() {
         let prefix = if spans.is_empty() { "" } else { " " };
-        spans.push(Span::styled(format!("{}self-dev", prefix), Style::default().fg(dim_color())));
+        spans.push(Span::styled(
+            format!("{}self-dev", prefix),
+            Style::default().fg(dim_color()),
+        ));
     }
     let status_items = collect_status_items(app);
     if !status_items.is_empty() {
@@ -913,7 +943,9 @@ fn build_gradient_separator(width: usize) -> Line<'static> {
             let text: String = std::iter::repeat_n(ch, n).collect();
             spans.push(Span::styled(
                 text,
-                Style::default().fg(colors[run_start]).add_modifier(Modifier::DIM),
+                Style::default()
+                    .fg(colors[run_start])
+                    .add_modifier(Modifier::DIM),
             ));
             run_start = i;
         }
@@ -966,7 +998,11 @@ fn build_model_line(
     } else {
         header_provider_label(&app.provider_name(), auth, active)
     };
-    let upstream = if model_is_placeholder { None } else { app.upstream_provider() };
+    let upstream = if model_is_placeholder {
+        None
+    } else {
+        app.upstream_provider()
+    };
 
     let mut spans: Vec<Span> = Vec::new();
     let mut len = nice_model.chars().count();
@@ -999,7 +1035,9 @@ fn build_model_line(
         nice_model.to_string(),
         // Match the info widget's model accent (pink, bold) instead of plain
         // white so the model reads as a distinct, styled element.
-        Style::default().fg(rgb(255, 148, 205)).add_modifier(Modifier::BOLD),
+        Style::default()
+            .fg(rgb(255, 148, 205))
+            .add_modifier(Modifier::BOLD),
     ));
 
     if let Some(upstream) = upstream.as_deref() {
@@ -1024,7 +1062,9 @@ fn build_model_line(
             &mut len,
             fit_width,
             "/model to switch".to_string(),
-            Style::default().fg(rgb(70, 78, 100)).add_modifier(Modifier::ITALIC),
+            Style::default()
+                .fg(rgb(70, 78, 100))
+                .add_modifier(Modifier::ITALIC),
         );
     }
 
@@ -1050,9 +1090,7 @@ fn build_persistent_header_with_auth(
     // Visual separator between header brand and content area
     lines.push(build_gradient_separator(w));
 
-    if let Some(model_line) =
-        build_model_line(app, &model, &nice_model, auth, active, fit_width)
-    {
+    if let Some(model_line) = build_model_line(app, &model, &nice_model, auth, active, fit_width) {
         lines.push(model_line);
     }
 
@@ -1119,10 +1157,13 @@ fn build_working_dir_line(app: &dyn TuiState, w: usize, align: Alignment) -> Opt
             }
         }
     }
-    Some(Line::from(Span::styled(
-        format!("\u{250c} {}", text),
-        Style::default().fg(rgb(128, 138, 158)),
-    )).alignment(align))
+    Some(
+        Line::from(Span::styled(
+            format!("\u{250c} {}", text),
+            Style::default().fg(rgb(128, 138, 158)),
+        ))
+        .alignment(align),
+    )
 }
 
 fn build_secondary_header_lines(app: &dyn TuiState, width: u16) -> Vec<Line<'static>> {
@@ -1177,7 +1218,10 @@ pub(super) fn build_updates_box_lines(width: u16, max_lines: usize) -> Vec<Line<
         .collect();
     if has_more {
         content.push(Line::from(Span::styled(
-            format!("  …{} more · /changelog to see all", new_entries.len() - display_count),
+            format!(
+                "  …{} more · /changelog to see all",
+                new_entries.len() - display_count
+            ),
             Style::default().fg(dim_color()),
         )));
     }
@@ -1285,7 +1329,12 @@ mod tests {
     fn rendered_header_lines(app: &crate::alphacode_tui::tui::app::App, width: u16) -> Vec<String> {
         build_persistent_header(app, width)
             .iter()
-            .map(|line| line.spans.iter().map(|span| span.content.as_ref()).collect::<String>())
+            .map(|line| {
+                line.spans
+                    .iter()
+                    .map(|span| span.content.as_ref())
+                    .collect::<String>()
+            })
             .collect()
     }
 
@@ -1310,7 +1359,9 @@ mod tests {
 
         assert!(!non_empty.is_empty(), "expected persistent header lines");
         assert!(
-            non_empty.iter().all(|line| line.alignment == Some(Alignment::Left)),
+            non_empty
+                .iter()
+                .all(|line| line.alignment == Some(Alignment::Left)),
             "persistent header should be left aligned: {non_empty:?}"
         );
     }
@@ -1329,7 +1380,9 @@ mod tests {
         // The secondary header may legitimately be empty (no MCP servers, no
         // working dir); whatever renders must stay left aligned.
         assert!(
-            non_empty.iter().all(|line| line.alignment == Some(Alignment::Left)),
+            non_empty
+                .iter()
+                .all(|line| line.alignment == Some(Alignment::Left)),
             "header detail lines should be left aligned: {non_empty:?}"
         );
         // Regression guard: the credential dot inventory and skills list no
@@ -1366,8 +1419,14 @@ mod tests {
         );
 
         let lines = rendered_header_lines(&app, 120);
-        let server_line = lines.iter().find(|line| line.contains("server:")).expect("server line");
-        let client_line = lines.iter().find(|line| line.contains("client:")).expect("client line");
+        let server_line = lines
+            .iter()
+            .find(|line| line.contains("server:"))
+            .expect("server line");
+        let client_line = lines
+            .iter()
+            .find(|line| line.contains("client:"))
+            .expect("client line");
 
         // Clean version-only labels: no pet/server names, no emoji.
         assert!(
@@ -1409,7 +1468,11 @@ mod tests {
             .collect();
 
         // Identical versions collapse to a single "server/client:" line.
-        assert_eq!(version_lines.len(), 1, "matching versions should render one line: {lines:?}");
+        assert_eq!(
+            version_lines.len(),
+            1,
+            "matching versions should render one line: {lines:?}"
+        );
         let compact = compact_version_label(&full_version);
         assert!(
             version_lines[0].contains(&format!("server/client: {}", compact)),
@@ -1431,15 +1494,24 @@ mod tests {
         );
 
         let lines = rendered_header_lines(&app, 160);
-        let server_line = lines.iter().find(|line| line.contains("server:")).expect("server line");
-        let client_line = lines.iter().find(|line| line.contains("client:")).expect("client line");
+        let server_line = lines
+            .iter()
+            .find(|line| line.contains("server:"))
+            .expect("server line");
+        let client_line = lines
+            .iter()
+            .find(|line| line.contains("client:"))
+            .expect("client line");
 
         assert!(
             server_line.contains("(0000000)"),
             "same-semver mismatch should keep the server git hash: {server_line}"
         );
         assert!(
-            client_line.contains(&format!("client: {}", crate::alphacode_build_meta::version())),
+            client_line.contains(&format!(
+                "client: {}",
+                crate::alphacode_build_meta::version()
+            )),
             "same-semver mismatch should keep the client git hash: {client_line}"
         );
     }
@@ -1470,7 +1542,9 @@ mod tests {
             "local mode should not render a server line: {lines:?}"
         );
         assert!(
-            !lines.iter().any(|line| line.contains("client:") && line.contains(" · v")),
+            !lines
+                .iter()
+                .any(|line| line.contains("client:") && line.contains(" · v")),
             "local mode client line should not carry a version label: {lines:?}"
         );
     }
@@ -1487,7 +1561,10 @@ mod tests {
         app.set_connection_type_for_tests(Some("https/sse"));
 
         let lines = rendered_header_lines(&app, 120);
-        let client_line = lines.iter().find(|line| line.contains("client:")).expect("client line");
+        let client_line = lines
+            .iter()
+            .find(|line| line.contains("client:"))
+            .expect("client line");
 
         let client_version = compact_version_label(crate::alphacode_build_meta::version());
         assert!(
@@ -1509,9 +1586,15 @@ mod tests {
         assert_eq!(prettify_model_id("claude-fable-5"), "Claude Fable 5");
         assert_eq!(prettify_model_id("grok-code-fast-1"), "Grok Code Fast 1");
         assert_eq!(prettify_model_id("kimi_k2"), "Kimi K2");
-        assert_eq!(prettify_model_id("gemini-3-pro-preview"), "Gemini 3 Pro Preview");
+        assert_eq!(
+            prettify_model_id("gemini-3-pro-preview"),
+            "Gemini 3 Pro Preview"
+        );
         assert_eq!(prettify_model_id("deepseek-chat"), "Deepseek Chat");
-        assert_eq!(prettify_model_id("mistral-large-2411"), "Mistral Large 2411");
+        assert_eq!(
+            prettify_model_id("mistral-large-2411"),
+            "Mistral Large 2411"
+        );
         assert_eq!(prettify_model_id("o3-mini"), "O3 Mini");
         // Vowel-less short segments read as acronyms.
         assert_eq!(prettify_model_id("glm-4.6"), "GLM 4.6");
@@ -1520,10 +1603,16 @@ mod tests {
         assert_eq!(prettify_model_id("llama-3.3-70b"), "Llama 3.3 70B");
         assert_eq!(prettify_model_id("mixtral-8x7b"), "Mixtral 8X7B");
         // Long digit runs (snapshot dates) are dropped.
-        assert_eq!(prettify_model_id("claude-fable-5-20260101"), "Claude Fable 5");
+        assert_eq!(
+            prettify_model_id("claude-fable-5-20260101"),
+            "Claude Fable 5"
+        );
         // Placeholders and slashed ids pass through untouched.
         assert_eq!(prettify_model_id("loading session…"), "loading session…");
-        assert_eq!(prettify_model_id("deepseek/deepseek-chat"), "deepseek/deepseek-chat");
+        assert_eq!(
+            prettify_model_id("deepseek/deepseek-chat"),
+            "deepseek/deepseek-chat"
+        );
         // Degenerate inputs survive.
         assert_eq!(prettify_model_id(""), "");
         assert_eq!(prettify_model_id("-"), "-");
@@ -1573,7 +1662,11 @@ mod tests {
             ("llama-3.1-8b-instant", "Llama 3.1 8B Instant"),
         ];
         for (input, expected) in cases {
-            assert_eq!(header_model_display_name(input, ""), expected, "model id {input:?}");
+            assert_eq!(
+                header_model_display_name(input, ""),
+                expected,
+                "model id {input:?}"
+            );
         }
 
         // Slashed ids keep the provider label form.
@@ -1582,7 +1675,10 @@ mod tests {
             "OpenRouter: deepseek/deepseek-chat"
         );
         // Placeholders pass through untouched.
-        assert_eq!(header_model_display_name("loading session…", ""), "loading session…");
+        assert_eq!(
+            header_model_display_name("loading session…", ""),
+            "loading session…"
+        );
         assert_eq!(header_model_display_name("connected", ""), "Connected");
     }
 
@@ -1665,7 +1761,10 @@ mod tests {
             "api-key"
         );
         let rendered = flatten(&build_auth_status_lines(&both, overrides));
-        assert!(rendered.contains("anthropic(oauth+key*)"), "rendered: {rendered}");
+        assert!(
+            rendered.contains("anthropic(oauth+key*)"),
+            "rendered: {rendered}"
+        );
 
         if let Some(value) = prev {
             crate::alphacode_core::env::set_var("ALPHACODE_RUNTIME_PROVIDER", value);
@@ -1782,7 +1881,9 @@ mod tests {
         crate::alphacode_core::env::remove_var("ALPHACODE_PROVIDER");
 
         let mut app = crate::alphacode_tui::tui::app::App::new_for_remote(None);
-        app.set_remote_startup_phase(crate::alphacode_tui::tui::app::RemoteStartupPhase::LoadingSession);
+        app.set_remote_startup_phase(
+            crate::alphacode_tui::tui::app::RemoteStartupPhase::LoadingSession,
+        );
 
         // The model line lives in the persistent header now; the startup phase
         // label renders there without a bogus "(unknown)" provider tag.
@@ -1842,7 +1943,10 @@ mod tests {
             .collect::<Vec<_>>()
             .join("\n");
 
-        assert!(rendered.contains("anthropic(oauth)"), "rendered: {rendered}");
+        assert!(
+            rendered.contains("anthropic(oauth)"),
+            "rendered: {rendered}"
+        );
         assert!(rendered.contains("openai(key)"), "rendered: {rendered}");
         // Providers the user has no credentials for stay out of the header.
         assert!(!rendered.contains("openrouter"), "rendered: {rendered}");
@@ -1852,8 +1956,12 @@ mod tests {
 
     #[test]
     fn auth_status_lines_list_all_providers_when_nothing_configured() {
-        let lines = build_auth_status_lines(&AuthStatus::default(), ActiveCredentialOverrides::default());
-        assert!(!lines.is_empty(), "all providers should be listed: {lines:?}");
+        let lines =
+            build_auth_status_lines(&AuthStatus::default(), ActiveCredentialOverrides::default());
+        assert!(
+            !lines.is_empty(),
+            "all providers should be listed: {lines:?}"
+        );
     }
 
     #[test]
@@ -1872,20 +1980,31 @@ mod tests {
 
         let rendered_with = |runtime: Option<&str>| {
             match runtime {
-                Some(value) => crate::alphacode_core::env::set_var("ALPHACODE_RUNTIME_PROVIDER", value),
+                Some(value) => {
+                    crate::alphacode_core::env::set_var("ALPHACODE_RUNTIME_PROVIDER", value)
+                }
                 None => crate::alphacode_core::env::remove_var("ALPHACODE_RUNTIME_PROVIDER"),
             }
-            flatten(&build_auth_status_lines(&auth, ActiveCredentialOverrides::default()))
+            flatten(&build_auth_status_lines(
+                &auth,
+                ActiveCredentialOverrides::default(),
+            ))
         };
 
         // Auto prefers OAuth: the star must sit on oauth, matching the header
         // provider tag's active-route answer.
         let rendered = rendered_with(None);
-        assert!(rendered.contains("anthropic(oauth*+key)"), "rendered: {rendered}");
+        assert!(
+            rendered.contains("anthropic(oauth*+key)"),
+            "rendered: {rendered}"
+        );
 
         // Pinning the API key moves the star, keeping both surfaces consistent.
         let rendered = rendered_with(Some("claude-api"));
-        assert!(rendered.contains("anthropic(oauth+key*)"), "rendered: {rendered}");
+        assert!(
+            rendered.contains("anthropic(oauth+key*)"),
+            "rendered: {rendered}"
+        );
 
         match prev {
             Some(value) => crate::alphacode_core::env::set_var("ALPHACODE_RUNTIME_PROVIDER", value),
@@ -1907,9 +2026,15 @@ mod tests {
             "OpenRouter: anthropic/claude-sonnet-4"
         );
         // Missing provider name falls back to "OpenRouter" rather than an empty label.
-        assert_eq!(format_model_name("deepseek/deepseek-chat", ""), "OpenRouter: deepseek/deepseek-chat");
+        assert_eq!(
+            format_model_name("deepseek/deepseek-chat", ""),
+            "OpenRouter: deepseek/deepseek-chat"
+        );
         // Non-slashed models are unaffected by the provider label.
-        assert_eq!(format_model_name("claude-opus-4-6", "OpenRouter"), "Claude Opus");
+        assert_eq!(
+            format_model_name("claude-opus-4-6", "OpenRouter"),
+            "Claude Opus"
+        );
     }
 
     #[test]
@@ -1934,12 +2059,18 @@ mod tests {
         let wide = build_alpha_banner(120);
         assert!(!wide.is_empty());
         let wide_text = flatten(&wide);
-        assert!(wide_text.contains('█'), "wide banner should use block glyphs: {wide_text}");
+        assert!(
+            wide_text.contains('█'),
+            "wide banner should use block glyphs: {wide_text}"
+        );
 
         // A very narrow terminal falls back to the minimal wordmark rather
         // than rendering nothing.
         let narrow = build_alpha_banner(20);
-        assert!(!narrow.is_empty(), "minimal banner should still fit at width 20");
+        assert!(
+            !narrow.is_empty(),
+            "minimal banner should still fit at width 20"
+        );
         let narrow_text = flatten(&narrow);
         assert!(
             narrow_text.to_lowercase().contains("alphacode"),

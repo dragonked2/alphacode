@@ -1,5 +1,5 @@
-use chrono::{DateTime, Utc};
 use crate::alphacode_provider_gemini::CodeAssistGenerateResponse;
+use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::{HashMap, HashSet};

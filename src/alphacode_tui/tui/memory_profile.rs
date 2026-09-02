@@ -347,7 +347,9 @@ fn estimate_side_panel_memory(snapshot: &SidePanelSnapshot) -> SidePanelMemorySt
 mod tests {
     use super::*;
     use crate::alphacode_tui::message::{ContentBlock, Role};
-    use crate::alphacode_tui::side_panel::{SidePanelPage, SidePanelPageFormat, SidePanelPageSource};
+    use crate::alphacode_tui::side_panel::{
+        SidePanelPage, SidePanelPageFormat, SidePanelPageSource,
+    };
 
     #[test]
     fn transcript_memory_profile_breaks_out_provider_display_and_side_panel() {
@@ -437,4 +439,3 @@ mod tests {
         );
     }
 }
-

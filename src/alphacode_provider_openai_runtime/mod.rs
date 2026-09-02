@@ -8,14 +8,14 @@
 //! (it is shared vocabulary for routing), as does the pure request shaping in
 //! `crate::alphacode_base::provider::openai_request`.
 
-use anyhow::{Context, Result};
-use async_trait::async_trait;
-use futures::{FutureExt, SinkExt, StreamExt as FuturesStreamExt};
 use crate::alphacode_base::auth::codex::CodexCredentials;
 use crate::alphacode_base::auth::oauth;
 use crate::alphacode_base::provider::openai_request::{build_responses_input, build_tools};
 use crate::alphacode_message_types::{Message as ChatMessage, StreamEvent, ToolDefinition};
 use crate::alphacode_provider_core::{EventStream, Provider};
+use anyhow::{Context, Result};
+use async_trait::async_trait;
+use futures::{FutureExt, SinkExt, StreamExt as FuturesStreamExt};
 
 use reqwest::header::HeaderValue;
 use reqwest::{Client, StatusCode};
@@ -201,7 +201,9 @@ pub(crate) fn load_credentials_for_mode(mode: OpenAICredentialMode) -> Result<Co
     match mode {
         OpenAICredentialMode::Auto => crate::alphacode_base::auth::codex::load_credentials(),
         OpenAICredentialMode::OAuth => crate::alphacode_base::auth::codex::load_oauth_credentials(),
-        OpenAICredentialMode::ApiKey => crate::alphacode_base::auth::codex::load_api_key_credentials(),
+        OpenAICredentialMode::ApiKey => {
+            crate::alphacode_base::auth::codex::load_api_key_credentials()
+        }
     }
 }
 
@@ -754,7 +756,9 @@ impl OpenAIProvider {
         let credential_mode = if browser_only {
             OpenAICredentialMode::Auto
         } else {
-            OpenAICredentialMode::from_runtime_env(crate::alphacode_provider_core::DualAuthProvider::OpenAI)
+            OpenAICredentialMode::from_runtime_env(
+                crate::alphacode_provider_core::DualAuthProvider::OpenAI,
+            )
         };
         let credentials = if browser_only {
             credentials
@@ -917,8 +921,13 @@ impl OpenAIProvider {
         // Keep the runtime provider identity in sync with the explicit credential
         // choice so UI surfaces report the auth method requests will actually use.
         // `Auto` leaves the existing identity untouched.
-        if let Some(route) = mode.auth_route(crate::alphacode_provider_core::DualAuthProvider::OpenAI) {
-            crate::alphacode_base::env::set_var("ALPHACODE_RUNTIME_PROVIDER", route.runtime_provider_key());
+        if let Some(route) =
+            mode.auth_route(crate::alphacode_provider_core::DualAuthProvider::OpenAI)
+        {
+            crate::alphacode_base::env::set_var(
+                "ALPHACODE_RUNTIME_PROVIDER",
+                route.runtime_provider_key(),
+            );
         }
         // Drop any cached auth snapshot so surfaces that still consult the cheap
         // cached probe (auto-mode resolution, usage availability, account labels)
@@ -929,7 +938,8 @@ impl OpenAIProvider {
     }
 
     fn reload_cached_reasoning_efforts(&self) {
-        let cached = crate::alphacode_base::provider::cached_openai_reasoning_efforts().unwrap_or_default();
+        let cached =
+            crate::alphacode_base::provider::cached_openai_reasoning_efforts().unwrap_or_default();
         match self.model_reasoning_efforts.write() {
             Ok(mut efforts) => *efforts = cached,
             Err(poisoned) => *poisoned.into_inner() = cached,
@@ -959,7 +969,10 @@ impl OpenAIProvider {
     async fn clear_persistent_ws(&self, reason: &str) {
         let mut persistent_ws = self.persistent_ws.lock().await;
         if persistent_ws.is_some() {
-            crate::alphacode_base::logging::info(&format!("Clearing persistent OpenAI WS state: {}", reason));
+            crate::alphacode_base::logging::info(&format!(
+                "Clearing persistent OpenAI WS state: {}",
+                reason
+            ));
         }
         *persistent_ws = None;
     }
@@ -1258,7 +1271,8 @@ impl OpenAIProvider {
 
     async fn model_id(&self) -> String {
         let current = self.model.read().await.clone();
-        let availability = crate::alphacode_base::provider::model_availability_for_account(&current);
+        let availability =
+            crate::alphacode_base::provider::model_availability_for_account(&current);
 
         match availability.state {
             crate::alphacode_base::provider::AccountModelAvailabilityState::Unavailable => {
@@ -1268,7 +1282,8 @@ impl OpenAIProvider {
                         current, detail
                     ));
                 }
-                if let Some(fallback) = crate::alphacode_base::provider::get_best_available_openai_model()
+                if let Some(fallback) =
+                    crate::alphacode_base::provider::get_best_available_openai_model()
                     && fallback != current
                 {
                     crate::alphacode_base::logging::info(&format!(
@@ -1364,4 +1379,3 @@ use self::websocket_health::{
     record_websocket_success, summarize_websocket_fallback_reason, websocket_activity_timeout_kind,
     websocket_cooldown_remaining, websocket_next_activity_timeout_secs_with_completion,
 };
-

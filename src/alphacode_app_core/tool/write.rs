@@ -1,5 +1,5 @@
-use super::{Tool, ToolContext, ToolOutput};
 use super::diff_utils::{build_file_touch_preview, generate_diff_summary};
+use super::{Tool, ToolContext, ToolOutput};
 use crate::alphacode_app_core::bus::{Bus, BusEvent, FileOp, FileTouch};
 use anyhow::Result;
 use async_trait::async_trait;
@@ -120,8 +120,6 @@ impl Tool for WriteTool {
         }
     }
 }
-
-
 
 #[cfg(test)]
 mod tests {

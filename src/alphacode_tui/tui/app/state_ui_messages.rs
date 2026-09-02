@@ -681,4 +681,3 @@ fn parse_leading_usize(text: &str) -> Option<(usize, &str)> {
     let value = text[..end].parse().ok()?;
     Some((value, &text[end..]))
 }
-

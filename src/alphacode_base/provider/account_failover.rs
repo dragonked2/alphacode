@@ -33,8 +33,12 @@ pub(super) fn active_account_label_for_provider(provider: ActiveProvider) -> Opt
 
 pub(super) fn set_account_override_for_provider(provider: ActiveProvider, label: Option<String>) {
     match provider {
-        ActiveProvider::Claude => crate::alphacode_base::auth::claude::set_active_account_override(label),
-        ActiveProvider::OpenAI => crate::alphacode_base::auth::codex::set_active_account_override(label),
+        ActiveProvider::Claude => {
+            crate::alphacode_base::auth::claude::set_active_account_override(label)
+        }
+        ActiveProvider::OpenAI => {
+            crate::alphacode_base::auth::codex::set_active_account_override(label)
+        }
         _ => {}
     }
 }
@@ -81,7 +85,8 @@ pub(super) fn same_provider_account_candidates(provider: ActiveProvider) -> Vec<
 
     match provider {
         ActiveProvider::Claude => {
-            for account in crate::alphacode_base::auth::claude::list_accounts().unwrap_or_default() {
+            for account in crate::alphacode_base::auth::claude::list_accounts().unwrap_or_default()
+            {
                 push_unique(account.label);
             }
         }

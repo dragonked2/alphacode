@@ -613,4 +613,3 @@ pub(super) fn draw_file_diff_view(
     let paragraph = Paragraph::new(visible_lines);
     frame.render_widget(paragraph, inner);
 }
-

@@ -1049,15 +1049,17 @@ mod tests {
 
         codex::upsert_account_from_tokens("openai-1", "sk-test-key-123", "", None, None)
             .expect("write OpenAI test auth");
-        crate::alphacode_base::auth::claude::upsert_account(crate::alphacode_base::auth::claude::AnthropicAccount {
-            label: "claude-1".to_string(),
-            access: "claude-access".to_string(),
-            refresh: "claude-refresh".to_string(),
-            expires: 4_102_444_800_000,
-            email: None,
-            scopes: Vec::new(),
-            subscription_type: None,
-        })
+        crate::alphacode_base::auth::claude::upsert_account(
+            crate::alphacode_base::auth::claude::AnthropicAccount {
+                label: "claude-1".to_string(),
+                access: "claude-access".to_string(),
+                refresh: "claude-refresh".to_string(),
+                expires: 4_102_444_800_000,
+                email: None,
+                scopes: Vec::new(),
+                subscription_type: None,
+            },
+        )
         .expect("write Claude test auth");
 
         let sidecar = Sidecar::with_configured_model(None);
@@ -1161,7 +1163,9 @@ mod tests {
         ) -> Result<crate::provider::EventStream> {
             let reply = self.reply.clone();
             let stream = futures::stream::once(async move {
-                Ok(crate::alphacode_message_types::StreamEvent::TextDelta(reply))
+                Ok(crate::alphacode_message_types::StreamEvent::TextDelta(
+                    reply,
+                ))
             });
             Ok(Box::pin(stream))
         }
@@ -1302,15 +1306,18 @@ mod tests {
     #[test]
     fn test_anthropic_sidecar_prefers_api_key_respects_pinned_mode() {
         // Pinning the runtime to API-key mode must make the sidecar prefer the key.
-        let _g =
-            EnvVarGuard::set_path("ALPHACODE_RUNTIME_PROVIDER", std::path::Path::new("claude-api"));
+        let _g = EnvVarGuard::set_path(
+            "ALPHACODE_RUNTIME_PROVIDER",
+            std::path::Path::new("claude-api"),
+        );
         assert!(
             anthropic_sidecar_prefers_api_key(),
             "claude-api runtime => prefer API key"
         );
 
         // Pinning to OAuth mode must NOT prefer the key.
-        let _g2 = EnvVarGuard::set_path("ALPHACODE_RUNTIME_PROVIDER", std::path::Path::new("claude"));
+        let _g2 =
+            EnvVarGuard::set_path("ALPHACODE_RUNTIME_PROVIDER", std::path::Path::new("claude"));
         assert!(
             !anthropic_sidecar_prefers_api_key(),
             "claude (oauth) runtime => do not force API key"

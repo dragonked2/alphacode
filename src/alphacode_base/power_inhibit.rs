@@ -345,7 +345,9 @@ fn run_windows_power_guard(
 
     if ready_tx.send(Ok(())).is_err() {
         if unsafe { SetThreadExecutionState(windows_clear_execution_state_flags()) } == 0 {
-            crate::alphacode_logging::warn("failed to clear Windows power guard after receiver disconnect");
+            crate::alphacode_logging::warn(
+                "failed to clear Windows power guard after receiver disconnect",
+            );
         }
         return;
     }

@@ -626,11 +626,11 @@ pub fn memory_score(entry: &MemoryEntry) -> f64 {
 
     // Category importance weight
     score += match entry.category {
-        MemoryCategory::Correction => 60.0,  // User corrections are highest value
-        MemoryCategory::Preference => 35.0,  // Preferences shape behavior
-        MemoryCategory::Fact => 25.0,        // Facts provide context
-        MemoryCategory::Entity => 15.0,      // Entities are reference
-        MemoryCategory::Custom(_) => 10.0,   // Custom categories
+        MemoryCategory::Correction => 60.0, // User corrections are highest value
+        MemoryCategory::Preference => 35.0, // Preferences shape behavior
+        MemoryCategory::Fact => 25.0,       // Facts provide context
+        MemoryCategory::Entity => 15.0,     // Entities are reference
+        MemoryCategory::Custom(_) => 10.0,  // Custom categories
     };
 
     // Trust level multiplier
@@ -868,7 +868,9 @@ pub fn memory_matches_search(memory: &MemoryEntry, normalized_query: &str) -> bo
         return text.contains(query_lower.as_str());
     }
     // Multi-word query: all words must appear (AND logic)
-    query_lower.split_whitespace().all(|word| text.contains(word))
+    query_lower
+        .split_whitespace()
+        .all(|word| text.contains(word))
 }
 
 pub mod ranking {

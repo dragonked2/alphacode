@@ -372,4 +372,3 @@ fn assess_segment(tokens: &[Token], ctx: &RiskContext, findings: &mut Vec<RiskFi
         }
     }
 }
-

@@ -1349,7 +1349,10 @@ fn render_assistant_message_plan_card_keeps_nested_fences_inside() {
         .join("\n");
 
     assert!(plain.contains("⛭ Validation plan"), "plain: {plain}");
-    assert!(plain.contains("cargo test -p alphacode-tui"), "plain: {plain}");
+    assert!(
+        plain.contains("cargo test -p alphacode-tui"),
+        "plain: {plain}"
+    );
     assert!(plain.contains("After the block."), "plain: {plain}");
     assert!(plain.contains("Outside text."), "plain: {plain}");
     // The nested bash content stays inside the card borders.
@@ -1683,8 +1686,8 @@ fn render_swarm_message_expanded_shows_body_and_collapse_badge() {
         "fixed the flaky test",
         "The flaky test was caused by a race in the setup helper.",
     );
-    let expanded =
-        crate::alphacode_tui_messages::toggle_collapsible_swarm_content(&collapsed).expect("toggle");
+    let expanded = crate::alphacode_tui_messages::toggle_collapsible_swarm_content(&collapsed)
+        .expect("toggle");
     let msg = DisplayMessage::swarm("DM from sheep", expanded);
 
     let lines = render_swarm_message(&msg, 100, crate::config::DiffDisplayMode::Off);
@@ -2849,7 +2852,8 @@ fn render_swarm_message_preserves_inline_image_placeholder_lines() {
     // Simulate a rendered mermaid diagram inside a swarm message body: the
     // marker line plus its blank fill rows must survive rendering without a
     // rail prefix or blank-line cleanup so the image draws at full height.
-    let placeholder = crate::alphacode_tui::tui::mermaid::inline_image_placeholder_lines(0xabcd1234, 4, 20);
+    let placeholder =
+        crate::alphacode_tui::tui::mermaid::inline_image_placeholder_lines(0xabcd1234, 4, 20);
     assert_eq!(placeholder.len(), 4);
     let marker_text = placeholder[0]
         .spans
@@ -2866,7 +2870,8 @@ fn render_swarm_message_preserves_inline_image_placeholder_lines() {
     // line-preservation path directly through render_swarm_message with a body
     // the markdown renderer maps to placeholder lines is not deterministic in
     // tests. Instead assert the parser round-trips the marker we emit.
-    let parsed = crate::alphacode_tui::tui::mermaid::parse_inline_image_placeholder(&placeholder[0]);
+    let parsed =
+        crate::alphacode_tui::tui::mermaid::parse_inline_image_placeholder(&placeholder[0]);
     assert_eq!(parsed, Some((0xabcd1234, 4, 20)));
     assert!(
         marker_text.starts_with('\u{0}'),
@@ -2937,7 +2942,11 @@ fn theme_preview_renders_truecolor_swatches_and_active_marker() {
 
     let lines = render_system_message(&msg, 80, crate::config::DiffDisplayMode::Off);
 
-    let text = lines.iter().map(extract_line_text).collect::<Vec<_>>().join("\n");
+    let text = lines
+        .iter()
+        .map(extract_line_text)
+        .collect::<Vec<_>>()
+        .join("\n");
     assert!(text.contains("nord"), "row id should appear: {text}");
     assert!(text.contains("Arctic calm blues"), "description: {text}");
     assert!(text.contains("paper"), "second row: {text}");
@@ -2960,7 +2969,10 @@ fn theme_preview_renders_truecolor_swatches_and_active_marker() {
         }
     }
     assert!(saw_nord_rgb, "nord fg swatch should render in truecolor");
-    assert!(saw_accent_rgb, "nord accent swatch should render in truecolor");
+    assert!(
+        saw_accent_rgb,
+        "nord accent swatch should render in truecolor"
+    );
 }
 
 #[test]
@@ -2975,7 +2987,11 @@ fn theme_preview_falls_back_to_plaintext_on_unparseable_payload() {
     };
 
     let lines = render_system_message(&msg, 80, crate::config::DiffDisplayMode::Off);
-    let text = lines.iter().map(extract_line_text).collect::<Vec<_>>().join("\n");
+    let text = lines
+        .iter()
+        .map(extract_line_text)
+        .collect::<Vec<_>>()
+        .join("\n");
     assert!(
         text.contains("just some old plain text"),
         "fallback should show original text: {text}"
@@ -2987,4 +3003,3 @@ fn theme_preview_falls_back_to_plaintext_on_unparseable_payload() {
         }
     }
 }
-

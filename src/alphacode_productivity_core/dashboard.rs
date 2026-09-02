@@ -251,7 +251,10 @@ pub fn render_svg(r: &ProductivityReport) -> String {
     svg.text(
         hx + half_w - 22.0,
         hy + 38.0,
-        &format!("peak {} ", crate::alphacode_productivity_core::markdown::hour_label_pub(r.peak_hour)),
+        &format!(
+            "peak {} ",
+            crate::alphacode_productivity_core::markdown::hour_label_pub(r.peak_hour)
+        ),
         16.0,
         MUTED,
         500,
@@ -426,7 +429,13 @@ fn draw_weekday_bars(svg: &mut Svg, x: f32, y: f32, w: f32, h: f32, hist: &[u32;
     }
 }
 
-fn draw_tool_list(svg: &mut Svg, x: f32, y: f32, w: f32, tools: &[crate::alphacode_productivity_core::model::Tally]) {
+fn draw_tool_list(
+    svg: &mut Svg,
+    x: f32,
+    y: f32,
+    w: f32,
+    tools: &[crate::alphacode_productivity_core::model::Tally],
+) {
     let max = tools.first().map(|t| t.count).unwrap_or(1).max(1) as f32;
     let row_h = 34.0;
     let label_w = 110.0;
@@ -445,7 +454,13 @@ fn draw_tool_list(svg: &mut Svg, x: f32, y: f32, w: f32, tools: &[crate::alphaco
     }
 }
 
-fn draw_project_list(svg: &mut Svg, x: f32, y: f32, w: f32, projects: &[crate::alphacode_productivity_core::model::Tally]) {
+fn draw_project_list(
+    svg: &mut Svg,
+    x: f32,
+    y: f32,
+    w: f32,
+    projects: &[crate::alphacode_productivity_core::model::Tally],
+) {
     let row_h = 34.0;
     for (i, p) in projects.iter().take(8).enumerate() {
         let ry = y + i as f32 * row_h;

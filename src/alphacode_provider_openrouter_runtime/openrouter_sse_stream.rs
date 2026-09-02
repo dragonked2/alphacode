@@ -124,7 +124,8 @@ pub(super) async fn run_stream_with_retries(
                             e
                         ));
                     }
-                    next_retry_delay = crate::alphacode_provider_core::retry_after::retry_after_from_error(&e);
+                    next_retry_delay =
+                        crate::alphacode_provider_core::retry_after::retry_after_from_error(&e);
                     last_error = Some(e);
                     continue;
                 }
@@ -213,21 +214,24 @@ async fn stream_response(
 
     if !response.status().is_success() {
         let status = response.status();
-        let retry_after = crate::alphacode_provider_core::retry_after::retry_after(response.headers());
+        let retry_after =
+            crate::alphacode_provider_core::retry_after::retry_after(response.headers());
         let body = crate::alphacode_base::util::http_error_body(response, "HTTP error").await;
         let hint = local_endpoint_troubleshooting_hint(&api_base, &model);
-        return Err(crate::alphacode_provider_core::retry_after::error_with_retry_after(
-            format!(
-                "OpenAI-compatible chat request failed\n  endpoint: {}\n  model: {}\n  auth: {}\n  status: {}\n  response: {}\n{}",
-                url,
-                model,
-                auth.label(),
-                status,
-                body,
-                hint
+        return Err(
+            crate::alphacode_provider_core::retry_after::error_with_retry_after(
+                format!(
+                    "OpenAI-compatible chat request failed\n  endpoint: {}\n  model: {}\n  auth: {}\n  status: {}\n  response: {}\n{}",
+                    url,
+                    model,
+                    auth.label(),
+                    status,
+                    body,
+                    hint
+                ),
+                retry_after,
             ),
-            retry_after,
-        ));
+        );
     }
 
     let _ = tx
@@ -303,7 +307,8 @@ fn is_retryable_error(error_str: &str) -> bool {
     // burns time/credits. 429 (rate limit) is NOT retryable here -- the
     // failover system handles it by marking the route unavailable and trying
     // a fallback. Retrying in the transport loop wastes extra API requests.
-    if let Some(400 | 401 | 402 | 403 | 404 | 405 | 406 | 422 | 429) = parsed_http_status(error_str) {
+    if let Some(400 | 401 | 402 | 403 | 404 | 405 | 406 | 422 | 429) = parsed_http_status(error_str)
+    {
         return false;
     }
 

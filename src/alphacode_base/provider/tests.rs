@@ -80,7 +80,9 @@ fn with_clean_provider_test_env<T>(f: impl FnOnce() -> T) -> T {
             prev_subscription,
         );
     } else {
-        crate::alphacode_core::env::remove_var(crate::subscription_catalog::ALPHACODE_SUBSCRIPTION_ACTIVE_ENV);
+        crate::alphacode_core::env::remove_var(
+            crate::subscription_catalog::ALPHACODE_SUBSCRIPTION_ACTIVE_ENV,
+        );
     }
     for (key, value) in saved_profile_env {
         if let Some(value) = value {
@@ -154,11 +156,13 @@ fn save_test_openai_compatible_login_config(default_model: &str) {
 }
 
 fn save_test_openrouter_model_cache(namespace: &str, source_api_base: &str, model_ids: &[&str]) {
-    let alphacode_home = std::env::var_os("ALPHACODE_HOME").expect("test ALPHACODE_HOME should be set");
+    let alphacode_home =
+        std::env::var_os("ALPHACODE_HOME").expect("test ALPHACODE_HOME should be set");
     let cache_dir = std::path::PathBuf::from(alphacode_home).join("cache");
     std::fs::create_dir_all(&cache_dir).expect("create model cache dir");
     let cache = crate::alphacode_provider_openrouter::DiskCache {
-        cached_at: crate::alphacode_provider_openrouter::current_unix_secs().expect("current unix time"),
+        cached_at: crate::alphacode_provider_openrouter::current_unix_secs()
+            .expect("current unix time"),
         source_api_base: Some(source_api_base.to_string()),
         models: model_ids
             .iter()
@@ -814,7 +818,9 @@ impl StubExternalRuntime {
             api_method,
             models,
             model: std::sync::RwLock::new(models[0].to_string()),
-            credential_mode: std::sync::RwLock::new(crate::alphacode_provider_core::CredentialMode::Auto),
+            credential_mode: std::sync::RwLock::new(
+                crate::alphacode_provider_core::CredentialMode::Auto,
+            ),
         }
     }
 
@@ -924,7 +930,10 @@ impl Provider for StubExternalRuntime {
             .read()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
     }
-    fn set_credential_mode(&self, mode: crate::alphacode_provider_core::CredentialMode) -> anyhow::Result<()> {
+    fn set_credential_mode(
+        &self,
+        mode: crate::alphacode_provider_core::CredentialMode,
+    ) -> anyhow::Result<()> {
         *self
             .credential_mode
             .write()
@@ -978,8 +987,8 @@ fn register_test_external_runtimes() {
     // transport identities), so register the real factory like the binary's
     // composition root does. The dev-dependency cycle is test-only.
     external::register_openrouter_factory(|spec| {
-        use external::OpenRouterRuntimeSpec;
         use crate::alphacode_provider_openrouter_runtime::OpenRouterProvider;
+        use external::OpenRouterRuntimeSpec;
         let provider: Arc<dyn Provider> = match spec {
             OpenRouterRuntimeSpec::Default => Arc::new(OpenRouterProvider::new()?),
             OpenRouterRuntimeSpec::OpenRouterApiKey => {

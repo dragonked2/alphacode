@@ -277,7 +277,9 @@ impl App {
             return Some(last_activity.elapsed());
         }
         if !self.display_messages.is_empty() && !self.is_processing {
-            return Some(crate::alphacode_tui::tui::REDRAW_DEEP_IDLE_AFTER + Duration::from_secs(1));
+            return Some(
+                crate::alphacode_tui::tui::REDRAW_DEEP_IDLE_AFTER + Duration::from_secs(1),
+            );
         }
         Some(self.app_started.elapsed())
     }
@@ -460,4 +462,3 @@ impl App {
         }
     }
 }
-

@@ -93,22 +93,26 @@ pub(crate) fn members_to_gallery(members: &[SwarmMemberStatus]) -> Vec<GalleryMe
             todo_items: member
                 .todo_items
                 .iter()
-                .map(|t| crate::alphacode_tui_render::swarm_gallery::GalleryTodo {
-                    content: t.content.clone(),
-                    status: t.status.clone(),
-                    tool_intents: t
-                        .tool_intents
-                        .iter()
-                        .map(|tool| crate::alphacode_tui_render::swarm_gallery::GalleryToolIntent {
-                            tool_name: tool.tool_name.clone(),
-                            intent: tool.intent.clone(),
-                            status: tool.status.clone(),
-                            progress: tool.progress.as_ref().map(|progress| {
-                                (progress.current, progress.total, progress.unit.clone())
-                            }),
-                        })
-                        .collect(),
-                })
+                .map(
+                    |t| crate::alphacode_tui_render::swarm_gallery::GalleryTodo {
+                        content: t.content.clone(),
+                        status: t.status.clone(),
+                        tool_intents: t
+                            .tool_intents
+                            .iter()
+                            .map(|tool| {
+                                crate::alphacode_tui_render::swarm_gallery::GalleryToolIntent {
+                                    tool_name: tool.tool_name.clone(),
+                                    intent: tool.intent.clone(),
+                                    status: tool.status.clone(),
+                                    progress: tool.progress.as_ref().map(|progress| {
+                                        (progress.current, progress.total, progress.unit.clone())
+                                    }),
+                                }
+                            })
+                            .collect(),
+                    },
+                )
                 .collect(),
         })
         .collect()

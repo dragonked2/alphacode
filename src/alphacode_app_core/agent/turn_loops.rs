@@ -1168,13 +1168,14 @@ impl Agent {
 
             if print_output {
                 println!();
-            }            // Check for soft interrupts (e.g. Telegram messages) and inject them for the next turn
+            } // Check for soft interrupts (e.g. Telegram messages) and inject them for the next turn
             let injected = self.inject_soft_interrupts();
             if !injected.is_empty() {
                 let total_chars: usize = injected.iter().map(|item| item.content.len()).sum();
                 logging::info(&format!(
                     "Soft interrupt injected into headless turn ({} message(s), {} chars)",
-                    injected.len(), total_chars
+                    injected.len(),
+                    total_chars
                 ));
             }
 

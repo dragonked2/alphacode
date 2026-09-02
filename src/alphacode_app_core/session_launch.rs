@@ -90,8 +90,10 @@ impl SessionSpawnContext {
 pub fn resumed_window_title(session_id: &str) -> String {
     let session_name = crate::alphacode_base::process_title::session_name(session_id);
     let icon = id::session_icon(&session_name);
-    let display_title = crate::alphacode_base::process_title::terminal_display_title_for_id(session_id);
-    let session_label = crate::alphacode_base::process_title::terminal_session_label(&session_name, None);
+    let display_title =
+        crate::alphacode_base::process_title::terminal_display_title_for_id(session_id);
+    let session_label =
+        crate::alphacode_base::process_title::terminal_session_label(&session_name, None);
     let fallback_label = if let Some(server_info) =
         crate::registry::find_server_by_socket_sync(&server::socket_path())
     {
@@ -348,22 +350,23 @@ fn find_wezterm_gui_binary() -> Option<String> {
             .stdout(Stdio::piped())
             .stderr(Stdio::null())
             .output()
-            && output.status.success() {
-                let stdout = String::from_utf8_lossy(&output.stdout);
-                if let Some(line) = stdout.lines().next() {
-                    let trimmed = line.trim();
-                    if !trimmed.is_empty() {
-                        if *bin == "wezterm" {
-                            let p = std::path::Path::new(trimmed);
-                            let gui = p.with_file_name("wezterm-gui.exe");
-                            if gui.exists() {
-                                return Some(gui.to_string_lossy().into_owned());
-                            }
+            && output.status.success()
+        {
+            let stdout = String::from_utf8_lossy(&output.stdout);
+            if let Some(line) = stdout.lines().next() {
+                let trimmed = line.trim();
+                if !trimmed.is_empty() {
+                    if *bin == "wezterm" {
+                        let p = std::path::Path::new(trimmed);
+                        let gui = p.with_file_name("wezterm-gui.exe");
+                        if gui.exists() {
+                            return Some(gui.to_string_lossy().into_owned());
                         }
-                        return Some(trimmed.to_string());
                     }
+                    return Some(trimmed.to_string());
                 }
             }
+        }
     }
 
     None

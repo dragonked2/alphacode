@@ -2,9 +2,9 @@
 
 use super::{Tool, ToolContext, ToolOutput};
 use crate::alphacode_app_core::bus::{Bus, BusEvent, FileOp, FileTouch};
+use crate::alphacode_terminal_image::{ImageDisplayParams, ImageProtocol, display_image};
 use anyhow::Result;
 use async_trait::async_trait;
-use crate::alphacode_terminal_image::{ImageDisplayParams, ImageProtocol, display_image};
 use serde::Deserialize;
 use serde_json::{Value, json};
 use std::path::Path;
@@ -277,10 +277,16 @@ impl Tool for ReadTool {
         if end < total_lines {
             let continuation_hint = match range.style {
                 ReadRangeStyle::OffsetLimit => {
-                    format!("Use `offset={}` to read the next chunk.", range.next_offset())
+                    format!(
+                        "Use `offset={}` to read the next chunk.",
+                        range.next_offset()
+                    )
                 }
                 ReadRangeStyle::StartEnd => {
-                    format!("Use `start_line={}` to read the next chunk.", range.next_start_line())
+                    format!(
+                        "Use `start_line={}` to read the next chunk.",
+                        range.next_start_line()
+                    )
                 }
             };
             output.push_str(&format!(
@@ -326,7 +332,10 @@ fn is_binary_file(path: &Path) -> bool {
             if null_count as f64 > n as f64 * BINARY_NULL_THRESHOLD {
                 return true;
             }
-            let text_chars = buf[..n].iter().filter(|&&b| b.is_ascii_graphic() || b == b'\t' || b == b'\n' || b == b'\r').count();
+            let text_chars = buf[..n]
+                .iter()
+                .filter(|&&b| b.is_ascii_graphic() || b == b'\t' || b == b'\n' || b == b'\r')
+                .count();
             if text_chars < n / 2 {
                 return true;
             }

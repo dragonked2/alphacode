@@ -1,8 +1,8 @@
 //! Tier 3/4: clipboard, scripting bridge, waits, notifications, system state.
 
 use super::osa;
-use anyhow::{Result, bail};
 use crate::alphacode_tool_types::ToolOutput;
+use anyhow::{Result, bail};
 use serde_json::json;
 use std::process::Command;
 use std::thread::sleep;

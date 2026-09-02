@@ -667,7 +667,8 @@ pub(super) fn prepare_messages(
         messages_version: app.display_messages_version(),
         diagram_mode: app.diagram_mode(),
         centered: app.centered_mode(),
-        mermaid_aspect_bucket: crate::alphacode_tui::tui::mermaid::current_preferred_aspect_ratio_bucket(),
+        mermaid_aspect_bucket:
+            crate::alphacode_tui::tui::mermaid::current_preferred_aspect_ratio_bucket(),
         is_processing: app.is_processing(),
         streaming_text_len: app.streaming_text().len(),
         streaming_text_hash: super::hash_text_for_cache(app.streaming_text()),
@@ -703,9 +704,9 @@ pub(super) fn prepare_messages(
             // `messages_version`/`streaming_text_hash`, so an exact hit can
             // still bake in a stale "rendering..." placeholder. Fall through
             // to a rebuild, which re-renders the pending tail.
-            let stale = prepared
-                .mermaid_pending_epoch()
-                .is_some_and(|stamp| crate::alphacode_tui::tui::mermaid::deferred_render_epoch() != stamp);
+            let stale = prepared.mermaid_pending_epoch().is_some_and(|stamp| {
+                crate::alphacode_tui::tui::mermaid::deferred_render_epoch() != stamp
+            });
             if !stale {
                 super::note_full_prep_cache_lookup(cache_lookup_start.elapsed());
                 super::note_full_prep_cache_hit(kind, prepared.as_ref());
@@ -860,30 +861,16 @@ fn prepare_messages_inner(app: &dyn TuiState, width: u16, height: u16) -> Prepar
             let hint_spans: Vec<Span<'static>> = vec![
                 Span::styled(
                     "  ◆  ",
-                    Style::default()
-                        .fg(accent)
-                        .add_modifier(Modifier::BOLD),
+                    Style::default().fg(accent).add_modifier(Modifier::BOLD),
                 ),
                 Span::styled(
                     "Type to begin",
                     Style::default().fg(dim).add_modifier(Modifier::ITALIC),
                 ),
-                Span::styled(
-                    "  ·  ",
-                    Style::default().fg(dim),
-                ),
-                Span::styled(
-                    "Enter to send",
-                    Style::default().fg(dim),
-                ),
-                Span::styled(
-                    "  ·  ",
-                    Style::default().fg(dim),
-                ),
-                Span::styled(
-                    "/ for commands",
-                    Style::default().fg(dim),
-                ),
+                Span::styled("  ·  ", Style::default().fg(dim)),
+                Span::styled("Enter to send", Style::default().fg(dim)),
+                Span::styled("  ·  ", Style::default().fg(dim)),
+                Span::styled("/ for commands", Style::default().fg(dim)),
             ];
             wrapped_lines.push(Line::from(hint_spans).alignment(suggestion_align));
         }
@@ -1158,7 +1145,8 @@ fn prepare_body_cached(app: &dyn TuiState, width: u16) -> Arc<PreparedMessages> 
         messages_version: app.display_messages_version(),
         diagram_mode: app.diagram_mode(),
         centered: app.centered_mode(),
-        mermaid_aspect_bucket: crate::alphacode_tui::tui::mermaid::current_preferred_aspect_ratio_bucket(),
+        mermaid_aspect_bucket:
+            crate::alphacode_tui::tui::mermaid::current_preferred_aspect_ratio_bucket(),
         pin_images: app.pin_images(),
         inline_images_visible: app.inline_images_visible(),
         images_signature: app.side_pane_images_signature(),
@@ -1184,9 +1172,9 @@ fn prepare_body_cached(app: &dyn TuiState, width: u16) -> Arc<PreparedMessages> 
         // a "rendering..." placeholder whose background render has since
         // finished. Fall through to the rebuild path, which truncates the
         // base at the pending message and re-renders the tail.
-        let stale = prepared
-            .mermaid_pending_epoch
-            .is_some_and(|stamp| crate::alphacode_tui::tui::mermaid::deferred_render_epoch() != stamp);
+        let stale = prepared.mermaid_pending_epoch.is_some_and(|stamp| {
+            crate::alphacode_tui::tui::mermaid::deferred_render_epoch() != stamp
+        });
         if !stale {
             super::note_body_cache_lookup(cache_lookup_start.elapsed());
             super::note_body_cache_hit(kind, prepared.as_ref());
@@ -2689,4 +2677,3 @@ fn wrap_lines_with_map(
 #[cfg(test)]
 #[path = "ui_prepare/tests.rs"]
 mod tests;
-

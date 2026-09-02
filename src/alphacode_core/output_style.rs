@@ -123,21 +123,41 @@ pub fn colorized(text: impl AsRef<str>, c: impl AsRef<str>) -> String {
 }
 
 /// Status indicators.
-pub fn status_success() -> &'static str { "+" }
-pub fn status_warning() -> &'static str { "!" }
-pub fn status_failure() -> &'static str { "x" }
-pub fn status_loading() -> &'static str { "⟳" }
+pub fn status_success() -> &'static str {
+    "+"
+}
+pub fn status_warning() -> &'static str {
+    "!"
+}
+pub fn status_failure() -> &'static str {
+    "x"
+}
+pub fn status_loading() -> &'static str {
+    "⟳"
+}
 
 /// Colorized status indicators for richer terminal output.
-pub fn status_success_colored() -> String { colorized("✔", "[38;5;10m") }
-pub fn status_warning_colored() -> String { colorized("⚠", "[38;5;226m") }
-pub fn status_failure_colored() -> String { colorized("✘", "[38;5;196m") }
-pub fn status_info_colored() -> String { colorized("ℹ", "[38;5;45m") }
-
-
+pub fn status_success_colored() -> String {
+    colorized("✔", "[38;5;10m")
+}
+pub fn status_warning_colored() -> String {
+    colorized("⚠", "[38;5;226m")
+}
+pub fn status_failure_colored() -> String {
+    colorized("✘", "[38;5;196m")
+}
+pub fn status_info_colored() -> String {
+    colorized("ℹ", "[38;5;45m")
+}
 
 /// Compact header replacing the large ASCII logo.
-pub fn compact_header(version: &str, provider: &str, model: &str, server: &str, workspace: &str) -> String {
+pub fn compact_header(
+    version: &str,
+    provider: &str,
+    model: &str,
+    server: &str,
+    workspace: &str,
+) -> String {
     format!(
         "{color_cyan}╔══ {color_blue}AlphaCode {version} {color_cyan}══╗{color_reset} {color_gray}│{color_reset} {color_gray}Provider   {provider}{color_reset} {color_gray}│{color_reset} {color_gray}Model      {model}{color_reset} {color_gray}│{color_reset} {color_gray}Server     {server}{color_reset} {color_gray}│{color_reset} {color_gray}Workspace  {workspace}{color_reset} {color_green}Ready{color_reset}",
         color_cyan = "\u{1b}[38;5;45m",
@@ -163,7 +183,10 @@ pub fn copyright_notice(version: &str) -> String {
 
 /// Aligned header labels — no visual clutter.
 pub fn aligned_header(label: &str, value: &str) -> String {
-    format!("{label}{label_padding} {value}", label_padding = " ".repeat(10))
+    format!(
+        "{label}{label_padding} {value}",
+        label_padding = " ".repeat(10)
+    )
 }
 
 /// Clean prompt formatting.
@@ -187,14 +210,18 @@ pub fn progress(text: &str) -> String {
 
 /// Rewrite errors to be short, actionable, and readable.
 pub fn error_reason(reason: &str) -> String {
-    reason.lines()
+    reason
+        .lines()
         .filter(|line| !line.is_empty() && !line.trim().starts_with('['))
         .take(3)
         .collect::<Vec<_>>()
         .join(" ")
 }
 pub fn error_message(reason: &str) -> String {
-    format!("{COLOR_RED}{error}{COLOR_RESET}", error = error_reason(reason))
+    format!(
+        "{COLOR_RED}{error}{COLOR_RESET}",
+        error = error_reason(reason)
+    )
 }
 pub fn error_action(reason: &str) -> String {
     let reason = reason.lines().next().unwrap_or(reason);
@@ -205,7 +232,6 @@ pub fn error_action(reason: &str) -> String {
 pub fn success_message(text: &str) -> String {
     colorized(text, COLOR_GREEN)
 }
-
 
 fn grapheme_is_emoji(grapheme: &str) -> bool {
     let has_text_selector = grapheme.chars().any(is_text_presentation_selector);

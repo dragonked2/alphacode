@@ -350,9 +350,7 @@ impl Agent {
                     true
                 }
                 Err(reason) => {
-                    logging::warn(&format!(
-                        "Proactive compaction skipped: {}", reason
-                    ));
+                    logging::warn(&format!("Proactive compaction skipped: {}", reason));
                     false
                 }
             }

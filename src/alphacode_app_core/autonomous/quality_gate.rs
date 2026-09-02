@@ -90,7 +90,9 @@ pub fn evaluate_with_config(
     let (impl_ok, impl_detail) = implementation_check();
     result.implementation_complete = impl_ok;
     if !impl_ok {
-        result.failed_checks.push(format!("Implementation: {impl_detail}"));
+        result
+            .failed_checks
+            .push(format!("Implementation: {impl_detail}"));
     }
 
     let (tests_ok, tests_detail) = tests_check();
@@ -109,25 +111,33 @@ pub fn evaluate_with_config(
     // Adaptive: relax documentation for long-running sessions after initial phases.
     result.documentation_updated = docs_ok || config.docs_can_be_relaxed();
     if !docs_ok && !result.documentation_updated {
-        result.failed_checks.push(format!("Documentation: {docs_detail}"));
+        result
+            .failed_checks
+            .push(format!("Documentation: {docs_detail}"));
     }
 
     let (issues_ok, issues_detail) = issues_check();
     result.no_critical_issues = issues_ok;
     if !issues_ok {
-        result.failed_checks.push(format!("Critical issues: {issues_detail}"));
+        result
+            .failed_checks
+            .push(format!("Critical issues: {issues_detail}"));
     }
 
     let (review_ok, review_detail) = review_check();
     result.review_approved = review_ok;
     if !review_ok {
-        result.failed_checks.push(format!("Review: {review_detail}"));
+        result
+            .failed_checks
+            .push(format!("Review: {review_detail}"));
     }
 
     let (cp_ok, cp_detail) = checkpoint_check();
     result.checkpoint_created = cp_ok;
     if !cp_ok {
-        result.failed_checks.push(format!("Checkpoint: {cp_detail}"));
+        result
+            .failed_checks
+            .push(format!("Checkpoint: {cp_detail}"));
     }
 
     result.evaluated_at = chrono::Utc::now();

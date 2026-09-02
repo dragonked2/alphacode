@@ -33,7 +33,9 @@ use crate::alphacode_app_core::message::{
 };
 use crate::alphacode_app_core::protocol::{HistoryMessage, ServerEvent};
 use crate::alphacode_app_core::provider::{NativeToolResult, Provider, ProviderRuntimeState};
-use crate::alphacode_app_core::session::{GitState, Session, SessionStatus, StoredDisplayRole, StoredMessage};
+use crate::alphacode_app_core::session::{
+    GitState, Session, SessionStatus, StoredDisplayRole, StoredMessage,
+};
 use crate::alphacode_app_core::skill::SkillRegistry;
 use crate::alphacode_app_core::tool::{Registry, ToolContext, ToolExecutionMode};
 use anyhow::Result;
@@ -46,25 +48,26 @@ use std::sync::{Arc, LazyLock, Mutex as StdMutex};
 use std::time::{Duration, Instant};
 use tokio::sync::mpsc;
 
-use interrupts::{NoToolCallOutcome, PostToolInterruptOutcome};
 pub use crate::alphacode_agent_runtime::{
     BackgroundToolSignal, GracefulShutdownSignal, InterruptSignal, SoftInterruptMessage,
     SoftInterruptQueue, SoftInterruptSource, StreamError,
 };
+use interrupts::{NoToolCallOutcome, PostToolInterruptOutcome};
 
 const ALPHACODE_NATIVE_TOOLS: &[&str] = &["selfdev", "communicate"];
 static RECOVERED_TEXT_WRAPPED_TOOL_CALLS: std::sync::atomic::AtomicU64 =
     std::sync::atomic::AtomicU64::new(0);
-static ALPHACODE_REPO_SOURCE_STATE: LazyLock<(Option<String>, Option<bool>)> = LazyLock::new(|| {
-    crate::build::get_repo_dir()
-        .map(|repo_dir| {
-            (
-                build::current_git_hash(&repo_dir).ok(),
-                build::is_working_tree_dirty(&repo_dir).ok(),
-            )
-        })
-        .unwrap_or((None, None))
-});
+static ALPHACODE_REPO_SOURCE_STATE: LazyLock<(Option<String>, Option<bool>)> =
+    LazyLock::new(|| {
+        crate::build::get_repo_dir()
+            .map(|repo_dir| {
+                (
+                    build::current_git_hash(&repo_dir).ok(),
+                    build::is_working_tree_dirty(&repo_dir).ok(),
+                )
+            })
+            .unwrap_or((None, None))
+    });
 static WORKING_GIT_STATE_CACHE: LazyLock<StdMutex<HashMap<PathBuf, Option<GitState>>>> =
     LazyLock::new(|| StdMutex::new(HashMap::new()));
 const STREAM_KEEPALIVE_PONG_ID: u64 = 0;
@@ -991,4 +994,3 @@ impl Agent {
         md
     }
 }
-

@@ -4,12 +4,12 @@
 //! binary's composition root registers [`ClaudeProvider`] with
 //! `crate::alphacode_base::provider::external` at startup.
 
-use anyhow::{Context, Result};
-use async_trait::async_trait;
 use crate::alphacode_base::auth::{claude as claude_auth, oauth};
 use crate::alphacode_message_types::{ContentBlock, Message, Role, StreamEvent, ToolDefinition};
 use crate::alphacode_provider_core::NativeToolResultSender;
 use crate::alphacode_provider_core::{EventStream, Provider};
+use anyhow::{Context, Result};
+use async_trait::async_trait;
 use serde::Deserialize;
 use serde_json::{Value, json};
 use std::collections::HashSet;
@@ -700,10 +700,11 @@ impl Provider for ClaudeProvider {
             for attempt in 0..MAX_RETRIES {
                 if attempt > 0 {
                     // Exponential backoff with jitter: ~1s, ~2s, ~4s, ~8s, ~16s
-                    let base_delay = crate::alphacode_provider_core::attempt_tracker::retry_backoff_delay(
-                        attempt,
-                        RETRY_BASE_DELAY_MS,
-                    );
+                    let base_delay =
+                        crate::alphacode_provider_core::attempt_tracker::retry_backoff_delay(
+                            attempt,
+                            RETRY_BASE_DELAY_MS,
+                        );
                     // Add extra delay for transport errors (from last_error if available)
                     let extra_delay = if let Some(ref e) = last_error {
                         let err_str = e.to_string().to_lowercase();
@@ -845,14 +846,20 @@ impl Provider for ClaudeProvider {
             creds.access_token
         };
 
-        match crate::alphacode_base::provider::fetch_anthropic_model_catalog_oauth(&access_token).await {
+        match crate::alphacode_base::provider::fetch_anthropic_model_catalog_oauth(&access_token)
+            .await
+        {
             Ok(catalog) => {
                 crate::alphacode_base::provider::persist_anthropic_model_catalog(&catalog);
                 if !catalog.context_limits.is_empty() {
-                    crate::alphacode_base::provider::populate_context_limits(catalog.context_limits);
+                    crate::alphacode_base::provider::populate_context_limits(
+                        catalog.context_limits,
+                    );
                 }
                 if !catalog.available_models.is_empty() {
-                    crate::alphacode_base::provider::populate_anthropic_models(catalog.available_models);
+                    crate::alphacode_base::provider::populate_anthropic_models(
+                        catalog.available_models,
+                    );
                 }
             }
             Err(err) => {

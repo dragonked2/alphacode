@@ -1784,4 +1784,3 @@ pub async fn build_transfer_compaction_state(
         compacted_count: 0,
     }))
 }
-

@@ -571,7 +571,6 @@ pub(super) fn approx_layout_bytes(layout: &Layout) -> u64 {
     bytes
 }
 
-
 pub fn evict_render_cache_by_hash(hash: u64) {
     let mut cache = RENDER_CACHE
         .lock()
@@ -609,7 +608,6 @@ pub fn evict_render_cache_by_hash(hash: u64) {
 pub fn evict_render_cache_for_content(content: &str) {
     evict_render_cache_by_hash(hash_content(content));
 }
-
 
 pub(super) fn get_cached_diagram(hash: u64, min_width: Option<u32>) -> Option<CachedDiagram> {
     let profile = current_render_profile();
@@ -1339,7 +1337,9 @@ mod font_prewarm_tests {
         // path below).
         assert!(super::is_mermaid_lang("mermaid"));
         assert!(
-            crate::alphacode_tui_mermaid::SVG_FONT_DB_PREWARM_STARTED.get().is_some(),
+            crate::alphacode_tui_mermaid::SVG_FONT_DB_PREWARM_STARTED
+                .get()
+                .is_some(),
             "first mermaid sighting must kick off the font-DB prewarm"
         );
     }

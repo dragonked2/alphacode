@@ -196,7 +196,11 @@ pub fn build_compaction_conversation_text(
                     // Keep more context for tool results — they often contain
                     // the actual state of the system after an action
                     let truncated = if content.len() > 800 {
-                        format!("{}... (truncated from {} chars)", truncate_str_boundary(content, 800), content.len())
+                        format!(
+                            "{}... (truncated from {} chars)",
+                            truncate_str_boundary(content, 800),
+                            content.len()
+                        )
                     } else {
                         content.clone()
                     };
@@ -499,7 +503,10 @@ pub fn build_emergency_summary_text(
 
     if !user_goals.is_empty() {
         user_goals.truncate(5);
-        summary_parts.push(format!("User goals in dropped context: {}", user_goals.join("; ")));
+        summary_parts.push(format!(
+            "User goals in dropped context: {}",
+            user_goals.join("; ")
+        ));
     }
 
     if !key_decisions.is_empty() {
@@ -565,11 +572,7 @@ fn collect_user_goals(msg: &Message, goals: &mut Vec<String>) {
             let trimmed = text.trim();
             // Extract the first sentence or first 200 chars as a goal summary
             if trimmed.len() > 10 {
-                let goal = trimmed
-                    .split(['.', '\n'])
-                    .next()
-                    .unwrap_or(trimmed)
-                    .trim();
+                let goal = trimmed.split(['.', '\n']).next().unwrap_or(trimmed).trim();
                 if goal.len() > 10 && goal.len() < 200 {
                     goals.push(goal.to_string());
                 }
@@ -596,7 +599,10 @@ fn collect_key_decisions(msg: &Message, decisions: &mut Vec<String>) {
             ContentBlock::Text { text, .. } => {
                 // Look for decision markers in assistant text
                 let lower = text.to_lowercase();
-                if lower.contains("i'll ") || lower.contains("let me ") || lower.contains("going to ") {
+                if lower.contains("i'll ")
+                    || lower.contains("let me ")
+                    || lower.contains("going to ")
+                {
                     let snippet = text
                         .split('\n')
                         .find(|line| {

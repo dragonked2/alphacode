@@ -396,9 +396,7 @@ fn lerp_f64(a: f64, b: f64, t: f64) -> f64 {
 
 fn aggregate_confidence_suffix_width(score: Option<u8>) -> u16 {
     match score {
-        Some(score) => {
-            (" · confidence ".width() + confidence_label(Some(score)).width()) as u16
-        }
+        Some(score) => (" · confidence ".width() + confidence_label(Some(score)).width()) as u16,
         None => 0,
     }
 }
@@ -407,7 +405,10 @@ fn push_aggregate_confidence_suffix(spans: &mut Vec<Span<'static>>, score: Optio
     let Some(score) = score else {
         return;
     };
-    spans.push(Span::styled(" \u{00b7} ", Style::default().fg(rgb(88, 92, 108))));
+    spans.push(Span::styled(
+        " \u{00b7} ",
+        Style::default().fg(rgb(88, 92, 108)),
+    ));
     spans.push(Span::styled(
         "confidence ",
         Style::default().fg(rgb(128, 132, 148)),
@@ -566,7 +567,9 @@ fn push_todo_item_line(
     }
     // Bold the icon for in_progress items to draw the eye
     let icon_style = if todo.status == "in_progress" {
-        Style::default().fg(status_color).add_modifier(ratatui::style::Modifier::BOLD)
+        Style::default()
+            .fg(status_color)
+            .add_modifier(ratatui::style::Modifier::BOLD)
     } else {
         Style::default().fg(status_color)
     };
@@ -574,14 +577,20 @@ fn push_todo_item_line(
     if !priority_marker.0.is_empty() {
         spans.push(Span::styled(
             priority_marker.0,
-            Style::default().fg(priority_marker.1).add_modifier(ratatui::style::Modifier::BOLD),
+            Style::default()
+                .fg(priority_marker.1)
+                .add_modifier(ratatui::style::Modifier::BOLD),
         ));
     }
     // Bold completed and in_progress content for visual hierarchy
     let content_style = if todo.status == "completed" {
-        Style::default().fg(text_color).add_modifier(ratatui::style::Modifier::CROSSED_OUT)
+        Style::default()
+            .fg(text_color)
+            .add_modifier(ratatui::style::Modifier::CROSSED_OUT)
     } else if todo.status == "in_progress" {
-        Style::default().fg(text_color).add_modifier(ratatui::style::Modifier::BOLD)
+        Style::default()
+            .fg(text_color)
+            .add_modifier(ratatui::style::Modifier::BOLD)
     } else {
         Style::default().fg(text_color)
     };
@@ -1058,7 +1067,8 @@ mod tests {
         let todos = grouped(&[("alpha", "pending"), ("beta", "pending")]);
         let groups = grouped_todos(&todos).expect("todos declare groups");
         for max_lines in 1..=4usize {
-            let (lines, shown) = render_grouped_todo_lines(&groups, &[], rect(60), false, max_lines);
+            let (lines, shown) =
+                render_grouped_todo_lines(&groups, &[], rect(60), false, max_lines);
             assert!(lines.len() <= max_lines, "budget {max_lines} overflowed");
             if !lines.is_empty() {
                 assert!(
@@ -1086,10 +1096,7 @@ mod tests {
         let mut todos = grouped(&[("beta", "pending"), ("alpha", "pending")]);
         todos.push(todo("pending"));
         let groups = grouped_todos(&todos).expect("some todos declare groups");
-        let keys: Vec<Option<&str>> = groups
-            .iter()
-            .map(|(key, _)| key.as_deref())
-            .collect();
+        let keys: Vec<Option<&str>> = groups.iter().map(|(key, _)| key.as_deref()).collect();
         assert_eq!(keys, vec![Some("beta"), Some("alpha"), None]);
     }
 
@@ -1245,10 +1252,7 @@ mod tests {
         };
         let mut spans = Vec::new();
         push_goal_loop_suffix(&mut spans, &goal);
-        assert_eq!(
-            spans_width(&spans),
-            goal_loop_suffix_width(&goal) as usize
-        );
+        assert_eq!(spans_width(&spans), goal_loop_suffix_width(&goal) as usize);
 
         let unscored = crate::todo::TodoGoal::default();
         let mut spans = Vec::new();
@@ -1357,10 +1361,7 @@ mod tests {
         assert!(text.contains("1 active"), "{text}");
         assert!(text.contains("1 open"), "{text}");
         assert!(text.contains("1 done"), "{text}");
-        assert!(
-            !text.contains("cancelled"),
-            "nothing was cancelled: {text}"
-        );
+        assert!(!text.contains("cancelled"), "nothing was cancelled: {text}");
     }
 
     #[test]

@@ -182,9 +182,10 @@ impl ResourceMonitor {
             .unwrap_or_else(|poisoned| poisoned.into_inner());
         if let Some((_, snap)) = history.last() {
             if let Some(disk) = snap.disk_free_bytes
-                && disk < 1_000_000_000 {
-                    return true;
-                }
+                && disk < 1_000_000_000
+            {
+                return true;
+            }
             if snap.running_agents >= self.limits.max_parallel_tasks as usize {
                 return true;
             }

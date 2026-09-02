@@ -995,7 +995,9 @@ pub fn load_claude_tokens() -> Result<OAuthTokens> {
         });
     }
 
-    anyhow::bail!("No Claude Max OAuth credentials found. Run 'alphacode login --provider claude'.");
+    anyhow::bail!(
+        "No Claude Max OAuth credentials found. Run 'alphacode login --provider claude'."
+    );
 }
 
 /// Load Claude tokens for a specific stored account label.
@@ -1155,7 +1157,9 @@ pub async fn refresh_claude_tokens_for_account(
             let observed = observed_refresh.clone();
             move |stored: &OAuthTokens| {
                 stored.refresh_token != observed
-                    && crate::alphacode_base::auth::refresh_coordinator::expiry_is_fresh(stored.expires_at)
+                    && crate::alphacode_base::auth::refresh_coordinator::expiry_is_fresh(
+                        stored.expires_at,
+                    )
             }
         },
         move |stored: Option<OAuthTokens>| async move {
@@ -1186,7 +1190,8 @@ pub async fn refresh_claude_tokens_for_account(
                     &message,
                 );
             } else {
-                let _ = crate::alphacode_base::auth::refresh_state::record_failure("claude", &message);
+                let _ =
+                    crate::alphacode_base::auth::refresh_state::record_failure("claude", &message);
             }
         }
     }
@@ -1258,7 +1263,9 @@ pub async fn refresh_openai_tokens_for_account(
             let observed = observed_refresh.clone();
             move |stored: &OAuthTokens| {
                 stored.refresh_token != observed
-                    && crate::alphacode_base::auth::refresh_coordinator::expiry_is_fresh(stored.expires_at)
+                    && crate::alphacode_base::auth::refresh_coordinator::expiry_is_fresh(
+                        stored.expires_at,
+                    )
             }
         },
         move |stored: Option<OAuthTokens>| async move {
@@ -1331,7 +1338,10 @@ async fn refresh_openai_tokens_inner(
             let _ = crate::alphacode_base::auth::refresh_state::record_success("openai");
         }
         Err(err) => {
-            let _ = crate::alphacode_base::auth::refresh_state::record_failure("openai", err.to_string());
+            let _ = crate::alphacode_base::auth::refresh_state::record_failure(
+                "openai",
+                err.to_string(),
+            );
         }
     }
 

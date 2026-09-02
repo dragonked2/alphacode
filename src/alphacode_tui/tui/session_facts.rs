@@ -16,7 +16,8 @@
 /// `Sonnet 4.5` rather than `Claude Fable 5`.
 pub(crate) fn pretty_model(model: &str) -> String {
     let model = strip_path_prefix(model);
-    let pretty = crate::alphacode_tui::tui::app::helpers::model_names::pretty_model_display_name(model);
+    let pretty =
+        crate::alphacode_tui::tui::app::helpers::model_names::pretty_model_display_name(model);
     match pretty.strip_prefix("Claude ") {
         Some(rest) if !rest.trim().is_empty() => rest.to_string(),
         _ => pretty,
@@ -29,10 +30,15 @@ pub(crate) fn pretty_model(model: &str) -> String {
 fn strip_path_prefix(model: &str) -> &str {
     let trimmed = model.trim();
     if let Some(stem) = trimmed.rsplit('/').next()
-        && stem != trimmed && !stem.is_empty() {
-            let stem = stem.strip_suffix(".gguf").or_else(|| stem.strip_suffix(".bin")).unwrap_or(stem);
-            return stem;
-        }
+        && stem != trimmed
+        && !stem.is_empty()
+    {
+        let stem = stem
+            .strip_suffix(".gguf")
+            .or_else(|| stem.strip_suffix(".bin"))
+            .unwrap_or(stem);
+        return stem;
+    }
     trimmed
 }
 
@@ -111,4 +117,3 @@ mod tests {
         assert_eq!(dir_label_short(""), None);
     }
 }
-

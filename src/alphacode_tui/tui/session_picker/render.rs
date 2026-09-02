@@ -441,8 +441,8 @@ impl SessionPicker {
         let server_color: Color = rgb(255, 200, 100);
         let dim: Color = rgb(100, 100, 100);
         let spinner_frame = Self::running_spinner_frame();
-        let spinner = crate::alphacode_tui_render::swarm_gallery::STRIP_SPINNER_FRAMES
-            [spinner_frame % crate::alphacode_tui_render::swarm_gallery::STRIP_SPINNER_FRAMES.len()];
+        let spinner = crate::alphacode_tui_render::swarm_gallery::STRIP_SPINNER_FRAMES[spinner_frame
+            % crate::alphacode_tui_render::swarm_gallery::STRIP_SPINNER_FRAMES.len()];
 
         let items: Vec<ListItem> = if let Some(message) = self.loading_message.as_deref() {
             vec![
@@ -563,7 +563,8 @@ impl SessionPicker {
                     .fg(rgb(255, 200, 100))
                     .add_modifier(Modifier::BOLD),
             ));
-        } else if self.filter_mode == crate::alphacode_tui_session_picker::SessionFilterMode::Active {
+        } else if self.filter_mode == crate::alphacode_tui_session_picker::SessionFilterMode::Active
+        {
             // The Active view breaks the count down into "still working" vs
             // "ready for input" so the user can triage at a glance. Counts are
             // derived from the visible rows so search/debug filters stay honest.
@@ -742,21 +743,44 @@ impl SessionPicker {
         let body = vec![
             Line::from(vec![
                 Span::styled("💥 ", Style::default().fg(rgb(255, 140, 140))),
-                Span::styled(names, Style::default().fg(rgb(220, 220, 230)).add_modifier(Modifier::BOLD)),
+                Span::styled(
+                    names,
+                    Style::default()
+                        .fg(rgb(220, 220, 230))
+                        .add_modifier(Modifier::BOLD),
+                ),
             ]),
             Line::from(vec![
                 Span::styled("Press ", Style::default().fg(rgb(150, 155, 170))),
-                Span::styled("R", Style::default().fg(rgb(130, 224, 215)).add_modifier(Modifier::BOLD)),
+                Span::styled(
+                    "R",
+                    Style::default()
+                        .fg(rgb(130, 224, 215))
+                        .add_modifier(Modifier::BOLD),
+                ),
                 Span::styled(" (or ", Style::default().fg(rgb(150, 155, 170))),
-                Span::styled("B", Style::default().fg(rgb(130, 224, 215)).add_modifier(Modifier::BOLD)),
-                Span::styled(") to restore only this guessed recent group.", Style::default().fg(rgb(140, 145, 160))),
+                Span::styled(
+                    "B",
+                    Style::default()
+                        .fg(rgb(130, 224, 215))
+                        .add_modifier(Modifier::BOLD),
+                ),
+                Span::styled(
+                    ") to restore only this guessed recent group.",
+                    Style::default().fg(rgb(140, 145, 160)),
+                ),
             ]),
         ];
 
         let block = Paragraph::new(body)
             .block(
                 Block::default()
-                    .title(Span::styled(title, Style::default().fg(rgb(255, 140, 140)).add_modifier(Modifier::BOLD)))
+                    .title(Span::styled(
+                        title,
+                        Style::default()
+                            .fg(rgb(255, 140, 140))
+                            .add_modifier(Modifier::BOLD),
+                    ))
                     .borders(Borders::ALL)
                     .border_type(BorderType::Rounded)
                     .border_style(Style::default().fg(rgb(255, 140, 140))),

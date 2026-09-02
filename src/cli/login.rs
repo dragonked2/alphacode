@@ -11,8 +11,8 @@ use crate::alphacode_base::provider_catalog::{
 
 use super::provider_init::{ProviderChoice, login_provider_for_choice, save_named_api_key};
 
-mod existing_key_notice;
 mod alphacode_device;
+mod existing_key_notice;
 mod next_step;
 mod scriptable;
 use scriptable::*;
@@ -327,7 +327,9 @@ pub async fn run_login_provider(
         Ok(outcome) => outcome,
         Err(err) => {
             let reason =
-                crate::alphacode_base::auth::login_diagnostics::classify_auth_failure_message(&err.to_string());
+                crate::alphacode_base::auth::login_diagnostics::classify_auth_failure_message(
+                    &err.to_string(),
+                );
             crate::telemetry::record_auth_failed_reason(
                 provider.id,
                 provider.auth_kind.label(),
@@ -371,7 +373,9 @@ pub async fn run_login_provider(
     }
     if let Err(err) = super::commands::run_post_login_validation(provider).await {
         let error_message = err.to_string();
-        let reason = crate::alphacode_base::auth::login_diagnostics::classify_auth_failure_message(&error_message);
+        let reason = crate::alphacode_base::auth::login_diagnostics::classify_auth_failure_message(
+            &error_message,
+        );
         crate::telemetry::record_auth_failed_reason(
             provider.id,
             provider.auth_kind.label(),
@@ -386,7 +390,10 @@ pub async fn run_login_provider(
             ],
         );
         return Err(anyhow::anyhow!(
-            crate::alphacode_base::auth::login_diagnostics::augment_auth_error_message(provider.id, error_message)
+            crate::alphacode_base::auth::login_diagnostics::augment_auth_error_message(
+                provider.id,
+                error_message
+            )
         ));
     }
     auth::AuthStatus::invalidate_cache();
@@ -1384,5 +1391,3 @@ fn maybe_open_browser(target: &str, no_browser: bool) -> bool {
         open::that(target).is_ok()
     }
 }
-
-

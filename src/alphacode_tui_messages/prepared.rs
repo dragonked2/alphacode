@@ -1,5 +1,5 @@
-use crate::alphacode_tui_messages::WrappedLineMap;
 use crate::alphacode_tui_markdown::CopyTargetKind;
+use crate::alphacode_tui_messages::WrappedLineMap;
 use ratatui::text::Line;
 use std::sync::Arc;
 

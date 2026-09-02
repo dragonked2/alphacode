@@ -1,7 +1,6 @@
 mod agentgrep;
 pub mod ambient;
 mod apply_patch;
-pub(crate) mod diff_utils;
 mod bash;
 mod batch;
 mod bg;
@@ -12,9 +11,8 @@ mod communicate;
 mod computer;
 mod conversation_search;
 mod cron;
-mod plan;
-mod self_improve;
 mod debug_socket;
+pub(crate) mod diff_utils;
 mod discover;
 mod doctor;
 mod edit;
@@ -27,7 +25,9 @@ mod memory;
 mod multiedit;
 mod open;
 mod patch;
+mod plan;
 mod read;
+mod self_improve;
 pub mod selfdev;
 pub(crate) mod serde_coerce;
 mod session_search;
@@ -43,8 +43,8 @@ mod write;
 use crate::alphacode_app_core::compaction::CompactionManager;
 use crate::alphacode_app_core::provider::Provider;
 use crate::alphacode_app_core::skill::SkillRegistry;
-use anyhow::Result;
 use crate::alphacode_message_types::ToolDefinition;
+use anyhow::Result;
 use serde_json::Value;
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
@@ -239,10 +239,14 @@ impl Registry {
             Self::insert_tool_timed(&mut m, &mut timings, "gmail", gmail::GmailTool::new);
             Self::insert_tool_timed(&mut m, &mut timings, "schedule", ambient::ScheduleTool::new);
             Self::insert_tool_timed(&mut m, &mut timings, "selfdev", selfdev::SelfDevTool::new);
-            Self::insert_tool_timed(&mut m, &mut timings, "clipboard", || clipboard::ClipboardTool);
+            Self::insert_tool_timed(&mut m, &mut timings, "clipboard", || {
+                clipboard::ClipboardTool
+            });
             Self::insert_tool_timed(&mut m, &mut timings, "cron", || cron::CronTool);
             Self::insert_tool_timed(&mut m, &mut timings, "plan", || plan::PlanModeTool);
-            Self::insert_tool_timed(&mut m, &mut timings, "self_improve", || self_improve::SelfImproveTool);
+            Self::insert_tool_timed(&mut m, &mut timings, "self_improve", || {
+                self_improve::SelfImproveTool
+            });
             Self::insert_tool_timed(&mut m, &mut timings, "doctor", || doctor::DoctorTool);
             let nonzero: Vec<String> = timings
                 .iter()

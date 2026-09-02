@@ -75,8 +75,14 @@ pub struct DiagnosticReport {
 impl DiagnosticReport {
     pub fn from_checks(checks: Vec<CheckResult>) -> Self {
         let passed = checks.iter().filter(|c| c.severity == Severity::Ok).count();
-        let warnings = checks.iter().filter(|c| c.severity == Severity::Warn).count();
-        let failures = checks.iter().filter(|c| c.severity == Severity::Fail).count();
+        let warnings = checks
+            .iter()
+            .filter(|c| c.severity == Severity::Warn)
+            .count();
+        let failures = checks
+            .iter()
+            .filter(|c| c.severity == Severity::Fail)
+            .count();
         let total_elapsed_ms = checks.iter().map(|c| c.elapsed_ms).sum();
         let overall = if failures > 0 {
             Severity::Fail
@@ -85,7 +91,14 @@ impl DiagnosticReport {
         } else {
             Severity::Ok
         };
-        Self { checks, passed, warnings, failures, total_elapsed_ms, overall }
+        Self {
+            checks,
+            passed,
+            warnings,
+            failures,
+            total_elapsed_ms,
+            overall,
+        }
     }
 
     /// Format as a human-readable terminal report.
@@ -98,18 +111,23 @@ impl DiagnosticReport {
             Severity::Warn => "\x1b[93m⚠\x1b[0m",
             Severity::Fail => "\x1b[91m✗\x1b[0m",
         };
-        out.push_str("\n\x1b[1m\x1b[96m═══════════════════════════════════════════════════\x1b[0m\n");
+        out.push_str(
+            "\n\x1b[1m\x1b[96m═══════════════════════════════════════════════════\x1b[0m\n",
+        );
         out.push_str("\x1b[1m\x1b[96m System Diagnostics\x1b[0m\n");
-        out.push_str("\x1b[1m\x1b[96m═══════════════════════════════════════════════════\x1b[0m\n\n");
+        out.push_str(
+            "\x1b[1m\x1b[96m═══════════════════════════════════════════════════\x1b[0m\n\n",
+        );
 
         // Group by category
         let mut categories: Vec<(&str, Vec<&CheckResult>)> = Vec::new();
         for check in &self.checks {
             if let Some(last) = categories.last_mut()
-                && last.0 == check.category {
-                    last.1.push(check);
-                    continue;
-                }
+                && last.0 == check.category
+            {
+                last.1.push(check);
+                continue;
+            }
             categories.push((&check.category, vec![check]));
         }
 
@@ -182,7 +200,8 @@ fn check_rust_toolchain() -> Vec<CheckResult> {
             let version = String::from_utf8_lossy(&out.stdout).trim().to_string();
             let severity = if version.contains("1.") {
                 // Check minimum version (1.85+)
-                let ok = version.split_whitespace()
+                let ok = version
+                    .split_whitespace()
                     .nth(1)
                     .and_then(|v| v.split('.').next())
                     .and_then(|v| v.parse::<u32>().ok())
@@ -311,13 +330,15 @@ fn check_workspace(work_dir: Option<&Path>) -> Vec<CheckResult> {
     let start = Instant::now();
     let src_dir = dir.join("src");
     if src_dir.is_dir() {
-        let count = std::fs::read_dir(&src_dir)
-            .map(|e| e.count())
-            .unwrap_or(0);
+        let count = std::fs::read_dir(&src_dir).map(|e| e.count()).unwrap_or(0);
         results.push(CheckResult {
             category: "Workspace".to_string(),
             name: "src/ directory".to_string(),
-            severity: if count > 0 { Severity::Ok } else { Severity::Warn },
+            severity: if count > 0 {
+                Severity::Ok
+            } else {
+                Severity::Warn
+            },
             detail: format!("{} entries", count),
             elapsed_ms: start.elapsed().as_millis() as u64,
             auto_fixable: false,

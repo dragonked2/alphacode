@@ -3,9 +3,9 @@ use super::{
     ClientConnectionInfo, SessionInterruptQueues, SwarmEvent, SwarmEventType, SwarmMember,
     fanout_session_event, queue_soft_interrupt_for_session, record_swarm_event, truncate_detail,
 };
+use crate::alphacode_agent_runtime::SoftInterruptSource;
 use crate::alphacode_app_core::agent::Agent;
 use crate::alphacode_app_core::protocol::{CommDeliveryMode, NotificationType, ServerEvent};
-use crate::alphacode_agent_runtime::SoftInterruptSource;
 use crate::alphacode_swarm_core::ChannelIndex;
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;

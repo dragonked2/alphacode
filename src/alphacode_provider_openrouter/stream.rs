@@ -1,7 +1,7 @@
+use crate::alphacode_message_types::StreamEvent;
 use anyhow::Result;
 use bytes::Bytes;
 use futures::Stream;
-use crate::alphacode_message_types::StreamEvent;
 use serde_json::Value;
 use std::collections::VecDeque;
 use std::pin::Pin;
@@ -227,7 +227,9 @@ impl OpenRouterStream {
             let mut data_lines = Vec::new();
             let mut saw_done = false;
             for line in event_str.lines() {
-                if let Some(d) = crate::alphacode_core::util::sse_data_line(line.trim_end_matches('\r')) {
+                if let Some(d) =
+                    crate::alphacode_core::util::sse_data_line(line.trim_end_matches('\r'))
+                {
                     if d.trim() == "[DONE]" {
                         saw_done = true;
                     } else {
@@ -277,7 +279,8 @@ impl OpenRouterStream {
                     // object across two events, so a whole chunk of deltas was
                     // being discarded here (#609). Try to recover the individual
                     // objects before giving up.
-                    if let Some(split) = crate::alphacode_core::util::split_concatenated_json(data) {
+                    if let Some(split) = crate::alphacode_core::util::split_concatenated_json(data)
+                    {
                         let mut requeued = String::new();
                         for object in &split.objects {
                             requeued.push_str("data: ");

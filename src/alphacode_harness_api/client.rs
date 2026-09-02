@@ -1,6 +1,8 @@
 //! NDJSON framing helpers and a minimal blocking client.
 
-use crate::alphacode_harness_api::{API_VERSION_MAJOR, ApiEvent, ApiRequest, ClientFrame, ServerFrame};
+use crate::alphacode_harness_api::{
+    API_VERSION_MAJOR, ApiEvent, ApiRequest, ClientFrame, ServerFrame,
+};
 use std::io::{self, BufRead, Write};
 
 /// Errors from reading or writing a frame.

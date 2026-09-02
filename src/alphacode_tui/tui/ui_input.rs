@@ -313,7 +313,9 @@ fn command_suggestion_needle(input: &str) -> Option<String> {
 /// unhighlighted span when there is nothing (useful) to highlight.
 fn highlight_command_spans(cmd: &str, needle: Option<&str>, base: Style) -> Vec<Span<'static>> {
     let positions: Vec<usize> = match needle {
-        Some(n) if !n.is_empty() && n != "/" => crate::alphacode_tui::tui::fuzzy::fuzzy_match_positions(n, cmd),
+        Some(n) if !n.is_empty() && n != "/" => {
+            crate::alphacode_tui::tui::fuzzy::fuzzy_match_positions(n, cmd)
+        }
         _ => Vec::new(),
     };
     if positions.is_empty() {
@@ -460,28 +462,19 @@ pub(super) fn pending_queue_preview(app: &dyn TuiState) -> Vec<String> {
         for msg in app.pending_soft_interrupts() {
             if !msg.is_empty() {
                 let normalized = normalize_repaint_sensitive_notice_text(msg);
-                previews.push(format!(
-                    "↻ {}",
-                    truncate_preview(&normalized, 120)
-                ));
+                previews.push(format!("↻ {}", truncate_preview(&normalized, 120)));
             }
         }
         if let Some(msg) = app.interleave_message()
             && !msg.is_empty()
         {
             let normalized = normalize_repaint_sensitive_notice_text(msg);
-            previews.push(format!(
-                "⚡ {}",
-                truncate_preview(&normalized, 120)
-            ));
+            previews.push(format!("⚡ {}", truncate_preview(&normalized, 120)));
         }
     }
     for msg in app.queued_messages() {
         let normalized = normalize_repaint_sensitive_notice_text(msg);
-        previews.push(format!(
-            "⏳ {}",
-            truncate_preview(&normalized, 120)
-        ));
+        previews.push(format!("⏳ {}", truncate_preview(&normalized, 120)));
     }
     previews
 }
@@ -840,7 +833,12 @@ fn idle_session_stats_line(app: &dyn TuiState) -> Option<Line<'static>> {
     }
 
     Some(Line::from(vec![
-        Span::styled("⚡", Style::default().fg(rgb(130, 214, 220)).add_modifier(Modifier::BOLD)),
+        Span::styled(
+            "⚡",
+            Style::default()
+                .fg(rgb(130, 214, 220))
+                .add_modifier(Modifier::BOLD),
+        ),
         Span::styled(
             format!(" {}", text),
             Style::default().fg(rgb(140, 150, 170)),
@@ -1036,8 +1034,7 @@ pub(super) fn draw_status(frame: &mut Frame, app: &dyn TuiState, area: Rect, pen
                         / trailing_width as f32
                 };
                 let progress = elapsed * bar_speed % 1.0;
-                let head_pos =
-                    ((progress * trailing_width as f32) as usize) % trailing_width;
+                let head_pos = ((progress * trailing_width as f32) as usize) % trailing_width;
                 // Trailing marquee: a gradient sweep `▁▂▃▄▃▂▁`-style wave
                 // where the brightest cell travels along a thin underscore
                 // track. The wave is built as discrete span steps so the
@@ -1045,8 +1042,7 @@ pub(super) fn draw_status(frame: &mut Frame, app: &dyn TuiState, area: Rect, pen
                 // sit in `dim_color`, giving the bar a polished "alive" feel
                 // without the harshness of a single blinking dot.
                 let marquee_glyphs = ['\u{2581}', '\u{2582}', '\u{2583}', '\u{2584}'];
-                let mut trailing_spans: Vec<Span<'static>> =
-                    Vec::with_capacity(trailing_width);
+                let mut trailing_spans: Vec<Span<'static>> = Vec::with_capacity(trailing_width);
                 let dim = dim_color();
                 for i in 0..trailing_width {
                     // Distance from the moving head (0..trailing_width-1).
@@ -1161,7 +1157,10 @@ pub(super) fn draw_status(frame: &mut Frame, app: &dyn TuiState, area: Rect, pen
                 }
 
                 spans.push(Span::styled(
-                    format!(" · {} bg", crate::alphacode_tui_core::keybind::alt_chord("B")),
+                    format!(
+                        " · {} bg",
+                        crate::alphacode_tui_core::keybind::alt_chord("B")
+                    ),
                     Style::default().fg(rgb(100, 100, 100)),
                 ));
 
@@ -2231,7 +2230,9 @@ fn overscroll_truncate_spans(spans: Vec<Span<'static>>, max_width: usize) -> Vec
 /// Format a working dir path home-relative (~/foo/bar), keeping the last 2 segments.
 /// Compact git branch label for the status line and fact stack. Truncated so
 /// long branch names cannot crowd out the other facts.
-fn overscroll_git_branch(data: &crate::alphacode_tui::tui::info_widget::InfoWidgetData) -> Option<String> {
+fn overscroll_git_branch(
+    data: &crate::alphacode_tui::tui::info_widget::InfoWidgetData,
+) -> Option<String> {
     let branch = data.git_info.as_ref()?.branch.trim();
     if branch.is_empty() {
         return None;
@@ -2576,9 +2577,10 @@ fn right_fact_lines(app: &dyn TuiState) -> Vec<RightFactLine> {
     // exceeds its four-row budget: when provider/model/dir/context all fit,
     // the session stats already live on the idle status line instead.
     if lines.len() < 4
-        && let Some(line) = right_fact_session_stats(app, &data) {
-            lines.push(line);
-        }
+        && let Some(line) = right_fact_session_stats(app, &data)
+    {
+        lines.push(line);
+    }
 
     lines
 }
@@ -2605,12 +2607,7 @@ fn right_fact_session_stats(
         .usage_info
         .as_ref()
         .filter(|info| info.available)
-        .filter(|info| {
-            matches!(
-                info.provider,
-                super::info_widget::UsageProvider::CostBased
-            )
-        })
+        .filter(|info| matches!(info.provider, super::info_widget::UsageProvider::CostBased))
         .map(|info| info.total_cost)
         .filter(|cost| *cost > 0.0)
     {
@@ -2734,7 +2731,7 @@ fn right_fact_cell_is_blank(cell: &ratatui::buffer::Cell) -> bool {
     cell.symbol().trim().is_empty()
         && cell.bg == Color::Reset
         && cell.modifier.is_empty()
-         && cell.diff_option != ratatui::buffer::CellDiffOption::Skip
+        && cell.diff_option != ratatui::buffer::CellDiffOption::Skip
 }
 
 pub(super) fn draw_input(
@@ -2800,7 +2797,9 @@ pub(super) fn draw_input(
         hint_line = Some(hint.trim().to_string());
         lines.push(Line::from(Span::styled(
             hint,
-            Style::default().fg(rgb(128, 208, 255)).add_modifier(Modifier::ITALIC),
+            Style::default()
+                .fg(rgb(128, 208, 255))
+                .add_modifier(Modifier::ITALIC),
         )));
     } else if app.is_processing() && !input_text.is_empty() {
         hint_shown = true;
@@ -2812,7 +2811,9 @@ pub(super) fn draw_input(
         hint_line = Some(hint.trim().to_string());
         lines.push(Line::from(Span::styled(
             hint,
-            Style::default().fg(rgb(118, 128, 148)).add_modifier(Modifier::ITALIC),
+            Style::default()
+                .fg(rgb(118, 128, 148))
+                .add_modifier(Modifier::ITALIC),
         )));
     }
 
@@ -3172,7 +3173,6 @@ pub(crate) fn input_cursor_pos_from_screen(
         }
     };
 
-
     let screen_line = row.saturating_sub(area.y) as usize;
     if screen_line < hint_lines {
         return None;
@@ -3211,7 +3211,8 @@ pub(crate) fn wrap_input_text<'a>(
     caret_color: Color,
     prompt_len: usize,
 ) -> (Vec<Line<'a>>, usize, usize) {
-    let cursor_char_pos = crate::alphacode_tui::tui::core::byte_offset_to_char_index(input, cursor_pos);
+    let cursor_char_pos =
+        crate::alphacode_tui::tui::core::byte_offset_to_char_index(input, cursor_pos);
     let wrapped_segments = wrap_input_segments(input, line_width);
     let mut lines: Vec<Line> = Vec::new();
     let mut cursor_line = 0;
@@ -3250,13 +3251,12 @@ pub(crate) fn wrap_input_text<'a>(
                 // available line width so we never overflow into the next
                 // row (which would shift the cursor and the layout).
                 let avail = line_width.saturating_sub(1);
-                let truncated: String = placeholder
-                    .chars()
-                    .take(avail)
-                    .collect();
+                let truncated: String = placeholder.chars().take(avail).collect();
                 first_row_spans.push(Span::styled(
                     truncated,
-                    Style::default().fg(dim_color()).add_modifier(Modifier::ITALIC),
+                    Style::default()
+                        .fg(dim_color())
+                        .add_modifier(Modifier::ITALIC),
                 ));
             } else {
                 first_row_spans.push(Span::raw(segment.text.clone()));
@@ -3328,4 +3328,3 @@ enum QueuedMsgType {
     Interleave,
     Queued,
 }
-

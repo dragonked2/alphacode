@@ -252,4 +252,3 @@ async fn capture_connected_restart_snapshot()
         sessions,
     }))
 }
-

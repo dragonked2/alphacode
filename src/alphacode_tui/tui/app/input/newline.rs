@@ -71,4 +71,3 @@ fn hint_terminal_setup_once(app: &mut App) {
         "Tip: run /terminal-setup to make Shift+Enter insert newlines".to_string(),
     );
 }
-

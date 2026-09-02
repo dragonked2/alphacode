@@ -21,13 +21,15 @@ use super::{
     FileTouchService, ServerIdentity, SharedContext, SwarmEvent, SwarmMember, VersionedPlan,
     debug_control_allowed, fanout_session_event,
 };
+use crate::alphacode_agent_runtime::InterruptSignal;
 use crate::alphacode_app_core::agent::Agent;
 use crate::alphacode_app_core::ambient_runner::AmbientRunnerHandle;
-use crate::alphacode_app_core::protocol::{Request, ServerEvent, TranscriptMode, decode_request, encode_event};
+use crate::alphacode_app_core::protocol::{
+    Request, ServerEvent, TranscriptMode, decode_request, encode_event,
+};
 use crate::alphacode_app_core::provider::Provider;
 use crate::alphacode_app_core::transport::Stream;
 use anyhow::Result;
-use crate::alphacode_agent_runtime::InterruptSignal;
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use std::time::Instant;
@@ -570,4 +572,3 @@ pub(super) async fn handle_debug_client(
 
     Ok(())
 }
-

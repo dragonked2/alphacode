@@ -1,5 +1,5 @@
-use super::{Tool, ToolContext, ToolOutput};
 use super::diff_utils::generate_diff_with_start;
+use super::{Tool, ToolContext, ToolOutput};
 use anyhow::Result;
 use async_trait::async_trait;
 use serde::Deserialize;
@@ -269,5 +269,3 @@ async fn apply_patch_with_diff(patch: &FilePatch, path: &Path) -> Result<(String
     let diff = generate_diff_with_start(&old_content, &new_content, first_line);
     Ok((format!("modified ({} hunks)", patch.hunks.len()), diff))
 }
-
-

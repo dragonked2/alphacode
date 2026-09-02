@@ -94,9 +94,10 @@ fn counters() -> &'static Mutex<Counters> {
 /// session.
 pub fn reset_turn_counters() {
     if let Some(c) = COUNTERS.get()
-        && let Ok(mut g) = c.lock() {
-            g.per_kind.clear();
-        }
+        && let Ok(mut g) = c.lock()
+    {
+        g.per_kind.clear();
+    }
 }
 
 /// Classify an error message and produce a hint.  Returns `None` if the
@@ -141,22 +142,81 @@ pub fn analyze(error_text: &str) -> Option<FailureAnalysis> {
 
 fn classify(lower: &str) -> FailureKind {
     // Order matters: check the more specific patterns first.
-    if contains_any(lower, &["no such file", "does not exist", "not found", "cannot find", "could not find", "doesn't exist"]) {
+    if contains_any(
+        lower,
+        &[
+            "no such file",
+            "does not exist",
+            "not found",
+            "cannot find",
+            "could not find",
+            "doesn't exist",
+        ],
+    ) {
         return FailureKind::MissingPath;
     }
-    if contains_any(lower, &["permission denied", "access is denied", "eperm", "eacces", "not permitted", "operation not permitted"]) {
+    if contains_any(
+        lower,
+        &[
+            "permission denied",
+            "access is denied",
+            "eperm",
+            "eacces",
+            "not permitted",
+            "operation not permitted",
+        ],
+    ) {
         return FailureKind::PermissionDenied;
     }
-    if contains_any(lower, &["timed out", "timeout exceeded", "deadline exceeded", "operation timed out"]) {
+    if contains_any(
+        lower,
+        &[
+            "timed out",
+            "timeout exceeded",
+            "deadline exceeded",
+            "operation timed out",
+        ],
+    ) {
         return FailureKind::Timeout;
     }
-    if contains_any(lower, &["syntax error", "unexpected token", "parse error", "invalid json", "json parse", "yaml parse", "regex parse", "malformed"]) {
+    if contains_any(
+        lower,
+        &[
+            "syntax error",
+            "unexpected token",
+            "parse error",
+            "invalid json",
+            "json parse",
+            "yaml parse",
+            "regex parse",
+            "malformed",
+        ],
+    ) {
         return FailureKind::SyntaxError;
     }
-    if contains_any(lower, &["connection refused", "connection reset", "connection aborted", "broken pipe", "network is unreachable", "host unreachable", "could not resolve", "couldn't resolve", "dns error", "tls handshake", "connection closed", "eof before message"]) {
+    if contains_any(
+        lower,
+        &[
+            "connection refused",
+            "connection reset",
+            "connection aborted",
+            "broken pipe",
+            "network is unreachable",
+            "host unreachable",
+            "could not resolve",
+            "couldn't resolve",
+            "dns error",
+            "tls handshake",
+            "connection closed",
+            "eof before message",
+        ],
+    ) {
         return FailureKind::NetworkError;
     }
-    if contains_any(lower, &["no space left", "enospc", "disk full", "out of disk"]) {
+    if contains_any(
+        lower,
+        &["no space left", "enospc", "disk full", "out of disk"],
+    ) {
         return FailureKind::OutOfDisk;
     }
     if contains_any(lower, &["out of memory", "cannot allocate", "enomem"]) {
@@ -165,13 +225,29 @@ fn classify(lower: &str) -> FailureKind {
     if contains_any(lower, &["already exists", "file exists", "eexist"]) {
         return FailureKind::AlreadyExists;
     }
-    if contains_any(lower, &["invalid argument", "einval", "bad argument", "illegal argument"]) {
+    if contains_any(
+        lower,
+        &[
+            "invalid argument",
+            "einval",
+            "bad argument",
+            "illegal argument",
+        ],
+    ) {
         return FailureKind::InvalidArgument;
     }
     if contains_any(lower, &["not implemented", "todo", "unimplemented"]) {
         return FailureKind::NotImplemented;
     }
-    if contains_any(lower, &["cancelled", "canceled", "aborted by user", "user interrupted"]) {
+    if contains_any(
+        lower,
+        &[
+            "cancelled",
+            "canceled",
+            "aborted by user",
+            "user interrupted",
+        ],
+    ) {
         return FailureKind::Cancelled;
     }
     FailureKind::Unknown
@@ -216,7 +292,9 @@ fn build_hint(kind: FailureKind, count: u32, raw: &str) -> String {
         FailureKind::InvalidArgument => {
             "Hint: an argument is invalid; review the input shape against the schema.".into()
         }
-        FailureKind::NotImplemented => "Hint: this functionality is not implemented; pick a different approach.".into(),
+        FailureKind::NotImplemented => {
+            "Hint: this functionality is not implemented; pick a different approach.".into()
+        }
         FailureKind::Cancelled => String::new(),
         FailureKind::Unknown => {
             // For unknown errors, forward a tiny excerpt of the raw text so
@@ -260,9 +338,10 @@ pub fn should_escalate(kind: FailureKind) -> bool {
     }
     let c = counters();
     if let Ok(g) = c.lock()
-        && let Some(&n) = g.per_kind.get(&kind) {
-            return n >= 3;
-        }
+        && let Some(&n) = g.per_kind.get(&kind)
+    {
+        return n >= 3;
+    }
     false
 }
 

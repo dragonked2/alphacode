@@ -124,8 +124,12 @@ impl DaemonSession {
         if n == 0 {
             anyhow::bail!("Alphacode daemon disconnected");
         }
-        let event = serde_json::from_str(&line)
-            .with_context(|| format!("failed to decode Alphacode daemon event: {}", line.trim_end()))?;
+        let event = serde_json::from_str(&line).with_context(|| {
+            format!(
+                "failed to decode Alphacode daemon event: {}",
+                line.trim_end()
+            )
+        })?;
         Ok(event)
     }
 }
@@ -456,7 +460,10 @@ impl AcpRuntime {
 
     async fn connect_daemon(&self) -> Result<(ReadHalf, WriteHalf)> {
         self.ensure_daemon().await?;
-        let stream = crate::alphacode_app_core::server::connect_socket(&crate::alphacode_app_core::server::socket_path()).await?;
+        let stream = crate::alphacode_app_core::server::connect_socket(
+            &crate::alphacode_app_core::server::socket_path(),
+        )
+        .await?;
         Ok(stream.into_split())
     }
 
@@ -1076,7 +1083,10 @@ pub(crate) async fn run_acp_command(
     crate::alphacode_core::env::set_var("ALPHACODE_NON_INTERACTIVE", "1");
     let acp_config = crate::config::config().acp.clone();
     if !explicit_tool_profile {
-        crate::alphacode_core::env::set_var("ALPHACODE_TOOL_PROFILE", acp_config.tool_profile.trim());
+        crate::alphacode_core::env::set_var(
+            "ALPHACODE_TOOL_PROFILE",
+            acp_config.tool_profile.trim(),
+        );
         crate::config::invalidate_config_cache();
     }
     let profile = AcpProfile::parse(&acp_config.profile);

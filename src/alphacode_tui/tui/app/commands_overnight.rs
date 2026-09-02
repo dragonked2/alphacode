@@ -2,7 +2,9 @@ use super::{
     App, DisplayMessage, OvernightAutoPokeFingerprint, OvernightAutoPokeState, ProcessingStatus,
 };
 use crate::alphacode_tui::message::{ContentBlock, Message, Role};
-use crate::alphacode_tui::overnight::{OvernightCommand, OvernightRunStatus, OvernightStartOptions};
+use crate::alphacode_tui::overnight::{
+    OvernightCommand, OvernightRunStatus, OvernightStartOptions,
+};
 use crate::alphacode_tui::provider::Provider;
 use chrono::Utc;
 use std::sync::Arc;

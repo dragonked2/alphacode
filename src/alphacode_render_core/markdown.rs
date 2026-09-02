@@ -471,7 +471,9 @@ pub fn parse_markdown(text: &str) -> Document {
             }
             Event::InlineMath(math) => {
                 if in_table {
-                    current_cell.push_str(&crate::alphacode_render_core::math::render_inline_latex(&math));
+                    current_cell.push_str(
+                        &crate::alphacode_render_core::math::render_inline_latex(&math),
+                    );
                 } else {
                     if let Some(marker) = pending_item_marker.take() {
                         spans.push(StyledSpan::new(marker, StyleRole::Dim));
@@ -486,7 +488,9 @@ pub fn parse_markdown(text: &str) -> Document {
             }
             Event::DisplayMath(math) => {
                 if in_table {
-                    current_cell.push_str(&crate::alphacode_render_core::math::render_inline_latex(&math));
+                    current_cell.push_str(
+                        &crate::alphacode_render_core::math::render_inline_latex(&math),
+                    );
                 } else {
                     flush_paragraph(
                         &mut doc,
@@ -496,10 +500,13 @@ pub fn parse_markdown(text: &str) -> Document {
                         blockquote_depth,
                         &mut bq_lines,
                     );
-                    let mut lines: Vec<StyledLine> = crate::alphacode_render_core::math::render_display_latex(&math)
-                        .into_iter()
-                        .map(|l| StyledLine::from_spans(vec![StyledSpan::new(l, StyleRole::Math)]))
-                        .collect();
+                    let mut lines: Vec<StyledLine> =
+                        crate::alphacode_render_core::math::render_display_latex(&math)
+                            .into_iter()
+                            .map(|l| {
+                                StyledLine::from_spans(vec![StyledSpan::new(l, StyleRole::Math)])
+                            })
+                            .collect();
                     if lines.is_empty() {
                         lines.push(StyledLine::from_spans(vec![StyledSpan::new(
                             String::new(),

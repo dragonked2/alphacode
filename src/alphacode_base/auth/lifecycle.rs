@@ -1,7 +1,7 @@
+use crate::alphacode_provider_core::ActiveProvider;
 use crate::protocol::{AuthChanged, CatalogNamespace, RuntimeProviderKey};
 use crate::provider::ModelRoute;
 use crate::provider::activation::{ProviderActivation, RuntimeProviderId};
-use crate::alphacode_provider_core::ActiveProvider;
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct AuthActivationRequest {
@@ -237,8 +237,10 @@ pub fn globally_preferred_default_route(routes: &[ModelRoute]) -> Option<ModelRo
 
 fn globally_preferred_model_rank(model: &str) -> (u8, usize) {
     let normalized = normalize_model_for_preference(model);
-    let openai_default = normalize_model_for_preference(crate::alphacode_provider_core::DEFAULT_OPENAI_MODEL);
-    let claude_default = normalize_model_for_preference(crate::alphacode_provider_core::DEFAULT_CLAUDE_MODEL);
+    let openai_default =
+        normalize_model_for_preference(crate::alphacode_provider_core::DEFAULT_OPENAI_MODEL);
+    let claude_default =
+        normalize_model_for_preference(crate::alphacode_provider_core::DEFAULT_CLAUDE_MODEL);
 
     if normalized == openai_default {
         return (0, 0);
@@ -831,7 +833,9 @@ pub fn normalized_auth_provider_id(provider_hint: Option<&str>) -> Option<&'stat
 /// Returning the auth-specific provider id (`openai` vs `openai-api`, `claude`
 /// vs `claude-api`) matters because post-login activation uses it to select the
 /// matching route and its strongest available model.
-pub fn preferred_frontier_auth_provider(status: &crate::alphacode_base::auth::AuthStatus) -> Option<&'static str> {
+pub fn preferred_frontier_auth_provider(
+    status: &crate::alphacode_base::auth::AuthStatus,
+) -> Option<&'static str> {
     use crate::alphacode_base::auth::AuthState;
 
     if status.anthropic.state == AuthState::Available {
@@ -1211,7 +1215,8 @@ mod tests {
     fn api_key_login_replaces_stale_process_env_with_saved_file_key() {
         // Issue #453: a server process that inherited a stale ANTHROPIC_API_KEY
         // must start using the key that /login just wrote to anthropic.env.
-        let sandbox = crate::alphacode_base::auth::test_sandbox::AuthTestSandbox::new().expect("sandbox");
+        let sandbox =
+            crate::alphacode_base::auth::test_sandbox::AuthTestSandbox::new().expect("sandbox");
         crate::alphacode_core::env::set_var("ANTHROPIC_API_KEY", "stale-inherited-key");
         sandbox
             .write_env_file("anthropic.env", "ANTHROPIC_API_KEY", "fresh-login-key")
@@ -1239,7 +1244,8 @@ mod tests {
 
     #[test]
     fn legacy_hint_only_auth_change_still_syncs_saved_file_key() {
-        let sandbox = crate::alphacode_base::auth::test_sandbox::AuthTestSandbox::new().expect("sandbox");
+        let sandbox =
+            crate::alphacode_base::auth::test_sandbox::AuthTestSandbox::new().expect("sandbox");
         crate::alphacode_core::env::set_var("ANTHROPIC_API_KEY", "stale-inherited-key");
         sandbox
             .write_env_file("anthropic.env", "ANTHROPIC_API_KEY", "fresh-login-key")
@@ -1258,7 +1264,8 @@ mod tests {
 
     #[test]
     fn oauth_auth_change_does_not_touch_api_key_process_env() {
-        let sandbox = crate::alphacode_base::auth::test_sandbox::AuthTestSandbox::new().expect("sandbox");
+        let sandbox =
+            crate::alphacode_base::auth::test_sandbox::AuthTestSandbox::new().expect("sandbox");
         crate::alphacode_core::env::set_var("ANTHROPIC_API_KEY", "env-key-left-alone");
         sandbox
             .write_env_file("anthropic.env", "ANTHROPIC_API_KEY", "file-key")
@@ -1406,7 +1413,8 @@ mod tests {
         // Sandbox ALPHACODE_HOME so activation's env-file credential sync (#453)
         // cannot read the developer's real ~/.config/alphacode/*.env files and
         // leak keys into this process during the matrix run.
-        let _sandbox = crate::alphacode_base::auth::test_sandbox::AuthTestSandbox::new().expect("sandbox");
+        let _sandbox =
+            crate::alphacode_base::auth::test_sandbox::AuthTestSandbox::new().expect("sandbox");
 
         for (provider, runtime, active) in [
             ("claude", "claude", "claude"),
@@ -1450,7 +1458,8 @@ mod tests {
     fn direct_login_provider_descriptor_matrix_has_full_lifecycle_parity() {
         // Sandbox ALPHACODE_HOME for the same reason as the activation matrix
         // above: keep the #453 credential sync away from real env files.
-        let _sandbox = crate::alphacode_base::auth::test_sandbox::AuthTestSandbox::new().expect("sandbox");
+        let _sandbox =
+            crate::alphacode_base::auth::test_sandbox::AuthTestSandbox::new().expect("sandbox");
 
         let mut covered = Vec::new();
         for provider in crate::provider_catalog::login_providers() {

@@ -971,4 +971,3 @@ pub(crate) fn draw_pinned_diagram(
         clear_pinned_diagram_debug_snapshot();
     }
 }
-

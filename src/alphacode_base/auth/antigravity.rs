@@ -219,7 +219,10 @@ async fn refresh_tokens_uncoordinated(tokens: &AntigravityTokens) -> Result<Anti
             let _ = crate::alphacode_base::auth::refresh_state::record_success("antigravity");
         }
         Err(err) => {
-            let _ = crate::alphacode_base::auth::refresh_state::record_failure("antigravity", err.to_string());
+            let _ = crate::alphacode_base::auth::refresh_state::record_failure(
+                "antigravity",
+                err.to_string(),
+            );
         }
     }
 
@@ -233,7 +236,8 @@ pub async fn login(no_browser: bool) -> Result<AntigravityTokens> {
     let auth_url = build_auth_url(&redirect_uri, &challenge, &state)?;
 
     if !crate::alphacode_base::auth::browser_suppressed(no_browser)
-        && let Ok(listener) = crate::alphacode_base::auth::oauth::bind_callback_listener(DEFAULT_PORT)
+        && let Ok(listener) =
+            crate::alphacode_base::auth::oauth::bind_callback_listener(DEFAULT_PORT)
     {
         eprintln!("\nOpening browser for Antigravity login...\n");
         eprintln!("If the browser didn't open, visit:\n{}\n", auth_url);
@@ -256,7 +260,9 @@ pub async fn login(no_browser: bool) -> Result<AntigravityTokens> {
             );
             match tokio::time::timeout(
                 std::time::Duration::from_secs(300),
-                crate::alphacode_base::auth::oauth::wait_for_callback_async_on_listener(listener, &state),
+                crate::alphacode_base::auth::oauth::wait_for_callback_async_on_listener(
+                    listener, &state,
+                ),
             )
             .await
             {
@@ -332,7 +338,8 @@ pub async fn exchange_callback_input(
     redirect_uri: &str,
 ) -> Result<AntigravityTokens> {
     let code = if let Some(expected_state) = expected_state {
-        let (code, callback_state) = crate::alphacode_base::auth::oauth::parse_callback_input_with_state(input)?;
+        let (code, callback_state) =
+            crate::alphacode_base::auth::oauth::parse_callback_input_with_state(input)?;
         if callback_state != expected_state {
             anyhow::bail!(
                 "OAuth state mismatch. Start Antigravity login again and use the latest callback URL."

@@ -1,10 +1,10 @@
 //! Screen observation: full-screen + per-window screenshots and OCR.
 
 use super::osa;
+use crate::alphacode_tool_types::ToolOutput;
 use anyhow::{Context, Result, bail};
 use base64::{Engine as _, engine::general_purpose::STANDARD};
 use core_graphics::display::CGDisplay;
-use crate::alphacode_tool_types::ToolOutput;
 use serde_json::json;
 use std::process::Command;
 use std::time::Duration;

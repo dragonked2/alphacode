@@ -53,7 +53,7 @@ impl ModelPerformanceCache {
     pub fn get(&self, key: &str) -> Option<Vec<CachedModelRoute>> {
         let cache = self.cache.lock().ok()?;
         let entry = cache.get(key)?;
-        
+
         // Check if cache entry is still valid
         if entry.cached_at.elapsed() < self.ttl {
             Some(entry.routes.clone())
@@ -376,7 +376,8 @@ impl std::fmt::Display for PerformanceSummary {
 }
 
 /// Global performance cache instance
-static GLOBAL_PERFORMANCE_CACHE: std::sync::OnceLock<ModelPerformanceCache> = std::sync::OnceLock::new();
+static GLOBAL_PERFORMANCE_CACHE: std::sync::OnceLock<ModelPerformanceCache> =
+    std::sync::OnceLock::new();
 
 /// Get global performance cache
 pub fn global_performance_cache() -> &'static ModelPerformanceCache {
@@ -384,7 +385,8 @@ pub fn global_performance_cache() -> &'static ModelPerformanceCache {
 }
 
 /// Global performance metrics instance
-static GLOBAL_PERFORMANCE_METRICS: std::sync::OnceLock<ModelPerformanceMetrics> = std::sync::OnceLock::new();
+static GLOBAL_PERFORMANCE_METRICS: std::sync::OnceLock<ModelPerformanceMetrics> =
+    std::sync::OnceLock::new();
 
 /// Get global performance metrics
 pub fn global_performance_metrics() -> &'static ModelPerformanceMetrics {
@@ -429,7 +431,7 @@ mod tests {
         let cache = ModelPerformanceCache::new();
         cache.set("test-key", vec![]);
         assert!(cache.get("test-key").is_some());
-        
+
         cache.invalidate("test-key");
         assert!(cache.get("test-key").is_none());
     }
@@ -439,7 +441,7 @@ mod tests {
         let metrics = ModelPerformanceMetrics::new();
         metrics.record_load_time("model1", Duration::from_millis(100));
         metrics.record_load_time("model2", Duration::from_millis(200));
-        
+
         let avg = metrics.average_load_time();
         assert_eq!(avg, Duration::from_millis(150));
     }
@@ -450,7 +452,7 @@ mod tests {
         metrics.record_cache_hit();
         metrics.record_cache_hit();
         metrics.record_cache_miss();
-        
+
         let rate = metrics.cache_hit_rate();
         assert!((rate - 0.666).abs() < 0.01);
     }

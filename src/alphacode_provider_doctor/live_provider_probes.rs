@@ -14,7 +14,9 @@ use serde::Deserialize;
 
 use crate::alphacode_base::message::{ContentBlock, Message, Role, StreamEvent, ToolDefinition};
 use crate::alphacode_base::provider::Provider;
-use crate::alphacode_base::provider_catalog::{OpenAiCompatibleProfile, ResolvedOpenAiCompatibleProfile};
+use crate::alphacode_base::provider_catalog::{
+    OpenAiCompatibleProfile, ResolvedOpenAiCompatibleProfile,
+};
 use crate::alphacode_provider_anthropic_runtime::AnthropicProvider;
 use crate::alphacode_provider_antigravity_runtime::AntigravityProvider;
 
@@ -94,7 +96,8 @@ pub async fn fetch_live_openai_compatible_models(
     profile: OpenAiCompatibleProfile,
     api_key: &str,
 ) -> anyhow::Result<Vec<String>> {
-    let resolved = crate::alphacode_base::provider_catalog::resolve_openai_compatible_profile(profile);
+    let resolved =
+        crate::alphacode_base::provider_catalog::resolve_openai_compatible_profile(profile);
     let url = format!("{}/models", resolved.api_base.trim_end_matches('/'));
     let request = crate::alphacode_base::provider::shared_http_client().get(&url);
     let request = apply_provider_auth(request, &resolved, api_key);
@@ -166,7 +169,8 @@ pub async fn run_live_openai_compatible_smoke(
     model: &str,
 ) -> anyhow::Result<crate::live_tests::LiveVerificationStage> {
     let started = std::time::Instant::now();
-    let resolved = crate::alphacode_base::provider_catalog::resolve_openai_compatible_profile(profile);
+    let resolved =
+        crate::alphacode_base::provider_catalog::resolve_openai_compatible_profile(profile);
     let url = format!(
         "{}/chat/completions",
         resolved.api_base.trim_end_matches('/')
@@ -385,7 +389,8 @@ pub async fn run_live_openai_compatible_stream_smoke(
     model: &str,
 ) -> anyhow::Result<crate::live_tests::LiveVerificationStage> {
     let started = std::time::Instant::now();
-    let resolved = crate::alphacode_base::provider_catalog::resolve_openai_compatible_profile(profile);
+    let resolved =
+        crate::alphacode_base::provider_catalog::resolve_openai_compatible_profile(profile);
     let url = format!(
         "{}/chat/completions",
         resolved.api_base.trim_end_matches('/')
@@ -480,7 +485,8 @@ pub async fn run_live_openai_compatible_tool_smoke(
     model: &str,
 ) -> anyhow::Result<crate::live_tests::LiveVerificationStage> {
     let started = std::time::Instant::now();
-    let resolved = crate::alphacode_base::provider_catalog::resolve_openai_compatible_profile(profile);
+    let resolved =
+        crate::alphacode_base::provider_catalog::resolve_openai_compatible_profile(profile);
     let url = format!(
         "{}/chat/completions",
         resolved.api_base.trim_end_matches('/')
@@ -566,7 +572,8 @@ pub async fn run_live_openai_compatible_tool_smoke(
         .get("arguments")
         .and_then(|arguments| arguments.as_str())
         .context("live tool-call smoke response missing string arguments")?;
-    let parsed_arguments = crate::alphacode_base::message::ToolCall::parse_streamed_input_to_object(arguments);
+    let parsed_arguments =
+        crate::alphacode_base::message::ToolCall::parse_streamed_input_to_object(arguments);
     ensure!(
         parsed_arguments.is_object(),
         "{} live tool-call smoke returned non-object tool arguments: {:?}",
@@ -1945,11 +1952,13 @@ pub async fn run_live_native_provider_tool_smoke(
 /// Parse a streamed tool-call argument blob into a JSON object (empty object for
 /// a blank payload), shared by the native tool smoke probes.
 fn parse_tool_arguments(input_json: &str) -> serde_json::Value {
-    crate::alphacode_base::message::ToolCall::parse_streamed_input_to_object(if input_json.trim().is_empty() {
-        "{}"
-    } else {
-        input_json.trim()
-    })
+    crate::alphacode_base::message::ToolCall::parse_streamed_input_to_object(
+        if input_json.trim().is_empty() {
+            "{}"
+        } else {
+            input_json.trim()
+        },
+    )
 }
 
 /// Build the assistant `tool_use` replay block for a captured native tool call,

@@ -782,4 +782,3 @@ fn color_to_rgb(color: Color) -> Option<[u8; 3]> {
         _ => None,
     }
 }
-

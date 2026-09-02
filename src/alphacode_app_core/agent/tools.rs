@@ -1,6 +1,6 @@
 use crate::alphacode_app_core::message::{ContentBlock, ToolCall};
-use crate::terminal_println as println;
 use crate::alphacode_app_core::tool::ToolOutput;
+use crate::terminal_println as println;
 
 pub(super) const MAX_TOOL_OUTPUT_CHARS_FOR_HISTORY: usize = 1024 * 1024;
 
@@ -21,7 +21,15 @@ pub(super) fn cap_tool_output_for_history(tool_name: &str, mut output: ToolOutpu
     let head_limit = (half * 4 / 10).min(256 * 1024);
     let tail_limit = (half * 4 / 10).min(256 * 1024);
     let head: String = output.output.chars().take(head_limit).collect();
-    let tail: String = output.output.chars().rev().take(tail_limit).collect::<String>().chars().rev().collect();
+    let tail: String = output
+        .output
+        .chars()
+        .rev()
+        .take(tail_limit)
+        .collect::<String>()
+        .chars()
+        .rev()
+        .collect();
     let dropped = original_chars - head_limit - tail_limit;
     output.output = format!(
         "{}\n\n[... {} chars truncated from {} total: kept {} head + {} tail. Tool `{}` output was {} chars. Redirect large logs to a file and read targeted sections.]\n\n{}",
@@ -86,9 +94,11 @@ pub(super) fn tool_output_side_pane_images(
             source: crate::alphacode_session_types::RenderedImageSource::ToolResult {
                 tool_name: tool_name.to_string(),
             },
-            anchor: Some(crate::alphacode_session_types::RenderedImageAnchor::ToolCall {
-                id: tool_call_id.to_string(),
-            }),
+            anchor: Some(
+                crate::alphacode_session_types::RenderedImageAnchor::ToolCall {
+                    id: tool_call_id.to_string(),
+                },
+            ),
         })
         .collect()
 }

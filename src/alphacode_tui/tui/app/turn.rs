@@ -1195,7 +1195,9 @@ impl App {
                 self.status = ProcessingStatus::RunningTool(tc.name.clone());
                 self.observe_tool_call(&tc);
                 if matches!(tc.name.as_str(), "memory") {
-                    crate::memory::set_state(crate::alphacode_tui::tui::info_widget::MemoryState::Embedding);
+                    crate::memory::set_state(
+                        crate::alphacode_tui::tui::info_widget::MemoryState::Embedding,
+                    );
                 }
                 status_spinner_renderer.draw_full(self, terminal)?;
 
@@ -1431,9 +1433,13 @@ impl App {
                     Err(e) => {
                         let error_msg = if e.to_string().contains("timeout") {
                             format!("Tool timed out: {}", e)
-                        } else if e.to_string().contains("permission") || e.to_string().contains("denied") {
+                        } else if e.to_string().contains("permission")
+                            || e.to_string().contains("denied")
+                        {
                             format!("Permission denied: {}", e)
-                        } else if e.to_string().contains("not found") || e.to_string().contains("No such file") {
+                        } else if e.to_string().contains("not found")
+                            || e.to_string().contains("No such file")
+                        {
                             format!("File not found: {}", e)
                         } else {
                             format!("Error: {}", e)
@@ -1498,4 +1504,3 @@ impl App {
         Ok(())
     }
 }
-

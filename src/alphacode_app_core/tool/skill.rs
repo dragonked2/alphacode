@@ -328,7 +328,11 @@ impl SkillTool {
                         "Reference '{}' not found in skill '{}'.\n\nAvailable references: {}",
                         ref_name,
                         skill.name,
-                        if available.is_empty() { "none".to_string() } else { available.join(", ") }
+                        if available.is_empty() {
+                            "none".to_string()
+                        } else {
+                            available.join(", ")
+                        }
                     ))
                     .with_title(format!("Skills: {} reference not found", skill.name)));
                 }
@@ -412,7 +416,10 @@ impl SkillTool {
         } else {
             let mut output = format!("Skills matching '{}':\n\n", query);
             for (name, desc, score) in &matches {
-                output.push_str(&format!("- /{} (relevance: {})\n  {}\n\n", name, score, desc));
+                output.push_str(&format!(
+                    "- /{} (relevance: {})\n  {}\n\n",
+                    name, score, desc
+                ));
             }
             Ok(ToolOutput::new(output).with_title(format!("Skills: {} results", matches.len())))
         }
@@ -431,24 +438,30 @@ impl SkillTool {
             let mut output = format!("# Skill Info: {}\n\n", skill.name);
             output.push_str(&format!("**Description:** {}\n", skill.description));
             output.push_str(&format!("**Path:** {}\n", skill.path.display()));
-            
+
             if let Some(ref tools) = skill.allowed_tools {
                 output.push_str(&format!("**Allowed tools:** {}\n", tools.join(", ")));
             }
-            
+
             let refs = skill.list_references();
             if !refs.is_empty() {
-                output.push_str(&format!("\n## Reference Files ({} available)\n\n", refs.len()));
+                output.push_str(&format!(
+                    "\n## Reference Files ({} available)\n\n",
+                    refs.len()
+                ));
                 for name in &refs {
-                output.push_str(&format!("- `{}`\n", name));
-            }
-            output.push_str(&format!(
+                    output.push_str(&format!("- `{}`\n", name));
+                }
+                output.push_str(&format!(
                 "\nLoad a reference file with: skill_manage read, name=\"{}\", reference=\"<filename>\"\n",
                 skill.name
             ));
             }
-            
-            output.push_str(&format!("\n## Content Preview\n\n{}\n", &skill.content[..skill.content.len().min(500)]));
+
+            output.push_str(&format!(
+                "\n## Content Preview\n\n{}\n",
+                &skill.content[..skill.content.len().min(500)]
+            ));
             if skill.content.len() > 500 {
                 output.push_str("\n... (use `read` to see full content)\n");
             }

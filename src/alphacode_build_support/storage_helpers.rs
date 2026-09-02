@@ -1,6 +1,6 @@
 use super::{MigrationContext, binary_name};
-use anyhow::Result;
 use crate::alphacode_storage as storage;
+use anyhow::Result;
 use std::path::PathBuf;
 
 /// Get path to builds directory

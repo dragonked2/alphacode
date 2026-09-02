@@ -139,7 +139,8 @@ fn name_matches_ignore(name: &str, pattern: &str) -> bool {
     }
     if let Some(ext) = pattern.strip_prefix("*.") {
         // *.pyc  →  name ends with ".pyc"
-        return name.ends_with(ext) && name.len() > ext.len() + 1
+        return name.ends_with(ext)
+            && name.len() > ext.len() + 1
             && name.as_bytes()[name.len() - ext.len() - 1] == b'.';
     }
     if let Some(stripped) = pattern.strip_suffix("/*") {
@@ -185,9 +186,10 @@ fn collect_entries(
 
         let name = item.file_name().to_string_lossy().to_string();
 
-        if ignore.iter().any(|p| {
-            name == *p || name_matches_ignore(&name, p)
-        }) {
+        if ignore
+            .iter()
+            .any(|p| name == *p || name_matches_ignore(&name, p))
+        {
             continue;
         }
 

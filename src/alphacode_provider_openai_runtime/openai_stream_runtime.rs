@@ -153,7 +153,8 @@ pub(super) async fn stream_response(
 
     if !response.status().is_success() {
         let status = response.status();
-        let retry_after = crate::alphacode_provider_core::retry_after::retry_after(response.headers());
+        let retry_after =
+            crate::alphacode_provider_core::retry_after::retry_after(response.headers());
 
         let body = crate::alphacode_base::util::http_error_body(response, "HTTP error").await;
         log_openai_stream_lifecycle(
@@ -179,7 +180,9 @@ pub(super) async fn stream_response(
         if let Some(reason) = classify_unavailable_model_error(status, &body)
             && let Some(model_name) = request.get("model").and_then(|m| m.as_str())
         {
-            crate::alphacode_base::provider::record_model_unavailable_for_account(model_name, &reason);
+            crate::alphacode_base::provider::record_model_unavailable_for_account(
+                model_name, &reason,
+            );
             crate::alphacode_base::logging::warn(&format!(
                 "Recorded OpenAI model '{}' as unavailable: {}",
                 model_name, reason
@@ -748,11 +751,19 @@ pub(super) async fn try_persistent_ws_continuation(
 
     // Send the continuation request on the existing WebSocket
     let send_started_at = Instant::now();
-    emit_connection_phase(tx, crate::alphacode_message_types::ConnectionPhase::SendingRequest).await;
+    emit_connection_phase(
+        tx,
+        crate::alphacode_message_types::ConnectionPhase::SendingRequest,
+    )
+    .await;
     if let Err(e) = state.ws_stream.send(WsMessage::Text(request_text)).await {
         return PersistentWsResult::Failed(format!("send error: {}", e));
     }
-    emit_connection_phase(tx, crate::alphacode_message_types::ConnectionPhase::WaitingForResponse).await;
+    emit_connection_phase(
+        tx,
+        crate::alphacode_message_types::ConnectionPhase::WaitingForResponse,
+    )
+    .await;
     state.last_activity_at = Instant::now();
     crate::alphacode_base::logging::info(&format!(
         "Persistent WS continuation request sent in {}ms ({})",
@@ -825,8 +836,11 @@ pub(super) async fn try_persistent_ws_continuation(
             Ok(WsMessage::Text(text)) => {
                 let text = text.to_string();
                 if !logged_first_server_event {
-                    emit_connection_phase(tx, crate::alphacode_message_types::ConnectionPhase::Streaming)
-                        .await;
+                    emit_connection_phase(
+                        tx,
+                        crate::alphacode_message_types::ConnectionPhase::Streaming,
+                    )
+                    .await;
                     crate::alphacode_base::logging::info(&format!(
                         "Persistent WS first server event after {}ms ({})",
                         stream_started.elapsed().as_millis(),
@@ -989,7 +1003,9 @@ pub(super) async fn try_persistent_ws_continuation(
         PersistentWsResult::Success
     } else {
         // Got response but no response_id - can't chain further
-        crate::alphacode_base::logging::warn("Persistent WS: no response_id in response; breaking chain");
+        crate::alphacode_base::logging::warn(
+            "Persistent WS: no response_id in response; breaking chain",
+        );
         *guard = None;
         log_openai_stream_lifecycle(
             crate::alphacode_base::logging::LogLevel::Warn,

@@ -145,12 +145,17 @@ pub(super) fn subscribe_pitch_markdown() -> String {
             model_names.join(", ")
         ));
     }
-    message.push_str("  - No key management: sign in once in the browser, alphacode routes the rest\n");
+    message.push_str(
+        "  - No key management: sign in once in the browser, alphacode routes the rest\n",
+    );
     message.push_str("  - Automatic failover routing when a provider has a bad day\n");
     message.push_str("  - Funds alphacode development - alphacode is open source\n");
 
     message.push_str("\nPlans\n\n");
-    for tier in crate::subscription_catalog::AlphacodeTier::ALL.iter().copied() {
+    for tier in crate::subscription_catalog::AlphacodeTier::ALL
+        .iter()
+        .copied()
+    {
         message.push_str(&format!(
             "  - {} - ${}/mo, about ${:.2} usable inference budget\n",
             tier.display_name(),
@@ -326,7 +331,10 @@ mod tests {
         assert!(pitch.contains("/login alphacode"));
         assert!(pitch.contains("/subscription"));
         // Every launched tier appears with its retail price.
-        for tier in crate::subscription_catalog::AlphacodeTier::ALL.iter().copied() {
+        for tier in crate::subscription_catalog::AlphacodeTier::ALL
+            .iter()
+            .copied()
+        {
             assert!(pitch.contains(tier.display_name()));
             assert!(pitch.contains(&format!("${}/mo", tier.retail_price_usd())));
         }

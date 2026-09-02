@@ -102,7 +102,10 @@ mod tests {
         assert!(!temp.exists());
         assert!(
             !dir.path()
-                .join(format!(".alphacode-launcher-old-{}.exe", std::process::id()))
+                .join(format!(
+                    ".alphacode-launcher-old-{}.exe",
+                    std::process::id()
+                ))
                 .exists()
         );
     }

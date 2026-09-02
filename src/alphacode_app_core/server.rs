@@ -81,6 +81,7 @@ use self::swarm_persistence::{
     swarm_operation_lock,
 };
 use self::util::get_shared_mcp_pool;
+use crate::alphacode_agent_runtime::{InterruptSignal, SoftInterruptSource};
 use crate::alphacode_app_core::agent::Agent;
 use crate::alphacode_app_core::ambient_runner::AmbientRunnerHandle;
 use crate::alphacode_app_core::bus::{Bus, BusEvent};
@@ -94,12 +95,11 @@ use crate::alphacode_app_core::runtime_memory_log::{
 };
 use crate::alphacode_app_core::tool::selfdev::ReloadContext;
 use crate::alphacode_app_core::transport::Listener;
-use anyhow::Result;
-use crate::alphacode_agent_runtime::{InterruptSignal, SoftInterruptSource};
 use crate::alphacode_swarm_core::{
     append_swarm_completion_report_instructions, format_structured_completion_report,
     summarize_plan_items, truncate_detail,
 };
+use anyhow::Result;
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -620,7 +620,6 @@ use self::file_activity::file_activity_scope_label;
 
 mod file_touch_service;
 pub(crate) use self::file_touch_service::FileTouchService;
-
 
 /// Idle timeout for the shared server when no clients are connected (5 minutes)
 const IDLE_TIMEOUT_SECS: u64 = 300;
@@ -1345,8 +1344,9 @@ impl Server {
         let stale_swarm_plans = Arc::clone(&self.swarm_state.plans);
         let stale_swarm_coordinators = Arc::clone(&self.swarm_state.coordinators);
         tokio::spawn(async move {
-            let mut interval =
-                tokio::time::interval(crate::alphacode_app_core::server::swarm::swarm_task_sweep_interval());
+            let mut interval = tokio::time::interval(
+                crate::alphacode_app_core::server::swarm::swarm_task_sweep_interval(),
+            );
             interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
             loop {
                 interval.tick().await;

@@ -256,7 +256,8 @@ fn runtime_computed_targets_need_confirmation() {
 #[test]
 fn a_variable_that_resolves_to_home_is_denied_not_queried() {
     let expanded = expand("$HOME", &ctx());
-    let finding = classify_target(&expanded, "$HOME", true, &ctx()).expect("$HOME should be denied");
+    let finding =
+        classify_target(&expanded, "$HOME", true, &ctx()).expect("$HOME should be denied");
     assert_eq!(finding.level, RiskLevel::Catastrophic);
 }
 

@@ -46,7 +46,6 @@ pub enum PhaseStatus {
     Skipped,
 }
 
-
 /// A milestone within a phase.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Milestone {
@@ -60,8 +59,7 @@ pub struct Milestone {
 // ── Task Decomposition ────────────────────────────────────────────────────
 
 /// Estimated complexity of a task.
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, PartialOrd, Ord)]
-#[derive(Default)]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, PartialOrd, Ord, Default)]
 pub enum TaskComplexity {
     /// Trivial: single small change, < 100 lines.
     Trivial = 0,
@@ -83,7 +81,6 @@ impl TaskComplexity {
         self >= threshold
     }
 }
-
 
 // ── Agent Spec ───────────────────────────────────────────────────────────┐
 
@@ -615,7 +612,11 @@ mod tests {
         };
         let conflicts = detect_file_conflicts(&[r1, r2]);
         assert_eq!(conflicts.len(), 1);
-        assert!(conflicts[0].conflicting_files.contains(&"src/main.rs".to_string()));
+        assert!(
+            conflicts[0]
+                .conflicting_files
+                .contains(&"src/main.rs".to_string())
+        );
     }
 
     #[test]

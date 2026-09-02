@@ -281,7 +281,8 @@ async fn wait_for_reload_handoff_before_reconnect(
                 pid,
                 crate::alphacode_app_core::server::reload_state_summary(RELOAD_MARKER_MAX_AGE)
             ));
-            let wait = crate::alphacode_app_core::server::wait_for_reload_handoff_event(pid, &socket_path);
+            let wait =
+                crate::alphacode_app_core::server::wait_for_reload_handoff_event(pid, &socket_path);
             tokio::pin!(wait);
             let mut redraw = disconnected_redraw_interval(false);
             loop {
@@ -465,7 +466,9 @@ pub(in crate::alphacode_tui::tui::app) async fn connect_with_retry(
                     crate::alphacode_app_core::server::ReloadWaitStatus::Ready => {
                         crate::logging::info(&format!(
                             "Reconnect reload handoff: ready immediately (state={})",
-                            crate::alphacode_app_core::server::reload_state_summary(RELOAD_MARKER_MAX_AGE)
+                            crate::alphacode_app_core::server::reload_state_summary(
+                                RELOAD_MARKER_MAX_AGE
+                            )
                         ));
                         return Ok(ConnectOutcome::Retry);
                     }
@@ -473,7 +476,9 @@ pub(in crate::alphacode_tui::tui::app) async fn connect_with_retry(
                         crate::logging::warn(&format!(
                             "Reconnect reload handoff: failed detail={:?} state={}",
                             detail,
-                            crate::alphacode_app_core::server::reload_state_summary(RELOAD_MARKER_MAX_AGE)
+                            crate::alphacode_app_core::server::reload_state_summary(
+                                RELOAD_MARKER_MAX_AGE
+                            )
                         ));
                         let detail = detail.unwrap_or_else(|| {
                             "reload failed before the replacement server became ready; starting replacement server"
@@ -486,7 +491,9 @@ pub(in crate::alphacode_tui::tui::app) async fn connect_with_retry(
                     crate::alphacode_app_core::server::ReloadWaitStatus::Idle => {
                         crate::logging::warn(&format!(
                             "Reconnect reload handoff: idle without ready server state={}",
-                            crate::alphacode_app_core::server::reload_state_summary(RELOAD_MARKER_MAX_AGE)
+                            crate::alphacode_app_core::server::reload_state_summary(
+                                RELOAD_MARKER_MAX_AGE
+                            )
                         ));
                         if recover_reloading_server(
                             app,
@@ -504,9 +511,14 @@ pub(in crate::alphacode_tui::tui::app) async fn connect_with_retry(
                         crate::logging::info(&format!(
                             "Reconnect wait: awaiting reload lifecycle event (pid={:?}, state={})",
                             pid,
-                            crate::alphacode_app_core::server::reload_state_summary(RELOAD_MARKER_MAX_AGE)
+                            crate::alphacode_app_core::server::reload_state_summary(
+                                RELOAD_MARKER_MAX_AGE
+                            )
                         ));
-                        let wait = crate::alphacode_app_core::server::wait_for_reload_handoff_event(pid, &socket_path);
+                        let wait = crate::alphacode_app_core::server::wait_for_reload_handoff_event(
+                            pid,
+                            &socket_path,
+                        );
                         tokio::pin!(wait);
                         let mut redraw = disconnected_redraw_interval(false);
                         loop {
@@ -567,7 +579,9 @@ pub(in crate::alphacode_tui::tui::app) async fn connect_with_retry(
     }
 }
 
-pub(in crate::alphacode_tui::tui::app) async fn handle_post_connect<B: ratatui::backend::Backend>(
+pub(in crate::alphacode_tui::tui::app) async fn handle_post_connect<
+    B: ratatui::backend::Backend,
+>(
     app: &mut App,
     terminal: &mut ratatui::Terminal<B>,
     remote: &mut RemoteConnection,
@@ -882,4 +896,3 @@ pub(in crate::alphacode_tui::tui::app) fn finalize_reload_reconnect(
         app.reload_info.clear();
     }
 }
-

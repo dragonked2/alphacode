@@ -3,13 +3,13 @@ use serde::Serialize;
 use std::io::Read;
 use std::path::PathBuf;
 
-use crate::cli::args::ProviderAuthArg;
-use crate::config::{
-    Config, NamedProviderAuth, NamedProviderConfig, NamedProviderModelConfig, NamedProviderType,
-};
 use crate::alphacode_base::provider_catalog::{
     api_base_uses_localhost, is_safe_env_file_name, is_safe_env_key_name, normalize_api_base,
     resolve_login_provider, save_env_value_to_env_file,
+};
+use crate::cli::args::ProviderAuthArg;
+use crate::config::{
+    Config, NamedProviderAuth, NamedProviderConfig, NamedProviderModelConfig, NamedProviderType,
 };
 
 #[derive(Debug)]

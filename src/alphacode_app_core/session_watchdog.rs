@@ -209,7 +209,10 @@ pub fn record_recovery(action: RecoveryAction) {
     s.recovery_count.fetch_add(1, Ordering::Relaxed);
     *s.last_recovery.lock().unwrap_or_else(|p| p.into_inner()) = Instant::now();
     crate::health::record_recovery();
-    crate::logging::info(&format!("session_watchdog: recovery performed: {:?}", action));
+    crate::logging::info(&format!(
+        "session_watchdog: recovery performed: {:?}",
+        action
+    ));
 }
 
 /// Get the number of recoveries performed.

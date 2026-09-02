@@ -270,7 +270,9 @@ fn raw_selection_point(
 mod tests {
     use super::*;
     use crate::alphacode_tui_markdown::CopyTargetKind;
-    use crate::alphacode_tui_messages::{CopyTarget, PreparedChatFrame, PreparedMessages, WrappedLineMap};
+    use crate::alphacode_tui_messages::{
+        CopyTarget, PreparedChatFrame, PreparedMessages, WrappedLineMap,
+    };
     use ratatui::layout::Rect;
     use ratatui::text::Line;
     use std::sync::Arc;
@@ -357,4 +359,3 @@ mod tests {
         );
     }
 }
-

@@ -1414,9 +1414,6 @@ async fn run_server_keepalive(
     }
 }
 
-
-
-
 fn run_telemetry_command(subcmd: &super::args::TelemetryCommand) -> Result<()> {
     match subcmd {
         super::args::TelemetryCommand::Status { json } => run_telemetry_status(*json),
@@ -1426,18 +1423,37 @@ fn run_telemetry_command(subcmd: &super::args::TelemetryCommand) -> Result<()> {
 }
 
 fn run_telemetry_status(json: bool) -> Result<()> {
-    use crate::alphacode_telemetry_core::{is_enabled as telemetry_is_enabled, content_sharing_enabled, opt_out_forced_by_env};
+    use crate::alphacode_telemetry_core::{
+        content_sharing_enabled, is_enabled as telemetry_is_enabled, opt_out_forced_by_env,
+    };
     if json {
         let payload = serde_json::json!({
             "usage_telemetry_enabled": telemetry_is_enabled(),
             "content_sharing_enabled": content_sharing_enabled(),
             "opt_out_forced_by_env": opt_out_forced_by_env(),
         });
-        println!("{}", serde_json::to_string_pretty(&payload).unwrap_or_default());
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&payload).unwrap_or_default()
+        );
     } else {
         println!("Telemetry status");
-        println!("  usage telemetry    : {}", if telemetry_is_enabled() { "enabled" } else { "disabled" });
-        println!("  content sharing    : {}", if content_sharing_enabled() { "enabled" } else { "disabled" });
+        println!(
+            "  usage telemetry    : {}",
+            if telemetry_is_enabled() {
+                "enabled"
+            } else {
+                "disabled"
+            }
+        );
+        println!(
+            "  content sharing    : {}",
+            if content_sharing_enabled() {
+                "enabled"
+            } else {
+                "disabled"
+            }
+        );
         if opt_out_forced_by_env() {
             println!("  forced off via env : ALPHACODE_TELEMETRY=0");
         }
@@ -1455,7 +1471,6 @@ fn run_telemetry_set(enabled: bool) -> Result<()> {
     Ok(())
 }
 
-
 async fn run_server_promote(version: Option<&str>, json: bool) -> Result<()> {
     let target = match version {
         Some(v) => v.to_string(),
@@ -1469,7 +1484,10 @@ async fn run_server_promote(version: Option<&str>, json: bool) -> Result<()> {
         println!("{}", serde_json::json!({ "promoted": promoted }));
     } else {
         match promoted {
-            Some(v) => println!("Server channel pinned to {}. Run 'alphacode server reload' to apply.", v),
+            Some(v) => println!(
+                "Server channel pinned to {}. Run 'alphacode server reload' to apply.",
+                v
+            ),
             None => println!("No server channel to pin (no installed binary found)."),
         }
     }

@@ -13,13 +13,17 @@ pub(super) fn local_endpoint_hint(provider_id: &str) -> String {
         "ollama" => "Next step: install a model with `ollama pull llama3.2`, then run \
              `alphacode --provider ollama --model llama3.2 run 'hello'`."
             .to_string(),
-        "lmstudio" => "Next step: load a chat model in LM Studio's Local Server, then run alphacode \
+        "lmstudio" => {
+            "Next step: load a chat model in LM Studio's Local Server, then run alphacode \
              with that exact model id, for example \
              `alphacode --provider lmstudio --model <model-id> run 'hello'`."
-            .to_string(),
-        "dragonmeta" => "Next step: start the Alpha server with `alpha serve` in your ember project, \
+                .to_string()
+        }
+        "dragonmeta" => {
+            "Next step: start the Alpha server with `alpha serve` in your ember project, \
              then run `alphacode --provider dragonmeta --model alpha run 'hello'`."
-            .to_string(),
+                .to_string()
+        }
         other => format!(
             "Next step: run alphacode with a model available on this endpoint, for example \
              `alphacode --provider {} --model <model-id> run 'hello'`.",

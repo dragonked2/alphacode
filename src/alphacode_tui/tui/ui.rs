@@ -518,16 +518,14 @@ mod theme_support;
 use super::color_support::rgb;
 pub(crate) use layout_support::align_if_unset;
 use layout_support::{
-    centered_content_block_width, clear_area, draw_right_rail_chrome, left_aligned_content_inset,
-    left_pad_lines_to_block_width, right_rail_border_style, MAX_CENTERED_CONTENT_WIDTH,
+    MAX_CENTERED_CONTENT_WIDTH, centered_content_block_width, clear_area, draw_right_rail_chrome,
+    left_aligned_content_inset, left_pad_lines_to_block_width, right_rail_border_style,
 };
 #[cfg(test)]
 pub(crate) use status_support::calculate_input_lines;
-use status_support::{
-    format_status_for_debug, shorten_model_name,
-};
 #[cfg(test)]
 use status_support::semver;
+use status_support::{format_status_for_debug, shorten_model_name};
 use theme_support::{
     accent_color, activity_indicator, activity_indicator_frame_index, ai_color, ai_text,
     animated_tool_color, asap_color, blend_color, dim_color, file_link_color, header_icon_color,
@@ -1662,7 +1660,9 @@ fn copy_snapshot_slot_mut(
     }
 }
 
-fn copy_snapshot_for_pane(pane: crate::alphacode_tui::tui::CopySelectionPane) -> Option<CopyViewportSnapshot> {
+fn copy_snapshot_for_pane(
+    pane: crate::alphacode_tui::tui::CopySelectionPane,
+) -> Option<CopyViewportSnapshot> {
     #[cfg(test)]
     {
         TEST_COPY_VIEWPORT.with(|snapshots| {
@@ -1761,22 +1761,10 @@ fn record_copy_viewport_frame_snapshot(
     #[cfg(test)]
     {
         TEST_COPY_VIEWPORT.with(|state| {
-            *copy_snapshot_slot_mut(&mut state.borrow_mut(), crate::alphacode_tui::tui::CopySelectionPane::Chat) =
-                Some(CopyViewportSnapshot {
-                    pane: crate::alphacode_tui::tui::CopySelectionPane::Chat,
-                    data: CopyViewportData::ChatFrame { prepared },
-                    scroll,
-                    visible_end,
-                    content_area,
-                    left_margins: left_margins.to_vec(),
-                });
-        });
-        return;
-    }
-    #[cfg(not(test))]
-    if let Ok(mut state) = copy_viewport_state().lock() {
-        *copy_snapshot_slot_mut(&mut state, crate::alphacode_tui::tui::CopySelectionPane::Chat) =
-            Some(CopyViewportSnapshot {
+            *copy_snapshot_slot_mut(
+                &mut state.borrow_mut(),
+                crate::alphacode_tui::tui::CopySelectionPane::Chat,
+            ) = Some(CopyViewportSnapshot {
                 pane: crate::alphacode_tui::tui::CopySelectionPane::Chat,
                 data: CopyViewportData::ChatFrame { prepared },
                 scroll,
@@ -1784,6 +1772,22 @@ fn record_copy_viewport_frame_snapshot(
                 content_area,
                 left_margins: left_margins.to_vec(),
             });
+        });
+        return;
+    }
+    #[cfg(not(test))]
+    if let Ok(mut state) = copy_viewport_state().lock() {
+        *copy_snapshot_slot_mut(
+            &mut state,
+            crate::alphacode_tui::tui::CopySelectionPane::Chat,
+        ) = Some(CopyViewportSnapshot {
+            pane: crate::alphacode_tui::tui::CopySelectionPane::Chat,
+            data: CopyViewportData::ChatFrame { prepared },
+            scroll,
+            visible_end,
+            content_area,
+            left_margins: left_margins.to_vec(),
+        });
     }
 }
 
@@ -2207,7 +2211,10 @@ pub(crate) fn side_pane_point_from_screen(
     (point.pane == crate::alphacode_tui::tui::CopySelectionPane::SidePane).then_some(point)
 }
 
-fn copy_pane_line_text(pane: crate::alphacode_tui::tui::CopySelectionPane, abs_line: usize) -> Option<String> {
+fn copy_pane_line_text(
+    pane: crate::alphacode_tui::tui::CopySelectionPane,
+    abs_line: usize,
+) -> Option<String> {
     copy_snapshot_for_pane(pane)?
         .wrapped_plain_line(abs_line)
         .map(str::to_owned)
@@ -2218,11 +2225,17 @@ pub(crate) fn copy_viewport_line_text(abs_line: usize) -> Option<String> {
 }
 
 pub(crate) fn side_pane_line_text(abs_line: usize) -> Option<String> {
-    copy_pane_line_text(crate::alphacode_tui::tui::CopySelectionPane::SidePane, abs_line)
+    copy_pane_line_text(
+        crate::alphacode_tui::tui::CopySelectionPane::SidePane,
+        abs_line,
+    )
 }
 
 pub(crate) fn input_pane_line_text(abs_line: usize) -> Option<String> {
-    copy_pane_line_text(crate::alphacode_tui::tui::CopySelectionPane::Input, abs_line)
+    copy_pane_line_text(
+        crate::alphacode_tui::tui::CopySelectionPane::Input,
+        abs_line,
+    )
 }
 
 fn copy_pane_line_count(pane: crate::alphacode_tui::tui::CopySelectionPane) -> Option<usize> {
@@ -2268,7 +2281,9 @@ pub(crate) fn copy_pane_first_visible_point(
     })
 }
 
-pub(crate) fn copy_selection_text(range: crate::alphacode_tui::tui::CopySelectionRange) -> Option<String> {
+pub(crate) fn copy_selection_text(
+    range: crate::alphacode_tui::tui::CopySelectionRange,
+) -> Option<String> {
     if range.start.pane != range.end.pane {
         return None;
     }
@@ -2506,7 +2521,8 @@ pub(crate) fn inline_image_body_target_from_screen(
 /// image size), so external drivers (debug socket) can compute real click
 /// targets against the running TUI.
 pub(crate) fn debug_chat_image_regions_json() -> String {
-    let Some(snapshot) = copy_snapshot_for_pane(crate::alphacode_tui::tui::CopySelectionPane::Chat) else {
+    let Some(snapshot) = copy_snapshot_for_pane(crate::alphacode_tui::tui::CopySelectionPane::Chat)
+    else {
         return "{\"error\":\"no chat snapshot\"}".to_string();
     };
     let prepared = match &snapshot.data {
@@ -2564,7 +2580,9 @@ pub fn draw(frame: &mut Frame, app: &dyn TuiState) {
     // epoch here so the memo is scoped to exactly this frame.
     app.advance_command_suggestions_epoch();
     match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        crate::alphacode_tui::tui::markdown::with_deferred_mermaid_render_context(|| draw_inner(frame, app))
+        crate::alphacode_tui::tui::markdown::with_deferred_mermaid_render_context(|| {
+            draw_inner(frame, app)
+        })
     })) {
         Ok(()) => {}
         Err(payload) => render_recovered_panic_frame(frame, &payload),
@@ -3229,8 +3247,9 @@ fn draw_inner(frame: &mut Frame, app: &dyn TuiState) {
         }
     } else if swarm_page_active {
         let members = app.inline_swarm_members();
-        let spinner_frame =
-            (app.animation_elapsed() * crate::alphacode_tui_render::swarm_gallery::STRIP_SPINNER_FPS) as usize;
+        let spinner_frame = (app.animation_elapsed()
+            * crate::alphacode_tui_render::swarm_gallery::STRIP_SPINNER_FPS)
+            as usize;
         let lines = super::info_widget::swarm_gallery::render_swarm_page_lines(
             &members,
             app.swarm_panel_selected(),
@@ -3625,4 +3644,3 @@ pub(crate) fn render_native_scrollbar(
 #[cfg(test)]
 #[path = "ui_tests/mod.rs"]
 mod tests;
-

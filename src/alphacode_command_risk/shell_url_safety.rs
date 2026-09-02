@@ -129,8 +129,7 @@ fn detect_url_with_shell_chars(command: &str) -> Option<String> {
                          string. cmd.exe will interpret these. Either escape \
                          with `^` (caret), or pass via env var: \
                          `set URL={} && curl \"%URL%\"`",
-                        found,
-                        url
+                        found, url
                     ));
                 }
             }
@@ -191,17 +190,13 @@ mod tests {
 
     #[test]
     fn clean_linux_command_passes() {
-        let v = scan_for_shell_url_issues(
-            "curl -s https://api.example.com/users | jq .",
-        );
+        let v = scan_for_shell_url_issues("curl -s https://api.example.com/users | jq .");
         assert!(v.runs_immediately());
     }
 
     #[test]
     fn url_with_ampersand_in_query_triggers_warning() {
-        let v = scan_for_shell_url_issues(
-            "curl \"https://api.example.com/?a=1&b=2\"",
-        );
+        let v = scan_for_shell_url_issues("curl \"https://api.example.com/?a=1&b=2\"");
         match v {
             ShellUrlSafety::Warning(s) => {
                 assert!(s.contains("metacharacter"));
@@ -212,17 +207,13 @@ mod tests {
 
     #[test]
     fn url_with_pipe_in_query_triggers_warning() {
-        let v = scan_for_shell_url_issues(
-            "curl \"https://api.example.com/?q=a|b\"",
-        );
+        let v = scan_for_shell_url_issues("curl \"https://api.example.com/?q=a|b\"");
         assert!(!v.runs_immediately());
     }
 
     #[test]
     fn findstr_with_url_triggers_warning() {
-        let v = scan_for_shell_url_issues(
-            "curl https://api.example.com | findstr \"200\"",
-        );
+        let v = scan_for_shell_url_issues("curl https://api.example.com | findstr \"200\"");
         match v {
             ShellUrlSafety::Warning(s) => {
                 assert!(s.contains("findstr"));
@@ -246,9 +237,7 @@ mod tests {
 
     #[test]
     fn clean_powershell_no_url_passes() {
-        let v = scan_for_shell_url_issues(
-            "powershell Get-Process | Select-String chrome",
-        );
+        let v = scan_for_shell_url_issues("powershell Get-Process | Select-String chrome");
         assert!(v.runs_immediately());
     }
 }

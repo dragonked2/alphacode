@@ -660,4 +660,3 @@ impl MemoryGraph {
         self.graph_version == GRAPH_VERSION
     }
 }
-

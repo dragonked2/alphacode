@@ -15,7 +15,9 @@ pub use crate::alphacode_selfdev_types::client_selfdev_requested;
 const ALPHACODE_REPO_URL: &str = "https://github.com/dragonked2/alphacode.git";
 
 fn selfdev_clone_dir() -> Result<PathBuf> {
-    Ok(crate::storage::alphacode_dir()?.join("source").join("alphacode"))
+    Ok(crate::storage::alphacode_dir()?
+        .join("source")
+        .join("alphacode"))
 }
 
 fn resolve_or_clone_repo_dir() -> Result<PathBuf> {
@@ -89,7 +91,9 @@ async fn wait_for_reloading_server() -> bool {
                 "Reload handoff failed while resuming self-dev session on {}: {}; recent_state={}",
                 crate::alphacode_app_core::server::socket_path().display(),
                 detail.unwrap_or_else(|| "unknown reload failure".to_string()),
-                crate::alphacode_app_core::server::reload_state_summary(std::time::Duration::from_secs(60))
+                crate::alphacode_app_core::server::reload_state_summary(
+                    std::time::Duration::from_secs(60)
+                )
             ));
             false
         }
@@ -166,8 +170,9 @@ pub async fn run_self_dev(should_build: bool, resume_session: Option<String>) ->
 
     let mut server_running = super::dispatch::server_is_running().await;
     if !server_running && std::env::var("ALPHACODE_RESUMING").is_ok() {
-        if let Some(state) = crate::alphacode_app_core::server::recent_reload_state(std::time::Duration::from_secs(30))
-        {
+        if let Some(state) = crate::alphacode_app_core::server::recent_reload_state(
+            std::time::Duration::from_secs(30),
+        ) {
             match state.phase {
                 crate::alphacode_app_core::server::ReloadPhase::Starting => {
                     logging::info(
@@ -190,7 +195,9 @@ pub async fn run_self_dev(should_build: bool, resume_session: Option<String>) ->
                         state
                             .detail
                             .unwrap_or_else(|| "unknown reload failure".to_string()),
-                        crate::alphacode_app_core::server::reload_state_summary(std::time::Duration::from_secs(60))
+                        crate::alphacode_app_core::server::reload_state_summary(
+                            std::time::Duration::from_secs(60)
+                        )
                     ));
                 }
                 crate::alphacode_app_core::server::ReloadPhase::SocketReady => {}

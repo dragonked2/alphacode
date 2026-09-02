@@ -2022,7 +2022,6 @@ fn render_sections(
 // Tips widget - rotating helpful tips and keyboard shortcuts
 // ---------------------------------------------------------------------------
 
-
 fn format_event_for_expanded(
     event: &MemoryEvent,
     max_width: usize,

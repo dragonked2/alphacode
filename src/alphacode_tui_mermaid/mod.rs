@@ -1478,4 +1478,3 @@ pub fn render_pending_terminal_image_cleanup(buf: &mut Buffer) -> bool {
 
 #[cfg(test)]
 pub(crate) static IMAGE_TEST_LOCK: Mutex<()> = Mutex::new(());
-

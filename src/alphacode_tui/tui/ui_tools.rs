@@ -1593,12 +1593,12 @@ pub(super) fn render_batch_subcall_line(
     // Pre-compute reserved width without intermediate format! allocations
     let indent_width = 4 + icon.width() + 1; // "    {icon} "
     let name_width = display_name.width();
-    let intent_width = intent_display.as_ref().map_or(0, |intent| {
-        " · ".width() + intent.width()
-    });
-    let token_width = token_badge.as_ref().map_or(0, |(label, _)| {
-        " · ".width() + label.width()
-    });
+    let intent_width = intent_display
+        .as_ref()
+        .map_or(0, |intent| " · ".width() + intent.width());
+    let token_width = token_badge
+        .as_ref()
+        .map_or(0, |(label, _)| " · ".width() + label.width());
     let reserved = indent_width + name_width + 1 + intent_width + token_width;
     let summary_budget = max_width.map(|w| w.saturating_sub(reserved));
     let error_summary = output_content.and_then(concise_tool_error_summary);
@@ -1608,8 +1608,14 @@ pub(super) fn render_batch_subcall_line(
 
     // Pre-allocate spans with known capacity
     let mut spans = Vec::with_capacity(10);
-    spans.push(Span::styled(format!("    {} ", icon), Style::default().fg(icon_color)));
-    spans.push(Span::styled(display_name.to_string(), Style::default().fg(tool_color())));
+    spans.push(Span::styled(
+        format!("    {} ", icon),
+        Style::default().fg(icon_color),
+    ));
+    spans.push(Span::styled(
+        display_name.to_string(),
+        Style::default().fg(tool_color()),
+    ));
     if let Some(intent) = intent_display {
         // Error summaries always render so failures stay diagnosable even
         // when technical details are hidden. Compare against `intent` before
@@ -1623,7 +1629,10 @@ pub(super) fn render_batch_subcall_line(
             spans.push(Span::styled(summary, Style::default().fg(dim_color())));
         }
     } else if !summary.is_empty() {
-        spans.push(Span::styled(format!(" {}", summary), Style::default().fg(dim_color())));
+        spans.push(Span::styled(
+            format!(" {}", summary),
+            Style::default().fg(dim_color()),
+        ));
     }
     let token_suffix = token_badge.map(|(label, color)| {
         Line::from(vec![

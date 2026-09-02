@@ -1,5 +1,5 @@
-use crate::alphacode_tui::tui::color_support::rgb;
 use crate::alphacode_tui::tui::brand_ux::{BrandTheme, SpinnerStyle};
+use crate::alphacode_tui::tui::color_support::rgb;
 use ratatui::prelude::*;
 
 /// Enhanced input renderer with better visual feedback.
@@ -75,7 +75,11 @@ impl EnhancedInput {
     /// subtle 3D framing effect. The corner glyphs pick up the `pulse` so the
     /// active input "breathes" softly at idle.
     fn render_border(width: usize, _mode: InputMode, is_top: bool, pulse: f32) -> Line<'static> {
-        let (corner_l, corner_r) = if is_top { ("╭", "╮") } else { ("╰", "╯") };
+        let (corner_l, corner_r) = if is_top {
+            ("╭", "╮")
+        } else {
+            ("╰", "╯")
+        };
         let border_width = width.min(80);
         let content_width = border_width.saturating_sub(2);
         let intensity = if is_top { 1.0 } else { 0.5 };
@@ -103,7 +107,9 @@ impl EnhancedInput {
         let remainder = content_width - seg_size * seg_count;
         for seg in 0..seg_count {
             let n = seg_size + if seg < remainder { 1 } else { 0 };
-            if n == 0 { continue; }
+            if n == 0 {
+                continue;
+            }
             let color = gradient[seg % gradient.len()];
             // Apply intensity dimming
             let (r, g, b) = match color {
@@ -125,7 +131,10 @@ impl EnhancedInput {
         spans.push(Span::styled(
             corner_r,
             Style::default()
-                .fg(Self::scale_color(gradient[gradient.len() - 1], corner_boost))
+                .fg(Self::scale_color(
+                    gradient[gradient.len() - 1],
+                    corner_boost,
+                ))
                 .add_modifier(if pulse > 0.5 {
                     Modifier::BOLD
                 } else {
@@ -174,10 +183,7 @@ impl EnhancedInput {
             InputMode::Search => (" 🔍 ", "search", BrandTheme::info()),
         };
 
-        spans.push(Span::styled(
-            icon,
-            Style::default().fg(mode_color),
-        ));
+        spans.push(Span::styled(icon, Style::default().fg(mode_color)));
         spans.push(Span::styled(
             mode_text,
             Style::default().fg(mode_color).add_modifier(Modifier::BOLD),
@@ -186,20 +192,21 @@ impl EnhancedInput {
         if is_processing {
             spans.push(Span::styled(
                 " · thinking",
-                Style::default().fg(BrandTheme::warning()).add_modifier(Modifier::ITALIC),
+                Style::default()
+                    .fg(BrandTheme::warning())
+                    .add_modifier(Modifier::ITALIC),
             ));
         }
 
         // Dim separator before hints
-        spans.push(Span::styled(
-            "  │ ",
-            Style::default().fg(BrandTheme::dim()),
-        ));
+        spans.push(Span::styled("  │ ", Style::default().fg(BrandTheme::dim())));
 
         // Contextual hints
         spans.push(Span::styled(
             "Esc ",
-            Style::default().fg(BrandTheme::accent()).add_modifier(Modifier::BOLD),
+            Style::default()
+                .fg(BrandTheme::accent())
+                .add_modifier(Modifier::BOLD),
         ));
         spans.push(Span::styled(
             "commands  ",
@@ -207,7 +214,9 @@ impl EnhancedInput {
         ));
         spans.push(Span::styled(
             "↑↓ ",
-            Style::default().fg(BrandTheme::accent()).add_modifier(Modifier::BOLD),
+            Style::default()
+                .fg(BrandTheme::accent())
+                .add_modifier(Modifier::BOLD),
         ));
         spans.push(Span::styled(
             "history",
@@ -332,10 +341,7 @@ impl EnhancedInput {
 
             // Leading ellipsis if clipped from left
             if visible_start > 0 {
-                spans.push(Span::styled(
-                    "…",
-                    Style::default().fg(BrandTheme::dim()),
-                ));
+                spans.push(Span::styled("…", Style::default().fg(BrandTheme::dim())));
             }
 
             // Visible characters
@@ -344,14 +350,14 @@ impl EnhancedInput {
             for c in &chars[visible_start..visible_end] {
                 visible_text.push(*c);
             }
-            spans.push(Span::styled(visible_text, Style::default().fg(display_color)));
+            spans.push(Span::styled(
+                visible_text,
+                Style::default().fg(display_color),
+            ));
 
             // Trailing ellipsis if clipped from right
             if visible_end < char_count {
-                spans.push(Span::styled(
-                    "…",
-                    Style::default().fg(BrandTheme::dim()),
-                ));
+                spans.push(Span::styled("…", Style::default().fg(BrandTheme::dim())));
             }
 
             // Cursor block (breathing) or in-flight spinner glyph
@@ -378,10 +384,7 @@ impl EnhancedInput {
                 };
                 let boost = 0.7 + 0.5 * pulse.clamp(0.0, 1.0);
                 let boosted = Self::scale_color(cursor_color, boost);
-                spans.push(Span::styled(
-                    "█",
-                    Style::default().fg(boosted),
-                ));
+                spans.push(Span::styled("█", Style::default().fg(boosted)));
             }
         }
 
@@ -400,7 +403,12 @@ impl EnhancedInput {
 
         let mut hints: Vec<Span<'static>> = match mode {
             InputMode::Chat => vec![
-                Span::styled("  ↵ ", Style::default().fg(BrandTheme::success()).add_modifier(Modifier::BOLD)),
+                Span::styled(
+                    "  ↵ ",
+                    Style::default()
+                        .fg(BrandTheme::success())
+                        .add_modifier(Modifier::BOLD),
+                ),
                 Span::styled("send", Style::default().fg(dim)),
                 Span::styled("  │  ", Style::default().fg(BrandTheme::dim())),
                 Span::styled("⇧↵ ", Style::default().fg(bright)),
@@ -410,7 +418,12 @@ impl EnhancedInput {
                 Span::styled("clear", Style::default().fg(dim)),
             ],
             InputMode::Shell => vec![
-                Span::styled("  ↵ ", Style::default().fg(BrandTheme::success()).add_modifier(Modifier::BOLD)),
+                Span::styled(
+                    "  ↵ ",
+                    Style::default()
+                        .fg(BrandTheme::success())
+                        .add_modifier(Modifier::BOLD),
+                ),
                 Span::styled("execute", Style::default().fg(dim)),
                 Span::styled("  │  ", Style::default().fg(BrandTheme::dim())),
                 Span::styled("Esc ", Style::default().fg(bright)),
@@ -423,14 +436,24 @@ impl EnhancedInput {
                 Span::styled("  ↑↓ ", Style::default().fg(bright)),
                 Span::styled("navigate", Style::default().fg(dim)),
                 Span::styled("  │  ", Style::default().fg(BrandTheme::dim())),
-                Span::styled("↵ ", Style::default().fg(BrandTheme::success()).add_modifier(Modifier::BOLD)),
+                Span::styled(
+                    "↵ ",
+                    Style::default()
+                        .fg(BrandTheme::success())
+                        .add_modifier(Modifier::BOLD),
+                ),
                 Span::styled("select", Style::default().fg(dim)),
                 Span::styled("  │  ", Style::default().fg(BrandTheme::dim())),
                 Span::styled("Esc ", Style::default().fg(bright)),
                 Span::styled("cancel", Style::default().fg(dim)),
             ],
             InputMode::Search => vec![
-                Span::styled("  ↵ ", Style::default().fg(BrandTheme::success()).add_modifier(Modifier::BOLD)),
+                Span::styled(
+                    "  ↵ ",
+                    Style::default()
+                        .fg(BrandTheme::success())
+                        .add_modifier(Modifier::BOLD),
+                ),
                 Span::styled("search", Style::default().fg(dim)),
                 Span::styled("  │  ", Style::default().fg(BrandTheme::dim())),
                 Span::styled("Esc ", Style::default().fg(bright)),
@@ -445,15 +468,15 @@ impl EnhancedInput {
             hints.push(Span::styled("    ", Style::default().fg(dim)));
             hints.push(Span::styled(
                 format!("{bytes} {label}"),
-                Style::default().fg(BrandTheme::dim()).add_modifier(Modifier::ITALIC),
+                Style::default()
+                    .fg(BrandTheme::dim())
+                    .add_modifier(Modifier::ITALIC),
             ));
         }
 
         Line::from(hints)
     }
 }
-
-
 
 /// Input mode
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -481,9 +504,19 @@ impl EnhancedOutput {
     /// Format a single output line with context-aware styling.
     fn format_line(text: &str) -> Line<'static> {
         let (content, style) = if text.starts_with("```") {
-            (text, Style::default().fg(BrandTheme::accent()).add_modifier(Modifier::BOLD))
+            (
+                text,
+                Style::default()
+                    .fg(BrandTheme::accent())
+                    .add_modifier(Modifier::BOLD),
+            )
         } else if text.starts_with("# ") {
-            (text, Style::default().fg(BrandTheme::warning()).add_modifier(Modifier::BOLD))
+            (
+                text,
+                Style::default()
+                    .fg(BrandTheme::warning())
+                    .add_modifier(Modifier::BOLD),
+            )
         } else if let Some(rest) = text.strip_prefix("- ").or_else(|| text.strip_prefix("* ")) {
             return Line::from(vec![
                 Span::styled("• ", Style::default().fg(BrandTheme::accent())),
@@ -494,7 +527,9 @@ impl EnhancedOutput {
                 Span::styled("▸ ", Style::default().fg(BrandTheme::dim())),
                 Span::styled(
                     rest.to_string(),
-                    Style::default().fg(BrandTheme::dim_bright()).add_modifier(Modifier::ITALIC),
+                    Style::default()
+                        .fg(BrandTheme::dim_bright())
+                        .add_modifier(Modifier::ITALIC),
                 ),
             ]);
         } else {
@@ -513,7 +548,9 @@ impl CopyBadge {
         Line::from(vec![
             Span::styled(
                 " ✓ ",
-                Style::default().fg(BrandTheme::success()).add_modifier(Modifier::BOLD),
+                Style::default()
+                    .fg(BrandTheme::success())
+                    .add_modifier(Modifier::BOLD),
             ),
             Span::styled(
                 format!("copied: {}", text),
@@ -527,7 +564,9 @@ impl CopyBadge {
         Line::from(vec![
             Span::styled(
                 " ✗ ",
-                Style::default().fg(BrandTheme::error()).add_modifier(Modifier::BOLD),
+                Style::default()
+                    .fg(BrandTheme::error())
+                    .add_modifier(Modifier::BOLD),
             ),
             Span::styled(
                 format!("copy failed: {}", text),
@@ -568,13 +607,19 @@ mod tests {
     #[test]
     fn test_enhanced_input_narrow_terminal() {
         // Even on a 20-col terminal, input should render without panicking
-        let lines = EnhancedInput::render("a long message that wraps", 25, 20, false, InputMode::Chat);
+        let lines =
+            EnhancedInput::render("a long message that wraps", 25, 20, false, InputMode::Chat);
         assert!(!lines.is_empty());
     }
 
     #[test]
     fn test_enhanced_input_all_modes() {
-        for mode in [InputMode::Chat, InputMode::Shell, InputMode::Command, InputMode::Search] {
+        for mode in [
+            InputMode::Chat,
+            InputMode::Shell,
+            InputMode::Command,
+            InputMode::Search,
+        ] {
             let lines = EnhancedInput::render("test", 4, 80, false, mode);
             assert!(!lines.is_empty());
         }
@@ -610,10 +655,16 @@ mod tests {
         // The input line should now contain a spinner glyph from the Braille set
         let spinner_seen = lines.iter().any(|line| {
             line.spans.iter().any(|s| {
-                matches!(s.content.as_ref(), "⠋" | "⠙" | "⠹" | "⠸" | "⠼" | "⠴" | "⠦" | "⠧" | "⠇" | "⠏")
+                matches!(
+                    s.content.as_ref(),
+                    "⠋" | "⠙" | "⠹" | "⠸" | "⠼" | "⠴" | "⠦" | "⠧" | "⠇" | "⠏"
+                )
             })
         });
-        assert!(spinner_seen, "processing input should render a braille spinner glyph");
+        assert!(
+            spinner_seen,
+            "processing input should render a braille spinner glyph"
+        );
     }
 
     #[test]
@@ -621,27 +672,25 @@ mod tests {
         let lines = EnhancedInput::render("hello world", 11, 80, false, InputMode::Chat);
         // The help-hints line should mention "11 bytes" because the input has 11 bytes.
         let counter_seen = lines.iter().any(|line| {
-            let text: String = line
-                .spans
-                .iter()
-                .map(|s| s.content.as_ref())
-                .collect();
+            let text: String = line.spans.iter().map(|s| s.content.as_ref()).collect();
             text.contains("11 bytes")
         });
-        assert!(counter_seen, "help hints should include a byte counter when the input is non-empty");
+        assert!(
+            counter_seen,
+            "help hints should include a byte counter when the input is non-empty"
+        );
     }
 
     #[test]
     fn test_help_hints_skip_byte_counter_when_empty() {
         let lines = EnhancedInput::render("", 0, 80, false, InputMode::Chat);
         let counter_seen = lines.iter().any(|line| {
-            let text: String = line
-                .spans
-                .iter()
-                .map(|s| s.content.as_ref())
-                .collect();
+            let text: String = line.spans.iter().map(|s| s.content.as_ref()).collect();
             text.contains("bytes")
         });
-        assert!(!counter_seen, "help hints should not mention bytes for an empty input");
+        assert!(
+            !counter_seen,
+            "help hints should not mention bytes for an empty input"
+        );
     }
 }

@@ -1,8 +1,10 @@
 use super::{ALL_OPENAI_MODELS, openrouter};
+use crate::alphacode_provider_core::pricing as core_pricing;
+use crate::alphacode_provider_core::{
+    RouteCheapnessEstimate, RouteCostConfidence, RouteCostSource,
+};
 use crate::auth;
 use crate::provider::models::provider_for_model;
-use crate::alphacode_provider_core::pricing as core_pricing;
-use crate::alphacode_provider_core::{RouteCheapnessEstimate, RouteCostConfidence, RouteCostSource};
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
@@ -297,8 +299,8 @@ pub(crate) fn cheapness_for_route(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::env;
     use crate::alphacode_provider_core::{RouteBillingKind, RouteCostConfidence, RouteCostSource};
+    use crate::env;
 
     fn with_clean_provider_test_env<T>(f: impl FnOnce() -> T) -> T {
         let _guard = crate::storage::lock_test_env();

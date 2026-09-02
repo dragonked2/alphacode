@@ -8,7 +8,9 @@ use super::{
 use crate::alphacode_tui::bus::BusEvent;
 use crate::alphacode_tui::message::ToolCall;
 use crate::alphacode_tui::protocol::{ServerEvent, TranscriptMode};
-use crate::alphacode_tui::tui::backend::{RemoteConnection, RemoteDisconnectReason, RemoteEventState, RemoteRead};
+use crate::alphacode_tui::tui::backend::{
+    RemoteConnection, RemoteDisconnectReason, RemoteEventState, RemoteRead,
+};
 use anyhow::Result;
 use crossterm::event::{
     Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers, MouseEvent, MouseEventKind,
@@ -69,14 +71,16 @@ pub(super) enum RemoteEventOutcome {
 }
 
 pub(super) async fn handle_tick(app: &mut App, remote: &mut RemoteConnection) -> bool {
-    crate::alphacode_tui::tui::ui::set_frame_input_attribution(crate::alphacode_tui::tui::ui::FrameInputAttribution {
-        event: Some("tick".to_string()),
-        scroll_delta: None,
-        model_picker_open: app
-            .inline_interactive_state
-            .as_ref()
-            .is_some_and(|state| state.kind == crate::alphacode_tui::tui::PickerKind::Model),
-    });
+    crate::alphacode_tui::tui::ui::set_frame_input_attribution(
+        crate::alphacode_tui::tui::ui::FrameInputAttribution {
+            event: Some("tick".to_string()),
+            scroll_delta: None,
+            model_picker_open: app
+                .inline_interactive_state
+                .as_ref()
+                .is_some_and(|state| state.kind == crate::alphacode_tui::tui::PickerKind::Model),
+        },
+    );
     let mut needs_redraw = crate::alphacode_tui::tui::periodic_redraw_required(app);
     needs_redraw |= app.flush_pending_resize_redraw();
     app.maybe_capture_runtime_memory_heartbeat();
@@ -374,57 +378,61 @@ async fn apply_terminal_event(
                 }
                 if let Some(selection) = app.pending_account_picker_action.take() {
                     match selection {
-                        crate::alphacode_tui::tui::AccountPickerAction::Switch { provider_id, label } => {
-                            match provider_id.as_str() {
-                                "claude" => {
-                                    if let Err(e) = crate::alphacode_base::auth::claude::set_active_account(&label)
-                                    {
-                                        app.push_display_message(DisplayMessage::error(format!(
-                                            "Failed to switch account: {}",
-                                            e
-                                        )));
-                                    } else {
-                                        crate::alphacode_base::auth::AuthStatus::invalidate_cache();
-                                        app.context_limit = app.provider.context_window() as u64;
-                                        app.context_warning_shown = false;
-                                        let _ = remote.switch_anthropic_account(&label).await;
-                                        app.push_display_message(DisplayMessage::system(format!(
-                                            "Switched to Anthropic account `{}`.",
-                                            label
-                                        )));
-                                        app.set_status_notice(format!(
-                                            "Account: switched to {}",
-                                            label
-                                        ));
-                                    }
+                        crate::alphacode_tui::tui::AccountPickerAction::Switch {
+                            provider_id,
+                            label,
+                        } => match provider_id.as_str() {
+                            "claude" => {
+                                if let Err(e) =
+                                    crate::alphacode_base::auth::claude::set_active_account(&label)
+                                {
+                                    app.push_display_message(DisplayMessage::error(format!(
+                                        "Failed to switch account: {}",
+                                        e
+                                    )));
+                                } else {
+                                    crate::alphacode_base::auth::AuthStatus::invalidate_cache();
+                                    app.context_limit = app.provider.context_window() as u64;
+                                    app.context_warning_shown = false;
+                                    let _ = remote.switch_anthropic_account(&label).await;
+                                    app.push_display_message(DisplayMessage::system(format!(
+                                        "Switched to Anthropic account `{}`.",
+                                        label
+                                    )));
+                                    app.set_status_notice(format!(
+                                        "Account: switched to {}",
+                                        label
+                                    ));
                                 }
-                                "openai" => {
-                                    if let Err(e) = crate::alphacode_base::auth::codex::set_active_account(&label) {
-                                        app.push_display_message(DisplayMessage::error(format!(
-                                            "Failed to switch OpenAI account: {}",
-                                            e
-                                        )));
-                                    } else {
-                                        crate::alphacode_base::auth::AuthStatus::invalidate_cache();
-                                        app.context_limit = app.provider.context_window() as u64;
-                                        app.context_warning_shown = false;
-                                        let _ = remote.switch_openai_account(&label).await;
-                                        app.push_display_message(DisplayMessage::system(format!(
-                                            "Switched to OpenAI account `{}`.",
-                                            label
-                                        )));
-                                        app.set_status_notice(format!(
-                                            "OpenAI account: switched to {}",
-                                            label
-                                        ));
-                                    }
-                                }
-                                _ => app.push_display_message(DisplayMessage::error(format!(
-                                    "Provider `{}` does not support account switching.",
-                                    provider_id
-                                ))),
                             }
-                        }
+                            "openai" => {
+                                if let Err(e) =
+                                    crate::alphacode_base::auth::codex::set_active_account(&label)
+                                {
+                                    app.push_display_message(DisplayMessage::error(format!(
+                                        "Failed to switch OpenAI account: {}",
+                                        e
+                                    )));
+                                } else {
+                                    crate::alphacode_base::auth::AuthStatus::invalidate_cache();
+                                    app.context_limit = app.provider.context_window() as u64;
+                                    app.context_warning_shown = false;
+                                    let _ = remote.switch_openai_account(&label).await;
+                                    app.push_display_message(DisplayMessage::system(format!(
+                                        "Switched to OpenAI account `{}`.",
+                                        label
+                                    )));
+                                    app.set_status_notice(format!(
+                                        "OpenAI account: switched to {}",
+                                        label
+                                    ));
+                                }
+                            }
+                            _ => app.push_display_message(DisplayMessage::error(format!(
+                                "Provider `{}` does not support account switching.",
+                                provider_id
+                            ))),
+                        },
                         crate::alphacode_tui::tui::AccountPickerAction::Add { .. }
                         | crate::alphacode_tui::tui::AccountPickerAction::Replace { .. }
                         | crate::alphacode_tui::tui::AccountPickerAction::OpenCenter { .. } => {}
@@ -498,7 +506,6 @@ async fn dispatch_compacted_history_load(app: &mut App, remote: &mut RemoteConne
         }
     }
 }
-
 
 pub(super) async fn handle_bus_event(
     app: &mut App,
@@ -783,7 +790,9 @@ pub(super) async fn handle_remote_event<B: Backend>(
             // the current TUI state rather than "no frames captured".
             if debug_command_needs_current_frame(&command) {
                 crate::alphacode_tui::tui::visual_debug::enable();
-                if let Err(error) = terminal.draw(|frame| crate::alphacode_tui::tui::ui::draw(frame, app)) {
+                if let Err(error) =
+                    terminal.draw(|frame| crate::alphacode_tui::tui::ui::draw(frame, app))
+                {
                     let output = format!("ERR: failed to capture current frame: {error}");
                     let _ = remote.send_client_debug_response(id, output).await;
                     return Ok((RemoteEventOutcome::Continue, false));
@@ -2014,4 +2023,3 @@ mod stall_guard_tests {
         assert!(app.queued_followup_starved_since.is_none());
     }
 }
-

@@ -1,12 +1,12 @@
 use super::Agent;
+use crate::alphacode_agent_runtime::{
+    InterruptSignal, SoftInterruptMessage, SoftInterruptQueue, SoftInterruptSource,
+};
 use crate::alphacode_app_core::logging;
 use crate::alphacode_app_core::message::{ContentBlock, Role};
 use crate::alphacode_app_core::protocol::ServerEvent;
 use crate::alphacode_app_core::session::StoredDisplayRole;
 use anyhow::Result;
-use crate::alphacode_agent_runtime::{
-    InterruptSignal, SoftInterruptMessage, SoftInterruptQueue, SoftInterruptSource,
-};
 use std::sync::Arc;
 
 fn soft_interrupt_session_display_role(source: SoftInterruptSource) -> Option<StoredDisplayRole> {

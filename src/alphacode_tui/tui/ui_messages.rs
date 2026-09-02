@@ -584,7 +584,12 @@ fn render_theme_preview(msg: &DisplayMessage, width: u16) -> Vec<Line<'static>> 
 
     // Pad ids so the columns line up regardless of which themes are in the
     // catalog. The id column is the longest token on each row.
-    let id_width = payload.rows.iter().map(|row| row.id.width()).max().unwrap_or(0);
+    let id_width = payload
+        .rows
+        .iter()
+        .map(|row| row.id.width())
+        .max()
+        .unwrap_or(0);
     let mut lines = vec![Line::from(Span::styled(
         "Color themes (`/theme <name>`):",
         Style::default().fg(system_message_color()),
@@ -3997,8 +4002,16 @@ pub(crate) fn render_tool_message(
     let gradient = crate::alphacode_tui::tui::brand_ux::BrandTheme::gradient();
     let tool_name_color = gradient[5]; // teal for tool names
     let mut tool_line = vec![
-        Span::styled(format!("  {} ", icon), Style::default().fg(icon_color).add_modifier(Modifier::BOLD)),
-        Span::styled(display_name, Style::default().fg(tool_name_color).add_modifier(Modifier::BOLD)),
+        Span::styled(
+            format!("  {} ", icon),
+            Style::default().fg(icon_color).add_modifier(Modifier::BOLD),
+        ),
+        Span::styled(
+            display_name,
+            Style::default()
+                .fg(tool_name_color)
+                .add_modifier(Modifier::BOLD),
+        ),
     ];
     if let Some(intent) = intent {
         tool_line.push(Span::styled(" · ", Style::default().fg(dim_color())));
@@ -4359,4 +4372,3 @@ fn tool_output_token_badge(content: &str) -> ToolOutputTokenBadge {
 #[cfg(test)]
 #[path = "ui_messages/tests.rs"]
 mod tests;
-

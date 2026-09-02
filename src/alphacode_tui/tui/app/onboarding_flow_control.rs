@@ -739,10 +739,13 @@ impl App {
             // immediately failed. Prefer the concrete import outcome first (it
             // knows what was actually imported), then fall back to the global
             // auth status heuristic.
-            let imported_provider = outcome.preferred_activation_provider()
-                .or_else(|| crate::alphacode_base::auth::lifecycle::preferred_frontier_auth_provider(
-                    &crate::alphacode_base::auth::AuthStatus::check_fast(),
-                ))
+            let imported_provider = outcome
+                .preferred_activation_provider()
+                .or_else(|| {
+                    crate::alphacode_base::auth::lifecycle::preferred_frontier_auth_provider(
+                        &crate::alphacode_base::auth::AuthStatus::check_fast(),
+                    )
+                })
                 .unwrap_or("auto-import")
                 .to_string();
             crate::bus::Bus::global().publish(crate::bus::BusEvent::LoginCompleted(
@@ -1056,7 +1059,9 @@ impl App {
             // record is persisted (and the auth cache invalidated) before the
             // readiness summary reads `check_fast()` below.
             if verify_copilot {
-                let _ = crate::alphacode_base::auth::copilot::verify_copilot_credentials_live_default().await;
+                let _ =
+                    crate::alphacode_base::auth::copilot::verify_copilot_credentials_live_default()
+                        .await;
             }
             let (ok, detail) = match Self::onboarding_run_model_validation(provider).await {
                 Ok(()) => (true, None),
@@ -1594,4 +1599,3 @@ impl App {
         changed
     }
 }
-

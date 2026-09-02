@@ -59,4 +59,3 @@ pub(super) fn strip_relative_age_text(text: &str) -> String {
     }
     out
 }
-

@@ -189,9 +189,9 @@ fn render_labeled_bar(
 ) -> Line<'static> {
     // Smooth gradient color based on usage level
     let color = if left_pct <= 10 {
-        rgb(255, 80, 80)   // Critical red
+        rgb(255, 80, 80) // Critical red
     } else if left_pct <= 25 {
-        rgb(255, 120, 80)  // Warning orange
+        rgb(255, 120, 80) // Warning orange
     } else if left_pct <= 50 {
         rgb(255, 200, 100) // Caution yellow
     } else if left_pct <= 75 {
@@ -256,7 +256,11 @@ fn render_labeled_bar(
     let bar_filled: String = if filled > 0 {
         let mut chars = String::with_capacity(filled);
         for i in 0..filled {
-            let level = if filled == 1 { 7 } else { ((i as f32 / (filled - 1) as f32) * 7.0).round() as usize };
+            let level = if filled == 1 {
+                7
+            } else {
+                ((i as f32 / (filled - 1) as f32) * 7.0).round() as usize
+            };
             chars.push(gradient_blocks[level.min(7)]);
         }
         chars
@@ -388,7 +392,10 @@ mod tests {
     fn an_exhausted_quota_fills_the_whole_meter() {
         let text = line_text(&render_labeled_bar("5-hour", 100, 0, None, 40));
         assert!(text.contains('█'));
-        assert!(!text.contains('░'), "no empty cells remain at 100%: {text:?}");
+        assert!(
+            !text.contains('░'),
+            "no empty cells remain at 100%: {text:?}"
+        );
     }
 
     #[test]
@@ -447,9 +454,9 @@ pub(super) fn render_usage_pill(
         .clamp(0.0, 100.0) as u8;
     let left_pct = 100u8.saturating_sub(used_pct);
     let used_color = if left_pct <= 10 {
-        rgb(255, 80, 80)   // Critical
+        rgb(255, 80, 80) // Critical
     } else if left_pct <= 25 {
-        rgb(255, 120, 80)  // Warning
+        rgb(255, 120, 80) // Warning
     } else if left_pct <= 50 {
         rgb(255, 200, 100) // Caution
     } else if left_pct <= 75 {
@@ -494,9 +501,9 @@ pub(super) fn render_context_usage_line(
         .clamp(0.0, 100.0) as u8;
     let left_pct = 100u8.saturating_sub(used_pct);
     let token_color = if left_pct <= 10 {
-        rgb(255, 80, 80)   // Critical
+        rgb(255, 80, 80) // Critical
     } else if left_pct <= 25 {
-        rgb(255, 120, 80)  // Warning
+        rgb(255, 120, 80) // Warning
     } else if left_pct <= 50 {
         rgb(255, 200, 100) // Caution
     } else if left_pct <= 75 {
@@ -556,4 +563,3 @@ fn format_tokens(tokens: u64) -> String {
         format!("{}", tokens)
     }
 }
-

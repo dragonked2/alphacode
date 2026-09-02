@@ -1,6 +1,7 @@
 mod accessors;
 mod account_failover;
 pub mod activation;
+pub mod alphacode;
 pub mod anthropic;
 pub mod antigravity;
 pub mod bedrock;
@@ -15,7 +16,6 @@ mod failover;
 mod fingerprint;
 pub mod gemini;
 mod image_clamp;
-pub mod alphacode;
 pub mod models;
 mod multi_provider;
 pub mod openai;
@@ -30,6 +30,8 @@ mod startup;
 mod state;
 mod stream_timeout;
 
+#[cfg(test)]
+use crate::alphacode_provider_core::FailoverDecision;
 use crate::auth;
 use crate::message::{Message, ToolDefinition};
 use account_failover::{
@@ -39,24 +41,16 @@ use account_failover::{
 };
 use anyhow::{Result, anyhow};
 use async_trait::async_trait;
-#[cfg(test)]
-use crate::alphacode_provider_core::FailoverDecision;
 use registry::ProviderRegistry;
 use std::collections::HashMap;
 use std::sync::{Arc, LazyLock, Mutex, RwLock};
 
-pub use catalog_routes::{
-    append_simplified_anthropic_model_routes, remote_current_openai_compatible_route_for_model,
-    remote_model_is_server_copilot_only, remote_model_routes_fallback,
-    remote_model_routes_lightweight_fallback, remote_model_should_offer_copilot_route,
-    remote_openai_compatible_route_for_model, simplified_model_routes_for_picker,
-};
 pub use crate::alphacode_provider_core::attempt_tracker;
 pub use crate::alphacode_provider_core::cli_provider_arg_for_session_key;
 pub use crate::alphacode_provider_core::{
-    ALL_CLAUDE_MODELS, ALL_OPENAI_MODELS, CHATGPT_WEB_MODEL, CHEAPNESS_REFERENCE_INPUT_TOKENS,
-    CHEAPNESS_REFERENCE_OUTPUT_TOKENS, CredentialMode, DEFAULT_CONTEXT_LIMIT, EventStream,
-    ALPHACODE_USER_AGENT, ModelCapabilities, ModelCatalogRefreshSummary, ModelRoute,
+    ALL_CLAUDE_MODELS, ALL_OPENAI_MODELS, ALPHACODE_USER_AGENT, CHATGPT_WEB_MODEL,
+    CHEAPNESS_REFERENCE_INPUT_TOKENS, CHEAPNESS_REFERENCE_OUTPUT_TOKENS, CredentialMode,
+    DEFAULT_CONTEXT_LIMIT, EventStream, ModelCapabilities, ModelCatalogRefreshSummary, ModelRoute,
     ModelRouteApiMethod, NativeCompactionResult, NativeToolResult, NativeToolResultSender,
     PremiumMode, Provider, RouteBillingKind, RouteCheapnessEstimate, RouteCostConfidence,
     RouteCostSource, RouteSelection, RuntimeKey, dedupe_model_routes,
@@ -70,6 +64,12 @@ pub use crate::alphacode_provider_core::{
     pick_next_fallback_route_with_options,
 };
 pub use crate::alphacode_provider_core::{ProviderFailoverPrompt, parse_failover_prompt_message};
+pub use catalog_routes::{
+    append_simplified_anthropic_model_routes, remote_current_openai_compatible_route_for_model,
+    remote_model_is_server_copilot_only, remote_model_routes_fallback,
+    remote_model_routes_lightweight_fallback, remote_model_should_offer_copilot_route,
+    remote_openai_compatible_route_for_model, simplified_model_routes_for_picker,
+};
 pub use route_builders::{
     build_anthropic_oauth_route, build_chatgpt_web_route, build_copilot_route,
     build_openai_api_key_route, build_openai_oauth_route, build_openrouter_auto_route,
@@ -155,7 +155,8 @@ fn openai_compatible_profile_catalog_cache_is_stale(cached_at: u64, now: u64) ->
 pub(crate) fn cached_live_models_for_openai_compatible_profile(
     resolved: &crate::provider_catalog::ResolvedOpenAiCompatibleProfile,
 ) -> Option<(Vec<String>, bool)> {
-    let cache = crate::alphacode_provider_openrouter::load_disk_cache_entry_for_namespace(&resolved.id)?;
+    let cache =
+        crate::alphacode_provider_openrouter::load_disk_cache_entry_for_namespace(&resolved.id)?;
     let cache_is_stale = crate::alphacode_provider_openrouter::current_unix_secs()
         .map(|now| openai_compatible_profile_catalog_cache_is_stale(cache.cached_at, now))
         .unwrap_or(false);
@@ -250,7 +251,8 @@ fn standard_openrouter_profile_configured() -> bool {
 }
 
 fn configured_standard_openrouter_profile_routes() -> Vec<ModelRoute> {
-    let Some(cache) = crate::alphacode_provider_openrouter::load_disk_cache_entry_for_namespace("openrouter")
+    let Some(cache) =
+        crate::alphacode_provider_openrouter::load_disk_cache_entry_for_namespace("openrouter")
     else {
         return Vec::new();
     };
@@ -1384,7 +1386,9 @@ impl MultiProvider {
             ActiveProvider::Antigravity => self.antigravity_provider().map(|p| (p, "Antigravity")),
             ActiveProvider::Gemini => self.gemini_provider().map(|p| (p, "Gemini")),
             ActiveProvider::Cursor => self.cursor_provider().map(|p| (p, "Cursor")),
-            ActiveProvider::Bedrock => self.bedrock_provider().map(|p| (p as Arc<dyn Provider>, "AWS Bedrock")),
+            ActiveProvider::Bedrock => self
+                .bedrock_provider()
+                .map(|p| (p as Arc<dyn Provider>, "AWS Bedrock")),
         };
         if let Some((provider, label)) = provider_to_refresh {
             self.spawn_post_auth_model_refresh(provider, label);
@@ -1460,7 +1464,8 @@ impl MultiProvider {
             // do NOT pin a credential: they keep Auto mode (so an API-only user
             // with `default_provider = "claude"` still resolves their key
             // instead of failing to load absent OAuth credentials).
-            let pinned = crate::alphacode_provider_core::AuthRoute::parse_explicit_credential_prefix(pref);
+            let pinned =
+                crate::alphacode_provider_core::AuthRoute::parse_explicit_credential_prefix(pref);
             let anthropic_credential_mode = pinned.and_then(|route| {
                 matches!(
                     route.provider,
@@ -1481,8 +1486,12 @@ impl MultiProvider {
                     crate::alphacode_provider_core::DualAuthProvider::OpenAI
                 )
                 .then(|| match route.mode {
-                    crate::alphacode_provider_core::AuthMode::ApiKey => openai::OpenAICredentialMode::ApiKey,
-                    crate::alphacode_provider_core::AuthMode::Oauth => openai::OpenAICredentialMode::OAuth,
+                    crate::alphacode_provider_core::AuthMode::ApiKey => {
+                        openai::OpenAICredentialMode::ApiKey
+                    }
+                    crate::alphacode_provider_core::AuthMode::Oauth => {
+                        openai::OpenAICredentialMode::OAuth
+                    }
                 })
             });
             return self.set_model_on_provider_with_credential_modes(
@@ -1633,10 +1642,13 @@ impl Provider for MultiProvider {
                     crate::alphacode_provider_core::DEFAULT_CLAUDE_MODEL.to_string()
                 }
             }
-            ActiveProvider::OpenAI => self
-                .openai_provider()
-                .map(|o| o.model())
-                .unwrap_or_else(|| crate::alphacode_provider_core::DEFAULT_OPENAI_MODEL.to_string()),
+            ActiveProvider::OpenAI => {
+                self.openai_provider()
+                    .map(|o| o.model())
+                    .unwrap_or_else(|| {
+                        crate::alphacode_provider_core::DEFAULT_OPENAI_MODEL.to_string()
+                    })
+            }
             ActiveProvider::Copilot => self
                 .copilot_provider()
                 .map(|o| o.model())
@@ -1664,7 +1676,9 @@ impl Provider for MultiProvider {
         }
     }
 
-    fn active_resolved_credential(&self) -> Option<crate::alphacode_provider_core::ResolvedCredential> {
+    fn active_resolved_credential(
+        &self,
+    ) -> Option<crate::alphacode_provider_core::ResolvedCredential> {
         use crate::alphacode_provider_core::ResolvedCredential;
         match self.active_provider() {
             ActiveProvider::Claude => {
@@ -1738,7 +1752,9 @@ impl Provider for MultiProvider {
         Ok(())
     }
 
-    fn active_explicit_credential(&self) -> Option<crate::alphacode_provider_core::ResolvedCredential> {
+    fn active_explicit_credential(
+        &self,
+    ) -> Option<crate::alphacode_provider_core::ResolvedCredential> {
         use crate::alphacode_provider_core::ResolvedCredential;
         // Only report an *explicit* in-memory pin. Auto mode returns `None` so
         // callers fall back to their cheaper cached heuristic without forcing
@@ -1836,15 +1852,20 @@ impl Provider for MultiProvider {
             // The single canonical parser decides whether this prefix pins a
             // dual-auth credential (and which provider/mode). Bare `claude:` /
             // `openai:` prefixes route without pinning a credential.
-            let pinned = crate::alphacode_provider_core::AuthRoute::parse_explicit_credential_prefix(prefix);
+            let pinned =
+                crate::alphacode_provider_core::AuthRoute::parse_explicit_credential_prefix(prefix);
             let openai_credential_mode = pinned.and_then(|route| {
                 matches!(
                     route.provider,
                     crate::alphacode_provider_core::DualAuthProvider::OpenAI
                 )
                 .then(|| match route.mode {
-                    crate::alphacode_provider_core::AuthMode::ApiKey => openai::OpenAICredentialMode::ApiKey,
-                    crate::alphacode_provider_core::AuthMode::Oauth => openai::OpenAICredentialMode::OAuth,
+                    crate::alphacode_provider_core::AuthMode::ApiKey => {
+                        openai::OpenAICredentialMode::ApiKey
+                    }
+                    crate::alphacode_provider_core::AuthMode::Oauth => {
+                        openai::OpenAICredentialMode::OAuth
+                    }
                 })
             });
             let anthropic_credential_mode = pinned.and_then(|route| {
@@ -2045,9 +2066,7 @@ impl Provider for MultiProvider {
         let active = self.active_provider();
         let result = match active {
             ActiveProvider::Claude => {
-                let provider = self
-                    .anthropic_provider()
-                    .or_else(|| self.claude_provider());
+                let provider = self.anthropic_provider().or_else(|| self.claude_provider());
                 if let Some(p) = provider {
                     p.prefetch_models().await
                 } else {

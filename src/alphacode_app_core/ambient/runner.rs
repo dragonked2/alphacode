@@ -6,6 +6,9 @@
 //! ambient cycles: scheduling, spawning agent sessions, handling results, and
 //! providing status for the TUI widget and debug socket.
 
+use crate::alphacode_agent_runtime::{
+    SoftInterruptMessage, SoftInterruptQueue, SoftInterruptSource,
+};
 use crate::alphacode_app_core::agent::Agent;
 use crate::alphacode_app_core::ambient::{
     self, AmbientCycleResult, AmbientLock, AmbientManager, AmbientState, AmbientStatus,
@@ -22,7 +25,6 @@ use crate::alphacode_app_core::session::Session;
 use crate::alphacode_app_core::tool;
 use crate::alphacode_app_core::tool::ambient as ambient_tools;
 use chrono::Utc;
-use crate::alphacode_agent_runtime::{SoftInterruptMessage, SoftInterruptQueue, SoftInterruptSource};
 use std::sync::Arc;
 use tokio::sync::{Notify, RwLock};
 
@@ -1070,4 +1072,3 @@ impl AmbientRunnerHandle {
 }
 
 // ---------------------------------------------------------------------------
-

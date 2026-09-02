@@ -1,8 +1,8 @@
 use anyhow::Result;
 use sha2::{Digest, Sha256};
 
-use crate::storage;
 use crate::alphacode_gateway_types::{PairedDevice, PairingCode};
+use crate::storage;
 
 // ---------------------------------------------------------------------------
 // Device registry (persisted to ~/.alphacode/devices.json)

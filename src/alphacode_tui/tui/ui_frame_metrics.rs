@@ -1435,4 +1435,3 @@ mod draw_call_tests {
         assert_ne!(a, c);
     }
 }
-

@@ -192,7 +192,11 @@ pub fn tool_output_looks_failed(content: &str) -> bool {
         return false;
     }
     // Fast path: check the first few bytes before allocating
-    if trimmed.starts_with('✗') || trimmed.starts_with("Error:") || trimmed.starts_with("error:") || trimmed.starts_with("Failed:") {
+    if trimmed.starts_with('✗')
+        || trimmed.starts_with("Error:")
+        || trimmed.starts_with("error:")
+        || trimmed.starts_with("Failed:")
+    {
         return true;
     }
     let normalized = trimmed

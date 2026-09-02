@@ -1,6 +1,5 @@
 use crate::alphacode_app_core::build;
 use crate::alphacode_app_core::storage;
-use anyhow::{Context, Result};
 use crate::alphacode_update_core::{
     BACKGROUND_UPDATE_THRESHOLD, estimate_release_update_duration, estimate_source_update_duration,
     format_duration_estimate, get_asset_name, summarize_git_pull_failure, update_estimate,
@@ -11,6 +10,7 @@ pub use crate::alphacode_update_core::{
     UpdateCheckResult, UpdateEstimate, format_download_progress_bar, summarize_update_error,
     summary_is_divergence,
 };
+use anyhow::{Context, Result};
 
 use std::fs;
 use std::io::Read;
@@ -23,8 +23,8 @@ mod update_metadata;
 mod update_rate_limit;
 pub use update_metadata::UpdateMetadata;
 use update_metadata::{record_release_update_duration, record_source_update_duration};
-pub use update_rate_limit::{RATE_LIMIT_ERROR_PREFIX, is_rate_limit_error};
 use update_rate_limit::rate_limit_error;
+pub use update_rate_limit::{RATE_LIMIT_ERROR_PREFIX, is_rate_limit_error};
 
 const GITHUB_REPO: &str = "dragonked2/alphacode";
 /// Minimum gap between *automatic* update checks.
@@ -453,7 +453,9 @@ fn short_update_error(context: &str, error: &anyhow::Error) -> String {
 
 pub fn spawn_background_session_update(session_id: String) {
     std::thread::spawn(move || {
-        use crate::alphacode_app_core::bus::{Bus, BusEvent, ClientMaintenanceAction, SessionUpdateStatus};
+        use crate::alphacode_app_core::bus::{
+            Bus, BusEvent, ClientMaintenanceAction, SessionUpdateStatus,
+        };
 
         let action = ClientMaintenanceAction::Update;
 
@@ -707,7 +709,13 @@ fn build_from_source() -> Result<PathBuf> {
         let clone_url = format!("https://github.com/{}.git", GITHUB_REPO);
         let output = std::process::Command::new("git")
             .args([
-                "clone", "--depth", "1", "--branch", "main", &clone_url, "alphacode",
+                "clone",
+                "--depth",
+                "1",
+                "--branch",
+                "main",
+                &clone_url,
+                "alphacode",
             ])
             .current_dir(&build_dir)
             .output()
@@ -1240,11 +1248,15 @@ mod tests {
         );
         let parsed = parse_sha256sums(&contents).unwrap();
         assert_eq!(
-            parsed.get("alphacode-linux-x86_64.tar.gz").map(String::as_str),
+            parsed
+                .get("alphacode-linux-x86_64.tar.gz")
+                .map(String::as_str),
             Some(digest_a.as_str())
         );
         assert_eq!(
-            parsed.get("alphacode-windows-x86_64.exe").map(String::as_str),
+            parsed
+                .get("alphacode-windows-x86_64.exe")
+                .map(String::as_str),
             Some(digest_b_lower.as_str())
         );
     }

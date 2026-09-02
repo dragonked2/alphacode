@@ -129,7 +129,8 @@ pub fn scan_for_pasted_secrets(url: &str, headers_blob: &str) -> WebSafetyVerdic
         return WebSafetyVerdict::Confirm {
             prompt: "URL+headers blob exceeds 16KB; cannot pre-scan for pasted \
                      secrets. Re-issue with a smaller input or split into \
-                     multiple calls.".to_string(),
+                     multiple calls."
+                .to_string(),
             hits: Vec::new(),
         };
     }
@@ -215,12 +216,24 @@ fn detect_session_cookie(blob: &str) -> Option<SecretHit> {
     // Take until next newline or end
     let cookie_line = after.lines().next().unwrap_or(after);
     let names = [
-        "access_token=", "id_token=", "refresh_token=",
-        "phpsessid=", "jsessionid=", "asp.net_sessionid=",
-        "sp=", "_session=", "session=", "__secure-session=",
-        "sid=", "auth=", "token=", "lt=", "rt=",
+        "access_token=",
+        "id_token=",
+        "refresh_token=",
+        "phpsessid=",
+        "jsessionid=",
+        "asp.net_sessionid=",
+        "sp=",
+        "_session=",
+        "session=",
+        "__secure-session=",
+        "sid=",
+        "auth=",
+        "token=",
+        "lt=",
+        "rt=",
         // Spring / OAuth common
-        "remember-me=", "sess=",
+        "remember-me=",
+        "sess=",
     ];
     for name in names {
         if let Some(pos) = cookie_line.to_ascii_lowercase().find(name) {
@@ -247,7 +260,9 @@ fn detect_aws_key(blob: &str) -> Option<SecretHit> {
     let mut i = 0;
     while i + 20 <= bytes.len() {
         if &bytes[i..i + 4] == needle
-            && bytes[i + 4..i + 20].iter().all(|b| b.is_ascii_uppercase() || b.is_ascii_digit())
+            && bytes[i + 4..i + 20]
+                .iter()
+                .all(|b| b.is_ascii_uppercase() || b.is_ascii_digit())
         {
             let key = std::str::from_utf8(&bytes[i..i + 20]).ok()?;
             return Some(SecretHit {
@@ -266,7 +281,10 @@ fn detect_stripe_key(blob: &str) -> Option<SecretHit> {
         if let Some(idx) = blob.find(prefix) {
             // Stripe keys are 32+ chars after the prefix
             let after = &blob[idx + prefix.len()..];
-            let value: String = after.chars().take_while(|c| c.is_ascii_alphanumeric()).collect();
+            let value: String = after
+                .chars()
+                .take_while(|c| c.is_ascii_alphanumeric())
+                .collect();
             if value.len() >= 24 {
                 return Some(SecretHit {
                     kind: SecretKind::StripeKey,
@@ -281,15 +299,24 @@ fn detect_stripe_key(blob: &str) -> Option<SecretHit> {
 
 fn detect_generic_api_key(blob: &str) -> Option<SecretHit> {
     let patterns = [
-        "api_key=", "apikey=", "x-api-key:", "api-key:",
-        "x-auth-token:", "auth-token:", "x-token:",
-        "access-key:", "secret-key:",
+        "api_key=",
+        "apikey=",
+        "x-api-key:",
+        "api-key:",
+        "x-auth-token:",
+        "auth-token:",
+        "x-token:",
+        "access-key:",
+        "secret-key:",
     ];
     let lower = blob.to_ascii_lowercase();
     for pat in patterns {
         if let Some(idx) = lower.find(pat) {
             let after = &blob[idx + pat.len()..].trim_start();
-            let value: String = after.chars().take_while(|c| !c.is_whitespace() && *c != '"' && *c != '\'').collect();
+            let value: String = after
+                .chars()
+                .take_while(|c| !c.is_whitespace() && *c != '"' && *c != '\'')
+                .collect();
             if value.len() >= 12 {
                 return Some(SecretHit {
                     kind: SecretKind::GenericApiKey,
@@ -351,10 +378,7 @@ mod tests {
 
     #[test]
     fn clean_input_passes() {
-        let v = scan_for_pasted_secrets(
-            "https://api.example.com/users/1",
-            "User-Agent: my-agent",
-        );
+        let v = scan_for_pasted_secrets("https://api.example.com/users/1", "User-Agent: my-agent");
         assert!(v.runs_immediately());
     }
 
@@ -392,10 +416,7 @@ mod tests {
 
     #[test]
     fn aws_key_in_url_triggers_confirm() {
-        let v = scan_for_pasted_secrets(
-            "https://s3.amazonaws.com/?key=AKIAIOSFODNN7EXAMPLE",
-            "",
-        );
+        let v = scan_for_pasted_secrets("https://s3.amazonaws.com/?key=AKIAIOSFODNN7EXAMPLE", "");
         match v {
             WebSafetyVerdict::Confirm { hits, .. } => {
                 assert_eq!(hits[0].kind, SecretKind::AwsKey);
@@ -437,10 +458,7 @@ mod tests {
     #[test]
     fn no_false_positive_on_short_session_values() {
         // A 4-char `sp=ABCD` should not trigger; sessions are >= 8 chars
-        let v = scan_for_pasted_secrets(
-            "https://example.com/",
-            "Cookie: sp=ABCD",
-        );
+        let v = scan_for_pasted_secrets("https://example.com/", "Cookie: sp=ABCD");
         assert!(v.runs_immediately());
     }
 }

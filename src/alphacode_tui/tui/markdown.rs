@@ -13,9 +13,15 @@ fn to_markdown_diagram_mode(
     mode: crate::config::DiagramDisplayMode,
 ) -> crate::alphacode_tui_markdown::DiagramDisplayMode {
     match mode {
-        crate::config::DiagramDisplayMode::None => crate::alphacode_tui_markdown::DiagramDisplayMode::None,
-        crate::config::DiagramDisplayMode::Margin => crate::alphacode_tui_markdown::DiagramDisplayMode::Margin,
-        crate::config::DiagramDisplayMode::Pinned => crate::alphacode_tui_markdown::DiagramDisplayMode::Pinned,
+        crate::config::DiagramDisplayMode::None => {
+            crate::alphacode_tui_markdown::DiagramDisplayMode::None
+        }
+        crate::config::DiagramDisplayMode::Margin => {
+            crate::alphacode_tui_markdown::DiagramDisplayMode::Margin
+        }
+        crate::config::DiagramDisplayMode::Pinned => {
+            crate::alphacode_tui_markdown::DiagramDisplayMode::Pinned
+        }
     }
 }
 
@@ -23,9 +29,15 @@ fn from_markdown_diagram_mode(
     mode: crate::alphacode_tui_markdown::DiagramDisplayMode,
 ) -> crate::config::DiagramDisplayMode {
     match mode {
-        crate::alphacode_tui_markdown::DiagramDisplayMode::None => crate::config::DiagramDisplayMode::None,
-        crate::alphacode_tui_markdown::DiagramDisplayMode::Margin => crate::config::DiagramDisplayMode::Margin,
-        crate::alphacode_tui_markdown::DiagramDisplayMode::Pinned => crate::config::DiagramDisplayMode::Pinned,
+        crate::alphacode_tui_markdown::DiagramDisplayMode::None => {
+            crate::config::DiagramDisplayMode::None
+        }
+        crate::alphacode_tui_markdown::DiagramDisplayMode::Margin => {
+            crate::config::DiagramDisplayMode::Margin
+        }
+        crate::alphacode_tui_markdown::DiagramDisplayMode::Pinned => {
+            crate::config::DiagramDisplayMode::Pinned
+        }
     }
 }
 
@@ -46,11 +58,15 @@ fn to_markdown_latex_mode(
     mode: crate::config::LatexRenderingMode,
 ) -> crate::alphacode_tui_markdown::LatexRenderingMode {
     match mode {
-        crate::config::LatexRenderingMode::None => crate::alphacode_tui_markdown::LatexRenderingMode::None,
+        crate::config::LatexRenderingMode::None => {
+            crate::alphacode_tui_markdown::LatexRenderingMode::None
+        }
         crate::config::LatexRenderingMode::Unicode => {
             crate::alphacode_tui_markdown::LatexRenderingMode::Unicode
         }
-        crate::config::LatexRenderingMode::Image => crate::alphacode_tui_markdown::LatexRenderingMode::Image,
+        crate::config::LatexRenderingMode::Image => {
+            crate::alphacode_tui_markdown::LatexRenderingMode::Image
+        }
     }
 }
 

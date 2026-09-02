@@ -378,8 +378,9 @@ impl AuthLifecycleDriver {
         &self,
         spec: &AuthLifecycleSpec,
     ) -> anyhow::Result<AuthLifecycleResult> {
-        let resolved =
-            crate::alphacode_base::provider_catalog::resolve_openai_compatible_profile(spec.profile);
+        let resolved = crate::alphacode_base::provider_catalog::resolve_openai_compatible_profile(
+            spec.profile,
+        );
         ensure!(
             resolved.id == spec.provider_id,
             "spec provider id {} did not match profile {}",
@@ -620,7 +621,8 @@ mod tests {
     }
 
     fn live_openai_compatible_api_key(profile: OpenAiCompatibleProfile) -> Option<LiveTestApiKey> {
-        let resolved = crate::alphacode_base::provider_catalog::resolve_openai_compatible_profile(profile);
+        let resolved =
+            crate::alphacode_base::provider_catalog::resolve_openai_compatible_profile(profile);
         crate::alphacode_base::provider_catalog::load_api_key_from_env_or_config(
             &resolved.api_key_env,
             &resolved.env_file,
@@ -647,7 +649,8 @@ mod tests {
         I: IntoIterator<Item = S>,
         S: Into<String>,
     {
-        let resolved = crate::alphacode_base::provider_catalog::resolve_openai_compatible_profile(profile);
+        let resolved =
+            crate::alphacode_base::provider_catalog::resolve_openai_compatible_profile(profile);
         let mut event = crate::live_tests::LiveVerificationEvent::new(
             test_name,
             resolved.id,
@@ -683,9 +686,7 @@ mod tests {
         );
     }
 
-    fn cost_quota_safety_stage(
-        spend_enabled: bool,
-    ) -> crate::live_tests::LiveVerificationStage {
+    fn cost_quota_safety_stage(spend_enabled: bool) -> crate::live_tests::LiveVerificationStage {
         crate::live_tests::LiveVerificationStage::passed(
             crate::live_tests::checkpoints::COST_QUOTA_SAFETY,
         )
@@ -698,14 +699,10 @@ mod tests {
         )
     }
 
-    fn covered_stage_names(
-        stages: &[crate::live_tests::LiveVerificationStage],
-    ) -> Vec<String> {
+    fn covered_stage_names(stages: &[crate::live_tests::LiveVerificationStage]) -> Vec<String> {
         stages
             .iter()
-            .filter(|stage| {
-                stage.status != crate::live_tests::LiveVerificationStageStatus::NotRun
-            })
+            .filter(|stage| stage.status != crate::live_tests::LiveVerificationStageStatus::NotRun)
             .map(|stage| stage.name.clone())
             .collect()
     }
@@ -965,11 +962,12 @@ mod tests {
         // Native-routed profiles (Anthropic/OpenAI API-key) deliberately use a
         // native runtime route, not the generic `openai-compatible:<id>` one, so
         // exclude them from this generic switch/reauth contract.
-        let profiles: Vec<_> = crate::alphacode_base::provider_catalog::openai_compatible_profiles()
-            .iter()
-            .copied()
-            .filter(|profile| !is_native_routed_compat_profile(profile))
-            .collect();
+        let profiles: Vec<_> =
+            crate::alphacode_base::provider_catalog::openai_compatible_profiles()
+                .iter()
+                .copied()
+                .filter(|profile| !is_native_routed_compat_profile(profile))
+                .collect();
         assert!(
             profiles.len() >= 2,
             "switch/reauth matrix needs at least two OpenAI-compatible providers"
@@ -1254,8 +1252,9 @@ mod tests {
             );
             return;
         }
-        let api_key = live_cerebras_api_key()
-            .expect("ALPHACODE_AUTH_LIFECYCLE_LIVE=1 requires ALPHACODE_AUTH_LIFECYCLE_CEREBRAS_API_KEY");
+        let api_key = live_cerebras_api_key().expect(
+            "ALPHACODE_AUTH_LIFECYCLE_LIVE=1 requires ALPHACODE_AUTH_LIFECYCLE_CEREBRAS_API_KEY",
+        );
 
         let spend_smoke = env_truthy("ALPHACODE_AUTH_LIFECYCLE_SMOKE");
         let stream_smoke = env_truthy("ALPHACODE_AUTH_LIFECYCLE_STREAM_SMOKE");
@@ -1699,9 +1698,11 @@ mod tests {
             );
             return;
         };
-        let profile = crate::alphacode_base::provider_catalog::openai_compatible_profile_by_id(&provider_id)
-            .unwrap_or_else(|| panic!("unknown OpenAI-compatible profile id: {provider_id}"));
-        let resolved = crate::alphacode_base::provider_catalog::resolve_openai_compatible_profile(profile);
+        let profile =
+            crate::alphacode_base::provider_catalog::openai_compatible_profile_by_id(&provider_id)
+                .unwrap_or_else(|| panic!("unknown OpenAI-compatible profile id: {provider_id}"));
+        let resolved =
+            crate::alphacode_base::provider_catalog::resolve_openai_compatible_profile(profile);
         let api_key = live_openai_compatible_api_key(profile).unwrap_or_else(|| {
             panic!(
                 "ALPHACODE_ISSUE_DRIVEN_LIVE_PROVIDER={} requires {} or {}",
@@ -1912,11 +1913,13 @@ mod tests {
     fn fresh_start_sandbox_is_unconfigured_then_tui_key_lifecycle_configures_provider() {
         let driver = AuthLifecycleDriver::new().expect("driver");
         let spec = AuthLifecycleSpec::cerebras_fixture(AuthLifecycleAuthPath::TuiPasteApiKey);
-        let resolved =
-            crate::alphacode_base::provider_catalog::resolve_openai_compatible_profile(spec.profile);
+        let resolved = crate::alphacode_base::provider_catalog::resolve_openai_compatible_profile(
+            spec.profile,
+        );
         let env_file = driver.sandbox.env_file_path(&resolved.env_file);
-        let provider = crate::alphacode_base::provider_catalog::resolve_login_provider(spec.provider_id)
-            .expect("Cerebras login provider descriptor");
+        let provider =
+            crate::alphacode_base::provider_catalog::resolve_login_provider(spec.provider_id)
+                .expect("Cerebras login provider descriptor");
 
         assert!(
             !env_file.exists(),
@@ -1932,7 +1935,9 @@ mod tests {
             "fresh sandbox should not inherit credentials from the developer machine"
         );
         assert!(
-            !crate::alphacode_base::provider_catalog::openai_compatible_profile_is_configured(spec.profile),
+            !crate::alphacode_base::provider_catalog::openai_compatible_profile_is_configured(
+                spec.profile
+            ),
             "fresh sandbox should report the provider as unconfigured before setup"
         );
         crate::alphacode_base::auth::AuthStatus::invalidate_cache();

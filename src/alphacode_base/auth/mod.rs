@@ -615,7 +615,8 @@ impl AuthStatus {
                         AuthState::NotConfigured => "not configured",
                     };
 
-                    let accounts = crate::alphacode_base::auth::claude::list_accounts().unwrap_or_default();
+                    let accounts =
+                        crate::alphacode_base::auth::claude::list_accounts().unwrap_or_default();
                     if accounts.len() > 1 {
                         let active = crate::alphacode_base::auth::claude::active_account_label()
                             .unwrap_or_else(|| "?".to_string());
@@ -639,7 +640,8 @@ impl AuthStatus {
                         AuthState::NotConfigured => "not configured",
                     };
 
-                    let accounts = crate::alphacode_base::auth::codex::list_accounts().unwrap_or_default();
+                    let accounts =
+                        crate::alphacode_base::auth::codex::list_accounts().unwrap_or_default();
                     if accounts.len() > 1 {
                         let active = crate::alphacode_base::auth::codex::active_account_label()
                             .unwrap_or_else(|| "?".to_string());
@@ -728,7 +730,11 @@ impl AuthStatus {
             crate::provider_catalog::LoginProviderTarget::OpenAiApiKey => {
                 let (source, detail) = summarize_sources(vec![
                     env_source("OPENAI_API_KEY"),
-                    config_source("OPENAI_API_KEY", "openai.env", "~/.config/alphacode/openai.env"),
+                    config_source(
+                        "OPENAI_API_KEY",
+                        "openai.env",
+                        "~/.config/alphacode/openai.env",
+                    ),
                     external_api_key_source("OPENAI_API_KEY"),
                 ]);
                 (
@@ -813,7 +819,11 @@ impl AuthStatus {
                 {
                     summarize_sources(vec![
                         env_source(&key_env),
-                        config_source(&key_env, &env_file, format!("~/.config/alphacode/{}", env_file)),
+                        config_source(
+                            &key_env,
+                            &env_file,
+                            format!("~/.config/alphacode/{}", env_file),
+                        ),
                         external_api_key_source(&key_env),
                     ])
                 } else {
@@ -911,7 +921,9 @@ fn build_auth_status_uncached(mode: AuthProbeMode) -> (AuthStatus, Vec<(&'static
     let mut status = AuthStatus::default();
     let mut timings = Vec::new();
 
-    record_auth_probe_step(&mut timings, "alphacode", || probe_alphacode_status(&mut status));
+    record_auth_probe_step(&mut timings, "alphacode", || {
+        probe_alphacode_status(&mut status)
+    });
     record_auth_probe_step(&mut timings, "anthropic", || {
         probe_anthropic_status(&mut status)
     });
@@ -1365,7 +1377,8 @@ fn openai_oauth_source(status: &AuthStatus) -> Option<(AuthCredentialSource, Str
             "~/.alphacode/openai-auth.json".to_string(),
         ));
     }
-    if crate::alphacode_base::auth::codex::legacy_auth_allowed() && crate::alphacode_base::auth::codex::legacy_auth_source_exists()
+    if crate::alphacode_base::auth::codex::legacy_auth_allowed()
+        && crate::alphacode_base::auth::codex::legacy_auth_source_exists()
     {
         return Some((
             AuthCredentialSource::TrustedExternalFile,
@@ -1473,8 +1486,18 @@ fn cursor_source() -> Option<(AuthCredentialSource, String)> {
             format!("trusted Cursor app state ({})", path.display()),
         ));
     }
-    if config_source("CURSOR_API_KEY", "cursor.env", "~/.config/alphacode/cursor.env").is_some() {
-        return config_source("CURSOR_API_KEY", "cursor.env", "~/.config/alphacode/cursor.env");
+    if config_source(
+        "CURSOR_API_KEY",
+        "cursor.env",
+        "~/.config/alphacode/cursor.env",
+    )
+    .is_some()
+    {
+        return config_source(
+            "CURSOR_API_KEY",
+            "cursor.env",
+            "~/.config/alphacode/cursor.env",
+        );
     }
     None
 }
@@ -1516,12 +1539,14 @@ fn copilot_source() -> Option<(AuthCredentialSource, String)> {
         ));
     }
 
-    crate::alphacode_base::auth::copilot::load_github_token().ok().map(|_| {
-        (
-            AuthCredentialSource::LocalCliSession,
-            "gh CLI token fallback".to_string(),
-        )
-    })
+    crate::alphacode_base::auth::copilot::load_github_token()
+        .ok()
+        .map(|_| {
+            (
+                AuthCredentialSource::LocalCliSession,
+                "gh CLI token fallback".to_string(),
+            )
+        })
 }
 
 fn env_var_nonempty(key: &str) -> bool {
@@ -1554,4 +1579,3 @@ fn config_file_contains_assignment(path: &Path, env_key: &str) -> bool {
 fn api_key_available(env_key: &str, file_name: &str) -> bool {
     crate::provider_catalog::load_api_key_from_env_or_config(env_key, file_name).is_some()
 }
-

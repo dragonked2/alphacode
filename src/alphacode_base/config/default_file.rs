@@ -685,10 +685,10 @@ desktop_notifications = true
 
         // Substitute platform-specific defaults from the keybinding registry.
         let p = crate::alphacode_config_types::KeybindingPlatform::current();
-        let effort_increase =
-            crate::alphacode_config_types::default_binding("effort_increase", p).unwrap_or("alt+right");
-        let effort_decrease =
-            crate::alphacode_config_types::default_binding("effort_decrease", p).unwrap_or("alt+left");
+        let effort_increase = crate::alphacode_config_types::default_binding("effort_increase", p)
+            .unwrap_or("alt+right");
+        let effort_decrease = crate::alphacode_config_types::default_binding("effort_decrease", p)
+            .unwrap_or("alt+left");
         default_content
             .replace("@EFFORT_INCREASE@", effort_increase)
             .replace("@EFFORT_DECREASE@", effort_decrease)

@@ -156,4 +156,3 @@ mod tests {
         assert!(idle_retrim_due(Some(now - IDLE_RETRIM_INTERVAL), now));
     }
 }
-

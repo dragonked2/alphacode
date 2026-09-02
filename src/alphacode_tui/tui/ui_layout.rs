@@ -1,8 +1,8 @@
 use ratatui::prelude::*;
 
 pub(crate) use crate::alphacode_tui_render::chrome::{
-    align_if_unset, centered_content_block_width, left_aligned_content_inset,
-    left_pad_lines_to_block_width, MAX_CENTERED_CONTENT_WIDTH,
+    MAX_CENTERED_CONTENT_WIDTH, align_if_unset, centered_content_block_width,
+    left_aligned_content_inset, left_pad_lines_to_block_width,
 };
 pub(super) use crate::alphacode_tui_render::chrome::{clear_area, draw_right_rail_chrome};
 

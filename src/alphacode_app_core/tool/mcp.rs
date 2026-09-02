@@ -649,8 +649,8 @@ mod tests {
 
     #[tokio::test]
     async fn test_reload_empty_config() {
-        let _guard =
-            LocalMcpConfigGuard::new("{\"servers\":{}}").expect("create temporary .alphacode/mcp.json");
+        let _guard = LocalMcpConfigGuard::new("{\"servers\":{}}")
+            .expect("create temporary .alphacode/mcp.json");
         let tool = create_test_tool();
         let ctx = create_test_context();
         let input = json!({"action": "reload"});

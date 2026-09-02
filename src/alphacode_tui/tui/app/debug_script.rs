@@ -554,4 +554,3 @@ impl App {
         Ok(format!("injected {:?} with {:?}", key_code, modifiers))
     }
 }
-

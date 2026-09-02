@@ -507,7 +507,8 @@ pub(crate) async fn execute_account_command_remote(
                 .any(|account| account.label == label);
             match (has_anthropic, has_openai) {
                 (true, false) => {
-                    if let Err(e) = crate::alphacode_base::auth::claude::set_active_account(&label) {
+                    if let Err(e) = crate::alphacode_base::auth::claude::set_active_account(&label)
+                    {
                         app.push_display_message(DisplayMessage::error(format!(
                             "Failed to switch account: {}",
                             e
@@ -648,7 +649,9 @@ fn save_default_provider_setting(app: &mut App, provider: Option<&str>) {
         // honors them as a routing + OAuth-vs-API decision. Rejecting them here
         // was itself an inconsistency: the picker could save a default the
         // `/account` command refused to set.
-        Some(other) if crate::alphacode_provider_core::AuthRoute::parse(other).is_some() => normalized,
+        Some(other) if crate::alphacode_provider_core::AuthRoute::parse(other).is_some() => {
+            normalized
+        }
         Some(other) => {
             app.push_display_message(DisplayMessage::error(format!(
                 "Unsupported default provider {}. Use claude, openai, anthropic-api, openai-api, copilot, gemini, openrouter, or auto.",
@@ -947,7 +950,8 @@ fn render_provider_settings_markdown(app: &App, provider_id: &str) -> String {
     ));
     lines.push(String::new());
 
-    let recommended_actions = crate::alphacode_base::auth::doctor::recommended_actions(provider, &assessment, None);
+    let recommended_actions =
+        crate::alphacode_base::auth::doctor::recommended_actions(provider, &assessment, None);
     if !recommended_actions.is_empty() {
         lines.push("Recommended next steps".to_string());
         for action in recommended_actions {
@@ -1087,8 +1091,10 @@ fn render_auth_doctor_markdown(provider_filter: Option<&str>) -> String {
             .map(crate::alphacode_base::auth::validation::format_record_label);
         let recommended_actions =
             crate::alphacode_base::auth::doctor::recommended_actions(provider, &assessment, None);
-        let diagnostics = crate::alphacode_base::auth::doctor::diagnostics(provider, &assessment, None);
-        let needs_attention = crate::alphacode_base::auth::doctor::needs_attention(&assessment, None);
+        let diagnostics =
+            crate::alphacode_base::auth::doctor::diagnostics(provider, &assessment, None);
+        let needs_attention =
+            crate::alphacode_base::auth::doctor::needs_attention(&assessment, None);
 
         let mut lines = vec![format!("{} ({})", provider.display_name, provider.id)];
         lines.push(format!(
@@ -1197,4 +1203,3 @@ mod tests {
         assert!(markdown.contains("Review current state: alphacode auth status --json"));
     }
 }
-

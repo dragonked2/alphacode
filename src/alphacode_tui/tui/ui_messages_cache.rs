@@ -1,6 +1,8 @@
 use super::*;
 
-pub(super) use crate::alphacode_tui_messages::{centered_wrap_width, left_pad_lines_for_centered_mode};
+pub(super) use crate::alphacode_tui_messages::{
+    centered_wrap_width, left_pad_lines_for_centered_mode,
+};
 
 pub(crate) fn get_cached_message_lines<F>(
     msg: &DisplayMessage,
@@ -19,11 +21,11 @@ where
             diagram_mode: crate::config::config().display.diagram_mode,
             centered: markdown::center_code_blocks(),
             mermaid_epoch: crate::alphacode_tui::tui::mermaid::deferred_render_epoch(),
-            mermaid_aspect_bucket: crate::alphacode_tui::tui::mermaid::current_preferred_aspect_ratio_bucket(),
+            mermaid_aspect_bucket:
+                crate::alphacode_tui::tui::mermaid::current_preferred_aspect_ratio_bucket(),
             show_agentgrep_output: crate::config::config().display.show_agentgrep_output,
             tool_call_details: crate::config::config().display.tool_call_details,
         },
         render,
     )
 }
-

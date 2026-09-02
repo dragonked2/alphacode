@@ -616,7 +616,10 @@ async fn refresh_direct_access_token(
             let _ = crate::alphacode_base::auth::refresh_state::record_success("cursor");
         }
         Err(err) => {
-            let _ = crate::alphacode_base::auth::refresh_state::record_failure("cursor", err.to_string());
+            let _ = crate::alphacode_base::auth::refresh_state::record_failure(
+                "cursor",
+                err.to_string(),
+            );
         }
     }
 
@@ -728,4 +731,3 @@ fn status_output_indicates_authenticated(success: bool, stdout: &[u8], stderr: &
 
     success
 }
-

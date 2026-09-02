@@ -944,4 +944,3 @@ fn format_interactables_result(result: &Value) -> String {
 
     lines.join("\n")
 }
-

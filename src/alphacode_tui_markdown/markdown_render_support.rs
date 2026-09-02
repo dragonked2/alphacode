@@ -208,7 +208,9 @@ pub(super) fn render_table_aligned(
     let estimated_lines = rows.len() + rows.len() / 2; // rough estimate including separators
     let mut lines = Vec::with_capacity(estimated_lines);
     let separator_style = Style::default().fg(rgb(100, 120, 160));
-    let header_style = Style::default().fg(rgb(180, 200, 240)).add_modifier(ratatui::style::Modifier::BOLD | ratatui::style::Modifier::UNDERLINED);
+    let header_style = Style::default()
+        .fg(rgb(180, 200, 240))
+        .add_modifier(ratatui::style::Modifier::BOLD | ratatui::style::Modifier::UNDERLINED);
     let cell_style = Style::default().fg(text_color());
     let sep_span_style = Style::default().fg(rgb(80, 95, 130));
 
@@ -287,7 +289,8 @@ pub(super) fn render_table_aligned(
 
         // Separator after header row
         if row_idx == 0 {
-            let mut separator = String::with_capacity(col_widths.iter().sum::<usize>() + num_cols * 3);
+            let mut separator =
+                String::with_capacity(col_widths.iter().sum::<usize>() + num_cols * 3);
             for (i, &w) in col_widths.iter().enumerate() {
                 if i > 0 {
                     separator.push_str("─┼─");
@@ -440,10 +443,7 @@ pub(super) fn highlight_code(code: &str, lang: Option<&str>) -> Vec<Line<'static
                 lines.push(Line::from(spans));
             }
             Err(_) => {
-                lines.push(Line::from(Span::styled(
-                    line.to_string(),
-                    fallback_style,
-                )));
+                lines.push(Line::from(Span::styled(line.to_string(), fallback_style)));
             }
         }
     }

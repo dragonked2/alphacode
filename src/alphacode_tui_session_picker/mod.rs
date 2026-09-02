@@ -1,6 +1,6 @@
-use chrono::{DateTime, Utc};
 use crate::alphacode_message_types::ToolCall;
 use crate::alphacode_session_types::SessionStatus;
+use chrono::{DateTime, Utc};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
@@ -275,7 +275,11 @@ mod tests {
             SessionSource::Alphacode,
             Some("openai/codex-mini")
         ));
-        assert!(session_is_pi(SessionSource::Alphacode, Some("pi-main"), None));
+        assert!(session_is_pi(
+            SessionSource::Alphacode,
+            Some("pi-main"),
+            None
+        ));
         assert!(session_is_pi(
             SessionSource::Alphacode,
             None,

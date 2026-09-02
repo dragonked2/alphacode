@@ -88,7 +88,7 @@ pub const DEFAULT_CONTEXT_LIMIT: usize = 2_000_000_000;
 /// Returns None if unable to parse version.
 fn parse_glm_version(model: &str) -> Option<f64> {
     let m = model.to_lowercase();
-    
+
     // Try common GLM version patterns
     let patterns = [
         ("glm-5.3", 5.3),
@@ -100,13 +100,13 @@ fn parse_glm_version(model: &str) -> Option<f64> {
         ("glm-4.5", 4.5),
         ("glm-4.0", 4.0),
     ];
-    
+
     for (pattern, version) in patterns {
         if m.contains(pattern) {
             return Some(version);
         }
     }
-    
+
     // Try parsing version from patterns like "glm-53", "glm-52"
     if let Some(idx) = m.find("glm-") {
         let rest = &m[idx + 4..];
@@ -116,7 +116,7 @@ fn parse_glm_version(model: &str) -> Option<f64> {
                 // Two-digit pattern like "52" -> 5.2, "53" -> 5.3
                 if let (Some(major), Some(minor)) = (
                     digits.chars().next().and_then(|c| c.to_digit(10)),
-                    digits.chars().nth(1).and_then(|c| c.to_digit(10))
+                    digits.chars().nth(1).and_then(|c| c.to_digit(10)),
                 ) {
                     return Some(major as f64 + minor as f64 / 10.0);
                 }
@@ -128,7 +128,7 @@ fn parse_glm_version(model: &str) -> Option<f64> {
             }
         }
     }
-    
+
     None
 }
 
@@ -322,10 +322,7 @@ pub fn context_limit_for_model_with_provider_and_cache(
 
     // Spark variant has a smaller context window than the full codex model.
     if model.starts_with("gpt-5.3-codex-spark") {
-        crate::logging::debug(&format!(
-            "Context limit [spark-fallback]: {} = 128k",
-            model
-        ));
+        crate::logging::debug(&format!("Context limit [spark-fallback]: {} = 128k", model));
         return Some(128_000);
     }
 
@@ -333,29 +330,20 @@ pub fn context_limit_for_model_with_provider_and_cache(
         || model.starts_with("gpt-5.1-chat")
         || model.starts_with("gpt-5-chat")
     {
-        crate::logging::debug(&format!(
-            "Context limit [chat-fallback]: {} = 128k",
-            model
-        ));
+        crate::logging::debug(&format!("Context limit [chat-fallback]: {} = 128k", model));
         return Some(128_000);
     }
 
     // GPT-5.4-family models should default to the long-context window.
     // The live Codex OAuth catalog can still override this via the dynamic cache above.
     if model.starts_with("gpt-5.4") {
-        crate::logging::debug(&format!(
-            "Context limit [gpt-5.4-fallback]: {} = 1M",
-            model
-        ));
+        crate::logging::debug(&format!("Context limit [gpt-5.4-fallback]: {} = 1M", model));
         return Some(1_000_000);
     }
 
     // Most GPT-5.x codex/reasoning models: 272k per Codex backend API.
     if model.starts_with("gpt-5") {
-        crate::logging::debug(&format!(
-            "Context limit [gpt-5-fallback]: {} = 272k",
-            model
-        ));
+        crate::logging::debug(&format!("Context limit [gpt-5-fallback]: {} = 272k", model));
         return Some(272_000);
     }
 
@@ -363,10 +351,7 @@ pub fn context_limit_for_model_with_provider_and_cache(
         || model.starts_with("gemini-2.5")
         || model.starts_with("gemini-3")
     {
-        crate::logging::debug(&format!(
-            "Context limit [gemini-fallback]: {} = 1M",
-            model
-        ));
+        crate::logging::debug(&format!("Context limit [gemini-fallback]: {} = 1M", model));
         return Some(2_000_000);
     }
 
@@ -781,7 +766,9 @@ mod tests {
 
     #[test]
     fn anthropic_context_mode_classifications() {
-        use crate::alphacode_provider_core::anthropic::{AnthropicContextMode, anthropic_context_mode};
+        use crate::alphacode_provider_core::anthropic::{
+            AnthropicContextMode, anthropic_context_mode,
+        };
         assert_eq!(
             anthropic_context_mode("claude-opus-4-8"),
             AnthropicContextMode::Native1M
@@ -931,12 +918,30 @@ mod tests {
     #[test]
     fn minimax_m2_and_m3_resolve_to_204k() {
         // Direct API ids (hyphenated, case-preserved or lowercased).
-        assert_eq!(open_weight_family_context_limit("MiniMax-M2"), Some(2_000_000));
-        assert_eq!(open_weight_family_context_limit("MiniMax-M2.1"), Some(2_000_000));
-        assert_eq!(open_weight_family_context_limit("MiniMax-M2.5"), Some(2_000_000));
-        assert_eq!(open_weight_family_context_limit("MiniMax-M2.7"), Some(2_000_000));
-        assert_eq!(open_weight_family_context_limit("minimax-m3"), Some(2_000_000));
-        assert_eq!(open_weight_family_context_limit("minimax-m3-free"), Some(2_000_000));
+        assert_eq!(
+            open_weight_family_context_limit("MiniMax-M2"),
+            Some(2_000_000)
+        );
+        assert_eq!(
+            open_weight_family_context_limit("MiniMax-M2.1"),
+            Some(2_000_000)
+        );
+        assert_eq!(
+            open_weight_family_context_limit("MiniMax-M2.5"),
+            Some(2_000_000)
+        );
+        assert_eq!(
+            open_weight_family_context_limit("MiniMax-M2.7"),
+            Some(2_000_000)
+        );
+        assert_eq!(
+            open_weight_family_context_limit("minimax-m3"),
+            Some(2_000_000)
+        );
+        assert_eq!(
+            open_weight_family_context_limit("minimax-m3-free"),
+            Some(2_000_000)
+        );
         assert_eq!(
             open_weight_family_context_limit("MiniMax-M2.7-highspeed"),
             Some(2_000_000)
@@ -950,8 +955,14 @@ mod tests {
             Some(2_000_000)
         );
         // OpenRouter style: brand/model with a slash.
-        assert_eq!(open_weight_family_context_limit("minimax/m3-free"), Some(2_000_000));
-        assert_eq!(open_weight_family_context_limit("minimax/m2.7"), Some(2_000_000));
+        assert_eq!(
+            open_weight_family_context_limit("minimax/m3-free"),
+            Some(2_000_000)
+        );
+        assert_eq!(
+            open_weight_family_context_limit("minimax/m2.7"),
+            Some(2_000_000)
+        );
     }
 
     /// Future generations (M4+) must not be silently capped at 200K: the

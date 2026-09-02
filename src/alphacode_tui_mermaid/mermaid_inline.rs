@@ -236,7 +236,6 @@ pub fn rediscover_inline_image(id: u64) -> Option<(u64, u32, u32)> {
     None
 }
 
-
 /// Decode a bounded prefix of the base64 payload and try to read image
 /// dimensions straight from the container header (PNG/JPEG/GIF/BMP/WEBP).
 fn dims_from_b64_prefix(data_b64: &str) -> Option<(u32, u32)> {

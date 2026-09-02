@@ -45,12 +45,8 @@ impl CheckpointManager {
     /// Create a new CheckpointManager from a MemoryManager.
     pub fn new(memory: MemoryManager) -> Result<Self> {
         let checkpoints_dir = memory.root().join("checkpoints");
-        fs::create_dir_all(&checkpoints_dir).with_context(|| {
-            format!(
-                "creating checkpoints dir {}",
-                checkpoints_dir.display()
-            )
-        })?;
+        fs::create_dir_all(&checkpoints_dir)
+            .with_context(|| format!("creating checkpoints dir {}", checkpoints_dir.display()))?;
         Ok(Self {
             memory,
             checkpoints_dir,
@@ -88,8 +84,7 @@ impl CheckpointManager {
 
         let path = self.checkpoint_path(&checkpoint.id);
         let json = serde_json::to_string_pretty(&meta)?;
-        fs::write(&path, json)
-            .with_context(|| format!("writing checkpoint {}", path.display()))?;
+        fs::write(&path, json).with_context(|| format!("writing checkpoint {}", path.display()))?;
 
         // Update state's checkpoint list.
         self.memory.update_state(|s| {
@@ -108,8 +103,7 @@ impl CheckpointManager {
         let path = self.checkpoint_path(checkpoint_id);
         let data = fs::read_to_string(&path)
             .with_context(|| format!("reading checkpoint {}", path.display()))?;
-        let meta: CheckpointMeta =
-            serde_json::from_str(&data).context("parsing checkpoint")?;
+        let meta: CheckpointMeta = serde_json::from_str(&data).context("parsing checkpoint")?;
 
         self.memory.update_state(|s| {
             s.active_phase = Some(meta.checkpoint.phase.clone());
@@ -199,8 +193,7 @@ impl CheckpointManager {
         if all.is_empty() {
             return Ok(None);
         }
-        let mut checkpoints: Vec<Checkpoint> =
-            all.into_values().map(|m| m.checkpoint).collect();
+        let mut checkpoints: Vec<Checkpoint> = all.into_values().map(|m| m.checkpoint).collect();
         checkpoints.sort_by(|a, b| b.created_at.cmp(&a.created_at));
 
         // Prefer one with a git commit for full rollback.
@@ -267,7 +260,11 @@ mod tests {
     fn test_create_and_restore() {
         let (_dir, mgr) = make_mgr();
         let cp = mgr
-            .create("Phase 1", "Architecture complete", CheckpointTrigger::PhaseCompleted)
+            .create(
+                "Phase 1",
+                "Architecture complete",
+                CheckpointTrigger::PhaseCompleted,
+            )
             .unwrap();
         assert_eq!(cp.phase, "Phase 1");
 
@@ -279,8 +276,10 @@ mod tests {
     #[test]
     fn test_list() {
         let (_dir, mgr) = make_mgr();
-        mgr.create("Phase 1", "Done", CheckpointTrigger::PhaseCompleted).unwrap();
-        mgr.create("Phase 2", "Done", CheckpointTrigger::TimeInterval).unwrap();
+        mgr.create("Phase 1", "Done", CheckpointTrigger::PhaseCompleted)
+            .unwrap();
+        mgr.create("Phase 2", "Done", CheckpointTrigger::TimeInterval)
+            .unwrap();
         let all = mgr.list().unwrap();
         assert_eq!(all.len(), 2);
     }
@@ -288,9 +287,11 @@ mod tests {
     #[test]
     fn test_latest() {
         let (_dir, mgr) = make_mgr();
-        mgr.create("Phase 1", "First", CheckpointTrigger::PhaseCompleted).unwrap();
+        mgr.create("Phase 1", "First", CheckpointTrigger::PhaseCompleted)
+            .unwrap();
         std::thread::sleep(std::time::Duration::from_millis(10));
-        mgr.create("Phase 2", "Second", CheckpointTrigger::TimeInterval).unwrap();
+        mgr.create("Phase 2", "Second", CheckpointTrigger::TimeInterval)
+            .unwrap();
         let latest = mgr.latest().unwrap().unwrap();
         assert_eq!(latest.phase, "Phase 2");
     }
@@ -298,7 +299,8 @@ mod tests {
     #[test]
     fn test_best_for_recovery() {
         let (_dir, mgr) = make_mgr();
-        mgr.create("Phase 1", "No commit", CheckpointTrigger::PhaseCompleted).unwrap();
+        mgr.create("Phase 1", "No commit", CheckpointTrigger::PhaseCompleted)
+            .unwrap();
         let best = mgr.best_for_recovery().unwrap();
         assert!(best.is_some());
         // Without a git repo, we still get the latest checkpoint.
@@ -308,9 +310,13 @@ mod tests {
     #[test]
     fn test_rollback_deletes_future_checkpoints() {
         let (_dir, mgr) = make_mgr();
-        let cp1 = mgr.create("Phase 1", "Old", CheckpointTrigger::PhaseCompleted).unwrap();
+        let cp1 = mgr
+            .create("Phase 1", "Old", CheckpointTrigger::PhaseCompleted)
+            .unwrap();
         std::thread::sleep(std::time::Duration::from_millis(10));
-        let _cp2 = mgr.create("Phase 2", "New", CheckpointTrigger::PhaseCompleted).unwrap();
+        let _cp2 = mgr
+            .create("Phase 2", "New", CheckpointTrigger::PhaseCompleted)
+            .unwrap();
         assert_eq!(mgr.list().unwrap().len(), 2);
 
         let _ = mgr.rollback(&cp1.id).unwrap();
@@ -320,7 +326,9 @@ mod tests {
     #[test]
     fn test_delete() {
         let (_dir, mgr) = make_mgr();
-        let cp = mgr.create("Phase 1", "Done", CheckpointTrigger::PhaseCompleted).unwrap();
+        let cp = mgr
+            .create("Phase 1", "Done", CheckpointTrigger::PhaseCompleted)
+            .unwrap();
         assert!(mgr.delete(&cp.id).unwrap());
         assert!(!mgr.delete(&cp.id).unwrap());
     }

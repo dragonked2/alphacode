@@ -1175,7 +1175,9 @@ mod tests {
             // The region must point at blank placeholder lines, never the label.
             let first = &section.wrapped_lines[region.abs_line_idx];
             assert!(
-                crate::alphacode_tui_render::line_plain_text(first).trim().is_empty(),
+                crate::alphacode_tui_render::line_plain_text(first)
+                    .trim()
+                    .is_empty(),
                 "region should start on a blank placeholder line"
             );
             // Region height must match its line span.
@@ -1708,7 +1710,9 @@ mod tests {
         for offset in 1..rows as usize {
             let line = &lines[marker_idx + offset];
             assert!(
-                crate::alphacode_tui_render::line_plain_text(line).trim().is_empty(),
+                crate::alphacode_tui_render::line_plain_text(line)
+                    .trim()
+                    .is_empty(),
                 "placeholder row {offset} should be blank"
             );
         }
@@ -1724,4 +1728,3 @@ mod tests {
         assert!(cols <= 100);
     }
 }
-

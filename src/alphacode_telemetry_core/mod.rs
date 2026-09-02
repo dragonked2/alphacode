@@ -2,7 +2,6 @@ use crate::alphacode_logging as logging;
 use crate::alphacode_storage as storage;
 mod lifecycle;
 mod state_support;
-use chrono::{DateTime, NaiveDate, Utc};
 use crate::alphacode_usage_types::{
     AuthEvent, DiscoveryEvent, ErrorCounts, FeedbackEvent, InstallEvent, OnboardingStepEvent,
     SessionLifecycleEvent, SessionStartEvent, TelemetryProjectProfile as ProjectProfile,
@@ -13,6 +12,7 @@ use crate::alphacode_usage_types::{
     telemetry_workflow_flags_from_counts,
 };
 pub use crate::alphacode_usage_types::{ErrorCategory, SessionEndReason};
+use chrono::{DateTime, NaiveDate, Utc};
 use lifecycle::emit_lifecycle_event;
 use serde_json::Value;
 use state_support::*;
@@ -326,7 +326,9 @@ pub fn is_enabled() -> bool {
 /// across shells so the onboarding "Telemetry settings" screen can honor the
 /// choice without asking the user to edit their environment.
 fn opt_out_marker_path() -> Option<std::path::PathBuf> {
-    storage::alphacode_dir().ok().map(|d| d.join("no_telemetry"))
+    storage::alphacode_dir()
+        .ok()
+        .map(|d| d.join("no_telemetry"))
 }
 
 /// Whether telemetry is disabled by an environment variable rather than by the

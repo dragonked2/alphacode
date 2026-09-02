@@ -261,7 +261,11 @@ pub fn rainbow_prompt_color(distance: usize) -> Color {
         (rainbow as f32 * decay + gray as f32 * (1.0 - decay)) as u8
     };
 
-    rgb(blend_val(r, GRAY.0), blend_val(g, GRAY.1), blend_val(b, GRAY.2))
+    rgb(
+        blend_val(r, GRAY.0),
+        blend_val(g, GRAY.1),
+        blend_val(b, GRAY.2),
+    )
 }
 
 /// Convert HSL to RGB. h in 0-360, s and l in 0-1.
@@ -369,11 +373,7 @@ pub fn brighten(color: Color, amount: f32) -> Color {
 pub fn dim(color: Color, amount: f32) -> Color {
     let (r, g, b) = color_to_floats(color, (128.0, 128.0, 128.0));
     let factor = 1.0 - amount.clamp(0.0, 1.0);
-    rgb(
-        (r * factor) as u8,
-        (g * factor) as u8,
-        (b * factor) as u8,
-    )
+    rgb((r * factor) as u8, (g * factor) as u8, (b * factor) as u8)
 }
 
 /// Generate a color with alpha transparency (for overlays and semi-transparent effects).

@@ -226,7 +226,8 @@ impl SelfImproveTool {
         let records = load_records();
         if records.len() < 5 {
             return Ok(ToolOutput::new(
-                "Need at least 5 task records to learn patterns. Keep recording outcomes!".to_string(),
+                "Need at least 5 task records to learn patterns. Keep recording outcomes!"
+                    .to_string(),
             ));
         }
 
@@ -298,7 +299,8 @@ impl SelfImproveTool {
         let skills = load_skills();
         if skills.is_empty() {
             return Ok(ToolOutput::new(
-                "No learned skills yet. Use 'learn' after recording enough task outcomes.".to_string(),
+                "No learned skills yet. Use 'learn' after recording enough task outcomes."
+                    .to_string(),
             ));
         }
 
@@ -333,9 +335,7 @@ impl SelfImproveTool {
         let mut by_type: std::collections::HashMap<String, (u64, u64)> =
             std::collections::HashMap::new();
         for record in &records {
-            let entry = by_type
-                .entry(record.task_type.clone())
-                .or_insert((0, 0));
+            let entry = by_type.entry(record.task_type.clone()).or_insert((0, 0));
             if record.success {
                 entry.0 += 1;
             } else {
@@ -362,12 +362,9 @@ impl SelfImproveTool {
         if !by_type.is_empty() {
             output.push_str("By task type:\n");
             let mut sorted: Vec<_> = by_type.into_iter().collect();
-            sorted.sort_by(|a, b| b.1 .0.cmp(&a.1 .0));
+            sorted.sort_by(|a, b| b.1.0.cmp(&a.1.0));
             for (task_type, (s, f)) in sorted.iter().take(10) {
-                output.push_str(&format!(
-                    "  {task_type}: {} success, {} fail\n",
-                    s, f
-                ));
+                output.push_str(&format!("  {task_type}: {} success, {} fail\n", s, f));
             }
         }
 
@@ -422,7 +419,11 @@ impl SelfImproveTool {
 
         let total = records.len();
         let successes = records.iter().filter(|r| r.success).count();
-        let success_rate = if total > 0 { successes as f64 / total as f64 * 100.0 } else { 0.0 };
+        let success_rate = if total > 0 {
+            successes as f64 / total as f64 * 100.0
+        } else {
+            0.0
+        };
         if success_rate < 80.0 {
             output.push_str("⚠️ Success rate below 80%. Consider reviewing failure patterns.\n");
         } else if success_rate > 95.0 {

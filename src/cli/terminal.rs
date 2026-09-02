@@ -140,7 +140,11 @@ impl TuiRuntimeGuard {
     /// Normal teardown for the interactive client: restore unless we are about
     /// to exec a follow-up process (reload/rebuild/update), in which case the
     /// next process inherits the terminal modes.
-    pub fn finish_for_run_result(mut self, run_result: &crate::alphacode_tui::tui::RunResult, extra_exec: bool) {
+    pub fn finish_for_run_result(
+        mut self,
+        run_result: &crate::alphacode_tui::tui::RunResult,
+        extra_exec: bool,
+    ) {
         if run_result_will_exec(run_result, extra_exec) {
             export_tui_exec_handoff(&self.state);
         }
@@ -334,14 +338,19 @@ mod crash_resume_hint_tests {
         let joined = lines.join("\n");
 
         assert!(joined.contains("2 sessions crashed"), "{joined}");
-        assert!(joined.contains("alphacode --resume ses_koala_123"), "{joined}");
+        assert!(
+            joined.contains("alphacode --resume ses_koala_123"),
+            "{joined}"
+        );
         assert!(joined.contains("List all:"), "{joined}");
     }
 }
 
 fn init_tui_terminal(inherited_terminal: bool) -> Result<ratatui::DefaultTerminal> {
     if !io::stdin().is_terminal() || !io::stdout().is_terminal() {
-        anyhow::bail!("alphacode TUI requires an interactive terminal (stdin/stdout must be a TTY)");
+        anyhow::bail!(
+            "alphacode TUI requires an interactive terminal (stdin/stdout must be a TTY)"
+        );
     }
     if inherited_terminal {
         init_tui_terminal_resume()
@@ -371,7 +380,9 @@ pub fn init_tui_runtime() -> Result<(ratatui::DefaultTerminal, TuiRuntimeGuard)>
     if inherited_terminal {
         // OSC terminal queries are unsafe here because the previous process
         // deliberately exec'd without leaving raw mode or the alternate screen.
-        crate::alphacode_tui::tui::theme_detect::init_theme_mode_for_resume(inherited_theme.as_deref());
+        crate::alphacode_tui::tui::theme_detect::init_theme_mode_for_resume(
+            inherited_theme.as_deref(),
+        );
     } else {
         // The OSC 11 query needs the cooked terminal and must happen before init.
         crate::alphacode_tui::tui::theme_detect::init_theme_mode();
@@ -508,7 +519,10 @@ fn cleanup_tui_runtime_for_run_result(
     cleanup_tui_runtime(state, !run_result_will_exec(run_result, extra_exec));
 }
 
-fn run_result_will_exec(run_result: &crate::alphacode_tui::tui::RunResult, extra_exec: bool) -> bool {
+fn run_result_will_exec(
+    run_result: &crate::alphacode_tui::tui::RunResult,
+    extra_exec: bool,
+) -> bool {
     extra_exec
         || run_result.reload_session.is_some()
         || run_result.rebuild_session.is_some()
@@ -878,4 +892,3 @@ mod panic_crash_labeling_tests {
         }
     }
 }
-

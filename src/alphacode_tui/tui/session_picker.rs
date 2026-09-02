@@ -4,11 +4,11 @@
 //! conversation on the right. Sessions are grouped by server for multi-server support.
 
 use super::color_support::rgb;
+use crate::alphacode_session_types::SessionStatus;
 use crate::alphacode_tui::session::{CrashedSessionsInfo, Session};
 use crate::alphacode_tui::tui::{DisplayMessage, markdown};
 use anyhow::Result;
 use crossterm::event::{self, Event, KeyCode, KeyEventKind, KeyModifiers, MouseEventKind};
-use crate::alphacode_session_types::SessionStatus;
 use ratatui::{
     Frame,
     layout::{Alignment, Constraint, Direction, Layout, Margin, Rect},
@@ -2365,7 +2365,9 @@ impl SessionPicker {
                 // Standalone picker loop bypasses `ui::draw`; adapt for light
                 // terminal themes here (no-op on dark).
                 crate::alphacode_tui_style::adapt_buffer_for_theme(frame.buffer_mut());
-                crate::alphacode_tui::tui::ui::adapt_buffer_for_emoji_preference(frame.buffer_mut());
+                crate::alphacode_tui::tui::ui::adapt_buffer_for_emoji_preference(
+                    frame.buffer_mut(),
+                );
             })?;
             if event::poll(Duration::from_millis(100))? {
                 match event::read()? {
@@ -2433,5 +2435,3 @@ pub fn pick_session() -> Result<Option<PickerResult>> {
     let picker = SessionPicker::new_grouped(server_groups, orphan_sessions);
     picker.run()
 }
-
-

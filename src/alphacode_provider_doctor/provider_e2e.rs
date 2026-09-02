@@ -18,6 +18,12 @@
 //! intentionally record the API-dependent checkpoints as skipped so nothing is
 //! over-credited in the ledger.
 
+use crate::alphacode_base::auth::lifecycle::{
+    AuthActivationRequest, activate_auth_change, validate_catalog_invariants,
+};
+use crate::alphacode_base::protocol::{AuthChanged, CatalogNamespace, RuntimeProviderKey};
+use crate::alphacode_base::provider::ModelRoute;
+use crate::alphacode_base::provider_catalog::OpenAiCompatibleProfile;
 use crate::alphacode_provider_doctor::live_provider_probes::{
     fetch_live_openai_compatible_models, run_live_antigravity_native_reasoning_smoke,
     run_live_antigravity_native_smoke, run_live_antigravity_native_stream_smoke,
@@ -28,16 +34,10 @@ use crate::alphacode_provider_doctor::live_provider_probes::{
     run_live_native_provider_tool_smoke, run_live_openai_compatible_smoke,
     run_live_openai_compatible_stream_smoke, run_live_openai_compatible_tool_smoke,
 };
-use crate::alphacode_base::auth::lifecycle::{
-    AuthActivationRequest, activate_auth_change, validate_catalog_invariants,
-};
 use crate::live_tests::{
     self, LiveVerificationAuth, LiveVerificationEvent, LiveVerificationResult,
     LiveVerificationStage, LiveVerificationStageStatus, checkpoints,
 };
-use crate::alphacode_base::protocol::{AuthChanged, CatalogNamespace, RuntimeProviderKey};
-use crate::alphacode_base::provider::ModelRoute;
-use crate::alphacode_base::provider_catalog::OpenAiCompatibleProfile;
 
 /// How much of the strict pipeline to exercise.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -273,7 +273,10 @@ const FULL_PIPELINE_LABELS: &[(&str, &str)] = &[
     (checkpoints::TOOL_CALL_PARSE, "Tool-call parse"),
     (checkpoints::TOOL_EXECUTION_LOOP, "Tool execution loop"),
     (checkpoints::TOOL_RESULT_FOLLOWUP, "Tool-result followup"),
-    (checkpoints::REAL_ALPHACODE_TOOL_SMOKE, "Real Alphacode tool smoke"),
+    (
+        checkpoints::REAL_ALPHACODE_TOOL_SMOKE,
+        "Real Alphacode tool smoke",
+    ),
     (checkpoints::REASONING_CAPABILITY, "Reasoning capability"),
 ];
 
@@ -400,7 +403,8 @@ pub async fn run_provider_e2e(
     requested_model: Option<&str>,
     tier: DoctorTier,
 ) -> anyhow::Result<DoctorReport> {
-    let resolved = crate::alphacode_base::provider_catalog::resolve_openai_compatible_profile(profile);
+    let resolved =
+        crate::alphacode_base::provider_catalog::resolve_openai_compatible_profile(profile);
     let provider_id = profile.id.to_string();
     let provider_label = profile.display_name.to_string();
     let mut checks: Vec<DoctorCheck> = Vec::new();
@@ -606,10 +610,12 @@ pub async fn run_claude_native_e2e(
     use crate::alphacode_base::provider::Provider;
     use crate::alphacode_provider_anthropic_runtime::AnthropicProvider;
 
-    let normalized = crate::alphacode_base::auth::lifecycle::normalized_auth_provider_id(Some(provider_id))
-        .unwrap_or("claude");
-    let provider_label = crate::alphacode_base::auth::lifecycle::provider_display_label(Some(normalized))
-        .unwrap_or_else(|| "Anthropic/Claude".to_string());
+    let normalized =
+        crate::alphacode_base::auth::lifecycle::normalized_auth_provider_id(Some(provider_id))
+            .unwrap_or("claude");
+    let provider_label =
+        crate::alphacode_base::auth::lifecycle::provider_display_label(Some(normalized))
+            .unwrap_or_else(|| "Anthropic/Claude".to_string());
     let provider_id = normalized.to_string();
     let mut checks: Vec<DoctorCheck> = Vec::new();
 
@@ -1009,8 +1015,9 @@ pub async fn run_antigravity_native_e2e(
     // The antigravity login provider has a single fixed id; accept any alias the
     // caller passed (e.g. "antigravity") and normalize to the canonical id.
     let _ = crate::alphacode_base::auth::lifecycle::normalized_auth_provider_id(Some(provider_id));
-    let provider_label = crate::alphacode_base::auth::lifecycle::provider_display_label(Some("antigravity"))
-        .unwrap_or_else(|| "Antigravity".to_string());
+    let provider_label =
+        crate::alphacode_base::auth::lifecycle::provider_display_label(Some("antigravity"))
+            .unwrap_or_else(|| "Antigravity".to_string());
     let provider_id = "antigravity".to_string();
     let mut checks: Vec<DoctorCheck> = Vec::new();
 
@@ -1396,10 +1403,12 @@ impl NativeProviderKind {
                 // route identity is the managed Alphacode subscription. Model
                 // switches use a bare model id so they stay on that runtime.
                 contract: WiringContract {
-                    api_method: crate::alphacode_base::subscription_catalog::ALPHACODE_ROUTE_API_METHOD
-                        .to_string(),
-                    route_provider: crate::alphacode_base::subscription_catalog::ALPHACODE_PROVIDER_DISPLAY_NAME
-                        .to_string(),
+                    api_method:
+                        crate::alphacode_base::subscription_catalog::ALPHACODE_ROUTE_API_METHOD
+                            .to_string(),
+                    route_provider:
+                        crate::alphacode_base::subscription_catalog::ALPHACODE_PROVIDER_DISPLAY_NAME
+                            .to_string(),
                     expected_runtime: "alphacode",
                     expected_namespace: None,
                     switch_prefix: String::new(),
@@ -1432,31 +1441,31 @@ impl NativeProviderKind {
     /// Build the production runtime for this provider, pinned to no model yet.
     /// Returns an error only when the runtime cannot be constructed at all (e.g.
     /// Copilot with no credential file); model selection happens later.
-    fn build_runtime(self) -> anyhow::Result<std::sync::Arc<dyn crate::alphacode_base::provider::Provider>> {
-        use anyhow::Context as _;
+    fn build_runtime(
+        self,
+    ) -> anyhow::Result<std::sync::Arc<dyn crate::alphacode_base::provider::Provider>> {
         use crate::alphacode_base::provider::Provider;
+        use anyhow::Context as _;
         let runtime: std::sync::Arc<dyn Provider> = match self {
             Self::OpenAi => {
-                let credentials =
-                    crate::alphacode_base::auth::codex::load_credentials().unwrap_or_else(|_| {
-                        crate::alphacode_base::auth::codex::CodexCredentials {
-                            access_token: String::new(),
-                            refresh_token: String::new(),
-                            id_token: None,
-                            account_id: None,
-                            expires_at: None,
-                        }
+                let credentials = crate::alphacode_base::auth::codex::load_credentials()
+                    .unwrap_or_else(|_| crate::alphacode_base::auth::codex::CodexCredentials {
+                        access_token: String::new(),
+                        refresh_token: String::new(),
+                        id_token: None,
+                        account_id: None,
+                        expires_at: None,
                     });
-                std::sync::Arc::new(crate::alphacode_provider_openai_runtime::OpenAIProvider::new(
-                    credentials,
-                ))
+                std::sync::Arc::new(
+                    crate::alphacode_provider_openai_runtime::OpenAIProvider::new(credentials),
+                )
             }
             Self::Gemini => {
                 std::sync::Arc::new(crate::alphacode_provider_gemini_runtime::GeminiProvider::new())
             }
-            Self::Cursor => {
-                std::sync::Arc::new(crate::alphacode_provider_cursor_runtime::CursorCliProvider::new())
-            }
+            Self::Cursor => std::sync::Arc::new(
+                crate::alphacode_provider_cursor_runtime::CursorCliProvider::new(),
+            ),
             Self::Copilot => {
                 // `new()` requires a loadable GitHub token; fall back to an empty
                 // token so the offline tier can still construct the runtime for
@@ -1468,7 +1477,10 @@ impl NativeProviderKind {
                 // `detect_tier_and_set_default` (run from `prefetch_models`). With
                 // the default grace window the doctor's immediate prefetch returns
                 // early without marking init done, so the live probes would hang.
-                crate::alphacode_base::env::set_var("ALPHACODE_COPILOT_PREFETCH_STARTUP_GRACE_MS", "0");
+                crate::alphacode_base::env::set_var(
+                    "ALPHACODE_COPILOT_PREFETCH_STARTUP_GRACE_MS",
+                    "0",
+                );
                 let runtime = match crate::alphacode_provider_copilot_runtime::CopilotApiProvider::new() {
                     Ok(runtime) => runtime,
                     Err(_) => crate::alphacode_provider_copilot_runtime::CopilotApiProvider::new_with_token(
@@ -1477,18 +1489,21 @@ impl NativeProviderKind {
                 };
                 std::sync::Arc::new(runtime)
             }
-            Self::Bedrock => {
-                std::sync::Arc::new(crate::alphacode_base::provider::bedrock::BedrockProvider::new())
-            }
-            Self::Alphacode => std::sync::Arc::new(crate::alphacode_base::provider::alphacode::AlphacodeProvider::new()),
+            Self::Bedrock => std::sync::Arc::new(
+                crate::alphacode_base::provider::bedrock::BedrockProvider::new(),
+            ),
+            Self::Alphacode => std::sync::Arc::new(
+                crate::alphacode_base::provider::alphacode::AlphacodeProvider::new(),
+            ),
             Self::Azure => {
                 // Azure OpenAI is the OpenRouter transport configured via Azure
                 // env; apply that env (endpoint/key/header wiring) before building
                 // so the runtime points at the user's Azure deployment.
                 crate::alphacode_base::auth::azure::apply_runtime_env()
                     .context("apply Azure OpenAI runtime env")?;
-                let runtime = crate::alphacode_provider_openrouter_runtime::OpenRouterProvider::new()
-                    .context("construct Azure OpenAI (OpenRouter transport) runtime")?;
+                let runtime =
+                    crate::alphacode_provider_openrouter_runtime::OpenRouterProvider::new()
+                        .context("construct Azure OpenAI (OpenRouter transport) runtime")?;
                 // Azure exposes a single user-configured deployment rather than a
                 // live catalog; pin the runtime to it so the catalog/picker
                 // checks have a model to assert.
@@ -1533,8 +1548,9 @@ impl NativeProviderKind {
                 Ok("Cursor credential resolved".to_string())
             }
             Self::Copilot => {
-                let token = crate::alphacode_base::auth::copilot::load_github_token()
-                    .context("load GitHub Copilot token (run `alphacode login --provider copilot`)")?;
+                let token = crate::alphacode_base::auth::copilot::load_github_token().context(
+                    "load GitHub Copilot token (run `alphacode login --provider copilot`)",
+                )?;
                 if token.trim().is_empty() {
                     anyhow::bail!("resolved an empty GitHub Copilot token");
                 }

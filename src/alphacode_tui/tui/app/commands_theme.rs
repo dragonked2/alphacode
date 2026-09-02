@@ -133,11 +133,7 @@ struct ThemeListPayload<'a> {
 
 fn apply_theme(app: &mut App, name: &str) {
     let Some(preset) = preset_by_id(name) else {
-        let known = PRESETS
-            .iter()
-            .map(|p| p.id)
-            .collect::<Vec<_>>()
-            .join(", ");
+        let known = PRESETS.iter().map(|p| p.id).collect::<Vec<_>>().join(", ");
         app.push_display_message(DisplayMessage::error(format!(
             "Unknown theme '{name}'.\n\nAvailable: {known}\n\n{USAGE}"
         )));

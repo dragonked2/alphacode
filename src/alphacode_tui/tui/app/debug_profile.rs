@@ -907,4 +907,3 @@ mod debug_summary_tests {
         assert_eq!(summary["unexplained_process_pss_bytes"], 0);
     }
 }
-

@@ -6,13 +6,13 @@ use super::{
     AwaitMembersRuntime, FileTouchService, ServerIdentity, SessionInterruptQueues, SharedContext,
     SwarmEvent, SwarmMutationRuntime, SwarmState,
 };
+use crate::alphacode_agent_runtime::InterruptSignal;
 use crate::alphacode_app_core::agent::Agent;
 use crate::alphacode_app_core::ambient_runner::AmbientRunnerHandle;
 use crate::alphacode_app_core::gateway::GatewayClient;
 use crate::alphacode_app_core::protocol::ServerEvent;
 use crate::alphacode_app_core::provider::Provider;
 use crate::alphacode_app_core::transport::{Listener, Stream};
-use crate::alphacode_agent_runtime::InterruptSignal;
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::future::Future;
 use std::sync::Arc;

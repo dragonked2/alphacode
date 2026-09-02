@@ -108,7 +108,9 @@ pub fn retry_after_from_error(error: &Error) -> Option<Duration> {
 /// Select the delay before a retry, preferring a validated server hint over
 /// the provider's normal jittered exponential backoff.
 pub fn retry_delay(attempt: u32, base_ms: u64, server_hint: Option<Duration>) -> Duration {
-    server_hint.unwrap_or_else(|| crate::alphacode_provider_core::attempt_tracker::retry_backoff_delay(attempt, base_ms))
+    server_hint.unwrap_or_else(|| {
+        crate::alphacode_provider_core::attempt_tracker::retry_backoff_delay(attempt, base_ms)
+    })
 }
 
 #[cfg(test)]

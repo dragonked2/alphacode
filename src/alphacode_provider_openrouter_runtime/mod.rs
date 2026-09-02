@@ -16,9 +16,6 @@
 //! - Cache support: Automatically injects cache breakpoints when provider supports caching
 //! - Manual pinning: Set ALPHACODE_OPENROUTER_PROVIDER or use model@Provider syntax
 
-use anyhow::{Context, Result};
-use async_trait::async_trait;
-use futures::StreamExt;
 use crate::alphacode_base::provider_catalog::{
     OPENAI_COMPAT_PROFILE, is_safe_env_file_name, is_safe_env_key_name,
     load_api_key_from_env_or_config, load_env_value_from_env_or_config, normalize_api_base,
@@ -26,7 +23,9 @@ use crate::alphacode_base::provider_catalog::{
     openai_compatible_profile_static_context_limits, openai_compatible_profile_static_models,
     openai_compatible_profiles, resolve_openai_compatible_profile,
 };
-use crate::alphacode_message_types::{CacheControl, ContentBlock, Message, Role, StreamEvent, ToolDefinition};
+use crate::alphacode_message_types::{
+    CacheControl, ContentBlock, Message, Role, StreamEvent, ToolDefinition,
+};
 use crate::alphacode_provider_core::{EventStream, Provider};
 pub use crate::alphacode_provider_openrouter::{
     EndpointInfo, ModelInfo, ModelPricing, ModelTimestampIndex, ProviderRouting,
@@ -39,6 +38,9 @@ use crate::alphacode_provider_openrouter::{
     save_disk_cache_with_source, save_disk_cache_with_source_for_namespace,
     save_endpoints_disk_cache,
 };
+use anyhow::{Context, Result};
+use async_trait::async_trait;
+use futures::StreamExt;
 use reqwest::Client;
 use reqwest::header::HeaderName;
 use serde::Deserialize;
@@ -135,7 +137,9 @@ fn autodetected_openai_compatible_profile()
         .filter(|profile| profile.id != OPENAI_COMPAT_PROFILE.id)
         .filter_map(|profile| {
             let resolved = resolve_openai_compatible_profile(*profile);
-            if crate::alphacode_base::provider_catalog::openai_compatible_profile_is_configured(*profile) {
+            if crate::alphacode_base::provider_catalog::openai_compatible_profile_is_configured(
+                *profile,
+            ) {
                 Some(resolved)
             } else {
                 None
@@ -389,7 +393,9 @@ impl OpenRouterTransportState {
             "openrouter" | "openrouter-api-key" | "openrouter_byok" | "openrouter-byok" => {
                 Some(Self::OpenRouterApiKey)
             }
-            "alphacode" | "alphacode-subscription" | "subscription" => Some(Self::AlphacodeSubscription),
+            "alphacode" | "alphacode-subscription" | "subscription" => {
+                Some(Self::AlphacodeSubscription)
+            }
             "direct" | "direct-api-key" | "openai-compatible" | "compatible-api-key" => {
                 Some(Self::DirectApiKey)
             }
@@ -782,7 +788,8 @@ fn begin_profile_catalog_refresh(profile_id: &str) -> bool {
     }
     // Use the longer rate-limit backoff when the profile has been hitting 429s.
     // This prevents burning rate-limit budget on repeated /models calls.
-    let backoff = if let Some(&rl_failures) = state.consecutive_rate_limit_failures.get(profile_id) {
+    let backoff = if let Some(&rl_failures) = state.consecutive_rate_limit_failures.get(profile_id)
+    {
         profile_catalog_rate_limit_retry_delay_secs(rl_failures)
     } else {
         profile_catalog_retry_delay_secs(
@@ -838,7 +845,11 @@ fn profile_catalog_rate_limit_retry_delay_secs(consecutive_rate_limit_failures: 
         .min(MAX_RATE_LIMIT_RETRY_SECS)
 }
 
-fn finish_profile_catalog_refresh_with_outcome(profile_id: &str, succeeded: bool, error: Option<&str>) {
+fn finish_profile_catalog_refresh_with_outcome(
+    profile_id: &str,
+    succeeded: bool,
+    error: Option<&str>,
+) {
     if let Ok(mut state) = global_profile_catalog_refresh().lock() {
         state.in_flight.remove(profile_id);
         if succeeded {
@@ -866,8 +877,7 @@ fn finish_profile_catalog_refresh_with_outcome(profile_id: &str, succeeded: bool
                 *rl_entry = rl_entry.saturating_add(1);
                 crate::alphacode_base::logging::warn(&format!(
                     "Profile '{}' hit rate limit during catalog refresh; backing off aggressively (consecutive_rate_limit_failures={})",
-                    profile_id,
-                    rl_entry
+                    profile_id, rl_entry
                 ));
             }
         }
@@ -878,7 +888,8 @@ pub fn maybe_schedule_openai_compatible_profile_catalog_refresh(
     profile: crate::alphacode_base::provider_catalog::OpenAiCompatibleProfile,
     context: &'static str,
 ) -> bool {
-    let resolved = crate::alphacode_base::provider_catalog::resolve_openai_compatible_profile(profile);
+    let resolved =
+        crate::alphacode_base::provider_catalog::resolve_openai_compatible_profile(profile);
     if !begin_profile_catalog_refresh(&resolved.id) {
         return false;
     }
@@ -1347,7 +1358,9 @@ impl OpenRouterProvider {
             }
         }
 
-        if let Some(raw) = load_env_value_from_env_or_config("ALPHACODE_OPENAI_EXTRA_BODY", env_file) {
+        if let Some(raw) =
+            load_env_value_from_env_or_config("ALPHACODE_OPENAI_EXTRA_BODY", env_file)
+        {
             match serde_json::from_str::<Value>(&raw) {
                 Ok(Value::Object(object)) => {
                     for (key, val) in object {
@@ -1382,7 +1395,8 @@ impl OpenRouterProvider {
     /// (e.g. NVIDIA NIM) even though `name()` is fixed at `"openrouter"`.
     pub fn runtime_display_name(&self) -> String {
         if self.is_alphacode_subscription_runtime() {
-            return crate::alphacode_base::subscription_catalog::ALPHACODE_PROVIDER_DISPLAY_NAME.to_string();
+            return crate::alphacode_base::subscription_catalog::ALPHACODE_PROVIDER_DISPLAY_NAME
+                .to_string();
         }
 
         // Direct OpenAI-compatible profile (NVIDIA NIM, DeepSeek, Z.AI, ...).
@@ -1413,10 +1427,10 @@ impl OpenRouterProvider {
             }
             if !self.api_base.contains("openrouter.ai") {
                 let trimmed = self.api_base.trim_end_matches('/');
-                if let Some(host) = url::Url::parse(trimmed)
-                    .ok()
-                    .and_then(|u| u.host_str().map(|h| h.trim_start_matches("api.").to_string()))
-                {
+                if let Some(host) = url::Url::parse(trimmed).ok().and_then(|u| {
+                    u.host_str()
+                        .map(|h| h.trim_start_matches("api.").to_string())
+                }) {
                     return host;
                 }
                 return "OpenAI-compatible".to_string();
@@ -1433,7 +1447,8 @@ impl OpenRouterProvider {
 
         if self.is_alphacode_subscription_runtime() {
             return Some((
-                crate::alphacode_base::subscription_catalog::ALPHACODE_PROVIDER_DISPLAY_NAME.to_string(),
+                crate::alphacode_base::subscription_catalog::ALPHACODE_PROVIDER_DISPLAY_NAME
+                    .to_string(),
                 crate::alphacode_base::subscription_catalog::ALPHACODE_ROUTE_API_METHOD.to_string(),
                 self.api_base.clone(),
             ));
@@ -1465,11 +1480,11 @@ impl OpenRouterProvider {
     fn is_alphacode_subscription_runtime(&self) -> bool {
         !self.supports_provider_features
             && self.api_base.trim_end_matches('/')
-                == crate::alphacode_base::subscription_catalog::DEFAULT_ALPHACODE_API_BASE.trim_end_matches('/')
-            && self
-                .auth
-                .label()
-                .eq_ignore_ascii_case(crate::alphacode_base::subscription_catalog::ALPHACODE_API_KEY_ENV)
+                == crate::alphacode_base::subscription_catalog::DEFAULT_ALPHACODE_API_BASE
+                    .trim_end_matches('/')
+            && self.auth.label().eq_ignore_ascii_case(
+                crate::alphacode_base::subscription_catalog::ALPHACODE_API_KEY_ENV,
+            )
     }
 
     pub fn new_named_openai_compatible(
@@ -1498,11 +1513,13 @@ impl OpenRouterProvider {
             crate::alphacode_base::config::NamedProviderAuth::None => ProviderAuth::None {
                 label: "local endpoint (no auth)".to_string(),
             },
-            crate::alphacode_base::config::NamedProviderAuth::Bearer => ProviderAuth::AuthorizationBearer {
-                token: key
-                    .ok_or_else(|| anyhow::anyhow!("{} not found in environment", key_label))?,
-                label: key_label,
-            },
+            crate::alphacode_base::config::NamedProviderAuth::Bearer => {
+                ProviderAuth::AuthorizationBearer {
+                    token: key
+                        .ok_or_else(|| anyhow::anyhow!("{} not found in environment", key_label))?,
+                    label: key_label,
+                }
+            }
             crate::alphacode_base::config::NamedProviderAuth::Header => ProviderAuth::HeaderValue {
                 header_name: HeaderName::from_bytes(
                     profile
@@ -1741,7 +1758,10 @@ impl OpenRouterProvider {
         if std::env::var_os("ALPHACODE_OPENROUTER_CACHE_NAMESPACE").is_none()
             && let Some(profile) = autodetected_profile.as_ref()
         {
-            crate::alphacode_base::env::set_var("ALPHACODE_OPENROUTER_CACHE_NAMESPACE", &profile.id);
+            crate::alphacode_base::env::set_var(
+                "ALPHACODE_OPENROUTER_CACHE_NAMESPACE",
+                &profile.id,
+            );
         }
 
         let model = std::env::var("ALPHACODE_OPENROUTER_MODEL")
@@ -1869,16 +1889,13 @@ impl OpenRouterProvider {
 
         let static_context_limits = openai_compatible_profile_static_context_limits(profile);
         let static_models = openai_compatible_profile_static_models(profile);
-        let model = resolved
-            .default_model
-            .clone()
-            .unwrap_or_else(|| {
-                if profile.id == OPENAI_COMPAT_PROFILE.id {
-                    "gpt-4o".to_string()
-                } else {
-                    DEFAULT_MODEL.to_string()
-                }
-            });
+        let model = resolved.default_model.clone().unwrap_or_else(|| {
+            if profile.id == OPENAI_COMPAT_PROFILE.id {
+                "gpt-4o".to_string()
+            } else {
+                DEFAULT_MODEL.to_string()
+            }
+        });
 
         Ok(Self {
             client: crate::alphacode_provider_core::shared_http_client(),
@@ -2885,8 +2902,6 @@ mod openrouter_provider_impl;
 #[path = "openrouter_sse_stream.rs"]
 mod openrouter_sse_stream;
 
-
-
 #[cfg(test)]
 mod profile_catalog_backoff_tests {
     use super::{MODEL_CATALOG_REFRESH_RETRY_SECS, profile_catalog_retry_delay_secs};
@@ -2922,10 +2937,18 @@ mod reasoning_effort_profile_tests {
     fn dragonmeta_and_deepseek_profiles_support_reasoning_effort() {
         // The Alpha local endpoint accepts the standard `reasoning_effort`
         // request field, so the DeepSeek-style ladder must be offered there.
-        assert!(OpenRouterProvider::profile_supports_reasoning_effort(Some("deepseek")));
-        assert!(OpenRouterProvider::profile_supports_reasoning_effort(Some("dragonmeta")));
-        assert!(OpenRouterProvider::profile_supports_reasoning_effort(Some("DRAGONMETA")));
-        assert!(!OpenRouterProvider::profile_supports_reasoning_effort(Some("comtegra")));
+        assert!(OpenRouterProvider::profile_supports_reasoning_effort(Some(
+            "deepseek"
+        )));
+        assert!(OpenRouterProvider::profile_supports_reasoning_effort(Some(
+            "dragonmeta"
+        )));
+        assert!(OpenRouterProvider::profile_supports_reasoning_effort(Some(
+            "DRAGONMETA"
+        )));
+        assert!(!OpenRouterProvider::profile_supports_reasoning_effort(
+            Some("comtegra")
+        ));
         assert!(!OpenRouterProvider::profile_supports_reasoning_effort(None));
     }
 }

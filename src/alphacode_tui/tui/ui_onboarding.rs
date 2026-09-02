@@ -230,7 +230,9 @@ fn telemetry_settings_lines(
 /// Render the read-only detected-login list for the import summary screen: one
 /// dim checkmarked row per detected login. No cursor, no columns - the user is
 /// just being shown what we found before they hit Continue.
-fn import_summary_lines(prompt: &crate::alphacode_tui::tui::LoginImportPrompt) -> Vec<Line<'static>> {
+fn import_summary_lines(
+    prompt: &crate::alphacode_tui::tui::LoginImportPrompt,
+) -> Vec<Line<'static>> {
     let check_style = Style::default()
         .fg(rgb(126, 211, 159))
         .add_modifier(Modifier::BOLD);
@@ -264,7 +266,9 @@ fn import_summary_lines(prompt: &crate::alphacode_tui::tui::LoginImportPrompt) -
 /// The header, circles, and gutter are interactive-widget glyphs, not
 /// load-bearing prose: the surrounding ASCII copy ("We found N existing
 /// logins", "Imports all checked in Ns") already conveys state in plain text.
-fn import_two_column_lines(prompt: &crate::alphacode_tui::tui::LoginImportPrompt) -> Vec<Line<'static>> {
+fn import_two_column_lines(
+    prompt: &crate::alphacode_tui::tui::LoginImportPrompt,
+) -> Vec<Line<'static>> {
     let mut out: Vec<Line<'static>> = Vec::new();
 
     // Left column width: the widest "<cursor>Provider (source)" entry, so the
@@ -361,7 +365,9 @@ fn import_two_column_lines(prompt: &crate::alphacode_tui::tui::LoginImportPrompt
 fn telemetry_footer_line() -> Line<'static> {
     Line::from(Span::styled(
         "Anonymous usage stats only · /telemetry to change",
-        Style::default().fg(dim_color()).add_modifier(Modifier::ITALIC),
+        Style::default()
+            .fg(dim_color())
+            .add_modifier(Modifier::ITALIC),
     ))
     .alignment(Alignment::Center)
 }
@@ -369,20 +375,14 @@ fn telemetry_footer_line() -> Line<'static> {
 /// Welcome title line, rendered just above the donut.
 fn welcome_title_line() -> Line<'static> {
     Line::from(vec![
-        Span::styled(
-            "Welcome to ",
-            Style::default().fg(rgb(180, 200, 220)),
-        ),
+        Span::styled("Welcome to ", Style::default().fg(rgb(180, 200, 220))),
         Span::styled(
             "alphacode",
             Style::default()
                 .fg(welcome_accent())
                 .add_modifier(Modifier::BOLD),
         ),
-        Span::styled(
-            " ✨",
-            Style::default().fg(welcome_accent()),
-        ),
+        Span::styled(" ✨", Style::default().fg(welcome_accent())),
     ])
     .alignment(Alignment::Center)
 }
@@ -396,22 +396,19 @@ fn welcome_subtitle_line() -> Line<'static> {
                 .fg(rgb(180, 200, 220))
                 .add_modifier(Modifier::ITALIC),
         ),
-        Span::styled(
-            "— ready when you are",
-            Style::default().fg(dim_color()),
-        ),
+        Span::styled("— ready when you are", Style::default().fg(dim_color())),
     ])
     .alignment(Alignment::Center)
 }
 
 /// Short keyboard hint rendered just below the donut on guided phases.
 fn keyboard_hint_line() -> Line<'static> {
-    Line::from(vec![
-        Span::styled(
-            "Type a message below or press a number for a quick start",
-            Style::default().fg(rgb(120, 130, 150)).add_modifier(Modifier::ITALIC),
-        ),
-    ])
+    Line::from(vec![Span::styled(
+        "Type a message below or press a number for a quick start",
+        Style::default()
+            .fg(rgb(120, 130, 150))
+            .add_modifier(Modifier::ITALIC),
+    )])
     .alignment(Alignment::Center)
 }
 
@@ -794,4 +791,3 @@ pub(super) fn draw_onboarding_welcome(frame: &mut Frame, app: &dyn TuiState, are
         chunks[idx],
     );
 }
-

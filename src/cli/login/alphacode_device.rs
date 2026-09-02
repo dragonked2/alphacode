@@ -228,5 +228,3 @@ fn print_recovery_actions() {
     eprintln!("  Manage:  alphacode account manage");
     eprintln!("  Log out: alphacode account logout");
 }
-
-

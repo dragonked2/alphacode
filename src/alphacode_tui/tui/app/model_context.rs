@@ -355,7 +355,8 @@ impl App {
     /// (`claude-opus-4-8`), tolerating case, `[1m]` suffixes, and dated ids.
     fn is_guardrail_reroute_model(model: &str) -> bool {
         let canonical = crate::alphacode_provider_core::model_id::canonical(model);
-        crate::alphacode_provider_core::model_id::strip_date_suffix(&canonical) == GUARDRAIL_REROUTE_MODEL
+        crate::alphacode_provider_core::model_id::strip_date_suffix(&canonical)
+            == GUARDRAIL_REROUTE_MODEL
     }
 
     /// Pick the best available `claude-opus-4-8` route for a guardrail
@@ -1460,20 +1461,29 @@ pub(super) fn handle_model_command(app: &mut App, trimmed: &str) -> bool {
     }
 
     if trimmed == "/model" || trimmed == "/models" {
-        app.record_keybinding_slow(crate::alphacode_tui::tui::app::shortcut_hints::LearnableAction::ModelSwitch);
+        app.record_keybinding_slow(
+            crate::alphacode_tui::tui::app::shortcut_hints::LearnableAction::ModelSwitch,
+        );
         app.open_model_picker();
         return true;
     }
 
     // /set model is an alias for /model
     if trimmed == "/set model" || trimmed == "/set models" {
-        app.record_keybinding_slow(crate::alphacode_tui::tui::app::shortcut_hints::LearnableAction::ModelSwitch);
+        app.record_keybinding_slow(
+            crate::alphacode_tui::tui::app::shortcut_hints::LearnableAction::ModelSwitch,
+        );
         app.open_model_picker();
         return true;
     }
 
-    if let Some(model_name) = trimmed.strip_prefix("/set model ").or_else(|| trimmed.strip_prefix("/model ")) {
-        app.record_keybinding_slow(crate::alphacode_tui::tui::app::shortcut_hints::LearnableAction::ModelSwitch);
+    if let Some(model_name) = trimmed
+        .strip_prefix("/set model ")
+        .or_else(|| trimmed.strip_prefix("/model "))
+    {
+        app.record_keybinding_slow(
+            crate::alphacode_tui::tui::app::shortcut_hints::LearnableAction::ModelSwitch,
+        );
         let model_name = model_name.trim();
         match app.provider.set_model(model_name) {
             Ok(()) => {
@@ -1494,10 +1504,7 @@ pub(super) fn handle_model_command(app: &mut App, trimmed: &str) -> bool {
                 app.set_status_notice(format!("Model → {}", model_name));
             }
             Err(e) => {
-                let mut msg = model_switch_failure_message(
-                    &e.to_string(),
-                    app.is_remote,
-                );
+                let mut msg = model_switch_failure_message(&e.to_string(), app.is_remote);
                 // Hint about TokenRouter/OpenRouter for models with '/' (e.g. qwen/qwen3.8-max-free)
                 if model_name.contains('/') {
                     msg = format!(
@@ -1515,7 +1522,9 @@ pub(super) fn handle_model_command(app: &mut App, trimmed: &str) -> bool {
     }
 
     if trimmed == "/effort" {
-        app.record_keybinding_slow(crate::alphacode_tui::tui::app::shortcut_hints::LearnableAction::EffortCycle);
+        app.record_keybinding_slow(
+            crate::alphacode_tui::tui::app::shortcut_hints::LearnableAction::EffortCycle,
+        );
         let current = app.provider.reasoning_effort();
         let efforts = app.provider.available_efforts();
         if efforts.is_empty() {
@@ -1548,7 +1557,9 @@ pub(super) fn handle_model_command(app: &mut App, trimmed: &str) -> bool {
     }
 
     if let Some(level) = trimmed.strip_prefix("/effort ") {
-        app.record_keybinding_slow(crate::alphacode_tui::tui::app::shortcut_hints::LearnableAction::EffortCycle);
+        app.record_keybinding_slow(
+            crate::alphacode_tui::tui::app::shortcut_hints::LearnableAction::EffortCycle,
+        );
         let level = level.trim();
         match app.provider.set_reasoning_effort(level) {
             Ok(()) => {
@@ -1960,4 +1971,3 @@ pub(super) fn unavailable_model_route_message(
 
     lines.join("\n")
 }
-

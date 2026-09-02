@@ -153,7 +153,9 @@ impl PromptBuilder {
                 if let Some(meta) = index.files.get(f) {
                     body.push(format!(
                         "- {} ({} lines, {})",
-                        f, meta.lines, meta.language.as_deref().unwrap_or("unknown")
+                        f,
+                        meta.lines,
+                        meta.language.as_deref().unwrap_or("unknown")
                     ));
                 } else {
                     body.push(format!("- {f}"));
@@ -347,10 +349,13 @@ mod tests {
     #[test]
     fn test_recovery_prompt() {
         let (_dir, builder) = make_builder();
-        builder.memory.update_state(|s| {
-            s.objective = "Build a browser".into();
-            s.active_phase = Some("CSS Engine".into());
-        }).unwrap();
+        builder
+            .memory
+            .update_state(|s| {
+                s.objective = "Build a browser".into();
+                s.active_phase = Some("CSS Engine".into());
+            })
+            .unwrap();
 
         let prompt = builder
             .build_recovery_prompt("Architecture complete, networking done")

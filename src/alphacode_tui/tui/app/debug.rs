@@ -795,4 +795,3 @@ pub(super) fn handle_debug_command(app: &mut App, trimmed: &str) -> bool {
 
     false
 }
-

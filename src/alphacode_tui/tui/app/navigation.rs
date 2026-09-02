@@ -222,7 +222,8 @@ impl App {
         if message.role != "swarm" {
             return false;
         }
-        let Some(toggled) = crate::alphacode_tui_messages::toggle_collapsible_swarm_content(&message.content)
+        let Some(toggled) =
+            crate::alphacode_tui_messages::toggle_collapsible_swarm_content(&message.content)
         else {
             return false;
         };
@@ -720,11 +721,7 @@ impl App {
         // original feel so momentum does not glide far.
         let queued = self.mouse_scroll_queue.unsigned_abs() as usize;
 
-        if queued >= 8 {
-            2
-        } else {
-            1
-        }
+        if queued >= 8 { 2 } else { 1 }
     }
 
     fn drain_mouse_scroll_animation(&mut self, max_steps: usize) {
@@ -1838,4 +1835,3 @@ impl App {
         self.follow_chat_bottom();
     }
 }
-

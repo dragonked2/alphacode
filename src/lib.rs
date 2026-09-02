@@ -47,8 +47,11 @@ pub mod alphacode_overnight_core;
 pub mod alphacode_pdf;
 pub mod alphacode_plan;
 pub mod alphacode_productivity_core;
+pub mod alphacode_protocol;
 pub mod alphacode_provider_anthropic;
+pub mod alphacode_provider_anthropic_runtime;
 pub mod alphacode_provider_antigravity;
+pub mod alphacode_provider_antigravity_runtime;
 pub mod alphacode_provider_bedrock;
 pub mod alphacode_provider_claude_cli_runtime;
 pub mod alphacode_provider_copilot;
@@ -62,15 +65,13 @@ pub mod alphacode_provider_gemini_runtime;
 pub mod alphacode_provider_metadata;
 pub mod alphacode_provider_openai;
 pub mod alphacode_provider_openai_runtime;
-pub mod alphacode_provider_openrouter_runtime;
-pub mod alphacode_provider_anthropic_runtime;
-pub mod alphacode_provider_antigravity_runtime;
 pub mod alphacode_provider_openrouter;
+pub mod alphacode_provider_openrouter_runtime;
 pub mod alphacode_render_core;
 pub mod alphacode_selfdev_types;
 pub mod alphacode_session_types;
-pub mod alphacode_side_panel_types;
 pub mod alphacode_setup_hints;
+pub mod alphacode_side_panel_types;
 pub mod alphacode_storage;
 pub mod alphacode_swarm_core;
 pub mod alphacode_task_types;
@@ -81,7 +82,6 @@ pub mod alphacode_tool_core;
 pub mod alphacode_tool_types;
 pub mod alphacode_update_core;
 pub mod alphacode_usage_types;
-pub mod alphacode_protocol;
 
 // Foundation layer
 pub mod alphacode_base;
@@ -89,34 +89,38 @@ pub use alphacode_base::*;
 
 // Application core layer (re-exports alphacode_base)
 pub mod alphacode_app_core;
-pub use alphacode_app_core::*;
 pub use alphacode_app_core::setup_hints;
+pub use alphacode_app_core::*;
 
 // Presentation layer (re-exports alphacode_app_core)
 pub mod alphacode_tui;
 pub use alphacode_tui::*;
 
 // Re-export sub-crate public items at crate root for internal crate:: paths
-pub use alphacode_tui_account_picker::{AccountPickerCommand, AccountPickerItem, AccountPickerSummary, AccountProviderKind};
-pub use alphacode_tui_mermaid::DiagramInfo;
-pub use alphacode_tui_messages::{DisplayMessage, WrappedLineMap};
-pub use alphacode_tui_render::swarm_tiles;
-pub use alphacode_tui_render::memory_tiles;
-pub use alphacode_tui_style::palette;
-pub use alphacode_tui_style::harmony;
-pub use alphacode_tui_style::color;
+pub use alphacode_command_risk::{RiskAssessment, RiskLevel};
+pub use alphacode_harness_api::{
+    API_VERSION_MAJOR, ApiEvent, ApiRequest, ClientFrame, ServerFrame,
+};
+pub use alphacode_memory_types::{MemoryEntry, MemoryStore};
+pub use alphacode_plan::{NodeMeta, PlanItem, VersionedPlan, summarize_plan_graph};
+pub use alphacode_provider_core::ModelRoute;
+pub use alphacode_provider_core::ResolvedCredential;
+pub use alphacode_provider_openrouter::{PinSource, ProviderPin};
+pub use alphacode_tui_account_picker::{
+    AccountPickerCommand, AccountPickerItem, AccountPickerSummary, AccountProviderKind,
+};
 pub use alphacode_tui_markdown::{
     bold_color, code_bg, code_fg, heading_color, heading_h1_color, heading_h2_color,
     heading_h3_color, html_fg, link_fg, math_fg, math_inline_fg, md_dim_color, text_color,
 };
+pub use alphacode_tui_mermaid::DiagramInfo;
+pub use alphacode_tui_messages::{DisplayMessage, WrappedLineMap};
+pub use alphacode_tui_render::memory_tiles;
+pub use alphacode_tui_render::swarm_tiles;
+pub use alphacode_tui_style::color;
+pub use alphacode_tui_style::harmony;
+pub use alphacode_tui_style::palette;
 pub use alphacode_tui_workspace::{color_support, workspace_map};
-pub use alphacode_command_risk::{RiskAssessment, RiskLevel};
-pub use alphacode_harness_api::{API_VERSION_MAJOR, ApiEvent, ApiRequest, ClientFrame, ServerFrame};
-pub use alphacode_plan::{NodeMeta, PlanItem, VersionedPlan, summarize_plan_graph};
-pub use alphacode_provider_core::ResolvedCredential;
-pub use alphacode_provider_core::ModelRoute;
-pub use alphacode_provider_openrouter::{PinSource, ProviderPin};
-pub use alphacode_memory_types::{MemoryEntry, MemoryStore};
 // terminal macros are #[macro_export] at crate root via alphacode_core::output_style
 
 // TUI sub-crates (presentation layer leaves)

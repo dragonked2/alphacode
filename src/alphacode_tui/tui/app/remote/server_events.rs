@@ -690,7 +690,9 @@ pub(in crate::alphacode_tui::tui::app) fn handle_server_event(
             remote.handle_tool_start(&id, &name);
             app.commit_pending_streaming_assistant_message();
             if matches!(name.as_str(), "memory") {
-                crate::memory::set_state(crate::alphacode_tui::tui::info_widget::MemoryState::Embedding);
+                crate::memory::set_state(
+                    crate::alphacode_tui::tui::info_widget::MemoryState::Embedding,
+                );
             }
             app.status = ProcessingStatus::RunningTool(name.clone());
             app.streaming_tool_calls.push(ToolCall {
@@ -872,11 +874,12 @@ pub(in crate::alphacode_tui::tui::app) fn handle_server_event(
                         Some(app.streaming.streaming_cache_creation_tokens.unwrap_or(0));
                 }
 
-                let effective_prompt_tokens = crate::alphacode_tui::tui::info_widget::effective_prompt_tokens(
-                    input,
-                    app.streaming.streaming_cache_read_tokens.unwrap_or(0),
-                    app.streaming.streaming_cache_creation_tokens.unwrap_or(0),
-                );
+                let effective_prompt_tokens =
+                    crate::alphacode_tui::tui::info_widget::effective_prompt_tokens(
+                        input,
+                        app.streaming.streaming_cache_read_tokens.unwrap_or(0),
+                        app.streaming.streaming_cache_creation_tokens.unwrap_or(0),
+                    );
                 if let Some(baseline) = app.kv_cache.kv_cache_baseline.as_mut() {
                     // Store the effective prompt (input + read + creation): for
                     // split-accounting providers bare `input` is only the
@@ -1330,7 +1333,9 @@ pub(in crate::alphacode_tui::tui::app) fn handle_server_event(
                 return false;
             }
             if app.auto_poke_incomplete_todos
-                && crate::alphacode_tui::tui::app::commands::is_non_retryable_auto_poke_error(&message)
+                && crate::alphacode_tui::tui::app::commands::is_non_retryable_auto_poke_error(
+                    &message,
+                )
             {
                 if app.schedule_pending_remote_retry_with_limit(
                     "⚠ The request failed in a way a retry probably won't fix. Trying once more anyway.",
@@ -1338,7 +1343,9 @@ pub(in crate::alphacode_tui::tui::app) fn handle_server_event(
                 ) {
                     return false;
                 }
-                crate::alphacode_tui::tui::app::commands::stop_auto_poke_for_non_retryable_error(app, &message);
+                crate::alphacode_tui::tui::app::commands::stop_auto_poke_for_non_retryable_error(
+                    app, &message,
+                );
                 // Terminal: no retry will fire. Offer a one-keypress switch to
                 // the next best model/auth-method (e.g. an expired OAuth login
                 // -> a working provider) with the failed payload staged.
@@ -2209,7 +2216,9 @@ pub(in crate::alphacode_tui::tui::app) fn handle_server_event(
                     app.cursor_pos = app.input.len();
                 }
                 app.push_display_message(DisplayMessage::error(
-                    crate::alphacode_tui::tui::app::model_context::model_switch_failure_message(&err, true),
+                    crate::alphacode_tui::tui::app::model_context::model_switch_failure_message(
+                        &err, true,
+                    ),
                 ));
                 app.set_status_notice("Model switch failed");
             } else {
@@ -2583,7 +2592,9 @@ pub(in crate::alphacode_tui::tui::app) fn handle_server_event(
                     if matches!(member.status.as_str(), "running" | "streaming" | "thinking") {
                         member.status = "completed".to_string();
                     }
-                    if let Some(snapshot) = crate::alphacode_tui::tui::ui::encode_swarm_agent_snapshot(&member) {
+                    if let Some(snapshot) =
+                        crate::alphacode_tui::tui::ui::encode_swarm_agent_snapshot(&member)
+                    {
                         app.push_display_message(DisplayMessage::swarm(
                             crate::alphacode_tui::tui::ui::SWARM_AGENT_SNAPSHOT_TITLE,
                             snapshot.clone(),
@@ -2591,7 +2602,10 @@ pub(in crate::alphacode_tui::tui::app) fn handle_server_event(
                         persist_replay_display_message(
                             app,
                             "swarm",
-                            Some(crate::alphacode_tui::tui::ui::SWARM_AGENT_SNAPSHOT_TITLE.to_string()),
+                            Some(
+                                crate::alphacode_tui::tui::ui::SWARM_AGENT_SNAPSHOT_TITLE
+                                    .to_string(),
+                            ),
                             &snapshot,
                         );
                     }
@@ -2798,4 +2812,3 @@ fn runtime_activity_status_notice(message: &str) -> String {
         .trim_end_matches('.')
         .to_string()
 }
-

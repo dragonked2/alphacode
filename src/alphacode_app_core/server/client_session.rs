@@ -11,6 +11,7 @@ use super::{
     rename_session_interrupt_queue, send_swarm_plan_to_session, swarm_id_for_dir,
     unregister_session_event_sender, update_member_status,
 };
+use crate::alphacode_agent_runtime::InterruptSignal;
 use crate::alphacode_app_core::agent::Agent;
 use crate::alphacode_app_core::message::ContentBlock;
 use crate::alphacode_app_core::protocol::{NotificationType, ServerEvent};
@@ -18,7 +19,6 @@ use crate::alphacode_app_core::provider::Provider;
 use crate::alphacode_app_core::tool::Registry;
 use crate::alphacode_app_core::transport::WriteHalf;
 use anyhow::Result;
-use crate::alphacode_agent_runtime::InterruptSignal;
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -65,7 +65,9 @@ pub(super) fn restored_session_was_interrupted(
     let closed_pending_user_during_reload =
         matches!(previous_status, crate::session::SessionStatus::Closed)
             && last_is_user
-            && crate::alphacode_app_core::server::reload_marker_active(RELOAD_RESTORE_MARKER_MAX_AGE);
+            && crate::alphacode_app_core::server::reload_marker_active(
+                RELOAD_RESTORE_MARKER_MAX_AGE,
+            );
 
     if last_is_user && matches!(previous_status, crate::session::SessionStatus::Active) {
         crate::logging::info(&format!(
@@ -993,8 +995,11 @@ pub(super) async fn handle_reload(
     }
 
     let hash = crate::alphacode_build_meta::git_hash().to_string();
-    let signal_request_id =
-        crate::alphacode_app_core::server::send_reload_signal(hash, triggering_session.clone(), prefer_selfdev_binary);
+    let signal_request_id = crate::alphacode_app_core::server::send_reload_signal(
+        hash,
+        triggering_session.clone(),
+        prefer_selfdev_binary,
+    );
 
     crate::logging::info(&format!(
         "handle_reload: queued reload signal {} from remote client request {} (triggering_session={:?}, prefer_selfdev_binary={}, reload_notified_sessions={}, reload_notified_clients={})",
@@ -1704,4 +1709,3 @@ pub(super) async fn handle_resume_session(
 
     Ok(Arc::clone(agent))
 }
-

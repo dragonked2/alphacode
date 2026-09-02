@@ -89,7 +89,8 @@ pub fn remember_last_focused_session(session_id: &str) -> Result<()> {
     if let Some(parent) = path.parent() {
         crate::storage::ensure_dir(parent)?;
     }
-    std::fs::write(&path, session_id).context("failed to persist last focused alphacode session")?;
+    std::fs::write(&path, session_id)
+        .context("failed to persist last focused alphacode session")?;
 
     if let Ok(mut cache) = last_focused_session_write_cache().lock() {
         *cache = Some(session_id.to_string());
@@ -370,4 +371,3 @@ fn shell_command(command: &str) -> tokio::process::Command {
 fn last_focused_session_path() -> Result<std::path::PathBuf> {
     Ok(crate::storage::alphacode_dir()?.join("last_focused_client_session"))
 }
-

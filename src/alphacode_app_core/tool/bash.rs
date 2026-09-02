@@ -1,10 +1,10 @@
 use super::{StdinInputRequest, Tool, ToolContext, ToolOutput};
 use crate::alphacode_app_core::background::TaskResult;
-#[allow(unused_imports)]
-use crate::alphacode_app_core::smart_stream;
 use crate::alphacode_app_core::bus::{
     BackgroundTaskProgress, BackgroundTaskProgressKind, BackgroundTaskProgressSource,
 };
+#[allow(unused_imports)]
+use crate::alphacode_app_core::smart_stream;
 use crate::alphacode_app_core::stdin_detect::{self, StdinState};
 use crate::alphacode_app_core::util::truncate_str;
 use anyhow::Result;
@@ -33,8 +33,7 @@ const PROGRESS_MARKER_PREFIX: &str = "ALPHACODE_PROGRESS ";
 const CHECKPOINT_MARKER_PREFIX: &str = "ALPHACODE_CHECKPOINT ";
 const BACKGROUND_PROGRESS_GUIDANCE: &str = "For long-running background commands, prefer scripts or commands that periodically print progress updates. Best format: print lines starting with `ALPHACODE_PROGRESS ` followed by JSON like {\"percent\":42,\"message\":\"Running\"} or {\"current\":120,\"total\":1000,\"unit\":\"batches\",\"message\":\"Epoch 2/5\",\"eta_seconds\":30}. Supported JSON fields are `percent`, `message`, `current`, `total`, `unit`, `eta_seconds`, and optional `kind`=`indeterminate` or `kind`=`checkpoint`. For milestone-style wakeups, print `ALPHACODE_CHECKPOINT {\"message\":\"Unit tests passed\"}`. Generic fallback output that can be parsed includes `42%`, `3/10 tests`, `3 of 10 steps`, `1.5/3.0 GiB`, or phase lines like `Compiling ...`, `Downloading ...`, `Running ...`, and `Building ...`. If you are writing the script yourself, add these progress/checkpoint lines explicitly. Put large temporary files, worktrees, and virtual environments under `$ALPHACODE_SCRATCH_DIR`, not `/tmp`, because `/tmp` may be RAM-backed.";
 const BASH_TOOL_DESCRIPTION: &str = "Run a shell command. Commands execute in bash on all operating systems (including Windows via Git Bash). Use POSIX syntax: ls, mv, rm, cp, grep. Use forward slashes for paths. This is your primary tool for building, testing, inspecting systems, running git, and executing any shell operation. Always include error handling and use appropriate timeouts. Choose the smallest command that answers the question: prefer `grep -n`, `rg`, `git diff --stat`, or a targeted read over a full build when you only need to inspect state. After a code change, run the project's tests (or at minimum the previously-passing subset) to confirm no regressions. Never claim a command succeeded unless you actually saw it succeed in the output.";
-const WINDOWS_SHELL_TOOL_DESCRIPTION: &str =
-    "Run a shell command. Commands execute in Git Bash on Windows (POSIX-compatible). Use POSIX syntax: ls, mv, rm, cp, grep, cat, head, tail, wc, find, xargs. Use forward slashes for paths (C:/Users not C:\\Users). Never use cmd.exe syntax (dir, copy, del, move, type) or PowerShell ($env, Get-ChildItem). For PowerShell-specific APIs, prefix with: powershell -Command '...'. This is your primary tool for building, testing, inspecting systems, running git, and executing any shell operation. Always include error handling and use appropriate timeouts. Choose the smallest command that answers the question: prefer `grep -n`, `git diff --stat`, or a targeted read over a full build when you only need to inspect state. After a code change, run the project's tests (or at minimum the previously-passing subset) to confirm no regressions. Never claim a command succeeded unless you actually saw it succeed in the output.";
+const WINDOWS_SHELL_TOOL_DESCRIPTION: &str = "Run a shell command. Commands execute in Git Bash on Windows (POSIX-compatible). Use POSIX syntax: ls, mv, rm, cp, grep, cat, head, tail, wc, find, xargs. Use forward slashes for paths (C:/Users not C:\\Users). Never use cmd.exe syntax (dir, copy, del, move, type) or PowerShell ($env, Get-ChildItem). For PowerShell-specific APIs, prefix with: powershell -Command '...'. This is your primary tool for building, testing, inspecting systems, running git, and executing any shell operation. Always include error handling and use appropriate timeouts. Choose the smallest command that answers the question: prefer `grep -n`, `git diff --stat`, or a targeted read over a full build when you only need to inspect state. After a code change, run the project's tests (or at minimum the previously-passing subset) to confirm no regressions. Never claim a command succeeded unless you actually saw it succeed in the output.";
 
 /// Build a clear timeout message. The `timeout` param is in milliseconds, which
 /// agents frequently mistake for seconds (e.g. passing 1000 thinking it means
@@ -437,7 +436,8 @@ async fn handle_background_output_line(
         }
         Ok(None) => {}
         Err(err) => {
-            let warning = format!("[alphacode warning] failed to parse background progress: {err}\n");
+            let warning =
+                format!("[alphacode warning] failed to parse background progress: {err}\n");
             file.write_all(warning.as_bytes()).await.ok();
             file.flush().await.ok();
         }
@@ -469,7 +469,9 @@ fn tool_scratch_dir() -> Option<std::path::PathBuf> {
 #[cfg(not(windows))]
 fn configure_tool_scratch(command: &mut TokioCommand) {
     if let Some(dir) = tool_scratch_dir() {
-        command.env("TMPDIR", &dir).env("ALPHACODE_SCRATCH_DIR", dir);
+        command
+            .env("TMPDIR", &dir)
+            .env("ALPHACODE_SCRATCH_DIR", dir);
     }
 }
 
@@ -507,7 +509,10 @@ static GIT_BASH_PATH: LazyLock<Option<String>> = LazyLock::new(|| {
         r"C:\Program Files\Git\bin\bash.exe",
         r"C:\Program Files (x86)\Git\bin\bash.exe",
         // User-level install.
-        &format!(r"{}\AppData\Local\Programs\Git\bin\bash.exe", std::env::var("USERPROFILE").unwrap_or_default()),
+        &format!(
+            r"{}\AppData\Local\Programs\Git\bin\bash.exe",
+            std::env::var("USERPROFILE").unwrap_or_default()
+        ),
     ];
     for path in &candidates {
         if std::path::Path::new(path).exists() {
@@ -516,17 +521,18 @@ static GIT_BASH_PATH: LazyLock<Option<String>> = LazyLock::new(|| {
     }
     // Fallback: check if `bash` is on PATH (Git Bash often adds itself).
     if let Ok(output) = std::process::Command::new("where").arg("bash").output()
-        && output.status.success() {
-            let first_line = String::from_utf8_lossy(&output.stdout)
-                .lines()
-                .next()
-                .unwrap_or("")
-                .trim()
-                .to_string();
-            if !first_line.is_empty() && std::path::Path::new(&first_line).exists() {
-                return Some(first_line);
-            }
+        && output.status.success()
+    {
+        let first_line = String::from_utf8_lossy(&output.stdout)
+            .lines()
+            .next()
+            .unwrap_or("")
+            .trim()
+            .to_string();
+        if !first_line.is_empty() && std::path::Path::new(&first_line).exists() {
+            return Some(first_line);
         }
+    }
     None
 });
 
@@ -584,10 +590,9 @@ fn format_command_output(mut output: String, exit_code: Option<i32>) -> String {
         let summary = filter_result.summary.clone();
         output = filter_result.filtered;
         // Append filtering stats if significant reduction occurred
-        if was_significant
-            && let Some(ref s) = summary {
-                output.push_str(&format!("\n\n[smart_stream] {}", s));
-            }
+        if was_significant && let Some(ref s) = summary {
+            output.push_str(&format!("\n\n[smart_stream] {}", s));
+        }
     }
 
     if output.len() > MAX_OUTPUT_LEN {
@@ -608,7 +613,8 @@ fn format_command_output(mut output: String, exit_code: Option<i32>) -> String {
                 output.push_str(
                     "\nHint: This shell is Git Bash (POSIX). Use: ls, cat, grep, find, \\\n                     wc, head, tail, sort, uniq. Do NOT use cmd.exe commands (dir, \\\n                     type, copy, del, move, findstr) or PowerShell syntax.",
                 );
-            } else if lower.contains("no such file or directory") || lower.contains("cannot access") {
+            } else if lower.contains("no such file or directory") || lower.contains("cannot access")
+            {
                 output.push_str(
                     "\nHint: Check the path exists. Use `ls` to list directory contents \\\n                     before operating on files.",
                 );
@@ -700,10 +706,11 @@ mod utf8_truncation_tests {
     #[tokio::test]
     async fn build_shell_command_uses_disk_backed_scratch_directory() {
         let expected = super::tool_scratch_dir().expect("alphacode scratch directory");
-        let output = build_shell_command("printf '%s\\n%s\\n' \"$TMPDIR\" \"$ALPHACODE_SCRATCH_DIR\"")
-            .output()
-            .await
-            .expect("run bash command");
+        let output =
+            build_shell_command("printf '%s\\n%s\\n' \"$TMPDIR\" \"$ALPHACODE_SCRATCH_DIR\"")
+                .output()
+                .await
+                .expect("run bash command");
         assert!(output.status.success(), "bash command should succeed");
         let stdout = String::from_utf8(output.stdout).expect("utf-8 scratch paths");
         let paths = stdout.lines().collect::<Vec<_>>();
@@ -775,9 +782,7 @@ impl Tool for BashTool {
             && let crate::alphacode_command_risk::ShellUrlSafety::Warning(warning) =
                 crate::alphacode_command_risk::scan_for_shell_url_issues(&params.command)
         {
-            crate::logging::warn(
-                "[bash] URL-safety gate held command for review",
-            );
+            crate::logging::warn("[bash] URL-safety gate held command for review");
             return Err(anyhow::anyhow!(warning));
         }
 
@@ -1367,4 +1372,3 @@ impl BashTool {
             })))
     }
 }
-

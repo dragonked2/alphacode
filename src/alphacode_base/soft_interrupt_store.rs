@@ -1,5 +1,5 @@
-use anyhow::Result;
 use crate::alphacode_agent_runtime::{SoftInterruptMessage, SoftInterruptSource};
+use anyhow::Result;
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 
@@ -119,4 +119,3 @@ pub fn append(session_id: &str, interrupt: SoftInterruptMessage) -> Result<()> {
 pub fn clear(session_id: &str) -> Result<()> {
     overwrite(session_id, &[])
 }
-

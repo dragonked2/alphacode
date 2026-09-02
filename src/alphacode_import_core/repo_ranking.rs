@@ -770,7 +770,8 @@ mod tests {
 
     #[test]
     fn collect_missing_dir_is_empty() {
-        let locs = collect_alphacode_session_locations(Path::new("/nonexistent/alphacode/sessions"));
+        let locs =
+            collect_alphacode_session_locations(Path::new("/nonexistent/alphacode/sessions"));
         assert!(locs.is_empty());
     }
 }

@@ -678,7 +678,10 @@ mod tests {
         );
         assert_eq!(agent_host(), "agentn.us.api5.cursor.sh");
 
-        crate::alphacode_base::env::set_var("ALPHACODE_CURSOR_AGENT_HOST", "agentn.eu.api5.cursor.sh:443");
+        crate::alphacode_base::env::set_var(
+            "ALPHACODE_CURSOR_AGENT_HOST",
+            "agentn.eu.api5.cursor.sh:443",
+        );
         assert_eq!(agent_host(), "agentn.eu.api5.cursor.sh");
 
         // A blank override must not win; it falls through to the next source.
@@ -686,7 +689,9 @@ mod tests {
         assert_ne!(agent_host(), "   ");
 
         match prev {
-            Some(value) => crate::alphacode_base::env::set_var("ALPHACODE_CURSOR_AGENT_HOST", value),
+            Some(value) => {
+                crate::alphacode_base::env::set_var("ALPHACODE_CURSOR_AGENT_HOST", value)
+            }
             None => crate::alphacode_base::env::remove_var("ALPHACODE_CURSOR_AGENT_HOST"),
         }
     }

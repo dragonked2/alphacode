@@ -382,7 +382,10 @@ mod tests {
 
         // Full ID is "session_<uuid>" — no animal token, no timestamp.
         assert!(full_id.starts_with("session_"));
-        assert!(Uuid::parse_str(&short_name).is_ok(), "short name must be a UUID");
+        assert!(
+            Uuid::parse_str(&short_name).is_ok(),
+            "short name must be a UUID"
+        );
         assert_eq!(full_id, format!("session_{short_name}"));
     }
 
@@ -559,7 +562,10 @@ mod tests {
 
         // Full ID is "server_<uuid>" — no location noun, no timestamp.
         assert!(full_id.starts_with("server_"));
-        assert!(Uuid::parse_str(&short_name).is_ok(), "short name must be a UUID");
+        assert!(
+            Uuid::parse_str(&short_name).is_ok(),
+            "short name must be a UUID"
+        );
         assert_eq!(full_id, format!("server_{short_name}"));
     }
 

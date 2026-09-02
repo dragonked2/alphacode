@@ -127,7 +127,11 @@ pub fn configured_palette() -> (crate::alphacode_tui_style::Palette, Vec<String>
             .iter()
             .map(|(key, value)| (key.as_str(), value.as_str())),
     );
-    problems.extend(errors.into_iter().map(|error| format!("display.colors: {error}")));
+    problems.extend(
+        errors
+            .into_iter()
+            .map(|error| format!("display.colors: {error}")),
+    );
 
     (palette, problems)
 }

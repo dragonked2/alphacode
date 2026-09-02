@@ -1,10 +1,10 @@
 pub mod account_picker;
 pub(crate) mod app;
-pub mod smart_model_picker;
-pub mod model_performance;
 pub mod brand_ux;
-pub mod improved_input;
 pub mod enhanced_status;
+pub mod improved_input;
+pub mod model_performance;
+pub mod smart_model_picker;
 
 #[derive(Clone)]
 pub struct ContextSnapshot {
@@ -1873,4 +1873,3 @@ mod tests {
         assert!(!flags.contains(KeyboardEnhancementFlags::REPORT_ALL_KEYS_AS_ESCAPE_CODES));
     }
 }
-

@@ -7,11 +7,11 @@ use super::{
     queue_soft_interrupt_for_session, remove_session_channel_subscriptions,
     remove_session_from_swarm, swarm_id_for_dir, truncate_detail, update_member_status,
 };
+use crate::alphacode_agent_runtime::{SoftInterruptSource, StreamError};
 use crate::alphacode_app_core::agent::Agent;
 use crate::alphacode_app_core::protocol::{FeatureToggle, NotificationType, ServerEvent};
 use crate::alphacode_app_core::session::Session;
 use crate::alphacode_app_core::util::truncate_str;
-use crate::alphacode_agent_runtime::{SoftInterruptSource, StreamError};
 use std::collections::{HashMap, HashSet};
 use std::process::Stdio;
 use std::sync::Arc;
@@ -874,7 +874,6 @@ pub(super) async fn handle_transfer(
         new_session_name,
     });
 }
-
 
 /// Decide whether an idle live session still owes the model a continuation.
 ///

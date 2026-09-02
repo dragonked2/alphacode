@@ -267,7 +267,8 @@ fn estimate_pinned_content_entry_bytes(entry: &PinnedContentEntry) -> usize {
             file_path, lines, ..
         } => {
             file_path.capacity()
-                + lines.capacity() * std::mem::size_of::<crate::alphacode_tui::tui::ui_diff::ParsedDiffLine>()
+                + lines.capacity()
+                    * std::mem::size_of::<crate::alphacode_tui::tui::ui_diff::ParsedDiffLine>()
                 + lines
                     .iter()
                     .map(|line| line.prefix.capacity() + line.content.capacity())
@@ -752,7 +753,9 @@ fn collect_pinned_content(
                     .clone()
                     .unwrap_or_else(|| image.media_type.clone()),
                 media_type: image.media_type.clone(),
-                byte_count: crate::alphacode_tui::tui::image_metadata::estimate_base64_decoded_len(&image.data),
+                byte_count: crate::alphacode_tui::tui::image_metadata::estimate_base64_decoded_len(
+                    &image.data,
+                ),
                 source: image.source.clone(),
                 hash,
                 width,
@@ -1067,14 +1070,22 @@ pub(super) fn draw_pinned_content_cached(
 
                     let short_label = compact_image_label(label);
                     let source_badge = image_source_badge(source);
-                    let dimensions = crate::alphacode_tui::tui::image_metadata::format_dimensions(*img_w, *img_h);
-                    let mut metadata_parts =
-                        vec![crate::alphacode_tui::tui::image_metadata::compact_image_format(media_type)];
+                    let dimensions = crate::alphacode_tui::tui::image_metadata::format_dimensions(
+                        *img_w, *img_h,
+                    );
+                    let mut metadata_parts = vec![
+                        crate::alphacode_tui::tui::image_metadata::compact_image_format(media_type),
+                    ];
                     if let Some(byte_count) = byte_count {
-                        metadata_parts
-                            .push(crate::alphacode_tui::tui::image_metadata::format_byte_count(*byte_count));
+                        metadata_parts.push(
+                            crate::alphacode_tui::tui::image_metadata::format_byte_count(
+                                *byte_count,
+                            ),
+                        );
                     }
-                    if let Some(ratio) = crate::alphacode_tui::tui::image_metadata::aspect_ratio(*img_w, *img_h) {
+                    if let Some(ratio) =
+                        crate::alphacode_tui::tui::image_metadata::aspect_ratio(*img_w, *img_h)
+                    {
                         metadata_parts.push(format!("{ratio} ratio"));
                     }
 
@@ -2038,5 +2049,3 @@ fn resolve_side_panel_image_path(
         .map(|parent| parent.join(path))
         .unwrap_or_else(|| path.to_path_buf())
 }
-
-

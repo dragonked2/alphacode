@@ -1,5 +1,5 @@
-use super::{Tool, ToolContext, ToolOutput};
 use super::diff_utils::generate_diff_summary;
+use super::{Tool, ToolContext, ToolOutput};
 use anyhow::Result;
 use async_trait::async_trait;
 use serde::Deserialize;
@@ -160,8 +160,6 @@ impl Tool for MultiEditTool {
         Ok(ToolOutput::new(output).with_title(params.file_path.clone()))
     }
 }
-
-
 
 #[cfg(test)]
 mod tests {

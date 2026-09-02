@@ -505,4 +505,3 @@ Do not force-push or discard local commits without confirming they are already u
         super::spawn_in_new_terminal(&exe, session_id, &cwd, socket.as_deref())
     }
 }
-

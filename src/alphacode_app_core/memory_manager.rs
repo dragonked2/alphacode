@@ -148,9 +148,7 @@ impl MemoryManager {
     /// Create a new MemoryManager with the given root directory.
     pub fn new(root: impl AsRef<Path>) -> Result<Self> {
         let root = root.as_ref().to_path_buf();
-        let root = root
-            .canonicalize()
-            .map_err(io::Error::other)?;
+        let root = root.canonicalize().map_err(io::Error::other)?;
 
         // Define file paths relative to root.
         let state_path = root.join("STATE.json");
@@ -350,7 +348,10 @@ impl MemoryManager {
 
     /// Append a line (with trailing newline) to a markdown file.
     fn append_md(&self, path: &Path, line: &str) -> Result<()> {
-        let mut file = fs::OpenOptions::new().append(true).create(true).open(path)?;
+        let mut file = fs::OpenOptions::new()
+            .append(true)
+            .create(true)
+            .open(path)?;
         file.write_all(format!("{line}\n").as_bytes())?;
         Ok(())
     }
@@ -569,8 +570,7 @@ mod tests {
     #[test]
     fn test_store_and_retrieve() {
         let (_dir, mgr) = make_mgr();
-        let entry =
-            MemoryEntry::new(MemoryCategory::Fact, "Hello, memory!");
+        let entry = MemoryEntry::new(MemoryCategory::Fact, "Hello, memory!");
         let id = mgr.store(entry);
         assert!(mgr.get(&id).is_some());
     }

@@ -257,4 +257,3 @@ exit 0
         app_dir_escaped = app_dir_escaped,
     )
 }
-

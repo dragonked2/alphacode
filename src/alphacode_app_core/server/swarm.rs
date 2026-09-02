@@ -5,11 +5,11 @@ use crate::alphacode_app_core::agent::Agent;
 use crate::alphacode_app_core::plan::{PlanItem, newly_ready_item_ids};
 use crate::alphacode_app_core::protocol::{NotificationType, ServerEvent};
 use crate::alphacode_app_core::session::Session;
-use anyhow::Result;
-use futures::future::try_join_all;
 use crate::alphacode_swarm_core::{
     completion_notification_message, normalize_completion_report, truncate_detail,
 };
+use anyhow::Result;
+use futures::future::try_join_all;
 use serde::Deserialize;
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;

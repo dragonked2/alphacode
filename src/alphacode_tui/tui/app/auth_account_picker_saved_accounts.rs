@@ -148,36 +148,39 @@ impl App {
             } else {
                 ""
             };
-            items.push(crate::alphacode_tui::tui::account_picker::AccountPickerItem::action(
-                provider.id,
-                provider.display_name,
-                format!("Switch account `{label}`"),
-                format!("{email} - {status} - plan {plan}{active_suffix}"),
-                crate::alphacode_tui::tui::account_picker::AccountPickerCommand::SubmitInput(format!(
-                    "/account {} switch {}",
-                    provider.id, label
-                )),
-            ));
-            items.push(crate::alphacode_tui::tui::account_picker::AccountPickerItem::action(
-                provider.id,
-                provider.display_name,
-                format!("Re-login account `{label}`"),
-                format!("Refresh OAuth tokens for `{label}`"),
-                crate::alphacode_tui::tui::account_picker::AccountPickerCommand::SubmitInput(format!(
-                    "/account {} add {}",
-                    provider.id, label
-                )),
-            ));
-            items.push(crate::alphacode_tui::tui::account_picker::AccountPickerItem::action(
-                provider.id,
-                provider.display_name,
-                format!("Remove account `{label}`"),
-                format!("Delete saved credentials for `{label}`"),
-                crate::alphacode_tui::tui::account_picker::AccountPickerCommand::SubmitInput(format!(
-                    "/account {} remove {}",
-                    provider.id, label
-                )),
-            ));
+            items.push(
+                crate::alphacode_tui::tui::account_picker::AccountPickerItem::action(
+                    provider.id,
+                    provider.display_name,
+                    format!("Switch account `{label}`"),
+                    format!("{email} - {status} - plan {plan}{active_suffix}"),
+                    crate::alphacode_tui::tui::account_picker::AccountPickerCommand::SubmitInput(
+                        format!("/account {} switch {}", provider.id, label),
+                    ),
+                ),
+            );
+            items.push(
+                crate::alphacode_tui::tui::account_picker::AccountPickerItem::action(
+                    provider.id,
+                    provider.display_name,
+                    format!("Re-login account `{label}`"),
+                    format!("Refresh OAuth tokens for `{label}`"),
+                    crate::alphacode_tui::tui::account_picker::AccountPickerCommand::SubmitInput(
+                        format!("/account {} add {}", provider.id, label),
+                    ),
+                ),
+            );
+            items.push(
+                crate::alphacode_tui::tui::account_picker::AccountPickerItem::action(
+                    provider.id,
+                    provider.display_name,
+                    format!("Remove account `{label}`"),
+                    format!("Delete saved credentials for `{label}`"),
+                    crate::alphacode_tui::tui::account_picker::AccountPickerCommand::SubmitInput(
+                        format!("/account {} remove {}", provider.id, label),
+                    ),
+                ),
+            );
         }
     }
 
@@ -206,36 +209,39 @@ impl App {
             } else {
                 ""
             };
-            items.push(crate::alphacode_tui::tui::account_picker::AccountPickerItem::action(
-                provider.id,
-                provider.display_name,
-                format!("Switch account `{label}`"),
-                format!("{email} - {status} - acct {account_id}{active_suffix}"),
-                crate::alphacode_tui::tui::account_picker::AccountPickerCommand::SubmitInput(format!(
-                    "/account {} switch {}",
-                    provider.id, label
-                )),
-            ));
-            items.push(crate::alphacode_tui::tui::account_picker::AccountPickerItem::action(
-                provider.id,
-                provider.display_name,
-                format!("Re-login account `{label}`"),
-                format!("Refresh OpenAI OAuth tokens for `{label}`"),
-                crate::alphacode_tui::tui::account_picker::AccountPickerCommand::SubmitInput(format!(
-                    "/account {} add {}",
-                    provider.id, label
-                )),
-            ));
-            items.push(crate::alphacode_tui::tui::account_picker::AccountPickerItem::action(
-                provider.id,
-                provider.display_name,
-                format!("Remove account `{label}`"),
-                format!("Delete saved credentials for `{label}`"),
-                crate::alphacode_tui::tui::account_picker::AccountPickerCommand::SubmitInput(format!(
-                    "/account {} remove {}",
-                    provider.id, label
-                )),
-            ));
+            items.push(
+                crate::alphacode_tui::tui::account_picker::AccountPickerItem::action(
+                    provider.id,
+                    provider.display_name,
+                    format!("Switch account `{label}`"),
+                    format!("{email} - {status} - acct {account_id}{active_suffix}"),
+                    crate::alphacode_tui::tui::account_picker::AccountPickerCommand::SubmitInput(
+                        format!("/account {} switch {}", provider.id, label),
+                    ),
+                ),
+            );
+            items.push(
+                crate::alphacode_tui::tui::account_picker::AccountPickerItem::action(
+                    provider.id,
+                    provider.display_name,
+                    format!("Re-login account `{label}`"),
+                    format!("Refresh OpenAI OAuth tokens for `{label}`"),
+                    crate::alphacode_tui::tui::account_picker::AccountPickerCommand::SubmitInput(
+                        format!("/account {} add {}", provider.id, label),
+                    ),
+                ),
+            );
+            items.push(
+                crate::alphacode_tui::tui::account_picker::AccountPickerItem::action(
+                    provider.id,
+                    provider.display_name,
+                    format!("Remove account `{label}`"),
+                    format!("Delete saved credentials for `{label}`"),
+                    crate::alphacode_tui::tui::account_picker::AccountPickerCommand::SubmitInput(
+                        format!("/account {} remove {}", provider.id, label),
+                    ),
+                ),
+            );
         }
     }
 }
@@ -268,4 +274,3 @@ fn format_account_table(headers: &[&str; 5], rows: &[[String; 5]]) -> Vec<String
     }
     lines
 }
-

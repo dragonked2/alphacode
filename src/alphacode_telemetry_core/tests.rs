@@ -53,7 +53,10 @@ fn background_delivery_queue_is_bounded() {
 
 #[test]
 fn telemetry_endpoint_uses_production_custom_domain() {
-    assert_eq!(TELEMETRY_ENDPOINT, "https://telemetry.alphacode.sh/v1/event");
+    assert_eq!(
+        TELEMETRY_ENDPOINT,
+        "https://telemetry.alphacode.sh/v1/event"
+    );
 }
 
 fn lock_test_env() -> std::sync::MutexGuard<'static, ()> {

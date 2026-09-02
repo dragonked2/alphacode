@@ -1,5 +1,5 @@
-use super::{Tool, ToolContext, ToolOutput};
 use super::diff_utils::{build_file_touch_preview, generate_diff_with_start};
+use super::{Tool, ToolContext, ToolOutput};
 use crate::alphacode_app_core::bus::{Bus, BusEvent, FileOp, FileTouch};
 use anyhow::Result;
 use async_trait::async_trait;
@@ -154,8 +154,6 @@ fn find_line_number(content: &str, substring: &str) -> usize {
     }
 }
 
-
-
 /// Extract lines around the edited region, returns (start_line, end_line, content)
 fn extract_context(
     content: &str,
@@ -237,8 +235,14 @@ mod tests {
 
         assert!(diff.contains("6- line two"), "Should show deleted line");
         assert!(diff.contains("6+ modified two"), "Should show added line");
-        assert!(!diff.contains("line one"), "Should not show unchanged lines");
-        assert!(!diff.contains("line three"), "Should not show unchanged lines");
+        assert!(
+            !diff.contains("line one"),
+            "Should not show unchanged lines"
+        );
+        assert!(
+            !diff.contains("line three"),
+            "Should not show unchanged lines"
+        );
     }
 
     #[test]
@@ -270,8 +274,14 @@ mod tests {
         let old = "old";
         let new = "new";
         let diff = generate_diff_with_start(old, new, 42);
-        assert!(diff.contains("42- old"), "Should have line number directly before minus");
-        assert!(diff.contains("42+ new"), "Should have line number directly before plus");
+        assert!(
+            diff.contains("42- old"),
+            "Should have line number directly before minus"
+        );
+        assert!(
+            diff.contains("42+ new"),
+            "Should have line number directly before plus"
+        );
     }
 
     #[test]

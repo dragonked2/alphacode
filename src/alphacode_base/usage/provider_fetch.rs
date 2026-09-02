@@ -23,8 +23,11 @@ pub(super) async fn fetch_anthropic_usage_for_token(
 ) -> ProviderUsage {
     let now_ms = chrono::Utc::now().timestamp_millis();
     let access_token = if expires_at < now_ms + 300_000 && !refresh_token.is_empty() {
-        match crate::alphacode_base::auth::oauth::refresh_claude_tokens_for_account(&refresh_token, &account_label)
-            .await
+        match crate::alphacode_base::auth::oauth::refresh_claude_tokens_for_account(
+            &refresh_token,
+            &account_label,
+        )
+        .await
         {
             Ok(refreshed) => refreshed.access_token,
             Err(_) => {
@@ -142,7 +145,10 @@ pub(super) async fn fetch_openai_usage_for_account(
                     )
                     .await
                 }
-                None => crate::alphacode_base::auth::oauth::refresh_openai_tokens(&creds.refresh_token).await,
+                None => {
+                    crate::alphacode_base::auth::oauth::refresh_openai_tokens(&creds.refresh_token)
+                        .await
+                }
             };
             match refreshed {
                 Ok(refreshed) => {

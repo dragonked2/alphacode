@@ -6,7 +6,7 @@
 //! child agents are spawned.  Recursive decomposition is allowed until
 //! each task is manageable.
 
-use super::{AgentSpec, AgentLimits, TaskComplexity};
+use super::{AgentLimits, AgentSpec, TaskComplexity};
 use chrono::Utc;
 
 /// A decomposed task tree.
@@ -89,20 +89,57 @@ pub fn decompose(
 /// architectural moves, cross-cutting concerns, or system-wide changes.
 /// Each hit raises the estimated complexity.
 const COMPLEXITY_RAISERS: &[&str] = &[
-    "migrate", "migration", "integrate", "restructure", "convert", "overhaul",
-    "rearchitect", "redesign", "rewrite", "refactor entire", "parallel",
-    "distributed", "end-to-end", "pipeline", "concurrency", "thread-safe",
-    "multi-thread", "system-wide", "replace the", "database", "schema",
-    "month-long", "long-running", "continuous", "autonomous", "self-healing",
-    "watchdog", "recovery", "multi-agent", "orchestrate", "coordinate",
+    "migrate",
+    "migration",
+    "integrate",
+    "restructure",
+    "convert",
+    "overhaul",
+    "rearchitect",
+    "redesign",
+    "rewrite",
+    "refactor entire",
+    "parallel",
+    "distributed",
+    "end-to-end",
+    "pipeline",
+    "concurrency",
+    "thread-safe",
+    "multi-thread",
+    "system-wide",
+    "replace the",
+    "database",
+    "schema",
+    "month-long",
+    "long-running",
+    "continuous",
+    "autonomous",
+    "self-healing",
+    "watchdog",
+    "recovery",
+    "multi-agent",
+    "orchestrate",
+    "coordinate",
 ];
 
 /// Signals that make a task *easier*: mechanical edits with no design work.
 /// These push the estimate down unless a raiser is also present.
 const COMPLEXITY_LOWERERS: &[&str] = &[
-    "fix typo", "rename", "reformat", "lint", "bump version", "update comment",
-    "add comment", "chore", "update readme", "add a test", "minor fix",
-    "small fix", "tweak", "reorder", "update the version",
+    "fix typo",
+    "rename",
+    "reformat",
+    "lint",
+    "bump version",
+    "update comment",
+    "add comment",
+    "chore",
+    "update readme",
+    "add a test",
+    "minor fix",
+    "small fix",
+    "tweak",
+    "reorder",
+    "update the version",
 ];
 
 /// Estimate the complexity of a task based on heuristics.
@@ -116,8 +153,14 @@ pub fn estimate_complexity(objective: &str, file_count: usize) -> TaskComplexity
     let words = objective.split_whitespace().count();
     let sentences = count_sentences(&lower);
 
-    let raises = COMPLEXITY_RAISERS.iter().filter(|sig| lower.contains(**sig)).count();
-    let lowers = COMPLEXITY_LOWERERS.iter().filter(|sig| lower.contains(**sig)).count();
+    let raises = COMPLEXITY_RAISERS
+        .iter()
+        .filter(|sig| lower.contains(**sig))
+        .count();
+    let lowers = COMPLEXITY_LOWERERS
+        .iter()
+        .filter(|sig| lower.contains(**sig))
+        .count();
 
     // A purely mechanical edit is cheap regardless of wording; across many
     // files it is still just bulk application, so it tops out at Low.
@@ -130,7 +173,8 @@ pub fn estimate_complexity(objective: &str, file_count: usize) -> TaskComplexity
     }
 
     let mentions_multiple_files = file_count > 5;
-    let mentions_system = raises >= 2 || lower.contains("redesign")
+    let mentions_system = raises >= 2
+        || lower.contains("redesign")
         || lower.contains("rewrite")
         || lower.contains("refactor entire");
 
@@ -188,9 +232,8 @@ pub struct SuggestedPhase {
 /// overhead), while genuinely large tasks get the full pipeline.
 pub fn suggest_phases(objective: &str, complexity: TaskComplexity) -> Vec<SuggestedPhase> {
     let lower = objective.to_lowercase();
-    let build_task = lower.contains("build")
-        || lower.contains("implement")
-        || lower.contains("create");
+    let build_task =
+        lower.contains("build") || lower.contains("implement") || lower.contains("create");
     let is_long_running = lower.contains("month")
         || lower.contains("long-running")
         || lower.contains("autonomous")
@@ -209,7 +252,9 @@ pub fn suggest_phases(objective: &str, complexity: TaskComplexity) -> Vec<Sugges
         return vec![
             SuggestedPhase {
                 name: "analysis".into(),
-                objective: format!("Analyze requirements and design resilience strategy for: {objective}"),
+                objective: format!(
+                    "Analyze requirements and design resilience strategy for: {objective}"
+                ),
                 required_files: Vec::new(),
                 constraints: vec![
                     "Design for months of continuous operation.".into(),
@@ -242,7 +287,9 @@ pub fn suggest_phases(objective: &str, complexity: TaskComplexity) -> Vec<Sugges
             },
             SuggestedPhase {
                 name: "resilience".into(),
-                objective: format!("Add self-healing, watchdog, and crash recovery for: {objective}"),
+                objective: format!(
+                    "Add self-healing, watchdog, and crash recovery for: {objective}"
+                ),
                 required_files: Vec::new(),
                 constraints: vec![
                     "Must handle months of continuous operation.".into(),
@@ -332,10 +379,7 @@ pub fn suggest_phases(objective: &str, complexity: TaskComplexity) -> Vec<Sugges
 
     // Non-build work: analysis + implementation, plus verification at high.
     match complexity {
-        TaskComplexity::Medium => vec![
-            analysis_phase(objective),
-            implementation_phase(objective),
-        ],
+        TaskComplexity::Medium => vec![analysis_phase(objective), implementation_phase(objective)],
         TaskComplexity::High | TaskComplexity::Extreme => vec![
             analysis_phase(objective),
             implementation_phase(objective),
@@ -350,9 +394,9 @@ pub fn suggest_phases(objective: &str, complexity: TaskComplexity) -> Vec<Sugges
         // Trivial/Low never reach here: the small-task early return above runs
         // first. Kept explicit so the invariant is documented rather than a
         // silent catch-all.
-        TaskComplexity::Trivial | TaskComplexity::Low => unreachable!(
-            "small tasks are handled by the single-phase early return"
-        ),
+        TaskComplexity::Trivial | TaskComplexity::Low => {
+            unreachable!("small tasks are handled by the single-phase early return")
+        }
     }
 }
 
@@ -450,13 +494,19 @@ mod tests {
             TaskComplexity::Trivial
         );
         assert_eq!(count_sentences("update readme.md and bump to v1.2.3"), 1);
-        assert_eq!(count_sentences("add a retry loop. wire it in. expose a flag."), 3);
+        assert_eq!(
+            count_sentences("add a retry loop. wire it in. expose a flag."),
+            3
+        );
     }
 
     #[test]
     fn test_estimate_multi_sentence_is_medium() {
         assert_eq!(
-            estimate_complexity("Add a retry loop. Wire it into the CLI. Then expose a flag.", 0),
+            estimate_complexity(
+                "Add a retry loop. Wire it into the CLI. Then expose a flag.",
+                0
+            ),
             TaskComplexity::Medium
         );
     }
@@ -510,7 +560,10 @@ mod tests {
 
     #[test]
     fn test_suggest_phases_high_non_build_gets_verification() {
-        let phases = suggest_phases("Optimize the render pipeline for large scenes", TaskComplexity::High);
+        let phases = suggest_phases(
+            "Optimize the render pipeline for large scenes",
+            TaskComplexity::High,
+        );
         assert!(phases.iter().any(|p| p.name == "analysis"));
         assert!(phases.iter().any(|p| p.name == "verification"));
     }

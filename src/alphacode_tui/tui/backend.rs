@@ -1813,4 +1813,3 @@ mod tests {
         assert!(remote_protocol_frame_exceeds_limit(usize::MAX, 1));
     }
 }
-

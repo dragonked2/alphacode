@@ -833,10 +833,7 @@ mod tests {
                         }
                     }
                 }
-                assert!(
-                    any_text,
-                    "static decoration at {w}x{h} produced no glyphs"
-                );
+                assert!(any_text, "static decoration at {w}x{h} produced no glyphs");
             }
         }
     }
@@ -886,4 +883,3 @@ mod tests {
         assert_idle_sampler_stays_off_border_on_small_viewports("three_rings", sample_gyroscope);
     }
 }
-

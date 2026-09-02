@@ -34,8 +34,8 @@
 //! image as JPEG and progressively downscale it until its base64 payload fits
 //! within budget.
 
-use base64::Engine as _;
 use crate::alphacode_message_types::{ContentBlock, Message};
+use base64::Engine as _;
 
 /// Max edge (px) allowed when a request carries more than this many images.
 const MANY_IMAGE_THRESHOLD: usize = 20;
@@ -351,8 +351,8 @@ fn probe_dimensions(data: &[u8]) -> Option<(u32, u32)> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use image::{ImageFormat, RgbImage};
     use crate::alphacode_message_types::Role;
+    use image::{ImageFormat, RgbImage};
 
     fn encode_png(w: u32, h: u32) -> String {
         let img = RgbImage::from_pixel(w, h, image::Rgb([10, 20, 30]));

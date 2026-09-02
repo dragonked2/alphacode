@@ -1,5 +1,7 @@
 use super::*;
-use crate::alphacode_tui::tui::session_picker::{self, OverlayAction, PickerResult, ResumeTarget, SessionPicker};
+use crate::alphacode_tui::tui::session_picker::{
+    self, OverlayAction, PickerResult, ResumeTarget, SessionPicker,
+};
 use crate::alphacode_tui::tui::{
     AccountPickerAction, InlineInteractiveState, PickerAction, PickerEntry, PickerKind,
     PickerOption,
@@ -270,7 +272,9 @@ fn remote_model_catalog_cache_path() -> Option<std::path::PathBuf> {
 }
 
 fn remote_model_catalog_cache_origin() -> String {
-    crate::alphacode_app_core::server::socket_path().to_string_lossy().into_owned()
+    crate::alphacode_app_core::server::socket_path()
+        .to_string_lossy()
+        .into_owned()
 }
 
 fn remote_catalog_text_is_safe(value: &str, max_bytes: usize, allow_empty: bool) -> bool {
@@ -367,7 +371,10 @@ fn model_picker_route_is_current(
     if current_provider.trim().eq_ignore_ascii_case("remote") {
         return true;
     }
-    crate::alphacode_provider_core::model_route_provider_labels_match(&route.provider, current_provider)
+    crate::alphacode_provider_core::model_route_provider_labels_match(
+        &route.provider,
+        current_provider,
+    )
 }
 
 const RECOMMENDED_MODELS: &[&str] = &["gpt-5.5", "claude-opus-4-8"];
@@ -705,7 +712,8 @@ impl App {
                 .insert(route.api_method.as_str());
         }
         let auth = crate::alphacode_base::auth::AuthStatus::check_fast();
-        let bedrock_available = auth.bedrock != crate::alphacode_base::auth::AuthState::NotConfigured
+        let bedrock_available = auth.bedrock
+            != crate::alphacode_base::auth::AuthState::NotConfigured
             || crate::provider::bedrock::BedrockProvider::has_credentials();
         let missing: Vec<String> = remote_available_entries
             .iter()
@@ -1421,7 +1429,9 @@ impl App {
         if routes.is_empty() {
             self.inline_interactive_state = None;
             self.push_display_message(DisplayMessage::system(
-                crate::alphacode_tui::tui::app::model_context::no_models_available_message(self.is_remote),
+                crate::alphacode_tui::tui::app::model_context::no_models_available_message(
+                    self.is_remote,
+                ),
             ));
             self.set_status_notice("No models available");
             return routes;
@@ -1465,7 +1475,10 @@ impl App {
         }
 
         fn route_matches_recent_auth(route_provider: &str, login_provider: &str) -> bool {
-            crate::alphacode_provider_core::model_route_provider_labels_related(route_provider, login_provider)
+            crate::alphacode_provider_core::model_route_provider_labels_related(
+                route_provider,
+                login_provider,
+            )
         }
 
         let timestamp_started = std::time::Instant::now();
@@ -2537,7 +2550,10 @@ impl App {
                     )
                 }
                 ResumeTarget::CodexSession { session_id, .. } => {
-                    format!("Codex {}", crate::alphacode_core::util::truncate_str(session_id, 8))
+                    format!(
+                        "Codex {}",
+                        crate::alphacode_core::util::truncate_str(session_id, 8)
+                    )
                 }
                 ResumeTarget::PiSession { session_path } => std::path::Path::new(session_path)
                     .file_stem()
@@ -2545,10 +2561,16 @@ impl App {
                     .unwrap_or("Pi session")
                     .to_string(),
                 ResumeTarget::OpenCodeSession { session_id, .. } => {
-                    format!("OpenCode {}", crate::alphacode_core::util::truncate_str(session_id, 8))
+                    format!(
+                        "OpenCode {}",
+                        crate::alphacode_core::util::truncate_str(session_id, 8)
+                    )
                 }
                 ResumeTarget::CursorSession { session_id, .. } => {
-                    format!("Cursor {}", crate::alphacode_core::util::truncate_str(session_id, 8))
+                    format!(
+                        "Cursor {}",
+                        crate::alphacode_core::util::truncate_str(session_id, 8)
+                    )
                 }
             };
             let resolved_target = match crate::import::resolve_resume_target_to_alphacode(target) {
@@ -2642,7 +2664,10 @@ impl App {
                 )
             }
             ResumeTarget::CodexSession { session_id, .. } => {
-                format!("Codex {}", crate::alphacode_core::util::truncate_str(session_id, 8))
+                format!(
+                    "Codex {}",
+                    crate::alphacode_core::util::truncate_str(session_id, 8)
+                )
             }
             ResumeTarget::PiSession { session_path } => std::path::Path::new(session_path)
                 .file_stem()
@@ -2650,10 +2675,16 @@ impl App {
                 .unwrap_or("Pi session")
                 .to_string(),
             ResumeTarget::OpenCodeSession { session_id, .. } => {
-                format!("OpenCode {}", crate::alphacode_core::util::truncate_str(session_id, 8))
+                format!(
+                    "OpenCode {}",
+                    crate::alphacode_core::util::truncate_str(session_id, 8)
+                )
             }
             ResumeTarget::CursorSession { session_id, .. } => {
-                format!("Cursor {}", crate::alphacode_core::util::truncate_str(session_id, 8))
+                format!(
+                    "Cursor {}",
+                    crate::alphacode_core::util::truncate_str(session_id, 8)
+                )
             }
         };
 
@@ -2785,9 +2816,11 @@ impl App {
         // Single recovered session that could not get a new terminal: resume it
         // in the current terminal instead of forcing a manual command (#203).
         if spawned == 0 && recovered.len() == 1 && failed.len() == 1 {
-            self.handle_session_picker_current_terminal_selection(&[ResumeTarget::AlphacodeSession {
-                session_id: recovered[0].clone(),
-            }]);
+            self.handle_session_picker_current_terminal_selection(&[
+                ResumeTarget::AlphacodeSession {
+                    session_id: recovered[0].clone(),
+                },
+            ]);
             return;
         }
         if spawned > 0 && failed.is_empty() {
@@ -3782,34 +3815,43 @@ mod tests {
 
     #[test]
     fn model_picker_current_route_allows_provider_aliases() {
-        assert!(crate::alphacode_provider_core::model_route_provider_labels_match(
-            "Anthropic",
-            "Claude"
-        ));
-        assert!(crate::alphacode_provider_core::model_route_provider_labels_match(
-            "auto",
-            "OpenRouter"
-        ));
-        assert!(crate::alphacode_provider_core::model_route_provider_labels_match(
-            "GitHub Copilot",
-            "Copilot"
-        ));
-        assert!(crate::alphacode_provider_core::model_route_provider_labels_match(
-            "AWS Bedrock",
-            "Bedrock"
-        ));
+        assert!(
+            crate::alphacode_provider_core::model_route_provider_labels_match(
+                "Anthropic",
+                "Claude"
+            )
+        );
+        assert!(
+            crate::alphacode_provider_core::model_route_provider_labels_match("auto", "OpenRouter")
+        );
+        assert!(
+            crate::alphacode_provider_core::model_route_provider_labels_match(
+                "GitHub Copilot",
+                "Copilot"
+            )
+        );
+        assert!(
+            crate::alphacode_provider_core::model_route_provider_labels_match(
+                "AWS Bedrock",
+                "Bedrock"
+            )
+        );
     }
 
     #[test]
     fn model_picker_provider_match_does_not_use_substring_false_positives() {
-        assert!(!crate::alphacode_provider_core::model_route_provider_labels_match(
-            "OpenRouter/OpenAI",
-            "OpenAI"
-        ));
-        assert!(!crate::alphacode_provider_core::model_route_provider_labels_match(
-            "OpenAI",
-            "OpenRouter"
-        ));
+        assert!(
+            !crate::alphacode_provider_core::model_route_provider_labels_match(
+                "OpenRouter/OpenAI",
+                "OpenAI"
+            )
+        );
+        assert!(
+            !crate::alphacode_provider_core::model_route_provider_labels_match(
+                "OpenAI",
+                "OpenRouter"
+            )
+        );
     }
 
     #[test]
@@ -4207,4 +4249,3 @@ mod tests {
         );
     }
 }
-

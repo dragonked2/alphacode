@@ -4,11 +4,11 @@ use std::io::IsTerminal;
 
 use anyhow::{Context, Result, anyhow};
 
-use crate::live_tests::LiveVerificationStageStatus;
 use crate::alphacode_provider_doctor::{
     DoctorReport, DoctorTier, NativeProviderKind, native_doctor_supports_provider,
     run_antigravity_native_e2e, run_claude_native_e2e, run_generic_native_e2e, run_provider_e2e,
 };
+use crate::live_tests::LiveVerificationStageStatus;
 
 pub async fn run_provider_doctor_command(
     provider: &str,
@@ -25,7 +25,8 @@ pub async fn run_provider_doctor_command(
     // Claude and Antigravity keep bespoke drivers (unusual credential/catalog
     // stories); everything else flows through the generic native driver.
     if native_doctor_supports_provider(provider) {
-        let normalized = crate::alphacode_base::auth::lifecycle::normalized_auth_provider_id(Some(provider));
+        let normalized =
+            crate::alphacode_base::auth::lifecycle::normalized_auth_provider_id(Some(provider));
         let report = match normalized {
             Some("claude") => run_claude_native_e2e(provider, model, tier).await?,
             Some("antigravity") => run_antigravity_native_e2e(provider, model, tier).await?,

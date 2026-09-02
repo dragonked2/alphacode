@@ -1,6 +1,6 @@
 use crate::alphacode_tui::tui::color_support::rgb;
 use ratatui::prelude::*;
-use ratatui::widgets::{Block, Borders, BorderType, List, ListItem};
+use ratatui::widgets::{Block, BorderType, Borders, List, ListItem};
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -86,7 +86,7 @@ impl SmartModelPicker {
         entry.last_used = now;
         entry.usage_count += 1;
         entry.provider = provider.to_string();
-        
+
         // Update rolling average response time
         if entry.avg_response_ms == 0 {
             entry.avg_response_ms = response_time_ms;
@@ -176,7 +176,7 @@ impl SmartModelPicker {
         // Usage count bonus (logarithmic)
         if let Some(stats) = stats.get(model) {
             score += (stats.usage_count as f64).log2() * 100.0;
-            
+
             // Response time bonus (faster is better)
             if stats.avg_response_ms > 0 {
                 score += 100.0 / (stats.avg_response_ms as f64 / 1000.0);
@@ -216,26 +216,27 @@ impl SmartModelPicker {
 
     /// Get model statistics
     pub fn get_stats(&self, model: &str) -> Option<ModelUsageStats> {
-        self
-            .stats
+        self.stats
             .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner()).get(model).cloned()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .get(model)
+            .cloned()
     }
 
     /// Get recent models
     pub fn get_recent(&self) -> Vec<String> {
-        self
-            .recent_models
+        self.recent_models
             .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner()).clone()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .clone()
     }
 
     /// Get favorite models
     pub fn get_favorites(&self) -> Vec<String> {
-        self
-            .favorites
+        self.favorites
             .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner()).clone()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .clone()
     }
 
     /// Update model metadata
@@ -273,7 +274,7 @@ pub fn render_smart_model_picker(
     frame: &mut Frame,
 ) {
     let sorted_models = picker.get_sorted_models(models.to_vec());
-    
+
     // Filter models based on search query
     let filtered_models: Vec<&String> = if search_query.is_empty() {
         sorted_models.iter().collect()
@@ -291,19 +292,21 @@ pub fn render_smart_model_picker(
             let is_selected = selected == Some(idx);
             let stats = picker.get_stats(model);
             let is_favorite = picker.get_favorites().contains(model);
-            
+
             let mut spans = vec![];
-            
+
             // Favorite indicator
             if is_favorite {
                 spans.push(Span::styled(
                     "★ ",
-                    Style::default().fg(rgb(255, 215, 0)).add_modifier(Modifier::BOLD),
+                    Style::default()
+                        .fg(rgb(255, 215, 0))
+                        .add_modifier(Modifier::BOLD),
                 ));
             } else {
                 spans.push(Span::styled("  ", Style::default()));
             }
-            
+
             // Model tier
             if let Some(stats) = &stats {
                 spans.push(Span::styled(
@@ -313,7 +316,7 @@ pub fn render_smart_model_picker(
             } else {
                 spans.push(Span::styled("  ", Style::default()));
             }
-            
+
             // Gradient-colored model name
             let gradient = crate::alphacode_tui::tui::brand_ux::BrandTheme::gradient();
             let name_style = if is_selected {
@@ -321,13 +324,14 @@ pub fn render_smart_model_picker(
                     .fg(gradient[5]) // teal for selected
                     .add_modifier(Modifier::BOLD)
             } else if is_favorite {
-                Style::default().fg(gradient[12]) // rose for favorites
+                Style::default()
+                    .fg(gradient[12]) // rose for favorites
                     .add_modifier(Modifier::BOLD)
             } else {
                 Style::default().fg(rgb(220, 225, 240)) // brighter default
             };
             spans.push(Span::styled(model.to_string(), name_style));
-            
+
             // Usage count indicator
             if let Some(stats) = &stats
                 && stats.usage_count > 0
@@ -337,7 +341,7 @@ pub fn render_smart_model_picker(
                     Style::default().fg(rgb(120, 120, 120)),
                 ));
             }
-            
+
             // Context window indicator with gradient color
             if let Some(stats) = &stats
                 && let Some(ctx) = stats.context_window
@@ -362,31 +366,32 @@ pub fn render_smart_model_picker(
                     Style::default().fg(ctx_color),
                 ));
             }
-            
+
             // Provider-aware gradient-colored indicator
             if let Some(stats) = &stats
                 && !stats.provider.is_empty()
             {
                 let provider_lower = stats.provider.to_lowercase();
-                let provider_color = if provider_lower.contains("anthropic") || provider_lower.contains("claude") {
-                    rgb(118, 166, 255) // blue for Anthropic
-                } else if provider_lower.contains("openai") {
-                    rgb(134, 233, 180) // green for OpenAI
-                } else if provider_lower.contains("gmi") {
-                    rgb(130, 224, 215) // teal for GMI Cloud
-                } else if provider_lower.contains("openrouter") {
-                    rgb(200, 140, 255) // purple for OpenRouter
-                } else if provider_lower.contains("gemini") {
-                    rgb(255, 195, 88) // amber for Gemini
-                } else {
-                    rgb(140, 150, 170) // default dim
-                };
+                let provider_color =
+                    if provider_lower.contains("anthropic") || provider_lower.contains("claude") {
+                        rgb(118, 166, 255) // blue for Anthropic
+                    } else if provider_lower.contains("openai") {
+                        rgb(134, 233, 180) // green for OpenAI
+                    } else if provider_lower.contains("gmi") {
+                        rgb(130, 224, 215) // teal for GMI Cloud
+                    } else if provider_lower.contains("openrouter") {
+                        rgb(200, 140, 255) // purple for OpenRouter
+                    } else if provider_lower.contains("gemini") {
+                        rgb(255, 195, 88) // amber for Gemini
+                    } else {
+                        rgb(140, 150, 170) // default dim
+                    };
                 spans.push(Span::styled(
                     format!(" ({})", stats.provider),
                     Style::default().fg(provider_color),
                 ));
             }
-            
+
             ListItem::new(Line::from(spans))
         })
         .collect();
@@ -400,7 +405,9 @@ pub fn render_smart_model_picker(
                 .border_type(BorderType::Rounded)
                 .title(Span::styled(
                     " Model Picker ",
-                    Style::default().fg(gradient[4]).add_modifier(Modifier::BOLD),
+                    Style::default()
+                        .fg(gradient[4])
+                        .add_modifier(Modifier::BOLD),
                 ))
                 .title_bottom(Line::from(Span::styled(
                     " f: favorite | /: search | Enter: select ",
@@ -408,7 +415,12 @@ pub fn render_smart_model_picker(
                 )))
                 .border_style(Style::default().fg(gradient[4])),
         )
-        .highlight_style(Style::default().bg(rgb(35, 40, 55)).fg(Color::White).add_modifier(Modifier::BOLD));
+        .highlight_style(
+            Style::default()
+                .bg(rgb(35, 40, 55))
+                .fg(Color::White)
+                .add_modifier(Modifier::BOLD),
+        );
 
     frame.render_widget(list, area);
 }
@@ -428,7 +440,7 @@ mod tests {
     fn test_record_usage() {
         let picker = SmartModelPicker::new();
         picker.record_usage("claude-3-opus", "anthropic", 1000);
-        
+
         let stats = picker.get_stats("claude-3-opus").unwrap();
         assert_eq!(stats.usage_count, 1);
         assert_eq!(stats.provider, "anthropic");
@@ -438,9 +450,17 @@ mod tests {
     fn test_toggle_favorite() {
         let picker = SmartModelPicker::new();
         assert!(!picker.toggle_favorite("claude-3-opus"));
-        assert!(picker.get_favorites().contains(&"claude-3-opus".to_string()));
+        assert!(
+            picker
+                .get_favorites()
+                .contains(&"claude-3-opus".to_string())
+        );
         assert!(picker.toggle_favorite("claude-3-opus"));
-        assert!(!picker.get_favorites().contains(&"claude-3-opus".to_string()));
+        assert!(
+            !picker
+                .get_favorites()
+                .contains(&"claude-3-opus".to_string())
+        );
     }
 
     #[test]
@@ -449,10 +469,14 @@ mod tests {
         picker.record_usage("model-b", "provider", 500);
         picker.record_usage("model-a", "provider", 1000);
         picker.record_usage("model-b", "provider", 500);
-        
-        let models = vec!["model-a".to_string(), "model-b".to_string(), "model-c".to_string()];
+
+        let models = vec![
+            "model-a".to_string(),
+            "model-b".to_string(),
+            "model-c".to_string(),
+        ];
         let sorted = picker.get_sorted_models(models);
-        
+
         // model-b should be first (most used)
         assert_eq!(sorted[0], "model-b");
     }
@@ -463,7 +487,7 @@ mod tests {
         for i in 0..15 {
             picker.record_usage(&format!("model-{}", i), "provider", 1000);
         }
-        
+
         let recent = picker.get_recent();
         assert_eq!(recent.len(), 10); // max_recent is 10
     }

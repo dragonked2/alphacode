@@ -10,11 +10,9 @@ pub(super) fn destructive_command_refusal(
     justification: Option<&str>,
     working_dir: Option<std::path::PathBuf>,
 ) -> Option<String> {
-    let risk_ctx =
-        crate::alphacode_command_risk::RiskContext::from_env(working_dir);
+    let risk_ctx = crate::alphacode_command_risk::RiskContext::from_env(working_dir);
 
-    let assessment =
-        crate::alphacode_command_risk::assess(command, &risk_ctx);
+    let assessment = crate::alphacode_command_risk::assess(command, &risk_ctx);
 
     if assessment.level.runs_immediately() {
         return None;
@@ -24,10 +22,7 @@ pub(super) fn destructive_command_refusal(
         text: justification.map(str::to_owned),
     };
 
-    match crate::alphacode_command_risk::gate(
-        &assessment,
-        &justification,
-    ) {
+    match crate::alphacode_command_risk::gate(&assessment, &justification) {
         crate::alphacode_command_risk::GateOutcome::Allow => None,
 
         crate::alphacode_command_risk::GateOutcome::Deny { reason } => {

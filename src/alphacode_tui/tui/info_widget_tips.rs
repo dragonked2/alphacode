@@ -138,10 +138,7 @@ pub(super) fn render_tips_widget(inner: Rect) -> Vec<Line<'static>> {
                 .add_modifier(Modifier::BOLD),
         ),
         Span::styled(" ", Style::default()),
-        Span::styled(
-            "\u{2502}",
-            Style::default().fg(gradient[3]),
-        ),
+        Span::styled("\u{2502}", Style::default().fg(gradient[3])),
     ]));
 
     for line_text in wrapped {

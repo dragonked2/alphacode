@@ -199,7 +199,9 @@ impl Agent {
     /// the provider distinguishes OAuth (subscription) from API key (cost).
     /// Resolved authoritatively here so remote clients can render billing/usage
     /// without re-deriving it from the provider name.
-    pub fn active_resolved_credential(&self) -> Option<crate::alphacode_provider_core::ResolvedCredential> {
+    pub fn active_resolved_credential(
+        &self,
+    ) -> Option<crate::alphacode_provider_core::ResolvedCredential> {
         self.provider.active_resolved_credential()
     }
 

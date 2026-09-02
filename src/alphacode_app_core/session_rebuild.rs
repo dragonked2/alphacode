@@ -7,8 +7,8 @@ use crate::alphacode_app_core::{build, update};
 
 pub fn hot_rebuild(session_id: &str) -> Result<()> {
     let cwd = std::env::current_dir()?;
-    let repo_dir =
-        build::get_repo_dir().ok_or_else(|| anyhow::anyhow!("Could not find alphacode repository"))?;
+    let repo_dir = build::get_repo_dir()
+        .ok_or_else(|| anyhow::anyhow!("Could not find alphacode repository"))?;
 
     eprintln!("Rebuilding alphacode with session {}...", session_id);
     pull_latest_changes_for_rebuild(&repo_dir);

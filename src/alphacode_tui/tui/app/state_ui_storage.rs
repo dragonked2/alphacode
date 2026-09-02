@@ -407,9 +407,12 @@ fn compact_tool_input_for_display(name: &str, input: &serde_json::Value) -> serd
                                 .or_else(|| call.get("name"))
                                 .and_then(|v| v.as_str())
                                 .unwrap_or("?");
-                            let params = crate::alphacode_tui::tui::ui::tools_ui::batch_subcall_params(call);
+                            let params =
+                                crate::alphacode_tui::tui::ui::tools_ui::batch_subcall_params(call);
                             let intent =
-                                crate::alphacode_tui::tui::ui::tools_ui::batch_subcall_intent(call, &params);
+                                crate::alphacode_tui::tui::ui::tools_ui::batch_subcall_intent(
+                                    call, &params,
+                                );
                             let compacted = compact_tool_input_for_display(raw_name, &params);
                             let mut entry = serde_json::Map::new();
                             entry.insert(
@@ -731,4 +734,3 @@ mod tests {
         );
     }
 }
-

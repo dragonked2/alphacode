@@ -134,7 +134,11 @@ pub fn set_client_session_title(session_id: &str, is_selfdev: bool) {
 }
 
 pub fn set_client_display_title(session_name: &str, is_selfdev: bool) {
-    let prefix = if is_selfdev { "alphacode:d:" } else { "alphacode:c:" };
+    let prefix = if is_selfdev {
+        "alphacode:d:"
+    } else {
+        "alphacode:c:"
+    };
     set_title(compact_process_title(prefix, Some(session_name)));
 }
 
@@ -143,7 +147,11 @@ pub fn set_client_remote_display_title(server_name: &str, session_name: &str, is
         set_client_display_title(session_name, is_selfdev);
         return;
     }
-    let prefix = if is_selfdev { "alphacode:d:" } else { "alphacode:c:" };
+    let prefix = if is_selfdev {
+        "alphacode:d:"
+    } else {
+        "alphacode:c:"
+    };
     set_title(format!("{prefix}{server_name}/{session_name}"));
 }
 

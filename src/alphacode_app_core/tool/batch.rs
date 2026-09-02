@@ -327,4 +327,3 @@ impl Tool for BatchTool {
         Ok(ToolOutput::new(output))
     }
 }
-

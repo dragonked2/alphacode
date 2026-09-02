@@ -41,7 +41,8 @@ pub fn generate_diff_summary(old: &str, new: &str) -> String {
                     output.push_str("...\n");
                     break;
                 }
-                let _ = std::fmt::write(&mut output, format_args!("{}- {}\n", old_line - 1, content));
+                let _ =
+                    std::fmt::write(&mut output, format_args!("{}- {}\n", old_line - 1, content));
                 lines_shown += 1;
             }
             ChangeTag::Insert => {
@@ -54,7 +55,8 @@ pub fn generate_diff_summary(old: &str, new: &str) -> String {
                     output.push_str("...\n");
                     break;
                 }
-                let _ = std::fmt::write(&mut output, format_args!("{}+ {}\n", new_line - 1, content));
+                let _ =
+                    std::fmt::write(&mut output, format_args!("{}+ {}\n", new_line - 1, content));
                 lines_shown += 1;
             }
         }
@@ -106,7 +108,10 @@ pub fn generate_diff_with_start(old: &str, new: &str, start_line: usize) -> Stri
             }
         };
 
-        let _ = std::fmt::write(&mut output, format_args!("{}{} {}\n", line_num, prefix, content));
+        let _ = std::fmt::write(
+            &mut output,
+            format_args!("{}{} {}\n", line_num, prefix, content),
+        );
         line_count += 1;
     }
 
@@ -175,8 +180,14 @@ mod tests {
 
     #[test]
     fn diff_summary_truncation() {
-        let old = (1..=35).map(|i| format!("old {}", i)).collect::<Vec<_>>().join("\n");
-        let new = (1..=35).map(|i| format!("new {}", i)).collect::<Vec<_>>().join("\n");
+        let old = (1..=35)
+            .map(|i| format!("old {}", i))
+            .collect::<Vec<_>>()
+            .join("\n");
+        let new = (1..=35)
+            .map(|i| format!("new {}", i))
+            .collect::<Vec<_>>()
+            .join("\n");
         let diff = generate_diff_summary(&old, &new);
         assert!(diff.contains("..."));
     }
@@ -208,7 +219,10 @@ mod tests {
 
     #[test]
     fn touch_preview_long_diff_truncated() {
-        let long = (0..20).map(|i| format!("{}+ line {}", i, i)).collect::<Vec<_>>().join("\n");
+        let long = (0..20)
+            .map(|i| format!("{}+ line {}", i, i))
+            .collect::<Vec<_>>()
+            .join("\n");
         let preview = build_file_touch_preview(&long).unwrap();
         assert!(preview.contains("…"));
     }

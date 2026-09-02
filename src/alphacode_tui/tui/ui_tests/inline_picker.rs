@@ -10,7 +10,9 @@ fn render_inline_picker(state: &TestState, width: u16, height: u16) -> Vec<Strin
     terminal
         .draw(|frame| {
             let area = Rect::new(0, 0, width, height);
-            crate::alphacode_tui::tui::ui::inline_interactive_ui::draw_inline_interactive(frame, state, area);
+            crate::alphacode_tui::tui::ui::inline_interactive_ui::draw_inline_interactive(
+                frame, state, area,
+            );
         })
         .expect("failed to draw inline picker");
 
@@ -93,4 +95,3 @@ fn model_picker_hotkey_hint_renders_above_the_box() {
         lines[hint_row]
     );
 }
-

@@ -6,6 +6,12 @@ mod catalog;
 #[path = "model_catalog_service.rs"]
 mod catalog_service;
 
+use crate::alphacode_provider_core::{
+    ALL_CLAUDE_MODELS, ALL_OPENAI_MODELS, CHATGPT_WEB_MODEL, ModelCapabilities,
+    OPENAI_API_ONLY_PRO_MODELS, context_limit_for_model_with_provider_and_cache,
+    core_provider_for_model_with_hint, is_openai_api_only_pro_model, provider_key_from_hint,
+    shared_http_client,
+};
 use anyhow::Result;
 #[cfg(test)]
 pub(crate) use catalog::parse_anthropic_model_catalog;
@@ -15,12 +21,6 @@ pub use catalog::{
     fetch_openai_api_key_model_catalog, fetch_openai_context_limits, fetch_openai_model_catalog,
 };
 use catalog_service::{ModelCatalogService, RuntimeModelUnavailability};
-use crate::alphacode_provider_core::{
-    ALL_CLAUDE_MODELS, ALL_OPENAI_MODELS, CHATGPT_WEB_MODEL, ModelCapabilities,
-    OPENAI_API_ONLY_PRO_MODELS, context_limit_for_model_with_provider_and_cache,
-    core_provider_for_model_with_hint, is_openai_api_only_pro_model, provider_key_from_hint,
-    shared_http_client,
-};
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
@@ -1137,9 +1137,15 @@ pub fn provider_for_model_with_hint(
     let model = model.trim();
     if model.contains('@') {
         Some("openrouter")
-    } else if crate::alphacode_provider_core::model_id::matches_known_model(model, ALL_CLAUDE_MODELS) {
+    } else if crate::alphacode_provider_core::model_id::matches_known_model(
+        model,
+        ALL_CLAUDE_MODELS,
+    ) {
         Some("claude")
-    } else if crate::alphacode_provider_core::model_id::matches_known_model(model, ALL_OPENAI_MODELS) {
+    } else if crate::alphacode_provider_core::model_id::matches_known_model(
+        model,
+        ALL_OPENAI_MODELS,
+    ) {
         Some("openai")
     } else if crate::provider::bedrock::BedrockProvider::is_bedrock_model_id(model) {
         Some("bedrock")

@@ -156,4 +156,3 @@ fn measured_topology_covers_real_area_and_adjacency() {
         "expected substantial painted area, got {total}"
     );
 }
-

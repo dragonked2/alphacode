@@ -292,24 +292,29 @@ impl App {
         .map(|resolved| resolved.active)
     }
 
-    fn widget_auth_method(&self, route: WidgetRouteInfo) -> crate::alphacode_tui::tui::info_widget::AuthMethod {
+    fn widget_auth_method(
+        &self,
+        route: WidgetRouteInfo,
+    ) -> crate::alphacode_tui::tui::info_widget::AuthMethod {
         use crate::alphacode_tui::auth::ActiveCredential;
         use crate::alphacode_tui::tui::info_widget::AuthMethod;
 
         match route.provider {
             WidgetProviderKind::Anthropic => {
-                match self
-                    .dual_credential_active(route, crate::alphacode_provider_core::ActiveProvider::Claude)
-                {
+                match self.dual_credential_active(
+                    route,
+                    crate::alphacode_provider_core::ActiveProvider::Claude,
+                ) {
                     Some(ActiveCredential::OAuth) => AuthMethod::AnthropicOAuth,
                     Some(ActiveCredential::ApiKey) => AuthMethod::AnthropicApiKey,
                     None => AuthMethod::Unknown,
                 }
             }
             WidgetProviderKind::OpenAI => {
-                match self
-                    .dual_credential_active(route, crate::alphacode_provider_core::ActiveProvider::OpenAI)
-                {
+                match self.dual_credential_active(
+                    route,
+                    crate::alphacode_provider_core::ActiveProvider::OpenAI,
+                ) {
                     Some(ActiveCredential::OAuth) => AuthMethod::OpenAIOAuth,
                     Some(ActiveCredential::ApiKey) => AuthMethod::OpenAIApiKey,
                     None => AuthMethod::Unknown,
@@ -320,7 +325,9 @@ impl App {
             // `widget_usage_info`'s `is_remote` handling, so report Unknown here
             // and let the local heuristics run only for local sessions.
             _ if route.is_remote => AuthMethod::Unknown,
-            WidgetProviderKind::OpenCode => crate::alphacode_tui::tui::info_widget::AuthMethod::OpenCodeApiKey,
+            WidgetProviderKind::OpenCode => {
+                crate::alphacode_tui::tui::info_widget::AuthMethod::OpenCodeApiKey
+            }
             WidgetProviderKind::OpenRouter => {
                 let runtime_provider = active_runtime_provider_key();
                 let transport_state =
@@ -335,8 +342,12 @@ impl App {
                     crate::alphacode_tui::tui::info_widget::AuthMethod::Unknown
                 }
             }
-            WidgetProviderKind::CostBasedApiKey => crate::alphacode_tui::tui::info_widget::AuthMethod::ApiKey,
-            WidgetProviderKind::Copilot => crate::alphacode_tui::tui::info_widget::AuthMethod::CopilotOAuth,
+            WidgetProviderKind::CostBasedApiKey => {
+                crate::alphacode_tui::tui::info_widget::AuthMethod::ApiKey
+            }
+            WidgetProviderKind::Copilot => {
+                crate::alphacode_tui::tui::info_widget::AuthMethod::CopilotOAuth
+            }
             WidgetProviderKind::Gemini => {
                 // Per-frame: never block the render thread on a credential probe.
                 let auth_status = crate::alphacode_base::auth::AuthStatus::check_fast_nonblocking();
@@ -346,7 +357,9 @@ impl App {
                     crate::alphacode_tui::tui::info_widget::AuthMethod::Unknown
                 }
             }
-            WidgetProviderKind::Unknown => crate::alphacode_tui::tui::info_widget::AuthMethod::Unknown,
+            WidgetProviderKind::Unknown => {
+                crate::alphacode_tui::tui::info_widget::AuthMethod::Unknown
+            }
         }
     }
 
@@ -398,24 +411,26 @@ impl App {
         };
 
         match route.provider {
-            WidgetProviderKind::Copilot => Some(crate::alphacode_tui::tui::info_widget::UsageInfo {
-                provider: crate::alphacode_tui::tui::info_widget::UsageProvider::Copilot,
-                primary_limit_label: None,
-                five_hour: 0.0,
-                five_hour_resets_at: None,
-                secondary_limit_label: None,
-                seven_day: 0.0,
-                seven_day_resets_at: None,
-                spark: None,
-                spark_resets_at: None,
-                total_cost: 0.0,
-                input_tokens: display_input_tokens,
-                output_tokens: display_output_tokens,
-                cache_read_tokens: None,
-                cache_write_tokens: None,
-                output_tps,
-                available: display_input_tokens > 0 || display_output_tokens > 0,
-            }),
+            WidgetProviderKind::Copilot => {
+                Some(crate::alphacode_tui::tui::info_widget::UsageInfo {
+                    provider: crate::alphacode_tui::tui::info_widget::UsageProvider::Copilot,
+                    primary_limit_label: None,
+                    five_hour: 0.0,
+                    five_hour_resets_at: None,
+                    secondary_limit_label: None,
+                    seven_day: 0.0,
+                    seven_day_resets_at: None,
+                    spark: None,
+                    spark_resets_at: None,
+                    total_cost: 0.0,
+                    input_tokens: display_input_tokens,
+                    output_tokens: display_output_tokens,
+                    cache_read_tokens: None,
+                    cache_write_tokens: None,
+                    output_tps,
+                    available: display_input_tokens > 0 || display_output_tokens > 0,
+                })
+            }
             WidgetProviderKind::Anthropic => {
                 match auth_method {
                     crate::alphacode_tui::tui::info_widget::AuthMethod::AnthropicApiKey => {
@@ -794,7 +809,10 @@ impl crate::alphacode_tui::tui::TuiState for App {
         // process yet. Treat those as already idle so reopening many historical sessions does not
         // spend the first warm-up window rerendering large static transcripts at idle FPS.
         if !self.display_messages.is_empty() && !self.is_processing {
-            return Some(crate::alphacode_tui::tui::REDRAW_DEEP_IDLE_AFTER + std::time::Duration::from_secs(1));
+            return Some(
+                crate::alphacode_tui::tui::REDRAW_DEEP_IDLE_AFTER
+                    + std::time::Duration::from_secs(1),
+            );
         }
 
         Some(self.app_started.elapsed())
@@ -880,8 +898,10 @@ impl crate::alphacode_tui::tui::TuiState for App {
             if !self.is_remote {
                 return None;
             }
-            crate::registry::find_server_by_socket_sync(&crate::alphacode_app_core::server::socket_path())
-                .map(|info| info.name)
+            crate::registry::find_server_by_socket_sync(
+                &crate::alphacode_app_core::server::socket_path(),
+            )
+            .map(|info| info.name)
         })
     }
 
@@ -890,8 +910,10 @@ impl crate::alphacode_tui::tui::TuiState for App {
             if !self.is_remote {
                 return None;
             }
-            crate::registry::find_server_by_socket_sync(&crate::alphacode_app_core::server::socket_path())
-                .map(|info| info.icon)
+            crate::registry::find_server_by_socket_sync(
+                &crate::alphacode_app_core::server::socket_path(),
+            )
+            .map(|info| info.icon)
         })
     }
 
@@ -903,9 +925,11 @@ impl crate::alphacode_tui::tui::TuiState for App {
         // sync); fall back to the registry record so a version is available
         // even before the first history event arrives.
         self.remote_server_version.clone().or_else(|| {
-            crate::registry::find_server_by_socket_sync(&crate::alphacode_app_core::server::socket_path())
-                .map(|info| info.version)
-                .filter(|version| !version.trim().is_empty())
+            crate::registry::find_server_by_socket_sync(
+                &crate::alphacode_app_core::server::socket_path(),
+            )
+            .map(|info| info.version)
+            .filter(|version| !version.trim().is_empty())
         })
     }
 
@@ -1511,11 +1535,13 @@ impl crate::alphacode_tui::tui::TuiState for App {
                         .kv_cache_miss_samples
                         .iter()
                         .rev()
-                        .map(|sample| crate::alphacode_tui::tui::info_widget::CacheMissAttribution {
-                            turn_number: sample.turn_number,
-                            call_index: sample.call_index,
-                            missed_tokens: sample.missed_tokens,
-                            reason: sample.reason.label().to_string(),
+                        .map(|sample| {
+                            crate::alphacode_tui::tui::info_widget::CacheMissAttribution {
+                                turn_number: sample.turn_number,
+                                call_index: sample.call_index,
+                                missed_tokens: sample.missed_tokens,
+                                reason: sample.reason.label().to_string(),
+                            }
                         })
                         .collect(),
                 }
@@ -1618,7 +1644,9 @@ impl crate::alphacode_tui::tui::TuiState for App {
         self.workspace_client.is_enabled()
     }
 
-    fn workspace_map_rows(&self) -> Vec<crate::alphacode_tui::tui::workspace_map::VisibleWorkspaceRow> {
+    fn workspace_map_rows(
+        &self,
+    ) -> Vec<crate::alphacode_tui::tui::workspace_map::VisibleWorkspaceRow> {
         let session_id = if self.is_remote {
             self.remote_session_id.as_deref()
         } else {
@@ -1851,7 +1879,9 @@ impl crate::alphacode_tui::tui::TuiState for App {
     fn diff_line_wrap(&self) -> bool {
         crate::config::config().display.diff_line_wrap
     }
-    fn inline_interactive_state(&self) -> Option<&crate::alphacode_tui::tui::InlineInteractiveState> {
+    fn inline_interactive_state(
+        &self,
+    ) -> Option<&crate::alphacode_tui::tui::InlineInteractiveState> {
         self.inline_interactive_state.as_ref()
     }
 
@@ -1878,7 +1908,9 @@ impl crate::alphacode_tui::tui::TuiState for App {
         self.session_picker_overlay.as_ref()
     }
 
-    fn login_picker_overlay(&self) -> Option<&RefCell<crate::alphacode_tui::tui::login_picker::LoginPicker>> {
+    fn login_picker_overlay(
+        &self,
+    ) -> Option<&RefCell<crate::alphacode_tui::tui::login_picker::LoginPicker>> {
         self.login_picker_overlay.as_ref()
     }
 
@@ -1888,7 +1920,9 @@ impl crate::alphacode_tui::tui::TuiState for App {
         self.account_picker_overlay.as_ref()
     }
 
-    fn usage_overlay(&self) -> Option<&RefCell<crate::alphacode_tui::tui::usage_overlay::UsageOverlay>> {
+    fn usage_overlay(
+        &self,
+    ) -> Option<&RefCell<crate::alphacode_tui::tui::usage_overlay::UsageOverlay>> {
         self.usage_overlay.as_ref()
     }
 
@@ -1970,7 +2004,8 @@ impl crate::alphacode_tui::tui::TuiState for App {
         if last_provider != provider || last_model != model {
             return None;
         }
-        let ttl_secs = crate::alphacode_tui::tui::cache_ttl_for_provider_model(provider, Some(&model))?;
+        let ttl_secs =
+            crate::alphacode_tui::tui::cache_ttl_for_provider_model(provider, Some(&model))?;
         let elapsed = last_completed.elapsed().as_secs();
         let remaining = ttl_secs.saturating_sub(elapsed);
         Some(crate::alphacode_tui::tui::CacheTtlInfo {
@@ -2092,7 +2127,8 @@ impl App {
             self.set_status_notice("No swarm agents to open");
             return;
         }
-        let order = crate::alphacode_tui::tui::info_widget::swarm_gallery::members_display_order(&members);
+        let order =
+            crate::alphacode_tui::tui::info_widget::swarm_gallery::members_display_order(&members);
         let idx = self.swarm_panel_selected.min(order.len().saturating_sub(1));
         let Some(session_id) = order.get(idx).cloned() else {
             self.set_status_notice("No swarm agent selected");
@@ -2106,8 +2142,11 @@ impl App {
 
         let exe = std::env::current_exe().unwrap_or_else(|_| std::path::PathBuf::from("alphacode"));
         let cwd = std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
-        match crate::alphacode_app_core::session_launch::spawn_resume_in_new_terminal(&exe, &session_id, &cwd)
-        {
+        match crate::alphacode_app_core::session_launch::spawn_resume_in_new_terminal(
+            &exe,
+            &session_id,
+            &cwd,
+        ) {
             Ok(true) => self.set_status_notice(format!("Opened {label} in a new window")),
             Ok(false) => self.set_status_notice(format!(
                 "Could not open a terminal for {label} (no emulator found)"
@@ -2147,7 +2186,8 @@ pub(crate) fn swarm_panel_action_for_key(
     let alt = modifiers.contains(KeyModifiers::ALT);
     // macOS Option+letter often arrives as a transformed glyph with no ALT
     // modifier; normalize through the shared shortcut helper.
-    let macos_letter = crate::alphacode_tui::tui::keybind::shortcut_char_for_macos_option_key(code, modifiers);
+    let macos_letter =
+        crate::alphacode_tui::tui::keybind::shortcut_char_for_macos_option_key(code, modifiers);
     match code {
         KeyCode::Down | KeyCode::Char('j') if alt => Some(SwarmPanelAction::SelectNext),
         KeyCode::Up | KeyCode::Char('k') if alt => Some(SwarmPanelAction::SelectPrev),
@@ -2411,4 +2451,3 @@ mod inline_swarm_subtree_tests {
         );
     }
 }
-
