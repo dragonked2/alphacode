@@ -3855,7 +3855,8 @@ pub(crate) fn render_tool_message(
     }
 
     if tools_ui::is_memory_recall_tool(tc) && !msg.content.starts_with("Error:") {
-        let border_style = Style::default().fg(rgb(150, 180, 255));
+        let gradient = crate::alphacode_tui::tui::brand_ux::BrandTheme::gradient();
+        let border_style = Style::default().fg(gradient[2]); // blue accent for memory recall
         let text_style = Style::default().fg(dim_color());
 
         let mut entries: Vec<(String, String)> = Vec::new();
@@ -3913,12 +3914,13 @@ pub(crate) fn render_tool_message(
         .map(|counts| counts.failed > 0 && counts.succeeded > 0)
         .unwrap_or(false);
 
+    // Brighter, bolder status icons for tool results
     let (icon, icon_color) = if is_partial_batch {
-        ("⚠", rgb(214, 184, 92))
+        ("⚠", rgb(255, 210, 90))
     } else if is_error {
-        ("✗", rgb(220, 100, 100))
+        ("✖", rgb(255, 90, 90))
     } else {
-        ("✓", rgb(100, 180, 100))
+        ("✔", rgb(100, 220, 130))
     };
 
     let is_edit_tool = tools_ui::is_edit_tool_name(&tc.name);
@@ -3991,9 +3993,12 @@ pub(crate) fn render_tool_message(
         tools_ui::get_tool_summary_with_budget(tc, 50, Some(technical_summary_width))
     };
 
+    // Gradient-colored tool name for a premium look
+    let gradient = crate::alphacode_tui::tui::brand_ux::BrandTheme::gradient();
+    let tool_name_color = gradient[5]; // teal for tool names
     let mut tool_line = vec![
-        Span::styled(format!("  {} ", icon), Style::default().fg(icon_color)),
-        Span::styled(display_name, Style::default().fg(tool_color())),
+        Span::styled(format!("  {} ", icon), Style::default().fg(icon_color).add_modifier(Modifier::BOLD)),
+        Span::styled(display_name, Style::default().fg(tool_name_color).add_modifier(Modifier::BOLD)),
     ];
     if let Some(intent) = intent {
         tool_line.push(Span::styled(" · ", Style::default().fg(dim_color())));

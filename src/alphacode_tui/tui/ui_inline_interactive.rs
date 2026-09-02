@@ -377,7 +377,9 @@ pub(super) fn draw_inline_interactive(frame: &mut Frame, app: &dyn TuiState, are
     let is_account_picker = picker.uses_compact_navigation();
     let is_usage_picker = picker.kind == crate::alphacode_tui::tui::PickerKind::Usage;
 
-    let col_focus_style = Style::default().fg(accent_color()).bold();
+    // Gradient-colored header labels for the model picker
+    let gradient = crate::alphacode_tui::tui::brand_ux::BrandTheme::gradient();
+    let col_focus_style = Style::default().fg(gradient[4]).bold(); // teal for focused column
     let col_dim_style = Style::default().fg(dim_color());
     let marker_width = 3usize;
     const WIDTH_SCAN_LIMIT: usize = 200;
@@ -431,11 +433,16 @@ pub(super) fn draw_inline_interactive(frame: &mut Frame, app: &dyn TuiState, are
             width: area.width,
             height: 1,
         };
+        // Gradient-colored hint text for the model picker
+        let gradient = crate::alphacode_tui::tui::brand_ux::BrandTheme::gradient();
         frame.render_widget(
-            Paragraph::new(Line::from(Span::styled(
-                truncate_display(hint, area.width.saturating_sub(1) as usize),
-                Style::default().fg(rgb(120, 120, 150)).italic(),
-            ))),
+            Paragraph::new(Line::from(vec![
+                Span::styled(" ", Style::default()),
+                Span::styled(
+                    truncate_display(hint, area.width.saturating_sub(1) as usize),
+                    Style::default().fg(gradient[3]).add_modifier(Modifier::ITALIC), // sky blue hint
+                ),
+            ])),
             hint_area,
         );
     }
@@ -446,11 +453,13 @@ pub(super) fn draw_inline_interactive(frame: &mut Frame, app: &dyn TuiState, are
         width: outer_width as u16,
         height: area.height.saturating_sub(hint_rows),
     };
+    // Gradient-colored border for the model picker for a premium look
+    let gradient = crate::alphacode_tui::tui::brand_ux::BrandTheme::gradient();
     let block = Block::default()
         .borders(Borders::ALL)
         .border_type(BorderType::Rounded)
-        .border_style(Style::default().fg(rgb(85, 85, 110)))
-        .style(Style::default().bg(rgb(18, 18, 26)));
+        .border_style(Style::default().fg(gradient[4])) // teal accent border
+        .style(Style::default().bg(rgb(16, 16, 24))); // slightly darker bg for contrast
     frame.render_widget(block.clone(), render_area);
 
     let inner = block.inner(render_area);
@@ -652,22 +661,23 @@ pub(super) fn draw_inline_interactive(frame: &mut Frame, app: &dyn TuiState, are
             }) => Some(rgb(150, 190, 255)),
             _ => None,
         };
+        // Gradient-colored model name styling based on state
         let primary_style = if unavailable {
             Style::default().fg(rgb(80, 80, 80))
         } else if is_row_selected && col == 0 {
-            Style::default().fg(Color::White).bg(rgb(60, 60, 80)).bold()
+            Style::default().fg(Color::White).bg(rgb(50, 55, 75)).bold()
         } else if let Some(color) = account_action_color {
             Style::default().fg(color).bold()
         } else if entry.is_current {
-            Style::default().fg(accent_color())
+            Style::default().fg(gradient[5]).add_modifier(Modifier::BOLD) // teal for current
         } else if entry.is_favorite {
-            Style::default().fg(rgb(255, 160, 210)).bold()
+            Style::default().fg(gradient[12]).add_modifier(Modifier::BOLD) // rose for favorites
         } else if entry.recommended {
-            Style::default().fg(rgb(255, 220, 120))
+            Style::default().fg(gradient[9]) // amber for recommended
         } else if entry.old {
             Style::default().fg(rgb(120, 120, 130))
         } else {
-            Style::default().fg(rgb(200, 200, 220))
+            Style::default().fg(rgb(210, 215, 230)) // brighter default text
         };
 
         if is_account_picker {
@@ -804,12 +814,29 @@ pub(super) fn draw_inline_interactive(frame: &mut Frame, app: &dyn TuiState, are
         };
         let pw = provider_width.saturating_sub(1);
         let provider_display = format!(" {}", pad_left_display(provider_label.as_str(), pw));
+        // Provider-aware gradient coloring: different providers get different hues
+        let provider_lower = provider_label.to_lowercase();
+        let provider_color = if provider_lower.contains("anthropic") || provider_lower.contains("claude") {
+            gradient[2] // blue for Anthropic
+        } else if provider_lower.contains("openai") || provider_lower.contains("gpt") {
+            gradient[7] // green for OpenAI
+        } else if provider_lower.contains("gmi") {
+            gradient[4] // teal for GMI Cloud
+        } else if provider_lower.contains("openrouter") {
+            gradient[14] // purple for OpenRouter
+        } else if provider_lower.contains("gemini") {
+            gradient[9] // amber for Gemini
+        } else if provider_lower.contains("copilot") {
+            gradient[11] // peach for Copilot
+        } else {
+            rgb(140, 180, 255) // default blue
+        };
         let provider_style = if unavailable {
             Style::default().fg(rgb(80, 80, 80))
         } else if is_row_selected && col == 1 {
             Style::default().fg(Color::White).bg(rgb(60, 60, 80)).bold()
         } else {
-            Style::default().fg(rgb(140, 180, 255))
+            Style::default().fg(provider_color)
         };
 
         let via_raw = route

@@ -235,9 +235,11 @@ pub fn render_markdown_with_width(text: &str, max_width: Option<usize>) -> Vec<L
                 if let Some(url) = link_targets.pop()
                     && !url.is_empty()
                 {
+                    // Gradient-colored URL display for links
+                    let gradient = crate::alphacode_tui::tui::brand_ux::BrandTheme::gradient();
                     current_spans.push(Span::styled(
                         format!(" ({})", url),
-                        Style::default().fg(md_dim_color()),
+                        Style::default().fg(gradient[3]).add_modifier(Modifier::DIM), // sky blue for URLs
                     ));
                 }
             }
@@ -475,26 +477,44 @@ pub fn render_markdown_with_width(text: &str, max_width: Option<usize>) -> Vec<L
                         highlight_code_cached(&code_block_content, code_block_lang.as_deref());
 
                     let lang_label = code_block_lang.as_deref().unwrap_or("");
-                    // Add header
-                    lines.push(
-                        Line::from(Span::styled(
-                            format!("┌─ {} ", lang_label),
-                            Style::default().fg(md_dim_color()),
-                        ))
-                        .left_aligned(),
-                    );
+                    // Gradient-colored code block frame
+                    let gradient = crate::alphacode_tui::tui::brand_ux::BrandTheme::gradient();
+                    let frame_color = if lang_label.is_empty() {
+                        md_dim_color()
+                    } else {
+                        gradient[5] // teal for code blocks with language
+                    };
+                    // Add header with gradient accent
+                    if lang_label.is_empty() {
+                        lines.push(
+                            Line::from(Span::styled(
+                                format!("┌─ ┌─ "),
+                                Style::default().fg(md_dim_color()),
+                            ))
+                            .left_aligned(),
+                        );
+                    } else {
+                        lines.push(
+                            Line::from(vec![
+                                Span::styled("┌─ ", Style::default().fg(frame_color).add_modifier(Modifier::DIM)),
+                                Span::styled(lang_label.to_string(), Style::default().fg(frame_color).add_modifier(Modifier::BOLD)),
+                                Span::styled(" ", Style::default().fg(frame_color).add_modifier(Modifier::DIM)),
+                            ])
+                            .left_aligned(),
+                        );
+                    }
 
                     // Add code lines
                     for hl_line in highlighted {
                         let mut spans =
-                            vec![Span::styled("│ ", Style::default().fg(md_dim_color()))];
+                            vec![Span::styled("│ ", Style::default().fg(frame_color).add_modifier(Modifier::DIM))];
                         spans.extend(hl_line.spans);
                         lines.push(Line::from(spans).left_aligned());
                     }
 
                     // Add footer
                     lines.push(
-                        Line::from(Span::styled("└─", Style::default().fg(md_dim_color())))
+                        Line::from(Span::styled("└─", Style::default().fg(frame_color).add_modifier(Modifier::DIM)))
                             .left_aligned(),
                     );
                 }
@@ -854,7 +874,13 @@ pub fn render_markdown_with_width(text: &str, max_width: Option<usize>) -> Vec<L
                 } else {
                     "• ".to_string()
                 };
-                current_spans.push(Span::styled(marker, Style::default().fg(md_dim_color())));
+                // Gradient-colored list markers for a premium look
+                let marker_color = if marker.contains("·") {
+                    rgb(100, 180, 120) // green for bullets
+                } else {
+                    rgb(180, 150, 255) // purple for numbered items
+                };
+                current_spans.push(Span::styled(marker, Style::default().fg(marker_color)));
             }
             Event::End(TagEnd::Item) => {
                 flush_current_line_with_alignment(

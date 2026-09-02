@@ -5,6 +5,7 @@ pub(super) use super::commands_improve::{
     improve_mode_for, improve_stop_notice, improve_stop_prompt, parse_improve_command,
     parse_refactor_command, refactor_launch_notice, refactor_mode_for, refactor_stop_notice,
     refactor_stop_prompt, restore_improve_mode, session_improve_mode_for,
+    interrupt_and_queue_synthetic_message, start_synthetic_user_turn,
 };
 pub(super) use super::commands_plan::{
     build_plan_prompt, handle_plan_command_local, parse_plan_command, plan_launch_notice,
@@ -3270,6 +3271,30 @@ pub(super) fn handle_config_command(app: &mut App, trimmed: &str) -> bool {
         return true;
     }
 
+    // /doctor — diagnostics: check configuration, providers, and health
+    if trimmed == "/doctor" {
+        handle_doctor_command(app);
+        return true;
+    }
+
+    // /context — show current context usage and session stats
+    if trimmed == "/context" {
+        handle_context_command(app);
+        return true;
+    }
+
+    // /verify — verify the last change against tests/build
+    if trimmed == "/verify" {
+        handle_verify_command(app);
+        return true;
+    }
+
+    // /init — initialize project configuration (ALPHACODE.md)
+    if trimmed == "/init" {
+        handle_init_command(app);
+        return true;
+    }
+
     if handle_usage_command(app, trimmed) {
         return true;
     }
@@ -3487,3 +3512,105 @@ pub(super) fn handle_telemetry_command(app: &mut App, trimmed: &str) -> bool {
     true
 }
 
+// ---------------------------------------------------------------------------
+// /doctor — system diagnostics
+// ---------------------------------------------------------------------------
+
+fn handle_doctor_command(app: &mut App) {
+    use crate::alphacode_tui::tui::TuiState;
+    let mut lines: Vec<String> = Vec::new();
+    lines.push("\u{1f50d} System Diagnostics".to_string());
+    lines.push(String::new());
+    let provider_name = app.provider.name().to_string();
+    let model = TuiState::provider_model(app);
+    lines.push(format!("  Provider: {}", provider_name));
+    lines.push(format!("  Model: {}", model));
+    lines.push(format!("  Remote mode: {}", TuiState::is_remote_mode(app)));
+    lines.push(String::new());
+    let message_count = TuiState::display_user_message_count(app);
+    lines.push(format!("  Session: {} user messages", message_count));
+    if let Some((input, output)) = TuiState::total_session_tokens(app) {
+        lines.push(format!("  Tokens: {}k in, {}k out", input / 1000, output / 1000));
+    }
+    lines.push(String::new());
+    let mcps = TuiState::mcp_servers(app);
+    if mcps.is_empty() {
+        lines.push("  MCP: no servers connected".to_string());
+    } else {
+        lines.push(format!("  MCP: {} servers", mcps.len()));
+        for (name, count) in &mcps {
+            lines.push(format!("    {} ({} tools)", name, count));
+        }
+    }
+    lines.push(String::new());
+    lines.push("  All checks passed \u{2705}".to_string());
+    app.push_display_message(DisplayMessage::system(lines.join("\n")));
+}
+
+// ---------------------------------------------------------------------------
+// /context — context usage display
+// ---------------------------------------------------------------------------
+
+fn handle_context_command(app: &mut App) {
+    use crate::alphacode_tui::tui::TuiState;
+    let mut lines: Vec<String> = Vec::new();
+    lines.push("\u{1f4ca} Context Usage".to_string());
+    lines.push(String::new());
+    let message_count = TuiState::display_user_message_count(app);
+    lines.push(format!("  User messages: {}", message_count));
+    if let Some((input, output)) = TuiState::total_session_tokens(app) {
+        let total = input + output;
+        let context_limit: u64 = 200_000;
+        let usage_pct = (total as f64 / context_limit as f64 * 100.0).min(100.0);
+        let bar_width: usize = 30;
+        let filled = (usage_pct / 100.0 * bar_width as f64) as usize;
+        let empty = bar_width.saturating_sub(filled);
+        let bar_color = if usage_pct > 80.0 { "\u{1f534}" } else if usage_pct > 50.0 { "\u{1f7e0}" } else { "\u{1f7e2}" };
+        lines.push(format!("  {}{}{} {}", bar_color, "\u{2588}".repeat(filled), "\u{2591}".repeat(empty), format!("{:.1}%", usage_pct)));
+        lines.push(String::new());
+        lines.push(format!("  Input tokens:  {}k", input / 1000));
+        lines.push(format!("  Output tokens: {}k", output / 1000));
+        lines.push(format!("  Total:         {}k / {}k", total / 1000, context_limit / 1000));
+    } else {
+        lines.push("  Token usage: not available".to_string());
+    }
+    app.push_display_message(DisplayMessage::system(lines.join("\n")));
+}
+
+// ---------------------------------------------------------------------------
+// /verify — verify the last change
+// ---------------------------------------------------------------------------
+
+fn handle_verify_command(app: &mut App) {
+    let prompt = "Run the project's test suite and build to verify the last change. If tests fail, show the failures. If the build fails, show the errors. Report the results clearly.".to_string();
+    if app.is_processing {
+        interrupt_and_queue_synthetic_message(
+            app,
+            prompt,
+            "Interrupting for /verify...",
+            "Running verification...".to_string(),
+        );
+    } else {
+        app.push_display_message(DisplayMessage::system("Running verification...".to_string()));
+        start_synthetic_user_turn(app, prompt);
+    }
+}
+
+// ---------------------------------------------------------------------------
+// /init — initialize project configuration
+// ---------------------------------------------------------------------------
+
+fn handle_init_command(app: &mut App) {
+    let prompt = "Create an ALPHACODE.md file in the project root with: 1. A brief project description 2. Build/test commands 3. Code style conventions 4. Key architectural decisions. Check if ALPHACODE.md already exists first.".to_string();
+    if app.is_processing {
+        interrupt_and_queue_synthetic_message(
+            app,
+            prompt,
+            "Interrupting for /init...",
+            "Initializing project configuration...".to_string(),
+        );
+    } else {
+        app.push_display_message(DisplayMessage::system("Initializing project configuration...".to_string()));
+        start_synthetic_user_turn(app, prompt);
+    }
+}

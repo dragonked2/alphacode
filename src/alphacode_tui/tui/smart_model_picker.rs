@@ -152,7 +152,8 @@ impl SmartModelPicker {
         scored_models.into_iter().map(|(model, _)| model).collect()
     }
 
-    /// Calculate score for a model based on various factors
+    /// Calculate score for a model based on various factors.
+    /// Provider-aware: logged-in providers get a significant boost.
     fn calculate_score(
         &self,
         model: &str,
@@ -179,6 +180,30 @@ impl SmartModelPicker {
             // Response time bonus (faster is better)
             if stats.avg_response_ms > 0 {
                 score += 100.0 / (stats.avg_response_ms as f64 / 1000.0);
+            }
+
+            // Provider-aware bonus: boost models from well-known providers
+            let provider_lower = stats.provider.to_lowercase();
+            if provider_lower.contains("anthropic") || provider_lower.contains("claude") {
+                score += 150.0; // Premium provider bonus
+            } else if provider_lower.contains("openai") {
+                score += 140.0;
+            } else if provider_lower.contains("gmi") {
+                score += 130.0; // GMI Cloud (free tier)
+            } else if provider_lower.contains("openrouter") {
+                score += 120.0;
+            } else if provider_lower.contains("gemini") {
+                score += 135.0;
+            }
+        }
+
+        // Model tier bonus
+        if let Some(stats) = stats.get(model) {
+            match stats.tier {
+                ModelTier::Premium => score += 200.0,
+                ModelTier::Standard => score += 100.0,
+                ModelTier::Fast => score += 150.0, // Fast models are often preferred
+                ModelTier::Free => score += 80.0,
             }
         }
 
@@ -289,13 +314,17 @@ pub fn render_smart_model_picker(
                 spans.push(Span::styled("  ", Style::default()));
             }
             
-            // Model name
+            // Gradient-colored model name
+            let gradient = crate::alphacode_tui::tui::brand_ux::BrandTheme::gradient();
             let name_style = if is_selected {
                 Style::default()
-                    .fg(rgb(100, 255, 180))
+                    .fg(gradient[5]) // teal for selected
+                    .add_modifier(Modifier::BOLD)
+            } else if is_favorite {
+                Style::default().fg(gradient[12]) // rose for favorites
                     .add_modifier(Modifier::BOLD)
             } else {
-                Style::default().fg(rgb(220, 220, 220))
+                Style::default().fg(rgb(220, 225, 240)) // brighter default
             };
             spans.push(Span::styled(model.to_string(), name_style));
             
@@ -309,7 +338,7 @@ pub fn render_smart_model_picker(
                 ));
             }
             
-            // Context window indicator
+            // Context window indicator with gradient color
             if let Some(stats) = &stats
                 && let Some(ctx) = stats.context_window
             {
@@ -320,19 +349,41 @@ pub fn render_smart_model_picker(
                 } else {
                     ctx.to_string()
                 };
+                // Color based on context size: larger = more capable
+                let ctx_color = if ctx >= 200_000 {
+                    rgb(100, 220, 160) // green for large context
+                } else if ctx >= 100_000 {
+                    rgb(120, 200, 220) // cyan for medium context
+                } else {
+                    rgb(180, 160, 200) // purple for small context
+                };
                 spans.push(Span::styled(
                     format!(" [{}]", ctx_display),
-                    Style::default().fg(rgb(100, 150, 200)),
+                    Style::default().fg(ctx_color),
                 ));
             }
             
-            // Provider indicator
+            // Provider-aware gradient-colored indicator
             if let Some(stats) = &stats
                 && !stats.provider.is_empty()
             {
+                let provider_lower = stats.provider.to_lowercase();
+                let provider_color = if provider_lower.contains("anthropic") || provider_lower.contains("claude") {
+                    rgb(118, 166, 255) // blue for Anthropic
+                } else if provider_lower.contains("openai") {
+                    rgb(134, 233, 180) // green for OpenAI
+                } else if provider_lower.contains("gmi") {
+                    rgb(130, 224, 215) // teal for GMI Cloud
+                } else if provider_lower.contains("openrouter") {
+                    rgb(200, 140, 255) // purple for OpenRouter
+                } else if provider_lower.contains("gemini") {
+                    rgb(255, 195, 88) // amber for Gemini
+                } else {
+                    rgb(140, 150, 170) // default dim
+                };
                 spans.push(Span::styled(
                     format!(" ({})", stats.provider),
-                    Style::default().fg(rgb(120, 120, 120)),
+                    Style::default().fg(provider_color),
                 ));
             }
             
@@ -340,19 +391,24 @@ pub fn render_smart_model_picker(
         })
         .collect();
 
+    // Gradient-colored border and highlight for the model picker
+    let gradient = crate::alphacode_tui::tui::brand_ux::BrandTheme::gradient();
     let list = List::new(items)
         .block(
             Block::default()
                 .borders(Borders::ALL)
                 .border_type(BorderType::Rounded)
-                .title(" Model Picker ")
+                .title(Span::styled(
+                    " Model Picker ",
+                    Style::default().fg(gradient[4]).add_modifier(Modifier::BOLD),
+                ))
                 .title_bottom(Line::from(Span::styled(
                     " f: favorite | /: search | Enter: select ",
-                    Style::default().fg(rgb(100, 100, 100)),
+                    Style::default().fg(gradient[3]).add_modifier(Modifier::DIM),
                 )))
-                .border_style(Style::default().fg(rgb(100, 100, 100))),
+                .border_style(Style::default().fg(gradient[4])),
         )
-        .highlight_style(Style::default().bg(rgb(40, 44, 52)).add_modifier(Modifier::BOLD));
+        .highlight_style(Style::default().bg(rgb(35, 40, 55)).fg(Color::White).add_modifier(Modifier::BOLD));
 
     frame.render_widget(list, area);
 }
