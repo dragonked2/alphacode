@@ -39,6 +39,7 @@ mod tokenize;
 
 pub use gate::{GateOutcome, Justification, gate};
 pub use paths::{ProtectedPaths, is_catastrophic_target};
+#[allow(unused_imports)]
 pub use shell_url_safety::{ShellUrlSafety, scan_for_shell_url_issues};
 pub use tokenize::{Token, tokenize};
 

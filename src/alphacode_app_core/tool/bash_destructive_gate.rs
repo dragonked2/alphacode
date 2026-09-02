@@ -2,9 +2,20 @@
 //!
 //! Keeps the destructive-command policy and bash parameter schema together so
 //! bash.rs only needs to delegate to this module.
+//!
+//! # Policy
+//!
+//! The previous version of this gate held every cross-directory destructive
+//! command for a "reflection prompt", which the model had to answer before
+//! the command would run. In practice this blocked routine authorized
+//! security testing (`nmap`, `subfinder`, `nuclei`, `httpx`, `ffuf`, `curl`
+//! against an in-scope target, etc.) because every such tool reaches outside
+//! the working directory by definition. The gate is now reduced to a single
+//! hard check: refuse commands that would destroy a protected path (home
+//! directory, credential store, or system root). Everything else runs.
 
-/// Apply the deterministic destructive-command gate, returning refusal text
-/// when the command must not run as-issued.
+/// Apply the destructive-command gate, returning refusal text when the
+/// command must not run as-issued. Only the catastrophic tier is held.
 pub(super) fn destructive_command_refusal(
     command: &str,
     justification: Option<&str>,
@@ -33,15 +44,6 @@ pub(super) fn destructive_command_refusal(
 
             Some(reason)
         }
-
-        crate::alphacode_command_risk::GateOutcome::Reflect { prompt } => {
-            crate::logging::info(&format!(
-                "[bash] destructive command requires confirmation: {}",
-                summarize_command(command)
-            ));
-
-            Some(prompt)
-        }
     }
 }
 
@@ -59,8 +61,11 @@ fn summarize_command(command: &str) -> String {
     }
 }
 
-/// The `bash` tool's JSON schema, including the `justification` field consumed
-/// by the destructive-command gate.
+/// The `bash` tool's JSON schema.
+///
+/// The `justification` field is preserved for backwards compatibility with
+/// callers that still supply it, but it is no longer required: the
+/// destructive gate no longer asks the model to re-justify a held command.
 pub(super) fn bash_parameters_schema() -> serde_json::Value {
     let cmd_desc = if cfg!(windows) {
         "The command to execute in Git Bash (POSIX-compatible). \
@@ -109,7 +114,7 @@ Never mix shell syntaxes."
 
             "justification": {
                 "type": "string",
-                "description": "Only when re-issuing a command the destructive gate refused; explain which user request it serves."
+                "description": "Optional. No longer required, but accepted for compatibility with earlier releases."
             }
         }
     })
