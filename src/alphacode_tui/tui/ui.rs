@@ -14,6 +14,7 @@ use super::ui_diff::{
     DiffLineKind, ParsedDiffLine, collect_diff_lines, diff_add_color, diff_change_counts_for_tool,
     diff_del_color, generate_diff_lines_from_tool_input, tint_span_with_diff_color,
 };
+use super::ui_error_toast as error_toast;
 use super::visual_debug::{
     self, FrameCaptureBuilder, ImageRegionCapture, InfoWidgetCapture, MarginsCapture,
     MessageCapture, RenderTimingCapture,
@@ -3495,6 +3496,11 @@ fn draw_inner(frame: &mut Frame, app: &dyn TuiState) {
     // Ctrl+R reverse prompt-history search overlay (drawn after the command
     // palette so it wins when both could be visible).
     input_ui::draw_prompt_history_search_overlay(frame, app, chunks[7]);
+
+    // Error / warning / info toasts. Drawn last so they float above every
+    // other overlay. Anchored to the bottom-right of the frame so they
+    // sit above the input box but stay out of the way of the transcript.
+    error_toast::draw(frame, frame.area());
 
     // Observe the rendered messages area for the anchor-stability (smoothness)
     // report. Runs on the final buffer so it sees exactly what the user sees.
