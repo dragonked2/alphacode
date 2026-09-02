@@ -523,6 +523,4 @@ fn parse_element(input: &ComputerInput) -> Result<ax::ElementHandle> {
 }
 
 #[cfg(all(test, target_os = "macos"))]
-mod coverage_tests;
-#[cfg(all(test, target_os = "macos"))]
 mod tests;

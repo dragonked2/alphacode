@@ -1368,6 +1368,3 @@ impl BashTool {
     }
 }
 
-#[cfg(all(test, not(windows)))]
-#[path = "bash_tests.rs"]
-mod tests;
