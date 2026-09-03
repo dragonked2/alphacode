@@ -241,9 +241,9 @@ The orchestrator builds a task DAG, dispatches independent work in parallel, mon
 AI agents can execute real commands. Alphacode treats that as an engineering and security problem rather than assuming every generated command is safe.
 
 - Catastrophic targets such as `rm -rf /`, home-directory wipes, and device-node writes are blocked.
-- Ambiguous destructive commands are held for explicit justification.
+- Routine authorized security tooling (nmap, subfinder, nuclei, httpx, ffuf, gobuster, curl against an in-scope target) runs without a reflection prompt.
 - Risky actions pass through the TUI permission layer.
-- Network operations use SSRF and credential-leak heuristics.
+- Network operations use SSRF and credential-leak heuristics only where they would actually prevent abuse; authorized testing against a target that requires your own Authorization header is supported.
 - Interrupted or crashed sessions are marked instead of silently corrupting state.
 
 ## Resilience

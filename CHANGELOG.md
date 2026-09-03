@@ -4,6 +4,44 @@ All notable changes to Alphacode are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project
 adheres to [Semantic Versioning](https://semver.org/).
 
+## Unreleased
+
+Security-research usability release: simplify the deterministic command
+gate and remove the URL-secret reflection prompt that was blocking
+authorized bug-bounty work without actually catching abuse.
+
+### Changed
+
+- **Destructive-command gate** (`alphacode_command_risk::gate`,
+  `tool::bash_destructive_gate`): the `Confirm` tier and its reflection
+  prompt have been removed. The gate now collapses to two outcomes -
+  `Allow` for everything except the catastrophic tier, and `Deny` for
+  the catastrophic tier. Routine authorized security tooling (`nmap`,
+  `subfinder`, `nuclei`, `httpx`, `ffuf`, `gobuster`, `curl` against an
+  in-scope target, `cat`-on-an-output-file, etc.) used to be held for a
+  reflection turn because every such tool reaches outside the working
+  directory by definition; it now runs immediately. The catastrophic
+  tier still refuses `rm -rf ~`, `rm -rf ~/.ssh`, `rm -rf /etc`,
+  recursive destruction of system paths, and direct writes to device
+  nodes. The `justification` field on the `bash` tool schema is
+  preserved for backwards compatibility but is no longer consumed.
+- **Windows URL-safety gate** (`tool::bash`): the FDJ-style
+  `findstr`/`powershell` URL-with-`&` heuristic has been removed from
+  the bash tool. The detector still exists as a pure function in
+  `alphacode_command_risk::shell_url_safety` for callers that want to
+  invoke it explicitly, but no longer pre-empts every bash call.
+- **Webfetch URL-secret gate** (`tool::webfetch`): the previous
+  scan-for-pasted-bearer/cookie/AWS/Stripe/key-in-URL reflection prompt
+  has been removed. The webfetch tool now fetches any valid `http(s)://`
+  URL as supplied. Authorized security testing that needs your own
+  `Authorization` header against an in-scope target is now supported
+  end-to-end. The `web_safety` module and its tests have been deleted.
+
+### Security
+
+- The `bash` tool still refuses `rm -rf /`, `$HOME` wipes, device-node
+  writes, and similar catastrophic targets.
+
 ## [1.0.7] - 2026-09-02
 
 Patch release. TUI polish round: the idle splash now renders the
