@@ -45,6 +45,7 @@ pub(crate) use redraw_schedule::{
     periodic_redraw_required_excluding_idle_animation, redraw_interval,
     redraw_interval_with_policy,
 };
+pub mod keymap_overview;
 mod remote_diff;
 pub mod screenshot;
 pub(crate) mod session_facts;
@@ -55,6 +56,8 @@ pub mod test_harness;
 pub mod theme_detect;
 mod ui;
 mod ui_diff;
+pub mod ui_error_toast;
+pub mod ui_frame_chrome;
 pub(crate) mod ui_todo_suppress;
 pub mod usage_overlay;
 pub mod visual_debug;

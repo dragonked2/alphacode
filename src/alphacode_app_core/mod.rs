@@ -29,6 +29,7 @@ pub mod ambient_runner;
 pub mod ambient_scheduler;
 pub mod autonomous;
 pub mod bounded;
+pub mod bugbounty_doctor;
 pub mod build;
 pub mod catchup;
 pub mod channel;

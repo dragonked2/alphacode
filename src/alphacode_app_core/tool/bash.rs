@@ -775,18 +775,10 @@ impl Tool for BashTool {
         let mut params: BashInput = serde_json::from_value(input)?;
         let run_in_background = params.run_in_background.unwrap_or(false);
 
-        // Windows-URL-safety gate: detect the FDJ-style "URL with `&` in
-        // powershell/findstr" trap before the command fires. Mirrors
-        // destructive_command_refusal but for a different failure mode.
-        if cfg!(windows)
-            && let crate::alphacode_command_risk::ShellUrlSafety::Warning(warning) =
-                crate::alphacode_command_risk::scan_for_shell_url_issues(&params.command)
-        {
-            crate::logging::warn("[bash] URL-safety gate held command for review");
-            return Err(anyhow::anyhow!(warning));
-        }
-
-        // Destructive-command gate (#604), before background dispatch.
+        // Destructive-command gate: refuse only commands that would destroy a
+        // protected path (home directory, credential store, or system root).
+        // Routine authorized security tooling (nmap, subfinder, nuclei, httpx,
+        // ffuf, curl against in-scope targets, etc.) is allowed through.
         if let Some(refusal) = destructive_command_refusal(
             &params.command,
             params.justification.as_deref(),

@@ -554,19 +554,9 @@ fn format_goal_markdown(goals: &[crate::todo::TodoGoal], group: Option<&str>) ->
 }
 
 /// Plan-level intent lines, shown once for the whole todo list.
-fn format_plan_markdown(plan: &crate::todo::TodoPlan) -> String {
-    let mut markdown = String::new();
-    if let Some(intention) = plan
-        .user_intention
-        .as_deref()
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-    {
-        markdown.push_str(&format!("- User intention: {}\n", intention));
-    }
-    if let Some(score) = plan.understands_user_intent {
-        markdown.push_str(&format!("- Understands user intent: **{}%**\n", score));
-    }
+fn format_plan_markdown(_plan: &crate::todo::TodoPlan) -> String {
+    let markdown = String::new();
+    // Intention and intent-score are internal plan metadata, not user-facing.
     markdown
 }
 

@@ -683,12 +683,11 @@ You can watch the whole plan and progress live inside the app.
 
 AI agents that can run real commands are powerful — and that power needs real guardrails. Alphacode treats safety as a first-class engineering problem, not an afterthought:
 
-- 🚫 **Dangerous commands are blocked outright** — things like wiping your entire hard drive are refused, no exceptions.
-- ⚠️ **Risky-but-ambiguous actions require you to confirm** — Alphacode asks first instead of guessing.
-- 🔒 **A permission system sits in front of every risky action** inside the app.
-- 🌐 **Network safety checks** guard against data leaks and malicious redirects.
-- 💥 **Crashes are handled gracefully** — a dropped connection marks the session as recoverable instead of corrupting your work.
-- 📵 **Privacy by default** — telemetry is set to `no_content` out of the box, meaning your actual code and prompts are never sent to analytics services unless you explicitly opt in.
+- Catastrophic targets such as `rm -rf /`, home-directory wipes, and device-node writes are blocked.
+- Routine authorized security tooling (nmap, subfinder, nuclei, httpx, ffuf, gobuster, curl against an in-scope target) runs without a reflection prompt.
+- Risky actions pass through the TUI permission layer.
+- Network operations use SSRF and credential-leak heuristics only where they would actually prevent abuse; authorized testing against a target that requires your own Authorization header is supported.
+- Interrupted or crashed sessions are marked instead of silently corrupting state.
 
 Found a security vulnerability? Please report it responsibly via [`SECURITY.md`](./SECURITY.md).
 

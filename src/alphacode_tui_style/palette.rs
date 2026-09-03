@@ -110,6 +110,15 @@ pub enum Role {
     TodoDone,
     /// Todo pending.
     TodoPending,
+    /// Active modal/panel border. Brighter than `Border` so a focused
+    /// surface pops. Added for the widget-chrome unification pass.
+    PanelBorder,
+    /// Inactive modal/panel border. Slightly dimmer than `Border`. Used
+    /// by surfaces that show a frame when not the current focus.
+    PanelBorderMuted,
+    /// Mid-brightness secondary text, between `Dim` and `AiText`. Used by
+    /// login/session/smart-model pickers for hint lines and tip text.
+    MutedText,
 }
 
 /// All roles, in declaration order. Used by `/colors` listings and harmony
@@ -154,6 +163,9 @@ pub const ALL_ROLES: &[Role] = &[
     Role::Memory,
     Role::TodoDone,
     Role::TodoPending,
+    Role::PanelBorder,
+    Role::PanelBorderMuted,
+    Role::MutedText,
 ];
 
 impl Role {
@@ -199,6 +211,9 @@ impl Role {
             Role::Memory => "memory",
             Role::TodoDone => "todo_done",
             Role::TodoPending => "todo_pending",
+            Role::PanelBorder => "panel_border",
+            Role::PanelBorderMuted => "panel_border_muted",
+            Role::MutedText => "muted_text",
         }
     }
 
@@ -254,6 +269,14 @@ impl Role {
             Role::Memory => (205, 168, 255),
             Role::TodoDone => (108, 230, 158),
             Role::TodoPending => (255, 195, 88),
+            // These three were reverse-engineered from off-palette literals
+            // that pre-existed in `login_picker.rs`, `session_picker.rs`,
+            // and `smart_model_picker.rs`. Values chosen to match the
+            // historical look byte-for-byte so widget migration is a no-op
+            // visual change for users without a custom palette.
+            Role::PanelBorder => (110, 175, 155),
+            Role::PanelBorderMuted => (75, 82, 100),
+            Role::MutedText => (130, 140, 160),
         }
     }
 
