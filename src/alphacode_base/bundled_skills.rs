@@ -93,6 +93,38 @@ pub(super) const BUNDLED_SKILLS: &[BundledSkill] = &[BundledSkill {
             "web3-audit",
             include_str!("bundled_skills/bugbounty/web3-audit/SKILL.md"),
         ),
+        (
+            "pentest-ops",
+            include_str!("bundled_skills/bugbounty/pentest-ops/SKILL.md"),
+        ),
+        (
+            "knowledge-broker",
+            include_str!("bundled_skills/bugbounty/knowledge-broker/SKILL.md"),
+        ),
+        (
+            "findings-lifecycle",
+            include_str!("bundled_skills/bugbounty/findings-lifecycle/SKILL.md"),
+        ),
+        (
+            "evidence-locker",
+            include_str!("bundled_skills/bugbounty/evidence-locker/SKILL.md"),
+        ),
+        (
+            "tool-doctor",
+            include_str!("bundled_skills/bugbounty/tool-doctor/SKILL.md"),
+        ),
+        (
+            "runbook",
+            include_str!("bundled_skills/bugbounty/runbook/SKILL.md"),
+        ),
+        (
+            "network-cloud-triage",
+            include_str!("bundled_skills/bugbounty/network-cloud-triage/SKILL.md"),
+        ),
+        (
+            "redteam-ops",
+            include_str!("bundled_skills/bugbounty/redteam-ops/SKILL.md"),
+        ),
     ],
 }];
 

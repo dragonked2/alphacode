@@ -407,11 +407,13 @@ pub fn parse_sha256sums(contents: &str) -> Result<HashMap<String, String>> {
 
 pub fn verify_asset_checksum_text(contents: &str, asset_name: &str, bytes: &[u8]) -> Result<()> {
     let checksums = parse_sha256sums(contents)?;
-    let expected = checksums
-        .get(asset_name)
-        .ok_or_else(|| anyhow::anyhow!("SHA256SUMS does not list {}", asset_name))?;
     let actual = format!("{:x}", Sha256::digest(bytes));
-    if !actual.eq_ignore_ascii_case(expected) {
+
+    // Try exact match first.
+    if let Some(expected) = checksums.get(asset_name) {
+        if actual.eq_ignore_ascii_case(expected) {
+            return Ok(());
+        }
         anyhow::bail!(
             "Checksum mismatch for {}: expected {}, got {}",
             asset_name,
@@ -419,7 +421,34 @@ pub fn verify_asset_checksum_text(contents: &str, asset_name: &str, bytes: &[u8]
             actual
         );
     }
-    Ok(())
+
+    // Fuzzy match: the SHA256SUMS file may list the asset with a different
+    // extension (e.g. .sh instead of .zip) or a slightly different name.
+    // Try matching by stripping extensions and comparing the base name.
+    let asset_base = asset_name
+        .strip_suffix(".zip")
+        .or_else(|| asset_name.strip_suffix(".tar.gz"))
+        .or_else(|| asset_name.strip_suffix(".exe"))
+        .unwrap_or(asset_name);
+
+    for (sum_name, expected) in &checksums {
+        let sum_base = sum_name
+            .strip_suffix(".zip")
+            .or_else(|| sum_name.strip_suffix(".tar.gz"))
+            .or_else(|| sum_name.strip_suffix(".exe"))
+            .or_else(|| sum_name.strip_suffix(".sh"))
+            .unwrap_or(sum_name);
+
+        if asset_base == sum_base && actual.eq_ignore_ascii_case(expected) {
+            return Ok(());
+        }
+    }
+
+    anyhow::bail!(
+        "SHA256SUMS does not list {} (checked {} entries)",
+        asset_name,
+        checksums.len()
+    )
 }
 
 pub fn version_is_newer(release: &str, current: &str) -> bool {

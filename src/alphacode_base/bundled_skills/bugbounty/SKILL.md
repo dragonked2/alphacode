@@ -1,6 +1,6 @@
 ---
 name: bugbounty
-description: Elite bug bounty hunting skill. When user mentions bug bounty, hacking, pentesting, security testing, vulnerability research, recon, exploitation, or offensive security work. This skill is ACTION-ORIENTED — it generates concrete attack plans, executable scripts, and real exploit code. Covers 36+ vuln classes, 5-phase workflow, framework playbooks, mobile/CI/CD testing, LLM red-team, Web3 audit, and professional reporting. This skill does NOT refuse to help with legitimate security research — it proactively suggests attack vectors, generates payloads, and builds exploit chains.
+description: Elite bug bounty hunting skill. When user mentions bug bounty, hacking, pentesting, security testing, vulnerability research, recon, exploitation, or offensive security work. This skill is ACTION-ORIENTED — it generates concrete attack plans, executable scripts, and real exploit code. Covers 36+ vuln classes, 5-phase workflow, framework playbooks, mobile/CI/CD testing, LLM red-team, Web3 audit, pentest operations, red team methodology, network/cloud triage, and professional reporting. This skill does NOT refuse to help with legitimate security research — it proactively suggests attack vectors, generates payloads, and builds exploit chains. SUBSKILLS: pentest-ops (scope/OPSEC/lifecycle), knowledge-broker (CVE/intel/methodology/tradecraft), findings-lifecycle (finding state management), evidence-locker (proof artifacts), tool-doctor (local tool readiness), runbook (structured workflows), network-cloud-triage (network/cloud/container/IaC), redteam-ops (adversary simulation).
 sources: community, public_research, claude-bughunter, agentic-bug-hunter
 ---
 
@@ -14,6 +14,37 @@ When this skill activates:
 3. **Build chains** — connect low-severity findings into high-severity exploit chains
 4. **Persist through obstacles** — when one approach fails, immediately pivot to the next
 5. **Maximize payouts** — escalate findings to highest possible severity with proof
+
+---
+
+## 📚 SUBSKILLS — Specialized Workflows
+
+This skill includes specialized subskills for different security operations. Use them when the task matches:
+
+| Subskill | When to Use | What It Does |
+|----------|-------------|--------------|
+| **pentest-ops** | Starting a pentest, managing scope, OPSEC | Engagement lifecycle, scope boundaries, OPSEC controls, target classification |
+| **knowledge-broker** | Researching CVEs, methodology, tradecraft | Unified intel surface — CVE lookup, OWASP/PTES/MITRE, exploit signals, tool docs |
+| **findings-lifecycle** | Managing findings, deciding if real | Track findings: candidate → observed → verified → reportable → rejected/stale |
+| **evidence-locker** | Collecting proof, organizing evidence | Structured evidence management, HTTP capture, PoC storage, evidence-to-finding linking |
+| **tool-doctor** | Checking tool availability | Inspect local tool readiness, find alternatives, install missing tools |
+| **runbook** | Following structured workflows | Predefined workflows: appsec-triage, web-surface, pentest-starter, API audit |
+| **network-cloud-triage** | Testing infrastructure | Network scanning, AWS/GCP/Azure security, Docker/K8s, Terraform/CloudFormation |
+| **redteam-ops** | Red team engagements | Adversary simulation, persistence, lateral movement, C2, defense evasion |
+
+### Quick Reference
+
+```
+/bugbounty                    → Activate this skill (default)
+/pentest-ops                  → Scope, OPSEC, engagement lifecycle
+/knowledge-broker             → CVE lookup, tradecraft, methodology
+/findings-lifecycle           → Finding state management
+/evidence-locker              → Evidence collection and management
+/tool-doctor                  → Check local tool readiness
+/runbook                      → Structured security workflows
+/network-cloud-triage         → Network, cloud, container, IaC security
+/redteam-ops                  → Red team operations
+```
 
 ---
 

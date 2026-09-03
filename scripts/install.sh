@@ -236,8 +236,12 @@ print "Installed → $BIN_DIR/alphacode"
 
 # --- Done --------------------------------------------------------------------
 
-INSTALLED_VERSION="$("$BIN_DIR/alphacode" --version 2>/dev/null || echo unknown)"
-print "Installed version: $INSTALLED_VERSION"
+INSTALLED_VERSION="$("$BIN_DIR/alphacode" version 2>/dev/null | grep '^version' | cut -f2 || echo unknown)"
+if [ "$INSTALLED_VERSION" != "unknown" ]; then
+  print "Installed version: $INSTALLED_VERSION"
+else
+  print "Installed (could not verify version)"
+fi
 
 if [ -z "${NO_PATH:-}" ] && ! command -v alphacode >/dev/null 2>&1; then
   echo

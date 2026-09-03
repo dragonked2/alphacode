@@ -184,7 +184,7 @@ impl App {
                     Self::client_maintenance_card_message(
                         action,
                         format!("installing {}", version),
-                        "alphacode will restart automatically when the update is ready.",
+                        "Extracting and installing the new binary. alphacode will restart in place when ready.",
                     ),
                 );
             }
@@ -246,8 +246,8 @@ impl App {
             action,
             Self::client_maintenance_card_message(
                 action,
-                "reloading client",
-                "The new binary is ready, so alphacode is switching over now.",
+                "reloading with new version",
+                "The update is complete. Restarting alphacode with the new version now.",
             ),
         );
         self.save_input_for_reload(&session_id);
@@ -269,17 +269,25 @@ impl App {
                 action,
                 message,
             } => {
-                if session_id != active_session_id {
+                if !session_id.is_empty() && session_id != active_session_id {
                     return;
                 }
                 self.background_client_action = Some(action);
                 self.set_status_notice(message.clone());
+                // For source builds, the message from install_main_source_update_blocking
+                // already contains phase-specific info (e.g. "Building from source...").
+                // Show it directly instead of wrapping it in a generic "Still running" card.
+                let note = if message.contains("Building") || message.contains("Cloning") || message.contains("Pulling") {
+                    "Progress updates will appear here. alphacode will restart automatically when the build finishes."
+                } else {
+                    "Still running in the background. alphacode will reload automatically when ready."
+                };
                 self.set_client_maintenance_message(
                     action,
                     Self::client_maintenance_card_message(
                         action,
                         message,
-                        "Still running in the background. alphacode will reload automatically when ready.",
+                        note,
                     ),
                 );
             }
@@ -292,14 +300,14 @@ impl App {
                 }
                 self.background_client_action = None;
                 self.pending_background_client_reload = None;
-                let message = format!("Already up to date ({})", current);
+                let message = format!("Up to date ({})", current);
                 self.set_status_notice(&message);
                 self.set_client_maintenance_message(
                     ClientMaintenanceAction::Update,
                     Self::client_maintenance_card_message(
                         ClientMaintenanceAction::Update,
-                        "already up to date",
-                        format!("Current version: `{}`", current),
+                        format!("up to date ({})", current),
+                        format!("Current version: `{}`\nNo update available.", current),
                     ),
                 );
             }
@@ -392,7 +400,7 @@ impl App {
         // Bypass `client_maintenance_card_message` (which would prepend a
         // "Status:" line) and set the card content directly.
         let content = format!(
-            "Update diverged. Press {} to let a alphacode agent merge local and upstream (or run `git pull` / `git rebase` yourself).",
+            "Update needs merge. Your local code and the upstream release have diverged.\n\nPress {} to let an agent merge them, or run `git pull` / `git rebase` manually in the alphacode repo.",
             key_label
         );
         self.set_client_maintenance_message(action, content);
