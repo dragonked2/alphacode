@@ -300,28 +300,22 @@ fn parsed_http_status(error_str: &str) -> Option<u16> {
     }
 }
 
+/// Check if an error is transient and should be retried.
+///
+/// Delegates the heavy lifting to the unified
+/// [`crate::alphacode_provider_core::retry::is_retryable_message`] classifier so
+/// every provider agrees on what counts as transient. We keep the explicit
+/// non-retryable HTTP-status list (400, 401, 402, 403, 404, 405, 406, 422, 429)
+/// because 429 is handled by the failover system rather than the in-flight
+/// retry loop.
 fn is_retryable_error(error_str: &str) -> bool {
-    // Explicit non-retryable HTTP statuses take precedence over the loose
-    // substring heuristics below. These are deterministic client-side failures
-    // (auth, billing, malformed request) where retrying is futile and just
-    // burns time/credits. 429 (rate limit) is NOT retryable here -- the
-    // failover system handles it by marking the route unavailable and trying
-    // a fallback. Retrying in the transport loop wastes extra API requests.
     if let Some(400 | 401 | 402 | 403 | 404 | 405 | 406 | 422 | 429) = parsed_http_status(error_str)
     {
         return false;
     }
-
-    crate::alphacode_provider_core::is_transient_transport_error(error_str)
-        || error_str.contains("stream error")
-        || error_str.contains("eof")
-        || error_str.contains("5")
-            && (error_str.contains("50")
-                || error_str.contains("502")
-                || error_str.contains("503")
-                || error_str.contains("504")
-                || error_str.contains("internal server error"))
-        || error_str.contains("overloaded")
+    let lower = error_str.to_ascii_lowercase();
+    crate::alphacode_provider_core::retry::is_retryable_message(&lower)
+        || lower.contains("stream error")
 }
 
 #[cfg(test)]

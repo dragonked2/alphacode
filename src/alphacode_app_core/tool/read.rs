@@ -125,7 +125,7 @@ impl Tool for ReadTool {
     }
 
     fn description(&self) -> &str {
-        "Read a file's contents. Supports text files, images (PNG/JPG/GIF/WEBP), and PDFs. Use this to inspect code, configuration, logs, or any file. For large files, use offset and limit parameters to read specific sections. Always read files before modifying them to understand the current state."
+        "Read file contents (text, images, PDFs). Use offset/limit for large files. Always read before editing."
     }
 
     fn parameters_schema(&self) -> Value {
@@ -275,25 +275,28 @@ impl Tool for ReadTool {
 
         // Add metadata
         if end < total_lines {
+            let remaining = total_lines - end;
             let continuation_hint = match range.style {
                 ReadRangeStyle::OffsetLimit => {
                     format!(
-                        "Use `offset={}` to read the next chunk.",
+                        "Use `offset={}` to continue.",
                         range.next_offset()
                     )
                 }
                 ReadRangeStyle::StartEnd => {
                     format!(
-                        "Use `start_line={}` to read the next chunk.",
+                        "Use `start_line={}` to continue.",
                         range.next_start_line()
                     )
                 }
             };
+            let size_hint = if remaining > 10000 {
+                format!("~{}k lines", remaining / 1000)
+            } else {
+                format!("{} lines", remaining)
+            };
             output.push_str(&format!(
-                "\n[Read more: {} {} lines remaining]\n{}",
-                continuation_hint,
-                total_lines - end,
-                "…".repeat(3)
+                "\n[{continuation_hint} {size_hint} remaining]",
             ));
         }
 
@@ -348,37 +351,102 @@ fn is_binary_file(path: &Path) -> bool {
 fn find_similar_files(path: &Path) -> Vec<String> {
     let parent = path.parent().unwrap_or(Path::new("."));
     let filename = path.file_name().map(|s| s.to_string_lossy().to_lowercase());
+    let target_name = match &filename {
+        Some(name) => name.clone(),
+        None => return Vec::new(),
+    };
 
     let mut suggestions = Vec::new();
 
+    // Strategy 1: exact sibling files in the same directory
     if let Ok(entries) = std::fs::read_dir(parent) {
         let mut scored: Vec<(usize, String)> = Vec::new();
         for entry in entries.filter_map(|e| e.ok()) {
             let name = entry.file_name().to_string_lossy().to_lowercase();
-            if let Some(ref target) = filename {
-                let score = if name == *target {
-                    0
-                } else if name.contains(target) || target.contains(&name) {
-                    1
-                } else {
-                    let dist = levenshtein_distance(target, &name);
-                    let max_len = target.len().max(name.len());
-                    if dist <= max_len / 3 && dist > 0 {
-                        2 + dist
-                    } else {
-                        usize::MAX
-                    }
-                };
-                if score < usize::MAX {
-                    scored.push((score, entry.path().display().to_string()));
-                }
+            let score = file_name_similarity_score(&name, &target_name);
+            if score < usize::MAX {
+                let display = entry.path().display().to_string();
+                scored.push((score, display));
             }
         }
         scored.sort_by(|a, b| a.0.cmp(&b.0));
         suggestions = scored.into_iter().take(3).map(|(_, path)| path).collect();
     }
 
+    // Strategy 2: if no sibling matches, try parent's parent (common typo)
+    if suggestions.is_empty() {
+        if let Some(grandparent) = parent.parent() {
+            if let Ok(entries) = std::fs::read_dir(grandparent) {
+                for entry in entries.filter_map(|e| e.ok()) {
+                    let name = entry.file_name().to_string_lossy().to_lowercase();
+                    let score = file_name_similarity_score(&name, &target_name);
+                    if score <= 2 {
+                        suggestions.push(entry.path().display().to_string());
+                        if suggestions.len() >= 3 {
+                            break;
+                        }
+                    }
+                }
+            }
+        }
+    }
+
     suggestions
+}
+
+fn file_name_similarity_score(name: &str, target: &str) -> usize {
+    if *name == *target {
+        0
+    } else if name.contains(target) || target.contains(&name) {
+        1
+    } else {
+        // Extension-aware: penalize mismatched extensions (e.g. .rs vs .ts)
+        let target_ext = std::path::Path::new(target)
+            .extension()
+            .map(|e| e.to_ascii_lowercase());
+        let name_ext = std::path::Path::new(name)
+            .extension()
+            .map(|e| e.to_ascii_lowercase());
+        let ext_penalty = if target_ext.is_some() && target_ext != name_ext { 2 } else { 0 };
+
+        // Stem similarity (filename without extension). file_stem() yields
+        // an OsString; convert to String so contains/len/levenshtein work.
+        let target_stem = std::path::Path::new(target)
+            .file_stem()
+            .map(|s| s.to_ascii_lowercase().to_string_lossy().to_string())
+            .unwrap_or_default();
+        let name_stem = std::path::Path::new(name)
+            .file_stem()
+            .map(|s| s.to_ascii_lowercase().to_string_lossy().to_string())
+            .unwrap_or_default();
+
+        if !target_stem.is_empty() && !name_stem.is_empty() {
+            // Check stem containment first (very fast)
+            if name_stem.contains(&target_stem) || target_stem.contains(&name_stem) {
+                return 1 + ext_penalty;
+            }
+            let dist = levenshtein_distance(&target_stem, &name_stem);
+            let max_len = target_stem.len().max(name_stem.len());
+            if max_len == 0 {
+                return usize::MAX;
+            }
+            if dist <= max_len / 3 && dist > 0 {
+                return 2 + dist + ext_penalty;
+            }
+        }
+
+        // Fallback: full name Levenshtein
+        let dist = levenshtein_distance(target, name);
+        let max_len = target.len().max(name.len());
+        if max_len == 0 {
+            return usize::MAX;
+        }
+        if dist <= max_len / 3 && dist > 0 {
+            2 + dist + ext_penalty
+        } else {
+            usize::MAX
+        }
+    }
 }
 
 fn levenshtein_distance(a: &str, b: &str) -> usize {

@@ -138,14 +138,23 @@ pub fn update_estimate(summary: String, duration: Duration) -> UpdateEstimate {
     }
 }
 
-pub fn get_asset_name() -> &'static str {
+/// Stable stem used for release assets, e.g. `alphacode-linux-x86_64`.
+///
+/// Mirrors the `archive:` field in `.github/workflows/release.yml` and the
+/// `ASSET=` lines in `scripts/install.sh` / `scripts/install.ps1`. The release
+/// pipeline ships one `.tar.gz` (Linux/macOS) or one `.zip` (Windows) per
+/// stem plus a matching `.sha256`. The binary itself (the launcher on Windows)
+/// may or may not have a `.exe` suffix inside the archive, so this stem is
+/// intentionally extension-free: it is what we use to *find* the asset on
+/// GitHub and to recognise the launcher inside the archive.
+pub fn get_asset_stem() -> &'static str {
     #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
     {
         "alphacode-linux-x86_64"
     }
     #[cfg(all(target_os = "linux", target_arch = "aarch64"))]
     {
-        "alphacode-linux-aarch64"
+        "alphacode-linux-arm64"
     }
     #[cfg(all(target_os = "macos", target_arch = "x86_64"))]
     {
@@ -153,15 +162,15 @@ pub fn get_asset_name() -> &'static str {
     }
     #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
     {
-        "alphacode-macos-aarch64"
+        "alphacode-macos-arm64"
     }
     #[cfg(all(target_os = "windows", target_arch = "x86_64"))]
     {
-        "alphacode-windows-x86_64.exe"
+        "alphacode-windows-x86_64"
     }
     #[cfg(all(target_os = "windows", target_arch = "aarch64"))]
     {
-        "alphacode-windows-aarch64.exe"
+        "alphacode-windows-arm64"
     }
     #[cfg(not(any(
         all(target_os = "linux", target_arch = "x86_64"),
@@ -174,6 +183,37 @@ pub fn get_asset_name() -> &'static str {
     {
         "alphacode-unknown"
     }
+}
+
+/// Archive extension for the current target. Linux/macOS ship `.tar.gz`;
+/// Windows ships `.zip`. This is the suffix of the *downloaded archive*,
+/// not of the binary inside it.
+pub fn get_asset_extension() -> &'static str {
+    #[cfg(target_os = "windows")]
+    {
+        "zip"
+    }
+    #[cfg(not(target_os = "windows"))]
+    {
+        "tar.gz"
+    }
+}
+
+/// Full archive filename, e.g. `alphacode-linux-x86_64.tar.gz` or
+/// `alphacode-windows-x86_64.zip`. Built from [`get_asset_stem`] +
+/// [`get_asset_extension`] so the two cannot drift.
+pub fn get_asset_filename() -> String {
+    format!("{}.{}", get_asset_stem(), get_asset_extension())
+}
+
+/// Backwards-compatible alias for [`get_asset_stem`].
+///
+/// Older call sites passed this value to `starts_with`/`==`; they were
+/// assuming the stem-without-extension form, which is what this function
+/// now returns. The original name is preserved so existing imports and
+/// tests keep working.
+pub fn get_asset_name() -> &'static str {
+    get_asset_stem()
 }
 
 pub fn summarize_git_pull_failure(stderr: &[u8]) -> String {
@@ -367,11 +407,13 @@ pub fn parse_sha256sums(contents: &str) -> Result<HashMap<String, String>> {
 
 pub fn verify_asset_checksum_text(contents: &str, asset_name: &str, bytes: &[u8]) -> Result<()> {
     let checksums = parse_sha256sums(contents)?;
-    let expected = checksums
-        .get(asset_name)
-        .ok_or_else(|| anyhow::anyhow!("SHA256SUMS does not list {}", asset_name))?;
     let actual = format!("{:x}", Sha256::digest(bytes));
-    if !actual.eq_ignore_ascii_case(expected) {
+
+    // Try exact match first.
+    if let Some(expected) = checksums.get(asset_name) {
+        if actual.eq_ignore_ascii_case(expected) {
+            return Ok(());
+        }
         anyhow::bail!(
             "Checksum mismatch for {}: expected {}, got {}",
             asset_name,
@@ -379,7 +421,34 @@ pub fn verify_asset_checksum_text(contents: &str, asset_name: &str, bytes: &[u8]
             actual
         );
     }
-    Ok(())
+
+    // Fuzzy match: the SHA256SUMS file may list the asset with a different
+    // extension (e.g. .sh instead of .zip) or a slightly different name.
+    // Try matching by stripping extensions and comparing the base name.
+    let asset_base = asset_name
+        .strip_suffix(".zip")
+        .or_else(|| asset_name.strip_suffix(".tar.gz"))
+        .or_else(|| asset_name.strip_suffix(".exe"))
+        .unwrap_or(asset_name);
+
+    for (sum_name, expected) in &checksums {
+        let sum_base = sum_name
+            .strip_suffix(".zip")
+            .or_else(|| sum_name.strip_suffix(".tar.gz"))
+            .or_else(|| sum_name.strip_suffix(".exe"))
+            .or_else(|| sum_name.strip_suffix(".sh"))
+            .unwrap_or(sum_name);
+
+        if asset_base == sum_base && actual.eq_ignore_ascii_case(expected) {
+            return Ok(());
+        }
+    }
+
+    anyhow::bail!(
+        "SHA256SUMS does not list {} (checked {} entries)",
+        asset_name,
+        checksums.len()
+    )
 }
 
 pub fn version_is_newer(release: &str, current: &str) -> bool {
@@ -516,6 +585,78 @@ mod tests {
     #[test]
     fn asset_name_is_supported() {
         assert_ne!(get_asset_name(), "alphacode-unknown");
+        assert_ne!(get_asset_stem(), "alphacode-unknown");
+    }
+
+    /// The release workflow (`release.yml`) and the install scripts
+    /// (`install.sh` / `install.ps1`) all share the same asset naming. If
+    /// the Rust side drifts, `/update` silently reports "already up to date"
+    /// on every platform it gets wrong. Lock the contract down here.
+    #[test]
+    fn asset_stem_matches_release_workflow_naming() {
+        let stem = get_asset_stem();
+        let ext = get_asset_extension();
+        let filename = get_asset_filename();
+
+        // Every supported target uses `arm64` (not `aarch64`) and never
+        // bundles a `.exe` into the archive stem. The Windows install
+        // workflow is .zip, everything else is .tar.gz.
+        assert!(
+            !stem.contains("aarch64"),
+            "stem should use `arm64`, not `aarch64`: {stem}"
+        );
+        assert!(
+            !stem.ends_with(".exe"),
+            "stem must not carry a `.exe` suffix: {stem}"
+        );
+        assert_eq!(filename, format!("{stem}.{ext}"));
+
+        // The actual filenames GitHub publishes for v1.0.9 must all be
+        // reachable as `starts_with(stem)` — that is how
+        // `platform_asset` recognises them. A mismatch here is the
+        // exact reason `/update` ever reports "already up to date" while
+        // GitHub has a newer release.
+        let expected_assets: &[&str] = &[
+            #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+            "alphacode-linux-x86_64.tar.gz",
+            #[cfg(all(target_os = "linux", target_arch = "aarch64"))]
+            "alphacode-linux-arm64.tar.gz",
+            #[cfg(all(target_os = "macos", target_arch = "x86_64"))]
+            "alphacode-macos-x86_64.tar.gz",
+            #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+            "alphacode-macos-arm64.tar.gz",
+            #[cfg(all(target_os = "windows", target_arch = "x86_64"))]
+            "alphacode-windows-x86_64.zip",
+            #[cfg(all(target_os = "windows", target_arch = "aarch64"))]
+            "alphacode-windows-arm64.zip",
+        ];
+        assert!(
+            !expected_assets.is_empty(),
+            "no expected asset configured for target_os/target_arch; update the test"
+        );
+        for asset in expected_assets {
+            assert!(
+                asset.starts_with(stem),
+                "asset {asset} should start with stem {stem}"
+            );
+        }
+    }
+
+    /// `get_asset_filename()` must end in the right archive extension for
+    /// the current target. This is the only place the install path
+    /// (`.tar.gz` extraction vs `.zip` extraction) makes its branching
+    /// decision, so getting it wrong silently swallows every Windows
+    /// update.
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn asset_filename_uses_zip_on_windows() {
+        assert!(get_asset_filename().ends_with(".zip"));
+    }
+
+    #[cfg(not(target_os = "windows"))]
+    #[test]
+    fn asset_filename_uses_tar_gz_off_windows() {
+        assert!(get_asset_filename().ends_with(".tar.gz"));
     }
 
     #[test]
@@ -541,7 +682,7 @@ mod tests {
     fn sha256sums_accepts_standard_and_binary_lines() {
         let checksums = parse_sha256sums(
             "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa  alphacode-linux-x86_64\n\
-             bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb *alphacode-macos-aarch64\n",
+             bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb *alphacode-macos-arm64\n",
         )
         .unwrap();
         assert_eq!(
@@ -549,7 +690,7 @@ mod tests {
             Some("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa")
         );
         assert_eq!(
-            checksums.get("alphacode-macos-aarch64").map(String::as_str),
+            checksums.get("alphacode-macos-arm64").map(String::as_str),
             Some("bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb")
         );
     }

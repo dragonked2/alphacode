@@ -367,7 +367,15 @@ fn emit_build_environment(info: &BuildInfo) {
 
     let base_semver = info.base_version.as_string();
 
-    let update_semver = if explicit_build_version().is_some() {
+    // The update-comparison semver must reflect the *actual* code the user
+    // is running, not just the package base tag. For a release build we use
+    // the base semver so a v1.0.5 release correctly identifies v1.0.6 as
+    // newer; for a dev build, the binary already contains commits past the
+    // latest tagged release, so we use build_version (base + commit count)
+    // and avoid the older "I am still on v1.0.9 even though I am 5 commits
+    // past it" bug that made /update report "already up to date" against
+    // a release older than the local checkout.
+    let update_semver = if explicit_build_version().is_some() || !info.release {
         info.build_version.clone()
     } else {
         base_semver.clone()

@@ -51,9 +51,12 @@ use tokio::sync::{RwLock, mpsc};
 use tokio_stream::wrappers::ReceiverStream;
 
 /// Maximum number of retries for transient errors
-const MAX_RETRIES: u32 = 3;
+const MAX_RETRIES: u32 = crate::alphacode_provider_core::retry::MAX_ATTEMPTS;
 
 /// Base delay for exponential backoff (in milliseconds)
+/// Retained for back-compat; the unified [] policy
+/// owns the real backoff math now.
+#[allow(dead_code)]
 const RETRY_BASE_DELAY_MS: u64 = 1000;
 
 /// OpenRouter API base URL

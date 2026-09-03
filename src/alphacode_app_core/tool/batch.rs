@@ -170,7 +170,7 @@ impl Tool for BatchTool {
     }
 
     fn description(&self) -> &str {
-        "Run tools in parallel."
+        "Run multiple independent tool calls in parallel. Use when tool calls don't depend on each other to save time. Each sub-call has its own error handling."
     }
 
     fn parameters_schema(&self) -> Value {

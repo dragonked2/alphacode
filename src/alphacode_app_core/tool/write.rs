@@ -30,7 +30,7 @@ impl Tool for WriteTool {
     }
 
     fn description(&self) -> &str {
-        "Create or overwrite a file with the given content. Use this to create new files or to completely replace an existing file. For partial changes, prefer the edit tool — `write` is destructive and will discard any content you do not include. Write the smallest file that solves the problem; do not paste unrelated code, generated boilerplate, or scaffolding the user did not ask for. After writing, verify the file's contents (e.g. with a follow-up `read` or by running a build/test that exercises it)."
+        "Create or overwrite a file. Destructive: replaces entire content. For partial changes, use `edit` instead. Write only what solves the problem — no boilerplate or unused scaffolding. Verify after writing with `read` or a build/test."
     }
 
     fn parameters_schema(&self) -> Value {

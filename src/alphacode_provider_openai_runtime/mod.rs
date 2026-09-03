@@ -54,10 +54,14 @@ fn model_supports_image_generation(model_id: &str) -> bool {
     !model_id.to_ascii_lowercase().contains("codex")
 }
 
-/// Maximum number of retries for transient errors
-const MAX_RETRIES: u32 = 3;
+/// Maximum number of retries for transient errors. Aligned with the unified
+/// [] policy: 5 attempts gives us a chance to ride
+/// out a 5-minute transient outage without surfacing the error to the user.
+const MAX_RETRIES: u32 = crate::alphacode_provider_core::retry::MAX_ATTEMPTS;
 
-/// Base delay for exponential backoff (in milliseconds)
+/// Retained for back-compat; the unified [] policy owns
+/// the real backoff math now.
+#[allow(dead_code)]
 const RETRY_BASE_DELAY_MS: u64 = 1000;
 const WEBSOCKET_UPGRADE_REQUIRED_ERROR: StatusCode = StatusCode::UPGRADE_REQUIRED;
 const WEBSOCKET_CONNECT_TIMEOUT_SECS: u64 = 8;

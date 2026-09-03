@@ -1080,19 +1080,20 @@ async fn run_claude_cli(
     Ok(())
 }
 
-/// Check if an error is transient and should be retried
+/// Check if an error is transient and should be retried.
+///
+/// Delegates the heavy lifting to the unified
+/// [`crate::alphacode_provider_core::retry::is_retryable_message`] classifier so
+/// every provider agrees on what counts as transient. The Claude-CLI-specific
+/// exceptions (processtransport, taskgroup) are kept because they only surface
+/// in the local subprocess transport.
 fn is_retryable_error(error_str: &str) -> bool {
-    crate::alphacode_provider_core::is_transient_transport_error(error_str)
-        // Claude CLI specific errors
-        || error_str.contains("processtransport")
-        || error_str.contains("not ready for writing")
-        || error_str.contains("taskgroup")
-        || error_str.contains("sub-exception")
-        // Server errors (5xx)
-        || error_str.contains("502 bad gateway")
-        || error_str.contains("503 service unavailable")
-        || error_str.contains("504 gateway timeout")
-        || error_str.contains("overloaded")
+    let lower = error_str.to_ascii_lowercase();
+    crate::alphacode_provider_core::retry::is_retryable_message(&lower)
+        || lower.contains("processtransport")
+        || lower.contains("not ready for writing")
+        || lower.contains("taskgroup")
+        || lower.contains("sub-exception")
 }
 
 fn to_claude_tool_name(name: &str) -> String {

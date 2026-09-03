@@ -74,19 +74,22 @@ pub const EMBEDDING_HISTORY_WINDOW: usize = 10;
 /// Per-manager semantic embedding cache capacity.
 pub const SEMANTIC_EMBED_CACHE_CAPACITY: usize = 256;
 
-pub const SUMMARY_PROMPT: &str = r#"Summarize our conversation so you can continue this work later.
+pub const SUMMARY_PROMPT: &str = r#"Summarize our conversation so you can continue this work later. Write in natural language with these sections:
 
-Write in natural language with these sections:
 - **Context:** What we're working on and why (1-2 sentences)
-- **What we did:** Key actions taken, files changed, problems solved
+- **What we did:** Key actions taken, files changed, problems solved (use file paths only, no content)
 - **Current state:** What works, what's broken, what's next
 - **User preferences:** Specific requirements or decisions they made
-- **Key decisions:** Important architectural or design choices made
-- **Files modified:** List all files that were created, edited, or deleted
+- **Key decisions:** Important architectural or design choices
+- **Files modified:** Bullet list of all files created/edited/deleted (just paths)
 
-Be concise but preserve important details. Focus on information that would be needed to continue the work. You can search the full conversation later if you need exact error messages or code snippets.
-
-CRITICAL: Preserve any user-stated constraints, preferences, or requirements verbatim — these are often the most important context to keep."#;
+Rules:
+- Be concise: aim for 200-400 words total. Every word should earn its place.
+- Preserve user-stated constraints/requirements VERBATIM — these are highest priority.
+- Do NOT include code snippets, error messages, or verbose output. Reference file paths instead.
+- Do NOT include tool call details or intermediate reasoning — focus on outcomes.
+- If a file path was referenced multiple times, mention it once with what changed.
+- Focus on information needed to CONTINUE the work, not to relive it."#;
 
 /// A completed summary covering turns up to a certain point
 #[derive(Debug, Clone)]
@@ -483,9 +486,7 @@ pub fn build_emergency_summary_text(
     }
 
     summary_parts.push(format!(
-        "**[Emergency compaction]**: {} messages were dropped to recover from context overflow. \
-         The conversation had ~{}k tokens which exceeded the {}k limit. \
-         Recent work is preserved above; dropped messages contained the following artifacts:",
+        "**[Emergency compaction]** {} msgs dropped (~{}k → {}k tokens). Recent work above.\nDropped artifacts:",
         dropped_count,
         pre_tokens / 1000,
         token_budget / 1000,
@@ -523,11 +524,13 @@ pub fn build_emergency_summary_text(
     file_mentions.sort();
     file_mentions.dedup();
     if !file_mentions.is_empty() {
-        file_mentions.truncate(50);
-        summary_parts.push(format!("Files referenced: {}", file_mentions.join(", ")));
+        file_mentions.truncate(30);
+        // Compact file list: group by directory to save tokens
+        let compact = compact_file_list(&file_mentions);
+        summary_parts.push(format!("Files: {}", compact));
     }
 
-    summary_parts.join("\n\n")
+    summary_parts.join("\n")
 }
 
 fn collect_emergency_summary_hints(
@@ -619,6 +622,46 @@ fn collect_key_decisions(msg: &Message, decisions: &mut Vec<String>) {
             _ => {}
         }
     }
+}
+
+/// Compact a list of file paths by grouping files in the same directory.
+/// E.g. ["src/foo.rs", "src/bar.rs", "tests/baz.rs"] becomes
+/// "src/{foo,bar}.rs, tests/baz.rs" — saving tokens on long lists.
+fn compact_file_list(files: &[String]) -> String {
+    use std::collections::BTreeMap;
+    let mut by_dir: BTreeMap<String, Vec<String>> = BTreeMap::new();
+    for f in files {
+        let path = std::path::Path::new(f);
+        let dir = path
+            .parent()
+            .and_then(|p| p.to_str())
+            .unwrap_or("")
+            .to_string();
+        let name = path
+            .file_name()
+            .map(|n| n.to_string_lossy().to_string())
+            .unwrap_or_else(|| f.clone());
+        by_dir.entry(dir).or_default().push(name);
+    }
+    let mut parts = Vec::new();
+    for (dir, names) in &by_dir {
+        if names.len() == 1 {
+            if dir.is_empty() {
+                parts.push(names[0].clone());
+            } else {
+                parts.push(format!("{}/{}", dir, names[0]));
+            }
+        } else {
+            // Group: src/{foo.rs, bar.rs, baz.rs}
+            let joined = names.join(", ");
+            if dir.is_empty() {
+                parts.push(format!("{{{}}}", joined));
+            } else {
+                parts.push(format!("{}/{{{}}}", dir, joined));
+            }
+        }
+    }
+    parts.join(", ")
 }
 
 pub fn extract_file_mentions(text: &str, file_mentions: &mut Vec<String>) {
@@ -1155,5 +1198,33 @@ mod tests {
         let stripped = emergency_strip_large_images(&mut messages, 2000);
         assert_eq!(stripped, 1);
         assert!(matches!(messages[0].content[0], ContentBlock::Text { .. }));
+    }
+
+    #[test]
+    fn compact_file_list_groups_by_directory() {
+        let files = vec![
+            "src/foo.rs".to_string(),
+            "src/bar.rs".to_string(),
+            "tests/baz.rs".to_string(),
+        ];
+        let compact = compact_file_list(&files);
+        // Should group src/ files together
+        assert!(compact.contains("src/{"), "expected grouping: {compact}");
+        assert!(compact.contains("foo.rs"));
+        assert!(compact.contains("bar.rs"));
+        assert!(compact.contains("tests/baz.rs"));
+    }
+
+    #[test]
+    fn compact_file_list_single_file_no_grouping() {
+        let files = vec!["src/only.rs".to_string()];
+        let compact = compact_file_list(&files);
+        assert_eq!(compact, "src/only.rs");
+    }
+
+    #[test]
+    fn compact_file_list_empty() {
+        let compact = compact_file_list(&[]);
+        assert!(compact.is_empty());
     }
 }

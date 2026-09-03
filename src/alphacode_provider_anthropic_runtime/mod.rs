@@ -340,10 +340,14 @@ const DEFAULT_MODEL: &str = crate::alphacode_provider_core::DEFAULT_CLAUDE_MODEL
 /// API version header
 const API_VERSION: &str = "2023-06-01";
 
-/// Maximum number of retries for transient errors
-const MAX_RETRIES: u32 = 3;
+/// Maximum number of retries for transient errors. Aligned with the unified
+/// [] policy; 5 attempts gives us a chance to ride
+/// out a 5-minute transient outage without surfacing the error to the user.
+const MAX_RETRIES: u32 = crate::alphacode_provider_core::retry::MAX_ATTEMPTS;
 
-/// Base delay for exponential backoff (in milliseconds)
+/// Retained for back-compat with helpers that still reference it. The unified
+/// [] policy owns the real backoff math now.
+#[allow(dead_code)]
 const RETRY_BASE_DELAY_MS: u64 = 1000;
 
 /// Cached OAuth credentials
@@ -1496,11 +1500,15 @@ async fn run_stream_with_retries(
 
     for attempt in 0..MAX_RETRIES {
         if attempt > 0 {
-            // Exponential backoff with jitter: ~1s, ~2s, ~4s
-            let delay = crate::alphacode_provider_core::retry_after::retry_delay(
-                attempt,
-                RETRY_BASE_DELAY_MS,
-                next_retry_delay.take(),
+            // Backoff: prefer the server's Retry-After hint, otherwise fall back
+            // to the unified retry policy (5s base for rate limits, 1s base for
+            // 5xx/transport, doubled per attempt with +/-20% jitter, capped at 180s).
+            let hint = next_retry_delay.take();
+            let reason = crate::alphacode_provider_core::retry::RetryReason::TransportFault;
+            let delay = crate::alphacode_provider_core::retry::backoff_for(
+                reason,
+                attempt - 1,
+                hint,
             );
             let _ = tx
                 .send(Ok(StreamEvent::ConnectionPhase {
@@ -1849,6 +1857,24 @@ async fn stream_response(
         let retry_after =
             crate::alphacode_provider_core::retry_after::retry_after(response.headers());
         let error_text = crate::alphacode_base::util::http_error_body(response, "HTTP error").await;
+        // Tag the error so the outer retry loop can recognize rate-limit 429s,
+        // overloaded 529s, and 5xx the same way every other provider does.
+        let body_lower = error_text.to_ascii_lowercase();
+        let classification = if status.as_u16() == 429 {
+            if crate::alphacode_provider_core::retry::is_retryable_message(&body_lower) {
+                "rate-limited (will retry with backoff)"
+            } else {
+                "rate-limit 429 without rate-limit vocabulary (likely moderation, will not retry)"
+            }
+        } else if status.is_server_error() {
+            "server error (will retry)"
+        } else {
+            "non-retryable client error"
+        };
+        crate::alphacode_base::logging::warn(&format!(
+            "Anthropic API returned {} [{}]: {}",
+            status, classification, error_text
+        ));
         return Err(
             crate::alphacode_provider_core::retry_after::error_with_retry_after(
                 format!("Anthropic API error ({}): {}", status, error_text),
@@ -1932,23 +1958,20 @@ async fn stream_response(
     Ok(())
 }
 
-/// Check if an error is transient and should be retried
+/// Check if an error is transient and should be retried.
+///
+/// Delegates to the unified
+/// [] classifier so
+/// every provider agrees on what counts as transient. The Anthropic-specific
+/// additions here (e.g. "overloaded", "api_error") keep parity with the previous
+/// behaviour.
 fn is_retryable_error(error_str: &str) -> bool {
-    crate::alphacode_provider_core::is_transient_transport_error(error_str)
-        // Server errors (5xx)
-        || error_str.contains("500 internal server error")
-        || error_str.contains("502 bad gateway")
-        || error_str.contains("503 service unavailable")
-        || error_str.contains("504 gateway timeout")
-        || error_str.contains("overloaded")
-        // NOTE: 429 (rate limiting) is intentionally NOT retryable here.
-        // The failover system handles 429 by marking the route unavailable
-        // and trying a fallback. Retrying in the transport loop wastes extra
-        // API requests that count against the rate limit. The agent-level
-        // retry in response_recovery.rs handles 429 with proper backoff.
-        // API-level server errors (SSE error events)
-        || error_str.contains("api_error")
-        || error_str.contains("internal server error")
+    let lower = error_str.to_ascii_lowercase();
+    if crate::alphacode_provider_core::retry::is_retryable_message(&lower) {
+        return true;
+    }
+    // API-level server errors (SSE error events)
+    lower.contains("api_error")
 }
 
 /// Detect an Anthropic "model not found" rejection.

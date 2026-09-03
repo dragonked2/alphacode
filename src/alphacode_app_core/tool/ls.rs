@@ -50,7 +50,7 @@ impl Tool for LsTool {
     }
 
     fn description(&self) -> &str {
-        "List directory contents."
+        "List directory contents with tree structure. Use before read/edit to discover file paths."
     }
 
     fn parameters_schema(&self) -> Value {

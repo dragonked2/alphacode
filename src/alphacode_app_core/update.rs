@@ -289,7 +289,20 @@ fn synthetic_main_release(latest_sha: &str) -> GitHubRelease {
 }
 
 fn install_main_source_update_blocking(latest_sha: &str) -> Result<PathBuf> {
-    let path = build_from_source()?;
+    use crate::alphacode_app_core::bus::{Bus, BusEvent, ClientMaintenanceAction, SessionUpdateStatus};
+    let action = ClientMaintenanceAction::Update;
+    let sha = latest_sha.to_string();
+    let path = build_from_source_with_progress(|phase| {
+        let message = format!("{} (main-{})...", phase.label(), sha);
+        crate::logging::info(&message);
+        Bus::global().publish(BusEvent::SessionUpdateStatus(
+            SessionUpdateStatus::Status {
+                session_id: String::new(), // broadcast to all
+                action,
+                message,
+            },
+        ));
+    })?;
     crate::logging::info(&format!(
         "Main channel: built successfully at {}",
         path.display()
@@ -515,15 +528,12 @@ pub fn spawn_background_session_update(session_id: String) {
                 publish(SessionUpdateStatus::Status {
                     session_id: session_id.clone(),
                     action,
-                    message: estimate.summary,
-                });
-                publish(SessionUpdateStatus::Status {
-                    session_id: session_id.clone(),
-                    action,
                     message: format!(
-                        "Building main-{} in the background (estimated {})...",
+                        "Update {} → main-{} ({})\n\n{}\n\nBuilding in the background. This may take a few minutes on the first run.",
+                        crate::alphacode_build_meta::version(),
                         latest_sha,
-                        format_duration_estimate(estimate.duration)
+                        format_duration_estimate(estimate.duration),
+                        estimate.summary
                     ),
                 });
                 match install_main_source_update_blocking(&latest_sha) {
@@ -659,8 +669,31 @@ fn has_cargo() -> bool {
         .unwrap_or(false)
 }
 
-/// Build alphacode from source by cloning/pulling the repo and running cargo build
-fn build_from_source() -> Result<PathBuf> {
+/// Progress phases for source builds, so the UI can show what's happening.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SourceBuildPhase {
+    Cloning,
+    Pulling,
+    Building,
+    Installing,
+}
+
+impl SourceBuildPhase {
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Cloning => "Cloning repository",
+            Self::Pulling => "Pulling latest changes",
+            Self::Building => "Building from source",
+            Self::Installing => "Installing binary",
+        }
+    }
+}
+
+/// Build alphacode from source by cloning/pulling the repo and running cargo build.
+/// Calls `on_phase` at each major step so the UI can show progress.
+fn build_from_source_with_progress(
+    mut on_phase: impl FnMut(SourceBuildPhase),
+) -> Result<PathBuf> {
     let started = Instant::now();
     let build_dir = source_build_root()?;
     fs::create_dir_all(&build_dir)?;
@@ -668,7 +701,7 @@ fn build_from_source() -> Result<PathBuf> {
     let repo_dir = build_dir.join("alphacode");
 
     if repo_dir.join(".git").exists() {
-        // Pull latest
+        on_phase(SourceBuildPhase::Pulling);
         crate::logging::info("Main channel: pulling latest from main...");
         let output = std::process::Command::new("git")
             .args(["pull", "--ff-only", "origin", "main"])
@@ -677,7 +710,6 @@ fn build_from_source() -> Result<PathBuf> {
             .context("Failed to run git pull")?;
 
         if !output.status.success() {
-            // If pull fails (e.g. diverged), reset to origin/main
             let summary = summarize_git_pull_failure(&output.stderr);
             crate::logging::warn(&format!("{}, trying reset", summary));
             let output = std::process::Command::new("git")
@@ -704,7 +736,7 @@ fn build_from_source() -> Result<PathBuf> {
             }
         }
     } else {
-        // Clone
+        on_phase(SourceBuildPhase::Cloning);
         crate::logging::info("Main channel: cloning repository...");
         let clone_url = format!("https://github.com/{}.git", GITHUB_REPO);
         let output = std::process::Command::new("git")
@@ -729,7 +761,7 @@ fn build_from_source() -> Result<PathBuf> {
         }
     }
 
-    // Build
+    on_phase(SourceBuildPhase::Building);
     crate::logging::info("Main channel: building with cargo...");
     let output = std::process::Command::new("cargo")
         .args(["build", "--release"])

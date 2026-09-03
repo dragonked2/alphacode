@@ -197,8 +197,26 @@ $installedExe = Join-Path $BinDir 'alphacode.exe'
 Copy-Item -Path $binary.FullName -Destination $installedExe -Force
 Print "Installed -> $installedExe"
 
-$installed = & "$BinDir\alphacode.exe" --version 2>$null
-if ($installed) { Print "Installed version: $installed" }
+# Verify the installed binary works. Use 'version' subcommand instead of
+# --version because PowerShell treats stderr from external commands as a
+# NativeCommandError even with 2>$null redirection.
+try {
+  $installed = & "$BinDir\alphacode.exe" version 2>$null
+  if ($LASTEXITCODE -eq 0 -and $installed) {
+    # Extract just the version line from the multi-line output
+    $versionLine = ($installed -split "`n" | Where-Object { $_ -match '^version\t' } | Select-Object -First 1)
+    if ($versionLine) {
+      $version = ($versionLine -split "\t")[1]
+      Print "Installed version: $version"
+    } else {
+      Print "Installed (could not parse version)"
+    }
+  } else {
+    Warn "Binary installed but 'version' command returned exit code $LASTEXITCODE"
+  }
+} catch {
+  Warn "Binary installed but could not verify version: $($_.Exception.Message)"
+}
 
 if (-not $NoPath) {
   $haveIt = ($env:PATH -split [IO.Path]::PathSeparator) | Where-Object { $_ -ieq $BinDir } | Select-Object -First 1

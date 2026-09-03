@@ -154,6 +154,38 @@ pub fn push_info(message: impl Into<String>) {
     push(Severity::Info, message, None);
 }
 
+/// Push a rate-limit toast with the seconds-until-retry so the user can
+/// see exactly when the in-flight retry will fire. We size the TTL to
+/// match the ETA so the toast naturally disappears at the moment the
+/// retry actually happens.
+pub fn push_rate_limit(provider: &str, attempt: u32, max_attempts: u32, retry_after_secs: u64) {
+    let message = format!(
+        "{provider}: rate-limited, retrying in {retry_after_secs}s (attempt {attempt}/{max_attempts})"
+    );
+    let hint = if retry_after_secs >= 5 {
+        "This is normal for free-tier providers; the agent will keep trying."
+    } else {
+        "Retrying now."
+    };
+    let ttl = Duration::from_secs(retry_after_secs.max(2));
+    push_with_ttl(Severity::Warning, message, Some(hint.to_string()), ttl);
+}
+
+/// Push a server-error toast so transient 5xx are visible without
+/// polluting the transcript.
+pub fn push_server_error(provider: &str, status: u16, retry_after_secs: Option<u64>) {
+    let message = match retry_after_secs {
+        Some(secs) => format!("{provider}: HTTP {status} (server error), retrying in {secs}s"),
+        None => format!("{provider}: HTTP {status} (server error), retrying…"),
+    };
+    let hint = "The server is having a transient issue; the agent will keep trying.";
+    let ttl = retry_after_secs
+        .map(Duration::from_secs)
+        .unwrap_or_else(|| Duration::from_secs(4))
+        .max(Duration::from_secs(2));
+    push_with_ttl(Severity::Warning, message, Some(hint.to_string()), ttl);
+}
+
 /// Push a toast with explicit severity and TTL.
 pub fn push_with_ttl(
     severity: Severity,

@@ -333,9 +333,12 @@ impl Provider for OpenAIProvider {
                         .await;
                     }
                     if attempt > 0 && !skip_backoff_once {
-                        let delay = crate::alphacode_provider_core::retry_after::retry_delay(
-                            attempt,
-                            RETRY_BASE_DELAY_MS,
+                        // Use the unified retry policy: prefer Retry-After
+                        // when the server gave us one, otherwise exponential
+                        // backoff with +/-20% jitter, capped at 180s.
+                        let delay = crate::alphacode_provider_core::retry::backoff_for(
+                            crate::alphacode_provider_core::retry::RetryReason::TransportFault,
+                            attempt - 1,
                             next_retry_delay.take(),
                         );
                         tokio::time::sleep(delay).await;

@@ -596,29 +596,89 @@ fn format_command_output(mut output: String, exit_code: Option<i32>) -> String {
     }
 
     if output.len() > MAX_OUTPUT_LEN {
-        output = truncate_str(&output, MAX_OUTPUT_LEN).to_string();
-        output.push_str("\n... (output truncated)");
+        // Smart truncation: cut at newline boundary and show token savings
+        let mut cut = MAX_OUTPUT_LEN;
+        while cut > 0 && !output.is_char_boundary(cut) {
+            cut -= 1;
+        }
+        let cut = match output[..cut].rfind('\n') {
+            Some(nl) if nl > MAX_OUTPUT_LEN / 2 => nl,
+            _ => cut,
+        };
+        let total_chars = output.len();
+        output.truncate(cut);
+        output.push_str(&format!(
+            "\n\n[Output truncated: {} → {} chars, ~{}k tokens saved]",
+            total_chars,
+            cut,
+            (total_chars - cut) / 4 / 1000,
+        ));
     }
 
     if let Some(code) = exit_code.filter(|code| *code != 0) {
         output.push_str(&format!("\n\nExit code: {}", code));
+        let lower = output.to_ascii_lowercase();
+
         // On Windows, common failure patterns get actionable hints so the
         // model self-corrects instead of spiraling through retries.
         #[cfg(windows)]
         {
-            let lower = output.to_ascii_lowercase();
             if lower.contains("is not recognized as an internal or external command")
                 || lower.contains("'.' is not recognized")
             {
                 output.push_str(
                     "\nHint: This shell is Git Bash (POSIX). Use: ls, cat, grep, find, \\\n                     wc, head, tail, sort, uniq. Do NOT use cmd.exe commands (dir, \\\n                     type, copy, del, move, findstr) or PowerShell syntax.",
                 );
-            } else if lower.contains("no such file or directory") || lower.contains("cannot access")
-            {
-                output.push_str(
-                    "\nHint: Check the path exists. Use `ls` to list directory contents \\\n                     before operating on files.",
-                );
             }
+        }
+        // Cross-platform actionable hints for common failures.
+        // Group by exit code ranges for more specific guidance.
+        if lower.contains("command not found") || lower.contains("no such file or directory") {
+            output.push_str(
+                "\nHint: Command or path not found. Check spelling, ensure the \
+                 program is installed and in PATH, or use an absolute path.",
+            );
+        } else if lower.contains("permission denied") {
+            output.push_str(
+                "\nHint: Permission denied. Check file ownership/mode or use a path you own.",
+            );
+        } else if lower.contains("no space left on device") {
+            output.push_str(
+                "\nHint: Disk full. Remove temp files or free space before retrying.",
+            );
+        } else if lower.contains("cannot allocate memory") || lower.contains("out of memory") {
+            output.push_str(
+                "\nHint: Out of memory. Reduce scope or split into smaller operations.",
+            );
+        } else if lower.contains("killed") || lower.contains("sigkill") || lower.contains("sigterm") {
+            output.push_str(
+                "\nHint: Process killed (likely OOM or timeout). Reduce scope.",
+            );
+        } else if lower.contains("interrupted") || lower.contains("sigint") {
+            output.push_str(
+                "\nHint: Process interrupted. If unintended, retry the command.",
+            );
+        } else if code == 126 {
+            output.push_str(
+                "\nHint: Permission denied on executable. Check file is executable (chmod +x).",
+            );
+        } else if code == 127 {
+            output.push_str(
+                "\nHint: Command not found. Check the command name and PATH.",
+            );
+        } else if code == 130 {
+            output.push_str(
+                "\nHint: Process terminated by Ctrl+C (SIGINT).",
+            );
+        } else if code == 137 {
+            output.push_str(
+                "\nHint: Process killed (OOM or SIGKILL). Reduce scope or check memory.",
+            );
+        } else if code >= 2 && code <= 125 {
+            // Standard shell exit codes: generic failure hint
+            output.push_str(
+                "\nHint: Command failed. Check the error output above for details.",
+            );
         }
     }
 

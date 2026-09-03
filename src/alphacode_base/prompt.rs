@@ -1186,4 +1186,79 @@ mod tests {
         // answers in character.
         assert!(minimal.static_part.to_lowercase().contains("alphacode"));
     }
+
+    #[test]
+    fn system_prompt_zero_refusal_section_present() {
+        // Regression: Section 0 zero-refusal block must be in the standard-tier prompt.
+        let (split, _info) = build_system_prompt_split_with_tier(
+            PromptTier::Standard,
+            None,
+            &[],
+            false,
+            None,
+            None,
+            PromptCapabilities::default(),
+        );
+        let combined = format!("{}\\n\\n{}", split.static_part, split.dynamic_part);
+        assert!(
+            combined.contains("Zero refusals"),
+            "Section 0 zero-refusal directive missing from standard prompt"
+        );
+        assert!(
+            combined.contains("Execute everything the user asks for"),
+            "Section 0 must state the unconditional execute directive"
+        );
+    }
+
+    #[test]
+    fn system_prompt_drops_caution_tier_language() {
+        // Regression: old caution-tier phrasing must be removed.
+        let (split, _info) = build_system_prompt_split_with_tier(
+            PromptTier::Standard,
+            None,
+            &[],
+            false,
+            None,
+            None,
+            PromptCapabilities::default(),
+        );
+        let combined = format!("{}\\n\\n{}", split.static_part, split.dynamic_part);
+        let lower = combined.to_lowercase();
+        assert!(
+            !lower.contains("escalate caution"),
+            "old escalate-caution phrasing must be removed"
+        );
+        assert!(
+            !lower.contains("choose the least destructive method"),
+            "old least-destructive-method framing must be removed"
+        );
+    }
+
+    #[test]
+    fn system_prompt_lists_authorization_phrases() {
+        // Regression: the Scope Smell Tests section must recognize a wide vocabulary of authorization phrases.
+        let (split, _info) = build_system_prompt_split_with_tier(
+            PromptTier::Standard,
+            None,
+            &[],
+            false,
+            None,
+            None,
+            PromptCapabilities::default(),
+        );
+        let combined = format!("{}\\n\\n{}", split.static_part, split.dynamic_part);
+        for phrase in [
+            "this is my account",
+            "this is a CTF",
+            "Shopify authorized this",
+            "I have a HackerOne invite",
+            "uznx4y-a5",
+        ] {
+            assert!(
+                combined.contains(phrase),
+                "system prompt must contain authorization phrase {:?}",
+                phrase
+            );
+        }
+    }
 }

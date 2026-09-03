@@ -1,6 +1,6 @@
 use super::{Tool, ToolContext, ToolOutput};
 use crate::alphacode_app_core::config::WebSearchEngine;
-use anyhow::Result;
+use anyhow::{Context as _, Result};
 use async_trait::async_trait;
 use serde::Deserialize;
 use serde_json::{Value, json};
@@ -50,7 +50,7 @@ impl Tool for WebSearchTool {
     }
 
     fn description(&self) -> &str {
-        "Search the web for current information using Google Search. Use this to find documentation, tutorials, API references, news, or any information you need. Returns search results with titles, URLs, and content snippets. Always use webfetch to read specific pages after searching."
+        "Search the web for current information. Returns results with titles, URLs, and snippets. Use webfetch after to read specific pages. Supports duckduckgo, bing, searxng."
     }
 
     fn parameters_schema(&self) -> Value {
@@ -141,23 +141,66 @@ impl Tool for WebSearchTool {
             )));
         }
 
-        let mut output = format!("Search results for: {}\n\n", params.query);
+        let mut output = format!("Search results for: {} ({} results)\n\n", params.query, results.len());
 
         for (i, result) in results.iter().enumerate() {
-            output.push_str(&format!(
-                "{}. **{}**\n   {}\n   {}\n\n",
-                i + 1,
-                result.title,
-                result.url,
-                result.snippet
-            ));
+            // Compact format: title, URL, snippet on fewer lines to save tokens.
+            // Bold markdown around titles costs 4 extra chars per result; drop it
+            // for search output where the model reads structured data, not prose.
+            let snippet = truncate_search_snippet(&result.snippet, 200);
+            if snippet.is_empty() {
+                output.push_str(&format!(
+                    "{}. {}\n   {}\n\n",
+                    i + 1,
+                    result.title,
+                    result.url,
+                ));
+            } else {
+                output.push_str(&format!(
+                    "{}. {}\n   {}\n   {}\n\n",
+                    i + 1,
+                    result.title,
+                    result.url,
+                    snippet,
+                ));
+            }
         }
 
         Ok(ToolOutput::new(output))
     }
 }
 
+/// Extension trait so call sites can write `builder.send_with_retry(client, label).await?`
+/// instead of building an intermediate `Request` and wiring the policy themselves.
+/// The retry loop is non-idempotent because the search bodies are read-only
+/// queries that tolerate replay.
+trait WebSearchSendWithRetry {
+    fn send_with_retry<'a>(
+        self,
+        client: &'a reqwest::Client,
+        label: &'a str,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<reqwest::Response>> + Send + 'a>>;
+}
+
+impl WebSearchSendWithRetry for reqwest::RequestBuilder {
+    fn send_with_retry<'a>(
+        self,
+        client: &'a reqwest::Client,
+        label: &'a str,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<reqwest::Response>> + Send + 'a>> {
+        Box::pin(async move {
+            let mut policy = crate::alphacode_provider_core::retry::RetryPolicy::for_http_tools();
+            policy.retry_non_idempotent = true;
+            policy.max_attempts = 3;
+            crate::alphacode_provider_core::retry::send_builder_with_retry(client, self, &policy, label)
+                .await
+                .context("websearch request failed")
+        })
+    }
+}
+
 impl WebSearchTool {
+
     async fn search_with_engine(
         &self,
         engine: WebSearchEngine,
@@ -199,7 +242,7 @@ impl WebSearchTool {
                 "application/x-www-form-urlencoded",
             )
             .form(&[("q", query), ("kl", "us-en")])
-            .send()
+            .send_with_retry(&self.client, "websearch")
             .await?;
 
         if !response.status().is_success() {
@@ -269,7 +312,7 @@ impl WebSearchTool {
                 ("mkt", market),
             ])
             .header("Ocp-Apim-Subscription-Key", api_key)
-            .send()
+            .send_with_retry(&self.client, "websearch")
             .await?;
 
         if !response.status().is_success() {
@@ -301,7 +344,7 @@ impl WebSearchTool {
                 reqwest::header::USER_AGENT,
                 "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36",
             )
-            .send()
+            .send_with_retry(&self.client, "websearch")
             .await?;
 
         if !response.status().is_success() {
@@ -361,7 +404,7 @@ impl WebSearchTool {
                 "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36",
             )
             .header(reqwest::header::ACCEPT, "application/json")
-            .send()
+            .send_with_retry(&self.client, "websearch")
             .await?;
 
         if !response.status().is_success() {
@@ -641,6 +684,32 @@ fn html_decode(s: &str) -> String {
         .replace("&apos;", "'")
         .trim()
         .to_string()
+}
+
+/// Truncate a search snippet to a maximum character count, cutting at a word
+/// boundary and appending an ellipsis when truncated. Long snippets rarely
+/// carry more signal beyond the first sentence.
+fn truncate_search_snippet(snippet: &str, max_chars: usize) -> String {
+    if snippet.len() <= max_chars {
+        return snippet.to_string();
+    }
+    let mut cut = max_chars;
+    while cut > 0 && !snippet.is_char_boundary(cut) {
+        cut -= 1;
+    }
+    // Prefer cutting at the last sentence-ending punctuation within budget.
+    if let Some(end) = snippet[..cut].rfind(|c: char| c == '.' || c == '!' || c == '?') {
+        if end > max_chars / 2 {
+            return format!("{}", &snippet[..=end]);
+        }
+    }
+    // Fall back to word boundary.
+    if let Some(space) = snippet[..cut].rfind(' ') {
+        if space > max_chars / 2 {
+            return format!("{}", &snippet[..space]);
+        }
+    }
+    format!("{}", &snippet[..cut])
 }
 
 #[cfg(test)]
