@@ -190,7 +190,7 @@ impl StatusBar {
         history: &TokenHistory,
         width: usize,
     ) -> Line<'static> {
-        let mut spans = Vec::with_capacity(8);
+        let mut spans = Vec::with_capacity(10);
 
         // Spinner with gradient color based on speed
         let spinner_frame = (elapsed.as_millis() / 200) as usize;
@@ -204,7 +204,7 @@ impl StatusBar {
                 .add_modifier(Modifier::BOLD),
         ));
 
-        // TPS — color-coded by throughput tier
+        // TPS — color-coded by throughput tier with adaptive precision
         let tps_color = if tokens_per_second > 80.0 {
             BrandTheme::success()
         } else if tokens_per_second > 40.0 {
@@ -214,8 +214,13 @@ impl StatusBar {
         } else {
             BrandTheme::error()
         };
+        let tps_str = if tokens_per_second >= 100.0 {
+            format!("{:.0}", tokens_per_second)
+        } else {
+            format!("{:.1}", tokens_per_second)
+        };
         spans.push(Span::styled(
-            format!(" · {:.1} tok/s", tokens_per_second),
+            format!(" · {} tok/s", tps_str),
             Style::default().fg(tps_color),
         ));
 
@@ -321,12 +326,28 @@ impl StatusBar {
     }
 
     /// Render connection status with latency color coding.
+    ///
+    /// Displays a connection indicator with tiered latency feedback:
+    /// - ● <50ms green   (excellent)
+    /// - ● <200ms blue   (good)
+    /// - ● <500ms yellow (acceptable)
+    /// - ● >=500ms red   (slow)
+    /// - ○ red            (disconnected)
     pub fn connection_status(connected: bool, latency: Option<Duration>) -> Line<'static> {
-        let mut spans = Vec::with_capacity(2);
+        let mut spans = Vec::with_capacity(4);
 
-        // Connection indicator — filled dot for connected, hollow for disconnected
         let (icon, color) = if connected {
-            ("●", BrandTheme::success())
+            let lat_ms = latency.map(|l| l.as_millis()).unwrap_or(0);
+            let indicator_color = if lat_ms < 50 {
+                BrandTheme::success()
+            } else if lat_ms < 200 {
+                BrandTheme::info()
+            } else if lat_ms < 500 {
+                BrandTheme::warning()
+            } else {
+                BrandTheme::error()
+            };
+            ("●", indicator_color)
         } else {
             ("○", BrandTheme::error())
         };
@@ -335,18 +356,33 @@ impl StatusBar {
             Style::default().fg(color),
         ));
 
-        // Latency with tier-based color
+        // Latency with tier-based color and compact formatting
         if let Some(latency) = latency {
-            let lat_color = if latency.as_millis() < 100 {
-                BrandTheme::success()
-            } else if latency.as_millis() < 500 {
-                BrandTheme::warning()
-            } else {
-                BrandTheme::error()
+            let (lat_str, lat_color) = match latency.as_millis() {
+                0..=49 => (format!("{}ms", latency.as_millis()), BrandTheme::success()),
+                50..=199 => (format!("{}ms", latency.as_millis()), BrandTheme::info()),
+                200..=999 => (format!("{}ms", latency.as_millis()), BrandTheme::warning()),
+                _ => {
+                    let secs = latency.as_secs_f32();
+                    (format!("{:.1}s", secs), BrandTheme::error())
+                }
             };
             spans.push(Span::styled(
-                format!("{}ms", latency.as_millis()),
+                lat_str,
                 Style::default().fg(lat_color),
+            ));
+        }
+
+        // Connection label
+        if connected {
+            spans.push(Span::styled(
+                " live",
+                Style::default().fg(BrandTheme::dim_bright()),
+            ));
+        } else {
+            spans.push(Span::styled(
+                " disconnected",
+                Style::default().fg(BrandTheme::error()),
             ));
         }
 

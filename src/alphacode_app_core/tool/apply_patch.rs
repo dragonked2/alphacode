@@ -57,7 +57,7 @@ impl Tool for ApplyPatchTool {
     }
 
     fn description(&self) -> &str {
-        "Apply a Codex-style *** Begin Patch / *** End Patch patch. Prefer over patch."
+        "Apply a Codex-style patch (*** Begin Patch / *** End Patch). Creates/modify/delete files atomically. Prefer over patch or individual edits for multi-file changes."
     }
 
     fn parameters_schema(&self) -> Value {

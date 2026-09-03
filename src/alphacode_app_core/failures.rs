@@ -151,6 +151,11 @@ fn classify(lower: &str) -> FailureKind {
             "cannot find",
             "could not find",
             "doesn't exist",
+            "no matching files",
+            "path does not exist",
+            "unable to access",
+            "cannot access",
+            "can't access",
         ],
     ) {
         return FailureKind::MissingPath;
@@ -164,6 +169,10 @@ fn classify(lower: &str) -> FailureKind {
             "eacces",
             "not permitted",
             "operation not permitted",
+            "read-only file system",
+            "erofs",
+            "immutable",
+            "immutable file",
         ],
     ) {
         return FailureKind::PermissionDenied;
@@ -175,6 +184,9 @@ fn classify(lower: &str) -> FailureKind {
             "timeout exceeded",
             "deadline exceeded",
             "operation timed out",
+            "request timeout",
+            "read timed out",
+            "initial response timeout",
         ],
     ) {
         return FailureKind::Timeout;
@@ -190,6 +202,12 @@ fn classify(lower: &str) -> FailureKind {
             "yaml parse",
             "regex parse",
             "malformed",
+            "invalid syntax",
+            "unexpected character",
+            "unclosed string",
+            "unclosed bracket",
+            "unexpected end of input",
+            "expected",
         ],
     ) {
         return FailureKind::SyntaxError;
@@ -209,20 +227,24 @@ fn classify(lower: &str) -> FailureKind {
             "tls handshake",
             "connection closed",
             "eof before message",
+            "connection pool closed",
+            "channel closed",
+            "peer closed connection",
+            "transport error",
         ],
     ) {
         return FailureKind::NetworkError;
     }
     if contains_any(
         lower,
-        &["no space left", "enospc", "disk full", "out of disk"],
+        &["no space left", "enospc", "disk full", "out of disk", "quota exceeded"],
     ) {
         return FailureKind::OutOfDisk;
     }
-    if contains_any(lower, &["out of memory", "cannot allocate", "enomem"]) {
+    if contains_any(lower, &["out of memory", "cannot allocate", "enomem", "oom"]) {
         return FailureKind::OutOfMemory;
     }
-    if contains_any(lower, &["already exists", "file exists", "eexist"]) {
+    if contains_any(lower, &["already exists", "file exists", "eexist", "directory not empty"]) {
         return FailureKind::AlreadyExists;
     }
     if contains_any(
@@ -232,11 +254,13 @@ fn classify(lower: &str) -> FailureKind {
             "einval",
             "bad argument",
             "illegal argument",
+            "invalid value",
+            "out of range",
         ],
     ) {
         return FailureKind::InvalidArgument;
     }
-    if contains_any(lower, &["not implemented", "todo", "unimplemented"]) {
+    if contains_any(lower, &["not implemented", "todo", "unimplemented", "unsupported operation"]) {
         return FailureKind::NotImplemented;
     }
     if contains_any(
@@ -246,6 +270,7 @@ fn classify(lower: &str) -> FailureKind {
             "canceled",
             "aborted by user",
             "user interrupted",
+            "interrupted",
         ],
     ) {
         return FailureKind::Cancelled;
@@ -258,49 +283,72 @@ fn contains_any(haystack: &str, needles: &[&str]) -> bool {
 }
 
 fn build_hint(kind: FailureKind, count: u32, raw: &str) -> String {
-    let already = if count > 1 {
-        format!(" (already tried {}x this turn)", count)
+    let retry_nag = if count > 3 {
+        format!(" [{}x this turn — you MUST try a completely different approach]", count)
+    } else if count > 2 {
+        format!(" [{}x this turn — try a different approach]", count)
+    } else if count > 1 {
+        format!(" [{}x this turn]", count)
     } else {
         String::new()
     };
     match kind {
-        FailureKind::MissingPath => format!(
-            "Hint: the path is wrong. Run `ls` on the parent directory before retrying{}.",
-            already
-        ),
-        FailureKind::PermissionDenied => format!(
-            "Hint: this is a permissions error. Check the file mode or use a different path{}.",
-            already
-        ),
-        FailureKind::Timeout => format!(
-            "Hint: the operation timed out. Try a smaller scope or raise the deadline{}.",
-            already
-        ),
-        FailureKind::SyntaxError => format!(
-            "Hint: the input has a syntax error. Read the error position carefully{}.",
-            already
-        ),
+        FailureKind::MissingPath => {
+            if count > 3 {
+                "Hint: path still wrong after many retries. STOP guessing — run `ls` on the exact parent, read the output, then use the precise filename from it.".into()
+            } else if count > 2 {
+                "Hint: path still wrong after retries. Use `ls` on the parent, then use the exact name from the listing.".into()
+            } else {
+                "Hint: path not found. Run `ls` on the parent directory first.".into()
+            }
+        }
+        FailureKind::PermissionDenied => {
+            if count > 2 {
+                "Hint: permissions error persists. Stop retrying the same write — check `ls -la` output, fix ownership, or write to a directory you own.".into()
+            } else {
+                "Hint: permissions error. Check file ownership/mode, or use a path you own.".into()
+            }
+        }
+        FailureKind::Timeout => {
+            if count > 2 {
+                "Hint: timed out repeatedly. You MUST narrow the scope dramatically — use specific line ranges, exact file paths, and avoid scanning entire directories.".into()
+            } else if count > 1 {
+                "Hint: timed out again. Use a smaller scope, narrower file range, or specific line numbers.".into()
+            } else {
+                "Hint: timed out. Try a smaller scope or add line range limits.".into()
+            }
+        }
+        FailureKind::SyntaxError => {
+            if count > 2 {
+                "Hint: persistent syntax error. Read the file first with the read tool, find the exact error location, then fix precisely at that point.".into()
+            } else {
+                "Hint: syntax error. Check the exact error position and fix the malformed input.".into()
+            }
+        }
         FailureKind::NetworkError => {
-            // Network errors are transient; we don't pile on retry pressure.
+            // Network errors are transient; retries are handled upstream.
             String::new()
         }
-        FailureKind::OutOfDisk => "Hint: host is out of disk space; free some and retry.".into(),
-        FailureKind::OutOfMemory => "Hint: host is out of memory; shrink the request.".into(),
+        FailureKind::OutOfDisk => "Hint: disk full. Remove temp files or free space.".into(),
+        FailureKind::OutOfMemory => "Hint: out of memory. Reduce the scope of the operation.".into(),
         FailureKind::AlreadyExists => {
-            "Hint: target already exists. Use a different name or delete it first.".into()
+            if count > 1 {
+                "Hint: file already exists. Use `write` to overwrite entirely, or use `edit` for surgical changes, or pick a different filename.".into()
+            } else {
+                "Hint: file already exists. Use `write` to overwrite, or pick a new name.".into()
+            }
         }
         FailureKind::InvalidArgument => {
-            "Hint: an argument is invalid; review the input shape against the schema.".into()
+            "Hint: bad argument. Re-read the tool schema and fix the input shape.".into()
         }
         FailureKind::NotImplemented => {
-            "Hint: this functionality is not implemented; pick a different approach.".into()
+            "Hint: not implemented here. Try a different tool or approach.".into()
         }
         FailureKind::Cancelled => String::new(),
         FailureKind::Unknown => {
-            // For unknown errors, forward a tiny excerpt of the raw text so
-            // the model can self-debug.
-            let ex = truncate(raw, 160);
-            format!("Hint: error context: {}", ex)
+            // For unknown errors, forward a tiny excerpt so the model can self-debug.
+            let ex = truncate(raw, 120);
+            format!("Hint: {}{}", ex, retry_nag)
         }
     }
 }

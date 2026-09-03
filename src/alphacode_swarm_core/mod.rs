@@ -527,14 +527,32 @@ pub fn normalize_completion_report(report: Option<String>) -> Option<String> {
         return None;
     }
 
-    let char_count = report.chars().count();
+    // Step 1: Collapse redundant whitespace to save tokens.
+    let collapsed = report.split_whitespace().collect::<Vec<_>>().join(" ");
+
+    let char_count = collapsed.chars().count();
     if char_count <= MAX_SWARM_COMPLETION_REPORT_CHARS {
-        return Some(report);
+        return Some(collapsed);
+    }
+
+    // Step 2: Try to cut at a sentence boundary for cleaner truncation.
+    let mut cut = MAX_SWARM_COMPLETION_REPORT_CHARS.saturating_sub(80);
+    while cut > 0 && !collapsed.is_char_boundary(cut) {
+        cut -= 1;
+    }
+    // Prefer cutting at the last sentence-ending punctuation within budget.
+    if let Some(end) = collapsed[..cut].rfind(|c: char| c == '.' || c == '!' || c == '?') {
+        if end > cut / 2 {
+            cut = end + 1;
+        }
+    } else if let Some(space) = collapsed[..cut].rfind(' ') {
+        if space > cut / 2 {
+            cut = space;
+        }
     }
 
     let suffix = "\n\n[Report truncated by alphacode before delivery.]";
-    let keep_chars = MAX_SWARM_COMPLETION_REPORT_CHARS.saturating_sub(suffix.chars().count());
-    let mut truncated: String = report.chars().take(keep_chars).collect();
+    let mut truncated: String = collapsed.chars().take(cut).collect();
     truncated.push_str(suffix);
     Some(truncated)
 }
@@ -579,8 +597,12 @@ pub fn completion_notification_message(name: &str, status: &str, report: Option<
     let intro = completion_status_intro(name, status);
     let followup = completion_followup(status, report.is_some());
     match report {
-        Some(report) => format!("{intro}\n\nReport:\n{report}\n\n{followup}"),
-        None => format!("{intro}\n\nNo final textual report was produced. {followup}"),
+        Some(report) => {
+            // Compact format: collapse whitespace to save tokens on delivery.
+            let compact = report.split_whitespace().collect::<Vec<_>>().join(" ");
+            format!("{intro}\nReport: {compact}\n{followup}")
+        }
+        None => format!("{intro}\nNo final report. {followup}"),
     }
 }
 

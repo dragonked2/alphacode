@@ -171,7 +171,7 @@ impl Tool for AgentGrepTool {
     }
 
     fn description(&self) -> &str {
-        "Search code and file names with advanced patterns (ripgrep-based). Use this to find function definitions, variable usage, imports, error patterns, or any code pattern across the codebase. Supports regex, word boundaries, and file type filtering. Default mode is grep. Use this before reading files to locate what you need."
+        "Search code with ripgrep: grep (patterns), find (files), outline (structure), trace (callers). Use before reading files to locate targets. Supports regex and file type filtering."
     }
 
     fn parameters_schema(&self) -> Value {

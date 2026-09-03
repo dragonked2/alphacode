@@ -7,7 +7,7 @@
 /// Maximum number of retry attempts for a single Antigravity generateContent
 /// call when the upstream returns 429 / RESOURCE_EXHAUSTED. Matches the
 /// budget used by the Anthropic provider runtime.
-const MAX_RETRIES: u32 = 3;
+const MAX_RETRIES: u32 = crate::alphacode_provider_core::retry::MAX_ATTEMPTS;
 
 use crate::alphacode_base::auth::antigravity as antigravity_auth;
 use crate::alphacode_message_types::{ConnectionPhase, Message, StreamEvent, ToolDefinition};
@@ -397,9 +397,12 @@ impl AntigravityProvider {
                 let server_hint =
                     crate::alphacode_provider_core::retry_after::retry_after(&headers)
                         .map(|hint| hint.remaining());
-                let delay = crate::alphacode_provider_core::retry_after::retry_delay(
-                    attempt + 1,
-                    1_000,
+                // Use the unified retry policy: prefer the server hint, otherwise
+                // back off with the rate-limit base (5s, doubled per attempt with
+                    // +/-20% jitter, capped at 180s).
+                let delay = crate::alphacode_provider_core::retry::backoff_for(
+                    crate::alphacode_provider_core::retry::RetryReason::RateLimited,
+                    attempt,
                     server_hint,
                 );
                 crate::alphacode_base::logging::info(&format!(

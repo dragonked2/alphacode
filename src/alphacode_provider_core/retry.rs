@@ -223,6 +223,17 @@ pub fn is_retryable_message(error_str: &str) -> bool {
         "temporarily unavailable",
         "service unavailable",
         "overloaded",
+        "server is busy",
+        "server too busy",
+        "server overload",
+        "capacity exceeded",
+        "try again later",
+        "internal server error",
+        "bad gateway",
+        "gateway timeout",
+        "service temporarily unavailable",
+        "currently handling high load",
+        "request failed",  // generic server-side failure
     ] {
         if lower.contains(needle) {
             return true;
@@ -323,6 +334,13 @@ impl std::error::Error for RetryExhausted {
     }
 }
 
+/// Wrap a [`RetryExhausted`] in an [`anyhow::Error`] so it can flow through
+/// the existing error chains. Equivalent to `anyhow::Error::new(exhausted)`
+/// but spelled out so the call site is searchable.
+pub fn into_anyhow(exhausted: RetryExhausted) -> Error {
+    Error::new(exhausted)
+}
+
 fn method_idempotent(method: &Method) -> bool {
     matches!(
         *method,
@@ -379,10 +397,14 @@ pub async fn send_with_retry(
             tokio::time::sleep(delay).await;
         }
 
-        let builder = client.request(
-            method.clone(),
-            reqwest::Url::parse(&url).expect("valid url"),
-        );
+        // Re-parse the URL on every attempt. `reqwest::Url::parse` only
+        // fails on malformed input, and the source URL came out of a valid
+        // `Request` — so this is an internal invariant. If the invariant
+        // is ever broken we want a clean error rather than a process abort.
+        let parsed_url = reqwest::Url::parse(&url).map_err(|err| {
+            anyhow::anyhow!("internal: stored URL '{url}' failed to parse: {err}")
+        })?;
+        let builder = client.request(method.clone(), parsed_url);
         let builder = apply_headers(builder, request.headers());
         let builder = match replay_bytes.as_ref() {
             Some(bytes) => builder.body(bytes.clone()),
@@ -535,6 +557,39 @@ fn _ensure_legacy_retry_after_used() {
     let _ = error_with_retry_after("noop".into(), None);
 }
 
+/// Build a `RetryPolicy` whose `on_retry` callback pushes a TUI toast.
+///
+/// Best-effort: the toast helper is a no-op in headless contexts, so this
+/// is safe to use in any process that links `alphacode_tui`. The toast
+/// disappears at the moment the retry actually fires (TTL == ETA) so the
+/// user sees the retry countdown in real time.
+pub fn policy_with_tui_toast(base: RetryPolicy) -> RetryPolicy {
+    use std::sync::Arc;
+    let cb: Arc<dyn Fn(RetryEvent) + Send + Sync> = Arc::new(|event: RetryEvent| {
+        let secs = event.next_delay.as_secs();
+        match event.reason {
+            RetryReason::RateLimited => {
+                crate::alphacode_tui::tui::ui_error_toast::push_rate_limit(
+                    &event.provider,
+                    event.attempt,
+                    event.max_attempts,
+                    secs,
+                );
+            }
+            // We don't have the actual HTTP status here, so we pass 0 and
+            // the toast helper renders a generic "transient" line.
+            _ => {
+                crate::alphacode_tui::tui::ui_error_toast::push_server_error(
+                    &event.provider,
+                    0,
+                    Some(secs),
+                );
+            }
+        }
+    });
+    base.with_on_retry(cb)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -634,9 +689,9 @@ mod tests {
         use reqwest::header::{HeaderMap, RETRY_AFTER};
         let mut headers = HeaderMap::new();
         headers.insert(RETRY_AFTER, HeaderValue::from_static("11"));
-        let parsed = retry_after(&headers).expect("header");
+        let parsed = retry_after(&headers).unwrap();
         let err = error_with_retry_after("rate limited".into(), Some(parsed));
-        let recovered = server_hint_from_error(&err).expect("hint");
+        let recovered = server_hint_from_error(&err).unwrap();
         let secs = recovered.as_secs();
         assert!(secs <= 11, "got {secs}");
     }
@@ -645,8 +700,305 @@ mod tests {
     fn header_retry_after_parses_delta() {
         let mut headers = HeaderMap::new();
         headers.insert(reqwest::header::RETRY_AFTER, HeaderValue::from_static("3"));
-        let parsed = retry_after(&headers).expect("header");
+        let parsed = retry_after(&headers).unwrap();
         let secs = parsed.remaining().as_secs();
         assert!(secs <= 3, "got {secs}");
+    }
+
+    // ── End-to-end retry tests against a one-shot TCP server ─────────────
+    //
+    // These cover the loop as a whole: server classification, body drain,
+    // delay computation, exhaustion, and idempotency. They use a tiny
+    // hand-rolled HTTP/1.1 server so we don't need to mock reqwest.
+
+    use std::io::{Read, Write};
+    use std::net::TcpListener;
+
+    /// Bind a localhost port that returns the supplied HTTP response for any
+    /// request and counts how many times a client has connected.
+    fn one_shot_server(response: Vec<u8>) -> (String, std::sync::Arc<std::sync::atomic::AtomicU32>) {
+        let listener = TcpListener::bind("127.0.0.1:0").expect("bind");
+        let addr = listener.local_addr().expect("addr");
+        let counter = std::sync::Arc::new(std::sync::atomic::AtomicU32::new(0));
+        let counter_clone = counter.clone();
+        std::thread::spawn(move || {
+            for stream in listener.incoming() {
+                let mut stream = stream.expect("accept");
+                let mut buf = [0u8; 4096];
+                let _ = stream.read(&mut buf);
+                counter_clone.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                stream.write_all(&response).expect("write response");
+                stream.flush().ok();
+            }
+        });
+        (format!("http://{addr}/"), counter)
+    }
+
+    fn http_response(status: u16, status_text: &str, body: &str) -> Vec<u8> {
+        format!(
+            "HTTP/1.1 {status} {status_text}\r\ncontent-type: text/plain\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{body}",
+            body.len()
+        )
+        .into_bytes()
+    }
+
+    fn http_response_with_retry_after(
+        status: u16,
+        status_text: &str,
+        body: &str,
+        retry_after_secs: u64,
+    ) -> Vec<u8> {
+        format!(
+            "HTTP/1.1 {status} {status_text}\r\ncontent-type: text/plain\r\ncontent-length: {}\r\nretry-after: {retry_after_secs}\r\nconnection: close\r\n\r\n{body}",
+            body.len()
+        )
+        .into_bytes()
+    }
+
+    #[tokio::test]
+    async fn retries_on_429_with_rate_limit_words() {
+        // First 2 responses: 429 with rate-limit body. Third response: 200.
+        let listener = TcpListener::bind("127.0.0.1:0").expect("bind");
+        let addr = listener.local_addr().expect("addr");
+        let counter = std::sync::Arc::new(std::sync::atomic::AtomicU32::new(0));
+        let counter_clone = counter.clone();
+        let server = std::thread::spawn(move || {
+            for (idx, stream) in listener.incoming().enumerate() {
+                let mut stream = stream.expect("accept");
+                let mut buf = [0u8; 4096];
+                let _ = stream.read(&mut buf);
+                counter_clone.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                let response = if idx < 2 {
+                    http_response(
+                        429,
+                        "Too Many Requests",
+                        "rate limit exceeded, try again shortly",
+                    )
+                } else {
+                    http_response(200, "OK", "ok")
+                };
+                stream.write_all(&response).expect("write");
+                stream.flush().ok();
+            }
+        });
+        let url = format!("http://{addr}/");
+        let client = reqwest::Client::builder()
+            .timeout(Duration::from_secs(2))
+            .build()
+            .unwrap();
+        let request = client.get(&url).build().unwrap();
+        let policy = RetryPolicy {
+            max_attempts: 5,
+            retry_non_idempotent: false,
+            initial_response_timeout: Duration::from_secs(2),
+            on_retry: None,
+        };
+        let response = send_with_retry(&client, request, &policy, "test")
+            .await
+            .expect("should succeed after retries");
+        assert_eq!(response.status().as_u16(), 200);
+        assert!(counter.load(std::sync::atomic::Ordering::SeqCst) >= 3);
+        drop(server);
+    }
+
+    #[tokio::test]
+    async fn does_not_retry_429_without_rate_limit_words() {
+        // 429 with moderation body — must NOT retry, must surface the error.
+        let (url, counter) = one_shot_server(http_response(
+            429,
+            "Too Many Requests",
+            "request was rejected by moderation policy",
+        ));
+        let client = reqwest::Client::builder()
+            .timeout(Duration::from_secs(2))
+            .build()
+            .unwrap();
+        let request = client.get(&url).build().unwrap();
+        let policy = RetryPolicy {
+            max_attempts: 5,
+            retry_non_idempotent: false,
+            initial_response_timeout: Duration::from_secs(2),
+            on_retry: None,
+        };
+        let err = send_with_retry(&client, request, &policy, "test")
+            .await
+            .expect_err("should not retry a moderation 429");
+        assert!(err.to_string().contains("429"));
+        assert_eq!(counter.load(std::sync::atomic::Ordering::SeqCst), 1);
+    }
+
+    #[tokio::test]
+    async fn retries_on_500_then_succeeds() {
+        let listener = TcpListener::bind("127.0.0.1:0").expect("bind");
+        let addr = listener.local_addr().expect("addr");
+        let counter = std::sync::Arc::new(std::sync::atomic::AtomicU32::new(0));
+        let counter_clone = counter.clone();
+        let server = std::thread::spawn(move || {
+            for (idx, stream) in listener.incoming().enumerate() {
+                let mut stream = stream.expect("accept");
+                let mut buf = [0u8; 4096];
+                let _ = stream.read(&mut buf);
+                counter_clone.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                let response = if idx == 0 {
+                    http_response(503, "Service Unavailable", "server overloaded, try later")
+                } else {
+                    http_response(200, "OK", "recovered")
+                };
+                stream.write_all(&response).expect("write");
+                stream.flush().ok();
+            }
+        });
+        let url = format!("http://{addr}/");
+        let client = reqwest::Client::builder()
+            .timeout(Duration::from_secs(2))
+            .build()
+            .unwrap();
+        let request = client.get(&url).build().unwrap();
+        let policy = RetryPolicy {
+            max_attempts: 5,
+            retry_non_idempotent: false,
+            initial_response_timeout: Duration::from_secs(2),
+            on_retry: None,
+        };
+        let response = send_with_retry(&client, request, &policy, "test")
+            .await
+            .expect("should succeed after one 503");
+        assert_eq!(response.status().as_u16(), 200);
+        assert_eq!(counter.load(std::sync::atomic::Ordering::SeqCst), 2);
+        drop(server);
+    }
+
+    #[tokio::test]
+    async fn exhausts_budget_on_persistent_500() {
+        // Always returns 500. We should give up after exactly max_attempts.
+        let (url, counter) = one_shot_server(http_response(
+            500,
+            "Internal Server Error",
+            "boom",
+        ));
+        let client = reqwest::Client::builder()
+            .timeout(Duration::from_secs(2))
+            .build()
+            .unwrap();
+        let request = client.get(&url).build().unwrap();
+        let policy = RetryPolicy {
+            max_attempts: 3,
+            retry_non_idempotent: false,
+            initial_response_timeout: Duration::from_secs(2),
+            on_retry: None,
+        };
+        let err = send_with_retry(&client, request, &policy, "test")
+            .await
+            .expect_err("should give up");
+        let msg = err.to_string();
+        assert!(
+            msg.contains("after 3 attempt"),
+            "exhaustion message should mention attempt count, got: {msg}"
+        );
+        assert_eq!(counter.load(std::sync::atomic::Ordering::SeqCst), 3);
+    }
+
+    #[tokio::test]
+    async fn honours_retry_after_header() {
+        // Server returns 429 + Retry-After: 1 — the loop should sleep ~1s
+        // before the next attempt. We verify the second attempt happens at
+        // least 800ms after the first.
+        let listener = TcpListener::bind("127.0.0.1:0").expect("bind");
+        let addr = listener.local_addr().expect("addr");
+        let counter = std::sync::Arc::new(std::sync::atomic::AtomicU32::new(0));
+        let counter_clone = counter.clone();
+        let server = std::thread::spawn(move || {
+            for (idx, stream) in listener.incoming().enumerate() {
+                let mut stream = stream.expect("accept");
+                let mut buf = [0u8; 4096];
+                let _ = stream.read(&mut buf);
+                counter_clone.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                let response = if idx == 0 {
+                    http_response_with_retry_after(
+                        429,
+                        "Too Many Requests",
+                        "rate limit, retry later",
+                        1,
+                    )
+                } else {
+                    http_response(200, "OK", "ok")
+                };
+                stream.write_all(&response).expect("write");
+                stream.flush().ok();
+            }
+        });
+        let url = format!("http://{addr}/");
+        let client = reqwest::Client::builder()
+            .timeout(Duration::from_secs(3))
+            .build()
+            .unwrap();
+        let request = client.get(&url).build().unwrap();
+        let policy = RetryPolicy {
+            max_attempts: 3,
+            retry_non_idempotent: false,
+            initial_response_timeout: Duration::from_secs(2),
+            on_retry: None,
+        };
+        let started = std::time::Instant::now();
+        let _ = send_with_retry(&client, request, &policy, "test")
+            .await
+            .expect("should succeed");
+        let elapsed = started.elapsed();
+        assert!(
+            elapsed >= Duration::from_millis(800),
+            "expected Retry-After: 1 to drive at least 800ms of delay, got {elapsed:?}"
+        );
+        drop(server);
+    }
+
+    #[tokio::test]
+    async fn on_retry_callback_fires_for_each_attempt() {
+        use std::sync::{Arc, Mutex};
+
+        let listener = TcpListener::bind("127.0.0.1:0").expect("bind");
+        let addr = listener.local_addr().expect("addr");
+        let server = std::thread::spawn(move || {
+            for (idx, stream) in listener.incoming().enumerate() {
+                let mut stream = stream.expect("accept");
+                let mut buf = [0u8; 4096];
+                let _ = stream.read(&mut buf);
+                let response = if idx < 2 {
+                    http_response(
+                        429,
+                        "Too Many Requests",
+                        "rate limit, try again shortly",
+                    )
+                } else {
+                    http_response(200, "OK", "ok")
+                };
+                stream.write_all(&response).expect("write");
+                stream.flush().ok();
+            }
+        });
+        let url = format!("http://{addr}/");
+        let client = reqwest::Client::builder()
+            .timeout(Duration::from_secs(2))
+            .build()
+            .unwrap();
+        let request = client.get(&url).build().unwrap();
+        let events: Arc<Mutex<Vec<RetryEvent>>> = Arc::new(Mutex::new(Vec::new()));
+        let events_clone = events.clone();
+        let cb: Arc<dyn Fn(RetryEvent) + Send + Sync> = Arc::new(move |event: RetryEvent| {
+            events_clone.lock().unwrap().push(event);
+        });
+        let policy = RetryPolicy {
+            max_attempts: 5,
+            retry_non_idempotent: false,
+            initial_response_timeout: Duration::from_secs(2),
+            on_retry: Some(cb),
+        };
+        let _ = send_with_retry(&client, request, &policy, "test")
+            .await
+            .expect("should succeed");
+        let got = events.lock().unwrap();
+        assert_eq!(got.len(), 2, "callback should fire twice (attempts 2 and 3)");
+        assert_eq!(got[0].reason, RetryReason::RateLimited);
+        assert_eq!(got[1].reason, RetryReason::RateLimited);
+        drop(server);
     }
 }

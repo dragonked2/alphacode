@@ -31,15 +31,16 @@ pub(super) fn cap_tool_output_for_history(tool_name: &str, mut output: ToolOutpu
         .rev()
         .collect();
     let dropped = original_chars - head_limit - tail_limit;
+    let saved_tokens = dropped / 4;
     output.output = format!(
-        "{}\n\n[... {} chars truncated from {} total: kept {} head + {} tail. Tool `{}` output was {} chars. Redirect large logs to a file and read targeted sections.]\n\n{}",
+        "{}\n\n[... {} chars truncated (~{}k tokens saved). Kept {} head + {} tail from {} total chars. Tool `{}`: redirect large output to a file and read targeted sections.]\n\n{}",
         head.trim_end(),
         dropped,
-        original_chars,
+        saved_tokens / 1000,
         head_limit,
         tail_limit,
-        tool_name,
         original_chars,
+        tool_name,
         tail.trim_start(),
     );
     output

@@ -29,6 +29,134 @@ const REQUEST_ID: u64 = 1;
 /// with the server's recursive-spawn RAM safety guard).
 const LIGHT_MODE_DEFAULT_CONCURRENCY: usize = 4;
 
+/// Minimum delay between consecutive spawn requests to avoid bursting the
+/// provider's rate limit. Most providers allow ~2-5 concurrent requests; a
+/// 400ms stagger keeps the first wave under most rate limits while still
+/// saturating a small pool within 2 seconds.
+const SPAWN_STAGGER_DELAY_MS: u64 = 400;
+
+/// Maximum number of consecutive rate-limit (429) failures before the adaptive
+/// concurrency controller backs off. Once this threshold is hit, concurrency
+/// is halved and a recovery timer starts.
+const RATE_LIMIT_BACKOFF_THRESHOLD: u32 = 3;
+
+/// Recovery time (in coordination loops) before the adaptive controller
+/// attempts to restore full concurrency after a backoff event.
+const RATE_LIMIT_RECOVERY_LOOPS: u32 = 5;
+
+/// Adaptive concurrency state for rate-limit-aware spawn scheduling.
+/// Tracks observed failures and adjusts the effective concurrency limit
+/// to stay under provider rate limits without manual tuning.
+#[derive(Debug, Clone)]
+struct AdaptiveConcurrency {
+    /// The configured maximum (from config or request).
+    configured_max: usize,
+    /// Current effective maximum after adaptive adjustments.
+    effective_max: usize,
+    /// Consecutive rate-limit failures observed in the current window.
+    consecutive_rate_limit_failures: u32,
+    /// Loops remaining before attempting to restore full concurrency.
+    recovery_loops_remaining: u32,
+    /// Total rate-limit hits across the entire run (for diagnostics).
+    total_rate_limit_hits: u32,
+    /// Total successful spawns across the entire run.
+    total_spawns: u32,
+    /// Timestamp of the last spawn (for stagger enforcement).
+    last_spawn_time: std::time::Instant,
+}
+
+impl AdaptiveConcurrency {
+    fn new(configured_max: usize) -> Self {
+        Self {
+            configured_max,
+            effective_max: configured_max,
+            consecutive_rate_limit_failures: 0,
+            recovery_loops_remaining: 0,
+            total_rate_limit_hits: 0,
+            total_spawns: 0,
+            last_spawn_time: std::time::Instant::now(),
+        }
+    }
+
+    /// Record a successful spawn. Resets the consecutive failure counter.
+    fn record_success(&mut self) {
+        self.consecutive_rate_limit_failures = 0;
+        self.total_spawns += 1;
+        self.last_spawn_time = std::time::Instant::now();
+    }
+
+    /// Record a rate-limit failure. May trigger adaptive backoff.
+    fn record_rate_limit_hit(&mut self) {
+        self.consecutive_rate_limit_failures += 1;
+        self.total_rate_limit_hits += 1;
+
+        if self.consecutive_rate_limit_failures >= RATE_LIMIT_BACKOFF_THRESHOLD
+            && self.effective_max > 2
+        {
+            // Halve concurrency and start recovery countdown.
+            self.effective_max = (self.effective_max / 2).max(2);
+            self.recovery_loops_remaining = RATE_LIMIT_RECOVERY_LOOPS;
+        }
+    }
+
+    /// Called at the start of each coordination loop. Manages recovery
+    /// of concurrency after a backoff event.
+    fn tick_recovery(&mut self) {
+        if self.recovery_loops_remaining > 0 {
+            self.recovery_loops_remaining -= 1;
+            if self.recovery_loops_remaining == 0 {
+                // Attempt to restore: increase by 25% (gradual, not sudden).
+                let restored = (self.effective_max * 5 / 4).max(self.effective_max + 1);
+                self.effective_max = restored.min(self.configured_max);
+                // Reset failure counter so a new burst doesn't immediately
+                // re-trigger backoff at the old threshold.
+                self.consecutive_rate_limit_failures = 0;
+            }
+        }
+    }
+
+    /// Whether we should wait before the next spawn to avoid bursting.
+    fn should_stagger(&self) -> bool {
+        self.last_spawn_time.elapsed()
+            < std::time::Duration::from_millis(SPAWN_STAGGER_DELAY_MS)
+    }
+
+    /// How long to wait before the next spawn.
+    fn stagger_delay(&self) -> std::time::Duration {
+        let elapsed = self.last_spawn_time.elapsed();
+        let target = std::time::Duration::from_millis(SPAWN_STAGGER_DELAY_MS);
+        if elapsed >= target {
+            std::time::Duration::ZERO
+        } else {
+            target - elapsed
+        }
+    }
+
+    /// The current effective concurrency limit.
+    fn max_concurrent(&self) -> usize {
+        self.effective_max
+    }
+
+    /// Generate a diagnostic summary for the terminal report.
+    fn report(&self) -> String {
+        if self.total_rate_limit_hits == 0 && self.total_spawns as usize <= self.configured_max {
+            return String::new();
+        }
+        let mut parts = Vec::new();
+        parts.push(format!(
+            "Spawn scheduling: {} spawns, {} rate-limit hits",
+            self.total_spawns, self.total_rate_limit_hits
+        ));
+        if self.effective_max < self.configured_max {
+            parts.push(format!(
+                "Concurrency: {}→{} (adaptive backoff)",
+                self.configured_max, self.effective_max
+            ));
+        }
+        parts.join(" | ")
+    }
+}
+
 mod transport;
 use transport::{send_request, send_request_with_timeout};
 
@@ -954,17 +1082,26 @@ enum AssignErrorAction {
     /// finished owned workers and/or fall back to reusing ready workers instead
     /// of aborting the whole run.
     RecoverCapacity,
+    /// Provider rate limit (429): back off and reduce concurrency.
+    RateLimited,
     /// Anything else is a real failure.
     Fail,
 }
 
 fn classify_assign_error(message: &str) -> AssignErrorAction {
+    let lower = message.to_ascii_lowercase();
     if message.contains("No runnable unassigned tasks")
         || message.contains("No ready or completed swarm agents")
     {
         AssignErrorAction::BreakGracefully
     } else if message.contains("Swarm member limit reached") {
         AssignErrorAction::RecoverCapacity
+    } else if lower.contains("rate limit")
+        || lower.contains("too many requests")
+        || lower.contains("429")
+        || lower.contains("throttl")
+    {
+        AssignErrorAction::RateLimited
     } else {
         AssignErrorAction::Fail
     }
@@ -1247,6 +1384,9 @@ async fn run_swarm_plan_loop(
     let configured_deep_cap = crate::config::config().agents.swarm_max_concurrent_agents;
     let concurrency_limit =
         resolve_run_plan_concurrency(params.concurrency_limit, is_deep, configured_deep_cap);
+    // Wrap the concurrency limit in an adaptive controller that backs off
+    // on rate-limit hits and gradually recovers.
+    let mut adaptive = AdaptiveConcurrency::new(concurrency_limit);
     let timeout_minutes = params.timeout_minutes.unwrap_or(60).max(1);
     let retain_agents = params.retain_agents.unwrap_or(false);
     let spawn_if_needed = params.spawn_if_needed.or(Some(true));
@@ -1326,6 +1466,10 @@ async fn run_swarm_plan_loop(
                 "\n{}",
                 utilization.report(concurrency_limit, is_deep)
             ));
+            let adaptive_report = adaptive.report();
+            if !adaptive_report.is_empty() {
+                output.push_str(&format!("\n{}", adaptive_report));
+            }
             if !summary.low_confidence_ids.is_empty() {
                 output.push_str(&format!(
                     "\nConfidence coverage: {} completed node(s) self-reported LOW confidence: {}. \
@@ -1355,8 +1499,11 @@ async fn run_swarm_plan_loop(
             return Ok(ToolOutput::new(output));
         }
 
+        // Adaptive concurrency: tick recovery, then use the effective limit.
+        adaptive.tick_recovery();
+        let effective_limit = adaptive.max_concurrent();
         let active_count = summary.active_ids.len().max(in_flight_sessions.len());
-        let available_slots = concurrency_limit.saturating_sub(active_count);
+        let available_slots = effective_limit.saturating_sub(active_count);
         let mut assigned_sessions = Vec::new();
         // Member-cap fallback state, reset each coordination loop. When the swarm
         // hits its total member cap, fresh spawns are refused; instead of aborting
@@ -1367,6 +1514,14 @@ async fn run_swarm_plan_loop(
         let mut reuse_only = false;
         let mut slots_remaining = available_slots;
         while slots_remaining > 0 {
+            // Rate-limit-aware stagger: wait between spawns to avoid bursting
+            // the provider's per-second request limit.
+            if !reuse_only && adaptive.should_stagger() {
+                let delay = adaptive.stagger_delay();
+                if !delay.is_zero() {
+                    tokio::time::sleep(delay).await;
+                }
+            }
             let request = Request::CommAssignNext {
                 id: REQUEST_ID,
                 session_id: ctx.session_id.clone(),
@@ -1394,6 +1549,7 @@ async fn run_swarm_plan_loop(
                 }) => {
                     assignment_count += 1;
                     slots_remaining -= 1;
+                    adaptive.record_success();
                     reporter
                         .log(&format!("assigned {} -> {}", task_id, target_session))
                         .await;
@@ -1402,6 +1558,18 @@ async fn run_swarm_plan_loop(
                 Ok(ServerEvent::Error { message, .. }) => {
                     match classify_assign_error(&message) {
                         AssignErrorAction::BreakGracefully => break,
+                        AssignErrorAction::RateLimited => {
+                            // Adaptive backoff: record the hit, reduce concurrency,
+                            // and break to wait for in-flight work to drain.
+                            adaptive.record_rate_limit_hit();
+                            reporter
+                                .log(&format!(
+                                    "rate limited (429); adaptive concurrency: {}→{}",
+                                    adaptive.configured_max, adaptive.effective_max
+                                ))
+                                .await;
+                            break;
+                        }
                         AssignErrorAction::RecoverCapacity => {
                             cap_hits += 1;
                             let freed = if cap_hits == 1 {

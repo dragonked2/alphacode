@@ -864,18 +864,18 @@ impl CopilotApiProvider {
     }
 }
 
+/// Check if an error is transient and should be retried.
+///
+/// Delegates the heavy lifting to the unified
+/// [`crate::alphacode_provider_core::retry::is_retryable_message`] classifier so
+/// every provider agrees on what counts as transient. We keep the
+/// Copilot-specific stream-read-timeout match because it surfaces only on the
+/// streaming transport path.
 fn is_retryable_error(error_str: &str) -> bool {
-    crate::alphacode_provider_core::is_transient_transport_error(error_str)
-        || error_str.contains("500 internal server error")
-        || error_str.contains("502 bad gateway")
-        || error_str.contains("503 service unavailable")
-        || error_str.contains("504 gateway timeout")
-        || error_str.contains("overloaded")
-        || error_str.contains("429 too many requests")
-        || error_str.contains("rate limit")
-        || error_str.contains("rate_limit")
-        || error_str.contains("stream error")
-        || error_str.contains("stream read timeout")
+    let lower = error_str.to_ascii_lowercase();
+    crate::alphacode_provider_core::retry::is_retryable_message(&lower)
+        || lower.contains("stream error")
+        || lower.contains("stream read timeout")
 }
 
 #[async_trait]

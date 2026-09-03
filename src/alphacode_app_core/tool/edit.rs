@@ -33,7 +33,7 @@ impl Tool for EditTool {
     }
 
     fn description(&self) -> &str {
-        "Replace exact text in a file. Provide old_string (exact text to find) and new_string (replacement). old_string must match exactly including whitespace; use a unique enough fragment to avoid accidental multi-match (set replace_all=true only when every occurrence is intended). Prefer this over `write` for modifying existing files. Always read the file first to confirm current contents — guessing at text causes silent no-ops. Make the smallest change that solves the problem: do not bundle unrelated edits into the same call."
+        "Replace exact text in a file. old_string must match exactly (whitespace matters). Use unique fragments to avoid multi-match. Always read the file first. Prefer over `write` for existing files. Make minimal changes — one edit per call."
     }
 
     fn parameters_schema(&self) -> Value {
@@ -178,16 +178,19 @@ fn extract_context(
 }
 
 fn try_flexible_match(content: &str, old_string: &str, file_path: &str) -> Result<ToolOutput> {
-    // Try trimmed matching
+    // Strategy 1: trimmed matching
     let trimmed = old_string.trim();
     if content.contains(trimmed) && trimmed != old_string {
+        let pos = content.find(trimmed).unwrap_or(0);
+        let line_num = content[..pos].lines().count() + 1;
         return Err(anyhow::anyhow!(
-            "old_string not found exactly, but found after trimming whitespace.\n\
-             Try using the exact string from the file, including leading/trailing whitespace."
+            "old_string not found exactly, but found after trimming whitespace near line {}.\
+             Use the exact text from the file, including leading/trailing whitespace.",
+            line_num
         ));
     }
 
-    // Try line-by-line matching with normalized whitespace
+    // Strategy 2: line-by-line matching with normalized whitespace
     let old_lines: Vec<&str> = old_string.lines().collect();
     let content_lines: Vec<&str> = content.lines().collect();
 
@@ -199,18 +202,112 @@ fn try_flexible_match(content: &str, old_string: &str, file_path: &str) -> Resul
 
         if matches {
             return Err(anyhow::anyhow!(
-                "old_string not found exactly, but found with different indentation around line {}.\n\
-                 Make sure to preserve the exact whitespace from the file.",
+                "old_string found near line {} but with different indentation.\
+                 Read the file first, then use the exact text including indentation.",
                 i + 1
             ));
         }
     }
 
+    // Strategy 3: partial match — first 80% of chars
+    let partial_len = (old_string.len() * 4) / 5;
+    if partial_len > 20 {
+        let partial = &old_string[..partial_len];
+        if let Some(pos) = content.find(partial) {
+            let line_num = content[..pos].lines().count() + 1;
+            return Err(anyhow::anyhow!(
+                "old_string partially matches near line {} but diverges after ~{} chars.\
+                 Re-read the file to get the current exact content.",
+                line_num, partial_len
+            ));
+        }
+    }
+
+    // Strategy 4: closest line heuristic
+    if old_lines.len() > 1 {
+        if let Some(longest) = old_lines.iter().max_by_key(|l| l.len()) {
+            if longest.len() > 20 && !content.contains(longest) {
+                let best = content_lines.iter()
+                    .map(|line| (line, line_similarity(line, longest)))
+                    .filter(|(_, score)| *score > 0.6)
+                    .max_by(|a, b| a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal));
+                if let Some((similar, score)) = best {
+                    let line_num = content_lines.iter().position(|l| *l == *similar).unwrap_or(0) + 1;
+                    let snippet = if similar.len() > 80 { &similar[..80] } else { similar };
+                    return Err(anyhow::anyhow!(
+                        "old_string not found. Closest match (~{:.0}% similar) at line {}: \"{}\"\
+                         Re-read the file to get the current content.",
+                        score * 100.0, line_num, snippet
+                    ));
+                }
+            }
+        }
+    }
+
     Err(anyhow::anyhow!(
-        "old_string not found in {}.\n\
-         Use the read tool to see the current file contents.",
+        "old_string not found in {}.\
+         Re-read the file to confirm the current content, then provide the exact text.",
         file_path
     ))
+}
+
+/// Quick similarity score between two strings (0.0 to 1.0).
+/// Uses prefix match, substring containment, and bigram overlap for
+/// accurate fuzzy matching — fast enough for hints.
+fn line_similarity(a: &str, b: &str) -> f32 {
+    if a == b {
+        return 1.0;
+    }
+    let a_lower = a.trim().to_ascii_lowercase();
+    let b_lower = b.trim().to_ascii_lowercase();
+    if a_lower == b_lower {
+        return 0.95;
+    }
+    let common_prefix = a_lower.chars().zip(b_lower.chars()).take_while(|(x, y)| x == y).count();
+    let max_len = a_lower.len().max(b_lower.len());
+    if max_len == 0 {
+        return 0.0;
+    }
+    let prefix_score = common_prefix as f32 / max_len as f32;
+    let contains_score = if a_lower.contains(&b_lower) || b_lower.contains(&a_lower) {
+        0.7
+    } else {
+        0.0
+    };
+    // Bigram overlap: catches lines that differ only in a few characters
+    let bigram_score = bigram_similarity(&a_lower, &b_lower);
+    prefix_score.max(contains_score).max(bigram_score)
+}
+
+/// Character bigram overlap similarity (Dice coefficient).
+/// Catches lines that differ only in a few characters (e.g. variable names,
+/// counters, timestamps) — critical for accurate edit-failure hints.
+fn bigram_similarity(a: &str, b: &str) -> f32 {
+    let a_bytes = a.as_bytes();
+    let b_bytes = b.as_bytes();
+    if a_bytes.len() < 2 || b_bytes.len() < 2 {
+        return 0.0;
+    }
+    let mut intersection = 0u32;
+    // Use a small 64-bucket counter for speed over precision
+    let mut a_counts = [0u16; 64];
+    let mut b_counts = [0u16; 64];
+    for w in a_bytes.windows(2) {
+        let idx = ((w[0] as usize) ^ (w[1] as usize)) & 63;
+        a_counts[idx] += 1;
+    }
+    for w in b_bytes.windows(2) {
+        let idx = ((w[0] as usize) ^ (w[1] as usize)) & 63;
+        b_counts[idx] += 1;
+    }
+    for i in 0..64 {
+        intersection += a_counts[i].min(b_counts[i]) as u32;
+    }
+    let total = (a_bytes.len() - 1) as u32 + (b_bytes.len() - 1) as u32;
+    if total == 0 {
+        return 0.0;
+    }
+    (2.0 * intersection as f32) / total as f32
 }
 
 #[cfg(test)]
@@ -347,5 +444,31 @@ mod tests {
         assert_eq!(end, 5, "Should clamp to last line");
         assert!(ctx.contains("line 3"), "Should include line 3");
         assert!(ctx.contains("line 5"), "Should include line 5");
+    }
+
+    #[test]
+    fn test_bigram_similarity_identical() {
+        assert_eq!(bigram_similarity("hello world", "hello world"), 1.0);
+    }
+
+    #[test]
+    fn test_bigram_similarity_different() {
+        let score = bigram_similarity("completely different text", "nothing alike at all");
+        assert!(score < 0.3, "expected low similarity, got {score}");
+    }
+
+    #[test]
+    fn test_bigram_similarity_similar() {
+        let score = bigram_similarity(
+            "line 42 content here repeated stuff",
+            "line 43 content here repeated stuff",
+        );
+        assert!(score > 0.8, "expected high similarity, got {score}");
+    }
+
+    #[test]
+    fn test_bigram_similarity_short_strings() {
+        assert_eq!(bigram_similarity("a", "b"), 0.0);
+        assert_eq!(bigram_similarity("", ""), 0.0);
     }
 }

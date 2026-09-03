@@ -269,7 +269,7 @@ impl Tool for SessionSearchTool {
     }
 
     fn description(&self) -> &str {
-        "Search past chat sessions. Current session and tool noise hidden by default."
+        "Search past chat sessions for prior decisions, context, and solutions. Current session and tool noise hidden by default."
     }
 
     fn parameters_schema(&self) -> Value {

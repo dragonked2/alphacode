@@ -101,6 +101,10 @@ pub fn classify_failover_error_message(message: &str) -> FailoverDecision {
         "billing",
         "payment required",
         "usage tier",
+        "throttl",
+        "rate limits exceeded",
+        "slow down",
+        "enhance_your_calm",
     ]
     .iter()
     .any(|needle| lower.contains(needle))
@@ -124,6 +128,12 @@ pub fn classify_failover_error_message(message: &str) -> FailoverDecision {
         "authentication failed",
         "unauthorized",
         "forbidden",
+        "invalid api key",
+        "invalid api_key",
+        "api key not valid",
+        "permission denied",
+        "account suspended",
+        "account disabled",
     ]
     .iter()
     .any(|needle| lower.contains(needle))

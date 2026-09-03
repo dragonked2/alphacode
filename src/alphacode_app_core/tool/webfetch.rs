@@ -1,5 +1,5 @@
 use super::{Tool, ToolContext, ToolOutput};
-use anyhow::Result;
+use anyhow::{Context as _, Result};
 use async_trait::async_trait;
 use futures::StreamExt;
 use serde::Deserialize;
@@ -9,7 +9,7 @@ use std::time::Duration;
 const MAX_SIZE: usize = 5 * 1024 * 1024; // 5MB
 /// Cap on the text handed back to the model. Full pages routinely exceed 150 KB
 /// (~40k tokens) which is rarely worth the context budget.
-const MAX_OUTPUT_CHARS: usize = 40_000;
+const MAX_OUTPUT_CHARS: usize = 30_000;
 /// Links whose target exceeds this length are rendered as their anchor text
 /// only. Long URLs are typically encoded payloads (pre-filled editors, tracking
 /// parameters, data URIs) whose cost far exceeds their navigational value.
@@ -87,7 +87,11 @@ impl Tool for WebFetchTool {
         let timeout = params.timeout.unwrap_or(DEFAULT_TIMEOUT).min(MAX_TIMEOUT);
         let format = params.format.as_deref().unwrap_or("markdown");
 
-        let response = self
+        // Use the unified retry policy so a flaky CDN doesn't burn the user's
+        // time on a 5-minute backoff. WebFetch is GET-only, so all retries are
+        // safe by default. The  wrapper pushes a
+        // dismissible toast on every retry so the user sees the countdown.
+        let request = self
             .client
             .get(&params.url)
             .header(
@@ -95,8 +99,17 @@ impl Tool for WebFetchTool {
                 "Mozilla/5.0 (compatible; Alphacode/1.0)",
             )
             .timeout(Duration::from_secs(timeout))
-            .send()
-            .await?;
+            .build()
+            .context("failed to build webfetch request")?;
+        let response = crate::alphacode_provider_core::retry::send_with_retry(
+            &self.client,
+            request,
+            &crate::alphacode_provider_core::retry::policy_with_tui_toast(
+                crate::alphacode_provider_core::retry::RetryPolicy::for_http_tools(),
+            ),
+            "webfetch",
+        )
+        .await?;
 
         let status = response.status();
         if !status.is_success() {
@@ -167,17 +180,24 @@ impl Tool for WebFetchTool {
         let (output, output_truncated) = truncate_output(output);
 
         let note = if output_truncated {
+            let saved_k = (full_len - output.len()) / 4 / 1000;
             format!(
-                "\n\n(output truncated to {MAX_OUTPUT_CHARS} of {full_len} chars; \
-                 fetch a more specific URL or anchor for the rest)"
+                "\n\n[Truncated: ~{saved_k}k tokens saved — fetch a more specific URL or anchor for the rest]"
             )
         } else {
             String::new()
         };
 
+        // Compact header: show size in KB with one decimal, and line count
+        // for quick context assessment.
+        let line_count = output.lines().count();
         Ok(ToolOutput::new(format!(
-            "Fetched {} ({} bytes)\n\n{}{}",
-            params.url, full_len, output, note
+            "Fetched {} ({:.1}KB, {} lines)\n\n{}{}",
+            params.url,
+            full_len as f64 / 1024.0,
+            line_count,
+            output,
+            note
         )))
     }
 }

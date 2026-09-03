@@ -347,35 +347,86 @@ impl GeminiProvider {
         Ok(models)
     }
 
-    /// Send a request with a single transient-error retry, transparently
-    /// rebuilding the HTTP client on the second attempt. The `make` closure
-    /// produces a fully-configured (auth + body) request builder for each try.
+    /// Send a request with up to [`crate::alphacode_provider_core::retry::MAX_ATTEMPTS`]
+    /// attempts, transparently rebuilding the HTTP client on retry to dodge
+    /// poisoned connection pools. The `make` closure produces a fully-configured
+    /// (auth + body) request builder for each try. Backoff honors the server's
+    /// `Retry-After` header when present, otherwise uses the unified policy.
     async fn send_with_retry<F>(&self, make: F, url: &str) -> Result<reqwest::Response>
     where
         F: Fn(reqwest::Client) -> reqwest::RequestBuilder,
     {
+        use crate::alphacode_provider_core::retry::{
+            RetryReason, MAX_ATTEMPTS, backoff_for, is_retryable_message,
+        };
         let mut last_error: Option<anyhow::Error> = None;
-        for attempt in 0..2 {
+        for attempt in 0..MAX_ATTEMPTS {
             let client = if attempt == 0 {
                 self.client.clone()
             } else {
                 gemini_http_client()
             };
-            match make(client).send().await {
-                Ok(response) => return Ok(response),
-                Err(err) if attempt == 0 && is_transient_gemini_transport_error(&err) => {
+            let response_result = make(client).send().await;
+            match response_result {
+                Ok(response) => {
+                    let status = response.status();
+                    if status.is_success() {
+                        return Ok(response);
+                    }
+                    // Non-2xx: drain the body, decide retry, possibly sleep.
+                    let hint = crate::alphacode_provider_core::retry_after::retry_after(
+                        response.headers(),
+                    )
+                    .map(|h| h.remaining());
+                    let body = response
+                        .text()
+                        .await
+                        .unwrap_or_else(|_| String::from("<unreadable body>"));
+                    let combined = format!("HTTP {status}: {body}");
+                    let retryable = if status.as_u16() == 429 {
+                        is_retryable_message(&combined)
+                    } else {
+                        status.is_server_error()
+                            || status.as_u16() == 408
+                            || status.as_u16() == 409
+                    };
+                    if !retryable || attempt + 1 >= MAX_ATTEMPTS {
+                        return Err(anyhow::anyhow!(combined))
+                            .with_context(|| format!("Gemini request to {url} failed"));
+                    }
+                    let reason = if status.as_u16() == 429 {
+                        RetryReason::RateLimited
+                    } else {
+                        RetryReason::ServerError
+                    };
+                    let delay = backoff_for(reason, attempt, hint);
+                    crate::alphacode_base::logging::warn(&format!(
+                        "[retry] Gemini {url}: attempt {} after {delay:?} ({reason})",
+                        attempt + 1
+                    ));
+                    tokio::time::sleep(delay).await;
+                }
+                Err(err) if is_transient_gemini_transport_error(&err) => {
                     last_error = Some(err.into());
-                    tokio::time::sleep(Duration::from_millis(250)).await;
+                    if attempt + 1 >= MAX_ATTEMPTS {
+                        break;
+                    }
+                    let delay = backoff_for(RetryReason::TransportFault, attempt, None);
+                    crate::alphacode_base::logging::warn(&format!(
+                        "[retry] Gemini {url}: attempt {} after {delay:?} (transport fault)",
+                        attempt + 1
+                    ));
+                    tokio::time::sleep(delay).await;
                 }
                 Err(err) => {
-                    return Err(err).with_context(|| format!("Gemini request to {} failed", url));
+                    return Err(err)
+                        .with_context(|| format!("Gemini request to {url} failed"));
                 }
             }
         }
         let err = last_error.unwrap_or_else(|| anyhow::anyhow!("Gemini request failed"));
-        Err(err).with_context(|| format!("Gemini request to {} failed", url))
+        Err(err).with_context(|| format!("Gemini request to {url} failed"))
     }
-
     async fn post_json<T: DeserializeOwned>(
         &self,
         method: &str,

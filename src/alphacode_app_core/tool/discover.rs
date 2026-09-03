@@ -1012,15 +1012,16 @@ async fn fetch_listing(
         request = request.header(DISCOVERY_BENCHMARK_HEADER, "1");
     }
 
-    let response = request.send().await.map_err(|err| DiscoveryFetchError {
+    let response = crate::alphacode_provider_core::retry::send_builder_with_retry(
+        context.client,
+        request,
+        &crate::alphacode_provider_core::retry::RetryPolicy::for_http_tools(),
+        "discover",
+    )
+    .await
+    .map_err(|err| DiscoveryFetchError {
         message: format!("discovery unavailable: {err}"),
-        failure_reason: if err.is_timeout() {
-            "timeout"
-        } else if err.is_connect() {
-            "connect_error"
-        } else {
-            "transport_error"
-        },
+        failure_reason: "transport_error",
         http_status: None,
         response_bytes: None,
     })?;
@@ -1090,15 +1091,19 @@ async fn submit_suggestion(
     if context.benchmark_run {
         request = request.header(DISCOVERY_BENCHMARK_HEADER, "1");
     }
-    let response = request.send().await.map_err(|err| DiscoveryFetchError {
-        message: format!("catalog suggestion unavailable: {err}"),
-        failure_reason: if err.is_timeout() {
-            "timeout"
-        } else if err.is_connect() {
-            "connect_error"
-        } else {
-            "transport_error"
+    let response = crate::alphacode_provider_core::retry::send_builder_with_retry(
+        context.client,
+        request,
+        &crate::alphacode_provider_core::retry::RetryPolicy {
+            retry_non_idempotent: true,
+            ..crate::alphacode_provider_core::retry::RetryPolicy::for_http_tools()
         },
+        "discover-suggest",
+    )
+    .await
+    .map_err(|err| DiscoveryFetchError {
+        message: format!("catalog suggestion unavailable: {err}"),
+        failure_reason: "transport_error",
         http_status: None,
         response_bytes: None,
     })?;
