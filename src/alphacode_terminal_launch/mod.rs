@@ -718,7 +718,7 @@ fn build_spawn_command(term: &str, command: &TerminalCommand, cwd: &Path) -> Opt
     Some(cmd)
 }
 
-#[cfg(any(not(unix), test))]
+#[cfg(not(unix))]
 fn windows_arg_quote(arg: &str) -> String {
     if arg.is_empty()
         || arg
@@ -731,7 +731,7 @@ fn windows_arg_quote(arg: &str) -> String {
     }
 }
 
-#[cfg(any(not(unix), test))]
+#[cfg(not(unix))]
 fn windows_command_line(args: &[String]) -> String {
     args.iter()
         .map(|arg| windows_arg_quote(arg))
