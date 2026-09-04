@@ -652,7 +652,11 @@ impl SkillRegistry {
         let yaml = &rest[..end];
         let body = rest[end + 3..].trim().to_string();
 
-        let frontmatter: SkillFrontmatter = serde_yaml::from_str(yaml)?;
+        // Normalize CRLF → LF so serde_yaml never chokes on \r inside
+        // quoted YAML values (e.g. the bundled bugbounty SKILL.md which
+        // ships with Windows-style line endings after `include_str!`).
+        let yaml_norm = yaml.replace("\r\n", "\n");
+        let frontmatter: SkillFrontmatter = serde_yaml::from_str(&yaml_norm)?;
 
         Ok((frontmatter, body))
     }
@@ -1512,6 +1516,48 @@ mod tests {
             registry.get("session-skill").is_none(),
             "shared/global reload must never absorb project-local skills"
         );
+    }
+
+    /// Regression test: reload_global must preserve bundled (compiled-in)
+    /// skills. Without this, any skill reload clears bundled skills like
+    /// `/bugbounty` because they were only loaded during the initial
+    /// `load_global()` call at startup.
+    #[test]
+    fn reload_global_preserves_bundled_skills() {
+        let mut registry = SkillRegistry::default();
+        // First reload to populate bundled skills.
+        registry.reload_global().expect("initial reload");
+        let names_before: std::collections::BTreeSet<_> =
+            registry.list().into_iter().map(|s| s.name.clone()).collect();
+        assert!(
+            names_before.contains("bugbounty"),
+            "bundled bugbounty must be present after initial reload"
+        );
+
+        // Second reload must still have bundled skills.
+        registry.reload_global().expect("second reload");
+        let names_after: std::collections::BTreeSet<_> =
+            registry.list().into_iter().map(|s| s.name.clone()).collect();
+        assert_eq!(
+            names_before, names_after,
+            "reload_global must not drop bundled skills; before={:?} after={:?}",
+            names_before, names_after
+        );
+    }
+
+    /// Regression test: CRLF line endings in YAML frontmatter must not
+    /// break serde_yaml parsing. The bundled bugbounty SKILL.md historically
+    /// shipped with Windows-style `\r\n` endings via `include_str!`, causing
+    /// "mapping values are not allowed in this context" errors that silently
+    /// dropped `/bugbounty` from every fresh install.
+    #[test]
+    fn parse_frontmatter_handles_crlf() {
+        let crlf_yaml = "---\r\nname: test-skill\r\ndescription: A test skill with colon inside\r\n---\r\n\nBody here.";
+        let (fm, body) = SkillRegistry::parse_frontmatter(crlf_yaml)
+            .expect("CRLF frontmatter must parse cleanly");
+        assert_eq!(fm.name, "test-skill");
+        assert_eq!(fm.description, "A test skill with colon inside");
+        assert_eq!(body, "Body here.");
     }
 
     #[test]

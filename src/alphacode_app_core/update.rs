@@ -2,8 +2,8 @@ use crate::alphacode_app_core::build;
 use crate::alphacode_app_core::storage;
 use crate::alphacode_update_core::{
     BACKGROUND_UPDATE_THRESHOLD, estimate_release_update_duration, estimate_source_update_duration,
-    format_duration_estimate, get_asset_name, summarize_git_pull_failure, update_estimate,
-    verify_asset_checksum_text, version_is_newer,
+    format_duration_estimate, get_asset_name, is_archive_name, summarize_git_pull_failure,
+    update_estimate, verify_asset_checksum_text, version_is_newer,
 };
 pub use crate::alphacode_update_core::{
     DownloadProgress, GIT_PULL_DIVERGED_SUMMARY, GitHubAsset, GitHubRelease, PreparedUpdate,
@@ -242,7 +242,7 @@ fn platform_asset(release: &GitHubRelease) -> Result<&GitHubAsset> {
     release
         .assets
         .iter()
-        .find(|a| a.name.starts_with(asset_name))
+        .find(|a| a.name.starts_with(asset_name) && is_archive_name(&a.name))
         .ok_or_else(|| anyhow::anyhow!("No asset found for platform: {}", asset_name))
 }
 
@@ -580,7 +580,7 @@ fn check_for_stable_update_blocking() -> Result<Option<GitHubRelease>> {
         let has_asset = release
             .assets
             .iter()
-            .any(|a| a.name.starts_with(asset_name));
+            .any(|a| a.name.starts_with(asset_name) && is_archive_name(&a.name));
 
         if has_asset {
             return Ok(Some(release));
@@ -647,7 +647,7 @@ fn check_for_main_update_blocking() -> Result<Option<GitHubRelease>> {
         let has_asset = release
             .assets
             .iter()
-            .any(|a| a.name.starts_with(asset_name));
+            .any(|a| a.name.starts_with(asset_name) && is_archive_name(&a.name));
         if has_asset {
             let release_version = release.tag_name.trim_start_matches('v');
             let current_version = current_update_semver().trim_start_matches('v');
@@ -983,7 +983,7 @@ pub fn download_and_install_blocking_with_progress(
     let asset = release
         .assets
         .iter()
-        .find(|a| a.name.starts_with(asset_name))
+        .find(|a| a.name.starts_with(asset_name) && is_archive_name(&a.name))
         .ok_or_else(|| anyhow::anyhow!("No asset found for platform: {}", asset_name))?;
 
     let download_url = asset.browser_download_url.clone();
@@ -1244,6 +1244,50 @@ mod tests {
     fn test_asset_name() {
         let name = get_asset_name();
         assert!(name.starts_with("alphacode-"));
+    }
+
+    #[test]
+    fn test_is_archive_name() {
+        assert!(is_archive_name("alphacode-linux-x86_64.tar.gz"));
+        assert!(is_archive_name("alphacode-windows-x86_64.zip"));
+        assert!(!is_archive_name("alphacode-windows-x86_64.sha256"));
+        assert!(!is_archive_name("alphacode-linux-x86_64.sha256"));
+        assert!(!is_archive_name("alphacode-windows-x86_64"));
+        assert!(!is_archive_name("SHA256SUMS"));
+    }
+
+    /// Regression: `platform_asset` must never match a `.sha256` checksum
+    /// sidecar when a real archive exists with the same stem.  Previously
+    /// `starts_with(stem)` matched `.sha256` first (alphabetical), causing
+    /// `/update` to fail with "SHA256SUMS does not list …" on every
+    /// platform.
+    #[test]
+    fn test_platform_asset_skips_sha256_sidecars() {
+        let release = GitHubRelease {
+            tag_name: "v1.0.99".into(),
+            _name: None,
+            _html_url: String::new(),
+            _published_at: None,
+            assets: vec![
+                GitHubAsset {
+                    name: format!("{}.sha256", get_asset_name()),
+                    browser_download_url: String::new(),
+                    _size: 100,
+                },
+                GitHubAsset {
+                    name: format!("{}.zip", get_asset_name()),
+                    browser_download_url: String::new(),
+                    _size: 1024,
+                },
+            ],
+            _target_commitish: String::new(),
+        };
+        let asset = platform_asset(&release).expect("should find archive, not .sha256");
+        assert!(
+            asset.name.ends_with(".zip") || asset.name.ends_with(".tar.gz"),
+            "platform_asset must return the archive, got: {}",
+            asset.name
+        );
     }
 
     #[test]

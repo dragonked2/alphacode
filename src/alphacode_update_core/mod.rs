@@ -216,6 +216,14 @@ pub fn get_asset_name() -> &'static str {
     get_asset_stem()
 }
 
+/// Returns `true` when `name` looks like a release archive (`.tar.gz` or
+/// `.zip`) rather than a `.sha256` checksum sidecar.  Used by
+/// `platform_asset` and download callers so they never accidentally
+/// match a checksum file when looking for the real archive.
+pub fn is_archive_name(name: &str) -> bool {
+    name.ends_with(".tar.gz") || name.ends_with(".zip")
+}
+
 pub fn summarize_git_pull_failure(stderr: &[u8]) -> String {
     let stderr = String::from_utf8_lossy(stderr);
     let text = stderr.trim();
