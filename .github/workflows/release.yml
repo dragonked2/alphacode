@@ -124,6 +124,45 @@ jobs:
             ${{ matrix.archive }}.sha256
           if-no-files-found: ignore
 
+      # Regression guard: every published alphacode binary must contain the
+      # bundled `/bugbounty` skill (and its key subskills) embedded at
+      # compile time so users on any machine/working directory can invoke it.
+      # If this fails the release artifact is broken even if cargo build
+      # succeeded — typically because a contributor deleted a SKILL.md,
+      # removed an `include_str!` entry from `bundled_skills.rs`, or a
+      # platform-conditional cfg stripped the module.
+      - name: Verify bundled /bugbounty skill is in the release binary
+        shell: bash
+        env:
+          ARCHIVE_BASE: ${{ matrix.archive }}
+        run: |
+          set -euo pipefail
+          TMP_DIR="$(mktemp -d)"
+          trap 'rm -rf "$TMP_DIR"' EXIT
+          if [ -f "${ARCHIVE_BASE}.zip" ]; then
+            unzip -q "${ARCHIVE_BASE}.zip" -d "$TMP_DIR"
+          elif [ -f "${ARCHIVE_BASE}.tar.gz" ]; then
+            tar -xzf "${ARCHIVE_BASE}.tar.gz" -C "$TMP_DIR"
+          else
+            echo "::error::no archive found for ${ARCHIVE_BASE}"
+            exit 1
+          fi
+          # The action unpacks binaries straight into the archive root or one
+          # level deep; find whatever alphacode-named executable landed.
+          BIN="$(find "$TMP_DIR" -maxdepth 3 -type f \( -name alphacode -o -name alphacode.exe \) -print -quit)"
+          if [ -z "$BIN" ]; then
+            echo "::error::could not locate alphacode binary inside ${ARCHIVE_BASE} archive"
+            exit 1
+          fi
+          echo "Checking $BIN for bundled /bugbounty skill content ..."
+          for needle in bugbounty pentest-ops knowledge-broker findings-lifecycle evidence-locker tool-doctor runbook network-cloud-triage redteam-ops advanced-techniques hunt-sqli hunt-xss hunt-ssrf hunt-idor hunt-api hunt-graphql hunt-oauth hunt-memory credential-attack client-reverse recon llm-redteam web3-audit security-arsenal report; do
+            if ! grep -aq -- "$needle" "$BIN"; then
+              echo "::error file=src/alphacode_base/bundled_skills/bugbounty/SKILL.md::bundled subskill '$needle' missing from $BIN — the /bugbounty skill is incomplete in this release"
+              exit 1
+            fi
+          done
+          echo "OK: bundled /bugbounty skill is present in the release binary ($BIN)"
+
   release:
     name: publish release
     needs: build

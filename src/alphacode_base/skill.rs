@@ -743,6 +743,12 @@ impl SkillRegistry {
             count += self.load_from_dir_count(&agents_skills)?;
         }
 
+        // Reload bundled skills embedded at compile time so they are always
+        // available after a reload — without this, any skill reload clears
+        // bundled skills (e.g. /bugbounty) because they were only loaded
+        // during the initial `load_global()` call at startup.
+        Self::load_bundled_skills(self);
+
         Ok(count)
     }
 
@@ -1783,5 +1789,123 @@ mod tests {
         let temp = tempfile::tempdir().expect("tempdir");
         let missing = temp.path().join("does-not-exist");
         assert!(SkillRegistry::plugin_skill_dirs_under(&missing).is_empty());
+    }
+
+    // --- Regression tests: ensure every alphacode binary ships with the
+    // bundled `/bugbounty` skill embedded at compile time. These guard against
+    // future drift where a contributor deletes the `bundled_skills/bugbounty/`
+    // tree, removes an `include_str!` entry, or the linker optimizes the
+    // embedded strings away. Without these tests, a user who installs
+    // alphacode on a fresh machine (or from any working directory that has no
+    // project-local `.alphacode/skills/`) would silently lose `/bugbounty`
+    // and have no way to discover why.
+
+    #[test]
+    fn bundled_skill_count_is_at_least_one() {
+        let count = crate::alphacode_base::bundled_skills::bundled_skill_count();
+        assert!(
+            count >= 1,
+            "expected at least one bundled skill, got {count}"
+        );
+    }
+
+    #[test]
+    fn bundled_skill_names_include_bugbounty() {
+        let names = crate::alphacode_base::bundled_skills::bundled_skill_names();
+        assert!(
+            names.iter().any(|n| *n == "bugbounty"),
+            "the `/bugbounty` skill must be bundled so it is available in every \
+             alphacode release regardless of working directory or on-disk install. \
+             Bundled skill names: {names:?}"
+        );
+    }
+
+    #[test]
+    fn bundled_bugbounty_skill_parses_and_registers() {
+        use crate::alphacode_base::bundled_skills::BUNDLED_SKILLS;
+
+        let mut found = false;
+        let mut registry = SkillRegistry::default();
+        for skill in BUNDLED_SKILLS {
+            if skill.name == "bugbounty" {
+                let parsed = SkillRegistry::parse_embedded_skill(
+                    skill.name,
+                    skill.body,
+                    skill.references,
+                )
+                .expect("bundled bugbounty SKILL.md must parse cleanly");
+                assert_eq!(parsed.name, "bugbounty");
+                assert!(
+                    !parsed.description.is_empty(),
+                    "bundled bugbounty description must not be empty"
+                );
+                assert!(
+                    parsed.content.contains("bug bounty")
+                        || parsed.content.contains("Bug Bounty")
+                        || parsed.content.contains("BUG BOUNTY"),
+                    "bundled bugbounty body must contain the hunter methodology text"
+                );
+                registry
+                    .skills
+                    .entry(parsed.name.clone())
+                    .or_insert(parsed);
+                found = true;
+                break;
+            }
+        }
+        assert!(
+            found,
+            "BUNDLED_SKILLS does not contain an entry named `bugbounty`"
+        );
+        assert!(
+            registry.contains("bugbounty"),
+            "bundled bugbounty skill must end up in the registry"
+        );
+    }
+
+    #[test]
+    fn bundled_bugbounty_subskills_are_embedded_as_references() {
+        use crate::alphacode_base::bundled_skills::BUNDLED_SKILLS;
+        let bugbounty = BUNDLED_SKILLS
+            .iter()
+            .find(|s| s.name == "bugbounty")
+            .expect("`bugbounty` must be in BUNDLED_SKILLS");
+        let expected_subskills = [
+            "pentest-ops",
+            "knowledge-broker",
+            "findings-lifecycle",
+            "evidence-locker",
+            "tool-doctor",
+            "runbook",
+            "network-cloud-triage",
+            "redteam-ops",
+            "advanced-techniques",
+            "hunt-sqli",
+            "hunt-xss",
+            "hunt-ssrf",
+            "hunt-idor",
+            "hunt-api",
+            "hunt-graphql",
+            "hunt-oauth",
+            "hunt-memory",
+            "credential-attack",
+            "client-reverse",
+            "recon",
+            "llm-redteam",
+            "web3-audit",
+            "security-arsenal",
+            "report",
+        ];
+        let mut missing: Vec<&str> = Vec::new();
+        for sub in expected_subskills {
+            if !bugbounty.references.iter().any(|(name, _)| *name == sub) {
+                missing.push(sub);
+            }
+        }
+        assert!(
+            missing.is_empty(),
+            "these bugbounty subskills are missing from BUNDLED_SKILLS.references: {missing:?}. \
+             They must be embedded so the methodology is available offline."
+        );
     }
 }
