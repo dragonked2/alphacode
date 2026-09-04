@@ -1042,4 +1042,23 @@ mod tests {
             "'/usr/bin/ghostty' '-e' '/bin/alphacode' '--spawn-hotkey' 'cmd+;'"
         );
     }
+
+    // Cover `LinuxCompositor::name`. This method is only used on Linux at
+    // runtime, but the enclosing module is compiled in test builds on every
+    // platform, so the method would otherwise be flagged as dead code on
+    // macOS/Windows CI. Verifying the labels here also documents the public
+    // user-facing names alphacode prints in setup hints.
+    #[test]
+    fn linux_compositor_name_matches_user_facing_labels() {
+        assert_eq!(LinuxCompositor::Niri.name(), "niri");
+        assert_eq!(LinuxCompositor::Hyprland.name(), "Hyprland");
+        assert_eq!(LinuxCompositor::Sway.name(), "sway");
+        assert_eq!(LinuxCompositor::I3.name(), "i3");
+        assert_eq!(LinuxCompositor::Bspwm.name(), "bspwm/sxhkd");
+        assert_eq!(LinuxCompositor::Gnome.name(), "GNOME");
+        assert_eq!(LinuxCompositor::Kde.name(), "KDE Plasma");
+        assert_eq!(LinuxCompositor::Cinnamon.name(), "Cinnamon");
+        assert_eq!(LinuxCompositor::Mate.name(), "MATE");
+        assert_eq!(LinuxCompositor::Xfce.name(), "XFCE");
+    }
 }

@@ -718,7 +718,8 @@ fn build_spawn_command(term: &str, command: &TerminalCommand, cwd: &Path) -> Opt
     Some(cmd)
 }
 
-#[cfg(not(unix))]
+#[allow(dead_code)]
+#[cfg(any(not(unix), test))]
 fn windows_arg_quote(arg: &str) -> String {
     if arg.is_empty()
         || arg
@@ -731,7 +732,8 @@ fn windows_arg_quote(arg: &str) -> String {
     }
 }
 
-#[cfg(not(unix))]
+#[allow(dead_code)]
+#[cfg(any(not(unix), test))]
 fn windows_command_line(args: &[String]) -> String {
     args.iter()
         .map(|arg| windows_arg_quote(arg))
@@ -1221,6 +1223,42 @@ mod tests {
         assert_eq!(
             env_value(&cmd, "ALPHACODE_SPAWN_SESSION_ID").as_deref(),
             Some("ses_abc")
+        );
+    }
+
+    // Exhaustive tests for the Windows command-line helpers below.
+    // These functions are gated `#[cfg(any(not(unix), test))]`, so on
+    // Unix CI they only exist in the test build. Without callers in the
+    // Unix test binary, clippy/test would flag them as dead code, so we
+    // exercise them here on every platform.
+    #[test]
+    fn windows_arg_quote_handles_plain_and_complex() {
+        assert_eq!(windows_arg_quote("alphacode"), "alphacode");
+        assert_eq!(windows_arg_quote(""), "\"\"");
+        assert_eq!(windows_arg_quote("with space"), "\"with space\"");
+        // Pipe, ampersand, caret, angle-bracket and embedded double-quote
+        // characters must all force quoting; embedded double quotes get
+        // backslash-escaped inside the resulting quoted string.
+        assert_eq!(windows_arg_quote("a&b"), "\"a&b\"");
+        assert_eq!(windows_arg_quote("a|b"), "\"a|b\"");
+        assert_eq!(windows_arg_quote("a^b"), "\"a^b\"");
+        assert_eq!(windows_arg_quote("a<b>c"), "\"a<b>c\"");
+        assert_eq!(windows_arg_quote("a\"b"), "\"a\\\"b\"");
+    }
+
+    #[test]
+    fn windows_command_line_joins_quoted_args() {
+        assert_eq!(
+            windows_command_line(&["alphacode".to_string(), "self-dev".to_string(),]),
+            "alphacode self-dev",
+        );
+        assert_eq!(
+            windows_command_line(&[
+                "cmd".to_string(),
+                "with space".to_string(),
+                "quote\"s".to_string(),
+            ]),
+            "cmd \"with space\" \"quote\\\"s\"",
         );
     }
 }
