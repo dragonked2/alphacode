@@ -137,16 +137,14 @@ mod tests {
         // Asking for +999 from a bright role should saturate to white, not
         // overflow into a negative channel.
         let white = themed_rgb(Role::UserText, (999, 999, 999));
-        match white {
-            Color::Rgb(r, g, b) => assert_eq!((r, g, b), (255, 255, 255)),
-            _ => {}
+        if let Color::Rgb(r, g, b) = white {
+            assert_eq!((r, g, b), (255, 255, 255));
         }
 
         // Asking for -999 from a dark role should saturate to black.
         let black = themed_rgb(Role::UserBg, (-999, -999, -999));
-        match black {
-            Color::Rgb(r, g, b) => assert_eq!((r, g, b), (0, 0, 0)),
-            _ => {}
+        if let Color::Rgb(r, g, b) = black {
+            assert_eq!((r, g, b), (0, 0, 0));
         }
     }
 

@@ -555,9 +555,8 @@ fn format_goal_markdown(goals: &[crate::todo::TodoGoal], group: Option<&str>) ->
 
 /// Plan-level intent lines, shown once for the whole todo list.
 fn format_plan_markdown(_plan: &crate::todo::TodoPlan) -> String {
-    let markdown = String::new();
     // Intention and intent-score are internal plan metadata, not user-facing.
-    markdown
+    String::new()
 }
 
 /// Partition todos into ordered groups (first-seen order, ungrouped last).

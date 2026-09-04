@@ -183,10 +183,11 @@ pub struct RetryEvent {
 
 /// Classification of why we are retrying. Stable across calls so consumers
 /// can chart it.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum RetryReason {
     RateLimited,
     ServerError,
+    #[default]
     TransportFault,
     ServerHint,
 }
@@ -233,7 +234,7 @@ pub fn is_retryable_message(error_str: &str) -> bool {
         "gateway timeout",
         "service temporarily unavailable",
         "currently handling high load",
-        "request failed",  // generic server-side failure
+        "request failed", // generic server-side failure
     ] {
         if lower.contains(needle) {
             return true;
@@ -372,7 +373,7 @@ pub async fn send_with_retry(
     let replay_bytes: Option<bytes::Bytes> = request
         .body()
         .and_then(|body| body.as_bytes())
-        .map(|slice| bytes::Bytes::copy_from_slice(slice));
+        .map(bytes::Bytes::copy_from_slice);
 
     let mut state = LoopState::default();
 
@@ -411,11 +412,8 @@ pub async fn send_with_retry(
             None => builder,
         };
 
-        let send_result = send_with_initial_response_timeout(
-            builder,
-            policy.initial_response_timeout,
-        )
-        .await;
+        let send_result =
+            send_with_initial_response_timeout(builder, policy.initial_response_timeout).await;
 
         match send_result {
             Ok(response) => {
@@ -444,18 +442,17 @@ pub async fn send_with_retry(
                 let combined = format!("HTTP {status}: {body_text}");
 
                 let Some(reason) = reason else {
-                    return Err(anyhow!(combined.clone()).context(format!(
-                        "request to {url} failed"
-                    )));
+                    return Err(
+                        anyhow!(combined.clone()).context(format!("request to {url} failed"))
+                    );
                 };
 
                 // Conservative 429 check using the body.
                 if matches!(reason, RetryReason::RateLimited)
                     && !contains_429_with_rate_limit(&body_text.to_ascii_lowercase())
                 {
-                    return Err(anyhow!(combined.clone()).context(format!(
-                        "request to {url} failed (non-rate-limit 429)"
-                    )));
+                    return Err(anyhow!(combined.clone())
+                        .context(format!("request to {url} failed (non-rate-limit 429)")));
                 }
 
                 state.reason = reason;
@@ -487,7 +484,9 @@ pub async fn send_with_retry(
     }
 
     let attempts = policy.attempts();
-    let final_err = state.last_error.unwrap_or_else(|| anyhow!("{}", state.last_message));
+    let final_err = state
+        .last_error
+        .unwrap_or_else(|| anyhow!("{}", state.last_message));
     Err(Error::new(RetryExhausted {
         attempts,
         last_status: state.last_status,
@@ -504,9 +503,7 @@ pub async fn send_builder_with_retry(
     policy: &RetryPolicy,
     label: &str,
 ) -> Result<Response, Error> {
-    let request = builder
-        .build()
-        .context("failed to build HTTP request")?;
+    let request = builder.build().context("failed to build HTTP request")?;
     send_with_retry(client, request, policy, label).await
 }
 
@@ -517,12 +514,6 @@ struct LoopState {
     last_message: String,
     hint: Option<Duration>,
     last_error: Option<Error>,
-}
-
-impl Default for RetryReason {
-    fn default() -> Self {
-        RetryReason::TransportFault
-    }
 }
 
 impl LoopState {
@@ -612,8 +603,12 @@ mod tests {
 
     #[test]
     fn conservative_429_classifier() {
-        assert!(contains_429_with_rate_limit("status: 429 too many requests"));
-        assert!(contains_429_with_rate_limit("status: 429 rate limit exceeded"));
+        assert!(contains_429_with_rate_limit(
+            "status: 429 too many requests"
+        ));
+        assert!(contains_429_with_rate_limit(
+            "status: 429 rate limit exceeded"
+        ));
         assert!(contains_429_with_rate_limit("status: 429 throttled"));
         assert!(!contains_429_with_rate_limit("status: 429 moderation hit"));
         assert!(!contains_429_with_rate_limit("status: 5000 bad request"));
@@ -716,7 +711,9 @@ mod tests {
 
     /// Bind a localhost port that returns the supplied HTTP response for any
     /// request and counts how many times a client has connected.
-    fn one_shot_server(response: Vec<u8>) -> (String, std::sync::Arc<std::sync::atomic::AtomicU32>) {
+    fn one_shot_server(
+        response: Vec<u8>,
+    ) -> (String, std::sync::Arc<std::sync::atomic::AtomicU32>) {
         let listener = TcpListener::bind("127.0.0.1:0").expect("bind");
         let addr = listener.local_addr().expect("addr");
         let counter = std::sync::Arc::new(std::sync::atomic::AtomicU32::new(0));
@@ -871,11 +868,7 @@ mod tests {
     #[tokio::test]
     async fn exhausts_budget_on_persistent_500() {
         // Always returns 500. We should give up after exactly max_attempts.
-        let (url, counter) = one_shot_server(http_response(
-            500,
-            "Internal Server Error",
-            "boom",
-        ));
+        let (url, counter) = one_shot_server(http_response(500, "Internal Server Error", "boom"));
         let client = reqwest::Client::builder()
             .timeout(Duration::from_secs(2))
             .build()
@@ -963,11 +956,7 @@ mod tests {
                 let mut buf = [0u8; 4096];
                 let _ = stream.read(&mut buf);
                 let response = if idx < 2 {
-                    http_response(
-                        429,
-                        "Too Many Requests",
-                        "rate limit, try again shortly",
-                    )
+                    http_response(429, "Too Many Requests", "rate limit, try again shortly")
                 } else {
                     http_response(200, "OK", "ok")
                 };
@@ -996,7 +985,11 @@ mod tests {
             .await
             .expect("should succeed");
         let got = events.lock().unwrap();
-        assert_eq!(got.len(), 2, "callback should fire twice (attempts 2 and 3)");
+        assert_eq!(
+            got.len(),
+            2,
+            "callback should fire twice (attempts 2 and 3)"
+        );
         assert_eq!(got[0].reason, RetryReason::RateLimited);
         assert_eq!(got[1].reason, RetryReason::RateLimited);
         drop(server);

@@ -7,8 +7,8 @@ pub fn new_id(prefix: &str) -> String {
 
 /// Server/location names with their icons.
 ///
-/// Servers now use location nouns while sessions use client/entity nouns,
-/// producing names like "harbor fox" or "observatory otter".
+/// Servers now use location nouns while sessions use tech-themed nouns,
+/// producing names like "harbor flux" or "observatory node".
 ///
 /// Icon constraints match `SESSION_NAMES`: single codepoints with default
 /// emoji presentation (no VS16), see the comment there.
@@ -51,140 +51,135 @@ const SERVER_MODIFIERS: &[(&str, &str)] = &[
 
 /// Session/client names with their icons.
 const SESSION_NAMES: &[(&str, &str)] = &[
-    // Animals, nature companions, and client entities. Every emoji here is a single, widely-supported
+    // Tech-themed identities. Every emoji here is a single, widely-supported
     // codepoint (Unicode <= 12.0, no ZWJ sequences) with *default emoji
-    // presentation* (no VS16 / U+FE0F needed). Text-default codepoints that rely
-    // on VS16 render as monochrome outlines or tofu in macOS window titles
-    // (Ghostty/Terminal tab and titlebar fonts ignore the selector), so they are
-    // banned by `session_icons_render_as_single_safe_glyphs`.
-    ("ant", "🐜"),
-    ("bat", "🦇"),
-    ("bird", "🐦"),
+    // presentation* (no VS16 / U+FE0F needed).
+    ("bit", "🐜"),
+    ("cmd", "🦇"),
+    ("byte", "🐦"),
     ("bug", "🐛"),
-    ("cat", "🐱"),
-    ("chicken", "🐔"),
-    ("chick", "🐥"),
-    ("chipmunk", "🌰"),
-    ("cow", "🐄"),
-    ("crocodile", "🐊"),
-    ("cricket", "🦗"),
-    ("dog", "🐕"),
-    ("dove", "🤍"),
-    ("eagle", "🦅"),
-    ("fish", "🐟"),
-    ("fox", "🦊"),
-    ("giraffe", "🦒"),
-    ("hamster", "🐹"),
-    ("ladybug", "🐞"),
-    ("lobster", "🦞"),
-    ("mosquito", "🦟"),
-    ("owl", "🦉"),
-    ("ox", "🐂"),
-    ("pig", "🐷"),
-    ("rat", "🐀"),
+    ("cast", "🐱"),
+    ("chip", "🐔"),
+    ("cli", "🐥"),
+    ("cache", "🌰"),
+    ("core", "🐄"),
+    ("cron", "🐊"),
+    ("crux", "🦗"),
+    ("dev", "🐕"),
+    ("data", "🤍"),
+    ("edge", "🦅"),
+    ("flow", "🐟"),
+    ("flux", "🦊"),
+    ("git", "🦒"),
+    ("hash", "🐹"),
+    ("lint", "🐞"),
+    ("lambda", "🦞"),
+    ("micro", "🦟"),
+    ("op", "🦉"),
+    ("obj", "🐂"),
+    ("pipe", "🐷"),
+    ("raw", "🐀"),
     ("ram", "🐏"),
-    ("rooster", "🐓"),
-    ("shrimp", "🦐"),
-    ("sauropod", "🦕"),
-    ("blowfish", "🐡"),
-    ("buffalo", "🐃"),
-    ("butterfly", "🦋"),
-    ("badger", "🦡"),
-    ("bear", "🐻"),
-    ("crab", "🦀"),
-    ("deer", "🦌"),
-    ("duck", "🦆"),
-    ("frog", "🐸"),
-    ("goat", "🐐"),
-    ("lion", "🦁"),
-    ("wolf", "🐺"),
-    ("horse", "🐴"),
-    ("koala", "🐨"),
+    ("root", "🐓"),
+    ("shell", "🦐"),
+    ("stack", "🦕"),
+    ("bloom", "🐡"),
+    ("buffer", "🐃"),
+    ("babel", "🦋"),
+    ("bash", "🦡"),
+    ("base", "🐻"),
+    ("curl", "🦀"),
+    ("dep", "🦌"),
+    ("dock", "🦆"),
+    ("fork", "🐸"),
+    ("go", "🐐"),
+    ("link", "🦁"),
+    ("warp", "🐺"),
+    ("heap", "🐴"),
+    ("lua", "🐨"),
     ("llama", "🦙"),
     ("mouse", "🐭"),
-    ("otter", "🦦"),
-    ("panda", "🐼"),
-    ("peacock", "🦚"),
-    ("penguin", "🐧"),
-    ("shark", "🦈"),
-    ("sheep", "🐑"),
-    ("sloth", "🦥"),
-    ("snail", "🐌"),
-    ("snake", "🐍"),
-    ("spider", "🧶"),
+    ("auth", "🦦"),
+    ("pan", "🐼"),
+    ("pack", "🦚"),
+    ("ping", "🐧"),
+    ("shard", "🦈"),
+    ("ssh", "🐑"),
+    ("sync", "🦥"),
+    ("snap", "🐌"),
+    ("pip", "🐍"),
+    ("spawn", "🧶"),
     ("squid", "🦑"),
-    ("swan", "🦢"),
-    ("t-rex", "🦖"),
-    ("tiger", "🐯"),
-    ("turkey", "🦃"),
-    ("whale", "🐋"),
-    ("turtle", "🐢"),
-    ("rabbit", "🐰"),
-    ("parrot", "🦜"),
-    ("jaguar", "🐆"),
-    ("lizard", "🦎"),
-    ("monkey", "🐒"),
-    ("gorilla", "🦍"),
-    ("orangutan", "🦧"),
+    ("swap", "🦢"),
+    ("test", "🦖"),
+    ("type", "🐯"),
+    ("turbo", "🦃"),
+    ("wave", "🐋"),
+    ("tuple", "🐢"),
+    ("rapid", "🐰"),
+    ("parse", "🦜"),
+    ("java", "🐆"),
+    ("lisp", "🦎"),
+    ("macro", "🐒"),
+    ("gradle", "🦍"),
+    ("org", "🦧"),
     ("camel", "🐫"),
-    ("elephant", "🐘"),
-    ("rhino", "🦏"),
-    ("hippo", "🦛"),
-    ("boar", "🐗"),
-    ("unicorn", "🦄"),
-    ("kangaroo", "🦘"),
-    ("hedgehog", "🦔"),
-    ("skunk", "🦨"),
-    ("raccoon", "🦝"),
-    ("flamingo", "🦩"),
-    ("dolphin", "🐬"),
-    ("octopus", "🐙"),
-    ("scorpion", "🦂"),
-    ("zebra", "🦓"),
-    ("stallion", "🐎"),
-    ("dromedary", "🐪"),
-    ("hog", "🐖"),
-    ("kitten", "🐈"),
-    ("poodle", "🐩"),
-    ("hare", "🐇"),
-    ("vole", "🐁"),
-    ("dragon", "🐉"),
-    ("humpback", "🐳"),
-    ("guppy", "🐠"),
-    ("nautilus", "🐚"),
-    ("hatchling", "🐣"),
-    ("wyvern", "🐲"),
-    ("calf", "🐮"),
-    ("macaque", "🐵"),
-    ("tigress", "🐅"),
+    ("elk", "🐘"),
+    ("rust", "🦏"),
+    ("hip", "🦛"),
+    ("bin", "🐗"),
+    ("unix", "🦄"),
+    ("kube", "🦘"),
+    ("hex", "🦔"),
+    ("sdk", "🦨"),
+    ("repo", "🦝"),
+    ("flex", "🦩"),
+    ("dyno", "🐬"),
+    ("octo", "🐙"),
+    ("scan", "🦂"),
+    ("zlib", "🦓"),
+    ("state", "🐎"),
+    ("druid", "🐪"),
+    ("hub", "🐖"),
+    ("kit", "🐈"),
+    ("pod", "🐩"),
+    ("http", "🐇"),
+    ("vol", "🐁"),
+    ("hook", "🐳"),
+    ("gpu", "🐠"),
+    ("net", "🐚"),
+    ("hotfix", "🐣"),
+    ("web", "🐲"),
+    ("col", "🐮"),
+    ("mac", "🐵"),
+    ("tid", "🐅"),
     // Additional terminal-safe identities. These deliberately stay on Unicode
     // 12 or older so they work in terminal tabs and window titles without a
-    // bundled emoji font. `bee` is intentionally absent: 🐝 is reserved for the
-    // global swarm marker rather than an individual client.
-    ("puppy", "🐶"),
-    ("duckling", "🐤"),
-    ("mizaru", "🙈"),
-    ("kikazaru", "🙉"),
-    ("iwazaru", "🙊"),
-    ("retriever", "🦮"),
-    ("pawprint", "🐾"),
-    ("piglet", "🐽"),
-    ("bonehound", "🦴"),
-    ("sabertooth", "🦷"),
-    ("microbe", "🦠"),
-    ("mushroom", "🍄"),
-    ("cactus", "🌵"),
-    ("clover", "🍀"),
-    ("sunflower", "🌻"),
-    ("hibiscus", "🌺"),
-    ("blossom", "🌸"),
-    ("daisy", "🌼"),
+    // bundled emoji font.
+    ("node", "🐶"),
+    ("html", "🐤"),
+    ("hide", "🙈"),
+    ("deaf", "🙉"),
+    ("speak", "🙊"),
+    ("render", "🦮"),
+    ("trace", "🐾"),
+    ("emit", "🐽"),
+    ("nucleus", "🦴"),
+    ("sharp", "🦷"),
+    ("cell", "🦠"),
+    ("mold", "🍄"),
+    ("thorn", "🌵"),
+    ("leaf", "🍀"),
+    ("sun", "🌻"),
+    ("flora", "🌺"),
+    ("petal", "🌸"),
+    ("dot", "🌼"),
     ("tulip", "🌷"),
     ("rose", "🌹"),
     ("maple", "🍁"),
-    ("seedling", "🌱"),
-    ("evergreen", "🌲"),
-    ("palmtree", "🌴"),
+    ("seed", "🌱"),
+    ("pine", "🌲"),
+    ("palm", "🌴"),
     ("herb", "🌿"),
 ];
 
@@ -351,7 +346,7 @@ pub fn new_memorable_session_id_avoiding(used_names: &HashSet<String>) -> (Strin
 }
 
 /// Try to extract the memorable name from a session ID
-/// e.g., "session_fox_1234567890" -> Some("fox") (legacy animal format)
+/// e.g., "session_flux_1234567890" -> Some("flux") (legacy format)
 /// e.g., "session_550e8400-e29b-41d4-a716-446655440000" -> Some("550e8400-e29b-41d4-a716-446655440000") (current UUID format)
 /// Returns None for empty input, the bare prefix, or anything that doesn't
 /// start with "session_".
@@ -380,7 +375,7 @@ mod tests {
     fn test_new_memorable_session_id_is_uuid() {
         let (full_id, short_name) = new_memorable_session_id();
 
-        // Full ID is "session_<uuid>" — no animal token, no timestamp.
+        // Full ID is "session_<uuid>" — no legacy name, no timestamp.
         assert!(full_id.starts_with("session_"));
         assert!(
             Uuid::parse_str(&short_name).is_ok(),
@@ -391,16 +386,19 @@ mod tests {
 
     #[test]
     fn test_extract_session_name_handles_legacy_and_uuid() {
-        // Legacy animal-token format still parses (so old on-disk sessions
+        // Legacy format still parses (so old on-disk sessions
         // continue to display their original name).
-        assert_eq!(extract_session_name("session_fox_1234567890"), Some("fox"));
         assert_eq!(
-            extract_session_name("session_fox_1234567890_deadbeefcafebabe"),
-            Some("fox")
+            extract_session_name("session_flux_1234567890"),
+            Some("flux")
         );
         assert_eq!(
-            extract_session_name("session_blue-whale_1234567890"),
-            Some("blue-whale")
+            extract_session_name("session_flux_1234567890_deadbeefcafebabe"),
+            Some("flux")
+        );
+        assert_eq!(
+            extract_session_name("session_blue-wave_1234567890"),
+            Some("blue-wave")
         );
         // Pure UUID format parses as the whole UUID token.
         assert_eq!(
@@ -429,8 +427,8 @@ mod tests {
 
     #[test]
     fn test_legacy_names_still_have_icons() {
-        // The animal-token table is retained so that sessions whose short
-        // name is still a legacy animal keep their original icon.
+        // The name table is retained so that sessions whose short
+        // name is still a legacy name keep their original icon.
         for (name, expected_icon) in SESSION_NAMES {
             let icon = session_icon(name);
             assert_eq!(icon, *expected_icon, "Icon mismatch for '{}'", name);
@@ -454,8 +452,7 @@ mod tests {
     #[test]
     fn test_unknown_input_falls_back_to_default_icon() {
         // Names that aren't in either legacy table and aren't UUID-shaped hit
-        // the default `💫` fallback. (The legacy tables still cover the old
-        // animal/location names; unknown UUIDs are handled by the
+        // the default `💫` fallback. (Unknown UUIDs are handled by the
         // `test_uuid_sessions_get_stable_geometric_icons` test above.)
         assert_eq!(session_icon("not-in-any-table"), "💫");
         assert_eq!(session_icon(""), "💫");
@@ -492,7 +489,7 @@ mod tests {
     /// render as monochrome outlines or tofu because the title renderer
     /// ignores the emoji-presentation selector - the Ghostty-on-macOS bug).
     /// We avoid a broad block range here because the Supplemental Symbols
-    /// block mixes safe Unicode 11/12 emoji (otter, sloth) with risky Unicode
+    /// block mixes safe Unicode 11/12 emoji with risky Unicode
     /// 13+ ones (mammoth, beaver), so we list the unsafe codepoints
     /// explicitly.
     fn is_fragile_emoji(emoji: &str) -> bool {

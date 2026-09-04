@@ -141,7 +141,11 @@ impl Tool for WebSearchTool {
             )));
         }
 
-        let mut output = format!("Search results for: {} ({} results)\n\n", params.query, results.len());
+        let mut output = format!(
+            "Search results for: {} ({} results)\n\n",
+            params.query,
+            results.len()
+        );
 
         for (i, result) in results.iter().enumerate() {
             // Compact format: title, URL, snippet on fewer lines to save tokens.
@@ -187,20 +191,22 @@ impl WebSearchSendWithRetry for reqwest::RequestBuilder {
         self,
         client: &'a reqwest::Client,
         label: &'a str,
-    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<reqwest::Response>> + Send + 'a>> {
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<reqwest::Response>> + Send + 'a>>
+    {
         Box::pin(async move {
             let mut policy = crate::alphacode_provider_core::retry::RetryPolicy::for_http_tools();
             policy.retry_non_idempotent = true;
             policy.max_attempts = 3;
-            crate::alphacode_provider_core::retry::send_builder_with_retry(client, self, &policy, label)
-                .await
-                .context("websearch request failed")
+            crate::alphacode_provider_core::retry::send_builder_with_retry(
+                client, self, &policy, label,
+            )
+            .await
+            .context("websearch request failed")
         })
     }
 }
 
 impl WebSearchTool {
-
     async fn search_with_engine(
         &self,
         engine: WebSearchEngine,
@@ -698,18 +704,18 @@ fn truncate_search_snippet(snippet: &str, max_chars: usize) -> String {
         cut -= 1;
     }
     // Prefer cutting at the last sentence-ending punctuation within budget.
-    if let Some(end) = snippet[..cut].rfind(|c: char| c == '.' || c == '!' || c == '?') {
-        if end > max_chars / 2 {
-            return format!("{}", &snippet[..=end]);
-        }
+    if let Some(end) = snippet[..cut].rfind(['.', '!', '?'])
+        && end > max_chars / 2
+    {
+        return snippet[..=end].to_string();
     }
     // Fall back to word boundary.
-    if let Some(space) = snippet[..cut].rfind(' ') {
-        if space > max_chars / 2 {
-            return format!("{}", &snippet[..space]);
-        }
+    if let Some(space) = snippet[..cut].rfind(' ')
+        && space > max_chars / 2
+    {
+        return snippet[..space].to_string();
     }
-    format!("{}", &snippet[..cut])
+    snippet[..cut].to_string()
 }
 
 #[cfg(test)]

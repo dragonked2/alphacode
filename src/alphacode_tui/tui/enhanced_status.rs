@@ -367,10 +367,7 @@ impl StatusBar {
                     (format!("{:.1}s", secs), BrandTheme::error())
                 }
             };
-            spans.push(Span::styled(
-                lat_str,
-                Style::default().fg(lat_color),
-            ));
+            spans.push(Span::styled(lat_str, Style::default().fg(lat_color)));
         }
 
         // Connection label

@@ -12,8 +12,6 @@
 //! 4. Summarizing large outputs with statistics
 //! 5. Applying per-tool heuristic rules
 
-
-
 // ── Configuration ─────────────────────────────────────────────────────────
 
 /// Maximum lines to keep before summarizing.
@@ -516,12 +514,13 @@ mod tests {
 
     #[test]
     fn noise_lines_filtered() {
-        let mut lines = Vec::new();
-        lines.push("Loading...".to_string());
-        lines.push("═══════════════════".to_string());
-        lines.push("Real content here".to_string());
-        lines.push("│ table border".to_string());
-        lines.push("└─ last item".to_string());
+        let lines = [
+            "Loading...".to_string(),
+            "═══════════════════".to_string(),
+            "Real content here".to_string(),
+            "│ table border".to_string(),
+            "└─ last item".to_string(),
+        ];
         let output = lines.join("\n");
 
         let result = filter_output("bash", &output);
@@ -594,8 +593,17 @@ mod tests {
         let output = "line1\n\n\n\n\nline2";
         let result = filter_output("bash", output);
         // Should collapse 5 blank lines to at most 2
-        let blank_count = result.filtered.lines().filter(|l| l.trim().is_empty()).count();
-        assert!(blank_count <= 2, "expected at most 2 consecutive blanks, got {} in: {}", blank_count, result.filtered);
+        let blank_count = result
+            .filtered
+            .lines()
+            .filter(|l| l.trim().is_empty())
+            .count();
+        assert!(
+            blank_count <= 2,
+            "expected at most 2 consecutive blanks, got {} in: {}",
+            blank_count,
+            result.filtered
+        );
     }
 
     #[test]

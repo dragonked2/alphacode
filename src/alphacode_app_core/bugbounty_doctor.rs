@@ -205,17 +205,17 @@ fn which(binary: &str) -> ToolStatus {
     };
     for cmd in candidates {
         let output = Command::new(cmd).arg(binary).output();
-        if let Ok(out) = output {
-            if out.status.success() {
-                let path = String::from_utf8_lossy(&out.stdout)
-                    .lines()
-                    .next()
-                    .unwrap_or("")
-                    .trim()
-                    .to_string();
-                if !path.is_empty() {
-                    return ToolStatus::Present { path };
-                }
+        if let Ok(out) = output
+            && out.status.success()
+        {
+            let path = String::from_utf8_lossy(&out.stdout)
+                .lines()
+                .next()
+                .unwrap_or("")
+                .trim()
+                .to_string();
+            if !path.is_empty() {
+                return ToolStatus::Present { path };
             }
         }
     }
@@ -355,21 +355,22 @@ mod tests {
 
     #[test]
     fn render_markdown_groups_present_and_missing() {
-        let mut report = Vec::new();
-        report.push(ToolReport {
-            binary: "a".into(),
-            purpose: "first".into(),
-            install_hint: "go: install".into(),
-            status: ToolStatus::Present {
-                path: "/usr/bin/a".into(),
+        let report = vec![
+            ToolReport {
+                binary: "a".into(),
+                purpose: "first".into(),
+                install_hint: "go: install".into(),
+                status: ToolStatus::Present {
+                    path: "/usr/bin/a".into(),
+                },
             },
-        });
-        report.push(ToolReport {
-            binary: "b".into(),
-            purpose: "second".into(),
-            install_hint: "apt: install".into(),
-            status: ToolStatus::Missing,
-        });
+            ToolReport {
+                binary: "b".into(),
+                purpose: "second".into(),
+                install_hint: "apt: install".into(),
+                status: ToolStatus::Missing,
+            },
+        ];
         let md = render_markdown(&report);
         assert!(md.contains("Bug-bounty tool doctor"));
         assert!(md.contains("1 present, 1 missing"));

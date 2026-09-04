@@ -402,8 +402,7 @@ impl App {
                 let n: usize = raw.parse().unwrap_or(3);
                 let statuses = ["running", "thinking", "ready", "completed", "blocked"];
                 let names = [
-                    "fox", "owl", "bee", "elk", "ant", "cat", "dog", "jay", "ram", "yak", "ox",
-                    "emu",
+                    "flux", "op", "bug", "elk", "bit", "cast", "dev", "core", "ram", "raw", "bin",
                 ];
                 let samples = [
                     "Editing crates/alphacode-tui/src/tui/ui.rs\n  carving the gallery band off chat_area",

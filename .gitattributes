@@ -1,0 +1,2 @@
+# Force Cargo.lock to always use LF so `cargo --locked` passes on all platforms.
+Cargo.lock text eol=lf

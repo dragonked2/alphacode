@@ -277,18 +277,17 @@ impl App {
                 // For source builds, the message from install_main_source_update_blocking
                 // already contains phase-specific info (e.g. "Building from source...").
                 // Show it directly instead of wrapping it in a generic "Still running" card.
-                let note = if message.contains("Building") || message.contains("Cloning") || message.contains("Pulling") {
+                let note = if message.contains("Building")
+                    || message.contains("Cloning")
+                    || message.contains("Pulling")
+                {
                     "Progress updates will appear here. alphacode will restart automatically when the build finishes."
                 } else {
                     "Still running in the background. alphacode will reload automatically when ready."
                 };
                 self.set_client_maintenance_message(
                     action,
-                    Self::client_maintenance_card_message(
-                        action,
-                        message,
-                        note,
-                    ),
+                    Self::client_maintenance_card_message(action, message, note),
                 );
             }
             SessionUpdateStatus::NoUpdate {

@@ -357,7 +357,7 @@ impl GeminiProvider {
         F: Fn(reqwest::Client) -> reqwest::RequestBuilder,
     {
         use crate::alphacode_provider_core::retry::{
-            RetryReason, MAX_ATTEMPTS, backoff_for, is_retryable_message,
+            MAX_ATTEMPTS, RetryReason, backoff_for, is_retryable_message,
         };
         let mut last_error: Option<anyhow::Error> = None;
         for attempt in 0..MAX_ATTEMPTS {
@@ -386,9 +386,7 @@ impl GeminiProvider {
                     let retryable = if status.as_u16() == 429 {
                         is_retryable_message(&combined)
                     } else {
-                        status.is_server_error()
-                            || status.as_u16() == 408
-                            || status.as_u16() == 409
+                        status.is_server_error() || status.as_u16() == 408 || status.as_u16() == 409
                     };
                     if !retryable || attempt + 1 >= MAX_ATTEMPTS {
                         return Err(anyhow::anyhow!(combined))
@@ -419,8 +417,7 @@ impl GeminiProvider {
                     tokio::time::sleep(delay).await;
                 }
                 Err(err) => {
-                    return Err(err)
-                        .with_context(|| format!("Gemini request to {url} failed"));
+                    return Err(err).with_context(|| format!("Gemini request to {url} failed"));
                 }
             }
         }

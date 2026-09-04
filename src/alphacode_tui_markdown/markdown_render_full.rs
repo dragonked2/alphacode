@@ -488,7 +488,7 @@ pub fn render_markdown_with_width(text: &str, max_width: Option<usize>) -> Vec<L
                     if lang_label.is_empty() {
                         lines.push(
                             Line::from(Span::styled(
-                                format!("┌─ ┌─ "),
+                                "┌─ ┌─ ".to_string(),
                                 Style::default().fg(md_dim_color()),
                             ))
                             .left_aligned(),

@@ -39,6 +39,9 @@ struct SkillFrontmatter {
     /// Claude Code extension: user-facing aliases for this skill.
     #[serde(default)]
     aliases: Option<Vec<String>>,
+    /// Optional source attribution (ignored by the runtime).
+    #[serde(default)]
+    sources: Option<String>,
 }
 
 /// Registry of available skills
@@ -502,6 +505,7 @@ impl SkillRegistry {
             allowed_tools,
             auto_invoke: _,
             aliases: _,
+            sources: _,
         } = frontmatter;
 
         let allowed_tools =
@@ -564,6 +568,7 @@ impl SkillRegistry {
             allowed_tools,
             auto_invoke: _,
             aliases: _,
+            sources: _,
         } = frontmatter;
         let allowed_tools =
             allowed_tools.map(|s| s.split(',').map(|t| t.trim().to_string()).collect());

@@ -1505,11 +1505,8 @@ async fn run_stream_with_retries(
             // 5xx/transport, doubled per attempt with +/-20% jitter, capped at 180s).
             let hint = next_retry_delay.take();
             let reason = crate::alphacode_provider_core::retry::RetryReason::TransportFault;
-            let delay = crate::alphacode_provider_core::retry::backoff_for(
-                reason,
-                attempt - 1,
-                hint,
-            );
+            let delay =
+                crate::alphacode_provider_core::retry::backoff_for(reason, attempt - 1, hint);
             let _ = tx
                 .send(Ok(StreamEvent::ConnectionPhase {
                     phase: crate::alphacode_message_types::ConnectionPhase::Retrying {

@@ -59,6 +59,7 @@ mod tests {
     use super::*;
 
     #[test]
+    #[allow(clippy::const_is_empty)]
     fn categories_are_nonempty_and_lowercase() {
         assert!(!DISCOVERY_CATEGORIES.is_empty());
         for cat in DISCOVERY_CATEGORIES {

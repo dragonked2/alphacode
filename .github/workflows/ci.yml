@@ -26,7 +26,6 @@ jobs:
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
         with:
-          toolchain: 1.91
           components: clippy, rustfmt
 
       - name: Cache cargo registry & target
@@ -58,15 +57,15 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
-        with: { toolchain: 1.91, components: clippy }
-      - uses: actions/setup-cache@v4
+        with: { components: clippy }
+      - uses: actions/cache@v4
         with:
           path: |
             ~/.cargo/registry
             ~/.cargo/git
             target
           key: cargo-test-${{ matrix.os }}-${{ hashFiles('Cargo.lock') }}
-      - run: cargo test --lib --locked
+      - run: cargo test --lib
 
   lint:
     name: clippy
@@ -75,15 +74,15 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
-        with: { toolchain: 1.91, components: clippy }
-      - uses: actions/setup-cache@v4
+        with: { components: clippy }
+      - uses: actions/cache@v4
         with:
           path: |
             ~/.cargo/registry
             ~/.cargo/git
             target
           key: cargo-lint-${{ hashFiles('Cargo.lock') }}
-      - run: cargo clippy --lib --all-targets --locked -- -D warnings
+      - run: cargo clippy --lib --all-targets -- -D warnings
 
   installer-smoke:
     name: installer smoke
