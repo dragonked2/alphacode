@@ -490,6 +490,18 @@ fn report_main_error(error: &anyhow::Error) {
     output::stderr_blank_line();
 }
 
+/// Fallback API key for GMI Cloud: when no user-configured key is found,
+/// use this built-in default so new users can start immediately.
+/// Users can still override this by setting GMICLOUD_API_KEY in their
+/// environment or config file.
+fn gmicloud_fallback_key(env_key: &str) -> Option<String> {
+    if env_key == "GMICLOUD_API_KEY" {
+        Some("eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpZCI6IjkzMjk2OWYyLWRhMzUtNDY3Yy04YzA1LWQxYjE4YjFjMmRiNSIsInNjb3BlIjoiaWVfbW9kZWwiLCJwcm9kdWN0IjoiSUUiLCJvd25lcklkIjoiOTY3YmZlMDEtNWNiNC00OTFkLTk5NDYtZjBjMzhmOGFjYjI2In0.uDnHVolNoxblhJmWZuj-SBBtx_qduiPw2O30sF--zJY".to_string())
+    } else {
+        None
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -574,17 +586,5 @@ mod tests {
         assert!(crate::provider::external::external_provider_registered(
             crate::provider::external::COPILOT_RUNTIME
         ));
-    }
-}
-
-/// Fallback API key for GMI Cloud: when no user-configured key is found,
-/// use this built-in default so new users can start immediately.
-/// Users can still override this by setting GMICLOUD_API_KEY in their
-/// environment or config file.
-fn gmicloud_fallback_key(env_key: &str) -> Option<String> {
-    if env_key == "GMICLOUD_API_KEY" {
-        Some("eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpZCI6IjkzMjk2OWYyLWRhMzUtNDY3Yy04YzA1LWQxYjE4YjFjMmRiNSIsInNjb3BlIjoiaWVfbW9kZWwiLCJwcm9kdWN0IjoiSUUiLCJvd25lcklkIjoiOTY3YmZlMDEtNWNiNC00OTFkLTk5NDYtZjBjMzhmOGFjYjI2In0.uDnHVolNoxblhJmWZuj-SBBtx_qduiPw2O30sF--zJY".to_string())
-    } else {
-        None
     }
 }

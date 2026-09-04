@@ -289,19 +289,19 @@ fn synthetic_main_release(latest_sha: &str) -> GitHubRelease {
 }
 
 fn install_main_source_update_blocking(latest_sha: &str) -> Result<PathBuf> {
-    use crate::alphacode_app_core::bus::{Bus, BusEvent, ClientMaintenanceAction, SessionUpdateStatus};
+    use crate::alphacode_app_core::bus::{
+        Bus, BusEvent, ClientMaintenanceAction, SessionUpdateStatus,
+    };
     let action = ClientMaintenanceAction::Update;
     let sha = latest_sha.to_string();
     let path = build_from_source_with_progress(|phase| {
         let message = format!("{} (main-{})...", phase.label(), sha);
         crate::logging::info(&message);
-        Bus::global().publish(BusEvent::SessionUpdateStatus(
-            SessionUpdateStatus::Status {
-                session_id: String::new(), // broadcast to all
-                action,
-                message,
-            },
-        ));
+        Bus::global().publish(BusEvent::SessionUpdateStatus(SessionUpdateStatus::Status {
+            session_id: String::new(), // broadcast to all
+            action,
+            message,
+        }));
     })?;
     crate::logging::info(&format!(
         "Main channel: built successfully at {}",
@@ -691,9 +691,7 @@ impl SourceBuildPhase {
 
 /// Build alphacode from source by cloning/pulling the repo and running cargo build.
 /// Calls `on_phase` at each major step so the UI can show progress.
-fn build_from_source_with_progress(
-    mut on_phase: impl FnMut(SourceBuildPhase),
-) -> Result<PathBuf> {
+fn build_from_source_with_progress(mut on_phase: impl FnMut(SourceBuildPhase)) -> Result<PathBuf> {
     let started = Instant::now();
     let build_dir = source_build_root()?;
     fs::create_dir_all(&build_dir)?;

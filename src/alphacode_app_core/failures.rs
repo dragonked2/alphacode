@@ -237,14 +237,31 @@ fn classify(lower: &str) -> FailureKind {
     }
     if contains_any(
         lower,
-        &["no space left", "enospc", "disk full", "out of disk", "quota exceeded"],
+        &[
+            "no space left",
+            "enospc",
+            "disk full",
+            "out of disk",
+            "quota exceeded",
+        ],
     ) {
         return FailureKind::OutOfDisk;
     }
-    if contains_any(lower, &["out of memory", "cannot allocate", "enomem", "oom"]) {
+    if contains_any(
+        lower,
+        &["out of memory", "cannot allocate", "enomem", "oom"],
+    ) {
         return FailureKind::OutOfMemory;
     }
-    if contains_any(lower, &["already exists", "file exists", "eexist", "directory not empty"]) {
+    if contains_any(
+        lower,
+        &[
+            "already exists",
+            "file exists",
+            "eexist",
+            "directory not empty",
+        ],
+    ) {
         return FailureKind::AlreadyExists;
     }
     if contains_any(
@@ -260,7 +277,15 @@ fn classify(lower: &str) -> FailureKind {
     ) {
         return FailureKind::InvalidArgument;
     }
-    if contains_any(lower, &["not implemented", "todo", "unimplemented", "unsupported operation"]) {
+    if contains_any(
+        lower,
+        &[
+            "not implemented",
+            "todo",
+            "unimplemented",
+            "unsupported operation",
+        ],
+    ) {
         return FailureKind::NotImplemented;
     }
     if contains_any(
@@ -284,7 +309,10 @@ fn contains_any(haystack: &str, needles: &[&str]) -> bool {
 
 fn build_hint(kind: FailureKind, count: u32, raw: &str) -> String {
     let retry_nag = if count > 3 {
-        format!(" [{}x this turn — you MUST try a completely different approach]", count)
+        format!(
+            " [{}x this turn — you MUST try a completely different approach]",
+            count
+        )
     } else if count > 2 {
         format!(" [{}x this turn — try a different approach]", count)
     } else if count > 1 {
@@ -322,7 +350,8 @@ fn build_hint(kind: FailureKind, count: u32, raw: &str) -> String {
             if count > 2 {
                 "Hint: persistent syntax error. Read the file first with the read tool, find the exact error location, then fix precisely at that point.".into()
             } else {
-                "Hint: syntax error. Check the exact error position and fix the malformed input.".into()
+                "Hint: syntax error. Check the exact error position and fix the malformed input."
+                    .into()
             }
         }
         FailureKind::NetworkError => {
@@ -330,7 +359,9 @@ fn build_hint(kind: FailureKind, count: u32, raw: &str) -> String {
             String::new()
         }
         FailureKind::OutOfDisk => "Hint: disk full. Remove temp files or free space.".into(),
-        FailureKind::OutOfMemory => "Hint: out of memory. Reduce the scope of the operation.".into(),
+        FailureKind::OutOfMemory => {
+            "Hint: out of memory. Reduce the scope of the operation.".into()
+        }
         FailureKind::AlreadyExists => {
             if count > 1 {
                 "Hint: file already exists. Use `write` to overwrite entirely, or use `edit` for surgical changes, or pick a different filename.".into()

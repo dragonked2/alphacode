@@ -36,6 +36,7 @@ fn contrast(a: (u8, u8, u8), b: (u8, u8, u8)) -> f64 {
 // ---------------------------------------------------------------------------
 
 #[test]
+#[allow(clippy::const_is_empty)]
 fn the_catalog_is_not_empty() {
     assert!(!PRESETS.is_empty());
 }

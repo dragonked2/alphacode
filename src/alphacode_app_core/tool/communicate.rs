@@ -117,8 +117,7 @@ impl AdaptiveConcurrency {
 
     /// Whether we should wait before the next spawn to avoid bursting.
     fn should_stagger(&self) -> bool {
-        self.last_spawn_time.elapsed()
-            < std::time::Duration::from_millis(SPAWN_STAGGER_DELAY_MS)
+        self.last_spawn_time.elapsed() < std::time::Duration::from_millis(SPAWN_STAGGER_DELAY_MS)
     }
 
     /// How long to wait before the next spawn.

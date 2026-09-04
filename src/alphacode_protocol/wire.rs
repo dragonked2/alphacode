@@ -1268,7 +1268,7 @@ pub enum ServerEvent {
     Notification {
         /// Session ID of the agent that triggered the notification
         from_session: String,
-        /// Friendly name of the agent (e.g., "fox")
+        /// Friendly name of the agent (e.g., "flux")
         #[serde(skip_serializing_if = "Option::is_none")]
         from_name: Option<String>,
         /// Type of notification

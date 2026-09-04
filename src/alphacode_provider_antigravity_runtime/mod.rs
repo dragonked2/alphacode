@@ -399,7 +399,7 @@ impl AntigravityProvider {
                         .map(|hint| hint.remaining());
                 // Use the unified retry policy: prefer the server hint, otherwise
                 // back off with the rate-limit base (5s, doubled per attempt with
-                    // +/-20% jitter, capped at 180s).
+                // +/-20% jitter, capped at 180s).
                 let delay = crate::alphacode_provider_core::retry::backoff_for(
                     crate::alphacode_provider_core::retry::RetryReason::RateLimited,
                     attempt,

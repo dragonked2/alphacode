@@ -541,14 +541,14 @@ pub fn normalize_completion_report(report: Option<String>) -> Option<String> {
         cut -= 1;
     }
     // Prefer cutting at the last sentence-ending punctuation within budget.
-    if let Some(end) = collapsed[..cut].rfind(|c: char| c == '.' || c == '!' || c == '?') {
+    if let Some(end) = collapsed[..cut].rfind(['.', '!', '?']) {
         if end > cut / 2 {
             cut = end + 1;
         }
-    } else if let Some(space) = collapsed[..cut].rfind(' ') {
-        if space > cut / 2 {
-            cut = space;
-        }
+    } else if let Some(space) = collapsed[..cut].rfind(' ')
+        && space > cut / 2
+    {
+        cut = space;
     }
 
     let suffix = "\n\n[Report truncated by alphacode before delivery.]";

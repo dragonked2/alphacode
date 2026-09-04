@@ -3585,11 +3585,11 @@ fn handle_context_command(app: &mut App) {
             "\u{1f7e2}"
         };
         lines.push(format!(
-            "  {}{}{} {}",
+            "  {}{}{} {:.1}%",
             bar_color,
             "\u{2588}".repeat(filled),
             "\u{2591}".repeat(empty),
-            format!("{:.1}%", usage_pct)
+            usage_pct
         ));
         lines.push(String::new());
         lines.push(format!("  Input tokens:  {}k", input / 1000));

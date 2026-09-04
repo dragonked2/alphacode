@@ -201,6 +201,7 @@ mod tests {
     use super::*;
 
     #[test]
+    #[allow(clippy::const_is_empty)]
     fn overview_is_nonempty() {
         assert!(
             !OVERVIEW.is_empty(),

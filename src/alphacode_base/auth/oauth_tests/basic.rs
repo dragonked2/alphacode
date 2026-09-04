@@ -152,6 +152,7 @@ fn save_claude_tokens_preserves_existing_account_metadata() -> Result<()> {
 }
 
 #[test]
+#[allow(clippy::const_is_empty)]
 fn claude_oauth_constants() {
     assert!(!claude::CLIENT_ID.is_empty());
     assert_eq!(
@@ -227,6 +228,7 @@ async fn fetch_claude_profile_email_propagates_http_error() -> Result<()> {
 }
 
 #[test]
+#[allow(clippy::const_is_empty)]
 fn openai_oauth_constants() {
     assert!(!openai::CLIENT_ID.is_empty());
     assert!(openai::AUTHORIZE_URL.starts_with("https://"));

@@ -278,16 +278,10 @@ impl Tool for ReadTool {
             let remaining = total_lines - end;
             let continuation_hint = match range.style {
                 ReadRangeStyle::OffsetLimit => {
-                    format!(
-                        "Use `offset={}` to continue.",
-                        range.next_offset()
-                    )
+                    format!("Use `offset={}` to continue.", range.next_offset())
                 }
                 ReadRangeStyle::StartEnd => {
-                    format!(
-                        "Use `start_line={}` to continue.",
-                        range.next_start_line()
-                    )
+                    format!("Use `start_line={}` to continue.", range.next_start_line())
                 }
             };
             let size_hint = if remaining > 10000 {
@@ -295,9 +289,7 @@ impl Tool for ReadTool {
             } else {
                 format!("{} lines", remaining)
             };
-            output.push_str(&format!(
-                "\n[{continuation_hint} {size_hint} remaining]",
-            ));
+            output.push_str(&format!("\n[{continuation_hint} {size_hint} remaining]",));
         }
 
         if output.is_empty() {
@@ -374,18 +366,17 @@ fn find_similar_files(path: &Path) -> Vec<String> {
     }
 
     // Strategy 2: if no sibling matches, try parent's parent (common typo)
-    if suggestions.is_empty() {
-        if let Some(grandparent) = parent.parent() {
-            if let Ok(entries) = std::fs::read_dir(grandparent) {
-                for entry in entries.filter_map(|e| e.ok()) {
-                    let name = entry.file_name().to_string_lossy().to_lowercase();
-                    let score = file_name_similarity_score(&name, &target_name);
-                    if score <= 2 {
-                        suggestions.push(entry.path().display().to_string());
-                        if suggestions.len() >= 3 {
-                            break;
-                        }
-                    }
+    if suggestions.is_empty()
+        && let Some(grandparent) = parent.parent()
+        && let Ok(entries) = std::fs::read_dir(grandparent)
+    {
+        for entry in entries.filter_map(|e| e.ok()) {
+            let name = entry.file_name().to_string_lossy().to_lowercase();
+            let score = file_name_similarity_score(&name, &target_name);
+            if score <= 2 {
+                suggestions.push(entry.path().display().to_string());
+                if suggestions.len() >= 3 {
+                    break;
                 }
             }
         }
@@ -397,7 +388,7 @@ fn find_similar_files(path: &Path) -> Vec<String> {
 fn file_name_similarity_score(name: &str, target: &str) -> usize {
     if *name == *target {
         0
-    } else if name.contains(target) || target.contains(&name) {
+    } else if name.contains(target) || target.contains(name) {
         1
     } else {
         // Extension-aware: penalize mismatched extensions (e.g. .rs vs .ts)
@@ -407,7 +398,11 @@ fn file_name_similarity_score(name: &str, target: &str) -> usize {
         let name_ext = std::path::Path::new(name)
             .extension()
             .map(|e| e.to_ascii_lowercase());
-        let ext_penalty = if target_ext.is_some() && target_ext != name_ext { 2 } else { 0 };
+        let ext_penalty = if target_ext.is_some() && target_ext != name_ext {
+            2
+        } else {
+            0
+        };
 
         // Stem similarity (filename without extension). file_stem() yields
         // an OsString; convert to String so contains/len/levenshtein work.

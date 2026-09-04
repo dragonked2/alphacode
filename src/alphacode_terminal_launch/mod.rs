@@ -1012,7 +1012,7 @@ mod tests {
 
     #[test]
     fn shell_command_quotes_arguments() {
-        let _shell = shell_command(&["alphacode".to_string(), "it's ok".to_string()]);
+        let shell = shell_command(&["alphacode".to_string(), "it's ok".to_string()]);
         #[cfg(unix)]
         assert_eq!(shell, "'alphacode' 'it'\"'\"'s ok'");
     }

@@ -218,29 +218,41 @@ fn try_flexible_match(content: &str, old_string: &str, file_path: &str) -> Resul
             return Err(anyhow::anyhow!(
                 "old_string partially matches near line {} but diverges after ~{} chars.\
                  Re-read the file to get the current exact content.",
-                line_num, partial_len
+                line_num,
+                partial_len
             ));
         }
     }
 
     // Strategy 4: closest line heuristic
-    if old_lines.len() > 1 {
-        if let Some(longest) = old_lines.iter().max_by_key(|l| l.len()) {
-            if longest.len() > 20 && !content.contains(longest) {
-                let best = content_lines.iter()
-                    .map(|line| (line, line_similarity(line, longest)))
-                    .filter(|(_, score)| *score > 0.6)
-                    .max_by(|a, b| a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal));
-                if let Some((similar, score)) = best {
-                    let line_num = content_lines.iter().position(|l| *l == *similar).unwrap_or(0) + 1;
-                    let snippet = if similar.len() > 80 { &similar[..80] } else { similar };
-                    return Err(anyhow::anyhow!(
-                        "old_string not found. Closest match (~{:.0}% similar) at line {}: \"{}\"\
+    if old_lines.len() > 1
+        && let Some(longest) = old_lines.iter().max_by_key(|l| l.len())
+        && longest.len() > 20
+        && !content.contains(longest)
+    {
+        let best = content_lines
+            .iter()
+            .map(|line| (line, line_similarity(line, longest)))
+            .filter(|(_, score)| *score > 0.6)
+            .max_by(|a, b| a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal));
+        if let Some((similar, score)) = best {
+            let line_num = content_lines
+                .iter()
+                .position(|l| *l == *similar)
+                .unwrap_or(0)
+                + 1;
+            let snippet = if similar.len() > 80 {
+                &similar[..80]
+            } else {
+                similar
+            };
+            return Err(anyhow::anyhow!(
+                "old_string not found. Closest match (~{:.0}% similar) at line {}: \"{}\"\
                          Re-read the file to get the current content.",
-                        score * 100.0, line_num, snippet
-                    ));
-                }
-            }
+                score * 100.0,
+                line_num,
+                snippet
+            ));
         }
     }
 
@@ -263,7 +275,11 @@ fn line_similarity(a: &str, b: &str) -> f32 {
     if a_lower == b_lower {
         return 0.95;
     }
-    let common_prefix = a_lower.chars().zip(b_lower.chars()).take_while(|(x, y)| x == y).count();
+    let common_prefix = a_lower
+        .chars()
+        .zip(b_lower.chars())
+        .take_while(|(x, y)| x == y)
+        .count();
     let max_len = a_lower.len().max(b_lower.len());
     if max_len == 0 {
         return 0.0;

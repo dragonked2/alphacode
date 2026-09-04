@@ -651,7 +651,7 @@ mod tests {
         let report = run_all(None);
         // Should have at least rustc + cargo checks
         assert!(!report.checks.is_empty());
-        assert!(report.total_elapsed_ms > 0 || report.checks.len() > 0);
+        assert!(report.total_elapsed_ms > 0 || !report.checks.is_empty());
     }
 
     #[test]
