@@ -587,14 +587,14 @@ impl SkillRegistry {
             }
 
             let skills_dir = plugin_dir.join("skills");
-            if skills_dir.exists() {
-                if let Err(err) = registry.load_from_dir(&skills_dir) {
-                    crate::alphacode_logging::warn(&format!(
-                        "failed to load skills from plugin {}: {}",
-                        plugin_dir.display(),
-                        err
-                    ));
-                }
+            if skills_dir.exists()
+                && let Err(err) = registry.load_from_dir(&skills_dir)
+            {
+                crate::alphacode_logging::warn(&format!(
+                    "failed to load skills from plugin {}: {}",
+                    plugin_dir.display(),
+                    err
+                ));
             }
         }
     }
@@ -1572,8 +1572,11 @@ mod tests {
         let mut registry = SkillRegistry::default();
         // First reload to populate bundled skills.
         registry.reload_global().expect("initial reload");
-        let names_before: std::collections::BTreeSet<_> =
-            registry.list().into_iter().map(|s| s.name.clone()).collect();
+        let names_before: std::collections::BTreeSet<_> = registry
+            .list()
+            .into_iter()
+            .map(|s| s.name.clone())
+            .collect();
         assert!(
             names_before.contains("bugbounty"),
             "bundled bugbounty must be present after initial reload"
@@ -1581,8 +1584,11 @@ mod tests {
 
         // Second reload must still have bundled skills.
         registry.reload_global().expect("second reload");
-        let names_after: std::collections::BTreeSet<_> =
-            registry.list().into_iter().map(|s| s.name.clone()).collect();
+        let names_after: std::collections::BTreeSet<_> = registry
+            .list()
+            .into_iter()
+            .map(|s| s.name.clone())
+            .collect();
         assert_eq!(
             names_before, names_after,
             "reload_global must not drop bundled skills; before={:?} after={:?}",
@@ -1919,12 +1925,9 @@ mod tests {
         let mut registry = SkillRegistry::default();
         for skill in BUNDLED_SKILLS {
             if skill.name == "bugbounty" {
-                let parsed = SkillRegistry::parse_embedded_skill(
-                    skill.name,
-                    skill.body,
-                    skill.references,
-                )
-                .expect("bundled bugbounty SKILL.md must parse cleanly");
+                let parsed =
+                    SkillRegistry::parse_embedded_skill(skill.name, skill.body, skill.references)
+                        .expect("bundled bugbounty SKILL.md must parse cleanly");
                 assert_eq!(parsed.name, "bugbounty");
                 assert!(
                     !parsed.description.is_empty(),
@@ -1936,10 +1939,7 @@ mod tests {
                         || parsed.content.contains("BUG BOUNTY"),
                     "bundled bugbounty body must contain the hunter methodology text"
                 );
-                registry
-                    .skills
-                    .entry(parsed.name.clone())
-                    .or_insert(parsed);
+                registry.skills.entry(parsed.name.clone()).or_insert(parsed);
                 found = true;
                 break;
             }

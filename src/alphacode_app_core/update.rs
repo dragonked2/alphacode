@@ -1043,8 +1043,7 @@ pub fn download_and_install_blocking_with_progress(
             }
         } else {
             let cursor = std::io::Cursor::new(&bytes);
-            let mut archive =
-                zip::ZipArchive::new(cursor).context("Failed to open zip archive")?;
+            let mut archive = zip::ZipArchive::new(cursor).context("Failed to open zip archive")?;
             for i in 0..archive.len() {
                 let mut entry = archive.by_index(i)?;
                 let entry_name = entry.name().to_string();
