@@ -4,6 +4,34 @@ All notable changes to Alphacode are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project
 adheres to [Semantic Versioning](https://semver.org/).
 
+## [1.0.18] - 2026-09-05
+
+Patch release. Two correctness fixes plus the lockfile bump CI demanded.
+
+### Fixed
+
+- **`/update` reload no longer re-execs the old binary**
+  (`build::update_reload_candidate`, `cli::hot_exec::hot_reload`,
+  `alphacode_build_support::paths`): when a release was freshly
+  installed by `/update`, the post-install reload used to fall back to
+  the local repo build (`target/{selfdev,release}/alphacode`) whenever
+  its mtime happened to be newer than the channel binary. Self-dev
+  users running from inside the repo, or anyone whose filesystem mtime
+  resolution is coarser than the install stamp, saw `/update` succeed
+  and then reload into the old binary ("stays with the old version").
+  `/update` now always re-execs the freshly installed `current` channel
+  binary. `/reload` and `/rebuild` keep the old "prefer the local
+  build" behavior because those commands are explicitly about picking
+  up a freshly built local binary. Regression test:
+  `alphacode_build_support::paths::update_reload_candidate_prefers_freshly_installed_release_over_newer_repo_build`.
+- **CI build lockfile drift** (`Cargo.lock`): the checked-in lockfile
+  was 53 packages behind `Cargo.toml`, which made every CI matrix
+  build (`ubuntu-latest / dev`, `macos-latest / dev`,
+  `windows-latest / dev`) fail with "the lock file needs to be updated
+  but --locked was passed" (see run 33969058675). The lockfile is now
+  regenerated; `cargo build --release --locked` succeeds locally and
+  on CI.
+
 ## [1.0.9] - 2026-09-03
 
 Security-research usability release: simplify the deterministic command

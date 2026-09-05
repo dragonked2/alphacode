@@ -13,6 +13,7 @@ use super::{
     ProviderChoice, choice_for_login_provider, login_provider_choice_mappings,
     login_provider_for_choice, profile_for_choice,
 };
+use crate::provider_catalog::LoginProviderTarget;
 use clap::ValueEnum;
 
 /// Every `ProviderChoice` except the deprecated `ClaudeSubprocess` shim and the
@@ -113,6 +114,48 @@ fn agentrouter_cli_aliases_parse() {
             ProviderChoice::from_str(alias, true).ok(),
             Some(ProviderChoice::Agentrouter),
             "alias {} should parse to ProviderChoice::Agentrouter",
+            alias
+        );
+    }
+}
+
+#[test]
+fn agentrouter_anthropic_choice_round_trips_through_the_catalog() {
+    let provider = login_provider_for_choice(&ProviderChoice::AgentrouterAnthropic)
+        .expect("agentrouter-anthropic choice must map to a login provider");
+    assert_eq!(provider.id, "agentrouter-anthropic");
+    assert_eq!(
+        choice_for_login_provider(provider),
+        Some(ProviderChoice::AgentrouterAnthropic)
+    );
+    assert_eq!(
+        ProviderChoice::AgentrouterAnthropic.as_arg_value(),
+        "agentrouter-anthropic"
+    );
+}
+
+#[test]
+fn agentrouter_anthropic_choice_resolves_to_agentrouter_anthropic_target() {
+    let provider = login_provider_for_choice(&ProviderChoice::AgentrouterAnthropic)
+        .expect("agentrouter-anthropic must resolve to a login provider");
+    assert!(matches!(
+        provider.target,
+        LoginProviderTarget::AgentRouterAnthropic
+    ));
+}
+
+#[test]
+fn agentrouter_anthropic_cli_aliases_parse() {
+    for alias in [
+        "agentrouter-anthropic",
+        "agentrouter-claude",
+        "agentrouter-anthropic-api",
+        "agent-router-anthropic",
+    ] {
+        assert_eq!(
+            ProviderChoice::from_str(alias, true).ok(),
+            Some(ProviderChoice::AgentrouterAnthropic),
+            "alias {} should parse to ProviderChoice::AgentrouterAnthropic",
             alias
         );
     }

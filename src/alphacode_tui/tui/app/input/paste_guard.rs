@@ -45,11 +45,21 @@ pub(super) fn note_paste_start() {
     PASTE_NEWLINE_COUNT.with(|cell| cell.set(0));
 }
 
-/// Record that a bracketed-paste event was just handled (content delivered).
-/// The suppression window resets on every paste chunk so that a slow,
-/// multi-chunk paste never leaks through.
+/// Record that a complete bracketed-paste event was just handled.
+///
+/// Crossterm delivers `Event::Paste` only after it has collected the paste
+/// payload; it does not expose separate start/end events.  Marking a paste as
+/// in-flight here therefore left the flag set forever and swallowed every
+/// later Enter key.  Keep the explicit start/end hooks for callers that do
+/// have that lifecycle, while ordinary crossterm paste events only refresh the
+/// trailing-Enter guard.
 pub(super) fn note_paste() {
-    PASTE_IN_FLIGHT.store(true, Ordering::Relaxed);
+    if !PASTE_IN_FLIGHT.load(Ordering::Relaxed) {
+        // Each standalone crossterm paste is a complete sequence. Do not let
+        // the size of an old paste make a later, unrelated paste suppress
+        // Enter for several seconds.
+        PASTE_NEWLINE_COUNT.with(|cell| cell.set(0));
+    }
     LAST_PASTE.with(|cell| cell.set(Some(Instant::now())));
 }
 
@@ -63,7 +73,7 @@ pub(super) fn note_paste_end() {
 /// Increment the newline counter for the current paste.  Used to scale the
 /// suppression window for very long pastes.
 pub(super) fn count_paste_newlines(newlines: usize) {
-    PASTE_NEWLINE_COUNT.with(|cell| cell.set(cell.get() + newlines));
+    PASTE_NEWLINE_COUNT.with(|cell| cell.set(cell.get().saturating_add(newlines)));
 }
 
 /// Returns true when we are currently inside a bracketed-paste sequence.
@@ -109,11 +119,12 @@ pub(super) fn consume_paste_trailing_enter() -> bool {
     })
 }
 
-/// Test hook: age the recorded paste so a subsequent Enter submits normally.
+/// Test hook: expire only the timestamp-based trailing window.  Keeping the
+/// in-flight flag untouched lets tests prove that a regular `Event::Paste`
+/// never leaves the guard active indefinitely.
 #[cfg(test)]
-pub(in crate::alphacode_tui::tui::app) fn expire_for_test() {
+pub(in crate::alphacode_tui::tui::app) fn expire_trailing_window_for_test() {
     LAST_PASTE.with(|cell| cell.set(None));
-    PASTE_IN_FLIGHT.store(false, Ordering::Relaxed);
 }
 
 /// Media type for image file extensions accepted by drag-and-drop paste.

@@ -27,6 +27,7 @@ pub enum LoginProviderTarget {
     Alphacode,
     Claude,
     ClaudeApiKey,
+    AgentRouterAnthropic,
     OpenAi,
     OpenAiApiKey,
     OpenRouter,

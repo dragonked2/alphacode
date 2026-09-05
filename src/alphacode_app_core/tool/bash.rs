@@ -27,8 +27,12 @@ use tokio::process::Command as TokioCommand;
 
 const MAX_OUTPUT_LEN: usize = 30000;
 const DEFAULT_TIMEOUT_MS: u64 = 120000;
-const STDIN_POLL_INTERVAL_MS: u64 = 500;
-const STDIN_INITIAL_DELAY_MS: u64 = 300;
+// 100 ms feels instant to the user on a local terminal but still keeps
+// the `stdin_detect` syscall (inotify on Linux, lsof elsewhere) cheap.
+// Previously this was 500 ms, which made interactive commands such as
+// `sudo` or `python -i` feel sluggish.
+const STDIN_POLL_INTERVAL_MS: u64 = 100;
+const STDIN_INITIAL_DELAY_MS: u64 = 200;
 const PROGRESS_MARKER_PREFIX: &str = "ALPHACODE_PROGRESS ";
 const CHECKPOINT_MARKER_PREFIX: &str = "ALPHACODE_CHECKPOINT ";
 const BACKGROUND_PROGRESS_GUIDANCE: &str = "For long-running background commands, prefer scripts or commands that periodically print progress updates. Best format: print lines starting with `ALPHACODE_PROGRESS ` followed by JSON like {\"percent\":42,\"message\":\"Running\"} or {\"current\":120,\"total\":1000,\"unit\":\"batches\",\"message\":\"Epoch 2/5\",\"eta_seconds\":30}. Supported JSON fields are `percent`, `message`, `current`, `total`, `unit`, `eta_seconds`, and optional `kind`=`indeterminate` or `kind`=`checkpoint`. For milestone-style wakeups, print `ALPHACODE_CHECKPOINT {\"message\":\"Unit tests passed\"}`. Generic fallback output that can be parsed includes `42%`, `3/10 tests`, `3 of 10 steps`, `1.5/3.0 GiB`, or phase lines like `Compiling ...`, `Downloading ...`, `Running ...`, and `Building ...`. If you are writing the script yourself, add these progress/checkpoint lines explicitly. Put large temporary files, worktrees, and virtual environments under `$ALPHACODE_SCRATCH_DIR`, not `/tmp`, because `/tmp` may be RAM-backed.";

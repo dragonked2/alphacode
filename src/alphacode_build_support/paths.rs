@@ -571,12 +571,66 @@ pub fn version_matches_installed_channel(version: &str, git_hash: &str) -> bool 
     !saw_marker
 }
 
+/// Resolve the best binary to use for the post-`/update` reload.
+///
+/// Always prefers the channel binary (`current` symlink) that the update flow
+/// just rewrote to the freshly installed release. The local repo build
+/// (`target/{selfdev,release}/`) is intentionally ignored: after a successful
+/// `/update` the user explicitly asked for the published release, not
+/// whatever happened to be sitting in the local target dir, and the repo
+/// build's mtime is an unreliable signal because it gets touched every time
+/// cargo rebuilds the binary for unrelated reasons. If the channel is missing
+/// entirely (no published install) this falls back to the repo build so a
+/// self-dev session that has never installed a release still has something
+/// to reload into after the update machinery finishes its bookkeeping.
+///
+/// Callers triggered by `/update` should use this function. `/rebuild` and
+/// `/reload` keep using [`preferred_reload_candidate`] because those commands
+/// are explicitly about picking up a freshly built local binary.
+pub fn update_reload_candidate(is_selfdev_session: bool) -> Option<(PathBuf, &'static str)> {
+    if let Some(current) = existing_binary(current_binary_path(), "current") {
+        return Some(current);
+    }
+
+    if let Some(launcher) = existing_binary(launcher_binary_path(), "launcher") {
+        return Some(launcher);
+    }
+
+    if let Some(stable) = existing_binary(stable_binary_path(), "stable") {
+        return Some(stable);
+    }
+
+    // No published install exists; fall back to whatever the repo has so a
+    // self-dev session that has never installed a release still has something
+    // to reload into after the update machinery finishes its bookkeeping.
+    if is_selfdev_session {
+        let repo_binary = get_repo_dir().and_then(|repo_dir| {
+            newest_existing_binary(vec![
+                (selfdev_binary_path(&repo_dir), "repo-selfdev"),
+                (release_binary_path(&repo_dir), "repo-release"),
+            ])
+        });
+        if let Some((path, label)) = repo_binary {
+            return Some((path, label));
+        }
+    }
+
+    std::env::current_exe().ok().map(|exe| (exe, "current"))
+}
+
 /// Resolve the best binary to use for `/reload`.
 ///
 /// This mostly follows `client_update_candidate`, but if a freshly built repo
 /// release binary exists and is newer than the selected channel binary, prefer
 /// that so local rebuilds can reload correctly even if publishing the build
 /// failed.
+///
+/// Note: callers triggered by `/update` should use [`update_reload_candidate`]
+/// instead. The repo-binary-override here is for `/rebuild` and `/reload`,
+/// where the user explicitly wants the local build; for `/update` the user
+/// wants the freshly installed release, and the mtime comparison would
+/// otherwise send them back to the old repo binary whenever cargo touched it
+/// after the install completed.
 pub fn preferred_reload_candidate(is_selfdev_session: bool) -> Option<(PathBuf, &'static str)> {
     let candidate = client_update_candidate(is_selfdev_session);
 
@@ -861,6 +915,116 @@ mod tests {
         assert_eq!(
             resolve_binary_payload(&wrapper),
             std::fs::canonicalize(&wrapper).expect("canonical wrapper")
+        );
+    }
+
+    /// Regression test for the `/update` reload bug: when a release is
+    /// freshly installed at `versions/<v>/` but a local repo build happens to
+    /// have a newer mtime (e.g. the user ran `cargo build` after the install,
+    /// or the filesystem mtime resolution is coarser than the install stamp),
+    /// `update_reload_candidate` must still return the freshly installed
+    /// release binary rather than the old repo build. The previous code path
+    /// (`preferred_reload_candidate`) preferred the repo build on a mtime
+    /// comparison, which made `/update` look like a no-op to users.
+    #[test]
+    fn update_reload_candidate_prefers_freshly_installed_release_over_newer_repo_build() {
+        use std::time::{Duration, SystemTime};
+        // `ALPHACODE_HOME` and `ALPHACODE_REPO_DIR` are process-wide.  Use the
+        // shared lock so parallel tests cannot observe this temporary layout.
+        let _env_lock = crate::storage::lock_test_env();
+        // Build a real ELF/PE-magic header so `is_valid_executable` lets the
+        // file through on every platform (the production code path refuses
+        // random bytes that look like archives, which is exactly the bug
+        /// regression fixed in this test). The rest of the bytes don't
+        /// matter: we only care that the candidate lookup accepts the file
+        /// and the mtime comparison behaves as expected.
+        #[cfg(unix)]
+        let exec_bytes: [u8; 16] = [0x7f, b'E', b'L', b'F', 2, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0];
+        #[cfg(windows)]
+        let exec_bytes: [u8; 16] = [b'M', b'Z', 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0];
+
+        let temp = tempfile::TempDir::new().expect("temp");
+        let builds = temp.path().join("builds");
+        let versions = builds.join("versions").join("1.0.99");
+        std::fs::create_dir_all(&versions).expect("versions dir");
+        let channel_dir = builds.join("current");
+        std::fs::create_dir_all(&channel_dir).expect("channel dir");
+        let installed = versions.join(binary_name());
+        let installed_bytes: Vec<u8> = exec_bytes
+            .iter()
+            .copied()
+            .chain(std::iter::repeat_n(0u8, 8176))
+            .collect();
+        std::fs::write(&installed, &installed_bytes).expect("installed binary");
+        let channel_link = channel_dir.join(binary_name());
+        std::fs::copy(&installed, &channel_link).expect("channel copy");
+
+        // Inline repo fixture so the test does not depend on the
+        // `super::tests::repo_fixture` helper.
+        let repo_dir = tempfile::TempDir::new().expect("repo");
+        std::fs::create_dir_all(repo_dir.path().join(".git")).expect("git dir");
+        std::fs::write(
+            repo_dir.path().join("Cargo.toml"),
+            "[package]\nname = \"alphacode\"\nversion = \"0.1.0\"\n",
+        )
+        .expect("Cargo.toml");
+        let repo_release = release_binary_path(repo_dir.path());
+        std::fs::create_dir_all(repo_release.parent().expect("parent")).expect("dir");
+        let repo_bytes: Vec<u8> = exec_bytes
+            .iter()
+            .copied()
+            .chain(std::iter::repeat_n(0u8, 8176))
+            .collect();
+        std::fs::write(&repo_release, &repo_bytes).expect("repo binary");
+
+        let now = SystemTime::now();
+        let installed_mtime = now - Duration::from_secs(120);
+        let repo_mtime = now;
+        std::fs::OpenOptions::new()
+            .write(true)
+            .open(&installed)
+            .expect("open installed")
+            .set_modified(installed_mtime)
+            .expect("installed mtime");
+        std::fs::OpenOptions::new()
+            .write(true)
+            .open(&channel_link)
+            .expect("open channel")
+            .set_modified(installed_mtime)
+            .expect("channel mtime");
+        std::fs::OpenOptions::new()
+            .write(true)
+            .open(&repo_release)
+            .expect("open repo")
+            .set_modified(repo_mtime)
+            .expect("repo mtime");
+
+        let prev_home = std::env::var_os("ALPHACODE_HOME");
+        crate::alphacode_core::env::set_var("ALPHACODE_HOME", temp.path());
+        let prev_repo = std::env::var_os("ALPHACODE_REPO_DIR");
+        crate::alphacode_core::env::set_var("ALPHACODE_REPO_DIR", repo_dir.path());
+
+        // Self-dev is the path where a newer repo build used to override the
+        // freshly installed channel binary during an update reload.
+        let chosen = update_reload_candidate(true);
+
+        match prev_home {
+            Some(v) => crate::alphacode_core::env::set_var("ALPHACODE_HOME", v),
+            None => crate::alphacode_core::env::remove_var("ALPHACODE_HOME"),
+        }
+        match prev_repo {
+            Some(v) => crate::alphacode_core::env::set_var("ALPHACODE_REPO_DIR", v),
+            None => crate::alphacode_core::env::remove_var("ALPHACODE_REPO_DIR"),
+        }
+
+        let (path, label) = chosen.expect("update_reload_candidate should return a binary");
+        assert_eq!(
+            label, "current",
+            "must prefer the channel binary over the repo build"
+        );
+        assert_eq!(
+            std::fs::canonicalize(&path).expect("canonical channel"),
+            std::fs::canonicalize(&channel_link).expect("canonical channel link")
         );
     }
 }

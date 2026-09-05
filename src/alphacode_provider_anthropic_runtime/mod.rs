@@ -47,11 +47,37 @@ use tokio::sync::{RwLock, mpsc};
 use tokio_stream::wrappers::ReceiverStream;
 use uuid::Uuid;
 
-/// Anthropic Messages API endpoint
+/// Anthropic Messages API endpoint (default)
 const API_URL: &str = "https://api.anthropic.com/v1/messages";
 
 /// OAuth endpoint (with beta=true query param)
 const API_URL_OAUTH: &str = "https://api.anthropic.com/v1/messages?beta=true";
+
+/// Whether the current configuration uses a non-Anthropic base URL (e.g.
+/// AgentRouter).  When true the runtime switches from `x-api-key` auth to
+/// `Bearer` token auth, matching what third-party Anthropic-compatible
+/// gateways expect.
+fn is_third_party_anthropic_base() -> bool {
+    if let Ok(base) = std::env::var("ANTHROPIC_BASE_URL") {
+        return !base.contains("api.anthropic.com");
+    }
+    false
+}
+
+/// Build the full Messages API URL.  When `ANTHROPIC_BASE_URL` is set the
+/// returned `String` is `{base}/messages`; otherwise the static `API_URL`
+/// constant is returned via the `Cow` wrapper.
+fn build_api_url(is_oauth: bool) -> std::borrow::Cow<'static, str> {
+    if is_oauth {
+        return std::borrow::Cow::Borrowed(API_URL_OAUTH);
+    }
+    if let Ok(base) = std::env::var("ANTHROPIC_BASE_URL") {
+        let base = base.trim_end_matches('/');
+        std::borrow::Cow::Owned(format!("{}/messages", base))
+    } else {
+        std::borrow::Cow::Borrowed(API_URL)
+    }
+}
 
 #[derive(Debug, Clone, Default)]
 struct OAuthClientMetadata {
@@ -1789,10 +1815,10 @@ async fn stream_response(
     let connect_start = std::time::Instant::now();
     let stream_idle_timeout = crate::alphacode_base::provider::stream_idle_timeout();
     // Build request with appropriate auth headers
-    let url = if is_oauth { API_URL_OAUTH } else { API_URL };
+    let url = build_api_url(is_oauth);
 
     let mut req = client
-        .post(url)
+        .post(url.as_ref())
         .header("anthropic-version", API_VERSION)
         .header("content-type", "application/json")
         .header(
@@ -1803,6 +1829,8 @@ async fn stream_response(
                 "text/event-stream"
             },
         );
+
+    let third_party_base = is_third_party_anthropic_base();
 
     if is_oauth {
         // OAuth tokens require:
@@ -1820,6 +1848,19 @@ async fn stream_response(
                 .header("anthropic-beta", beta_header),
             oauth_session_id,
         );
+    } else if third_party_base {
+        // Third-party Anthropic-compatible gateways (e.g. AgentRouter)
+        // expect Bearer token auth rather than x-api-key.
+        let beta_header = if is_1m_model(model_name) {
+            "prompt-caching-2024-07-31,context-1m-2025-08-07"
+        } else {
+            "prompt-caching-2024-07-31"
+        };
+        let beta_header =
+            anthropic_beta_header_with_thinking(beta_header, request.thinking.is_some());
+        req = req
+            .header("Authorization", format!("Bearer {}", token))
+            .header("anthropic-beta", beta_header);
     } else {
         // Direct API keys use x-api-key
         // Include prompt-caching beta header

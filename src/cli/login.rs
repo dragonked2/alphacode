@@ -289,6 +289,9 @@ pub async fn run_login_provider(
             LoginProviderTarget::ClaudeApiKey => {
                 login_anthropic_api_key_flow().map(|_| LoginFlowOutcome::Completed)
             }
+            LoginProviderTarget::AgentRouterAnthropic => {
+                login_agentrouter_anthropic_flow().map(|_| LoginFlowOutcome::Completed)
+            }
             LoginProviderTarget::OpenAi => login_openai_flow(account_label, options.no_browser)
                 .await
                 .map(|_| LoginFlowOutcome::Completed),
@@ -566,6 +569,33 @@ fn login_anthropic_api_key_flow() -> Result<()> {
     );
     eprintln!("Provider: claude (native Anthropic Messages API)");
     crate::telemetry::record_auth_success("anthropic-api", "api_key");
+    Ok(())
+}
+
+fn login_agentrouter_anthropic_flow() -> Result<()> {
+    eprintln!("Setting up AgentRouter (Anthropic-compatible)...");
+    eprintln!("Get your API key from: https://agentrouter.org/console/token\n");
+    eprint!("Paste your AgentRouter API key: ");
+    io::stdout().flush()?;
+
+    let key = read_secret_line()?;
+
+    if key.is_empty() {
+        anyhow::bail!("No API key provided.");
+    }
+
+    save_named_api_key("agentrouter.env", "AGENTROUTER_API_KEY", &key)?;
+    // Also set ANTHROPIC_BASE_URL so the Anthropic runtime targets AgentRouter.
+    crate::alphacode_core::env::set_var("ANTHROPIC_BASE_URL", "https://agentrouter.org");
+    eprintln!("\nSuccessfully saved AgentRouter API key!");
+    eprintln!(
+        "Stored at {}",
+        crate::storage::app_config_dir()?
+            .join("agentrouter.env")
+            .display()
+    );
+    eprintln!("Provider: agentrouter-anthropic (Anthropic Messages API via AgentRouter)");
+    crate::telemetry::record_auth_success("agentrouter-anthropic", "api_key");
     Ok(())
 }
 

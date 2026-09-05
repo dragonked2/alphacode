@@ -628,7 +628,7 @@ use paste_buffer::{
     rapid_insertion_active, reset_burst,
 };
 #[cfg(test)]
-pub(in crate::alphacode_tui::tui::app) use paste_guard::expire_for_test as paste_guard_expire_for_test;
+pub(in crate::alphacode_tui::tui::app) use paste_guard::expire_trailing_window_for_test as paste_guard_expire_trailing_window_for_test;
 use paste_guard::image_media_type;
 
 pub(super) fn handle_paste(app: &mut App, text: String) {

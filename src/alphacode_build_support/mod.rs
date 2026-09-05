@@ -10,7 +10,7 @@ pub use paths::{
     preferred_reload_candidate, release_binary_path, resolve_binary_payload, run_selfdev_build,
     selfdev_binary_path, selfdev_build_command, selfdev_build_command_for_target,
     shared_server_update_candidate, update_launcher_symlink_to_current,
-    update_launcher_symlink_to_stable, version_matches_installed_channel,
+    update_launcher_symlink_to_stable, update_reload_candidate, version_matches_installed_channel,
 };
 pub use source_state::{
     current_build_info, current_git_diff, current_git_hash, current_git_hash_full,

@@ -464,11 +464,12 @@ pub const CELERIS_PROFILE: OpenAiCompatibleProfile = OpenAiCompatibleProfile {
 pub const AGENTROUTER_PROFILE: OpenAiCompatibleProfile = OpenAiCompatibleProfile {
     id: "agentrouter",
     display_name: "AgentRouter",
-    // Per https://agentrouter.org/docs/codex.html the base URL includes `/v1`
-    // ("OpenAI compatible 配置，Base URL 加上 /v1"), so the runtime's appended
-    // `/chat/completions` and `/models` resolve under it. Requires a bearer API
-    // key (prefixed `ak-`); unauthenticated requests return 401
-    // `unauthorized_client_error`. Available models: gpt-5.6, gpt-5.5, glm-5.2.
+    // OpenAI-compatible endpoint per https://agentrouter.org/docs/opencode.html.
+    // Base URL includes `/v1`; the runtime appends `/chat/completions` and
+    // `/models`. Requires a bearer API key (prefixed `ak-`).
+    // Available models: gpt-5.5, gpt-5.6-sol, glm-5.2.
+    // For Claude models, use the Anthropic-compatible endpoint instead
+    // (see AGENTROUTER_ANTHROPIC_LOGIN_PROVIDER).
     api_base: "https://agentrouter.org/v1",
     api_key_env: "AGENTROUTER_API_KEY",
     env_file: "agentrouter.env",
@@ -1230,10 +1231,27 @@ pub const AGENTROUTER_LOGIN_PROVIDER: LoginProviderDescriptor = LoginProviderDes
     auth_state_key: LoginProviderAuthStateKey::OpenRouterLike,
     auth_status_method: "API key",
     aliases: &["agent-router", "agentrouter-org", "agentrouter-api"],
-    menu_detail: "API key (ak-...), GPT-5.5/5.6, GLM-5.2",
+    menu_detail: "API key (ak-...), GPT-5.5/5.6, GLM-5.2 via OpenAI-compatible",
     recommended: false,
     target: LoginProviderTarget::OpenAiCompatible(AGENTROUTER_PROFILE),
     order: LoginProviderSurfaceOrder::new(Some(39), Some(39), Some(39), Some(39), Some(39)),
+};
+
+pub const AGENTROUTER_ANTHROPIC_LOGIN_PROVIDER: LoginProviderDescriptor = LoginProviderDescriptor {
+    id: "agentrouter-anthropic",
+    display_name: "AgentRouter (Anthropic)",
+    auth_kind: LoginProviderAuthKind::ApiKey,
+    auth_state_key: LoginProviderAuthStateKey::OpenRouterLike,
+    auth_status_method: "API key",
+    aliases: &[
+        "agentrouter-claude",
+        "agentrouter-anthropic-api",
+        "agent-router-anthropic",
+    ],
+    menu_detail: "API key (ak-...), Claude Opus 4-6/4-7/4-8 via Anthropic API",
+    recommended: false,
+    target: LoginProviderTarget::AgentRouterAnthropic,
+    order: LoginProviderSurfaceOrder::new(Some(40), Some(40), Some(40), Some(40), Some(40)),
 };
 
 pub const GOOGLE_LOGIN_PROVIDER: LoginProviderDescriptor = LoginProviderDescriptor {
@@ -1249,7 +1267,7 @@ pub const GOOGLE_LOGIN_PROVIDER: LoginProviderDescriptor = LoginProviderDescript
     order: LoginProviderSurfaceOrder::new(Some(13), None, None, None, None),
 };
 
-pub(crate) const LOGIN_PROVIDERS: [LoginProviderDescriptor; 53] = [
+pub(crate) const LOGIN_PROVIDERS: [LoginProviderDescriptor; 54] = [
     AUTO_IMPORT_LOGIN_PROVIDER,
     CLAUDE_LOGIN_PROVIDER,
     ANTHROPIC_API_LOGIN_PROVIDER,
@@ -1292,6 +1310,7 @@ pub(crate) const LOGIN_PROVIDERS: [LoginProviderDescriptor; 53] = [
     XIAOMI_MIMO_LOGIN_PROVIDER,
     CELERIS_LOGIN_PROVIDER,
     AGENTROUTER_LOGIN_PROVIDER,
+    AGENTROUTER_ANTHROPIC_LOGIN_PROVIDER,
     LMSTUDIO_LOGIN_PROVIDER,
     OLLAMA_LOGIN_PROVIDER,
     DRAGONMETA_LOGIN_PROVIDER,

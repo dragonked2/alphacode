@@ -90,6 +90,9 @@ impl MultiProvider {
     ) -> Option<&'static str> {
         match provider.target {
             LoginProviderTarget::Claude | LoginProviderTarget::ClaudeApiKey => Some("claude"),
+            // AgentRouter is an Anthropic-compatible gateway and uses the
+            // same runtime provider key as `claude-api`.
+            LoginProviderTarget::AgentRouterAnthropic => Some("claude"),
             LoginProviderTarget::OpenAi | LoginProviderTarget::OpenAiApiKey => Some("openai"),
             LoginProviderTarget::OpenRouter => Some("openrouter"),
             LoginProviderTarget::Bedrock => Some("bedrock"),

@@ -102,6 +102,12 @@ pub enum ProviderChoice {
         alias = "agentrouter-api"
     )]
     Agentrouter,
+    #[value(
+        alias = "agentrouter-claude",
+        alias = "agentrouter-anthropic-api",
+        alias = "agent-router-anthropic"
+    )]
+    AgentrouterAnthropic,
     #[value(alias = "lm-studio")]
     Lmstudio,
     Ollama,
@@ -177,6 +183,7 @@ impl ProviderChoice {
             Self::XiaomiMimo => "xiaomi-mimo",
             Self::Celeris => "celeris",
             Self::Agentrouter => "agentrouter",
+            Self::AgentrouterAnthropic => "agentrouter-anthropic",
             Self::Lmstudio => "lmstudio",
             Self::Ollama => "ollama",
             Self::Dragonmeta => "dragonmeta",
@@ -345,6 +352,10 @@ const PROVIDER_CHOICE_LOGIN_PROVIDERS: &[(ProviderChoice, LoginProviderDescripto
     (
         ProviderChoice::Agentrouter,
         crate::provider_catalog::AGENTROUTER_LOGIN_PROVIDER,
+    ),
+    (
+        ProviderChoice::AgentrouterAnthropic,
+        crate::provider_catalog::AGENTROUTER_ANTHROPIC_LOGIN_PROVIDER,
     ),
     (
         ProviderChoice::Lmstudio,
@@ -1283,7 +1294,9 @@ pub async fn login_and_bootstrap_provider(
             Arc::new(provider::MultiProvider::new())
         }
         LoginProviderTarget::Alphacode => Arc::new(provider::alphacode::AlphacodeProvider::new()),
-        LoginProviderTarget::Claude | LoginProviderTarget::ClaudeApiKey => {
+        LoginProviderTarget::Claude
+        | LoginProviderTarget::ClaudeApiKey
+        | LoginProviderTarget::AgentRouterAnthropic => {
             disable_subscription_runtime_mode();
             Arc::new(provider::MultiProvider::new())
         }
@@ -1559,6 +1572,7 @@ async fn init_provider_with_options(
         | ProviderChoice::XiaomiMimo
         | ProviderChoice::Celeris
         | ProviderChoice::Agentrouter
+        | ProviderChoice::AgentrouterAnthropic
         | ProviderChoice::Lmstudio
         | ProviderChoice::Ollama
         | ProviderChoice::Dragonmeta

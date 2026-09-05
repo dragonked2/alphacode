@@ -11,6 +11,11 @@ pub enum RuntimeProviderId {
     Alphacode,
     Claude,
     ClaudeApiKey,
+    /// Anthropic-compatible gateway (e.g. AgentRouter). Routes through the
+    /// Claude API key transport but keeps its own runtime identity so
+    /// `/provider` and the auth lifecycle can distinguish it from the
+    /// canonical `claude-api` flow.
+    AgentRouterAnthropic,
     OpenAi,
     OpenAiApiKey,
     OpenRouter,
@@ -30,6 +35,7 @@ impl RuntimeProviderId {
             Self::Alphacode => "alphacode",
             Self::Claude => "claude",
             Self::ClaudeApiKey => "claude-api",
+            Self::AgentRouterAnthropic => "agentrouter-anthropic",
             Self::OpenAi => "openai",
             Self::OpenAiApiKey => "openai-api",
             Self::OpenRouter => "openrouter",
@@ -49,6 +55,7 @@ impl RuntimeProviderId {
             Self::Alphacode => "Alphacode Subscription",
             Self::Claude => "Anthropic/Claude",
             Self::ClaudeApiKey => "Anthropic API",
+            Self::AgentRouterAnthropic => "AgentRouter (Anthropic)",
             Self::OpenAi => "OpenAI",
             Self::OpenAiApiKey => "OpenAI API",
             Self::OpenRouter => "OpenRouter",

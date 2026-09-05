@@ -126,16 +126,13 @@ fn agentrouter_profile_is_registered_and_resolves() {
     assert!(resolved.requires_api_key);
 }
 
-/// The three models AgentRouter serves must be offered before any live
-/// `/v1/models` fetch, since the endpoint 401s without a key and the picker
-/// would otherwise be empty on a fresh login.
+/// The models AgentRouter serves via its OpenAI-compatible endpoint must be
+/// offered before any live `/v1/models` fetch, since the endpoint 401s
+/// without a key and the picker would otherwise be empty on a fresh login.
 #[test]
 fn agentrouter_static_models_cover_the_served_catalog() {
     let models = openai_compatible_profile_static_models(AGENTROUTER_PROFILE);
-    assert_eq!(
-        models,
-        vec!["claude-opus-5", "gpt-5.6-sol", "claude-opus-4-8"]
-    );
+    assert_eq!(models, vec!["gpt-5.6-sol", "gpt-5.5", "glm-5.2"]);
 }
 
 /// The default model must be one the gateway actually serves.
@@ -144,7 +141,7 @@ fn agentrouter_default_model_is_a_served_model() {
     let default_model = AGENTROUTER_PROFILE
         .default_model
         .expect("agentrouter declares a default model");
-    assert_eq!(default_model, "claude-opus-5");
+    assert_eq!(default_model, "gpt-5.5");
     assert!(
         openai_compatible_profile_static_models(AGENTROUTER_PROFILE)
             .iter()
@@ -176,6 +173,33 @@ fn agentrouter_login_provider_is_discoverable_on_every_surface() {
         assert!(
             provider.order.for_surface(surface).is_some(),
             "agentrouter should be listed on {:?}",
+            surface
+        );
+    }
+}
+
+#[test]
+fn agentrouter_anthropic_login_provider_is_registered() {
+    use crate::provider_catalog::LoginProviderSurface;
+
+    let provider = resolve_login_provider("agentrouter-anthropic")
+        .expect("agentrouter-anthropic login provider must resolve");
+    assert_eq!(provider.display_name, "AgentRouter (Anthropic)");
+    assert!(matches!(
+        provider.target,
+        LoginProviderTarget::AgentRouterAnthropic
+    ));
+
+    for surface in [
+        LoginProviderSurface::CliLogin,
+        LoginProviderSurface::TuiLogin,
+        LoginProviderSurface::ServerBootstrap,
+        LoginProviderSurface::AutoInit,
+        LoginProviderSurface::AuthStatus,
+    ] {
+        assert!(
+            provider.order.for_surface(surface).is_some(),
+            "agentrouter-anthropic should be listed on {:?}",
             surface
         );
     }

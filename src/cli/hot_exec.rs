@@ -79,8 +79,23 @@ pub fn hot_reload(session_id: &str) -> Result<()> {
     }
 
     let is_selfdev = crate::cli::selfdev::client_selfdev_requested();
-    let (exe, _label) = build::preferred_reload_candidate(is_selfdev)
-        .ok_or_else(|| anyhow::anyhow!("No reloadable binary found"))?;
+    // If an `/update` install just finished in this session, prefer the
+    // freshly installed release binary (the `current` channel) over any
+    // local repo build. Otherwise a self-dev user who runs `cargo build`
+    // after the install but before the reload would end up reloading into
+    // the old repo binary even though the new release is sitting in
+    // `versions/<new>/` waiting to be used. See
+    // `build::update_reload_candidate` for the rationale.
+    let recently_updated = update::UpdateMetadata::load()
+        .ok()
+        .and_then(|metadata| metadata.installed_version)
+        .is_some();
+    let (exe, _label) = if recently_updated {
+        build::update_reload_candidate(is_selfdev)
+    } else {
+        build::preferred_reload_candidate(is_selfdev)
+    }
+    .ok_or_else(|| anyhow::anyhow!("No reloadable binary found"))?;
 
     if let Ok(metadata) = std::fs::metadata(&exe) {
         let age = metadata

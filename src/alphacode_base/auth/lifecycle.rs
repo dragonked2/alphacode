@@ -867,6 +867,9 @@ fn normalized_login_provider_id(provider_id: &str) -> Option<&'static str> {
     match provider_id.trim().to_ascii_lowercase().as_str() {
         "claude" | "anthropic" => Some("claude"),
         "anthropic-api" | "claude-api" | "anthropic-key" | "claude-key" => Some("claude-api"),
+        "agentrouter-anthropic" | "agentrouter-claude" | "agentrouter-anthropic-api" => {
+            Some("agentrouter-anthropic")
+        }
         "openai" => Some("openai"),
         "openai-api" | "openai-key" | "openai-apikey" | "openai-platform" | "platform-openai" => {
             Some("openai-api")
@@ -1121,6 +1124,10 @@ fn direct_provider_activation(provider_id: &str) -> Option<ProviderActivation> {
     let (runtime_id, active) = match normalized_login_provider_id(provider_id)? {
         "claude" => (RuntimeProviderId::Claude, ActiveProvider::Claude),
         "claude-api" => (RuntimeProviderId::ClaudeApiKey, ActiveProvider::Claude),
+        "agentrouter-anthropic" => (
+            RuntimeProviderId::AgentRouterAnthropic,
+            ActiveProvider::Claude,
+        ),
         "openai" => (RuntimeProviderId::OpenAi, ActiveProvider::OpenAI),
         "openai-api" => (RuntimeProviderId::OpenAiApiKey, ActiveProvider::OpenAI),
         "openrouter" => (RuntimeProviderId::OpenRouter, ActiveProvider::OpenRouter),
@@ -1151,6 +1158,7 @@ pub fn model_switch_request_for_provider_id(
         }
         Some("claude") => format!("claude-oauth:{}", model),
         Some("claude-api") => format!("claude-api:{}", model),
+        Some("agentrouter-anthropic") => format!("agentrouter-anthropic:{}", model),
         Some("openai") => format!("openai-oauth:{}", model),
         Some("openai-api") => format!("openai-api:{}", model),
         Some("openrouter") => format!("openrouter:{}", model),
@@ -1473,6 +1481,12 @@ mod tests {
                 crate::provider_catalog::LoginProviderTarget::ClaudeApiKey => {
                     Some(("claude-api", "claude-api", "claude", "claude-api"))
                 }
+                crate::provider_catalog::LoginProviderTarget::AgentRouterAnthropic => Some((
+                    "agentrouter-anthropic",
+                    "agentrouter-anthropic",
+                    "claude",
+                    "agentrouter-anthropic",
+                )),
                 crate::provider_catalog::LoginProviderTarget::OpenAi => {
                     Some(("openai", "openai", "openai", "openai-oauth"))
                 }

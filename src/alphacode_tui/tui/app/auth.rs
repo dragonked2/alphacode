@@ -298,6 +298,11 @@ impl App {
                 Self::clear_api_key_login("ANTHROPIC_API_KEY", "anthropic.env")?;
                 Ok("Logged out of Anthropic API key.".to_string())
             }
+            LoginProviderTarget::AgentRouterAnthropic => {
+                Self::clear_api_key_login("AGENTROUTER_API_KEY", "agentrouter.env")?;
+                crate::alphacode_core::env::remove_var("ANTHROPIC_BASE_URL");
+                Ok("Logged out of AgentRouter (Anthropic) API key.".to_string())
+            }
             LoginProviderTarget::OpenAi => {
                 let removed = crate::alphacode_base::auth::codex::clear_accounts()?;
                 Ok(format!("Logged out of {} OpenAI account(s).", removed))
@@ -562,6 +567,9 @@ impl App {
             crate::provider_catalog::LoginProviderTarget::Claude => self.start_claude_login(),
             crate::provider_catalog::LoginProviderTarget::ClaudeApiKey => {
                 self.start_anthropic_api_key_login()
+            }
+            crate::provider_catalog::LoginProviderTarget::AgentRouterAnthropic => {
+                self.start_agentrouter_anthropic_login()
             }
             crate::provider_catalog::LoginProviderTarget::OpenAi => self.start_openai_login(),
             crate::provider_catalog::LoginProviderTarget::OpenAiApiKey => {
@@ -1549,6 +1557,19 @@ impl App {
         );
     }
 
+    fn start_agentrouter_anthropic_login(&mut self) {
+        self.start_api_key_login(
+            "AgentRouter (Anthropic)",
+            "https://agentrouter.org/console/token",
+            "agentrouter.env",
+            "AGENTROUTER_API_KEY",
+            Some("claude-opus-4-6"),
+            Some("https://agentrouter.org"),
+            false,
+            None,
+        );
+    }
+
     fn start_openai_compatible_profile_login(
         &mut self,
         profile: crate::provider_catalog::OpenAiCompatibleProfile,
@@ -2317,6 +2338,15 @@ impl App {
                                 &env_file,
                                 Some("us-east-2"),
                             )
+                        })()
+                    } else if key_name == "AGENTROUTER_API_KEY" {
+                        (|| {
+                            Self::save_named_api_key(&env_file, &key_name, &key)?;
+                            crate::alphacode_core::env::set_var(
+                                "ANTHROPIC_BASE_URL",
+                                "https://agentrouter.org",
+                            );
+                            Ok(())
                         })()
                     } else {
                         Self::save_named_api_key(&env_file, &key_name, &key)

@@ -23,8 +23,10 @@ fn bare_enter_immediately_after_paste_does_not_submit() {
         "input should be preserved after paste"
     );
 
-    // A later, human-timed Enter still submits.
-    crate::alphacode_tui::tui::app::input::paste_guard_expire_for_test();
+    // A later, human-timed Enter still submits.  Expire only the timestamp so
+    // this also catches a regression where `Event::Paste` leaves the
+    // in-flight flag set forever.
+    crate::alphacode_tui::tui::app::input::paste_guard_expire_trailing_window_for_test();
     app.handle_key_press_event(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE))
         .unwrap();
     assert!(app.input.is_empty(), "later Enter should submit normally");

@@ -487,7 +487,16 @@ impl AuthStatus {
             // even with zero API key configured, which then failed at request
             // time because API-key mode never falls back to OAuth.
             crate::provider_catalog::LoginProviderTarget::ClaudeApiKey => {
-                if api_key_available("ANTHROPIC_API_KEY", "anthropic.env") {
+                if api_key_available("ANTHROPIC_API_KEY", "anthropic.env")
+                    || api_key_available("AGENTROUTER_API_KEY", "agentrouter.env")
+                {
+                    AuthState::Available
+                } else {
+                    AuthState::NotConfigured
+                }
+            }
+            crate::provider_catalog::LoginProviderTarget::AgentRouterAnthropic => {
+                if api_key_available("AGENTROUTER_API_KEY", "agentrouter.env") {
                     AuthState::Available
                 } else {
                     AuthState::NotConfigured
@@ -562,7 +571,14 @@ impl AuthStatus {
             }
             crate::provider_catalog::LoginProviderTarget::ClaudeApiKey => {
                 if self.state_for_provider(provider) == AuthState::Available {
-                    "API key (`ANTHROPIC_API_KEY`)".to_string()
+                    "API key (`ANTHROPIC_API_KEY` or `AGENTROUTER_API_KEY`)".to_string()
+                } else {
+                    "not configured".to_string()
+                }
+            }
+            crate::provider_catalog::LoginProviderTarget::AgentRouterAnthropic => {
+                if self.state_for_provider(provider) == AuthState::Available {
+                    "API key (`AGENTROUTER_API_KEY`)".to_string()
                 } else {
                     "not configured".to_string()
                 }
@@ -758,7 +774,30 @@ impl AuthStatus {
                         "anthropic.env",
                         "~/.config/alphacode/anthropic.env",
                     ),
+                    env_source("AGENTROUTER_API_KEY"),
+                    config_source(
+                        "AGENTROUTER_API_KEY",
+                        "agentrouter.env",
+                        "~/.config/alphacode/agentrouter.env",
+                    ),
                     external_api_key_source("ANTHROPIC_API_KEY"),
+                ]);
+                (
+                    source,
+                    detail,
+                    AuthExpiryConfidence::NotApplicable,
+                    AuthRefreshSupport::NotApplicable,
+                    AuthValidationMethod::PresenceCheck,
+                )
+            }
+            crate::provider_catalog::LoginProviderTarget::AgentRouterAnthropic => {
+                let (source, detail) = summarize_sources(vec![
+                    env_source("AGENTROUTER_API_KEY"),
+                    config_source(
+                        "AGENTROUTER_API_KEY",
+                        "agentrouter.env",
+                        "~/.config/alphacode/agentrouter.env",
+                    ),
                 ]);
                 (
                     source,

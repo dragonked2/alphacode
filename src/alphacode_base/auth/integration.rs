@@ -57,6 +57,7 @@ pub fn runtime_id_for_login_provider(
         LoginProviderTarget::Alphacode => Some(RuntimeProviderId::Alphacode),
         LoginProviderTarget::Claude => Some(RuntimeProviderId::Claude),
         LoginProviderTarget::ClaudeApiKey => Some(RuntimeProviderId::ClaudeApiKey),
+        LoginProviderTarget::AgentRouterAnthropic => Some(RuntimeProviderId::AgentRouterAnthropic),
         LoginProviderTarget::OpenAi => Some(RuntimeProviderId::OpenAi),
         LoginProviderTarget::OpenAiApiKey => Some(RuntimeProviderId::OpenAiApiKey),
         LoginProviderTarget::OpenRouter => Some(RuntimeProviderId::OpenRouter),

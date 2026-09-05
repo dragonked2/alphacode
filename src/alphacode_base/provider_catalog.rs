@@ -543,8 +543,13 @@ pub fn openai_compatible_profile_static_models(profile: OpenAiCompatibleProfile)
             push("MiniMax-M2.5");
         }
         "agentrouter" => {
-            push("claude-opus-5");
             push("gpt-5.6-sol");
+            push("gpt-5.5");
+            push("glm-5.2");
+        }
+        "agentrouter-anthropic" => {
+            push("claude-opus-4-6");
+            push("claude-opus-4-7");
             push("claude-opus-4-8");
         }
         "tokenrouter" => {
