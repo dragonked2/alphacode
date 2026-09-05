@@ -192,7 +192,8 @@ impl SkillTool {
             skills.iter().map(|s| s.name.as_str()).collect();
 
         let mut output = if skills.is_empty() {
-            format!("No skills loaded.\n\n\n            Skills are loaded from:\n\n            - ~/.alphacode/skills/<skill-name>/SKILL.md (global)\n\n            - ./.alphacode/skills/<skill-name>/SKILL.md (project-local)\n\n            - ./.claude/skills/<skill-name>/SKILL.md (compatibility)\n\n\n            Bundled skills (always available):\n{}",
+            format!(
+                "No skills loaded.\n\n\n            Skills are loaded from:\n\n            - ~/.alphacode/skills/<skill-name>/SKILL.md (global)\n\n            - ./.alphacode/skills/<skill-name>/SKILL.md (project-local)\n\n            - ./.claude/skills/<skill-name>/SKILL.md (compatibility)\n\n\n            Bundled skills (always available):\n{}",
                 crate::alphacode_base::bundled_skills::bundled_skill_names()
                     .iter()
                     .map(|n| format!("  /{}", n))

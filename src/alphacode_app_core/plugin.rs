@@ -111,8 +111,12 @@ pub fn list_plugins() -> Result<Vec<PluginInfo>> {
         return Ok(plugins);
     }
 
-    let entries = fs::read_dir(&plugins_dir)
-        .with_context(|| format!("Failed to read plugins directory: {}", plugins_dir.display()))?;
+    let entries = fs::read_dir(&plugins_dir).with_context(|| {
+        format!(
+            "Failed to read plugins directory: {}",
+            plugins_dir.display()
+        )
+    })?;
 
     for entry in entries.flatten() {
         let path = entry.path();
@@ -160,10 +164,7 @@ pub fn get_plugin(name: &str) -> Result<PluginInfo> {
 
     let manifest_path = plugin_dir.join("plugin.json");
     if !manifest_path.exists() {
-        anyhow::bail!(
-            "Plugin '{}' has no manifest (plugin.json)",
-            name
-        );
+        anyhow::bail!("Plugin '{}' has no manifest (plugin.json)", name);
     }
 
     let manifest = load_manifest(&manifest_path)?;
@@ -180,10 +181,7 @@ pub fn get_plugin(name: &str) -> Result<PluginInfo> {
 pub fn install_plugin(source_dir: &Path) -> Result<InstallResult> {
     let manifest_path = source_dir.join("plugin.json");
     if !manifest_path.exists() {
-        anyhow::bail!(
-            "No plugin.json found in {}",
-            source_dir.display()
-        );
+        anyhow::bail!("No plugin.json found in {}", source_dir.display());
     }
 
     let manifest = load_manifest(&manifest_path)?;
@@ -229,12 +227,18 @@ pub fn install_plugin(source_dir: &Path) -> Result<InstallResult> {
 /// Clones the repo into a temporary directory, validates the manifest,
 /// then copies it into the plugins directory.
 pub async fn install_plugin_from_git(url: &str) -> Result<InstallResult> {
-    let temp_dir = tempfile::tempdir()
-        .context("Failed to create temporary directory for plugin clone")?;
+    let temp_dir =
+        tempfile::tempdir().context("Failed to create temporary directory for plugin clone")?;
 
     // Clone the repository
     let status = tokio::process::Command::new("git")
-        .args(["clone", "--depth", "1", url, &temp_dir.path().to_string_lossy()])
+        .args([
+            "clone",
+            "--depth",
+            "1",
+            url,
+            &temp_dir.path().to_string_lossy(),
+        ])
         .status()
         .await
         .context("Failed to run git clone")?;
@@ -264,8 +268,12 @@ pub fn remove_plugin(name: &str) -> Result<PluginInfo> {
         skill_count,
     };
 
-    fs::remove_dir_all(&plugin_dir)
-        .with_context(|| format!("Failed to remove plugin directory: {}", plugin_dir.display()))?;
+    fs::remove_dir_all(&plugin_dir).with_context(|| {
+        format!(
+            "Failed to remove plugin directory: {}",
+            plugin_dir.display()
+        )
+    })?;
 
     Ok(info)
 }
@@ -394,9 +402,7 @@ fn count_skills_in_plugin(plugin_dir: &Path, manifest: &PluginManifest) -> usize
         manifest
             .skills
             .iter()
-            .filter(|skill_path| {
-                plugin_dir.join(skill_path).join("SKILL.md").exists()
-            })
+            .filter(|skill_path| plugin_dir.join(skill_path).join("SKILL.md").exists())
             .count()
     } else {
         // Auto-discover from skills/ directory
@@ -424,8 +430,7 @@ fn discover_skill_names(plugin_dir: &Path, manifest: &PluginManifest) -> Vec<Str
             .filter_map(|skill_path| {
                 let dir = plugin_dir.join(skill_path);
                 if dir.join("SKILL.md").exists() {
-                    dir.file_name()
-                        .map(|n| n.to_string_lossy().into_owned())
+                    dir.file_name().map(|n| n.to_string_lossy().into_owned())
                 } else {
                     None
                 }
@@ -443,11 +448,7 @@ fn discover_skill_names(plugin_dir: &Path, manifest: &PluginManifest) -> Vec<Str
             entries
                 .flatten()
                 .filter(|e| e.path().join("SKILL.md").exists())
-                .filter_map(|e| {
-                    e.file_name()
-                        .into_string()
-                        .ok()
-                })
+                .filter_map(|e| e.file_name().into_string().ok())
                 .collect()
         })
         .unwrap_or_default()
