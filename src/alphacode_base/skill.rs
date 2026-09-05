@@ -1910,7 +1910,7 @@ mod tests {
     fn bundled_skill_names_include_bugbounty() {
         let names = crate::alphacode_base::bundled_skills::bundled_skill_names();
         assert!(
-            names.iter().any(|n| *n == "bugbounty"),
+            names.contains(&"bugbounty"),
             "the `/bugbounty` skill must be bundled so it is available in every \
              alphacode release regardless of working directory or on-disk install. \
              Bundled skill names: {names:?}"

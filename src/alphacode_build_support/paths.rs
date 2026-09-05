@@ -160,7 +160,41 @@ fn newest_existing_binary(
 fn existing_binary(path: Result<PathBuf>, label: &'static str) -> Option<(PathBuf, &'static str)> {
     path.ok()
         .filter(|path| path.exists())
+        .filter(|path| is_valid_executable(path))
         .map(|path| (path, label))
+}
+
+/// Check that a file looks like a valid native executable by inspecting its
+/// magic bytes. This catches a class of bugs where a previous update wrote a
+/// raw `.zip` archive (Windows) or `.tar.gz` archive (Linux/macOS) directly as
+/// the binary — the file exists and is non-empty but is not actually runnable.
+fn is_valid_executable(path: &Path) -> bool {
+    let Ok(mut file) = std::fs::File::open(path) else {
+        return false;
+    };
+    use std::io::Read;
+    let mut header = [0u8; 4];
+    let Ok(()) = file.read_exact(&mut header) else {
+        return false;
+    };
+    // PE (Windows): MZ
+    // ELF (Linux): \x7fELF
+    // Mach-O (macOS): FE ED FA CE / FE ED FA CF (and byte-swapped variants)
+    matches!(
+        header,
+        // PE
+        [0x4D, 0x5A, _, _]
+        // ELF
+        | [0x7F, 0x45, 0x4C, 0x46]
+        // Mach-O 64-bit big-endian
+        | [0xFE, 0xED, 0xFA, 0xCE]
+        // Mach-O 64-bit little-endian
+        | [0xFE, 0xED, 0xFA, 0xCF]
+        // Mach-O 32-bit big-endian
+        | [0xCE, 0xFA, 0xED, 0xFE]
+        // Mach-O 32-bit little-endian
+        | [0xCF, 0xFA, 0xED, 0xFE]
+    )
 }
 
 pub fn selfdev_build_command(repo_dir: &Path) -> SelfDevBuildCommand {
