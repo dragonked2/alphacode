@@ -147,6 +147,58 @@ pub fn run_cloud_command(cmd: CloudSubcommand) -> Result<()> {
     }
 }
 
+pub(crate) fn run_plugin_command(cmd: super::args::PluginCommand) -> Result<()> {
+    use super::args::PluginCommand;
+    match cmd {
+        PluginCommand::List { json } => {
+            let plugins = crate::alphacode_app_core::plugin::list_plugins()?;
+            if json {
+                let data: Vec<_> = plugins.iter().map(|p| {
+                    serde_json::json!({
+                        "name": p.manifest.name,
+                        "version": p.manifest.version,
+                        "description": p.manifest.description,
+                        "author": p.manifest.author,
+                        "skills": p.skill_count,
+                    })
+                }).collect();
+                println!("{}", serde_json::to_string_pretty(&data)?);
+            } else {
+                print!("{}", crate::alphacode_app_core::plugin::format_plugin_list(&plugins));
+            }
+        }
+        PluginCommand::Install { path, git } => {
+            if git {
+                let rt = tokio::runtime::Runtime::new()?;
+                let result = rt.block_on(crate::alphacode_app_core::plugin::install_plugin_from_git(&path))?;
+                println!("Installed plugin '{}' v{}", result.plugin.manifest.name, result.plugin.manifest.version);
+                if !result.skills_added.is_empty() {
+                    println!("Added {} skills: {}", result.skills_added.len(), result.skills_added.join(", "));
+                }
+            } else {
+                let source = std::path::Path::new(&path);
+                if !source.exists() {
+                    anyhow::bail!("Path does not exist: {}", path);
+                }
+                let result = crate::alphacode_app_core::plugin::install_plugin(source)?;
+                println!("Installed plugin '{}' v{}", result.plugin.manifest.name, result.plugin.manifest.version);
+                if !result.skills_added.is_empty() {
+                    println!("Added {} skills: {}", result.skills_added.len(), result.skills_added.join(", "));
+                }
+            }
+        }
+        PluginCommand::Remove { name } => {
+            let info = crate::alphacode_app_core::plugin::remove_plugin(&name)?;
+            println!("Removed plugin '{}' v{}", info.manifest.name, info.manifest.version);
+        }
+        PluginCommand::Info { name } => {
+            let plugin = crate::alphacode_app_core::plugin::get_plugin(&name)?;
+            print!("{}", crate::alphacode_app_core::plugin::format_plugin_info(&plugin));
+        }
+    }
+    Ok(())
+}
+
 fn run_cloud_sessions_command(action: CloudSessionsSubcommand) -> Result<()> {
     match action {
         CloudSessionsSubcommand::Configure {

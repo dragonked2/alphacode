@@ -33,6 +33,7 @@ pub(crate) fn initial_title(args: &Args) -> String {
             _ => "alphacode ambient".to_string(),
         },
         Some(Command::Cloud(_)) => "alphacode cloud".to_string(),
+        Some(Command::Plugin(_)) => "alphacode plugin".to_string(),
         Some(Command::Pair { .. }) => "alphacode pair".to_string(),
         Some(Command::Permissions) => "alphacode permissions".to_string(),
         Some(Command::Transcript { .. }) => "alphacode transcript".to_string(),

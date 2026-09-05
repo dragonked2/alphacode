@@ -1,6 +1,6 @@
 [package]
 name = "alphacode"
-version = "1.0.12"
+version = "1.0.15"
 authors = ["Ali Essam <tlbbeg313@gmail.com>"]
 description = "A coding agent for the terminal. Multi-model orchestration, swarm coordination, and 40+ tools working together — built so the changes it makes are the smallest ones that solve the problem."
 edition = "2024"

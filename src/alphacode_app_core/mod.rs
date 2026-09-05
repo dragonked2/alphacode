@@ -57,6 +57,7 @@ pub mod smart_stream;
 pub mod ssh_remote;
 pub mod startup_profile;
 pub mod system_diagnostics;
+pub mod plugin;
 pub mod tool;
 pub mod turn_cancel_registry;
 pub mod update;

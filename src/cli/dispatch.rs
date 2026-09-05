@@ -362,6 +362,9 @@ pub(crate) async fn run_main(mut args: Args) -> Result<()> {
         Some(Command::Cloud(subcmd)) => {
             commands::run_cloud_command(map_cloud_subcommand(subcmd))?;
         }
+        Some(Command::Plugin(subcmd)) => {
+            commands::run_plugin_command(subcmd)?;
+        }
         Some(Command::Pair { list, revoke }) => {
             commands::run_pair_command(list, revoke)?;
         }

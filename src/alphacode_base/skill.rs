@@ -270,6 +270,8 @@ impl SkillRegistry {
         {
             registry.load_from_dir(&agents_skills)?;
         }
+        // Load skills from installed plugins (~/.alphacode/plugins/*/skills/)
+        Self::load_plugin_skills_from_plugins_dir(&mut registry);
         // Load bundled skills embedded at compile time so they are always
         // available regardless of cwd, $HOME, or any on-disk install.
         Self::load_bundled_skills(&mut registry);
@@ -557,6 +559,46 @@ impl SkillRegistry {
         }
     }
 
+    /// Load skills from installed plugins under `~/.alphacode/plugins/*/skills/`.
+    ///
+    /// Each plugin directory may contain a `skills/` subdirectory with
+    /// skill directories following the standard SKILL.md format. Plugin
+    /// skills are loaded with lower priority than bundled skills but
+    /// higher priority than on-disk user skills.
+    fn load_plugin_skills_from_plugins_dir(registry: &mut Self) {
+        let plugins_dir = match crate::storage::alphacode_dir() {
+            Ok(dir) => dir.join("plugins"),
+            Err(_) => return,
+        };
+
+        if !plugins_dir.exists() {
+            return;
+        }
+
+        let entries = match std::fs::read_dir(&plugins_dir) {
+            Ok(entries) => entries,
+            Err(_) => return,
+        };
+
+        for entry in entries.flatten() {
+            let plugin_dir = entry.path();
+            if !plugin_dir.is_dir() {
+                continue;
+            }
+
+            let skills_dir = plugin_dir.join("skills");
+            if skills_dir.exists() {
+                if let Err(err) = registry.load_from_dir(&skills_dir) {
+                    crate::alphacode_logging::warn(&format!(
+                        "failed to load skills from plugin {}: {}",
+                        plugin_dir.display(),
+                        err
+                    ));
+                }
+            }
+        }
+    }
+
     /// Parse an embedded SKILL.md body into a [`Skill`] without any
     /// filesystem reads. Returns the parsed skill, including subskill
     /// references merged into `reference_files`.
@@ -746,6 +788,9 @@ impl SkillRegistry {
         {
             count += self.load_from_dir_count(&agents_skills)?;
         }
+
+        // Load skills from installed plugins (~/.alphacode/plugins/*/skills/)
+        Self::load_plugin_skills_from_plugins_dir(self);
 
         // Reload bundled skills embedded at compile time so they are always
         // available after a reload — without this, any skill reload clears

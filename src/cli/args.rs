@@ -326,6 +326,10 @@ pub(crate) enum Command {
     #[command(subcommand)]
     Cloud(CloudCommand),
 
+    /// Manage installed plugins
+    #[command(subcommand)]
+    Plugin(PluginCommand),
+
     /// Generate a pairing code for iOS/web client
     Pair {
         /// List paired devices instead of generating a code
@@ -896,6 +900,38 @@ pub(crate) enum RestartCommand {
     Status,
     /// Remove the currently saved reboot snapshot
     Clear,
+}
+
+#[derive(Subcommand, Debug)]
+pub(crate) enum PluginCommand {
+    /// List all installed plugins
+    List {
+        /// Emit JSON instead of human-readable text
+        #[arg(long)]
+        json: bool,
+    },
+
+    /// Install a plugin from a local directory
+    Install {
+        /// Path to the plugin directory (must contain plugin.json)
+        path: String,
+
+        /// Install from a Git repository URL
+        #[arg(long)]
+        git: bool,
+    },
+
+    /// Remove an installed plugin
+    Remove {
+        /// Plugin name to remove
+        name: String,
+    },
+
+    /// Show detailed info about an installed plugin
+    Info {
+        /// Plugin name
+        name: String,
+    },
 }
 
 #[derive(Subcommand, Debug)]

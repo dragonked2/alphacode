@@ -227,6 +227,56 @@ BundledSkill {
     body: include_str!("bundled_skills/frontend-design/SKILL.md"),
     references: &[],
 },
+BundledSkill {
+    name: "git-workflow",
+    body: include_str!("bundled_skills/git-workflow/SKILL.md"),
+    references: &[],
+},
+BundledSkill {
+    name: "docker",
+    body: include_str!("bundled_skills/docker/SKILL.md"),
+    references: &[],
+},
+BundledSkill {
+    name: "database",
+    body: include_str!("bundled_skills/database/SKILL.md"),
+    references: &[],
+},
+BundledSkill {
+    name: "code-review",
+    body: include_str!("bundled_skills/code-review/SKILL.md"),
+    references: &[],
+},
+BundledSkill {
+    name: "debug",
+    body: include_str!("bundled_skills/debug/SKILL.md"),
+    references: &[],
+},
+BundledSkill {
+    name: "documentation",
+    body: include_str!("bundled_skills/documentation/SKILL.md"),
+    references: &[],
+},
+BundledSkill {
+    name: "devops",
+    body: include_str!("bundled_skills/devops/SKILL.md"),
+    references: &[],
+},
+BundledSkill {
+    name: "regex",
+    body: include_str!("bundled_skills/regex/SKILL.md"),
+    references: &[],
+},
+BundledSkill {
+    name: "testing",
+    body: include_str!("bundled_skills/testing/SKILL.md"),
+    references: &[],
+},
+BundledSkill {
+    name: "api-builder",
+    body: include_str!("bundled_skills/api-builder/SKILL.md"),
+    references: &[],
+},
 ];
 
 /// One bundled skill: a name, the top-level SKILL.md body, and any

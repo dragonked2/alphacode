@@ -437,6 +437,7 @@ pub fn verify_asset_checksum_text(contents: &str, asset_name: &str, bytes: &[u8]
         .strip_suffix(".zip")
         .or_else(|| asset_name.strip_suffix(".tar.gz"))
         .or_else(|| asset_name.strip_suffix(".exe"))
+        .or_else(|| asset_name.strip_suffix(".sha256"))
         .unwrap_or(asset_name);
 
     for (sum_name, expected) in &checksums {
@@ -445,6 +446,7 @@ pub fn verify_asset_checksum_text(contents: &str, asset_name: &str, bytes: &[u8]
             .or_else(|| sum_name.strip_suffix(".tar.gz"))
             .or_else(|| sum_name.strip_suffix(".exe"))
             .or_else(|| sum_name.strip_suffix(".sh"))
+            .or_else(|| sum_name.strip_suffix(".sha256"))
             .unwrap_or(sum_name);
 
         if asset_base == sum_base && actual.eq_ignore_ascii_case(expected) {
@@ -452,9 +454,11 @@ pub fn verify_asset_checksum_text(contents: &str, asset_name: &str, bytes: &[u8]
         }
     }
 
+    let listed: Vec<&str> = checksums.keys().map(|s| s.as_str()).collect();
     anyhow::bail!(
-        "SHA256SUMS does not list {} (checked {} entries)",
+        "SHA256SUMS does not list {} — found entries: {} (checked {} entries)",
         asset_name,
+        listed.join(", "),
         checksums.len()
     )
 }
