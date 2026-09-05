@@ -1014,37 +1014,75 @@ pub fn download_and_install_blocking_with_progress(
     verify_asset_checksum_if_available(&client, release, asset, &bytes)?;
 
     let mut installed_version_dir: Option<PathBuf> = None;
-    if asset.name.ends_with(".tar.gz") {
-        let cursor = std::io::Cursor::new(&bytes);
-        let gz = flate2::read::GzDecoder::new(cursor);
-        let mut archive = tar::Archive::new(gz);
+    if asset.name.ends_with(".tar.gz") || asset.name.ends_with(".zip") {
         let extract_dir = temp_path.with_extension("extract");
         if extract_dir.exists() {
             let _ = fs::remove_dir_all(&extract_dir);
         }
         fs::create_dir_all(&extract_dir).context("Failed to create archive extraction dir")?;
+
+        if asset.name.ends_with(".tar.gz") {
+            let cursor = std::io::Cursor::new(&bytes);
+            let gz = flate2::read::GzDecoder::new(cursor);
+            let mut archive = tar::Archive::new(gz);
+            for entry in archive.entries()? {
+                let mut entry = entry?;
+                let entry_path = entry.path()?.into_owned();
+                if entry_path.components().count() != 1 {
+                    continue;
+                }
+                let file_name = entry_path
+                    .file_name()
+                    .map(|n| n.to_string_lossy().to_string())
+                    .unwrap_or_default();
+                if file_name.is_empty() || file_name.ends_with(".tar.gz") {
+                    continue;
+                }
+                let dest = extract_dir.join(&file_name);
+                entry.unpack(&dest)?;
+            }
+        } else {
+            let cursor = std::io::Cursor::new(&bytes);
+            let mut archive =
+                zip::ZipArchive::new(cursor).context("Failed to open zip archive")?;
+            for i in 0..archive.len() {
+                let mut entry = archive.by_index(i)?;
+                let entry_name = entry.name().to_string();
+                // Only extract top-level files (no subdirectories)
+                if entry_name.contains('/') || entry_name.contains('\\') {
+                    continue;
+                }
+                if entry_name.is_empty() || entry_name.ends_with(".zip") {
+                    continue;
+                }
+                let dest = extract_dir.join(&entry_name);
+                let mut out_file = fs::File::create(&dest)?;
+                std::io::copy(&mut entry, &mut out_file)?;
+            }
+        }
+
         let mut extracted_binary: Option<PathBuf> = None;
-        for entry in archive.entries()? {
-            let mut entry = entry?;
-            let entry_path = entry.path()?.into_owned();
-            if entry_path.components().count() != 1 {
+        for entry in fs::read_dir(&extract_dir).context("Failed to read extracted archive")? {
+            let entry = entry?;
+            if !entry.file_type()?.is_file() {
                 continue;
             }
-            let file_name = entry_path
-                .file_name()
-                .map(|n| n.to_string_lossy().to_string())
-                .unwrap_or_default();
-            if file_name.is_empty() || file_name.ends_with(".tar.gz") {
-                continue;
-            }
-            let dest = extract_dir.join(&file_name);
-            entry.unpack(&dest)?;
-            if file_name.starts_with("alphacode") && !file_name.ends_with(".bin") {
-                extracted_binary = Some(dest);
+            let name = entry.file_name();
+            let name_string = name.to_string_lossy();
+            if name_string.starts_with("alphacode") && !name_string.ends_with(".bin") {
+                extracted_binary = Some(entry.path());
+                break;
             }
         }
         let Some(extracted_binary) = extracted_binary else {
-            anyhow::bail!("Could not find alphacode binary inside tar.gz archive");
+            anyhow::bail!(
+                "Could not find alphacode binary inside {} archive",
+                if asset.name.ends_with(".tar.gz") {
+                    "tar.gz"
+                } else {
+                    "zip"
+                }
+            );
         };
         crate::platform::set_permissions_executable(&extracted_binary)?;
 
@@ -1081,10 +1119,6 @@ pub fn download_and_install_blocking_with_progress(
             }
             installed_files.push(dest);
         }
-        // Give every installed file the same mtime. The wrapper script and the
-        // `.bin` payload otherwise land with whatever sub-second skew the copy
-        // loop produced, and any code comparing binary freshness by mtime then
-        // sees two "different age" files for one logical install.
         let install_stamp = SystemTime::now();
         for path in &installed_files {
             if let Ok(file) = fs::File::options().write(true).open(path) {
