@@ -5,4 +5,5 @@ Cargo.lock text eol=lf
 # include_str!. CRLF line endings break YAML frontmatter parsing
 # ("mapping values are not allowed in this context"), so force LF to
 # prevent CRLF re-introduction on Windows checkouts.
+# All bundled SKILL.md files must use LF to prevent YAML parsing failures.
 src/alphacode_base/bundled_skills/**/SKILL.md text eol=lf

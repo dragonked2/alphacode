@@ -126,7 +126,108 @@ pub(super) const BUNDLED_SKILLS: &[BundledSkill] = &[BundledSkill {
             include_str!("bundled_skills/bugbounty/redteam-ops/SKILL.md"),
         ),
     ],
-}];
+},
+BundledSkill {
+    name: "optimization",
+    body: include_str!("bundled_skills/optimization/SKILL.md"),
+    references: &[],
+},
+BundledSkill {
+    name: "security-audit",
+    body: include_str!("bundled_skills/security-audit/SKILL.md"),
+    references: &[],
+},
+BundledSkill {
+    name: "refactor",
+    body: include_str!("bundled_skills/refactor/SKILL.md"),
+    references: &[],
+},
+BundledSkill {
+    name: "test-writer",
+    body: include_str!("bundled_skills/test-writer/SKILL.md"),
+    references: &[],
+},
+BundledSkill {
+    name: "api-design",
+    body: include_str!("bundled_skills/api-design/SKILL.md"),
+    references: &[],
+},
+BundledSkill {
+    name: "dependency-audit",
+    body: include_str!("bundled_skills/dependency-audit/SKILL.md"),
+    references: &[],
+},
+BundledSkill {
+    name: "architecture-review",
+    body: include_str!("bundled_skills/architecture-review/SKILL.md"),
+    references: &[],
+},
+BundledSkill {
+    name: "performance-profiling",
+    body: include_str!("bundled_skills/performance-profiling/SKILL.md"),
+    references: &[],
+},
+BundledSkill {
+    name: "incident-response",
+    body: include_str!("bundled_skills/incident-response/SKILL.md"),
+    references: &[],
+},
+BundledSkill {
+    name: "data-pipeline",
+    body: include_str!("bundled_skills/data-pipeline/SKILL.md"),
+    references: &[],
+},
+BundledSkill {
+    name: "migration-planner",
+    body: include_str!("bundled_skills/migration-planner/SKILL.md"),
+    references: &[],
+},
+BundledSkill {
+    name: "observability",
+    body: include_str!("bundled_skills/observability/SKILL.md"),
+    references: &[],
+},
+BundledSkill {
+    name: "vuln-hunter",
+    body: include_str!("bundled_skills/vuln-hunter/SKILL.md"),
+    references: &[],
+},
+BundledSkill {
+    name: "bug-bounty-methodology",
+    body: include_str!("bundled_skills/bug-bounty-methodology/SKILL.md"),
+    references: &[],
+},
+BundledSkill {
+    name: "api-security",
+    body: include_str!("bundled_skills/api-security/SKILL.md"),
+    references: &[],
+},
+BundledSkill {
+    name: "crypto-audit",
+    body: include_str!("bundled_skills/crypto-audit/SKILL.md"),
+    references: &[],
+},
+BundledSkill {
+    name: "cloud-security",
+    body: include_str!("bundled_skills/cloud-security/SKILL.md"),
+    references: &[],
+},
+BundledSkill {
+    name: "code-audit",
+    body: include_str!("bundled_skills/code-audit/SKILL.md"),
+    references: &[],
+},
+BundledSkill {
+    name: "exploit-dev",
+    body: include_str!("bundled_skills/exploit-dev/SKILL.md"),
+    references: &[],
+},
+BundledSkill {
+    name: "frontend-design",
+    body: include_str!("bundled_skills/frontend-design/SKILL.md"),
+    references: &[],
+},
+];
 
 /// One bundled skill: a name, the top-level SKILL.md body, and any
 /// nested subskill references that should be merged into the skill's

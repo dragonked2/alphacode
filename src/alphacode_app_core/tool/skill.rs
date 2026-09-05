@@ -192,19 +192,13 @@ impl SkillTool {
             skills.iter().map(|s| s.name.as_str()).collect();
 
         let mut output = if skills.is_empty() {
-            "No skills loaded.\n\n\
-            Skills are loaded from:\n\
-            - ~/.alphacode/skills/<skill-name>/SKILL.md (global)\n\
-            - ./.alphacode/skills/<skill-name>/SKILL.md (project-local)\n\
-            - ./.claude/skills/<skill-name>/SKILL.md (compatibility)\n\n\
-            Create a SKILL.md file with YAML frontmatter:\n\
-            ---\n\
-            name: my-skill\n\
-            description: What this skill does\n\
-            allowed-tools: bash, read, write\n\
-            ---\n\n\
-            # Skill content here\n"
-                .to_string()
+            format!("No skills loaded.\n\n\n            Skills are loaded from:\n\n            - ~/.alphacode/skills/<skill-name>/SKILL.md (global)\n\n            - ./.alphacode/skills/<skill-name>/SKILL.md (project-local)\n\n            - ./.claude/skills/<skill-name>/SKILL.md (compatibility)\n\n\n            Bundled skills (always available):\n{}",
+                crate::alphacode_base::bundled_skills::bundled_skill_names()
+                    .iter()
+                    .map(|n| format!("  /{}", n))
+                    .collect::<Vec<_>>()
+                    .join("\n")
+            )
         } else {
             let mut output = format!("Loaded skills: {}\n\n", skills.len());
             for skill in &skills {
