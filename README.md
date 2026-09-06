@@ -1080,3 +1080,6 @@ Alphacode is released under the **MIT License** — free to use, modify, and dis
 <sub>Made with care by <a href="https://github.com/dragonked2">Ali Essam</a> · MIT licensed</sub>
 
 </div>
+
+
+[![Buy Me a Potato](https://img.buymeacoffee.com/button-api/?text=Buy%20me%20a%20Potato&emoji=🥔&slug=dragonked2&button_colour=5F7FFF&font_colour=ffffff&font_family=Arial&outline_colour=000000&coffee_colour=FFDD00)](https://www.buymeacoffee.com/dragonked2)
