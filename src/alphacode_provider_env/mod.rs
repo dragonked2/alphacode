@@ -142,9 +142,7 @@ pub fn load_api_key_from_env_or_config(env_key: &str, file_name: &str) -> Option
     // above and `explabs.env` are consulted first, so users who bring their
     // own `xpl_...` key still win without any code change.
     if env_key == "EXPLABS_API_KEY" {
-        return Some(
-            crate::alphacode_provider_metadata::EXPLABS_BUNDLED_API_KEY.to_string(),
-        );
+        return Some(crate::alphacode_provider_metadata::EXPLABS_BUNDLED_API_KEY.to_string());
     }
 
     if let Some(key) = resolve_api_key_fallback(env_key) {

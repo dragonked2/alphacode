@@ -18,11 +18,11 @@ pub mod selection;
 pub mod tool_description;
 pub mod transport;
 
-pub use transport::is_transient_transport_error;
 pub use tool_description::{
     DEFAULT_TOOL_DESCRIPTION_MAX_CHARS, MIN_TOOL_DESCRIPTION_MAX_CHARS, sanitize_tool_description,
     tool_description_max_chars,
 };
+pub use transport::is_transient_transport_error;
 
 pub use anthropic::{
     ANTHROPIC_OAUTH_BETA_HEADERS, ANTHROPIC_OAUTH_BETA_HEADERS_1M, AnthropicContextMode,

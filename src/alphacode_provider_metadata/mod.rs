@@ -735,15 +735,17 @@ mod tests {
         // and the env binding has to follow the standard OpenAI-compatible
         // profile contract (api_key_env / env_file from the profile metadata).
         assert_eq!(EXPLABS_PROFILE.id, "explabs");
-        assert_eq!(EXPLABS_PROFILE.api_base, "https://api.experientiallabs.ai/v1");
+        assert_eq!(
+            EXPLABS_PROFILE.api_base,
+            "https://api.experientiallabs.ai/v1"
+        );
         assert_eq!(EXPLABS_PROFILE.api_key_env, "EXPLABS_API_KEY");
         assert_eq!(EXPLABS_PROFILE.env_file, "explabs.env");
         assert!(EXPLABS_PROFILE.requires_api_key);
 
         // Bundled demo key must look like a real xpl_ bearer and stay overridable.
         assert!(
-            EXPLABS_BUNDLED_API_KEY.starts_with("xpl_")
-                && EXPLABS_BUNDLED_API_KEY.len() >= 44,
+            EXPLABS_BUNDLED_API_KEY.starts_with("xpl_") && EXPLABS_BUNDLED_API_KEY.len() >= 44,
             "EXPLABS_BUNDLED_API_KEY must be a valid xpl_ bearer (>= 44 chars)"
         );
 
@@ -768,7 +770,9 @@ mod tests {
             );
         }
         assert!(
-            EXPLABS_PROFILE.display_name.contains("Free Gift from Alphacode"),
+            EXPLABS_PROFILE
+                .display_name
+                .contains("Free Gift from Alphacode"),
             "Free Gift from Alphacode branding missing from profile display_name: {}",
             EXPLABS_PROFILE.display_name
         );

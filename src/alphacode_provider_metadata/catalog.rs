@@ -432,8 +432,7 @@ pub const ALIBABA_CODING_PLAN_PROFILE: OpenAiCompatibleProfile = OpenAiCompatibl
 /// `explabs.env`). Overridable — the user's own key always wins. This is a
 /// shared key, so set `EXPLABS_API_KEY` to your own `xpl_...` key for
 /// dedicated rate limits and credit balance.
-pub const EXPLABS_BUNDLED_API_KEY: &str =
-    "xpl_e1e6ed64f7f13f09bf2d72025b735a2b3ff0da77";
+pub const EXPLABS_BUNDLED_API_KEY: &str = "xpl_e1e6ed64f7f13f09bf2d72025b735a2b3ff0da77";
 
 /// Curated order of the Experiential Labs free platform-funded lane. The
 /// post-login flagship picker consults this list to rank free models above
