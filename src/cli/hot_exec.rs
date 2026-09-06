@@ -372,23 +372,17 @@ pub fn run_auto_update() -> Result<()> {
         return Ok(());
     }
 
-    crate::logging::info(&format!("Updated to {}. Restarting...", version));
-    std::thread::sleep(std::time::Duration::from_millis(250));
-
-    let exe = build::client_update_candidate(false)
-        .map(|(p, _)| p)
-        .or_else(|| std::env::current_exe().ok())
-        .ok_or_else(|| anyhow::anyhow!("No executable path found after update"))?;
-    let args: Vec<String> = std::env::args().skip(1).collect();
-
-    let err =
-        crate::platform::replace_process(ProcessCommand::new(&exe).args(&args).arg("--no-update"));
-
-    Err(anyhow::anyhow!(
-        "Failed to exec new binary {:?}: {}",
-        exe,
-        err
-    ))
+    // No TUI session is registered yet. Exec-ing from this background thread
+    // would call exit(0) while the main thread is mid-terminal-init,
+    // corrupting the console and breaking input in the replacement process.
+    // The update is already installed on disk; the next startup's
+    // binary-freshness check (maybe_reexec_to_fresher_binary) will re-exec
+    // into the new binary.
+    crate::logging::info(&format!(
+        "Updated to {}. Binary installed; will take effect on next startup.",
+        version
+    ));
+    Ok(())
 }
 
 pub fn run_update() -> Result<()> {

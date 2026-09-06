@@ -154,6 +154,14 @@ pub async fn run() -> Result<()> {
     startup_profile::mark("telemetry_check");
 
     let args = parse_and_prepare_args()?;
+
+    // Check if a newer binary was installed by a previous session's auto-update
+    // but the current process is still the old one (e.g. the user ran the old
+    // binary from PATH after an update installed a newer version). This is a
+    // cheap filesystem check (symlink + mtime) that runs before the TUI is
+    // initialized, so a re-exec here is safe and invisible to the user.
+    maybe_reexec_to_fresher_binary(&args)?;
+
     spawn_background_update_check(&args);
 
     if let Err(e) = dispatch::run_main(args).await {
@@ -334,7 +342,7 @@ fn spawn_background_update_check(args: &Args) {
                 } => {
                     logging::info(&format!("Update available: {} -> {}", current, latest));
                 }
-                update::UpdateCheckResult::UpdateInstalled { version, path } => {
+                update::UpdateCheckResult::UpdateInstalled { version, path: _ } => {
                     // When an interactive TUI session is running, hand the switch
                     // to the app's graceful reload path (saves the input line,
                     // waits for the current turn, resumes the session) instead of
@@ -353,18 +361,18 @@ fn spawn_background_update_check(args: &Args) {
                         ));
                         return;
                     }
-                    logging::info(&format!("Updated to {}. Restarting...", version));
-                    std::thread::sleep(std::time::Duration::from_millis(250));
-                    let args: Vec<String> = std::env::args().skip(1).collect();
-                    let exec_path = build::client_update_candidate(false)
-                        .map(|(p, _)| p)
-                        .unwrap_or(path);
-                    let err = crate::platform::replace_process(
-                        ProcessCommand::new(&exec_path)
-                            .args(&args)
-                            .arg("--no-update"),
-                    );
-                    eprintln!("Failed to exec new binary: {}", err);
+                    // No TUI session is registered yet (we are still in early
+                    // startup before set_current_session). Exec-ing from this
+                    // background thread would call exit(0) while the main thread
+                    // is mid-terminal-init, corrupting the console and breaking
+                    // input in the replacement process (the "input preserved"
+                    // failure). The update is already installed on disk and the
+                    // channel symlinks are updated, so the next startup's
+                    // binary-freshness check will re-exec into the new binary.
+                    logging::info(&format!(
+                        "Updated to {}. Binary installed; will take effect on next startup.",
+                        version
+                    ));
                 }
                 update::UpdateCheckResult::Error(e) => {
                     logging::info(&format!("Update check failed: {}", e));
@@ -441,6 +449,79 @@ fn should_spawn_background_update_check(args: &Args) -> bool {
 
 fn should_auto_install_update(args: &Args) -> bool {
     args.auto_update
+}
+
+/// If a previous session's auto-update installed a newer binary (via channel
+/// symlinks) but the current process is still the old one, re-exec into the
+/// newer binary so the user always runs the latest version.
+///
+/// This catches the case where: (1) an update was downloaded and installed,
+/// (2) the background thread's replace_process failed or was skipped, and
+/// (3) the user starts a new session from the old binary in PATH.
+///
+/// The check is a cheap filesystem comparison (symlink target + mtime) and
+/// runs before the TUI is initialized, so a re-exec here is safe and
+/// transparent to the user.
+fn maybe_reexec_to_fresher_binary(args: &Args) -> Result<()> {
+    // Only check for release builds; self-dev users manage their own binaries.
+    if !update::is_release_build() {
+        return Ok(());
+    }
+    // Don't re-exec during resume, update command, or server/ACP mode.
+    if args.resume.is_some()
+        || matches!(
+            args.command,
+            Some(Command::Update) | Some(Command::Serve { .. }) | Some(Command::Acp)
+        )
+    {
+        return Ok(());
+    }
+
+    let current_exe = match std::env::current_exe() {
+        Ok(exe) => exe,
+        Err(_) => return Ok(()),
+    };
+
+    let Some((candidate, _label)) = build::client_update_candidate(false) else {
+        return Ok(());
+    };
+
+    // Same binary — nothing to do.
+    if candidate == current_exe {
+        return Ok(());
+    }
+
+    // Compare mtimes: only re-exec if the candidate is strictly newer.
+    let candidate_mtime = match candidate.metadata().and_then(|m| m.modified()) {
+        Ok(t) => t,
+        Err(_) => return Ok(()),
+    };
+    let current_mtime = match current_exe.metadata().and_then(|m| m.modified()) {
+        Ok(t) => t,
+        Err(_) => return Ok(()),
+    };
+
+    if candidate_mtime <= current_mtime {
+        return Ok(());
+    }
+
+    logging::info(&format!(
+        "Re-exec to fresher binary: current={:?} (mtime={:?}) candidate={:?} (mtime={:?})",
+        current_exe, current_mtime, candidate, candidate_mtime
+    ));
+
+    let args: Vec<String> = std::env::args().collect();
+    let err = crate::platform::replace_process(
+        ProcessCommand::new(&candidate)
+            .args(&args)
+            .arg("--no-update"),
+    );
+    // If exec fails, log and continue with the current binary.
+    logging::warn(&format!(
+        "Re-exec to {:?} failed: {}; continuing with current binary",
+        candidate, err
+    ));
+    Ok(())
 }
 
 fn report_main_error(error: &anyhow::Error) {

@@ -479,8 +479,14 @@ fn test_restore_session_with_selfdev_reload_tool_result_queues_continuation() {
             .iter()
             .any(|message| message.contains("Continue exactly where you left off"))
     );
-    assert!(app.pending_turn);
-    assert!(matches!(app.status, ProcessingStatus::Sending));
+    // The reload-continuation system reminder is *queued* but NOT
+    // auto-dispatched: dispatching it eagerly would lock the input field
+    // for the whole model round-trip (the "inputpreserved prevents
+    // typing" bug). The user must press Enter to send it. The local event
+    // loop must therefore see the composer as idle.
+    assert!(!app.is_processing);
+    assert!(!app.pending_turn);
+    assert!(matches!(app.status, ProcessingStatus::Idle));
 
     let _ = std::fs::remove_file(crate::session::session_path(&session_id).unwrap());
 }

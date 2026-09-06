@@ -12,8 +12,18 @@ pub(super) struct RestoredReloadInput {
     pub hidden_queued_system_messages: Vec<String>,
     pub startup_status_notice: Option<String>,
     pub startup_display_message: Option<(String, String)>,
+    // The three fields below remain part of the saved snapshot contract
+    // (they are written by `save_input_for_reload`) so that downstream
+    // consumers and tests can introspect what was on disk. The reload
+    // lifecycle intentionally does NOT auto-replay them any more: doing so
+    // dispatched the recovered system reminder before the user could type a
+    // single character and locked the composer for the duration of the
+    // model round-trip (the "inputpreserved prevents typing" bug).
+    #[allow(dead_code)]
     pub interleave_message: Option<String>,
+    #[allow(dead_code)]
     pub pending_soft_interrupts: Vec<String>,
+    #[allow(dead_code)]
     pub pending_soft_interrupt_resend: Option<Vec<String>>,
     pub rate_limit_pending_message: Option<super::PendingRemoteMessage>,
     pub rate_limit_reset: Option<Instant>,

@@ -7,22 +7,25 @@ impl App {
         self.input = restored.input;
         self.cursor_pos = restored.cursor;
         self.pending_images = restored.pending_images;
-        self.submit_input_on_startup = restored.submit_on_restore
-            && (!self.input.is_empty() || !self.pending_images.is_empty());
+        // A reload must NEVER auto-submit a user prompt. The previous version
+        // may have saved an in-flight rate-limit or queued retry with
+        // `submit_on_restore=true`; replaying that here would race the user's
+        // first keystrokes and (on Windows) make the input box appear to
+        // swallow every keypress until the auto-dispatch finishes. The
+        // "Reload complete - continuing" chat message is already pushed by
+        // `restore_session`; the user is free to type a new prompt.
+        let _ = restored.submit_on_restore;
+        self.submit_input_on_startup = false;
         crate::logging::info(&format!(
-            "Startup input restored: submit_on_restore={} input_chars={} pending_images={} queued_messages={} hidden_system={} => submit_input_on_startup={}",
-            restored.submit_on_restore,
+            "Startup input restored: input_chars={} pending_images={} queued_messages={} hidden_system={}",
             self.input.chars().count(),
             self.pending_images.len(),
             restored.queued_messages.len(),
             restored.hidden_queued_system_messages.len(),
-            self.submit_input_on_startup,
         ));
         self.hidden_queued_system_messages = restored.hidden_queued_system_messages;
         if let Some(status_notice) = restored.startup_status_notice {
             self.set_status_notice(status_notice);
-        } else if self.submit_input_on_startup {
-            self.set_status_notice("Startup prompt queued");
         }
         if let Some((title, message)) = restored.startup_display_message {
             self.push_display_message(DisplayMessage::system(message).with_title(title));
@@ -38,48 +41,41 @@ impl App {
         self.set_todos_view_enabled(restored.todos_view_enabled, restored.todos_view_enabled);
         self.todo_confidence_spike_challenged = restored.todo_confidence_spike_challenged;
 
-        let mut queued_messages = restored.queued_messages;
-        let mut recovered_followups = Vec::new();
-        if let Some(interleave_message) = restored.interleave_message
-            && !interleave_message.trim().is_empty()
-        {
-            recovered_followups.push(interleave_message);
-        }
-        let recovered_interrupts = restored
-            .pending_soft_interrupt_resend
-            .unwrap_or(restored.pending_soft_interrupts);
-        if !recovered_interrupts.is_empty() {
-            crate::logging::info(&format!(
-                "Recovered {} pending soft interrupt(s) after reload; re-queueing them as normal follow-ups",
-                recovered_interrupts.len()
+        // Recovered queued follow-ups and soft-interrupts are *kept* in the
+        // queue (so a future explicit submit can pick them up), but we do NOT
+        // auto-start a turn here. Auto-starting a turn on every reload was the
+        // source of the "inputpreserved prevents typing" bug: the local event
+        // loop dispatched the recovered system reminder immediately, leaving
+        // `is_processing = true` for the duration of the round-trip. During
+        // that window the input field rendered a cursor but every keypress
+        // was consumed by the in-flight dispatch path, so the user appeared
+        // to be locked out of typing. The system reminder is already visible
+        // in the chat transcript (pushed by `restore_session` when it queued
+        // the reload continuation); keeping the entries in `queued_messages`
+        // lets the user re-submit or modify them manually.
+        self.queued_messages = restored.queued_messages;
+        let recovered_followup_count = self.queued_messages.len();
+        if recovered_followup_count > 0 {
+            self.set_status_notice(format!(
+                "Restored {} queued prompt(s) after reload - press Enter to send",
+                recovered_followup_count
             ));
-            recovered_followups.extend(recovered_interrupts);
-        }
-        if !recovered_followups.is_empty() {
-            let mut recovered_queue = recovered_followups;
-            recovered_queue.append(&mut queued_messages);
-            queued_messages = recovered_queue;
-            self.set_status_notice("Recovered pending prompts after reload");
         }
 
-        self.queued_messages = queued_messages;
-        if self.has_queued_followups() {
-            if self.is_remote {
-                // Do not synthesize a processing turn for restored remote follow-ups.
-                // After a reload, the server may still be running the previous turn;
-                // the queue must remain a wait-until-turn-end queue until the history
-                // bootstrap/Done event proves the remote turn is idle. The remote
-                // post-connect/history/tick paths will dispatch once it is safe.
-                self.set_status_notice("Restored queued follow-up after reload");
-            } else {
-                self.is_processing = true;
-                self.status = ProcessingStatus::Sending;
-                if self.processing_started.is_none() {
-                    self.processing_started = Some(Instant::now());
-                }
-                self.pending_turn = true;
-            }
+        // Make sure the input is in a known-good editable state. If the
+        // restored cursor ended up past the end of the input (truncated
+        // payload, for example) clamp it; otherwise the next keystroke can
+        // be silently dropped.
+        let chars = self.input.chars().count();
+        if self.cursor_pos > chars {
+            self.cursor_pos = chars;
         }
+        // Always reset these on a fresh restore so the user is not stuck in
+        // a phantom "still processing" frame from the previous process.
+        self.is_processing = false;
+        self.pending_turn = false;
+        self.processing_started = None;
+        self.cancel_requested = false;
     }
 
     /// Re-parse keybinding snapshots when the config cache has reloaded.

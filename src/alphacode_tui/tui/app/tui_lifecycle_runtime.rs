@@ -430,13 +430,18 @@ impl App {
                 ReloadContext::log_recovery_outcome("local_restore", session_id, "resumed", detail);
                 self.hidden_queued_system_messages
                     .push(directive.continuation_message);
-                // Trigger processing so the queued message gets sent to the LLM.
-                // Without this, the local event loop waits for user input since
-                // process_queued_messages only runs inside process_turn_with_input.
-                self.is_processing = true;
-                self.status = ProcessingStatus::Sending;
-                self.processing_started = Some(Instant::now());
-                self.pending_turn = true;
+                // Do NOT auto-start the reload-continuation turn. The previous
+                // implementation flipped `is_processing = true` here, which
+                // dispatched the system reminder before the user could type a
+                // single character. On Windows the in-flight network round
+                // trip also re-ran a phantom input-restoration that left the
+                // composer apparently frozen (the "inputpreserved prevents
+                // typing" bug). The user can press Enter to send the queued
+                // reminder, or run any new command first; either way the
+                // composer stays responsive.
+                self.set_status_notice(
+                    "Reload complete - press Enter to send the continuation message".to_string(),
+                );
             } else {
                 ReloadContext::log_recovery_outcome(
                     "local_restore",
