@@ -510,7 +510,12 @@ fn maybe_reexec_to_fresher_binary(args: &Args) -> Result<()> {
         current_exe, current_mtime, candidate, candidate_mtime
     ));
 
-    let args: Vec<String> = std::env::args().collect();
+    // Skip args[0] (the program name) because ProcessCommand::new(&candidate)
+    // already sets argv[0]. Passing it again makes the new process see its own
+    // executable path as an extra positional argument, which clap interprets as
+    // an unrecognized subcommand (e.g. "error: unrecognized subcommand
+    // 'C:\...\alphacode.exe'").
+    let args: Vec<String> = std::env::args().skip(1).collect();
     let err = crate::platform::replace_process(
         ProcessCommand::new(&candidate)
             .args(&args)

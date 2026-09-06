@@ -242,7 +242,7 @@ print "Installed → $BIN_DIR/alphacode"
 
 # --- Done --------------------------------------------------------------------
 
-INSTALLED_VERSION="$("$BIN_DIR/alphacode" version 2>/dev/null | grep '^version' | cut -f2 || echo unknown)"
+INSTALLED_VERSION="$("$BIN_DIR/alphacode" --version 2>/dev/null | sed -E 's/.*alphacode[[:space:]]+(v[0-9.]+).*/\1/' || echo unknown)"
 if [ "$INSTALLED_VERSION" != "unknown" ]; then
   print "Installed version: $INSTALLED_VERSION"
 else

@@ -205,15 +205,15 @@ foreach ($pf in $payloadFiles) {
 
 Print "Installed -> $installedExe"
 
-# Verify the installed binary works. Use 'version' subcommand instead of
-# --version because PowerShell treats stderr from external commands as a
-# NativeCommandError even with 2>$null redirection.
+# Verify the installed binary works. Use --version (handled by clap before
+# any application logic) so the check succeeds even if a re-exec path would
+# otherwise interfere with subcommand parsing.
 try {
-  $installed = & "$BinDir\alphacode.exe" version 2>$null
+  $installed = & "$BinDir\alphacode.exe" --version 2>$null
   if ($LASTEXITCODE -eq 0 -and $installed) {
-    $versionLine = ($installed -split "`n" | Where-Object { $_ -match '^version\t' } | Select-Object -First 1)
+    $versionLine = ($installed -split "`n" | Where-Object { $_ -match 'alphacode\s+v[\d.]+' } | Select-Object -First 1)
     if ($versionLine) {
-      $version = ($versionLine -split "\t")[1]
+      $version = ($versionLine -replace '.*alphacode\s+(v[\d.]+).*','$1')
       Print "Installed version: $version"
     } else {
       Print "Installed (could not parse version)"
