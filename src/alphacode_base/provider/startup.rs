@@ -269,7 +269,16 @@ impl MultiProvider {
         // (reliable when apply_openai_compatible_profile_env ran), then fall
         // back to the config's default_provider key so shells that set env
         // vars in a different order still resolve correctly.
-        if matches!(active, ActiveProvider::Claude) && availability.openrouter {
+        //
+        // NOTE: we do NOT gate on `availability.openrouter` here because
+        // the availability flags are captured *before* the supplemental
+        // bootstrap applies the built-in GMI Cloud fallback key. For a
+        // fresh user with no credentials, `availability.openrouter` is
+        // false even though GMI Cloud is always available via the bundled
+        // JWT. The `display_is_gmicloud || config_prefers_gmicloud` checks
+        // are sufficient to ensure we only switch when GMI Cloud is
+        // explicitly configured.
+        if matches!(active, ActiveProvider::Claude) {
             let display_is_gmicloud =
                 crate::provider_catalog::active_openai_compatible_display_name()
                     .as_deref()
