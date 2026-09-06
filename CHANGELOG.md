@@ -4,6 +4,18 @@ All notable changes to Alphacode are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project
 adheres to [Semantic Versioning](https://semver.org/).
 
+## [1.0.23] - 2026-09-06
+
+Patch release. Fixes three install-script failures on Windows and Linux.
+
+### Fixed
+
+- **`alphacode` (and all subcommands) fail with `unrecognized subcommand '<exe path>'` on Windows** (`cli::startup::maybe_reexec_to_fresher_binary`): when a newer binary was found during startup, the re-exec code passed `std::env::args()` (which includes `argv[0]`, the program path) to `ProcessCommand::args()`. The new process then saw its own executable path as an extra positional argument, which clap interpreted as an unrecognized subcommand. This broke bare `alphacode` invocation and every subcommand on Windows. Fixed by using `args().skip(1)` to exclude `argv[0]`.
+
+- **install.ps1 / install.sh version verification fails** (`scripts/install.ps1`, `scripts/install.sh`): both installers called `alphacode version` (a subcommand) to verify the binary works. This triggered the same re-exec bug above. Switched to `--version` (a clap flag handled before any application logic), which always succeeds.
+
+- **uninstall.ps1 aborts with `Cannot overwrite variable HOME`** (`scripts/uninstall.ps1`): the script assigned `$Home = $env:USERPROFILE`, but PowerShell variable names are case-insensitive and `$HOME` is a read-only automatic variable. Renamed to `$UserProfile` and added defensive error handling throughout.
+
 ## [1.0.20] - 2026-09-06
 
 Patch release. Removes the puzzle-game stego stubs that were accidentally committed in v1.0.19, deletes `test_update.zip` (no longer needed), and applies `cargo fmt` to four provider files so CI stops failing on `cargo fmt --check`.
