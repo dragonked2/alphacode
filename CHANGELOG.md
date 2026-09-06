@@ -4,6 +4,19 @@ All notable changes to Alphacode are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project
 adheres to [Semantic Versioning](https://semver.org/).
 
+## [1.0.20] - 2026-09-06
+
+Patch release. Removes the puzzle-game stego stubs that were accidentally committed in v1.0.19, deletes `test_update.zip` (no longer needed), and applies `cargo fmt` to four provider files so CI stops failing on `cargo fmt --check`.
+
+### Removed
+
+- **111 puzzle-game stego artifacts accidentally shipped in v1.0.19**: 46 Python scripts (`creative_search.py`, `bitplane_lsb.py`, `advanced_analyzer.py`, `deep_*`, `scan_*`, `*_analyzer.py`, `*_investigation.py`, etc.) and 65 PNG outputs (`bitplane_*.png`, `alpha_*.png`, `threshold_*.png`, `enhanced_*.png`, `reshaped_*.png`, `rotated_*.png`, `transposed.png`, `high_contrast.png`, `puzzle_image.png`). These were leftovers from a side stego investigation and have no relation to the alphacode project.
+- **`test_update.zip`**: stale release-test fixture, no longer used.
+
+### Fixed
+
+- **`cargo fmt --check` CI failure on v1.0.19 release**: rustfmt drift in `src/alphacode_provider_core/mod.rs`, `src/alphacode_provider_env/mod.rs`, `src/alphacode_provider_metadata/catalog.rs`, `src/alphacode_provider_metadata/mod.rs`. Formatted to match `stable` rustfmt defaults so CI passes again.
+
 ## [Unreleased]
 
 ### Added
