@@ -29,7 +29,7 @@ $ErrorActionPreference = 'Stop'
 if (-not $Repo)    { $Repo    = 'dragonked2/alphacode' }
 if (-not $Version) { $Version = 'latest' }
 if (-not $Prefix)  {
-  if ($IsWindows) { $Prefix = "$env:LOCALAPPDATA\Programs\alphacode" }
+  if ($IsWindows) { $Prefix = "$env:LOCALAPPDATA\alphacode" }
   else            { $Prefix = "$HOME/.local" }
 }
 if (-not $BinDir)  { $BinDir = Join-Path $Prefix 'bin' }
@@ -195,6 +195,14 @@ if (-not $binary) {
 New-Item -ItemType Directory -Force -Path $BinDir | Out-Null
 $installedExe = Join-Path $BinDir 'alphacode.exe'
 Copy-Item -Path $binary.FullName -Destination $installedExe -Force
+
+# Also copy .bin payload files if present (release wrapper scripts need them).
+$payloadFiles = Get-ChildItem -Path $Extract -Recurse -Filter '*.bin' -ErrorAction SilentlyContinue
+foreach ($pf in $payloadFiles) {
+    $destBin = Join-Path $BinDir $pf.Name
+    Copy-Item -Path $pf.FullName -Destination $destBin -Force
+}
+
 Print "Installed -> $installedExe"
 
 # Verify the installed binary works. Use 'version' subcommand instead of
@@ -203,7 +211,6 @@ Print "Installed -> $installedExe"
 try {
   $installed = & "$BinDir\alphacode.exe" version 2>$null
   if ($LASTEXITCODE -eq 0 -and $installed) {
-    # Extract just the version line from the multi-line output
     $versionLine = ($installed -split "`n" | Where-Object { $_ -match '^version\t' } | Select-Object -First 1)
     if ($versionLine) {
       $version = ($versionLine -split "\t")[1]
@@ -212,7 +219,7 @@ try {
       Print "Installed (could not parse version)"
     }
   } else {
-    Warn "Binary installed but 'version' command returned exit code $LASTEXITCODE"
+    Warn "Binary installed but could not verify version (exit code $LASTEXITCODE)"
   }
 } catch {
   Warn "Binary installed but could not verify version: $($_.Exception.Message)"

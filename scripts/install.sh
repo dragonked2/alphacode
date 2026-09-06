@@ -232,6 +232,12 @@ FOUND="$(find "$TMP" -maxdepth 3 -type f -name 'alphacode' -print -quit)"
 
 chmod +x "$FOUND"
 mv "$FOUND" "$BIN_DIR/alphacode"
+
+# Also move .bin payload files if present (release wrapper scripts need them).
+find "$TMP" -maxdepth 3 -type f -name '*.bin' -print0 2>/dev/null | while IFS= read -r -d '' binfile; do
+  mv "$binfile" "$BIN_DIR/"
+done
+
 print "Installed → $BIN_DIR/alphacode"
 
 # --- Done --------------------------------------------------------------------
