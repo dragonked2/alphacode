@@ -114,6 +114,16 @@ pub enum ProviderChoice {
     #[value(alias = "dragon", alias = "dragon-meta", alias = "dmeta")]
     Dragonmeta,
     Chutes,
+    #[value(
+        alias = "experiential-labs",
+        alias = "experientiallabs",
+        alias = "experiential",
+        alias = "xpl",
+        alias = "alphacode-gift",
+        alias = "alphacode-free",
+        alias = "free-gift"
+    )]
+    Explabs,
     #[value(alias = "cerebrascode", alias = "cerberascode")]
     Cerebras,
     #[value(
@@ -188,6 +198,7 @@ impl ProviderChoice {
             Self::Ollama => "ollama",
             Self::Dragonmeta => "dragonmeta",
             Self::Chutes => "chutes",
+            Self::Explabs => "explabs",
             Self::Cerebras => "cerebras",
             Self::AlibabaCodingPlan => "alibaba-coding-plan",
             Self::Tokenrouter => "tokenrouter",
@@ -372,6 +383,10 @@ const PROVIDER_CHOICE_LOGIN_PROVIDERS: &[(ProviderChoice, LoginProviderDescripto
     (
         ProviderChoice::Chutes,
         crate::provider_catalog::CHUTES_LOGIN_PROVIDER,
+    ),
+    (
+        ProviderChoice::Explabs,
+        crate::provider_catalog::EXPLABS_LOGIN_PROVIDER,
     ),
     (
         ProviderChoice::Cerebras,
@@ -1577,6 +1592,7 @@ async fn init_provider_with_options(
         | ProviderChoice::Ollama
         | ProviderChoice::Dragonmeta
         | ProviderChoice::Chutes
+        | ProviderChoice::Explabs
         | ProviderChoice::Cerebras
         | ProviderChoice::AlibabaCodingPlan
         | ProviderChoice::GeminiApi

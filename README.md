@@ -599,6 +599,7 @@ Alphacode doesn't lock you into one AI company. Use whichever model is best (or 
 | 🔷 **Azure** | Azure AD or API key | Optional `azure-auth` build feature |
 | 🟡 **OpenRouter** | API key | Access to many models via one key |
 | ⚙️ **Any OpenAI-compatible service** | API key | Add it with `alphacode provider add` |
+| 🎁 **Experiential Labs** | *Bundled — no setup* | *Free Gift from Alphacode* — works out of the box on the platform-funded lane (GPT6 Astra, Claude Fable 5.1, GPT-5.6 Luna, Qwen3.8 27B, DeepSeek V4 Flash). Set `EXPLABS_API_KEY` to use your own `xpl_...` key. |
 | 🆓 **GMI Cloud** | *Nothing — it's built in* | Free, works out of the box, zero setup |
 
 **Switch providers anytime, mid-conversation:**

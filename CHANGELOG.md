@@ -4,6 +4,44 @@ All notable changes to Alphacode are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project
 adheres to [Semantic Versioning](https://semver.org/).
 
+## [Unreleased]
+
+### Added
+
+- **Experiential Labs provider — Free Gift from Alphacode**
+  (`alphacode_provider_metadata::catalog::EXPLABS_PROFILE`,
+  `cli::provider_init::ProviderChoice::Explabs`): a first-class OpenAI-compatible
+  provider pointing at `https://api.experientiallabs.ai/v1` so the gateway's free
+  models (qwen3.8-27b at launch, plus experimental GPT6 / Astra / Fable 5.1 etc. as
+  the platform-funded lane grows) show up in the model picker as a single labeled
+  entry. Auth is a bearer key minted at
+  https://platform.experientiallabs.ai/settings/api-keys (`xpl_<40 hex>`,
+  `EXPLABS_API_KEY`). The login picker and `/provider list` show it as
+  "Experiential Labs (Free Gift from Alphacode)" and it is `recommended: true` so
+  first-time setup surfaces the free lane before the paid gateways. Aliases:
+  `experiential-labs`, `experientiallabs`, `experiential`, `xpl`,
+  `alphacode-gift`, `alphacode-free`, `free-gift`.
+- **Bundled demo key for the Free Gift from Alphacode lane**
+  (`alphacode_provider_metadata::catalog::EXPLABS_BUNDLED_API_KEY`,
+  `alphacode_provider_env::load_api_key_from_env_or_config`): when the user
+  has not set their own `EXPLABS_API_KEY` (env var or `explabs.env`), the
+  runtime falls back to a bundled `xpl_` bearer so the lane works out of
+  the box with zero setup. Users who bring their own key still win — the
+  env var and `explabs.env` are consulted before the bundled fallback. The
+  bundled key is shared, so set `EXPLABS_API_KEY` for dedicated rate limits
+  and credit balance.
+- **Curated free-model list for the Free Gift from Alphacode lane**
+  (`ALL_EXPLABS_MODELS`): top-down free slugs are `gpt-6-astra`,
+  `claude-fable-5.1`, `gpt-5.6-luna`, `qwen3.8-27b`, `deepseek-v4-flash`.
+  The post-login flagship picker consults this list so the free models
+  rank above the live catalog's first random row, and
+  `EXPLABS_PROFILE.default_model` is now `gpt-6-astra` so first-login
+  auto-selects the strongest free tier.
+
+### Fixed
+
+- **OpenAI-compatible gateways no longer reject the whole chat request when one tool's description is over the provider's hard cap** (`alphacode_provider_core::tool_description::sanitize_tool_description`, `alphacode_provider_openrouter::request::sanitize_tool_description`, `alphacode_provider_openai::request::build_tools`, `alphacode_provider_openrouter_runtime::openrouter_provider_impl::complete`): strict gateways such as Experiential Labs (`https://api.experientiallabs.ai/v1`) were returning HTTP 400 `Invalid value for 'tools.30.function.description'` because the swarm tool's description inlines the full user-tunable `swarm-prompt.md` (~16 KB / ~4k tokens), which is far over the OpenAI-documented 1024-character limit most strict gateways enforce. The single over-long tool bricked the entire request, locking the user out of *every* tool call. The new canonical helper caps each tool's description at 1024 chars by default (configurable per-launch via `ALPHACODE_TOOL_DESCRIPTION_MAX_CHARS`, with a 256-char safety floor so a misconfigured env var cannot strip descriptions to nothing), truncates on UTF-8 char boundaries, and appends a `[description truncated to fit provider limit; full prompt loaded separately]` marker so the model knows the text was clipped. The same helper is wired into both the openrouter-compat runtime path (used by every OpenAI-compatible gateway incl. explabs) and the native OpenAI provider path.
+
 ## [1.0.18] - 2026-09-05
 
 Patch release. Two correctness fixes plus the lockfile bump CI demanded.

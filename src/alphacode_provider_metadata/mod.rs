@@ -616,6 +616,14 @@ mod tests {
             resolve_login_provider("gmail").map(|provider| provider.id),
             Some("google")
         );
+        assert_eq!(
+            resolve_login_provider("uno-router").map(|provider| provider.id),
+            Some("unorouter")
+        );
+        assert_eq!(
+            resolve_login_provider("unorouter-api").map(|provider| provider.id),
+            Some("unorouter")
+        );
     }
 
     #[test]
@@ -640,22 +648,28 @@ mod tests {
     #[test]
     fn matrix_tui_login_selection_supports_numbers_and_names() {
         let providers = tui_login_providers();
+        // Position 1 is the Free Gift from Alphacode (experiential labs),
+        // surfacing the free tier ahead of every other provider so first-time
+        // setup sees the no-credit-card lane first.
         assert_eq!(
             resolve_login_selection("1", &providers).map(|provider| provider.id),
-            Some("auto-import")
+            Some("explabs")
         );
         assert_eq!(
             resolve_login_selection("2", &providers).map(|provider| provider.id),
-            Some("claude")
+            Some("auto-import")
         );
-        // `anthropic-api` sits at 3 (between claude and openai), shifting the
-        // rest of the list down one slot relative to the pre-May-2026 order.
         assert_eq!(
             resolve_login_selection("3", &providers).map(|provider| provider.id),
+            Some("claude")
+        );
+        // `anthropic-api` now sits at 4 (shifted right by explabs).
+        assert_eq!(
+            resolve_login_selection("4", &providers).map(|provider| provider.id),
             Some("anthropic-api")
         );
         assert_eq!(
-            resolve_login_selection("7", &providers).map(|provider| provider.id),
+            resolve_login_selection("8", &providers).map(|provider| provider.id),
             Some("bedrock")
         );
         assert_eq!(
@@ -668,38 +682,124 @@ mod tests {
     #[test]
     fn matrix_cli_login_selection_preserves_existing_order() {
         let providers = cli_login_providers();
+        // 1 is the Free Gift from Alphacode lane, just like in the TUI list.
         assert_eq!(
             resolve_login_selection("1", &providers).map(|provider| provider.id),
+            Some("explabs")
+        );
+        assert_eq!(
+            resolve_login_selection("2", &providers).map(|provider| provider.id),
             Some("auto-import")
         );
-        // `anthropic-api` at 3 shifted everything after it down one slot.
+        // `anthropic-api` now sits at 4 (shifted right by explabs); everything
+        // after it moved down one slot too.
         assert_eq!(
-            resolve_login_selection("3", &providers).map(|provider| provider.id),
+            resolve_login_selection("4", &providers).map(|provider| provider.id),
             Some("anthropic-api")
         );
         assert_eq!(
-            resolve_login_selection("5", &providers).map(|provider| provider.id),
+            resolve_login_selection("6", &providers).map(|provider| provider.id),
             Some("alphacode")
         );
+        // Everything from the old slot 6 onward shifted right by 1 because
+        // explabs took slot 1; copilot and openrouter sit at 7 and 8 now.
         assert_eq!(
-            resolve_login_selection("6", &providers).map(|provider| provider.id),
+            resolve_login_selection("7", &providers).map(|provider| provider.id),
             Some("copilot")
         );
         assert_eq!(
-            resolve_login_selection("7", &providers).map(|provider| provider.id),
+            resolve_login_selection("8", &providers).map(|provider| provider.id),
             Some("openrouter")
         );
         assert_eq!(
-            resolve_login_selection("8", &providers).map(|provider| provider.id),
+            resolve_login_selection("9", &providers).map(|provider| provider.id),
             Some("bedrock")
         );
         assert_eq!(
-            resolve_login_selection("9", &providers).map(|provider| provider.id),
+            resolve_login_selection("10", &providers).map(|provider| provider.id),
             Some("azure")
         );
         assert_eq!(
             resolve_login_selection("bedrock", &providers).map(|provider| provider.id),
             Some("bedrock")
         );
+    }
+
+    #[test]
+    fn explabs_profile_is_branded_as_a_free_gift_and_reachable_by_every_alias() {
+        // The Experiential Labs gateway is the "Free Gift from Alphacode" lane,
+        // so the invariants here double as a contract for the branding: the
+        // display label must carry the gift wording, every alias has to resolve
+        // back to the same canonical descriptor (so users can paste `xpl`,
+        // `free-gift`, or `experiential-labs` and land on the same provider),
+        // and the env binding has to follow the standard OpenAI-compatible
+        // profile contract (api_key_env / env_file from the profile metadata).
+        assert_eq!(EXPLABS_PROFILE.id, "explabs");
+        assert_eq!(EXPLABS_PROFILE.api_base, "https://api.experientiallabs.ai/v1");
+        assert_eq!(EXPLABS_PROFILE.api_key_env, "EXPLABS_API_KEY");
+        assert_eq!(EXPLABS_PROFILE.env_file, "explabs.env");
+        assert!(EXPLABS_PROFILE.requires_api_key);
+
+        // Bundled demo key must look like a real xpl_ bearer and stay overridable.
+        assert!(
+            EXPLABS_BUNDLED_API_KEY.starts_with("xpl_")
+                && EXPLABS_BUNDLED_API_KEY.len() >= 44,
+            "EXPLABS_BUNDLED_API_KEY must be a valid xpl_ bearer (>= 44 chars)"
+        );
+
+        // Curated free-model list must include the default + the four other free
+        // slugs the user confirmed, in the documented strongest-first order.
+        assert_eq!(ALL_EXPLABS_MODELS[0], "gpt-6-astra");
+        assert_eq!(
+            EXPLABS_PROFILE.default_model,
+            Some("gpt-6-astra"),
+            "default_model must point at the top free model so first-login auto-selects the strongest lane"
+        );
+        for required in [
+            "gpt-6-astra",
+            "claude-fable-5.1",
+            "gpt-5.6-luna",
+            "qwen3.8-27b",
+            "deepseek-v4-flash",
+        ] {
+            assert!(
+                ALL_EXPLABS_MODELS.contains(&required),
+                "ALL_EXPLABS_MODELS must include free slug {required}"
+            );
+        }
+        assert!(
+            EXPLABS_PROFILE.display_name.contains("Free Gift from Alphacode"),
+            "Free Gift from Alphacode branding missing from profile display_name: {}",
+            EXPLABS_PROFILE.display_name
+        );
+
+        assert_eq!(EXPLABS_LOGIN_PROVIDER.id, "explabs");
+        assert!(EXPLABS_LOGIN_PROVIDER.recommended);
+        assert!(
+            EXPLABS_LOGIN_PROVIDER
+                .display_name
+                .contains("Free Gift from Alphacode"),
+            "Free Gift from Alphacode branding missing from login display_name: {}",
+            EXPLABS_LOGIN_PROVIDER.display_name
+        );
+        assert!(matches!(
+            EXPLABS_LOGIN_PROVIDER.target,
+            LoginProviderTarget::OpenAiCompatible(profile) if profile.id == EXPLABS_PROFILE.id
+        ));
+        for alias in EXPLABS_LOGIN_PROVIDER.aliases {
+            assert_eq!(
+                resolve_login_provider(alias).map(|d| d.id),
+                Some("explabs"),
+                "alias {alias:?} must resolve to explabs"
+            );
+        }
+
+        // The OpenAI-compatible profile contract is what feeds
+        // `api_key_env_bindings_for_provider` and the login env-file picker,
+        // so assert the env binding the profile declares up-front rather than
+        // re-running the resolver here (the resolver lives in `alphacode_base`,
+        // which would force a circular dev-dependency in this leaf crate).
+        assert_eq!(EXPLABS_PROFILE.api_key_env, "EXPLABS_API_KEY");
+        assert_eq!(EXPLABS_PROFILE.env_file, "explabs.env");
     }
 }

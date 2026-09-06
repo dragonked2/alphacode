@@ -83,6 +83,16 @@ pub fn sanitize_tool_parameters_schema(schema: &Value) -> Value {
     sanitized
 }
 
+/// Truncate and normalize a tool description to the provider's hard cap.
+///
+/// Thin re-export of [`crate::alphacode_provider_core::sanitize_tool_description`]
+/// so OpenRouter-side callers (and any other OpenAI-compatible provider that
+/// already imports from this module) keep their existing import path. See the
+/// canonical doc comment in `alphacode_provider_core::tool_description` for the
+/// full rationale (strict gateways reject over-long `function.description`,
+/// and the swarm tool historically inlines a 16 KB `swarm-prompt.md`).
+pub use crate::alphacode_provider_core::sanitize_tool_description;
+
 /// Flatten `oneOf`/`anyOf`/`allOf` at the top level of a tool parameters
 /// schema into a single object schema (issue #495).
 ///

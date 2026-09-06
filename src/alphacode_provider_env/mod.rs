@@ -136,6 +136,17 @@ pub fn load_api_key_from_env_or_config(env_key: &str, file_name: &str) -> Option
         }
     }
 
+    // Experiential Labs (Free Gift from Alphacode): when the user has not set
+    // their own `EXPLABS_API_KEY`, fall back to the bundled bearer so the
+    // "Free Gift from Alphacode" lane works out of the box. Both the env var
+    // above and `explabs.env` are consulted first, so users who bring their
+    // own `xpl_...` key still win without any code change.
+    if env_key == "EXPLABS_API_KEY" {
+        return Some(
+            crate::alphacode_provider_metadata::EXPLABS_BUNDLED_API_KEY.to_string(),
+        );
+    }
+
     if let Some(key) = resolve_api_key_fallback(env_key) {
         return Some(key);
     }

@@ -104,8 +104,14 @@ impl Provider for OpenRouterProvider {
                     "function": {
                         "name": t.name,
                         // Prompt-visible. Approximate token cost for this field:
-                        // t.description_token_estimate().
-                        "description": t.description,
+                        // t.description_token_estimate(). Capped to the
+                        // provider's hard limit so a single over-long tool
+                        // (e.g. the swarm tool inlining the user-tunable
+                        // swarm-prompt.md) can't 400 the whole request on
+                        // strict gateways (issue: explabs / OpenAI-compat
+                        // gateways reject `tools.N.function.description`
+                        // when it exceeds their cap).
+                        "description": crate::alphacode_provider_openrouter::request::sanitize_tool_description(&t.description),
                         // Sanitized so bare `{"type":"object"}` MCP tool
                         // schemas do not 400 on strict endpoints (issue #446).
                         "parameters": crate::alphacode_provider_openrouter::request::sanitize_tool_parameters_schema(&t.input_schema),

@@ -62,8 +62,13 @@ pub fn build_tools(tools: &[ToolDefinition]) -> Vec<Value> {
                 "type": "function",
                 "name": t.name,
                 // Prompt-visible. Approximate token cost for this field:
-                // t.description_token_estimate().
-                "description": t.description,
+                // t.description_token_estimate(). Capped to the
+                // provider's hard limit so a single over-long tool
+                // (e.g. the swarm tool inlining the user-tunable
+                // swarm-prompt.md) cannot 400 the whole request on
+                // strict gateways. Canonical helper lives in
+                // alphacode_provider_core::tool_description.
+                "description": crate::alphacode_provider_core::sanitize_tool_description(&t.description),
                 "strict": supports_strict,
                 "parameters": parameters,
             })

@@ -330,6 +330,10 @@ fn provider_preferred_model_orders(
         Some("azure-openai") => &[crate::provider::ALL_OPENAI_MODELS],
         // Gemini (Code Assist OAuth) and Antigravity both serve Gemini models.
         Some("gemini") | Some("antigravity") => &[ALL_GEMINI_MODELS],
+        // Experiential Labs (Free Gift from Alphacode): the gateway's free
+        // platform-funded lane is dominated by a small curated set of slugs, so
+        // rank the curated list above the live catalog's first random entry.
+        Some("explabs") => &[crate::alphacode_provider_metadata::ALL_EXPLABS_MODELS],
         _ => &[],
     }
 }
@@ -2360,6 +2364,7 @@ mod tests {
         "azure-openai",
         "gemini",
         "antigravity",
+        "explabs",
     ];
 
     fn activation_for_provider_id(provider_id: &str) -> AuthActivationResult {
@@ -2504,6 +2509,16 @@ mod tests {
                 "Antigravity",
                 &["gemini-2.5-flash", "gemini-2.5-pro", "gemini-3-pro-preview"],
                 "gemini-3-pro-preview",
+            ),
+            (
+                // Experiential Labs (Free Gift from Alphacode): the curated
+                // free-model list must still pick gpt-6-astra as the flagship
+                // even when a weaker model appears first in the catalog.
+                "explabs",
+                "openai-compatible:explabs",
+                "Experiential Labs (Free Gift from Alphacode)",
+                &["deepseek-v4-flash", "qwen3.8-27b", "gpt-6-astra"],
+                "gpt-6-astra",
             ),
         ];
 
