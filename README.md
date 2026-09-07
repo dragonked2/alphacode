@@ -190,8 +190,22 @@ alphacode --version
 alphacode doctor
 alphacode
 ```
+## 🗑 Uninstalling Alphacode
 
-> **Always up to date:** the install script pulls the [latest tagged release](https://github.com/dragonked2/alphacode/releases/latest) automatically — the version badge at the top of this page updates live from GitHub Releases, so it never needs a manual edit.
+### macOS / Linux
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/dragonked2/alphacode/main/scripts/uninstall.sh | bash
+```
+
+Want to remove your settings, sessions, and logs too?
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/dragonked2/alphacode/main/scripts/uninstall.sh | bash -s -- --purge
+```
+<div align="center">
+  
+**Always up to date:** the install script pulls the [latest tagged release](https://github.com/dragonked2/alphacode/releases/latest) automatically — the version badge at the top of this page updates live from GitHub Releases, so it never needs a manual edit.
 
 <img src="https://capsule-render.vercel.app/api?type=rect&color=gradient&customColorList=6,11,20&height=3&width=100%" width="100%">
 
