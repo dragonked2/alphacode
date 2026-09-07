@@ -901,6 +901,72 @@ pub(super) fn draw_inline_interactive(frame: &mut Frame, app: &dyn TuiState, are
     frame.render_widget(Paragraph::new(lines), inner);
 }
 
+/// Phase 2d: alternate renderer for the new 3-column model browser.
+///
+/// The legacy `draw_inline_interactive` handles every picker kind in one
+/// 1300-line function. The browser provides a parallel path that the App can
+/// opt into without breaking the existing layout tests. Callers check
+/// `model_browser_v2_enabled()` (a future App flag) and dispatch.
+#[allow(dead_code)]
+pub(super) fn draw_inline_interactive_v2(
+    frame: &mut Frame,
+    _app: &dyn TuiState,
+    area: Rect,
+    state: &crate::alphacode_tui::tui::model_browser::ModelBrowserState,
+) {
+    if area.height <= 2 || area.width <= 2 {
+        return;
+    }
+
+    let height = area.height as usize;
+    let width = area.width as usize;
+
+    // Top hotkey hint (1 row).
+    let hint_height = 1usize;
+    let bottom_height = 1usize;
+    let browser_height = height.saturating_sub(hint_height + bottom_height).max(3);
+
+    let chunks = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Length(hint_height as u16),
+            Constraint::Length(browser_height as u16),
+            Constraint::Length(bottom_height as u16),
+        ])
+        .split(area);
+
+    // Hint line.
+    frame.render_widget(
+        Paragraph::new(crate::alphacode_tui::tui::model_browser_render::top_hint_line()),
+        chunks[0],
+    );
+
+    // Browser body.
+    let inner = chunks[1];
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(Color::Cyan))
+        .title(Span::styled(
+            format!(" /model ({}) ", state.sort.label()),
+            Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD),
+        ));
+    let inner = block.inner(inner);
+    frame.render_widget(block, chunks[1]);
+    crate::alphacode_tui::tui::model_browser_render::render_browser(
+        state,
+        inner,
+        frame.buffer_mut(),
+    );
+
+    // Bottom status hint.
+    let bottom = crate::alphacode_tui::tui::model_browser_render::bottom_hint_line(state);
+    frame.render_widget(Paragraph::new(bottom), chunks[2]);
+
+    // Suppress unused-import warnings in non-test builds where `width` is
+    // intentionally unused.
+    let _ = width;
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

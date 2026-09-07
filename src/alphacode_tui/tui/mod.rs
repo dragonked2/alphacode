@@ -3,6 +3,9 @@ pub(crate) mod app;
 pub mod brand_ux;
 pub mod enhanced_status;
 pub mod improved_input;
+pub mod model_browser;
+pub mod model_browser_open;
+pub mod model_browser_render;
 pub mod model_performance;
 pub mod smart_model_picker;
 
