@@ -76,6 +76,18 @@ jobs:
               target
           key: release-${{ matrix.target }}-${{ hashFiles('Cargo.lock') }}
 
+      # Extract the release version from the git tag and expose it as
+      # ALPHACODE_BUILD_SEMVER so the build script embeds the *exact* tag
+      # version (e.g. 1.0.28) into the binary instead of computing a
+      # phantom patch number from commit count (the old behavior produced
+      # v1.0.34 when the release tag was v1.0.27).
+      - name: Set build version from tag
+        shell: bash
+        run: |
+          VERSION="${GITHUB_REF_NAME#v}"
+          echo "ALPHACODE_BUILD_SEMVER=$VERSION" >> "$GITHUB_ENV"
+          echo "Release version: $VERSION"
+
       # The action auto-uses `cross` for cross-compile (e.g. linux arm64
       # from ubuntu x86_64) and falls back to native cargo on host-matched
       # targets. It produces:
@@ -164,6 +176,43 @@ jobs:
             fi
           done
           echo "OK: bundled /bugbounty skill is present in the release binary ($BIN)"
+
+      # Verify the binary version matches the release tag. The build script
+      # derives the version from the git tag (via ALPHACODE_BUILD_SEMVER or
+      # `git tag --points-at HEAD`), but this guard catches mismatches early.
+      - name: Verify binary version matches release tag
+        shell: bash
+        env:
+          ARCHIVE_BASE: ${{ matrix.archive }}
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          TMP_DIR="$(mktemp -d)"
+          trap 'rm -rf "$TMP_DIR"' EXIT
+          if [ -f "${ARCHIVE_BASE}.zip" ]; then
+            unzip -q "${ARCHIVE_BASE}.zip" -d "$TMP_DIR"
+          elif [ -f "${ARCHIVE_BASE}.tar.gz" ]; then
+            tar -xzf "${ARCHIVE_BASE}.tar.gz" -C "$TMP_DIR"
+          fi
+          BIN="$(find "$TMP_DIR" -maxdepth 3 -type f \( -name alphacode -o -name alphacode.exe \) -print -quit)"
+          if [ -z "$BIN" ]; then
+            echo "::error::no binary found for version check"
+            exit 1
+          fi
+          # Run --version and extract the version number
+          VERSION_OUTPUT="$("$BIN" --version 2>&1 || true)"
+          echo "Binary version output: $VERSION_OUTPUT"
+          # Extract version: expect v{semver} ... — strip the 'v' prefix
+          BIN_VERSION="$(echo "$VERSION_OUTPUT" | sed -n 's/.*v\([0-9][0-9]*\.[0-9][0-9]*\.[0-9][0-9]*\).*/\1/p' | head -1)"
+          EXPECTED_VERSION="$(echo "$RELEASE_TAG" | sed 's/^v//')"
+          if [ -z "$BIN_VERSION" ]; then
+            echo "::warning::Could not parse version from binary output: $VERSION_OUTPUT"
+          elif [ "$BIN_VERSION" != "$EXPECTED_VERSION" ]; then
+            echo "::error::Version mismatch: binary reports v${BIN_VERSION} but release tag is ${RELEASE_TAG}"
+            exit 1
+          else
+            echo "OK: binary version v${BIN_VERSION} matches release tag ${RELEASE_TAG}"
+          fi
 
   release:
     name: publish release

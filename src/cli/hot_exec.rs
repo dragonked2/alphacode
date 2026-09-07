@@ -127,7 +127,10 @@ pub fn hot_reload(session_id: &str) -> Result<()> {
         if is_selfdev {
             cmd.arg("self-dev");
         }
-        cmd.arg("--resume").arg(session_id).current_dir(&cwd);
+        cmd.arg("--resume")
+            .arg(session_id)
+            .arg("--no-update")
+            .current_dir(&cwd);
         let err = crate::platform::replace_process(&mut cmd);
 
         if err.kind() == std::io::ErrorKind::NotFound && attempt < 2 {

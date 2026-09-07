@@ -145,9 +145,70 @@ fn resolve_build_version(base: Version, repo_root: &Path) -> String {
         return version;
     }
 
+    // For release builds, derive the version from the annotated git tag rather
+    // than commit-count arithmetic. The tag *is* the release version; commit
+    // counting produces a phantom number (e.g. v1.0.34) that does not match
+    // the tag the CI created (v1.0.27), which confuses users and breaks the
+    // update check (update_semver ends up wrong).
+    let is_release = env::var_os(ENV_RELEASE).is_some();
+    if is_release {
+        if let Some(tag_version) = extract_version_from_release_tag(repo_root) {
+            return tag_version;
+        }
+    }
+
     let commits = commits_since_base_tag(base, repo_root).unwrap_or(0);
 
     base.with_patch_offset(commits).as_string()
+}
+
+/// When `ALPHACODE_RELEASE_BUILD` is set, try to extract the version from the
+/// current git tag. Looks for tags matching `v*.*.*` at HEAD and returns the
+/// version string (without the `v` prefix).
+fn extract_version_from_release_tag(repo_root: &Path) -> Option<String> {
+    // `git tag --points-at HEAD --list 'v*'` lists tags pointing at HEAD.
+    let output = Command::new("git")
+        .current_dir(repo_root)
+        .args(["tag", "--points-at", "HEAD", "--list", "v*"])
+        .output()
+        .ok()?;
+
+    if !output.status.success() {
+        return None;
+    }
+
+    let tags = String::from_utf8_lossy(&output.stdout);
+    // Find the first valid semver tag.
+    for tag in tags.lines() {
+        let tag = tag.trim();
+        if let Some(version) = tag.strip_prefix('v') {
+            if Version::parse(version).is_some() {
+                return Some(version.to_string());
+            }
+        }
+    }
+
+    // Fallback: try `git describe --tags --abbrev=0` to find the nearest tag,
+    // then verify it points at HEAD.
+    let describe = Command::new("git")
+        .current_dir(repo_root)
+        .args(["describe", "--tags", "--abbrev=0"])
+        .output()
+        .ok()?;
+
+    if !describe.status.success() {
+        return None;
+    }
+
+    let tag = String::from_utf8_lossy(&describe.stdout);
+    let tag = tag.trim();
+    if let Some(version) = tag.strip_prefix('v') {
+        if Version::parse(version).is_some() {
+            return Some(version.to_string());
+        }
+    }
+
+    None
 }
 
 fn explicit_build_version() -> Option<String> {
@@ -368,18 +429,14 @@ fn emit_build_environment(info: &BuildInfo) {
     let base_semver = info.base_version.as_string();
 
     // The update-comparison semver must reflect the *actual* code the user
-    // is running, not just the package base tag. For a release build we use
-    // the base semver so a v1.0.5 release correctly identifies v1.0.6 as
-    // newer; for a dev build, the binary already contains commits past the
-    // latest tagged release, so we use build_version (base + commit count)
-    // and avoid the older "I am still on v1.0.9 even though I am 5 commits
-    // past it" bug that made /update report "already up to date" against
-    // a release older than the local checkout.
-    let update_semver = if explicit_build_version().is_some() || !info.release {
-        info.build_version.clone()
-    } else {
-        base_semver.clone()
-    };
+    // is running, not just the package base tag. For release builds we use
+    // the build_version (which now comes from the git tag via
+    // extract_version_from_release_tag, or from ALPHACODE_BUILD_SEMVER in CI)
+    // so v1.0.27 correctly identifies v1.0.28 as newer. For dev builds, the
+    // binary already contains commits past the latest tagged release, so we
+    // use build_version (base + commit count) and avoid the "already up to
+    // date" bug.
+    let update_semver = info.build_version.clone();
 
     emit_env("ALPHACODE_GIT_HASH", &info.git_hash);
     emit_env("ALPHACODE_GIT_DATE", &info.git_date);
