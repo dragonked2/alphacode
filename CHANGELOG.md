@@ -4,6 +4,34 @@ All notable changes to Alphacode are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project
 adheres to [Semantic Versioning](https://semver.org/).
 
+## [1.0.25] - 2026-09-07
+
+Major feature release: UI/UX improvements, performance optimizations, stability hardening, accuracy gains, harness API v1.1, and three new skill suites (CTF, frontend-dev, backend-dev) with expanded bug bounty coverage.
+
+### Added
+
+- **CTF solving skill suite** (`/ctf`): 8 subskills covering web exploitation, cryptanalysis, binary exploitation (pwn), reverse engineering, digital forensics, miscellaneous challenges, CTF methodology, and essential toolkit (pwntools, Ghidra, Burp Suite, etc.).
+- **Frontend development skill suite** (`/frontend-dev`): 6 subskills covering React 19+, Next.js 15+, Tailwind CSS 4+, component systems, performance optimization, and testing (Vitest, Playwright, Storybook).
+- **Backend development skill suite** (`/backend-dev`): 7 subskills covering Node.js/Express, Python/FastAPI, Rust/Axum, database patterns, authentication (JWT, OAuth2, RBAC), and caching strategies.
+- **Bug bounty hunt-cors subskill** (`/bugbounty hunt-cors`): CORS misconfiguration hunting — origin reflection, null origin, pre-flight abuse, trust exploitation.
+- **Bug bounty hunt-ssrf-advanced subskill** (`/bugbounty hunt-ssrf-advanced`): Advanced SSRF — cloud metadata, DNS rebinding, protocol smuggling, SSRF-to-RCE chains.
+- **Bug bounty hunt-race subskill** (`/bugbounty hunt-race`): Race condition hunting — TOCTOU, double-spend, parallel request techniques.
+- **Bug bounty hunt-desync subskill** (`/bugbounty hunt-desync`): HTTP request smuggling — CL.TE, TE.CL, TE.TE, H2.CL, prefix injection.
+- **Bug bounty llm-injection subskill** (`/bugbounty llm-injection`): LLM/AI prompt injection — direct/indirect injection, jailbreak, data exfiltration, tool abuse.
+- **Error toast expand/collapse** (`ui_error_toast`): Error toasts now support expand/collapse — press Enter to expand a toast to see the full message and hint at wider width (100 cells). Collapsed toasts show "▸" indicator and "press Enter to expand" hint. Esc dismisses all visible toasts.
+- **Harness API v1.1 events** (`alphacode_harness_api`): Added `ToolProgress` (batch execution progress), `MemoryWarning` (pre-compaction alert), and `HealthUpdate` (periodic resource metrics) events. Backward compatible.
+- **Time-based session auto-save** (`turn_loops`): Sessions now auto-save every 60 seconds regardless of tool iteration count, preventing data loss during long-running single-tool operations.
+
+### Changed
+
+- **Streaming reveal rate increased** (`stream_buffer`): Base reveal rate 180 → 240 chars/sec, backlog gain 3.0 → 4.0, max reveal rate 960 → 1440 chars/sec. Text now appears 33% faster during streaming.
+- **HTTP connection pool expanded** (`provider_core`): `pool_max_idle_per_host` increased from 2 to 4, improving connection reuse for parallel requests (catalog refresh, health checks).
+- **Context compaction quality improved** (`compaction_core`): `RECENT_TURNS_TO_KEEP` increased from 15 to 20, `EMERGENCY_TOOL_RESULT_MAX_CHARS` increased from 8000 to 10000. More context preserved during compaction reduces information loss on multi-step tasks.
+
+### Fixed
+
+- **install.ps1 version verification fails with empty warning** (`scripts/install.ps1`): The installer suppressed stderr with `2>$null`, discarding the actual error when the binary failed to run (e.g., Windows Defender/SmartScreen block). Replaced with `Start-Process` + `RedirectStandardError` to capture and display the real error. Added 500ms delay for Windows SmartScreen unsealing. Warnings now show actionable diagnostic text instead of a bare colon.
+
 ## [1.0.24] - 2026-09-07
 
 Patch release. Adds automatic GitHub star feature and bumps version.

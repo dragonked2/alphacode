@@ -2741,6 +2741,12 @@ pub(super) fn handle_basic_key(app: &mut App, code: KeyCode) -> bool {
             true
         }
         KeyCode::Esc => {
+            // Toast dismissal takes priority: if toasts are visible, Esc
+            // clears them before any other Esc behavior.
+            if crate::alphacode_tui::tui::ui_error_toast::count() > 0 {
+                crate::alphacode_tui::tui::ui_error_toast::clear();
+                return true;
+            }
             if app
                 .inline_interactive_state
                 .as_ref()
@@ -2995,6 +3001,20 @@ impl App {
         if modifiers.contains(KeyModifiers::CONTROL)
             && handle_global_control_shortcuts(self, code, diagram_available)
         {
+            return Ok(());
+        }
+
+        // Enter on a toast toggles expand/collapse (when not processing and
+        // no other input is focused).
+        if code == KeyCode::Enter
+            && !self.is_processing
+            && self.input.is_empty()
+            && crate::alphacode_tui::tui::ui_error_toast::count() > 0
+        {
+            // Expand/collapse the most recent toast (index 0 = oldest,
+            // last = newest; we expand the newest visible one).
+            let count = crate::alphacode_tui::tui::ui_error_toast::count();
+            crate::alphacode_tui::tui::ui_error_toast::toggle_expand(count - 1);
             return Ok(());
         }
 

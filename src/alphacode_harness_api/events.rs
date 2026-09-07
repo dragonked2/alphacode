@@ -147,6 +147,45 @@ pub enum ApiEvent {
         model: Option<String>,
     },
 
+    /// Per-tool progress update during batch execution. Sent periodically
+    /// while a batch of parallel tool calls is in flight, allowing clients
+    /// to render a progress bar instead of a simple spinner.
+    ToolProgress {
+        session_id: String,
+        /// Total number of tools in the batch.
+        total: u32,
+        /// Number of tools that have completed so far.
+        completed: u32,
+        /// Name of the currently executing tool, if any.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        active_tool: Option<String>,
+    },
+
+    /// Memory system warning: context is approaching compaction threshold.
+    /// Sent when context usage exceeds 80%, giving clients advance notice
+    /// that a compaction event may happen soon.
+    MemoryWarning {
+        session_id: String,
+        /// Context usage as a fraction 0..=1.
+        usage: f32,
+        /// Human-readable message, e.g. "Context 85% full — compaction pending".
+        message: String,
+    },
+
+    /// Periodic health update with live metrics. Sent every 60 seconds
+    /// while a session is active, allowing clients to display resource
+    /// usage without polling.
+    HealthUpdate {
+        /// RSS memory in bytes.
+        rss_bytes: u64,
+        /// Number of active threads.
+        threads: u32,
+        /// Number of open file descriptors.
+        open_fds: u32,
+        /// Number of recoveries performed since startup.
+        recovery_count: u64,
+    },
+
     /// Forward-compatibility catch-all: clients must skip this silently.
     #[serde(other)]
     Unknown,

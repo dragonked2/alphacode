@@ -15,6 +15,10 @@ impl Agent {
     /// is periodically persisted to disk so a crash loses at most this many
     /// tool results instead of the entire turn.
     const AUTO_SAVE_INTERVAL: u32 = 5;
+    /// Maximum time between auto-saves, regardless of tool iteration count.
+    /// This ensures progress is saved even during long-running single-tool
+    /// operations (e.g., large file reads, image rendering).
+    const AUTO_SAVE_INTERVAL_SECS: u64 = 60;
     /// Maximum context usage percentage before triggering proactive compaction.
     /// When the context window is 85%+ full, start compacting early to avoid
     /// hitting the hard context limit during a critical turn.
@@ -50,6 +54,7 @@ impl Agent {
         let mut cached_static_prompt: Option<crate::prompt::SplitSystemPrompt> = None;
         let mut cached_tools: Option<Vec<ToolDefinition>> = None;
         let mut iteration_count: u32 = 0;
+        let mut last_save_time = Instant::now();
         loop {
             iteration_count += 1;
             // Periodic session auto-save: persist every N tool iterations so
@@ -58,6 +63,13 @@ impl Agent {
             // sessions running for hours or days.
             if iteration_count > 1 && iteration_count.is_multiple_of(Self::AUTO_SAVE_INTERVAL) {
                 self.persist_session_best_effort("periodic auto-save");
+                last_save_time = Instant::now();
+            }
+            // Time-based auto-save: ensure progress is saved even during
+            // long-running single-tool operations.
+            if last_save_time.elapsed() >= Duration::from_secs(Self::AUTO_SAVE_INTERVAL_SECS) {
+                self.persist_session_best_effort("time-based auto-save");
+                last_save_time = Instant::now();
             }
             // Proactive compaction: check context usage before each API call.
             // If we're above the threshold, trigger early compaction to avoid

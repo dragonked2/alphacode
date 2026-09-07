@@ -208,21 +208,35 @@ Print "Installed -> $installedExe"
 # Verify the installed binary works. Use --version (handled by clap before
 # any application logic) so the check succeeds even if a re-exec path would
 # otherwise interfere with subcommand parsing.
+# Brief pause: Windows SmartScreen / Defender may need a moment to allow a
+# freshly-copied executable to run.
+Start-Sleep -Milliseconds 500
 try {
-  $installed = & "$BinDir\alphacode.exe" --version 2>$null
-  if ($LASTEXITCODE -eq 0 -and $installed) {
-    $versionLine = ($installed -split "`n" | Where-Object { $_ -match 'alphacode\s+v[\d.]+' } | Select-Object -First 1)
+  $proc = Start-Process -FilePath "$BinDir\alphacode.exe" -ArgumentList '--version' `
+    -NoNewWindow -Wait -PassThru -RedirectStandardOutput "$Tmp\version_stdout.txt" `
+    -RedirectStandardError "$Tmp\version_stderr.txt"
+  $exitCode = $proc.ExitCode
+  $stdout = if (Test-Path "$Tmp\version_stdout.txt") { Get-Content "$Tmp\version_stdout.txt" -Raw } else { '' }
+  $stderr = if (Test-Path "$Tmp\version_stderr.txt") { Get-Content "$Tmp\version_stderr.txt" -Raw } else { '' }
+  if ($exitCode -eq 0 -and $stdout) {
+    $versionLine = ($stdout -split "`n" | Where-Object { $_ -match 'alphacode\s+v[\d.]+' } | Select-Object -First 1)
     if ($versionLine) {
       $version = ($versionLine -replace '.*alphacode\s+(v[\d.]+).*','$1')
       Print "Installed version: $version"
     } else {
-      Print "Installed (could not parse version)"
+      Print "Installed (could not parse version from: $stdout)"
     }
   } else {
-    Warn "Binary installed but could not verify version (exit code $LASTEXITCODE)"
+    $detail = if ($stderr) { $stderr.Trim() } else { "exit code $exitCode" }
+    Warn "Binary installed but could not verify version: $detail"
   }
 } catch {
-  Warn "Binary installed but could not verify version: $($_.Exception.Message)"
+  $excMsg = "$($_.Exception.Message)"
+  if ([string]::IsNullOrWhiteSpace($excMsg)) {
+    Write-Host '[warn] Binary installed but could not verify version: Start-Process failed (no exception detail; check file permissions and antivirus)' -ForegroundColor Yellow
+  } else {
+    Warn "Binary installed but could not verify version: $excMsg"
+  }
 }
 
 if (-not $NoPath) {
