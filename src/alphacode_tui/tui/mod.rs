@@ -1490,13 +1490,95 @@ impl PickerEntry {
 }
 
 /// A single available option for a picker entry.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub struct PickerOption {
     pub provider: String,
     pub api_method: String,
     pub available: bool,
     pub detail: String,
     pub estimated_reference_cost_micros: Option<u64>,
+    #[doc(hidden)]
+    /// Pre-computed detail display. Populated by ::new(); existing struct-literal
+    /// call sites are migrated in a follow-up patch.
+    pub detail_display: Option<String>,
+    #[doc(hidden)]
+    pub detail_is_limited: bool,
+    #[doc(hidden)]
+    pub detail_severity: RouteDetailSeverity,
+}
+
+impl PickerOption {
+    /// Convenience: build a PickerOption with the precomputed detail fields
+    /// populated, so call sites that constructed PickerOption directly keep
+    /// compiling with no behavior change.
+    pub fn new(
+        provider: String,
+        api_method: String,
+        available: bool,
+        detail: String,
+        estimated_reference_cost_micros: Option<u64>,
+    ) -> Self {
+        let (detail_display, detail_is_limited, detail_severity) =
+            precompute_route_detail(&detail, available);
+        Self {
+            provider,
+            api_method,
+            available,
+            detail,
+            estimated_reference_cost_micros,
+            detail_display,
+            detail_is_limited,
+            detail_severity,
+        }
+    }
+}
+
+/// Severity bucket for a route precomputed detail.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum RouteDetailSeverity {
+    #[default]
+    None,
+    Info,
+    Warn,
+    Unavailable,
+}
+
+/// Pre-compute (display_text, is_limited, severity) for a route detail string.
+fn precompute_route_detail(
+    detail: &str,
+    unavailable: bool,
+) -> (Option<String>, bool, RouteDetailSeverity) {
+    let trimmed = detail.trim();
+    let is_limited = if trimmed.is_empty() {
+        false
+    } else {
+        let lower = trimmed.to_ascii_lowercase();
+        lower.contains("fallback:")
+            || lower.contains("fallback model")
+            || lower.contains("no tools")
+            || lower.contains("requires an inference profile")
+            || lower.contains("catalog still loading")
+            || lower.contains("provider will initialize")
+    };
+    let (display, severity) = if unavailable {
+        if trimmed.is_empty() {
+            (Some("unavailable".to_string()), RouteDetailSeverity::Unavailable)
+        } else {
+            (
+                Some(format!("unavailable · {}", trimmed)),
+                RouteDetailSeverity::Unavailable,
+            )
+        }
+    } else if trimmed.is_empty() {
+        (None, RouteDetailSeverity::None)
+    } else if is_limited {
+        (Some(trimmed.to_string()), RouteDetailSeverity::Warn)
+    } else if trimmed.to_ascii_lowercase().contains("inference profile") {
+        (Some(trimmed.to_string()), RouteDetailSeverity::Info)
+    } else {
+        (Some(trimmed.to_string()), RouteDetailSeverity::None)
+    };
+    (display, is_limited, severity)
 }
 
 pub(crate) fn subscribe_metadata(

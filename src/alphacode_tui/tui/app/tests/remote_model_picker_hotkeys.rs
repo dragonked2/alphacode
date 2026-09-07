@@ -16,7 +16,7 @@ fn remote_model_picker_preview_state() -> crate::alphacode_tui::tui::InlineInter
                 available: true,
                 detail: String::new(),
                 estimated_reference_cost_micros: None,
-            }],
+             ..crate::alphacode_tui::tui::PickerOption::default()}],
             action: crate::alphacode_tui::tui::PickerAction::Model,
             selected_option: 0,
             is_current: false,

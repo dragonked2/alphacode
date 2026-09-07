@@ -232,7 +232,11 @@ pub fn tui_policy_for(
     }
 
     if profile.is_wsl_windows_terminal() {
-        redraw_fps = redraw_fps.min(20);
+        // Phase 1e: 30 fps is enough for the breath/streaming animations and
+        // 50% more responsive than the legacy 20 fps floor. The simplified
+        // model picker remains on because its main cost is the synchronous
+        // catalog build on the UI thread, not the redraw rate.
+        redraw_fps = redraw_fps.min(30);
         enable_focus_change = false;
         enable_keyboard_enhancement = false;
         simplified_model_picker = true;
@@ -774,7 +778,8 @@ mod tests {
         };
         let policy = tui_policy_for(&profile, &display);
         assert_eq!(policy.tier, PerformanceTier::Reduced);
-        assert_eq!(policy.redraw_fps, 20);
+        // Phase 1e: bumped from 20 -> 30 fps.
+        assert_eq!(policy.redraw_fps, 30);
         assert_eq!(policy.animation_fps, 1);
         assert!(!policy.enable_decorative_animations);
         assert!(!policy.enable_focus_change);

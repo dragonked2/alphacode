@@ -169,21 +169,12 @@ impl BrandTheme {
         colors[index % colors.len()]
     }
 
-    /// Animated brand color: rotates the gradient through time so any single
-    /// cell painted with this method has a slow, premium hue drift. `t` is
-    /// seconds since the last reset; the period is 12s.
-    pub fn gradient_color_animated(index: usize, t: f32) -> Color {
-        let colors = Self::gradient();
-        let n = colors.len();
-        // Drift offset in [0, n), recomputed every frame.
-        let drift = ((t / 12.0) * n as f32) % n as f32;
-        // `virtual` is a reserved keyword in Rust 2024; we use `pos` instead.
-        let pos = index as f32 + drift;
-        let lo = pos.floor() as usize % n;
-        let hi = (lo + 1) % n;
-        let frac = pos - pos.floor();
-        blend_rgb(colors[lo], colors[hi], frac)
-    }
+    // Phase 1c: gradient_color_animated intentionally removed. Animating the
+    // hue across every painted cell churns the GPU glyph atlas (the
+    // `fragile_glyph_cache` path in `perf.rs` exists for exactly this) and
+    // renders brand colors as decoration rather than focus. The static
+    // `gradient_color` below remains for one-off accents (focus rings,
+    // splash wordmark) where a single cell owns the color.
 
     /// Gradient spans for text (one color per character).
     ///
@@ -1076,28 +1067,6 @@ mod tests {
             *wide.last().unwrap(),
             *BrandTheme::gradient().last().unwrap()
         );
-    }
-
-    #[test]
-    fn test_gradient_color_animated_stays_in_palette() {
-        pin_truecolor();
-        // The animated color must always be reachable from one of the stops.
-        let palette = BrandTheme::gradient();
-        for &t in &[0.0_f32, 0.5, 1.0, 6.0, 30.0] {
-            for idx in 0..16 {
-                let color = BrandTheme::gradient_color_animated(idx, t);
-                // The interpolated output is an RGB blend, so it may not match a
-                // base stop exactly. The check is that it is a valid RGB color
-                // and stays within the convex hull of the base palette.
-                match color {
-                    Color::Rgb(r, g, b) => {
-                        assert!(r < 255 || g < 255 || b < 255 || idx == 15);
-                    }
-                    _ => panic!("animated color must be RGB, got {color:?}"),
-                }
-                let _ = palette; // keep the import meaningful for future asserts
-            }
-        }
     }
 
     #[test]

@@ -1211,7 +1211,7 @@ impl App {
                     available: true,
                     detail: "updating model list…".to_string(),
                     estimated_reference_cost_micros: None,
-                }],
+                 ..PickerOption::default()}],
                 action: PickerAction::Model,
                 selected_option: 0,
                 is_current: true,
@@ -1447,13 +1447,14 @@ impl App {
             model_options
                 .entry(r.model.clone())
                 .or_default()
-                .push(PickerOption {
-                    provider: r.provider.clone(),
-                    api_method: r.api_method.clone(),
-                    available: r.available,
-                    detail: r.detail.clone(),
-                    estimated_reference_cost_micros: r.estimated_reference_cost_micros(),
-                });
+                // Phase 1a: use ::new() so precomputed detail fields are populated.
+                .push(PickerOption::new(
+                    r.provider.clone(),
+                    r.api_method.clone(),
+                    r.available,
+                    r.detail.clone(),
+                    r.estimated_reference_cost_micros(),
+                ));
         }
         let grouping_ms = grouping_started.elapsed().as_millis();
 
@@ -3692,7 +3693,7 @@ mod tests {
             available: true,
             detail: String::new(),
             estimated_reference_cost_micros: None,
-        }
+         ..PickerOption::default()}
     }
 
     fn picker_option(provider: &str) -> PickerOption {

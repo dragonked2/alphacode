@@ -170,7 +170,10 @@ impl Default for DisplayConfig {
             native_scrollbars: NativeScrollbarConfig::default(),
             keybinding_hints: true,
             theme: String::new(),
-            preset: String::new(),
+            // Phase 1b: aurora-pro is the new default theme. Empty preset
+            // continues to mean "use alphacode's built-in palette"; users
+            // who want the old look can run `/theme alphacode`.
+            preset: String::from("aurora-pro"),
             colors: std::collections::BTreeMap::new(),
             active_sessions_manager: false,
             external_sessions: true,

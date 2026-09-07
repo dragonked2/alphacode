@@ -540,7 +540,7 @@ impl App {
                     available: true,
                     detail: format!("{} - {} - plan {}", email, status, plan),
                     estimated_reference_cost_micros: None,
-                }],
+                 ..crate::alphacode_tui::tui::PickerOption::default()}],
                 action: crate::alphacode_tui::tui::PickerAction::Account(
                     crate::alphacode_tui::tui::AccountPickerAction::Switch {
                         provider_id: "claude".to_string(),
@@ -589,7 +589,7 @@ impl App {
                     available: true,
                     detail: format!("{} - {} - acct {}", email, status, account_id),
                     estimated_reference_cost_micros: None,
-                }],
+                 ..crate::alphacode_tui::tui::PickerOption::default()}],
                 action: crate::alphacode_tui::tui::PickerAction::Account(
                     crate::alphacode_tui::tui::AccountPickerAction::Switch {
                         provider_id: "openai".to_string(),
@@ -617,7 +617,7 @@ impl App {
                 available: true,
                 detail: format!("create {}", next_claude),
                 estimated_reference_cost_micros: None,
-            }],
+             ..crate::alphacode_tui::tui::PickerOption::default()}],
             action: crate::alphacode_tui::tui::PickerAction::Account(
                 crate::alphacode_tui::tui::AccountPickerAction::Add {
                     provider_id: "claude".to_string(),
@@ -643,7 +643,7 @@ impl App {
                 available: true,
                 detail: format!("create {}", next_openai),
                 estimated_reference_cost_micros: None,
-            }],
+             ..crate::alphacode_tui::tui::PickerOption::default()}],
             action: crate::alphacode_tui::tui::PickerAction::Account(
                 crate::alphacode_tui::tui::AccountPickerAction::Add {
                     provider_id: "openai".to_string(),
@@ -679,7 +679,7 @@ impl App {
                     format!("refresh {}", replace_claude)
                 },
                 estimated_reference_cost_micros: None,
-            }],
+             ..crate::alphacode_tui::tui::PickerOption::default()}],
             action: crate::alphacode_tui::tui::PickerAction::Account(
                 crate::alphacode_tui::tui::AccountPickerAction::Replace {
                     provider_id: "claude".to_string(),
@@ -716,7 +716,7 @@ impl App {
                     format!("refresh {}", replace_openai)
                 },
                 estimated_reference_cost_micros: None,
-            }],
+             ..crate::alphacode_tui::tui::PickerOption::default()}],
             action: crate::alphacode_tui::tui::PickerAction::Account(
                 crate::alphacode_tui::tui::AccountPickerAction::Replace {
                     provider_id: "openai".to_string(),
@@ -743,7 +743,7 @@ impl App {
                 available: true,
                 detail: "settings, defaults, and other providers".to_string(),
                 estimated_reference_cost_micros: None,
-            }],
+             ..crate::alphacode_tui::tui::PickerOption::default()}],
             action: crate::alphacode_tui::tui::PickerAction::Account(
                 crate::alphacode_tui::tui::AccountPickerAction::OpenCenter {
                     provider_filter: None,
@@ -808,7 +808,7 @@ impl App {
                     available: true,
                     detail: format!("{} - {} - plan {}", email, status, plan),
                     estimated_reference_cost_micros: None,
-                }],
+                 ..crate::alphacode_tui::tui::PickerOption::default()}],
                 action: crate::alphacode_tui::tui::PickerAction::Account(
                     crate::alphacode_tui::tui::AccountPickerAction::Switch {
                         provider_id: "claude".to_string(),
@@ -836,7 +836,7 @@ impl App {
                 available: true,
                 detail: format!("create {}", next_label),
                 estimated_reference_cost_micros: None,
-            }],
+             ..crate::alphacode_tui::tui::PickerOption::default()}],
             action: crate::alphacode_tui::tui::PickerAction::Account(
                 crate::alphacode_tui::tui::AccountPickerAction::Add {
                     provider_id: "claude".to_string(),
@@ -872,7 +872,7 @@ impl App {
                     format!("refresh {}", replace_target)
                 },
                 estimated_reference_cost_micros: None,
-            }],
+             ..crate::alphacode_tui::tui::PickerOption::default()}],
             action: crate::alphacode_tui::tui::PickerAction::Account(
                 crate::alphacode_tui::tui::AccountPickerAction::Replace {
                     provider_id: "claude".to_string(),
@@ -899,7 +899,7 @@ impl App {
                 available: true,
                 detail: "full Claude account center and settings".to_string(),
                 estimated_reference_cost_micros: None,
-            }],
+             ..crate::alphacode_tui::tui::PickerOption::default()}],
             action: crate::alphacode_tui::tui::PickerAction::Account(
                 crate::alphacode_tui::tui::AccountPickerAction::OpenCenter {
                     provider_filter: Some("claude".to_string()),
@@ -964,7 +964,7 @@ impl App {
                     available: true,
                     detail: format!("{} - {} - acct {}", email, status, account_id),
                     estimated_reference_cost_micros: None,
-                }],
+                 ..crate::alphacode_tui::tui::PickerOption::default()}],
                 action: crate::alphacode_tui::tui::PickerAction::Account(
                     crate::alphacode_tui::tui::AccountPickerAction::Switch {
                         provider_id: "openai".to_string(),
@@ -992,7 +992,7 @@ impl App {
                 available: true,
                 detail: format!("create {}", next_label),
                 estimated_reference_cost_micros: None,
-            }],
+             ..crate::alphacode_tui::tui::PickerOption::default()}],
             action: crate::alphacode_tui::tui::PickerAction::Account(
                 crate::alphacode_tui::tui::AccountPickerAction::Add {
                     provider_id: "openai".to_string(),
@@ -1028,7 +1028,7 @@ impl App {
                     format!("refresh {}", replace_target)
                 },
                 estimated_reference_cost_micros: None,
-            }],
+             ..crate::alphacode_tui::tui::PickerOption::default()}],
             action: crate::alphacode_tui::tui::PickerAction::Account(
                 crate::alphacode_tui::tui::AccountPickerAction::Replace {
                     provider_id: "openai".to_string(),
@@ -1055,7 +1055,7 @@ impl App {
                 available: true,
                 detail: "full OpenAI account center and settings".to_string(),
                 estimated_reference_cost_micros: None,
-            }],
+             ..crate::alphacode_tui::tui::PickerOption::default()}],
             action: crate::alphacode_tui::tui::PickerAction::Account(
                 crate::alphacode_tui::tui::AccountPickerAction::OpenCenter {
                     provider_filter: Some("openai".to_string()),

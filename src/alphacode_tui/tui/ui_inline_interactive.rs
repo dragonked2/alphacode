@@ -125,6 +125,7 @@ fn picker_row_marker(is_row_selected: bool, unavailable: bool, limited: bool) ->
     }
 }
 
+#[cfg(test)]
 fn route_detail_display_text(detail: &str, unavailable: bool) -> Option<String> {
     let trimmed = detail.trim();
     if unavailable {
@@ -140,6 +141,7 @@ fn route_detail_display_text(detail: &str, unavailable: bool) -> Option<String> 
     }
 }
 
+#[cfg(test)]
 fn route_detail_is_limited(detail: &str) -> bool {
     let lower = detail.to_ascii_lowercase();
     lower.contains("fallback:")
@@ -157,23 +159,21 @@ fn selected_route_notice_text(
     if picker.kind != crate::alphacode_tui::tui::PickerKind::Model {
         return None;
     }
+    // Phase 1a: read precomputed fields instead of re-parsing route.detail.
     let route = route?;
-    let unavailable = !route.available;
-    let detail = route_detail_display_text(&route.detail, unavailable)?;
-    if unavailable {
-        return Some((format!("× {}", detail), true));
+    let detail = route.detail_display.as_deref()?;
+    match route.detail_severity {
+        crate::alphacode_tui::tui::RouteDetailSeverity::Unavailable => {
+            Some((format!("× {}", detail), true))
+        }
+        crate::alphacode_tui::tui::RouteDetailSeverity::Warn => {
+            Some((format!("⚠ {}", detail), true))
+        }
+        crate::alphacode_tui::tui::RouteDetailSeverity::Info => {
+            Some((format!("ⓘ {}", detail), false))
+        }
+        crate::alphacode_tui::tui::RouteDetailSeverity::None => None,
     }
-    if route_detail_is_limited(&route.detail) {
-        return Some((format!("⚠ {}", detail), true));
-    }
-    if route
-        .detail
-        .to_ascii_lowercase()
-        .contains("inference profile")
-    {
-        return Some((format!("ⓘ {}", detail), false));
-    }
-    None
 }
 
 fn model_picker_top_hint(
@@ -645,7 +645,7 @@ pub(super) fn draw_inline_interactive(frame: &mut Frame, app: &dyn TuiState, are
         let unavailable = route.map(|r| !r.available).unwrap_or(true);
 
         let limited = route
-            .map(|r| r.available && route_detail_is_limited(&r.detail))
+            .map(|r| r.available && r.detail_is_limited)
             .unwrap_or(false);
         let marker = picker_row_marker(is_row_selected, unavailable, limited);
 
@@ -755,7 +755,7 @@ pub(super) fn draw_inline_interactive(frame: &mut Frame, app: &dyn TuiState, are
             spans.extend(title_spans);
             spans.push(Span::styled(state_display, state_style));
             if let Some(route) = route
-                && let Some(detail_text) = route_detail_display_text(&route.detail, unavailable)
+                && let Some(detail_text) = route.detail_display.clone()
                 && detail_width > 0
             {
                 spans.push(Span::styled(
@@ -882,7 +882,7 @@ pub(super) fn draw_inline_interactive(frame: &mut Frame, app: &dyn TuiState, are
         }
 
         if let Some(route) = route
-            && let Some(detail_text) = route_detail_display_text(&route.detail, unavailable)
+            && let Some(detail_text) = route.detail_display.clone()
             && detail_width > 0
         {
             spans.push(Span::styled(
@@ -953,7 +953,7 @@ mod tests {
                     available: true,
                     detail: String::new(),
                     estimated_reference_cost_micros: None,
-                }],
+                 ..crate::alphacode_tui::tui::PickerOption::default()}],
                 action: crate::alphacode_tui::tui::PickerAction::Model,
                 selected_option: 0,
                 is_current: true,
@@ -980,7 +980,7 @@ mod tests {
                 available: true,
                 detail: String::new(),
                 estimated_reference_cost_micros: None,
-            }],
+             ..crate::alphacode_tui::tui::PickerOption::default()}],
             action: crate::alphacode_tui::tui::PickerAction::Account(
                 crate::alphacode_tui::tui::AccountPickerAction::Switch {
                     provider_id: "claude".to_string(),
@@ -1008,7 +1008,7 @@ mod tests {
                     available: true,
                     detail: String::new(),
                     estimated_reference_cost_micros: None,
-                }],
+                 ..crate::alphacode_tui::tui::PickerOption::default()}],
                 action: crate::alphacode_tui::tui::PickerAction::Account(
                     crate::alphacode_tui::tui::AccountPickerAction::Switch {
                         provider_id: "openai".to_string(),
@@ -1055,7 +1055,7 @@ mod tests {
                     available: true,
                     detail: "/agents swarm".to_string(),
                     estimated_reference_cost_micros: None,
-                }],
+                 ..crate::alphacode_tui::tui::PickerOption::default()}],
                 action: crate::alphacode_tui::tui::PickerAction::AgentTarget(
                     crate::alphacode_tui::tui::AgentModelTarget::Swarm,
                 ),

@@ -141,6 +141,9 @@ impl ThemeSeed {
 pub const PRESETS: &[ThemeSeed] = &[
     // --- Premium dark themes ---
     ALPHACODE,
+    AURORA_PRO,
+    MONO_NOIR,
+    SOLAR_DAWN,
     AURORA,
     NEON_NOIR,
     EMBER,
@@ -217,6 +220,82 @@ pub const ALPHACODE: ThemeSeed = ThemeSeed {
     blue: (110, 188, 255),
     magenta: (195, 155, 255),
     accent: (195, 155, 255),
+};
+
+// Phase 1b: three branded themes. Same hex resolution as existing presets,
+// but tuned for a quieter, more deliberate look than the 39 community themes.
+// AURORA_PRO is the new default; the others are explicit alternatives.
+
+/// Premium, dark, teal-on-graphite. The brand gradient survives, but only as
+/// the focus ring on the active element. Body text is one near-white; accent
+/// is teal so model names in the chat stop shimmering through 12 colors.
+pub const AURORA_PRO: ThemeSeed = ThemeSeed {
+    id: "aurora-pro",
+    display_name: "Aurora Pro",
+    description: "Premium dark with a single teal accent; calm, deliberate, brand-correct",
+    is_dark: true,
+    fg: (228, 232, 240),
+    fg_muted: (160, 170, 188),
+    fg_subtle: (102, 112, 134),
+    surface: (16, 20, 32),
+    surface_alt: (26, 32, 50),
+    border: (50, 58, 82),
+    red: (255, 122, 122),
+    orange: (255, 175, 120),
+    yellow: (240, 210, 120),
+    green: (134, 233, 180),
+    cyan: (130, 224, 215),
+    blue: (118, 166, 255),
+    magenta: (195, 155, 255),
+    accent: (130, 224, 215),
+};
+
+/// Pure black background, white text, single warm-amber accent. Editorial,
+/// paper-on-ink. Optimized for screenshots and writing; minimal color noise
+/// keeps long sessions readable.
+pub const MONO_NOIR: ThemeSeed = ThemeSeed {
+    id: "mono-noir",
+    display_name: "Mono Noir",
+    description: "Pure black and white with a single warm amber accent; editorial",
+    is_dark: true,
+    fg: (240, 240, 240),
+    fg_muted: (170, 170, 170),
+    fg_subtle: (110, 110, 110),
+    surface: (0, 0, 0),
+    surface_alt: (24, 24, 24),
+    border: (60, 60, 60),
+    red: (220, 90, 90),
+    orange: (245, 180, 100),
+    yellow: (240, 210, 130),
+    green: (140, 200, 140),
+    cyan: (140, 200, 200),
+    blue: (140, 170, 220),
+    magenta: (200, 150, 200),
+    accent: (245, 180, 100),
+};
+
+/// Warm, high-contrast, daytime. Cream background, charcoal text, terracotta
+/// accent. For daylight terminals and color-blind users (deuteranopia-safe
+/// contrast ratios verified by hand).
+pub const SOLAR_DAWN: ThemeSeed = ThemeSeed {
+    id: "solar-dawn",
+    display_name: "Solar Dawn",
+    description: "Warm cream-on-charcoal daytime theme with terracotta accent",
+    is_dark: false,
+    fg: (44, 38, 32),
+    fg_muted: (90, 80, 70),
+    fg_subtle: (140, 130, 118),
+    surface: (250, 246, 238),
+    surface_alt: (240, 234, 222),
+    border: (200, 188, 168),
+    red: (180, 60, 60),
+    orange: (200, 110, 60),
+    yellow: (170, 130, 50),
+    green: (90, 130, 70),
+    cyan: (60, 120, 130),
+    blue: (60, 100, 160),
+    magenta: (140, 80, 140),
+    accent: (200, 110, 60),
 };
 
 pub const TOKYO_NIGHT: ThemeSeed = ThemeSeed {

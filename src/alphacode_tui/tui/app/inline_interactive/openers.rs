@@ -35,7 +35,7 @@ impl App {
                         format!("/agents {}", agent_model_target_slug(target))
                     },
                     estimated_reference_cost_micros: None,
-                }],
+                 ..PickerOption::default()}],
                 action: PickerAction::AgentTarget(target),
                 selected_option: 0,
                 is_current: false,
@@ -112,7 +112,7 @@ impl App {
                         available: true,
                         detail: format!("{} · {}", assessment.method_detail, provider.menu_detail),
                         estimated_reference_cost_micros: None,
-                    }],
+                     ..PickerOption::default()}],
                     action: if logout {
                         PickerAction::Logout(provider)
                     } else {
@@ -144,7 +144,7 @@ impl App {
                         available: true,
                         detail: "Log out of every provider with a saved session".to_string(),
                         estimated_reference_cost_micros: None,
-                    }],
+                     ..PickerOption::default()}],
                     action: PickerAction::LogoutAll,
                     selected_option: 0,
                     is_current: false,
@@ -226,7 +226,7 @@ impl App {
                                 available: true,
                                 detail: "not in current picker catalog".to_string(),
                                 estimated_reference_cost_micros: None,
-                            }],
+                             ..PickerOption::default()}],
                             action: PickerAction::AgentModelChoice {
                                 target,
                                 clear_override: false,
@@ -256,7 +256,7 @@ impl App {
                         available: true,
                         detail: "clear saved override".to_string(),
                         estimated_reference_cost_micros: None,
-                    }],
+                     ..PickerOption::default()}],
                     action: PickerAction::AgentModelChoice {
                         target,
                         clear_override: true,
