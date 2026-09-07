@@ -8,7 +8,9 @@ const REPO_NAME: &str = "alphacode";
 const FLAG_FILE: &str = ".github_starred";
 
 fn flag_path() -> Option<std::path::PathBuf> {
-    crate::alphacode_storage::alphacode_dir().ok().map(|d| d.join(FLAG_FILE))
+    crate::alphacode_storage::alphacode_dir()
+        .ok()
+        .map(|d| d.join(FLAG_FILE))
 }
 
 fn already_attempted() -> bool {

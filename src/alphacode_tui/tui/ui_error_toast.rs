@@ -102,6 +102,9 @@ pub struct Toast {
     pub hint: Option<String>,
     pub created_at: Instant,
     pub ttl: Duration,
+    /// Whether the toast is expanded to show the full message and hint.
+    /// Collapsed toasts show a truncated preview; expanded show everything.
+    pub expanded: bool,
 }
 
 impl Toast {
@@ -123,8 +126,11 @@ pub const MAX_VISIBLE_TOASTS: usize = 4;
 pub const DEFAULT_TTL: Duration = Duration::from_secs(6);
 
 /// Maximum toast width in cells. Anything longer wraps within this width
-/// rather than exceeding the chat area.
+/// rather than exceeding the chat area. Expanded toasts use a wider cap.
 pub const MAX_TOAST_WIDTH: u16 = 60;
+
+/// Maximum toast width when expanded.
+pub const MAX_TOAST_WIDTH_EXPANDED: u16 = 100;
 
 /// Process-global toast queue. A `Mutex<Vec<Toast>>` is fine here: the
 /// queue is touched once per push (from input handlers), once per render
@@ -200,6 +206,7 @@ pub fn push_with_ttl(
         hint,
         created_at: Instant::now(),
         ttl,
+        expanded: false,
     });
     // Keep only the most-recent `MAX_VISIBLE_TOASTS` to bound the screen
     // real estate. The oldest in the queue is evicted first.
@@ -225,6 +232,35 @@ pub fn dismiss(index: usize) {
     let mut guard = TOASTS.lock().expect("error_toast mutex poisoned");
     if index < guard.len() {
         guard.remove(index);
+    }
+}
+
+/// Toggle the expanded state of a toast by index. When expanded, the full
+/// message and hint are shown at wider width. Out-of-range indices are
+/// ignored. Returns whether the toast was expanded after toggling.
+pub fn toggle_expand(index: usize) -> bool {
+    let mut guard = TOASTS.lock().expect("error_toast mutex poisoned");
+    if let Some(toast) = guard.get_mut(index) {
+        toast.expanded = !toast.expanded;
+        toast.expanded
+    } else {
+        false
+    }
+}
+
+/// Expand a specific toast by index. Out-of-range indices are ignored.
+pub fn expand(index: usize) {
+    let mut guard = TOASTS.lock().expect("error_toast mutex poisoned");
+    if let Some(toast) = guard.get_mut(index) {
+        toast.expanded = true;
+    }
+}
+
+/// Collapse a specific toast by index. Out-of-range indices are ignored.
+pub fn collapse(index: usize) {
+    let mut guard = TOASTS.lock().expect("error_toast mutex poisoned");
+    if let Some(toast) = guard.get_mut(index) {
+        toast.expanded = false;
     }
 }
 
@@ -261,10 +297,22 @@ pub fn draw(frame: &mut ratatui::Frame, area: Rect) {
     }
 
     let mut y = area.y + area.height.saturating_sub(1);
-    for toast in toasts.iter().rev() {
+    for (_idx, toast) in toasts.iter().rev().enumerate() {
         // Compute the toast size from its content (auto-fit, capped).
-        let msg_width = toast.message.chars().count().min(MAX_TOAST_WIDTH as usize) as u16;
-        let hint_lines = toast.hint.as_ref().map(|h| h.lines().count()).unwrap_or(0);
+        let max_width = if toast.expanded {
+            MAX_TOAST_WIDTH_EXPANDED
+        } else {
+            MAX_TOAST_WIDTH
+        };
+        let msg_width = toast.message.chars().count().min(max_width as usize) as u16;
+        // When collapsed and hint exists, show expand indicator in hint line.
+        let hint_lines = if toast.expanded {
+            toast.hint.as_ref().map(|h| h.lines().count()).unwrap_or(0)
+        } else if toast.hint.is_some() {
+            1 // collapsed: show "▸ expand for details" hint
+        } else {
+            0
+        };
         // 1 line for message + hint_lines + 1 padding row inside + 2 for borders.
         let height = (1 + hint_lines + 1 + 2) as u16;
         if y < area.y + height {
@@ -286,11 +334,22 @@ pub fn draw(frame: &mut ratatui::Frame, area: Rect) {
         frame.render_widget(Clear, toast_area);
 
         let border_color = role_color(toast.severity.role());
+        // Show expand/collapse indicator when hint is available.
+        let expand_indicator = if toast.hint.is_some() {
+            if toast.expanded { " ▾" } else { " ▸" }
+        } else {
+            ""
+        };
         let block = Block::default()
             .borders(Borders::ALL)
             .border_style(Style::default().fg(border_color))
             .title(Span::styled(
-                format!(" {} {} ", toast.severity.icon(), toast.severity.label()),
+                format!(
+                    " {} {} {} ",
+                    toast.severity.icon(),
+                    toast.severity.label(),
+                    expand_indicator
+                ),
                 Style::default()
                     .fg(border_color)
                     .add_modifier(Modifier::BOLD),
@@ -301,9 +360,18 @@ pub fn draw(frame: &mut ratatui::Frame, area: Rect) {
             toast.message.clone(),
             Style::default(),
         )));
-        if let Some(hint) = &toast.hint {
+        if toast.expanded {
+            // Expanded: show full hint.
+            if let Some(hint) = &toast.hint {
+                lines.push(Line::from(Span::styled(
+                    hint.clone(),
+                    Style::default().fg(role_color(Role::Dim)),
+                )));
+            }
+        } else if toast.hint.is_some() {
+            // Collapsed: show "press Enter to expand" hint.
             lines.push(Line::from(Span::styled(
-                hint.clone(),
+                "press Enter to expand",
                 Style::default().fg(role_color(Role::Dim)),
             )));
         }

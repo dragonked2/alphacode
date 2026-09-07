@@ -126,6 +126,26 @@ pub(super) const BUNDLED_SKILLS: &[BundledSkill] = &[
                 "redteam-ops",
                 include_str!("bundled_skills/bugbounty/redteam-ops/SKILL.md"),
             ),
+            (
+                "hunt-cors",
+                include_str!("bundled_skills/bugbounty/hunt-cors/SKILL.md"),
+            ),
+            (
+                "hunt-ssrf-advanced",
+                include_str!("bundled_skills/bugbounty/hunt-ssrf-advanced/SKILL.md"),
+            ),
+            (
+                "hunt-race",
+                include_str!("bundled_skills/bugbounty/hunt-race/SKILL.md"),
+            ),
+            (
+                "hunt-desync",
+                include_str!("bundled_skills/bugbounty/hunt-desync/SKILL.md"),
+            ),
+            (
+                "llm-injection",
+                include_str!("bundled_skills/bugbounty/llm-injection/SKILL.md"),
+            ),
         ],
     },
     BundledSkill {
@@ -277,6 +297,92 @@ pub(super) const BUNDLED_SKILLS: &[BundledSkill] = &[
         name: "api-builder",
         body: include_str!("bundled_skills/api-builder/SKILL.md"),
         references: &[],
+    },
+    BundledSkill {
+        name: "ctf",
+        body: include_str!("bundled_skills/ctf/SKILL.md"),
+        references: &[
+            ("web", include_str!("bundled_skills/ctf/ctf/web/SKILL.md")),
+            (
+                "crypto",
+                include_str!("bundled_skills/ctf/ctf/crypto/SKILL.md"),
+            ),
+            ("pwn", include_str!("bundled_skills/ctf/ctf/pwn/SKILL.md")),
+            ("rev", include_str!("bundled_skills/ctf/ctf/rev/SKILL.md")),
+            (
+                "forensics",
+                include_str!("bundled_skills/ctf/ctf/forensics/SKILL.md"),
+            ),
+            ("misc", include_str!("bundled_skills/ctf/ctf/misc/SKILL.md")),
+            (
+                "methodology",
+                include_str!("bundled_skills/ctf/ctf/methodology/SKILL.md"),
+            ),
+            (
+                "toolkit",
+                include_str!("bundled_skills/ctf/ctf/toolkit/SKILL.md"),
+            ),
+        ],
+    },
+    BundledSkill {
+        name: "frontend-dev",
+        body: include_str!("bundled_skills/frontend-dev/SKILL.md"),
+        references: &[
+            (
+                "react",
+                include_str!("bundled_skills/frontend-dev/react/SKILL.md"),
+            ),
+            (
+                "nextjs",
+                include_str!("bundled_skills/frontend-dev/nextjs/SKILL.md"),
+            ),
+            (
+                "tailwind",
+                include_str!("bundled_skills/frontend-dev/tailwind/SKILL.md"),
+            ),
+            (
+                "components",
+                include_str!("bundled_skills/frontend-dev/components/SKILL.md"),
+            ),
+            (
+                "performance",
+                include_str!("bundled_skills/frontend-dev/performance/SKILL.md"),
+            ),
+            (
+                "testing",
+                include_str!("bundled_skills/frontend-dev/testing/SKILL.md"),
+            ),
+        ],
+    },
+    BundledSkill {
+        name: "backend-dev",
+        body: include_str!("bundled_skills/backend-dev/SKILL.md"),
+        references: &[
+            (
+                "nodejs",
+                include_str!("bundled_skills/backend-dev/nodejs/SKILL.md"),
+            ),
+            (
+                "python",
+                include_str!("bundled_skills/backend-dev/python/SKILL.md"),
+            ),
+            (
+                "rust",
+                include_str!("bundled_skills/backend-dev/rust/SKILL.md"),
+            ),
+            (
+                "database",
+                include_str!("bundled_skills/backend-dev/database/SKILL.md"),
+            ),
+            (
+                "auth",
+                include_str!("bundled_skills/backend-dev/auth/SKILL.md"),
+            ),
+            (
+                "caching",
+                include_str!("bundled_skills/backend-dev/caching/SKILL.md"),
+            ),
+        ],
     },
 ];
 

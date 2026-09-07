@@ -29,12 +29,12 @@ use std::time::{Duration, Instant};
 
 /// Steady-state reveal rate (chars/sec) when the backlog is empty. This sets the
 /// floor cadence and how the trailing characters of a burst drain out.
-const BASE_REVEAL_CPS: f32 = 180.0;
+const BASE_REVEAL_CPS: f32 = 240.0;
 
 /// Additional reveal rate per buffered character. The controller speeds up as the
 /// backlog grows so we track fast models with bounded latency: at steady incoming
 /// rate `R`, the backlog settles near `(R - BASE_REVEAL_CPS) / REVEAL_BACKLOG_GAIN`.
-const REVEAL_BACKLOG_GAIN: f32 = 3.0;
+const REVEAL_BACKLOG_GAIN: f32 = 4.0;
 
 /// Hard ceiling for paced output, in characters per second. The proportional
 /// controller above may ask to catch up much faster when a provider delivers a
@@ -43,7 +43,7 @@ const REVEAL_BACKLOG_GAIN: f32 = 3.0;
 /// several terminal rows appearing at once. Capping by elapsed time (rather
 /// than by a fixed chars-per-frame value) keeps 16ms and 50ms redraw loops at
 /// the same visual rate while still draining a large burst in a few seconds.
-const MAX_REVEAL_CPS: f32 = 960.0;
+const MAX_REVEAL_CPS: f32 = 1440.0;
 
 /// Maximum elapsed time credited to a single reveal step. Without this, a long
 /// idle gap before the first/next burst would bank a huge budget and dump the

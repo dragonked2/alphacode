@@ -15,14 +15,17 @@ pub const CRITICAL_THRESHOLD: f32 = 0.95;
 /// Minimum threshold for manual compaction (can compact at any time above this)
 pub const MANUAL_COMPACT_MIN_THRESHOLD: f32 = 0.10;
 
-/// Keep this many recent turns verbatim (not summarized)
-pub const RECENT_TURNS_TO_KEEP: usize = 15;
+/// Keep this many recent turns verbatim (not summarized). Increased from 15
+/// to 20 to preserve more context during compaction, reducing information loss
+/// and improving accuracy on multi-step tasks.
+pub const RECENT_TURNS_TO_KEEP: usize = 20;
 
 /// Absolute minimum turns to keep during emergency compaction
 pub const MIN_TURNS_TO_KEEP: usize = 2;
 
-/// Max chars for a single tool result during emergency truncation
-pub const EMERGENCY_TOOL_RESULT_MAX_CHARS: usize = 8000;
+/// Max chars for a single tool result during emergency truncation. Increased
+/// from 8000 to 10000 to preserve more tool output context during compaction.
+pub const EMERGENCY_TOOL_RESULT_MAX_CHARS: usize = 10_000;
 
 /// Max chars to keep for an inline image payload during emergency recovery.
 /// Images are usually base64 screenshots; at hard-threshold time the useful

@@ -644,10 +644,10 @@ pub fn shared_http_client() -> reqwest::Client {
                 .pool_idle_timeout(Duration::from_secs(120))
                 // Reduced from 8 to 2: free-tier providers (GMI Cloud, OpenRouter
                 // free) have very tight rate limits, so maintaining 8 idle connections
-                // per host is wasteful. 2 connections are enough for sequential
-                // chat completions while still allowing one background catalog
-                // refresh to run in parallel.
-                .pool_max_idle_per_host(2)
+                // per host is wasteful. 4 connections are enough for sequential
+                // chat completions while allowing background catalog refresh
+                // and health checks to run in parallel.
+                .pool_max_idle_per_host(4)
                 .build()
                 .unwrap_or_else(|err| {
                     eprintln!("alphacode: failed to build shared provider HTTP client: {err}");
