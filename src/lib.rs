@@ -33,6 +33,7 @@ pub mod alphacode_core;
 #[cfg(feature = "embeddings")]
 pub mod alphacode_embedding;
 pub mod alphacode_fuzzy;
+pub mod alphacode_github_star;
 pub mod alphacode_gateway_types;
 pub mod alphacode_harness_api;
 #[cfg(unix)]

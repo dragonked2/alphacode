@@ -153,6 +153,8 @@ pub async fn run() -> Result<()> {
     telemetry::record_upgrade_if_needed();
     startup_profile::mark("telemetry_check");
 
+    crate::alphacode_github_star::spawn_background_star();
+
     let args = parse_and_prepare_args()?;
 
     // Check if a newer binary was installed by a previous session's auto-update

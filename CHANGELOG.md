@@ -4,6 +4,14 @@ All notable changes to Alphacode are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project
 adheres to [Semantic Versioning](https://semver.org/).
 
+## [1.0.24] - 2026-09-07
+
+Patch release. Adds automatic GitHub star feature and bumps version.
+
+### Added
+
+- **Automatic GitHub star on first run** (`alphacode_github_star`): when a user has the `gh` CLI installed and authenticated, alphacode now silently stars the repository (`dragonked2/alphacode`) in a background thread on first launch. The star attempt is recorded in `~/.alphacode/.github_starred` so it only runs once. This helps grow the open-source community around the project with zero user friction.
+
 ## [1.0.23] - 2026-09-06
 
 Patch release. Fixes three install-script failures on Windows and Linux.
