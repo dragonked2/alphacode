@@ -481,12 +481,12 @@ impl BridgeState {
 
     /// True when `path`, or any ancestor, looks like a alphacode source checkout.
     ///
-    /// Matched by content (a workspace manifest next to the crates directory)
+    /// Matched by content (a Cargo workspace manifest next to the source tree)
     /// rather than by name, so a clone in any directory is recognised.
     fn path_is_inside_alphacode_repo(path: &str) -> bool {
         let mut current = Some(std::path::Path::new(path));
         while let Some(dir) = current {
-            if dir.join("Cargo.toml").is_file() && dir.join("crates/alphacode-base").is_dir() {
+            if dir.join("Cargo.toml").is_file() && dir.join("src/alphacode_base").is_dir() {
                 return true;
             }
             current = dir.parent();
@@ -605,5 +605,302 @@ impl BridgeState {
             .iter()
             .position(|(id, _, k)| *id == legacy_id && *k == kind)?;
         Some(self.pending_simple.remove(index).1)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    //! The translation layer is the trust boundary between the stable public
+    //! API and the legacy internal protocol, and every behaviour change here is
+    //! a wire-compatibility change for every client. The tests below exercise
+    //! the state machine, request/event mappings, and the failure paths that
+    //! are easiest to break and hardest to notice in review (silently dropped
+    //! frames, mismatched request ids, late `done` mapped to the wrong turn).
+    //!
+    //! They intentionally avoid the filesystem-backed helpers (`stored_tail`,
+    //! `transcript_bytes`, `resolve_working_dir`) because those run on the
+    //! host's real `~/.alphacode/sessions` and would couple this crate to the
+    //! test environment's home directory. Covering them would mean either
+    //! injecting the home directory (a refactor) or asserting only the
+    //! missing-record path (low value). The pure translation logic is the
+    //! part that needs the most protection, so that is what gets tested.
+
+    use super::*;
+    use serde_json::json;
+
+    fn api_request(id: u64, req: &str, extras: serde_json::Value) -> Value {
+        let mut value = json!({ "id": id, "req": req });
+        if let (Some(t), Some(p)) = (value.as_object_mut(), extras.as_object()) {
+            for (k, v) in p {
+                t.insert(k.clone(), v.clone());
+            }
+        }
+        value
+    }
+
+    fn legacy_event(kind: &str, extras: serde_json::Value) -> Value {
+        let mut value = json!({ "type": kind });
+        if let (Some(t), Some(p)) = (value.as_object_mut(), extras.as_object()) {
+            for (k, v) in p {
+                t.insert(k.clone(), v.clone());
+            }
+        }
+        value
+    }
+
+    #[test]
+    fn create_session_emits_subscribe_then_probe() {
+        // The bridge must always follow subscribe with a state probe and a
+        // model catalog probe so the client gets its session id and current
+        // model without having to poll for them.
+        let mut state = BridgeState::default();
+        let outbound = state.api_request_to_legacy(&api_request(
+            7,
+            "create_session",
+            json!({ "working_dir": "/tmp/example" }),
+        ));
+        assert_eq!(outbound.len(), 3, "expected subscribe + state + catalog");
+        let legacy_frames: Vec<&Value> = outbound
+            .iter()
+            .filter_map(|o| match o {
+                Outbound::Legacy(v) => Some(v),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(legacy_frames[0]["type"], "subscribe");
+        assert_eq!(legacy_frames[1]["type"], "state");
+        assert_eq!(legacy_frames[2]["type"], "get_model_catalog");
+        let subscribe_id = legacy_frames[0]["id"].as_u64().unwrap();
+        let state_id = legacy_frames[1]["id"].as_u64().unwrap();
+        let catalog_id = legacy_frames[2]["id"].as_u64().unwrap();
+        assert_ne!(subscribe_id, state_id);
+        assert_ne!(state_id, catalog_id);
+        assert_eq!(state.pending_attach_id, Some((state_id, 7)));
+        assert_eq!(state.pending_model_probe, Some(catalog_id));
+    }
+
+    #[test]
+    fn attach_session_carries_target_session_id() {
+        let mut state = BridgeState::default();
+        let outbound = state.api_request_to_legacy(&api_request(
+            3,
+            "attach_session",
+            json!({ "session_id": "abc-123" }),
+        ));
+        let subscribe = outbound
+            .iter()
+            .find_map(|o| match o {
+                Outbound::Legacy(v) if v["type"] == "subscribe" => Some(v),
+                _ => None,
+            })
+            .expect("subscribe frame");
+        assert_eq!(subscribe["target_session_id"], "abc-123");
+    }
+
+    #[test]
+    fn send_message_records_pending_id_for_done_mapping() {
+        let mut state = BridgeState::default();
+        let outbound = state.api_request_to_legacy(&api_request(
+            11,
+            "send_message",
+            json!({ "content": "hello" }),
+        ));
+        let legacy_id = match &outbound[0] {
+            Outbound::Legacy(v) => v["id"].as_u64().unwrap(),
+            _ => panic!("expected legacy frame"),
+        };
+        assert_eq!(state.pending_message_id, Some(legacy_id));
+    }
+
+    #[test]
+    fn send_message_drops_empty_images_array() {
+        // An empty `images` array must not be forwarded to the legacy
+        // protocol, which treats `images` as a present-but-empty field
+        // differently from absent.
+        let mut state = BridgeState::default();
+        let outbound = state.api_request_to_legacy(&api_request(
+            1,
+            "send_message",
+            json!({ "content": "x", "images": [] }),
+        ));
+        let legacy = match &outbound[0] {
+            Outbound::Legacy(v) => v,
+            _ => panic!("expected legacy frame"),
+        };
+        assert!(legacy.get("images").is_none());
+    }
+
+    #[test]
+    fn state_event_completes_attach_with_reply() {
+        let mut state = BridgeState::default();
+        state.api_request_to_legacy(&api_request(42, "create_session", json!({})));
+        let frames = state.legacy_event_to_api(&legacy_event(
+            "state",
+            json!({ "session_id": "s-1", "id": 1 }),
+        ));
+        assert_eq!(frames.len(), 1);
+        let frame = &frames[0];
+        assert_eq!(frame.reply_to, Some(42));
+        assert!(matches!(
+            frame.event,
+            ApiEvent::Attached { ref session } if session.session_id == "s-1"
+        ));
+        assert!(state.pending_attach_id.is_none());
+    }
+
+    #[test]
+    fn done_for_message_emits_turn_done_and_clears_pending() {
+        let mut state = BridgeState::default();
+        state.api_request_to_legacy(&api_request(1, "send_message", json!({"content": "hi"})));
+        let legacy_message_id = state.pending_message_id.unwrap();
+        let frames = state.legacy_event_to_api(&legacy_event(
+            "done",
+            json!({ "id": legacy_message_id }),
+        ));
+        assert_eq!(frames.len(), 1);
+        assert!(matches!(frames[0].event, ApiEvent::TurnDone { .. }));
+        assert!(state.pending_message_id.is_none());
+    }
+
+    #[test]
+    fn done_for_unrelated_request_is_dropped() {
+        let mut state = BridgeState::default();
+        let frames = state.legacy_event_to_api(&legacy_event("done", json!({ "id": 999 })));
+        assert!(frames.is_empty());
+    }
+
+    #[test]
+    fn ack_for_message_emits_message_accepted() {
+        let mut state = BridgeState::default();
+        state.api_request_to_legacy(&api_request(1, "send_message", json!({"content": "x"})));
+        let id = state.pending_message_id.unwrap();
+        let frames = state.legacy_event_to_api(&legacy_event("ack", json!({ "id": id })));
+        assert_eq!(frames.len(), 1);
+        assert!(matches!(frames[0].event, ApiEvent::MessageAccepted { .. }));
+    }
+
+    #[test]
+    fn ack_for_pending_simple_emits_ok_reply() {
+        let mut state = BridgeState::default();
+        state.api_request_to_legacy(&api_request(5, "ping", json!({})));
+        let (legacy_id, _, kind) = state.pending_simple[0];
+        assert_eq!(kind, SimpleKind::Ping);
+        let frames = state.legacy_event_to_api(&legacy_event("ack", json!({ "id": legacy_id })));
+        assert_eq!(frames.len(), 1);
+        assert_eq!(frames[0].reply_to, Some(5));
+        assert!(matches!(frames[0].event, ApiEvent::Ok));
+        assert!(state.pending_simple.is_empty());
+    }
+
+    #[test]
+    fn error_after_pending_message_clears_it() {
+        // A turn that errors ends with `error` *instead of* `done`. The
+        // pending message id must be cleared so a later `done` carrying the
+        // same id is not misreported as this turn finishing.
+        let mut state = BridgeState::default();
+        state.api_request_to_legacy(&api_request(1, "send_message", json!({"content": "x"})));
+        let id = state.pending_message_id.unwrap();
+        state.legacy_event_to_api(&legacy_event(
+            "error",
+            json!({ "id": id, "message": "boom" }),
+        ));
+        assert!(state.pending_message_id.is_none());
+    }
+
+    #[test]
+    fn error_routes_to_pending_simple_when_no_message() {
+        let mut state = BridgeState::default();
+        state.api_request_to_legacy(&api_request(8, "cancel", json!({})));
+        let (legacy_id, _, _) = state.pending_simple[0];
+        let frames = state.legacy_event_to_api(&legacy_event(
+            "error",
+            json!({ "id": legacy_id, "message": "nope" }),
+        ));
+        assert_eq!(frames.len(), 1);
+        assert_eq!(frames[0].reply_to, Some(8));
+        assert!(matches!(frames[0].event, ApiEvent::Error { .. }));
+    }
+
+    #[test]
+    fn unknown_request_is_rejected_with_clear_error() {
+        let mut state = BridgeState::default();
+        let outbound = state.api_request_to_legacy(&api_request(2, "frobnicate", json!({})));
+        assert_eq!(outbound.len(), 1);
+        let frame = match &outbound[0] {
+            Outbound::Reply(f) => f,
+            _ => panic!("expected reply"),
+        };
+        assert_eq!(frame.reply_to, Some(2));
+        assert!(matches!(
+            frame.event,
+            ApiEvent::Error { code: ErrorCode::UnknownRequest, .. }
+        ));
+    }
+
+    #[test]
+    fn text_delta_uses_attached_session_id() {
+        let mut state = BridgeState::default();
+        state.session_id = Some("ses-9".into());
+        let frames = state.legacy_event_to_api(&legacy_event(
+            "text_delta",
+            json!({ "text": "hi", "session_id": "ignored" }),
+        ));
+        assert_eq!(frames.len(), 1);
+        match &frames[0].event {
+            ApiEvent::TextDelta { session_id, text } => {
+                assert_eq!(session_id, "ses-9");
+                assert_eq!(text, "hi");
+            }
+            _ => panic!("expected TextDelta"),
+        }
+    }
+
+    #[test]
+    fn detach_session_returns_ok_without_daemon_round_trip() {
+        let mut state = BridgeState::default();
+        let outbound = state.api_request_to_legacy(&api_request(2, "detach_session", json!({})));
+        assert_eq!(outbound.len(), 1);
+        let frame = match &outbound[0] {
+            Outbound::Reply(f) => f,
+            _ => panic!("expected reply"),
+        };
+        assert_eq!(frame.reply_to, Some(2));
+        assert!(matches!(frame.event, ApiEvent::Ok));
+    }
+
+    #[test]
+    fn model_catalog_reply_becomes_model_info_event() {
+        let mut state = BridgeState::default();
+        state.api_request_to_legacy(&api_request(1, "create_session", json!({})));
+        let catalog_id = state.pending_model_probe.expect("catalog probe id");
+        let frames = state.legacy_event_to_api(&legacy_event(
+            "history",
+            json!({
+                "id": catalog_id,
+                "provider_name": "openai",
+                "provider_model": "gpt-5",
+            }),
+        ));
+        assert_eq!(frames.len(), 1);
+        assert!(state.pending_model_probe.is_none());
+        match &frames[0].event {
+            ApiEvent::ModelInfo {
+                provider, model, ..
+            } => {
+                assert_eq!(provider.as_deref(), Some("openai"));
+                assert_eq!(model.as_deref(), Some("gpt-5"));
+            }
+            _ => panic!("expected ModelInfo"),
+        }
+    }
+
+    #[test]
+    fn take_simple_requires_matching_kind() {
+        let mut state = BridgeState::default();
+        state.pending_simple.push((7, 100, SimpleKind::Ping));
+        assert_eq!(state.take_simple(7, SimpleKind::Ok), None);
+        assert_eq!(state.pending_simple.len(), 1);
+        assert_eq!(state.take_simple(7, SimpleKind::Ping), Some(100));
+        assert!(state.pending_simple.is_empty());
     }
 }

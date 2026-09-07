@@ -543,12 +543,12 @@ pub(crate) async fn run_main(mut args: Args) -> Result<()> {
             commands::run_menubar_command(once, json)?;
         }
         #[cfg(unix)]
-        Some(Command::ApiBridge { .. }) => {
-            // Placeholder: the api-bridge subcommand is declared in
-            // cli/args but its dispatch is wired up incrementally.
-            // Until the real handler lands we surface a clear error
-            // rather than silently falling through to the default TUI.
-            anyhow::bail!("alphacode api-bridge is not implemented yet");
+        Some(Command::ApiBridge { api_socket }) => {
+            let api_socket = api_socket
+                .map(std::path::PathBuf::from)
+                .unwrap_or_else(crate::alphacode_harness_api_server::api_socket_path);
+            let legacy_socket = crate::alphacode_harness_api_server::legacy_socket_path();
+            crate::alphacode_harness_api_server::run_bridge(api_socket, legacy_socket).await?;
         }
         None => run_default_command(args).await?,
     }

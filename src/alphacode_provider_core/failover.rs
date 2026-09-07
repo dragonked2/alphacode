@@ -146,9 +146,63 @@ pub fn classify_failover_error_message(message: &str) -> FailoverDecision {
     FailoverDecision::None
 }
 
+/// Minimal circuit-breaker for auto-failover.
+///
+/// Today `fallback_sequence()` is static and health is advisory-only; this
+/// pure tracker gives the router a memory of consecutive failures so it can
+/// avoid a provider that just failed N times in a row without needing clocks,
+/// threads, or global state. Callers own the map `provider -> ProviderHealth`.
+#[derive(Debug, Clone, Default)]
+pub struct ProviderHealth {
+    consecutive_failures: u32,
+    consecutive_successes: u32,
+}
+
+impl ProviderHealth {
+    /// Failures needed before the provider should be avoided.
+    pub const AVOID_AFTER_FAILURES: u32 = 3;
+
+    pub fn record_success(&mut self) {
+        self.consecutive_failures = 0;
+        self.consecutive_successes = self.consecutive_successes.saturating_add(1);
+    }
+
+    pub fn record_failure(&mut self) {
+        self.consecutive_failures = self.consecutive_failures.saturating_add(1);
+        self.consecutive_successes = 0;
+    }
+
+    pub fn should_avoid(&self) -> bool {
+        self.consecutive_failures >= Self::AVOID_AFTER_FAILURES
+    }
+
+    pub fn consecutive_failures(&self) -> u32 {
+        self.consecutive_failures
+    }
+
+    pub fn reset(&mut self) {
+        self.consecutive_failures = 0;
+        self.consecutive_successes = 0;
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn circuit_breaker_avoids_after_three_failures() {
+        let mut h = ProviderHealth::default();
+        assert!(!h.should_avoid());
+        h.record_failure();
+        h.record_failure();
+        assert!(!h.should_avoid());
+        h.record_failure();
+        assert!(h.should_avoid());
+        h.record_success();
+        assert!(!h.should_avoid());
+        assert_eq!(h.consecutive_failures(), 0);
+    }
 
     #[test]
     fn failover_prompt_roundtrips_from_error_message() {

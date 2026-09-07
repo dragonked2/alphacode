@@ -4,6 +4,62 @@ All notable changes to Alphacode are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project
 adheres to [Semantic Versioning](https://semver.org/).
 
+## [1.0.26] - 2026-09-07
+
+Quality, performance, and stability release: ships task-aware model routing, a fuzzier model-picker search, smoother streaming, and connection-resilience improvements across the board.
+
+### Added
+
+- **Task-aware model routing** (`alphacode_provider_core::selection::TaskKind`): the existing `TaskKind` enum now exposes `min_context_window()`, `needs_long_context()`, `is_latency_sensitive()`, and a per-model `score_model()` heuristic so the picker can rank opus/o1/o3 higher for reasoning/debug/security tasks, prefer `codex`/`coder` models for code generation, prefer `haiku`/`mini`/`flash` for latency-sensitive Q&A, and de-prioritize any model below the task's required context floor. Used today by the model picker; the same scoring will let `pick_next_fallback_route` surface reasoning-class alternates on hard failures.
+- **`SmartModelPicker::get_sorted_models_for_task`** (`smart_model_picker`): new method that combines the existing usage/favorite/recency ranking with the new `TaskKind::score_model` heuristic. Free-form user text is auto-classified via `TaskKind::classify` so the picker just-in-time ranks the catalog for the current task. The picker title now shows the detected task kind (e.g. `[task: security]`) so the user can see the routing decision.
+- **Fuzzy search in model picker** (`smart_model_picker`): substring match is now augmented with a subsequence fallback so a query like `haik` matches `claude-haiku-3-5` even when the exact substring is absent. Pure O(n) over the candidate list.
+- **`build_status_summary` helper** (`alphacode_tui::tui::ui_status`): produces a single `model=… | task=… | conn=… | tokens=…k/…k` line for the status header. `format_status_for_debug` now prepends it so debug builds see all four axes at a glance.
+- **`AgentPhase` / `ExecutionMode` / `VerificationOutcome` state types** (`alphacode_agent_runtime`): explicit THINK → PLAN → ACT → OBSERVE → VERIFY → REFLECT phases, Fast/Plan/Deep/Swarm execution modes with `ExecutionMode::auto(...)` heuristic, and a `VerificationOutcome` accumulator that records build/test/lint/security/diff checks. Currently unused outside tests; lays the groundwork for the unified turn loop.
+- **`ProviderHealth` circuit breaker** (`alphacode_provider_core::failover`): pure, side-effect-free `ProviderHealth` tracker that records consecutive successes/failures and avoids a provider after three failures in a row. Will be wired into `fallback_sequence` so a flaky provider can be skipped proactively instead of after another 5xx.
+
+### Changed
+
+- **Streaming reveal rate config bump** (carried from 1.0.25): base 240 chars/sec, backlog gain 4.0, max 1440 chars/sec.
+- **HTTP connection pool** (`provider_core`): `pool_max_idle_per_host` 2 → 4.
+- **Context compaction** (`compaction_core`): `RECENT_TURNS_TO_KEEP` 15 → 20, `EMERGENCY_TOOL_RESULT_MAX_CHARS` 8000 → 10000.
+- **`TaskKind` heuristics expanded**: classification now factors task length, security/debug/code/long-context keyword sets, and explicit reasoning/coding/fast model name patterns.
+- **`slash_command_rest` accepts tabs**: `/model	gpt-5` and `/model gpt-5` now parse identically.
+
+### Fixed
+
+- **`apply_patch` catastrophic-target pre-flight**: Add/Update/Move/DeleteFile hunks are all checked against `RiskContext` before any write so a destructive patch that targets `/etc/cron.d/x` cannot bypass the bash gate. Refused hunks fail the whole patch atomically instead of partially applying.
+- **`apply_patch` all-failed surfacing**: when every hunk in a patch fails, the tool now returns `Err(...)` (so automation counts it as a failure) and on partial success the summary line reports both counts plus structured JSON metadata (`succeeded`, `failed`, `touched_paths`).
+- **MCP tool errors surface as `Err`**: previously MCP tool errors were returned as `Ok("Error: ...")` which masked failures behind success. They are now `Err(anyhow!(...))` and the success path emits structured `mcp__{server}__{tool}` metadata.
+- **Empty `images` array on send_message is dropped**: harness translation layer no longer forwards an empty `images` array, which the legacy protocol interpreted differently from absent.
+- **`read` tool UTF-8 truncation now uses char-boundary-safe `truncate_str`**: previous `&s[..max]` panicked on multibyte input.
+- **`cron::truncate_str` no longer panics on multibyte text**: switched to `alphacode_core::util::truncate_str`.
+- **Big O(n²) markdown re-render in incremental renderer replaced by O(n) newline scan** (`markdown_incremental`): the `lines_at_checkpoint` was doing a second full markdown render per streaming delta. Now scans for `
+` only.
+- **`tool_description::tool_description_max_chars` collapses nested `if let`s** with `let-chains` and skips the early return when the parsed env value is below the minimum.
+- **`browser::write_file_atomically` no longer has leading-underscore unused parameter**.
+- **`provider_metadata::catalog` `const`-evaluates `assert!`s** on profile constants so they fire at compile time instead of test-run time.
+- **`mcp/tool` and `apply_patch` metadata** are emitted as JSON `metadata` so agents/automation don't have to parse human-readable strings.
+
+### Fixed
+
+- **`MultiProvider::available_models_for_switching` empty-list bug** (`alphacode_base/provider/mod.rs`): the default `Provider::available_models()` returns an empty `Vec`, so any OpenAI-compatible profile whose `/models` cache had not yet finished prefetching falsely looked like a provider with no switchable models and `/model` failed with "Model switching is not available for this provider." Multi-provider now falls back to the current model so the picker at least knows the active model and the switch succeeds.
+- **`MultiProvider::set_reasoning_effort` could not reach an active compat profile** (`alphacode_base/provider/mod.rs`): when `active_openrouter_execution_provider()` returned `None` (compat profile registered but runtime not yet hot-initialized) but the registry still had an active compat profile id, `/effort` bailed with "OpenAI-compatible provider not available". Now we walk the registry's compat-profile lookup before falling back to the real OpenRouter slot, so a logged-in OpenAI-compatible profile can always change effort.
+- **`SmartModelPicker::toggle_favorite` returned inverted semantics**: `true` meant "added" instead of "removed", which broke the existing `test_toggle_favorite` regression test and would have made favorite-key UX confusing. Now `true` means "the model was removed from favorites", `false` means "the model was added".
+- **Regression test `openai_compatible_profile_supports_model_and_effort_switching`** added in `provider/tests/model_resolution.rs` to lock both fixes.
+
+### Performance
+
+- **Streaming reveal rate 33% faster** (carried from 1.0.25).
+- **HTTP pool 2 → 4 per host** improves parallel-request throughput.
+- **Markdown incremental renderer drops O(n²) re-render** on every checkpoint.
+- **Levenshtein deduped to a single canonical implementation** (`alphacode_core::util::levenshtein`); the duplicate copies in `tool/mod.rs` and `tool/read.rs` were removed.
+
+### Stability
+
+- **Harness API translation tests** added in `translate.rs`: every bridge state transition is exercised, every wire-compatibility invariant is locked. Tests cover create_session, attach_session, send_message, state_event, ack, done, and the edge cases where unrelated `done` frames are dropped.
+- **Provider failover heuristics expanded** with the new `ProviderHealth` circuit breaker scaffolding.
+- **Tests added for `TaskKind` scoring, task-aware picker sorting, slash-command tab handling, and status summary.** New test count this release: 13.
+
 ## [1.0.25] - 2026-09-07
 
 Major feature release: UI/UX improvements, performance optimizations, stability hardening, accuracy gains, harness API v1.1, and three new skill suites (CTF, frontend-dev, backend-dev) with expanded bug bounty coverage.

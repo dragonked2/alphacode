@@ -598,11 +598,16 @@ mod tests {
     #[tokio::test]
     async fn test_list_empty() {
         let tool = create_test_tool();
-        let ctx = create_test_context();
+        // Point the tool at an empty working directory so the project
+        // overlay (./.alphacode/skills/) does not leak test fixtures
+        // from the repo checkout into the "empty" registry.
+        let empty_dir = tempfile::tempdir().unwrap();
+        let mut ctx = create_test_context();
+        ctx.working_dir = Some(empty_dir.path().to_path_buf());
         let input = json!({"action": "list"});
 
         let result = tool.execute(input, ctx).await.unwrap();
-        assert!(result.output.contains("No skills loaded"));
+        assert!(result.output.contains("No skills loaded."));
         // Even with no skills loaded, the endorsed catalog should be listed.
         assert!(result.output.contains("Endorsed skills"));
     }

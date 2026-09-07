@@ -2335,3 +2335,91 @@ fn bare_openai_compatible_model_id_routes_to_its_profile_not_the_active_provider
         );
     });
 }
+
+/// Regression: `/model` and `/effort` on an OpenAI-compatible profile whose
+/// runtime `available_models_for_switching` returned an empty Vec used to
+/// fail with "Model switching is not available for this provider." and
+/// "failed to set effort: openai-compatible provider not available".
+///
+/// `MultiProvider::available_models_for_switching` now falls back to the
+/// current model when the underlying runtime returns an empty list, and
+/// `set_reasoning_effort` now resolves the active compat profile through
+/// the registry before falling back to the real OpenRouter slot.
+#[test]
+fn openai_compatible_profile_supports_model_and_effort_switching() {
+    use crate::alphacode_provider_core::Provider;
+
+    // A stub openai-compatible runtime that always returns an empty model
+    // list (the historical failure mode before the runtime had completed its
+    // `/models` catalog prefetch).
+    struct EmptyModelsCompat;
+    #[async_trait::async_trait]
+    impl Provider for EmptyModelsCompat {
+        fn name(&self) -> &str {
+            "test-compat"
+        }
+        fn model(&self) -> String {
+            "musemodel-spark-x".to_string()
+        }
+        fn available_models_for_switching(&self) -> Vec<String> {
+            Vec::new()
+        }
+        fn available_efforts(&self) -> Vec<&'static str> {
+            vec!["low", "medium", "high"]
+        }
+        fn set_reasoning_effort(&self, _effort: &str) -> anyhow::Result<()> {
+            Ok(())
+        }
+        async fn complete(
+            &self,
+            _messages: &[crate::alphacode_app_core::message::Message],
+            _tools: &[crate::alphacode_app_core::message::ToolDefinition],
+            _system: &str,
+            _resume_session_id: Option<&str>,
+        ) -> anyhow::Result<crate::alphacode_app_core::provider::EventStream> {
+            Err(anyhow::anyhow!("not used in this test"))
+        }
+        fn fork(&self) -> std::sync::Arc<dyn Provider> {
+            std::sync::Arc::new(EmptyModelsCompat)
+        }
+    }
+
+    let mut profiles = std::collections::HashMap::new();
+    profiles.insert(
+        "test-compat".to_string(),
+        std::sync::Arc::new(EmptyModelsCompat) as std::sync::Arc<dyn Provider>,
+    );
+    let provider = MultiProvider {
+        claude: RwLock::new(None),
+        anthropic: RwLock::new(None),
+        openai: RwLock::new(None),
+        copilot_api: RwLock::new(None),
+        antigravity: RwLock::new(None),
+        gemini: RwLock::new(None),
+        cursor: RwLock::new(None),
+        bedrock: RwLock::new(None),
+        openrouter: RwLock::new(None),
+        openai_compatible_profiles: RwLock::new(profiles),
+        active_openai_compatible_profile: RwLock::new(Some("test-compat".to_string())),
+        active: RwLock::new(ActiveProvider::OpenRouter),
+        use_claude_cli: false,
+        startup_notices: RwLock::new(Vec::new()),
+        initial_provider: None,
+        routes_memo: std::sync::Mutex::new(None),
+        post_auth_refreshes_pending: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
+    };
+
+    // The fix: when the runtime returns an empty switching-list,
+    // MultiProvider should still surface the current model so `/model` works.
+    let models = provider.available_models_for_switching();
+    assert!(
+        models.iter().any(|m| m == "musemodel-spark-x"),
+        "current model must appear in the switching list: {models:?}"
+    );
+
+    // The fix: set_reasoning_effort must reach the active compat profile
+    // through the registry, not bail with "provider not available".
+    provider
+        .set_reasoning_effort("high")
+        .expect("set_reasoning_effort must succeed for an active compat profile");
+}

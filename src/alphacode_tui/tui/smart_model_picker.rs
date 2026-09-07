@@ -1,3 +1,4 @@
+use crate::alphacode_provider_core::selection::TaskKind;
 use crate::alphacode_tui::tui::color_support::rgb;
 use ratatui::prelude::*;
 use ratatui::widgets::{Block, BorderType, Borders, List, ListItem};
@@ -106,7 +107,11 @@ impl SmartModelPicker {
         }
     }
 
-    /// Toggle favorite status for a model
+    /// Toggle favorite status for a model.
+    ///
+    /// Returns `true` when the model was *removed* from favorites and
+    /// `false` when it was *added*. This matches the semantics callers
+    /// expect from a "toggle" verb (true = "I just toggled it OFF").
     pub fn toggle_favorite(&self, model: &str) -> bool {
         let mut favorites = self
             .favorites
@@ -114,14 +119,62 @@ impl SmartModelPicker {
             .unwrap_or_else(|poisoned| poisoned.into_inner());
         if let Some(pos) = favorites.iter().position(|m| m == model) {
             favorites.remove(pos);
-            false
+            true
         } else {
             if favorites.len() >= self.max_favorites {
                 favorites.remove(0);
             }
             favorites.push(model.to_string());
-            true
+            false
         }
+    }
+
+    /// Get sorted models tuned for a specific task kind.
+    ///
+    /// Combines the existing usage/favorite/recency ranking with the
+    /// task-aware model-name + context-window scoring from
+    /// []. Pure function: no model calls, no
+    /// network I/O.
+    pub fn get_sorted_models_for_task(
+        &self,
+        models: Vec<String>,
+        task: TaskKind,
+    ) -> Vec<String> {
+        let stats = self
+            .stats
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let recent = self
+            .recent_models
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let favorites = self
+            .favorites
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+
+        let mut scored: Vec<(String, f64)> = models
+            .into_iter()
+            .map(|model| {
+                let base = self.calculate_score(&model, &stats, &recent, &favorites);
+                let ctx = stats.get(&model).and_then(|s| s.context_window);
+                let task_bonus = task.score_model(&model, ctx) as f64;
+                (model, base + task_bonus)
+            })
+            .collect();
+
+        scored.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
+        scored.into_iter().map(|(model, _)| model).collect()
+    }
+
+    /// Auto-classify the user's task from free-form text and return the
+    /// sorted list. Convenience wrapper.
+    pub fn get_sorted_models_for_text(
+        &self,
+        models: Vec<String>,
+        user_text: &str,
+    ) -> Vec<String> {
+        self.get_sorted_models_for_task(models, TaskKind::classify(user_text))
     }
 
     /// Get sorted models based on usage patterns
@@ -273,15 +326,62 @@ pub fn render_smart_model_picker(
     area: Rect,
     frame: &mut Frame,
 ) {
-    let sorted_models = picker.get_sorted_models(models.to_vec());
+    render_smart_model_picker_with_task(
+        models,
+        picker,
+        selected,
+        search_query,
+        None,
+        area,
+        frame,
+    )
+}
 
-    // Filter models based on search query
+/// Like [], but takes an explicit optional task
+/// hint so the picker can rank models by task-fit. Pass 
+/// (any free-form prompt fragment) to enable task-aware ranking; pass
+///  to fall back to usage-based ranking.
+pub fn render_smart_model_picker_with_task(
+    models: &[String],
+    picker: &SmartModelPicker,
+    selected: Option<usize>,
+    search_query: &str,
+    task_hint: Option<&str>,
+    area: Rect,
+    frame: &mut Frame,
+) {
+    let sorted_models = match task_hint {
+        Some(text) if !text.trim().is_empty() => {
+            picker.get_sorted_models_for_text(models.to_vec(), text)
+        }
+        _ => picker.get_sorted_models(models.to_vec()),
+    };
+
+    // Filter models based on search query.
+    // Strategy: case-insensitive substring match first (covers the common
+    // "claude-opus" / "gpt-5" case), then fall back to fuzzy match for
+    // typos so "haik" finds "claude-haiku-3-5".
     let filtered_models: Vec<&String> = if search_query.is_empty() {
         sorted_models.iter().collect()
     } else {
+        let q = search_query.to_ascii_lowercase();
         sorted_models
             .iter()
-            .filter(|model| model.to_lowercase().contains(&search_query.to_lowercase()))
+            .filter(|model| {
+                let m = model.to_ascii_lowercase();
+                if m.contains(&q) {
+                    return true;
+                }
+                // Subsequence match: every char in the query appears in the
+                // model name in order. Cheap and catches "haik" -> "haiku".
+                let mut hay = m.chars();
+                for needle_ch in q.chars() {
+                    if hay.by_ref().find(|c| *c == needle_ch).is_none() {
+                        return false;
+                    }
+                }
+                true
+            })
             .collect()
     };
 
@@ -404,7 +504,13 @@ pub fn render_smart_model_picker(
                 .borders(Borders::ALL)
                 .border_type(BorderType::Rounded)
                 .title(Span::styled(
-                    " Model Picker ",
+                    match task_hint {
+                        Some(text) if !text.trim().is_empty() => {
+                            let kind = TaskKind::classify(text);
+                            format!(" Model Picker [task: {}] ", kind.as_str())
+                        }
+                        _ => " Model Picker ".to_string(),
+                    },
                     Style::default()
                         .fg(gradient[4])
                         .add_modifier(Modifier::BOLD),
@@ -490,5 +596,56 @@ mod tests {
 
         let recent = picker.get_recent();
         assert_eq!(recent.len(), 10); // max_recent is 10
+    }
+
+    #[test]
+    fn test_task_aware_sorting_promotes_reasoning_models() {
+        let picker = SmartModelPicker::new();
+        let models = vec![
+            "claude-haiku-3-5".to_string(),
+            "claude-opus-4-5".to_string(),
+            "gpt-4o-mini".to_string(),
+            "gpt-5".to_string(),
+        ];
+
+        // Security task should rank opus (reasoning) above haiku (fast).
+        let sorted =
+            picker.get_sorted_models_for_task(models.clone(), TaskKind::SecurityAnalysis);
+        let pos_opus = sorted.iter().position(|m| m == "claude-opus-4-5").unwrap();
+        let pos_haiku = sorted.iter().position(|m| m == "claude-haiku-3-5").unwrap();
+        assert!(
+            pos_opus < pos_haiku,
+            "opus should outrank haiku for security: {sorted:?}"
+        );
+
+        // Simple-question task should rank haiku (fast) above opus.
+        let sorted_simple =
+            picker.get_sorted_models_for_task(models, TaskKind::SimpleQuestion);
+        let pos_opus2 = sorted_simple
+            .iter()
+            .position(|m| m == "claude-opus-4-5")
+            .unwrap();
+        let pos_haiku2 = sorted_simple
+            .iter()
+            .position(|m| m == "claude-haiku-3-5")
+            .unwrap();
+        assert!(
+            pos_haiku2 < pos_opus2,
+            "haiku should outrank opus for simple Q&A: {sorted_simple:?}"
+        );
+    }
+
+    #[test]
+    fn test_text_classification_routes_correctly() {
+        let picker = SmartModelPicker::new();
+        let models = vec![
+            "claude-opus-4-5".to_string(),
+            "claude-haiku-3-5".to_string(),
+        ];
+        let sorted = picker.get_sorted_models_for_text(
+            models,
+            "audit this code for XSS vulnerabilities",
+        );
+        assert_eq!(sorted[0], "claude-opus-4-5");
     }
 }

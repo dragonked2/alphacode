@@ -125,10 +125,35 @@ impl Tool for MultiEditTool {
             }
         }
 
-        // Write the result
+        // Atomicity: if any edit fails, fail the whole batch WITHOUT writing.
+        // Previously this wrote partial results while advertising "whole batch fails".
+        if !failed.is_empty() {
+            let mut output = format!(
+                "Multiedit aborted: {} applied, {} failed — no changes written to {}\n\n",
+                applied.len(),
+                failed.len(),
+                params.file_path
+            );
+            if !applied.is_empty() {
+                output.push_str("Would-have-applied (discarded):\n");
+                for msg in &applied {
+                    output.push_str(&format!("  ✓ {}\n", msg));
+                }
+            }
+            output.push_str("\nFailed:\n");
+            for msg in &failed {
+                output.push_str(&format!("  ✗ {}\n", msg));
+            }
+            output.push_str(
+                "\nFix the failed edits (use replace_all or more specific old_string) and retry.",
+            );
+            return Err(anyhow::anyhow!(output));
+        }
+
+        // Write the result (all edits validated)
         tokio::fs::write(&path, &content).await?;
 
-        // Format output
+        // Format output (all succeeded — failed is empty by construction above)
         let mut output = format!("Edited {}\n\n", params.file_path);
 
         if !applied.is_empty() {
@@ -138,17 +163,9 @@ impl Tool for MultiEditTool {
             }
         }
 
-        if !failed.is_empty() {
-            output.push_str("\nFailed:\n");
-            for msg in &failed {
-                output.push_str(&format!("  ✗ {}\n", msg));
-            }
-        }
-
         output.push_str(&format!(
-            "\nTotal: {} applied, {} failed\n",
+            "\nTotal: {} applied, 0 failed (atomic)\n",
             applied.len(),
-            failed.len()
         ));
 
         // Generate diff summary
@@ -157,7 +174,16 @@ impl Tool for MultiEditTool {
             output.push_str(&generate_diff_summary(&original_content, &content));
         }
 
-        Ok(ToolOutput::new(output).with_title(params.file_path.clone()))
+        let metadata = json!({
+            "tool": "multiedit",
+            "path": params.file_path,
+            "applied": applied.len(),
+            "failed": 0,
+            "atomic": true,
+        });
+        Ok(ToolOutput::new(output)
+            .with_title(params.file_path.clone())
+            .with_metadata(metadata))
     }
 }
 

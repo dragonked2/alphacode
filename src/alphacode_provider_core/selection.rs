@@ -119,6 +119,167 @@ pub fn provider_from_model_key(key: &str) -> Option<ActiveProvider> {
     }
 }
 
+/// Task kind for intelligent model routing.
+///
+/// Different tasks need different models: simple Q&A wants speed, deep
+/// debugging wants reasoning, security review wants precision. This pure
+/// classifier maps free-form user text → `TaskKind` with zero model calls
+/// so the router can prefer quality/speed/cost appropriately.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TaskKind {
+    SimpleQuestion,
+    CodeGeneration,
+    ComplexReasoning,
+    Debugging,
+    SecurityAnalysis,
+    LargeContext,
+    FastToolUse,
+}
+
+impl TaskKind {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::SimpleQuestion => "simple",
+            Self::CodeGeneration => "codegen",
+            Self::ComplexReasoning => "reasoning",
+            Self::Debugging => "debug",
+            Self::SecurityAnalysis => "security",
+            Self::LargeContext => "large-context",
+            Self::FastToolUse => "fast-tool",
+        }
+    }
+
+    /// Heuristic classification. Ordered by specificity: security and debug
+    /// signals win over generic codegen; explicit architecture/long-context
+    /// hints win over simple questions.
+    pub fn classify(text: &str) -> Self {
+        let lower = text.to_ascii_lowercase();
+        let has = |words: &[&str]| words.iter().any(|w| lower.contains(w));
+        if has(&[
+            "vulnerab", "exploit", "cve", "xss", "sqli", "injection", "pentest", "bug bounty",
+            "auth bypass", "secret", "malicious",
+        ]) {
+            Self::SecurityAnalysis
+        } else if has(&[
+            "stack trace", "backtrace", "panicked", "segfault", "flaky", "regression",
+            "why does", "fails with", "error:", "exception",
+        ]) {
+            Self::Debugging
+        } else if has(&[
+            "architecture", "design doc", "rfc", "tradeoff", "trade-off", "dependency graph",
+            "refactor the module", "migrate",
+        ]) || text.len() > 4000
+        {
+            Self::ComplexReasoning
+        } else if has(&["audit the repo", "whole codebase", "all files", "large repo", "index the"]) {
+            Self::LargeContext
+        } else if has(&[
+            "implement", "add function", "write code", "create component", "generate",
+            "scaffold",
+        ]) {
+            Self::CodeGeneration
+        } else if text.len() < 200 && !has(&["tool", "run", "exec", "build", "test"]) {
+            Self::SimpleQuestion
+        } else {
+            Self::FastToolUse
+        }
+    }
+
+    /// Whether this task prefers reasoning quality over raw speed.
+    pub fn prefers_quality(self) -> bool {
+        matches!(
+            self,
+            Self::ComplexReasoning | Self::Debugging | Self::SecurityAnalysis
+        )
+    }
+
+    /// Whether this task tolerates long context (>=100k tokens).
+    pub fn needs_long_context(self) -> bool {
+        matches!(self, Self::LargeContext | Self::ComplexReasoning)
+    }
+
+    /// Whether this task is latency-sensitive and benefits from a fast model.
+    pub fn is_latency_sensitive(self) -> bool {
+        matches!(self, Self::SimpleQuestion | Self::FastToolUse)
+    }
+
+    /// Required minimum context window (in tokens) for this task kind.
+    /// 0 means the model context is not a constraint for routing.
+    pub fn min_context_window(self) -> u64 {
+        match self {
+            Self::LargeContext => 200_000,
+            Self::ComplexReasoning => 100_000,
+            Self::SecurityAnalysis => 100_000,
+            Self::Debugging => 32_000,
+            Self::CodeGeneration => 32_000,
+            Self::FastToolUse => 8_000,
+            Self::SimpleQuestion => 0,
+        }
+    }
+
+    /// Score a single candidate model string for this task. Higher = better fit.
+    /// Pure function - no model calls.
+    ///
+    ///  is Some(tokens) if the caller knows it; None means
+    /// the picker does not know (treat as satisfied).
+    pub fn score_model(self, model: &str, context_window: Option<u64>) -> i64 {
+        let m = model.to_ascii_lowercase();
+        let mut score: i64 = 0;
+
+        // Tier 1: explicit capability match - name heuristic.
+        let is_reasoning_named = ["opus", "o3", "o1", "r1", "reason", "thinking"]
+            .iter()
+            .any(|k| m.contains(k));
+        let is_fast_named = ["haiku", "mini", "nano", "flash", "instant", "lite", "small"]
+            .iter()
+            .any(|k| m.contains(k));
+        let is_coding_named = ["codex", "coder", "code-", "qwen-coder", "deepseek-coder"]
+            .iter()
+            .any(|k| m.contains(k));
+        let is_long_named = ["-1m", "1m-context", "200k", "128k", "1m"]
+            .iter()
+            .any(|k| m.contains(k));
+
+        match self {
+            Self::ComplexReasoning | Self::Debugging | Self::SecurityAnalysis => {
+                if is_reasoning_named { score += 500; }
+                if is_fast_named { score -= 300; }
+                if is_coding_named { score += 150; }
+            }
+            Self::CodeGeneration => {
+                if is_coding_named { score += 400; }
+                if is_reasoning_named { score += 100; }
+                if is_fast_named { score -= 50; }
+            }
+            Self::LargeContext => {
+                if let Some(ctx) = context_window {
+                    if ctx >= 1_000_000 { score += 600; }
+                    else if ctx >= 200_000 { score += 400; }
+                    else if ctx >= 100_000 { score += 200; }
+                    else if ctx < self.min_context_window() {
+                        score -= 1_000;
+                    }
+                }
+                if is_long_named { score += 200; }
+                if is_reasoning_named { score += 100; }
+            }
+            Self::FastToolUse | Self::SimpleQuestion => {
+                if is_fast_named { score += 400; }
+                if is_reasoning_named { score -= 50; }
+            }
+        }
+
+        // Tier 2: context-window hard floor.
+        if let Some(ctx) = context_window
+            && ctx < self.min_context_window()
+        {
+            score -= 5_000;
+        }
+
+        score
+    }
+}
+
 /// Translate a persisted session/runtime provider key (the `RuntimeKey`
 /// stable-id or `ModelRouteApiMethod` vocabulary, e.g. `anthropic-api-key`,
 /// `claude-oauth`, `openai-api-key`) into the CLI `--provider` argument value
@@ -691,5 +852,85 @@ mod tests {
         assert_eq!(sequence.first(), Some(&ActiveProvider::OpenRouter));
         assert!(sequence.contains(&ActiveProvider::Claude));
         assert!(sequence.contains(&ActiveProvider::Cursor));
+    }
+
+    #[test]
+    fn task_kind_classifies_by_specificity() {
+        assert_eq!(
+            TaskKind::classify("audit this for XSS vulnerabilities"),
+            TaskKind::SecurityAnalysis
+        );
+        assert_eq!(
+            TaskKind::classify("fails with stack trace NullPointerException"),
+            TaskKind::Debugging
+        );
+        assert_eq!(
+            TaskKind::classify("write architecture design doc with tradeoffs"),
+            TaskKind::ComplexReasoning
+        );
+        assert_eq!(
+            TaskKind::classify("implement login function"),
+            TaskKind::CodeGeneration
+        );
+        assert_eq!(TaskKind::classify("what is rust?"), TaskKind::SimpleQuestion);
+        assert!(TaskKind::Debugging.prefers_quality());
+        assert!(!TaskKind::SimpleQuestion.prefers_quality());
+    }
+
+    #[test]
+    fn task_kind_prefers_quality_for_complex_tasks() {
+        // Quality tasks prefer reasoning-named models and penalize fast ones.
+        let opus_score = TaskKind::ComplexReasoning.score_model("claude-opus-4-5", Some(200_000));
+        let haiku_score = TaskKind::ComplexReasoning.score_model("claude-haiku-3-5", Some(200_000));
+        assert!(opus_score > haiku_score, "opus should outscore haiku for reasoning: {opus_score} vs {haiku_score}");
+        // Security tasks follow the same rule.
+        let sec_opus = TaskKind::SecurityAnalysis.score_model("o1-pro", Some(128_000));
+        let sec_mini = TaskKind::SecurityAnalysis.score_model("gpt-4o-mini", Some(128_000));
+        assert!(sec_opus > sec_mini);
+    }
+
+    #[test]
+    fn task_kind_prefers_fast_for_latency_sensitive() {
+        // Simple questions like a fast model.
+        let mini = TaskKind::SimpleQuestion.score_model("gpt-4o-mini", Some(128_000));
+        let opus = TaskKind::SimpleQuestion.score_model("claude-opus-4-5", Some(200_000));
+        assert!(mini > opus, "fast should outscore reasoning for simple Q&A: {mini} vs {opus}");
+    }
+
+    #[test]
+    fn task_kind_prefers_long_context_for_large_context() {
+        // Large-context tasks strongly prefer long-context models.
+        let long = TaskKind::LargeContext.score_model("claude-sonnet-4-5-1m", Some(1_000_000));
+        let short = TaskKind::LargeContext.score_model("gpt-4o-mini", Some(128_000));
+        assert!(long > short, "1m should outscore 128k for large-context: {long} vs {short}");
+        // Below the minimum context is strongly penalized.
+        let tiny = TaskKind::LargeContext.score_model("gpt-3.5-turbo", Some(16_000));
+        assert!(tiny < 0, "below-minimum model must score negative, got {tiny}");
+    }
+
+    #[test]
+    fn task_kind_prefers_coding_for_code_generation() {
+        let coder = TaskKind::CodeGeneration.score_model("qwen-coder-32b", Some(128_000));
+        let generic = TaskKind::CodeGeneration.score_model("claude-sonnet-4-5", Some(200_000));
+        assert!(coder >= generic, "coder should not lose to a generic model: {coder} vs {generic}");
+    }
+
+    #[test]
+    fn task_kind_context_floor_blocks_small_models() {
+        // Debugging needs 32k+ context.
+        let ok = TaskKind::Debugging.score_model("claude-sonnet-4-5", Some(200_000));
+        let too_small = TaskKind::Debugging.score_model("some-4k-model", Some(4_000));
+        assert!(ok > too_small);
+        assert!(too_small < 0);
+    }
+
+    #[test]
+    fn task_kind_helper_methods_consistent() {
+        assert!(TaskKind::ComplexReasoning.needs_long_context());
+        assert!(!TaskKind::SimpleQuestion.needs_long_context());
+        assert!(TaskKind::SimpleQuestion.is_latency_sensitive());
+        assert!(!TaskKind::Debugging.is_latency_sensitive());
+        assert_eq!(TaskKind::SimpleQuestion.min_context_window(), 0);
+        assert!(TaskKind::LargeContext.min_context_window() >= 100_000);
     }
 }

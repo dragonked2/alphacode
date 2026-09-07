@@ -352,7 +352,8 @@ fn truncate_str(s: &str, max: usize) -> String {
     if s.len() <= max {
         s.to_string()
     } else {
-        format!("{}...", &s[..max])
+        // Char-boundary safe: raw `&s[..max]` panics on multibyte input.
+        format!("{}...", crate::alphacode_core::util::truncate_str(s, max))
     }
 }
 

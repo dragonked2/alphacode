@@ -78,8 +78,42 @@ impl Tool for ApplyPatchTool {
         let params: ApplyPatchInput = serde_json::from_value(input)?;
         let hunks = parse_apply_patch(&params.patch_text)?;
 
+        // Pre-flight: deny catastrophic targets BEFORE any writes (atomic safety).
+        // Previously only DeleteFile was checked; Add/Update/Move could overwrite
+        // /etc/cron.d/x etc. while bypassing the bash gate. Abort whole patch
+        // if any target is protected so we never leave a half-applied patch.
+        let risk_ctx = crate::alphacode_command_risk::RiskContext::from_env(
+            ctx.working_dir.clone(),
+        );
+        for hunk in &hunks {
+            let targets: Vec<&String> = match hunk {
+                PatchHunk::AddFile { path, .. } => vec![path],
+                PatchHunk::DeleteFile { path } => vec![path],
+                PatchHunk::UpdateFile {
+                    path, move_to, ..
+                } => {
+                    let mut v = vec![path];
+                    if let Some(dest) = move_to {
+                        v.push(dest);
+                    }
+                    v
+                }
+            };
+            for target in targets {
+                let resolved = ctx.resolve_path(Path::new(target));
+                if crate::alphacode_command_risk::is_catastrophic_target(&resolved, &risk_ctx) {
+                    return Err(anyhow::anyhow!(
+                        "Refused: '{}' resolves to a protected path and must never be touched by an agent ({}). No changes applied.",
+                        target,
+                        resolved.display()
+                    ));
+                }
+            }
+        }
+
         let mut results = Vec::new();
         let mut touched_paths = Vec::new();
+        let mut failed_count = 0usize;
 
         for hunk in &hunks {
             match hunk {
@@ -107,11 +141,9 @@ impl Tool for ApplyPatchTool {
                 }
                 PatchHunk::DeleteFile { path } => {
                     let resolved = ctx.resolve_path(Path::new(path));
-                    // `resolve_path` passes absolute paths through unchanged, so
-                    // a patch can name any file on disk. The bash gate does not
-                    // cover this path, so apply the same absolute deny here
-                    // (#604). Only the catastrophic tier: ordinary file deletes
-                    // are this tool's normal job.
+                    // Defense-in-depth: pre-flight above already denied catastrophic
+                    // targets for the whole patch, but re-check here in case of
+                    // TOCTOU / future code paths that skip pre-flight.
                     let risk_ctx = crate::alphacode_command_risk::RiskContext::from_env(
                         ctx.working_dir.clone(),
                     );
@@ -121,6 +153,7 @@ impl Tool for ApplyPatchTool {
                              be deleted by an agent",
                             path
                         ));
+                        failed_count += 1;
                         continue;
                     }
                     let old_contents = tokio::fs::read_to_string(&resolved)
@@ -144,6 +177,7 @@ impl Tool for ApplyPatchTool {
                         }
                     } else {
                         results.push(format!("✗ {}: failed to delete", path));
+                        failed_count += 1;
                     }
                 }
                 PatchHunk::UpdateFile {
@@ -225,6 +259,7 @@ impl Tool for ApplyPatchTool {
                         }
                         Err(e) => {
                             results.push(format!("✗ {}: {}", path, e));
+                            failed_count += 1;
                         }
                     }
                 }
@@ -233,8 +268,26 @@ impl Tool for ApplyPatchTool {
 
         if results.is_empty() {
             Ok(ToolOutput::new("No changes applied"))
+        } else if touched_paths.is_empty() {
+            // All hunks failed — surface as Err so batch/automation counts it
+            // as failure instead of masking behind Ok("✗ ...").
+            return Err(anyhow::anyhow!(results.join("\n")));
         } else {
-            let output = ToolOutput::new(results.join("\n"));
+            // Structured metadata so agents/automation don't have to parse human text.
+            let succeeded = touched_paths.len();
+            let summary = format!(
+                "{} succeeded, {} failed\n{}",
+                succeeded,
+                failed_count,
+                results.join("\n")
+            );
+            let metadata = serde_json::json!({
+                "tool": "apply_patch",
+                "succeeded": succeeded,
+                "failed": failed_count,
+                "touched_paths": touched_paths,
+            });
+            let output = ToolOutput::new(summary).with_metadata(metadata);
             if touched_paths.len() == 1 {
                 Ok(output.with_title(touched_paths[0].clone()))
             } else {

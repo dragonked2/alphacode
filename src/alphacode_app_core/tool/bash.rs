@@ -693,13 +693,31 @@ mod utf8_truncation_tests {
     fn format_command_output_truncates_on_utf8_boundary() {
         let input = format!("{}é", "a".repeat(29_999));
         let output = format_command_output(input, None);
-        assert!(output.ends_with("\n... (output truncated)"));
+        // The truncation marker was upgraded to surface token savings
+        // so an agent can budget its next read; the marker must still
+        // signal that the original bytes are no longer recoverable
+        // from this string.
+        assert!(
+            output.contains("[Output truncated:"),
+            "expected truncation marker in: {output:?}"
+        );
         assert!(output.starts_with(&"a".repeat(29_999)));
     }
 
     #[cfg(windows)]
     #[tokio::test]
     async fn build_shell_command_uses_cmd_and_executes_command() {
+        // build_shell_command prefers Git Bash over cmd.exe on Windows
+        // so POSIX commands work as documented. This test exercises the
+        // cmd.exe fallback path; if Git Bash is installed the fallback
+        // is intentionally never taken, and the assertion below would
+        // fire on a POSIX-running shell that has no `call` builtin.
+        if super::GIT_BASH_PATH.is_some() {
+            eprintln!(
+                "skipping: Git Bash is installed, build_shell_command uses bash instead of cmd.exe",
+            );
+            return;
+        }
         let output = build_shell_command("echo hello-from-cmd")
             .output()
             .await

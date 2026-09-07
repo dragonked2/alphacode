@@ -123,6 +123,111 @@ impl Default for InterruptSignal {
     }
 }
 
+/// Agent execution phase — THINK → PLAN → ACT → OBSERVE → VERIFY → REFLECT.
+///
+/// This is the state machine the turn loops implement implicitly today
+/// (`turn_loops.rs` / `turn_streaming_mpsc.rs`). Naming it explicitly gives
+/// observability (what phase failed?), testability, and a home for future
+/// unification of the two duplicated loops without changing runtime behavior.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum AgentPhase {
+    Think,
+    Plan,
+    Act,
+    Observe,
+    Verify,
+    Reflect,
+}
+
+impl AgentPhase {
+    /// Canonical successor in the happy path. `Verify` loops back to `Act`
+    /// on failure (handled by caller) or advances to `Reflect` on success.
+    pub fn next(self) -> Self {
+        match self {
+            Self::Think => Self::Plan,
+            Self::Plan => Self::Act,
+            Self::Act => Self::Observe,
+            Self::Observe => Self::Verify,
+            Self::Verify => Self::Reflect,
+            Self::Reflect => Self::Think,
+        }
+    }
+
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Think => "think",
+            Self::Plan => "plan",
+            Self::Act => "act",
+            Self::Observe => "observe",
+            Self::Verify => "verify",
+            Self::Reflect => "reflect",
+        }
+    }
+}
+
+/// Execution mode — FAST direct execution vs structured planning vs swarm.
+///
+/// Today mode selection is implicit (server/swarm vs single-turn). This enum
+/// makes the choice explicit and auto-selectable via [`ExecutionMode::auto`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ExecutionMode {
+    Fast,
+    Plan,
+    Deep,
+    Swarm,
+}
+
+impl ExecutionMode {
+    /// Heuristic auto-selection. Cheap, deterministic, no model call.
+    /// - `task_hint_len`: chars in user request
+    /// - `file_count`: distinct files implicated
+    /// - `explicit_swarm`: user asked for swarm / multi-agent explicitly
+    pub fn auto(task_hint_len: usize, file_count: usize, explicit_swarm: bool) -> Self {
+        if explicit_swarm || file_count >= 8 || task_hint_len >= 2000 {
+            Self::Swarm
+        } else if file_count >= 4 || task_hint_len >= 800 {
+            Self::Deep
+        } else if file_count >= 2 || task_hint_len >= 200 {
+            Self::Plan
+        } else {
+            Self::Fast
+        }
+    }
+}
+
+/// Outcome of the self-verification pipeline:
+/// CODE CHANGE → BUILD → TEST → LINT → SECURITY CHECK → DIFF REVIEW.
+#[derive(Debug, Clone, Default)]
+pub struct VerificationOutcome {
+    pub build_ok: Option<bool>,
+    pub tests_ok: Option<bool>,
+    pub lint_ok: Option<bool>,
+    pub security_ok: Option<bool>,
+    pub diff_review_ok: Option<bool>,
+    pub details: Vec<String>,
+}
+
+impl VerificationOutcome {
+    pub fn passed(&self) -> bool {
+        // `None` = check was skipped (not applicable); only explicit `false` fails.
+        [&self.build_ok, &self.tests_ok, &self.lint_ok, &self.security_ok, &self.diff_review_ok]
+            .iter()
+            .all(|v| v.unwrap_or(true))
+    }
+
+    pub fn record(&mut self, check: &str, ok: bool, detail: impl Into<String>) {
+        match check {
+            "build" => self.build_ok = Some(ok),
+            "test" => self.tests_ok = Some(ok),
+            "lint" => self.lint_ok = Some(ok),
+            "security" => self.security_ok = Some(ok),
+            "diff" => self.diff_review_ok = Some(ok),
+            _ => {}
+        }
+        self.details.push(format!("{}: {} — {}", check, if ok { "pass" } else { "FAIL" }, detail.into()));
+    }
+}
+
 #[derive(Debug, thiserror::Error)]
 #[error("{message}")]
 pub struct StreamError {
@@ -313,6 +418,37 @@ where
 mod tests {
     use super::*;
     use std::time::Duration;
+
+    #[test]
+    fn agent_phase_cycles_in_order() {
+        assert_eq!(AgentPhase::Think.next(), AgentPhase::Plan);
+        assert_eq!(AgentPhase::Plan.next(), AgentPhase::Act);
+        assert_eq!(AgentPhase::Act.next(), AgentPhase::Observe);
+        assert_eq!(AgentPhase::Observe.next(), AgentPhase::Verify);
+        assert_eq!(AgentPhase::Verify.next(), AgentPhase::Reflect);
+        assert_eq!(AgentPhase::Think.as_str(), "think");
+        assert_eq!(AgentPhase::Verify.as_str(), "verify");
+    }
+
+    #[test]
+    fn execution_mode_auto_selects_by_size() {
+        assert_eq!(ExecutionMode::auto(20, 0, false), ExecutionMode::Fast);
+        assert_eq!(ExecutionMode::auto(300, 2, false), ExecutionMode::Plan);
+        assert_eq!(ExecutionMode::auto(900, 4, false), ExecutionMode::Deep);
+        assert_eq!(ExecutionMode::auto(100, 1, true), ExecutionMode::Swarm);
+        assert_eq!(ExecutionMode::auto(5000, 10, false), ExecutionMode::Swarm);
+    }
+
+    #[test]
+    fn verification_outcome_skipped_checks_pass() {
+        let mut v = VerificationOutcome::default();
+        assert!(v.passed(), "all-skipped should pass");
+        v.record("build", true, "cargo check ok");
+        v.record("test", false, "2 failures");
+        assert!(!v.passed());
+        assert_eq!(v.details.len(), 2);
+    }
+
 
     /// Documents the tokio semantics `InterruptSignal::notified()` relies on:
     /// current tokio guarantees a `notified()` future receives wakeups from

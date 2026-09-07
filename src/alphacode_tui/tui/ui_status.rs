@@ -76,8 +76,17 @@ pub(super) fn shorten_model_name(model: &str) -> String {
     model.split('-').take(3).collect::<Vec<_>>().join("")
 }
 
-pub(super) fn format_status_for_debug(app: &dyn TuiState) -> String {
-    match app.status() {
+pub fn format_status_for_debug(app: &dyn TuiState) -> String {
+    // Build a structured summary line that complements the human-readable
+    // status produced below: model + detected task + connection + tokens.
+    // Empty when the trait object does not expose those fields (legacy tests).
+    let summary = build_status_summary(
+        Some(&app.provider_model()),
+        None,
+        app.total_session_tokens(),
+        app.connection_type().is_some(),
+    );
+    let body: String = match app.status() {
         ProcessingStatus::Idle => {
             if let Some(notice) = app.status_notice() {
                 format!("Idle (notice: {})", notice)
@@ -127,5 +136,76 @@ pub(super) fn format_status_for_debug(app: &dyn TuiState) -> String {
             }
             format!("Running tool: {}", name)
         }
+    };
+    if summary.is_empty() {
+        body
+    } else {
+        format!("{summary} | {body}")
+    }
+}
+
+/// Build a one-line status summary suitable for the header strip.
+///
+/// Combines the current model (shortened), the running task hint classified
+/// via [`TaskKind`], the connection state, and any session token totals into
+/// a single `key=value` line. Pure function: no I/O, no model calls.
+pub fn build_status_summary(model: Option<&str>, task_hint: Option<&str>, tokens: Option<(u64, u64)>, connected: bool) -> String {
+    use crate::alphacode_provider_core::selection::TaskKind;
+
+    let mut parts: Vec<String> = Vec::new();
+
+    // Model (compact).
+    if let Some(m) = model {
+        parts.push(format!("model={}", shorten_model_name(m)));
+    } else {
+        parts.push("model=auto".to_string());
+    }
+
+    // Task classification.
+    if let Some(hint) = task_hint
+        && !hint.trim().is_empty()
+    {
+        let kind = TaskKind::classify(hint);
+        parts.push(format!("task={}", kind.as_str()));
+    }
+
+    // Connection state.
+    parts.push(if connected {
+        "conn=ok".to_string()
+    } else {
+        "conn=offline".to_string()
+    });
+
+    // Session tokens.
+    if let Some((input, output)) = tokens {
+        parts.push(format!("tokens={}k/{}k", input / 1000, output / 1000));
+    }
+
+    parts.join(" | ")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn build_status_summary_includes_model_and_task() {
+        let s = build_status_summary(
+            Some("claude-opus-4-5"),
+            Some("audit for XSS vulnerabilities"),
+            Some((12_000, 4_500)),
+            true,
+        );
+        assert!(s.contains("model="));
+        assert!(s.contains("task=security"));
+        assert!(s.contains("conn=ok"));
+        assert!(s.contains("tokens=12k/4k"));
+    }
+
+    #[test]
+    fn build_status_summary_omits_task_when_empty() {
+        let s = build_status_summary(Some("gpt-5"), None, None, false);
+        assert!(!s.contains("task="));
+        assert!(s.contains("conn=offline"));
     }
 }

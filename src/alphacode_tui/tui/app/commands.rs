@@ -2543,12 +2543,27 @@ pub(super) fn handle_test_command(app: &mut App, trimmed: &str) -> bool {
     true
 }
 
+/// Strip the leading `/cmd` from a slash-command line and return the rest.
+///
+/// Returns `Some("")` for `/cmd` with no argument, `Some(rest)` for
+/// `/cmd rest...`, and `None` when the line is not the command. Accepts a
+/// single space, tab, or no separator so users can type `/model	gpt-5`
+/// or `/model gpt-5` interchangeably.
 fn slash_command_rest<'a>(trimmed: &'a str, command: &str) -> Option<&'a str> {
     if trimmed == command {
-        Some("")
-    } else {
-        trimmed.strip_prefix(&format!("{} ", command))
+        return Some("");
     }
+    if let Some(rest) = trimmed.strip_prefix(command) {
+        // Only consume one leading separator (space or tab) so the caller can
+        // distinguish "/cmd" (no args) from "/cmd rest" (with args).
+        let mut chars = rest.chars();
+        match chars.next() {
+            Some(' ') | Some('\t') => return Some(&rest[1..]),
+            Some(c) if c.is_whitespace() => return Some(chars.as_str()),
+            _ => return None,
+        }
+    }
+    None
 }
 
 fn test_usage() -> String {

@@ -297,7 +297,7 @@ pub fn draw(frame: &mut ratatui::Frame, area: Rect) {
     }
 
     let mut y = area.y + area.height.saturating_sub(1);
-    for (_idx, toast) in toasts.iter().rev().enumerate() {
+    for toast in toasts.iter().rev() {
         // Compute the toast size from its content (auto-fit, capped).
         let max_width = if toast.expanded {
             MAX_TOAST_WIDTH_EXPANDED

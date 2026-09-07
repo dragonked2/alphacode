@@ -41,12 +41,11 @@ const TOOL_DESCRIPTION_TRUNCATION_MARKER: &str =
 
 /// Resolve the active tool-description cap, honouring the env override.
 pub fn tool_description_max_chars() -> usize {
-    if let Ok(raw) = std::env::var("ALPHACODE_TOOL_DESCRIPTION_MAX_CHARS") {
-        if let Ok(parsed) = raw.trim().parse::<usize>() {
-            if parsed >= MIN_TOOL_DESCRIPTION_MAX_CHARS {
-                return parsed;
-            }
-        }
+    if let Ok(raw) = std::env::var("ALPHACODE_TOOL_DESCRIPTION_MAX_CHARS")
+        && let Ok(parsed) = raw.trim().parse::<usize>()
+        && parsed >= MIN_TOOL_DESCRIPTION_MAX_CHARS
+    {
+        return parsed;
     }
     DEFAULT_TOOL_DESCRIPTION_MAX_CHARS
 }

@@ -293,9 +293,23 @@ impl Tool for ReadTool {
         }
 
         if output.is_empty() {
-            Ok(ToolOutput::new("(empty file)"))
+            Ok(ToolOutput::new("(empty file)").with_metadata(json!({
+                "tool": "read",
+                "path": params.file_path,
+                "lines": 0,
+                "total_lines": 0,
+            })))
         } else {
-            Ok(ToolOutput::new(output))
+            Ok(ToolOutput::new(output)
+                .with_title(params.file_path.clone())
+                .with_metadata(json!({
+                    "tool": "read",
+                    "path": params.file_path,
+                    "start_line": range.offset + 1,
+                    "end_line": end,
+                    "total_lines": total_lines,
+                    "truncated_lines": truncated_line_count,
+                })))
         }
     }
 }
@@ -445,25 +459,7 @@ fn file_name_similarity_score(name: &str, target: &str) -> usize {
 }
 
 fn levenshtein_distance(a: &str, b: &str) -> usize {
-    let a: Vec<char> = a.chars().collect();
-    let b: Vec<char> = b.chars().collect();
-    if a.is_empty() {
-        return b.len();
-    }
-    if b.is_empty() {
-        return a.len();
-    }
-    let mut prev: Vec<usize> = (0..=b.len()).collect();
-    let mut curr: Vec<usize> = vec![0; b.len() + 1];
-    for (i, &ca) in a.iter().enumerate() {
-        curr[0] = i + 1;
-        for (j, &cb) in b.iter().enumerate() {
-            let cost = if ca == cb { 0 } else { 1 };
-            curr[j + 1] = (prev[j + 1] + 1).min(curr[j] + 1).min(prev[j] + cost);
-        }
-        std::mem::swap(&mut prev, &mut curr);
-    }
-    prev[b.len()]
+    crate::alphacode_core::util::levenshtein(a, b)
 }
 
 /// Check if a file is an image based on extension

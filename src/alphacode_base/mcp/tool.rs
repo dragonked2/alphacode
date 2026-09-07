@@ -99,10 +99,28 @@ impl Tool for McpTool {
         let title = format!("mcp:{}:{}", self.server_name, self.tool_def.name);
 
         if result.is_error {
-            Ok(ToolOutput::new(format!("Error: {}", output)).with_title(title))
-        } else {
-            Ok(ToolOutput::new(output).with_title(title))
+            // Surface MCP tool errors as Err so batch/automation counts them
+            // as failures. Previously this returned Ok("Error: ...") which
+            // masked failures behind success.
+            return Err(anyhow::anyhow!(
+                "MCP tool {}:{} failed: {}",
+                self.server_name,
+                self.tool_def.name,
+                if output.is_empty() {
+                    "(empty error output)".to_string()
+                } else {
+                    output
+                }
+            ));
         }
+        let metadata = serde_json::json!({
+            "tool": format!("mcp__{}__{}", self.server_name, self.tool_def.name),
+            "server": self.server_name,
+            "mcp_tool": self.tool_def.name,
+        });
+        Ok(ToolOutput::new(output)
+            .with_title(title)
+            .with_metadata(metadata))
     }
 }
 

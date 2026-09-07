@@ -67,24 +67,68 @@ impl Tool for PatchTool {
             return Err(anyhow::anyhow!("No valid patches found in input"));
         }
 
+        // Pre-flight catastrophic deny (parity with apply_patch): never touch
+        // protected paths even though this tool takes unified diffs.
+        let risk_ctx =
+            crate::alphacode_command_risk::RiskContext::from_env(ctx.working_dir.clone());
+        for patch in &patches {
+            let resolved = ctx.resolve_path(Path::new(&patch.path));
+            if crate::alphacode_command_risk::is_catastrophic_target(&resolved, &risk_ctx) {
+                return Err(anyhow::anyhow!(
+                    "Refused: '{}' resolves to a protected path ({}). No changes applied.",
+                    patch.path,
+                    resolved.display()
+                ));
+            }
+        }
+
         let mut results = Vec::new();
+        let mut succeeded = 0usize;
+        let mut failed = 0usize;
+        let mut touched: Vec<String> = Vec::new();
 
         for patch in patches {
             let resolved_path = ctx.resolve_path(Path::new(&patch.path));
             let result = apply_patch_with_diff(&patch, &resolved_path).await;
             match result {
                 Ok((msg, diff)) => {
+                    succeeded += 1;
+                    touched.push(patch.path.clone());
                     if diff.is_empty() {
                         results.push(format!("✓ {}: {}", patch.path, msg));
                     } else {
                         results.push(format!("✓ {}: {}\n{}", patch.path, msg, diff));
                     }
                 }
-                Err(e) => results.push(format!("✗ {}: {}", patch.path, e)),
+                Err(e) => {
+                    failed += 1;
+                    results.push(format!("✗ {}: {}", patch.path, e));
+                }
             }
         }
 
-        Ok(ToolOutput::new(results.join("\n\n")))
+        if succeeded == 0 {
+            return Err(anyhow::anyhow!(results.join("\n\n")));
+        }
+        let summary = format!(
+            "{} succeeded, {} failed\n{}",
+            succeeded,
+            failed,
+            results.join("\n\n")
+        );
+        let metadata = json!({
+            "tool": "patch",
+            "succeeded": succeeded,
+            "failed": failed,
+            "touched_paths": touched,
+        });
+        Ok(ToolOutput::new(summary)
+            .with_title(if touched.len() == 1 {
+                touched[0].clone()
+            } else {
+                format!("{} files", touched.len())
+            })
+            .with_metadata(metadata))
     }
 }
 

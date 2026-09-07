@@ -741,7 +741,7 @@ mod tests {
         );
         assert_eq!(EXPLABS_PROFILE.api_key_env, "EXPLABS_API_KEY");
         assert_eq!(EXPLABS_PROFILE.env_file, "explabs.env");
-        assert!(EXPLABS_PROFILE.requires_api_key);
+        const { assert!(EXPLABS_PROFILE.requires_api_key) };
 
         // Bundled demo key must look like a real xpl_ bearer and stay overridable.
         assert!(
@@ -778,7 +778,7 @@ mod tests {
         );
 
         assert_eq!(EXPLABS_LOGIN_PROVIDER.id, "explabs");
-        assert!(EXPLABS_LOGIN_PROVIDER.recommended);
+        const { assert!(EXPLABS_LOGIN_PROVIDER.recommended) };
         assert!(
             EXPLABS_LOGIN_PROVIDER
                 .display_name

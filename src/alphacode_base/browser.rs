@@ -514,7 +514,8 @@ async fn download_browser_binary() -> Result<()> {
     Ok(())
 }
 
-fn write_file_atomically(path: &PathBuf, bytes: &[u8], _executable: bool) -> Result<()> {
+#[allow(unused_variables)]
+fn write_file_atomically(path: &PathBuf, bytes: &[u8], executable: bool) -> Result<()> {
     let parent = path
         .parent()
         .context("Target file has no parent directory")?;
@@ -536,7 +537,7 @@ fn write_file_atomically(path: &PathBuf, bytes: &[u8], _executable: bool) -> Res
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
-        let mode = if _executable { 0o755 } else { 0o644 };
+        let mode = if executable { 0o755 } else { 0o644 };
         std::fs::set_permissions(&tmp_path, std::fs::Permissions::from_mode(mode))?;
     }
 

@@ -1980,43 +1980,58 @@ impl Provider for MultiProvider {
     }
 
     fn available_models_for_switching(&self) -> Vec<String> {
+        // Helper: surface at least the current model when the underlying runtime
+        // returns an empty list. The default `Provider::available_models()` is
+        // empty, so without this any openai-compatible profile that has not
+        // yet completed its `/models` cache prefetch would falsely look like a
+        // provider with no switchable models, and `/model` would error with
+        // "Model switching is not available for this provider.".
+        let with_current = |provider: &dyn Provider, mut models: Vec<String>| -> Vec<String> {
+            if models.is_empty() {
+                let current = provider.model();
+                if !current.trim().is_empty() {
+                    models.push(current);
+                }
+            }
+            models
+        };
         match self.active_provider() {
             ActiveProvider::Claude => {
                 if let Some(anthropic) = self.anthropic_provider() {
-                    anthropic.available_models_for_switching()
+                    with_current(&*anthropic, anthropic.available_models_for_switching())
                 } else if let Some(claude) = self.claude_provider() {
-                    claude.available_models_for_switching()
+                    with_current(&*claude, claude.available_models_for_switching())
                 } else {
                     Vec::new()
                 }
             }
             ActiveProvider::OpenAI => self
                 .openai_provider()
-                .map(|openai| openai.available_models_for_switching())
+                .map(|openai| with_current(&*openai, openai.available_models_for_switching()))
                 .unwrap_or_default(),
             ActiveProvider::Copilot => self
                 .copilot_provider()
-                .map(|copilot| copilot.available_models_for_switching())
+                .map(|copilot| with_current(&*copilot, copilot.available_models_for_switching()))
                 .unwrap_or_default(),
             ActiveProvider::Antigravity => self
                 .antigravity_provider()
-                .map(|antigravity| antigravity.available_models_for_switching())
+                .map(|antigravity| with_current(&*antigravity, antigravity.available_models_for_switching()))
                 .unwrap_or_default(),
             ActiveProvider::Gemini => self
                 .gemini_provider()
-                .map(|gemini| gemini.available_models_for_switching())
+                .map(|gemini| with_current(&*gemini, gemini.available_models_for_switching()))
                 .unwrap_or_default(),
             ActiveProvider::Cursor => self
                 .cursor_provider()
-                .map(|cursor| cursor.available_models_for_switching())
+                .map(|cursor| with_current(&*cursor, cursor.available_models_for_switching()))
                 .unwrap_or_default(),
             ActiveProvider::Bedrock => self
                 .bedrock_provider()
-                .map(|bedrock| bedrock.available_models_for_switching())
+                .map(|bedrock| with_current(&*bedrock, bedrock.available_models_for_switching()))
                 .unwrap_or_default(),
             ActiveProvider::OpenRouter => self
                 .active_openrouter_execution_provider()
-                .map(|openrouter| openrouter.available_models_for_switching())
+                .map(|openrouter| with_current(&*openrouter, openrouter.available_models_for_switching()))
                 .unwrap_or_default(),
         }
     }
@@ -2222,10 +2237,26 @@ impl Provider for MultiProvider {
                 .copilot_provider()
                 .ok_or_else(|| anyhow::anyhow!("Copilot provider not available"))?
                 .set_reasoning_effort(effort),
-            ActiveProvider::OpenRouter => self
-                .active_openrouter_execution_provider()
-                .ok_or_else(|| anyhow::anyhow!("OpenAI-compatible provider not available"))?
-                .set_reasoning_effort(effort),
+            ActiveProvider::OpenRouter => {
+                // Prefer the active compat profile, then fall back to the
+                // real OpenRouter slot. Either way we get the openai-compatible
+                // wire protocol so reasoning-effort is meaningful here.
+                let provider = self
+                    .active_openrouter_execution_provider()
+                    .or_else(|| {
+                        let registry = ProviderRegistry::new(self);
+                        registry
+                            .active_compatible_profile_id()
+                            .and_then(|id| registry.compatible_profile(&id))
+                            .or_else(|| registry.real_openrouter())
+                    })
+                    .ok_or_else(|| {
+                        anyhow::anyhow!(
+                            "OpenAI-compatible provider not available: please log in to an OpenAI-compatible profile first"
+                        )
+                    })?;
+                provider.set_reasoning_effort(effort)
+            }
             _ => Err(anyhow::anyhow!(
                 "Reasoning effort is only supported for OpenAI, Anthropic, and compatible reasoning models"
             )),

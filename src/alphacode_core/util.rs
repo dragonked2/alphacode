@@ -14,6 +14,33 @@ pub fn truncate_str(s: &str, max_bytes: usize) -> &str {
     &s[..end]
 }
 
+/// Classic Levenshtein edit distance over Unicode scalar values.
+///
+/// Single canonical implementation for tool-name suggestions, file-name
+/// suggestions, etc. Previously tripled across `tool/mod.rs`,
+/// `tool/read.rs` (as `levenshtein_distance`). O(n*m) two-row — more than
+/// sufficient for short suggestion strings.
+pub fn levenshtein(a: &str, b: &str) -> usize {    let a: Vec<char> = a.chars().collect();
+    let b: Vec<char> = b.chars().collect();
+    if a.is_empty() {
+        return b.len();
+    }
+    if b.is_empty() {
+        return a.len();
+    }
+    let mut prev: Vec<usize> = (0..=b.len()).collect();
+    let mut curr: Vec<usize> = vec![0; b.len() + 1];
+    for (i, &ca) in a.iter().enumerate() {
+        curr[0] = i + 1;
+        for (j, &cb) in b.iter().enumerate() {
+            let cost = if ca == cb { 0 } else { 1 };
+            curr[j + 1] = (prev[j + 1] + 1).min(curr[j] + 1).min(prev[j] + cost);
+        }
+        std::mem::swap(&mut prev, &mut curr);
+    }
+    prev[b.len()]
+}
+
 pub const APPROX_CHARS_PER_TOKEN: usize = 4;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -308,6 +335,14 @@ pub fn process_fd_diagnostic_snapshot() -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn test_levenshtein_basic() {
+        assert_eq!(levenshtein("", ""), 0);
+        assert_eq!(levenshtein("kitten", "sitting"), 3);
+        assert_eq!(levenshtein("bash", "bash"), 0);
+        assert_eq!(levenshtein("bash", "brash"), 1);
+    }
 
     #[test]
     fn test_truncate_ascii() {

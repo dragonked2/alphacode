@@ -222,9 +222,15 @@ impl IncrementalMarkdownRenderer {
         if new_checkpoint == 0 {
             self.lines_at_checkpoint = 0;
         } else {
-            let prefix_lines =
-                render_markdown_with_width(&full_text[..new_checkpoint], self.max_width);
-            self.lines_at_checkpoint = prefix_lines.len();
+            // PERF: previously this did a second full markdown render of the
+            // prefix just to count lines for debug telemetry → 2x parse cost
+            // per streaming delta (O(n²) on long answers). The checkpoint line
+            // count is only consumed by debug_memory_profile, so approximate
+            // with a cheap newline scan instead of a full render.
+            // SAFETY: byte index is always on a line boundary (produced by
+            // find_last_complete_block_checkpoint), so slicing is safe.
+            let prefix = full_text.get(..new_checkpoint).unwrap_or("");
+            self.lines_at_checkpoint = prefix.matches('\n').count() + 1;
         }
     }
 
