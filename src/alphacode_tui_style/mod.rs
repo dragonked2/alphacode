@@ -1,4 +1,5 @@
 pub mod color;
+pub mod color_tokens;
 pub mod harmony;
 pub mod icons;
 pub mod palette;
@@ -9,6 +10,7 @@ pub mod theme_mode;
 pub mod tokens;
 
 pub use color::{ColorCapability, clear_buf, color_capability, has_truecolor, indexed_to_rgb, rgb};
+pub use color_tokens::ColorToken;
 pub use harmony::{Criterion, HarmonyReport, Oklab, analyze as analyze_harmony, analyze_active};
 pub use icons::{Icon, TerminalClass, force_terminal_class, terminal_class};
 pub use palette::{ALL_ROLES, Palette, Role, palette, role_color, set_palette};

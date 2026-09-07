@@ -147,17 +147,18 @@ impl BrandTheme {
         rgb(140, 150, 170)
     }
 
-    /// Model name color
+    /// Model name color (Phase 3b: resolves the palette role so `/theme`
+    /// retunes the model name in the chat composer).
     pub fn model() -> Color {
-        rgb(255, 170, 220)
+        crate::alphacode_tui_style::ColorToken::ModelName.resolve()
     }
-    /// Provider color
+    /// Provider color.
     pub fn provider() -> Color {
-        rgb(130, 224, 215)
+        crate::alphacode_tui_style::ColorToken::ProviderLabel.resolve()
     }
-    /// Tool color
+    /// Tool color.
     pub fn tool() -> Color {
-        rgb(255, 204, 128)
+        crate::alphacode_tui_style::ColorToken::ToolName.resolve()
     }
 
     /// Brand gradient for a character at a given index.
