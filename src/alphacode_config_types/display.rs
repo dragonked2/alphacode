@@ -136,6 +136,13 @@ pub struct DisplayConfig {
         deserialize_with = "crate::alphacode_config_types::serde_lenient::lenient_enum"
     )]
     pub overscroll_status: OverscrollStatusMode,
+    /// Phase 4a: terminal font selection. "mono" (default) uses whatever the
+    /// terminal reports; "mono-bold" requests SGR weight 1 on header rows;
+    /// "compact" tightens column widths on box-drawing characters; "dyslexic"
+    /// points the user at installing OpenDyslexic Mono (the TUI itself cannot
+    /// change the host font, but it can note the intent in /font).
+    #[serde(default)]
+    pub font: String,
 }
 impl Default for DisplayConfig {
     fn default() -> Self {
@@ -178,6 +185,7 @@ impl Default for DisplayConfig {
             active_sessions_manager: false,
             external_sessions: true,
             overscroll_status: OverscrollStatusMode::default(),
+            font: String::from("mono"),
         }
     }
 }

@@ -7,6 +7,7 @@ pub mod model_browser;
 pub mod model_browser_open;
 pub mod model_browser_render;
 pub mod model_performance;
+pub mod picker_spacing;
 pub mod smart_model_picker;
 
 #[derive(Clone)]
