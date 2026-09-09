@@ -270,7 +270,8 @@ mod tests {
             available: true,
             detail: String::new(),
             estimated_reference_cost_micros: None,
-         ..PickerOption::default()}
+            ..PickerOption::default()
+        }
     }
 
     #[test]

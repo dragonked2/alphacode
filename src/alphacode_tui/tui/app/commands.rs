@@ -2979,9 +2979,14 @@ pub(super) fn handle_swarm_prompt_command(app: &mut App, trimmed: &str) -> bool 
             }
         };
 
+    let default_editor = if cfg!(target_os = "windows") {
+        "notepad".to_string()
+    } else {
+        "nano".to_string()
+    };
     let editor = std::env::var("VISUAL")
         .or_else(|_| std::env::var("EDITOR"))
-        .unwrap_or_else(|_| "nano".to_string());
+        .unwrap_or(default_editor);
     let mut parts = editor.split_whitespace();
     let Some(bin) = parts.next() else {
         app.push_display_message(DisplayMessage::error(

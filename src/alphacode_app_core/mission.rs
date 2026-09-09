@@ -4,6 +4,7 @@ use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 
 use crate::alphacode_app_core::prompt::MISSION_CONTINUATION_TEMPLATE;
+use crate::alphacode_task_types::goal_contract::{GoalContract, PhaseBudgets};
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
@@ -194,4 +195,24 @@ fn default_long_horizon_intent(objective: &str) -> String {
         "Interpret `{}` broadly: pursue the literal objective, continuously refresh the todo frontier, include semantically adjacent work that improves the outcome, and preserve long-term quality.",
         objective
     )
+}
+
+/// Create a GoalContract from a Mission's success_criteria and validation_plan.
+/// Returns `None` if the mission has no success criteria to build a contract from.
+pub fn contract_from_mission(mission: &Mission) -> Option<GoalContract> {
+    if mission.success_criteria.is_empty() && mission.validation_plan.is_empty() {
+        return None;
+    }
+
+    let mut criteria = mission.success_criteria.clone();
+    // Validation plan items become additional criteria
+    for item in &mission.validation_plan {
+        if !criteria.contains(item) {
+            criteria.push(item.clone());
+        }
+    }
+
+    let mut contract = GoalContract::new(&mission.objective, criteria);
+    contract.budgets = PhaseBudgets::default();
+    Some(contract)
 }

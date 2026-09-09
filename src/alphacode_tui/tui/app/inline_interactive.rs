@@ -1211,7 +1211,8 @@ impl App {
                     available: true,
                     detail: "updating model list…".to_string(),
                     estimated_reference_cost_micros: None,
-                 ..PickerOption::default()}],
+                    ..PickerOption::default()
+                }],
                 action: PickerAction::Model,
                 selected_option: 0,
                 is_current: true,
@@ -3693,7 +3694,8 @@ mod tests {
             available: true,
             detail: String::new(),
             estimated_reference_cost_micros: None,
-         ..PickerOption::default()}
+            ..PickerOption::default()
+        }
     }
 
     fn picker_option(provider: &str) -> PickerOption {

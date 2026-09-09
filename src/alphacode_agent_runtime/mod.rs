@@ -210,9 +210,15 @@ pub struct VerificationOutcome {
 impl VerificationOutcome {
     pub fn passed(&self) -> bool {
         // `None` = check was skipped (not applicable); only explicit `false` fails.
-        [&self.build_ok, &self.tests_ok, &self.lint_ok, &self.security_ok, &self.diff_review_ok]
-            .iter()
-            .all(|v| v.unwrap_or(true))
+        [
+            &self.build_ok,
+            &self.tests_ok,
+            &self.lint_ok,
+            &self.security_ok,
+            &self.diff_review_ok,
+        ]
+        .iter()
+        .all(|v| v.unwrap_or(true))
     }
 
     pub fn record(&mut self, check: &str, ok: bool, detail: impl Into<String>) {
@@ -224,7 +230,12 @@ impl VerificationOutcome {
             "diff" => self.diff_review_ok = Some(ok),
             _ => {}
         }
-        self.details.push(format!("{}: {} — {}", check, if ok { "pass" } else { "FAIL" }, detail.into()));
+        self.details.push(format!(
+            "{}: {} — {}",
+            check,
+            if ok { "pass" } else { "FAIL" },
+            detail.into()
+        ));
     }
 }
 
@@ -448,7 +459,6 @@ mod tests {
         assert!(!v.passed());
         assert_eq!(v.details.len(), 2);
     }
-
 
     /// Documents the tokio semantics `InterruptSignal::notified()` relies on:
     /// current tokio guarantees a `notified()` future receives wakeups from

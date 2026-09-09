@@ -1566,7 +1566,10 @@ fn precompute_route_detail(
     };
     let (display, severity) = if unavailable {
         if trimmed.is_empty() {
-            (Some("unavailable".to_string()), RouteDetailSeverity::Unavailable)
+            (
+                Some("unavailable".to_string()),
+                RouteDetailSeverity::Unavailable,
+            )
         } else {
             (
                 Some(format!("unavailable · {}", trimmed)),

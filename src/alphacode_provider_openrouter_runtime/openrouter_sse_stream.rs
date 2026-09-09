@@ -168,9 +168,16 @@ async fn stream_response(
         }))
         .await;
     let connect_start = std::time::Instant::now();
-    let stream_idle_timeout = crate::alphacode_base::provider::stream_idle_timeout();
+    let stream_idle_timeout = super::effective_stream_idle_timeout(&api_base);
 
-    let url = format!("{}/chat/completions", api_base);
+    let url = super::resolve_chat_completions_url(&api_base).ok_or_else(|| {
+        anyhow::anyhow!(
+            "OpenAI-compatible chat request failed\n  endpoint: invalid base '{}'\n  model: {}\n  auth: {}\n  mode: streaming",
+            api_base,
+            model,
+            auth.label()
+        )
+    })?;
     let mut req = apply_kimi_coding_agent_headers(
         auth.apply(
             client
@@ -189,6 +196,8 @@ async fn stream_response(
             .header("X-Title", "alphacode");
     }
 
+    // Diagnostics: estimated prompt size, timeout, and mode. Never includes secrets.
+    let request_estimate = super::estimate_chat_request_tokens(&request);
     let response = crate::alphacode_provider_core::transport::send_with_initial_response_timeout(
         req.json(&request),
         stream_idle_timeout,
@@ -197,10 +206,12 @@ async fn stream_response(
     .with_context(|| {
         let hint = local_endpoint_troubleshooting_hint(&api_base, &model);
         format!(
-            "Failed to send OpenAI-compatible chat request\n  endpoint: {}\n  model: {}\n  auth: {}\n{}",
+            "Failed to send OpenAI-compatible chat request\n  endpoint: {}\n  model: {}\n  auth: {}\n  mode: streaming\n  context_estimate: ~{} tokens\n  timeout: {}s\n{}",
             url,
             model,
             auth.label(),
+            request_estimate,
+            stream_idle_timeout.as_secs(),
             hint
         )
     })?;
@@ -217,14 +228,22 @@ async fn stream_response(
         let retry_after =
             crate::alphacode_provider_core::retry_after::retry_after(response.headers());
         let body = crate::alphacode_base::util::http_error_body(response, "HTTP error").await;
-        let hint = local_endpoint_troubleshooting_hint(&api_base, &model);
+        let mut hint = local_endpoint_troubleshooting_hint(&api_base, &model).to_string();
+        if super::response_body_reports_context_overflow(&body) {
+            hint = format!(
+                "{}\nContext hint: the prompt (~{} tokens) exceeded the server context. Compact the session (/compact), drop large tool outputs, or restart llama-server with a larger `-c` (e.g. `-c 16384`).",
+                hint, request_estimate
+            );
+        }
         return Err(
             crate::alphacode_provider_core::retry_after::error_with_retry_after(
                 format!(
-                    "OpenAI-compatible chat request failed\n  endpoint: {}\n  model: {}\n  auth: {}\n  status: {}\n  response: {}\n{}",
+                    "OpenAI-compatible chat request failed\n  endpoint: {}\n  model: {}\n  auth: {}\n  mode: streaming\n  context_estimate: ~{} tokens\n  timeout: {}s\n  status: {}\n  response: {}\n{}",
                     url,
                     model,
                     auth.label(),
+                    request_estimate,
+                    stream_idle_timeout.as_secs(),
                     status,
                     body,
                     hint
@@ -253,7 +272,7 @@ async fn stream_response(
         let event = match tokio::time::timeout(stream_idle_timeout, stream.next()).await {
             Ok(Some(Ok(event))) => event,
             Ok(Some(Err(e))) => anyhow::bail!(
-                "OpenAI-compatible stream error\n  endpoint: {}\n  model: {}\n  auth: {}\n  error: {}",
+                "OpenAI-compatible stream error\n  endpoint: {}\n  model: {}\n  auth: {}\n  mode: streaming\n  error: {}",
                 url,
                 model,
                 auth.label(),
@@ -266,7 +285,7 @@ async fn stream_response(
                     idle_timeout_secs
                 ));
                 anyhow::bail!(
-                    "OpenAI-compatible stream timeout\n  endpoint: {}\n  model: {}\n  auth: {}\n  timeout: no data received for {} seconds\n{}",
+                    "OpenAI-compatible stream timeout\n  endpoint: {}\n  model: {}\n  auth: {}\n  mode: streaming\n  timeout: no data received for {} seconds\n{}",
                     url,
                     model,
                     auth.label(),

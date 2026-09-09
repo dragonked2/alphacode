@@ -21,15 +21,15 @@
 //!   Sort: For you \u{2022} 12 models \u{2022} type / to search
 //! ```
 
+use crossterm::event::KeyCode;
 use ratatui::prelude::*;
 use ratatui::widgets::{Block, Borders, List, ListItem, ListState, Paragraph};
-use crossterm::event::KeyCode;
 
+use crate::alphacode_tui::tui::RouteDetailSeverity;
 #[allow(unused_imports)]
 use crate::alphacode_tui::tui::model_browser::{
     BrowserRow, Capability, FacetState, ModelBrowserState, ModelTier, SortMode,
 };
-use crate::alphacode_tui::tui::RouteDetailSeverity;
 
 /// A column-key event produced by the picker when the user types 1..9.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -51,38 +51,47 @@ pub enum BrowserKey {
 /// Top hotkey hint printed above the browser box.
 pub fn top_hint_line() -> Line<'static> {
     Line::from(vec![
-        Span::styled(
-            " ",
-            Style::default().fg(Color::DarkGray),
-        ),
+        Span::styled(" ", Style::default().fg(Color::DarkGray)),
         Span::styled(
             "Tab",
-            Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD),
+            Style::default()
+                .fg(Color::Cyan)
+                .add_modifier(Modifier::BOLD),
         ),
         Span::styled(" sort  ", Style::default().fg(Color::DarkGray)),
         Span::styled(
             "1-9",
-            Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD),
+            Style::default()
+                .fg(Color::Cyan)
+                .add_modifier(Modifier::BOLD),
         ),
         Span::styled(" jump  ", Style::default().fg(Color::DarkGray)),
         Span::styled(
             "p",
-            Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD),
+            Style::default()
+                .fg(Color::Cyan)
+                .add_modifier(Modifier::BOLD),
         ),
         Span::styled(" provider  ", Style::default().fg(Color::DarkGray)),
         Span::styled(
             "t",
-            Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD),
+            Style::default()
+                .fg(Color::Cyan)
+                .add_modifier(Modifier::BOLD),
         ),
         Span::styled(" tier  ", Style::default().fg(Color::DarkGray)),
         Span::styled(
             "c",
-            Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD),
+            Style::default()
+                .fg(Color::Cyan)
+                .add_modifier(Modifier::BOLD),
         ),
         Span::styled(" capability  ", Style::default().fg(Color::DarkGray)),
         Span::styled(
             "Esc",
-            Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD),
+            Style::default()
+                .fg(Color::Cyan)
+                .add_modifier(Modifier::BOLD),
         ),
         Span::styled(" close", Style::default().fg(Color::DarkGray)),
     ])
@@ -94,7 +103,9 @@ pub fn bottom_hint_line(state: &ModelBrowserState) -> Line<'static> {
     let total = state.rows.len();
     let mut spans = vec![Span::styled(
         format!(" Sort: {} ", state.sort.label()),
-        Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD),
+        Style::default()
+            .fg(Color::Cyan)
+            .add_modifier(Modifier::BOLD),
     )];
     spans.push(Span::styled(
         format!("\u{2022} {count}/{total} models  "),
@@ -126,11 +137,7 @@ pub fn render_facets(
         .take(area.height as usize)
         .enumerate()
         .map(|(idx, p)| {
-            let count = state
-                .rows
-                .iter()
-                .filter(|r| r.provider == *p)
-                .count();
+            let count = state.rows.iter().filter(|r| r.provider == *p).count();
             let active = state.facets.providers.contains(p);
             let marker = if active { "\u{25cf}" } else { "\u{25cb}" };
             let color = if active {
@@ -148,10 +155,7 @@ pub fn render_facets(
                     Style::default().fg(Color::DarkGray),
                 ),
                 Span::styled(p.clone(), Style::default().fg(Color::White)),
-                Span::styled(
-                    format!("  ({count})"),
-                    Style::default().fg(Color::DarkGray),
-                ),
+                Span::styled(format!("  ({count})"), Style::default().fg(Color::DarkGray)),
             ]))
         })
         .collect();
@@ -165,11 +169,7 @@ pub fn render_facets(
 }
 
 /// Render the models column.
-pub fn render_models(
-    state: &ModelBrowserState,
-    area: Rect,
-    buf: &mut Buffer,
-) {
+pub fn render_models(state: &ModelBrowserState, area: Rect, buf: &mut Buffer) {
     let height = area.height as usize;
     let start = state.selected.saturating_sub(height / 2);
     let end = (start + height).min(state.filtered.len());
@@ -188,7 +188,9 @@ pub fn render_models(
                 Span::styled(
                     num_pad,
                     if is_selected {
-                        Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD)
+                        Style::default()
+                            .fg(Color::Yellow)
+                            .add_modifier(Modifier::BOLD)
                     } else {
                         Style::default().fg(Color::DarkGray)
                     },
@@ -209,13 +211,17 @@ pub fn render_models(
             if row.is_current {
                 spans.push(Span::styled(
                     "  \u{2190}current",
-                    Style::default().fg(Color::Green).add_modifier(Modifier::BOLD),
+                    Style::default()
+                        .fg(Color::Green)
+                        .add_modifier(Modifier::BOLD),
                 ));
             }
             if row.is_default {
                 spans.push(Span::styled(
                     "  default",
-                    Style::default().fg(Color::Cyan).add_modifier(Modifier::ITALIC),
+                    Style::default()
+                        .fg(Color::Cyan)
+                        .add_modifier(Modifier::ITALIC),
                 ));
             }
             let tier_label = format!(" [{}]", row.tier.label());
@@ -244,18 +250,13 @@ pub fn render_models(
                 .add_modifier(Modifier::BOLD),
         )
         .highlight_symbol("\u{25b8} ");
-    let mut state_for_list = ListState::default().with_selected(Some(
-        state.selected.saturating_sub(start),
-    ));
+    let mut state_for_list =
+        ListState::default().with_selected(Some(state.selected.saturating_sub(start)));
     StatefulWidget::render(list, area, buf, &mut state_for_list);
 }
 
 /// Render the detail column for the currently-selected row.
-pub fn render_detail(
-    state: &ModelBrowserState,
-    area: Rect,
-    buf: &mut Buffer,
-) {
+pub fn render_detail(state: &ModelBrowserState, area: Rect, buf: &mut Buffer) {
     let mut lines: Vec<Line> = Vec::new();
     if let Some(row) = state.selected_row() {
         lines.push(Line::from(Span::styled(
@@ -279,7 +280,11 @@ pub fn render_detail(
             lines.push(detail_row(
                 "$/M in/out",
                 &format!("${:.2}", dollars),
-                if dollars < 1.0 { Color::Green } else { Color::White },
+                if dollars < 1.0 {
+                    Color::Green
+                } else {
+                    Color::White
+                },
             ));
         }
         if !row.capabilities.is_empty() {
@@ -387,13 +392,7 @@ pub fn map_key(code: KeyCode) -> Option<BrowserKey> {
 mod tests {
     use super::*;
     use crate::alphacode_tui::tui::model_browser::ModelBrowserState;
-    use crate::alphacode_tui::tui::PickerOption;
     use ratatui::backend::TestBackend;
-    use std::collections::HashSet;
-
-    fn opt(p: &str) -> PickerOption {
-        PickerOption::new(p.to_string(), "x".into(), true, String::new(), Some(3000))
-    }
 
     fn row_with(name: &str, provider: &str, tier: ModelTier) -> BrowserRow {
         BrowserRow {
@@ -471,15 +470,24 @@ mod tests {
 
     #[test]
     fn map_key_handles_digits() {
-        assert!(matches!(map_key(KeyCode::Char('1')), Some(BrowserKey::Jump(1))));
-        assert!(matches!(map_key(KeyCode::Char('9')), Some(BrowserKey::Jump(9))));
+        assert!(matches!(
+            map_key(KeyCode::Char('1')),
+            Some(BrowserKey::Jump(1))
+        ));
+        assert!(matches!(
+            map_key(KeyCode::Char('9')),
+            Some(BrowserKey::Jump(9))
+        ));
         assert!(map_key(KeyCode::Char('0')).is_none());
     }
 
     #[test]
     fn map_key_handles_specials() {
         assert!(matches!(map_key(KeyCode::Tab), Some(BrowserKey::CycleSort)));
-        assert!(matches!(map_key(KeyCode::Esc), Some(BrowserKey::ClearFacets)));
+        assert!(matches!(
+            map_key(KeyCode::Esc),
+            Some(BrowserKey::ClearFacets)
+        ));
     }
 
     #[test]
@@ -574,7 +582,13 @@ mod tests {
 
     #[test]
     fn sort_label_includes_all_modes() {
-        for mode in [SortMode::ForYou, SortMode::Newest, SortMode::Cheapest, SortMode::Fastest, SortMode::Alpha] {
+        for mode in [
+            SortMode::ForYou,
+            SortMode::Newest,
+            SortMode::Cheapest,
+            SortMode::Fastest,
+            SortMode::Alpha,
+        ] {
             assert!(!mode.label().is_empty());
         }
     }

@@ -948,7 +948,9 @@ pub(super) fn draw_inline_interactive_v2(
         .border_style(Style::default().fg(Color::Cyan))
         .title(Span::styled(
             format!(" /model ({}) ", state.sort.label()),
-            Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD),
+            Style::default()
+                .fg(Color::Cyan)
+                .add_modifier(Modifier::BOLD),
         ));
     let inner = block.inner(inner);
     frame.render_widget(block, chunks[1]);
@@ -1019,7 +1021,8 @@ mod tests {
                     available: true,
                     detail: String::new(),
                     estimated_reference_cost_micros: None,
-                 ..crate::alphacode_tui::tui::PickerOption::default()}],
+                    ..crate::alphacode_tui::tui::PickerOption::default()
+                }],
                 action: crate::alphacode_tui::tui::PickerAction::Model,
                 selected_option: 0,
                 is_current: true,
@@ -1046,7 +1049,8 @@ mod tests {
                 available: true,
                 detail: String::new(),
                 estimated_reference_cost_micros: None,
-             ..crate::alphacode_tui::tui::PickerOption::default()}],
+                ..crate::alphacode_tui::tui::PickerOption::default()
+            }],
             action: crate::alphacode_tui::tui::PickerAction::Account(
                 crate::alphacode_tui::tui::AccountPickerAction::Switch {
                     provider_id: "claude".to_string(),
@@ -1074,7 +1078,8 @@ mod tests {
                     available: true,
                     detail: String::new(),
                     estimated_reference_cost_micros: None,
-                 ..crate::alphacode_tui::tui::PickerOption::default()}],
+                    ..crate::alphacode_tui::tui::PickerOption::default()
+                }],
                 action: crate::alphacode_tui::tui::PickerAction::Account(
                     crate::alphacode_tui::tui::AccountPickerAction::Switch {
                         provider_id: "openai".to_string(),
@@ -1121,7 +1126,8 @@ mod tests {
                     available: true,
                     detail: "/agents swarm".to_string(),
                     estimated_reference_cost_micros: None,
-                 ..crate::alphacode_tui::tui::PickerOption::default()}],
+                    ..crate::alphacode_tui::tui::PickerOption::default()
+                }],
                 action: crate::alphacode_tui::tui::PickerAction::AgentTarget(
                     crate::alphacode_tui::tui::AgentModelTarget::Swarm,
                 ),

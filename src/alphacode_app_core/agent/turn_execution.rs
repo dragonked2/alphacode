@@ -140,7 +140,67 @@ impl Agent {
             let message: String = error.to_string().chars().take(ERROR_LIMIT).collect();
             event = event.field("ERROR", message);
         }
+
+        // Goal contract: add waste metrics to the hook event
+        if let Some(ref contract) = self.goal_contract {
+            event = event.field("GOAL_CONTRACT_PHASE", contract.phase.as_str());
+            event = event.field("GOAL_CONTRACT_TERMINAL", contract.is_terminal().to_string());
+            if let Some(ref evidence) = contract.terminal_evidence {
+                event = event.field("TERMINAL_EVIDENCE", &evidence.description);
+            }
+        }
+
+        // Budget enforcer: add metrics to the hook event
+        event = event.field(
+            "TOTAL_CALLS",
+            self.budget_enforcer.total_calls().to_string(),
+        );
+        event = event.field(
+            "POST_GOAL_CALLS",
+            self.budget_enforcer.post_goal_calls().to_string(),
+        );
+        // Waste metrics: one-line efficiency summary for hooks/telemetry.
+        if let Some(metrics) = crate::telemetry::waste_metrics::snapshot() {
+            event = event.field("WASTE_SUMMARY", metrics.summary_line());
+        }
+
         crate::hooks::dispatch_observer(event);
+
+        // Quality gate: when the contract reaches Report phase, run the
+        // quality gate to verify the final report.
+        if let Some(ref contract) = self.goal_contract
+            && contract.phase == crate::alphacode_task_types::goal_contract::ContractPhase::Report
+        {
+            self.run_quality_gate_on_report();
+        }
+    }
+
+    /// Run the quality gate on the final report when the goal contract
+    /// reaches the Report phase.
+    fn run_quality_gate_on_report(&self) {
+        // Get the latest assistant text as the "report"
+        let report = self.last_assistant_text().unwrap_or_default();
+        if report.is_empty() {
+            return;
+        }
+
+        // Run claim checker on the report
+        let working_dir = self
+            .working_dir()
+            .map(std::path::PathBuf::from)
+            .unwrap_or_else(|| std::env::current_dir().unwrap_or_default());
+
+        let results = crate::agent::claim_checker::check_all_claims(&report, &working_dir);
+        let summary = crate::agent::claim_checker::verification_summary(&results);
+
+        if !results.iter().all(|r| r.verified) {
+            logging::warn(&format!(
+                "Quality gate: claim verification found issues:\n{}",
+                summary
+            ));
+        } else {
+            logging::info("Quality gate: all claims verified");
+        }
     }
 
     /// Clear conversation history

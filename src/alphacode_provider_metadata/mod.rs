@@ -266,6 +266,78 @@ pub fn normalize_api_base(raw: &str) -> Option<String> {
     Some(trimmed.trim_end_matches('/').to_string())
 }
 
+/// Canonicalize an OpenAI-compatible base URL.
+///
+/// Accepts all four user-facing forms:
+/// `http://host:port`, `http://host:port/`, `http://host:port/v1`,
+/// `http://host:port/v1/`.
+///
+/// When the URL has no meaningful path (empty or `/`), `/v1` is appended so
+/// bare llama.cpp/Ollama-style roots (`http://127.0.0.1:8080`) resolve to the
+/// OpenAI-compatible namespace (`http://127.0.0.1:8080/v1`). Custom versioned
+/// paths (e.g. `/api/v3`, `/coding/v1`) are preserved verbatim so cloud
+/// gateways are never rewritten.
+pub fn normalize_openai_compat_api_base(raw: &str) -> Option<String> {
+    let base = normalize_api_base(raw)?;
+    let parsed = url::Url::parse(&base).ok()?;
+    let path = parsed.path().trim_end_matches('/');
+    if path.is_empty() || path == "/" {
+        return Some(format!("{}/v1", base));
+    }
+    Some(base)
+}
+
+/// Build an OpenAI-compatible request URL tolerant to a missing `/v1`.
+///
+/// `endpoint` is a relative path like `"models"` or `"chat/completions"`.
+/// - base ending in `/v1` → `{base}/{endpoint}`
+/// - base with no path (bare host:port) → `{base}/v1/{endpoint}`
+/// - base with any other path (`/api/v3`, `/coding/v1`, ...) → `{base}/{endpoint}`
+///
+/// This keeps `http://127.0.0.1:8080` and `http://127.0.0.1:8080/v1` equivalent
+/// while never rewriting custom gateway prefixes and never producing `/v1/v1`.
+pub fn openai_compat_request_url(api_base: &str, endpoint: &str) -> Option<String> {
+    let base = normalize_api_base(api_base)?;
+    let endpoint = endpoint
+        .trim()
+        .trim_start_matches('/')
+        .trim_end_matches('/');
+    if endpoint.is_empty() {
+        return None;
+    }
+    let parsed = url::Url::parse(&base).ok()?;
+    let path = parsed.path().trim_end_matches('/');
+    if path.is_empty() || path == "/" {
+        return Some(format!("{}/v1/{}", base, endpoint));
+    }
+    Some(format!("{}/{}", base, endpoint))
+}
+
+/// Convenience for `GET {base}/v1/models` (or custom-prefix equivalent).
+pub fn openai_compat_models_url(api_base: &str) -> Option<String> {
+    openai_compat_request_url(api_base, "models")
+}
+
+/// Convenience for `POST {base}/v1/chat/completions` (or custom equivalent).
+pub fn openai_compat_chat_completions_url(api_base: &str) -> Option<String> {
+    openai_compat_request_url(api_base, "chat/completions")
+}
+
+/// True for loopback/local OpenAI-compatible endpoints (llama.cpp, Ollama,
+/// LM Studio). Used for local-aware timeouts and conservative context defaults.
+/// Capability-based (host check), never model-name based.
+pub fn openai_compat_base_is_local(api_base: &str) -> bool {
+    let Ok(parsed) = url::Url::parse(api_base.trim()) else {
+        return false;
+    };
+    match parsed.host_str().map(|h| h.to_ascii_lowercase()) {
+        Some(host) => {
+            host == "localhost" || host == "127.0.0.1" || host == "::1" || host == "[::1]"
+        }
+        None => false,
+    }
+}
+
 fn allows_insecure_http_host(host: &str) -> bool {
     let host = host.trim();
     let host = host
@@ -663,14 +735,14 @@ mod tests {
             resolve_login_selection("3", &providers).map(|provider| provider.id),
             Some("claude")
         );
-        // `anthropic-api` now sits at 4 (shifted right by explabs).
+        // Position 4 is TheHive AI (Free Gift from Alphacode).
         assert_eq!(
             resolve_login_selection("4", &providers).map(|provider| provider.id),
-            Some("anthropic-api")
+            Some("hive")
         );
         assert_eq!(
-            resolve_login_selection("8", &providers).map(|provider| provider.id),
-            Some("bedrock")
+            resolve_login_selection("5", &providers).map(|provider| provider.id),
+            Some("anthropic-api")
         );
         assert_eq!(
             resolve_login_selection("compat", &providers).map(|provider| provider.id),
@@ -691,37 +763,47 @@ mod tests {
             resolve_login_selection("2", &providers).map(|provider| provider.id),
             Some("auto-import")
         );
-        // `anthropic-api` now sits at 4 (shifted right by explabs); everything
-        // after it moved down one slot too.
+        assert_eq!(
+            resolve_login_selection("3", &providers).map(|provider| provider.id),
+            Some("claude")
+        );
+        // TheHive AI sits at 4 in the CLI list.
         assert_eq!(
             resolve_login_selection("4", &providers).map(|provider| provider.id),
+            Some("hive")
+        );
+        // openai and anthropic-api sit at 5 and 6.
+        assert_eq!(
+            resolve_login_selection("5", &providers).map(|provider| provider.id),
             Some("anthropic-api")
         );
         assert_eq!(
             resolve_login_selection("6", &providers).map(|provider| provider.id),
-            Some("alphacode")
+            Some("openai")
         );
-        // Everything from the old slot 6 onward shifted right by 1 because
-        // explabs took slot 1; copilot and openrouter sit at 7 and 8 now.
         assert_eq!(
             resolve_login_selection("7", &providers).map(|provider| provider.id),
-            Some("copilot")
+            Some("alphacode")
         );
         assert_eq!(
             resolve_login_selection("8", &providers).map(|provider| provider.id),
-            Some("openrouter")
+            Some("copilot")
         );
         assert_eq!(
             resolve_login_selection("9", &providers).map(|provider| provider.id),
-            Some("bedrock")
+            Some("openrouter")
         );
         assert_eq!(
             resolve_login_selection("10", &providers).map(|provider| provider.id),
-            Some("azure")
+            Some("bedrock")
         );
         assert_eq!(
             resolve_login_selection("bedrock", &providers).map(|provider| provider.id),
             Some("bedrock")
+        );
+        assert_eq!(
+            resolve_login_selection("thehive", &providers).map(|provider| provider.id),
+            Some("hive")
         );
     }
 
@@ -805,5 +887,146 @@ mod tests {
         // which would force a circular dev-dependency in this leaf crate).
         assert_eq!(EXPLABS_PROFILE.api_key_env, "EXPLABS_API_KEY");
         assert_eq!(EXPLABS_PROFILE.env_file, "explabs.env");
+    }
+
+    #[test]
+    fn hive_profile_is_branded_as_a_free_gift_and_reachable_by_every_alias() {
+        // TheHive AI gateway is the "Free Gift from Alphacode" lane, so the
+        // invariants here double as a contract for the branding: the display
+        // label must carry the gift wording, every alias has to resolve back
+        // to the same canonical descriptor, and the env binding has to follow
+        // the standard OpenAI-compatible profile contract.
+        assert_eq!(HIVE_PROFILE.id, "hive");
+        assert_eq!(HIVE_PROFILE.api_base, "https://api-cdn.thehive.ai/api/v3");
+        assert_eq!(HIVE_PROFILE.api_key_env, "HIVE_API_KEY");
+        assert_eq!(HIVE_PROFILE.env_file, "hive.env");
+        const { assert!(HIVE_PROFILE.requires_api_key) };
+
+        // Bundled demo key must be non-empty.
+        assert!(
+            !HIVE_BUNDLED_API_KEY.is_empty(),
+            "HIVE_BUNDLED_API_KEY must not be empty"
+        );
+
+        // Curated free-model list must include the default GLM-5.3-Flash.
+        assert_eq!(ALL_HIVE_MODELS[0], "zai-org/glm-5.3-flash");
+        assert_eq!(
+            HIVE_PROFILE.default_model,
+            Some("zai-org/glm-5.3-flash"),
+            "default_model must point at the free GLM-5.3-Flash model"
+        );
+        assert!(
+            HIVE_PROFILE
+                .display_name
+                .contains("Free Gift from Alphacode"),
+            "Free Gift from Alphacode branding missing from profile display_name: {}",
+            HIVE_PROFILE.display_name
+        );
+
+        assert_eq!(HIVE_LOGIN_PROVIDER.id, "hive");
+        const { assert!(HIVE_LOGIN_PROVIDER.recommended) };
+        assert!(
+            HIVE_LOGIN_PROVIDER
+                .display_name
+                .contains("Free Gift from Alphacode"),
+            "Free Gift from Alphacode branding missing from login display_name: {}",
+            HIVE_LOGIN_PROVIDER.display_name
+        );
+        assert!(matches!(
+            HIVE_LOGIN_PROVIDER.target,
+            LoginProviderTarget::OpenAiCompatible(profile) if profile.id == HIVE_PROFILE.id
+        ));
+        for alias in HIVE_LOGIN_PROVIDER.aliases {
+            assert_eq!(
+                resolve_login_provider(alias).map(|d| d.id),
+                Some("hive"),
+                "alias {alias:?} must resolve to hive"
+            );
+        }
+
+        // The OpenAI-compatible profile contract feeds the login env-file
+        // picker, so assert the env binding up-front.
+        assert_eq!(HIVE_PROFILE.api_key_env, "HIVE_API_KEY");
+        assert_eq!(HIVE_PROFILE.env_file, "hive.env");
+    }
+
+    #[test]
+    fn openai_compat_base_normalization_handles_all_four_user_forms() {
+        // All four forms from the llama.cpp bug report must canonicalize.
+        assert_eq!(
+            normalize_openai_compat_api_base("http://127.0.0.1:8080").as_deref(),
+            Some("http://127.0.0.1:8080/v1")
+        );
+        assert_eq!(
+            normalize_openai_compat_api_base("http://127.0.0.1:8080/").as_deref(),
+            Some("http://127.0.0.1:8080/v1")
+        );
+        assert_eq!(
+            normalize_openai_compat_api_base("http://127.0.0.1:8080/v1").as_deref(),
+            Some("http://127.0.0.1:8080/v1")
+        );
+        assert_eq!(
+            normalize_openai_compat_api_base("http://127.0.0.1:8080/v1/").as_deref(),
+            Some("http://127.0.0.1:8080/v1")
+        );
+        // Custom versioned prefixes are preserved, never rewritten to /v1.
+        assert_eq!(
+            normalize_openai_compat_api_base("https://api-cdn.thehive.ai/api/v3").as_deref(),
+            Some("https://api-cdn.thehive.ai/api/v3")
+        );
+        assert_eq!(
+            normalize_openai_compat_api_base("https://api.kimi.com/coding/v1").as_deref(),
+            Some("https://api.kimi.com/coding/v1")
+        );
+    }
+
+    #[test]
+    fn openai_compat_request_urls_never_double_v1_and_handle_bare_roots() {
+        // Bare root and /v1 forms converge on the same versioned endpoint.
+        for base in [
+            "http://127.0.0.1:8080",
+            "http://127.0.0.1:8080/",
+            "http://127.0.0.1:8080/v1",
+            "http://127.0.0.1:8080/v1/",
+        ] {
+            assert_eq!(
+                openai_compat_chat_completions_url(base).as_deref(),
+                Some("http://127.0.0.1:8080/v1/chat/completions"),
+                "chat URL for base {base}"
+            );
+            assert_eq!(
+                openai_compat_models_url(base).as_deref(),
+                Some("http://127.0.0.1:8080/v1/models"),
+                "models URL for base {base}"
+            );
+        }
+        // No /v1/v1 duplication.
+        assert!(
+            !openai_compat_chat_completions_url("http://127.0.0.1:8080/v1")
+                .unwrap()
+                .contains("/v1/v1")
+        );
+        // Custom prefixes preserved.
+        assert_eq!(
+            openai_compat_chat_completions_url("https://api-cdn.thehive.ai/api/v3").as_deref(),
+            Some("https://api-cdn.thehive.ai/api/v3/chat/completions")
+        );
+        assert_eq!(
+            openai_compat_models_url("https://api.openai.com/v1").as_deref(),
+            Some("https://api.openai.com/v1/models")
+        );
+    }
+
+    #[test]
+    fn openai_compat_base_is_local_detects_loopback_only() {
+        assert!(openai_compat_base_is_local("http://127.0.0.1:8080/v1"));
+        assert!(openai_compat_base_is_local("http://localhost:11434/v1"));
+        assert!(openai_compat_base_is_local("http://127.0.0.1:8080"));
+        assert!(!openai_compat_base_is_local("https://api.openai.com/v1"));
+        assert!(!openai_compat_base_is_local(
+            "https://api.experientiallabs.ai/v1"
+        ));
+        // Private LAN is not loopback-local for timeout purposes.
+        assert!(!openai_compat_base_is_local("http://192.168.1.25:8000/v1"));
     }
 }

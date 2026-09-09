@@ -334,6 +334,10 @@ fn provider_preferred_model_orders(
         // platform-funded lane is dominated by a small curated set of slugs, so
         // rank the curated list above the live catalog's first random entry.
         Some("explabs") => &[crate::alphacode_provider_metadata::ALL_EXPLABS_MODELS],
+        // TheHive AI (Free Gift from Alphacode): the gateway's free lane hosts
+        // GLM-5.3-Flash, rank the curated list above the live catalog's first
+        // random entry.
+        Some("hive") => &[crate::alphacode_provider_metadata::ALL_HIVE_MODELS],
         _ => &[],
     }
 }
@@ -2365,6 +2369,7 @@ mod tests {
         "gemini",
         "antigravity",
         "explabs",
+        "hive",
     ];
 
     fn activation_for_provider_id(provider_id: &str) -> AuthActivationResult {
@@ -2519,6 +2524,15 @@ mod tests {
                 "Experiential Labs (Free Gift from Alphacode)",
                 &["deepseek-v4-flash", "qwen3.8-27b", "gpt-6-astra"],
                 "gpt-6-astra",
+            ),
+            // TheHive AI is the second free-gift provider; its bundled catalog
+            // ships with only one model, so that model must be the flagship.
+            (
+                "hive",
+                "openai-compatible:hive",
+                "TheHive AI (Free Gift from Alphacode)",
+                &["zai-org/glm-5.3-flash"],
+                "zai-org/glm-5.3-flash",
             ),
         ];
 

@@ -36,6 +36,23 @@ impl Agent {
             &self.session.id,
             self.graceful_shutdown.clone(),
         );
+
+        // Goal contract initialization: create a GoalContract from the active
+        // mission's success_criteria if one exists and no contract is active yet.
+        if self.goal_contract.is_none()
+            && let Ok(Some(mission)) = crate::mission::load(&self.session.id)
+            && let Some(contract) = crate::mission::contract_from_mission(&mission)
+        {
+            logging::info(&format!(
+                "Goal contract created from mission: {} criteria",
+                contract.success_criteria.len()
+            ));
+            self.goal_contract = Some(contract);
+            // Reset per-contract waste tracking so metrics describe exactly
+            // the contract being executed, not leftovers from a previous one.
+            crate::telemetry::waste_metrics::begin_contract();
+        }
+
         let mut final_text = String::new();
         let trace = trace_enabled();
         let mut context_limit_retries = 0u32;
@@ -1052,6 +1069,101 @@ impl Agent {
                     io::stdout().flush()?;
                 }
 
+                // Goal contract enforcement: reject non-report tool calls
+                // when the contract has reached terminal state.
+                if let Some(ref contract) = self.goal_contract
+                    && super::goal_evaluator::GoalEvaluator::should_reject_tool_call(
+                        contract, &tc.name,
+                    )
+                {
+                    logging::info(&format!(
+                        "Goal contract terminal - rejecting tool call: {}",
+                        tc.name
+                    ));
+                    let rejection_msg = "This tool call is rejected: the goal contract has been satisfied by authoritative evidence. Produce the final report now.".to_string();
+                    Bus::global().publish(BusEvent::ToolUpdated(ToolEvent {
+                        session_id: self.session.id.clone(),
+                        message_id: message_id.clone(),
+                        tool_call_id: tc.id.clone(),
+                        tool_name: tc.name.clone(),
+                        status: ToolStatus::Error,
+                        intent: tc.intent.clone(),
+                        title: None,
+                    }));
+                    self.add_message(
+                        Role::User,
+                        vec![ContentBlock::ToolResult {
+                            tool_use_id: tc.id,
+                            content: rejection_msg,
+                            is_error: Some(true),
+                        }],
+                    );
+                    tool_results_dirty = true;
+                    continue;
+                }
+
+                // Budget enforcement: check phase budgets and degraded tools
+                if let Some(ref contract) = self.goal_contract {
+                    let verdict = self.budget_enforcer.record_call(&tc.name, contract);
+                    if let super::budget_enforcer::BudgetVerdict::OverBudget(msg) = verdict {
+                        logging::info(&format!("Budget overrun: {}", msg));
+                        // Force transition to report phase
+                        if let Some(ref mut c) = self.goal_contract {
+                            c.phase =
+                                crate::alphacode_task_types::goal_contract::ContractPhase::Report;
+                        }
+                        self.budget_enforcer.transition_phase(
+                            crate::alphacode_task_types::goal_contract::ContractPhase::Report,
+                        );
+                        let budget_msg = format!(
+                            "Budget overrun: {}. Transitioning to report phase. Produce the final report now.",
+                            msg
+                        );
+                        Bus::global().publish(BusEvent::ToolUpdated(ToolEvent {
+                            session_id: self.session.id.clone(),
+                            message_id: message_id.clone(),
+                            tool_call_id: tc.id.clone(),
+                            tool_name: tc.name.clone(),
+                            status: ToolStatus::Error,
+                            intent: tc.intent.clone(),
+                            title: None,
+                        }));
+                        self.add_message(
+                            Role::User,
+                            vec![ContentBlock::ToolResult {
+                                tool_use_id: tc.id,
+                                content: budget_msg,
+                                is_error: Some(true),
+                            }],
+                        );
+                        tool_results_dirty = true;
+                        continue;
+                    } else if let super::budget_enforcer::BudgetVerdict::Rejected(msg) = verdict {
+                        logging::info(&format!("Tool rejected: {}", msg));
+                        let rejection_msg =
+                            format!("Tool call rejected: {}. Use an alternative approach.", msg);
+                        Bus::global().publish(BusEvent::ToolUpdated(ToolEvent {
+                            session_id: self.session.id.clone(),
+                            message_id: message_id.clone(),
+                            tool_call_id: tc.id.clone(),
+                            tool_name: tc.name.clone(),
+                            status: ToolStatus::Error,
+                            intent: tc.intent.clone(),
+                            title: None,
+                        }));
+                        self.add_message(
+                            Role::User,
+                            vec![ContentBlock::ToolResult {
+                                tool_use_id: tc.id,
+                                content: rejection_msg,
+                                is_error: Some(true),
+                            }],
+                        );
+                        tool_results_dirty = true;
+                        continue;
+                    }
+                }
+
                 let ctx = ToolContext {
                     session_id: self.session.id.clone(),
                     message_id: message_id.clone(),
@@ -1097,6 +1209,10 @@ impl Agent {
 
                 match result {
                     Ok(output) => {
+                        // Record success in budget enforcer
+                        self.budget_enforcer.record_result(&tc.name, true);
+                        crate::telemetry::waste_metrics::record_tool_call();
+
                         let output = cap_tool_output_for_history(&tc.name, output);
                         Bus::global().publish(BusEvent::ToolUpdated(ToolEvent {
                             session_id: self.session.id.clone(),
@@ -1123,15 +1239,55 @@ impl Agent {
                             println!("{}", preview.lines().next().unwrap_or("(done)"));
                         }
 
-                        let blocks = tool_output_to_content_blocks(tc.id, output);
+                        let blocks = tool_output_to_content_blocks(tc.id, output.clone());
                         self.add_message_with_duration(
                             Role::User,
                             blocks,
                             Some(tool_elapsed.as_millis() as u64),
                         );
                         tool_results_dirty = true;
+
+                        // Goal contract evaluation: check if this tool output
+                        // satisfies any terminal success criterion.
+                        if let Some(ref contract) = self.goal_contract
+                            && let Some(evidence) = super::goal_evaluator::GoalEvaluator::evaluate(
+                                contract,
+                                &tc.name,
+                                &output.output,
+                            )
+                        {
+                            logging::info(&format!(
+                                "Goal contract terminal evidence: criterion #{} ({})",
+                                evidence.criterion_index + 1,
+                                evidence.description
+                            ));
+                            // Mark the contract as terminal and inject the
+                            // termination reminder so the model knows to
+                            // produce a final report.
+                            if let Some(ref mut c) = self.goal_contract {
+                                c.mark_terminal(evidence.clone());
+                            }
+                            // Record goal achievement in budget enforcer
+                            self.budget_enforcer.mark_goal_achieved();
+                            crate::telemetry::waste_metrics::mark_goal_achieved(
+                                self.budget_enforcer.total_calls(),
+                            );
+                            let reminder =
+                                super::goal_evaluator::GoalEvaluator::terminal_reminder(&evidence);
+                            self.add_message(
+                                Role::User,
+                                vec![ContentBlock::Text {
+                                    text: reminder,
+                                    cache_control: None,
+                                }],
+                            );
+                            tool_results_dirty = true;
+                        }
                     }
                     Err(e) => {
+                        // Record failure in budget enforcer
+                        self.budget_enforcer.record_result(&tc.name, false);
+
                         crate::telemetry::record_tool_failure();
                         Bus::global().publish(BusEvent::ToolUpdated(ToolEvent {
                             session_id: self.session.id.clone(),

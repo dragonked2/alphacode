@@ -2,6 +2,7 @@ use crate::alphacode_logging as logging;
 use crate::alphacode_storage as storage;
 mod lifecycle;
 mod state_support;
+pub mod waste_metrics;
 use crate::alphacode_usage_types::{
     AuthEvent, DiscoveryEvent, ErrorCounts, FeedbackEvent, InstallEvent, OnboardingStepEvent,
     SessionLifecycleEvent, SessionStartEvent, TelemetryProjectProfile as ProjectProfile,

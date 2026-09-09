@@ -151,10 +151,8 @@ fn resolve_build_version(base: Version, repo_root: &Path) -> String {
     // the tag the CI created (v1.0.27), which confuses users and breaks the
     // update check (update_semver ends up wrong).
     let is_release = env::var_os(ENV_RELEASE).is_some();
-    if is_release {
-        if let Some(tag_version) = extract_version_from_release_tag(repo_root) {
-            return tag_version;
-        }
+    if is_release && let Some(tag_version) = extract_version_from_release_tag(repo_root) {
+        return tag_version;
     }
 
     let commits = commits_since_base_tag(base, repo_root).unwrap_or(0);
@@ -181,10 +179,10 @@ fn extract_version_from_release_tag(repo_root: &Path) -> Option<String> {
     // Find the first valid semver tag.
     for tag in tags.lines() {
         let tag = tag.trim();
-        if let Some(version) = tag.strip_prefix('v') {
-            if Version::parse(version).is_some() {
-                return Some(version.to_string());
-            }
+        if let Some(version) = tag.strip_prefix('v')
+            && Version::parse(version).is_some()
+        {
+            return Some(version.to_string());
         }
     }
 
@@ -202,10 +200,10 @@ fn extract_version_from_release_tag(repo_root: &Path) -> Option<String> {
 
     let tag = String::from_utf8_lossy(&describe.stdout);
     let tag = tag.trim();
-    if let Some(version) = tag.strip_prefix('v') {
-        if Version::parse(version).is_some() {
-            return Some(version.to_string());
-        }
+    if let Some(version) = tag.strip_prefix('v')
+        && Version::parse(version).is_some()
+    {
+        return Some(version.to_string());
     }
 
     None

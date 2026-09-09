@@ -135,11 +135,7 @@ impl SmartModelPicker {
     /// task-aware model-name + context-window scoring from
     /// []. Pure function: no model calls, no
     /// network I/O.
-    pub fn get_sorted_models_for_task(
-        &self,
-        models: Vec<String>,
-        task: TaskKind,
-    ) -> Vec<String> {
+    pub fn get_sorted_models_for_task(&self, models: Vec<String>, task: TaskKind) -> Vec<String> {
         let stats = self
             .stats
             .lock()
@@ -169,11 +165,7 @@ impl SmartModelPicker {
 
     /// Auto-classify the user's task from free-form text and return the
     /// sorted list. Convenience wrapper.
-    pub fn get_sorted_models_for_text(
-        &self,
-        models: Vec<String>,
-        user_text: &str,
-    ) -> Vec<String> {
+    pub fn get_sorted_models_for_text(&self, models: Vec<String>, user_text: &str) -> Vec<String> {
         self.get_sorted_models_for_task(models, TaskKind::classify(user_text))
     }
 
@@ -326,19 +318,11 @@ pub fn render_smart_model_picker(
     area: Rect,
     frame: &mut Frame,
 ) {
-    render_smart_model_picker_with_task(
-        models,
-        picker,
-        selected,
-        search_query,
-        None,
-        area,
-        frame,
-    )
+    render_smart_model_picker_with_task(models, picker, selected, search_query, None, area, frame)
 }
 
 /// Like [], but takes an explicit optional task
-/// hint so the picker can rank models by task-fit. Pass 
+/// hint so the picker can rank models by task-fit. Pass
 /// (any free-form prompt fragment) to enable task-aware ranking; pass
 ///  to fall back to usage-based ranking.
 pub fn render_smart_model_picker_with_task(
@@ -376,7 +360,7 @@ pub fn render_smart_model_picker_with_task(
                 // model name in order. Cheap and catches "haik" -> "haiku".
                 let mut hay = m.chars();
                 for needle_ch in q.chars() {
-                    if hay.by_ref().find(|c| *c == needle_ch).is_none() {
+                    if !hay.by_ref().any(|c| c == needle_ch) {
                         return false;
                     }
                 }
@@ -609,8 +593,7 @@ mod tests {
         ];
 
         // Security task should rank opus (reasoning) above haiku (fast).
-        let sorted =
-            picker.get_sorted_models_for_task(models.clone(), TaskKind::SecurityAnalysis);
+        let sorted = picker.get_sorted_models_for_task(models.clone(), TaskKind::SecurityAnalysis);
         let pos_opus = sorted.iter().position(|m| m == "claude-opus-4-5").unwrap();
         let pos_haiku = sorted.iter().position(|m| m == "claude-haiku-3-5").unwrap();
         assert!(
@@ -619,8 +602,7 @@ mod tests {
         );
 
         // Simple-question task should rank haiku (fast) above opus.
-        let sorted_simple =
-            picker.get_sorted_models_for_task(models, TaskKind::SimpleQuestion);
+        let sorted_simple = picker.get_sorted_models_for_task(models, TaskKind::SimpleQuestion);
         let pos_opus2 = sorted_simple
             .iter()
             .position(|m| m == "claude-opus-4-5")
@@ -642,10 +624,8 @@ mod tests {
             "claude-opus-4-5".to_string(),
             "claude-haiku-3-5".to_string(),
         ];
-        let sorted = picker.get_sorted_models_for_text(
-            models,
-            "audit this code for XSS vulnerabilities",
-        );
+        let sorted =
+            picker.get_sorted_models_for_text(models, "audit this code for XSS vulnerabilities");
         assert_eq!(sorted[0], "claude-opus-4-5");
     }
 }

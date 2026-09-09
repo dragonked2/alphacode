@@ -144,10 +144,22 @@ impl Agent {
     pub fn restore_reasoning_effort_from_session(&mut self) {
         if let Some(effort) = self.session.reasoning_effort.clone() {
             if let Err(e) = self.provider.set_reasoning_effort(&effort) {
-                crate::logging::error(&format!(
-                    "Failed to restore session reasoning effort '{}': {}",
-                    effort, e
-                ));
+                // Unsupported effort on this model/profile is not fatal: clear
+                // it so chat can proceed (local llama.cpp models accept no
+                // effort field). Log at info level to avoid scary errors.
+                let msg = format!("{e:#}").to_ascii_lowercase();
+                if msg.contains("not supported") {
+                    crate::logging::info(&format!(
+                        "Session reasoning effort '{}' not supported by this model/profile; continuing without it.",
+                        effort
+                    ));
+                    self.session.reasoning_effort = self.provider.reasoning_effort();
+                } else {
+                    crate::logging::error(&format!(
+                        "Failed to restore session reasoning effort '{}': {}",
+                        effort, e
+                    ));
+                }
             }
         } else {
             self.session.reasoning_effort = self.provider.reasoning_effort();
