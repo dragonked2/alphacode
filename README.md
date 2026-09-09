@@ -78,7 +78,6 @@
 | 🥇 **Alphacode** (lean mode) | **27.8 MB** | **1.0×** |
 | Codex CLI | 140.0 MB | 5.0× |
 | pi | 144.4 MB | 5.2× |
-| Alphacode (default) | 167.1 MB | 6.0× |
 | Cursor Agent | 214.9 MB | 7.7× |
 | Antigravity CLI | 243.7 MB | 8.8× |
 | GitHub Copilot CLI | 333.3 MB | 12.0× |
@@ -93,7 +92,6 @@
 | Tool | RAM | vs. Alphacode |
 | :-- | --: | --: |
 | 🥇 **Alphacode** (lean mode) | **117.0 MB** | **1.0×** |
-| Alphacode (default) | 260.8 MB | 2.2× |
 | Codex CLI | 334.8 MB | 2.9× |
 | pi | 833.0 MB | 7.1× |
 | Antigravity CLI | 1,021.2 MB | 8.7× |
