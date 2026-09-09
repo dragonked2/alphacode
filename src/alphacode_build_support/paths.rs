@@ -375,14 +375,26 @@ pub fn launcher_dir() -> Result<PathBuf> {
 
     #[cfg(windows)]
     {
-        if let Ok(local) = std::env::var("LOCALAPPDATA") {
-            return Ok(PathBuf::from(local).join("alphacode").join("bin"));
+        let local_bin = home_dir()?.join(".local").join("bin");
+        let local_data_bin = if let Ok(local) = std::env::var("LOCALAPPDATA") {
+            PathBuf::from(local).join("alphacode").join("bin")
+        } else {
+            home_dir()?
+                .join("AppData")
+                .join("Local")
+                .join("alphacode")
+                .join("bin")
+        };
+
+        // If the binary already exists under ~/.local/bin (e.g. installed via
+        // source build or an older installer), prefer that path so the update
+        // mechanism writes to the correct location.  Fall back to the
+        // standard %LOCALAPPDATA% path.
+        let user_bin = local_bin.join(binary_name());
+        if user_bin.exists() {
+            return Ok(local_bin);
         }
-        Ok(home_dir()?
-            .join("AppData")
-            .join("Local")
-            .join("alphacode")
-            .join("bin"))
+        return Ok(local_data_bin);
     }
     #[cfg(not(windows))]
     {
