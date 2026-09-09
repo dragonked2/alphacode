@@ -2547,7 +2547,7 @@ pub(super) fn handle_test_command(app: &mut App, trimmed: &str) -> bool {
 ///
 /// Returns `Some("")` for `/cmd` with no argument, `Some(rest)` for
 /// `/cmd rest...`, and `None` when the line is not the command. Accepts a
-/// single space, tab, or no separator so users can type `/model	gpt-5`
+/// single space, tab, or no separator so users can type `/model gpt-5`
 /// or `/model gpt-5` interchangeably.
 fn slash_command_rest<'a>(trimmed: &'a str, command: &str) -> Option<&'a str> {
     if trimmed == command {

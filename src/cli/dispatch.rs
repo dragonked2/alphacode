@@ -84,6 +84,14 @@ pub(crate) async fn run_main(mut args: Args) -> Result<()> {
     // users; anyone re-enabling it afterwards keeps their choice.
     crate::config::Config::migrate_idle_animation_off_once();
 
+    // Detached reload helper: spawned by hot_reload() on Windows to wait for
+    // the current process to exit, then exec into the new binary. This
+    // avoids the Windows locking issue where the running executable cannot
+    // be replaced in-place.
+    if args.internal_reload_helper {
+        return run_reload_helper(&args);
+    }
+
     if let Some(profile_name) = args
         .provider_profile
         .as_deref()
@@ -1495,4 +1503,90 @@ async fn run_server_promote(version: Option<&str>, json: bool) -> Result<()> {
         }
     }
     Ok(())
+}
+
+/// Detached reload helper: waits for the parent process to exit, then execs
+/// into the target binary. This solves the Windows problem where the running
+/// executable cannot be replaced in-place.
+fn run_reload_helper(args: &Args) -> Result<()> {
+    let target = args
+        .reload_target
+        .as_deref()
+        .ok_or_else(|| anyhow::anyhow!("--reload-target is required for reload helper"))?;
+    let target_path = std::path::PathBuf::from(target);
+    let session_id = args.resume.as_deref().unwrap_or("");
+    let parent_pid = args.parent_pid;
+
+    eprintln!(
+        "[reload-helper] Waiting for parent pid={} to exit before launching {:?}...",
+        parent_pid.unwrap_or(0),
+        target_path
+    );
+
+    // Wait for the parent process to exit by polling.
+    if let Some(pid) = parent_pid {
+        #[cfg(windows)]
+        {
+            use std::ffi::c_void;
+            type Handle = *mut c_void;
+            type Dword = u32;
+            const PROCESS_QUERY_LIMITED_INFORMATION: Dword = 0x1000;
+            const WAIT_OBJECT_0: Dword = 0;
+
+            unsafe extern "system" {
+                fn OpenProcess(access: Dword, inherit: i32, pid: Dword) -> Handle;
+                fn WaitForSingleObject(handle: Handle, ms: Dword) -> Dword;
+                fn CloseHandle(handle: Handle) -> i32;
+            }
+
+            unsafe {
+                let handle = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid);
+                if !handle.is_null() {
+                    // Wait up to 30 seconds; if the parent doesn't exit, proceed anyway.
+                    let wait_result = WaitForSingleObject(handle, 30_000);
+                    CloseHandle(handle);
+                    if wait_result == WAIT_OBJECT_0 {
+                        eprintln!("[reload-helper] Parent process exited.");
+                    } else {
+                        eprintln!("[reload-helper] Parent wait timed out, proceeding anyway.");
+                    }
+                } else {
+                    // Process not found — already exited.
+                    eprintln!("[reload-helper] Parent process not found (already exited).");
+                }
+            }
+        }
+        #[cfg(not(windows))]
+        {
+            // On Unix, use kill(pid, 0) to check if the process is alive.
+            for _ in 0..300 {
+                let alive = unsafe { libc::kill(pid as i32, 0) } == 0;
+                if !alive {
+                    break;
+                }
+                std::thread::sleep(std::time::Duration::from_millis(100));
+            }
+        }
+    } else {
+        // No parent PID provided; wait a fixed duration as fallback.
+        eprintln!("[reload-helper] No parent PID, waiting 2 seconds...");
+        std::thread::sleep(std::time::Duration::from_secs(2));
+    }
+
+    eprintln!(
+        "[reload-helper] Launching {:?} with --resume {} --no-update",
+        target_path, session_id
+    );
+
+    // Exec into the new binary. On Unix this replaces the helper process;
+    // on Windows it spawns and the helper exits.
+    let mut cmd = ProcessCommand::new(&target_path);
+    cmd.arg("--resume")
+        .arg(session_id)
+        .arg("--no-update")
+        .current_dir(
+            std::env::current_dir().unwrap_or_else(|_| target_path.parent().unwrap().to_path_buf()),
+        );
+    let err = crate::platform::replace_process(&mut cmd);
+    Err(anyhow::anyhow!("Failed to exec {:?}: {}", target_path, err))
 }

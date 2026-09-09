@@ -71,6 +71,20 @@ pub(crate) struct Args {
     #[arg(long, global = true, hide = true, value_name = "CHORD")]
     pub(crate) spawn_hotkey: Option<String>,
 
+    /// Internal: detached helper process that waits for the parent to exit,
+    /// then execs into the reload-target binary. Used on Windows where the
+    /// running executable cannot be replaced in-place.
+    #[arg(long, global = true, hide = true)]
+    pub(crate) internal_reload_helper: bool,
+
+    /// Internal: path to the binary that the reload helper should exec into.
+    #[arg(long, global = true, hide = true)]
+    pub(crate) reload_target: Option<String>,
+
+    /// Internal: parent process ID for the reload helper to wait on.
+    #[arg(long, global = true, hide = true)]
+    pub(crate) parent_pid: Option<u32>,
+
     /// Disable auto-detection of alphacode repository and self-dev mode
     #[arg(long, global = true)]
     pub(crate) no_selfdev: bool,

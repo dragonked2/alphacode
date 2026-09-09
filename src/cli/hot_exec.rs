@@ -116,6 +116,50 @@ pub fn hot_reload(session_id: &str) -> Result<()> {
         crate::logging::info(&format!("Reloading with binary built {}...", age));
     }
 
+    // On Windows, the currently-running executable is locked and cannot be
+    // replaced in-place. If the target binary is a *different* file (e.g. a
+    // freshly installed update in versions/<v>/), spawn a detached helper
+    // process that waits for us to exit, then execs into the new binary.
+    // This avoids the race where both old and new processes load the same
+    // file because Windows keeps the old handle open.
+    #[cfg(windows)]
+    {
+        let current_exe = std::env::current_exe().ok();
+        let different_binary = current_exe.as_ref() != Some(&exe);
+        if different_binary {
+            crate::logging::info(&format!(
+                "Spawning detached helper to reload with {:?} after current process exits...",
+                exe
+            ));
+            let mut helper_cmd = ProcessCommand::new(std::env::current_exe()?);
+            helper_cmd
+                .arg("--internal-reload-helper")
+                .arg("--resume")
+                .arg(session_id)
+                .arg("--reload-target")
+                .arg(&exe)
+                .arg("--parent-pid")
+                .arg(std::process::id().to_string())
+                .arg("--no-update");
+            if is_selfdev {
+                helper_cmd.arg("self-dev");
+            }
+            helper_cmd.current_dir(&cwd);
+            match crate::platform::spawn_detached_process(&mut helper_cmd) {
+                Ok(_child) => {
+                    crate::logging::info("Detached helper spawned. Current process will exit now.");
+                    std::process::exit(0);
+                }
+                Err(e) => {
+                    crate::logging::warn(&format!(
+                        "Failed to spawn detached helper: {}. Falling back to direct exec.",
+                        e
+                    ));
+                }
+            }
+        }
+    }
+
     for attempt in 0..3 {
         if attempt > 0 {
             std::thread::sleep(std::time::Duration::from_millis(200));

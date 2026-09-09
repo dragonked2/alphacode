@@ -467,3 +467,35 @@ pub fn replace_process(cmd: &mut std::process::Command) -> std::io::Error {
         }
     }
 }
+
+/// Spawn a detached process that survives the parent's exit.
+///
+/// On Windows: uses `CREATE_NO_WINDOW | DETACHED_PROCESS` flags so the helper
+/// runs in the background without a console window. The child inherits no
+/// handles and is fully independent.
+///
+/// On Unix: uses `pre_exec` to setsid() + fork, achieving the same effect.
+#[cfg(windows)]
+pub fn spawn_detached_process(
+    cmd: &mut std::process::Command,
+) -> std::io::Result<std::process::Child> {
+    use std::os::windows::process::CommandExt;
+    const CREATE_NO_WINDOW: u32 = 0x08000000;
+    const DETACHED_PROCESS: u32 = 0x00000008;
+    cmd.creation_flags(CREATE_NO_WINDOW | DETACHED_PROCESS)
+        .spawn()
+}
+
+#[cfg(not(windows))]
+pub fn spawn_detached_process(
+    cmd: &mut std::process::Command,
+) -> std::io::Result<std::process::Child> {
+    use std::os::unix::process::CommandExt;
+    unsafe {
+        cmd.pre_exec(|| {
+            libc::setsid();
+            Ok(())
+        });
+    }
+    cmd.spawn()
+}
