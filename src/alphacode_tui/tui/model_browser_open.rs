@@ -27,7 +27,7 @@ use std::sync::{Arc, Mutex};
 use std::time::Instant;
 
 use crate::alphacode_tui::tui::model_browser::{
-    build_rows_from_options, BrowserRow, ModelBrowserState, RowDelta,
+    BrowserRow, ModelBrowserState, RowDelta, build_rows_from_options,
 };
 
 /// Sender for the in-flight browser build. Held by `App` until the build
@@ -85,10 +85,7 @@ pub fn signature_from_routes(
             // so it is safe as a delimiter.
             format!(
                 "{}\u{1f}{}\u{1f}{}\u{1f}{}",
-                r.provider,
-                r.api_method,
-                r.detail,
-                r.detail_severity as u8,
+                r.provider, r.api_method, r.detail, r.detail_severity as u8,
             )
         })
         .collect();
@@ -158,10 +155,10 @@ where
     let sig = signature_from_routes(routes, current_model, task_hint);
 
     // Phase 1: cache hit returns instantly.
-    if let Some(slot) = cached {
-        if slot.is_fresh(&sig) {
-            return OpenOutcome::CacheHit(slot.state.clone());
-        }
+    if let Some(slot) = cached
+        && slot.is_fresh(&sig)
+    {
+        return OpenOutcome::CacheHit(slot.state.clone());
     }
 
     // No routes at all: don't bother painting the skeleton.
@@ -182,7 +179,12 @@ where
         let started = Instant::now();
         let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
             let new_routes = routes_fn();
-            build_rows_from_options(&new_routes, &favorites_clone, Some(&current), default.as_deref())
+            build_rows_from_options(
+                &new_routes,
+                &favorites_clone,
+                Some(&current),
+                default.as_deref(),
+            )
         }));
         match result {
             Ok(rows) => {
@@ -239,10 +241,7 @@ pub type SharedCacheSlot = Arc<Mutex<Option<BrowserCacheSlot>>>;
 
 /// Convenience: build the cache from a delta stream. Called after the build
 /// completes so the next open hits the cache.
-pub fn cache_from_state(
-    sig: BrowserCacheSignature,
-    state: &ModelBrowserState,
-) -> BrowserCacheSlot {
+pub fn cache_from_state(sig: BrowserCacheSignature, state: &ModelBrowserState) -> BrowserCacheSlot {
     BrowserCacheSlot {
         signature: sig,
         state: state.clone(),
@@ -263,7 +262,13 @@ mod tests {
     use std::sync::mpsc;
 
     fn opt(p: &str, m: &str) -> PickerOption {
-        PickerOption::new(p.to_string(), m.to_string(), true, String::new(), Some(3000))
+        PickerOption::new(
+            p.to_string(),
+            m.to_string(),
+            true,
+            String::new(),
+            Some(3000),
+        )
     }
 
     #[test]
@@ -292,7 +297,15 @@ mod tests {
             state: ModelBrowserState::new(vec![]),
             cached_at: Instant::now(),
         };
-        let outcome = open_browser(Some(&slot), &[opt("A", "a")], "current", None, &HashSet::new(), None, || panic!("should not run"));
+        let outcome = open_browser(
+            Some(&slot),
+            &[opt("A", "a")],
+            "current",
+            None,
+            &HashSet::new(),
+            None,
+            || panic!("should not run"),
+        );
         assert!(matches!(outcome, OpenOutcome::CacheHit(_)));
     }
 
@@ -314,7 +327,11 @@ mod tests {
             None,
         );
         tx.send(RowDelta::Replaced(real_rows.clone())).unwrap();
-        tx.send(RowDelta::Complete { total: real_rows.len(), elapsed_ms: 5 }).unwrap();
+        tx.send(RowDelta::Complete {
+            total: real_rows.len(),
+            elapsed_ms: 5,
+        })
+        .unwrap();
         drop(tx);
         let changed = poll_browser_load(&rx, &mut state);
         assert!(changed);

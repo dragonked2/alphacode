@@ -838,4 +838,70 @@ mod tests {
         ));
         assert!(stream.tool_call_accumulators.is_empty());
     }
+
+    #[test]
+    fn llamacpp_streaming_shape_parses_content_usage_and_done() {
+        // Minimal llama.cpp `stream=true` shape: content deltas, a stop reason,
+        // usage with prompt/completion tokens, then [DONE].
+        let mut stream = test_stream();
+        stream.buffer = concat!(
+            "data: {\"choices\":[{\"delta\":{\"content\":\"Hello\"},\"index\":0}],\"created\":0,\"model\":\"alpha\"}\n\n",
+            "data: {\"choices\":[{\"delta\":{\"content\":\" world\"},\"index\":0}],\"created\":0,\"model\":\"alpha\"}\n\n",
+            "data: {\"choices\":[{\"delta\":{},\"finish_reason\":\"stop\",\"index\":0}],\"created\":0,\"model\":\"alpha\",\"usage\":{\"prompt_tokens\":10,\"completion_tokens\":3}}\n\n",
+            "data: [DONE]\n\n",
+        )
+        .to_string();
+
+        let mut text = String::new();
+        let mut saw_usage = false;
+        let mut stop = None;
+        while let Some(event) = stream.parse_next_event() {
+            match event {
+                StreamEvent::TextDelta(d) => text.push_str(&d),
+                StreamEvent::TokenUsage {
+                    input_tokens,
+                    output_tokens,
+                    ..
+                } => {
+                    saw_usage = true;
+                    assert_eq!(input_tokens, Some(10));
+                    assert_eq!(output_tokens, Some(3));
+                }
+                StreamEvent::MessageEnd { stop_reason } => {
+                    stop = stop_reason;
+                    break;
+                }
+                _ => {}
+            }
+        }
+        assert_eq!(text, "Hello world");
+        assert!(saw_usage);
+        assert_eq!(stop.as_deref(), Some("stop"));
+    }
+
+    #[test]
+    fn llamacpp_non_streaming_message_shape_parses_as_delta() {
+        // llama.cpp `stream=false` returns `choices[0].message`; the parser
+        // accepts `message` as an alias for `delta` so non-streaming payloads
+        // routed through the same parser still yield text.
+        let mut stream = test_stream();
+        stream.buffer =
+            "data: {\"choices\":[{\"message\":{\"content\":\"hi there\"}}]}\n\ndata: [DONE]\n\n"
+                .to_string();
+        assert_eq!(drain_text(&mut stream), "hi there");
+    }
+
+    #[test]
+    fn llamacpp_empty_and_malformed_chunks_do_not_break_stream() {
+        let mut stream = test_stream();
+        stream.buffer = concat!(
+            "data: \n\n",
+            ": keep-alive\n\n",
+            "data: {not-json}\n\n",
+            "data: {\"choices\":[{\"delta\":{\"content\":\"ok\"}}]}\n\n",
+            "data: [DONE]\n\n",
+        )
+        .to_string();
+        assert_eq!(drain_text(&mut stream), "ok");
+    }
 }

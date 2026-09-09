@@ -156,25 +156,58 @@ impl TaskKind {
         let lower = text.to_ascii_lowercase();
         let has = |words: &[&str]| words.iter().any(|w| lower.contains(w));
         if has(&[
-            "vulnerab", "exploit", "cve", "xss", "sqli", "injection", "pentest", "bug bounty",
-            "auth bypass", "secret", "malicious",
+            "vulnerab",
+            "exploit",
+            "cve",
+            "xss",
+            "sqli",
+            "injection",
+            "pentest",
+            "bug bounty",
+            "auth bypass",
+            "secret",
+            "malicious",
         ]) {
             Self::SecurityAnalysis
         } else if has(&[
-            "stack trace", "backtrace", "panicked", "segfault", "flaky", "regression",
-            "why does", "fails with", "error:", "exception",
+            "stack trace",
+            "backtrace",
+            "panicked",
+            "segfault",
+            "flaky",
+            "regression",
+            "why does",
+            "fails with",
+            "error:",
+            "exception",
         ]) {
             Self::Debugging
         } else if has(&[
-            "architecture", "design doc", "rfc", "tradeoff", "trade-off", "dependency graph",
-            "refactor the module", "migrate",
+            "architecture",
+            "design doc",
+            "rfc",
+            "tradeoff",
+            "trade-off",
+            "dependency graph",
+            "refactor the module",
+            "migrate",
         ]) || text.len() > 4000
         {
             Self::ComplexReasoning
-        } else if has(&["audit the repo", "whole codebase", "all files", "large repo", "index the"]) {
+        } else if has(&[
+            "audit the repo",
+            "whole codebase",
+            "all files",
+            "large repo",
+            "index the",
+        ]) {
             Self::LargeContext
         } else if has(&[
-            "implement", "add function", "write code", "create component", "generate",
+            "implement",
+            "add function",
+            "write code",
+            "create component",
+            "generate",
             "scaffold",
         ]) {
             Self::CodeGeneration
@@ -242,30 +275,53 @@ impl TaskKind {
 
         match self {
             Self::ComplexReasoning | Self::Debugging | Self::SecurityAnalysis => {
-                if is_reasoning_named { score += 500; }
-                if is_fast_named { score -= 300; }
-                if is_coding_named { score += 150; }
+                if is_reasoning_named {
+                    score += 500;
+                }
+                if is_fast_named {
+                    score -= 300;
+                }
+                if is_coding_named {
+                    score += 150;
+                }
             }
             Self::CodeGeneration => {
-                if is_coding_named { score += 400; }
-                if is_reasoning_named { score += 100; }
-                if is_fast_named { score -= 50; }
+                if is_coding_named {
+                    score += 400;
+                }
+                if is_reasoning_named {
+                    score += 100;
+                }
+                if is_fast_named {
+                    score -= 50;
+                }
             }
             Self::LargeContext => {
                 if let Some(ctx) = context_window {
-                    if ctx >= 1_000_000 { score += 600; }
-                    else if ctx >= 200_000 { score += 400; }
-                    else if ctx >= 100_000 { score += 200; }
-                    else if ctx < self.min_context_window() {
+                    if ctx >= 1_000_000 {
+                        score += 600;
+                    } else if ctx >= 200_000 {
+                        score += 400;
+                    } else if ctx >= 100_000 {
+                        score += 200;
+                    } else if ctx < self.min_context_window() {
                         score -= 1_000;
                     }
                 }
-                if is_long_named { score += 200; }
-                if is_reasoning_named { score += 100; }
+                if is_long_named {
+                    score += 200;
+                }
+                if is_reasoning_named {
+                    score += 100;
+                }
             }
             Self::FastToolUse | Self::SimpleQuestion => {
-                if is_fast_named { score += 400; }
-                if is_reasoning_named { score -= 50; }
+                if is_fast_named {
+                    score += 400;
+                }
+                if is_reasoning_named {
+                    score -= 50;
+                }
             }
         }
 
@@ -872,7 +928,10 @@ mod tests {
             TaskKind::classify("implement login function"),
             TaskKind::CodeGeneration
         );
-        assert_eq!(TaskKind::classify("what is rust?"), TaskKind::SimpleQuestion);
+        assert_eq!(
+            TaskKind::classify("what is rust?"),
+            TaskKind::SimpleQuestion
+        );
         assert!(TaskKind::Debugging.prefers_quality());
         assert!(!TaskKind::SimpleQuestion.prefers_quality());
     }
@@ -882,7 +941,10 @@ mod tests {
         // Quality tasks prefer reasoning-named models and penalize fast ones.
         let opus_score = TaskKind::ComplexReasoning.score_model("claude-opus-4-5", Some(200_000));
         let haiku_score = TaskKind::ComplexReasoning.score_model("claude-haiku-3-5", Some(200_000));
-        assert!(opus_score > haiku_score, "opus should outscore haiku for reasoning: {opus_score} vs {haiku_score}");
+        assert!(
+            opus_score > haiku_score,
+            "opus should outscore haiku for reasoning: {opus_score} vs {haiku_score}"
+        );
         // Security tasks follow the same rule.
         let sec_opus = TaskKind::SecurityAnalysis.score_model("o1-pro", Some(128_000));
         let sec_mini = TaskKind::SecurityAnalysis.score_model("gpt-4o-mini", Some(128_000));
@@ -894,7 +956,10 @@ mod tests {
         // Simple questions like a fast model.
         let mini = TaskKind::SimpleQuestion.score_model("gpt-4o-mini", Some(128_000));
         let opus = TaskKind::SimpleQuestion.score_model("claude-opus-4-5", Some(200_000));
-        assert!(mini > opus, "fast should outscore reasoning for simple Q&A: {mini} vs {opus}");
+        assert!(
+            mini > opus,
+            "fast should outscore reasoning for simple Q&A: {mini} vs {opus}"
+        );
     }
 
     #[test]
@@ -902,17 +967,26 @@ mod tests {
         // Large-context tasks strongly prefer long-context models.
         let long = TaskKind::LargeContext.score_model("claude-sonnet-4-5-1m", Some(1_000_000));
         let short = TaskKind::LargeContext.score_model("gpt-4o-mini", Some(128_000));
-        assert!(long > short, "1m should outscore 128k for large-context: {long} vs {short}");
+        assert!(
+            long > short,
+            "1m should outscore 128k for large-context: {long} vs {short}"
+        );
         // Below the minimum context is strongly penalized.
         let tiny = TaskKind::LargeContext.score_model("gpt-3.5-turbo", Some(16_000));
-        assert!(tiny < 0, "below-minimum model must score negative, got {tiny}");
+        assert!(
+            tiny < 0,
+            "below-minimum model must score negative, got {tiny}"
+        );
     }
 
     #[test]
     fn task_kind_prefers_coding_for_code_generation() {
         let coder = TaskKind::CodeGeneration.score_model("qwen-coder-32b", Some(128_000));
         let generic = TaskKind::CodeGeneration.score_model("claude-sonnet-4-5", Some(200_000));
-        assert!(coder >= generic, "coder should not lose to a generic model: {coder} vs {generic}");
+        assert!(
+            coder >= generic,
+            "coder should not lose to a generic model: {coder} vs {generic}"
+        );
     }
 
     #[test]

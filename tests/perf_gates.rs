@@ -28,9 +28,9 @@
 use std::collections::HashSet;
 use std::time::{Duration, Instant};
 
-use alphacode::tui::model_browser::ModelBrowserState;
-use alphacode::tui::model_browser_open::{open_browser, OpenOutcome};
 use alphacode::tui::PickerOption;
+use alphacode::tui::model_browser::ModelBrowserState;
+use alphacode::tui::model_browser_open::{OpenOutcome, open_browser};
 
 const PERF_BUDGET_CACHE_HIT: Duration = Duration::from_millis(16);
 const PERF_BUDGET_COLD_OPEN: Duration = Duration::from_millis(100);
@@ -71,10 +71,11 @@ fn cache_hit_under_16ms() {
         _ => panic!("expected skeleton"),
     };
     let slot = alphacode::tui::model_browser_open::BrowserCacheSlot {
-        signature:
-            alphacode::tui::model_browser_open::signature_from_routes(
-                &options, "current-model", None,
-            ),
+        signature: alphacode::tui::model_browser_open::signature_from_routes(
+            &options,
+            "current-model",
+            None,
+        ),
         state: cached,
         cached_at: Instant::now(),
     };
@@ -90,7 +91,10 @@ fn cache_hit_under_16ms() {
         || panic!("cache hit must not invoke the build closure"),
     );
     let elapsed = started.elapsed();
-    assert!(matches!(outcome, OpenOutcome::CacheHit(_)), "expected cache hit");
+    assert!(
+        matches!(outcome, OpenOutcome::CacheHit(_)),
+        "expected cache hit"
+    );
     assert!(
         elapsed < PERF_BUDGET_CACHE_HIT,
         "cache hit took {elapsed:?}, budget {PERF_BUDGET_CACHE_HIT:?}"
@@ -126,21 +130,13 @@ fn cold_open_skeleton_under_100ms() {
 
 #[test]
 fn paint_400_rows_under_4ms() {
-    use alphacode::tui::model_browser::{
-        build_rows_from_options, BrowserRow,
-    };
+    use alphacode::tui::model_browser::build_rows_from_options;
     use alphacode::tui::model_browser_render::render_browser;
-    use ratatui::backend::TestBackend;
     use ratatui::Terminal;
+    use ratatui::backend::TestBackend;
 
     let options = make_options(400);
-    let options_for_closure = options.clone();
-    let rows = build_rows_from_options(
-        &options,
-        &HashSet::new(),
-        Some("provider-0"),
-        None,
-    );
+    let rows = build_rows_from_options(&options, &HashSet::new(), Some("provider-0"), None);
     let state = ModelBrowserState::new(rows);
 
     let backend = TestBackend::new(160, 48);
@@ -162,13 +158,7 @@ fn facet_toggle_400_rows_under_2ms() {
     use alphacode::tui::model_browser::build_rows_from_options;
 
     let options = make_options(400);
-    let options_for_closure = options.clone();
-    let rows = build_rows_from_options(
-        &options,
-        &HashSet::new(),
-        Some("provider-0"),
-        None,
-    );
+    let rows = build_rows_from_options(&options, &HashSet::new(), Some("provider-0"), None);
     let mut state = ModelBrowserState::new(rows);
 
     let started = Instant::now();
@@ -188,15 +178,12 @@ fn facet_toggle_400_rows_under_2ms() {
 #[test]
 fn sort_cycle_under_500us() {
     let options = make_options(400);
-    let options_for_closure = options.clone();
-    let mut state = ModelBrowserState::new(
-        alphacode::tui::model_browser::build_rows_from_options(
-            &options,
-            &HashSet::new(),
-            Some("provider-0"),
-            None,
-        ),
-    );
+    let mut state = ModelBrowserState::new(alphacode::tui::model_browser::build_rows_from_options(
+        &options,
+        &HashSet::new(),
+        Some("provider-0"),
+        None,
+    ));
 
     let started = Instant::now();
     for _ in 0..1000 {

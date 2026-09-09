@@ -37,7 +37,8 @@ fn model_picker_entry() -> crate::alphacode_tui::tui::PickerEntry {
             available: true,
             detail: String::new(),
             estimated_reference_cost_micros: None,
-         ..crate::alphacode_tui::tui::PickerOption::default()}],
+            ..crate::alphacode_tui::tui::PickerOption::default()
+        }],
         action: crate::alphacode_tui::tui::PickerAction::Model,
         selected_option: 0,
         is_current: true,

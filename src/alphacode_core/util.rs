@@ -20,7 +20,8 @@ pub fn truncate_str(s: &str, max_bytes: usize) -> &str {
 /// suggestions, etc. Previously tripled across `tool/mod.rs`,
 /// `tool/read.rs` (as `levenshtein_distance`). O(n*m) two-row — more than
 /// sufficient for short suggestion strings.
-pub fn levenshtein(a: &str, b: &str) -> usize {    let a: Vec<char> = a.chars().collect();
+pub fn levenshtein(a: &str, b: &str) -> usize {
+    let a: Vec<char> = a.chars().collect();
     let b: Vec<char> = b.chars().collect();
     if a.is_empty() {
         return b.len();

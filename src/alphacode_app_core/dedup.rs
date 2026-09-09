@@ -231,6 +231,130 @@ pub fn last_touched() -> Option<Instant> {
     None
 }
 
+// ---------------------------------------------------------------------------
+// Redundant-call guard: rejects identical (tool, params) within a sliding window
+// ---------------------------------------------------------------------------
+
+/// Minimum number of turns between identical tool+params calls before they're
+/// considered redundant. A window of 3 means the same call within 3 turns is
+/// rejected.
+const REDUNDANT_CALL_WINDOW: u64 = 3;
+
+/// Minimum output size (bytes) to consider for near-duplicate detection.
+/// Small outputs are cheap to re-fetch, so we don't guard those.
+const NEAR_DUP_MIN_OUTPUT: usize = 512;
+
+/// A record of a tool call for redundant-call detection.
+#[derive(Debug, Clone)]
+struct CallRecord {
+    tool_name: String,
+    params_hash: u64,
+    output_hash: u64,
+    turn: u64,
+}
+
+/// Sliding-window guard that rejects redundant tool calls.
+pub struct CallGuard {
+    records: VecDeque<CallRecord>,
+    window_size: u64,
+}
+
+impl CallGuard {
+    pub fn new() -> Self {
+        Self {
+            records: VecDeque::with_capacity(256),
+            window_size: REDUNDANT_CALL_WINDOW,
+        }
+    }
+
+    /// Check if a tool call should be rejected as redundant.
+    /// Returns `Some(reason)` if the call is redundant, `None` if allowed.
+    pub fn should_reject(
+        &self,
+        tool_name: &str,
+        params: &[u8],
+        current_turn: u64,
+    ) -> Option<String> {
+        let params_hash = hash_bytes(params);
+
+        for record in self.records.iter().rev() {
+            // Only check within the window
+            if current_turn.saturating_sub(record.turn) > self.window_size {
+                break;
+            }
+            if record.tool_name == tool_name && record.params_hash == params_hash {
+                return Some(format!(
+                    "Redundant call: {} with identical parameters was already executed {} turns ago (result #{} in context). Reuse the existing result.",
+                    tool_name,
+                    current_turn.saturating_sub(record.turn),
+                    record.turn
+                ));
+            }
+        }
+        None
+    }
+
+    /// Check if a tool output is a near-duplicate of a recent output.
+    /// Near-duplicate = same tool + output within NEAR_DUP_MIN_OUTPUT bytes.
+    pub fn is_near_duplicate(
+        &self,
+        tool_name: &str,
+        output: &str,
+        current_turn: u64,
+    ) -> Option<String> {
+        if output.len() < NEAR_DUP_MIN_OUTPUT {
+            return None;
+        }
+        let output_hash = hash_bytes(output.as_bytes());
+
+        for record in self.records.iter().rev() {
+            if current_turn.saturating_sub(record.turn) > self.window_size {
+                break;
+            }
+            if record.tool_name == tool_name && record.output_hash == output_hash {
+                return Some(format!(
+                    "Near-duplicate output: {} produced identical output {} turns ago. Reuse the existing result.",
+                    tool_name,
+                    current_turn.saturating_sub(record.turn)
+                ));
+            }
+        }
+        None
+    }
+
+    /// Record a tool call for future redundancy checks.
+    pub fn record(&mut self, tool_name: &str, params: &[u8], output: &str, turn: u64) {
+        let record = CallRecord {
+            tool_name: tool_name.to_string(),
+            params_hash: hash_bytes(params),
+            output_hash: hash_bytes(output.as_bytes()),
+            turn,
+        };
+
+        // Evict old records outside the window
+        while let Some(front) = self.records.front() {
+            if turn.saturating_sub(front.turn) > self.window_size * 2 {
+                self.records.pop_front();
+            } else {
+                break;
+            }
+        }
+
+        self.records.push_back(record);
+    }
+
+    /// Clear all records (e.g., on compaction or session reset).
+    pub fn clear(&mut self) {
+        self.records.clear();
+    }
+}
+
+impl Default for CallGuard {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

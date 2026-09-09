@@ -215,7 +215,7 @@ impl BrowserRow {
             if !hay.contains(&needle) {
                 // Subsequence fallback for typos (haik -> haiku).
                 let mut chars = hay.chars();
-                let ok = needle.chars().all(|nc| chars.by_ref().find(|c| *c == nc).is_some());
+                let ok = needle.chars().all(|nc| chars.by_ref().any(|c| c == nc));
                 if !ok {
                     return false;
                 }
@@ -358,7 +358,13 @@ impl ModelBrowserState {
             .rows
             .iter()
             .enumerate()
-            .filter_map(|(i, row)| if row.matches(&self.facets) { Some(i) } else { None })
+            .filter_map(|(i, row)| {
+                if row.matches(&self.facets) {
+                    Some(i)
+                } else {
+                    None
+                }
+            })
             .collect();
         if self.filtered.is_empty() {
             self.selected = 0;
@@ -541,7 +547,7 @@ fn score_row(mut row: BrowserRow) -> BrowserRow {
     row.score_newest = row
         .created_date
         .as_deref()
-        .and_then(|d| parse_short_date(d))
+        .and_then(parse_short_date)
         .unwrap_or(0) as f64;
 
     // Cheapest: lower cost ranks higher (we negate).
@@ -623,7 +629,10 @@ mod tests {
 
     #[test]
     fn builds_rows_from_options() {
-        let opts = vec![opt("Anthropic", "claude-oauth"), opt("OpenAI", "openai-oauth")];
+        let opts = vec![
+            opt("Anthropic", "claude-oauth"),
+            opt("OpenAI", "openai-oauth"),
+        ];
         let rows = build_rows_from_options(&opts, &HashSet::new(), None, None);
         assert_eq!(rows.len(), 2);
         assert_eq!(rows[0].provider, "Anthropic");
@@ -641,14 +650,20 @@ mod tests {
     #[test]
     fn apply_complete_clears_loading() {
         let mut s = ModelBrowserState::skeleton();
-        s.apply(RowDelta::Complete { total: 3, elapsed_ms: 50 });
+        s.apply(RowDelta::Complete {
+            total: 3,
+            elapsed_ms: 50,
+        });
         assert!(s.loading.is_none());
     }
 
     #[test]
     fn apply_replaced_paints_real_rows() {
         let mut s = ModelBrowserState::skeleton();
-        let rows = vec![opt("Anthropic", "claude-oauth"), opt("OpenAI", "openai-oauth")];
+        let rows = vec![
+            opt("Anthropic", "claude-oauth"),
+            opt("OpenAI", "openai-oauth"),
+        ];
         let built = build_rows_from_options(&rows, &HashSet::new(), None, None);
         s.apply(RowDelta::Replaced(built));
         assert_eq!(s.rows.len(), 2);
@@ -744,11 +759,7 @@ mod tests {
 
     #[test]
     fn move_by_wraps_around() {
-        let mut s = ModelBrowserState::new(vec![
-            row("A"),
-            row("B"),
-            row("C"),
-        ]);
+        let mut s = ModelBrowserState::new(vec![row("A"), row("B"), row("C")]);
         s.selected = 0;
         s.move_by(-1);
         assert_eq!(s.selected, 2);

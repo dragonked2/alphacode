@@ -149,7 +149,12 @@ pub fn format_status_for_debug(app: &dyn TuiState) -> String {
 /// Combines the current model (shortened), the running task hint classified
 /// via [`TaskKind`], the connection state, and any session token totals into
 /// a single `key=value` line. Pure function: no I/O, no model calls.
-pub fn build_status_summary(model: Option<&str>, task_hint: Option<&str>, tokens: Option<(u64, u64)>, connected: bool) -> String {
+pub fn build_status_summary(
+    model: Option<&str>,
+    task_hint: Option<&str>,
+    tokens: Option<(u64, u64)>,
+    connected: bool,
+) -> String {
     use crate::alphacode_provider_core::selection::TaskKind;
 
     let mut parts: Vec<String> = Vec::new();

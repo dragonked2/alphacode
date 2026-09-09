@@ -1,10 +1,14 @@
 #![cfg_attr(test, allow(clippy::await_holding_lock))]
 
+mod budget_enforcer;
+mod claim_checker;
 mod compaction;
 mod environment;
+mod goal_evaluator;
 mod inline_tail;
 mod interrupts;
 mod messages;
+mod playbook_match;
 mod prompting;
 mod provider;
 mod response_recovery;
@@ -252,6 +256,14 @@ pub struct Agent {
     /// Persists across turns so the coordinator's viewport never blanks at
     /// turn boundaries or freezes during long tool calls.
     inline_tail: inline_tail::InlineTailBuffer,
+    /// Active goal contract for this session. Created at turn start from the
+    /// mission's success_criteria, enforced by the goal evaluator on every
+    /// tool result. `None` when no mission is active or the contract hasn't
+    /// been created yet.
+    pub(crate) goal_contract: Option<crate::alphacode_task_types::goal_contract::GoalContract>,
+    /// Budget enforcer for the current goal contract. Tracks per-phase call
+    /// counts, wall-clock time, and consecutive tool failures.
+    pub(crate) budget_enforcer: budget_enforcer::BudgetEnforcer,
 }
 
 impl Agent {
@@ -305,6 +317,8 @@ impl Agent {
             provider_runtime_state: ProviderRuntimeState::observed(initial_provider_model),
             inline_output_tap: false,
             inline_tail: inline_tail::InlineTailBuffer::default(),
+            goal_contract: None,
+            budget_enforcer: budget_enforcer::BudgetEnforcer::new(),
         };
         crate::tool::set_session_tool_policy(
             &agent.session.id,

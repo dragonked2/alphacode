@@ -753,10 +753,8 @@ mod tests {
         let mut state = BridgeState::default();
         state.api_request_to_legacy(&api_request(1, "send_message", json!({"content": "hi"})));
         let legacy_message_id = state.pending_message_id.unwrap();
-        let frames = state.legacy_event_to_api(&legacy_event(
-            "done",
-            json!({ "id": legacy_message_id }),
-        ));
+        let frames =
+            state.legacy_event_to_api(&legacy_event("done", json!({ "id": legacy_message_id })));
         assert_eq!(frames.len(), 1);
         assert!(matches!(frames[0].event, ApiEvent::TurnDone { .. }));
         assert!(state.pending_message_id.is_none());
@@ -833,7 +831,10 @@ mod tests {
         assert_eq!(frame.reply_to, Some(2));
         assert!(matches!(
             frame.event,
-            ApiEvent::Error { code: ErrorCode::UnknownRequest, .. }
+            ApiEvent::Error {
+                code: ErrorCode::UnknownRequest,
+                ..
+            }
         ));
     }
 

@@ -467,6 +467,32 @@ pub const EXPLABS_PROFILE: OpenAiCompatibleProfile = OpenAiCompatibleProfile {
     requires_api_key: true,
 };
 
+/// Bundled bearer key for the "Free Gift from Alphacode" TheHive lane. Used as
+/// a last-resort fallback by `alphacode_provider_env::load_api_key_from_env_or_config`
+/// when the user has not provided their own `HIVE_API_KEY` (env var or
+/// `hive.env`). Overridable — the user's own key always wins.
+pub const HIVE_BUNDLED_API_KEY: &str = "HCScyZ//H41wf32rZueJbg==";
+
+/// Curated order of TheHive free models. The post-login flagship picker
+/// consults this list to rank free models above the live catalog's first
+/// random row. Top-down = picker top-down.
+pub const ALL_HIVE_MODELS: &[&str] = &["zai-org/glm-5.3-flash"];
+
+pub const HIVE_PROFILE: OpenAiCompatibleProfile = OpenAiCompatibleProfile {
+    id: "hive",
+    // Branded as a Free Gift from Alphacode: TheHive AI gateway hosts free
+    // models (GLM-5.3-Flash at launch) accessible via OpenAI-compatible
+    // Chat Completions API. Users get a shared bearer key bundled into
+    // alphacode so the free lane works out of the box.
+    display_name: "TheHive AI (Free Gift from Alphacode)",
+    api_base: "https://api-cdn.thehive.ai/api/v3",
+    api_key_env: "HIVE_API_KEY",
+    env_file: "hive.env",
+    setup_url: "https://docs.thehive.ai/docs/chat-completions-openai-compatible-llms",
+    default_model: Some("zai-org/glm-5.3-flash"),
+    requires_api_key: true,
+};
+
 pub const NVIDIA_NIM_PROFILE: OpenAiCompatibleProfile = OpenAiCompatibleProfile {
     id: "nvidia-nim",
     display_name: "NVIDIA NIM",
@@ -552,7 +578,7 @@ pub const UNOROUTER_PROFILE: OpenAiCompatibleProfile = OpenAiCompatibleProfile {
     requires_api_key: true,
 };
 
-pub(crate) const OPENAI_COMPAT_PROFILES: [OpenAiCompatibleProfile; 44] = [
+pub(crate) const OPENAI_COMPAT_PROFILES: [OpenAiCompatibleProfile; 45] = [
     GMICLOUD_PROFILE,
     OPENCODE_PROFILE,
     OPENCODE_GO_PROFILE,
@@ -588,6 +614,7 @@ pub(crate) const OPENAI_COMPAT_PROFILES: [OpenAiCompatibleProfile; 44] = [
     XAI_PROFILE,
     NVIDIA_NIM_PROFILE,
     EXPLABS_PROFILE,
+    HIVE_PROFILE,
     XIAOMI_MIMO_PROFILE,
     CELERIS_PROFILE,
     AGENTROUTER_PROFILE,
@@ -832,6 +859,27 @@ pub const EXPLABS_LOGIN_PROVIDER: LoginProviderDescriptor = LoginProviderDescrip
     // auth status). The sort is by `for_surface` then `unwrap_or(u8::MAX)`, so
     // 0 is the very first row -- right above `auto-import` at 1.
     order: LoginProviderSurfaceOrder::new(Some(0), Some(0), Some(0), Some(0), Some(0)),
+};
+
+pub const HIVE_LOGIN_PROVIDER: LoginProviderDescriptor = LoginProviderDescriptor {
+    id: "hive",
+    // Branded "Free Gift from Alphacode" — see HIVE_PROFILE for the
+    // rationale. The display_name is the string the TUI login picker and
+    // `/provider list` rows show, so the gift branding is what users actually
+    // see at first contact.
+    display_name: "TheHive AI (Free Gift from Alphacode)",
+    auth_kind: LoginProviderAuthKind::ApiKey,
+    auth_state_key: LoginProviderAuthStateKey::OpenRouterLike,
+    auth_status_method: "API key",
+    aliases: &["thehive", "the-hive", "hive-ai"],
+    menu_detail: "API key, free GLM-5.3-Flash tier (bundled key)",
+    recommended: true,
+    target: LoginProviderTarget::OpenAiCompatible(HIVE_PROFILE),
+    // Surface the free gift lane near the top so it appears early in every
+    // surface (TUI login picker, CLI login list, server bootstrap, auto-init,
+    // auth status). Order 2 = same tier as ANTHROPIC_API and OPENAI; HIVE
+    // sorts before them because it appears earlier in LOGIN_PROVIDERS.
+    order: LoginProviderSurfaceOrder::new(Some(2), Some(2), Some(2), Some(2), Some(2)),
 };
 
 pub const ZEROG_LOGIN_PROVIDER: LoginProviderDescriptor = LoginProviderDescriptor {
@@ -1363,10 +1411,11 @@ pub const GOOGLE_LOGIN_PROVIDER: LoginProviderDescriptor = LoginProviderDescript
     order: LoginProviderSurfaceOrder::new(Some(13), None, None, None, None),
 };
 
-pub(crate) const LOGIN_PROVIDERS: [LoginProviderDescriptor; 56] = [
+pub(crate) const LOGIN_PROVIDERS: [LoginProviderDescriptor; 57] = [
     AUTO_IMPORT_LOGIN_PROVIDER,
     CLAUDE_LOGIN_PROVIDER,
     EXPLABS_LOGIN_PROVIDER,
+    HIVE_LOGIN_PROVIDER,
     ANTHROPIC_API_LOGIN_PROVIDER,
     OPENAI_LOGIN_PROVIDER,
     OPENAI_API_LOGIN_PROVIDER,

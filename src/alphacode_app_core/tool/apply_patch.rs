@@ -82,16 +82,13 @@ impl Tool for ApplyPatchTool {
         // Previously only DeleteFile was checked; Add/Update/Move could overwrite
         // /etc/cron.d/x etc. while bypassing the bash gate. Abort whole patch
         // if any target is protected so we never leave a half-applied patch.
-        let risk_ctx = crate::alphacode_command_risk::RiskContext::from_env(
-            ctx.working_dir.clone(),
-        );
+        let risk_ctx =
+            crate::alphacode_command_risk::RiskContext::from_env(ctx.working_dir.clone());
         for hunk in &hunks {
             let targets: Vec<&String> = match hunk {
                 PatchHunk::AddFile { path, .. } => vec![path],
                 PatchHunk::DeleteFile { path } => vec![path],
-                PatchHunk::UpdateFile {
-                    path, move_to, ..
-                } => {
+                PatchHunk::UpdateFile { path, move_to, .. } => {
                     let mut v = vec![path];
                     if let Some(dest) = move_to {
                         v.push(dest);

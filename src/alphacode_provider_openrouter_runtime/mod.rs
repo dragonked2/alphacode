@@ -19,6 +19,7 @@
 use crate::alphacode_base::provider_catalog::{
     OPENAI_COMPAT_PROFILE, is_safe_env_file_name, is_safe_env_key_name,
     load_api_key_from_env_or_config, load_env_value_from_env_or_config, normalize_api_base,
+    openai_compat_base_is_local, openai_compat_chat_completions_url, openai_compat_models_url,
     openai_compatible_profile_by_id, openai_compatible_profile_id_for_api_base,
     openai_compatible_profile_static_context_limits, openai_compatible_profile_static_models,
     openai_compatible_profiles, resolve_openai_compatible_profile,
@@ -334,6 +335,93 @@ fn configured_allow_no_auth() -> bool {
         .unwrap_or(false)
 }
 
+/// Tolerant chat-completions URL for any OpenAI-compatible base.
+///
+/// Handles `http://127.0.0.1:8080`, `.../`, `.../v1`, `.../v1/` without ever
+/// producing `/chat/completions` vs `/v1/chat/completions` mismatches or
+/// `/v1/v1` duplication. Custom prefixes (`/api/v3`, `/coding/v1`) preserved.
+pub(crate) fn resolve_chat_completions_url(api_base: &str) -> Option<String> {
+    openai_compat_chat_completions_url(api_base)
+}
+
+/// Tolerant models URL (see [`resolve_chat_completions_url`]).
+#[allow(dead_code)]
+pub(crate) fn resolve_models_url(api_base: &str) -> Option<String> {
+    openai_compat_models_url(api_base)
+}
+
+/// Local-aware streaming idle timeout.
+///
+/// Local inference (llama.cpp/Ollama/LM Studio) can take minutes to process a
+/// large prompt on CPU before emitting the first token. Use at least 600s for
+/// loopback endpoints so valid local requests are not prematurely cancelled,
+/// while cloud endpoints keep the globally configured budget.
+pub(crate) fn effective_stream_idle_timeout(api_base: &str) -> std::time::Duration {
+    let base = crate::alphacode_base::provider::stream_idle_timeout();
+    if openai_compat_base_is_local(api_base) {
+        let local_min = std::time::Duration::from_secs(600);
+        // Allow explicit override for very slow hardware.
+        if let Ok(raw) = std::env::var("ALPHACODE_LOCAL_STREAM_IDLE_TIMEOUT_SECS")
+            && let Ok(secs) = raw.trim().parse::<u64>()
+            && secs >= 1
+        {
+            return base.max(std::time::Duration::from_secs(secs));
+        }
+        base.max(local_min)
+    } else {
+        base
+    }
+}
+
+/// Rough token estimate for a chat-completions request body (`chars/4`).
+/// Used for pre-flight context guards and failure diagnostics only.
+pub(crate) fn estimate_chat_request_tokens(request: &serde_json::Value) -> usize {
+    let serialized = serde_json::to_string(request).unwrap_or_default();
+    serialized.len() / 4
+}
+
+/// True when an error body looks like a context-window overflow
+/// (llama.cpp `exceed_context_size_error`, OpenAI `context_length_exceeded`,
+/// or explicit `n_ctx` mentions). Capability-based string match, no secrets.
+pub(crate) fn response_body_reports_context_overflow(body: &str) -> bool {
+    let lower = body.to_ascii_lowercase();
+    lower.contains("exceed_context_size")
+        || lower.contains("exceeds the available context")
+        || lower.contains("context_length_exceeded")
+        || lower.contains("context length")
+        || lower.contains("n_ctx")
+        || lower.contains("maximum context")
+        || (lower.contains("400") && lower.contains("context"))
+}
+
+/// Conservative context fallback for direct local endpoints when no live
+/// catalog, static table, or family classifier yields a limit.
+///
+/// Cloud unknown models fall back to the global 2B default elsewhere; local
+/// llama.cpp servers are typically 4K-32K, so returning 2B would let doomed
+/// 11K-token prompts through. Honors `ALPHACODE_OPENROUTER_CONTEXT_WINDOW`
+/// when set, else 16_384 (matches the recommended `llama-server -c 16384`).
+pub(crate) fn local_direct_context_fallback() -> usize {
+    if let Ok(raw) = std::env::var("ALPHACODE_OPENROUTER_CONTEXT_WINDOW")
+        && let Ok(value) = raw.trim().parse::<usize>()
+        && value >= 1024
+    {
+        return value;
+    }
+    16_384
+}
+
+/// True when `model` looks like a Windows filesystem path (`D:\...`, `D:/...`).
+/// Such IDs come straight from llama.cpp `/v1/models` when no `--alias` is
+/// set and must be sent verbatim; they are never session-routing prefixes.
+pub(crate) fn model_id_is_windows_path(model: &str) -> bool {
+    let bytes = model.trim().as_bytes();
+    bytes.len() >= 3
+        && bytes[0].is_ascii_alphabetic()
+        && bytes[1] == b':'
+        && (bytes[2] == b'\\' || bytes[2] == b'/')
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum OpenRouterTransportState {
     /// Real OpenRouter BYOK. The provider implementation is both the runtime identity
@@ -552,7 +640,16 @@ async fn fetch_models_from_api(
     models_cache: Arc<RwLock<ModelsCache>>,
     cache_namespace: Option<String>,
 ) -> Result<Vec<ModelInfo>> {
-    let url = format!("{}/models", api_base);
+    // Tolerant to bare roots (`http://127.0.0.1:8080`) and versioned bases
+    // (`.../v1`): both resolve to `.../v1/models` without ever producing
+    // `/v1/v1/models`. Custom prefixes (`/api/v3`, ...) are preserved.
+    let url = openai_compat_models_url(&api_base).ok_or_else(|| {
+        anyhow::anyhow!(
+            "OpenAI-compatible model catalog request failed\n  endpoint: invalid base '{}'\n  auth: {}\nHint: use http(s)://host:port with optional /v1 suffix.",
+            api_base,
+            auth.label()
+        )
+    })?;
     let response =
         apply_kimi_coding_agent_headers(auth.apply(client.get(&url)).await?, &api_base, None)
             .send()
@@ -1640,6 +1737,13 @@ impl OpenRouterProvider {
     /// left intact so switching the active provider from a saved session still
     /// round-trips verbatim.
     fn strip_session_profile_prefix<'a>(&self, model: &'a str) -> &'a str {
+        // llama.cpp without `--alias` reports the GGUF filesystem path as the
+        // model id (`D:\...gguf`). That `D:` drive prefix must never be treated
+        // as a session-routing `<profile>:` prefix; the id goes on the wire
+        // verbatim as the authoritative catalog id.
+        if model_id_is_windows_path(model) {
+            return model;
+        }
         let Some((prefix, rest)) = model.split_once(':') else {
             return model;
         };
@@ -2953,5 +3057,208 @@ mod reasoning_effort_profile_tests {
             Some("comtegra")
         ));
         assert!(!OpenRouterProvider::profile_supports_reasoning_effort(None));
+    }
+}
+
+#[cfg(test)]
+mod llamacpp_compat_tests {
+    use super::*;
+    use crate::alphacode_provider_core::Provider;
+
+    fn local_no_auth_provider(model: &str) -> OpenRouterProvider {
+        OpenRouterProvider {
+            client: crate::alphacode_provider_core::shared_http_client(),
+            model: std::sync::Arc::new(tokio::sync::RwLock::new(model.to_string())),
+            reasoning_effort: std::sync::Arc::new(tokio::sync::RwLock::new(None)),
+            api_base: "http://127.0.0.1:8080/v1".to_string(),
+            auth: ProviderAuth::None {
+                label: "local endpoint (no auth)".to_string(),
+            },
+            supports_provider_features: false,
+            supports_model_catalog: true,
+            profile_id: Some("openai-compatible".to_string()),
+            reasoning_effort_support: None,
+            max_tokens: None,
+            extra_body: None,
+            static_models: Vec::new(),
+            static_context_limits: std::collections::HashMap::new(),
+            static_image_input_support: std::collections::HashMap::new(),
+            send_openrouter_headers: false,
+            models_cache: std::sync::Arc::new(tokio::sync::RwLock::new(ModelsCache::default())),
+            model_catalog_refresh: std::sync::Arc::new(std::sync::Mutex::new(
+                ModelCatalogRefreshState::default(),
+            )),
+            provider_routing: std::sync::Arc::new(tokio::sync::RwLock::new(
+                ProviderRouting::default(),
+            )),
+            provider_pin: std::sync::Arc::new(std::sync::Mutex::new(None)),
+            endpoints_cache: std::sync::Arc::new(tokio::sync::RwLock::new(
+                std::collections::HashMap::new(),
+            )),
+            endpoint_refresh: std::sync::Arc::new(std::sync::Mutex::new(
+                EndpointRefreshTracker::default(),
+            )),
+        }
+    }
+
+    #[test]
+    fn windows_gguf_path_is_detected_and_never_a_routing_prefix() {
+        let path = r"D:\freespace\alpha-train\gguf\Spark-X2.5-4B-abliterated-FIT-BALANCED-2.68GiB-Q5_K_S.gguf";
+        assert!(model_id_is_windows_path(path));
+        assert!(super::model_id_is_windows_path(path));
+        assert!(!model_id_is_windows_path("alpha"));
+        assert!(!model_id_is_windows_path("gpt-4o"));
+        // Forward-slash drive form also counts.
+        assert!(model_id_is_windows_path("D:/models/spark.gguf"));
+
+        let provider = local_no_auth_provider(path);
+        assert_eq!(
+            provider.strip_session_profile_prefix(path),
+            path,
+            "Windows drive prefix must not be stripped"
+        );
+        // Normal session prefix still strips.
+        let dragon = OpenRouterProvider {
+            profile_id: Some("dragonmeta".to_string()),
+            ..local_no_auth_provider("alpha")
+        };
+        assert_eq!(
+            dragon.strip_session_profile_prefix("dragonmeta:alpha"),
+            "alpha"
+        );
+    }
+
+    #[test]
+    fn set_model_preserves_windows_path_verbatim_for_direct_endpoints() {
+        let provider = local_no_auth_provider("alpha");
+        let path = r"D:\freespace\alpha-train\gguf\Spark-X2.5-4B-abliterated-FIT-BALANCED-2.68GiB-Q5_K_S.gguf";
+        provider
+            .set_model(path)
+            .expect("set_model must accept catalog id");
+        assert_eq!(provider.model(), path);
+    }
+
+    #[test]
+    fn reasoning_effort_unsupported_is_graceful_not_fatal() {
+        // Generic local profile supports no effort ladder.
+        let provider = local_no_auth_provider("spark-model");
+        assert!(!provider.supports_any_reasoning_effort());
+        assert!(provider.available_efforts().is_empty());
+        // Must succeed (clearing effort) so chat can proceed.
+        provider
+            .set_reasoning_effort("high")
+            .expect("unsupported effort must not be fatal");
+        assert_eq!(provider.reasoning_effort(), None);
+        provider
+            .set_reasoning_effort("none")
+            .expect("clearing effort must succeed");
+        assert_eq!(provider.reasoning_effort(), None);
+    }
+
+    #[test]
+    fn reasoning_effort_supported_still_accepts_valid_levels() {
+        let mut provider = local_no_auth_provider("deepseek-v4-flash");
+        provider.profile_id = Some("deepseek".to_string());
+        provider.reasoning_effort_support = None;
+        assert!(provider.supports_any_reasoning_effort());
+        provider
+            .set_reasoning_effort("high")
+            .expect("supported effort must succeed");
+        assert_eq!(provider.reasoning_effort().as_deref(), Some("high"));
+    }
+
+    #[test]
+    fn local_stream_timeout_is_generous_but_cloud_is_unchanged() {
+        let local = effective_stream_idle_timeout("http://127.0.0.1:8080/v1");
+        let cloud = effective_stream_idle_timeout("https://api.openai.com/v1");
+        let base = crate::alphacode_base::provider::stream_idle_timeout();
+        assert!(
+            local >= std::time::Duration::from_secs(600),
+            "local timeout must allow slow CPU inference: {local:?}"
+        );
+        assert!(local >= base);
+        assert_eq!(cloud, base, "cloud timeout must stay globally configured");
+    }
+
+    #[test]
+    fn context_overflow_body_is_detected() {
+        let llamacpp = r#"{"error":{"code":400,"message":"request (11934 tokens) exceeds the available context size (8192 tokens)","type":"exceed_context_size_error"}}"#;
+        assert!(response_body_reports_context_overflow(llamacpp));
+        assert!(response_body_reports_context_overflow(
+            "context_length_exceeded: too many tokens"
+        ));
+        assert!(!response_body_reports_context_overflow(
+            r#"{"error":{"message":"invalid api key"}}"#
+        ));
+    }
+
+    #[test]
+    fn local_context_fallback_is_conservative_not_2b() {
+        let fallback = local_direct_context_fallback();
+        assert!(
+            (8_192..=32_768).contains(&fallback),
+            "local fallback must be llama.cpp-scale, got {fallback}"
+        );
+        // A local provider with an unknown model must not report 2B.
+        let provider = local_no_auth_provider(
+            r"D:\freespace\alpha-train\gguf\Spark-X2.5-4B-abliterated-FIT-BALANCED-2.68GiB-Q5_K_S.gguf",
+        );
+        let window = provider.context_window();
+        assert!(
+            window <= 1_000_000,
+            "unknown local model must not fall back to 2B, got {window}"
+        );
+    }
+
+    #[test]
+    fn request_token_estimate_scales_with_body_size() {
+        let small = serde_json::json!({"model":"m","messages":[{"role":"user","content":"hi"}]});
+        let large = serde_json::json!({"model":"m","messages":[{"role":"user","content": "x".repeat(4000)}]});
+        assert!(estimate_chat_request_tokens(&large) > estimate_chat_request_tokens(&small));
+        assert_eq!(
+            estimate_chat_request_tokens(&small),
+            small.to_string().len() / 4
+        );
+    }
+
+    #[test]
+    fn models_response_parses_llamacpp_shape() {
+        // llama.cpp without --alias reports the GGUF path as `id`, sometimes
+        // with `meta.n_ctx`; both must be accepted and `n_ctx` must win.
+        let body = r#"{"object":"list","data":[{"id":"alpha","object":"model","created":0,"owned_by":"llamacpp","meta":{"n_ctx":16384,"n_ctx_train":32768}}]}"#;
+        let models = parse_openai_compatible_models_response(body).expect("parse");
+        assert_eq!(models.len(), 1);
+        assert_eq!(models[0].id, "alpha");
+        assert_eq!(models[0].context_length, Some(16384));
+
+        let path_body = r#"{"object":"list","data":[{"id":"D:\\models\\spark.gguf","object":"model","created":0,"owned_by":"llamacpp"}]}"#;
+        let models = parse_openai_compatible_models_response(path_body).expect("parse path id");
+        assert_eq!(models[0].id, r"D:\models\spark.gguf");
+
+        // Top-level array shape (some proxies) also works.
+        let arr = r#"[{"id":"spark","name":"spark"}]"#;
+        let models = parse_openai_compatible_models_response(arr).expect("parse array");
+        assert_eq!(models[0].id, "spark");
+    }
+
+    #[test]
+    fn chat_and_models_urls_cover_all_four_user_forms() {
+        for base in [
+            "http://127.0.0.1:8080",
+            "http://127.0.0.1:8080/",
+            "http://127.0.0.1:8080/v1",
+            "http://127.0.0.1:8080/v1/",
+        ] {
+            assert_eq!(
+                resolve_chat_completions_url(base).as_deref(),
+                Some("http://127.0.0.1:8080/v1/chat/completions"),
+                "{base}"
+            );
+            assert_eq!(
+                resolve_models_url(base).as_deref(),
+                Some("http://127.0.0.1:8080/v1/models"),
+                "{base}"
+            );
+        }
     }
 }

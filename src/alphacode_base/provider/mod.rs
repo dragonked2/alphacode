@@ -1936,6 +1936,39 @@ impl Provider for MultiProvider {
             );
         }
 
+        // Models with a '/' are typically OpenRouter-style IDs
+        // (e.g. `qwen/qwen3.8-max-free`, `deepseek/deepseek-chat`).
+        // Check if ANY configured OpenAI-compatible profile owns this model
+        // BEFORE provider_for_model, which claims ALL "/" models as OpenRouter.
+        if model.contains('/') {
+            let active_profile_id = ProviderRegistry::new(self).active_compatible_profile_id();
+            // First check the active profile (fast path).
+            if let Some(profile_id) = &active_profile_id
+                && let Some(profile) =
+                    crate::provider_catalog::openai_compatible_profile_by_id(profile_id)
+            {
+                let static_models =
+                    crate::provider_catalog::openai_compatible_profile_static_models(profile);
+                if static_models.iter().any(|m| m == model) {
+                    return self.set_model_on_openai_compatible_profile(profile, model);
+                }
+            }
+            // Active profile doesn't own this "/" model — check all configured
+            // profiles so models from other profiles aren't misrouted to OpenRouter.
+            for profile in crate::provider_catalog::openai_compatible_profiles() {
+                if active_profile_id.as_deref() == Some(profile.id) {
+                    continue; // already checked above
+                }
+                if crate::provider_catalog::openai_compatible_profile_is_configured(*profile) {
+                    let static_models =
+                        crate::provider_catalog::openai_compatible_profile_static_models(*profile);
+                    if static_models.iter().any(|m| m == model) {
+                        return self.set_model_on_openai_compatible_profile(*profile, model);
+                    }
+                }
+            }
+        }
+
         // Detect which provider an unprefixed model belongs to.
         let target_provider = provider_for_model(model);
         if let Some(target_provider) = target_provider
@@ -1949,12 +1982,13 @@ impl Provider for MultiProvider {
             // whichever provider happened to be active and failed with a
             // misleading "not supported by <active provider>" error.
             self.set_model_on_openai_compatible_profile(profile, model)
-        } else if model.contains('/') && self.openrouter_provider().is_some() {
-            // Models with a '/' are typically OpenRouter-style IDs
-            // (e.g. `qwen/qwen3.8-max-free`, `deepseek/deepseek-chat`).
-            // Auto-route them through OpenRouter instead of the current
-            // active provider, which would reject the unfamiliar model name.
-            self.set_model_on_provider(ActiveProvider::OpenRouter, model)
+        } else if model.contains('/') {
+            // "/" model not owned by any active profile — fall back to OpenRouter.
+            if self.openrouter_provider().is_some() {
+                self.set_model_on_provider(ActiveProvider::OpenRouter, model)
+            } else {
+                self.set_model_on_provider(self.active_provider(), model)
+            }
         } else {
             // Unknown model - try current provider.
             self.set_model_on_provider(self.active_provider(), model)
@@ -2015,7 +2049,9 @@ impl Provider for MultiProvider {
                 .unwrap_or_default(),
             ActiveProvider::Antigravity => self
                 .antigravity_provider()
-                .map(|antigravity| with_current(&*antigravity, antigravity.available_models_for_switching()))
+                .map(|antigravity| {
+                    with_current(&*antigravity, antigravity.available_models_for_switching())
+                })
                 .unwrap_or_default(),
             ActiveProvider::Gemini => self
                 .gemini_provider()
@@ -2031,7 +2067,9 @@ impl Provider for MultiProvider {
                 .unwrap_or_default(),
             ActiveProvider::OpenRouter => self
                 .active_openrouter_execution_provider()
-                .map(|openrouter| with_current(&*openrouter, openrouter.available_models_for_switching()))
+                .map(|openrouter| {
+                    with_current(&*openrouter, openrouter.available_models_for_switching())
+                })
                 .unwrap_or_default(),
         }
     }

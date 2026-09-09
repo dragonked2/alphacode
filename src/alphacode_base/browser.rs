@@ -417,12 +417,28 @@ async fn download_browser_binary() -> Result<()> {
     if let Some(token) = crate::github::github_public_api_token() {
         request = request.bearer_auth(token);
     }
-    let release_info: serde_json::Value = request
-        .send()
-        .await?
-        .json()
-        .await
-        .context("Failed to fetch latest release info")?;
+    let response = request.send().await?;
+    let status = response.status();
+    let release_info: serde_json::Value = if status.is_success() {
+        response
+            .json()
+            .await
+            .context("Failed to fetch latest release info")?
+    } else if status.as_u16() == 404 {
+        anyhow::bail!(
+            "Browser bridge GitHub repository not found (HTTP 404). \
+             The release repository 'dragonked2/firefox-agent-bridge' does not exist. \
+             Please check the GITHUB_API_LATEST constant in browser.rs or manually install \
+             the browser bridge binaries into ~/.alphacode/browser/"
+        );
+    } else {
+        let body = response.text().await.unwrap_or_default();
+        anyhow::bail!(
+            "Browser bridge GitHub API returned HTTP {}: {}",
+            status,
+            body.trim()
+        );
+    };
 
     let assets = release_info["assets"]
         .as_array()

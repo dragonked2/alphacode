@@ -252,6 +252,33 @@ impl Provider for OpenRouterProvider {
             }
         }
 
+        // Pre-flight context guard: never send a request whose estimated
+        // prompt + reserved output exceeds the known server context. Without
+        // this, a 11_934-token prompt against an 8_192-token llama-server
+        // waits through full local inference only to 400 with
+        // `exceed_context_size_error`. Fail fast with actionable diagnostics.
+        {
+            let context_window = self.context_window();
+            let estimated_prompt = super::estimate_chat_request_tokens(&request);
+            let reserved_output = self.max_tokens.unwrap_or(2048) as usize;
+            if estimated_prompt.saturating_add(reserved_output) > context_window {
+                let endpoint =
+                    super::resolve_chat_completions_url(&self.api_base).unwrap_or_else(|| {
+                        format!("{}/chat/completions", self.api_base.trim_end_matches('/'))
+                    });
+                anyhow::bail!(
+                    "OpenAI-compatible request exceeds context\n  endpoint: {}\n  model: {}\n  mode: streaming\n  context_estimate: ~{} prompt tokens + ~{} reserved output = ~{} tokens\n  context_window: {} tokens\n  timeout: {}s\nHint: compact the session (/compact), drop large tool outputs, or restart the server with a larger context (llama-server `-c 16384`).",
+                    endpoint,
+                    model,
+                    estimated_prompt,
+                    reserved_output,
+                    estimated_prompt.saturating_add(reserved_output),
+                    context_window,
+                    super::effective_stream_idle_timeout(&self.api_base).as_secs()
+                );
+            }
+        }
+
         let message_items = request
             .get("messages")
             .and_then(|value| value.as_array())
@@ -455,8 +482,23 @@ impl Provider for OpenRouterProvider {
     }
 
     fn set_reasoning_effort(&self, effort: &str) -> Result<()> {
+        // Graceful degradation for local/plain OpenAI-compatible models
+        // (e.g. llama.cpp): they accept no `reasoning_effort` field at all.
+        // Rather than failing the turn with "not supported", clear any stored
+        // effort and succeed so the user can still chat; `complete()` already
+        // omits the parameter when unsupported.
         if !self.supports_any_reasoning_effort() {
-            anyhow::bail!("Reasoning effort is not supported by this model/profile.");
+            let requested = effort.trim().to_ascii_lowercase();
+            if let Ok(mut current) = self.reasoning_effort.try_write() {
+                *current = None;
+            }
+            if !requested.is_empty() && requested != "none" {
+                crate::alphacode_base::logging::info(&format!(
+                    "Reasoning effort '{}' is not supported by this model/profile; continuing without it.",
+                    effort.trim()
+                ));
+            }
+            return Ok(());
         }
         let requested = effort.trim().to_ascii_lowercase();
         let mut accepted = self.available_efforts().contains(&requested.as_str());
@@ -746,11 +788,34 @@ impl Provider for OpenRouterProvider {
         {
             return limit;
         }
-        crate::alphacode_provider_core::context_limit_for_model_with_provider(
+        if let Some(limit) = crate::alphacode_provider_core::context_limit_for_model_with_provider(
             &model_id,
             Some(self.name()),
-        )
-        .unwrap_or(crate::alphacode_provider_core::DEFAULT_CONTEXT_LIMIT)
+        ) {
+            // The open-weight family classifier returns 2M for `alpha`/GLM/Kimi
+            // style ids, which is correct for hosted gateways but wildly wrong
+            // for a local llama.cpp server started with `-c 8192/16384`. For
+            // direct local endpoints without live catalog data, prefer the
+            // conservative local fallback so prompt budgeting cannot approve a
+            // doomed 11K-token request against a 2B window.
+            if !self.supports_provider_features
+                && crate::alphacode_base::provider_catalog::openai_compat_base_is_local(
+                    &self.api_base,
+                )
+                && limit >= 1_000_000
+            {
+                // Only the live catalog (checked above) is authoritative for
+                // local servers; without it, use the local default.
+                return super::local_direct_context_fallback();
+            }
+            return limit;
+        }
+        if !self.supports_provider_features
+            && crate::alphacode_base::provider_catalog::openai_compat_base_is_local(&self.api_base)
+        {
+            return super::local_direct_context_fallback();
+        }
+        crate::alphacode_provider_core::DEFAULT_CONTEXT_LIMIT
     }
 
     fn fork(&self) -> Arc<dyn Provider> {
