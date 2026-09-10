@@ -947,7 +947,7 @@ mod tests {
         // Build a real ELF/PE-magic header so `is_valid_executable` lets the
         // file through on every platform (the production code path refuses
         // random bytes that look like archives, which is exactly the bug
-        /// regression fixed in this test). The rest of the bytes don't
+        // regression fixed in this test). The rest of the bytes don't
         /// matter: we only care that the candidate lookup accepts the file
         /// and the mtime comparison behaves as expected.
         #[cfg(unix)]

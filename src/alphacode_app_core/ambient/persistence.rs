@@ -75,7 +75,12 @@ impl ScheduledQueue {
 
     pub fn push(&mut self, item: ScheduledItem) {
         self.items.push(item);
-        let _ = self.save();
+        if let Err(err) = self.save() {
+            crate::logging::warn(&format!(
+                "[ambient] failed to persist scheduled queue after push: {}",
+                err
+            ));
+        }
     }
 
     /// Remove a scheduled item by ID, persisting the queue when found.
@@ -107,7 +112,12 @@ impl ScheduledQueue {
         });
 
         if !ready.is_empty() {
-            let _ = self.save();
+            if let Err(err) = self.save() {
+                crate::logging::warn(&format!(
+                    "[ambient] failed to persist scheduled queue after pop_ready: {}",
+                    err
+                ));
+            }
         }
 
         ready
@@ -133,7 +143,12 @@ impl ScheduledQueue {
         self.items = remaining;
 
         if !ready_direct.is_empty() {
-            let _ = self.save();
+            if let Err(err) = self.save() {
+                crate::logging::warn(&format!(
+                    "[ambient] failed to persist scheduled queue after take_ready_direct: {}",
+                    err
+                ));
+            }
         }
 
         ready_direct.sort_by(|a, b| {

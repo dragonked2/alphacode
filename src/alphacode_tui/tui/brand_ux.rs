@@ -1,4 +1,5 @@
 use crate::alphacode_tui::tui::color_support::rgb;
+use crate::alphacode_tui_style::palette::{Role, role_color};
 use ratatui::prelude::*;
 use std::time::{Duration, Instant};
 
@@ -73,29 +74,28 @@ impl SpinnerStyle {
 pub struct BrandTheme;
 
 impl BrandTheme {
-    /// Primary gradient colors (left to right). 16 stops give a perceptually
-    /// smooth sweep across the spectrum, with neighbouring stops only one or
-    /// two perceptual units apart in Oklab. The wider band also means
-    /// character-level gradients over 5-15 chars no longer hit the same color
-    /// twice, which made narrow spans look stuttery.
+    /// Primary gradient colors (left to right). 16 stops sweep the spectrum,
+    /// each derived from a palette role so theme presets recolor the entire
+    /// gradient. Ordered by hue family: violet → blue → cyan → teal → green →
+    /// amber → violet. No pink/rose — the sweep stays in cool-to-warm territory.
     pub fn gradient() -> [Color; 16] {
         [
-            rgb(118, 92, 226),  //  0  violet
-            rgb(96, 132, 245),  //  1  indigo
-            rgb(88, 166, 255),  //  2  bright blue
-            rgb(110, 198, 255), //  3  sky
-            rgb(121, 220, 240), //  4  light cyan
-            rgb(130, 224, 215), //  5  teal
-            rgb(134, 233, 180), //  6  mint
-            rgb(165, 232, 145), //  7  green
-            rgb(220, 226, 110), //  8  lime
-            rgb(255, 220, 110), //  9  amber
-            rgb(255, 204, 128), // 10  soft amber
-            rgb(255, 175, 130), // 11  peach
-            rgb(255, 145, 175), // 12  rose
-            rgb(245, 130, 215), // 13  pink
-            rgb(200, 140, 255), // 14  purple
-            rgb(160, 120, 255), // 15  deep violet
+            role_color(Role::Accent),       //  0  violet/purple
+            role_color(Role::Memory),       //  1  deep violet
+            role_color(Role::Spinner),      //  2  purple
+            role_color(Role::User),         //  3  blue
+            role_color(Role::Heading),      //  4  sky-blue
+            role_color(Role::FileLink),     //  5  light cyan
+            role_color(Role::Asap),         //  6  cyan
+            role_color(Role::PanelBorder),  //  7  teal
+            role_color(Role::Ai),           //  8  green/mint
+            role_color(Role::Success),      //  9  green
+            role_color(Role::DiffAdd),      // 10  bright green
+            role_color(Role::Queued),       // 11  amber
+            role_color(Role::Warning),      // 12  warm amber
+            role_color(Role::Info),         // 13  blue (return to cool)
+            role_color(Role::HeaderIcon),   // 14  cyan-blue
+            role_color(Role::Accent),       // 15  violet (loop back)
         ]
     }
 
@@ -122,29 +122,30 @@ impl BrandTheme {
         out
     }
 
-    /// Accent colors for interactive elements
+    /// Accent colors for interactive elements, resolved from palette roles
+    /// so theme presets recolor them.
     pub fn accent() -> Color {
-        rgb(130, 224, 215)
+        role_color(Role::Accent)
     }
     pub fn success() -> Color {
-        rgb(134, 233, 180)
+        role_color(Role::Success)
     }
     pub fn warning() -> Color {
-        rgb(255, 204, 128)
+        role_color(Role::Warning)
     }
     pub fn error() -> Color {
-        rgb(255, 130, 130)
+        role_color(Role::Error)
     }
     pub fn info() -> Color {
-        rgb(121, 192, 255)
+        role_color(Role::Info)
     }
 
-    /// Dim colors for secondary text
+    /// Dim colors for secondary text, resolved from palette roles.
     pub fn dim() -> Color {
-        rgb(100, 110, 130)
+        role_color(Role::Dim)
     }
     pub fn dim_bright() -> Color {
-        rgb(140, 150, 170)
+        role_color(Role::MutedText)
     }
 
     /// Model name color (Phase 3b: resolves the palette role so `/theme`

@@ -311,7 +311,7 @@ mod tests {
 
     #[test]
     fn empty_routes_returns_empty() {
-        let outcome = open_browser(None, &[], "current", None, &HashSet::new(), None, || vec![]);
+        let outcome = open_browser(None, &[], "current", None, &HashSet::new(), None, Vec::new);
         assert!(matches!(outcome, OpenOutcome::Empty));
     }
 

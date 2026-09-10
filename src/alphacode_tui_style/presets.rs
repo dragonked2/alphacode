@@ -146,6 +146,7 @@ pub const PRESETS: &[ThemeSeed] = &[
     SOLAR_DAWN,
     AURORA,
     NEON_NOIR,
+    CYBER_SPACE,
     EMBER,
     TOKYO_NIGHT_STORM,
     TOKYO_NIGHT,
@@ -1035,6 +1036,31 @@ pub const NEON_NOIR: ThemeSeed = ThemeSeed {
     blue: (120, 170, 255),
     magenta: (220, 110, 255),
     accent: (255, 92, 198),
+};
+
+/// Cyber Space: neon-lit futuristic terminal with electric cyan, hot magenta,
+/// and acid yellow on a near-black void. Inspired by cyberpunk cityscapes
+/// and sci-fi HUD interfaces. High-contrast neon accents cut through deep
+/// space-dark surfaces for a sharp, immersive coding environment.
+pub const CYBER_SPACE: ThemeSeed = ThemeSeed {
+    id: "cyber-space",
+    display_name: "Cyber Space",
+    description: "Neon-lit futuristic terminal: electric cyan, hot magenta, acid yellow on void-black",
+    is_dark: true,
+    fg: (220, 230, 245),
+    fg_muted: (140, 152, 175),
+    fg_subtle: (80, 90, 115),
+    surface: (8, 10, 18),
+    surface_alt: (16, 20, 32),
+    border: (40, 50, 72),
+    red: (255, 80, 110),
+    orange: (255, 160, 90),
+    yellow: (240, 230, 60),
+    green: (80, 245, 180),
+    cyan: (0, 240, 255),
+    blue: (80, 170, 255),
+    magenta: (255, 80, 200),
+    accent: (0, 240, 255),
 };
 
 /// Elite "Frost" theme: high-key light theme with cool blue accents.

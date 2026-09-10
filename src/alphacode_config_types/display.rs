@@ -177,10 +177,10 @@ impl Default for DisplayConfig {
             native_scrollbars: NativeScrollbarConfig::default(),
             keybinding_hints: true,
             theme: String::new(),
-            // Phase 1b: aurora-pro is the new default theme. Empty preset
-            // continues to mean "use alphacode's built-in palette"; users
-            // who want the old look can run `/theme alphacode`.
-            preset: String::from("aurora-pro"),
+            // Cyber Space is the default theme: neon-lit futuristic terminal
+            // with electric cyan, hot magenta, and acid yellow on void-black.
+            // Users who want a different look can run `/theme <name>`.
+            preset: String::from("cyber-space"),
             colors: std::collections::BTreeMap::new(),
             active_sessions_manager: false,
             external_sessions: true,

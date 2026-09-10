@@ -83,12 +83,20 @@ impl Cache {
     fn advance_turn(&mut self) {
         self.turn = self.turn.saturating_add(1);
         // Opportunistic eviction: drop entries older than MAX_AGE_TURNS.
+        let mut evicted = false;
         while let Some(front) = self.entries.front() {
             if self.turn.saturating_sub(front.first_turn) > MAX_AGE_TURNS {
                 let removed = self.entries.pop_front().expect("front exists");
                 self.by_hash.remove(&removed.hash);
+                evicted = true;
             } else {
                 break;
+            }
+        }
+        // After front-eviction, remaining indices shifted. Rebuild the index map.
+        if evicted && !self.by_hash.is_empty() {
+            for (idx, entry) in self.entries.iter().enumerate() {
+                self.by_hash.insert(entry.hash, idx);
             }
         }
     }
@@ -142,6 +150,12 @@ pub fn should_dedup(tool_name: &str, body: &str) -> Option<String> {
             cache.by_hash.remove(&removed.hash);
         } else {
             break;
+        }
+    }
+    // After front-eviction, remaining indices shifted. Rebuild the index map.
+    if !cache.by_hash.is_empty() {
+        for (idx, entry) in cache.entries.iter().enumerate() {
+            cache.by_hash.insert(entry.hash, idx);
         }
     }
 
@@ -209,7 +223,14 @@ static TOTAL_DEDUP_BYTES: std::sync::atomic::AtomicU64 = std::sync::atomic::Atom
 
 pub fn stats() -> DedupStats {
     let g = cache();
-    let cache = g.as_ref().unwrap();
+    let Some(cache) = g.as_ref() else {
+        return DedupStats {
+            entries: 0,
+            capacity: DEFAULT_CAPACITY,
+            current_turn: 0,
+            total_dedup_bytes: TOTAL_DEDUP_BYTES.load(std::sync::atomic::Ordering::Relaxed),
+        };
+    };
     DedupStats {
         entries: cache.entries.len(),
         capacity: DEFAULT_CAPACITY,

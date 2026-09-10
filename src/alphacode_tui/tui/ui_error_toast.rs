@@ -199,7 +199,9 @@ pub fn push_with_ttl(
     hint: Option<String>,
     ttl: Duration,
 ) {
-    let mut guard = TOASTS.lock().expect("error_toast mutex poisoned");
+    let mut guard = TOASTS
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
     guard.push(Toast {
         severity,
         message: message.into(),
@@ -223,13 +225,17 @@ fn push(severity: Severity, message: impl Into<String>, hint: Option<String>) {
 
 /// Clear all currently-visible toasts. Used by the `Esc` dismissal hook.
 pub fn clear() {
-    TOASTS.lock().expect("error_toast mutex poisoned").clear();
+    TOASTS
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner()).clear();
 }
 
 /// Dismiss a single toast by index (used when the user clicks an "x" on
 /// a specific toast). Out-of-range indices are ignored.
 pub fn dismiss(index: usize) {
-    let mut guard = TOASTS.lock().expect("error_toast mutex poisoned");
+    let mut guard = TOASTS
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
     if index < guard.len() {
         guard.remove(index);
     }
@@ -239,7 +245,9 @@ pub fn dismiss(index: usize) {
 /// message and hint are shown at wider width. Out-of-range indices are
 /// ignored. Returns whether the toast was expanded after toggling.
 pub fn toggle_expand(index: usize) -> bool {
-    let mut guard = TOASTS.lock().expect("error_toast mutex poisoned");
+    let mut guard = TOASTS
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
     if let Some(toast) = guard.get_mut(index) {
         toast.expanded = !toast.expanded;
         toast.expanded
@@ -250,7 +258,9 @@ pub fn toggle_expand(index: usize) -> bool {
 
 /// Expand a specific toast by index. Out-of-range indices are ignored.
 pub fn expand(index: usize) {
-    let mut guard = TOASTS.lock().expect("error_toast mutex poisoned");
+    let mut guard = TOASTS
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
     if let Some(toast) = guard.get_mut(index) {
         toast.expanded = true;
     }
@@ -258,7 +268,9 @@ pub fn expand(index: usize) {
 
 /// Collapse a specific toast by index. Out-of-range indices are ignored.
 pub fn collapse(index: usize) {
-    let mut guard = TOASTS.lock().expect("error_toast mutex poisoned");
+    let mut guard = TOASTS
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
     if let Some(toast) = guard.get_mut(index) {
         toast.expanded = false;
     }
@@ -269,7 +281,9 @@ pub fn collapse(index: usize) {
 /// mutex during ratatui calls.
 pub fn snapshot() -> Vec<Toast> {
     let now = Instant::now();
-    let mut guard = TOASTS.lock().expect("error_toast mutex poisoned");
+    let mut guard = TOASTS
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
     guard.retain(|t| !t.is_expired(now));
     guard.clone()
 }

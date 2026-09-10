@@ -1252,14 +1252,20 @@ impl Provider for BedrockProvider {
                                 let id = tool.tool_use_id().to_string();
                                 let name = tool.name().to_string();
                                 current_tool = Some((id.clone(), name.clone(), String::new()));
-                                let _ = tx.send(Ok(StreamEvent::ToolUseStart { id, name })).await;
+                                if tx.send(Ok(StreamEvent::ToolUseStart { id, name })).await.is_err() {
+                                    crate::logging::warn("[bedrock] stream receiver dropped during ToolUseStart");
+                                    return;
+                                }
                             }
                         }
                         ConverseStreamOutput::ContentBlockDelta(delta) => {
                             if let Some(d) = delta.delta {
                                 match d {
                                     ContentBlockDelta::Text(text) => {
-                                        let _ = tx.send(Ok(StreamEvent::TextDelta(text))).await;
+                                        if tx.send(Ok(StreamEvent::TextDelta(text))).await.is_err() {
+                                            crate::logging::warn("[bedrock] stream receiver dropped during TextDelta");
+                                            return;
+                                        }
                                     }
                                     ContentBlockDelta::ToolUse(tool_delta) => {
                                         let input = tool_delta.input();
@@ -1267,17 +1273,25 @@ impl Provider for BedrockProvider {
                                             if let Some((_, _, buf)) = current_tool.as_mut() {
                                                 buf.push_str(input);
                                             }
-                                            let _ = tx
+                                            if tx
                                                 .send(Ok(StreamEvent::ToolInputDelta(
                                                     input.to_string(),
                                                 )))
-                                                .await;
+                                                .await
+                                                .is_err()
+                                            {
+                                                crate::logging::warn("[bedrock] stream receiver dropped during ToolInputDelta");
+                                                return;
+                                            }
                                         }
                                     }
                                     ContentBlockDelta::ReasoningContent(
                                         ReasoningContentBlockDelta::Text(text),
                                     ) => {
-                                        let _ = tx.send(Ok(StreamEvent::ThinkingDelta(text))).await;
+                                        if tx.send(Ok(StreamEvent::ThinkingDelta(text))).await.is_err() {
+                                            crate::logging::warn("[bedrock] stream receiver dropped during ThinkingDelta");
+                                            return;
+                                        }
                                     }
                                     _ => {}
                                 }
@@ -1285,16 +1299,24 @@ impl Provider for BedrockProvider {
                         }
                         ConverseStreamOutput::ContentBlockStop(_) => {
                             if current_tool.take().is_some() {
-                                let _ = tx.send(Ok(StreamEvent::ToolUseEnd)).await;
+                                if tx.send(Ok(StreamEvent::ToolUseEnd)).await.is_err() {
+                                    crate::logging::warn("[bedrock] stream receiver dropped during ToolUseEnd");
+                                    return;
+                                }
                             }
                         }
                         ConverseStreamOutput::MessageStop(stop) => {
                             let reason = Some(format!("{:?}", stop.stop_reason()));
-                            let _ = tx
+                            if tx
                                 .send(Ok(StreamEvent::MessageEnd {
                                     stop_reason: reason,
                                 }))
-                                .await;
+                                .await
+                                .is_err()
+                            {
+                                crate::logging::warn("[bedrock] stream receiver dropped during MessageEnd");
+                                return;
+                            }
                         }
                         ConverseStreamOutput::Metadata(meta) => {
                             if let Some(usage) = meta.usage() {

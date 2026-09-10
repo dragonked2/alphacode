@@ -1,6 +1,7 @@
 use crate::alphacode_tui::tui::brand_ux::{BrandTheme, ProgressBar};
 use ratatui::prelude::*;
 use std::time::Duration;
+use unicode_width::UnicodeWidthStr;
 
 /// Ring buffer for tracking recent token throughput.
 ///
@@ -93,13 +94,21 @@ impl StatusBar {
                 .add_modifier(Modifier::BOLD),
         ));
 
-        // Model name (truncated if needed, Unicode-safe)
+        // Model name (truncated if needed, Unicode display-width safe)
         let model_display = {
-            let truncated: String = model.chars().take(24).collect();
-            if truncated.len() < model.len() {
+            let display_width = model.width();
+            if display_width > 24 {
+                let mut width = 0;
+                let truncated: String = model
+                    .chars()
+                    .take_while(|c| {
+                        width += unicode_width::UnicodeWidthChar::width(*c).unwrap_or(0);
+                        width <= 22
+                    })
+                    .collect();
                 format!("{}…", truncated)
             } else {
-                truncated
+                model.to_string()
             }
         };
         spans.push(Span::styled(
@@ -337,15 +346,20 @@ impl StatusBar {
         let mut spans = Vec::with_capacity(4);
 
         let (icon, color) = if connected {
-            let lat_ms = latency.map(|l| l.as_millis()).unwrap_or(0);
-            let indicator_color = if lat_ms < 50 {
-                BrandTheme::success()
-            } else if lat_ms < 200 {
-                BrandTheme::info()
-            } else if lat_ms < 500 {
-                BrandTheme::warning()
-            } else {
-                BrandTheme::error()
+            let indicator_color = match latency {
+                Some(lat) => {
+                    let lat_ms = lat.as_millis();
+                    if lat_ms < 50 {
+                        BrandTheme::success()
+                    } else if lat_ms < 200 {
+                        BrandTheme::info()
+                    } else if lat_ms < 500 {
+                        BrandTheme::warning()
+                    } else {
+                        BrandTheme::error()
+                    }
+                }
+                None => BrandTheme::info(), // Unknown latency — don't signal "excellent"
             };
             ("●", indicator_color)
         } else {

@@ -840,8 +840,10 @@ mod tests {
 
     #[test]
     fn text_delta_uses_attached_session_id() {
-        let mut state = BridgeState::default();
-        state.session_id = Some("ses-9".into());
+        let mut state = BridgeState {
+            session_id: Some("ses-9".into()),
+            ..Default::default()
+        };
         let frames = state.legacy_event_to_api(&legacy_event(
             "text_delta",
             json!({ "text": "hi", "session_id": "ignored" }),

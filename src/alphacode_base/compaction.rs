@@ -481,7 +481,7 @@ impl CompactionManager {
 
         // 4. Growth has stalled: last stall_window snapshots show no increase.
         //    If tokens haven't grown, there's no urgency.
-        if self.token_history.len() >= cfg.stall_window {
+        if cfg.stall_window > 0 && self.token_history.len() >= cfg.stall_window {
             let recent: Vec<u64> = self
                 .token_history
                 .iter()
@@ -489,8 +489,10 @@ impl CompactionManager {
                 .take(cfg.stall_window)
                 .cloned()
                 .collect();
-            let oldest = recent[recent.len() - 1];
-            let newest = recent[0];
+            let Some((&newest, rest)) = recent.split_first() else {
+                return false;
+            };
+            let oldest = *rest.last().unwrap_or(&newest);
             if newest <= oldest {
                 return true;
             }

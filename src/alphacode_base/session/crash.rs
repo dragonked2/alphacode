@@ -338,7 +338,9 @@ fn find_crashed_via_pid_files() -> Option<Vec<(String, String)>> {
         let pid: u32 = match pid_str.trim().parse() {
             Ok(p) => p,
             Err(_) => {
-                let _ = std::fs::remove_file(entry.path());
+                // Don't delete the PID file — it may be corrupted by a
+                // partial write but the session could still be alive.
+                // Skip it and let the session's own cleanup remove it.
                 continue;
             }
         };

@@ -890,6 +890,7 @@ mod tests {
     }
 
     #[test]
+    #[allow(clippy::const_is_empty)]
     fn hive_profile_is_branded_as_a_free_gift_and_reachable_by_every_alias() {
         // TheHive AI gateway is the "Free Gift from Alphacode" lane, so the
         // invariants here double as a contract for the branding: the display

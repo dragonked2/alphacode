@@ -479,19 +479,24 @@ pub(super) fn pending_queue_preview(app: &dyn TuiState) -> Vec<String> {
     previews
 }
 
-/// Truncate a preview string to `max_chars`, collapsing internal newlines to
-/// spaces for a single-line preview. When truncated, appends an ellipsis.
+/// Truncate a preview string to `max_chars` (display-width characters),
+/// collapsing internal newlines to spaces for a single-line preview.
+/// When truncated, appends an ellipsis.
 fn truncate_preview(text: &str, max_chars: usize) -> String {
+    use unicode_width::UnicodeWidthStr;
     let single_line: String = text.replace('\n', " ");
     let trimmed = single_line.trim();
-    if trimmed.len() <= max_chars {
+    if trimmed.width() <= max_chars {
         trimmed.to_string()
     } else {
-        // Find a safe byte boundary at or below the target length
         let limit = max_chars.saturating_sub(3);
+        let mut width = 0;
         let safe_end = trimmed
             .char_indices()
-            .take_while(|(i, _)| *i < limit)
+            .take_while(|(_, c)| {
+                width += unicode_width::UnicodeWidthChar::width(*c).unwrap_or(0);
+                width <= limit
+            })
             .last()
             .map(|(i, c)| i + c.len_utf8())
             .unwrap_or(0);

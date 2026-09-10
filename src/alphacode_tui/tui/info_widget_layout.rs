@@ -375,7 +375,7 @@ pub(crate) fn calculate_placements_anchored(
                 continue;
             }
 
-            let mut score = -((height as i32 * width as i32) / 10);
+            let mut score = -((height as i64 * width as i64) / 10) as i32;
             if side == preferred {
                 score += 1000;
             }

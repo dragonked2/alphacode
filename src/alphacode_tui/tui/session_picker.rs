@@ -1388,10 +1388,9 @@ impl SessionPicker {
         // Read cache geometry through a short-lived borrow so the scroll-offset
         // clamp below can take `&mut self` without conflict.
         let (show_scrollbar, total_lines, first_match_line) = {
-            let cache = self
-                .preview_cache
-                .as_ref()
-                .expect("preview cache populated above");
+            let Some(cache) = self.preview_cache.as_ref() else {
+                return;
+            };
             (
                 cache.show_scrollbar,
                 cache.wrapped_lines.len(),
@@ -1441,10 +1440,9 @@ impl SessionPicker {
         // tick O(viewport height) rather than O(total wrapped lines).
         let visible_end = (scroll + visible_height).min(total_lines);
         let visible_lines: Vec<Line<'static>> = {
-            let cache = self
-                .preview_cache
-                .as_ref()
-                .expect("preview cache populated above");
+            let Some(cache) = self.preview_cache.as_ref() else {
+                return;
+            };
             if scroll < visible_end {
                 cache.wrapped_lines[scroll..visible_end].to_vec()
             } else {

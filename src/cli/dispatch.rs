@@ -1248,7 +1248,8 @@ async fn detect_bootstrap_credentials() -> BootstrapCredentialState {
     let has_openai = has_openai.unwrap_or(false);
     let has_openrouter = provider::openrouter::has_credentials();
     let has_copilot = auth::copilot::has_copilot_credentials();
-    let has_api_key = std::env::var("ANTHROPIC_API_KEY").is_ok();
+    let has_api_key = std::env::var("ANTHROPIC_API_KEY").is_ok()
+        || std::env::var("ALPHACODE_ANTHROPIC_API_KEY").is_ok();
 
     BootstrapCredentialState {
         has_any: has_claude || has_openai || has_openrouter || has_copilot || has_api_key,
@@ -1585,7 +1586,12 @@ fn run_reload_helper(args: &Args) -> Result<()> {
         .arg(session_id)
         .arg("--no-update")
         .current_dir(
-            std::env::current_dir().unwrap_or_else(|_| target_path.parent().unwrap().to_path_buf()),
+            std::env::current_dir().unwrap_or_else(|_| {
+                target_path
+                    .parent()
+                    .unwrap_or_else(|| std::path::Path::new("."))
+                    .to_path_buf()
+            }),
         );
     let err = crate::platform::replace_process(&mut cmd);
     Err(anyhow::anyhow!("Failed to exec {:?}: {}", target_path, err))

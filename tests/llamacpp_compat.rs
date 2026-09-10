@@ -4,8 +4,8 @@
 //! requiring a live `llama-server`:
 //! 1. base URL normalization (4 forms), 2. /v1/models discovery URLs,
 //! 3. model-id verbatim handling, 4/5. auth header modes, 6/7. reasoning effort
-//! helpers, 8/9. stream true/false payload shapes, 10. SSE parsing,
-//! 11/12. context overflow detection, 13/14. timeout + cancellation helpers,
+//!    helpers, 8/9. stream true/false payload shapes, 10. SSE parsing,
+//!    11/12. context overflow detection, 13/14. timeout + cancellation helpers,
 //! 15. tool schema sanitize, 16. cloud prefixes preserved.
 
 use alphacode::alphacode_provider_metadata::{

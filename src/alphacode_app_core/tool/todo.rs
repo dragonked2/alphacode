@@ -611,9 +611,17 @@ impl Tool for TodoTool {
             (|| {
                 let stored_goals = load_goals(&ctx.session_id).unwrap_or_default();
                 let stored_plan = load_plan(&ctx.session_id).unwrap_or_default();
+                let goals_sent = params.goals.is_some();
                 let goals = merge_goals(&stored_goals, params.goals);
                 let plan = merge_plan(&stored_plan, params.plan);
-                if !newly_completed_groups_have_sufficient_ownership(&previous, &todos, &goals) {
+                // Only enforce the ownership gate when the model is explicitly
+                // sending goals. When goals are omitted, stored goals from a
+                // previous write may have stale ownership scores that the
+                // model has no way to update in the same call, causing the
+                // gate to reject every write regardless of intent.
+                if goals_sent
+                    && !newly_completed_groups_have_sufficient_ownership(&previous, &todos, &goals)
+                {
                     crate::telemetry::record_todo_gate(crate::telemetry::TodoGateKind::Ownership);
                     return build_todo_output(
                         previous,
@@ -1111,6 +1119,141 @@ mod tests {
             stdin_request_tx: None,
             graceful_shutdown_signal: None,
             execution_mode: crate::tool::ToolExecutionMode::Direct,
+        }
+    }
+
+    /// A todo-only write that completes a group must not be rejected by stale
+    /// stored goals with low ownership. The ownership gate should only apply
+    /// when the model is explicitly sending goals in the same write.
+    #[tokio::test]
+    async fn todo_only_write_with_stale_low_ownership_goals_is_not_rejected() {
+        let _guard = crate::storage::lock_test_env();
+        let previous_home = std::env::var_os("ALPHACODE_HOME");
+        let dir = tempfile::TempDir::new().expect("tempdir");
+        crate::alphacode_core::env::set_var("ALPHACODE_HOME", dir.path());
+        let session = "ownership-gate-stale-goals";
+
+        // First write: set up a group with low ownership.
+        let output = TodoTool::new()
+            .execute(
+                json!({
+                    "todos": [{
+                        "content": "implement feature",
+                        "status": "in_progress",
+                        "priority": "high",
+                        "id": "feat",
+                        "group": "ship",
+                        "confidence": 80,
+                    }],
+                    "goals": [{
+                        "group": "ship",
+                        "closed_feedback_loop": 70,
+                        "feedback_loop": "run tests",
+                        "end_to_end_ownership": 50,
+                    }],
+                }),
+                test_ctx(session),
+            )
+            .await
+            .expect("first write should succeed");
+        assert!(
+            !output.output.contains(TODO_OWNERSHIP_CONTINUATION_MESSAGE),
+            "first write with in_progress todo must not be gated: {}",
+            output.output
+        );
+
+        // Second write: complete the todo WITHOUT sending goals.
+        // The stored goal has low ownership (50), but since goals are not
+        // being updated, the ownership gate must not reject the write.
+        let output = TodoTool::new()
+            .execute(
+                json!({
+                    "todos": [{
+                        "content": "implement feature",
+                        "status": "completed",
+                        "priority": "high",
+                        "id": "feat",
+                        "group": "ship",
+                        "confidence": 80,
+                        "completion_confidence": 95,
+                    }],
+                }),
+                test_ctx(session),
+            )
+            .await
+            .expect("todo-only write should succeed");
+        assert!(
+            !output.output.contains(TODO_OWNERSHIP_CONTINUATION_MESSAGE),
+            "todo-only write must not be rejected by stale stored goals: {}",
+            output.output
+        );
+        assert!(
+            output.output.contains("\"status\": \"completed\""),
+            "the completed todo should be in the output: {}",
+            output.output
+        );
+
+        // Verify the todo was actually saved as completed.
+        let todos = load_todos(session).expect("load todos");
+        assert_eq!(todos.len(), 1);
+        assert_eq!(todos[0].status, "completed");
+
+        match previous_home {
+            Some(value) => crate::alphacode_core::env::set_var("ALPHACODE_HOME", value),
+            None => crate::alphacode_core::env::remove_var("ALPHACODE_HOME"),
+        }
+    }
+
+    /// When goals ARE sent with a todo write, the ownership gate must still
+    /// enforce the threshold.
+    #[tokio::test]
+    async fn ownership_gate_still_blocks_when_goals_are_sent() {
+        let _guard = crate::storage::lock_test_env();
+        let previous_home = std::env::var_os("ALPHACODE_HOME");
+        let dir = tempfile::TempDir::new().expect("tempdir");
+        crate::alphacode_core::env::set_var("ALPHACODE_HOME", dir.path());
+        let session = "ownership-gate-active-goals";
+
+        // Complete a todo AND send a goal with low ownership.
+        let output = TodoTool::new()
+            .execute(
+                json!({
+                    "todos": [{
+                        "content": "implement feature",
+                        "status": "completed",
+                        "priority": "high",
+                        "id": "feat",
+                        "group": "ship",
+                        "confidence": 80,
+                        "completion_confidence": 95,
+                    }],
+                    "goals": [{
+                        "group": "ship",
+                        "closed_feedback_loop": 70,
+                        "feedback_loop": "run tests",
+                        "end_to_end_ownership": 50,
+                    }],
+                }),
+                test_ctx(session),
+            )
+            .await
+            .expect("write should succeed");
+        assert!(
+            output.output.contains(TODO_OWNERSHIP_CONTINUATION_MESSAGE),
+            "ownership gate must reject when goals are sent with low ownership: {}",
+            output.output
+        );
+
+        // The todo should NOT have been saved (write was rejected).
+        let todos = load_todos(session).expect("load todos");
+        assert!(
+            todos.is_empty() || todos.iter().all(|t| t.status != "completed"),
+            "rejected write must not persist completed todos"
+        );
+
+        match previous_home {
+            Some(value) => crate::alphacode_core::env::set_var("ALPHACODE_HOME", value),
+            None => crate::alphacode_core::env::remove_var("ALPHACODE_HOME"),
         }
     }
 
