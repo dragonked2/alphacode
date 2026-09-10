@@ -4351,6 +4351,84 @@ pub(crate) fn render_tool_message(
     lines
 }
 
+/// Render tool output with a subtle left border for visual distinction.
+///
+/// Wraps content lines with a left-side vertical bar and optional tool name
+/// header, creating a clear visual separation between tool output and regular
+/// assistant text. The border uses the tool's semantic color.
+#[allow(dead_code)]
+pub(crate) fn render_tool_output_with_border(
+    tool_name: &str,
+    content_lines: Vec<Line<'static>>,
+    width: u16,
+    border_color: Color,
+) -> Vec<Line<'static>> {
+    let max_width = width.saturating_sub(6) as usize; // 4 for border + 2 margin
+    let mut lines: Vec<Line<'static>> = Vec::with_capacity(content_lines.len() + 2);
+
+    // Tool name header with subtle background
+    let tool_name_owned = tool_name.to_string();
+    let header = Line::from(vec![
+        Span::raw("  "),
+        Span::styled(
+            "│ ",
+            Style::default()
+                .fg(border_color)
+                .add_modifier(Modifier::DIM),
+        ),
+        Span::styled(
+            tool_name_owned,
+            Style::default()
+                .fg(border_color)
+                .add_modifier(Modifier::BOLD),
+        ),
+    ]);
+    lines.push(header);
+
+    // Content lines with left border
+    for line in content_lines {
+        let mut spans = vec![
+            Span::raw("  "),
+            Span::styled(
+                "│ ",
+                Style::default()
+                    .fg(border_color)
+                    .add_modifier(Modifier::DIM),
+            ),
+        ];
+
+        // Copy content spans, respecting width
+        let mut remaining_width = max_width;
+        for span in &line.spans {
+            let span_width = unicode_width::UnicodeWidthStr::width(span.content.as_ref());
+            if span_width <= remaining_width {
+                spans.push(span.clone());
+                remaining_width -= span_width;
+            } else {
+                // Truncate span to fit
+                let mut truncated = String::new();
+                let mut used = 0;
+                for ch in span.content.chars() {
+                    let cw = unicode_width::UnicodeWidthChar::width(ch).unwrap_or(0);
+                    if used + cw > remaining_width {
+                        break;
+                    }
+                    truncated.push(ch);
+                    used += cw;
+                }
+                if !truncated.is_empty() {
+                    spans.push(Span::styled(truncated, span.style));
+                }
+                break;
+            }
+        }
+
+        lines.push(Line::from(spans));
+    }
+
+    lines
+}
+
 struct ToolOutputTokenBadge {
     label: String,
     color: Color,
@@ -4367,6 +4445,153 @@ fn tool_output_token_badge(content: &str) -> ToolOutputTokenBadge {
         label: crate::util::format_approx_token_count(tokens),
         color,
     }
+}
+
+/// Message role icons and colors for visual distinction.
+#[allow(dead_code)]
+pub struct MessageRole;
+
+impl MessageRole {
+    /// Get the icon and color for a message role.
+    #[allow(dead_code)]
+    pub fn icon_and_color(role: &str) -> (&'static str, Color) {
+        match role {
+            "user" => ("👤", rgb(138, 235, 225)),
+            "assistant" => ("🤖", rgb(158, 135, 255)),
+            "tool" => ("⚙", rgb(118, 228, 168)),
+            "system" => ("⚡", rgb(255, 215, 108)),
+            "error" => ("✗", rgb(255, 118, 118)),
+            "success" => ("✓", rgb(108, 230, 158)),
+            "warning" => ("⚠", rgb(255, 195, 88)),
+            "info" => ("ℹ", rgb(148, 188, 255)),
+            _ => ("·", rgb(118, 118, 118)),
+        }
+    }
+
+    /// Get the background color for a message role (very subtle).
+    #[allow(dead_code)]
+    pub fn background_color(role: &str) -> Option<Color> {
+        match role {
+            "user" => Some(rgb(22, 28, 38)),
+            "assistant" => Some(rgb(24, 22, 38)),
+            "tool" => Some(rgb(22, 28, 26)),
+            "system" => Some(rgb(28, 26, 22)),
+            _ => None,
+        }
+    }
+
+    /// Get the border color for a message role.
+    #[allow(dead_code)]
+    pub fn border_color(role: &str) -> Color {
+        match role {
+            "user" => rgb(58, 85, 95),
+            "assistant" => rgb(68, 55, 95),
+            "tool" => rgb(48, 75, 65),
+            "system" => rgb(75, 65, 48),
+            "error" => rgb(95, 48, 48),
+            _ => rgb(48, 48, 55),
+        }
+    }
+}
+
+/// Render a message bubble with role icon and subtle styling.
+///
+/// Creates a visually distinct message container with:
+/// - Role icon (user/assistant/tool/system)
+/// - Subtle background color
+/// - Optional border
+/// - Content with proper wrapping
+#[allow(dead_code)]
+pub fn render_message_bubble(
+    role: &str,
+    content: &str,
+    width: u16,
+    show_icon: bool,
+) -> Vec<Line<'static>> {
+    let mut lines = Vec::new();
+    let (icon, icon_color) = MessageRole::icon_and_color(role);
+    let border_color = MessageRole::border_color(role);
+
+    let content_width = width.saturating_sub(4) as usize;
+
+    // Add role icon on first line
+    if show_icon {
+        let icon_line = Line::from(vec![
+            Span::raw("  "),
+            Span::styled(
+                "│ ",
+                Style::default()
+                    .fg(border_color)
+                    .add_modifier(Modifier::DIM),
+            ),
+            Span::styled(
+                icon,
+                Style::default().fg(icon_color).add_modifier(Modifier::BOLD),
+            ),
+            Span::styled(
+                format!(" {} ", role),
+                Style::default().fg(icon_color).add_modifier(Modifier::DIM),
+            ),
+        ]);
+        lines.push(icon_line);
+    }
+
+    // Render content with left border
+    let content_lines = markdown::render_markdown_with_width(content, Some(content_width));
+    for content_line in content_lines {
+        let mut spans = vec![
+            Span::raw("  "),
+            Span::styled(
+                "│ ",
+                Style::default()
+                    .fg(border_color)
+                    .add_modifier(Modifier::DIM),
+            ),
+        ];
+
+        // Copy content spans
+        for span in &content_line.spans {
+            spans.push(span.clone());
+        }
+
+        lines.push(Line::from(spans));
+    }
+
+    lines
+}
+
+/// Render a tool call summary with status indicator.
+#[allow(dead_code)]
+pub fn render_tool_call_summary(tool_name: &str, status: &str, _width: u16) -> Line<'static> {
+    let (status_icon, status_color) = match status {
+        "running" => ("⟳", rgb(255, 215, 108)),
+        "completed" => ("✓", rgb(108, 230, 158)),
+        "failed" => ("✗", rgb(255, 118, 118)),
+        "queued" => ("⏳", rgb(148, 188, 255)),
+        _ => ("·", rgb(118, 118, 118)),
+    };
+
+    let spans = vec![
+        Span::raw("  "),
+        Span::styled(
+            "│ ",
+            Style::default()
+                .fg(rgb(48, 75, 65))
+                .add_modifier(Modifier::DIM),
+        ),
+        Span::styled("⚙ ", Style::default().fg(rgb(118, 228, 168))),
+        Span::styled(
+            tool_name.to_string(),
+            Style::default()
+                .fg(rgb(118, 228, 168))
+                .add_modifier(Modifier::BOLD),
+        ),
+        Span::styled(" ", Style::default()),
+        Span::styled(status_icon, Style::default().fg(status_color)),
+        Span::styled(format!(" {}", status), Style::default().fg(status_color)),
+    ];
+
+    Line::from(spans)
 }
 
 #[cfg(test)]

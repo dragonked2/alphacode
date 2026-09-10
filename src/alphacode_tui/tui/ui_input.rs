@@ -49,9 +49,42 @@ fn composer_mode(input: &str, is_remote_mode: bool) -> ComposerMode {
 
 fn shell_mode_hint(mode: ComposerMode) -> Option<&'static str> {
     match mode {
-        ComposerMode::ShellLocal => Some("  \u{2699} shell mode \u{00b7} Enter runs locally"),
-        ComposerMode::ShellRemote => Some("  \u{2699} shell mode \u{00b7} Enter runs on server"),
+        ComposerMode::ShellLocal => Some("  \u{2699} shell \u{00b7} Enter runs locally"),
+        ComposerMode::ShellRemote => Some("  \u{2699} shell \u{00b7} Enter runs on server"),
         _ => None,
+    }
+}
+
+/// Get the mode badge for display in the input area.
+///
+/// Returns a styled badge that indicates the current input mode with
+/// appropriate icon and color.
+#[allow(dead_code)]
+pub(super) fn input_mode_badge(app: &dyn TuiState) -> Option<Span<'static>> {
+    let mode = composer_mode(app.input(), app.is_remote_mode());
+    match mode {
+        ComposerMode::ShellLocal => Some(Span::styled(
+            " $ SHELL ",
+            Style::default()
+                .fg(rgb(118, 228, 168))
+                .bg(rgb(28, 32, 48))
+                .add_modifier(Modifier::BOLD),
+        )),
+        ComposerMode::ShellRemote => Some(Span::styled(
+            " $ REMOTE ",
+            Style::default()
+                .fg(rgb(118, 228, 168))
+                .bg(rgb(28, 32, 48))
+                .add_modifier(Modifier::BOLD),
+        )),
+        ComposerMode::SlashCommand => Some(Span::styled(
+            " / CMD ",
+            Style::default()
+                .fg(rgb(215, 178, 255))
+                .bg(rgb(28, 32, 48))
+                .add_modifier(Modifier::BOLD),
+        )),
+        ComposerMode::Chat => None,
     }
 }
 
@@ -404,6 +437,25 @@ pub(super) fn input_prompt(app: &dyn TuiState) -> (&'static str, Color) {
         ("\u{00bb} ", rgb(215, 178, 255))
     } else {
         ("> ", rgb(138, 235, 225))
+    }
+}
+
+/// Get the mode-specific icon for the input area.
+///
+/// Returns a (icon, color, description) tuple for the current input mode.
+#[allow(dead_code)]
+pub(super) fn input_mode_icon(app: &dyn TuiState) -> (&'static str, Color, &'static str) {
+    let mode = composer_mode(app.input(), app.is_remote_mode());
+    if mode.is_shell() {
+        ("$", rgb(118, 228, 168), "Shell mode")
+    } else if app.is_processing() {
+        ("…", rgb(255, 215, 108), "Processing")
+    } else if app.active_skill().is_some() {
+        ("»", rgb(215, 178, 255), "Skill active")
+    } else if app.next_prompt_new_session_armed() {
+        ("↗", rgb(120, 200, 255), "New session")
+    } else {
+        (">", rgb(138, 235, 225), "Chat")
     }
 }
 

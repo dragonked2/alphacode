@@ -82,13 +82,13 @@ impl StatusBar {
         status: &str,
         width: usize,
     ) -> Line<'static> {
-        let mut spans = Vec::with_capacity(14);
-        let sep = || Span::styled(" ╷ ", Style::default().fg(BrandTheme::dim()));
+        let mut spans = Vec::with_capacity(16);
+        let sep = || Span::styled(" │ ", Style::default().fg(BrandTheme::dim()));
 
-        // Brand marker with gradient
+        // Brand marker with animated gradient dot
         let gradient = BrandTheme::gradient();
         spans.push(Span::styled(
-            "◆",
+            "●",
             Style::default()
                 .fg(gradient[0])
                 .add_modifier(Modifier::BOLD),
@@ -128,18 +128,19 @@ impl StatusBar {
 
         spans.push(sep());
 
-        // Token counts — compact formatting with directional color
+        // Token counts — compact formatting with directional color and icons
         if input_tokens > 0 || output_tokens > 0 {
             spans.push(Span::styled(
-                "↑",
+                "⬆",
                 Style::default().fg(BrandTheme::success()),
             ));
             spans.push(Span::styled(
                 format_tokens(input_tokens),
                 Style::default().fg(gradient[1]),
             ));
+            spans.push(Span::styled(" ", Style::default()));
             spans.push(Span::styled(
-                "↓",
+                "⬇",
                 Style::default().fg(BrandTheme::warning()),
             ));
             spans.push(Span::styled(
@@ -199,11 +200,11 @@ impl StatusBar {
         history: &TokenHistory,
         width: usize,
     ) -> Line<'static> {
-        let mut spans = Vec::with_capacity(10);
+        let mut spans = Vec::with_capacity(14);
 
         // Spinner with gradient color based on speed
-        let spinner_frame = (elapsed.as_millis() / 200) as usize;
-        spans.extend(ProgressBar::spinner(spinner_frame));
+        let spinner_frame = (elapsed.as_millis() / 150) as usize;
+        spans.extend(ProgressBar::spinner_smooth(spinner_frame));
 
         // Model
         spans.push(Span::styled(
@@ -235,7 +236,7 @@ impl StatusBar {
 
         // Sparkline of recent token throughput
         if !history.values().is_empty() {
-            let spark_width = 12.min(width.saturating_sub(60));
+            let spark_width = 16.min(width.saturating_sub(65));
             spans.push(Span::styled(" ", Style::default()));
             spans.extend(BrandTheme::sparkline(
                 history.values(),
@@ -312,10 +313,15 @@ impl StatusBar {
 
     /// Render a tool execution status with optional progress bar.
     pub fn tool_status(tool_name: &str, progress: Option<f32>) -> Line<'static> {
-        let mut spans = Vec::with_capacity(4);
+        let mut spans = Vec::with_capacity(6);
 
-        // Tool icon
-        spans.push(Span::styled("⚙ ", Style::default().fg(BrandTheme::tool())));
+        // Tool icon with gradient color
+        let icon_color = match progress {
+            Some(p) if p >= 1.0 => BrandTheme::success(),
+            Some(_) => BrandTheme::accent(),
+            None => BrandTheme::tool(),
+        };
+        spans.push(Span::styled("⚙ ", Style::default().fg(icon_color)));
 
         // Tool name
         spans.push(Span::styled(
@@ -328,7 +334,7 @@ impl StatusBar {
         // Progress bar if available
         if let Some(progress) = progress {
             spans.push(Span::styled(" ", Style::default()));
-            spans.extend(ProgressBar::render(progress, 15, None));
+            spans.extend(ProgressBar::render_compact(progress, 12));
         }
 
         Line::from(spans)
@@ -343,7 +349,7 @@ impl StatusBar {
     /// - ● >=500ms red   (slow)
     /// - ○ red            (disconnected)
     pub fn connection_status(connected: bool, latency: Option<Duration>) -> Line<'static> {
-        let mut spans = Vec::with_capacity(4);
+        let mut spans = Vec::with_capacity(6);
 
         let (icon, color) = if connected {
             let indicator_color = match latency {
@@ -384,11 +390,13 @@ impl StatusBar {
             spans.push(Span::styled(lat_str, Style::default().fg(lat_color)));
         }
 
-        // Connection label
+        // Connection label with subtle styling
         if connected {
             spans.push(Span::styled(
                 " live",
-                Style::default().fg(BrandTheme::dim_bright()),
+                Style::default()
+                    .fg(BrandTheme::dim_bright())
+                    .add_modifier(Modifier::DIM),
             ));
         } else {
             spans.push(Span::styled(
@@ -399,13 +407,227 @@ impl StatusBar {
 
         Line::from(spans)
     }
+
+    /// Render a compact connection dot — just the indicator, suitable for
+    /// tight layouts where the full status line would overflow.
+    pub fn connection_dot(connected: bool, latency: Option<Duration>) -> Span<'static> {
+        let (icon, color) = if connected {
+            let c = match latency {
+                Some(lat) => {
+                    let ms = lat.as_millis();
+                    if ms < 50 {
+                        BrandTheme::success()
+                    } else if ms < 200 {
+                        BrandTheme::info()
+                    } else if ms < 500 {
+                        BrandTheme::warning()
+                    } else {
+                        BrandTheme::error()
+                    }
+                }
+                None => BrandTheme::info(),
+            };
+            ("●", c)
+        } else {
+            ("○", BrandTheme::error())
+        };
+        Span::styled(
+            icon.to_string(),
+            Style::default().fg(color).add_modifier(Modifier::BOLD),
+        )
+    }
+
+    /// Render a connection HUD with latency graph and status indicators.
+    ///
+    /// Shows: connection dot · latency graph · latency value · connection type
+    /// The latency graph shows the last N latency readings as a sparkline.
+    pub fn connection_hud(
+        connected: bool,
+        latency: Option<Duration>,
+        latency_history: &[Duration],
+        connection_type: &str,
+        width: usize,
+    ) -> Line<'static> {
+        let mut spans = Vec::with_capacity(12);
+
+        // Connection dot with glow effect
+        let dot = Self::connection_dot(connected, latency);
+        spans.push(dot);
+        spans.push(Span::styled(" ", Style::default()));
+
+        // Latency graph (sparkline of recent latency readings)
+        if !latency_history.is_empty() && width > 30 {
+            let graph_width = 12.min(width.saturating_sub(40));
+            let values: Vec<u64> = latency_history
+                .iter()
+                .map(|d| d.as_millis() as u64)
+                .collect();
+            let max_val = values.iter().copied().max().unwrap_or(100).max(1);
+
+            // Color code the graph based on average latency
+            let avg_ms = values.iter().sum::<u64>() as f32 / values.len() as f32;
+            let graph_color = if avg_ms < 50.0 {
+                BrandTheme::success()
+            } else if avg_ms < 200.0 {
+                BrandTheme::info()
+            } else if avg_ms < 500.0 {
+                BrandTheme::warning()
+            } else {
+                BrandTheme::error()
+            };
+
+            // Build sparkline
+            const BLOCKS: [&str; 8] = ["▁", "▂", "▃", "▄", "▅", "▆", "▇", "█"];
+            let step = (values.len() as f32 / graph_width as f32).max(1.0);
+            let mut graph_str = String::with_capacity(graph_width);
+            for i in 0..graph_width {
+                let idx = (i as f32 * step) as usize;
+                let val = values[idx.min(values.len() - 1)];
+                let normalized = (val as f32 / max_val as f32).clamp(0.0, 1.0);
+                let block_idx = (normalized * 7.0).round() as usize;
+                graph_str.push_str(BLOCKS[block_idx]);
+            }
+            spans.push(Span::styled(graph_str, Style::default().fg(graph_color)));
+            spans.push(Span::styled(" ", Style::default()));
+        }
+
+        // Latency value with tier color
+        if let Some(latency) = latency {
+            let (lat_str, lat_color) = match latency.as_millis() {
+                0..=49 => (format!("{}ms", latency.as_millis()), BrandTheme::success()),
+                50..=199 => (format!("{}ms", latency.as_millis()), BrandTheme::info()),
+                200..=999 => (format!("{}ms", latency.as_millis()), BrandTheme::warning()),
+                _ => {
+                    let secs = latency.as_secs_f32();
+                    (format!("{:.1}s", secs), BrandTheme::error())
+                }
+            };
+            spans.push(Span::styled(lat_str, Style::default().fg(lat_color)));
+            spans.push(Span::styled(" ", Style::default()));
+        }
+
+        // Connection type with icon
+        let (type_icon, type_color) = match connection_type.to_lowercase().as_str() {
+            "websocket" | "ws" => ("🔌", BrandTheme::info()),
+            "stdio" | "subprocess" | "cli" => ("⚙", BrandTheme::tool()),
+            "tcp" => ("📡", BrandTheme::accent()),
+            _ => ("🔗", BrandTheme::dim_bright()),
+        };
+        spans.push(Span::styled(
+            format!("{} {}", type_icon, connection_type),
+            Style::default().fg(type_color),
+        ));
+
+        Line::from(spans)
+    }
+
+    /// Render a thinking indicator with animated dots and model name.
+    pub fn thinking_indicator(model: &str, elapsed: Duration) -> Line<'static> {
+        let mut spans = Vec::with_capacity(6);
+
+        // Animated thinking dots
+        let phase = (elapsed.as_millis() / 200) as usize % 6;
+        let dots = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴"];
+        spans.push(Span::styled(
+            dots[phase],
+            Style::default()
+                .fg(BrandTheme::accent())
+                .add_modifier(Modifier::BOLD),
+        ));
+
+        // Model name
+        spans.push(Span::styled(
+            format!(" {}", model),
+            Style::default()
+                .fg(BrandTheme::model())
+                .add_modifier(Modifier::BOLD),
+        ));
+
+        // Status text
+        spans.push(Span::styled(
+            " thinking",
+            Style::default()
+                .fg(BrandTheme::dim_bright())
+                .add_modifier(Modifier::ITALIC),
+        ));
+
+        // Elapsed time
+        if elapsed.as_secs() > 1 {
+            spans.push(Span::styled(
+                format!(" · {}", format_elapsed(elapsed)),
+                Style::default().fg(BrandTheme::warning()),
+            ));
+        }
+
+        Line::from(spans)
+    }
+
+    /// Render an error status with retry information.
+    pub fn error_status(
+        error_msg: &str,
+        retry_count: Option<u32>,
+        max_retries: Option<u32>,
+    ) -> Line<'static> {
+        let mut spans = Vec::with_capacity(8);
+
+        // Error icon with pulsing effect
+        spans.push(Span::styled(
+            "✗ ",
+            Style::default()
+                .fg(BrandTheme::error())
+                .add_modifier(Modifier::BOLD),
+        ));
+
+        // Error message (truncated if too long)
+        let max_msg_width = 40;
+        let msg_display = if error_msg.len() > max_msg_width {
+            format!("{}…", &error_msg[..max_msg_width])
+        } else {
+            error_msg.to_string()
+        };
+        spans.push(Span::styled(
+            msg_display,
+            Style::default().fg(BrandTheme::error()),
+        ));
+
+        // Retry information
+        if let (Some(count), Some(max)) = (retry_count, max_retries) {
+            spans.push(Span::styled(
+                format!(" (retry {}/{})", count, max),
+                Style::default()
+                    .fg(BrandTheme::warning())
+                    .add_modifier(Modifier::ITALIC),
+            ));
+        }
+
+        Line::from(spans)
+    }
+
+    /// Render a success status with checkmark.
+    pub fn success_status(message: &str) -> Line<'static> {
+        let mut spans = Vec::with_capacity(4);
+
+        spans.push(Span::styled(
+            "✓ ",
+            Style::default()
+                .fg(BrandTheme::success())
+                .add_modifier(Modifier::BOLD),
+        ));
+
+        spans.push(Span::styled(
+            message.to_string(),
+            Style::default().fg(BrandTheme::success()),
+        ));
+
+        Line::from(spans)
+    }
 }
 
 /// Compact status badge for inline display
 pub struct StatusBadge;
 
 impl StatusBadge {
-    /// Render a colored badge
+    /// Render a colored badge with subtle background emphasis
     pub fn render(text: &str, color: Color) -> Span<'static> {
         Span::styled(
             format!(" {} ", text),
@@ -431,6 +653,21 @@ impl StatusBadge {
     /// Render an info badge
     pub fn info(text: &str) -> Span<'static> {
         Self::render(text, BrandTheme::info())
+    }
+
+    /// Render a dim/muted badge for secondary information
+    pub fn dim(text: &str) -> Span<'static> {
+        Span::styled(
+            format!(" {} ", text),
+            Style::default()
+                .fg(BrandTheme::dim())
+                .add_modifier(Modifier::DIM),
+        )
+    }
+
+    /// Render a gradient badge that sweeps through brand colors
+    pub fn gradient(text: &str) -> Vec<Span<'static>> {
+        BrandTheme::gradient_spans(text)
     }
 }
 
@@ -532,5 +769,40 @@ mod tests {
     fn test_status_badge() {
         let span = StatusBadge::success("ok");
         assert!(!span.content.is_empty());
+    }
+
+    #[test]
+    fn test_connection_hud() {
+        let latency_history = vec![
+            Duration::from_millis(30),
+            Duration::from_millis(45),
+            Duration::from_millis(60),
+        ];
+        let line = StatusBar::connection_hud(
+            true,
+            Some(Duration::from_millis(45)),
+            &latency_history,
+            "websocket",
+            80,
+        );
+        assert!(!line.spans.is_empty());
+    }
+
+    #[test]
+    fn test_thinking_indicator() {
+        let line = StatusBar::thinking_indicator("claude-3-opus", Duration::from_secs(2));
+        assert!(!line.spans.is_empty());
+    }
+
+    #[test]
+    fn test_error_status() {
+        let line = StatusBar::error_status("Connection failed", Some(2), Some(3));
+        assert!(!line.spans.is_empty());
+    }
+
+    #[test]
+    fn test_success_status() {
+        let line = StatusBar::success_status("Task completed");
+        assert!(!line.spans.is_empty());
     }
 }

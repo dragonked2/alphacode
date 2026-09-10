@@ -385,8 +385,21 @@ fn build_todo_output(
 /// objects, or numeric fields like `confidence` as `"90"`. Strict
 /// `serde_json::from_value` rejects these with `invalid type: string ...`,
 /// failing the entire call (issue #357; same provider quirk as #106).
-fn normalize_todo_input(mut input: Value) -> Value {
-    let Some(obj) = input.as_object_mut() else {
+fn normalize_todo_input(input: Value) -> Value {
+    // Some providers stringify the entire tool-arguments object. Unwrap one
+    // layer so downstream code always sees a JSON object (or the original
+    // value if the string is not valid JSON).
+    let input = match &input {
+        Value::String(raw) => {
+            let trimmed = raw.trim();
+            if trimmed.is_empty() {
+                return input;
+            }
+            serde_json::from_str::<Value>(trimmed).unwrap_or(input)
+        }
+        _ => input,
+    };
+    let Some(mut obj) = input.as_object().cloned() else {
         return input;
     };
     if let Some(plan) = obj.get_mut("plan") {
@@ -394,10 +407,31 @@ fn normalize_todo_input(mut input: Value) -> Value {
             let trimmed = raw.trim();
             if trimmed.is_empty() {
                 *plan = Value::Null;
-            } else if let Ok(parsed @ (Value::Object(_) | Value::Null)) =
-                serde_json::from_str::<Value>(trimmed)
-            {
-                *plan = parsed;
+            } else if let Ok(parsed) = serde_json::from_str::<Value>(trimmed) {
+                match parsed {
+                    Value::Object(_) | Value::Null => {
+                        *plan = parsed;
+                    }
+                    Value::String(text) => {
+                        // Provider sent a JSON-quoted string for plan;
+                        // treat the inner text as user_intention.
+                        *plan = json!({"user_intention": text});
+                    }
+                    Value::Number(n) => {
+                        // Provider sent a bare number; treat as
+                        // understands_user_intent score.
+                        *plan = json!({"understands_user_intent": n});
+                    }
+                    _ => {
+                        // Array, bool, etc. – fall back to treating the
+                        // raw string as user_intention.
+                        *plan = json!({"user_intention": trimmed});
+                    }
+                }
+            } else {
+                // Not valid JSON at all – plain text the model sent as the
+                // plan. Treat as user_intention.
+                *plan = json!({"user_intention": trimmed});
             }
         }
         if let Some(fields) = plan.as_object_mut() {
@@ -458,7 +492,7 @@ fn normalize_todo_input(mut input: Value) -> Value {
             }
         }
     }
-    input
+    Value::Object(obj)
 }
 
 /// Coerce a numeric string (`"90"`) or whole float (`90.0`) to a JSON integer,
@@ -978,6 +1012,58 @@ mod tests {
         let plan = parsed.plan.expect("plan present");
         assert_eq!(plan.user_intention.as_deref(), Some("ship it"));
         assert_eq!(plan.understands_user_intent, Some(96));
+    }
+
+    #[test]
+    fn plain_text_plan_is_treated_as_user_intention() {
+        let parsed = parse(json!({
+            "plan": "Set up hunt plan for Rootstock critical vulnerability hunt"
+        }))
+        .expect("plain text plan should parse");
+        let plan = parsed.plan.expect("plan present");
+        assert_eq!(
+            plan.user_intention.as_deref(),
+            Some("Set up hunt plan for Rootstock critical vulnerability hunt")
+        );
+        assert!(plan.understands_user_intent.is_none());
+    }
+
+    #[test]
+    fn stringified_json_string_plan_is_unwrapped_as_user_intention() {
+        let parsed = parse(json!({
+            "plan": "\"reference live behavior of the protocol\""
+        }))
+        .expect("stringified JSON string plan should parse");
+        let plan = parsed.plan.expect("plan present");
+        assert_eq!(
+            plan.user_intention.as_deref(),
+            Some("reference live behavior of the protocol")
+        );
+    }
+
+    #[test]
+    fn stringified_number_plan_is_treated_as_intent_score() {
+        let parsed = parse(json!({
+            "plan": "42"
+        }))
+        .expect("stringified number plan should parse");
+        let plan = parsed.plan.expect("plan present");
+        assert_eq!(plan.understands_user_intent, Some(42));
+        assert!(plan.user_intention.is_none());
+    }
+
+    #[test]
+    fn entire_input_as_stringified_json_is_unwrapped() {
+        let input_str = serde_json::to_string(&json!({
+            "todos": [
+                {"content": "f", "status": "pending", "priority": "high", "id": "6", "confidence": 75}
+            ]
+        }))
+        .expect("serialize");
+        let parsed = parse(json!(input_str)).expect("stringified entire input should parse");
+        let todos = parsed.todos.expect("todos present");
+        assert_eq!(todos.len(), 1);
+        assert_eq!(todos[0].confidence, Some(75));
     }
 
     #[test]

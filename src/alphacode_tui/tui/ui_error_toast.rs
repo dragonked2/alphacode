@@ -227,7 +227,8 @@ fn push(severity: Severity, message: impl Into<String>, hint: Option<String>) {
 pub fn clear() {
     TOASTS
         .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner()).clear();
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .clear();
 }
 
 /// Dismiss a single toast by index (used when the user clicks an "x" on

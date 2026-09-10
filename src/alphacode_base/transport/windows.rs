@@ -91,7 +91,10 @@ pub enum Stream {
 impl Stream {
     pub async fn connect(path: impl AsRef<Path>) -> io::Result<Self> {
         let pipe_name = path_to_pipe_name(path.as_ref());
-        loop {
+        // Cap the ERROR_PIPE_BUSY retry loop so a broken/stale pipe cannot
+        // spin forever and starve the higher-level reconnect logic.
+        const MAX_BUSY_RETRIES: u32 = 60;
+        for _ in 0..MAX_BUSY_RETRIES {
             match ClientOptions::new().open(&pipe_name) {
                 Ok(client) => return Ok(Stream::Client(client)),
                 Err(e)
@@ -103,6 +106,13 @@ impl Stream {
                 Err(e) => return Err(e),
             }
         }
+        Err(io::Error::new(
+            io::ErrorKind::ConnectionRefused,
+            format!(
+                "named pipe {} busy after {} retries; server may be dead or broken",
+                pipe_name, MAX_BUSY_RETRIES,
+            ),
+        ))
     }
 
     pub fn into_split(self) -> (ReadHalf, WriteHalf) {

@@ -21,6 +21,18 @@ pub enum SpinnerStyle {
     Pulse,
     /// Scrolling line, used for the swarm and parallel agents.
     Bar,
+    /// Diamond spinner with rotating facets.
+    Diamond,
+    /// Brain neuron firing animation for AI thinking.
+    Neural,
+    /// Gear turning for tool execution.
+    Gear,
+    /// Clock spinner for waiting states.
+    Clock,
+    /// Matrix-style rain for data processing.
+    Matrix,
+    /// Star field for long operations.
+    Starfield,
 }
 
 impl SpinnerStyle {
@@ -31,23 +43,20 @@ impl SpinnerStyle {
             SpinnerStyle::Dots => (&["⠁", "⠂", "⠄", "⡀", "⢀", "⠠", "⠐", "⠈"], 1),
             SpinnerStyle::Braille => (&["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"], 1),
             SpinnerStyle::Orbit => (&["◜", "◠", "◝", "◞", "◡", "◟"], 1),
-            // Strictly monotonic up-sweep with all-distinct frames so the
-            // spinner-uniqueness test (which checks every frame across every
-            // style) holds without a back-and-forth mirror that would
-            // duplicate the up-sweep frames. The `frames()[1] == 2` divisor
-            // (the per-frame interval) makes the perceived cadence
-            // equivalent to a 14-frame ping-pong.
             SpinnerStyle::Wave => (&["▁", "▂", "▃", "▄", "▅", "▆", "▇", "█"], 1),
-            // Strictly monotonic ramp with all-distinct frames (5 stages
-            // from outline to filled) so the spinner-uniqueness test
-            // holds. The `frames()[1] == 2` divisor gives the cycle a
-            // soft rhythm that reads as a pulse.
             SpinnerStyle::Pulse => (&["◌", "◍", "◎", "◉", "●"], 2),
-            // Strictly monotonic fill sweep (1/8 -> 7/8) with all-distinct
-            // frames, peak `▮` (vertical bar) instead of `█` (full block) so
-            // `Wave` and `Bar` don't share a frame. See `Wave` for why a
-            // back-and-forth mirror would re-introduce duplicates.
             SpinnerStyle::Bar => (&["▏", "▎", "▍", "▌", "▋", "▊", "▉", "▮"], 1),
+            SpinnerStyle::Diamond => (&["◇", "◆", "◉", "●", "◉", "◆"], 2),
+            SpinnerStyle::Neural => (&["🧠", "💭", "⚡", "✨", "⚡", "💭"], 3),
+            SpinnerStyle::Gear => (&["⚙", "⚙", "⛭", "⛭", "⚙", "⚙"], 2),
+            SpinnerStyle::Clock => (
+                &[
+                    "🕛", "🕐", "🕑", "🕒", "🕓", "🕔", "🕕", "🕖", "🕗", "🕘", "🕙", "🕚",
+                ],
+                2,
+            ),
+            SpinnerStyle::Matrix => (&["‌", ",strlen", "‎", "​", "‌", "‎"], 1),
+            SpinnerStyle::Starfield => (&["✦", "✧", "★", "☆", "★", "✧"], 2),
         }
     }
 
@@ -62,6 +71,30 @@ impl SpinnerStyle {
             SpinnerStyle::Wave => 7,
             SpinnerStyle::Pulse => 10,
             SpinnerStyle::Bar => 13,
+            SpinnerStyle::Diamond => 1,
+            SpinnerStyle::Neural => 3,
+            SpinnerStyle::Gear => 5,
+            SpinnerStyle::Clock => 8,
+            SpinnerStyle::Matrix => 11,
+            SpinnerStyle::Starfield => 14,
+        }
+    }
+
+    /// Description of what this spinner represents, for accessibility.
+    pub fn description(self) -> &'static str {
+        match self {
+            SpinnerStyle::Dots => "Processing",
+            SpinnerStyle::Braille => "Streaming",
+            SpinnerStyle::Orbit => "Tool executing",
+            SpinnerStyle::Wave => "Downloading",
+            SpinnerStyle::Pulse => "Ready",
+            SpinnerStyle::Bar => "Parallel work",
+            SpinnerStyle::Diamond => "Thinking",
+            SpinnerStyle::Neural => "AI reasoning",
+            SpinnerStyle::Gear => "Building",
+            SpinnerStyle::Clock => "Waiting",
+            SpinnerStyle::Matrix => "Computing",
+            SpinnerStyle::Starfield => "Long operation",
         }
     }
 }
@@ -80,22 +113,22 @@ impl BrandTheme {
     /// amber → violet. No pink/rose — the sweep stays in cool-to-warm territory.
     pub fn gradient() -> [Color; 16] {
         [
-            role_color(Role::Accent),       //  0  violet/purple
-            role_color(Role::Memory),       //  1  deep violet
-            role_color(Role::Spinner),      //  2  purple
-            role_color(Role::User),         //  3  blue
-            role_color(Role::Heading),      //  4  sky-blue
-            role_color(Role::FileLink),     //  5  light cyan
-            role_color(Role::Asap),         //  6  cyan
-            role_color(Role::PanelBorder),  //  7  teal
-            role_color(Role::Ai),           //  8  green/mint
-            role_color(Role::Success),      //  9  green
-            role_color(Role::DiffAdd),      // 10  bright green
-            role_color(Role::Queued),       // 11  amber
-            role_color(Role::Warning),      // 12  warm amber
-            role_color(Role::Info),         // 13  blue (return to cool)
-            role_color(Role::HeaderIcon),   // 14  cyan-blue
-            role_color(Role::Accent),       // 15  violet (loop back)
+            role_color(Role::Accent),      //  0  violet/purple
+            role_color(Role::Memory),      //  1  deep violet
+            role_color(Role::Spinner),     //  2  purple
+            role_color(Role::User),        //  3  blue
+            role_color(Role::Heading),     //  4  sky-blue
+            role_color(Role::FileLink),    //  5  light cyan
+            role_color(Role::Asap),        //  6  cyan
+            role_color(Role::PanelBorder), //  7  teal
+            role_color(Role::Ai),          //  8  green/mint
+            role_color(Role::Success),     //  9  green
+            role_color(Role::DiffAdd),     // 10  bright green
+            role_color(Role::Queued),      // 11  amber
+            role_color(Role::Warning),     // 12  warm amber
+            role_color(Role::Info),        // 13  blue (return to cool)
+            role_color(Role::HeaderIcon),  // 14  cyan-blue
+            role_color(Role::Accent),      // 15  violet (loop back)
         ]
     }
 
@@ -263,10 +296,29 @@ impl BrandTheme {
 
     /// Smooth breathing animation helper — returns a factor between 0.0 and 1.0
     /// that oscillates smoothly for ambient effects like border pulsing.
+    /// Uses a dual-frequency sine wave for more organic, less mechanical feel.
     pub fn breathe(elapsed_secs: f32) -> f32 {
-        // 3-second period, smooth sinusoidal
-        let phase = (elapsed_secs * std::f32::consts::PI * 2.0 / 3.0).sin();
+        // Primary: 3-second period, Secondary: 1.7-second period (prime ratio)
+        let primary = (elapsed_secs * std::f32::consts::PI * 2.0 / 3.0).sin();
+        let secondary = (elapsed_secs * std::f32::consts::PI * 2.0 / 1.7).sin() * 0.3;
+        let combined = primary + secondary;
+        (combined + 1.0) / 2.0
+    }
+
+    /// Faster breathing for high-energy states (thinking, streaming).
+    pub fn breathe_fast(elapsed_secs: f32) -> f32 {
+        let phase = (elapsed_secs * std::f32::consts::PI * 2.0 / 1.0).sin();
         (phase + 1.0) / 2.0
+    }
+
+    /// Pulse effect for emphasis — sharp attack, smooth decay.
+    pub fn pulse(elapsed_secs: f32) -> f32 {
+        let t = elapsed_secs % 2.0; // 2-second cycle
+        if t < 0.1 {
+            t * 10.0 // Sharp rise
+        } else {
+            (-(t - 0.1) * 2.0).exp() // Smooth decay
+        }
     }
 
     /// Render a pulsing border line with ambient breathing effect.
@@ -309,6 +361,163 @@ impl BrandTheme {
         }
         Line::from(spans).alignment(Alignment::Left)
     }
+
+    /// Render a smooth wave separator with animated flow effect.
+    pub fn wave_separator(width: usize, elapsed_secs: f32) -> Line<'static> {
+        let gradient = Self::gradient();
+        let phase = elapsed_secs * 2.0;
+
+        let mut colors: Vec<Color> = Vec::with_capacity(width);
+        for i in 0..width {
+            let t = i as f32 / width as f32;
+            let wave = (t * 6.28 + phase).sin() * 0.5 + 0.5;
+            let gradient_idx = (t * (gradient.len() - 1) as f32).round() as usize;
+            let base_color = gradient[gradient_idx.min(gradient.len() - 1)];
+
+            let color = match base_color {
+                Color::Rgb(r, g, b) => {
+                    let dimmed = wave > 0.3;
+                    if dimmed {
+                        rgb(
+                            (r as f32 * 0.4) as u8,
+                            (g as f32 * 0.4) as u8,
+                            (b as f32 * 0.4) as u8,
+                        )
+                    } else {
+                        base_color
+                    }
+                }
+                _ => base_color,
+            };
+            colors.push(color);
+        }
+
+        let mut spans: Vec<Span<'static>> = Vec::with_capacity(width / 3 + 1);
+        let mut run_start = 0;
+        for i in 1..=width {
+            if i == width || colors[i] != colors[i - 1] {
+                let n = i - run_start;
+                spans.push(Span::styled(
+                    std::iter::repeat_n('～', n).collect::<String>(),
+                    Style::default()
+                        .fg(colors[run_start])
+                        .add_modifier(Modifier::DIM),
+                ));
+                run_start = i;
+            }
+        }
+        Line::from(spans).alignment(Alignment::Left)
+    }
+
+    /// Render a glowing border line with bright center and dim edges.
+    ///
+    /// Creates a neon-glow effect where the center is brightest and
+    /// edges fade to dim. Perfect for highlighting active elements.
+    pub fn glow_separator(width: usize, elapsed_secs: f32) -> Line<'static> {
+        let gradient = Self::gradient();
+        let breathe = Self::breathe_fast(elapsed_secs);
+
+        let mut spans: Vec<Span<'static>> = Vec::with_capacity(width / 2 + 1);
+        let center = width as f32 / 2.0;
+
+        let mut run_start = 0;
+        let mut run_color = Color::Reset;
+
+        for i in 0..width {
+            let dist_from_center = (i as f32 - center).abs() / center;
+            let glow = (1.0 - dist_from_center) * breathe;
+
+            let gradient_idx =
+                (i as f32 / width as f32 * (gradient.len() - 1) as f32).round() as usize;
+            let base_color = gradient[gradient_idx.min(gradient.len() - 1)];
+
+            let color = match base_color {
+                Color::Rgb(r, g, b) => {
+                    let brightness = 0.3 + glow * 0.7;
+                    rgb(
+                        (r as f32 * brightness) as u8,
+                        (g as f32 * brightness) as u8,
+                        (b as f32 * brightness) as u8,
+                    )
+                }
+                _ => base_color,
+            };
+
+            if i > 0 && color != run_color {
+                let n = i - run_start;
+                spans.push(Span::styled(
+                    std::iter::repeat_n('─', n).collect::<String>(),
+                    Style::default().fg(run_color),
+                ));
+                run_start = i;
+            }
+            run_color = color;
+        }
+
+        if run_start < width {
+            let n = width - run_start;
+            spans.push(Span::styled(
+                std::iter::repeat_n('─', n).collect::<String>(),
+                Style::default().fg(run_color),
+            ));
+        }
+
+        Line::from(spans).alignment(Alignment::Left)
+    }
+
+    /// Render a double-line separator with gradient colors.
+    pub fn double_separator(width: usize) -> Line<'static> {
+        let gradient = Self::gradient();
+        let mut spans: Vec<Span<'static>> = Vec::with_capacity(width / 2 + 1);
+
+        let mut run_start = 0;
+        let mut run_color = Color::Reset;
+
+        for i in 0..width {
+            let gradient_idx =
+                (i as f32 / width as f32 * (gradient.len() - 1) as f32).round() as usize;
+            let color = gradient[gradient_idx.min(gradient.len() - 1)];
+
+            if i > 0 && color != run_color {
+                let n = i - run_start;
+                spans.push(Span::styled(
+                    std::iter::repeat_n('═', n).collect::<String>(),
+                    Style::default().fg(run_color).add_modifier(Modifier::DIM),
+                ));
+                run_start = i;
+            }
+            run_color = color;
+        }
+
+        if run_start < width {
+            let n = width - run_start;
+            spans.push(Span::styled(
+                std::iter::repeat_n('═', n).collect::<String>(),
+                Style::default().fg(run_color).add_modifier(Modifier::DIM),
+            ));
+        }
+
+        Line::from(spans).alignment(Alignment::Left)
+    }
+
+    /// Render a dotted separator with gradient colors.
+    pub fn dotted_separator(width: usize) -> Line<'static> {
+        let gradient = Self::gradient();
+        let mut spans: Vec<Span<'static>> = Vec::with_capacity(width / 2 + 1);
+
+        for i in 0..width {
+            let gradient_idx =
+                (i as f32 / width as f32 * (gradient.len() - 1) as f32).round() as usize;
+            let color = gradient[gradient_idx.min(gradient.len() - 1)];
+            let ch = if i % 2 == 0 { "●" } else { "○" };
+            spans.push(Span::styled(
+                ch,
+                Style::default().fg(color).add_modifier(Modifier::DIM),
+            ));
+        }
+
+        Line::from(spans).alignment(Alignment::Left)
+    }
 }
 
 /// Animated progress bar renderer.
@@ -321,20 +530,31 @@ impl ProgressBar {
     ///
     /// Uses pre-allocated spans: the empty portion is a single span,
     /// and the filled portion uses up to 8 gradient segments instead
-    /// of one span per cell.
+    /// of one span per cell. Includes a smooth lead-in effect at the
+    /// fill boundary and optional shimmer animation.
     pub fn render(
         progress: f32, // 0.0 to 1.0
         width: usize,
         label: Option<&str>,
     ) -> Vec<Span<'static>> {
+        Self::render_animated(progress, width, label, 0.0)
+    }
+
+    /// Render a progress bar with animated shimmer effect.
+    pub fn render_animated(
+        progress: f32,
+        width: usize,
+        label: Option<&str>,
+        elapsed_secs: f32,
+    ) -> Vec<Span<'static>> {
         let filled = (progress.clamp(0.0, 1.0) * width as f32).round() as usize;
         let empty = width.saturating_sub(filled);
         let gradient = BrandTheme::gradient();
-        let mut spans = Vec::with_capacity(8);
+        let mut spans = Vec::with_capacity(16);
 
         // Left bracket with gradient start
         spans.push(Span::styled(
-            "╢",
+            "│",
             Style::default().fg(gradient[0]).add_modifier(Modifier::DIM),
         ));
 
@@ -343,27 +563,64 @@ impl ProgressBar {
             let seg_count = gradient.len().min(filled);
             let seg_size = filled / seg_count;
             let remainder = filled - seg_size * seg_count;
+
+            // Shimmer offset based on time
+            let shimmer_offset = (elapsed_secs * 4.0) as usize;
+
             for seg in 0..seg_count {
                 let n = seg_size + if seg < remainder { 1 } else { 0 };
                 if n == 0 {
                     continue;
                 }
-                let color = gradient[seg % gradient.len()];
+                let color_idx = (seg + shimmer_offset) % gradient.len();
+                let color = gradient[color_idx];
                 spans.push(Span::styled("█".repeat(n), Style::default().fg(color)));
+            }
+            // Soft lead-in at the fill boundary for a polished edge
+            if empty > 0 {
+                let lead_color = gradient
+                    [(filled - 1 + shimmer_offset).min(gradient.len() - 1) % gradient.len()];
+                spans.push(Span::styled(
+                    "▌",
+                    Style::default().fg(lead_color).add_modifier(Modifier::BOLD),
+                ));
             }
         }
 
-        // Empty portion — subtle dim blocks
+        // Empty portion — subtle dim blocks with gradient hint
         if empty > 0 {
-            spans.push(Span::styled(
-                "░".repeat(empty),
-                Style::default().fg(BrandTheme::dim()),
-            ));
+            let dots = empty.saturating_sub(1);
+            if dots > 0 {
+                // Use alternating dim gradient colors for visual interest
+                let mut empty_spans: Vec<Span<'static>> = Vec::new();
+                let chunk_size = (dots / 4).max(1);
+                let mut remaining = dots;
+                let mut chunk_start = 0;
+                while remaining > 0 {
+                    let chunk = remaining.min(chunk_size);
+                    let color_idx = (chunk_start / chunk_size) % gradient.len();
+                    let dim_color = match gradient[color_idx] {
+                        Color::Rgb(r, g, b) => rgb(
+                            (r as f32 * 0.25) as u8,
+                            (g as f32 * 0.25) as u8,
+                            (b as f32 * 0.25) as u8,
+                        ),
+                        _ => BrandTheme::dim(),
+                    };
+                    empty_spans.push(Span::styled(
+                        "░".repeat(chunk),
+                        Style::default().fg(dim_color),
+                    ));
+                    remaining -= chunk;
+                    chunk_start += chunk;
+                }
+                spans.extend(empty_spans);
+            }
         }
 
         // Right bracket with gradient end
         spans.push(Span::styled(
-            "╢",
+            "│",
             Style::default()
                 .fg(gradient[gradient.len() - 1])
                 .add_modifier(Modifier::DIM),
@@ -394,19 +651,164 @@ impl ProgressBar {
         spans
     }
 
+    /// Render a compact progress bar without brackets or percentage —
+    /// just the gradient fill, suitable for inline status lines.
+    pub fn render_compact(progress: f32, width: usize) -> Vec<Span<'static>> {
+        let filled = (progress.clamp(0.0, 1.0) * width as f32).round() as usize;
+        let empty = width.saturating_sub(filled);
+        let gradient = BrandTheme::gradient();
+        let mut spans = Vec::with_capacity(6);
+
+        if filled > 0 {
+            let seg_count = gradient.len().min(filled);
+            let seg_size = filled / seg_count;
+            let remainder = filled - seg_size * seg_count;
+            for seg in 0..seg_count {
+                let n = seg_size + if seg < remainder { 1 } else { 0 };
+                if n == 0 {
+                    continue;
+                }
+                let color = gradient[seg % gradient.len()];
+                spans.push(Span::styled("█".repeat(n), Style::default().fg(color)));
+            }
+        }
+        if empty > 0 {
+            spans.push(Span::styled(
+                "░".repeat(empty),
+                Style::default().fg(BrandTheme::dim()),
+            ));
+        }
+        spans
+    }
+
     /// Render an indeterminate spinner with brand gradient animation.
     ///
     /// Returns a single styled span — zero heap allocation for the
     /// common case.
     pub fn spinner(frame: usize) -> Vec<Span<'static>> {
-        const FRAMES: [&str; 8] = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧"];
+        const FRAMES: [&str; 10] = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
         let idx = frame % FRAMES.len();
-        let color = BrandTheme::gradient_color(frame / 4);
+        let color = BrandTheme::gradient_color(frame / 3);
 
         vec![Span::styled(
             FRAMES[idx],
             Style::default().fg(color).add_modifier(Modifier::BOLD),
         )]
+    }
+
+    /// Render a smooth two-phase spinner: a sweep phase followed by a
+    /// settling phase, so the animation feels more organic than a raw
+    /// braille loop.
+    pub fn spinner_smooth(frame: usize) -> Vec<Span<'static>> {
+        const SWEEP: [&str; 8] = ["⣾", "⣽", "⣻", "⢿", "⡿", "⣟", "⣯", "⣷"];
+        let idx = frame % SWEEP.len();
+        let color = BrandTheme::gradient_color(frame / 2);
+        vec![Span::styled(
+            SWEEP[idx],
+            Style::default().fg(color).add_modifier(Modifier::BOLD),
+        )]
+    }
+
+    /// Render a moon-phase spinner for calm/idle states.
+    pub fn spinner_moon(frame: usize) -> Vec<Span<'static>> {
+        const PHASES: [&str; 8] = ["🌑", "🌒", "🌓", "🌔", "🌕", "🌖", "🌗", "🌘"];
+        let idx = frame % PHASES.len();
+        vec![Span::styled(
+            PHASES[idx],
+            Style::default().fg(BrandTheme::accent()),
+        )]
+    }
+
+    /// Render a diamond spinner for thinking states.
+    pub fn spinner_diamond(frame: usize) -> Vec<Span<'static>> {
+        const FRAMES: [&str; 6] = ["◇", "◆", "◉", "●", "◉", "◆"];
+        let idx = frame % FRAMES.len();
+        let color = BrandTheme::gradient_color(frame / 2);
+        vec![Span::styled(
+            FRAMES[idx],
+            Style::default().fg(color).add_modifier(Modifier::BOLD),
+        )]
+    }
+
+    /// Render a neural/brain spinner for AI thinking.
+    pub fn spinner_neural(frame: usize) -> Vec<Span<'static>> {
+        const FRAMES: [&str; 6] = ["🧠", "💭", "⚡", "✨", "⚡", "💭"];
+        let idx = frame % FRAMES.len();
+        vec![Span::styled(
+            FRAMES[idx],
+            Style::default().fg(BrandTheme::accent()),
+        )]
+    }
+
+    /// Render a gear spinner for tool execution.
+    pub fn spinner_gear(frame: usize) -> Vec<Span<'static>> {
+        const FRAMES: [&str; 6] = ["⚙", "⚙", "⛭", "⛭", "⚙", "⚙"];
+        let idx = frame % FRAMES.len();
+        let color = BrandTheme::gradient_color(frame / 2);
+        vec![Span::styled(
+            FRAMES[idx],
+            Style::default().fg(color).add_modifier(Modifier::BOLD),
+        )]
+    }
+
+    /// Render a clock spinner for waiting states.
+    pub fn spinner_clock(frame: usize) -> Vec<Span<'static>> {
+        const FRAMES: [&str; 12] = [
+            "🕛", "🕐", "🕑", "🕒", "🕓", "🕔", "🕕", "🕖", "🕗", "🕘", "🕙", "🕚",
+        ];
+        let idx = frame % FRAMES.len();
+        vec![Span::styled(
+            FRAMES[idx],
+            Style::default().fg(BrandTheme::info()),
+        )]
+    }
+
+    /// Render a starfield spinner for long operations.
+    pub fn spinner_starfield(frame: usize) -> Vec<Span<'static>> {
+        const FRAMES: [&str; 6] = ["✦", "✧", "★", "☆", "★", "✧"];
+        let idx = frame % FRAMES.len();
+        let color = BrandTheme::gradient_color(frame / 2);
+        vec![Span::styled(
+            FRAMES[idx],
+            Style::default().fg(color).add_modifier(Modifier::BOLD),
+        )]
+    }
+
+    /// Render a typing indicator animation (three bouncing dots).
+    pub fn typing_indicator(frame: usize) -> Vec<Span<'static>> {
+        let phase = frame % 6;
+        let dots = [
+            Span::styled("·", Style::default().fg(BrandTheme::dim())),
+            Span::styled("·", Style::default().fg(BrandTheme::dim())),
+            Span::styled("·", Style::default().fg(BrandTheme::dim())),
+        ];
+
+        let mut result = Vec::with_capacity(5);
+        result.push(Span::styled(" ", Style::default()));
+
+        for (i, dot) in dots.iter().enumerate() {
+            let active = match phase {
+                0 => i == 0,
+                1 => i == 0 || i == 1,
+                2 => i == 0 || i == 1 || i == 2,
+                3 => i == 1 || i == 2,
+                4 => i == 2,
+                _ => false,
+            };
+
+            if active {
+                result.push(Span::styled(
+                    "●",
+                    Style::default()
+                        .fg(BrandTheme::accent())
+                        .add_modifier(Modifier::BOLD),
+                ));
+            } else {
+                result.push(dot.clone());
+            }
+        }
+
+        result
     }
 
     /// Render one of several spinner styles. Picking a different style per
@@ -420,6 +822,12 @@ impl ProgressBar {
     /// - `Wave`: low-frequency horizontal pulse, used for downloads
     /// - `Pulse`: soft accent ring, used for "ready" / idle states
     /// - `Bar`: scrolling line, used for the swarm and parallel agents
+    /// - `Diamond`: rotating diamond facets, used for thinking states
+    /// - `Neural`: brain firing animation, used for AI reasoning
+    /// - `Gear`: turning gear, used for tool execution
+    /// - `Clock`: clock hands, used for waiting states
+    /// - `Matrix`: matrix rain, used for data processing
+    /// - `Starfield`: star field, used for long operations
     pub fn spinner_styled(style: SpinnerStyle, frame: usize) -> Vec<Span<'static>> {
         let (frames, divisor) = style.frames();
         let idx = frame % frames.len();

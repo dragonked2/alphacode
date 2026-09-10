@@ -1585,14 +1585,12 @@ fn run_reload_helper(args: &Args) -> Result<()> {
     cmd.arg("--resume")
         .arg(session_id)
         .arg("--no-update")
-        .current_dir(
-            std::env::current_dir().unwrap_or_else(|_| {
-                target_path
-                    .parent()
-                    .unwrap_or_else(|| std::path::Path::new("."))
-                    .to_path_buf()
-            }),
-        );
+        .current_dir(std::env::current_dir().unwrap_or_else(|_| {
+            target_path
+                .parent()
+                .unwrap_or_else(|| std::path::Path::new("."))
+                .to_path_buf()
+        }));
     let err = crate::platform::replace_process(&mut cmd);
     Err(anyhow::anyhow!("Failed to exec {:?}: {}", target_path, err))
 }

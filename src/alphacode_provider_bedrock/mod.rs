@@ -1252,8 +1252,14 @@ impl Provider for BedrockProvider {
                                 let id = tool.tool_use_id().to_string();
                                 let name = tool.name().to_string();
                                 current_tool = Some((id.clone(), name.clone(), String::new()));
-                                if tx.send(Ok(StreamEvent::ToolUseStart { id, name })).await.is_err() {
-                                    crate::logging::warn("[bedrock] stream receiver dropped during ToolUseStart");
+                                if tx
+                                    .send(Ok(StreamEvent::ToolUseStart { id, name }))
+                                    .await
+                                    .is_err()
+                                {
+                                    crate::logging::warn(
+                                        "[bedrock] stream receiver dropped during ToolUseStart",
+                                    );
                                     return;
                                 }
                             }
@@ -1262,8 +1268,11 @@ impl Provider for BedrockProvider {
                             if let Some(d) = delta.delta {
                                 match d {
                                     ContentBlockDelta::Text(text) => {
-                                        if tx.send(Ok(StreamEvent::TextDelta(text))).await.is_err() {
-                                            crate::logging::warn("[bedrock] stream receiver dropped during TextDelta");
+                                        if tx.send(Ok(StreamEvent::TextDelta(text))).await.is_err()
+                                        {
+                                            crate::logging::warn(
+                                                "[bedrock] stream receiver dropped during TextDelta",
+                                            );
                                             return;
                                         }
                                     }
@@ -1280,7 +1289,9 @@ impl Provider for BedrockProvider {
                                                 .await
                                                 .is_err()
                                             {
-                                                crate::logging::warn("[bedrock] stream receiver dropped during ToolInputDelta");
+                                                crate::logging::warn(
+                                                    "[bedrock] stream receiver dropped during ToolInputDelta",
+                                                );
                                                 return;
                                             }
                                         }
@@ -1288,8 +1299,14 @@ impl Provider for BedrockProvider {
                                     ContentBlockDelta::ReasoningContent(
                                         ReasoningContentBlockDelta::Text(text),
                                     ) => {
-                                        if tx.send(Ok(StreamEvent::ThinkingDelta(text))).await.is_err() {
-                                            crate::logging::warn("[bedrock] stream receiver dropped during ThinkingDelta");
+                                        if tx
+                                            .send(Ok(StreamEvent::ThinkingDelta(text)))
+                                            .await
+                                            .is_err()
+                                        {
+                                            crate::logging::warn(
+                                                "[bedrock] stream receiver dropped during ThinkingDelta",
+                                            );
                                             return;
                                         }
                                     }
@@ -1300,7 +1317,9 @@ impl Provider for BedrockProvider {
                         ConverseStreamOutput::ContentBlockStop(_) => {
                             if current_tool.take().is_some() {
                                 if tx.send(Ok(StreamEvent::ToolUseEnd)).await.is_err() {
-                                    crate::logging::warn("[bedrock] stream receiver dropped during ToolUseEnd");
+                                    crate::logging::warn(
+                                        "[bedrock] stream receiver dropped during ToolUseEnd",
+                                    );
                                     return;
                                 }
                             }
@@ -1314,7 +1333,9 @@ impl Provider for BedrockProvider {
                                 .await
                                 .is_err()
                             {
-                                crate::logging::warn("[bedrock] stream receiver dropped during MessageEnd");
+                                crate::logging::warn(
+                                    "[bedrock] stream receiver dropped during MessageEnd",
+                                );
                                 return;
                             }
                         }
