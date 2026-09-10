@@ -1,344 +1,334 @@
----
-name: ctf
-description: "Comprehensive CTF (Capture The Flag) solving skill suite. When user mentions CTF, capture the flag, security competition, wargame, or challenge solving. Covers the full 5-phase CTF workflow: Recon, Categorize, Triage, Solve, Submit. Includes methodology, time management, team coordination, flag format detection, and write-up templates. Subskills cover specific categories: web (SQLi, XSS, SSRF, SSTI, JWT), crypto (RSA, AES, elliptic curves, PRNG), pwn (buffer overflow, ROP, heap exploitation), rev (deobfuscation, anti-debug, binary analysis), forensics (memory dumps, pcap, steganography), misc (OSINT, encoding, logic puzzles), and toolkit (pwntools, Ghidra, Burp Suite, John)."
----
+# CTF Solver Skill
 
-# CTF Solver — Elite Competition Brain
+## Role
+Rapid Capture-The-Flag solver. Speed is the primary differentiator. You triage challenges in <60 seconds, route to the correct category, execute optimized solve scripts, and submit flags. You learn from every writeup you read and every challenge you solve.
 
-This skill transforms you into a top-tier CTF solver. When activated:
-1. **Triage immediately** — classify challenges, prioritize solvability
-2. **Work systematically** — follow the 5-phase workflow
-3. **Extract flags fast** — recognize patterns, use automation
-4. **Submit correctly** — always submit the flag, never forget the format
-5. **Manage time ruthlessly** — abandon dead ends, pivot to other challenges
+## Speed-First Workflow
 
----
-
-## Subskills
-
-| Subskill | When to Use | What It Does |
-|----------|-------------|--------------|
-| **web** | Web exploitation challenges | SQLi, XSS, SSRF, SSTI, deserialization, JWT, race conditions, CORS, HTTP smuggling |
-| **crypto** | Cryptanalysis challenges | RSA, AES/CBC/ECB, hash attacks, elliptic curves, PRNG prediction, padding oracle |
-| **pwn** | Binary exploitation challenges | Buffer overflow, ROP, format string, heap exploitation, syscall, ret2libc, GOT overwrite |
-| **rev** | Reverse engineering challenges | ELF/PE analysis, deobfuscation, anti-debug bypass, protocol reverse, Ghidra/IDA |
-| **forensics** | Digital forensics challenges | Volatility memory analysis, pcap, steganography, file carving, registry, timeline |
-| **misc** | Miscellaneous challenges | OSINT, encoding/decoding, logic puzzles, command injection, audio/image analysis |
-| **methodology** | Planning and coordination | Challenge triage, flag format detection, time management, team coordination, write-ups |
-| **toolkit** | Tool selection and usage | pwntools, Ghidra, Burp Suite, John, binwalk, Wireshark, CyberChef, gdb/pwndbg, sqlmap |
-
----
-
-## 5-Phase CTF Workflow
-
-### Phase 1: Recon (First 5 Minutes)
-
-**Objective:** Understand the competition and map all challenges.
-
+### Phase 1: Rapid Triage (<60 seconds)
 ```
-CHECKLIST:
-□ Read the competition rules and scoring
-□ Identify flag format (e.g., flag{...}, CTF{...}, hctf{...})
-□ List all challenges with categories and point values
-□ Note time remaining and scoring dynamics
-□ Identify quick wins (low-point challenges)
-□ Set up team communication channel
-□ Create shared notes document
+1. Download challenge files + note CTFd metadata (points, solves, tags)
+2. Run: file *, strings -n8, xxd | head -50 on all binaries
+3. Hit web endpoints: curl -I, ffuf -mc 200 with tiny wordlist (500 entries)
+4. Route to category:
+   - Binary → pwn (file ELF/PE → pwn)
+   - Encrypted/encoded strings → crypto
+   - Obfuscated/compiled code → rev
+   - Network capture (.pcap) → forensics
+   - Web service → web
+   - Unusual format → misc
 ```
 
-**Common Flag Formats:**
+### Phase 2: Quick Win Scan (first 5 minutes)
 ```
-flag{[a-zA-Z0-9_\-]+}          — Most common
-CTF{[a-zA-Z0-9_\-]+}           — CTF competitions
-hctf{[a-zA-Z0-9_\-]+}          — HCTF competitions
-HTB{[a-zA-Z0-9_\-]+}           — Hack The Box
-crackmes.one{[a-zA-Z0-9_\-]+}  — Crackmes
-FLAG{[a-zA-Z0-9_\-]+}          — Alternate case
-[a-f0-9]{32,}                   — Raw hashes (MD5, SHA1)
-base64 encoded flag             — Decode before submit
-```
-
-**Flag Detection Regex:**
-```python
-import re
-patterns = [
-    r'flag\{[^\}]+\}',
-    r'CTF\{[^\}]+\}',
-    r'HTB\{[^\}]+\}',
-    r'FLAG\{[^\}]+\}',
-    r'hctf\{[^\}]+\}',
-    r'cta\{[^\}]+\}',
-    r'actf\{[^\}]+\}',
-    r'[a-zA-Z0-9]{32}',  # MD5
-]
+BEFORE deep analysis, check for low-hanging fruit:
+- cat flag, cat flag.txt, cat README.md on any provided files
+- strings all binaries for "flag{" "CTF{" "FLAG{" patterns
+- Check web endpoints for /flag, /admin, /robots.txt, /.git/config
+- Run steghide extract -sf image.jpg (password: "")
+- Run binwalk -e on any suspicious files
+- Check common crypto: ROT13, base64, hex, XOR with 0x42
 ```
 
-### Phase 2: Categorize (Minutes 5-10)
-
-**Objective:** Classify each challenge and estimate difficulty.
-
+### Phase 3: Solve or Escalate
 ```
-CATEGORY ASSESSMENT:
-For each challenge, determine:
-  □ Category (web/crypto/pwn/rev/forensics/misc)
-  □ Difficulty (trivial/easy/medium/hard/insane)
-  □ Estimated solve time
-  □ Required tools
-  □ Prerequisites
-  □ Point value vs effort ratio
+IF quick win found → submit immediately
+ELSE → route to specialized subskill (web/crypto/pwn/rev/forensics/misc)
 ```
 
-**Decision Matrix:**
-```
-SOLVE ORDER (maximize points per hour):
-1. Easy challenges regardless of category (quick points)
-2. Medium challenges in your strongest category
-3. Hard challenges in your strongest category
-4. Any remaining challenges by point value
-5. Never attempt "insane" unless everything else is solved
-```
+## CTFd Platform Integration
 
-### Phase 3: Triage (Minutes 10-20)
-
-**Objective:** Attempt every challenge briefly, identify solvable ones.
-
-```
-TRIAGE RULES:
-□ Spend MAX 10 minutes on any single challenge before moving on
-□ If you're stuck, document where you are and move on
-□ Flag format: always check for obvious flags in provided files
-□ Low-hanging fruit: strings, file identification, quick decryption
-□ Return to stuck challenges later with fresh perspective
-```
-
-**Quick Checks for Any Challenge:**
+### CTFd API Playbook
+Most modern CTFs use CTFd. Know these API endpoints:
 ```bash
-# File identification
-file challenge*
-binwalk challenge*
-strings challenge* | grep -i flag
-xxd challenge* | head -20
+# List all challenges
+curl -H "Authorization: Bearer $TOKEN" $CTFD_URL/api/v1/challenges
 
-# Check for hidden data
-steghide extract -sf challenge*
-zsteg challenge*
-exiftool challenge*
+# Get challenge details (hints, tags, solves)
+curl -H "Authorization: Bearer $TOKEN" $CTFD_URL/api/v1/challenges/$ID
 
-# Check for encoded content
-echo "base64string" | base64 -d
-echo "hexstring" | xxd -r -p
+# Submit flag
+curl -X POST -H "Authorization: Bearer $TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"submission":"FLAG{...}"}' \
+  $CTFD_URL/api/v1/challenges/$ID/attempt
+
+# Get scoreboard
+curl -H "Authorization: Bearer $TOKEN" $CTFD_URL/api/v1/scoreboard
+
+# Unlock hints (costs points, use wisely)
+curl -X POST -H "Authorization: Bearer $TOKEN" \
+  $CTFD_URL/api/v1/hints/$HINT_ID/attempt
 ```
 
-### Phase 4: Solve (Core Work)
-
-**Objective:** Systematically solve each triaged challenge.
-
-**Solve Workflow:**
-```
-FOR EACH CHALLENGE:
-□ Re-read the challenge description
-□ Identify the attack vector or solution method
-□ Select appropriate tool or technique
-□ Execute the solution step by step
-□ Verify the flag format matches expectations
-□ Document your method for the write-up
-□ Submit the flag immediately
-```
-
-**Category-Specific Solving:**
-
-| Category | First Steps | Primary Tools |
-|----------|-------------|---------------|
-| **Web** | Check source, intercept requests, test input | Burp Suite, curl, sqlmap |
-| **Crypto** | Identify algorithm, check for weaknesses | CyberChef, Python (pycryptodome) |
-| **Pwn** | Check protections, find vulnerability | GDB/pwndbg, pwntools |
-| **Rev** | Identify file type, strings, entry point | Ghidra, IDA, strace |
-| **Forensics** | File type, metadata, embedded data | Volatility, Wireshark, binwalk |
-| **Misc** | Encoding detection, pattern recognition | CyberChef, Python |
-
-### Phase 5: Submit (Immediate)
-
-**Objective:** Submit every flag as soon as you find it.
-
-```
-SUBMISSION CHECKLIST:
-□ Flag format matches the competition's expected format
-□ No extra whitespace or characters
-□ Flag is complete (not truncated)
-□ Submit immediately — don't wait
-□ Verify submission was accepted
-□ Log submission time and challenge for tracking
-```
-
----
-
-## Time Management Strategies
-
-### The Clock Rule
-```
-COMPETITION LENGTH → TIME PER CHALLENGE
-4 hours           → 15-20 minutes max
-8 hours           → 20-30 minutes max
-24 hours          → 30-45 minutes max
-48+ hours         → 1 hour max
-```
-
-### Rotation Schedule
-```
-EVERY 30 MINUTES:
-□ Am I making progress on current challenge?
-□ Are there easier challenges I haven't attempted?
-□ Have I submitted all flags I've found?
-□ Is my team blocked on anything?
-□ Should I switch categories for fresh perspective?
-```
-
-### Abandonment Criteria
-```
-ABANDON A CHALLENGE WHEN:
-□ Stuck for > 20 minutes with no new ideas
-□ Required tool is not available and can't be installed
-□ Challenge requires knowledge you don't have
-□ Point value is too low for time invested
-□ Another team member is making progress on it
-```
-
----
-
-## Team Coordination (分工)
-
-### Role Assignments
-```
-ROLES FOR TEAM OF 4:
-1. Recon Lead     — Maps all challenges, tracks scoreboard
-2. Category Expert — Deep-dives into assigned categories
-3. Solver         — Quick triage and solving of easy challenges
-4. Documentation  — Tracks flags, writes up solutions
-```
-
-### Communication Protocol
-```
-CHANNEL STRUCTURE:
-#general    — Scoreboard updates, strategy
-#web        — Web challenge discussion
-#crypto     — Crypto challenge discussion
-#pwn        — Binary exploitation discussion
-#rev        — Reverse engineering discussion
-#forensics  — Forensics discussion
-#misc       — Miscellaneous discussion
-#flags      — Flag submissions and verification
-```
-
-### Handoff Protocol
-```
-WHEN STUCK:
-1. Post in category channel: "Stuck on [challenge] at [step]"
-2. Document what you've tried
-3. List what you think the next step is
-4. Another member picks up or suggests approach
-5. Don't spend > 5 minutes typing — just share the state
-```
-
----
-
-## Write-Up Template
-
-```markdown
-# [Challenge Name] — [Category] ([Points])
-
-## Challenge
-[Description of the challenge]
-
-## Solution
-
-### Step 1: [Initial Recon]
-[What you found first]
-
-### Step 2: [Analysis]
-[What you discovered]
-
-### Step 3: [Exploitation/Solving]
-[How you solved it]
-
-### Step 4: [Flag Extraction]
-[How you got the flag]
-
-## Flag
-`flag{...}`
-
-## Tools Used
-- [Tool 1]
-- [Tool 2]
-
-## Time Taken
-[X minutes]
-
-## Key Takeaway
-[What to remember for similar challenges]
-```
-
----
-
-## Common Patterns to Recognize
-
-### Quick Flag Searches
+### Team Token Workflow
 ```bash
-# In any provided file
-strings file | grep -iE "flag|ctf|key|secret|password"
-strings file | grep -E "flag\{[^}]+\}"
-strings file | head -100
+# Login and get session token
+TOKEN=$(curl -s -X POST -H "Content-Type: application/json" \
+  -d '{"name":"TEAM","password":"PASS"}' \
+  $CTFD_URL/api/v1/login | jq -r .data.session_token)
 
-# In network traffic
-tshark -r capture.pcap -Y "http contains flag" 2>/dev/null
+# Or use API token from profile
+export TOKEN="your-api-token-here"
 ```
 
-### Encoding Detection
-```
-SIGNS OF BASE64: A-Za-z0-9+/= padding at end
-SIGNS OF HEX: [0-9a-fA-F] only, even length
-SIGNS OF BINARY: 0s and 1s only, groups of 8
-SIGNS OF ROT13: Readable but wrong letters
-SIGNS OF MORSE: dots and dashes
-SIGNS OF BINARY STRING: 01010100 01101000...
+### Challenge Scoring Intelligence
+- **Dynamic scoring**: Fewer solves = more points. Prioritize unsolved challenges.
+- **First blood bonus**: Extra points for first solve. Race condition matters.
+- **Hint cost**: Usually 50-100 points. Only buy hints when stuck >15 minutes.
+- **Retired challenges**: Usually already solved. Focus on active challenges.
+
+## Pattern Database (from Writeups)
+
+### Fast-Path Patterns (solve in <5 minutes each)
+
+| Pattern | Detection | Quick Solve |
+|---------|-----------|-------------|
+| Base64 in flag format | `flag.*base64` | `echo "..." \| base64 -d` |
+| ROT13 encoded | Letter frequency uniform | `echo "..." \| tr A-Z N-ZA-M` |
+| XOR with single byte | Short encrypted string | Brute force: `for i in $(seq 0 255); do echo -n "..." \| xxd -p \| xxd -r -p \| xorsum -s $i; done` |
+| SQL injection in login | Login form | `' OR 1=1--` or `admin'--` |
+| Hidden form field | View source | Change value, resubmit |
+| Cookie manipulation | DevTools → Application | Change role=user to role=admin |
+| Directory listing | URL + / | Browse, find flag.txt |
+| robots.txt | URL/robots.txt | Follow Disallow paths |
+| Git leak | /.git/config visible | `git-dumper` or `git clone` |
+| LFI with /etc/passwd | URL param ?page= | `../../../../etc/passwd` |
+| XSS in search | Search input | `<script>alert(1)</script>` → check reflected |
+| SSH with default creds | OpenSSH port | `admin:admin`, `root:root`, `ctf:ctf` |
+| Web directory brute | Any web service | `ffuf -u $URL/FUZZ -w /usr/share/seclists/Discovery/Web-Content/raft-small-directories.txt` |
+
+### Medium Patterns (5-20 minutes)
+
+| Pattern | Detection | Approach |
+|---------|-----------|----------|
+| Custom XOR encryption | Multiple encrypted values | Recover key via known plaintext |
+| Padding oracle | "Invalid padding" error | Padbuster or custom script |
+| SQL injection (blind) | Login works/won't differently | Time-based: `'; IF (1=1) WAITFOR DELAY '0:0:5'--` |
+| IDOR in API | /api/users/1, /api/users/2 | Increment IDs, check /api/users/admin |
+| File upload bypass | Upload form | Rename .php → .php5, modify Content-Type |
+| Race condition | Single-use operations | Send 20+ concurrent requests with curl |
+
+### Slow Patterns (>20 minutes, skip if simpler challenges remain)
+
+| Pattern | When to Attempt |
+|---------|-----------------|
+| Custom crypto | No known attacks, but points are high |
+| Reverse engineering complex binary | No quick strings/pattern match |
+| Multi-step exploitation chain | Individual steps found but need chaining |
+| Steganography + decryption | Steg content but encoded |
+
+## Automated Solve Scripts
+
+### One-Liner Flag Hunters
+```bash
+# Find all flags in downloaded files
+grep -rnEi 'flag\{[^}]+\}|CTF\{[^}]+\}|FLAG\{[^}]+\}' . 2>/dev/null
+
+# Find flags in base64-encoded strings
+strings * | grep -i '[A-Za-z0-9+/]\{20,\}==' | while read s; do
+  decoded=$(echo "$s" | base64 -d 2>/dev/null)
+  echo "$decoded" | grep -qi flag && echo "FLAG: $decoded"
+done
+
+# Find flags in hex strings
+strings * | grep -Ei '^[0-9a-f]{20,}$' | while read s; do
+  decoded=$(echo "$s" | xxd -r -p 2>/dev/null)
+  echo "$decoded" | grep -qi flag && echo "FLAG: $decoded"
+done
 ```
 
-### Challenge Type Indicators
-```
-PROVIDED A BINARY          → pwn or rev
-PROVIDED A PCAP            → forensics (network)
-PROVIDED AN IMAGE          → forensics (stego) or misc
-PROVIDED A TEXT FILE       → crypto or misc
-PROVIDED A URL             → web
-PROVIDED A DOCUMENT        → forensics (metadata) or misc
-PROVIDED NOTHING (just IP) → web or pwn
-```
-
----
-
-## Mental Models
-
-### The "What If" Generator
-For every input or data point, systematically try:
-```
-□ What if I modify this byte?
-□ What if I decode this differently?
-□ What if I reverse the order?
-□ What if I combine this with something else?
-□ What if the algorithm is broken?
-□ What if there's a backdoor?
-□ What if the implementation is flawed?
+### Quick Web Check Script
+```bash
+#!/bin/bash
+URL=$1
+echo "=== Headers ==="
+curl -sI $URL
+echo "=== robots.txt ==="
+curl -s $URL/robots.txt
+echo "=== common files ==="
+for f in flag flag.txt README.md .git/config admin index.html .env; do
+  code=$(curl -s -o /dev/null -w '%{http_code}' $URL/$f)
+  echo "$f → $code"
+done
+echo "=== directory listing ==="
+ffuf -mc 200,301,302,403 -u $URL/FUZZ -w /usr/share/seclists/Discovery/Web-Content/common.txt -s 2>/dev/null | head -20
 ```
 
-### The Pattern Matcher
-```
-PATTERN: Same structure as last CTF → Similar solution
-PATTERN: Low points → Usually simple encoding or tool use
-PATTERN: High points → Usually multi-step chain
-PATTERN: "Impossible" description → Look for the trick
-PATTERN: Custom encryption → Find the weakness in implementation
-PATTERN: Custom protocol → Reverse engineer it
+### Quick Binary Check
+```bash
+#!/bin/bash
+FILE=$1
+echo "=== file type ==="
+file $FILE
+echo "=== strings (flag patterns) ==="
+strings $FILE | grep -iE 'flag\{[^}]+\}|CTF\{[^}]+\}'
+echo "=== strings (interesting) ==="
+strings -n8 $FILE | head -30
+echo "=== imports ==="
+objdump -p $FILE 2>/dev/null | grep -i "NEEDED\|dynamic"
+echo "=== protections ==="
+checksec --file=$FILE 2>/dev/null || readelf -l $FILE | grep GNU_STACK
 ```
 
----
+### Quick Crypto Check
+```bash
+#!/bin/bash
+FILE=$1
+echo "=== file type ==="
+file $FILE
+echo "=== entropy (high = encrypted/compressed) ==="
+ent $FILE 2>/dev/null || python3 -c "
+import math
+data=open('$FILE','rb').read()
+freq=[data.count(bytes([i]))/len(data) for i in range(256)]
+e=-sum(f*math.log2(f) for f in freq if f>0)
+print(f'Entropy: {e:.2f} bits/byte (max 8.0)')
+"
+echo "=== hex dump (first 128 bytes) ==="
+xxd -l128 $FILE
+```
 
-**Remember:** CTF is about speed, pattern recognition, and systematic problem-solving. Don't get stuck on one challenge. Use the right tools, follow the workflow, and always submit your flags.
+## Triage Decision Matrix
+
+```
+IF file is ELF binary:
+  → pwn (check with checksec, run locally)
+  
+IF web service with login:
+  → web (try SQLi, default creds, IDOR)
+
+IF encrypted text (not binary):
+  → crypto (check if known cipher, key length)
+
+IF .pcap/.pcapng file:
+  → forensics (strings, tshark, extract files)
+
+IF obfuscated code (pyc, class, dex):
+  → rev (decompile, analyze logic)
+
+IF unusual file format:
+  → misc (research format, try standard tools)
+
+IF multiple files:
+  → Try the simplest file first. Often one file is the key.
+
+IF no files, only text description:
+  → May be pure logic puzzle. Read carefully.
+```
+
+## Time Management
+
+### CTF Tournament Rules
+```
+0-5 min:   Triage all challenges, quick-win scan
+5-15 min:  Solve all quick-win patterns (base64, ROT13, default creds, etc.)
+15-30 min: Tackle medium-difficulty challenges
+30-60 min: Work on high-value challenges (200+ points)
+60+ min:   Only if very close to solve. Otherwise move on.
+
+CHECKPOINT EVERY 15 MINUTES:
+- What challenges are solved?
+- What's the easiest unsolved challenge?
+- Are we stuck? Move on or buy a hint.
+```
+
+### Abandon Criteria (stop working on a challenge)
+```
+- Stuck for 15 minutes with no new ideas
+- No hints purchased yet → buy a hint
+- Lower-point challenges remain unsolved
+- Challenge requires knowledge we don't have and can't google
+- Team energy is low → switch to easier challenge for morale
+```
+
+### Solved Challenge Pattern Review
+```
+EVERY 5 SOLVED CHALLENGES:
+1. What patterns are repeating?
+2. Can we write a faster script for the next similar challenge?
+3. Are we spending too much time on one category?
+4. Should we redistribute team effort?
+```
+
+## File Organization
+```
+challenge_name/
+├── challenge.*          # Original files
+├── solved/              # Extracted/solved files
+├── scripts/             # Your solve scripts
+│   ├── solve.py
+│   └── exploit.py
+├── notes.md             # Working notes
+└── flag.txt             # Captured flag
+```
+
+## Flag Format Recognition
+
+### Common Flag Formats
+```
+flag{...}          # Most common (lowercase)
+CTF{...}           # Common
+FLAG{...}          # Sometimes
+ctf{...}           # Variant
+hitcon{...}        # HITCON CTF
+picoCTF{...}       # PicoCTF
+HTB{...}           # HackTheBox
+THM{...}           # TryHackMe
+[1337s-Ur-Flag]    # SpiderCTF format
+FS{...}            # FSecure
+```
+
+### Flag Validation Checklist
+```
+Before submitting, verify:
+□ Correct flag format for this CTF (check other solved challenges)
+□ No trailing/leading whitespace
+□ Correct capitalization (flag vs FLAG vs Flag)
+□ No extra characters, no URL encoding
+□ Flag makes sense contextually (sometimes flags are phrases)
+□ Checked for similar flags (flag{ vs flags{ vs flag{typo)
+```
+
+## Error Recovery
+
+### Common Failures
+```
+"Connection refused" → Service is down or port is wrong
+"Permission denied" → Need different creds or exploit
+"Flag is incorrect" → Wrong flag format, encoding issue, or not the real flag
+"No such file" → Challenge files not downloaded correctly
+"Syntax error" in script → Debug with -x flag or add print statements
+```
+
+### Retry Strategy
+```
+1. Re-read the challenge description
+2. Check if there are hints you missed
+3. Look at the solve count — if >100, pattern is probably simple
+4. Google "CTF [challenge name] writeup" (you're allowed to research)
+5. Ask teammate for fresh eyes
+6. If truly stuck, move on. Come back later with fresh perspective.
+```
+
+## Team Coordination
+
+### Information Sharing
+```
+When you find something useful:
+1. Claim the challenge: "Working on [challenge_name]"
+2. Share discoveries in real-time: "Found LFI at ?page= param"
+3. Share scripts: Drop in team's shared directory
+4. Flag submission: Only one person submits, announce it
+5. Post-mortem: If stuck, describe what you tried
+```
+
+### Role Assignment
+```
+Person A: Web challenges
+Person B: Crypto + Forensics
+Person C: Pwn + Rev
+Person D: Misc + Triage (helps everyone)
+
+Adjust based on team strengths. Rebalance as needed.
+```

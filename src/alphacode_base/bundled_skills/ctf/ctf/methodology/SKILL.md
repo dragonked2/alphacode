@@ -1,542 +1,456 @@
----
-name: ctf-methodology
-description: "CTF workflow methodology skill. When user mentions CTF strategy, challenge triage, flag format detection, time management, team coordination, write-up templates, or CTF planning. Covers the complete CTF methodology including challenge triage rules, flag format detection patterns, time management strategies, team coordination protocols, and write-up templates for all challenge categories."
----
+# CTF Methodology Skill
 
-# CTF Methodology — Competition Strategy Brain
+## Core Principle: Speed Through Pattern Recognition
+Every challenge you solve teaches you a pattern. Every writeup you read teaches you a shortcut. Build a mental database of patterns and apply them instantly.
 
-This skill covers the strategic layer of CTF competitions:
-1. **Triage systematically** — classify and prioritize every challenge
-2. **Detect flags early** — recognize format patterns instantly
-3. **Manage time ruthlessly** — abandon dead ends, pivot fast
-4. **Coordinate as a team** — divide and conquer
-5. **Document everything** — write-ups earn bonus points
+## Speed-First Methodology
 
----
-
-## Challenge Triage
-
-### The 10-Minute Rule
-```
-RULE: Spend MAX 10 minutes on any challenge before moving on.
-
-MINUTE 0-2: Read description, check provided files
-MINUTE 2-4: Identify category and difficulty
-MINUTE 4-6: Attempt initial approach
-MINUTE 6-8: If stuck, try alternative approach
-MINUTE 8-10: Document progress and move on
-
-AFTER 10 MINUTES:
-□ Is there a clear path forward? → Continue
-□ Are you stuck with no new ideas? → Move on
-□ Is a teammate making progress? → Let them handle it
-□ Is the point value worth more time? → Maybe continue
-```
-
-### Triage Process
-```
-STEP 1: LIST ALL CHALLENGES
-Challenge Name | Category | Points | Status
-_______________|__________|________|_______
-```
-
-### Difficulty Assessment
-```
-EASY (solve in <15 min):
-□ Single-step encoding
-□ Simple tool usage
-□ Obvious vulnerability
-□ Low point value (<100)
-
-MEDIUM (solve in 15-45 min):
-□ Multi-step process
-□ Requires specific knowledge
-□ Moderate tool usage
-□ Medium point value (100-300)
-
-HARD (solve in 45-120 min):
-□ Complex chain required
-□ Custom exploitation
-□ Advanced tooling
-□ High point value (300-500)
-
-INSANE (solve in 2+ hours):
-□ Novel technique required
-□ Extensive research needed
-□ Multi-category chain
-□ Very high point value (500+)
-```
-
----
-
-## Flag Format Detection
-
-### Common Flag Formats
-```python
-import re
-
-FLAG_PATTERNS = [
-    # Standard formats
-    r'flag\{[^\}]+\}',
-    r'CTF\{[^\}]+\}',
-    r'FLAG\{[^\}]+\}',
-    r'HTB\{[^\}]+\}',
-    r'hctf\{[^\}]+\}',
-    r'actf\{[^\}]+\}',
-    r'cta\{[^\}]+\}',
-    r'picoCTF\{[^\}]+\}',
-    r'DUCTF\{[^\}]+\}',
-    r'bugctf\{[^\}]+\}',
-    r'wctf\{[^\}]+\}',
-    r'0ctf\{[^\}]+\}',
-    r'midnight\{[^\}]+\}',
-    r'SECCTF\{[^\}]+\}',
-    
-    # Hash formats (raw)
-    r'[a-f0-9]{32}',  # MD5
-    r'[a-f0-9]{40}',  # SHA1
-    r'[a-f0-9]{64}',  # SHA256
-    
-    # Base64 encoded flags
-    r'ZmxhZ3s[^\}]+\}',  # "flag{" in base64
-    
-    # Custom formats (from challenge description)
-    # Always check challenge description for flag format
-]
-
-def find_flags(text):
-    flags = []
-    for pattern in FLAG_PATTERNS:
-        matches = re.findall(pattern, text, re.IGNORECASE)
-        flags.extend(matches)
-    return flags
-```
-
-### Flag Validation
-```python
-def validate_flag(flag, expected_format=None):
-    # Remove whitespace
-    flag = flag.strip()
-    
-    # Check if it looks like a flag
-    if not flag:
-        return False
-    
-    # Check common formats
-    if re.match(r'flag\{[^\}]+\}', flag, re.IGNORECASE):
-        return True
-    if re.match(r'CTF\{[^\}]+\}', flag, re.IGNORECASE):
-        return True
-    if re.match(r'HTB\{[^\}]+\}', flag, re.IGNORECASE):
-        return True
-    
-    # Check if it's a hash
-    if re.match(r'^[a-f0-9]{32,64}$', flag, re.IGNORECASE):
-        return True
-    
-    # Check if it's printable and reasonable length
-    if flag.isprintable() and 10 < len(flag) < 200:
-        return True
-    
-    return False
-```
-
-### Flag Extraction from Files
+### Phase 0: Pre-Competition Setup (Before CTF starts)
 ```bash
-# From any file
-strings file | grep -iE "flag|ctf|key|secret|password"
-strings file | grep -E "\{[^\}]+\}"
+# Create workspace structure
+mkdir -p ~/ctf/{web,crypto,pwn,rev,forensics,misc,scripts,notes,dfir,malware,siem}
+cd ~/ctf
 
-# From binary
-strings binary | grep -i flag
+# Install/update tools
+pip install pwntools pycryptodome z3-solver angr capstone keystone
+apt install steghide binwalk foremost exiftool
+apt install sqlmap nikto gobuster ffuf hydra john hashcat
+apt install tshark wireshark nmap netcat
 
-# From images
-exiftool image.png | grep -i flag
-zsteg image.png | grep -i flag
+# Prepare templates
+cat > scripts/exploit_template.py << 'EOF'
+from pwn import *
+context.arch = 'amd64'
+context.log_level = 'debug'
+p = remote('HOST', PORT)
+# exploit here
+p.interactive()
+EOF
 
-# From pcap
-tshark -r capture.pcap -Y "http contains flag"
+cat > scripts/web_template.sh << 'EOF'
+#!/bin/bash
+URL=$1
+echo "=== Headers ===" && curl -sI $URL
+echo "=== robots ===" && curl -s $URL/robots.txt
+echo "=== common ===" && for f in flag flag.txt admin .git/config; do
+  curl -s -o /dev/null -w "%{http_code} $f\n" $URL/$f
+done
+EOF
+chmod +x scripts/web_template.sh
 ```
 
----
-
-## Time Management
-
-### Competition Timeline
+### Phase 1: Rapid Triage (first 5 minutes)
 ```
-4-HOUR COMPETITION:
-0:00 - 0:05  → Recon (list all challenges)
-0:05 - 0:15  → Triage (attempt all challenges briefly)
-0:15 - 1:00  → Solve easy challenges
-1:00 - 2:00  → Solve medium challenges
-2:00 - 3:30  → Solve hard challenges
-3:30 - 4:00  → Review and submit remaining flags
+Goal: Categorize ALL challenges, solve any quick wins
 
-8-HOUR COMPETITION:
-0:00 - 0:10  → Recon
-0:10 - 0:30  → Triage
-0:30 - 2:00  → Easy challenges
-2:00 - 4:00  → Medium challenges
-4:00 - 6:00  → Hard challenges
-6:00 - 7:30  → Remaining challenges
-7:30 - 8:00  → Review and submit
-
-24-HOUR COMPETITION:
-Day 1 Morning   → Recon, Triage, Easy
-Day 1 Afternoon → Medium
-Day 1 Evening   → Hard
-Day 2 Morning   → Remaining hard
-Day 2 Afternoon → Review and submit
+1. LIST all challenges with scores
+2. DOWNLOAD all challenge files to appropriate category folders
+3. RUN quick-win scan on everything:
+   - grep -rli 'flag{' . 
+   - strings * | grep -i 'flag\|ctf'
+   - file * on all binaries
+4. SOLVE any base64, ROT13, hex, XOR-with-obvious-key challenges
+5. SUBMIT all quick flags
+6. ASSIGN team members to categories
 ```
 
-### Rotation Schedule
+### Phase 2: Systematic Solving (5-60 minutes)
 ```
-EVERY 30 MINUTES:
-□ Am I making progress?
-□ Should I switch challenges?
-□ Have I submitted all found flags?
-□ Are teammates stuck?
-□ Is the scoreboard changing?
+For each category, work challenges in order:
+1. Lowest points first (usually simpler)
+2. Most solves first (pattern is probably common)
+3. Challenges matching your known patterns
 
-RED FLAGS (switch immediately):
-□ No progress in 20 minutes
-□ Wrong approach identified
-□ Missing required tools
-□ Challenge is way above your skill level
-□ Teammate is ahead on this challenge
+CHECKPOINT EVERY 15 MINUTES:
+- Are we stuck on anything? → Buy hint or move on
+- New challenges appeared? → Quick triage
+- Scoreboard position? → Adjust strategy
 ```
 
-### Abandonment Criteria
+### Phase 3: Endgame (last hour)
 ```
-ABANDON WHEN:
-□ Stuck for > 20 minutes
-□ Required tool unavailable
-□ Challenge requires unknown knowledge
-□ Point value too low for time invested
-□ Teammate solving it
-□ Better opportunities elsewhere
-
-NEVER ABANDON WHEN:
-□ You've found a working approach
-□ You're close to the flag
-□ It's a unique category no one else can solve
-□ It's worth significant points
+1. Focus on highest-value unsolved challenges
+2. Buy ALL remaining hints (points don't matter at end)
+3. Submit any partial flags or known patterns
+4. Share all discoveries between team members
 ```
 
----
+## CTFd API Integration
 
-## Team Coordination
-
-### Role Assignments (Team of 4)
-```
-ROLE 1: Recon Lead
-  Responsibilities:
-  - Map all challenges
-  - Track scoreboard
-  - Monitor competition announcements
-  - Coordinate team efforts
-
-ROLE 2: Web/Crypto Expert
-  Responsibilities:
-  - Solve web challenges
-  - Solve crypto challenges
-  - Share techniques with team
-
-ROLE 3: Pwn/Rev Expert
-  Responsibilities:
-  - Solve binary challenges
-  - Solve reverse engineering
-  - Share techniques with team
-
-ROLE 4: Forensics/Misc Expert
-  Responsibilities:
-  - Solve forensics challenges
-  - Solve miscellaneous
-  - Document solutions
-```
-
-### Communication Protocol
-```
-CHANNEL STRUCTURE:
-#general     → Strategy, scoreboard, announcements
-#web         → Web challenge discussion
-#crypto      → Crypto challenge discussion
-#pwn         → Binary exploitation discussion
-#rev         → Reverse engineering discussion
-#forensics   → Forensics discussion
-#misc        → Miscellaneous discussion
-#flags       → Flag submissions
-
-MESSAGING FORMAT:
-[CHALLENGE] [STATUS] [MESSAGE]
-
-Example:
-[login-page] [IN-PROGRESS] Found SQL injection, testing payloads
-[login-page] [SOLVED] Flag: flag{...}
-[crypto-easy] [STUCK] Tried RSA, no progress, help needed
-```
-
-### Handoff Protocol
-```
-WHEN STUCK:
-1. Post: "Stuck on [challenge] at [step]"
-2. Document what you've tried
-3. List what you think the next step is
-4. Another member picks up or suggests approach
-
-WHEN SOLVING:
-1. Post: "Found [vulnerability/technique] on [challenge]"
-2. Share your approach
-3. Document the solution method
-4. Submit flag and update scoreboard
-
-WHEN DONE:
-1. Post: "Solved [challenge], flag: [flag]"
-2. Write up the solution
-3. Help others with similar challenges
-```
-
----
-
-## Write-Up Templates
-
-### Web Challenge Write-Up
-```markdown
-# [Challenge Name] — Web ([Points])
-
-## Challenge
-[Description of the challenge]
-
-## Reconnaissance
-[What you found during initial survey]
-
-## Vulnerability
-[Description of the vulnerability found]
-
-## Exploitation
-### Step 1: [Initial Access]
-[How you started the attack]
-
-### Step 2: [Privilege Escalation]
-[How you escalated]
-
-### Step 3: [Flag Extraction]
-[How you got the flag]
-
-## Flag
-`flag{...}`
-
-## Tools Used
-- [Tool 1]
-- [Tool 2]
-
-## Time Taken
-[X minutes]
-
-## Key Takeaway
-[What to remember for similar challenges]
-```
-
-### Crypto Challenge Write-Up
-```markdown
-# [Challenge Name] — Crypto ([Points])
-
-## Challenge
-[Description of the challenge]
-
-## Analysis
-[Analysis of the cryptographic scheme]
-
-## Attack
-### Step 1: [Identify Weakness]
-[What weakness was found]
-
-### Step 2: [Implement Attack]
-[How you implemented the attack]
-
-### Step 3: [Extract Flag]
-[How you got the flag]
-
-## Flag
-`flag{...}`
-
-## Tools Used
-- [Tool 1]
-- [Tool 2]
-
-## Time Taken
-[X minutes]
-
-## Key Takeaway
-[What to remember for similar challenges]
-```
-
-### Pwn Challenge Write-Up
-```markdown
-# [Challenge Name] — Pwn ([Points])
-
-## Challenge
-[Description of the challenge]
-
-## Binary Analysis
-[Analysis of the binary, protections, vulnerabilities]
-
-## Exploitation
-### Step 1: [Find Vulnerability]
-[What vulnerability was found]
-
-### Step 2: [Develop Exploit]
-[How you developed the exploit]
-
-### Step 3: [Get Shell/Flag]
-[How you got code execution or the flag]
-
-## Flag
-`flag{...}`
-
-## Exploit Code
+### Automated Challenge Discovery
 ```python
-[Full exploit code]
+import requests
+import json
+
+class CTFdClient:
+    def __init__(self, base_url, token=None):
+        self.base = f"{base_url}/api/v1"
+        self.headers = {}
+        if token:
+            self.headers["Authorization"] = f"Bearer {token}"
+    
+    def get_challenges(self):
+        r = requests.get(f"{self.base}/challenges", headers=self.headers)
+        return r.json()["data"]
+    
+    def get_challenge(self, chal_id):
+        r = requests.get(f"{self.base}/challenges/{chal_id}", headers=self.headers)
+        return r.json()["data"]
+    
+    def submit_flag(self, chal_id, flag):
+        r = requests.post(f"{self.base}/challenges/{chal_id}/attempt",
+                         headers=self.headers,
+                         json={"submission": flag})
+        return r.json()
+    
+    def get_hints(self, chal_id):
+        r = requests.get(f"{self.base}/challenges/{chal_id}/hints", headers=self.headers)
+        return r.json()["data"]
+    
+    def unlock_hint(self, hint_id):
+        r = requests.post(f"{self.base}/hints/{hint_id}/attempt", headers=self.headers)
+        return r.json()
+    
+    def get_scoreboard(self):
+        r = requests.get(f"{self.base}/scoreboard", headers=self.headers)
+        return r.json()["data"]
+
+# Usage
+ctf = CTFdClient("https://ctf.example.com", "your-token-here")
+challenges = ctf.get_challenges()
+
+# Sort by: least solves (first blood opportunity) OR lowest points (easier)
+unsolved = [c for c in challenges if not c["solved_by_me"]]
+unsolved.sort(key=lambda c: (c["solves"], c["value"]))
 ```
 
-## Tools Used
-- [Tool 1]
-- [Tool 2]
+### Challenge Scoring Intelligence
+```
+Dynamic Scoring: Points = base / (1 + solves * decay)
+- First blood: Usually +50-100 bonus points
+- Few solves: Challenge is likely hard OR undiscovered
+- Many solves: Pattern is probably simple
 
-## Time Taken
-[X minutes]
-
-## Key Takeaway
-[What to remember for similar challenges]
+Strategy:
+1. First 30 min: Focus on challenges with 0 solves (first blood)
+2. 30-60 min: Focus on challenges with 1-5 solves (still high value)
+3. After 60 min: Focus on easiest unsolved (maximize flag count)
 ```
 
-### Rev Challenge Write-Up
-```markdown
-# [Challenge Name] — Rev ([Points])
+### Automated File Download
+```python
+import os
 
-## Challenge
-[Description of the challenge]
-
-## Analysis
-[Analysis of the binary, what it does]
-
-## Reversing
-### Step 1: [Understand Logic]
-[What the binary does]
-
-### Step 2: [Find Key Logic]
-[Key algorithm or check]
-
-### Step 3: [Extract Flag]
-[How you got the flag]
-
-## Flag
-`flag{...}`
-
-## Tools Used
-- [Tool 1]
-- [Tool 2]
-
-## Time Taken
-[X minutes]
-
-## Key Takeaway
-[What to remember for similar challenges]
+def download_challenge_files(challenge, client):
+    chal_dir = f"ctf/{challenge['category']}/{challenge['id']}_{challenge['name']}"
+    os.makedirs(chal_dir, exist_ok=True)
+    
+    for file_info in challenge.get("files", []):
+        file_url = f"{client.base}/files/{file_info['id']}/{file_info['name']}"
+        r = requests.get(file_url, headers=client.headers)
+        filepath = os.path.join(chal_dir, file_info['name'])
+        with open(filepath, 'wb') as f:
+            f.write(r.content)
+        print(f"  Downloaded: {file_info['name']}")
+    
+    return chal_dir
 ```
 
-### Forensics Challenge Write-Up
-```markdown
-# [Challenge Name] — Forensics ([Points])
+## Pattern Matching from Writeups
 
-## Challenge
-[Description of the challenge]
-
-## Analysis
-[Analysis of the provided files]
-
-## Findings
-### Step 1: [Initial Survey]
-[What you found first]
-
-### Step 2: [Deep Analysis]
-[What you discovered]
-
-### Step 3: [Flag Extraction]
-[How you got the flag]
-
-## Flag
-`flag{...}`
-
-## Tools Used
-- [Tool 1]
-- [Tool 2]
-
-## Time Taken
-[X minutes]
-
-## Key Takeaway
-[What to remember for similar challenges]
+### Pattern Recognition Framework
+```python
+PATTERNS = {
+    "base64": {
+        "detect": lambda s: "==" in s or (len(s) % 4 == 0 and all(c in "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/=" for c in s[:50])),
+        "solve": lambda s: base64.b64decode(s).decode(),
+        "speed": "<1 min"
+    },
+    "rot13": {
+        "detect": lambda s: all(c in "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz" for c in s[:20]) and frequency_analysis(s)[:1] == ['e'],
+        "solve": lambda s: codecs.encode(s, 'rot_13'),
+        "speed": "<1 min"
+    },
+    "xor_single": {
+        "detect": lambda s: len(s) < 100 and not is_printable(xor_with_byte(s[:20], 0x42)),
+        "solve": lambda s: brute_xor_single_byte(s),
+        "speed": "<2 min"
+    },
+    "sql_injection": {
+        "detect": lambda r: "error" in r.text.lower() or "syntax" in r.text.lower() or r.status_code == 500,
+        "solve": "sqlmap or manual injection",
+        "speed": "5-10 min"
+    },
+    "idor": {
+        "detect": lambda url: re.search(r'/api/\w+/\d+', url) or re.search(r'/user/\d+', url),
+        "solve": "Increment IDs, try different user IDs",
+        "speed": "2-5 min"
+    },
+    "lfi": {
+        "detect": lambda params: any(p.startswith('../') or 'etc/passwd' in p for p in params.values()),
+        "solve": "Try ../../etc/passwd, php://filter/convert.base64-encode/resource=index.php",
+        "speed": "3-5 min"
+    }
+}
 ```
 
----
+### Writeup Database Search
+```bash
+# When stuck, search for similar challenges
+CHAL_KEYWORDS="login form SQL injection"
 
-## Competition Checklist
+# Search CTFtime writeups
+curl -s "https://ctftime.org/writeups/?q=$CHAL_KEYWORDS" | grep -oP 'href="/writeups/\d+"' | head -5
 
-### Before Competition
-```
-□ Tools installed and working
-□ Wordlists downloaded
-□ Scripts ready (pwntools, etc.)
-□ Team communication set up
-□ Notes template ready
-□ Flag submission system ready
-□ Backup tools available
-□ Snacks and drinks ready
-```
+# Search GitHub writeups
+curl -s "https://api.github.com/search/repositories?q=CTF+writeups+$CHAL_KEYWORDS" | jq '.items[].html_url'
 
-### During Competition
-```
-□ Recon complete
-□ All challenges triaged
-□ Easy challenges solved
-□ Medium challenges attempted
-□ Hard challenges attempted
-□ Flags submitted
-□ Write-ups started
-□ Team coordination active
+# Search specific CTF writeups
+find ~/ctf-writeups -name "*.md" | xargs grep -l "$CHAL_KEYWORDS" 2>/dev/null | head -5
 ```
 
-### After Competition
+## Solving Speed Optimization
+
+### Pre-Computed Solutions
+Maintain a library of solve scripts for common patterns:
+
+```bash
+~/ctf/scripts/
+├── web/
+│   ├── sqli_login.sh          # SQL injection on login forms
+│   ├── idor.sh                # IDOR enumeration
+│   ├── lfi.sh                 # LFI traversal
+│   ├── xss_stored.sh          # Stored XSS
+│   └── file_upload.sh         # Bypass upload restrictions
+├── crypto/
+│   ├── xor_brute.py           # Single-byte XOR brute force
+│   ├── rsa_common_modulus.py   # RSA common modulus attack
+│   ├── rsa_wiener.py           # Wiener's attack
+│   ├── des_weak_key.py         # DES weak key detection
+│   └── aes_ecb_oracle.py       # ECB byte flipping
+├── pwn/
+│   ├── ret2win.py             # Standard ret2win
+│   ├── ret2libc.py            # ret2libc
+│   ├── format_string.py       # Format string exploit
+│   ├── rop_gadget.py          # ROP chain builder
+│   └── heap_fastbin.py        # Fastbin attack
+├── rev/
+│   ├── decompile.py           # Auto-decompile and search
+│   ├── angr_solve.py          # Symbolic execution
+│   └── z3_solver.py           # Constraint solving
+├── forensics/
+│   ├── extract_all.sh          # Extract from all file types
+│   └── network_extract.sh      # Extract files from pcap
+├── dfir/
+│   ├── volatility_quick.sh     # Quick memory analysis
+│   ├── eventlog_triage.sh     # Event log quick analysis
+│   └── timeline_builder.sh    # Build forensic timeline
+├── malware/
+│   ├── static_analysis.sh     # Quick static analysis
+│   ├── ioc_extract.sh         # Extract IOCs
+│   └── yara_scan.sh           # YARA rule scanning
+└── siem/
+    ├── log_triage.sh           # Quick log analysis
+    └── event_frequency.sh      # Event ID frequency
 ```
-□ All flags submitted
-□ Write-ups completed
-□ Lessons learned documented
-□ Tools updated
-□ Skills gaps identified
-□ Practice plan created
+
+### Speed Hacks
+```
+1. PARALLEL PROCESSING: Run multiple solves simultaneously
+   - Web challenges: Use curl in background
+   - Crypto: Try multiple attacks in parallel
+   - Binary: Run local and remote attempts simultaneously
+
+2. COPY-PASTE READY: Keep common commands in clipboard
+   - Base64 decode: echo "..." | base64 -d
+   - Hex decode: echo "..." | xxd -r -p
+   - URL decode: python3 -c "import urllib.parse; print(urllib.parse.unquote('...'))"
+
+3. AUTOMATED SUBMISSION: Submit flag immediately on discovery
+   - Don't wait for "completion" - partial flags might be valid
+   - Some CTFs have flag in multiple formats
+
+4. TOOL CHAINS: Pipe tools together
+   - strings binary | grep flag | base64 -d
+   - binwalk -e file && exiftool extracted/*
+   - tshark -r capture.pcap -T fields -d tcp.port==80,http -e http.file_data
 ```
 
----
+## Flag Extraction Patterns
 
-## Quick Reference: Decision Matrix
-
+### Automated Flag Search
+```bash
+#!/bin/bash
+find . -type f | while read f; do
+    # Check for flag patterns
+    grep -Po 'flag\{[^}]+\}|CTF\{[^}]+\}|FLAG\{[^}]+\}' "$f" 2>/dev/null
+    
+    # Check for base64 encoded flags
+    strings "$f" | grep -Ei '[A-Za-z0-9+/]{20,}={0,2}' | while read line; do
+        echo "$line" | base64 -d 2>/dev/null | grep -qi flag && echo "B64: $line"
+    done
+    
+    # Check for hex encoded flags
+    strings "$f" | grep -Ei '^[0-9a-f]{20,}$' | while read line; do
+        echo "$line" | xxd -r -p 2>/dev/null | grep -qi flag && echo "HEX: $line"
+    done
+done
 ```
-DECISION: Which challenge to solve next?
-→ Lowest expected time / highest points
 
-DECISION: Keep trying or move on?
-→ If no progress in 10 min, move on
-
-DECISION: Solo or team effort?
-→ Solo if you're close, team if stuck
-
-DECISION: Easy or hard challenge?
-→ Easy first for quick points
-
-DECISION: Document now or later?
-→ Document immediately after solving
+### Steganography Quick Check
+```bash
+#!/bin/bash
+FILE=$1
+echo "=== Exiftool ==="
+exiftool "$FILE"
+echo "=== Strings ==="
+strings -n8 "$FILE" | head -20
+echo "=== Binwalk ==="
+binwalk "$FILE"
+echo "=== Steghide (empty password) ==="
+steghide extract -sf "$FILE" -f -p "" 2>/dev/null
+echo "=== Zsteg (PNG/BMP) ==="
+zsteg "$FILE" 2>/dev/null | head -10
+echo "=== Stegsolve check needed"
 ```
 
----
+## Scoreboard-Driven Strategy
 
-**Remember:** CTF is a team sport. Communication, coordination, and time management are as important as technical skills. Always triage systematically, detect flags early, and write up solutions for the team.
+### Adaptive Strategy Based on Position
+```
+IF leading (top 3):
+  - Maintain lead with safe solves
+  - Don't risk on hard challenges unless high points
+  - Focus on defense (if attack/defense CTF)
+
+IF mid-pack (4-10):
+  - Take calculated risks on high-point challenges
+  - Look for unsolved challenges others missed
+  - Buy hints to catch up
+
+IF behind (11+):
+  - Focus on quick wins to build momentum
+  - Look for challenges with few solves (first blood)
+  - Buy all hints (points don't matter when behind)
+```
+
+### Challenge Selection Heuristics
+```
+Prioritize in this order:
+1. Challenges matching your known patterns (fast solve)
+2. Challenges with 0-3 solves (high value per solve)
+3. Challenges in your strong category
+4. High-point challenges (if you can solve them)
+5. Low-point challenges (only if nothing else available)
+
+Avoid:
+- Challenges with many solves but you're stuck (pattern doesn't match your skills)
+- Challenges requiring specialized knowledge you don't have
+- Challenges you've spent >20 minutes on without progress
+```
+
+## Communication Protocol
+
+### Team Information Sharing
+```
+STATUS UPDATE FORMAT:
+[TIME] [CATEGORY] Challenge: [NAME] | Points: [X] | Status: [SOLVED/STUCK/IN-PROGRESS] | Notes: [brief description]
+
+FLAG SUBMISSION FORMAT:
+[TIME] [YOUR_NAME] submitting FLAG{...} for [CHALLENGE_NAME]
+
+POST-MORTEM FORMAT:
+[TIME] [CHALLENGE_NAME] POST-MORTEM:
+- What worked: [technique that eventually solved it]
+- What didn't work: [failed attempts]
+- Time spent: [minutes]
+- Pattern: [reusable pattern for similar challenges]
+```
+
+### Knowledge Base Building
+```
+AFTER EACH CHALLENGE:
+1. Document the pattern in your solve script comments
+2. Add any new tool usage to your cheat sheet
+3. Share the pattern with teammates
+4. Update your speed template if it was a fast solve
+
+EVERY 5 CHALLENGES:
+1. Review what patterns are repeating
+2. Create automation for repeated patterns
+3. Update your category-specific scripts
+4. Share best practices with team
+```
+
+## Adaptive Learning Engine
+
+### Pattern Recognition Tracker
+```python
+# Track solved patterns for adaptive learning
+pattern_db = {
+    "solved": {},      # pattern_name → {count, avg_time, last_seen}
+    "failed": {},      # pattern_name → {count, techniques_tried}
+    "speed_records": {} # pattern_name → best_solve_time
+}
+
+def record_solve(pattern, time_seconds):
+    if pattern not in pattern_db["solved"]:
+        pattern_db["solved"][pattern] = {"count": 0, "total_time": 0, "times": []}
+    pattern_db["solved"][pattern]["count"] += 1
+    pattern_db["solved"][pattern]["total_time"] += time_seconds
+    pattern_db["solved"][pattern]["times"].append(time_seconds)
+    
+    # Update speed record
+    if pattern not in pattern_db["speed_records"] or time_seconds < pattern_db["speed_records"][pattern]:
+        pattern_db["speed_records"][pattern] = time_seconds
+
+def get_pattern_priority(patterns):
+    """Rank patterns by solve probability and speed"""
+    scored = []
+    for p in patterns:
+        if p in pattern_db["solved"]:
+            stats = pattern_db["solved"][p]
+            avg_time = stats["total_time"] / stats["count"]
+            confidence = min(stats["count"] / 5.0, 1.0)  # Max confidence at 5 solves
+            score = confidence / (avg_time + 1)  # Higher score = faster + more confident
+        else:
+            score = 0.5  # Unknown pattern - neutral score
+        scored.append((p, score))
+    return sorted(scored, key=lambda x: -x[1])
+```
+
+### Difficulty Estimation
+```python
+def estimate_difficulty(challenge):
+    """Estimate challenge difficulty based on available metadata"""
+    difficulty_signals = []
+    
+    # Points-based estimation
+    if challenge.get("value", 0) > 500:
+        difficulty_signals.append("hard")
+    elif challenge.get("value", 0) > 200:
+        difficulty_signals.append("medium")
+    else:
+        difficulty_signals.append("easy")
+    
+    # Solve count estimation
+    solves = challenge.get("solves", 0)
+    if solves == 0:
+        difficulty_signals.append("unsolved")
+    elif solves > 100:
+        difficulty_signals.append("many_solves")
+    elif solves < 5:
+        difficulty_signals.append("few_solves")
+    
+    # Tag-based estimation
+    tags = challenge.get("tags", [])
+    advanced_tags = ["crypto", "pwn", "rev", "forensics"]
+    easy_tags = ["web", "misc", "encoding"]
+    
+    if any(t in advanced_tags for t in tags):
+        difficulty_signals.append("advanced_category")
+    if any(t in easy_tags for t in tags):
+        difficulty_signals.append("easy_category")
+    
+    return difficulty_signals
+```

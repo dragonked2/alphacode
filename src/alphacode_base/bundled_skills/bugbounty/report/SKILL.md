@@ -1,44 +1,41 @@
 ---
 name: report
-description: Bug bounty report writing — Professional report templates, severity mapping, VRT alignment. Use when writing reports, when user mentions reporting, or when preparing submissions. Includes H1, Bugcrowd, Intigriti, and Immunefi formats.
+description: Bug bounty report writing with mandatory 7-gate validation. Professional report templates, severity mapping, VRT alignment. Every report must reference which gates the finding passed. Use when writing reports or preparing submissions.
 ---
 
-# 🎯 Report Writing Skill
+# REPORT WRITING — GATE-VALIDATED REPORTS
 
-Elite-level bug bounty report writing and submission preparation.
+Every report must reference the 7-gate validation that the finding passed.
 
-## Report Checklist
+---
 
-### Before Writing
-- [ ] Vulnerability validated and reproducible
-- [ ] Impact clearly demonstrated
-- [ ] Proof of concept prepared
-- [ ] Evidence cleaned (no PII)
-- [ ] Severity assessed
+## PRE-SUBMISSION CHECKLIST
 
-### Report Structure
-- [ ] Clear, descriptive title
-- [ ] Executive summary
-- [ ] Technical details
-- [ ] Steps to reproduce
-- [ ] Proof of concept
-- [ ] Impact analysis
-- [ ] Remediation recommendations
+Before writing ANY report, verify the finding state:
 
-### After Writing
-- [ ] Readability check
-- [ ] Formatting consistency
-- [ ] Evidence attached
-- [ ] No sensitive data exposed
-- [ ] Submission ready
+```
+FINDING STATE: VALIDATED (passed all 7 gates)
+  Gate 1 (Scope): ✓ Asset in program scope
+  Gate 2 (Boundary): ✓ Security boundary violation identified
+  Gate 3 (Attacker): ✓ Realistic attacker capability
+  Gate 4 (Reproducible): ✓ Deterministic reproduction
+  Gate 5 (Impact): ✓ Concrete security impact
+  Gate 6 (FP): ✓ False positive eliminated
+  Gate 7 (Program): ✓ Program accepts this finding
 
-## Report Templates
+IF ANY GATE FAILED → DO NOT WRITE REPORT
+```
+
+---
+
+## REPORT TEMPLATES
 
 ### HackerOne Report
+
 ```markdown
 # Summary
 
-Vulnerability type: [Vulnern Type]
+Vulnerability type: [Vulnerability Type]
 Vulnerability severity: [Critical/High/Medium/Low/Info]
 Weakness: [CWE-XXX]
 
@@ -48,10 +45,9 @@ Weakness: [CWE-XXX]
 
 # Steps To Reproduce
 
-1. Navigate to [URL]
-2. [Step 2]
-3. [Step 3]
-4. Observe [result]
+1. [Exact HTTP request — copy-paste ready]
+2. [Exact response showing impact]
+3. [Screenshot/video of impact]
 
 # Proof of Concept
 
@@ -75,6 +71,7 @@ Weakness: [CWE-XXX]
 ```
 
 ### Bugcrowd Report (VRT-aligned)
+
 ```markdown
 # Vulnerability Name
 
@@ -100,28 +97,8 @@ Weakness: [CWE-XXX]
 [Fix recommendation]
 ```
 
-### Intigriti Report
-```markdown
-# Summary
-
-Vulnerability Type: [Type]
-Affected Component: [URL/Endpoint]
-Severity: [Critical/High/Medium/Low/Info]
-
-## Description
-[Technical details]
-
-## Proof of Concept
-[Steps and evidence]
-
-## Impact
-[Business impact]
-
-## Remediation
-[Fix recommendations]
-```
-
 ### Immunefi Report (Web3)
+
 ```markdown
 # Summary
 
@@ -141,35 +118,38 @@ Severity: [Critical/High/Medium/Low/Info]
 
 ## Remediation
 [Fix recommendations]
-
-## Tool Used
-[Tools used for discovery]
 ```
 
-## Severity Mapping
+---
+
+## SEVERITY MAPPING
 
 ### CVSS Scoring
+
 | Severity | Score | Typical Findings |
 |----------|-------|------------------|
-| Critical | 9.0-10.0 | RCE, SQLi with data exfil, Auth bypass |
-| High | 7.0-8.9 | SSRF, Stored XSS, IDOR with PII |
-| Medium | 4.0-6.9 | CSRF, Open Redirect, Info Disclosure |
-| Low | 0.1-3.9 | Missing headers, Version disclosure |
-| Info | 0.0 | Best practice violations |
+| Critical | 9.0-10.0 | RCE, SQLi with data exfil, Auth bypass, ATO |
+| High | 7.0-8.9 | SSRF, Stored XSS, IDOR with PII, Privilege escalation |
+| Medium | 4.0-6.9 | CSRF, Open Redirect, Limited IDOR, Race condition |
+| Low | 0.1-3.9 | Info disclosure, Limited impact findings |
+| Info | 0.0 | Best practice violations (only if chained) |
 
 ### HackerOne Severity Guidelines
+
 | Severity | Typical Payout | Examples |
 |----------|---------------|----------|
-| Critical | $5,000-$50,000+ | RCE, Full account takeover, SQLi |
+| Critical | $5,000-$50,000+ | RCE, Full ATO, SQLi, SSRF→RCE |
 | High | $2,000-$10,000 | Stored XSS, SSRF, IDOR with sensitive data |
 | Medium | $500-$2,000 | CSRF, Open Redirect, Limited IDOR |
-| Low | $100-$500 | Info disclosure, Missing headers |
-| None | $0-100 | Best practice, Documentation |
+| Low | $100-$500 | Info disclosure, Limited impact |
+| None | $0-100 | Best practice (chained only) |
 
-## Writing Best Practices
+---
+
+## WRITING BEST PRACTICES
 
 ### Title
-- Be specific: "SQL Injection in /api/users allows data exfiltration"
+- Be specific: "IDOR in /api/users/{id} allows reading any user's PII"
 - Not generic: "Security Vulnerability Found"
 
 ### Summary
@@ -193,17 +173,23 @@ Severity: [Critical/High/Medium/Low/Info]
 - Not just "fix the vulnerability"
 - Include code examples if helpful
 
-## Common Mistakes to Avoid
+---
 
-1. **Vague titles** — "Security Issue" vs "SQL Injection in /api/login"
+## COMMON MISTAKES TO AVOID
+
+1. **Vague titles** — "Security Issue" vs "IDOR in /api/users/{id}"
 2. **Missing impact** — Technical details without business context
 3. **Unreproducible steps** — Steps that don't work for triagers
 4. **Sensitive data** — Including real PII in reports
 5. **Poor formatting** — Walls of text without structure
 6. **Duplicate submissions** — Not checking Hacktivity first
 7. **Out of scope** — Testing excluded assets
+8. **Theoretical impact** — "Could potentially" instead of "did"
 
-## Evidence Cleaning
+---
+
+## EVIDENCE CLEANING
+
 ```bash
 # Remove PII from screenshots
 # Blur names, emails, phone numbers
@@ -220,7 +206,9 @@ Severity: [Critical/High/Medium/Low/Info]
 # Use generic placeholders
 ```
 
-## Submission Platforms
+---
+
+## SUBMISSION PLATFORMS
 
 ### HackerOne
 - https://hackerone.com
@@ -245,10 +233,12 @@ Severity: [Critical/High/Medium/Low/Info]
 - Web3/DeFi focused
 - Higher bounties for critical findings
 - Follow their disclosure policy
-```
 
-## Report Review Checklist
+---
 
+## REPORT REVIEW CHECKLIST
+
+Before submitting:
 - [ ] Title is specific and descriptive
 - [ ] Summary is clear and concise
 - [ ] Steps are reproducible
@@ -259,3 +249,5 @@ Severity: [Critical/High/Medium/Low/Info]
 - [ ] No sensitive data exposed
 - [ ] Duplicate check completed
 - [ ] Program rules followed
+- [ ] All 7 gates passed (documented in finding state)
+- [ ] Severity matches demonstrated impact

@@ -1,529 +1,517 @@
----
-name: ctf-rev
-description: "CTF reverse engineering skill. When user mentions rev challenges, reverse engineering, binary analysis, deobfuscation, anti-debug bypass, ELF/PE analysis, Ghidra, IDA Pro, protocol reverse engineering, file format analysis, or disassembly in a CTF context. Covers all major RE techniques with step-by-step methodology, tool usage, and practical examples."
----
+# CTF Reverse Engineering Skill
 
-# CTF Reverse Engineering — Challenge Solving Brain
+## Speed-First Approach: Solve rev challenges in <15 minutes
 
-When solving rev challenges:
-1. **Run the binary first** — observe behavior before static analysis
-2. **Identify the file type** — ELF, PE, Java, Python, .NET, WASM
-3. **Strings are your friend** — always check strings first
-4. **Use Ghidra/IDA for decompilation** — understand the logic
-5. **Trace execution** — use strace/ltrace/dynamic analysis
-
----
-
-## Phase 1: Initial Reconnaissance
-
-### File Identification
+### Phase 1: Instant Classification (<2 minutes)
 ```bash
-# Identify file type
-file binary
-binwalk binary
-strings binary | head -50
+# Run this immediately on any binary challenge
+FILE=$1
 
-# Check architecture
-readelf -h binary
-objdump -f binary
+# Basic info
+file $FILE
+strings -n8 $FILE | head -30
+strings $FILE | grep -iE 'flag\{|ctf\{|CTF\{|FLAG\{|correct\|wrong\|success'
 
-# Check for UPX packing
-binwalk binary | grep -i upx
-upx -t binary
-```
+# Check for obvious patterns
+strings $FILE | grep -E '[A-Za-z0-9]{20,}' | head -10
+strings $FILE | grep -i 'password\|key\|secret\|admin'
 
-### Quick Wins
-```bash
-# Extract all strings
-strings binary > strings.txt
-strings -n 8 binary > long_strings.txt
-
-# Search for flag patterns
-strings binary | grep -iE "flag|ctf|key|secret|password|correct|wrong|success"
-
-# Check for hardcoded values
-strings binary | grep -E "[0-9a-f]{32}"  # MD5
-strings binary | grep -E "base64|=="      # Base64
-```
-
-### Dynamic Analysis First
-```bash
-# Run with strace
-strace ./binary
-strace -e trace=open,read,write ./binary
-
-# Run with ltrace
-ltrace ./binary
-
-# Run with gdb
-gdb -q ./binary
-r
-# Input test string
-# Check what happens
-```
-
----
-
-## Phase 2: ELF Binary Analysis
-
-### ELF Structure
-```
-ELF Header:
-  - Magic number
-  - Architecture (32/64 bit)
-  - Entry point address
-  - Program header offset
-  - Section header offset
-
-Program Headers (for execution):
-  - LOAD: Segment to load into memory
-  - DYNAMIC: Dynamic linking info
-  - INTERP: Path to interpreter
-
-Section Headers (for analysis):
-  - .text: Code
-  - .data: Initialized data
-  - .bss: Uninitialized data
-  - .rodata: Read-only data
-  - .plt: Procedure Linkage Table
-  - .got: Global Offset Table
-  - .symtab: Symbol table
-  - .strtab: String table
-```
-
-### ELF Analysis Commands
-```bash
-# Headers
-readelf -h binary
-readelf -l binary  # Program headers
-readelf -S binary  # Section headers
-
-# Symbols
-readelf --syms binary
-readelf --dyn-syms binary
-nm binary | grep -i main
-
-# Sections
-objdump -s -j .rodata binary  # Read-only data
-objdump -s -j .data binary    # Data section
-
-# Dynamic linking
-ldd binary
-readelf -d binary
-```
-
----
-
-## Phase 3: PE Binary Analysis
-
-### PE Structure
-```
-DOS Header:
-  - MZ magic
-  - e_lfanew → PE header offset
-
-PE Header:
-  - Signature: PE\0\0
-  - COFF Header: Machine, NumberOfSections
-  - Optional Header: AddressOfEntryPoint, ImageBase
-
-Section Headers:
-  - .text: Code
-  - .data: Data
-  - .rdata: Read-only data
-  - .rsrc: Resources
-  - .reloc: Relocations
-```
-
-### PE Analysis Commands
-```bash
-# Using pestudio
-pestudio binary.exe
-
-# Using pefile (Python)
+# Entropy check (high = packed/encrypted, low = simple)
 python3 -c "
-import pefile
-pe = pefile.PE('binary.exe')
-print('Entry point:', hex(pe.OPTIONAL_HEADER.AddressOfEntryPoint))
-print('Image base:', hex(pe.OPTIONAL_HEADER.ImageBase))
-for section in pe.sections:
-    print(f'{section.Name.decode()}: {hex(section.VirtualAddress)}')
+import math
+data=open('$FILE','rb').read()
+freq=[data.count(bytes([i]))/len(data) for i in range(256)]
+e=-sum(f*math.log2(f) for f in freq if f>0)
+print(f'Entropy: {e:.2f} bits/byte')
+print('Likely: Packed/Encrypted' if e > 7.5 else 'Likely: Normal' if e < 6.5 else 'Likely: Mixed')
 "
 
-# Using strings
-strings -el binary.exe  # UTF-16 strings
+# File structure
+xxd -l64 $FILE
+readelf -h $FILE 2>/dev/null || file -b $FILE
 ```
 
----
-
-## Phase 4: Ghidra Usage
-
-### Workflow
+### Phase 2: Tool Selection (<1 minute)
 ```
-1. Import binary
-   File → Import File → Select binary
-   
-2. Auto-analyze
-   Analysis → Auto Analysis (or just let it run)
-   
-3. Find main
-   Window → Symbol Tree → Functions → main
-   
-4. Decompile
-   Double-click function → decompiler window shows C code
-   
-5. Rename variables
-   Right-click → Rename Variable
-   
-6. Add types
-   Right-click → Retype Variable
+MATCH binary to tool:
+├── ELF binary → Ghidra, IDA, radare2
+├── .NET → dnSpy, dotPeek, ILSpy
+├── Java → JD-GUI, JADX, CFR
+├── Python bytecode (.pyc) → uncompyle6, decompyle3
+├── .NET Assembly (.exe/.dll) → dnSpy
+├── Go binary → go tool objdump, Ghidra
+├── Rust binary → Ghidra,IDA
+├── Android (dex/apk) → jadx-gui, apktool
+├── JavaScript → node --inspect, de4js
+└── Obfuscated → angr (symbolic execution)
 ```
 
-### Useful Ghidra Scripts
-```java
-// Find XOR loops
-// Search → For Scalars → Search for constant 0x5A (XOR opcode)
-
-// Find string references
-// Right-click string → References → Find References
-
-// Patch binary
-// Right-click instruction → Patch Instruction
+### Phase 3: Solve and Submit
+```
+IF flag found → submit immediately
+ELSE → try next tool (come back later if stuck)
 ```
 
-### Ghidra Keyboard Shortcuts
-```
-Ctrl+E: Export function
-Ctrl+Shift+E: Export all functions
-G: Go to address
-X: Cross references
-Ctrl+F: Find in listing
-;: Add comment
-L: Rename label
-```
+## One-Liner Solvers
 
----
+### Quick String Extraction
+```bash
+# Extract all printable strings
+strings -n8 $FILE
 
-## Phase 5: IDA Pro Usage
+# Extract strings with context
+strings -t x $FILE | head -30  # Show offset
 
-### Workflow
-```
-1. Load binary
-   File → Open → Select binary
-   
-2. Wait for analysis
-   Let IDA auto-analyze
+# Extract specific patterns
+strings $FILE | grep -oP 'flag\{[^}]+\}'
 
-3. Find main
-   Functions window → search "main"
-   Or: Shift+F12 → Strings → find "main" → double-click → Xrefs
+# Extract base64 strings
+strings $FILE | grep -Ei '[A-Za-z0-9+/]{20,}={0,2}' | while read s; do
+  echo "$s" | base64 -d 2>/dev/null | grep -qi flag && echo "B64: $s"
+done
 
-4. Switch to graph view
-   Space bar (IDA Free) or View → Graphs → Function Graph
-
-5. Rename
-   N key → rename variable/function
-
-6. Add comments
-   ; key → add comment
+# Extract hex strings
+strings $FILE | grep -Ei '^[0-9a-f]{20,}$' | while read s; do
+  echo "$s" | xxd -r -p 2>/dev/null | grep -qi flag && echo "HEX: $s"
+done
 ```
 
-### IDA Keyboard Shortcuts
-```
-Space: Toggle graph/listing
-N: Rename
-;: Add comment
-X: Cross references
-G: Go to address
-F5: Decompile (Hex-Rays)
-Tab: Switch between views
-Alt+T: Text search
-Ctrl+T: Type search
+### Quick Binary Analysis
+```bash
+# Function list
+objdump -t $FILE | grep -i 'main\|flag\|win\|check\|verify\|decrypt'
+
+# Import list
+objdump -p $FILE | grep NEEDED
+nm -D $FILE | grep -i 'printf\|puts\|gets\|scanf\|strcmp'
+
+# Disassemble main
+objdump -d $FILE | grep -A50 '<main>:'
+
+# Check for obfuscation
+objdump -d $FILE | grep -c 'xor\|rol\|ror' | xargs echo "XOR/ROT count:"
 ```
 
-### IDAPython Scripts
+### Ghidra Headless Analysis
+```bash
+# Run Ghidra headless (fast)
+analyzeHeadless /tmp/ghidra_project project_name \
+  -import $FILE \
+  -postScript FindFlag.java \
+  -scriptPath /path/to/scripts
+
+# Find flag strings
+find /tmp/ghidra_project -name "*.rep" -exec grep -l "flag{" {} \;
+```
+
+## Fast Analysis Patterns
+
+### Pattern: Simple XOR Encoding
+```
+Detection: strings with uniform distribution, not English
+Attack:
+1. Find XOR loop in disassembly
+2. Identify key (usually single byte or short)
+3. Brute force key
+```
+
 ```python
-# Find all functions
-import idaapi, idautils
-for func in idautils.Functions():
-    print(hex(func), idc.get_func_name(func))
-
-# Find XOR patterns
-for addr in idautils.CodeRefsTo(0x401000, 0):
-    if idc.get_operand_value(addr, 1) == 0x5A:  # XOR
-        print(f"XOR at {hex(addr)}")
+# Quick XOR decode
+data = open('binary', 'rb').read()
+for key in range(256):
+    result = bytes([b ^ key for b in data])
+    if b'flag' in result.lower():
+        print(f'Key: {key} ({chr(key)}) → {result}')
 ```
 
----
-
-## Phase 6: Deobfuscation
-
-### Control Flow Flattening
+### Pattern: Base64 in Binary
 ```
-SIGNS:
-- Large switch statement with many cases
-- State variable that controls flow
-- Cases set state to next case
-- Unusual function structure
-
-REVERSING:
-1. Identify the state variable
-2. Map case values to operations
-3. Reconstruct the original control flow
-4. Ignore state transitions, focus on operations
+Detection: Long base64 strings in strings output
+Attack:
+1. Find base64 string
+2. Decode
+3. Often combined with XOR or other transforms
 ```
 
-### String Encryption
-```
-SIGNS:
-- Encrypted strings in .data/.rodata
-- Decryption routine called before string use
-- XOR loop or crypto function
-
-REVERSING:
-1. Find decryption function
-2. Identify the key
-3. Extract encrypted data
-4. Decrypt offline
-
-EXAMPLE:
-def decrypt(data, key):
-    return bytes([b ^ key[i % len(key)] for i, b in enumerate(data)])
-```
-
-### Opaque Predicates
-```
-SIGNS:
-- Always-true or always-false conditions
-- Complex math that always evaluates same way
-- Unreachable code after predicate
-
-REVERSING:
-1. Identify the predicate
-2. Determine if always true/false
-3. Remove dead branches
-4. Simplify the code
-```
-
-### Virtualization/VM-Based
-```
-SIGNS:
-- Custom opcodes
-- Interpreter loop
-- Opcode dispatch table
-
-REVERSING:
-1. Identify the VM structure
-2. Map opcodes to operations
-3. Write a decompiler
-4. Analyze decompiled code
-```
-
----
-
-## Phase 7: Anti-Debug Bypass
-
-### ptrace Check
-```c
-// Standard anti-debug
-if (ptrace(PTRACE_TRACEME, 0, 0, 0) == -1) {
-    // Being debugged
-    exit(1);
-}
-
-// Bypass: NOP out the check
-# Or: LD_PRELOAD hook ptrace
-# Or: Patch the conditional jump
-```
-
-### IsDebuggerPresent (Windows)
-```c
-// Check
-if (IsDebuggerPresent()) {
-    exit(1);
-}
-
-// Bypass:
-// 1. Patch the function to return 0
-// 2. Use ScyllaHide plugin
-// 3. Hook NtQueryInformationProcess
-```
-
-### Timing Checks
-```c
-// Check execution time
-start = rdtsc();
-// ... code ...
-end = rdtsc();
-if (end - start > THRESHOLD) {
-    // Debugging detected
-}
-
-// Bypass: Patch timing checks
-// Or: Manipulate rdtsc
-```
-
-### Anti-Debug Techniques
 ```bash
-# Linux
-# ptrace check
-# /proc/self/status TracerPid
-# /proc/self/maps
-# Signal handlers
-# Timing checks
-
-# Windows
-# IsDebuggerPresent
-# CheckRemoteDebuggerPresent
-# NtQueryInformationProcess
-# OutputDebugString
-# GetTickCount
-# QueryPerformanceCounter
+# Extract and decode base64
+strings $FILE | grep -Ei '[A-Za-z0-9+/]{40,}={0,2}' | while read s; do
+  decoded=$(echo "$s" | base64 -d 2>/dev/null)
+  [ -n "$decoded" ] && echo "$s → $decoded"
+done
 ```
 
-### Bypass Methods
+### Pattern: Simple Comparison
+```
+Detection: strcmp(), strncmp() with hardcoded string
+Attack:
+1. Find strcmp call in disassembly
+2. Extract second argument (hardcoded string)
+3. That's the password/flag
+```
+
 ```bash
-# NOP patching
-# Replace conditional jump (je → jne, or nop)
+# Find strcmp comparisons
+objdump -d $FILE | grep -B5 -A5 'strcmp'
 
-# LD_PRELOAD
-LD_PRELOAD=./bypass.so ./binary
-
-# LD_PRELOAD library
-cat > bypass.c << 'EOF'
-#include <sys/ptrace.h>
-int ptrace(int request, int pid, void *addr, void *data) {
-    return 0;
-}
-EOF
-gcc -shared -o bypass.so bypass.c
-
-# GDB
-catch signal
-handle SIGTRAP nopass
+# Or in Ghidra: search for xrefs to strcmp
+# Input string is first arg, hardcoded is second
 ```
 
----
-
-## Phase 8: Protocol Reverse Engineering
-
-### Approach
+### Pattern: Math Operations
 ```
-1. Capture traffic (Wireshark/tcpdump)
-2. Identify packet structure
-3. Find magic bytes/headers
-4. Map fields to meaning
-5. Identify request/response pattern
-6. Reimplement protocol
+Detection: XOR, ADD, SUB, ROL, ROR on each character
+Attack:
+1. Identify operation
+2. Find key/constant
+3. Apply inverse operation
 ```
 
-### Common Patterns
-```
-BINARY PROTOCOL:
-- Magic bytes (e.g., 0x4D 0x5A)
-- Length field
-- Type/command field
-- Checksum
-- Payload
-
-TEXT PROTOCOL:
-- Command + arguments
-- Delimiters (space, newline, comma)
-- Status codes
-- Headers
-```
-
-### Example Analysis
 ```python
-# Analyze captured packets
-import struct
+# Brute force simple math transforms
+import itertools
 
-def parse_packet(data):
-    magic = data[0:4]
-    length = struct.unpack('<I', data[4:8])[0]
-    cmd = data[8]
-    payload = data[9:9+length]
-    return {'magic': magic, 'length': length, 'cmd': cmd, 'payload': payload}
+def try_transforms(data):
+    # Try common transforms
+    for key in range(256):
+        # XOR
+        if bytes([b ^ key for b in data[:20]]).isascii():
+            print(f'XOR {key}: {bytes([b ^ key for b in data])}')
+        
+        # ADD/SUB
+        for op in [operator.add, operator.sub]:
+            result = bytes([op(b, key) & 0xFF for b in data[:20]])
+            if result.isascii():
+                print(f'{"ADD" if op == operator.add else "SUB"} {key}: {result}')
 ```
 
----
-
-## Phase 9: File Format Analysis
-
-### Custom Format Reverse Engineering
+### Pattern: Control Flow Flattening
 ```
-1. Examine hex dump
-   xxd binary | head -100
-   010 Editor with template
-
-2. Identify structure
-   - Magic bytes
-   - Header fields
-   - Data sections
-   - Index/offset tables
-
-3. Write parser
-   Python struct module
-   Custom parser
-
-4. Extract data
-   Parse and dump contents
+Detection: Large switch statement in disassembly
+Attack:
+1. Identify state variables
+2. Trace execution path
+3. Reconstruct original logic
 ```
 
-### Common File Formats
+### Pattern: OLLVM (Obfuscated LLVM)
 ```
-ZIP: 50 4B 03 04
-RAR: 52 61 72 21
-PNG: 89 50 4E 47 0D 0A 1A 0A
-GIF: 47 49 46 38
-PDF: 25 50 44 46
-JPEG: FF D8 FF
-ELF: 7F 45 4C 46
-PE:  4D 5A
+Detection: Opaque predicates, bogus control flow
+Attack:
+1. Use symbolic execution (angr)
+2. Simplify with Ghidra/IDA decompiler
+3. Dynamic analysis (GDB + script)
 ```
 
----
+## Decompilation Tools
 
-## Quick Reference: Common Patterns
-
-```
-SIGN: XOR with single byte → Brute force the key
-SIGN: XOR with repeating key → Frequency analysis
-SIGN: Base64 strings → Decode them
-SIGN: Hex strings → Convert to bytes
-SIGN: Custom encryption → Find the flaw
-SIGN: Anti-debug → Patch it
-SIGN: Packed binary → Unpack it
-SIGN: Virtual machine → Analyze the VM
-SIGN: Multi-stage → Extract each stage
-```
-
----
-
-## Tool Reference
-
+### Ghidra Usage
 ```bash
-# Static analysis
-file binary
-strings binary
-binwalk binary
-readelf -a binary
-objdump -d binary
+# Install Ghidra
+wget https://github.com/NationalSecurityAgency/ghidra/releases/latest
+unzip ghidra_*.zip
+./ghidra_*/ghidraRun
 
-# Dynamic analysis
-strace ./binary
-ltrace ./binary
-gdb ./binary
+# Headless analysis
+analyzeHeadless /tmp/project proj -import binary -postScript FlagFinder.java
 
-# Disassembly
-objdump -d -M intel binary
-radare2 -A binary
+# Ghidra script to find flags
+# FlagFinder.java
+import ghidra.app.script.GhidraScript;
+import ghidra.program.model.listing.*;
+import ghidra.program.model.data.*;
+import ghidra.program.model.mem.*;
 
-# Decompilation
-ghidra binary
-retdec-decompiler binary
+public class FlagFinder extends GhidraScript {
+    @Override
+    public void run() throws Exception {
+        // Search for flag pattern
+        Memory mem = currentProgram.getMemory();
+        byte[] buf = new byte[1000];
+        for (AddressSetView set : mem.getAddresses(true)) {
+            // Search for "flag{" bytes
+            // ...
+        }
+    }
+}
 ```
 
----
+### IDA Free Usage
+```bash
+# Install IDA Free
+# Download from hex-rays.com/ida-free
 
-**Remember:** Rev is about patience and systematic analysis. Start with dynamic analysis (run it), then static (understand it). Strings and patterns are your best friends. Use Ghidra/IDA for decompilation, but always verify with dynamic analysis.
+# Analyze binary
+ida64 binary
+
+# Key shortcuts:
+# Space: Toggle graph/text
+# F5: Decompile (if available)
+# X: References to
+# N: Rename
+# G: Jump to address
+```
+
+### radare2 Usage
+```bash
+# Quick analysis
+r2 -A $FILE
+
+# Commands
+aaa              # Analyze all
+afl              # List functions
+pdf @main        # Disassemble main
+axt @sym.flag    # Find xrefs to flag function
+iz               # List strings
+izz              # List all strings
+px 64 @rsp       # Print hex at stack
+wao xor          # Apply XOR obfuscation
+
+# Find flag
+/ flag{
+/ flag
+izz~flag
+```
+
+### angr Usage
+```python
+import angr
+
+# Load binary
+proj = angr.Project('./binary', auto_load_libs=False)
+
+# Create initial state
+state = proj.factory.entry_state()
+
+# Create simulation manager
+simgr = proj.factory.simgr(state)
+
+# Find path to "Correct!" or "flag{" 
+simgr.explore(find=0x401234, avoid=0x401256)  # Use actual addresses
+
+if simgr.found:
+    found = simgr.found[0]
+    print(found.posix.dumps(0))  # stdin
+    print(found.memory.dumps(0x400000, 0x100))  # Memory
+```
+
+### JEB Usage (Android/Dalvik)
+```bash
+# Install JEB
+# Download from pnfsoftware.com
+
+# Analyze APK
+jeb_binary binary.apk
+
+# Navigate:
+# - Code browser: Decompiled Java
+# - Analysis: Strings, xrefs
+# - Search: Search for "flag"
+```
+
+## Binary Type Specific Approaches
+
+### .NET Binary
+```bash
+# Decompile with dnSpy
+# Open in dnSpy → File → Open → select binary
+
+# Or use ILSpy
+ilspycmd binary.exe > decompiled.cs
+
+# Search for flag
+grep -i 'flag\|password\|secret' decompiled.cs
+
+# Key patterns:
+# - Compare: if (input == "flag{...}")
+# - XOR: input[i] ^ key
+# - Base64: Convert.FromBase64String()
+```
+
+### Java Binary
+```bash
+# Decompile with JD-GUI
+jd-gui binary.jar
+
+# Or use jadx
+jadx binary.jar -d output/
+
+# Search for flag
+grep -ri 'flag\|password' output/
+
+# Key patterns:
+# - String.equals()
+# - StringBuilder.append()
+# - Integer.parseInt()
+```
+
+### Python Bytecode
+```bash
+# Decompile .pyc
+uncompyle6 binary.pyc > decompiled.py
+
+# Or use decompyle3
+decompyle3 binary.pyc > decompiled.py
+
+# Search for flag
+grep -i 'flag\|password' decompiled.py
+
+# Key patterns:
+# - XOR: ord(c) ^ key
+# - Base64: base64.b64decode()
+# - Hash: hashlib.md5().hexdigest()
+```
+
+### Go Binary
+```bash
+# Go binaries have lots of strings
+strings $FILE | grep -i 'flag\|password\|secret'
+
+# Use Ghidra with Go analyzer
+# Or use go tool objdump
+go tool objdump binary | grep -A10 'main.main'
+
+# Key patterns:
+# - fmt.Println("flag{...}")
+# - strings.Contains(input, "flag")
+# - XOR with key
+```
+
+### JavaScript (Node.js)
+```bash
+# If provided .js file
+node --inspect binary.js
+
+# Or use de4js
+# Online: https://www.cleancss.com/js-deobfuscator/
+
+# Key patterns:
+# - eval() with encoded string
+# - atob() for base64
+# - String.fromCharCode() for char conversion
+```
+
+## Symbolic Execution with angr
+
+### Basic angr Template
+```python
+import angr
+import claripy
+
+def solve_with_angr(binary_path, find_addr, avoid_addr=None):
+    proj = angr.Project(binary_path, auto_load_libs=False)
+    
+    # Create symbolic input
+    state = proj.factory.entry_state()
+    simgr = proj.factory.simgr(state)
+    
+    # Explore
+    if avoid_addr:
+        simgr.explore(find=find_addr, avoid=avoid_addr)
+    else:
+        simgr.explore(find=find_addr)
+    
+    if simgr.found:
+        found = simgr.found[0]
+        # Extract stdin
+        return found.posix.dumps(0)
+    return None
+
+# Usage
+result = solve_with_angr('./binary', 0x401234, 0x401256)
+if result:
+    print(f"Input: {result}")
+```
+
+### angr with Constraints
+```python
+import angr
+import claripy
+
+proj = angr.Project('./binary', auto_load_libs=False)
+
+# Create symbolic bitvector
+input_size = 30
+input_bytes = claripy.BVS('input', input_size * 8)
+
+state = proj.factory.full_init_state(
+    args=['./binary'],
+    stdin=angr.SimFileStream(name='stdin', content=input_bytes)
+)
+
+# Add constraints
+for i in range(input_size):
+    # Only printable ASCII
+    state.solver.add(input_bytes.get_byte(i) >= 0x20)
+    state.solver.add(input_bytes.get_byte(i) <= 0x7e)
+
+simgr = proj.factory.simgr(state)
+simgr.explore(find=0x401234, avoid=0x401256)
+
+if simgr.found:
+    found = simgr.found[0]
+    solution = found.solver.eval(input_bytes, cast_to=bytes)
+    print(f"Flag: {solution}")
+```
+
+## Z3 Constraint Solving
+
+### Basic Z3 Template
+```python
+from z3 import *
+
+# Create solver
+s = Solver()
+
+# Create variables
+flag = [BitVec(f'f{i}', 8) for i in range(30)]
+
+# Add constraints (from reverse engineering)
+# Example: each character XORed with key
+key = 0x42
+for i in range(30):
+    s.add(flag[i] ^ key == expected[i])  # expected from binary
+
+# Add ASCII constraints
+for f in flag:
+    s.add(f >= 0x20, f <= 0x7e)
+
+# Solve
+if s.check() == sat:
+    m = s.model()
+    result = ''.join(chr(m[f].as_long()) for f in flag)
+    print(f"Flag: {result}")
+```
+
+### Z3 for Complex Logic
+```python
+from z3 import *
+
+s = Solver()
+
+# Variables
+x, y, z = BitVecs('x y z', 32)
+
+# Constraints from binary analysis
+s.add(x ^ y == 0x12345678)
+s.add((x + y) * z == 0x9abcdef0)
+s.add(x > 0, y > 0, z > 0)
+
+if s.check() == sat:
+    m = s.model()
+    print(f"x = {m[x]}")
+    print(f"y = {m[y]}")
+    print(f"z = {m[z]}")
+```
+
+## Speed Metrics
+```
+Average solve times (target):
+- Simple string comparison: <2 minutes
+- XOR with known key: <3 minutes
+- Base64 in binary: <2 minutes
+- Simple math transform: <5 minutes
+- .NET/Java decompilation: <5 minutes
+- Complex obfuscation: <15 minutes
+- OLLVM: <20 minutes
+```
