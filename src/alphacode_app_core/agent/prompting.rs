@@ -85,6 +85,70 @@ impl Agent {
         split.dynamic_part.push_str(reminder);
     }
 
+    /// Detect verification loops: N consecutive read-only tool calls with no
+    /// state-changing result. When detected, inject a system reminder that
+    /// breaks the loop by re-deriving the completion predicate.
+    fn detect_verification_loop(&self, split: &mut crate::prompt::SplitSystemPrompt) {
+        const LOOP_THRESHOLD: usize = 4;
+
+        // Read-only tools that don't change external state
+        const READ_ONLY_TOOLS: &[&str] = &[
+            "webfetch", "scrapling", "read", "grep", "glob", "agentgrep",
+            "session_search", "conversation_search", "skill_manage", "memory",
+            "todo", "browser",
+        ];
+
+        // State-changing tools that break the loop
+        const STATE_CHANGING_TOOLS: &[&str] = &[
+            "bash", "write", "edit", "multiedit", "apply_patch", "patch",
+        ];
+
+        let mut consecutive_read_only = 0usize;
+        let mut last_tool_calls = Vec::new();
+
+        // Scan recent messages (last 20) for tool call patterns
+        let msg_count = self.session.messages.len();
+        let start = msg_count.saturating_sub(20);
+
+        for stored in &self.session.messages[start..] {
+            for block in &stored.content {
+                if let crate::alphacode_app_core::message::ContentBlock::ToolUse { name, .. } = block
+                {
+                    last_tool_calls.push(name.clone());
+                }
+            }
+        }
+
+        // Walk backwards through tool calls
+        for tool_name in last_tool_calls.iter().rev() {
+            if STATE_CHANGING_TOOLS.contains(&tool_name.as_str()) {
+                consecutive_read_only = 0;
+                break;
+            } else if READ_ONLY_TOOLS.contains(&tool_name.as_str()) {
+                consecutive_read_only += 1;
+            }
+        }
+
+        if consecutive_read_only >= LOOP_THRESHOLD {
+            let reminder = format!(
+                "\n\n# Verification Loop Detected\n\n\
+                You have made {} consecutive read-only tool calls without a state-changing result. \
+                This pattern indicates you are verifying against derived artifacts instead of the authoritative signal.\n\n\
+                **Stop and re-derive the completion predicate from first principles:**\n\
+                1. What is the exact authoritative signal? (not grep output, not substring match)\n\
+                2. Have you observed it directly in a tool result?\n\
+                3. If not, what specific state change would produce it?\n\
+                4. Use a state-changing tool (bash, write, edit) to advance toward the goal, or report the blocker.",
+                consecutive_read_only
+            );
+
+            if !split.dynamic_part.is_empty() {
+                split.dynamic_part.push_str("\n\n");
+            }
+            split.dynamic_part.push_str(&reminder);
+        }
+    }
+
     /// Build split system prompt for better caching.
     /// Returns static (cacheable) and dynamic (not cached) parts separately,
     /// along with the resolved prompt tier.
@@ -143,6 +207,7 @@ impl Agent {
         );
 
         self.append_current_turn_system_reminder(&mut split);
+        self.detect_verification_loop(&mut split);
         crate::prompt::append_swarm_effort_directive(
             &mut split,
             self.provider.reasoning_effort().as_deref(),

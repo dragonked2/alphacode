@@ -42,6 +42,7 @@ serde_json = { version = "1", features = ["raw_value"] }
 toml = "0.8"
 serde_yaml = "0.9"
 pulldown-cmark = "0.12"
+scraper = "0.22"
 
 # CLI
 clap = { version = "4", features = ["derive"] }

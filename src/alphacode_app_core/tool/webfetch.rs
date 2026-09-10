@@ -204,7 +204,7 @@ impl Tool for WebFetchTool {
 
 /// Truncate at a char boundary, preferring to cut at the last newline so the tail
 /// is not a half-formed line.
-fn truncate_output(output: String) -> (String, bool) {
+pub(crate) fn truncate_output(output: String) -> (String, bool) {
     if output.len() <= MAX_OUTPUT_CHARS {
         return (output, false);
     }
@@ -220,7 +220,7 @@ fn truncate_output(output: String) -> (String, bool) {
     (output[..cut].to_string(), true)
 }
 
-mod html_regex {
+pub(crate) mod html_regex {
     use regex::Regex;
     use std::sync::OnceLock;
 
@@ -326,7 +326,7 @@ mod html_regex {
     }
 }
 
-fn html_to_text(html: &str) -> String {
+pub(crate) fn html_to_text(html: &str) -> String {
     let mut text = html.to_string();
 
     let (Some(script), Some(style), Some(tag), Some(whitespace)) = (
@@ -379,7 +379,7 @@ fn html_to_text(html: &str) -> String {
 ///   text is kept and the target dropped.
 /// - Pure in-page fragments (`#foo`) are navigation aids with no destination
 ///   content, so the text is kept and the target dropped.
-fn render_link(href: &str, text: &str) -> String {
+pub(crate) fn render_link(href: &str, text: &str) -> String {
     let text = text.trim();
     if text.is_empty() {
         return String::new();
@@ -391,7 +391,7 @@ fn render_link(href: &str, text: &str) -> String {
     format!("[{text}]({href})")
 }
 
-fn html_to_markdown(html: &str) -> String {
+pub(crate) fn html_to_markdown(html: &str) -> String {
     let mut md = html.to_string();
 
     let (

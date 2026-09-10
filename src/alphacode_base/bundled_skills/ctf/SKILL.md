@@ -1,3 +1,8 @@
+---
+name: ctf
+description: Rapid Capture-The-Flag solver — triage challenges in under 60 seconds, route to categories, execute optimized solve scripts, and submit flags.
+---
+
 # CTF Solver Skill
 
 ## Role

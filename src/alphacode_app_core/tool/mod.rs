@@ -18,6 +18,7 @@ mod doctor;
 mod edit;
 mod gmail;
 mod goal;
+mod httpflow;
 mod invalid;
 mod ls;
 pub mod mcp;
@@ -27,6 +28,7 @@ mod open;
 mod patch;
 mod plan;
 mod read;
+mod scrapling;
 mod self_improve;
 pub mod selfdev;
 pub(crate) mod serde_coerce;
@@ -212,6 +214,18 @@ impl Registry {
                 &mut timings,
                 "websearch",
                 websearch::WebSearchTool::new,
+            );
+            Self::insert_tool_timed(
+                &mut m,
+                &mut timings,
+                "scrapling",
+                scrapling::ScraplingTool::new,
+            );
+            Self::insert_tool_timed(
+                &mut m,
+                &mut timings,
+                "httpflow",
+                httpflow::HttpFlowTool::new,
             );
             Self::insert_tool_timed(&mut m, &mut timings, "invalid", invalid::InvalidTool::new);
             Self::insert_tool_timed(&mut m, &mut timings, "todo", todo::TodoTool::new);

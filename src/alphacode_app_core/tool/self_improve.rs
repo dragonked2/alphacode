@@ -258,6 +258,7 @@ impl SelfImproveTool {
         let mut skills = load_skills();
         let mut new_skills = 0;
 
+        // Phase 1: Tool-sequence frequency patterns (existing logic)
         for (task_type, sequences) in &tool_sequences {
             let mut freq: std::collections::HashMap<String, u64> = std::collections::HashMap::new();
             for seq in sequences {
@@ -285,10 +286,72 @@ impl SelfImproveTool {
             }
         }
 
+        // Phase 2: Extract operational lessons from failure records
+        // Groups failures by task_type, extracts error-based lessons, deduplicates
+        let failures: Vec<&TaskRecord> = records.iter().filter(|r| !r.success).collect();
+        let mut error_lessons: std::collections::HashMap<String, Vec<String>> =
+            std::collections::HashMap::new();
+
+        for record in &failures {
+            if let Some(ref error) = record.error {
+                // Normalize error messages for dedup (strip timestamps, IDs, etc.)
+                let normalized = normalize_error(error);
+                error_lessons
+                    .entry(record.task_type.clone())
+                    .or_default()
+                    .push(normalized);
+            }
+        }
+
+        for (task_type, errors) in &error_lessons {
+            // Count error frequency
+            let mut error_freq: std::collections::HashMap<String, u64> =
+                std::collections::HashMap::new();
+            for err in errors {
+                *error_freq.entry(err.clone()).or_insert(0) += 1;
+            }
+
+            for (error_pattern, count) in error_freq {
+                // Only learn from errors that occurred 2+ times (worth persisting)
+                if count < 2 {
+                    continue;
+                }
+
+                // Skip if we already have a lesson covering this error pattern
+                let exists = skills.iter().any(|s| {
+                    s.id.starts_with("lesson_")
+                        && s.tool_sequence.contains(&task_type)
+                        && s.pattern.contains(&error_pattern[..error_pattern.len().min(40)])
+                });
+                if exists {
+                    continue;
+                }
+
+                // Extract a corrective lesson from the error
+                let lesson = extract_correction_lesson(&error_pattern, task_type);
+                if lesson.is_empty() {
+                    continue;
+                }
+
+                let skill = LearnedSkill {
+                    id: format!("lesson_{}", now_ms()),
+                    name: format!("lesson: {} failure", task_type),
+                    pattern: lesson,
+                    tool_sequence: vec![task_type.clone(), "correction".to_string()],
+                    success_count: 0,
+                    failure_count: count,
+                    created_at: now_ms(),
+                    last_used: now_ms(),
+                };
+                skills.push(skill);
+                new_skills += 1;
+            }
+        }
+
         save_skills(&skills)?;
 
         Ok(ToolOutput::new(format!(
-            "🧠 Learning complete!\n\nAnalyzed {} task records.\nFound {} new patterns.\nTotal learned skills: {}.\n\nTip: Continue recording task outcomes to discover more patterns.",
+            "🧠 Learning complete!\n\nAnalyzed {} task records.\nFound {} new patterns/lessons.\nTotal learned skills: {}.\n\nTip: Continue recording task outcomes to discover more patterns.",
             records.len(),
             new_skills,
             skills.len()
@@ -432,4 +495,66 @@ impl SelfImproveTool {
 
         Ok(ToolOutput::new(output))
     }
+}
+
+/// Normalize error messages for deduplication.
+/// Strips timestamps, UUIDs, file paths, and other variable parts.
+fn normalize_error(error: &str) -> String {
+    // Lowercase and strip UUIDs (36-char with dashes)
+    let normalized = error.to_lowercase();
+    let normalized = normalized
+        .split_whitespace()
+        .filter(|w| !w.contains('-') || w.len() != 36)
+        .collect::<Vec<_>>()
+        .join(" ");
+
+    if normalized.len() > 120 {
+        format!("{}...", &normalized[..120])
+    } else {
+        normalized
+    }
+}
+
+/// Extract a corrective lesson from an error pattern and task type.
+/// Returns a string like "Correction: ... Fix: ..."
+fn extract_correction_lesson(error_pattern: &str, task_type: &str) -> String {
+    let lower = error_pattern.to_lowercase();
+
+    // Map common error patterns to corrective lessons
+    let corrections: Vec<(&str, &str, &str)> = vec![
+        ("timeout", "timed out", "Use longer timeout or batch smaller requests"),
+        ("connection refused", "connection refused", "Verify service is running and port is correct"),
+        ("permission denied", "permission denied", "Check file permissions or run with appropriate privileges"),
+        ("not found", "not found", "Verify the resource exists before operating on it"),
+        ("rate limit", "rate limit", "Add delay between requests or use exponential backoff"),
+        ("invalid syntax", "invalid syntax", "Validate input format before sending"),
+        ("assertion failed", "assertion", "Verify expected state before asserting"),
+        ("connection reset", "connection reset", "Retry with backoff; server may be under load"),
+        ("broken pipe", "broken pipe", "Connection was closed; re-establish before retrying"),
+        ("ssl", "tls", "Check certificate validity and TLS version compatibility"),
+        ("encoding", "utf-8", "Ensure proper encoding; use lossy conversion if needed"),
+        ("circular", "circular", "Check for infinite loops or circular dependencies"),
+        ("overflow", "overflow", "Check bounds before arithmetic; use saturating operations"),
+    ];
+
+    for (keyword, error_fragment, correction) in &corrections {
+        if lower.contains(keyword) || lower.contains(error_fragment) {
+            return format!(
+                "Correction for {} ({}): Error indicates '{}'. Fix: {}.",
+                task_type, keyword, error_fragment, correction
+            );
+        }
+    }
+
+    // Generic lesson extraction: first meaningful sentence
+    let first_sentence = error_pattern
+        .split(|c: char| c == '.' || c == ':' || c == '\n')
+        .map(|s| s.trim())
+        .find(|s| s.len() > 10)
+        .unwrap_or(error_pattern);
+
+    format!(
+        "Correction for {}: Recurring error: '{}'. Investigate root cause and apply fix before retrying.",
+        task_type, first_sentence
+    )
 }
