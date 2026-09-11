@@ -4,10 +4,10 @@ use std::path::PathBuf;
 use crate::{platform, storage};
 
 const GITHUB_API_LATEST: &str =
-    "https://api.github.com/repos/dragonked2/firefox-agent-bridge/releases/latest";
+    "https://api.github.com/repos/1jehuang/firefox-agent-bridge/releases/latest";
 
 const NATIVE_HOST_NAME: &str = "firefox_agent_bridge";
-const EXTENSION_ID_LISTED: &str = "browser-agent-bridge@dragonked2.github.io";
+const EXTENSION_ID_LISTED: &str = "browser-agent-bridge@1jehuang.github.io";
 const EXTENSION_ID_LOCAL: &str = "firefox-agent-bridge@local";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -427,7 +427,7 @@ async fn download_browser_binary() -> Result<()> {
     } else if status.as_u16() == 404 {
         anyhow::bail!(
             "Browser bridge GitHub repository not found (HTTP 404). \
-             The release repository 'dragonked2/firefox-agent-bridge' does not exist. \
+             The release repository '1jehuang/firefox-agent-bridge' does not exist. \
              Please check the GITHUB_API_LATEST constant in browser.rs or manually install \
              the browser bridge binaries into ~/.alphacode/browser/"
         );

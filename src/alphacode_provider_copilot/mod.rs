@@ -189,6 +189,8 @@ pub fn build_messages(system: &str, messages: &[ChatMessage]) -> Vec<Value> {
 
                 if !content_text.is_empty() {
                     assistant_msg["content"] = json!(content_text);
+                } else {
+                    assistant_msg["content"] = json!("");
                 }
                 if !tool_calls.is_empty() {
                     assistant_msg["tool_calls"] = json!(tool_calls);

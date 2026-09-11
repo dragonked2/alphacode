@@ -55,7 +55,7 @@ impl SpinnerStyle {
                 ],
                 2,
             ),
-            SpinnerStyle::Matrix => (&["‌", ",strlen", "‎", "​", "‌", "‎"], 1),
+            SpinnerStyle::Matrix => (&["_matrices", "|", "\\", "/", "-"], 1),
             SpinnerStyle::Starfield => (&["✦", "✧", "★", "☆", "★", "✧"], 2),
         }
     }
@@ -370,7 +370,7 @@ impl BrandTheme {
         let mut colors: Vec<Color> = Vec::with_capacity(width);
         for i in 0..width {
             let t = i as f32 / width as f32;
-            let wave = (t * 6.28 + phase).sin() * 0.5 + 0.5;
+            let wave = (t * std::f32::consts::TAU + phase).sin() * 0.5 + 0.5;
             let gradient_idx = (t * (gradient.len() - 1) as f32).round() as usize;
             let base_color = gradient[gradient_idx.min(gradient.len() - 1)];
 

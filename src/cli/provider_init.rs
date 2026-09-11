@@ -743,7 +743,16 @@ fn ensure_external_api_key_auth_allowed_for_explicit_choice(env_key: &str) -> Re
         return Ok(());
     }
     let Some(source) = auth::external::preferred_unconsented_api_key_source_for_env(env_key) else {
-        return Ok(());
+        // No API key configured and no external auth source found.
+        // Bail so the model command doesn't show models for an unconfigured provider.
+        let provider_name = provider_label_for_api_key_env(env_key);
+        let login_hint = provider_login_hint_for_api_key_env(env_key);
+        anyhow::bail!(
+            "No API key configured for {}. Run `{}` to authenticate, or set the {} environment variable.",
+            provider_name,
+            login_hint,
+            env_key
+        );
     };
     let path = source.path()?;
     let provider_name = provider_label_for_api_key_env(env_key);

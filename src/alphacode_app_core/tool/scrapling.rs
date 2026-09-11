@@ -1,5 +1,5 @@
-use super::{Tool, ToolContext, ToolOutput};
 use super::webfetch::{html_to_markdown, html_to_text, truncate_output};
+use super::{Tool, ToolContext, ToolOutput};
 use anyhow::{Context as _, Result};
 use async_trait::async_trait;
 use futures::StreamExt;
@@ -220,55 +220,52 @@ impl ScraplingTool {
         ctx: &ToolContext,
     ) -> Result<ToolOutput> {
         // Level 1: Try HTTP
-        match self.build_and_send_request(params, timeout).await {
-            Ok(response) => {
-                let (status, content_type, body) = self.read_response(response).await?;
+        if let Ok(response) = self.build_and_send_request(params, timeout).await {
+            let (status, content_type, body) = self.read_response(response).await?;
 
-                // Check if we got a valid response
-                if self.gate_validate(status, &content_type, &body).is_ok() {
-                    // Check for anti-bot signals
-                    if self.detect_anti_bot(&body) {
-                        // Escalate to adaptive
-                        let document = Html::parse_document(&body);
-                        let output = self.extract_main_content(&document, &content_type, format)?;
-                        let (output, truncated) = truncate_output(output);
-                        let note = if truncated {
-                            "\n\n[Truncated — anti-bot detected, content may be partial]"
-                        } else {
-                            "\n\n[Anti-bot detected — use mode='browser' for full rendering]"
-                        };
-                        return Ok(ToolOutput::new(format!(
-                            "Fetched {} (auto: adaptive fallback)\n\n{}{}",
-                            params.url, output, note
-                        )));
-                    }
-
-                    let output = self.format_output(&body, &content_type, format);
+            // Check if we got a valid response
+            if self.gate_validate(status, &content_type, &body).is_ok() {
+                // Check for anti-bot signals
+                if self.detect_anti_bot(&body) {
+                    // Escalate to adaptive
+                    let document = Html::parse_document(&body);
+                    let output = self.extract_main_content(&document, &content_type, format)?;
                     let (output, truncated) = truncate_output(output);
-                    let note = if truncated { "\n\n[Truncated]" } else { "" };
+                    let note = if truncated {
+                        "\n\n[Truncated — anti-bot detected, content may be partial]"
+                    } else {
+                        "\n\n[Anti-bot detected — use mode='browser' for full rendering]"
+                    };
                     return Ok(ToolOutput::new(format!(
-                        "Fetched {} (auto: HTTP)\n\n{}{}",
+                        "Fetched {} (auto: adaptive fallback)\n\n{}{}",
                         params.url, output, note
                     )));
                 }
+
+                let output = self.format_output(&body, &content_type, format);
+                let (output, truncated) = truncate_output(output);
+                let note = if truncated { "\n\n[Truncated]" } else { "" };
+                return Ok(ToolOutput::new(format!(
+                    "Fetched {} (auto: HTTP)\n\n{}{}",
+                    params.url, output, note
+                )));
             }
-            Err(_) => {} // Fall through to adaptive/browser
         }
+        // Fall through to adaptive/browser
 
         // Level 2: Try adaptive extraction (needs a new HTTP fetch)
-        if let Ok(response) = self.build_and_send_request(params, timeout).await {
-            if let Ok((status, content_type, body)) = self.read_response(response).await {
-                if self.gate_validate(status, &content_type, &body).is_ok() {
-                    let document = Html::parse_document(&body);
-                    if let Ok(output) = self.extract_main_content(&document, &content_type, format) {
-                        let (output, truncated) = truncate_output(output);
-                        let note = if truncated { "\n\n[Truncated]" } else { "" };
-                        return Ok(ToolOutput::new(format!(
-                            "Fetched {} (auto: adaptive)\n\n{}{}",
-                            params.url, output, note
-                        )));
-                    }
-                }
+        if let Ok(response) = self.build_and_send_request(params, timeout).await
+            && let Ok((status, content_type, body)) = self.read_response(response).await
+            && self.gate_validate(status, &content_type, &body).is_ok()
+        {
+            let document = Html::parse_document(&body);
+            if let Ok(output) = self.extract_main_content(&document, &content_type, format) {
+                let (output, truncated) = truncate_output(output);
+                let note = if truncated { "\n\n[Truncated]" } else { "" };
+                return Ok(ToolOutput::new(format!(
+                    "Fetched {} (auto: adaptive)\n\n{}{}",
+                    params.url, output, note
+                )));
             }
         }
 
@@ -291,7 +288,10 @@ impl ScraplingTool {
                 "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 \
                  (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
             )
-            .header(reqwest::header::ACCEPT, "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8")
+            .header(
+                reqwest::header::ACCEPT,
+                "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+            )
             .header(reqwest::header::ACCEPT_LANGUAGE, "en-US,en;q=0.9")
             .timeout(Duration::from_secs(timeout));
 
@@ -316,10 +316,7 @@ impl ScraplingTool {
         Ok(response)
     }
 
-    async fn read_response(
-        &self,
-        response: reqwest::Response,
-    ) -> Result<(u16, String, String)> {
+    async fn read_response(&self, response: reqwest::Response) -> Result<(u16, String, String)> {
         let status = response.status().as_u16();
         let content_type = response
             .headers()
@@ -431,8 +428,8 @@ impl ScraplingTool {
         selector_str: &str,
         format: &str,
     ) -> Result<String> {
-        let selector =
-            Selector::parse(selector_str).map_err(|e| anyhow::anyhow!("Invalid CSS selector: {}", e))?;
+        let selector = Selector::parse(selector_str)
+            .map_err(|e| anyhow::anyhow!("Invalid CSS selector: {}", e))?;
 
         let elements: Vec<String> = document
             .select(&selector)
@@ -460,11 +457,12 @@ impl ScraplingTool {
         let main_content = self.try_semantic_extraction(document);
 
         // Priority 2: Heuristic scoring (longest text block with low link density)
-        let scored_content = if main_content.is_none() || main_content.as_deref().unwrap_or("").len() < 100 {
-            self.try_heuristic_extraction(document)
-        } else {
-            main_content
-        };
+        let scored_content =
+            if main_content.is_none() || main_content.as_deref().unwrap_or("").len() < 100 {
+                self.try_heuristic_extraction(document)
+            } else {
+                main_content
+            };
 
         match scored_content {
             Some(content) if !content.trim().is_empty() => {
@@ -492,8 +490,17 @@ impl ScraplingTool {
 
     /// Try semantic HTML extraction: <article>, <main>, <section>
     fn try_semantic_extraction(&self, document: &Html) -> Option<String> {
-        let selectors = ["article", "main", "[role='main']", ".post-content", ".article-content",
-                         ".entry-content", ".content", "#content", ".markdown-body"];
+        let selectors = [
+            "article",
+            "main",
+            "[role='main']",
+            ".post-content",
+            ".article-content",
+            ".entry-content",
+            ".content",
+            "#content",
+            ".markdown-body",
+        ];
 
         for sel_str in &selectors {
             if let Ok(sel) = Selector::parse(sel_str) {
@@ -564,9 +571,7 @@ impl ScraplingTool {
                 let attrs: HashMap<String, String> = elem
                     .attrs
                     .iter()
-                    .map(|(name, value)| {
-                        (name.local.to_string(), value.to_string())
-                    })
+                    .map(|(name, value)| (name.local.to_string(), value.to_string()))
                     .collect();
                 json!({
                     "tag": elem.name(),
@@ -602,8 +607,7 @@ impl ScraplingTool {
         }
 
         // Create a temporary Python script
-        let script = format!(
-            r#"
+        let script = r#"
 import json, sys
 try:
     from scrapling import Fetcher
@@ -611,19 +615,19 @@ try:
     timeout = int(sys.argv[2])
     fetcher = Fetcher(auto_match=False)
     page = fetcher.get(url, timeout=timeout)
-    result = {{
+    result = {
         "status": page.status if hasattr(page, 'status') else None,
         "title": page.css_first('title').text() if hasattr(page, 'css_first') else None,
         "text": page.get_all_text(separator='\n') if hasattr(page, 'get_all_text') else None,
         "html": str(page.html_content) if hasattr(page, 'html_content') else None,
         "url": str(page.url) if hasattr(page, 'url') else None,
-    }}
+    }
     print(json.dumps(result))
 except Exception as e:
-    print(json.dumps({{"error": str(e)}}))
+    print(json.dumps({"error": str(e)}))
     sys.exit(1)
 "#
-        );
+        .to_string();
 
         let temp_dir = tempfile::tempdir()?;
         let script_path = temp_dir.path().join("scrapling_fetch.py");
@@ -705,12 +709,15 @@ except Exception as e:
             }
         });
 
-        // We can't directly call the browser tool from here without a circular dependency,
-        // so we'll use the same subprocess pattern
+        // Auto-install browser bridge if missing
+        let bin = crate::browser::browser_binary_path();
+        if !bin.exists() {
+            crate::browser::ensure_browser_setup().await?;
+        }
         let bin = crate::browser::browser_binary_path();
         if !bin.exists() {
             return Err(anyhow::anyhow!(
-                "Browser tool not available. Install it or use mode='http' or 'adaptive'."
+                "Browser bridge installation failed. Use mode='http' or 'adaptive' instead."
             ));
         }
 
@@ -731,8 +738,8 @@ except Exception as e:
         }
 
         let stdout = String::from_utf8_lossy(&output.stdout);
-        let result: Value = serde_json::from_str(&stdout)
-            .unwrap_or_else(|_| json!({ "raw": stdout.to_string() }));
+        let result: Value =
+            serde_json::from_str(&stdout).unwrap_or_else(|_| json!({ "raw": stdout.to_string() }));
 
         let content = result["content"]
             .as_str()
@@ -817,15 +824,24 @@ mod tests {
     fn test_gate_validate_rejects_errors() {
         let tool = ScraplingTool::new();
         assert!(tool.gate_validate(404, "text/html", "Not Found").is_err());
-        assert!(tool.gate_validate(500, "text/html", "Server Error").is_err());
+        assert!(
+            tool.gate_validate(500, "text/html", "Server Error")
+                .is_err()
+        );
         assert!(tool.gate_validate(200, "text/html", "").is_err());
     }
 
     #[test]
     fn test_gate_validate_accepts_valid() {
         let tool = ScraplingTool::new();
-        assert!(tool.gate_validate(200, "text/html", "<html><body>OK</body></html>").is_ok());
-        assert!(tool.gate_validate(200, "application/json", r#"{"key":"value"}"#).is_ok());
+        assert!(
+            tool.gate_validate(200, "text/html", "<html><body>OK</body></html>")
+                .is_ok()
+        );
+        assert!(
+            tool.gate_validate(200, "application/json", r#"{"key":"value"}"#)
+                .is_ok()
+        );
         assert!(tool.gate_validate(301, "text/html", "").is_ok()); // redirects can have empty body
     }
 
@@ -852,8 +868,18 @@ mod tests {
     fn test_format_output() {
         let tool = ScraplingTool::new();
         let html = "<p>Hello <b>world</b></p>";
-        assert!(tool.format_output(html, "text/html", "html").contains("<b>"));
-        assert!(!tool.format_output(html, "text/html", "text").contains("<b>"));
-        assert!(tool.format_output(html, "text/html", "markdown").contains("**world**"));
+        assert!(
+            tool.format_output(html, "text/html", "html")
+                .contains("<b>")
+        );
+        assert!(
+            !tool
+                .format_output(html, "text/html", "text")
+                .contains("<b>")
+        );
+        assert!(
+            tool.format_output(html, "text/html", "markdown")
+                .contains("**world**")
+        );
     }
 }

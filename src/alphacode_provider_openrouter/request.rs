@@ -376,6 +376,8 @@ pub fn build_chat_messages(
 
                 if !text_content.is_empty() {
                     assistant_msg["content"] = serde_json::json!(text_content);
+                } else {
+                    assistant_msg["content"] = serde_json::json!("");
                 }
 
                 if !tool_calls.is_empty() {

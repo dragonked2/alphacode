@@ -320,8 +320,9 @@ impl SelfImproveTool {
                 // Skip if we already have a lesson covering this error pattern
                 let exists = skills.iter().any(|s| {
                     s.id.starts_with("lesson_")
-                        && s.tool_sequence.contains(&task_type)
-                        && s.pattern.contains(&error_pattern[..error_pattern.len().min(40)])
+                        && s.tool_sequence.contains(task_type)
+                        && s.pattern
+                            .contains(&error_pattern[..error_pattern.len().min(40)])
                 });
                 if exists {
                     continue;
@@ -522,19 +523,71 @@ fn extract_correction_lesson(error_pattern: &str, task_type: &str) -> String {
 
     // Map common error patterns to corrective lessons
     let corrections: Vec<(&str, &str, &str)> = vec![
-        ("timeout", "timed out", "Use longer timeout or batch smaller requests"),
-        ("connection refused", "connection refused", "Verify service is running and port is correct"),
-        ("permission denied", "permission denied", "Check file permissions or run with appropriate privileges"),
-        ("not found", "not found", "Verify the resource exists before operating on it"),
-        ("rate limit", "rate limit", "Add delay between requests or use exponential backoff"),
-        ("invalid syntax", "invalid syntax", "Validate input format before sending"),
-        ("assertion failed", "assertion", "Verify expected state before asserting"),
-        ("connection reset", "connection reset", "Retry with backoff; server may be under load"),
-        ("broken pipe", "broken pipe", "Connection was closed; re-establish before retrying"),
-        ("ssl", "tls", "Check certificate validity and TLS version compatibility"),
-        ("encoding", "utf-8", "Ensure proper encoding; use lossy conversion if needed"),
-        ("circular", "circular", "Check for infinite loops or circular dependencies"),
-        ("overflow", "overflow", "Check bounds before arithmetic; use saturating operations"),
+        (
+            "timeout",
+            "timed out",
+            "Use longer timeout or batch smaller requests",
+        ),
+        (
+            "connection refused",
+            "connection refused",
+            "Verify service is running and port is correct",
+        ),
+        (
+            "permission denied",
+            "permission denied",
+            "Check file permissions or run with appropriate privileges",
+        ),
+        (
+            "not found",
+            "not found",
+            "Verify the resource exists before operating on it",
+        ),
+        (
+            "rate limit",
+            "rate limit",
+            "Add delay between requests or use exponential backoff",
+        ),
+        (
+            "invalid syntax",
+            "invalid syntax",
+            "Validate input format before sending",
+        ),
+        (
+            "assertion failed",
+            "assertion",
+            "Verify expected state before asserting",
+        ),
+        (
+            "connection reset",
+            "connection reset",
+            "Retry with backoff; server may be under load",
+        ),
+        (
+            "broken pipe",
+            "broken pipe",
+            "Connection was closed; re-establish before retrying",
+        ),
+        (
+            "ssl",
+            "tls",
+            "Check certificate validity and TLS version compatibility",
+        ),
+        (
+            "encoding",
+            "utf-8",
+            "Ensure proper encoding; use lossy conversion if needed",
+        ),
+        (
+            "circular",
+            "circular",
+            "Check for infinite loops or circular dependencies",
+        ),
+        (
+            "overflow",
+            "overflow",
+            "Check bounds before arithmetic; use saturating operations",
+        ),
     ];
 
     for (keyword, error_fragment, correction) in &corrections {
@@ -548,7 +601,7 @@ fn extract_correction_lesson(error_pattern: &str, task_type: &str) -> String {
 
     // Generic lesson extraction: first meaningful sentence
     let first_sentence = error_pattern
-        .split(|c: char| c == '.' || c == ':' || c == '\n')
+        .split(['.', ':', '\n'])
         .map(|s| s.trim())
         .find(|s| s.len() > 10)
         .unwrap_or(error_pattern);

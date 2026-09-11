@@ -93,15 +93,23 @@ impl Agent {
 
         // Read-only tools that don't change external state
         const READ_ONLY_TOOLS: &[&str] = &[
-            "webfetch", "scrapling", "read", "grep", "glob", "agentgrep",
-            "session_search", "conversation_search", "skill_manage", "memory",
-            "todo", "browser",
+            "webfetch",
+            "scrapling",
+            "read",
+            "grep",
+            "glob",
+            "agentgrep",
+            "session_search",
+            "conversation_search",
+            "skill_manage",
+            "memory",
+            "todo",
+            "browser",
         ];
 
         // State-changing tools that break the loop
-        const STATE_CHANGING_TOOLS: &[&str] = &[
-            "bash", "write", "edit", "multiedit", "apply_patch", "patch",
-        ];
+        const STATE_CHANGING_TOOLS: &[&str] =
+            &["bash", "write", "edit", "multiedit", "apply_patch", "patch"];
 
         let mut consecutive_read_only = 0usize;
         let mut last_tool_calls = Vec::new();
@@ -112,7 +120,8 @@ impl Agent {
 
         for stored in &self.session.messages[start..] {
             for block in &stored.content {
-                if let crate::alphacode_app_core::message::ContentBlock::ToolUse { name, .. } = block
+                if let crate::alphacode_app_core::message::ContentBlock::ToolUse { name, .. } =
+                    block
                 {
                     last_tool_calls.push(name.clone());
                 }

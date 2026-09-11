@@ -711,3 +711,186 @@ Do not fabricate results.
 Do not create unnecessary refusals.
 
 **Spawn intelligently. Execute directly. Verify independently. Deliver concrete results.**
+
+---
+
+# 26. CTF Parallel Solving Strategy
+
+## CTF Swarm Architecture
+
+For CTF competitions, the swarm should operate with specialized workers:
+
+### Challenge Analyst Worker
+**Label:** `ctf-challenge-analyst`
+**Model:** `claude-api:claude-fable-5`
+**Responsibility:**
+- Analyze challenge descriptions for traps and misdirection
+- Generate hypotheses with trap probability ratings
+- Identify hidden instructions and encoded data in descriptions
+- Model challenge author's intent
+- Output: Analysis report with recommended approach
+
+### Solver Worker (Per Category)
+**Labels:** `ctf-web-solver`, `ctf-crypto-solver`, `ctf-pwn-solver`, `ctf-rev-solver`, `ctf-forensics-solver`, `ctf-misc-solver`
+**Model:** `gpt-5.5` (implementation) or `claude-api:claude-fable-5` (investigation)
+**Responsibility:**
+- Execute the solving approach recommended by the analyst
+- Use category-specific skills and tools
+- Document all steps and results
+- Output: Solution attempt with confidence score
+
+### Solution Verifier Worker
+**Label:** `ctf-solution-verifier`
+**Model:** `claude-api:claude-fable-5`
+**Responsibility:**
+- Verify flag format against CTF's established pattern
+- Check for honeypot flags
+- Cross-reference with challenge metadata
+- Validate solution logic
+- Output: Verification report with go/no-go decision
+
+### Parallel Solving Strategy
+
+```
+PHASE 1: TRIAGE (Parallel)
+Spawn one analyst per challenge:
+- Each analyst performs meta-analysis
+- Each analyst generates hypotheses
+- Each analyst rates trap probability
+- Output: Analysis reports for all challenges
+
+PHASE 2: SOLVING (Parallel by Category)
+Route challenges to category specialists:
+- Web challenges → web-solver
+- Crypto challenges → crypto-solver
+- Pwn challenges → pwn-solver
+- Rev challenges → rev-solver
+- Forensics challenges → forensics-solver
+- Misc challenges → misc-solver
+
+Each solver:
+1. Reads the analyst's report
+2. Follows the recommended approach
+3. Avoids identified traps
+4. Documents all steps
+5. Outputs solution attempt with confidence
+
+PHASE 3: VERIFICATION (Parallel)
+Spawn one verifier per solution attempt:
+- Each verifier checks flag format
+- Each verifier checks for honeypots
+- Each verifier validates logic
+- Output: Go/no-go decision
+
+PHASE 4: SUBMISSION (Sequential)
+Submit only verified solutions:
+- Submit HIGH confidence solutions first
+- Submit MEDIUM confidence solutions if time-constrained
+- Never submit LOW confidence solutions
+```
+
+### Worker Coordination Rules
+
+```
+1. ANALYSTS RUN FIRST
+   - No solver starts without an analyst report
+   - Analysts have 2 minutes per challenge
+   - If analyst is stuck, skip to next challenge
+
+2. SOLVERS FOLLOW ANALYSTS
+   - Solvers MUST read the analyst's report before solving
+   - Solvers MUST avoid traps identified by analysts
+   - Solvers MUST document confidence level
+
+3. VERIFIERS RUN BEFORE SUBMISSION
+   - No flag is submitted without verification
+   - Verifiers have 30 seconds per flag
+   - If verifier says NO, do not submit
+
+4. COMMUNICATION PROTOCOL
+   - Analysts output to: /ctf/analysis/[challenge_name].json
+   - Solvers read from: /ctf/analysis/[challenge_name].json
+   - Solvers output to: /ctf/solutions/[challenge_name].json
+   - Verifiers read from: /ctf/solutions/[challenge_name].json
+   - Verifiers output to: /ctf/verified/[challenge_name].json
+```
+
+### Swarm Labels for CTF
+
+```
+LABELING CONVENTION:
+ctf-analyst-[category]-[challenge_name]
+ctf-solver-[category]-[challenge_name]
+ctf-verifier-[category]-[challenge_name]
+
+EXAMPLES:
+ctf-analyst-web-login-bypass
+ctf-solver-crypto-rsa-small-e
+ctf-verifier-pwn-buffer-overflow
+```
+
+### CTF-Specific Parallel Decomposition
+
+```
+GOOD PARALLEL DECOMPOSITION FOR CTF:
+
+1. TRIAGE ALL CHALLENGES (1 worker per challenge)
+   - Each worker downloads files
+   - Each worker runs quick-win scan
+   - Each worker categorizes challenge
+   - Output: Challenge list with categories
+
+2. ANALYZE ALL CHALLENGES (1 worker per challenge)
+   - Each worker performs meta-analysis
+   - Each worker generates hypotheses
+   - Each worker rates trap probability
+   - Output: Analysis reports
+
+3. SOLVE BY CATEGORY (1 worker per category)
+   - Each worker solves all challenges in their category
+   - Each worker uses category-specific skills
+   - Each worker documents confidence
+   - Output: Solution attempts
+
+4. VERIFY ALL SOLUTIONS (1 worker per solution)
+   - Each worker verifies one solution
+   - Each worker checks format and honeypots
+   - Each worker validates logic
+   - Output: Go/no-go decisions
+
+5. SUBMIT VERIFIED SOLUTIONS (1 worker, sequential)
+   - Worker submits only verified solutions
+   - Worker submits HIGH confidence first
+   - Worker tracks submission status
+```
+
+### CTF Swarm Efficiency Rules
+
+```
+1. MINIMIZE WORKER COUNT
+   - Don't spawn more workers than challenges
+   - Reuse workers for similar challenges
+   - Kill workers that are stuck
+
+2. MAXIMIZE PARALLELISM
+   - Run all analyses in parallel
+   - Run all solves in parallel (by category)
+   - Run all verifications in parallel
+
+3. SHARE CONTEXT
+   - Pass analyst reports to solvers
+   - Pass solution attempts to verifiers
+   - Pass verification results to submitter
+
+4. TIME MANAGEMENT
+   - Analysts: 2 minutes max per challenge
+   - Solvers: 10 minutes max per challenge
+   - Verifiers: 30 seconds max per solution
+   - Submitter: 5 seconds max per submission
+
+5. FAILURE RECOVERY
+   - If analyst fails, skip challenge
+   - If solver fails, try alternative hypothesis
+   - If verifier rejects, re-solve with different approach
+   - If submission fails, move to next solution
+```

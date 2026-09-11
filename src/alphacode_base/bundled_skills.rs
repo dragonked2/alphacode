@@ -322,17 +322,23 @@ pub(super) const BUNDLED_SKILLS: &[BundledSkill] = &[
                 "toolkit",
                 include_str!("bundled_skills/ctf/ctf/toolkit/SKILL.md"),
             ),
-            (
-                "dfir",
-                include_str!("bundled_skills/ctf/ctf/dfir/SKILL.md"),
-            ),
+            ("dfir", include_str!("bundled_skills/ctf/ctf/dfir/SKILL.md")),
             (
                 "malware-analysis",
                 include_str!("bundled_skills/ctf/ctf/malware-analysis/SKILL.md"),
             ),
+            ("siem", include_str!("bundled_skills/ctf/ctf/siem/SKILL.md")),
             (
-                "siem",
-                include_str!("bundled_skills/ctf/ctf/siem/SKILL.md"),
+                "advanced-reasoning",
+                include_str!("bundled_skills/ctf/ctf/advanced-reasoning/SKILL.md"),
+            ),
+            (
+                "adversarial-thinking",
+                include_str!("bundled_skills/ctf/ctf/adversarial-thinking/SKILL.md"),
+            ),
+            (
+                "solution-verifier",
+                include_str!("bundled_skills/ctf/ctf/solution-verifier/SKILL.md"),
             ),
         ],
     },

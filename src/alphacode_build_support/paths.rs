@@ -394,7 +394,7 @@ pub fn launcher_dir() -> Result<PathBuf> {
         if user_bin.exists() {
             return Ok(local_bin);
         }
-        return Ok(local_data_bin);
+        Ok(local_data_bin)
     }
     #[cfg(not(windows))]
     {

@@ -111,13 +111,13 @@ impl ScheduledQueue {
                 .then_with(|| a.scheduled_for.cmp(&b.scheduled_for))
         });
 
-        if !ready.is_empty() {
-            if let Err(err) = self.save() {
-                crate::logging::warn(&format!(
-                    "[ambient] failed to persist scheduled queue after pop_ready: {}",
-                    err
-                ));
-            }
+        if !ready.is_empty()
+            && let Err(err) = self.save()
+        {
+            crate::logging::warn(&format!(
+                "[ambient] failed to persist scheduled queue after pop_ready: {}",
+                err
+            ));
         }
 
         ready
@@ -142,13 +142,13 @@ impl ScheduledQueue {
 
         self.items = remaining;
 
-        if !ready_direct.is_empty() {
-            if let Err(err) = self.save() {
-                crate::logging::warn(&format!(
-                    "[ambient] failed to persist scheduled queue after take_ready_direct: {}",
-                    err
-                ));
-            }
+        if !ready_direct.is_empty()
+            && let Err(err) = self.save()
+        {
+            crate::logging::warn(&format!(
+                "[ambient] failed to persist scheduled queue after take_ready_direct: {}",
+                err
+            ));
         }
 
         ready_direct.sort_by(|a, b| {

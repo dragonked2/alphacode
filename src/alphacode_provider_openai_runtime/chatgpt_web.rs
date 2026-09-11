@@ -763,8 +763,12 @@ async fn evaluate(tab_id: u64, script: &str) -> Result<Value> {
 async fn bridge_command(action: &str, params: Value) -> Result<Value> {
     let binary = crate::alphacode_base::browser::browser_binary_path();
     if !binary.exists() {
+        crate::alphacode_base::browser::ensure_browser_setup().await?;
+    }
+    let binary = crate::alphacode_base::browser::browser_binary_path();
+    if !binary.exists() {
         anyhow::bail!(
-            "Browser bridge binary is not installed. Run `alphacode browser setup` once, then log in at chatgpt.com in Firefox"
+            "Browser bridge installation failed. Ensure network connectivity and try again."
         );
     }
 

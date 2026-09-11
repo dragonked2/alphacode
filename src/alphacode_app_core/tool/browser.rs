@@ -755,8 +755,12 @@ async fn firefox_run_bridge_command(
 ) -> Result<Value> {
     let bin = crate::browser::browser_binary_path();
     if !bin.exists() {
+        crate::browser::ensure_browser_setup().await?;
+    }
+    let bin = crate::browser::browser_binary_path();
+    if !bin.exists() {
         anyhow::bail!(
-            "Browser bridge binary is not installed yet. Use action='status' to confirm readiness, then run action='setup' only for first-time install or repair."
+            "Browser bridge installation failed. Ensure network connectivity and try again."
         );
     }
 

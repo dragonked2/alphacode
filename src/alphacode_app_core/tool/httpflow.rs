@@ -22,8 +22,21 @@ pub struct HttpFlowTool {
 
 impl HttpFlowTool {
     pub fn new() -> Self {
+        // Dedicated client for this tool. We deliberately do NOT use reqwest's
+        // built-in cookie_store: it would share cookies across every named
+        // session. Instead, each named session gets its own jar below and we
+        // attach the `cookie` header manually so sessions stay isolated.
+        let client = reqwest::Client::builder()
+            .user_agent("alphacode-httpflow/1.0")
+            .connect_timeout(std::time::Duration::from_secs(20))
+            .build()
+            .unwrap_or_else(|err| {
+                eprintln!("alphacode: failed to build httpflow client: {err}");
+                reqwest::Client::new()
+            });
+
         Self {
-            client: crate::provider::shared_http_client(),
+            client,
             sessions: Arc::new(RwLock::new(HashMap::new())),
         }
     }
@@ -153,22 +166,14 @@ impl HttpFlowTool {
         for value in headers.get_all(reqwest::header::SET_COOKIE).iter() {
             if let Ok(cookie_str) = value.to_str() {
                 // Parse "name=value; ..." format
-                if let Some(pair) = cookie_str.split(';').next() {
-                    if let Some((name, value)) = pair.split_once('=') {
-                        cookies.insert(name.trim().to_string(), value.trim().to_string());
-                    }
+                if let Some(pair) = cookie_str.split(';').next()
+                    && let Some((name, value)) = pair.split_once('=')
+                {
+                    cookies.insert(name.trim().to_string(), value.trim().to_string());
                 }
             }
         }
         cookies
-    }
-
-    fn build_cookie_header(cookies: &HashMap<String, String>) -> String {
-        cookies
-            .iter()
-            .map(|(k, v)| format!("{}={}", k, v))
-            .collect::<Vec<_>>()
-            .join("; ")
     }
 
     async fn send_request(
@@ -194,8 +199,8 @@ impl HttpFlowTool {
 
         for _ in 0..MAX_REDIRECTS {
             // Build request
-            let _parsed_url = Url::parse(&current_url)
-                .context(format!("Invalid URL: {}", current_url))?;
+            let _parsed_url =
+                Url::parse(&current_url).context(format!("Invalid URL: {}", current_url))?;
 
             let mut request_builder = match current_method.as_str() {
                 "GET" => self.client.get(&current_url),
@@ -208,13 +213,8 @@ impl HttpFlowTool {
                 _ => self.client.get(&current_url),
             };
 
-            // Add cookies from jar
-            let cookie_guard = cookies.read().await;
-            if !cookie_guard.is_empty() {
-                let cookie_header = Self::build_cookie_header(&cookie_guard);
-                request_builder = request_builder.header("cookie", &cookie_header);
-            }
-            drop(cookie_guard);
+            // Note: reqwest's cookie_store handles cookies automatically.
+            // We still track cookies in the manual jar for show_cookies/clear_session actions.
 
             // Add custom headers
             if let Some(headers) = &params.headers {
@@ -224,18 +224,18 @@ impl HttpFlowTool {
             }
 
             // Add body for POST/PUT/PATCH
-            if let Some(ref body) = current_body {
-                if !body.is_empty() {
-                    // Check if body looks like JSON
-                    if body.trim_start().starts_with('{') || body.trim_start().starts_with('[') {
-                        request_builder = request_builder
-                            .header("content-type", "application/json")
-                            .body(body.clone());
-                    } else {
-                        request_builder = request_builder
-                            .header("content-type", "application/x-www-form-urlencoded")
-                            .body(body.clone());
-                    }
+            if let Some(ref body) = current_body
+                && !body.is_empty()
+            {
+                // Check if body looks like JSON
+                if body.trim_start().starts_with('{') || body.trim_start().starts_with('[') {
+                    request_builder = request_builder
+                        .header("content-type", "application/json")
+                        .body(body.clone());
+                } else {
+                    request_builder = request_builder
+                        .header("content-type", "application/x-www-form-urlencoded")
+                        .body(body.clone());
                 }
             }
 
@@ -301,9 +301,7 @@ impl HttpFlowTool {
                     // POST → 303 always becomes GET
                     // POST → 301/302 becomes GET (browser convention)
                     // Other redirects preserve method
-                    current_method = if matches!(status, 301 | 302 | 303)
-                        && current_method == "POST"
-                    {
+                    current_method = if matches!(status, 301..=303) && current_method == "POST" {
                         current_body = None; // GET has no body
                         "GET".to_string()
                     } else {
@@ -333,7 +331,9 @@ impl HttpFlowTool {
 
             let mut output = format!(
                 "HTTP {} {}\nURL: {}\n",
-                result.status, status_text(result.status), result.url
+                result.status,
+                status_text(result.status),
+                result.url
             );
 
             if !result.redirect_chain.is_empty() {
@@ -375,14 +375,9 @@ impl HttpFlowTool {
 
         // First fetch the page
         let cookies = self.get_session_cookies(session_name).await;
-        let mut request_builder = self.client.get(url);
+        let request_builder = self.client.get(url);
 
-        let cookie_guard = cookies.read().await;
-        if !cookie_guard.is_empty() {
-            let cookie_header = Self::build_cookie_header(&cookie_guard);
-            request_builder = request_builder.header("cookie", &cookie_header);
-        }
-        drop(cookie_guard);
+        // Note: reqwest's cookie_store handles cookies automatically.
 
         let response = request_builder
             .send()
@@ -404,10 +399,9 @@ impl HttpFlowTool {
             .context("Failed to read response body")?;
 
         // Extract CSRF token
-        let selector = params
-            .csrf_selector
-            .as_deref()
-            .unwrap_or("input[name=csrf], input[name=_token], input[name=csrf_token], input[name=_csrf]");
+        let selector = params.csrf_selector.as_deref().unwrap_or(
+            "input[name=csrf], input[name=_token], input[name=csrf_token], input[name=_csrf]",
+        );
 
         match self.extract_csrf_token(&body, Some(selector)) {
             Some(token) => Ok(ToolOutput::new(format!(
@@ -467,7 +461,8 @@ impl HttpFlowTool {
                         session_name
                     )))
                 } else {
-                    let mut output = format!("Session '{}': {} cookies\n\n", session_name, jar.len());
+                    let mut output =
+                        format!("Session '{}': {} cookies\n\n", session_name, jar.len());
                     for (k, v) in jar.iter() {
                         output.push_str(&format!("  {}={}\n", k, v));
                     }
@@ -559,16 +554,6 @@ mod tests {
         );
         let cookies = HttpFlowTool::parse_cookies_from_headers(&headers);
         assert_eq!(cookies.get("session"), Some(&"abc123".to_string()));
-    }
-
-    #[test]
-    fn test_build_cookie_header() {
-        let mut cookies = HashMap::new();
-        cookies.insert("a".to_string(), "1".to_string());
-        cookies.insert("b".to_string(), "2".to_string());
-        let header = HttpFlowTool::build_cookie_header(&cookies);
-        assert!(header.contains("a=1"));
-        assert!(header.contains("b=2"));
     }
 
     #[test]

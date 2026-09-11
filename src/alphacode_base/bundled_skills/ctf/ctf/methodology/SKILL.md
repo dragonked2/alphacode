@@ -454,3 +454,129 @@ def estimate_difficulty(challenge):
     
     return difficulty_signals
 ```
+
+---
+
+# Multi-Layer Challenge Decomposition
+
+## Layer Identification Framework
+
+```
+FOR COMPLEX CHALLENGES, decompose into layers:
+
+LAYER 0: META-LAYER
+- What is the challenge ABOUT (not what it asks)?
+- Is the challenge testing knowledge, skill, or awareness?
+- What domain knowledge does the author assume?
+
+LAYER 1: SURFACE LAYER
+- What is the obvious entry point?
+- What does the description explicitly ask for?
+- What tools would a novice use?
+
+LAYER 2: HIDDEN LAYER
+- What is NOT mentioned in the description?
+- What would be visible if you looked at the data differently?
+- What encoding/encryption is applied?
+
+LAYER 3: TRAP LAYER
+- What is the author trying to make you miss?
+- What is the most likely mistake?
+- What would happen if you submitted the first result?
+
+LAYER 4: META-TRAP LAYER
+- Is the author expecting you to look for traps?
+- Is the obvious trap actually the solution?
+- Is there a trap about the trap? (Turtles all the way down)
+```
+
+## Multi-Path Solving Strategy
+
+```
+WHEN STUCK, apply multi-path strategy:
+
+PATH A: Direct approach (what the challenge asks)
+PATH B: Inverse approach (what the challenge prevents)
+PATH C: Lateral approach (completely different angle)
+PATH D: Meta approach (analyze the challenge structure itself)
+PATH E: Social approach (what would the author think is clever?)
+
+Execute paths in order, but switch if:
+- Path has no progress after 5 minutes
+- Path produces results that seem "too easy"
+- Path contradicts information from another path
+- Path leads to a trap (honeypot flag, misdirection)
+```
+
+## Confidence-Based Action Matrix
+
+```
+CONFIDENCE → ACTION:
+
+HIGH confidence + HIGH points → Submit immediately
+HIGH confidence + LOW points → Submit, move to higher value
+MEDIUM confidence + HIGH points → Verify once, then submit
+MEDIUM confidence + LOW points → Submit if time-constrained
+LOW confidence + HIGH points → Reconsider approach, do NOT submit
+LOW confidence + LOW points → Abandon or buy hint
+VERY LOW confidence → Rethink entire approach
+
+TIME-BASED OVERRIDE:
+- <5 min remaining in CTF → Submit MEDIUM+ confidence
+- <1 min remaining → Submit LOW+ confidence
+- Plenty of time → Only submit HIGH confidence
+```
+
+## Challenge Author Profiling
+
+```
+PROFILE the challenge author:
+
+SKILL LEVEL:
+- Junior: Simple vulnerabilities, obvious patterns, few traps
+- Intermediate: Known vulnerabilities with 1-2 traps
+- Advanced: Custom vulnerabilities, multiple traps, misdirection
+- Expert: Novel techniques, meta-traps, adversarial descriptions
+
+TEACHING STYLE:
+- Teacher: Wants you to learn, hints are genuine
+- Adversarial: Wants to prevent you from solving, everything is a trap
+- Trickster: Mix of teaching and trapping, requires careful reading
+- Minimalist: Very little description, challenge speaks for itself
+
+COMMON AUTHOR TRAPS BY LEVEL:
+├── Junior: Flag in strings, default creds, obvious SQLi
+├── Intermediate: 1 encoding layer, basic misdirection, honeypot flags
+├── Advanced: Multi-layer encoding, description traps, meta-challenges
+└── Expert: Adversarial descriptions, time-based traps, meta-meta-traps
+```
+
+## Counter-Adversarial Strategy
+
+```
+AGAINST ADVERSARIAL AUTHORS:
+
+1. ASSUME EVERYTHING IS A TRAP
+   - Description text: trap
+   - "Helpful" hints: trap
+   - Obvious solution: trap
+   - Easy find: trap
+
+2. VERIFY EVERYTHING
+   - Decode → re-encode → verify
+   - Find flag → validate format → cross-check
+   - Solve → reproduce → document
+
+3. USE RED TEAM THINKING
+   - "If I were the author, where would I hide the real flag?"
+   - "What would I punish a lazy solver for?"
+   - "What's the one thing a novice would never check?"
+
+4. APPLY PARANOID CHECKLIST
+   □ Did I read EVERY word of the description?
+   □ Did I check for hidden characters in the description?
+   □ Did I consider that the obvious answer is wrong?
+   □ Did I look for what's MISSING (not just what's present)?
+   □ Did I verify the flag format matches exactly?
+   □ Did I consider that finding the flag too easily is a red flag?
+```
