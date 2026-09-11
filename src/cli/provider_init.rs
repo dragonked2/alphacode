@@ -62,6 +62,8 @@ pub enum ProviderChoice {
     Ai302,
     Baseten,
     Cortecs,
+    #[value(alias = "token-harbor", alias = "thk")]
+    Tokenharbor,
     #[value(alias = "cgc", alias = "comtegra-gpu-cloud")]
     Comtegra,
     Deepseek,
@@ -179,6 +181,7 @@ impl ProviderChoice {
             Self::Ai302 => "302ai",
             Self::Baseten => "baseten",
             Self::Cortecs => "cortecs",
+            Self::Tokenharbor => "tokenharbor",
             Self::Comtegra => "comtegra",
             Self::Deepseek => "deepseek",
             Self::Fpt => "fpt",
@@ -287,6 +290,10 @@ const PROVIDER_CHOICE_LOGIN_PROVIDERS: &[(ProviderChoice, LoginProviderDescripto
     (
         ProviderChoice::Cortecs,
         crate::provider_catalog::CORTECS_LOGIN_PROVIDER,
+    ),
+    (
+        ProviderChoice::Tokenharbor,
+        crate::provider_catalog::TOKENHARBOR_LOGIN_PROVIDER,
     ),
     (
         ProviderChoice::Comtegra,
@@ -1592,6 +1599,7 @@ async fn init_provider_with_options(
         | ProviderChoice::Ai302
         | ProviderChoice::Baseten
         | ProviderChoice::Cortecs
+        | ProviderChoice::Tokenharbor
         | ProviderChoice::Comtegra
         | ProviderChoice::Deepseek
         | ProviderChoice::Fpt

@@ -80,6 +80,17 @@ pub const CORTECS_PROFILE: OpenAiCompatibleProfile = OpenAiCompatibleProfile {
     requires_api_key: true,
 };
 
+pub const TOKENHARBOR_PROFILE: OpenAiCompatibleProfile = OpenAiCompatibleProfile {
+    id: "tokenharbor",
+    display_name: "Token Harbor",
+    api_base: "https://tokenharbor.ai/v1",
+    api_key_env: "TOKENHARBOR_API_KEY",
+    env_file: "tokenharbor.env",
+    setup_url: "https://tokenharbor.ai/docs/getting-started/quickstart",
+    default_model: Some("tokenharbor/qwen3-max"),
+    requires_api_key: true,
+};
+
 // OpenRouter also has a dedicated provider implementation elsewhere, but it
 // speaks the standard OpenAI-compatible /api/v1 endpoint, so it can be driven
 // by `provider-doctor` / `provider-test-coverage` like any other
@@ -578,7 +589,7 @@ pub const UNOROUTER_PROFILE: OpenAiCompatibleProfile = OpenAiCompatibleProfile {
     requires_api_key: true,
 };
 
-pub(crate) const OPENAI_COMPAT_PROFILES: [OpenAiCompatibleProfile; 45] = [
+pub(crate) const OPENAI_COMPAT_PROFILES: [OpenAiCompatibleProfile; 46] = [
     GMICLOUD_PROFILE,
     OPENCODE_PROFILE,
     OPENCODE_GO_PROFILE,
@@ -591,6 +602,7 @@ pub(crate) const OPENAI_COMPAT_PROFILES: [OpenAiCompatibleProfile; 45] = [
     AI302_PROFILE,
     BASETEN_PROFILE,
     CORTECS_PROFILE,
+    TOKENHARBOR_PROFILE,
     OPENROUTER_OPENAI_COMPAT_PROFILE,
     ANTHROPIC_OPENAI_COMPAT_PROFILE,
     OPENAI_NATIVE_OPENAI_COMPAT_PROFILE,
@@ -958,6 +970,19 @@ pub const CORTECS_LOGIN_PROVIDER: LoginProviderDescriptor = LoginProviderDescrip
     recommended: false,
     target: LoginProviderTarget::OpenAiCompatible(CORTECS_PROFILE),
     order: LoginProviderSurfaceOrder::new(Some(20), Some(20), Some(20), Some(20), Some(20)),
+};
+
+pub const TOKENHARBOR_LOGIN_PROVIDER: LoginProviderDescriptor = LoginProviderDescriptor {
+    id: "tokenharbor",
+    display_name: "Token Harbor",
+    auth_kind: LoginProviderAuthKind::ApiKey,
+    auth_state_key: LoginProviderAuthStateKey::OpenRouterLike,
+    auth_status_method: "API key",
+    aliases: &["token-harbor", "thk"],
+    menu_detail: "API key, one key for all models",
+    recommended: false,
+    target: LoginProviderTarget::OpenAiCompatible(TOKENHARBOR_PROFILE),
+    order: LoginProviderSurfaceOrder::new(Some(21), Some(21), Some(21), Some(21), Some(21)),
 };
 
 pub const DEEPSEEK_LOGIN_PROVIDER: LoginProviderDescriptor = LoginProviderDescriptor {
@@ -1411,7 +1436,7 @@ pub const GOOGLE_LOGIN_PROVIDER: LoginProviderDescriptor = LoginProviderDescript
     order: LoginProviderSurfaceOrder::new(Some(13), None, None, None, None),
 };
 
-pub(crate) const LOGIN_PROVIDERS: [LoginProviderDescriptor; 57] = [
+pub(crate) const LOGIN_PROVIDERS: [LoginProviderDescriptor; 58] = [
     AUTO_IMPORT_LOGIN_PROVIDER,
     CLAUDE_LOGIN_PROVIDER,
     EXPLABS_LOGIN_PROVIDER,
@@ -1435,6 +1460,7 @@ pub(crate) const LOGIN_PROVIDERS: [LoginProviderDescriptor; 57] = [
     AI302_LOGIN_PROVIDER,
     BASETEN_LOGIN_PROVIDER,
     CORTECS_LOGIN_PROVIDER,
+    TOKENHARBOR_LOGIN_PROVIDER,
     DEEPSEEK_LOGIN_PROVIDER,
     COMTEGRA_LOGIN_PROVIDER,
     FPT_LOGIN_PROVIDER,
