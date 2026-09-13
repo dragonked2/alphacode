@@ -224,7 +224,7 @@ fn render_assistant_segments(
 
 /// Render the inner markdown of a ```plan block as a bordered plan card.
 fn render_plan_card(body: &str, width: u16) -> Vec<Line<'static>> {
-    let border_style = Style::default().fg(rgb(158, 135, 255));
+    let border_style = Style::default().fg(rgb(165, 140, 252));
     let max_box_width = (width.saturating_sub(4) as usize).clamp(28, 100);
     let inner_width = max_box_width.saturating_sub(4).max(8);
 
@@ -266,19 +266,19 @@ fn plan_card_title(body: &str) -> String {
         {
             let heading = heading.trim();
             if !heading.is_empty() {
-                return format!("⛭ {}", heading);
+                return format!("📋 {}", heading);
             }
         }
         if !trimmed.is_empty() {
             break;
         }
     }
-    "⛭ Plan".to_string()
+    "📋 Plan".to_string()
 }
 
 /// Remove the first heading line when it was promoted to the card title.
 fn plan_card_body_without_title(body: &str, title: &str) -> String {
-    if title == "⛭ Plan" {
+    if title == "📋 Plan" {
         return body.to_string();
     }
     let mut removed = false;

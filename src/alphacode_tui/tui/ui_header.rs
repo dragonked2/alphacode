@@ -726,15 +726,15 @@ fn push_if_fits<'a>(
 // ---------------------------------------------------------------------------
 
 /// Theme hue cycle shared by the gradient wordmark and the brand word.
-/// Vibrant, modern gradient that reads as premium.
+/// Sophisticated gradient with desaturated, high-legibility tones.
 fn brand_gradient_colors() -> [Color; 6] {
     [
-        rgb(108, 215, 255), // cyan
-        rgb(118, 198, 255), // blue
-        rgb(205, 168, 255), // purple
-        rgb(255, 148, 205), // pink
-        rgb(108, 235, 158), // green
-        rgb(255, 195, 88),  // amber
+        rgb(95, 218, 228),  // teal
+        rgb(105, 190, 255), // blue
+        rgb(185, 155, 255), // purple
+        rgb(240, 140, 195), // rose
+        rgb(110, 225, 155), // green
+        rgb(245, 195, 95),  // amber
     ]
 }
 
@@ -921,7 +921,6 @@ fn build_brand_line(app: &dyn TuiState, align: Alignment, show_wordmark: bool) -
 fn build_gradient_separator(width: usize) -> Line<'static> {
     let gradient = brand_gradient_colors();
     let total_chars = width.min(120);
-    // Pre-compute blended colors for all positions
     let mut colors: Vec<Color> = Vec::with_capacity(total_chars);
     for i in 0..total_chars {
         let hue_t = i as f32 / total_chars as f32;
@@ -932,15 +931,12 @@ fn build_gradient_separator(width: usize) -> Line<'static> {
         let c1 = gradient[(idx + 1).min(gradient.len() - 1)];
         colors.push(blend_colors(c0, c1, frac));
     }
-    // Group adjacent same-color cells into batched spans for fewer allocations
-    let chars = ['─', '┄', '┈', '╌'];
-    let mut spans: Vec<Span<'static>> = Vec::with_capacity(total_chars / 4 + 1);
+    let mut spans: Vec<Span<'static>> = Vec::with_capacity(total_chars / 6 + 1);
     let mut run_start = 0;
     for i in 1..=total_chars {
         if i == total_chars || colors[i] != colors[i - 1] {
             let n = i - run_start;
-            let ch = chars[run_start % chars.len()];
-            let text: String = std::iter::repeat_n(ch, n).collect();
+            let text: String = std::iter::repeat_n('━', n).collect();
             spans.push(Span::styled(
                 text,
                 Style::default()
@@ -1013,15 +1009,15 @@ fn build_model_line(
             &mut len,
             fit_width,
             format!("{} \u{00b7} ", provider_label),
-            Style::default().fg(rgb(88, 95, 118)),
+            Style::default().fg(rgb(78, 88, 115)),
         );
     }
 
     // Subtle connection status dot before the model name
     let status_dot_color = if app.is_processing() {
-        rgb(255, 204, 128) // amber for active
+        rgb(255, 200, 115) // warm amber for active
     } else {
-        rgb(134, 233, 180) // green for ready
+        rgb(100, 225, 155) // emerald for ready
     };
     push_if_fits(
         &mut spans,
@@ -1033,10 +1029,8 @@ fn build_model_line(
 
     spans.push(Span::styled(
         nice_model.to_string(),
-        // Match the info widget's model accent (pink, bold) instead of plain
-        // white so the model reads as a distinct, styled element.
         Style::default()
-            .fg(rgb(255, 148, 205))
+            .fg(rgb(90, 215, 230))
             .add_modifier(Modifier::BOLD),
     ));
 
@@ -1046,7 +1040,7 @@ fn build_model_line(
             &mut len,
             fit_width,
             format!(" \u{2192} {}", upstream),
-            Style::default().fg(rgb(88, 95, 118)),
+            Style::default().fg(rgb(78, 88, 115)),
         );
     }
     if !model_is_placeholder {
@@ -1055,7 +1049,7 @@ fn build_model_line(
             &mut len,
             fit_width,
             " \u{00b7} ".to_string(),
-            Style::default().fg(rgb(60, 65, 80)),
+            Style::default().fg(rgb(52, 58, 75)),
         );
         push_if_fits(
             &mut spans,
@@ -1063,7 +1057,7 @@ fn build_model_line(
             fit_width,
             "/model to switch".to_string(),
             Style::default()
-                .fg(rgb(70, 78, 100))
+                .fg(rgb(65, 72, 95))
                 .add_modifier(Modifier::ITALIC),
         );
     }
@@ -1134,7 +1128,7 @@ fn build_mcp_line(app: &dyn TuiState, w: usize, align: Alignment) -> Option<Line
         text = format!("mcp: {} servers", mcps.len());
     }
 
-    Some(Line::from(Span::styled(text, Style::default().fg(rgb(88, 95, 118)))).alignment(align))
+    Some(Line::from(Span::styled(text, Style::default().fg(rgb(78, 88, 115)))).alignment(align))
 }
 
 fn build_working_dir_line(app: &dyn TuiState, w: usize, align: Alignment) -> Option<Line<'static>> {
@@ -1147,8 +1141,8 @@ fn build_working_dir_line(app: &dyn TuiState, w: usize, align: Alignment) -> Opt
             let dir_part = format!("\u{250c} {}", text);
             let branch_part = format!("  \u{2442} {}", branch);
             let spans = vec![
-                Span::styled(dir_part, Style::default().fg(rgb(128, 138, 158))),
-                Span::styled(branch_part, Style::default().fg(rgb(108, 198, 118))),
+                Span::styled(dir_part, Style::default().fg(rgb(108, 120, 150))),
+                Span::styled(branch_part, Style::default().fg(rgb(98, 210, 130))),
             ];
             // Ensure total width fits
             let total_width: usize = spans.iter().map(|s| s.content.len()).sum();
@@ -1160,7 +1154,7 @@ fn build_working_dir_line(app: &dyn TuiState, w: usize, align: Alignment) -> Opt
     Some(
         Line::from(Span::styled(
             format!("\u{250c} {}", text),
-            Style::default().fg(rgb(128, 138, 158)),
+            Style::default().fg(rgb(108, 120, 150)),
         ))
         .alignment(align),
     )

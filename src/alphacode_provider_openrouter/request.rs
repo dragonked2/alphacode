@@ -211,7 +211,37 @@ pub fn build_chat_messages(
                 return Some(serde_json::json!(text));
             }
         }
-        Some(Value::Array(parts))
+        // Validate content parts: only allow types the Chat Completions API accepts.
+        // Filter out any unexpected types to prevent 400 errors from strict providers.
+        let valid_parts: Vec<Value> = parts
+            .into_iter()
+            .filter(|part| {
+                match part.get("type").and_then(|v| v.as_str()) {
+                    Some("text" | "image_url") => true,
+                    Some("cache_control") => true,
+                    _ => {
+                        // Log and drop invalid content parts rather than sending them
+                        // to the API where they'd cause a 400 deserialization error.
+                        crate::alphacode_logging::warn(&format!(
+                            "[openrouter] Dropped invalid content part type: {:?}",
+                            part.get("type")
+                        ));
+                        false
+                    }
+                }
+            })
+            .collect();
+        if valid_parts.is_empty() {
+            return None;
+        }
+        if valid_parts.len() == 1 {
+            let part = &valid_parts[0];
+            let has_cache = part.get("cache_control").is_some();
+            if !has_cache && let Some(text) = part.get("text").and_then(|v| v.as_str()) {
+                return Some(serde_json::json!(text));
+            }
+        }
+        Some(Value::Array(valid_parts))
     };
 
     let mut tool_result_last_pos: HashMap<String, usize> = HashMap::new();

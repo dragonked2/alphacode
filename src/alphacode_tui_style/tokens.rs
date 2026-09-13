@@ -218,7 +218,7 @@ impl Frame {
     /// Zero for card/panel because the parent layout positions them.
     pub const fn outer_margin(self) -> u16 {
         match self {
-            Self::Modal => 2,
+            Self::Modal => 3,
             Self::Card => 0,
             Self::Panel => 0,
         }
@@ -273,8 +273,7 @@ pub enum Glyph {
 impl Glyph {
     pub const fn text(self) -> &'static str {
         match self {
-            // U+2500 box-drawing horizontal, repeated 30 times. Universally
-            // supported across the terminals we test.
+            // U+2501 box-drawing heavy horizontal, repeated 30 times.
             Self::SectionRule => "──────────────────────────────",
             // U+2022 bullet, two cells of leading space already in caller.
             Self::Bullet => "•",
@@ -332,7 +331,7 @@ mod tests {
         let modal = tokens_for(Frame::Modal);
         assert_eq!(modal.spacing, Spacing::Modal);
         assert_eq!(modal.radius, Radius::Card);
-        assert_eq!(modal.frame.outer_margin(), 2);
+        assert_eq!(modal.frame.outer_margin(), 3);
 
         let card = tokens_for(Frame::Card);
         assert_eq!(card.spacing, Spacing::Card);

@@ -16,7 +16,7 @@ use crate::alphacode_tui::tui::session_facts;
 use ratatui::{prelude::*, style::Modifier, widgets::Paragraph};
 
 fn shell_mode_color() -> Color {
-    rgb(118, 228, 168)
+    rgb(100, 225, 155)
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -66,22 +66,22 @@ pub(super) fn input_mode_badge(app: &dyn TuiState) -> Option<Span<'static>> {
         ComposerMode::ShellLocal => Some(Span::styled(
             " $ SHELL ",
             Style::default()
-                .fg(rgb(118, 228, 168))
-                .bg(rgb(28, 32, 48))
+                .fg(rgb(100, 225, 155))
+                .bg(rgb(20, 28, 44))
                 .add_modifier(Modifier::BOLD),
         )),
         ComposerMode::ShellRemote => Some(Span::styled(
             " $ REMOTE ",
             Style::default()
-                .fg(rgb(118, 228, 168))
-                .bg(rgb(28, 32, 48))
+                .fg(rgb(100, 225, 155))
+                .bg(rgb(20, 28, 44))
                 .add_modifier(Modifier::BOLD),
         )),
         ComposerMode::SlashCommand => Some(Span::styled(
             " / CMD ",
             Style::default()
-                .fg(rgb(215, 178, 255))
-                .bg(rgb(28, 32, 48))
+                .fg(rgb(185, 155, 255))
+                .bg(rgb(20, 28, 44))
                 .add_modifier(Modifier::BOLD),
         )),
         ComposerMode::Chat => None,
@@ -172,9 +172,9 @@ pub(super) fn draw_prompt_history_search_overlay(
     };
     const VISIBLE_LIMIT: usize = 8;
 
-    let accent = Style::default().fg(rgb(255, 218, 138));
-    let dim = Style::default().fg(rgb(118, 128, 148));
-    let normal = Style::default().fg(rgb(138, 210, 205));
+    let accent = Style::default().fg(rgb(248, 212, 135));
+    let dim = Style::default().fg(rgb(108, 120, 148));
+    let normal = Style::default().fg(rgb(128, 210, 200));
 
     let mut lines: Vec<Line<'static>> = Vec::new();
     lines.push(Line::from(vec![
@@ -281,7 +281,7 @@ fn command_suggestion_lines(
     let mut lines = Vec::new();
     if suggestions.len() == 1 {
         let (cmd, desc) = &suggestions[0];
-        let base = Style::default().fg(rgb(255, 213, 128));
+        let base = Style::default().fg(rgb(248, 210, 120));
         let mut spans = highlight(cmd, base);
         spans.push(Span::styled(format!("  {}", desc), base));
         lines.push(Line::from(spans));
@@ -302,14 +302,14 @@ fn command_suggestion_lines(
         for (i, (cmd, desc)) in limited.iter().enumerate() {
             let is_selected = i == selected_visible;
             let description_style = if is_selected {
-                Style::default().fg(rgb(255, 213, 128))
+                Style::default().fg(rgb(248, 210, 120))
             } else {
                 Style::default().fg(dim_color())
             };
             let command_style = if is_selected {
-                Style::default().fg(rgb(255, 213, 128))
+                Style::default().fg(rgb(248, 210, 120))
             } else {
-                Style::default().fg(rgb(128, 203, 196))
+                Style::default().fg(rgb(118, 200, 190))
             };
             let mut spans = highlight(cmd, command_style);
             spans.push(Span::styled(format!("  {}", desc), description_style));
@@ -430,13 +430,13 @@ pub(super) fn send_mode_reserved_width(app: &dyn TuiState) -> usize {
 pub(super) fn input_prompt(app: &dyn TuiState) -> (&'static str, Color) {
     let mode = composer_mode(app.input(), app.is_remote_mode());
     if mode.is_shell() {
-        ("$ ", rgb(118, 228, 168))
+        ("$ ", rgb(100, 225, 155))
     } else if app.is_processing() {
-        ("\u{2026} ", rgb(255, 215, 108))
+        ("\u{2026} ", rgb(245, 195, 95))
     } else if app.active_skill().is_some() {
-        ("\u{00bb} ", rgb(215, 178, 255))
+        ("\u{00bb} ", rgb(185, 155, 255))
     } else {
-        ("> ", rgb(138, 235, 225))
+        ("> ", rgb(90, 215, 230))
     }
 }
 
@@ -447,15 +447,15 @@ pub(super) fn input_prompt(app: &dyn TuiState) -> (&'static str, Color) {
 pub(super) fn input_mode_icon(app: &dyn TuiState) -> (&'static str, Color, &'static str) {
     let mode = composer_mode(app.input(), app.is_remote_mode());
     if mode.is_shell() {
-        ("$", rgb(118, 228, 168), "Shell mode")
+        ("$", rgb(100, 225, 155), "Shell mode")
     } else if app.is_processing() {
-        ("…", rgb(255, 215, 108), "Processing")
+        ("\u{2026}", rgb(245, 195, 95), "Processing")
     } else if app.active_skill().is_some() {
-        ("»", rgb(215, 178, 255), "Skill active")
+        ("\u{00bb}", rgb(185, 155, 255), "Skill active")
     } else if app.next_prompt_new_session_armed() {
-        ("↗", rgb(120, 200, 255), "New session")
+        ("↗", rgb(115, 185, 255), "New session")
     } else {
-        (">", rgb(138, 235, 225), "Chat")
+        (">", rgb(90, 215, 230), "Chat")
     }
 }
 
@@ -893,12 +893,12 @@ fn idle_session_stats_line(app: &dyn TuiState) -> Option<Line<'static>> {
         Span::styled(
             "⚡",
             Style::default()
-                .fg(rgb(130, 214, 220))
+                .fg(rgb(90, 215, 230))
                 .add_modifier(Modifier::BOLD),
         ),
         Span::styled(
             format!(" {}", text),
-            Style::default().fg(rgb(140, 150, 170)),
+            Style::default().fg(rgb(128, 140, 165)),
         ),
     ]))
 }
@@ -931,10 +931,10 @@ pub(super) fn draw_status(frame: &mut Frame, app: &dyn TuiState, area: Rect, pen
     let line = if let Some(build_progress) = crate::build::read_build_progress() {
         let spinner = super::activity_indicator(elapsed, 12.5);
         Line::from(vec![
-            Span::styled(spinner, Style::default().fg(rgb(255, 193, 7))),
+            Span::styled(spinner, Style::default().fg(rgb(248, 190, 7))),
             Span::styled(
                 format!(" {}", build_progress),
-                Style::default().fg(rgb(255, 193, 7)),
+                Style::default().fg(rgb(248, 190, 7)),
             ),
         ])
     } else if let Some(remaining) = app.rate_limit_remaining() {
@@ -952,13 +952,13 @@ pub(super) fn draw_status(frame: &mut Frame, app: &dyn TuiState, area: Rect, pen
             format!("{}s", secs)
         };
         Line::from(vec![
-            Span::styled(spinner, Style::default().fg(rgb(255, 193, 7))),
+            Span::styled(spinner, Style::default().fg(rgb(248, 190, 7))),
             Span::styled(
                 format!(
                     " Rate limited. Auto-retry in {}...{}",
                     time_str, queued_suffix
                 ),
-                Style::default().fg(rgb(255, 193, 7)),
+                Style::default().fg(rgb(248, 190, 7)),
             ),
         ])
     } else if app.is_processing() {
@@ -991,15 +991,15 @@ pub(super) fn draw_status(frame: &mut Frame, app: &dyn TuiState, area: Rect, pen
                     .connection_phase_elapsed()
                     .map_or(elapsed, |d| d.as_secs_f32());
                 let label_color = match phase {
-                    crate::message::ConnectionPhase::Retrying { .. } => rgb(255, 193, 7),
+                    crate::message::ConnectionPhase::Retrying { .. } => rgb(248, 190, 7),
                     crate::message::ConnectionPhase::Authenticating if phase_elapsed > 10.0 => {
-                        rgb(255, 193, 7)
+                        rgb(248, 190, 7)
                     }
                     crate::message::ConnectionPhase::Connecting if phase_elapsed > 10.0 => {
-                        rgb(255, 193, 7)
+                        rgb(248, 190, 7)
                     }
                     crate::message::ConnectionPhase::SendingRequest if phase_elapsed > 10.0 => {
-                        rgb(255, 193, 7)
+                        rgb(248, 190, 7)
                     }
                     _ => dim_color(),
                 };
@@ -1060,14 +1060,14 @@ pub(super) fn draw_status(frame: &mut Frame, app: &dyn TuiState, area: Rect, pen
             }
             ProcessingStatus::WaitingForNetwork { listener } => {
                 let mut spans = vec![
-                    Span::styled("↻ ", Style::default().fg(rgb(255, 193, 7))),
+                    Span::styled("↻ ", Style::default().fg(rgb(248, 190, 7))),
                     Span::styled(
                         format!(
                             "network disconnected, waiting to retry · {} · {}",
                             listener,
                             format_elapsed(elapsed)
                         ),
-                        Style::default().fg(rgb(255, 193, 7)),
+                        Style::default().fg(rgb(248, 190, 7)),
                     ),
                 ];
                 push_queued_suffix(&mut spans, &queued_suffix);
@@ -1177,7 +1177,7 @@ pub(super) fn draw_status(frame: &mut Frame, app: &dyn TuiState, area: Rect, pen
                 if let Some(notice) = experimental_notice {
                     spans.push(Span::styled(
                         format!(" · ⚠ {}", notice),
-                        Style::default().fg(rgb(255, 193, 7)).bold(),
+                        Style::default().fg(rgb(248, 190, 7)).bold(),
                     ));
                 }
 
@@ -1209,7 +1209,7 @@ pub(super) fn draw_status(frame: &mut Frame, app: &dyn TuiState, area: Rect, pen
                     };
                     spans.push(Span::styled(
                         format!(" · ⚠ {} cache miss", miss_str),
-                        Style::default().fg(rgb(255, 193, 7)),
+                        Style::default().fg(rgb(248, 190, 7)),
                     ));
                 }
 
@@ -1241,9 +1241,9 @@ pub(super) fn draw_status(frame: &mut Frame, app: &dyn TuiState, area: Rect, pen
                 .unwrap_or(1_000_000);
             let warning_color =
                 if total >= severe_token_threshold || app.session_compaction_count() >= 3 {
-                    rgb(255, 100, 100)
+                    rgb(255, 100, 110)
                 } else {
-                    rgb(255, 193, 7)
+                    rgb(248, 190, 7)
                 };
             Line::from(vec![
                 Span::styled("⚠ ", Style::default().fg(warning_color)),
@@ -1920,12 +1920,12 @@ pub(super) fn build_notification_spans(app: &dyn TuiState) -> Vec<Span<'static>>
         push_sep(&mut spans);
         spans.push(Span::styled(
             flicker_notice.summary,
-            Style::default().fg(rgb(255, 193, 7)),
+            Style::default().fg(rgb(248, 190, 7)),
         ));
         push_sep(&mut spans);
         spans.push(Span::styled(
             flicker_notice.hint,
-            Style::default().fg(rgb(140, 180, 255)),
+            Style::default().fg(rgb(115, 180, 252)),
         ));
         spans.push(Span::raw(" "));
         if let Some(success) = copy_badge_ui.feedback_for_key(key, copy_badge_now) {
@@ -2043,7 +2043,7 @@ pub(super) fn build_notification_spans(app: &dyn TuiState) -> Vec<Span<'static>>
                 push_sep(&mut spans);
                 spans.push(Span::styled(
                     format!("⏳ cache {}{}", time_str, tokens_str),
-                    Style::default().fg(rgb(255, 193, 7)),
+                    Style::default().fg(rgb(248, 190, 7)),
                 ));
             }
         }
@@ -2053,7 +2053,7 @@ pub(super) fn build_notification_spans(app: &dyn TuiState) -> Vec<Span<'static>>
         push_sep(&mut spans);
         spans.push(Span::styled(
             "📋 stash",
-            Style::default().fg(rgb(255, 193, 7)),
+            Style::default().fg(rgb(248, 190, 7)),
         ));
     }
 

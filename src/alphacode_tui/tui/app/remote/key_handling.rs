@@ -1659,6 +1659,8 @@ async fn handle_remote_key_internal(
                     app.queued_messages.clear();
                     app.pasted_contents.clear();
                     app.pending_images.clear();
+                    app.remote_side_pane_images.clear();
+                    app.invalidate_side_pane_images_signature();
                     app.clear_streaming_render_state();
                     app.clear_live_usage_state();
                     // Full transcript discard: diagrams and side panel pages
