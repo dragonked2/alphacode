@@ -7,6 +7,13 @@ impl Agent {
         self.session.memory_profile_snapshot()
     }
 
+    /// Transient provider errors (rate limits, 5xx, transport blips) this
+    /// session rode out automatically. Surfaced so invisible resilience
+    /// becomes visible instead of reading as a hang.
+    pub fn provider_errors_auto_recovered(&self) -> u64 {
+        super::provider_errors_auto_recovered()
+    }
+
     pub fn message_count(&self) -> usize {
         self.session.messages.len()
     }

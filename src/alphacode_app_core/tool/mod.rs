@@ -20,6 +20,7 @@ mod gmail;
 mod goal;
 mod httpflow;
 mod invalid;
+mod jwt;
 mod ls;
 pub mod mcp;
 mod memory;
@@ -96,6 +97,71 @@ fn session_tool_policy(session_id: &str) -> Option<SessionToolPolicy> {
         .unwrap_or_else(|poisoned| poisoned.into_inner())
         .get(session_id)
         .cloned()
+}
+
+/// Append a tool-specific "next step" hint to an error before it is stored in
+/// the transcript and shown to the model. The unknown-tool error in
+/// [`Registry::execute`] already proved this pattern stops hallucination
+/// spirals (#104): models recover in one retry when the error names the fix.
+/// Hints are capped at one short line each so the history does not fill with
+/// coaching text.
+pub(crate) fn agent_facing_error(tool_name: &str, error: &anyhow::Error) -> String {
+    let base = error.to_string();
+    let hint = match tool_name {
+        "edit" | "multiedit" => {
+            if base.contains("not found") || base.contains("No match") {
+                Some(
+                    "Re-read the exact file section first and match the old_string character-for-character (whitespace, indentation, line endings).",
+                )
+            } else {
+                None
+            }
+        }
+        "bash" => {
+            if base.contains("exit code") || base.contains("exit status") {
+                Some(
+                    "Read the command's stderr above and fix the cause; do not re-run the identical command unchanged.",
+                )
+            } else {
+                None
+            }
+        }
+        "read" => {
+            if base.contains("binary") || base.contains("too large") || base.contains("oversized") {
+                Some(
+                    "Use offset/limit to read a smaller range, or grep to locate the relevant lines first.",
+                )
+            } else {
+                None
+            }
+        }
+        "write" | "apply_patch" | "patch" => {
+            if base.contains("permission")
+                || base.contains("read-only")
+                || base.contains("readonly")
+            {
+                Some(
+                    "Check whether the path is outside the working directory or read-only; ask the user before writing outside the project.",
+                )
+            } else {
+                None
+            }
+        }
+        "webfetch" | "websearch" | "scrapling" => {
+            if base.contains("timeout") || base.contains("timed out") || base.contains("connect") {
+                Some(
+                    "The site may be unreachable; retry once, then report the failure and continue with other work.",
+                )
+            } else {
+                None
+            }
+        }
+        _ => None,
+    };
+    match hint {
+        Some(hint) => format!("Error: {base}\nHint: {hint}"),
+        None => format!("Error: {base}"),
+    }
 }
 
 /// Registry of available tools (Arc-wrapped for sharing)
@@ -227,6 +293,7 @@ impl Registry {
                 "httpflow",
                 httpflow::HttpFlowTool::new,
             );
+            Self::insert_tool_timed(&mut m, &mut timings, "jwt", || jwt::JwtTool);
             Self::insert_tool_timed(&mut m, &mut timings, "invalid", invalid::InvalidTool::new);
             Self::insert_tool_timed(&mut m, &mut timings, "todo", todo::TodoTool::new);
             Self::insert_tool_timed(&mut m, &mut timings, "bg", bg::BgTool::new);
@@ -752,7 +819,14 @@ impl Registry {
 
         ToolOutput {
             output: truncated,
-            title: output.title,
+            // Surface the truncation on the transcript row so a user can tell
+            // "the model saw a short file" from "the output was cut" without
+            // inspecting session history. The existing title is preserved as a
+            // prefix when the tool set one.
+            title: Some(match output.title {
+                Some(existing) => format!("{existing} · truncated ~{}k tok", max_tokens / 1000),
+                None => format!("truncated ~{}k tok", max_tokens / 1000),
+            }),
             metadata: output.metadata,
             images: output.images,
         }

@@ -4,6 +4,7 @@ use async_trait::async_trait;
 use futures::StreamExt;
 use serde::Deserialize;
 use serde_json::{Value, json};
+use std::collections::HashMap;
 use std::time::Duration;
 
 const MAX_SIZE: usize = 5 * 1024 * 1024; // 5MB
@@ -116,6 +117,23 @@ impl Tool for WebFetchTool {
             return Err(anyhow::anyhow!("HTTP error: {}", status));
         }
 
+        // Capture key headers before consuming response
+        let resp_headers: HashMap<String, String> = response
+            .headers()
+            .iter()
+            .filter(|(k, _)| {
+                matches!(
+                    k.as_str(),
+                    "set-cookie"
+                        | "location"
+                        | "content-type"
+                        | "x-frame-options"
+                        | "content-security-policy"
+                )
+            })
+            .map(|(k, v)| (k.to_string(), v.to_str().unwrap_or("").to_string()))
+            .collect();
+
         // Check content length
         if let Some(len) = response.content_length()
             && len as usize > MAX_SIZE
@@ -191,14 +209,19 @@ impl Tool for WebFetchTool {
         // Compact header: show size in KB with one decimal, and line count
         // for quick context assessment.
         let line_count = output.lines().count();
-        Ok(ToolOutput::new(format!(
-            "Fetched {} ({:.1}KB, {} lines)\n\n{}{}",
+        let mut header = format!(
+            "Fetched {} ({:.1}KB, {} lines)\n",
             params.url,
             full_len as f64 / 1024.0,
             line_count,
-            output,
-            note
-        )))
+        );
+        // Show important response headers
+        for h in ["set-cookie", "location", "content-security-policy"] {
+            if let Some(val) = resp_headers.get(h) {
+                header.push_str(&format!("{}: {}\n", h, val));
+            }
+        }
+        Ok(ToolOutput::new(format!("{}\n\n{}{}", header, output, note)))
     }
 }
 

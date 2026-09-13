@@ -146,6 +146,62 @@ pub(super) const BUNDLED_SKILLS: &[BundledSkill] = &[
                 "llm-injection",
                 include_str!("bundled_skills/bugbounty/llm-injection/SKILL.md"),
             ),
+            (
+                "hunt-subdomain-takeover",
+                include_str!("bundled_skills/bugbounty/hunt-subdomain-takeover/SKILL.md"),
+            ),
+            (
+                "hunt-cache-poisoning",
+                include_str!("bundled_skills/bugbounty/hunt-cache-poisoning/SKILL.md"),
+            ),
+            (
+                "hunt-ssti",
+                include_str!("bundled_skills/bugbounty/hunt-ssti/SKILL.md"),
+            ),
+            (
+                "hunt-deserialization",
+                include_str!("bundled_skills/bugbounty/hunt-deserialization/SKILL.md"),
+            ),
+            (
+                "hunt-websocket",
+                include_str!("bundled_skills/bugbounty/hunt-websocket/SKILL.md"),
+            ),
+            (
+                "hunt-headers",
+                include_str!("bundled_skills/bugbounty/hunt-headers/SKILL.md"),
+            ),
+            (
+                "hunt-apikey-leak",
+                include_str!("bundled_skills/bugbounty/hunt-apikey-leak/SKILL.md"),
+            ),
+            (
+                "hunt-open-redirect",
+                include_str!("bundled_skills/bugbounty/hunt-open-redirect/SKILL.md"),
+            ),
+            (
+                "hunt-csrf",
+                include_str!("bundled_skills/bugbounty/hunt-csrf/SKILL.md"),
+            ),
+            (
+                "hunt-jwt",
+                include_str!("bundled_skills/bugbounty/hunt-jwt/SKILL.md"),
+            ),
+            (
+                "hunt-xxe",
+                include_str!("bundled_skills/bugbounty/hunt-xxe/SKILL.md"),
+            ),
+            (
+                "hunt-crlf",
+                include_str!("bundled_skills/bugbounty/hunt-crlf/SKILL.md"),
+            ),
+            (
+                "hunt-prototype-pollution",
+                include_str!("bundled_skills/bugbounty/hunt-prototype-pollution/SKILL.md"),
+            ),
+            (
+                "hunt-path-traversal",
+                include_str!("bundled_skills/bugbounty/hunt-path-traversal/SKILL.md"),
+            ),
         ],
     },
     BundledSkill {
@@ -339,6 +395,19 @@ pub(super) const BUNDLED_SKILLS: &[BundledSkill] = &[
             (
                 "solution-verifier",
                 include_str!("bundled_skills/ctf/ctf/solution-verifier/SKILL.md"),
+            ),
+            (
+                "ai-llm",
+                include_str!("bundled_skills/ctf/ctf/ai-llm/SKILL.md"),
+            ),
+            ("web3", include_str!("bundled_skills/ctf/ctf/web3/SKILL.md")),
+            (
+                "cloud",
+                include_str!("bundled_skills/ctf/ctf/cloud/SKILL.md"),
+            ),
+            (
+                "api-security",
+                include_str!("bundled_skills/ctf/ctf/api-security/SKILL.md"),
             ),
         ],
     },

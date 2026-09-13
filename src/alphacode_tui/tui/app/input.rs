@@ -1621,20 +1621,34 @@ impl App {
             {
                 self.todo_completion_gate_attempts =
                     self.todo_completion_gate_attempts.saturating_add(1);
+                // First emission carries the full continuation (reasoning +
+                // named todos); back-to-back repeats use the short one-liner
+                // variant so the model acts instead of re-reading coaching.
+                let repeat = self.todo_completion_gate_attempts > 1;
                 let notice = if confidence_summary.completion_confidence_needs_validation {
                     crate::telemetry::record_todo_gate(crate::telemetry::TodoGateKind::Completion);
-                    "🔍 Double-checking confidence for you..."
+                    if repeat {
+                        "🔍 Still double-checking confidence for you..."
+                    } else {
+                        "🔍 Double-checking confidence for you..."
+                    }
                 } else {
                     self.todo_confidence_spike_challenged = true;
                     crate::telemetry::record_todo_gate(
                         crate::telemetry::TodoGateKind::ConfidenceSpike,
                     );
-                    "🔍 Double-checking a confidence jump for you..."
+                    if repeat {
+                        "🔍 Still double-checking a confidence jump for you..."
+                    } else {
+                        "🔍 Double-checking a confidence jump for you..."
+                    }
                 };
                 self.push_display_message(DisplayMessage::system(notice));
                 // User-role content: reminder-only turns read as empty user
                 // messages and models answer instead of re-validating.
-                let summary = super::commands::build_todo_confidence_summary_message(&todos);
+                let summary = super::commands::build_todo_confidence_summary_message_with_repeat(
+                    &todos, repeat,
+                );
                 self.queued_messages.push(summary);
                 self.pending_queued_dispatch = true;
                 return true;

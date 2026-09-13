@@ -61,6 +61,24 @@ use interrupts::{NoToolCallOutcome, PostToolInterruptOutcome};
 const ALPHACODE_NATIVE_TOOLS: &[&str] = &["selfdev", "communicate"];
 static RECOVERED_TEXT_WRAPPED_TOOL_CALLS: std::sync::atomic::AtomicU64 =
     std::sync::atomic::AtomicU64::new(0);
+/// Process-wide count of transient provider errors the turn loop rode out
+/// automatically (rate limits, 5xx, transport blips). Surfaced through the
+/// status line so invisible resilience becomes visible: a user who sees
+/// "2 provider errors auto-recovered" trusts the pause instead of assuming
+/// the session hung. Bounded noise: the counter only ticks on *successful*
+/// recovery decisions, not on every failed request.
+static PROVIDER_ERRORS_AUTO_RECOVERED: std::sync::atomic::AtomicU64 =
+    std::sync::atomic::AtomicU64::new(0);
+
+/// Record one successfully-recovered transient provider error.
+pub(crate) fn note_provider_error_auto_recovered() {
+    PROVIDER_ERRORS_AUTO_RECOVERED.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+}
+
+/// Current count for status/debug surfaces.
+pub(crate) fn provider_errors_auto_recovered() -> u64 {
+    PROVIDER_ERRORS_AUTO_RECOVERED.load(std::sync::atomic::Ordering::Relaxed)
+}
 static ALPHACODE_REPO_SOURCE_STATE: LazyLock<(Option<String>, Option<bool>)> =
     LazyLock::new(|| {
         crate::build::get_repo_dir()
@@ -697,17 +715,23 @@ impl Agent {
                         self.note_compaction_applied();
                         self.persist_session_best_effort("compaction completion");
                     }
+                    // Called every turn-loop iteration; the full summary only
+                    // matters under trace. Throttling keeps the file log from
+                    // filling with an identical line per tool call.
                     let user_count = messages
                         .iter()
                         .filter(|message| matches!(message.role, Role::User))
                         .count();
                     let assistant_count = messages.len().saturating_sub(user_count);
-                    logging::info(&format!(
-                        "messages_for_provider (compaction): returning {} messages (user={}, assistant={})",
-                        messages.len(),
-                        user_count,
-                        assistant_count,
-                    ));
+                    crate::logging::info_throttled(
+                        "messages_for_provider_compaction",
+                        &format!(
+                            "messages_for_provider (compaction): returning {} messages (user={}, assistant={})",
+                            messages.len(),
+                            user_count,
+                            assistant_count,
+                        ),
+                    );
                     return (messages, event);
                 }
                 Err(_) => {
@@ -723,12 +747,15 @@ impl Agent {
             .filter(|message| matches!(message.role, Role::User))
             .count();
         let assistant_count = messages.len().saturating_sub(user_count);
-        logging::info(&format!(
-            "messages_for_provider (session): returning {} messages (user={}, assistant={})",
-            messages.len(),
-            user_count,
-            assistant_count,
-        ));
+        crate::logging::info_throttled(
+            "messages_for_provider_session",
+            &format!(
+                "messages_for_provider (session): returning {} messages (user={}, assistant={})",
+                messages.len(),
+                user_count,
+                assistant_count,
+            ),
+        );
         (messages, None)
     }
 

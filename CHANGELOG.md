@@ -4,6 +4,31 @@ All notable changes to Alphacode are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project
 adheres to [Semantic Versioning](https://semver.org/).
 
+## [1.0.40] - 2026-09-14
+
+CTF solving overhaul: mandatory vulnerability batteries, signal-to-action reflexes, hypothesis kill tracking, httpflow reliability fixes, and hardened blind-oracle extraction — informed by a full post-CTF retrospective on the TenantExchange 168-minute challenge.
+
+### Added
+
+- **Mandatory Vulnerability Battery** (`ctf/SKILL.md`, `ctf/web/SKILL.md`): 8-step battery (quotes, SQLi, SSTI, traversal, command injection, type confusion) that MUST run on every user-controlled input in the first 15 minutes before any hypothesis work. A search box is now a thing to inject first, not understand first.
+- **Signal → Action Reflexes** (`ctf/SKILL.md`, `ctf/web/SKILL.md`): 10 signal→action mappings enforced as mandatory immediate actions — wildcard matching triggers SQLi quote test, parameter response-class changes trigger full namespace mapping, search boxes trigger SQLi-first, 404-when-403-expected triggers param-override testing.
+- **Auto Param-Diff Harness** (`ctf/web/SKILL.md`): ready-to-use script that automatically tests snake/camel variants of every discovered parameter and reports response-class deltas.
+- **Hardened Blind-Oracle Extractor** (`ctf/web/SKILL.md`): extraction oracle rules — wildcard-free alphabets, ESCAPE-based disambiguation, parallel probes, auto-termination on no-match, binary search for speed.
+- **Hypothesis Ledger** (`ctf/SKILL.md`, `ctf/methodology/SKILL.md`): mandatory tracking format with time budget, next test, kill criteria, and status. Prevents 43-minute commitments to dead ends.
+- **Difficulty-Calibrated Priors** (`ctf/SKILL.md`, `ctf/methodology/SKILL.md`): probability-weighted testing order — basic CTF = SQLi/IDOR/SSTI before gRPC anything; exotic hypotheses time-boxed to 10 min with 20 min total exotic budget.
+- **CTF Workflow** (system prompt section 17): structured 3-phase workflow (Triage+Battery → Signal-Driven Exploration → Exploit+Extract) with mandatory hypothesis kill rules.
+- **Flag Archaeology** (`ctf/methodology/SKILL.md`): post-solve flag name decoding to calibrate priors for the next challenge.
+
+### Changed
+
+- **`truncate_body` UTF-8 safety** (`httpflow.rs`): switched from byte-based `body.len()`/`&body[..max]` to char-based `body.chars().count()`/`chars().take()`, preventing panics on multi-byte UTF-8 and Windows cp1252 binary output.
+- **CTF web skill** expanded with 5 "Common CTF Pitfalls" section documenting real-world mistakes (overfitting flavor text, parked smoking guns, ignoring dependency lists, flag name archaeology, Host header cookie issues).
+
+### Fixed
+
+- **httpflow Host header cookie jar bug** (`httpflow.rs`): when the `Host` header is overridden in custom headers, cookies are now explicitly re-pinned from the jar to prevent silent cookie loss that caused phantom "second app/vhost session scoping" false positives. Fixes the requests cookie-jar × Host header bug that cost 8 minutes in the TenantExchange CTF.
+- **httpflow response headers now displayed** (`httpflow.rs`): Set-Cookie, Location, Content-Type, and X-Frame-Options headers are now shown in response output for better visibility during multi-step workflows.
+
 ## [1.0.26] - 2026-09-07
 
 Quality, performance, and stability release: ships task-aware model routing, a fuzzier model-picker search, smoother streaming, and connection-resilience improvements across the board.

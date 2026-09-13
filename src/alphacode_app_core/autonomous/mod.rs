@@ -329,6 +329,67 @@ pub struct ReviewResult {
     #[serde(default)]
     pub tasks_created: Vec<String>,
     pub created_at: DateTime<Utc>,
+    #[serde(default)]
+    pub auto_fixes: Vec<AutomatedFix>,
+    #[serde(default)]
+    pub severity_score: u8,
+    #[serde(default)]
+    pub history_entry: Option<ReviewHistoryEntry>,
+}
+
+/// Severity level for review findings.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[serde(rename_all = "snake_case")]
+pub enum ReviewSeverity {
+    Critical,
+    High,
+    Medium,
+    Low,
+    Info,
+}
+
+impl ReviewSeverity {
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Critical => "critical",
+            Self::High => "high",
+            Self::Medium => "medium",
+            Self::Low => "low",
+            Self::Info => "info",
+        }
+    }
+
+    pub fn score(self) -> u8 {
+        match self {
+            Self::Critical => 100,
+            Self::High => 75,
+            Self::Medium => 50,
+            Self::Low => 25,
+            Self::Info => 5,
+        }
+    }
+}
+
+/// An automated fix suggestion generated during review.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AutomatedFix {
+    pub category: ReviewCategory,
+    pub severity: ReviewSeverity,
+    pub description: String,
+    pub file_path: String,
+    pub line_range: Option<(u32, u32)>,
+    pub replacement: Option<String>,
+    pub confidence: f32,
+}
+
+/// A review template for a common code pattern.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ReviewTemplate {
+    pub name: String,
+    pub category: ReviewCategory,
+    pub pattern: String,
+    pub checks: Vec<(ReviewCategory, String)>,
+    pub auto_fixes: Vec<AutomatedFix>,
 }
 
 /// A single check in a self-review pass.
@@ -336,7 +397,10 @@ pub struct ReviewResult {
 pub struct ReviewCheck {
     pub category: ReviewCategory,
     pub passed: bool,
+    pub severity: ReviewSeverity,
     pub detail: String,
+    #[serde(default)]
+    pub auto_fixes: Vec<AutomatedFix>,
 }
 
 /// Categories checked during self-review.
@@ -350,6 +414,11 @@ pub enum ReviewCategory {
     Style,
     Documentation,
     Architecture,
+    Accessibility,
+    Internationalization,
+    Testing,
+    Maintainability,
+    Readability,
 }
 
 impl ReviewCategory {
@@ -362,6 +431,11 @@ impl ReviewCategory {
             Self::Style,
             Self::Documentation,
             Self::Architecture,
+            Self::Accessibility,
+            Self::Internationalization,
+            Self::Testing,
+            Self::Maintainability,
+            Self::Readability,
         ]
     }
 
@@ -374,6 +448,11 @@ impl ReviewCategory {
             Self::Style => "style",
             Self::Documentation => "documentation",
             Self::Architecture => "architecture",
+            Self::Accessibility => "accessibility",
+            Self::Internationalization => "internationalization",
+            Self::Testing => "testing",
+            Self::Maintainability => "maintainability",
+            Self::Readability => "readability",
         }
     }
 
@@ -386,10 +465,97 @@ impl ReviewCategory {
             Self::Logic => 1,
             Self::Correctness => 2,
             Self::Performance => 3,
-            Self::Architecture => 4,
-            Self::Documentation => 5,
-            Self::Style => 6,
+            Self::Accessibility => 4,
+            Self::Testing => 5,
+            Self::Architecture => 6,
+            Self::Maintainability => 7,
+            Self::Documentation => 8,
+            Self::Readability => 9,
+            Self::Style => 10,
+            Self::Internationalization => 11,
         }
+    }
+}
+
+/// History entry for a completed review.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ReviewHistoryEntry {
+    pub reviewed_item: String,
+    pub overall_pass: bool,
+    pub total_checks: usize,
+    pub failed_checks: usize,
+    pub severity_scores: std::collections::HashMap<String, u8>,
+    pub auto_fixes_generated: usize,
+    pub tasks_created: usize,
+    pub created_at: DateTime<Utc>,
+}
+
+/// Aggregate review history for tracking trends.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ReviewHistory {
+    pub entries: Vec<ReviewHistoryEntry>,
+    pub total_reviews: usize,
+    pub overall_pass_rate: f32,
+    pub avg_severity_score: f32,
+}
+
+impl Default for ReviewHistory {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl ReviewHistory {
+    pub fn new() -> Self {
+        Self {
+            entries: Vec::new(),
+            total_reviews: 0,
+            overall_pass_rate: 0.0,
+            avg_severity_score: 0.0,
+        }
+    }
+
+    pub fn add_entry(&mut self, entry: ReviewHistoryEntry) {
+        self.entries.push(entry);
+        self.total_reviews = self.entries.len();
+        let passed = self.entries.iter().filter(|e| e.overall_pass).count();
+        self.overall_pass_rate = if self.total_reviews > 0 {
+            passed as f32 / self.total_reviews as f32
+        } else {
+            0.0
+        };
+        self.avg_severity_score = if self.total_reviews > 0 {
+            let total: u32 = self
+                .entries
+                .iter()
+                .flat_map(|e| e.severity_scores.values())
+                .map(|&s| s as u32)
+                .sum();
+            total as f32 / self.total_reviews as f32
+        } else {
+            0.0
+        };
+    }
+
+    pub fn recent_failures(&self, n: usize) -> Vec<&ReviewHistoryEntry> {
+        self.entries
+            .iter()
+            .filter(|e| !e.overall_pass)
+            .rev()
+            .take(n)
+            .collect()
+    }
+
+    pub fn category_failure_counts(&self) -> std::collections::HashMap<String, usize> {
+        let mut counts = std::collections::HashMap::new();
+        for entry in &self.entries {
+            for (cat, &score) in &entry.severity_scores {
+                if score > 0 {
+                    *counts.entry(cat.clone()).or_insert(0) += 1;
+                }
+            }
+        }
+        counts
     }
 }
 

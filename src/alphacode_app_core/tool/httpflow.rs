@@ -213,13 +213,36 @@ impl HttpFlowTool {
                 _ => self.client.get(&current_url),
             };
 
-            // Note: reqwest's cookie_store handles cookies automatically.
-            // We still track cookies in the manual jar for show_cookies/clear_session actions.
+            // Attach cookies from the jar to this request.
+            {
+                let jar = cookies.read().await;
+                if !jar.is_empty() {
+                    let cookie_header: Vec<String> =
+                        jar.iter().map(|(k, v)| format!("{}={}", k, v)).collect();
+                    request_builder = request_builder.header("cookie", cookie_header.join("; "));
+                }
+            }
 
             // Add custom headers
             if let Some(headers) = &params.headers {
+                // If Host header is overridden, we need to ensure cookies still
+                // transmit correctly. The reqwest client may not attach cookies
+                // when the Host header differs from the URL's host.
+                let host_overridden = headers.contains_key("host") || headers.contains_key("Host");
                 for (key, value) in headers {
                     request_builder = request_builder.header(key.as_str(), value.as_str());
+                }
+                // When Host is overridden, explicitly pin the Cookie header from
+                // the jar to ensure it's sent (reqwest may skip cookie injection
+                // when Host doesn't match the URL's original host).
+                if host_overridden {
+                    let jar = cookies.read().await;
+                    if !jar.is_empty() {
+                        let cookie_header: Vec<String> =
+                            jar.iter().map(|(k, v)| format!("{}={}", k, v)).collect();
+                        request_builder =
+                            request_builder.header("cookie", cookie_header.join("; "));
+                    }
                 }
             }
 
@@ -343,6 +366,14 @@ impl HttpFlowTool {
                 ));
             }
 
+            // Show key response headers (Set-Cookie, Location, Content-Type)
+            let important_headers = ["set-cookie", "location", "content-type", "x-frame-options"];
+            for h in &important_headers {
+                if let Some(val) = result.headers.get(*h) {
+                    output.push_str(&format!("{}: {}\n", h, val));
+                }
+            }
+
             if !result.cookies.is_empty() {
                 output.push_str(&format!("Cookies set: {}\n", result.cookies.join("; ")));
             }
@@ -375,9 +406,17 @@ impl HttpFlowTool {
 
         // First fetch the page
         let cookies = self.get_session_cookies(session_name).await;
-        let request_builder = self.client.get(url);
+        let mut request_builder = self.client.get(url);
 
-        // Note: reqwest's cookie_store handles cookies automatically.
+        // Attach cookies from jar
+        {
+            let jar = cookies.read().await;
+            if !jar.is_empty() {
+                let cookie_header: Vec<String> =
+                    jar.iter().map(|(k, v)| format!("{}={}", k, v)).collect();
+                request_builder = request_builder.header("cookie", cookie_header.join("; "));
+            }
+        }
 
         let response = request_builder
             .send()
@@ -506,13 +545,14 @@ fn status_text(status: u16) -> &'static str {
 }
 
 fn truncate_body(body: &str, max_chars: usize) -> String {
-    if body.len() <= max_chars {
+    if body.chars().count() <= max_chars {
         body.to_string()
     } else {
+        let truncated: String = body.chars().take(max_chars).collect();
         format!(
-            "{}...\n\n[truncated, {} bytes total]",
-            &body[..max_chars],
-            body.len()
+            "{}...\n\n[truncated, {} chars total]",
+            truncated,
+            body.chars().count()
         )
     }
 }

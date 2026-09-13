@@ -70,9 +70,13 @@ pub struct DisplayConfig {
     pub diff_line_wrap: bool,
     /// Performance tier override: auto/full/reduced/minimal (default: auto)
     pub performance: String,
-    /// FPS for animations (startup, idle donut): 1-120 (default: 60)
+    /// FPS for animations (startup, idle donut): 1-120 (default: 20).
+    /// Values above 30 are accepted but decorative animations are additionally
+    /// capped at 30 FPS at runtime (see `redraw_schedule.rs` for the measured
+    /// CPU data behind that cap); functional motion (spinners, streaming
+    /// reveal, scroll catch-up) keeps the configured rate.
     pub animation_fps: u32,
-    /// FPS for active redraw (processing, streaming): 1-120 (default: 30)
+    /// FPS for active redraw (processing, streaming): 1-120 (default: 60)
     pub redraw_fps: u32,
     /// Show a truncated preview of the previous prompt at the top when it scrolls out of view (default: true)
     pub prompt_preview: bool,

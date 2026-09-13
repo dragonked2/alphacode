@@ -889,6 +889,11 @@ fn idle_session_stats_line(app: &dyn TuiState) -> Option<Line<'static>> {
         ));
     }
 
+    let recovered = crate::alphacode_app_core::agent::provider_errors_auto_recovered();
+    if recovered > 0 {
+        text.push_str(&format!(" · {} recovered", recovered));
+    }
+
     Some(Line::from(vec![
         Span::styled(
             "⚡",

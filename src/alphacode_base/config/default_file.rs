@@ -240,9 +240,12 @@ prompt_entry_animation = true
 # minimal = disable all animations, slower redraw rate
 # performance = "auto"
 
-# Animation FPS (idle animation): 1-120 (default: 60)
-# Runtime policy may cap this lower on slower environments such as WSL/Windows Terminal.
-# animation_fps = 60
+# Animation FPS (idle animation): 1-120 (default: 20).
+# Decorative animations are additionally capped at 30 FPS at runtime
+# (measured CPU data in src/alphacode_tui/tui/redraw_schedule.rs); functional
+# motion (spinners, streaming reveal, scroll catch-up) keeps your value.
+# Runtime policy may cap this lower still on slow environments such as WSL.
+# animation_fps = 20
 
 # Active redraw FPS (processing, streaming, spinners): 1-120 (default: 60)
 # Runtime policy may cap this lower on slower environments such as WSL/Windows Terminal.

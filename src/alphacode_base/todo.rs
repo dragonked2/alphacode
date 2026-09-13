@@ -387,6 +387,72 @@ pub fn build_todo_confidence_spike_continuation_message(todos: &[TodoItem]) -> S
     message
 }
 
+/// Short repeat variants for the completion and spike gates.
+///
+/// The full continuations carry the reasoning behind the gate and name the
+/// failing todos, which is exactly right the first time. When the same gate
+/// fires again back to back, re-sending the full paragraph makes small models
+/// re-read their own coaching instead of working, burning a round-trip per
+/// attempt (the completion gate's own attempt cap exists because of this).
+/// Repeat emissions are one line that names the still-unresolved item(s).
+///
+/// Both variants keep the same self-identifying prefix as their full form so
+/// [`is_auto_poke_message`] and the session renderer classify them identically.
+pub fn build_todo_completion_repeat_message(todos: &[TodoItem]) -> String {
+    let named: Vec<String> = todos
+        .iter()
+        .filter(|todo| todo.status == "completed")
+        .filter(|todo| {
+            todo.completion_confidence
+                .is_none_or(|score| score < QUALITY_GATE_THRESHOLD)
+        })
+        .take(GATE_NAMED_TODO_LIMIT)
+        .map(quoted_todo_label)
+        .collect();
+    let tail = if named.is_empty() {
+        "re-verify the completed todos with concrete evidence, one line each.".to_string()
+    } else {
+        format!(
+            "name the concrete evidence for {}, one line each, then call the todo tool again.",
+            named.join(", ")
+        )
+    };
+    format!(
+        "{} (repeat) Completion confidence is still low: {tail}",
+        todo_gate_repeat_prefix()
+    )
+}
+
+/// Short repeat variant of the spike gate; same contract as
+/// [`build_todo_completion_repeat_message`].
+pub fn build_todo_confidence_spike_repeat_message(todos: &[TodoItem]) -> String {
+    let spiked = spike_completed_todos(todos);
+    let named: Vec<String> = spiked
+        .iter()
+        .take(GATE_NAMED_TODO_LIMIT)
+        .map(|todo| quoted_todo_label(todo))
+        .collect();
+    let tail = if named.is_empty() {
+        "the confidence jump still reads as unvalidated: recheck with concrete evidence."
+            .to_string()
+    } else {
+        format!(
+            "the confidence jump on {} still reads as unvalidated: recheck with concrete evidence.",
+            named.join(", ")
+        )
+    };
+    format!("{} (repeat) {tail}", todo_gate_repeat_prefix())
+}
+
+/// Shared prefix for short repeat gate emissions. The full continuations each
+/// start with their own bracketed self-identifier; repeats share one so
+/// `is_auto_poke_message` (and therefore transcript classification, poke
+/// filtering, and the display summaries) covers every repeat with a single
+/// `starts_with`.
+pub fn todo_gate_repeat_prefix() -> &'static str {
+    "[automated todo gate repeat - not a user message]"
+}
+
 /// True when `message` is a synthetic auto-poke continuation (the
 /// incomplete-todos poke or the todo confidence summary) rather than a real
 /// user prompt.
@@ -412,6 +478,7 @@ pub fn is_auto_poke_message(message: &str) -> bool {
         || trimmed.starts_with(LEGACY_TODO_CONFIDENCE_SPIKE_CONTINUATION_MESSAGE)
         || trimmed.starts_with(LEGACY_TODO_CONFIDENCE_SUMMARY_PREFIX)
         || trimmed.starts_with(TODO_GATE_DIGEST_PREFIX)
+        || trimmed.starts_with(todo_gate_repeat_prefix())
 }
 
 /// Short, user-facing stand-in for a synthetic auto-poke/gate continuation.
@@ -438,6 +505,9 @@ pub fn auto_poke_display_summary(message: &str) -> Option<&'static str> {
     }
     if trimmed.starts_with(TODO_GATE_DIGEST_PREFIX) {
         return Some("🔍 Reviewing the weak points of this turn for you...");
+    }
+    if trimmed.starts_with(todo_gate_repeat_prefix()) {
+        return Some("🔍 Still double-checking confidence for you...");
     }
     if trimmed.starts_with(TODO_OWNERSHIP_CONTINUATION_MESSAGE) {
         return Some("🔍 Checking the full outcome was owned end to end...");

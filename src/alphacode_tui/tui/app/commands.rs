@@ -2651,10 +2651,23 @@ fn weighted_confidence_average(scores: impl IntoIterator<Item = (u8, u32)>) -> O
     }
 }
 
-pub(super) fn build_todo_confidence_summary_message(todos: &[crate::todo::TodoItem]) -> String {
+/// Build the model-facing confidence-gate continuation. `repeat` selects the
+/// short one-line variant: the first gate emission gets the full continuation
+/// (reasoning + named todos); back-to-back repeats get a one-liner so small
+/// models act instead of re-reading their own coaching every attempt.
+pub(super) fn build_todo_confidence_summary_message_with_repeat(
+    todos: &[crate::todo::TodoItem],
+    repeat: bool,
+) -> String {
     let summary = todo_confidence_summary(todos);
     if summary.confidence_spike_detected && !summary.completion_confidence_needs_validation {
-        crate::todo::build_todo_confidence_spike_continuation_message(todos)
+        if repeat {
+            crate::todo::build_todo_confidence_spike_repeat_message(todos)
+        } else {
+            crate::todo::build_todo_confidence_spike_continuation_message(todos)
+        }
+    } else if repeat {
+        crate::todo::build_todo_completion_repeat_message(todos)
     } else {
         crate::todo::build_todo_completion_continuation_message(todos)
     }

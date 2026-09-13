@@ -77,6 +77,33 @@ pub const EMBEDDING_HISTORY_WINDOW: usize = 10;
 /// Per-manager semantic embedding cache capacity.
 pub const SEMANTIC_EMBED_CACHE_CAPACITY: usize = 256;
 
+/// Cosine similarity threshold for detecting topic shifts (lower = more sensitive)
+pub const TOPIC_SHIFT_THRESHOLD: f32 = 0.3;
+
+/// Minimum messages between topic-shift detections (prevents noise)
+pub const TOPIC_SHIFT_MIN_MESSAGES: usize = 3;
+
+/// Importance score thresholds for message retention
+pub const IMPORTANCE_CRITICAL: f32 = 0.8;
+pub const IMPORTANCE_HIGH: f32 = 0.6;
+pub const IMPORTANCE_MEDIUM: f32 = 0.4;
+pub const IMPORTANCE_LOW: f32 = 0.2;
+
+/// Maximum ratio of important messages to keep during compaction
+pub const IMPORTANT_MESSAGE_KEEP_RATIO: f32 = 0.3;
+
+/// Adaptive threshold adjustment factor based on task complexity
+pub const ADAPTIVE_THRESHOLD_STEP: f32 = 0.05;
+
+/// Maximum adaptive threshold upper bound
+pub const ADAPTIVE_THRESHOLD_MAX: f32 = 0.95;
+
+/// Minimum adaptive threshold lower bound
+pub const ADAPTIVE_THRESHOLD_MIN: f32 = 0.70;
+
+/// Rolling window for tracking compaction quality metrics
+pub const QUALITY_METRICS_WINDOW: usize = 10;
+
 pub const SUMMARY_PROMPT: &str = r#"Summarize our conversation so you can continue this work later. Write in natural language with these sections:
 
 - **Context:** What we're working on and why (1-2 sentences)
@@ -85,6 +112,8 @@ pub const SUMMARY_PROMPT: &str = r#"Summarize our conversation so you can contin
 - **User preferences:** Specific requirements or decisions they made
 - **Key decisions:** Important architectural or design choices
 - **Files modified:** Bullet list of all files created/edited/deleted (just paths)
+- **Lessons learned:** Important insights, gotchas, or patterns discovered
+- **Active tasks:** Unfinished work that needs to continue
 
 Rules:
 - Be concise: aim for 200-400 words total. Every word should earn its place.
@@ -92,7 +121,31 @@ Rules:
 - Do NOT include code snippets, error messages, or verbose output. Reference file paths instead.
 - Do NOT include tool call details or intermediate reasoning — focus on outcomes.
 - If a file path was referenced multiple times, mention it once with what changed.
-- Focus on information needed to CONTINUE the work, not to relive it."#;
+- Focus on information needed to CONTINUE the work, not to relive it.
+- Preserve ALL decision rationale — explain WHY choices were made, not just what was chosen.
+- Keep any debugging insights or workarounds that might be needed again."#;
+
+/// Enhanced summary prompt for topic-aware compaction with multiple topics
+pub const TOPIC_AWARE_SUMMARY_PROMPT: &str = r#"Summarize our conversation, organized by distinct topics we discussed. For each topic section, include:
+
+**Topic: [Name]**
+- What we were trying to accomplish
+- Key decisions and reasoning
+- Files touched and changes made
+- Current status
+
+Then add:
+- **Cross-cutting concerns:** Decisions or patterns that apply across topics
+- **User preferences:** Requirements that span multiple topics
+- **Unfinished work:** Tasks that need continuation across topics
+
+Rules:
+- Group related messages by topic, not chronologically
+- Preserve ALL user-stated constraints VERBATIM
+- Keep decision rationale (WHY, not just what)
+- Be concise: aim for 300-500 words total
+- Reference file paths, not content
+- Focus on what's needed to CONTINUE the work"#;
 
 /// A completed summary covering turns up to a certain point
 #[derive(Debug, Clone)]
@@ -141,6 +194,479 @@ pub struct CompactionStats {
     pub context_usage: f32,
 }
 
+/// Detected topic shift in conversation flow
+#[derive(Debug, Clone)]
+pub struct TopicShift {
+    /// Index where the topic shift occurred
+    pub message_index: usize,
+    /// Similarity score before the shift (higher = more similar to previous)
+    pub pre_shift_similarity: f32,
+    /// Similarity score after the shift (lower = more different from previous)
+    pub post_shift_similarity: f32,
+    /// Magnitude of the shift (difference between pre and post)
+    pub shift_magnitude: f32,
+    /// Whether this shift is significant enough to warrant separate summarization
+    pub is_significant: bool,
+}
+
+/// Importance score for a message
+#[derive(Debug, Clone)]
+pub struct ImportanceScore {
+    /// Overall importance score (0.0 - 1.0)
+    pub score: f32,
+    /// Whether this message contains user decisions
+    pub has_decisions: bool,
+    /// Whether this message contains errors or debugging
+    pub has_errors: bool,
+    /// Whether this message contains tool results
+    pub has_tool_results: bool,
+    /// Whether this message is a user preference/constraint
+    pub has_preferences: bool,
+    /// Reason for the score
+    pub reason: String,
+}
+
+/// Quality metrics for compaction
+#[derive(Debug, Clone)]
+pub struct CompactionQuality {
+    /// Estimated information loss ratio (0.0 - 1.0, lower is better)
+    pub information_loss: f32,
+    /// Ratio of important content preserved
+    pub important_content_preserved: f32,
+    /// Number of topic shifts detected
+    pub topic_shifts_detected: usize,
+    /// Average importance score of kept messages
+    pub avg_importance_kept: f32,
+    /// Average importance score of dropped messages
+    pub avg_importance_dropped: f32,
+    /// Whether the summary quality is acceptable
+    pub summary_quality_acceptable: bool,
+    /// Recommended action based on quality analysis
+    pub recommended_action: QualityAction,
+}
+
+/// Recommended action based on quality analysis
+#[derive(Debug, Clone, PartialEq)]
+pub enum QualityAction {
+    /// Compaction quality is acceptable
+    Acceptable,
+    /// Keep more messages due to high importance content
+    KeepMoreMessages,
+    /// Use topic-aware summarization due to topic shifts
+    UseTopicAwareSummarization,
+    /// Skip compaction due to critical content
+    SkipCompaction,
+}
+
+/// Adaptive compaction thresholds based on context usage patterns
+#[derive(Debug, Clone)]
+pub struct AdaptiveThresholds {
+    /// Current compaction threshold (adjusted based on usage patterns)
+    pub compaction_threshold: f32,
+    /// Current critical threshold
+    pub critical_threshold: f32,
+    /// Recent context usage history
+    pub usage_history: Vec<f32>,
+    /// Whether we're in a complex task (more conservative compaction)
+    pub is_complex_task: bool,
+    /// Task complexity score (0.0 - 1.0)
+    pub task_complexity: f32,
+    /// Number of compactions in current session
+    pub compaction_count: usize,
+}
+
+impl AdaptiveThresholds {
+    /// Create new adaptive thresholds with defaults
+    pub fn new() -> Self {
+        Self {
+            compaction_threshold: COMPACTION_THRESHOLD,
+            critical_threshold: CRITICAL_THRESHOLD,
+            usage_history: Vec::new(),
+            is_complex_task: false,
+            task_complexity: 0.5,
+            compaction_count: 0,
+        }
+    }
+
+    /// Update thresholds based on context usage pattern
+    pub fn update(&mut self, context_usage: f32) {
+        self.usage_history.push(context_usage);
+        if self.usage_history.len() > TOKEN_HISTORY_WINDOW {
+            self.usage_history.remove(0);
+        }
+
+        // Detect rapid context growth (indicates complex task)
+        if self.usage_history.len() >= 3 {
+            let recent = &self.usage_history[self.usage_history.len() - 3..];
+            let growth_rate = recent[2] - recent[0];
+            self.is_complex_task = growth_rate > 0.2;
+            self.task_complexity = (growth_rate * 2.0).min(1.0);
+        }
+
+        // Adjust thresholds based on task complexity
+        let adjustment = if self.is_complex_task {
+            // Be more conservative with complex tasks
+            -ADAPTIVE_THRESHOLD_STEP * self.task_complexity
+        } else {
+            // Normal tasks can be more aggressive
+            ADAPTIVE_THRESHOLD_STEP * 0.5
+        };
+
+        self.compaction_threshold = (COMPACTION_THRESHOLD + adjustment)
+            .clamp(ADAPTIVE_THRESHOLD_MIN, ADAPTIVE_THRESHOLD_MAX);
+
+        self.critical_threshold = (self.compaction_threshold + 0.10)
+            .clamp(ADAPTIVE_THRESHOLD_MIN, 0.98);
+    }
+
+    /// Record a compaction event
+    pub fn record_compaction(&mut self) {
+        self.compaction_count += 1;
+    }
+
+    /// Get recommended recent turns to keep based on task complexity
+    pub fn recommended_recent_turns(&self) -> usize {
+        if self.is_complex_task {
+            // Keep more turns for complex tasks
+            (RECENT_TURNS_TO_KEEP as f32 * 1.5) as usize
+        } else {
+            RECENT_TURNS_TO_KEEP
+        }
+    }
+}
+
+impl Default for AdaptiveThresholds {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+/// Topic detector for identifying conversation topic shifts
+#[derive(Debug, Clone)]
+pub struct TopicDetector {
+    /// Rolling window of message semantic hashes
+    pub recent_hashes: Vec<u64>,
+    /// Detected topic shifts
+    pub topic_shifts: Vec<TopicShift>,
+    /// Current topic index
+    pub current_topic: usize,
+}
+
+impl TopicDetector {
+    pub fn new() -> Self {
+        Self {
+            recent_hashes: Vec::new(),
+            topic_shifts: Vec::new(),
+            current_topic: 0,
+        }
+    }
+
+    /// Add a new message hash and detect topic shifts
+    pub fn add_message(&mut self, semantic_hash: u64) -> bool {
+        self.recent_hashes.push(semantic_hash);
+        if self.recent_hashes.len() > EMBEDDING_HISTORY_WINDOW {
+            self.recent_hashes.remove(0);
+        }
+
+        // Need at least a few messages to detect shifts
+        if self.recent_hashes.len() < TOPIC_SHIFT_MIN_MESSAGES {
+            return false;
+        }
+
+        // Calculate similarity between recent and older messages
+        let recent_avg = self.average_recent_hash();
+        let older_avg = self.average_older_hash();
+
+        // Simple hash-based similarity (not perfect but lightweight)
+        let similarity = hash_similarity(recent_avg, older_avg);
+
+        // Detect significant shift
+        if similarity < TOPIC_SHIFT_THRESHOLD {
+            let shift = TopicShift {
+                message_index: self.recent_hashes.len(),
+                pre_shift_similarity: similarity,
+                post_shift_similarity: similarity,
+                shift_magnitude: 1.0 - similarity,
+                is_significant: true,
+            };
+            self.topic_shifts.push(shift);
+            self.current_topic += 1;
+            return true;
+        }
+
+        false
+    }
+
+    /// Get all detected significant topic shifts
+    pub fn get_topic_shifts(&self) -> &[TopicShift] {
+        &self.topic_shifts
+    }
+
+    /// Check if there are significant topic shifts
+    pub fn has_topic_shifts(&self) -> bool {
+        self.topic_shifts.iter().any(|s| s.is_significant)
+    }
+
+    /// Get the number of distinct topics detected
+    pub fn topic_count(&self) -> usize {
+        self.current_topic + 1
+    }
+
+    fn average_recent_hash(&self) -> u64 {
+        if self.recent_hashes.is_empty() {
+            return 0;
+        }
+        let recent = &self.recent_hashes[self.recent_hashes.len().saturating_sub(3)..];
+        recent.iter().sum::<u64>() / recent.len() as u64
+    }
+
+    fn average_older_hash(&self) -> u64 {
+        if self.recent_hashes.len() < TOPIC_SHIFT_MIN_MESSAGES {
+            return 0;
+        }
+        let older = &self.recent_hashes[..self.recent_hashes.len() - 3];
+        if older.is_empty() {
+            return 0;
+        }
+        older.iter().sum::<u64>() / older.len() as u64
+    }
+}
+
+impl Default for TopicDetector {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+/// Importance scorer for messages
+#[derive(Debug, Clone)]
+pub struct ImportanceScorer;
+
+impl ImportanceScorer {
+    /// Score a message's importance (0.0 - 1.0)
+    pub fn score_message(msg: &Message) -> ImportanceScore {
+        let mut score: f32 = 0.0;
+        let mut has_decisions = false;
+        let mut has_errors = false;
+        let mut has_tool_results = false;
+        let mut has_preferences = false;
+        let mut reasons = Vec::new();
+
+        for block in &msg.content {
+            match block {
+                ContentBlock::Text { text, .. } => {
+                    let lower = text.to_lowercase();
+
+                    // User messages are generally more important
+                    if msg.role == Role::User {
+                        score += 0.1;
+                    }
+
+                    // Check for user preferences and constraints
+                    if lower.contains("must ")
+                        || lower.contains("should ")
+                        || lower.contains("need to ")
+                        || lower.contains("required")
+                        || lower.contains("constraint")
+                        || lower.contains("preference")
+                    {
+                        score += 0.3;
+                        has_preferences = true;
+                        reasons.push("user preference/constraint".to_string());
+                    }
+
+                    // Check for decision markers
+                    if lower.contains("decided ")
+                        || lower.contains("choosing ")
+                        || lower.contains("going with ")
+                        || lower.contains("let's ")
+                        || lower.contains("i'll ")
+                        || lower.contains("we need to ")
+                    {
+                        score += 0.25;
+                        has_decisions = true;
+                        reasons.push("decision".to_string());
+                    }
+
+                    // Check for debugging/error context
+                    if lower.contains("error")
+                        || lower.contains("bug")
+                        || lower.contains("fix")
+                        || lower.contains("workaround")
+                        || lower.contains("hack")
+                    {
+                        score += 0.2;
+                        has_errors = true;
+                        reasons.push("error/debugging context".to_string());
+                    }
+                }
+                ContentBlock::ToolUse { name, input, .. } => {
+                    // File operations are important
+                    if name == "write" || name == "edit" || name == "multiedit" {
+                        score += 0.15;
+                        if let Some(path) = input.get("file_path").and_then(|v| v.as_str()) {
+                            reasons.push(format!("file modification: {}", path));
+                        }
+                    }
+                    // Search/explore operations are less important
+                    if name == "grep" || name == "glob" || name == "read" {
+                        score += 0.05;
+                    }
+                }
+                ContentBlock::ToolResult {
+                    content, is_error, ..
+                } => {
+                    has_tool_results = true;
+                    // Error results are important
+                    if is_error.unwrap_or(false) {
+                        score += 0.2;
+                        has_errors = true;
+                        reasons.push("error result".to_string());
+                    } else {
+                        score += 0.1;
+                    }
+                    // Short results are often more important than long ones
+                    if content.len() < 200 {
+                        score += 0.05;
+                    }
+                }
+                _ => {}
+            }
+        }
+
+        ImportanceScore {
+            score: score.min(1.0),
+            has_decisions,
+            has_errors,
+            has_tool_results,
+            has_preferences,
+            reason: if reasons.is_empty() {
+                "no significant indicators".to_string()
+            } else {
+                reasons.join("; ")
+            },
+        }
+    }
+
+    /// Score all messages and return sorted by importance
+    pub fn score_all_messages(messages: &[Message]) -> Vec<(usize, ImportanceScore)> {
+        messages
+            .iter()
+            .enumerate()
+            .map(|(idx, msg)| (idx, Self::score_message(msg)))
+            .collect()
+    }
+
+    /// Get indices of messages that should be kept based on importance
+    pub fn get_important_indices(messages: &[Message], keep_ratio: f32) -> HashSet<usize> {
+        let scored = Self::score_all_messages(messages);
+        let mut sorted = scored;
+        sorted.sort_by(|a, b| b.1.score.partial_cmp(&a.1.score).unwrap());
+
+        let keep_count = (messages.len() as f32 * keep_ratio) as usize;
+        let mut indices = HashSet::new();
+
+        for (idx, _) in sorted.iter().take(keep_count) {
+            indices.insert(*idx);
+        }
+
+        indices
+    }
+}
+
+/// Compaction quality analyzer
+#[derive(Debug, Clone)]
+pub struct QualityAnalyzer;
+
+impl QualityAnalyzer {
+    /// Analyze the quality of a proposed compaction
+    pub fn analyze_quality(
+        messages: &[Message],
+        kept_indices: &HashSet<usize>,
+        topic_shifts: &[TopicShift],
+    ) -> CompactionQuality {
+        let total = messages.len() as f32;
+        let kept = kept_indices.len() as f32;
+        let dropped = total - kept;
+
+        // Calculate importance scores
+        let all_scores: Vec<f32> = messages
+            .iter()
+            .map(|msg| ImportanceScorer::score_message(msg).score)
+            .collect();
+
+        let kept_avg = if kept_indices.is_empty() {
+            0.0
+        } else {
+            let kept_sum: f32 = kept_indices.iter().map(|&idx| all_scores[idx]).sum();
+            kept_sum / kept_indices.len() as f32
+        };
+
+        let dropped_avg = if dropped == 0.0 {
+            0.0
+        } else {
+            let dropped_sum: f32 = all_scores
+                .iter()
+                .enumerate()
+                .filter(|(idx, _)| !kept_indices.contains(idx))
+                .map(|(_, &score)| score)
+                .sum();
+            dropped_sum / dropped
+        };
+
+        // Estimate information loss
+        let information_loss = 1.0 - (kept_avg / total.max(1.0));
+
+        // Important content preservation
+        let high_importance_count =
+            all_scores.iter().filter(|&&s| s >= IMPORTANCE_HIGH).count() as f32;
+        let high_importance_kept = kept_indices
+            .iter()
+            .filter(|&&idx| all_scores[idx] >= IMPORTANCE_HIGH)
+            .count() as f32;
+
+        let important_content_preserved = if high_importance_count == 0.0 {
+            1.0
+        } else {
+            high_importance_kept / high_importance_count
+        };
+
+        // Determine recommended action
+        let recommended_action = if important_content_preserved < 0.5 {
+            QualityAction::KeepMoreMessages
+        } else if topic_shifts.iter().any(|s| s.is_significant) {
+            QualityAction::UseTopicAwareSummarization
+        } else if dropped_avg > IMPORTANCE_MEDIUM && important_content_preserved < 0.7 {
+            QualityAction::KeepMoreMessages
+        } else {
+            QualityAction::Acceptable
+        };
+
+        CompactionQuality {
+            information_loss,
+            important_content_preserved,
+            topic_shifts_detected: topic_shifts.iter().filter(|s| s.is_significant).count(),
+            avg_importance_kept: kept_avg,
+            avg_importance_dropped: dropped_avg,
+            summary_quality_acceptable: important_content_preserved >= 0.7,
+            recommended_action,
+        }
+    }
+
+    /// Check if compaction should be skipped based on quality analysis
+    pub fn should_skip_compaction(quality: &CompactionQuality) -> bool {
+        quality.recommended_action == QualityAction::SkipCompaction
+            || quality.important_content_preserved < 0.3
+    }
+}
+
+/// Calculate similarity between two hashes (0.0 - 1.0, 1.0 = identical)
+fn hash_similarity(a: u64, b: u64) -> f32 {
+    let xor = a ^ b;
+    let bits = xor.count_ones() as f32;
+    1.0 - (bits / 64.0)
+}
+
 pub fn compacted_summary_text_block(summary: &str) -> String {
     format!("## Previous Conversation Summary\n\n{}\n\n---\n\n", summary)
 }
@@ -150,15 +676,64 @@ pub fn build_compaction_prompt(
     existing_summary: Option<&Summary>,
     max_prompt_chars: usize,
 ) -> String {
+    build_compaction_prompt_with_context(messages, existing_summary, max_prompt_chars, None, None)
+}
+
+/// Build compaction prompt with topic-aware summarization support
+pub fn build_compaction_prompt_with_context(
+    messages: &[Message],
+    existing_summary: Option<&Summary>,
+    max_prompt_chars: usize,
+    topic_shifts: Option<&[TopicShift]>,
+    adaptive_thresholds: Option<&AdaptiveThresholds>,
+) -> String {
+    let use_topic_aware = topic_shifts
+        .map(|shifts| shifts.iter().any(|s| s.is_significant))
+        .unwrap_or(false);
+
+    let prompt_template = if use_topic_aware {
+        TOPIC_AWARE_SUMMARY_PROMPT
+    } else {
+        SUMMARY_PROMPT
+    };
+
     let mut conversation_text = build_compaction_conversation_text(messages, existing_summary);
-    let overhead = SUMMARY_PROMPT.len() + 50;
+
+    // Add topic markers if topic-aware summarization is enabled
+    if let Some(shifts) = topic_shifts
+        && use_topic_aware
+    {
+        conversation_text.push_str("\n\n## Topic Boundaries Detected\n\n");
+        for (i, shift) in shifts.iter().enumerate() {
+            if shift.is_significant {
+                conversation_text.push_str(&format!(
+                    "- Topic {} starts at message {}\n",
+                    i + 1,
+                    shift.message_index
+                ));
+            }
+        }
+        conversation_text.push('\n');
+    }
+
+    // Add adaptive threshold info for the model
+    if let Some(thresholds) = adaptive_thresholds
+        && thresholds.is_complex_task
+    {
+        conversation_text.push_str(&format!(
+            "\n\n## Task Complexity: {:.0}% (complex task - preserve more detail)\n\n",
+            thresholds.task_complexity * 100.0
+        ));
+    }
+
+    let overhead = prompt_template.len() + 50;
     if conversation_text.len() + overhead > max_prompt_chars && max_prompt_chars > overhead {
         let budget = max_prompt_chars - overhead;
         conversation_text = truncate_str_boundary(&conversation_text, budget).to_string();
         conversation_text
             .push_str("\n\n... [earlier conversation truncated to fit context window]\n");
     }
-    format!("{}\n\n---\n\n{}", conversation_text, SUMMARY_PROMPT)
+    format!("{}\n\n---\n\n{}", conversation_text, prompt_template)
 }
 
 pub fn build_compaction_conversation_text(
@@ -489,7 +1064,7 @@ pub fn build_emergency_summary_text(
     }
 
     summary_parts.push(format!(
-        "**[Emergency compaction]** {} msgs dropped (~{}k → {}k tokens). Recent work above.\nDropped artifacts:",
+        "**[Emergency compaction]** {} messages were dropped (~{}k -> {}k tokens). Recent work above.\nDropped artifacts:",
         dropped_count,
         pre_tokens / 1000,
         token_budget / 1000,
@@ -499,10 +1074,12 @@ pub fn build_emergency_summary_text(
     let mut tool_names = HashSet::new();
     let mut user_goals = Vec::new();
     let mut key_decisions = Vec::new();
+    let mut lessons_learned = Vec::new();
     for msg in dropped_messages {
         collect_emergency_summary_hints(msg, &mut tool_names, &mut file_mentions);
         collect_user_goals(msg, &mut user_goals);
         collect_key_decisions(msg, &mut key_decisions);
+        collect_lessons_learned(msg, &mut lessons_learned);
     }
 
     if !user_goals.is_empty() {
@@ -516,6 +1093,11 @@ pub fn build_emergency_summary_text(
     if !key_decisions.is_empty() {
         key_decisions.truncate(5);
         summary_parts.push(format!("Key decisions made: {}", key_decisions.join("; ")));
+    }
+
+    if !lessons_learned.is_empty() {
+        lessons_learned.truncate(3);
+        summary_parts.push(format!("Lessons learned: {}", lessons_learned.join("; ")));
     }
 
     if !tool_names.is_empty() {
@@ -623,6 +1205,41 @@ fn collect_key_decisions(msg: &Message, decisions: &mut Vec<String>) {
                 }
             }
             _ => {}
+        }
+    }
+}
+
+/// Collect lessons learned from messages (workarounds, insights, gotchas)
+fn collect_lessons_learned(msg: &Message, lessons: &mut Vec<String>) {
+    for block in &msg.content {
+        if let ContentBlock::Text { text, .. } = block {
+            let lower = text.to_lowercase();
+
+            // Look for workarounds and insights
+            if lower.contains("workaround")
+                || lower.contains("lesson learned")
+                || lower.contains("gotcha")
+                || lower.contains("note: ")
+                || lower.contains("important: ")
+                || lower.contains("warning: ")
+            {
+                // Extract the relevant sentence
+                for line in text.lines() {
+                    let l = line.to_lowercase();
+                    if l.contains("workaround")
+                        || l.contains("lesson")
+                        || l.contains("gotcha")
+                        || l.contains("note:")
+                        || l.contains("important:")
+                        || l.contains("warning:")
+                    {
+                        let trimmed = line.trim().to_string();
+                        if trimmed.len() > 10 && trimmed.len() < 200 {
+                            lessons.push(trimmed);
+                        }
+                    }
+                }
+            }
         }
     }
 }
@@ -1093,7 +1710,9 @@ mod tests {
         assert!(summary.contains("previous"));
         assert!(summary.contains("2 messages were dropped"));
         assert!(summary.contains("Tools used: read"));
-        assert!(summary.contains("Files referenced: Cargo.toml, src/compaction.rs"));
+        assert!(summary.contains("Files:"));
+        assert!(summary.contains("Cargo.toml"));
+        assert!(summary.contains("src/compaction.rs"));
         assert!(!summary.contains("https://example.com"));
     }
 
@@ -1229,5 +1848,212 @@ mod tests {
     fn compact_file_list_empty() {
         let compact = compact_file_list(&[]);
         assert!(compact.is_empty());
+    }
+
+    // ========== New tests for enhanced compaction features ==========
+
+    #[test]
+    fn adaptive_thresholds_adjust_for_complex_tasks() {
+        let mut thresholds = AdaptiveThresholds::new();
+        assert_eq!(thresholds.compaction_threshold, COMPACTION_THRESHOLD);
+
+        // Simulate rapid context growth (complex task)
+        thresholds.update(0.3);
+        thresholds.update(0.5);
+        thresholds.update(0.7);
+
+        assert!(thresholds.is_complex_task);
+        assert!(thresholds.task_complexity > 0.5);
+        assert!(thresholds.compaction_threshold < COMPACTION_THRESHOLD);
+    }
+
+    #[test]
+    fn adaptive_thresholds_stay_within_bounds() {
+        let mut thresholds = AdaptiveThresholds::new();
+
+        // Extreme growth
+        thresholds.update(0.1);
+        thresholds.update(0.5);
+        thresholds.update(0.95);
+
+        assert!(thresholds.compaction_threshold >= ADAPTIVE_THRESHOLD_MIN);
+        assert!(thresholds.compaction_threshold <= ADAPTIVE_THRESHOLD_MAX);
+    }
+
+    #[test]
+    fn adaptive_thresholds_recommended_turns_for_complex_tasks() {
+        let mut thresholds = AdaptiveThresholds::new();
+        thresholds.is_complex_task = true;
+        thresholds.task_complexity = 0.8;
+
+        assert!(thresholds.recommended_recent_turns() > RECENT_TURNS_TO_KEEP);
+    }
+
+    #[test]
+    fn topic_detector_detects_shifts() {
+        let mut detector = TopicDetector::new();
+
+        // Add similar messages (same topic)
+        for _ in 0..5 {
+            assert!(!detector.add_message(0xABCD1234));
+        }
+
+        // Add very different messages (topic shift)
+        assert!(detector.add_message(0x00000001));
+        assert!(detector.has_topic_shifts());
+    }
+
+    #[test]
+    fn topic_detector_needs_minimum_messages() {
+        let mut detector = TopicDetector::new();
+
+        // Not enough messages to detect shifts
+        assert!(!detector.add_message(0x1234));
+        assert!(!detector.add_message(0x5678));
+        assert!(!detector.has_topic_shifts());
+    }
+
+    #[test]
+    fn importance_scorer_identifies_user_preferences() {
+        let msg = Message::user("You must use TypeScript and the error is critical");
+        let score = ImportanceScorer::score_message(&msg);
+
+        assert!(score.has_preferences);
+        assert!(score.has_errors);
+        assert!(score.score > IMPORTANCE_MEDIUM);
+    }
+
+    #[test]
+    fn importance_scorer_identifies_decisions() {
+        let mut msg = Message::user("");
+        msg.content = vec![ContentBlock::ToolUse {
+            id: "call_1".to_string(),
+            name: "write".to_string(),
+            input: serde_json::json!({"file_path": "src/main.rs"}),
+            thought_signature: None,
+        }];
+        let score = ImportanceScorer::score_message(&msg);
+
+        assert!(score.score > 0.0);
+        assert!(score.reason.contains("file modification"));
+    }
+
+    #[test]
+    fn importance_scorer_ranks_messages() {
+        let messages = vec![
+            Message::user("normal message"),
+            Message::user("This is required and must work correctly"),
+            Message::user("another normal message"),
+        ];
+
+        let indices = ImportanceScorer::get_important_indices(&messages, 0.5);
+        // Should include at least one message
+        assert!(!indices.is_empty());
+    }
+
+    #[test]
+    fn quality_analyzer_evaluates_compaction() {
+        let messages = vec![
+            Message::user("normal"),
+            Message::user("This must be preserved exactly"),
+            Message::user("another normal"),
+            Message::user("more normal content"),
+        ];
+
+        let mut kept = HashSet::new();
+        kept.insert(1); // Keep the important message
+
+        let quality = QualityAnalyzer::analyze_quality(&messages, &kept, &[]);
+
+        assert!(quality.important_content_preserved >= 0.5);
+        assert!(quality.avg_importance_kept > quality.avg_importance_dropped);
+    }
+
+    #[test]
+    fn quality_analyzer_recommends_keep_more_when_important_content_dropped() {
+        let messages = vec![
+            Message::user("This is required and critical"),
+            Message::user("normal message"),
+            Message::user("normal message 2"),
+        ];
+
+        let mut kept = HashSet::new();
+        kept.insert(1); // Keep only normal message
+
+        let quality = QualityAnalyzer::analyze_quality(&messages, &kept, &[]);
+
+        assert_eq!(quality.recommended_action, QualityAction::KeepMoreMessages);
+    }
+
+    #[test]
+    fn quality_analyzer_recommends_topic_aware_when_shifts_detected() {
+        let messages = vec![Message::user("normal")];
+        let kept = HashSet::from([0]);
+
+        let shifts = vec![TopicShift {
+            message_index: 5,
+            pre_shift_similarity: 0.8,
+            post_shift_similarity: 0.2,
+            shift_magnitude: 0.6,
+            is_significant: true,
+        }];
+
+        let quality = QualityAnalyzer::analyze_quality(&messages, &kept, &shifts);
+
+        assert_eq!(
+            quality.recommended_action,
+            QualityAction::UseTopicAwareSummarization
+        );
+    }
+
+    #[test]
+    fn hash_similarity_produces_valid_range() {
+        let sim = hash_similarity(0xFFFFFFFFFFFFFFFF, 0xFFFFFFFFFFFFFFFF);
+        assert!((sim - 1.0).abs() < 0.001);
+
+        let sim = hash_similarity(0xFFFFFFFFFFFFFFFF, 0x0000000000000000);
+        assert!((sim - 0.0).abs() < 0.001);
+    }
+
+    #[test]
+    fn collect_lessons_learned_finds_workarounds() {
+        let msg = Message::user("Important: we found a workaround for the race condition");
+        let mut lessons = Vec::new();
+
+        collect_lessons_learned(&msg, &mut lessons);
+
+        assert!(!lessons.is_empty());
+        assert!(lessons[0].contains("workaround"));
+    }
+
+    #[test]
+    fn build_compaction_prompt_with_topic_shifts() {
+        let messages = vec![Message::user("test")];
+        let shifts = vec![TopicShift {
+            message_index: 5,
+            pre_shift_similarity: 0.8,
+            post_shift_similarity: 0.2,
+            shift_magnitude: 0.6,
+            is_significant: true,
+        }];
+
+        let prompt =
+            build_compaction_prompt_with_context(&messages, None, 10_000, Some(&shifts), None);
+
+        assert!(prompt.contains("Topic Boundaries Detected"));
+        assert!(prompt.contains(TOPIC_AWARE_SUMMARY_PROMPT));
+    }
+
+    #[test]
+    fn build_compaction_prompt_with_adaptive_thresholds() {
+        let messages = vec![Message::user("test")];
+        let mut thresholds = AdaptiveThresholds::new();
+        thresholds.is_complex_task = true;
+        thresholds.task_complexity = 0.8;
+
+        let prompt =
+            build_compaction_prompt_with_context(&messages, None, 10_000, None, Some(&thresholds));
+
+        assert!(prompt.contains("Task Complexity"));
     }
 }

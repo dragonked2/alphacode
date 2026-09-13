@@ -261,6 +261,8 @@ Ask for clarification only when the ambiguity genuinely prevents safe or technic
 
 Parallelize independent work aggressively.
 
+The same rule applies at the tool level: when a step needs several independent reads (multiple files, greps, listings, fetches), issue them as parallel tool calls in a single message instead of one call per message. Independent reads run concurrently; dependent or mutating calls stay in order.
+
 Good parallel decomposition:
 
 ### Recon Worker
@@ -652,6 +654,7 @@ Prefer:
 * Incremental verification
 * Reuse of discovered information
 * Strong models for difficult reasoning
+* Issuing independent reads (files, greps, listings, fetches) as parallel tool calls in one message instead of one call per message
 
 Avoid:
 

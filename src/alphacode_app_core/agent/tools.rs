@@ -43,6 +43,12 @@ pub(super) fn cap_tool_output_for_history(tool_name: &str, mut output: ToolOutpu
         tool_name,
         tail.trim_start(),
     );
+    // Surface the cut on the transcript row (see guard_context_overflow for
+    // the context-budget variant of the same marker).
+    output.title = Some(match output.title.take() {
+        Some(existing) => format!("{existing} · truncated {}k chars", dropped / 1000),
+        None => format!("truncated {}k chars", dropped / 1000),
+    });
     output
 }
 

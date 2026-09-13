@@ -326,6 +326,9 @@ impl Agent {
             Self::MAX_PROVIDER_ERROR_CONTINUATION_ATTEMPTS,
             error.lines().next().unwrap_or(error).trim()
         ));
+        // Count the recovery so the status line can show the session rode
+        // out a transient blip instead of the user assuming a hang.
+        super::note_provider_error_auto_recovered();
         // Do NOT inject a continuation message for 429/rate-limit errors.
         // Injecting a user message forces a brand-new full-context API request,
         // which wastes tokens and can trigger more 429s. Instead, the caller

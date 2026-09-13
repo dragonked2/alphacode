@@ -173,11 +173,14 @@ impl Agent {
                 messages_with_memory.push(memory_msg);
             }
 
-            logging::info(&format!(
-                "API call starting: {} messages, {} tools",
-                messages_with_memory.len(),
-                tools.len()
-            ));
+            crate::logging::info_throttled(
+                "api_call_starting",
+                &format!(
+                    "API call starting: {} messages, {} tools",
+                    messages_with_memory.len(),
+                    tools.len()
+                ),
+            );
             let api_start = Instant::now();
 
             // Publish status for TUI to show during Task execution
@@ -946,10 +949,10 @@ impl Agent {
                 break;
             }
 
-            logging::info(&format!(
-                "Turn has {} tool calls to execute",
-                tool_calls.len()
-            ));
+            crate::logging::info_throttled(
+                "turn_tool_call_count",
+                &format!("Turn has {} tool calls to execute", tool_calls.len()),
+            );
 
             // If provider handles tools internally (like Claude Code CLI), only run native tools locally
             if self.provider.handles_tools_internally() {
@@ -1187,7 +1190,14 @@ impl Agent {
                     title: None,
                 }));
 
-                logging::info(&format!("Tool starting: {}", tc.name));
+                // Tool names come from a small fixed set, so a static key
+                // per known tool is not possible; throttle by a single
+                // shared key instead — the paired "finished" line below
+                // still carries exact timing for every call.
+                crate::logging::info_throttled(
+                    "tool_starting",
+                    &format!("Tool starting: {}", tc.name),
+                );
                 let tool_start = Instant::now();
 
                 // Publish status for TUI to show during Task execution
@@ -1201,6 +1211,9 @@ impl Agent {
                 crate::telemetry::record_tool_call();
                 self.unlock_tools_if_needed(&tc.name);
                 let tool_elapsed = tool_start.elapsed();
+                // The finish line carries the wall-clock timing, so it stays
+                // unthrottled; the throttled start line above avoids the
+                // paired duplicate when many tools fire in quick succession.
                 logging::info(&format!(
                     "Tool finished: {} in {:.2}s",
                     tc.name,
@@ -1299,7 +1312,9 @@ impl Agent {
                             title: None,
                         }));
 
-                        let error_msg = format!("Error: {}", e);
+                        // Wrap with a tool-specific recovery hint before the
+                        // error enters history (see agent_facing_error).
+                        let error_msg = crate::tool::agent_facing_error(&tc.name, &e);
                         if trace {
                             eprintln!(
                                 "[trace] tool_exec_error name={} id={} {}",

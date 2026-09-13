@@ -185,7 +185,11 @@ impl Config {
             } else {
                 &self.display.performance
             },
-            self.display.animation_fps,
+            // Show the effective decorative-animation rate, not the raw config
+            // value: the runtime cap at 30 FPS means a configured 60 renders
+            // at 30, and `/config` should not report a number the terminal
+            // never displays.
+            self.display.animation_fps.min(30),
             self.display.redraw_fps,
             if self.display.copy_badge_alt_label.trim().is_empty() {
                 "auto"

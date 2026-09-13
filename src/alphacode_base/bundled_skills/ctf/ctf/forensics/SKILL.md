@@ -1,473 +1,232 @@
-# CTF Forensics Skill
+# CTF Forensics — Speed-First
 
-## Speed-First Approach: Solve forensics challenges in <10 minutes
-
-### Phase 1: Instant Classification (<2 minutes)
+## Instant Classification
 ```bash
-FILE=$1
-
-# Basic info
-file $FILE
-ls -la $FILE
-
-# Quick strings (flag patterns)
-strings $FILE | grep -iE 'flag\{|ctf\{|CTF\{|FLAG\{'
-
-# Entropy check (high = encrypted/compressed)
+FILE=$1; file $FILE; strings $FILE | grep -iE 'flag\{|ctf\{|HTB\{'
 python3 -c "
-import math
-data=open('$FILE','rb').read()
-freq=[data.count(bytes([i]))/len(data) for i in range(256)]
-e=-sum(f*math.log2(f) for f in freq if f>0)
-print(f'Entropy: {e:.2f} bits/byte')
+import math;d=open('$FILE','rb').read()
+f=[d.count(bytes([i]))/len(d) for i in range(256)]
+print(f'Entropy: {-sum(x*math.log2(x) for x in f if x>0):.2f}')
 "
-
-# File structure
-xxd -l64 $FILE
-binwalk $FILE
+xxd -l64 $FILE; binwalk $FILE
 ```
 
-### Phase 2: Tool Selection (<1 minute)
+## File Type → Tool Map
 ```
-MATCH file to tool:
-├── .pcap/.pcapng → tshark, wireshark, NetworkMiner, Zui(Brim)
-├── .jpg/.png/.gif → steghide, zsteg, exiftool, stegsolve
-├── .wav/.mp3 → steghide, SpectralView, Sonic Visualiser, multimon-ng
-├── .pdf → pdfid, pdftk, qpdf, pdf-parser
-├── .doc/.docx → oletools, olevba, docx2txt
-├── .zip/.rar/.7z → 7z, unzip, unrar, zipdetails
-├── .gz/.tar/.bz2 → tar, gzip, bzip2
-├── .raw/.dd → autopsy, binwalk, foremost
-├── .vmdk/.vdi → guestmount, qemu-nbd
-├── .evtx → EvtxECmd → Timeline Explorer
-├── .dmp/.raw (memory) → Volatility 3, MemProcFS
-├── .sqlite → DB Browser for SQLite
-├── .pst/.ost → Thunderbird, Outlook Forensics Wizard
-├── .log files → grep, text analysis, timeline
-└── Registry hives → Registry Explorer, RegRipper
+.pcap/.pcapng → tshark, tcpflow           .jpg/.png → steghide, zsteg, stegano
+.wav/.mp3 → steghide, SpectralView        .pdf → pdfid, pdftk, pdf-parser
+.doc/.docx → oletools, olevba             .zip/.rar → 7z, unzip, zipdetails
+.raw/.dd → autopsy, binwalk, foremost      .evtx → EvtxECmd
+.dmp → Volatility 3                        .ntfs → streams, mft2csv (sleuthkit)
 ```
 
-### Phase 3: Solve and Submit
-```
-IF flag found → submit immediately
-ELSE → try next tool (come back later if stuck)
-```
+## One-Shot Scripts
 
-## One-Liner Solvers
-
-### Quick File Analysis
+### Full Extraction
 ```bash
-FILE=$1
-echo "=== File Type ===" && file $FILE
-echo "=== Strings (flag) ===" && strings $FILE | grep -i 'flag{'
-echo "=== Strings (long) ===" && strings -n8 $FILE | head -20
-echo "=== Binwalk ===" && binwalk $FILE
-echo "=== Exiftool ===" && exiftool $FILE 2>/dev/null
-echo "=== Hex (first 128 bytes) ===" && xxd -l128 $FILE
+FILE=$1; OUTDIR="ext_$(basename $FILE)"; mkdir -p $OUTDIR
+strings -n8 $FILE > $OUTDIR/str.txt
+strings $FILE | grep -iE 'flag\{|ctf\{' > $OUTDIR/flags.txt
+binwalk -e $FILE -C $OUTDIR 2>/dev/null; exiftool $FILE > $OUTDIR/meta.txt 2>/dev/null
+unzip -o $FILE -d $OUTDIR/zip 2>/dev/null; 7z x $FILE -o$OUTDIR/7z 2>/dev/null
 ```
 
-### Quick Steganography Check
+### PCAP Extraction
 ```bash
-FILE=$1
-echo "=== Exiftool ===" && exiftool $FILE
-echo "=== Strings ===" && strings -n8 $FILE | head -20
-echo "=== Binwalk ===" && binwalk $FILE
-echo "=== Steghide (empty password) ===" && steghide extract -sf $FILE -f -p "" 2>/dev/null
-echo "=== Zsteg (PNG/BMP) ===" && zsteg $FILE 2>/dev/null | head -10
-echo "=== Stegsolve check needed ==="
+FILE=$1; OUTDIR="pcap_$(basename $FILE .pcap)"; mkdir -p $OUTDIR
+capinfos $FILE > $OUTDIR/info.txt
+tshark -r $FILE --export-objects http,$OUTDIR/http 2>/dev/null
+tshark -r $FILE --export-objects smb,$OUTDIR/smb 2>/dev/null
+tshark -r $FILE -Y "dns" -T fields -e dns.qry.name > $OUTDIR/dns.txt
+tshark -r $FILE -Y "http.request.method==POST" -T fields -e http.file_data > $OUTDIR/post.txt
 ```
 
-### Quick PCAP Analysis
+### Image Steg Suite
 ```bash
-FILE=$1
-echo "=== Basic Info ===" && capinfos $FILE
-echo "=== Protocol Hierarchy ===" && tshark -r $FILE -q -z io,phs
-echo "=== HTTP Objects ===" && tshark -r $FILE --export-objects http,/tmp/pcap_http
-echo "=== DNS Queries ===" && tshark -r $FILE -Y "dns.qry.name" -T fields -e dns.qry.name | sort -u
-echo "=== Strings (flag) ===" && strings $FILE | grep -i 'flag{'
-echo "=== Credential Search ===" && tshark -r $FILE -Y "http.request.method==POST" -T fields -e http.file_data
-```
-
-### Quick PDF Analysis
-```bash
-FILE=$1
-echo "=== PDFID ===" && python3 pdfid.py $FILE
-echo "=== Strings ===" && strings -n8 $FILE | head -20
-echo "=== Extract Objects ===" && python3 pdf-parser.py --objects $FILE
-echo "=== Extract Streams ===" && python3 pdf-parser.py --streams $FILE
-```
-
-### Quick ZIP Analysis
-```bash
-FILE=$1
-echo "=== Info ===" && unzip -l $FILE
-echo "=== Extract ===" && unzip -o $FILE -d extracted/
-echo "=== Check for encryption ===" && unzip -l $FILE | grep -i 'encrypted'
-echo "=== Check for nested files ===" && find extracted/ -type f | xargs file
-echo "=== Hidden files ===" && find extracted/ -name ".*" -type f
-```
-
-## Automated Extraction Scripts
-
-### One-Command Forensics Suite
-```bash
-#!/bin/bash
-FILE=$1
-OUTDIR="extracted_$(basename $FILE)"
-mkdir -p $OUTDIR
-
-# Extract strings
-strings -n8 $FILE > $OUTDIR/strings.txt
-strings $FILE | grep -iE 'flag\{|ctf\{' > $OUTDIR/flag_strings.txt
-
-# Extract embedded files
-binwalk -e $FILE -C $OUTDIR 2>/dev/null
-
-# Extract metadata
-exiftool $FILE > $OUTDIR/metadata.txt 2>/dev/null
-
-# Extract from archives
-unzip -o $FILE -d $OUTDIR/zip_extract 2>/dev/null
-7z x $FILE -o$OUTDIR/7z_extract 2>/dev/null
-
-# Extract from PDF
-python3 pdf-parser.py --all $FILE > $OUTDIR/pdf_objects.txt 2>/dev/null
-
-echo "Extraction complete. Check $OUTDIR/"
-ls -la $OUTDIR/
-```
-
-### Network Forensics Suite
-```bash
-#!/bin/bash
-FILE=$1
-OUTDIR="pcap_$(basename $FILE .pcap)"
-mkdir -p $OUTDIR
-
-# Basic info
-capinfos $FILE > $OUTDIR/capinfos.txt
-
-# Protocol analysis
-tshark -r $FILE -q -z io,phs > $OUTDIR/protocol_hierarchy.txt
-
-# Export HTTP objects
-tshark -r $FILE --export-objects http,$OUTDIR/http_objects 2>/dev/null
-
-# Export DNS
-tshark -r $FILE -Y "dns" -T fields -e dns.qry.name > $OUTDIR/dns_queries.txt
-
-# Export files
-tshark -r $FILE --export-objects smb,$OUTDIR/smb_objects 2>/dev/null
-tshark -r $FILE --export-objects imf,$OUTDIR/email_objects 2>/dev/null
-
-# Extract all strings
-strings $FILE > $OUTDIR/all_strings.txt
-strings $FILE | grep -iE 'flag\{|ctf\{' > $OUTDIR/flag_strings.txt
-
-echo "Analysis complete. Check $OUTDIR/"
-```
-
-### Image Forensics Suite
-```bash
-#!/bin/bash
-FILE=$1
-OUTDIR="image_$(basename $FILE .jpg)"
-mkdir -p $OUTDIR
-
-# Metadata
-exiftool $FILE > $OUTDIR/metadata.txt
-
-# Extract strings
-strings -n8 $FILE > $OUTDIR/strings.txt
-
-# Check for embedded files
-binwalk $FILE > $OUTDIR/binwalk.txt
-
-# Try steghide with empty password
-steghide extract -sf $FILE -f -p "" -xf $OUTDIR/steghide_empty.jpg 2>/dev/null
-
-# Try zsteg (PNG/BMP)
-zsteg $FILE > $OUTDIR/zsteg.txt 2>/dev/null
-
-# Try stegsolve (manual check)
-echo "Check $OUTDIR/stegsolve.png with Stegsolve"
-
-# Try other tools
-steghide extract -sf $FILE -f -p "password" 2>/dev/null
+FILE=$1; OUTDIR="steg_$(basename $FILE)"; mkdir -p $OUTDIR
+exiftool $FILE > $OUTDIR/meta.txt
+steghide extract -sf $FILE -f -p "" -xf $OUTDIR/empty.jpg 2>/dev/null
+zsteg -a $FILE > $OUTDIR/zsteg.txt 2>/dev/null
 stegseek $FILE /usr/share/wordlists/rockyou.txt 2>/dev/null
-
-echo "Analysis complete. Check $OUTDIR/"
 ```
 
-## File Type Specific Approaches
-
-### PCAP Analysis
+### Memory & Event Logs
 ```bash
 FILE=$1
-
-# Protocol hierarchy
-tshark -r $FILE -q -z io,phs
-
-# HTTP traffic
-tshark -r $FILE -Y "http" -T fields -e http.request.full_uri -e http.file_data
-
-# DNS queries (look for C2, tunneling)
-tshark -r $FILE -Y "dns.qry.name" -T fields -e dns.qry.name | sort -u
-
-# Export all files
-tshark -r $FILE --export-objects http,/tmp/http_export
-tshark -r $FILE --export-objects smb,/tmp/smb_export
-
-# Follow TCP stream
-tshark -r $FILE -q -z follow,tcp,ascii,0
-
-# Find credentials (HTTP POST)
-tshark -r $FILE -Y "http.request.method==POST" -T fields -e http.file_data
-
-# Extract from specific protocols
-tshark -r $FILE -Y "ftp" -T fields -e ftp.request.command -e ftp.request.arg
-tshark -r $FILE -Y "telnet" -T fields -e telnet.data
-
-# VoIP analysis
-tshark -r $FILE -Y "sip" -T fields -e sip.Method
-tshark -r $FILE -Y "rtp" -T fields -e rtp.payload
-
-# Suspicious traffic patterns
-tshark -r $FILE -Y "dns.qry.name.len > 50" -T fields -e dns.qry.name | sort -u  # DGA domains
-tshark -r $FILE -Y "http.user_agent contains 'python'" -T fields -e http.user_agent  # Python HTTP client
-tshark -r $FILE -Y "http.request.uri contains 'base64'" -T fields -e http.request.uri  # Encoded data
-```
-
-### Image Steganography
-```bash
-FILE=$1
-
-# Metadata
-exiftool $FILE
-strings -n8 $FILE | head -20
-
-# Steghide
-steghide extract -sf $FILE -f -p ""
-steghide extract -sf $FILE -p "password"
-
-# Zsteg (PNG/BMP)
-zsteg $FILE
-
-# Stegsolve (manual)
-echo "Load in Stegsolve and check: Bit planes, Data extract, Frame browser"
-
-# F5-steganography
-java Extract $FILE
-
-# OutGuess
-outguess -r $FILE output.txt
-
-# Jsteg
-jsteg reveal $FILE output.txt
-
-# Sonic Visualiser (audio)
-# Load audio, add spectrogram, look for hidden patterns
-
-# Audio spectrogram analysis
-sox $FILE -n spectrogram -o spectrogram.png  # Create spectrogram
-# Look for flag text in spectrogram image
-```
-
-### PDF Analysis
-```bash
-FILE=$1
-
-# PDF structure
-python3 pdfid.py $FILE
-
-# Extract objects
-python3 pdf-parser.py --all $FILE
-
-# Extract streams
-python3 pdf-parser.py --objects --filter $FILE
-
-# Check for JavaScript
-python3 pdf-parser.py --objects --javascript $FILE
-
-# Check for embedded files
-python3 pdf-parser.py --objects --embedded $FILE
-
-# Extract images
-pdfimages -j $FILE extracted_images/
-
-# Extract text
-pdftotext $FILE output.txt
-
-# Check for encryption
-qpdf --check $FILE
-```
-
-### Archive Analysis
-```bash
-FILE=$1
-
-# List contents
-unzip -l $FILE
-
-# Extract
-unzip -o $FILE -d extracted/
-
-# Check for encryption
-unzip -l $FILE | grep -i "encrypted"
-
-# Check for nested archives
-find extracted/ -type f | xargs file | grep -i "zip\|rar\|7z\|gzip"
-
-# Check for hidden files
-find extracted/ -name ".*" -type f
-
-# Extract with password
-unzip -P "password" $FILE
-
-# ZIP details
-zipdetails $FILE
-
-# ZIP slip vulnerability check
-python3 -c "
-import zipfile, sys
-with zipfile.ZipFile(sys.argv[1]) as z:
-    for name in z.namelist():
-        if '..' in name:
-            print(f'SLIP: {name}')
-" $FILE
-```
-
-### Memory Dump Analysis
-```bash
-FILE=$1
-
-# Volatility 3 analysis
-vol -f $FILE windows.info
-vol -f $FILE windows.pslist
-vol -f $FILE windows.pstree
-vol -f $FILE windows.netscan
-vol -f $FILE windows.cmdline
-vol -f $FILE windows.consoles
-vol -f $FILE windows.dlllist
-vol -f $FILE windows.handles
-vol -f $FILE windows.malfind
-vol -f $FILE windows.hashdump
-vol -f $FILE windows.lsadump
-vol -f $FILE timeliner
-
-# MemProcFS (mount as filesystem)
-memprocfs -device $FILE -mount /tmp/memproc
-ls /tmp/memproc/pid_*/
-
-# Find strings
-strings $FILE | grep -iE 'flag\{|ctf\{|password|key'
-
-# Find processes
-vol -f $FILE windows.pslist | grep -i "cmd\|powershell\|chrome\|firefox"
-```
-
-### Event Log Analysis
-```bash
-FILE=$1
-
-# Parse with EvtxECmd
+vol -f $FILE windows.info windows.pslist windows.netscan windows.malfind
+vol -f $FILE windows.hashdump timeliner
 EvtxECmd.exe -f $FILE --csv output/ --csvf timeline.csv
-
-# Key Event IDs
-# 4624 - Successful logon
-# 4625 - Failed logon (brute force)
-# 4688 - Process creation
-# 7045 - Service installation
-# 4698 - Scheduled task
-# 1102 - Log cleared
-
-# Quick search
-grep -i "4625" $FILE  # Brute force
-grep -i "4688" $FILE  # Process creation
-grep -i "7045" $FILE  # Service installation
-grep -i "1102" $FILE  # Log cleared
+# Key IDs: 4624=logon, 4688=process, 7045=service, 1102=cleared
 ```
 
-## Common Patterns
+## Advanced Steganography
 
-### Pattern: Hidden in Metadata
-```
-Detection: Exiftool shows unusual fields
-Attack:
-1. Check Comment, UserComment, ImageDescription fields
-2. Check GPS coordinates for flag location
-3. Check Artist, Copyright fields
-4. Check IPTC/XMP data
-```
-
-### Pattern: LSB Steganography
-```
-Detection: Image looks normal but zsteg finds data
-Attack:
-1. Use zsteg for PNG/BMP
-2. Use stegsolve to view bit planes
-3. Check LSB of each channel (R, G, B, A)
-4. Try different bit orders (MSB/LSB)
+### F5 (JPEG DCT Coefficients)
+```bash
+FILE=$1
+python3 -c "
+from PIL import Image; import numpy as np; from scipy import fft
+img=np.array(Image.open('$FILE'))
+for ch in range(3):
+    d=np.abs(fft.fft2(img[:,:,ch]))
+    print(f'Ch{ch}: DFT mean={d.mean():.2f} std={d.std():.2f}')
+" 2>/dev/null
+# java -jar StegExpose.jar -a -t $FILE
 ```
 
-### Pattern: File Carving
-```
-Detection: Binwalk finds embedded files
-Attack:
-1. Use binwalk -e to extract
-2. Use foremost for deleted files
-3. Check file headers for magic bytes
-4. Try different carving tools
+### OutGuess (JPEG)
+```bash
+FILE=$1; outguess -r $FILE $FILE.out 2>/dev/null; strings $FILE.out | grep -iE 'flag\{|ctf\{'
 ```
 
-### Pattern: Network Extraction
-```
-Detection: PCAP contains file transfers
-Attack:
-1. Export HTTP objects
-2. Export SMB objects
-3. Follow TCP streams
-4. Check DNS for tunneling
-5. Extract from VoIP calls
-```
-
-### Pattern: Hidden in Plain Sight
-```
-Detection: File contains obvious but obfuscated data
-Attack:
-1. Check for base64 strings
-2. Check for hex-encoded data
-3. Check for XOR encoding
-4. Check for simple ciphers (ROT13, etc.)
+### zsteg LSB Variants (PNG/BMP)
+```bash
+FILE=$1
+zsteg -a $FILE 2>/dev/null                      # all methods
+zsteg $FILE -b 1 -c b1,rgb,lsb 2>/dev/null      # bit 1 LSB
+zsteg $FILE -b 2 -c b2,rgba,lsb 2>/dev/null     # bit 2 RGBA
+python3 -c "
+from PIL import Image; img=Image.open('$FILE'); p=list(img.getdata())
+bits=''.join([str((i[0]>>1)&1) for i in p])
+for i in range(0,len(bits)-8,8): print(chr(int(bits[i:i+8],2)),end='')
+" 2>/dev/null
 ```
 
-### Pattern: Ransomware Artifacts
-```
-Detection: .locked/.encrypted extensions, ransom notes
-Attack:
-1. Check for shadow copy deletion commands
-2. Check event logs for mass file modifications
-3. Extract encryption keys from memory
-4. Analyze ransomware sample for weaknesses
+### Stegano Module
+```bash
+pip install stegano 2>/dev/null; FILE=$1
+python3 -c "from stegano import lsb; print('[LSB]', lsb.reveal('$FILE'))" 2>/dev/null
 ```
 
-### Pattern: Malware C2 Communication
+## Network Forensics
+
+### DNS Tunneling
+```bash
+FILE=$1
+tshark -r $FILE -Y "dns.qry.name" -T fields -e dns.qry.name | sort -u > dns_q.txt
+python3 -c "
+import base64
+with open('dns_q.txt') as f:
+    for l in f:
+        p=l.strip().split('.')
+        if max(len(x) for x in p)>30:
+            print('[TUNNEL]', l.strip())
+            try: print('  Decoded:', base64.b32decode(''.join(p[:-2]).upper()+'=='))
+            except: pass
+"
 ```
-Detection: Unusual DNS queries, HTTP POST with encoded data
-Attack:
-1. Extract DGA domains from PCAP
-2. Decode Base64/Hex encoded data in HTTP
-3. Identify C2 protocol patterns
-4. Extract IOCs for threat intel
+
+### ICMP Tunneling
+```bash
+FILE=$1
+tshark -r $FILE -Y "icmp.type==8" -T fields -e data.data | tr -d '\n' > icmp.txt
+python3 -c "
+import binascii
+d=open('icmp.txt').read().replace('\n','')
+if d:
+    try: print('[+] ICMP:', binascii.unhexlify(d))
+    except: print('[+] Hex:', d[:200])
+"
+```
+
+### Certificate Transparency
+```bash
+DOMAIN=$1
+curl -s "https://crt.sh/?q=%25.$DOMAIN&output=json" | python3 -m json.tool | grep name_value
+```
+
+## Disk Forensics
+
+### NTFS Alternate Data Streams & $MFT
+```bash
+FILE=$1
+fls -r $FILE 2>/dev/null | head -40           # lists ADS (colon in name)
+istat $FILE <inode>                           # inode details
+mft2csv.exe -d $FILE -o mft.csv              # TZWorks
+python3 -c "
+from mft import MFTParser
+with open('$FILE','rb') as f:
+    for e in MFTParser(f.read()):
+        if e.filename: print(f'{e.ref_number:10d} {e.filename}')
+" 2>/dev/null
+```
+
+### File Carving
+```bash
+FILE=$1; OUTDIR="carved_$(basename $FILE)"; mkdir -p $OUTDIR
+foremost -i $FILE -o $OUTDIR/ 2>/dev/null; binwalk -e $FILE -C $OUTDIR/ 2>/dev/null
+python3 -c "
+import re; data=open('$FILE','rb').read()
+for ext,tag,stop in [('pdf',b'%PDF',b'%%EOF'),('png',b'\x89PNG',b'IEND'),('zip',b'PK\x03\x04',b'PK\x05\x06')]:
+    for m in re.finditer(tag,data):
+        s=m.start(); e=data.find(stop,s)
+        if e>0: open(f'{s}_c.{ext}','wb').write(data[s:e+len(stop)]); print(f'[+] {ext}@{s}')
+"
+```
+
+## Real-World CTF Examples
+
+### PicoCTF — L33t St3g4n0 (zsteg)
+```bash
+zsteg challenge.png -a 2>/dev/null | grep -i "flag\|ctf\|pico"
+```
+
+### PicoCTF — Packets Primer (PCAP)
+```bash
+tshark -r challenge.pcap --export-objects http,exported/
+strings exported/* | grep -i "flag\|pico"
+```
+
+### DEFCON 29 — Bonnyr (Memory)
+```bash
+vol3 -f mem.dmp windows.pslist | grep -i suspicious
+vol3 -f mem.dmp windows.malfind --dump
+```
+
+### SANS Holiday Hack 2023 — Glamtastic Goals
+```bash
+ffmpeg -i goal.mp4 -vf "select=eq(n\,42)" -vframes 1 f.png; zsteg f.png -a 2>/dev/null
+```
+
+### HTB Steganography
+```bash
+steghide extract -sf image.jpg -p "" 2>/dev/null
+stegseek image.jpg /usr/share/wordlists/rockyou.txt 2>/dev/null
+tail -c 2048 image.jpg | strings   # data after EOF
+```
+
+### Flare-On — Malware B64
+```bash
+python3 -c "
+import base64,re
+data=open('sample.bin','rb').read()
+for m in re.finditer(b'[A-Za-z0-9+/]{20,}={0,2}',data):
+    try:
+        d=base64.b64decode(m.group())
+        if d.isprintable(): print('[B64]',d.decode())
+    except: pass
+"
+```
+
+## Pattern Quick Solves
+```
+Metadata → Check Comment, GPS, IPTC/XMP        (PicoCTF Stego-100)
+LSB → zsteg PNG/BMP, stegsolve bit planes       (PicoCTF m00nwalk)
+Carving → binwalk -e, foremost, magic bytes      (SANS Holiday Hack 2022)
+Network → Export HTTP/SMB, DNS tunnel            (DEFCON CTF Quals)
+Ransomware → .locked ext, shadow copy del        (SANS FOR508)
+C2 → DGA domains, base64 POST                   (Flare-On)
+```
+
+## Cloud/Container Forensics
+```bash
+docker cp CONTAINER:/path ./extracted; docker history IMAGE
+docker save IMAGE | tar -xf - --to-stdout | strings | grep -i 'flag\|password'
+kubectl get secrets -A; kubectl logs POD_NAME --previous
+curl -s http://169.254.169.254/latest/meta-data/
 ```
 
 ## Speed Metrics
 ```
-Average solve times (target):
-- Basic steganography: <3 minutes
-- PCAP file extraction: <5 minutes
-- PDF analysis: <5 minutes
-- Memory dump basics: <10 minutes
-- Complex steg: <15 minutes
-- Event log triage: <5 minutes
+Basic steg: <3min  |  PCAP: <5min  |  Memory: <10min  |  DNS tunnel: <5min  |  MFT: <5min
 ```

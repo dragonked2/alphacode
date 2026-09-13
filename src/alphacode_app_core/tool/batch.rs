@@ -302,7 +302,10 @@ impl Tool for BatchTool {
                 Err(e) => {
                     error_count += 1;
                     failed_tools.push(tool_name.clone());
-                    output.push_str(&format!("Error: {}", e));
+                    // Same recovery-hint treatment as top-level tool errors:
+                    // a sub-call that names its next step recovers in one
+                    // retry instead of two.
+                    output.push_str(&super::agent_facing_error(&tool_name, &e));
                 }
             }
             output.push_str("\n\n");

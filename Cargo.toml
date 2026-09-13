@@ -1,6 +1,6 @@
 [package]
 name = "alphacode"
-version = "1.0.34"
+version = "1.0.40"
 authors = ["Ali Essam <tlbbeg313@gmail.com>"]
 description = "A coding agent for the terminal. Multi-model orchestration, swarm coordination, and 40+ tools working together — built so the changes it makes are the smallest ones that solve the problem."
 edition = "2024"
@@ -53,6 +53,7 @@ anyhow = "1"
 libc = "0.2"
 chrono = { version = "0.4", features = ["serde"] }
 sha2 = "0.10"
+hmac = "0.12"
 hex = "0.4"
 open = "5"
 uuid = { version = "1", features = ["v4", "v5"] }

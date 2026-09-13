@@ -331,7 +331,17 @@ impl MainBrain {
         item: &str,
         checks: Vec<(super::ReviewCategory, bool, String)>,
     ) -> ReviewResult {
-        let result = self_review::run_review(item, checks);
+        // Convert to new tuple format with Medium severity
+        let checks_with_severity: Vec<(
+            super::ReviewCategory,
+            bool,
+            super::ReviewSeverity,
+            String,
+        )> = checks
+            .into_iter()
+            .map(|(cat, passed, detail)| (cat, passed, super::ReviewSeverity::Medium, detail))
+            .collect();
+        let result = self_review::run_review(item, checks_with_severity, Vec::new());
         // If problems found, compress them as bugs.
         for task in &result.tasks_created {
             let _ = self.memory.append_bug(task);

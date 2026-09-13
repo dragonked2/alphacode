@@ -227,11 +227,14 @@ impl Agent {
                 messages_with_memory.push(memory_msg);
             }
 
-            logging::info(&format!(
-                "API call starting: {} messages, {} tools",
-                messages_with_memory.len(),
-                tools.len()
-            ));
+            crate::logging::info_throttled(
+                "api_call_starting",
+                &format!(
+                    "API call starting: {} messages, {} tools",
+                    messages_with_memory.len(),
+                    tools.len()
+                ),
+            );
             let api_start = Instant::now();
 
             let stamped = crate::config::config()
@@ -1278,10 +1281,10 @@ impl Agent {
                 break;
             }
 
-            logging::info(&format!(
-                "Turn has {} tool calls to execute",
-                tool_calls.len()
-            ));
+            crate::logging::info_throttled(
+                "turn_tool_call_count",
+                &format!("Turn has {} tool calls to execute", tool_calls.len()),
+            );
 
             if self.provider.handles_tools_internally() {
                 tool_calls.retain(|tc| ALPHACODE_NATIVE_TOOLS.contains(&tc.name.as_str()));
@@ -1405,7 +1408,12 @@ impl Agent {
                     eprintln!("[trace] tool_exec_start name={} id={}", tc.name, tc.id);
                 }
 
-                logging::info(&format!("Tool starting: {}", tc.name));
+                // Shared throttle key: the paired "finished" line below
+                // still carries exact per-call timing.
+                crate::logging::info_throttled(
+                    "tool_starting",
+                    &format!("Tool starting: {}", tc.name),
+                );
                 crate::session_metrics::record_activity(&self.session.id);
                 if inline_output_tap {
                     // Surface the tool execution on the coordinator's inline
@@ -1521,7 +1529,10 @@ impl Agent {
                             tool_results_dirty = true;
                         }
                         Err(e) => {
-                            let error_msg = format!("Error: {}", e);
+                            // Wrap with a tool-specific recovery hint before the
+                            // error enters history, so the model's next attempt
+                            // targets the fix instead of repeating the call.
+                            let error_msg = crate::tool::agent_facing_error(&tc.name, &e);
                             let _ = event_tx.send(ServerEvent::ToolDone {
                                 id: tc.id.clone(),
                                 name: tc.name.clone(),
@@ -1576,6 +1587,8 @@ impl Agent {
                         }],
                         Some(tool_elapsed.as_millis() as u64),
                     );
+                    // This branch saves and returns immediately, so the
+                    // dirty flag would never be read; persist directly.
                     self.session.save()?;
 
                     // Add results for any remaining tools too
@@ -1626,7 +1639,7 @@ impl Agent {
                         }],
                         Some(tool_elapsed.as_millis() as u64),
                     );
-                    self.session.save()?;
+                    tool_results_dirty = true;
 
                     self.background_tool_signal.reset();
                 }

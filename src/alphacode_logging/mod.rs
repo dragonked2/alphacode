@@ -256,6 +256,45 @@ pub fn info(message: &str) {
     }
 }
 
+/// Minimum interval between two emissions of the same throttled log key.
+const THROTTLE_INTERVAL: std::time::Duration = std::time::Duration::from_secs(1);
+
+/// Last-emission timestamps for [`info_throttled`], keyed by a static label.
+/// Bounded implicitly by the number of distinct call-site keys (small, static).
+static THROTTLE_STATE: std::sync::LazyLock<
+    std::sync::Mutex<std::collections::HashMap<&'static str, std::time::Instant>>,
+> = std::sync::LazyLock::new(|| std::sync::Mutex::new(std::collections::HashMap::new()));
+
+/// Log `message` at INFO level, but at most once per [`THROTTLE_INTERVAL`]
+/// per `key`. Cheap no-op (a single `Instant::now` + map probe) when the
+/// interval has not elapsed. Use this in hot loops (per-tool-call lifecycle
+/// lines, per-iteration turn summaries) where the content repeats and the
+/// wall-clock timing it carries is still served by a non-throttled line
+/// elsewhere.
+///
+/// The first call for a key always logs, so one-off keys pay only map-insert
+/// cost. The message argument is not formatted by the caller until this
+/// returns true — gate the `format!` on the returned bool.
+pub fn info_throttled(key: &'static str, message: &str) -> bool {
+    let now = std::time::Instant::now();
+    let should_log = {
+        let Ok(mut state) = THROTTLE_STATE.lock() else {
+            return false;
+        };
+        match state.get(key) {
+            Some(last) if now.duration_since(*last) < THROTTLE_INTERVAL => false,
+            _ => {
+                state.insert(key, now);
+                true
+            }
+        }
+    };
+    if should_log {
+        info(message);
+    }
+    should_log
+}
+
 /// Log an error message
 #[expect(
     clippy::collapsible_if,
