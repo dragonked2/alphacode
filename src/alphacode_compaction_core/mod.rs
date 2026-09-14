@@ -315,8 +315,8 @@ impl AdaptiveThresholds {
         self.compaction_threshold = (COMPACTION_THRESHOLD + adjustment)
             .clamp(ADAPTIVE_THRESHOLD_MIN, ADAPTIVE_THRESHOLD_MAX);
 
-        self.critical_threshold = (self.compaction_threshold + 0.10)
-            .clamp(ADAPTIVE_THRESHOLD_MIN, 0.98);
+        self.critical_threshold =
+            (self.compaction_threshold + 0.10).clamp(ADAPTIVE_THRESHOLD_MIN, 0.98);
     }
 
     /// Record a compaction event

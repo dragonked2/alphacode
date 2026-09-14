@@ -4,6 +4,15 @@ All notable changes to Alphacode are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project
 adheres to [Semantic Versioning](https://semver.org/).
 
+## [1.0.41] - 2026-09-14
+
+Release hygiene: code formatting fix, dead code cleanup, and compilation verification.
+
+### Fixed
+
+- **`cargo fmt` failure** (`alphacode_compaction_core/mod.rs:318`): reformatted `critical_threshold` assignment to match rustfmt's expected line breaking.
+- **6 stale orphan files removed** (`message_notifications.rs`, `usage_display.rs`, `usage_openai.rs`, `session_active_pids.rs`, `telemetry_state.rs`, `protocol_memory.rs`): dead duplicates from pre-refactoring, all functionality already lives in the correct modules (`alphacode_base`, `alphacode_storage`, `alphacode_telemetry_core`, `alphacode_protocol`).
+
 ## [1.0.40] - 2026-09-14
 
 CTF solving overhaul: mandatory vulnerability batteries, signal-to-action reflexes, hypothesis kill tracking, httpflow reliability fixes, and hardened blind-oracle extraction — informed by a full post-CTF retrospective on the TenantExchange 168-minute challenge.
