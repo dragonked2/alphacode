@@ -61,6 +61,8 @@ pub mod theme_detect;
 mod ui;
 mod ui_diff;
 pub mod ui_error_toast;
+#[path = "ui_transitions.rs"]
+pub mod ui_transitions;
 pub mod ui_frame_chrome;
 pub(crate) mod ui_todo_suppress;
 pub mod usage_overlay;

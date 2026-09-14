@@ -1,7 +1,40 @@
 use super::{InfoWidgetData, UsageInfo, UsageProvider};
 use crate::alphacode_tui::tui::color_support::rgb;
+use crate::alphacode_tui_style::palette::{Role, role_color};
+use crate::alphacode_tui_style::role::themed_rgb;
 use ratatui::prelude::*;
 use unicode_width::UnicodeWidthStr;
+
+/// Usage-level color shared by every limit/context bar.
+///
+/// Resolves through palette roles (`Error` → `Warning` → `Success`) so
+/// `/theme` retunes these bars along with the rest of the UI instead of
+/// leaving them as fixed literal RGB values that could clash with a light
+/// theme.
+fn usage_level_color(left_pct: u8) -> Color {
+    if left_pct <= 10 {
+        role_color(Role::Error) // Critical
+    } else if left_pct <= 25 {
+        themed_rgb(Role::Warning, (-10, -15, -30)) // Warning (warm orange)
+    } else if left_pct <= 50 {
+        role_color(Role::Warning) // Caution
+    } else if left_pct <= 75 {
+        themed_rgb(Role::Success, (-25, -10, 5)) // Good (softer green)
+    } else {
+        role_color(Role::Success) // Excellent
+    }
+}
+
+/// Track color for the unfilled portion of usage bars, resolved from the
+/// border role so light themes keep contrast.
+fn usage_track_color() -> Color {
+    themed_rgb(Role::Border, (-10, -10, 5))
+}
+
+/// Label color for usage bars, from the muted-text role.
+fn usage_label_color() -> Color {
+    role_color(Role::MutedText)
+}
 
 pub(super) fn render_usage_widget(data: &InfoWidgetData, inner: Rect) -> Vec<Line<'static>> {
     let Some(info) = &data.usage_info else {
@@ -19,7 +52,7 @@ pub(super) fn render_usage_widget(data: &InfoWidgetData, inner: Rect) -> Vec<Lin
                     format_tokens(info.input_tokens),
                     format_tokens(info.output_tokens)
                 ),
-                Style::default().fg(rgb(140, 140, 150)),
+                Style::default().fg(usage_label_color()),
             )])]
         }
         UsageProvider::CostBased => {
@@ -37,7 +70,7 @@ pub(super) fn render_usage_widget(data: &InfoWidgetData, inner: Rect) -> Vec<Lin
                         format_tokens(info.input_tokens),
                         format_tokens(info.output_tokens)
                     ),
-                    Style::default().fg(rgb(140, 140, 150)),
+                    Style::default().fg(usage_label_color()),
                 )]),
             ]
         }
@@ -62,7 +95,7 @@ pub(super) fn render_usage_widget(data: &InfoWidgetData, inner: Rect) -> Vec<Lin
                 lines.push(Line::from(vec![Span::styled(
                     format!("{} limits", label),
                     Style::default()
-                        .fg(rgb(140, 140, 150))
+                        .fg(usage_label_color())
                         .add_modifier(ratatui::style::Modifier::DIM),
                 )]));
             }
@@ -117,7 +150,7 @@ pub(super) fn render_usage_compact(info: &UsageInfo, width: u16) -> Vec<Line<'st
                 format_tokens(info.input_tokens),
                 format_tokens(info.output_tokens)
             ),
-            Style::default().fg(rgb(140, 140, 150)),
+            Style::default().fg(usage_label_color()),
         )])];
     }
 
@@ -140,7 +173,7 @@ pub(super) fn render_usage_compact(info: &UsageInfo, width: u16) -> Vec<Line<'st
         lines.push(Line::from(vec![Span::styled(
             format!("{} limits", label),
             Style::default()
-                .fg(rgb(140, 140, 150))
+                .fg(usage_label_color())
                 .add_modifier(ratatui::style::Modifier::DIM),
         )]));
     }
@@ -187,18 +220,8 @@ fn render_labeled_bar(
     reset_time: Option<&str>,
     width: u16,
 ) -> Line<'static> {
-    // Smooth gradient color based on usage level
-    let color = if left_pct <= 10 {
-        rgb(255, 80, 80) // Critical red
-    } else if left_pct <= 25 {
-        rgb(255, 120, 80) // Warning orange
-    } else if left_pct <= 50 {
-        rgb(255, 200, 100) // Caution yellow
-    } else if left_pct <= 75 {
-        rgb(150, 210, 130) // Good green
-    } else {
-        rgb(100, 220, 150) // Excellent green
-    };
+    // Smooth usage-level color shared with the context bar.
+    let color = usage_level_color(left_pct);
 
     const LABEL_WIDTH: usize = 7;
     const MIN_BAR_WIDTH: usize = 4;
@@ -270,9 +293,9 @@ fn render_labeled_bar(
     let bar_empty = "░".repeat(empty);
 
     Line::from(vec![
-        Span::styled(padded_label, Style::default().fg(rgb(140, 140, 150))),
+        Span::styled(padded_label, Style::default().fg(usage_label_color())),
         Span::styled(bar_filled, Style::default().fg(color)),
-        Span::styled(bar_empty, Style::default().fg(rgb(35, 38, 48))),
+        Span::styled(bar_empty, Style::default().fg(usage_track_color())),
         Span::styled(suffix, Style::default().fg(color)),
     ])
 }
@@ -453,17 +476,7 @@ pub(super) fn render_usage_pill(
         .round()
         .clamp(0.0, 100.0) as u8;
     let left_pct = 100u8.saturating_sub(used_pct);
-    let used_color = if left_pct <= 10 {
-        rgb(255, 80, 80) // Critical
-    } else if left_pct <= 25 {
-        rgb(255, 120, 80) // Warning
-    } else if left_pct <= 50 {
-        rgb(255, 200, 100) // Caution
-    } else if left_pct <= 75 {
-        rgb(150, 210, 130) // Good
-    } else {
-        rgb(100, 220, 150) // Excellent
-    };
+    let used_color = usage_level_color(left_pct);
 
     let empty_cells = bar_width.saturating_sub(used_cells);
     let mut spans = Vec::new();
@@ -474,7 +487,7 @@ pub(super) fn render_usage_pill(
     if empty_cells > 0 {
         spans.push(Span::styled(
             "░".repeat(empty_cells),
-            Style::default().fg(rgb(40, 42, 50)),
+            Style::default().fg(usage_track_color()),
         ));
     }
     Line::from(spans)
@@ -500,17 +513,7 @@ pub(super) fn render_context_usage_line(
         .round()
         .clamp(0.0, 100.0) as u8;
     let left_pct = 100u8.saturating_sub(used_pct);
-    let token_color = if left_pct <= 10 {
-        rgb(255, 80, 80) // Critical
-    } else if left_pct <= 25 {
-        rgb(255, 120, 80) // Warning
-    } else if left_pct <= 50 {
-        rgb(255, 200, 100) // Caution
-    } else if left_pct <= 75 {
-        rgb(150, 210, 130) // Good
-    } else {
-        rgb(100, 220, 150) // Excellent
-    };
+    let token_color = usage_level_color(left_pct);
 
     // Spend the row left to right — label, then counter, then bar — and stop
     // when the budget runs out. The label and counter used to be pushed
@@ -525,7 +528,7 @@ pub(super) fn render_context_usage_line(
     remaining -= UnicodeWidthStr::width(label_text.as_str());
     spans.push(Span::styled(
         label_text,
-        Style::default().fg(rgb(140, 140, 150)),
+        Style::default().fg(usage_label_color()),
     ));
 
     // The counter only means anything whole: a clipped `40k/20` misreports the

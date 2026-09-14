@@ -50,6 +50,7 @@ use ratatui::{
     widgets::{Block, Borders, Clear, Paragraph, Wrap},
 };
 
+use crate::alphacode_tui::tui::ui_transitions::{Transition, ease_out_cubic};
 use crate::alphacode_tui_style::icons::Icon;
 use crate::alphacode_tui_style::palette::{Role, role_color};
 
@@ -313,6 +314,21 @@ pub fn draw(frame: &mut ratatui::Frame, area: Rect) {
 
     let mut y = area.y + area.height.saturating_sub(1);
     for toast in toasts.iter().rev() {
+        // Slide-in: young toasts rise from one row below with an ease-out
+        // settle, so the stack reads as fluid rather than popping in. The
+        // animation is ~180ms and only shifts the spawn row, so it never
+        // moves a toast that the user is already reading.
+        const SLIDE_IN_MS: f32 = 180.0;
+        let mut slide = Transition::new(SLIDE_IN_MS / 1000.0);
+        slide.advance(toast.created_at.elapsed().as_secs_f32());
+        let slide_rows: u16 = if slide.is_complete() {
+            0
+        } else {
+            // ease_out_cubic: fast start, gentle settle.
+            let eased = ease_out_cubic(slide.progress);
+            ((1.0_f32 - eased) * 2.0).round() as u16 // 2 → 1 → 0 rows
+        };
+
         // Compute the toast size from its content (auto-fit, capped).
         let max_width = if toast.expanded {
             MAX_TOAST_WIDTH_EXPANDED
@@ -339,7 +355,7 @@ pub fn draw(frame: &mut ratatui::Frame, area: Rect) {
 
         let toast_area = Rect {
             x,
-            y,
+            y: y + slide_rows.min(2),
             width,
             height,
         };

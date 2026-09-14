@@ -151,6 +151,9 @@ pub const PRESETS: &[ThemeSeed] = &[
     NEON_NOIR,
     CYBER_SPACE,
     EMBER,
+    HORIZONS,
+    DEEP_OCEAN,
+    NEON_TOKYO,
     TOKYO_NIGHT_STORM,
     TOKYO_NIGHT,
     CATPPUCCIN_MOCHA,
@@ -174,8 +177,10 @@ pub const PRESETS: &[ThemeSeed] = &[
     EVERBLUSH,
     PENUMBRA_DARK,
     NOVA_DARK,
+    MUTED_PRO,
     // --- Light themes ---
     FROST,
+    PAPER_LIGHT,
     CATPPUCCIN_LATTE,
     GITHUB_LIGHT,
     SOLARIZED_LIGHT,
@@ -1185,6 +1190,127 @@ pub const EMBER: ThemeSeed = ThemeSeed {
     blue: (130, 158, 220),
     magenta: (220, 142, 184),
     accent: (242, 152, 92),
+};
+
+/// Horizons: warm sunset gradient with amber, coral, and violet drifting
+/// across a deep plum surface. Inspired by golden-hour skies — warm tones
+/// dominate but cool blue accents keep diffs and links readable.
+pub const HORIZONS: ThemeSeed = ThemeSeed {
+    id: "horizons",
+    display_name: "Horizons",
+    description: "Warm sunset gradient: amber, coral, and violet on deep plum",
+    is_dark: true,
+    fg: (235, 228, 218),
+    fg_muted: (168, 155, 138),
+    fg_subtle: (108, 98, 85),
+    surface: (26, 18, 28),
+    surface_alt: (38, 28, 40),
+    border: (62, 48, 65),
+    red: (245, 110, 120),
+    orange: (248, 165, 95),
+    yellow: (248, 210, 100),
+    green: (135, 210, 140),
+    cyan: (110, 200, 210),
+    blue: (120, 160, 235),
+    magenta: (210, 130, 230),
+    accent: (248, 165, 95),
+};
+
+/// Deep Ocean: abyssal blue surface with glowing teal and bioluminescent
+/// cyan accents. Maximum depth with a serene underwater feel — surfaces
+/// blend into the deep ocean while key elements glow like deep-sea life.
+pub const DEEP_OCEAN: ThemeSeed = ThemeSeed {
+    id: "deep-ocean",
+    display_name: "Deep Ocean",
+    description: "Abyssal blue with bioluminescent teal and cyan glow",
+    is_dark: true,
+    fg: (210, 225, 240),
+    fg_muted: (130, 150, 180),
+    fg_subtle: (70, 85, 115),
+    surface: (6, 12, 24),
+    surface_alt: (12, 20, 38),
+    border: (30, 42, 68),
+    red: (240, 100, 120),
+    orange: (245, 160, 100),
+    yellow: (245, 215, 100),
+    green: (80, 220, 150),
+    cyan: (60, 215, 235),
+    blue: (100, 175, 255),
+    magenta: (175, 140, 250),
+    accent: (60, 215, 235),
+};
+
+/// Neon Tokyo: vibrant neon-lit cityscape with hot pink, electric blue,
+/// and acid green on a deep indigo void. A more saturated, high-energy
+/// variant of Tokyo Night — designed for users who want maximum visual
+/// punch without sacrificing readability.
+pub const NEON_TOKYO: ThemeSeed = ThemeSeed {
+    id: "neon-tokyo",
+    display_name: "Neon Tokyo",
+    description: "Vibrant neon cityscape: hot pink, electric blue, acid green on indigo",
+    is_dark: true,
+    fg: (220, 225, 245),
+    fg_muted: (145, 155, 190),
+    fg_subtle: (82, 90, 130),
+    surface: (14, 14, 32),
+    surface_alt: (24, 22, 48),
+    border: (50, 45, 82),
+    red: (255, 95, 140),
+    orange: (255, 165, 105),
+    yellow: (250, 225, 85),
+    green: (100, 245, 160),
+    cyan: (80, 230, 255),
+    blue: (100, 160, 255),
+    magenta: (235, 100, 255),
+    accent: (235, 100, 255),
+};
+
+/// Paper Light: clean, airy, high-contrast light theme with blue-gray
+/// accents. Designed for bright environments and projectors — pure white
+/// surface with carefully tuned contrast ratios for all-day readability.
+pub const PAPER_LIGHT: ThemeSeed = ThemeSeed {
+    id: "paper-light",
+    display_name: "Paper Light",
+    description: "Clean airy light theme with blue-gray accents; all-day readability",
+    is_dark: false,
+    fg: (32, 38, 52),
+    fg_muted: (100, 112, 135),
+    fg_subtle: (160, 170, 190),
+    surface: (252, 252, 254),
+    surface_alt: (238, 240, 248),
+    border: (195, 202, 218),
+    red: (200, 65, 75),
+    orange: (200, 125, 55),
+    yellow: (170, 138, 28),
+    green: (55, 148, 95),
+    cyan: (45, 148, 175),
+    blue: (55, 108, 215),
+    magenta: (145, 78, 195),
+    accent: (55, 108, 215),
+};
+
+/// Muted professional: low-saturation dark with warm neutral tones.
+/// Designed for corporate/enterprise environments where vivid colors
+/// feel out of place. Subtle, serious, and universally appropriate.
+pub const MUTED_PRO: ThemeSeed = ThemeSeed {
+    id: "muted-pro",
+    display_name: "Muted Pro",
+    description: "Low-saturation dark with warm neutrals; professional and understated",
+    is_dark: true,
+    fg: (210, 212, 218),
+    fg_muted: (142, 145, 155),
+    fg_subtle: (88, 90, 100),
+    surface: (24, 26, 32),
+    surface_alt: (34, 36, 44),
+    border: (56, 58, 70),
+    red: (210, 100, 110),
+    orange: (215, 155, 100),
+    yellow: (210, 185, 110),
+    green: (130, 185, 130),
+    cyan: (110, 178, 188),
+    blue: (120, 155, 210),
+    magenta: (175, 138, 195),
+    accent: (120, 155, 210),
 };
 
 #[cfg(test)]

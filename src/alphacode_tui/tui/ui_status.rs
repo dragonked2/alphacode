@@ -77,9 +77,6 @@ pub(super) fn shorten_model_name(model: &str) -> String {
 }
 
 pub fn format_status_for_debug(app: &dyn TuiState) -> String {
-    // Build a structured summary line that complements the human-readable
-    // status produced below: model + detected task + connection + tokens.
-    // Empty when the trait object does not expose those fields (legacy tests).
     let summary = build_status_summary(
         Some(&app.provider_model()),
         None,
@@ -104,18 +101,18 @@ pub fn format_status_for_debug(app: &dyn TuiState) -> String {
                 "Idle".to_string()
             }
         }
-        ProcessingStatus::Sending => "Working/thinking...".to_string(),
-        ProcessingStatus::Connecting(ref phase) => format!("{}...", phase),
+        ProcessingStatus::Sending => "\u{25cf} Working/thinking...".to_string(),
+        ProcessingStatus::Connecting(ref phase) => format!("\u{25cb} {}...", phase),
         ProcessingStatus::Thinking(_start) => {
             let elapsed = app.elapsed().map(|d| d.as_secs_f32()).unwrap_or(0.0);
-            format!("Thinking... ({:.1}s)", elapsed)
+            format!("\u{25cf} Thinking... ({:.1}s)", elapsed)
         }
         ProcessingStatus::Streaming => {
             let (input, output) = app.streaming_tokens();
-            format!("Streaming (↑{} ↓{})", input, output)
+            format!("\u{25b6} Streaming (\u{2191}{} \u{2193}{})", input, output)
         }
         ProcessingStatus::WaitingForNetwork { ref listener } => {
-            format!("Waiting for network to retry ({})", listener)
+            format!("\u{25cc} Waiting for network to retry ({})", listener)
         }
         ProcessingStatus::RunningTool(ref name) => {
             if name == "batch"
@@ -123,18 +120,21 @@ pub fn format_status_for_debug(app: &dyn TuiState) -> String {
             {
                 let completed = progress.completed;
                 let total = progress.total;
-                let mut status = format!("Running batch: {}/{} done", completed, total);
+                let mut status = format!(
+                    "\u{25cf} Batch: {}/{} done",
+                    completed, total
+                );
                 if let Some(running) =
                     tools_ui::summarize_batch_running_tools_compact(&progress.running)
                 {
                     status.push_str(&format!(", running: {}", running));
                 }
                 if let Some(last) = progress.last_completed.filter(|_| completed < total) {
-                    status.push_str(&format!(", last done: {}", last));
+                    status.push_str(&format!(", last: {}", last));
                 }
                 return status;
             }
-            format!("Running tool: {}", name)
+            format!("\u{25cf} Tool: {}", name)
         }
     };
     if summary.is_empty() {

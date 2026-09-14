@@ -43,9 +43,15 @@ impl TokenHistory {
 /// Format a token count compactly: 1234 → "1.2k", 999 → "999", 1234567 → "1.2M".
 ///
 /// This reduces status bar clutter and improves readability at a glance.
+/// Values that would round up into the next unit bucket (e.g. 999 999 →
+/// "1000.0k") roll over instead, so the display never shows an impossible
+/// four-digit mantissa.
 fn format_tokens(n: u64) -> String {
     if n >= 1_000_000 {
         format!("{:.1}M", n as f64 / 1_000_000.0)
+    } else if n >= 999_950 {
+        // Rounds to 1.0M; emit the rolled-over form instead of "1000.0k".
+        "1.0M".to_string()
     } else if n >= 1_000 {
         format!("{:.1}k", n as f64 / 1_000.0)
     } else {
@@ -53,15 +59,20 @@ fn format_tokens(n: u64) -> String {
     }
 }
 
-/// Format elapsed seconds compactly: 1.23 → "1.2s", 65.4 → "1m5s".
+/// Format elapsed seconds compactly: 1.23 → "1.2s", 65.4 → "1m5s",
+/// 3600 → "1h0m". Keeps long-running turns scannable instead of "60m0s".
 fn format_elapsed(d: Duration) -> String {
     let secs = d.as_secs_f32();
     if secs < 60.0 {
         format!("{:.1}s", secs)
-    } else {
+    } else if secs < 3600.0 {
         let mins = d.as_secs() / 60;
         let rem = d.as_secs() % 60;
         format!("{}m{}s", mins, rem)
+    } else {
+        let hours = d.as_secs() / 3600;
+        let mins = (d.as_secs() % 3600) / 60;
+        format!("{}h{}m", hours, mins)
     }
 }
 
@@ -746,7 +757,11 @@ mod tests {
         assert_eq!(format_tokens(999), "999");
         assert_eq!(format_tokens(1000), "1.0k");
         assert_eq!(format_tokens(1234), "1.2k");
-        assert_eq!(format_tokens(999999), "1000.0k");
+        assert_eq!(format_tokens(999_399), "999.4k");
+        assert_eq!(format_tokens(999_499), "999.5k");
+        assert_eq!(format_tokens(999_949), "999.9k");
+        assert_eq!(format_tokens(999_950), "1.0M");
+        assert_eq!(format_tokens(999_999), "1.0M");
         assert_eq!(format_tokens(1000000), "1.0M");
         assert_eq!(format_tokens(1234567), "1.2M");
     }
@@ -756,7 +771,8 @@ mod tests {
         assert_eq!(format_elapsed(Duration::from_millis(500)), "0.5s");
         assert_eq!(format_elapsed(Duration::from_secs(5)), "5.0s");
         assert_eq!(format_elapsed(Duration::from_secs(65)), "1m5s");
-        assert_eq!(format_elapsed(Duration::from_secs(3600)), "60m0s");
+        assert_eq!(format_elapsed(Duration::from_secs(3600)), "1h0m");
+        assert_eq!(format_elapsed(Duration::from_secs(3725)), "1h2m");
     }
 
     #[test]

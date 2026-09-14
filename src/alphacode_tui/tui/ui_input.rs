@@ -19,6 +19,25 @@ fn shell_mode_color() -> Color {
     rgb(100, 225, 155)
 }
 
+/// Accent color for slash command mode badge.
+fn slash_mode_color() -> Color {
+    rgb(170, 140, 255)
+}
+
+/// Background color for mode badges (dark card surface).
+fn badge_bg() -> Color {
+    rgb(18, 20, 30)
+}
+
+/// Border glow color for active mode badges.
+fn badge_border_color(mode: ComposerMode) -> Color {
+    match mode {
+        ComposerMode::ShellLocal | ComposerMode::ShellRemote => rgb(60, 180, 130),
+        ComposerMode::SlashCommand => rgb(130, 110, 200),
+        ComposerMode::Chat => rgb(60, 68, 100),
+    }
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum ComposerMode {
     Chat,
@@ -30,6 +49,25 @@ enum ComposerMode {
 impl ComposerMode {
     fn is_shell(self) -> bool {
         matches!(self, Self::ShellLocal | Self::ShellRemote)
+    }
+
+    /// Short label for the mode badge.
+    fn badge_label(self) -> &'static str {
+        match self {
+            Self::ShellLocal => "$ LOCAL",
+            Self::ShellRemote => "$ REMOTE",
+            Self::SlashCommand => "/ CMD",
+            Self::Chat => "",
+        }
+    }
+
+    /// Icon prefix for the mode badge.
+    fn badge_icon(self) -> &'static str {
+        match self {
+            Self::ShellLocal | Self::ShellRemote => "\u{2699}",
+            Self::SlashCommand => "\u{2022}",
+            Self::Chat => "",
+        }
     }
 }
 
@@ -57,33 +95,37 @@ fn shell_mode_hint(mode: ComposerMode) -> Option<&'static str> {
 
 /// Get the mode badge for display in the input area.
 ///
-/// Returns a styled badge that indicates the current input mode with
-/// appropriate icon and color.
+/// Returns a styled badge with border effect and icon that indicates the
+/// current input mode with appropriate color and visual weight.
 #[allow(dead_code)]
 pub(super) fn input_mode_badge(app: &dyn TuiState) -> Option<Span<'static>> {
     let mode = composer_mode(app.input(), app.is_remote_mode());
     match mode {
-        ComposerMode::ShellLocal => Some(Span::styled(
-            " $ SHELL ",
-            Style::default()
-                .fg(rgb(100, 225, 155))
-                .bg(rgb(20, 28, 44))
-                .add_modifier(Modifier::BOLD),
-        )),
-        ComposerMode::ShellRemote => Some(Span::styled(
-            " $ REMOTE ",
-            Style::default()
-                .fg(rgb(100, 225, 155))
-                .bg(rgb(20, 28, 44))
-                .add_modifier(Modifier::BOLD),
-        )),
-        ComposerMode::SlashCommand => Some(Span::styled(
-            " / CMD ",
-            Style::default()
-                .fg(rgb(185, 155, 255))
-                .bg(rgb(20, 28, 44))
-                .add_modifier(Modifier::BOLD),
-        )),
+        ComposerMode::ShellLocal | ComposerMode::ShellRemote => {
+            let _border = badge_border_color(mode);
+            let bg = badge_bg();
+            let fg = shell_mode_color();
+            Some(Span::styled(
+                format!(" {} {} ", mode.badge_icon(), mode.badge_label()),
+                Style::default()
+                    .fg(fg)
+                    .bg(bg)
+                    .add_modifier(Modifier::BOLD)
+                    .add_modifier(Modifier::UNDERLINED),
+            ))
+        }
+        ComposerMode::SlashCommand => {
+            let bg = badge_bg();
+            let fg = slash_mode_color();
+            Some(Span::styled(
+                format!(" {} {} ", mode.badge_icon(), mode.badge_label()),
+                Style::default()
+                    .fg(fg)
+                    .bg(bg)
+                    .add_modifier(Modifier::BOLD)
+                    .add_modifier(Modifier::UNDERLINED),
+            ))
+        }
         ComposerMode::Chat => None,
     }
 }
@@ -814,6 +856,30 @@ fn append_batch_progress_spans(
         spans.push(Span::styled(
             format!(" · {}/{} done", completed, total),
             Style::default().fg(anim_color).bold(),
+        ));
+        // Inline gradient progress bar so the batch's position within the run
+        // is visible at a glance, not just as two numbers. Sized to fit a
+        // normal-width terminal; collapses gracefully on narrow panes.
+        let frac = completed as f32 / total as f32;
+        let bar_width = 10usize;
+        let filled = ((frac * bar_width as f32).round() as usize).clamp(0, bar_width);
+        spans.push(Span::styled(" ", Style::default()));
+        if filled > 0 {
+            spans.push(Span::styled(
+                "█".repeat(filled),
+                Style::default().fg(anim_color),
+            ));
+        }
+        let empty = bar_width - filled;
+        if empty > 0 {
+            spans.push(Span::styled(
+                "░".repeat(empty),
+                Style::default().fg(dim_color()),
+            ));
+        }
+        spans.push(Span::styled(
+            format!(" {:>3}%", (frac * 100.0).round() as u8),
+            Style::default().fg(anim_color),
         ));
     }
 

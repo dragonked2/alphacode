@@ -5,7 +5,7 @@
 //! boundary stays visible in the API surface.
 
 pub use crate::alphacode_core::output_style::{
-    colorized, compact_header, emoji_enabled, replace_emoji_with_ascii, set_emoji_enabled,
-    status_failure, status_loading, status_success, status_warning, terminal_text,
-    terminal_text_with_emoji,
+    colorized, compact_header, emoji_enabled, error_message, replace_emoji_with_ascii,
+    set_emoji_enabled, status_failure, status_loading, status_success, status_warning,
+    terminal_text, terminal_text_with_emoji,
 };

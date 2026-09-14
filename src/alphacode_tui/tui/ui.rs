@@ -83,8 +83,8 @@ mod smoothness;
 mod todo_changes;
 #[path = "ui_tools.rs"]
 pub(crate) mod tools_ui;
-#[path = "ui_transitions.rs"]
-mod transitions;
+// `ui_transitions` is declared at the `tui` module level (see mod.rs) so the
+// toast layer can reuse its easing helpers too.
 #[path = "ui_viewport.rs"]
 mod viewport;
 use crate::alphacode_tui::tui::mermaid;
@@ -151,9 +151,9 @@ use pinned_ui::{
     collect_pinned_diffs_cached, draw_pinned_content_cached, draw_side_panel_markdown,
 };
 #[cfg(test)]
-use transitions::extract_line_text;
+use crate::alphacode_tui::tui::ui_transitions::extract_line_text;
 #[cfg(test)]
-use transitions::inline_ui_gap_height;
+use crate::alphacode_tui::tui::ui_transitions::inline_ui_gap_height;
 #[cfg(test)]
 use viewport::compute_visible_margins;
 use viewport::draw_messages;

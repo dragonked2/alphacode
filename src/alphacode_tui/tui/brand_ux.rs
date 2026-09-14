@@ -29,7 +29,7 @@ pub enum SpinnerStyle {
     Gear,
     /// Clock spinner for waiting states.
     Clock,
-    /// Matrix-style rain for data processing.
+    /// Matrix-style digital rain for data processing.
     Matrix,
     /// Star field for long operations.
     Starfield,
@@ -55,7 +55,7 @@ impl SpinnerStyle {
                 ],
                 2,
             ),
-            SpinnerStyle::Matrix => (&["_matrices", "|", "\\", "/", "-"], 1),
+            SpinnerStyle::Matrix => (&["▁", "▄", "▆", "█", "▆", "▄"], 1),
             SpinnerStyle::Starfield => (&["✦", "✧", "★", "☆", "★", "✧"], 2),
         }
     }
@@ -369,22 +369,25 @@ impl BrandTheme {
 
         let mut colors: Vec<Color> = Vec::with_capacity(width);
         for i in 0..width {
-            let t = i as f32 / width as f32;
+            let t = i as f32 / width.max(1) as f32;
             let wave = (t * std::f32::consts::TAU + phase).sin() * 0.5 + 0.5;
             let gradient_idx = (t * (gradient.len() - 1) as f32).round() as usize;
             let base_color = gradient[gradient_idx.min(gradient.len() - 1)];
 
+            // Bright where the wave crest passes, dim in the trough. The old
+            // logic had this inverted (dim on crest, bright on trough), which
+            // read as a hole sweeping the line instead of a wave.
             let color = match base_color {
                 Color::Rgb(r, g, b) => {
-                    let dimmed = wave > 0.3;
-                    if dimmed {
-                        rgb(
-                            (r as f32 * 0.4) as u8,
-                            (g as f32 * 0.4) as u8,
-                            (b as f32 * 0.4) as u8,
-                        )
-                    } else {
+                    if wave > 0.3 {
                         base_color
+                    } else {
+                        let dimmed = 0.4;
+                        rgb(
+                            (r as f32 * dimmed) as u8,
+                            (g as f32 * dimmed) as u8,
+                            (b as f32 * dimmed) as u8,
+                        )
                     }
                 }
                 _ => base_color,

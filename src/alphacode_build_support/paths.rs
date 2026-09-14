@@ -948,8 +948,8 @@ mod tests {
         // file through on every platform (the production code path refuses
         // random bytes that look like archives, which is exactly the bug
         // regression fixed in this test). The rest of the bytes don't
-        /// matter: we only care that the candidate lookup accepts the file
-        /// and the mtime comparison behaves as expected.
+        // matter: we only care that the candidate lookup accepts the file
+        // and the mtime comparison behaves as expected.
         #[cfg(unix)]
         let exec_bytes: [u8; 16] = [0x7f, b'E', b'L', b'F', 2, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0];
         #[cfg(windows)]

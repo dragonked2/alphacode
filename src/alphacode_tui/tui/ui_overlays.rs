@@ -29,22 +29,61 @@ pub(super) fn draw_changelog_overlay(
             Style::default().fg(dim_color()),
         )));
     } else {
+        // Add a decorative header spacer
+        lines.push(Line::from(""));
         for group in &groups {
             let heading = match &group.released_at {
-                Some(released_at) => format!("  {} · {}", group.version, released_at),
-                None => format!("  {}", group.version),
+                Some(released_at) => format!(
+                    "  \u{25c6} {} \u{2500} {} ",
+                    group.version, released_at
+                ),
+                None => format!("  \u{25c6} {} ", group.version),
             };
             lines.push(Line::from(Span::styled(
                 heading,
                 Style::default()
-                    .fg(rgb(200, 200, 220))
+                    .fg(accent_color())
                     .add_modifier(Modifier::BOLD),
+            )));
+            lines.push(Line::from(Span::styled(
+                "  \u{2500}".repeat(40),
+                Style::default().fg(dim_color()),
             )));
             lines.push(Line::from(""));
             for entry in &group.entries {
+                // Detect entry type by prefix for visual categorization
+                let (bullet, entry_style) = if entry.starts_with("feat") || entry.starts_with("add") {
+                    (
+                        "\u{25b8}",
+                        Style::default().fg(rgb(120, 220, 140)),
+                    )
+                } else if entry.starts_with("fix") {
+                    (
+                        "\u{25b8}",
+                        Style::default().fg(rgb(120, 180, 255)),
+                    )
+                } else if entry.starts_with("perf") {
+                    (
+                        "\u{25b8}",
+                        Style::default().fg(rgb(255, 200, 100)),
+                    )
+                } else if entry.starts_with("break") || entry.starts_with("remov") {
+                    (
+                        "\u{25b8}",
+                        Style::default().fg(rgb(255, 120, 120)),
+                    )
+                } else {
+                    (
+                        "\u{25b8}",
+                        Style::default().fg(rgb(160, 165, 180)),
+                    )
+                };
                 lines.push(Line::from(vec![
-                    Span::styled("    • ", Style::default().fg(dim_color())),
-                    Span::styled(entry.clone(), Style::default().fg(rgb(170, 170, 185))),
+                    Span::styled(
+                        format!("    {} ", bullet),
+                        Style::default().fg(dim_color()),
+                    ),
+                    Span::styled(entry.clone(), entry_style),
                 ]));
             }
             lines.push(Line::from(""));
@@ -67,16 +106,16 @@ pub(super) fn draw_changelog_overlay(
         String::new()
     };
 
-    let title = format!(" Changelog {} ", scroll_info);
+    let title = format!(" \u{25c6} Changelog {} ", scroll_info);
     let block = Block::default()
         .title(Span::styled(
             title,
             Style::default()
-                .fg(rgb(200, 200, 220))
+                .fg(accent_color())
                 .add_modifier(Modifier::BOLD),
         ))
         .title_bottom(Line::from(Span::styled(
-            " Esc to close · drag to select, release to copy · wheel/j/k scroll ",
+            " Esc to close \u{00b7} drag to select, release to copy \u{00b7} wheel/j/k scroll ",
             Style::default().fg(dim_color()),
         )))
         .borders(Borders::ALL)

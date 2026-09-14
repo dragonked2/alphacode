@@ -372,9 +372,14 @@ fn telemetry_footer_line() -> Line<'static> {
     .alignment(Alignment::Center)
 }
 
-/// Welcome title line, rendered just above the donut.
+/// Welcome title line, rendered just above the donut. Enhanced with
+/// decorative elements and truecolor gradient styling.
 fn welcome_title_line() -> Line<'static> {
     Line::from(vec![
+        Span::styled(
+            "\u{2500}\u{2500}\u{2500} ",
+            Style::default().fg(rgb(60, 68, 90)),
+        ),
         Span::styled("Welcome to ", Style::default().fg(rgb(180, 200, 220))),
         Span::styled(
             "alphacode",
@@ -382,33 +387,46 @@ fn welcome_title_line() -> Line<'static> {
                 .fg(welcome_accent())
                 .add_modifier(Modifier::BOLD),
         ),
-        Span::styled(" ✨", Style::default().fg(welcome_accent())),
+        Span::styled(
+            " \u{2500}\u{2500}\u{2500}",
+            Style::default().fg(rgb(60, 68, 90)),
+        ),
     ])
     .alignment(Alignment::Center)
 }
 
-/// Warm subtitle shown below the donut on first run.
+/// Warm subtitle shown below the donut on first run. Enhanced with
+/// a softer color palette and italic emphasis.
 fn welcome_subtitle_line() -> Line<'static> {
     Line::from(vec![
         Span::styled(
             "Your AI coding companion ",
             Style::default()
-                .fg(rgb(180, 200, 220))
+                .fg(rgb(160, 180, 210))
                 .add_modifier(Modifier::ITALIC),
         ),
-        Span::styled("— ready when you are", Style::default().fg(dim_color())),
+        Span::styled(
+            "\u{2502} ready when you are",
+            Style::default().fg(rgb(100, 110, 130)),
+        ),
     ])
     .alignment(Alignment::Center)
 }
 
 /// Short keyboard hint rendered just below the donut on guided phases.
 fn keyboard_hint_line() -> Line<'static> {
-    Line::from(vec![Span::styled(
-        "Type a message below or press a number for a quick start",
-        Style::default()
-            .fg(rgb(120, 130, 150))
-            .add_modifier(Modifier::ITALIC),
-    )])
+    Line::from(vec![
+        Span::styled(
+            "\u{25b8} ",
+            Style::default().fg(welcome_accent()),
+        ),
+        Span::styled(
+            "Type a message below or press a number for a quick start",
+            Style::default()
+                .fg(rgb(120, 130, 150))
+                .add_modifier(Modifier::ITALIC),
+        ),
+    ])
     .alignment(Alignment::Center)
 }
 

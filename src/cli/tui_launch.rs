@@ -6,6 +6,12 @@ const MAX_INTERACTIVE_SWARM_REPLAY_PANES: usize = 16;
 use std::io::{self, Write};
 use std::process::Command as ProcessCommand;
 
+/// Short alias so the styled console output reads cleanly at call sites.
+use crate::output_style as os;
+
+/// Additional re-exports from the output-style module for richer errors.
+use crate::alphacode_base::output_style as osx;
+
 use crate::{
     id, logging, replay, server, session, setup_hints, startup_profile, tui, video_export,
 };
@@ -25,11 +31,24 @@ pub async fn run_client() -> Result<()> {
         anyhow::bail!("Failed to ping server");
     }
 
-    println!("Connected to Alphacode server");
-    println!("Type your message, or 'quit' to exit.\n");
+    println!(
+        "{}",
+        os::colorized(
+            &format!("● Connected to Alphacode server"),
+            "[38;5;10m"
+        )
+    );
+    println!(
+        "{}",
+        os::colorized(
+            "Type your message, or 'quit' to exit. '/help' is not available in this mode.",
+            "[38;5;247m"
+        )
+    );
+    println!();
 
     loop {
-        print!("> ");
+        print!("{}", os::colorized("› ", "[38;5;45m"));
         io::stdout().flush()?;
 
         let mut input = String::new();
@@ -58,20 +77,20 @@ pub async fn run_client() -> Result<()> {
                                 break;
                             }
                             ServerEvent::Error { message, .. } => {
-                                eprintln!("Error: {}", message);
+                                eprintln!("{}", osx::error_message(&message));
                                 break;
                             }
                             _ => {}
                         }
                     }
                     Err(e) => {
-                        eprintln!("Event error: {}", e);
+                        eprintln!("{}", osx::error_message(&format!("Event error: {e}")));
                         break;
                     }
                 }
             },
             Err(e) => {
-                eprintln!("Error: {}", e);
+                eprintln!("{}", osx::error_message(&format!("Send failed: {e}")));
             }
         }
 
