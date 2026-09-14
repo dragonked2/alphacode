@@ -71,7 +71,9 @@ use storage_paths::{estimate_json_bytes, persist_vector_mode_label};
 pub use storage_paths::{session_exists, session_journal_path, session_path};
 
 fn stored_messages_to_messages(messages: &[StoredMessage]) -> Vec<Message> {
-    messages.iter().map(StoredMessage::to_message).collect()
+    let mut result = Vec::with_capacity(messages.len());
+    result.extend(messages.iter().map(StoredMessage::to_message));
+    result
 }
 
 fn is_internal_system_reminder_message(message: &StoredMessage) -> bool {
@@ -185,6 +187,10 @@ pub struct Session {
     memory_profile_cache: SessionMemoryProfileCache,
     #[serde(skip)]
     memory_profile_dirty: bool,
+    /// Cached result of `is_self_dev()` to avoid repeated blocking I/O
+    /// (Cargo.toml + src/main.rs existence + read_to_string).
+    #[serde(skip)]
+    is_self_dev_cache: Option<bool>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -540,8 +546,10 @@ impl Session {
     /// copies while waiting on the network. Tool results and reasoning payloads
     /// can make that duplicate tens of MiB per active session.
     pub fn release_provider_messages_cache(&mut self) {
-        self.provider_messages_cache = Vec::new();
-        self.provider_message_prefix_hashes_cache = Vec::new();
+        self.provider_messages_cache.clear();
+        self.provider_messages_cache.shrink_to(128);
+        self.provider_message_prefix_hashes_cache.clear();
+        self.provider_message_prefix_hashes_cache.shrink_to(128);
         self.provider_messages_cache_len = 0;
         self.provider_messages_cache_mode = PersistVectorMode::Full;
         self.memory_profile_cache.provider_cache_count = 0;
@@ -705,6 +713,7 @@ impl Session {
         self.is_debug = meta.is_debug;
         self.saved = meta.saved;
         self.save_label = meta.save_label;
+        self.is_self_dev_cache = None;
         self.mark_memory_profile_dirty();
     }
 
@@ -755,6 +764,7 @@ impl Session {
             provider_messages_cache_mode: PersistVectorMode::Full,
             memory_profile_cache: SessionMemoryProfileCache::default(),
             memory_profile_dirty: false,
+            is_self_dev_cache: None,
         };
         session.reset_persist_state(false);
         session
@@ -809,6 +819,7 @@ impl Session {
             provider_messages_cache_mode: PersistVectorMode::Full,
             memory_profile_cache: SessionMemoryProfileCache::default(),
             memory_profile_dirty: false,
+            is_self_dev_cache: None,
         };
         session.reset_persist_state(false);
         session
@@ -1087,10 +1098,13 @@ request in this new forked session, using the inherited conversation only as con
         false
     }
 
-    /// Check if this session is working on the alphacode repository
-    pub fn is_self_dev(&self) -> bool {
-        if let Some(ref dir) = self.working_dir {
-            // Check if working dir contains alphacode source
+    /// Check if this session is working on the alphacode repository.
+    /// Result is cached after the first call to avoid repeated blocking I/O.
+    pub fn is_self_dev(&mut self) -> bool {
+        if let Some(cached) = self.is_self_dev_cache {
+            return cached;
+        }
+        let result = if let Some(ref dir) = self.working_dir {
             let path = std::path::Path::new(dir);
             path.join("Cargo.toml").exists()
                 && path.join("src/main.rs").exists()
@@ -1099,7 +1113,9 @@ request in this new forked session, using the inherited conversation only as con
                     .unwrap_or(false)
         } else {
             false
-        }
+        };
+        self.is_self_dev_cache = Some(result);
+        result
     }
 
     pub fn redacted_for_export(&self) -> Self {

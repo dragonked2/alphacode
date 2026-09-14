@@ -85,13 +85,13 @@ struct DiscoveryRequestProvenance {
 
 impl DiscoveryRequestProvenance {
     fn from_tool_context(ctx: &ToolContext) -> Self {
-        let session = crate::session::Session::load(&ctx.session_id).ok();
+        let mut session = crate::session::Session::load(&ctx.session_id).ok();
         let runtime = crate::telemetry::runtime_provenance();
         Self {
             session_id: ctx.session_id.clone(),
             session_metadata_available: session.is_some(),
             is_self_dev: session
-                .as_ref()
+                .as_mut()
                 .is_some_and(|session| session.is_self_dev()),
             is_debug: session.as_ref().is_some_and(|session| session.is_debug),
             is_canary: session.as_ref().is_some_and(|session| session.is_canary),

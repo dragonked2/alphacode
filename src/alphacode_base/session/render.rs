@@ -35,16 +35,18 @@ fn format_reasoning_markup(text: &str) -> String {
         // In both `Off` and `Current` modes persisted reasoning is not re-rendered:
         // `Current` only ever shows the live block, which is discarded once the
         // model answers, so reloaded history shows no past reasoning.
-        ReasoningDisplayMode::Off | ReasoningDisplayMode::Current => return String::new(),
-        ReasoningDisplayMode::Full => {}
+        ReasoningDisplayMode::Off | ReasoningDisplayMode::Current => String::new(),
+        ReasoningDisplayMode::Full => {
+            // Pre-allocate based on text length (markup typically adds ~10% overhead)
+            let mut out = String::with_capacity(text.len() + text.len() / 10 + 1);
+            for line in text.split('\n') {
+                out.push_str(&crate::alphacode_render_core::reasoning_line_markup(line));
+            }
+            // Blank line terminates the reasoning block.
+            out.push('\n');
+            out
+        }
     }
-    let mut out = String::new();
-    for line in text.split('\n') {
-        out.push_str(&crate::alphacode_render_core::reasoning_line_markup(line));
-    }
-    // Blank line terminates the reasoning block.
-    out.push('\n');
-    out
 }
 
 fn is_internal_system_reminder(msg: &super::StoredMessage) -> bool {
@@ -380,18 +382,15 @@ pub fn render_messages_and_images_with_compacted_history(
             .unwrap_or(0);
         let content = if remaining_compacted == 0 {
             format!(
-                "Earlier conversation compacted - showing all {} compacted historical messages. Redraw may be slower while this view is open.",
-                total_compacted
+                "Earlier conversation compacted - showing all {total_compacted} compacted historical messages. Redraw may be slower while this view is open."
             )
         } else if visible_compacted == 0 {
             format!(
-                "Earlier conversation compacted - {} historical messages hidden from the UI. Scroll to the top to load older history.",
-                remaining_compacted
+                "Earlier conversation compacted - {remaining_compacted} historical messages hidden from the UI. Scroll to the top to load older history."
             )
         } else {
             format!(
-                "Earlier conversation compacted - {} older historical messages hidden. Showing {} of {} compacted messages. Scroll to the top to load more.",
-                remaining_compacted, visible_compacted, total_compacted
+                "Earlier conversation compacted - {remaining_compacted} older historical messages hidden. Showing {visible_compacted} of {total_compacted} compacted messages. Scroll to the top to load more."
             )
         };
         rendered.push(RenderedMessage {

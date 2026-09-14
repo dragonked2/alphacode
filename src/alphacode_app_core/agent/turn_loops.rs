@@ -68,7 +68,7 @@ impl Agent {
         // and decides the next action — the system prompt and tool list never
         // change. Rebuilding them on every iteration wastes ~50ms of CPU and
         // produces identical bytes that the provider's KV cache already ignores.
-        let mut cached_static_prompt: Option<crate::prompt::SplitSystemPrompt> = None;
+        let mut cached_static_prompt: Option<std::sync::Arc<crate::prompt::SplitSystemPrompt>> = None;
         let mut cached_tools: Option<Vec<ToolDefinition>> = None;
         let mut iteration_count: u32 = 0;
         let mut last_save_time = Instant::now();
@@ -124,13 +124,10 @@ impl Agent {
             }
 
             // Reuse cached tools when available (tool list doesn't change mid-turn)
-            let tools = if let Some(ref cached) = cached_tools {
-                cached.clone()
-            } else {
-                let t = self.tool_definitions().await;
-                cached_tools = Some(t.clone());
-                t
-            };
+            if cached_tools.is_none() {
+                cached_tools = Some(self.tool_definitions().await);
+            }
+            let tools: &[ToolDefinition] = cached_tools.as_deref().unwrap();
             let messages: std::sync::Arc<[Message]> = messages.into();
             // Non-blocking memory: uses pending result from last turn, spawns check for next turn
             // Only rebuild memory prompt on fresh user turns (not every tool-result iteration)
@@ -141,11 +138,11 @@ impl Agent {
             // get a ~1.5 KB identity prompt instead of the 11 KB base prompt.
             // Reuse cached static prompt within a turn (it doesn't change between iterations)
             let (split_prompt, prompt_tier) = if let Some(ref cached) = cached_static_prompt {
-                (cached.clone(), crate::prompt::PromptTier::Standard)
+                (std::sync::Arc::clone(cached), crate::prompt::PromptTier::Standard)
             } else {
                 let (sp, tier) = self.build_system_prompt_split(None, None);
-                cached_static_prompt = Some(sp.clone());
-                (sp, tier)
+                cached_static_prompt = Some(std::sync::Arc::new(sp));
+                (std::sync::Arc::clone(cached_static_prompt.as_ref().unwrap()), tier)
             };
             self.log_prompt_prefix_accounting(&split_prompt, &tools, prompt_tier);
 
@@ -158,8 +155,10 @@ impl Agent {
             // the session's derived transcript copy before the network wait.
             self.session.release_provider_messages_cache();
 
-            // Inject memory as a user message at the end (preserves cache prefix)
-            let mut messages_with_memory: Vec<Message> = messages.iter().cloned().collect();
+            // Inject memory as a user message at the end (preserves cache prefix).
+            // Only allocate the messages_with_memory Vec when memory is present;
+            // otherwise use the Arc directly to avoid cloning every message.
+            let mut messages_with_memory_buf: Option<Vec<Message>> = None;
             if let Some(memory) = memory_pending.as_ref() {
                 let memory_count = memory.count.max(1);
                 let age_ms = memory.computed_at.elapsed().as_millis() as u64;
@@ -169,9 +168,14 @@ impl Agent {
                     "Memory injected as message ({} chars)",
                     memory.prompt.len()
                 ));
+                let mut msgs = messages.iter().cloned().collect::<Vec<Message>>();
                 let (memory_msg, _persisted) = self.prepare_memory_injection_message(memory);
-                messages_with_memory.push(memory_msg);
+                msgs.push(memory_msg);
+                messages_with_memory_buf = Some(msgs);
             }
+            let messages_with_memory: &[Message] = messages_with_memory_buf
+                .as_deref()
+                .unwrap_or(&messages);
 
             crate::logging::info_throttled(
                 "api_call_starting",
@@ -256,7 +260,7 @@ impl Agent {
             // The provider returned an owned stream, so the request transcript
             // copies are no longer needed while the response is consumed.
             drop(stamped);
-            drop(messages_with_memory);
+            drop(messages_with_memory_buf);
             drop(memory_pending);
             drop(messages);
             drop(split_prompt);

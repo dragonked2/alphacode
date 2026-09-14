@@ -58,7 +58,7 @@ impl Agent {
     }
 
     pub(super) fn build_env_snapshot(
-        &self,
+        &mut self,
         reason: &str,
         detail: EnvSnapshotDetail,
     ) -> EnvSnapshot {

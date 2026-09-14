@@ -136,7 +136,8 @@ impl Session {
         self.memory_injections
             .extend(entry.append_memory_injections);
         self.replay_events.extend(entry.append_replay_events);
-        self.mark_memory_profile_dirty();
+        // Note: mark_memory_profile_dirty() is called once after all journal
+        // entries are replayed in load_from_path(), not per-entry here.
     }
 
     fn checkpoint_snapshot(&mut self, snapshot_path: &Path, journal_path: &Path) -> Result<()> {
@@ -319,8 +320,10 @@ impl Session {
         let path = session_path(&self.id)?;
         let journal_path = session_journal_path_from_snapshot(&path);
         let start = std::time::Instant::now();
-        let snapshot_bytes_before = file_len_or_zero(&path);
-        let journal_bytes_before = file_len_or_zero(&journal_path);
+        // Defer stat calls until the telemetry slow path needs them;
+        // saves are called on every tool result and stat() is not free.
+        let mut snapshot_bytes_before: Option<u64> = None;
+        let mut journal_bytes_before: Option<u64> = None;
         let current_meta = self.journal_meta();
         let metadata_needs_snapshot = self
             .persist_state
@@ -446,61 +449,72 @@ impl Session {
             }
         };
         let elapsed = start.elapsed();
-        let snapshot_bytes_after = file_len_or_zero(&path);
+        let elapsed_ms = elapsed.as_millis();
         let result_ok = result.is_ok();
-        if elapsed.as_millis() > 50 {
-            crate::logging::info(&format!(
-                "Session save slow: total={:.0}ms mode={} metadata_snapshot={} vectors_snapshot={} entry_build={}ms append={}ms journal_stat={}ms checkpoint={}ms messages={} delta_messages={} delta_env_snapshots={} delta_memory_injections={} delta_replay_events={} snapshot_bytes_before={} journal_bytes_before={} journal_bytes_after={}",
-                elapsed.as_secs_f64() * 1000.0,
-                save_mode,
-                metadata_needs_snapshot,
-                vectors_need_snapshot,
-                entry_build_ms,
-                append_ms,
-                journal_stat_ms,
-                checkpoint_ms,
-                self.messages.len(),
-                delta_messages,
-                delta_env_snapshots,
-                delta_memory_injections,
-                delta_replay_events,
-                snapshot_bytes_before,
-                journal_bytes_before,
-                journal_bytes_after,
-            ));
-        }
-        let mut fields = vec![
-            ("phase", "save_done".to_string()),
-            ("session_id", self.id.clone()),
-            ("path", path.display().to_string()),
-            ("status", format!("{:?}", self.status)),
-            ("result", if result_ok { "ok" } else { "error" }.to_string()),
-            ("save_mode", save_mode.to_string()),
-            ("metadata_snapshot", metadata_needs_snapshot.to_string()),
-            ("vectors_snapshot", vectors_need_snapshot.to_string()),
-            ("messages", self.messages.len().to_string()),
-            ("delta_messages", delta_messages.to_string()),
-            ("delta_env_snapshots", delta_env_snapshots.to_string()),
-            (
-                "delta_memory_injections",
-                delta_memory_injections.to_string(),
-            ),
-            ("delta_replay_events", delta_replay_events.to_string()),
-            ("snapshot_bytes_before", snapshot_bytes_before.to_string()),
-            ("snapshot_bytes_after", snapshot_bytes_after.to_string()),
-            ("journal_bytes_before", journal_bytes_before.to_string()),
-            ("journal_bytes_after", journal_bytes_after.to_string()),
-            ("entry_build_ms", entry_build_ms.to_string()),
-            ("append_ms", append_ms.to_string()),
-            ("journal_stat_ms", journal_stat_ms.to_string()),
-            ("checkpoint_ms", checkpoint_ms.to_string()),
-            ("elapsed_ms", elapsed.as_millis().to_string()),
-        ];
-        if let Err(error) = &result {
-            fields.push(("error", crate::util::format_error_chain(error)));
-            crate::logging::event_warn("SESSION_PERSISTENCE", fields);
-        } else {
-            crate::logging::event_info("SESSION_PERSISTENCE", fields);
+        // Fast path: skip all telemetry field allocations for saves under 10ms.
+        // The journal-append path (the common case) typically completes in <1ms;
+        // building the 20+ telemetry String fields plus the vec costs more than
+        // the actual I/O on fast paths, adding measurable latency to every tool
+        // result save.
+        if elapsed_ms > 10 {
+            // Only stat files when the slow path actually needs the sizes
+            let snapshot_bytes_after = file_len_or_zero(&path);
+            let sb = *snapshot_bytes_before.get_or_insert_with(|| file_len_or_zero(&path));
+            let jb = *journal_bytes_before.get_or_insert_with(|| file_len_or_zero(&journal_path));
+            if elapsed_ms > 50 {
+                crate::logging::info(&format!(
+                    "Session save slow: total={:.0}ms mode={} metadata_snapshot={} vectors_snapshot={} entry_build={}ms append={}ms journal_stat={}ms checkpoint={}ms messages={} delta_messages={} delta_env_snapshots={} delta_memory_injections={} delta_replay_events={} snapshot_bytes_before={} journal_bytes_before={} journal_bytes_after={}",
+                    elapsed.as_secs_f64() * 1000.0,
+                    save_mode,
+                    metadata_needs_snapshot,
+                    vectors_need_snapshot,
+                    entry_build_ms,
+                    append_ms,
+                    journal_stat_ms,
+                    checkpoint_ms,
+                    self.messages.len(),
+                    delta_messages,
+                    delta_env_snapshots,
+                    delta_memory_injections,
+                    delta_replay_events,
+                    sb,
+                    jb,
+                    journal_bytes_after,
+                ));
+            }
+            let mut fields = vec![
+                ("phase", "save_done".to_string()),
+                ("session_id", self.id.clone()),
+                ("path", path.display().to_string()),
+                ("status", format!("{:?}", self.status)),
+                ("result", if result_ok { "ok" } else { "error" }.to_string()),
+                ("save_mode", save_mode.to_string()),
+                ("metadata_snapshot", metadata_needs_snapshot.to_string()),
+                ("vectors_snapshot", vectors_need_snapshot.to_string()),
+                ("messages", self.messages.len().to_string()),
+                ("delta_messages", delta_messages.to_string()),
+                ("delta_env_snapshots", delta_env_snapshots.to_string()),
+                (
+                    "delta_memory_injections",
+                    delta_memory_injections.to_string(),
+                ),
+                ("delta_replay_events", delta_replay_events.to_string()),
+                ("snapshot_bytes_before", sb.to_string()),
+                ("snapshot_bytes_after", snapshot_bytes_after.to_string()),
+                ("journal_bytes_before", jb.to_string()),
+                ("journal_bytes_after", journal_bytes_after.to_string()),
+                ("entry_build_ms", entry_build_ms.to_string()),
+                ("append_ms", append_ms.to_string()),
+                ("journal_stat_ms", journal_stat_ms.to_string()),
+                ("checkpoint_ms", checkpoint_ms.to_string()),
+                ("elapsed_ms", elapsed_ms.to_string()),
+            ];
+            if let Err(error) = &result {
+                fields.push(("error", crate::util::format_error_chain(error)));
+                crate::logging::event_warn("SESSION_PERSISTENCE", fields);
+            } else {
+                crate::logging::event_info("SESSION_PERSISTENCE", fields);
+            }
         }
         result
     }

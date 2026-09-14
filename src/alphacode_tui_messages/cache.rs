@@ -5,6 +5,7 @@ use ratatui::text::{Line, Span};
 use std::collections::{HashMap, VecDeque};
 use std::sync::{Arc, Mutex, OnceLock};
 
+
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 struct MessageCacheKey {
     width: u16,
@@ -76,6 +77,9 @@ pub fn left_pad_lines_for_centered_mode(lines: &mut [Line<'static>], width: u16)
         return;
     }
 
+    // Pre-allocate the pad string once and use String::clone (heap alloc)
+    // for each line. Unavoidable given Span<'static> ownership, but
+    // concentrated into one allocation pattern for the allocator.
     let pad_str = " ".repeat(pad);
     for line in lines {
         line.spans.insert(0, Span::raw(pad_str.clone()));
