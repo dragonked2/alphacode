@@ -1,6 +1,6 @@
 [package]
 name = "alphacode"
-version = "1.0.43"
+version = "1.0.46"
 authors = ["Ali Essam <tlbbeg313@gmail.com>"]
 description = "A coding agent for the terminal. Multi-model orchestration, swarm coordination, and 40+ tools working together — built so the changes it makes are the smallest ones that solve the problem."
 edition = "2024"
@@ -79,6 +79,7 @@ bytes = "1"
 webpki-roots = "1"
 walkdir = "2"
 wait-timeout = "0.2"
+xa11y = "0.9"
 agentgrep = { git = "https://github.com/1jehuang/agentgrep.git", tag = "v0.1.6" }
 
 # TUI

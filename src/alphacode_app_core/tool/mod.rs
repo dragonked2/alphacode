@@ -12,6 +12,7 @@ mod computer;
 mod conversation_search;
 mod cron;
 mod debug_socket;
+pub mod desktop;
 pub(crate) mod diff_utils;
 mod discover;
 mod doctor;
@@ -328,6 +329,7 @@ impl Registry {
                 self_improve::SelfImproveTool
             });
             Self::insert_tool_timed(&mut m, &mut timings, "doctor", || doctor::DoctorTool);
+            Self::insert_tool_timed(&mut m, &mut timings, "desktop", desktop::DesktopTool::new);
             let nonzero: Vec<String> = timings
                 .iter()
                 .filter(|(_, ms)| *ms > 0)

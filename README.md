@@ -3,8 +3,8 @@
 <img src="https://capsule-render.vercel.app/api?type=waving&color=0:0F0C29,50:302B63,100:24243e&height=210&section=header&text=Alphacode&fontSize=60&fontColor=ffffff&animation=fadeIn&fontAlignY=36&desc=The%20Free%2C%20Open-Source%20AI%20Coding%20Agent%20for%20Your%20Terminal&descAlignY=54&descSize=17" width="100%">
 
 <p>
-  <strong>Plan. Edit. Test. Review. Ship.</strong><br>
-  A fast, lightweight, open-source AI coding agent built in Rust.
+  <strong>Plan. Edit. Test. Review. Ship. Control your desktop.</strong><br>
+  A fast, lightweight, open-source AI coding agent built in Rust with 40+ tools.
 </p>
 
 <p>
@@ -24,6 +24,7 @@
   <a href="#why-alphacode">Why AlphaCode</a> ·
   <a href="#-install">Install</a> ·
   <a href="#-quick-start">Quick Start</a> ·
+  <a href="#-desktop-control">Desktop Control</a> ·
   <a href="#-browser-bridge">Browser Bridge</a> ·
   <a href="#-features">Features</a> ·
   <a href="#️-configuration">Configuration</a> ·
@@ -66,11 +67,13 @@ flowchart LR
 |---|---|
 | **Model-agnostic** | Connect Claude, GPT, Gemini, GitHub Copilot, Cursor, OpenRouter, Bedrock, Azure, or another OpenAI-compatible service. |
 | **Swarm Mode** | Break large tasks into parallel sub-tasks, execute them concurrently, then review the combined result. |
-| **40+ tools** | Editing, search, shell execution, web access, browser control, memory, sessions, scheduling, rendering, and more. |
+| **40+ tools** | Editing, search, shell execution, web access, browser control, desktop control, memory, sessions, scheduling, rendering, and more. |
+| **Desktop Control** | Cross-platform native desktop automation via accessibility APIs (Windows UIA, macOS AX, Linux AT-SPI2). |
+| **MCP support** | Model Context Protocol integration for extending tools via external servers. |
 | **Rust-native** | Small runtime footprint, fast startup, and efficient long-running sessions. |
 | **Persistent sessions** | Resume work after interruptions, crashes, dropped connections, or terminal restarts. |
 | **Safety controls** | Destructive operations are blocked and risky actions pass through the permission layer. |
-| **Terminal-first UX** | Rich TUI, syntax highlighting, diagrams, image previews, progress, and live agent activity. |
+| **Terminal-first UX** | Rich TUI, syntax highlighting, Mermaid diagrams, LaTeX math, image previews, progress, and live agent activity. |
 
 ---
 
@@ -285,6 +288,90 @@ review this code for security issues and explain the findings
 
 ---
 
+
+## 🖥 Desktop Control
+
+Cross-platform native desktop automation through accessibility APIs. AlphaCode can observe and interact with native desktop applications on Windows, macOS, and Linux.
+
+```mermaid
+flowchart TD
+    LLM["LLM Agent"] --> DT["Desktop Tools"]
+    DT --> DA["Desktop Abstraction Layer"]
+    DA --> XA11y["xa11y"]
+    XA11y --> W["Windows UIA"]
+    XA11y --> M["macOS AX"]
+    XA11y --> L["Linux AT-SPI2"]
+```
+
+**How it works:**
+
+The agent uses semantic accessibility APIs to understand and interact with desktop applications — not coordinates. It discovers applications, reads the UI tree, locates elements by role/name, and performs actions like clicking, typing, and pressing keys.
+
+**Key actions:**
+
+| Action | What it does |
+|---|---|
+| `list_windows` | Discover running applications and their windows |
+| `snapshot` | See the UI hierarchy of an application |
+| `find` | Locate elements by role, name, or value |
+| `click` | Click an element by ID (or coordinates as fallback) |
+| `type` | Type text into a focused element |
+| `press` | Press keyboard shortcuts (e.g. `ctrl+c`, `enter`) |
+| `scroll` | Scroll an element or region |
+| `focus` | Bring an application or element to focus |
+| `screenshot` | Capture a screenshot of an application or full screen |
+| `toggle` | Toggle a checkbox or switch |
+| `expand` / `collapse` | Expand or collapse tree items, menus, disclosures |
+
+**Safety features:**
+
+- Action timeouts (configurable, max 60s)
+- Emergency stop (kills all desktop operations instantly)
+- Input state cleanup (releases held keys/buttons on failure)
+- Stale element detection (detects when UI changes mid-operation)
+- Ambiguity handling (reports all matches when multiple elements match)
+- Permission detection (clear errors when accessibility permissions are missing)
+- Untrusted input sanitization (UI text is treated as untrusted data)
+
+**Platform support:**
+
+| Platform | Backend | Status |
+|---|---|---|
+| Windows | UI Automation (UIA) | Supported |
+| macOS | Accessibility API (AX) | Supported |
+| Linux | AT-SPI2 | Supported |
+
+**Example workflow:**
+
+```
+User: "Open Calculator and calculate 123 * 456"
+
+Agent:
+  1. desktop_list_windows → finds Calculator
+  2. desktop_snapshot → sees the calculator UI tree
+  3. desktop_find role=button name="1" → gets element_id
+  4. desktop_click element_id=desk_42f91 → clicks "1"
+  5. desktop_click element_id=desk_42f92 → clicks "2"
+  6. desktop_click element_id=desk_42f93 → clicks "3"
+  7. desktop_click element_id=desk_42f94 → clicks "*"
+  8. desktop_click element_id=desk_42f95 → clicks "4"
+  9. desktop_click element_id=desk_42f96 → clicks "5"
+  10. desktop_click element_id=desk_42f97 → clicks "6"
+  11. desktop_click element_id=desk_42f98 → clicks "="
+  12. desktop_snapshot → reads result: 56088
+```
+
+**When to use Desktop Control vs Browser:**
+
+| Use case | Tool |
+|---|---|
+| Web page content, DOM interaction | `browser` |
+| Browser chrome, devtools, extensions | `desktop` |
+| Native OS dialogs, file pickers | `desktop` |
+| Desktop applications (Calculator, Notepad, etc.) | `desktop` |
+| Certificate/permission prompts | `desktop` |
+| Login forms in browser | `browser` |
+
 # 🌐 Browser Bridge
 
 AlphaCode includes browser automation through a local **Browser Agent Bridge**.
@@ -459,21 +546,88 @@ Example:
 
 The goal is not parallelism for its own sake. Tasks should be decomposable, independently actionable, and reviewable.
 
+
 ## 🛠 Built-in toolbox
 
-| Area | Examples |
+AlphaCode includes **40+ built-in tools** organized by capability area:
+
+### File Operations
+
+| Tool | Description |
 |---|---|
-| **Editing** | Read, write, patch, multi-file changes |
-| **Search** | Regex, fuzzy, code-aware search |
-| **Execution** | Shell commands with safety controls |
-| **Web** | Page fetching and web search |
-| **Browser** | Real-browser automation through the bridge |
-| **Memory** | Project and conversation context |
-| **Skills** | Reusable and extensible capabilities |
-| **Sessions** | Save, resume, inspect, recover |
-| **Scheduling** | Recurring/background tasks |
-| **Rendering** | Images and diagrams |
-| **Documents** | Optional PDF text extraction |
+| `read` | Read file contents with line ranges |
+| `write` | Create or overwrite files |
+| `edit` | Make targeted edits to existing files |
+| `multiedit` | Apply multiple edits across files |
+| `patch` | Create and apply patches |
+| `apply_patch` | Apply unified diff patches |
+| `ls` | List directory contents |
+
+### Search & Analysis
+
+| Tool | Description |
+|---|---|
+| `agentgrep` | Code-aware regex search across the project |
+| `session_search` | Search conversation history |
+| `conversation_search` | Search within session transcripts |
+
+### Execution
+
+| Tool | Description |
+|---|---|
+| `bash` | Execute shell commands with safety controls |
+| `batch` | Execute multiple tool calls in sequence |
+| `bg` | Run commands in the background |
+
+### Web & Browser
+
+| Tool | Description |
+|---|---|
+| `browser` | Real-browser automation via Firefox bridge |
+| `webfetch` | Fetch and extract web page content |
+| `websearch` | Search the web (DuckDuckGo, Bing, SearXNG) |
+| `scrapling` | Advanced web scraping |
+| `httpflow` | HTTP request/response analysis |
+| `open` | Open files and URLs |
+
+### Desktop Control
+
+| Tool | Description |
+|---|---|
+| `desktop` | Cross-platform desktop automation via accessibility APIs |
+| `macos_computer_use` | macOS-specific desktop control (macOS only) |
+
+### Intelligence & Memory
+
+| Tool | Description |
+|---|---|
+| `memory` | Project memory and context retrieval |
+| `initiative` | Goal and initiative tracking |
+| `todo` | Task and todo list management |
+| `plan` | Plan mode for complex tasks |
+
+### Communication & Integration
+
+| Tool | Description |
+|---|---|
+| `swarm` | Multi-agent coordination and communication |
+| `gmail` | Email reading and sending |
+| `clipboard` | Clipboard access |
+| `skill_manage` | Browse and manage skills |
+| `discover_tools` | Discover third-party tool integrations |
+
+### System & Utilities
+
+| Tool | Description |
+|---|---|
+| `doctor` | System diagnostics and health checks |
+| `self_improve` | Agent self-improvement capabilities |
+| `selfdev` | Self-development mode |
+| `cron` | Cron-style scheduled tasks |
+| `schedule` | Ambient mode scheduling |
+| `jwt` | JWT token parsing and validation |
+| `side_panel` | Display content in the side panel |
+| `invalid` | Handle invalid tool calls gracefully |
 
 ## 🎓 Built-in skills
 
@@ -504,6 +658,7 @@ AlphaCode is designed to execute real operations while putting destructive actio
 - Authorized security tooling can run through the normal execution path.
 - Network operations apply SSRF and credential-leak heuristics where relevant.
 - Interrupted or crashed sessions are marked rather than silently discarded.
+- Desktop control includes emergency stop, input state cleanup, and action timeouts.
 
 **Session reliability**
 
@@ -582,6 +737,8 @@ alphacode --help                   # Show help
 | `/memory` | Inspect project memory |
 | `/skills` | Browse skills |
 | `/diff` | Review file changes |
+| `/poke` | Auto-follow-up toggle |
+| `/screenshot-mode` | Toggle screenshot capture |
 | `/exit` | Exit while preserving the session |
 
 ---
@@ -611,6 +768,23 @@ AlphaCode keeps configuration and session data outside your project directory.
 The initial configuration file is created automatically after provider setup.
 
 Full reference: [`docs/configuration.md`](./docs/configuration.md)
+
+### Key configuration sections
+
+| Section | Purpose |
+|---|---|
+| `[provider]` | Default model, reasoning effort, failover |
+| `[features]` | Memory, swarm, mermaid, auto-poke |
+| `[display]` | Theme, reasoning display, diff mode |
+| `[websearch]` | Search engine selection |
+| `[agents]` | Swarm model, memory embedding backend |
+| `[hooks]` | Lifecycle hooks (turn start/end, pre/post tool) |
+| `[safety]` | Notifications (ntfy, email, Telegram, Discord) |
+| `[compaction]` | Context management (reactive, proactive, semantic) |
+| `[power]` | Prevent sleep while streaming |
+| `[gateway]` | WebSocket gateway for remote access |
+
+
 
 ---
 
@@ -652,8 +826,23 @@ alphacode/
 │   ├── alphacode_provider_*/        # Provider runtimes
 │   ├── alphacode_auth_*/            # Provider authentication
 │   ├── alphacode_swarm_core/        # Multi-agent coordination
-│   ├── alphacode_modules/            # Higher-level autonomous modules
-│   └── alphacode_cli/               # CLI entrypoint
+│   │   └── tool/
+│   │       ├── desktop/             # Cross-platform desktop control (xa11y)
+│   │       ├── computer/            # macOS-specific desktop control
+│   │       ├── browser.rs           # Browser automation bridge
+│   │       ├── bash.rs              # Shell execution
+│   │       ├── edit.rs              # File editing
+│   │       └── ...                  # 40+ tools
+│   ├── alphacode_tui*/              # Terminal UI and workspace components
+│   ├── alphacode_tool_core/         # Tool abstractions and shared types
+│   ├── alphacode_provider_*/        # Provider runtimes
+│   ├── alphacode_auth_*/            # Provider authentication
+│   ├── alphacode_swarm_core/        # Multi-agent coordination
+│   ├── alphacode_compaction_core/   # Context compaction
+│   ├── alphacode_memory_types/      # Memory system
+│   ├── alphacode_embedding/         # Local ONNX embeddings (optional)
+│   ├── alphacode_mcp/               # Model Context Protocol
+│   └── cli/                         # CLI entrypoint
 ├── browser-agent-bridge.xpi         # Bundled Browser Agent Bridge package
 ├── docs/                            # Architecture and configuration docs
 ├── scripts/                         # Installer/uninstaller scripts
@@ -734,6 +923,21 @@ alphacode browser setup
 ```
 
 For Firefox, confirm the Browser Agent Bridge extension is installed, enabled, and running.
+
+</details>
+
+
+<details>
+<summary><strong>Desktop control permissions</strong></summary>
+<br>
+
+**macOS:** Grant Accessibility and Screen Recording permissions in System Preferences → Privacy & Security.
+
+**Windows:** No special permissions needed for most applications. Some elevated applications may require running AlphaCode as administrator.
+
+**Linux:** Ensure AT-SPI2 is available (`at-spi2-core` package). Some applications may need `--force-renderer-accessibility` for Electron/Chromium apps.
+
+Run the `desktop` tool with `action='list_windows'` to check if accessibility APIs are working.
 
 </details>
 
@@ -818,6 +1022,15 @@ Yes, where supported by the provider integration. You can authenticate through `
 <br>
 
 Yes. AlphaCode includes Browser Agent Bridge integration. The currently supported native path is Firefox-based, with the bundled `browser-agent-bridge.xpi` package available in the repository.
+
+</details>
+
+
+<details>
+<summary><strong>Can AlphaCode control native desktop applications?</strong></summary>
+<br>
+
+Yes. AlphaCode includes cross-platform desktop control via accessibility APIs (Windows UIA, macOS AX, Linux AT-SPI2). Use the `desktop` tool to discover applications, read UI trees, and interact with native elements.
 
 </details>
 
