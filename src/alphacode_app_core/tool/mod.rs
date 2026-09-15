@@ -502,7 +502,10 @@ impl Registry {
     fn resolve_tool_call(name: &str, tools: &HashMap<String, Arc<dyn Tool>>) -> ResolvedToolCall {
         let canonical = Self::resolve_tool_name(name);
         if tools.contains_key(canonical) {
-            return ResolvedToolCall { name: canonical.to_string(), action: None };
+            return ResolvedToolCall {
+                name: canonical.to_string(),
+                action: None,
+            };
         }
 
         // `<tool>.<selector>`: drop trailing dotted segments, longest tool first,
@@ -730,7 +733,12 @@ impl Registry {
     const SINGLE_OUTPUT_MAX_FRACTION: f32 = 0.30;
 
     /// Execute a tool by name
-    pub async fn execute(&self, name: &str, mut input: Value, ctx: ToolContext) -> Result<ToolOutput> {
+    pub async fn execute(
+        &self,
+        name: &str,
+        mut input: Value,
+        ctx: ToolContext,
+    ) -> Result<ToolOutput> {
         let tools = self.tools.read().await;
         let resolved = Self::resolve_tool_call(name, &tools);
         let resolved_name: &str = &resolved.name;
@@ -792,7 +800,8 @@ impl Registry {
         // A call that already failed with identical input will not start
         // working; refuse it here so the model gets one corrective message
         // instead of another identical failure to loop on.
-        let prior_failures = repeat_guard::prior_failures(&ctx.session_id, resolved_name, true, &input);
+        let prior_failures =
+            repeat_guard::prior_failures(&ctx.session_id, resolved_name, true, &input);
         if prior_failures >= repeat_guard::IDENTICAL_FAILURE_LIMIT {
             let msg = format!(
                 "Refusing to run `{resolved_name}` again: this identical call already failed \
@@ -811,7 +820,9 @@ impl Registry {
         // `desktop.snapshot`). Inject it when the call does not carry one.
         if let Some(action) = resolved.action.as_deref() {
             if let Some(object) = input.as_object_mut() {
-                object.entry("action".to_string()).or_insert(Value::String(action.to_string()));
+                object
+                    .entry("action".to_string())
+                    .or_insert(Value::String(action.to_string()));
             }
         }
 

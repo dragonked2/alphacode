@@ -48,7 +48,6 @@ enum CallKey {
     // NOTE: `session` is part of the key so streaks cannot leak between
     // sessions and `clear_session` can be exact. Session ids are included in
     // `Debug` output only; nothing logs these keys.
-
     /// A tool name that is not present in the registry.
     UnknownName { session: String, name: String },
     /// A registered tool called with byte-identical input.
@@ -149,8 +148,9 @@ pub fn record_success(session: &str, name: &str, input: &Value) {
 impl CallKey {
     fn session(&self) -> &str {
         match self {
-            CallKey::UnknownName { session, .. }
-            | CallKey::IdenticalInput { session, .. } => session,
+            CallKey::UnknownName { session, .. } | CallKey::IdenticalInput { session, .. } => {
+                session
+            }
         }
     }
 }
