@@ -1013,17 +1013,23 @@ fn build_model_line(
         );
     }
 
-    // Subtle connection status dot before the model name
+    // Subtle connection status dot before the model name — color-coded by state:
+    // pulsing green for ready, warm amber for active processing, dim for disconnected.
     let status_dot_color = if app.is_processing() {
         rgb(255, 200, 115) // warm amber for active
     } else {
         rgb(100, 225, 155) // emerald for ready
     };
+    let status_dot_char = if app.is_processing() {
+        "\u{25c9}" // ◉ — active/processing
+    } else {
+        "\u{25cf}" // ● — ready/idle
+    };
     push_if_fits(
         &mut spans,
         &mut len,
         fit_width,
-        "\u{25cf} ".to_string(),
+        format!("{} ", status_dot_char),
         Style::default().fg(status_dot_color),
     );
 
@@ -1043,6 +1049,27 @@ fn build_model_line(
             Style::default().fg(rgb(78, 88, 115)),
         );
     }
+
+    // Show connection type indicator (ws/http) when available
+    if let Some(conn_type) = app.connection_type() {
+        let display_conn = match conn_type.trim() {
+            t if t.contains("websocket") => "ws",
+            t if t.contains("http") => "http",
+            other => other,
+        };
+        if !display_conn.is_empty() {
+            push_if_fits(
+                &mut spans,
+                &mut len,
+                fit_width,
+                format!(" {}", display_conn),
+                Style::default()
+                    .fg(rgb(60, 75, 110))
+                    .add_modifier(Modifier::ITALIC),
+            );
+        }
+    }
+
     if !model_is_placeholder {
         push_if_fits(
             &mut spans,

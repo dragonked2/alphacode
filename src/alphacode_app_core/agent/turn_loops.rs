@@ -68,7 +68,8 @@ impl Agent {
         // and decides the next action — the system prompt and tool list never
         // change. Rebuilding them on every iteration wastes ~50ms of CPU and
         // produces identical bytes that the provider's KV cache already ignores.
-        let mut cached_static_prompt: Option<std::sync::Arc<crate::prompt::SplitSystemPrompt>> = None;
+        let mut cached_static_prompt: Option<std::sync::Arc<crate::prompt::SplitSystemPrompt>> =
+            None;
         let mut cached_tools: Option<Vec<ToolDefinition>> = None;
         let mut iteration_count: u32 = 0;
         let mut last_save_time = Instant::now();
@@ -138,13 +139,19 @@ impl Agent {
             // get a ~1.5 KB identity prompt instead of the 11 KB base prompt.
             // Reuse cached static prompt within a turn (it doesn't change between iterations)
             let (split_prompt, prompt_tier) = if let Some(ref cached) = cached_static_prompt {
-                (std::sync::Arc::clone(cached), crate::prompt::PromptTier::Standard)
+                (
+                    std::sync::Arc::clone(cached),
+                    crate::prompt::PromptTier::Standard,
+                )
             } else {
                 let (sp, tier) = self.build_system_prompt_split(None, None);
                 cached_static_prompt = Some(std::sync::Arc::new(sp));
-                (std::sync::Arc::clone(cached_static_prompt.as_ref().unwrap()), tier)
+                (
+                    std::sync::Arc::clone(cached_static_prompt.as_ref().unwrap()),
+                    tier,
+                )
             };
-            self.log_prompt_prefix_accounting(&split_prompt, &tools, prompt_tier);
+            self.log_prompt_prefix_accounting(&split_prompt, tools, prompt_tier);
 
             // Check for client-side cache violations before memory injection.
             // Memory is an ephemeral suffix that changes each turn; tracking it would cause
@@ -173,9 +180,8 @@ impl Agent {
                 msgs.push(memory_msg);
                 messages_with_memory_buf = Some(msgs);
             }
-            let messages_with_memory: &[Message] = messages_with_memory_buf
-                .as_deref()
-                .unwrap_or(&messages);
+            let messages_with_memory: &[Message] =
+                messages_with_memory_buf.as_deref().unwrap_or(&messages);
 
             crate::logging::info_throttled(
                 "api_call_starting",
@@ -197,15 +203,15 @@ impl Agent {
             let stamped = crate::config::config()
                 .features
                 .message_timestamps
-                .then(|| Message::with_timestamps(&messages_with_memory));
-            let send_messages = stamped.as_deref().unwrap_or(&messages_with_memory);
+                .then(|| Message::with_timestamps(messages_with_memory));
+            let send_messages = stamped.as_deref().unwrap_or(messages_with_memory);
             let prompt_has_recent_tool_result = Self::messages_end_with_tool_result(send_messages);
             self.last_status_detail = None;
             let mut stream = match self
                 .provider
                 .complete_split(
                     send_messages,
-                    &tools,
+                    tools,
                     &split_prompt.static_part,
                     &split_prompt.dynamic_part,
                     self.provider_session_id.as_deref(),

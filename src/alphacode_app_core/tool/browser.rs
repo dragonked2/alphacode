@@ -563,7 +563,10 @@ fn bridge_request(action: &str, input: &BrowserInput) -> Result<(String, Value, 
             // (BUG-09: 222k tokens of raw HTML). The bridge strips
             // <style>/<script> and truncates to maxLength.
             if input.format.as_deref() == Some("html") {
-                params.insert("maxLength".into(), json!(input.max_length.unwrap_or(60_000)));
+                params.insert(
+                    "maxLength".into(),
+                    json!(input.max_length.unwrap_or(60_000)),
+                );
             }
         }
         "interactables" => {}
@@ -659,10 +662,7 @@ fn bridge_request(action: &str, input: &BrowserInput) -> Result<(String, Value, 
             if let Some(contains) = &input.contains {
                 params.insert("contains".into(), json!(contains));
             }
-            if input.selector.is_none()
-                && input.text.is_none()
-                && input.contains.is_none()
-            {
+            if input.selector.is_none() && input.text.is_none() && input.contains.is_none() {
                 // Stability / fixed-delay mode.
                 match input.position.as_deref() {
                     Some("network-idle") => {

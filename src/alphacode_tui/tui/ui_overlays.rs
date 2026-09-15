@@ -33,10 +33,9 @@ pub(super) fn draw_changelog_overlay(
         lines.push(Line::from(""));
         for group in &groups {
             let heading = match &group.released_at {
-                Some(released_at) => format!(
-                    "  \u{25c6} {} \u{2500} {} ",
-                    group.version, released_at
-                ),
+                Some(released_at) => {
+                    format!("  \u{25c6} {} \u{2500} {} ", group.version, released_at)
+                }
                 None => format!("  \u{25c6} {} ", group.version),
             };
             lines.push(Line::from(Span::styled(
@@ -52,37 +51,20 @@ pub(super) fn draw_changelog_overlay(
             lines.push(Line::from(""));
             for entry in &group.entries {
                 // Detect entry type by prefix for visual categorization
-                let (bullet, entry_style) = if entry.starts_with("feat") || entry.starts_with("add") {
-                    (
-                        "\u{25b8}",
-                        Style::default().fg(rgb(120, 220, 140)),
-                    )
+                let (bullet, entry_style) = if entry.starts_with("feat") || entry.starts_with("add")
+                {
+                    ("\u{25b8}", Style::default().fg(rgb(120, 220, 140)))
                 } else if entry.starts_with("fix") {
-                    (
-                        "\u{25b8}",
-                        Style::default().fg(rgb(120, 180, 255)),
-                    )
+                    ("\u{25b8}", Style::default().fg(rgb(120, 180, 255)))
                 } else if entry.starts_with("perf") {
-                    (
-                        "\u{25b8}",
-                        Style::default().fg(rgb(255, 200, 100)),
-                    )
+                    ("\u{25b8}", Style::default().fg(rgb(255, 200, 100)))
                 } else if entry.starts_with("break") || entry.starts_with("remov") {
-                    (
-                        "\u{25b8}",
-                        Style::default().fg(rgb(255, 120, 120)),
-                    )
+                    ("\u{25b8}", Style::default().fg(rgb(255, 120, 120)))
                 } else {
-                    (
-                        "\u{25b8}",
-                        Style::default().fg(rgb(160, 165, 180)),
-                    )
+                    ("\u{25b8}", Style::default().fg(rgb(160, 165, 180)))
                 };
                 lines.push(Line::from(vec![
-                    Span::styled(
-                        format!("    {} ", bullet),
-                        Style::default().fg(dim_color()),
-                    ),
+                    Span::styled(format!("    {} ", bullet), Style::default().fg(dim_color())),
                     Span::styled(entry.clone(), entry_style),
                 ]));
             }

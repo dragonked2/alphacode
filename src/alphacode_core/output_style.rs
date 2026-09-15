@@ -84,21 +84,30 @@ fn contains_emoji(text: &str) -> bool {
 }
 
 fn emoji_ascii_fallback(grapheme: &str) -> &'static str {
-    if grapheme.chars().any(|ch| matches!(ch, '\u{2713}' | '\u{2714}' | '\u{2705}')) {
+    if grapheme
+        .chars()
+        .any(|ch| matches!(ch, '\u{2713}' | '\u{2714}' | '\u{2705}'))
+    {
         "+"
     } else if grapheme
         .chars()
         .any(|ch| matches!(ch, '\u{2715}' | '\u{2717}' | '\u{274c}' | '\u{274e}'))
     {
         "x"
-    } else if grapheme.chars().any(|ch| matches!(ch, '\u{26a0}' | '\u{1f6a8}')) {
+    } else if grapheme
+        .chars()
+        .any(|ch| matches!(ch, '\u{26a0}' | '\u{1f6a8}'))
+    {
         "!"
     } else if grapheme
         .chars()
         .any(|ch| matches!(ch, '\u{27a1}' | '\u{1f449}' | '\u{279c}' | '\u{27a3}'))
     {
         "->"
-    } else if grapheme.chars().any(|ch| matches!(ch, '\u{2b05}' | '\u{1f448}')) {
+    } else if grapheme
+        .chars()
+        .any(|ch| matches!(ch, '\u{2b05}' | '\u{1f448}'))
+    {
         "<-"
     } else {
         "*"
@@ -195,10 +204,7 @@ pub fn label_value(label: &str, value: &str) -> String {
 
 /// A horizontal separator line.
 pub fn separator(width: usize) -> String {
-    format!(
-        "{TC_GRAY_DIM}{}{COLOR_RESET}",
-        "\u{2500}".repeat(width)
-    )
+    format!("{TC_GRAY_DIM}{}{COLOR_RESET}", "\u{2500}".repeat(width))
 }
 
 /// Compact header replacing the large ASCII logo. Enhanced with truecolor gradient.
@@ -210,7 +216,7 @@ pub fn compact_header(
     workspace: &str,
 ) -> String {
     format!(
-        "{tc_bg}{TC_GRADIENT_A}{COLOR_BOLD} \u{2554}\u{2550}\u{2557} {COLOR_RESET} {TC_GRADIENT_A}AlphaCode{COLOR_RESET} {TC_GRADIENT_B}v{version}{COLOR_RESET} {TC_GRAY_DIM}\u{2502}{COLOR_RESET} {TC_GRAY}Provider   {TC_WHITE}{provider}{COLOR_RESET} {TC_GRAY_DIM}\u{2502}{COLOR_RESET} {TC_GRAY}Model      {TC_WHITE}{model}{COLOR_RESET} {TC_GRAY_DIM}\u{2502}{COLOR_RESET} {TC_GRAY}Server     {TC_WHITE}{server}{COLOR_RESET} {TC_GRAY_DIM}\u{2502}{COLOR_RESET} {TC_GRAY}Workspace  {TC_WHITE}{workspace}{COLOR_RESET} {TC_GREEN}{COLOR_BOLD}\u{25cf} Ready{COLOR_RESET}",
+        "{tc_bg}{TC_GRADIENT_A}{COLOR_BOLD} \u{2554}\u{2550}\u{2557} {COLOR_RESET} {TC_GRADIENT_A}AlphaCode{COLOR_RESET} {TC_GRADIENT_B}v{version}{COLOR_RESET} {TC_GRAY_DIM}\u{2502}{COLOR_RESET} {TC_GRAY}Provider   {TC_CYAN}{provider}{COLOR_RESET} {TC_GRAY_DIM}\u{2502}{COLOR_RESET} {TC_GRAY}Model      {TC_WHITE}{COLOR_BOLD}{model}{COLOR_RESET} {TC_GRAY_DIM}\u{2502}{COLOR_RESET} {TC_GRAY}Server     {TC_WHITE}{server}{COLOR_RESET} {TC_GRAY_DIM}\u{2502}{COLOR_RESET} {TC_GRAY}Workspace  {TC_WHITE}{workspace}{COLOR_RESET} {TC_GREEN}{COLOR_BOLD}\u{25cf} Ready{COLOR_RESET}",
         tc_bg = TC_BG_DARK,
         version = version,
         provider = provider,
@@ -245,14 +251,14 @@ pub fn startup_banner(version: &str, provider: &str, model: &str) -> String {
     let info_line = format!(
         "{TC_GRAY}  v{version}{COLOR_RESET} {TC_GRAY_DIM}\u{00b7}{COLOR_RESET} \
          {TC_WHITE}{provider}{COLOR_RESET} {TC_GRAY_DIM}\u{00b7}{COLOR_RESET} \
-         {TC_CYAN}{model}{COLOR_RESET}"
+         {TC_CYAN}{model}{COLOR_RESET} {TC_GREEN}{COLOR_BOLD}\u{25cf} Ready{COLOR_RESET}"
     );
     format!("{banner}\n{info_line}")
 }
 
 /// Copyright notice for terminal output.
 pub fn copyright_notice(version: &str) -> String {
-    let year = 2025;
+    let year = 2026;
     format!(
         "{TC_CYAN}AlphaCode{COLOR_RESET} {TC_GRAY_DIM}v{version}{COLOR_RESET}  \
          {TC_GRAY_DIM}\u{00a9} {year} AlphaCode. All rights reserved.{COLOR_RESET}",
@@ -275,9 +281,7 @@ pub fn prompt_header(title: &str) -> String {
     format!("{COLOR_BOLD}{TC_CYAN}{title}{COLOR_RESET}\n")
 }
 pub fn prompt_field(label: &str, value: &str) -> String {
-    format!(
-        "{TC_GRAY}{label}{COLOR_RESET}\n{TC_WHITE}{value}{COLOR_RESET}\n"
-    )
+    format!("{TC_GRAY}{label}{COLOR_RESET}\n{TC_WHITE}{value}{COLOR_RESET}\n")
 }
 pub fn prompt_subtle(text: &str) -> String {
     format!("{TC_GRAY_DIM}{text}{COLOR_RESET}")
@@ -293,9 +297,7 @@ pub fn progress(text: &str) -> String {
 
 /// Formatted progress with a spinner-style indicator.
 pub fn progress_spinner(text: &str) -> String {
-    format!(
-        "{TC_PURPLE}{COLOR_BOLD}\u{27f3}{COLOR_RESET} {TC_BLUE}{text}{COLOR_RESET}"
-    )
+    format!("{TC_PURPLE}{COLOR_BOLD}\u{27f3}{COLOR_RESET} {TC_BLUE}{text}{COLOR_RESET}")
 }
 
 /// Rewrite errors to be short, actionable, and readable.

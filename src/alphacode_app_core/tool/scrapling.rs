@@ -749,8 +749,12 @@ except Exception as e:
         // content leakage (BUG-04).
         let landed_url = result["url"].as_str().unwrap_or("");
         if !landed_url.is_empty() {
-            let requested_host = url::Url::parse(&params.url).ok().and_then(|u| u.host_str().map(String::from));
-            let landed_host = url::Url::parse(landed_url).ok().and_then(|u| u.host_str().map(String::from));
+            let requested_host = url::Url::parse(&params.url)
+                .ok()
+                .and_then(|u| u.host_str().map(String::from));
+            let landed_host = url::Url::parse(landed_url)
+                .ok()
+                .and_then(|u| u.host_str().map(String::from));
             if let (Some(req_host), Some(land_host)) = (&requested_host, &landed_host) {
                 let req_reg = req_host.trim_start_matches("www.");
                 let land_reg = land_host.trim_start_matches("www.");

@@ -64,6 +64,24 @@ pub(super) fn shorten_model_name(model: &str) -> String {
     if model.contains("haiku") {
         return "claudehaiku".to_string();
     }
+    if model.contains("gemini") {
+        if model.contains("2.5") {
+            return "gemini2.5".to_string();
+        }
+        if model.contains("2.0") {
+            return "gemini2.0".to_string();
+        }
+        return "gemini".to_string();
+    }
+    if model.contains("deepseek") {
+        if model.contains("r1") {
+            return "deepseek-r1".to_string();
+        }
+        return "deepseek".to_string();
+    }
+    if model.contains("qwen") {
+        return "qwen".to_string();
+    }
     if model.starts_with("gpt-5") {
         return model.replace("gpt-", "gpt").replace("-", "");
     }
@@ -121,10 +139,7 @@ pub fn format_status_for_debug(app: &dyn TuiState) -> String {
             {
                 let completed = progress.completed;
                 let total = progress.total;
-                let mut status = format!(
-                    "\u{25cf} Batch: {}/{} done",
-                    completed, total
-                );
+                let mut status = format!("\u{25cf} Batch: {}/{} done", completed, total);
                 if let Some(running) =
                     tools_ui::summarize_batch_running_tools_compact(&progress.running)
                 {
@@ -167,7 +182,10 @@ pub fn build_status_summary(
 /// request input size; when no limit is known the raw token count is shown
 /// instead of a percentage. Returns e.g. `ctx=42%` or `ctx=118k`. (The header
 /// keeps this visible at all times so usage never surprises the user.)
-fn format_context_fragment(tokens: Option<(u64, u64)>, context_limit: Option<usize>) -> Option<String> {
+fn format_context_fragment(
+    tokens: Option<(u64, u64)>,
+    context_limit: Option<usize>,
+) -> Option<String> {
     let (input, _output) = tokens?;
     if input == 0 {
         return None;
@@ -194,6 +212,15 @@ pub fn build_status_summary_with_context(
 
     let mut parts: Vec<String> = Vec::new();
 
+    // Provider status indicator — show connected/disconnected state with
+    // provider name so the header reads at a glance.
+    let conn_icon = if connected { "\u{25cf}" } else { "\u{25cb}" };
+    parts.push(format!(
+        "{} {}",
+        conn_icon,
+        if connected { "connected" } else { "offline" }
+    ));
+
     // Model (compact).
     if let Some(m) = model {
         parts.push(format!("model={}", shorten_model_name(m)));
@@ -214,13 +241,6 @@ pub fn build_status_summary_with_context(
         let kind = TaskKind::classify(hint);
         parts.push(format!("task={}", kind.as_str()));
     }
-
-    // Connection state.
-    parts.push(if connected {
-        "conn=ok".to_string()
-    } else {
-        "conn=offline".to_string()
-    });
 
     // Session tokens.
     if let Some((input, output)) = tokens {

@@ -89,6 +89,10 @@ pub(crate) mod tools_ui;
 mod viewport;
 use crate::alphacode_tui::tui::mermaid;
 #[cfg(test)]
+use crate::alphacode_tui::tui::ui_transitions::extract_line_text;
+#[cfg(test)]
+use crate::alphacode_tui::tui::ui_transitions::inline_ui_gap_height;
+#[cfg(test)]
 pub(crate) use box_utils::truncate_line_to_width;
 use box_utils::{
     line_plain_text, render_rounded_box, truncate_line_preserving_suffix_to_width,
@@ -150,10 +154,6 @@ pub(crate) use pinned_ui::{
 use pinned_ui::{
     collect_pinned_diffs_cached, draw_pinned_content_cached, draw_side_panel_markdown,
 };
-#[cfg(test)]
-use crate::alphacode_tui::tui::ui_transitions::extract_line_text;
-#[cfg(test)]
-use crate::alphacode_tui::tui::ui_transitions::inline_ui_gap_height;
 #[cfg(test)]
 use viewport::compute_visible_margins;
 use viewport::draw_messages;

@@ -111,7 +111,8 @@ impl Agent {
         // and decides the next action — the system prompt and tool list never
         // change. Rebuilding them on every iteration wastes CPU and produces
         // identical bytes that the provider's KV cache already ignores.
-        let mut cached_static_prompt: Option<std::sync::Arc<crate::prompt::SplitSystemPrompt>> = None;
+        let mut cached_static_prompt: Option<std::sync::Arc<crate::prompt::SplitSystemPrompt>> =
+            None;
         let mut cached_tools: Option<Vec<ToolDefinition>> = None;
         loop {
             let repaired = self.repair_missing_tool_outputs();
@@ -171,13 +172,19 @@ impl Agent {
             // avoids the API round-trip entirely.
             // Reuse cached static prompt within a turn (it doesn't change between iterations)
             let (split_prompt, prompt_tier) = if let Some(ref cached) = cached_static_prompt {
-                (std::sync::Arc::clone(cached), crate::prompt::PromptTier::Standard)
+                (
+                    std::sync::Arc::clone(cached),
+                    crate::prompt::PromptTier::Standard,
+                )
             } else {
                 let (sp, tier) = self.build_system_prompt_split(None, None);
                 cached_static_prompt = Some(std::sync::Arc::new(sp));
-                (std::sync::Arc::clone(cached_static_prompt.as_ref().unwrap()), tier)
+                (
+                    std::sync::Arc::clone(cached_static_prompt.as_ref().unwrap()),
+                    tier,
+                )
             };
-            self.log_prompt_prefix_accounting(&split_prompt, &tools, prompt_tier);
+            self.log_prompt_prefix_accounting(&split_prompt, tools, prompt_tier);
 
             // Check for client-side cache violations before memory injection.
             // Memory is an ephemeral suffix that changes each turn; tracking it would cause
@@ -231,9 +238,8 @@ impl Agent {
                 msgs.push(memory_msg);
                 messages_with_memory_buf = Some(msgs);
             }
-            let messages_with_memory: &[Message] = messages_with_memory_buf
-                .as_deref()
-                .unwrap_or(&messages);
+            let messages_with_memory: &[Message] =
+                messages_with_memory_buf.as_deref().unwrap_or(&messages);
 
             crate::logging::info_throttled(
                 "api_call_starting",
@@ -248,8 +254,8 @@ impl Agent {
             let stamped = crate::config::config()
                 .features
                 .message_timestamps
-                .then(|| Message::with_timestamps(&messages_with_memory));
-            let send_messages = stamped.as_deref().unwrap_or(&messages_with_memory);
+                .then(|| Message::with_timestamps(messages_with_memory));
+            let send_messages = stamped.as_deref().unwrap_or(messages_with_memory);
             let prompt_has_recent_tool_result = Self::messages_end_with_tool_result(send_messages);
             let provider = Arc::clone(&self.provider);
             // Capture the model id the request was issued with. A provider may
@@ -266,12 +272,10 @@ impl Agent {
             // When no memory was injected and timestamps are off, the original
             // messages slice suffices — no extra allocation.
             let _ = event_tx.send({
-                let csig_ref = cache_signature_messages
-                    .as_deref()
-                    .unwrap_or(&messages);
+                let csig_ref = cache_signature_messages.as_deref().unwrap_or(&messages);
                 kv_cache_request_event(
                     csig_ref,
-                    &tools,
+                    tools,
                     &split_prompt.static_part,
                     &ephemeral_signature_messages,
                 )
@@ -285,7 +289,7 @@ impl Agent {
             let mut stream = {
                 let mut complete_future = std::pin::pin!(provider.complete_split(
                     send_messages,
-                    &tools,
+                    tools,
                     &split_prompt.static_part,
                     &split_prompt.dynamic_part,
                     resume_session_id.as_deref(),

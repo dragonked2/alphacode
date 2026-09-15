@@ -56,7 +56,7 @@ fn runtime_user_discriminator() -> String {
         .unwrap_or_default();
     let user = std::env::var("USERNAME")
         .or_else(|_| std::env::var("USER"))
-        .map(|value| sanitize(value))
+        .map(sanitize)
         .unwrap_or_else(|_| "user".to_string());
     format!("{user}-{raw}main")
 }

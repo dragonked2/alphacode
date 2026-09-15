@@ -936,77 +936,108 @@ fn idle_session_stats_line(app: &dyn TuiState) -> Option<Line<'static>> {
         return None;
     }
 
-    let mut text = format!(
-        "⌁ {} total · ↑{} in · ↓{} out",
-        format_stream_tokens(total),
-        format_stream_tokens(total_in),
-        format_stream_tokens(total_out),
-    );
+    let mut spans: Vec<Span<'static>> = Vec::new();
 
-    // Steady context-usage segment: `ctx=42%` when the model's context window
-    // is known, `ctx=118k` otherwise. Always visible in the idle status line
-    // so the user never has to open an overlay to see how full the window is.
+    // Connection status dot — emerald for connected
+    spans.push(Span::styled(
+        "\u{25cf} ",
+        Style::default()
+            .fg(rgb(100, 225, 155))
+            .add_modifier(Modifier::BOLD),
+    ));
+
+    // Provider + model as the primary info
+    let provider = app.provider_name();
+    let model = app.provider_model();
+    let provider_display = if provider.is_empty() {
+        "auto".to_string()
+    } else {
+        provider.to_string()
+    };
+    let model_short = super::shorten_model_name(&model);
+    if !model_short.is_empty() {
+        spans.push(Span::styled(
+            format!("{} \u{00b7} {}", provider_display, model_short),
+            Style::default()
+                .fg(rgb(130, 180, 255))
+                .add_modifier(Modifier::BOLD),
+        ));
+        spans.push(Span::styled(" ", Style::default()));
+    }
+
+    // Token stats
+    spans.push(Span::styled(
+        format!(
+            "\u{2301} {} total \u{00b7} \u{2191}{} \u{00b7} \u{2193}{}",
+            format_stream_tokens(total),
+            format_stream_tokens(total_in),
+            format_stream_tokens(total_out),
+        ),
+        Style::default().fg(rgb(128, 140, 165)),
+    ));
+
+    // Steady context-usage segment
     if total_in > 0 {
-        text.push_str(&format!(
-            " · ctx={}",
-            idle_context_fragment(app, total_in)
+        spans.push(Span::styled(
+            format!(" \u{00b7} ctx={}", idle_context_fragment(app, total_in)),
+            Style::default().fg(rgb(160, 170, 195)),
         ));
     }
 
     let data = app.info_widget_data();
     if let Some(info) = data.usage_info.as_ref().filter(|info| info.available) {
-        let mut parts = Vec::new();
         if matches!(info.provider, super::info_widget::UsageProvider::CostBased)
             && info.total_cost > 0.0
         {
-            parts.push(format!("${:.2}", info.total_cost));
+            spans.push(Span::styled(
+                format!(" \u{00b7} ${:.2}", info.total_cost),
+                Style::default().fg(rgb(120, 220, 160)),
+            ));
         } else {
             if let Some(label) = info
                 .primary_limit_label
                 .as_deref()
                 .filter(|_| info.five_hour > 0.0)
             {
-                parts.push(format!("{} {:.0}%", label, info.five_hour * 100.0));
+                spans.push(Span::styled(
+                    format!(" \u{00b7} {} {:.0}%", label, info.five_hour * 100.0),
+                    Style::default().fg(rgb(128, 140, 165)),
+                ));
             }
             if let Some(label) = info
                 .secondary_limit_label
                 .as_deref()
                 .filter(|_| info.seven_day > 0.0)
             {
-                parts.push(format!("{} {:.0}%", label, info.seven_day * 100.0));
+                spans.push(Span::styled(
+                    format!(" \u{00b7} {} {:.0}%", label, info.seven_day * 100.0),
+                    Style::default().fg(rgb(128, 140, 165)),
+                ));
             }
-        }
-        if !parts.is_empty() {
-            text.push_str(&format!(" · {}", parts.join(" · ")));
         }
     }
 
     let compactions = app.session_compaction_count();
     if compactions > 0 {
-        text.push_str(&format!(
-            " · {} compact{}",
-            compactions,
-            if compactions == 1 { "" } else { "s" }
+        spans.push(Span::styled(
+            format!(
+                " \u{00b7} {} compact{}",
+                compactions,
+                if compactions == 1 { "" } else { "s" }
+            ),
+            Style::default().fg(rgb(128, 140, 165)),
         ));
     }
 
     let recovered = crate::alphacode_app_core::agent::provider_errors_auto_recovered();
     if recovered > 0 {
-        text.push_str(&format!(" · {} recovered", recovered));
+        spans.push(Span::styled(
+            format!(" \u{00b7} {} recovered", recovered),
+            Style::default().fg(rgb(128, 140, 165)),
+        ));
     }
 
-    Some(Line::from(vec![
-        Span::styled(
-            "⚡",
-            Style::default()
-                .fg(rgb(90, 215, 230))
-                .add_modifier(Modifier::BOLD),
-        ),
-        Span::styled(
-            format!(" {}", text),
-            Style::default().fg(rgb(128, 140, 165)),
-        ),
-    ]))
+    Some(Line::from(spans))
 }
 
 pub(super) fn draw_status(frame: &mut Frame, app: &dyn TuiState, area: Rect, pending_count: usize) {
@@ -1149,8 +1180,7 @@ pub(super) fn draw_status(frame: &mut Frame, app: &dyn TuiState, area: Rect, pen
                 if input_tokens > 0 {
                     match app.context_limit() {
                         Some(limit) if limit > 0 => {
-                            let pct =
-                                ((input_tokens as f64 / limit as f64) * 100.0).round() as u64;
+                            let pct = ((input_tokens as f64 / limit as f64) * 100.0).round() as u64;
                             status_text = format!("{} · ctx={}%", status_text, pct.min(999));
                         }
                         _ => {

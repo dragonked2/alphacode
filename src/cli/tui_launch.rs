@@ -33,10 +33,7 @@ pub async fn run_client() -> Result<()> {
 
     println!(
         "{}",
-        os::colorized(
-            &format!("● Connected to Alphacode server"),
-            "[38;5;10m"
-        )
+        os::colorized("● Connected to Alphacode server", "[38;5;10m")
     );
     println!(
         "{}",

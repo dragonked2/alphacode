@@ -416,10 +416,7 @@ fn welcome_subtitle_line() -> Line<'static> {
 /// Short keyboard hint rendered just below the donut on guided phases.
 fn keyboard_hint_line() -> Line<'static> {
     Line::from(vec![
-        Span::styled(
-            "\u{25b8} ",
-            Style::default().fg(welcome_accent()),
-        ),
+        Span::styled("\u{25b8} ", Style::default().fg(welcome_accent())),
         Span::styled(
             "Type a message below or press a number for a quick start",
             Style::default()

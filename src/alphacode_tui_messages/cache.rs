@@ -5,7 +5,6 @@ use ratatui::text::{Line, Span};
 use std::collections::{HashMap, VecDeque};
 use std::sync::{Arc, Mutex, OnceLock};
 
-
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 struct MessageCacheKey {
     width: u16,

@@ -309,6 +309,31 @@ impl Default for SmartModelPicker {
     }
 }
 
+/// Format a "last used" timestamp into a human-readable relative time string.
+/// E.g., "2m ago", "1h ago", "3d ago". Returns None if the timestamp is 0.
+fn format_last_used(last_used_secs: u64) -> Option<String> {
+    if last_used_secs == 0 {
+        return None;
+    }
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs();
+    if now <= last_used_secs {
+        return Some("just now".to_string());
+    }
+    let ago = now - last_used_secs;
+    if ago < 60 {
+        Some("just now".to_string())
+    } else if ago < 3600 {
+        Some(format!("{}m ago", ago / 60))
+    } else if ago < 86400 {
+        Some(format!("{}h ago", ago / 3600))
+    } else {
+        Some(format!("{}d ago", ago / 86400))
+    }
+}
+
 /// Render model picker with smart sorting and metadata
 pub fn render_smart_model_picker(
     models: &[String],
@@ -473,6 +498,19 @@ pub fn render_smart_model_picker_with_task(
                 spans.push(Span::styled(
                     format!(" ({})", stats.provider),
                     Style::default().fg(provider_color),
+                ));
+            }
+
+            // Last used timestamp — subtle dim indicator so users can see
+            // when they last used a model at a glance.
+            if let Some(stats) = &stats
+                && let Some(last_used) = format_last_used(stats.last_used)
+            {
+                spans.push(Span::styled(
+                    format!(" {}", last_used),
+                    Style::default()
+                        .fg(rgb(90, 100, 120))
+                        .add_modifier(Modifier::ITALIC),
                 ));
             }
 
