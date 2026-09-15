@@ -30,6 +30,7 @@ mod open;
 mod patch;
 mod plan;
 mod read;
+mod repeat_guard;
 mod scrapling;
 mod self_improve;
 pub mod selfdev;
@@ -90,6 +91,7 @@ pub(crate) fn clear_session_tool_policy(session_id: &str) {
         .write()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
     policies.remove(session_id);
+    repeat_guard::clear_session(session_id);
 }
 
 fn session_tool_policy(session_id: &str) -> Option<SessionToolPolicy> {
@@ -163,6 +165,16 @@ pub(crate) fn agent_facing_error(tool_name: &str, error: &anyhow::Error) -> Stri
         Some(hint) => format!("Error: {base}\nHint: {hint}"),
         None => format!("Error: {base}"),
     }
+}
+
+/// A model-supplied tool name resolved against the live tool registry.
+///
+/// `name` is the registry key that will be executed. `action` is set when the
+/// model encoded the action in the tool name (`desktop_find`,
+/// `desktop.snapshot`) instead of passing the tool's `action` parameter.
+struct ResolvedToolCall {
+    name: String,
+    action: Option<String>,
 }
 
 /// Registry of available tools (Arc-wrapped for sharing)
@@ -473,6 +485,85 @@ impl Registry {
         crate::alphacode_tool_types::resolve_tool_name(name)
     }
 
+    /// Resolve a model-supplied tool name against the live registry, tolerating
+    /// the shapes models actually emit for an existing tool:
+    ///
+    /// * alias spellings and transport namespaces (`shell_exec`, `functions.bash`)
+    ///   via [`Self::resolve_tool_name`];
+    /// * `<tool>.<schema-field>`, the name shape a model produces when it merges
+    ///   the tool with its required `intent` parameter (`ls.intent`);
+    /// * `<tool>.<action>` (`desktop.snapshot`) and `<tool>_<action>`
+    ///   (`desktop_find`) — the flattened form our own desktop-tool hints used to
+    ///   advertise. The action is injected into the input when the model did not
+    ///   pass `action` itself and the tool actually declares that action.
+    ///
+    /// Anything else resolves to the plain alias mapping and is reported as
+    /// unknown by the caller, exactly as before.
+    fn resolve_tool_call(name: &str, tools: &HashMap<String, Arc<dyn Tool>>) -> ResolvedToolCall {
+        let canonical = Self::resolve_tool_name(name);
+        if tools.contains_key(canonical) {
+            return ResolvedToolCall { name: canonical.to_string(), action: None };
+        }
+
+        // `<tool>.<selector>`: drop trailing dotted segments, longest tool first,
+        // and remember the outermost dropped segment as a candidate action.
+        let mut cut = name.len();
+        while let Some(dot) = name[..cut].rfind('.') {
+            let dropped = &name[dot + 1..cut];
+            cut = dot;
+            let candidate = Self::resolve_tool_name(&name[..cut]);
+            if tools.contains_key(candidate) {
+                return ResolvedToolCall {
+                    name: candidate.to_string(),
+                    action: Self::declared_action(tools, candidate, dropped),
+                };
+            }
+        }
+
+        // `<tool>_<action>`: accepted only when the head is a registered tool
+        // that really declares the tail as an action, so names like
+        // `conversation_search` and `apply_patch` are never split.
+        if let Some((head, tail)) = name.split_once('_') {
+            let candidate = Self::resolve_tool_name(head);
+            if tools.contains_key(candidate)
+                && Self::declared_action(tools, candidate, tail).is_some()
+            {
+                return ResolvedToolCall {
+                    name: candidate.to_string(),
+                    action: Some(tail.to_string()),
+                };
+            }
+        }
+
+        ResolvedToolCall {
+            name: canonical.to_string(),
+            action: None,
+        }
+    }
+
+    /// `Some(action)` when `tool_key` declares an `action` parameter that accepts
+    /// `action` — either as an enum member or as a free-form string.
+    fn declared_action(
+        tools: &HashMap<String, Arc<dyn Tool>>,
+        tool_key: &str,
+        action: &str,
+    ) -> Option<String> {
+        if action.is_empty() {
+            return None;
+        }
+        let tool = tools.get(tool_key)?;
+        let schema = tool.parameters_schema();
+        let property = schema.get("properties")?.get("action")?;
+        let accepted = match property.get("enum").and_then(Value::as_array) {
+            Some(values) => values.iter().any(|value| value.as_str() == Some(action)),
+            None => property
+                .get("type")
+                .and_then(Value::as_str)
+                .is_some_and(|kind| kind == "string"),
+        };
+        accepted.then(|| action.to_string())
+    }
+
     /// Suggest up to 3 available tool names that look similar to `name`.
     /// Uses cheap, dependency-free heuristics: case-insensitive equality,
     /// prefix/substring containment, then bounded edit distance. Helps the
@@ -639,38 +730,90 @@ impl Registry {
     const SINGLE_OUTPUT_MAX_FRACTION: f32 = 0.30;
 
     /// Execute a tool by name
-    pub async fn execute(&self, name: &str, input: Value, ctx: ToolContext) -> Result<ToolOutput> {
+    pub async fn execute(&self, name: &str, mut input: Value, ctx: ToolContext) -> Result<ToolOutput> {
         let tools = self.tools.read().await;
-        let resolved_name = Self::resolve_tool_name(name);
+        let resolved = Self::resolve_tool_call(name, &tools);
+        let resolved_name: &str = &resolved.name;
+        if resolved_name != name {
+            crate::logging::info(&format!(
+                "Tool name recovery: requested '{name}' -> '{resolved_name}'{} [session {}]",
+                resolved
+                    .action
+                    .as_deref()
+                    .map(|action| format!(" (action '{action}')"))
+                    .unwrap_or_default(),
+                ctx.session_id
+            ));
+        }
         if let Some(policy) = session_tool_policy(&ctx.session_id) {
             if let Some(allowed) = policy.allowed_tools.as_ref()
                 && !allowed.contains(resolved_name)
             {
+                repeat_guard::record_failure(&ctx.session_id, name, false, &input);
                 return Err(anyhow::anyhow!("Tool '{}' is not allowed", resolved_name));
             }
             if policy.disabled_tools.contains(resolved_name) {
+                repeat_guard::record_failure(&ctx.session_id, name, false, &input);
                 return Err(anyhow::anyhow!("Tool '{}' is disabled", resolved_name));
             }
         }
         let tool = match tools.get(resolved_name) {
             Some(tool) => tool.clone(),
             None => {
-                // List available tools so the model can recover instead of
-                // spiraling through hallucinated names like "ToolSearch" (#104).
                 let mut available: Vec<&str> = tools.keys().map(|k| k.as_str()).collect();
                 available.sort_unstable();
                 let suggestions = Self::closest_tool_names(name, &available);
+                let prior = repeat_guard::prior_failures(&ctx.session_id, name, false, &input);
                 let mut msg = format!("Unknown tool: {name}.");
                 if !suggestions.is_empty() {
                     msg.push_str(&format!(" Did you mean: {}?", suggestions.join(", ")));
+                } else {
+                    msg.push_str(&format!(" Available tools: {}.", available.join(", ")));
                 }
-                msg.push_str(&format!(" Available tools: {}.", available.join(", ")));
+                if prior >= repeat_guard::UNKNOWN_NAME_LIMIT {
+                    msg.push_str(&format!(
+                        " This name has now failed {} times; it cannot start working. Stop \
+                         calling it and use a different tool.",
+                        prior.saturating_add(1)
+                    ));
+                }
+                repeat_guard::record_failure(&ctx.session_id, name, false, &input);
+                crate::logging::warn(&format!(
+                    "Unknown tool '{name}' requested (prior failures: {prior}) [session {}]",
+                    ctx.session_id
+                ));
                 return Err(anyhow::anyhow!(msg));
             }
         };
 
         // Drop the lock before executing
         drop(tools);
+
+        // A call that already failed with identical input will not start
+        // working; refuse it here so the model gets one corrective message
+        // instead of another identical failure to loop on.
+        let prior_failures = repeat_guard::prior_failures(&ctx.session_id, resolved_name, true, &input);
+        if prior_failures >= repeat_guard::IDENTICAL_FAILURE_LIMIT {
+            let msg = format!(
+                "Refusing to run `{resolved_name}` again: this identical call already failed \
+                 {prior_failures} times in this session. Change the arguments or the approach — \
+                 repeating it cannot succeed. Use a different tool if the input is already correct."
+            );
+            crate::logging::warn(&format!(
+                "Repeat-failure guard blocked '{resolved_name}' (prior failures: {prior_failures}) \
+                 [session {}]",
+                ctx.session_id
+            ));
+            return Err(anyhow::anyhow!(msg));
+        }
+
+        // The model named the action instead of the tool (`desktop_find`,
+        // `desktop.snapshot`). Inject it when the call does not carry one.
+        if let Some(action) = resolved.action.as_deref() {
+            if let Some(object) = input.as_object_mut() {
+                object.entry("action".to_string()).or_insert(Value::String(action.to_string()));
+            }
+        }
 
         // User-configured pre_tool gate: external policy hook that can block
         // this call (exit 2). Skipped entirely when not configured.
@@ -706,6 +849,10 @@ impl Registry {
         let started_at = std::time::Instant::now();
         let result = tool.execute(input.clone(), ctx.clone()).await;
         let latency_ms = started_at.elapsed().as_millis().min(u128::from(u64::MAX)) as u64;
+        match &result {
+            Ok(_) => repeat_guard::record_success(&ctx.session_id, resolved_name, &input),
+            Err(_) => repeat_guard::record_failure(&ctx.session_id, resolved_name, true, &input),
+        }
 
         crate::telemetry::record_tool_execution(resolved_name, &input, result.is_ok(), latency_ms);
         Self::fire_post_tool_hook(resolved_name, &ctx, &result, latency_ms);

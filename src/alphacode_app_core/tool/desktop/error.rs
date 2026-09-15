@@ -56,21 +56,23 @@ impl DesktopError {
         match self {
             Self::ElementNotFound { message } => {
                 format!(
-                    "{message}\nHint: Run desktop_snapshot or desktop_find with a broader selector."
+                    "{message}\nHint: Run desktop action='snapshot' or desktop action='find' with a broader selector."
                 )
             }
             Self::AmbiguousElement { count, hint } => {
                 format!("Found {count} matching elements. {hint}")
             }
             Self::StaleElement { message } => {
-                format!("{message}\nHint: Re-run desktop_find to get a fresh element reference.")
+                format!(
+                    "{message}\nHint: Re-run desktop action='find' to get a fresh element reference."
+                )
             }
             Self::PermissionDenied { instructions } => {
                 format!("Permission denied. {instructions}")
             }
             Self::ApplicationNotFound { name } => {
                 format!(
-                    "Application '{name}' not found. Use desktop_list_windows to see available applications."
+                    "Application '{name}' not found. Use desktop action='list_windows' to see available applications."
                 )
             }
             Self::Timeout { secs } => {

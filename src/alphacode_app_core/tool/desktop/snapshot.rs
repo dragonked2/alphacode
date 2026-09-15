@@ -30,9 +30,11 @@ pub fn format_snapshot(result: &SnapshotResult, depth: usize, interactive_only: 
 
     // Add usage hint
     lines.push(String::new());
+    // Name the real invocation form. The tool is action-dispatched, so telling
+    // the model to call `desktop_find` sent it at a tool that does not exist.
     lines.push(
-        "Use element_id from above with desktop_click/type/focus to interact. \
-         Use desktop_find with role/name to search for specific elements."
+        "Use element_id from above with desktop action='click'/'focus'/'type' to interact. \
+         Use desktop action='find' with role/name to search for specific elements."
             .to_string(),
     );
 

@@ -123,7 +123,6 @@ pub fn truncate_middle_display(s: &str, max_width: usize) -> String {
     let tail = remaining / 2;
     let prefix = display_prefix_by_width(s, head);
     let suffix = display_suffix_by_width(s, tail);
-    // Pre-allocate with exact capacity to avoid reallocations
     let mut result = String::with_capacity(prefix.len() + 1 + suffix.len());
     result.push_str(prefix);
     result.push('…');
@@ -131,11 +130,47 @@ pub fn truncate_middle_display(s: &str, max_width: usize) -> String {
     result
 }
 
+/// Truncate from the right, keeping the head of the message.
+pub fn truncate_tail_display(s: &str, max_width: usize) -> String {
+    if UnicodeWidthStr::width(s) <= max_width {
+        return s.to_string();
+    }
+    if max_width == 0 {
+        return String::new();
+    }
+    let head = display_prefix_by_width(s, max_width.saturating_sub(1));
+    format!("{}…", head.trim_end())
+}
+
+/// Truncate from the left, keeping the tail of the message.
+pub fn truncate_head_display(s: &str, max_width: usize) -> String {
+    if UnicodeWidthStr::width(s) <= max_width {
+        return s.to_string();
+    }
+    if max_width == 0 {
+        return String::new();
+    }
+    let tail = display_suffix_by_width(s, max_width.saturating_sub(1));
+    format!("…{}", tail)
+}
+
 fn normalize_backticked_identifier(text: &str) -> String {
     text.replace('`', "").trim().to_string()
 }
 
+/// Drop a leading `[label] ` prefix from a tool result body.
+fn strip_leading_tool_label(content: &str) -> &str {
+    let trimmed = content.trim_start();
+    trimmed
+        .strip_prefix('[')
+        .and_then(|rest| rest.split_once("] "))
+        .filter(|(label, _)| !label.is_empty() && !label.contains(['\n', '\r']))
+        .map(|(_, rest)| rest)
+        .unwrap_or(trimmed)
+}
+
 pub fn concise_tool_error_summary(content: &str) -> Option<String> {
+    let content = strip_leading_tool_label(content);
     for raw_line in content.lines() {
         let line = raw_line.trim();
         if line.is_empty() {
@@ -163,7 +198,37 @@ pub fn concise_tool_error_summary(content: &str) -> Option<String> {
             if detail.starts_with("Refusing to publish") {
                 return Some("reload refused: rebuild against current source".to_string());
             }
-            return Some(format!("error: {}", truncate_middle_display(detail, 80)));
+            // Unknown-tool errors: show the mistaken name and best fix.
+            if let Some(rest) = detail.strip_prefix("Unknown tool:") {
+                let (name, suggestion) = match rest.split_once("Did you mean:") {
+                    Some((name, suggestion)) => (name, Some(suggestion)),
+                    None => (rest, None),
+                };
+                let name = name.trim().trim_end_matches('.').trim();
+                let first_suggestion = suggestion
+                    .and_then(|s| s.split(" Available tools").next())
+                    .and_then(|s| s.split(',').next())
+                    .map(|s| s.trim().trim_end_matches('?').trim())
+                    .filter(|s| !s.is_empty());
+                return Some(match first_suggestion {
+                    Some(first) => format!("unknown tool '{name}' — did you mean '{first}'?"),
+                    None => format!("unknown tool '{name}'"),
+                });
+            }
+            // Repeat-failure refusals: show the tool name and count.
+            if detail.starts_with("Refusing to run") {
+                let tool_name = detail.split('`').nth(1).unwrap_or("");
+                let attempts = detail
+                    .split_once("already failed")
+                    .and_then(|(_, rest)| rest.split_whitespace().next())
+                    .filter(|count| count.chars().all(|c| c.is_ascii_digit()));
+                return Some(match (tool_name, attempts) {
+                    ("", Some(count)) => format!("refused: identical call failed {count}×"),
+                    (name, Some(count)) => format!("refused: '{name}' failed {count}×"),
+                    (_, None) => "refused: identical call already failed".to_string(),
+                });
+            }
+            return Some(format!("error: {}", truncate_tail_display(detail, 80)));
         }
 
         if line.contains("Compile terminated by signal") {
@@ -191,7 +256,6 @@ pub fn tool_output_looks_failed(content: &str) -> bool {
     if trimmed.is_empty() {
         return false;
     }
-    // Fast path: check the first few bytes before allocating
     if trimmed.starts_with('✗')
         || trimmed.starts_with("Error:")
         || trimmed.starts_with("error:")
@@ -199,12 +263,7 @@ pub fn tool_output_looks_failed(content: &str) -> bool {
     {
         return true;
     }
-    let normalized = trimmed
-        .strip_prefix('[')
-        .and_then(|rest| rest.split_once("] "))
-        .filter(|(label, _)| !label.is_empty() && !label.contains(['\n', '\r']))
-        .map(|(_, rest)| rest)
-        .unwrap_or(trimmed);
+    let normalized = strip_leading_tool_label(trimmed);
     let lower = normalized.to_ascii_lowercase();
     if concise_tool_error_summary(normalized).is_some()
         || lower.starts_with("error:")
@@ -291,6 +350,45 @@ mod tests {
             concise_tool_error_summary("--- Command finished with exit code: 2 ---").as_deref(),
             Some("exit 2")
         );
+    }
+
+    #[test]
+    fn unknown_tool_summaries_keep_the_fix_and_drop_the_registry_dump() {
+        let summary = concise_tool_error_summary(
+            "Error: Unknown tool: ls.intent. Did you mean: ls? Available tools: bash, ls, \
+             read, swarm, todo, webfetch, websearch, write.",
+        )
+        .expect("unknown tool error should summarize");
+        assert_eq!(summary, "unknown tool 'ls.intent' — did you mean 'ls'?");
+        assert!(
+            !summary.contains("Available tools"),
+            "the registry dump must not reach the transcript row: {summary}"
+        );
+    }
+
+    #[test]
+    fn reads_through_a_leading_tool_label() {
+        let summary = concise_tool_error_summary("[ls] Error: Unknown tool: ls.intent.")
+            .expect("labelled error should summarize");
+        assert_eq!(summary, "unknown tool 'ls.intent'");
+    }
+
+    #[test]
+    fn repeat_refusals_summarize_to_their_count() {
+        let summary = concise_tool_error_summary(
+            "Error: Refusing to run `ls` again: this identical call already failed 2 times in \
+             this session. Change the arguments or the approach — repeating it cannot succeed.",
+        )
+        .expect("refusal should summarize");
+        assert_eq!(summary, "refused: 'ls' failed 2×");
+    }
+
+    #[test]
+    fn generic_error_summaries_keep_their_head() {
+        let summary = concise_tool_error_summary(&format!("Error: {}", "boom ".repeat(40)))
+            .expect("generic error should summarize");
+        assert!(summary.starts_with("error: boom boom"), "got: {summary}");
+        assert!(summary.ends_with('…'), "got: {summary}");
     }
 
     #[test]

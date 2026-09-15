@@ -344,7 +344,7 @@ fn action_find(input: &DesktopInput, timeout: Duration) -> Result<ToolOutput> {
     if matches.is_empty() {
         bail!(
             "ElementNotFound: No element matched role={:?}, name={:?}, value={:?}.\n\
-             Hint: Run desktop_snapshot to see available elements, or broaden your search.",
+             Hint: Run desktop action='snapshot' to see available elements, or broaden your search.",
             input.role,
             input.name,
             input.value
@@ -469,7 +469,9 @@ fn action_click(input: &DesktopInput, timeout: Duration) -> Result<ToolOutput> {
             ));
             backend::click_coordinates(xv, yv)
         } else {
-            bail!("click requires element_id or x/y coordinates. Use desktop_find first to locate an element.");
+            bail!(
+            "click requires element_id or x/y coordinates. Use desktop action='find' first to locate an element."
+        );
         }
     })
     .map(|msg| ToolOutput::new(msg).with_title("desktop click"))

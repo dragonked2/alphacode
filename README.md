@@ -348,19 +348,19 @@ The agent uses semantic accessibility APIs to understand and interact with deskt
 ```
 User: "Open Calculator and calculate 123 * 456"
 
-Agent:
-  1. desktop_list_windows → finds Calculator
-  2. desktop_snapshot → sees the calculator UI tree
-  3. desktop_find role=button name="1" → gets element_id
-  4. desktop_click element_id=desk_42f91 → clicks "1"
-  5. desktop_click element_id=desk_42f92 → clicks "2"
-  6. desktop_click element_id=desk_42f93 → clicks "3"
-  7. desktop_click element_id=desk_42f94 → clicks "*"
-  8. desktop_click element_id=desk_42f95 → clicks "4"
-  9. desktop_click element_id=desk_42f96 → clicks "5"
-  10. desktop_click element_id=desk_42f97 → clicks "6"
-  11. desktop_click element_id=desk_42f98 → clicks "="
-  12. desktop_snapshot → reads result: 56088
+Agent (one `desktop` tool, dispatched by `action`):
+  1. desktop action="list_windows" → finds Calculator
+  2. desktop action="snapshot" → sees the calculator UI tree
+  3. desktop action="find" role="button" name="1" → gets element_id
+  4. desktop action="click" element_id=desk_42f91 → clicks "1"
+  5. desktop action="click" element_id=desk_42f92 → clicks "2"
+  6. desktop action="click" element_id=desk_42f93 → clicks "3"
+  7. desktop action="click" element_id=desk_42f94 → clicks "*"
+  8. desktop action="click" element_id=desk_42f95 → clicks "4"
+  9. desktop action="click" element_id=desk_42f96 → clicks "5"
+  10. desktop action="click" element_id=desk_42f97 → clicks "6"
+  11. desktop action="click" element_id=desk_42f98 → clicks "="
+  12. desktop action="snapshot" → reads result: 56088
 ```
 
 **When to use Desktop Control vs Browser:**

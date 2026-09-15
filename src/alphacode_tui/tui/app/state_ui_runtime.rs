@@ -96,6 +96,22 @@ impl App {
         )
     }
 
+    /// Number of tool results in the current turn that failed.
+    /// Derived from the transcript rather than a counter, so it resets
+    /// at the turn boundary on every path with no extra state to sync.
+    pub(super) fn failed_tool_results_this_turn(&self) -> usize {
+        self.display_messages
+            .iter()
+            .rev()
+            .take_while(|message| message.role != "meta")
+            .filter(|message| message.role == "tool")
+            .filter(|message| !message.tool_calls.is_empty() || message.tool_data.is_some())
+            .filter(|message| {
+                crate::alphacode_tui::tui::ui::tools_ui::tool_output_looks_failed(&message.content)
+            })
+            .count()
+    }
+
     pub(super) fn build_turn_footer(&self, duration: Option<f32>) -> Option<String> {
         let mut parts = Vec::new();
         if let Some(secs) = duration {
@@ -117,6 +133,13 @@ impl App {
             self.streaming.streaming_cache_creation_tokens,
         ) {
             parts.push(cache);
+        }
+        let failed = self.failed_tool_results_this_turn();
+        if failed > 0 {
+            parts.push(format!(
+                "{failed} tool{} failed",
+                if failed == 1 { "" } else { "s" }
+            ));
         }
 
         if parts.is_empty() {

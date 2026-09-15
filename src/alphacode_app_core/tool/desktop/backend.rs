@@ -336,7 +336,7 @@ pub fn get_element_info(element_id: &str) -> Result<ElementInfo> {
         .get(element_id)
         .cloned()
         .ok_or_else(|| anyhow::anyhow!(
-            "ElementNotFound: element_id '{element_id}' not found or stale. Run desktop_find to get a fresh element reference."
+            "ElementNotFound: element_id '{element_id}' not found or stale. Run desktop action='find' to get a fresh element reference."
         ))
 }
 
@@ -575,7 +575,7 @@ fn resolve_element(element_id: &str) -> Result<xa11y::Element> {
         Err(xa11y::Error::SelectorNotMatched { .. }) => {
             bail!(
                 "StaleElement: element_id '{element_id}' matched '{}' but the selector '{}' \
-                 no longer resolves. The UI may have changed. Re-run desktop_find to get a fresh reference.",
+                 no longer resolves. The UI may have changed. Re-run desktop action='find' to get a fresh reference.",
                 info.name.as_deref().unwrap_or("(unnamed)"),
                 selector
             );
@@ -624,7 +624,7 @@ fn map_xa11y_error(err: xa11y::Error) -> anyhow::Error {
         }
         xa11y::Error::ElementStale { selector } => {
             anyhow::anyhow!(
-                "StaleElement: selector '{selector}' targeted a stale node. Re-run desktop_find."
+                "StaleElement: selector '{selector}' targeted a stale node. Re-run desktop action='find'."
             )
         }
         xa11y::Error::Timeout { elapsed, diagnosis } => {
