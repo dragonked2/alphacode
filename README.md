@@ -209,7 +209,9 @@ cargo build --release
 - Rust 1.91+ / edition 2024
 - `git`
 - A platform C toolchain
-  - Linux: `build-essential`, `pkg-config`, `libssl-dev`
+  - Linux: `build-essential`, `pkg-config`, `libssl-dev`, `libxkbcommon-dev`
+    (the Linux accessibility backend links `libxkbcommon`; without the `-dev`
+    package the link step fails with `unable to find library -lxkbcommon`)
   - macOS: Xcode Command Line Tools
   - Windows: MSVC Build Tools + Windows SDK
 

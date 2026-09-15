@@ -23,6 +23,16 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - name: Install Linux system deps
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          # `xa11y`'s Linux accessibility backend links the system libxkbcommon.
+          # Without the -dev package (which provides the `libxkbcommon.so`
+          # symlink used by `-lxkbcommon`) the build fails with:
+          #   rust-lld: error: unable to find library -lxkbcommon
+          sudo apt-get install -y --no-install-recommends libxkbcommon-dev
+
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
         with:
@@ -57,6 +67,12 @@ jobs:
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
+      - name: Install Linux system deps
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          # See the build job: libxkbcommon is a hard link-time dep on Linux.
+          sudo apt-get install -y --no-install-recommends libxkbcommon-dev
       - uses: dtolnay/rust-toolchain@stable
         with: { components: clippy }
       - uses: actions/cache@v4
@@ -74,6 +90,11 @@ jobs:
     needs: build
     steps:
       - uses: actions/checkout@v4
+      - name: Install Linux system deps
+        run: |
+          sudo apt-get update
+          # See the build job: libxkbcommon is a hard link-time dep on Linux.
+          sudo apt-get install -y --no-install-recommends libxkbcommon-dev
       - uses: dtolnay/rust-toolchain@stable
         with: { components: clippy }
       - uses: actions/cache@v4

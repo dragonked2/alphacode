@@ -249,6 +249,24 @@ else
   print "Installed (could not verify version)"
 fi
 
+# The prebuilt Linux binary links the system libxkbcommon (the `xa11y`
+# accessibility backend is a hard dependency). Every desktop distro has it,
+# but minimal server/container images often do not, and there the binary dies
+# at startup with "error while loading shared libraries" — which the version
+# check above would otherwise hide behind "could not verify version". Say what
+# is actually wrong so the install does not look silently broken.
+if [ "${PLATFORM:-}" = "linux" ] && ! "$BIN_DIR/alphacode" --version >/dev/null 2>&1; then
+  if command -v ldd >/dev/null 2>&1; then
+    MISSING_LIBS="$(ldd "$BIN_DIR/alphacode" 2>/dev/null | awk '/not found/ {print $1}' | sort -u | tr '\n' ' ')"
+    if [ -n "$MISSING_LIBS" ]; then
+      warn "alphacode cannot start: missing shared libraries: ${MISSING_LIBS% }"
+      warn "install them, e.g.  sudo apt-get install -y libxkbcommon0   (Debian/Ubuntu)"
+      warn "                   sudo dnf install -y libxkbcommon    (Fedora/RHEL)"
+      warn "or build from source: bash install.sh --from-source"
+    fi
+  fi
+fi
+
 if [ -z "${NO_PATH:-}" ] && ! command -v alphacode >/dev/null 2>&1; then
   echo
   printf "\033[1;33mNext step:\033[0m add '%s' to your PATH.\n" "$BIN_DIR"

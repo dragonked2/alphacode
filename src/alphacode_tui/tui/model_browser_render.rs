@@ -23,7 +23,9 @@
 
 use crossterm::event::KeyCode;
 use ratatui::prelude::*;
-use ratatui::widgets::{Block, Borders, List, ListItem, ListState, Paragraph};
+use ratatui::widgets::{Block, Borders, List, ListItem, ListState, Paragraph, Wrap};
+
+use super::query_highlight;
 
 use crate::alphacode_tui::tui::RouteDetailSeverity;
 #[allow(unused_imports)]
@@ -97,16 +99,58 @@ pub fn top_hint_line() -> Line<'static> {
     ])
 }
 
-/// Bottom status hint that summarises the visible count and sort mode.
+/// Bottom status hint: the live search field, the visible count and the sort
+/// mode.
+///
+/// The search box is rendered here (rather than inside the result list) so the
+/// query stays visible no matter how far the list is scrolled — the previous
+/// layout only hinted "type to search" and never echoed what was typed.
 pub fn bottom_hint_line(state: &ModelBrowserState) -> Line<'static> {
     let count = state.filtered.len();
     let total = state.rows.len();
-    let mut spans = vec![Span::styled(
+    let query = state.facets.text.trim();
+    let mut spans = Vec::new();
+    spans.push(Span::styled(
+        " Search ",
+        Style::default().fg(Color::DarkGray),
+    ));
+    if query.is_empty() {
+        spans.push(Span::styled(
+            "type to filter",
+            Style::default()
+                .fg(Color::DarkGray)
+                .add_modifier(Modifier::ITALIC),
+        ));
+    } else {
+        spans.push(Span::styled(
+            query.to_string(),
+            Style::default().fg(Color::White),
+        ));
+        spans.push(Span::styled("▏", Style::default().fg(Color::Cyan)));
+        spans.push(Span::styled(
+            format!(
+                " {count} match{}{}",
+                if count == 1 { "" } else { "es" },
+                if state.loading.is_some() {
+                    " so far"
+                } else {
+                    ""
+                }
+            ),
+            Style::default().fg(if count == 0 {
+                Color::Red
+            } else {
+                Color::DarkGray
+            }),
+        ));
+        spans.push(Span::styled("  ", Style::default()));
+    }
+    spans.extend([Span::styled(
         format!(" Sort: {} ", state.sort.label()),
         Style::default()
             .fg(Color::Cyan)
             .add_modifier(Modifier::BOLD),
-    )];
+    )]);
     spans.push(Span::styled(
         format!("\u{2022} {count}/{total} models  "),
         Style::default().fg(Color::Gray),
@@ -170,6 +214,30 @@ pub fn render_facets(
 
 /// Render the models column.
 pub fn render_models(state: &ModelBrowserState, area: Rect, buf: &mut Buffer) {
+    let models_block = || {
+        Block::default()
+            .borders(Borders::RIGHT)
+            .border_style(Style::default().fg(Color::DarkGray))
+            .title(Span::styled(
+                format!(" MODELS ({}) ", state.filtered.len()),
+                Style::default().fg(Color::Cyan),
+            ))
+    };
+
+    // A picker that goes silently blank when a query stops matching reads as
+    // "broken"; say what happened and how to get back instead.
+    if state.filtered.is_empty() {
+        Paragraph::new(empty_state_lines(state))
+            .block(models_block())
+            .wrap(Wrap { trim: false })
+            .render(area, buf);
+        return;
+    }
+
+    // The list reserves `\u{25b8} ` for the selection symbol on every row, and the
+    // block paints a right border, so the usable row width is three columns
+    // narrower than the area.
+    let models_width = area.width.saturating_sub(3) as usize;
     let height = area.height as usize;
     let start = state.selected.saturating_sub(height / 2);
     let end = (start + height).min(state.filtered.len());
@@ -184,30 +252,39 @@ pub fn render_models(state: &ModelBrowserState, area: Rect, buf: &mut Buffer) {
             let n = absolute + 1;
             let num_pad = format!("{:>3}. ", n.min(999));
 
-            let mut spans = vec![
-                Span::styled(
-                    num_pad,
-                    if is_selected {
-                        Style::default()
-                            .fg(Color::Yellow)
-                            .add_modifier(Modifier::BOLD)
-                    } else {
-                        Style::default().fg(Color::DarkGray)
-                    },
-                ),
-                Span::styled(
-                    row.pretty_name().to_string(),
-                    if is_selected {
-                        Style::default()
-                            .fg(Color::Cyan)
-                            .add_modifier(Modifier::BOLD)
-                    } else if row.is_favorite {
-                        Style::default().fg(Color::Magenta)
-                    } else {
-                        Style::default().fg(Color::White)
-                    },
-                ),
-            ];
+            let mut spans = vec![Span::styled(
+                num_pad,
+                if is_selected {
+                    Style::default()
+                        .fg(Color::Yellow)
+                        .add_modifier(Modifier::BOLD)
+                } else {
+                    Style::default().fg(Color::DarkGray)
+                },
+            )];
+
+            // Mark the characters the search matched, and keep them on screen
+            // when the name is wider than the column.
+            let name_style = if is_selected {
+                Style::default()
+                    .fg(Color::Cyan)
+                    .add_modifier(Modifier::BOLD)
+            } else if row.is_favorite {
+                Style::default().fg(Color::Magenta)
+            } else {
+                Style::default().fg(Color::White)
+            };
+            let hit_style = Style::default()
+                .fg(Color::Yellow)
+                .add_modifier(Modifier::BOLD | Modifier::UNDERLINED);
+            let name_budget = models_width.saturating_sub(name_badge_width(row)).max(6);
+            spans.extend(query_highlight::highlight_within(
+                row.pretty_name(),
+                &state.facets.text,
+                name_budget,
+                name_style,
+                hit_style,
+            ));
             if row.is_current {
                 spans.push(Span::styled(
                     "  \u{2190}current",
@@ -233,13 +310,7 @@ pub fn render_models(state: &ModelBrowserState, area: Rect, buf: &mut Buffer) {
         })
         .collect();
 
-    let block = Block::default()
-        .borders(Borders::RIGHT)
-        .border_style(Style::default().fg(Color::DarkGray))
-        .title(Span::styled(
-            format!(" MODELS ({}) ", state.filtered.len()),
-            Style::default().fg(Color::Cyan),
-        ));
+    let block = models_block();
 
     let list = List::new(items)
         .block(block)
@@ -325,6 +396,70 @@ fn detail_row(label: &str, value: &str, color: Color) -> Line<'static> {
         ),
         Span::styled(value.to_string(), Style::default().fg(color)),
     ])
+}
+
+/// Columns the trailing badges (row number, current / default markers, tier)
+/// occupy, so the highlighted name can be sized to the space actually left.
+fn name_badge_width(row: &BrowserRow) -> usize {
+    let mut width = 5; // "  1. "
+    if row.is_current {
+        width += 10; // "  \u{2190}current"
+    }
+    if row.is_default {
+        width += 9; // "  default"
+    }
+    width + 3 + row.tier.label().len() // " [pro]"
+}
+
+/// Lines shown in place of the result list when nothing matches.
+fn empty_state_lines(state: &ModelBrowserState) -> Vec<Line<'static>> {
+    if state.rows.is_empty() {
+        let mut lines = vec![Line::from(Span::styled(
+            if state.loading.is_some() {
+                "Loading models…"
+            } else {
+                "No models available for this provider yet."
+            },
+            Style::default().fg(Color::Gray),
+        ))];
+        if state.loading.is_some() {
+            lines.push(Line::from(Span::styled(
+                "The catalog is still being fetched.",
+                Style::default().fg(Color::DarkGray),
+            )));
+        }
+        return lines;
+    }
+
+    let query = state.facets.text.trim();
+    if query.is_empty() {
+        return vec![
+            Line::from(Span::styled(
+                "No models match the active filters.",
+                Style::default().fg(Color::Gray),
+            )),
+            Line::from(Span::styled(
+                "Esc clears the provider, tier and capability filters.",
+                Style::default().fg(Color::DarkGray),
+            )),
+        ];
+    }
+
+    vec![
+        Line::from(vec![
+            Span::styled("No models match ", Style::default().fg(Color::Gray)),
+            Span::styled(
+                query.to_string(),
+                Style::default()
+                    .fg(Color::White)
+                    .add_modifier(Modifier::BOLD),
+            ),
+        ]),
+        Line::from(Span::styled(
+            "Try fewer characters, or Esc to clear the search and filters.",
+            Style::default().fg(Color::DarkGray),
+        )),
+    ]
 }
 
 fn tier_color(tier: ModelTier) -> Color {
@@ -591,5 +726,91 @@ mod tests {
         ] {
             assert!(!mode.label().is_empty());
         }
+    }
+
+    fn render_to_text(state: &ModelBrowserState, width: u16, height: u16) -> String {
+        let backend = TestBackend::new(width, height);
+        let mut terminal = Terminal::new(backend).unwrap();
+        terminal
+            .draw(|f| {
+                let area = f.area();
+                render_browser(state, area, f.buffer_mut());
+            })
+            .unwrap();
+        let buf = terminal.backend().buffer().clone();
+        let mut s = String::new();
+        for y in 0..buf.area.height {
+            for x in 0..buf.area.width {
+                s.push_str(buf[(x, y)].symbol());
+            }
+        }
+        s
+    }
+
+    #[test]
+    fn search_box_echoes_the_query() {
+        let mut state =
+            ModelBrowserState::new(vec![row_with("claude-haiku", "Anthropic", ModelTier::Fast)]);
+        state.facets.text = "haik".into();
+        state.recompute_filtered();
+
+        let line = bottom_hint_line(&state);
+        let text: String = line.spans.iter().map(|s| s.content.as_ref()).collect();
+        assert!(text.contains("haik"), "query must be echoed: {text:?}");
+        assert!(
+            text.contains("1 match"),
+            "match count must be reported: {text:?}"
+        );
+    }
+
+    #[test]
+    fn empty_state_explains_a_query_with_no_matches() {
+        let mut state =
+            ModelBrowserState::new(vec![row_with("claude-haiku", "Anthropic", ModelTier::Fast)]);
+        state.facets.text = "gpt".into();
+        state.recompute_filtered();
+        assert!(state.filtered.is_empty(), "fixture must not match");
+
+        let text = render_to_text(&state, 120, 12);
+        assert!(
+            text.contains("No models match"),
+            "empty state must say what happened: {text:?}"
+        );
+        assert!(
+            text.contains("gpt"),
+            "empty state must name the query: {text:?}"
+        );
+    }
+
+    #[test]
+    fn empty_state_without_a_query_points_at_the_filters() {
+        let mut state =
+            ModelBrowserState::new(vec![row_with("claude-haiku", "Anthropic", ModelTier::Fast)]);
+        state.facets.providers.insert("OpenAI".into());
+        state.recompute_filtered();
+        assert!(state.filtered.is_empty());
+
+        let text = render_to_text(&state, 120, 12);
+        assert!(text.contains("active filters"), "{text:?}");
+        assert!(text.contains("Esc"), "{text:?}");
+    }
+
+    #[test]
+    fn matched_characters_stay_visible_in_a_narrow_column() {
+        // The matched substring sits at the end of a name longer than the
+        // column, so the rendered row must slide its window to show it.
+        let mut state = ModelBrowserState::new(vec![row_with(
+            "openrouter/anthropic/claude-sonnet-4.5",
+            "OpenRouter",
+            ModelTier::Premium,
+        )]);
+        state.facets.text = "sonnet".into();
+        state.recompute_filtered();
+
+        let text = render_to_text(&state, 60, 10);
+        assert!(
+            text.contains("sonnet"),
+            "match must not be clipped away: {text:?}"
+        );
     }
 }

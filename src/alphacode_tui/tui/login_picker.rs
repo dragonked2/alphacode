@@ -1,5 +1,6 @@
 use crate::alphacode_tui::auth::AuthState;
 use crate::alphacode_tui::provider_catalog::LoginProviderDescriptor;
+use crate::alphacode_tui::tui::query_highlight;
 use crate::alphacode_tui_style::rgb;
 use crossterm::event::{KeyCode, KeyModifiers, MouseButton, MouseEvent, MouseEventKind};
 use ratatui::{
@@ -71,6 +72,42 @@ impl LoginPickerItem {
         trimmed
             .split_whitespace()
             .all(|needle| haystack.contains(&needle.to_lowercase()))
+    }
+
+    /// Short label naming the field the query matched, for rows whose display
+    /// name does not contain the query.
+    ///
+    /// The filter matches the provider id, aliases, auth kind, status, menu
+    /// detail, and detected setup, but only the display name is rendered — so a
+    /// row that survived on `OAuth` or an alias looked like an unexplained
+    /// match. `None` means the name itself matched (or there is no query), in
+    /// which case the highlighted name already explains the row.
+    fn match_source_hint(&self, query: &str) -> Option<String> {
+        let trimmed = query.trim();
+        if trimmed.is_empty()
+            || query_highlight::matched_char_indices(self.provider.display_name, trimmed).is_some()
+        {
+            return None;
+        }
+
+        // Multi-word queries highlight per word; the hint anchors on the first
+        // word, which is what identifies the field the user was aiming at.
+        let first = trimmed.split_whitespace().next().unwrap_or(trimmed);
+        let candidates: [(&str, String); 6] = [
+            ("id", self.provider.id.to_string()),
+            ("alias", self.provider.aliases.join(", ")),
+            ("auth", self.provider.auth_kind.label().to_string()),
+            ("status", self.status_label().to_string()),
+            ("detail", self.provider.menu_detail.to_string()),
+            ("setup", self.method_detail.clone()),
+        ];
+
+        candidates
+            .into_iter()
+            .find(|(_, haystack)| query_highlight::matched_char_indices(haystack, first).is_some())
+            .map(|(field, haystack)| {
+                format!("matched {field}: {}", truncate_with_ellipsis(&haystack, 32))
+            })
     }
 
     fn status_label(&self) -> &'static str {
@@ -359,26 +396,32 @@ impl LoginPicker {
         let inner = block.inner(area);
         frame.render_widget(block, area);
 
+        // The caret marks the live filter box, so it is obvious that typing
+        // goes somewhere even when the filter is unchanged between frames.
+        let mut filter_spans = vec![Span::styled("Filter ", Style::default().fg(MUTED_DARK))];
+        if self.filter.is_empty() {
+            filter_spans.push(Span::styled(
+                "type provider, status, or auth method",
+                Style::default().fg(Color::Gray).italic(),
+            ));
+        } else {
+            filter_spans.push(Span::styled(
+                self.filter.clone(),
+                Style::default().fg(Color::White),
+            ));
+            filter_spans.push(Span::styled("▏", Style::default().fg(rgb(130, 224, 215))));
+        }
+        filter_spans.push(Span::styled(
+            format!(
+                "  ·  {} of {} results",
+                self.filtered.len(),
+                self.items.len()
+            ),
+            Style::default().fg(MUTED_DARK),
+        ));
+
         let lines = vec![
-            Line::from(vec![
-                Span::styled("Filter ", Style::default().fg(MUTED_DARK)),
-                Span::styled(
-                    if self.filter.is_empty() {
-                        "type provider, status, or auth method".to_string()
-                    } else {
-                        self.filter.clone()
-                    },
-                    if self.filter.is_empty() {
-                        Style::default().fg(Color::Gray).italic()
-                    } else {
-                        Style::default().fg(Color::White)
-                    },
-                ),
-                Span::styled(
-                    format!("  ·  {} results", self.filtered.len()),
-                    Style::default().fg(MUTED_DARK),
-                ),
-            ]),
+            Line::from(filter_spans),
             Line::from(vec![
                 metric_span(
                     "configured",
@@ -453,26 +496,53 @@ impl LoginPicker {
                 };
 
                 let row_width = inner.width.saturating_sub(2) as usize;
-                let name =
-                    truncate_with_ellipsis(item.provider.display_name, row_width.saturating_sub(2));
-                let visible_name_len = name.chars().count();
-                let padding = row_width.saturating_sub(visible_name_len + 2);
+                let query = self.filter.trim();
+                let hint = item.match_source_hint(query);
+                let hint_width = hint
+                    .as_ref()
+                    .map(|text| text.chars().count() + 4)
+                    .unwrap_or(0);
+                // Only spend columns on the hint when a readable name still
+                // fits; on a narrow terminal the highlighted name wins.
+                let hint_fits = hint_width > 0 && row_width > hint_width + 16;
+                let reserved = 4 + if hint_fits { hint_width } else { 0 };
+                let name_budget = row_width.saturating_sub(reserved).max(6);
 
-                lines.push(Line::from(vec![
-                    Span::styled(
-                        if selected { "▸ " } else { "  " },
-                        if selected {
-                            row_style
-                                .fg(rgb(130, 224, 215))
-                                .add_modifier(Modifier::BOLD)
-                        } else {
-                            row_style.fg(MUTED_DARK)
-                        },
-                    ),
-                    Span::styled(name, row_style.patch(provider_style(item.provider.id))),
-                    Span::styled(" ".repeat(padding), row_style),
-                    Span::styled(item.status_icon(), row_style.fg(item.status_color()).bold()),
-                ]));
+                let name_style = row_style.patch(provider_style(item.provider.id));
+                let hit_style = row_style
+                    .fg(rgb(235, 245, 255))
+                    .add_modifier(Modifier::BOLD | Modifier::UNDERLINED);
+
+                let mut row_spans: Vec<Span> = vec![Span::styled(
+                    if selected { "▸ " } else { "  " },
+                    if selected {
+                        row_style
+                            .fg(rgb(130, 224, 215))
+                            .add_modifier(Modifier::BOLD)
+                    } else {
+                        row_style.fg(MUTED_DARK)
+                    },
+                )];
+                row_spans.extend(query_highlight::highlight_within(
+                    item.provider.display_name,
+                    query,
+                    name_budget,
+                    name_style,
+                    hit_style,
+                ));
+                if hint_fits && let Some(hint) = hint {
+                    row_spans.push(Span::styled(format!("  · {hint}"), row_style.fg(MUTED)));
+                }
+
+                let used: usize = row_spans.iter().map(|span| span.width()).sum();
+                let padding = row_width.saturating_sub(used + 1).max(1);
+                row_spans.push(Span::styled(" ".repeat(padding), row_style));
+                row_spans.push(Span::styled(
+                    item.status_icon(),
+                    row_style.fg(item.status_color()).bold(),
+                ));
+
+                lines.push(Line::from(row_spans));
             }
         }
 
@@ -587,6 +657,20 @@ impl LoginPicker {
                 ),
             ]),
         ];
+
+        // When a filter is active, say which field put *this* provider in the
+        // list. The row itself only shows the display name, so a hit on an
+        // alias, auth kind or status otherwise looks arbitrary.
+        if !self.filter.trim().is_empty() {
+            let hint = item.match_source_hint(self.filter.trim());
+            lines.push(Line::from(vec![
+                Span::styled("Filter match ", Style::default().fg(MUTED_DARK)),
+                Span::styled(
+                    hint.unwrap_or_else(|| "provider name".to_string()),
+                    Style::default().fg(rgb(235, 245, 255)),
+                ),
+            ]));
+        }
 
         let account_lines = account_detail_lines(item.provider);
         if !account_lines.is_empty() {
@@ -1043,7 +1127,7 @@ mod tests {
                     provider.auth_kind.label(),
                     provider.menu_detail,
                     method_detail.as_str(),
-                    "Press Enter to begin login.",
+                    "to begin login",
                 ] {
                     assert!(
                         text.contains(expected),
@@ -1064,5 +1148,69 @@ mod tests {
                 }
             }
         }
+    }
+
+    #[test]
+    fn match_source_hint_explains_secondary_field_matches() {
+        let item = LoginPickerItem::new(
+            1,
+            crate::provider_catalog::OPENAI_LOGIN_PROVIDER,
+            AuthState::NotConfigured,
+            "not configured",
+        );
+
+        // No query, or a hit on the visible name: nothing to explain.
+        assert!(item.match_source_hint("").is_none());
+        assert!(item.match_source_hint("open").is_none());
+
+        // The auth kind is absent from the display name, so the row has to say
+        // where the match came from.
+        let auth_label = crate::provider_catalog::OPENAI_LOGIN_PROVIDER
+            .auth_kind
+            .label();
+        let hint = item
+            .match_source_hint(auth_label)
+            .unwrap_or_else(|| panic!("{auth_label:?} should match the auth field"));
+        assert!(hint.starts_with("matched "), "{hint:?}");
+        assert!(hint.contains(auth_label), "{hint:?}");
+    }
+
+    #[test]
+    fn active_filter_is_explained_in_the_detail_pane() {
+        let mut picker = LoginPicker::with_summary(
+            " Login ",
+            vec![LoginPickerItem::new(
+                1,
+                crate::provider_catalog::OPENAI_LOGIN_PROVIDER,
+                AuthState::NotConfigured,
+                "not configured",
+            )],
+            LoginPickerSummary::default(),
+        );
+
+        let auth_label = crate::provider_catalog::OPENAI_LOGIN_PROVIDER
+            .auth_kind
+            .label();
+        for ch in auth_label.chars() {
+            picker
+                .handle_overlay_key(KeyCode::Char(ch), KeyModifiers::empty())
+                .expect("typing should filter");
+        }
+        assert_eq!(
+            picker.filtered.len(),
+            1,
+            "the provider should survive its own auth-kind filter"
+        );
+
+        let backend = TestBackend::new(140, 46);
+        let mut terminal = Terminal::new(backend).expect("failed to create terminal");
+        terminal
+            .draw(|frame| picker.render(frame))
+            .expect("draw failed");
+        let text = buffer_to_text(terminal.backend().buffer());
+        assert!(
+            text.contains("Filter match"),
+            "detail pane should explain why the row matched; rendered:\n{text}"
+        );
     }
 }

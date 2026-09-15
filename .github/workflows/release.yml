@@ -33,11 +33,26 @@ jobs:
       matrix:
         include:
           # install.sh expects: alphacode-{linux,macos}-{x86_64,arm64}.tar.gz
+          # Linux artifacts are built on 22.04 (glibc 2.35), not 24.04 (glibc
+          # 2.39). The runner's glibc is a *floor* for everyone who runs the
+          # binary: a 24.04 build refuses to start on Ubuntu 22.04 LTS / Debian
+          # 12 with "GLIBC_2.39 not found", which is what the previous releases
+          # shipped. Only raise these labels when the dependency tree really
+          # needs a newer glibc.
           - target: x86_64-unknown-linux-gnu
-            os: ubuntu-latest
+            os: ubuntu-22.04
             archive: alphacode-linux-x86_64
+          # Build arm64 natively on GitHub's arm64 runner. It used to run on
+          # ubuntu-latest, where `upload-rust-binary-action` silently switched
+          # to `cross` for this target — i.e. the build happened inside
+          # ghcr.io/cross-rs/aarch64-unknown-linux-gnu:0.2.5, an Ubuntu 16.04
+          # container that has no libxkbcommon (the same hard link-time dep
+          # that broke x86_64) and whose apt sources are long EOL, so it cannot
+          # simply `apt-get install` the missing lib. Native also means the
+          # binary can be smoke-tested by the version check below, which the
+          # x64 host could never run.
           - target: aarch64-unknown-linux-gnu
-            os: ubuntu-latest
+            os: ubuntu-22.04-arm
             archive: alphacode-linux-arm64
           - target: x86_64-apple-darwin
             os: macos-latest
@@ -57,6 +72,19 @@ jobs:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
+
+      # `xa11y`'s Linux accessibility backend links the system libxkbcommon, so
+      # every Linux build here needs the -dev package (it provides the
+      # `libxkbcommon.so` symlink that `-lxkbcommon` looks for). Without it the
+      # build dies in the link step with:
+      #   rust-lld: error: unable to find library -lxkbcommon
+      # Both Linux targets build natively (x86_64 on ubuntu-22.04, arm64 on
+      # ubuntu-22.04-arm), so one `runner.os` check covers both.
+      - name: Install Linux system deps
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends libxkbcommon-dev
 
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
@@ -88,9 +116,10 @@ jobs:
           echo "ALPHACODE_BUILD_SEMVER=$VERSION" >> "$GITHUB_ENV"
           echo "Release version: $VERSION"
 
-      # The action auto-uses `cross` for cross-compile (e.g. linux arm64
-      # from ubuntu x86_64) and falls back to native cargo on host-matched
-      # targets. It produces:
+      # Every target here now builds natively (the matrix pairs each triple
+      # with a matching runner), so the action never reaches for `cross` —
+      # macOS/Windows cross-arch targets are handled by cargo/the MSVC
+      # toolchain, which cross doesn't support anyway. It produces:
       #   - $archive.tar.gz on Linux/macOS runners
       #   - $archive.zip    on Windows runners
       #   - $archive.sha256 (containing the .tar.gz or .zip hash)
@@ -199,9 +228,20 @@ jobs:
             echo "::error::no binary found for version check"
             exit 1
           fi
-          # Run --version and extract the version number
-          VERSION_OUTPUT="$("$BIN" --version 2>&1 || true)"
+          # Run --version and extract the version number. Unlike the parse
+          # check below, *running* the artifact is a hard gate: a binary that
+          # links but cannot start (missing shared library, wrong CPU arch,
+          # a glibc newer than the target machine) is a broken release, and we
+          # would rather fail the release job than ship it.
+          set +e
+          VERSION_OUTPUT="$("$BIN" --version 2>&1)"
+          VERSION_STATUS=$?
+          set -e
           echo "Binary version output: $VERSION_OUTPUT"
+          if [ "$VERSION_STATUS" -ne 0 ]; then
+            echo "::error::${ARCHIVE_BASE}: 'alphacode --version' exited ${VERSION_STATUS} on the build runner — the packaged binary does not run"
+            exit 1
+          fi
           # Extract version: expect v{semver} ... — strip the 'v' prefix
           BIN_VERSION="$(echo "$VERSION_OUTPUT" | sed -n 's/.*v\([0-9][0-9]*\.[0-9][0-9]*\.[0-9][0-9]*\).*/\1/p' | head -1)"
           EXPECTED_VERSION="$(echo "$RELEASE_TAG" | sed 's/^v//')"
