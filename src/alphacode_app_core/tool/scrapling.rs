@@ -698,10 +698,14 @@ except Exception as e:
         format: &str,
         _ctx: &ToolContext,
     ) -> Result<ToolOutput> {
-        // Use the existing browser tool's get_content action
+        // Open a dedicated tab for the requested URL. Reusing the shared
+        // active tab returned whatever page happened to be open — an agent
+        // scraping site A silently received site B's (possibly authenticated)
+        // content (BUG-04).
         let input = json!({
-            "action": "get_content",
+            "action": "open",
             "url": &params.url,
+            "new_tab": true,
             "format": match format {
                 "html" => "html",
                 "text" | "markdown" => "text",
@@ -723,7 +727,7 @@ except Exception as e:
 
         let params_json = serde_json::to_string(&input)?;
         let output = tokio::process::Command::new(&bin)
-            .arg("getContent")
+            .arg("navigate")
             .arg(&params_json)
             .stdin(std::process::Stdio::null())
             .stdout(std::process::Stdio::piped())
@@ -741,17 +745,38 @@ except Exception as e:
         let result: Value =
             serde_json::from_str(&stdout).unwrap_or_else(|_| json!({ "raw": stdout.to_string() }));
 
-        let content = result["content"]
+        // Validate the landed URL against the request: block cross-site
+        // content leakage (BUG-04).
+        let landed_url = result["url"].as_str().unwrap_or("");
+        if !landed_url.is_empty() {
+            let requested_host = url::Url::parse(&params.url).ok().and_then(|u| u.host_str().map(String::from));
+            let landed_host = url::Url::parse(landed_url).ok().and_then(|u| u.host_str().map(String::from));
+            if let (Some(req_host), Some(land_host)) = (&requested_host, &landed_host) {
+                let req_reg = req_host.trim_start_matches("www.");
+                let land_reg = land_host.trim_start_matches("www.");
+                if req_reg != land_reg {
+                    return Err(anyhow::anyhow!(
+                        "Browser fallback safety check failed: requested {} but landed on {} ({}). The browser may have redirected; use mode='http' instead.",
+                        params.url,
+                        landed_url,
+                        land_host
+                    ));
+                }
+            }
+        }
+
+        let content = result["content"]["content"]
             .as_str()
-            .or_else(|| result["text"].as_str())
-            .or_else(|| result["html"].as_str())
+            .or_else(|| result["content"]["text"].as_str())
+            .or_else(|| result["content"]["html"].as_str())
+            .or_else(|| result["content"].as_str())
             .unwrap_or(&stdout);
 
         let (output, truncated) = truncate_output(content.to_string());
         let note = if truncated { "\n\n[Truncated]" } else { "" };
 
         Ok(ToolOutput::new(format!(
-            "Fetched {} (browser: Firefox fallback)\n\n{}{}",
+            "Fetched {} (browser: Firefox fallback, dedicated tab)\n\n{}{}",
             params.url, output, note
         )))
     }

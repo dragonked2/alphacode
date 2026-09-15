@@ -60,8 +60,15 @@ impl Tool for ClipboardTool {
             }
             "paste" => match paste_from_clipboard() {
                 Ok(text) => {
+                    // Truncate at a valid UTF-8 boundary: slicing `&text[..500]`
+                    // panicked on multi-byte characters (e.g. CJK or emoji
+                    // pasted from a browser).
                     let preview = if text.len() > 500 {
-                        format!("{}... ({} total chars)", &text[..500], text.len())
+                        format!(
+                            "{}... ({} total chars)",
+                            crate::alphacode_core::util::truncate_str(&text, 500),
+                            text.chars().count()
+                        )
                     } else {
                         text.clone()
                     };
@@ -109,9 +116,12 @@ fn copy_to_clipboard(text: &str) -> Result<()> {
             child.wait()?;
             return Ok(());
         }
-        // Fallback: write to a temp file
-        let path = std::env::temp_dir().join("alphacode_clipboard.txt");
+        // Fallback: write to a per-user runtime file. `std::env::temp_dir()`
+        // is shared between users on multi-user Linux hosts, which leaked
+        // clipboard contents across accounts; the runtime dir is per-uid.
+        let path = clipboard_fallback_path();
         std::fs::write(&path, text)?;
+        let _ = crate::alphacode_core::fs::set_permissions_owner_only(&path);
         Ok(())
     }
     #[cfg(target_os = "windows")]
@@ -160,16 +170,26 @@ fn paste_from_clipboard() -> Result<String> {
         {
             return Ok(String::from_utf8_lossy(&output.stdout).to_string());
         }
-        // Fallback: read from temp file
-        let path = std::env::temp_dir().join("alphacode_clipboard.txt");
+        // Fallback: read from the per-user runtime file (see copy).
+        let path = clipboard_fallback_path();
         Ok(std::fs::read_to_string(&path).unwrap_or_default())
     }
     #[cfg(target_os = "windows")]
     {
         use std::process::Command;
+        // -NoProfile skips user profile scripts: measurably faster on every
+        // call and keeps the paste isolated from profile-side side effects.
         let output = Command::new("powershell")
-            .args(["-command", "Get-Clipboard"])
+            .args(["-NoProfile", "-NonInteractive", "-Command", "Get-Clipboard"])
             .output()?;
         Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
     }
+}
+
+/// Shared fallback file for headless Linux where neither xclip nor xsel is
+/// available. Lives in the per-user runtime dir (not the shared temp dir) so
+/// clipboard contents never leak across user accounts.
+#[cfg(target_os = "linux")]
+fn clipboard_fallback_path() -> std::path::PathBuf {
+    crate::storage::runtime_dir().join("clipboard-fallback.txt")
 }

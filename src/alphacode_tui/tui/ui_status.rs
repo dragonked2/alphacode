@@ -77,11 +77,12 @@ pub(super) fn shorten_model_name(model: &str) -> String {
 }
 
 pub fn format_status_for_debug(app: &dyn TuiState) -> String {
-    let summary = build_status_summary(
+    let summary = build_status_summary_with_context(
         Some(&app.provider_model()),
         None,
         app.total_session_tokens(),
         app.connection_type().is_some(),
+        app.context_limit(),
     );
     let body: String = match app.status() {
         ProcessingStatus::Idle => {
@@ -149,11 +150,45 @@ pub fn format_status_for_debug(app: &dyn TuiState) -> String {
 /// Combines the current model (shortened), the running task hint classified
 /// via [`TaskKind`], the connection state, and any session token totals into
 /// a single `key=value` line. Pure function: no I/O, no model calls.
+// Legacy four-argument form kept for external callers and tests; new code
+// should prefer `build_status_summary_with_context` so the context-usage
+// segment is included.
+#[allow(dead_code)]
 pub fn build_status_summary(
     model: Option<&str>,
     task_hint: Option<&str>,
     tokens: Option<(u64, u64)>,
     connected: bool,
+) -> String {
+    build_status_summary_with_context(model, task_hint, tokens, connected, None)
+}
+
+/// Format a context-usage percentage for the header strip. Tokens are the
+/// request input size; when no limit is known the raw token count is shown
+/// instead of a percentage. Returns e.g. `ctx=42%` or `ctx=118k`. (The header
+/// keeps this visible at all times so usage never surprises the user.)
+fn format_context_fragment(tokens: Option<(u64, u64)>, context_limit: Option<usize>) -> Option<String> {
+    let (input, _output) = tokens?;
+    if input == 0 {
+        return None;
+    }
+    match context_limit {
+        Some(limit) if limit > 0 => {
+            let pct = ((input as f64 / limit as f64) * 100.0).round() as u64;
+            Some(format!("ctx={}%", pct.min(999)))
+        }
+        _ => Some(format!("ctx={}k", input / 1000)),
+    }
+}
+
+/// Like [`build_status_summary`] but also renders a steady context-usage
+/// segment whenever token totals and a context limit are available.
+pub fn build_status_summary_with_context(
+    model: Option<&str>,
+    task_hint: Option<&str>,
+    tokens: Option<(u64, u64)>,
+    connected: bool,
+    context_limit: Option<usize>,
 ) -> String {
     use crate::alphacode_provider_core::selection::TaskKind;
 
@@ -164,6 +199,12 @@ pub fn build_status_summary(
         parts.push(format!("model={}", shorten_model_name(m)));
     } else {
         parts.push("model=auto".to_string());
+    }
+
+    // Context usage — placed right after the model so it is always visible in
+    // the header, even while streaming.
+    if let Some(fragment) = format_context_fragment(tokens, context_limit) {
+        parts.push(fragment);
     }
 
     // Task classification.
@@ -205,6 +246,36 @@ mod tests {
         assert!(s.contains("task=security"));
         assert!(s.contains("conn=ok"));
         assert!(s.contains("tokens=12k/4k"));
+    }
+
+    #[test]
+    fn build_status_summary_with_context_shows_percent() {
+        let s = build_status_summary_with_context(
+            Some("claude-opus-4-5"),
+            None,
+            Some((84_000, 4_500)),
+            true,
+            Some(200_000),
+        );
+        assert!(s.contains("ctx=42%"), "got: {}", s);
+    }
+
+    #[test]
+    fn build_status_summary_with_context_falls_back_to_tokens() {
+        let s = build_status_summary_with_context(
+            Some("gpt-5"),
+            None,
+            Some((118_000, 500)),
+            false,
+            None,
+        );
+        assert!(s.contains("ctx=118k"), "got: {}", s);
+    }
+
+    #[test]
+    fn build_status_summary_with_context_omits_when_empty() {
+        let s = build_status_summary_with_context(Some("gpt-5"), None, None, true, Some(200_000));
+        assert!(!s.contains("ctx="), "got: {}", s);
     }
 
     #[test]

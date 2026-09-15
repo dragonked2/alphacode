@@ -4,6 +4,45 @@ All notable changes to Alphacode are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project
 adheres to [Semantic Versioning](https://semver.org/).
 
+## [Unreleased]
+
+Windows session isolation and tool hardening pass.
+
+<arg_value><b88a6f17>
+### Fixed
+
+- **Windows runtime-dir collisions between logon sessions**: Windows named pipes are machine-global, so two sessions of the same user (console + RDP, or service logons) resolved the same daemon/API pipe name and the second daemon silently stole the first one's connections. The runtime-user discriminator now includes `SESSIONNAME` (`Console`/`RDP-Tcp#0`/...) with an `ALPHACODE_SESSION_TAG` escape hatch, kept byte-identical between `alphacode_storage` and `alphacode_harness_api::sockets`.
+- **TUI debug command channel moved out of the shared temp dir**: `alphacode_debug_cmd`/`alphacode_debug_response` defaults lived in the world-writable temp dir where any local process could inject debug commands into the TUI; they now live in the per-user runtime dir (`ALPHACODE_DEBUG_CMD_PATH` still wins).
+- **Windows `cmd.exe` spawn fallback ran the wrong program**: `start <title> cmd.exe /K ...` with an unquoted single-word title made `start` treat `cmd.exe` as the title and try to execute a program named after the title. The title is now always force-quoted.
+- **clipboard paste panicked on multi-byte characters**: `&text[..500]` sliced mid-codepoint (CJK/emoji from a browser). Truncation now uses `truncate_str` at a valid UTF-8 boundary.
+- **Linux clipboard fallback leaked across users**: the xclip/xsel-less fallback wrote `alphacode_clipboard.txt` into the shared temp dir; it now uses the per-user runtime dir with owner-only permissions.
+- **Windows clipboard paste loaded user PowerShell profiles**: `Get-Clipboard` now runs with `-NoProfile -NonInteractive` — faster per call and free of profile-side side effects.
+- **Windows bash tool ignored the disk-backed scratch dir**: Git Bash tool shells got neither `TMPDIR` nor `ALPHACODE_SCRATCH_DIR`, so POSIX scripts silently wrote large temp artifacts to the RAM-backed user temp. `configure_tool_scratch` is now wired on every platform (`TEMP`/`TMP` untouched so cmd.exe semantics stay intact).
+
+### Added
+
+- **Bundled-skills integrity tests**: compile-time guarantees that every bundled skill has a non-empty SKILL.md body with frontmatter, non-empty subskill references, and unique lowercase names.
+- **Context usage stays visible while tips rotate**: the idle status line now appends `· ctx=42%` to rotating tips instead of letting them displace the context reading for up to 12s.
+
+### Previous pass — browser bridge reliability (13 session-reported tool defects)
+
+- **eval always returned `null (type: undefined)`** (BUG-01): bare expressions like `1+1` had no `return`, so `new Function` discarded the result. Expressions are now auto-wrapped (`return (expr)`), and undefined results carry an explanatory note.
+- **scroll reported success but never moved** (BUG-02): the bridge scrolled `window` while SPAs scroll nested `overflow:auto` containers. Scroll now detects the largest scrollable container, mirrors the scroll onto it, and reports real post-scroll positions (`containerScrollTop`).
+- **clicks silently hit invisible overlays** (BUG-03): hit-testing via `elementFromPoint` now reports `occluded: true` plus the occluding element summary instead of a false `clicked: true`.
+- **Scrapling browser-mode returned the wrong site** (BUG-04): the fallback reused the shared active tab, leaking another tab's authenticated content. It now opens a dedicated tab and validates the landed host against the request.
+- **`fill_form` typed into look-alike inputs** (BUG-05): resolution is scoped to the topmost open modal first, and generated selectors are disambiguated with `:nth-of-type` so two elements never share a byte-identical selector.
+- **snapshot flakiness/plain-text variants** (BUG-06): `navigate`/`newSession` retry getContent up to 3 times while SPA content scripts hydrate; annotated output always includes selectors and hrefs.
+- **`:has-text()` selectors rejected** (BUG-07): Playwright-style pseudo-selectors are now translated and matched, and text-match clicks promote to the nearest clickable ancestor (`a`/`button`/`[role=button]`).
+- **`wait` required a target** (BUG-08): bare `timeout_ms` (fixed delay) and `position='dom-stable'/'network-idle'` (MutationObserver-based) modes added.
+- **`get_content format=html` dumped 222k tokens** (BUG-09): `<style>`/`<script>` stripped, default 60k-char cap with a `maxLength` parameter, `truncated` flag in metadata.
+- **`select` rejected `value`** (BUG-10): both `text` and `value` are accepted.
+- **`click contains=...` was dead** (BUG-11): `contains` now acts as a text match.
+- **`new_tab` returned `about:blank` metadata** (BUG-12): url/title are re-read after load and reflect the final navigated page.
+- **screenshot unusable without image input** (BUG-13): output now tells the agent to verify via annotated snapshot/interactables when the model cannot receive images.
+- **`interactables` stale and viewport-only** (BUG-14): full-subtree walk including shadow DOM, unique verified selectors only, `inViewport` flags, and modal scoping.
+- **text-clicks resolved hidden 0×0 elements** (BUG-15): hidden targets now fall back to the first visible match and zero-size hits are flagged via the occlusion report.
+- **TUI header now shows a steady `ctx=42%` context-usage segment** in idle and streaming status lines (falls back to `ctx=118k` when the window size is unknown).
+
 ## [1.0.41] - 2026-09-14
 
 Release hygiene: code formatting fix, dead code cleanup, and compilation verification.

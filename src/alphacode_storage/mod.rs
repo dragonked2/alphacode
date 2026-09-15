@@ -124,16 +124,34 @@ fn runtime_user_discriminator() -> String {
 
 #[cfg(not(unix))]
 fn runtime_user_discriminator() -> String {
-    let raw = std::env::var("USERNAME")
+    // Windows named pipes are machine-global (unlike per-uid filesystem
+    // sockets), so two Windows sessions of the same user (console + RDP, or
+    // two service logons) share `%TEMP%` and would otherwise resolve the
+    // same pipe name: the second daemon silently steals the first daemon's
+    // connections. `SESSIONNAME` distinguishes console/RDP/RDS sessions;
+    // `ALPHACODE_SESSION_TAG` covers exotic service hosts. Keep this logic
+    // byte-identical to `alphacode_harness_api::sockets` so the API socket
+    // always lands beside the daemon socket.
+    let raw = std::env::var("SESSIONNAME")
+        .or_else(|_| std::env::var("ALPHACODE_SESSION_TAG"))
+        .map(|value| format!("{}-", sanitize_discriminator(&value)))
+        .unwrap_or_default();
+    let user = std::env::var("USERNAME")
         .or_else(|_| std::env::var("USER"))
+        .map(|value| sanitize_discriminator(&value))
         .unwrap_or_else(|_| "user".to_string());
+    format!("{user}-{raw}main")
+}
+
+#[cfg(not(unix))]
+fn sanitize_discriminator(raw: &str) -> String {
     let sanitized: String = raw
         .chars()
         .filter(|ch| ch.is_ascii_alphanumeric() || matches!(ch, '-' | '_'))
         .take(64)
         .collect();
     if sanitized.is_empty() {
-        "user".to_string()
+        "main".to_string()
     } else {
         sanitized
     }

@@ -451,7 +451,6 @@ async fn handle_background_output_line(
     file.flush().await.ok();
 }
 
-#[cfg(not(windows))]
 fn tool_scratch_dir() -> Option<std::path::PathBuf> {
     let dir = std::env::var_os("ALPHACODE_SCRATCH_DIR")
         .filter(|value| !value.is_empty())
@@ -465,7 +464,13 @@ fn tool_scratch_dir() -> Option<std::path::PathBuf> {
     Some(dir)
 }
 
-#[cfg(not(windows))]
+/// Export the disk-backed scratch dir to tool shells on every platform.
+///
+/// On Windows (Git Bash path) POSIX scripts still read `$TMPDIR` / expect
+/// `$ALPHACODE_SCRATCH_DIR`, and without this they silently wrote large
+/// temp artifacts to `C:\Users\<u>\AppData\Local\Temp` instead. Windows-native
+/// `TEMP`/`TMP` are intentionally left untouched so cmd.exe fallback and
+/// installers keep their expected semantics.
 fn configure_tool_scratch(command: &mut TokioCommand) {
     if let Some(dir) = tool_scratch_dir() {
         command
@@ -545,6 +550,7 @@ fn build_shell_command(cmd_str: &str) -> TokioCommand {
         if let Some(ref bash_path) = *GIT_BASH_PATH {
             let mut cmd = TokioCommand::new(bash_path);
             cmd.arg("-c").arg(cmd_str);
+            configure_tool_scratch(&mut cmd);
             cmd
         } else {
             let mut cmd = TokioCommand::new("cmd.exe");

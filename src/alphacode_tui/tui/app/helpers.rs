@@ -197,20 +197,25 @@ pub(super) fn ctrl_bracket_fallback_to_esc(code: &mut KeyCode, modifiers: &mut K
 #[cfg(not(target_os = "macos"))]
 pub(super) fn ctrl_bracket_fallback_to_esc(_code: &mut KeyCode, _modifiers: &mut KeyModifiers) {}
 
-/// Debug command file path
+/// Debug command file path.
+///
+/// Defaults to the per-user runtime dir rather than the shared temp dir:
+/// `std::env::temp_dir()` is world-writable and (on Windows) shared between
+/// all sessions of a user, so any local process could inject debug commands
+/// into the TUI. `ALPHACODE_DEBUG_CMD_PATH` still wins for tester harnesses.
 pub(super) fn debug_cmd_path() -> PathBuf {
     if let Ok(path) = std::env::var("ALPHACODE_DEBUG_CMD_PATH") {
         return PathBuf::from(path);
     }
-    std::env::temp_dir().join("alphacode_debug_cmd")
+    crate::storage::runtime_dir().join("alphacode_debug_cmd")
 }
 
-/// Debug response file path
+/// Debug response file path (see [`debug_cmd_path`] for the isolation notes).
 pub(super) fn debug_response_path() -> PathBuf {
     if let Ok(path) = std::env::var("ALPHACODE_DEBUG_RESPONSE_PATH") {
         return PathBuf::from(path);
     }
-    std::env::temp_dir().join("alphacode_debug_response")
+    crate::storage::runtime_dir().join("alphacode_debug_response")
 }
 
 pub(super) fn is_context_limit_error(error: &str) -> bool {

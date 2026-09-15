@@ -898,6 +898,31 @@ fn append_batch_progress_spans(
     }
 }
 
+/// Compact `ctx=` fragment shared by the idle stats line and the tip line.
+/// `42%` when the context window is known, the raw token count otherwise.
+fn idle_context_fragment(app: &dyn TuiState, input_tokens: u64) -> String {
+    match app.context_limit() {
+        Some(limit) if limit > 0 => {
+            let pct = ((input_tokens as f64 / limit as f64) * 100.0).round() as u64;
+            format!("{}%", pct.min(999))
+        }
+        _ => format_stream_tokens(input_tokens),
+    }
+}
+
+/// Append a dim `· ctx=…` suffix to a tip line so context usage stays visible
+/// even while rotating tips occupy the status line.
+fn append_idle_context_suffix(spans: &mut Vec<Span<'static>>, app: &dyn TuiState) {
+    if let Some((total_in, _)) = app.total_session_tokens()
+        && total_in > 0
+    {
+        spans.push(Span::styled(
+            format!(" · ctx={}", idle_context_fragment(app, total_in)),
+            Style::default().fg(rgb(128, 140, 165)),
+        ));
+    }
+}
+
 /// Build the always-on idle session-stats line shown under the input: total
 /// session tokens, per-direction tokens, estimated cost or OAuth window usage
 /// (when the provider reports it), and compaction count.
@@ -917,6 +942,16 @@ fn idle_session_stats_line(app: &dyn TuiState) -> Option<Line<'static>> {
         format_stream_tokens(total_in),
         format_stream_tokens(total_out),
     );
+
+    // Steady context-usage segment: `ctx=42%` when the model's context window
+    // is known, `ctx=118k` otherwise. Always visible in the idle status line
+    // so the user never has to open an overlay to see how full the window is.
+    if total_in > 0 {
+        text.push_str(&format!(
+            " · ctx={}",
+            idle_context_fragment(app, total_in)
+        ));
+    }
 
     let data = app.info_widget_data();
     if let Some(info) = data.usage_info.as_ref().filter(|info| info.available) {
@@ -1107,6 +1142,25 @@ pub(super) fn draw_status(frame: &mut Frame, app: &dyn TuiState, area: Rect, pen
                         format_stream_tokens(input_tokens),
                         format_stream_tokens(output_tokens)
                     );
+                }
+                // Steady context-usage segment while streaming (same `ctx=`
+                // format as the idle line so it reads identically in both
+                // states).
+                if input_tokens > 0 {
+                    match app.context_limit() {
+                        Some(limit) if limit > 0 => {
+                            let pct =
+                                ((input_tokens as f64 / limit as f64) * 100.0).round() as u64;
+                            status_text = format!("{} · ctx={}%", status_text, pct.min(999));
+                        }
+                        _ => {
+                            status_text = format!(
+                                "{} · ctx={}",
+                                status_text,
+                                format_stream_tokens(input_tokens)
+                            );
+                        }
+                    }
                 }
                 append_transport_context(&mut status_text, app);
                 if let Some(problem) = kv_cache_problem {
@@ -1323,7 +1377,13 @@ pub(super) fn draw_status(frame: &mut Frame, app: &dyn TuiState, area: Rect, pen
         } else if let Some(tip) =
             occasional_status_tip(area.width as usize, app.animation_elapsed() as u64)
         {
-            Line::from(vec![Span::styled(tip, Style::default().fg(dim_color()))])
+            // Keep the context-usage segment visible even while a tip shows:
+            // tips used to displace the `ctx=` reading entirely, hiding the
+            // most important number for up to 12s at a time.
+            let mut spans: Vec<Span<'static>> =
+                vec![Span::styled(tip, Style::default().fg(dim_color()))];
+            append_idle_context_suffix(&mut spans, app);
+            Line::from(spans)
         } else if let Some(stats) = idle_session_stats_line(app) {
             stats
         } else {
@@ -1332,7 +1392,10 @@ pub(super) fn draw_status(frame: &mut Frame, app: &dyn TuiState, area: Rect, pen
     } else if let Some(tip) =
         occasional_status_tip(area.width as usize, app.animation_elapsed() as u64)
     {
-        Line::from(vec![Span::styled(tip, Style::default().fg(dim_color()))])
+        let mut spans: Vec<Span<'static>> =
+            vec![Span::styled(tip, Style::default().fg(dim_color()))];
+        append_idle_context_suffix(&mut spans, app);
+        Line::from(spans)
     } else {
         Line::from("")
     };

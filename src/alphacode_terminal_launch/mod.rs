@@ -701,7 +701,18 @@ fn build_spawn_command(term: &str, command: &TerminalCommand, cwd: &Path) -> Opt
         }
         #[cfg(not(unix))]
         "cmd" => {
-            cmd.args(["/C", "start", title, "cmd.exe", "/K"]);
+            // `start` treats its FIRST *quoted* argument as the window title
+            // and the next token as the program. The title must always be
+            // force-quoted (even single words): unquoted, `start alphacode
+            // cmd.exe /K ...` runs a program named `alphacode` instead of
+            // cmd.exe.
+            cmd.args([
+                "/C",
+                "start",
+                &format!("\"{}\"", title.replace('"', "\\\"")),
+                "cmd.exe",
+                "/K",
+            ]);
             cmd.arg(windows_command_line(&command_parts(command)));
         }
         _ => return None,
@@ -1041,7 +1052,13 @@ mod tests {
             .get_args()
             .map(|arg| arg.to_string_lossy().into_owned())
             .collect();
-        assert_eq!(&args[..5], ["/C", "start", "alphacode", "cmd.exe", "/K"]);
+        // The title must be quoted: `start` treats the first quoted token as
+        // the window title. Unquoted, `start alphacode cmd.exe /K ...` tries
+        // to run a program named `alphacode` instead of cmd.exe.
+        assert_eq!(
+            &args[..5],
+            ["/C", "start", "\"alphacode\"", "cmd.exe", "/K"]
+        );
         assert!(args[5].contains(r#""C:\Program Files\alphacode\alphacode.exe""#));
         assert!(args[5].contains("self-dev"));
     }

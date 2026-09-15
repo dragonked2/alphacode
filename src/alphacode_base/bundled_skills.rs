@@ -493,3 +493,53 @@ pub fn bundled_skill_count() -> usize {
 pub fn bundled_skill_names() -> Vec<&'static str> {
     BUNDLED_SKILLS.iter().map(|s| s.name).collect()
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn bundled_skill_bodies_and_references_are_non_empty() {
+        for skill in BUNDLED_SKILLS {
+            assert!(
+                !skill.body.trim().is_empty(),
+                "bundled skill '{}' has an empty SKILL.md body",
+                skill.name
+            );
+            assert!(
+                skill.body.contains("description:"),
+                "bundled skill '{}' SKILL.md is missing YAML frontmatter description",
+                skill.name
+            );
+            for (ref_name, ref_body) in skill.references {
+                assert!(
+                    !ref_body.trim().is_empty(),
+                    "bundled skill '{}' reference '{}' is empty",
+                    skill.name,
+                    ref_name
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn bundled_skill_names_are_unique_and_lowercase() {
+        let names = bundled_skill_names();
+        let mut sorted = names.clone();
+        sorted.sort();
+        sorted.dedup();
+        assert_eq!(
+            names.len(),
+            sorted.len(),
+            "duplicate bundled skill name registered"
+        );
+        for name in &names {
+            assert_eq!(
+                *name,
+                name.to_lowercase(),
+                "bundled skill name '{}' is not lowercase; slash invocation resolves lowercase",
+                name
+            );
+        }
+    }
+}

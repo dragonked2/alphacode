@@ -45,6 +45,8 @@ struct BrowserInput {
     #[serde(default)]
     text: Option<String>,
     #[serde(default)]
+    value: Option<String>,
+    #[serde(default)]
     contains: Option<String>,
     #[serde(default)]
     script: Option<String>,
@@ -76,6 +78,8 @@ struct BrowserInput {
     timeout_ms: Option<u64>,
     #[serde(default)]
     path: Option<String>,
+    #[serde(default)]
+    max_length: Option<usize>,
     #[serde(default)]
     fields: Option<Vec<BrowserField>>,
     #[serde(default)]
@@ -181,10 +185,10 @@ impl Tool for BrowserTool {
                 "enum": [
                     "status", "setup", "list_tabs", "new_tab", "select_tab", "get_active_tab",
                     "list_frames", "open", "snapshot", "get_content", "interactables", "click", "type",
-                    "fill_form", "select", "wait", "screenshot", "eval", "scroll", "upload",
+                    "fill_form", "select",                    "wait", "screenshot", "eval", "scroll", "upload",
                     "press", "provider_command"
                 ],
-                "description": "Action. Check 'status' first; run 'setup' only when the bridge is not ready."
+                "description": "Action. Check 'status' first; run 'setup' only when the bridge is not ready. wait also accepts timeout_ms alone (fixed delay) or position='dom-stable'/'network-idle'."
             }),
         );
         properties.insert(
@@ -235,6 +239,14 @@ impl Tool for BrowserTool {
             ("behavior", json!({"type": "string"})),
             ("timeout_ms", json!({"type": "integer"})),
             ("path", json!({"type": "string"})),
+            (
+                "max_length",
+                json!({"type": "integer", "description": "Max characters for html get_content (default 60000, hard cap)."}),
+            ),
+            (
+                "value",
+                json!({"type": "string", "description": "Option value for select (text is also accepted)."}),
+            ),
         ] {
             properties.insert(name.into(), schema);
         }
@@ -547,21 +559,30 @@ fn bridge_request(action: &str, input: &BrowserInput) -> Result<(String, Value, 
                 "format".into(),
                 json!(input.format.as_deref().unwrap_or("text")),
             );
+            // Cap HTML dumps so one call can't blow the context budget
+            // (BUG-09: 222k tokens of raw HTML). The bridge strips
+            // <style>/<script> and truncates to maxLength.
+            if input.format.as_deref() == Some("html") {
+                params.insert("maxLength".into(), json!(input.max_length.unwrap_or(60_000)));
+            }
         }
         "interactables" => {}
         "click" => {
+            // `contains` previously parsed but was dead: treat it as a text
+            // match so `click contains="Save changes"` works (BUG-11).
             if input.selector.is_none()
                 && input.text.is_none()
+                && input.contains.is_none()
                 && input.x.is_none()
                 && input.y.is_none()
             {
-                anyhow::bail!("click requires selector, text, or x/y coordinates");
+                anyhow::bail!("click requires selector, text, contains, or x/y coordinates");
             }
-            if let Some(x) = input.x {
-                params.insert("x".into(), json!(x));
-            }
-            if let Some(y) = input.y {
-                params.insert("y".into(), json!(y));
+            // `contains` acts as a text match in the bridge.
+            if input.text.is_none()
+                && let Some(contains) = &input.contains
+            {
+                params.insert("text".into(), json!(contains));
             }
         }
         "type" => {
@@ -603,23 +624,60 @@ fn bridge_request(action: &str, input: &BrowserInput) -> Result<(String, Value, 
                 .selector
                 .as_deref()
                 .ok_or_else(|| anyhow::anyhow!("selector is required for select"))?;
-            let value = input.text.as_deref().ok_or_else(|| {
-                anyhow::anyhow!("text is required for select and is used as the option value")
-            })?;
+            // Accept both `text` and `value` for the option value (BUG-10):
+            // the old error message demanded `text`, which was confusing.
+            let value = input
+                .text
+                .as_deref()
+                .or(input.value.as_deref())
+                .ok_or_else(|| {
+                    anyhow::anyhow!("select requires the option value in 'text' or 'value'")
+                })?;
             params.insert(
                 "fields".into(),
                 json!([{ "selector": selector, "value": value }]),
             );
         }
         "wait" => {
-            if input.selector.is_none() && input.text.is_none() && input.contains.is_none() {
-                anyhow::bail!("wait requires selector, text, or contains");
+            // Support a bare fixed-delay / dom-stable wait with no target
+            // (BUG-08): `wait timeout_ms=1500` used to error out, forcing
+            // snapshot retry loops after SPA navigations.
+            if input.selector.is_none()
+                && input.text.is_none()
+                && input.contains.is_none()
+                && input.position.as_deref() != Some("dom-stable")
+                && input.position.as_deref() != Some("network-idle")
+                && input.timeout_ms.is_none()
+            {
+                anyhow::bail!(
+                    "wait requires selector, text, contains, timeout_ms (fixed delay), or position='dom-stable'/'network-idle'"
+                );
             }
             if let Some(timeout_ms) = input.timeout_ms {
                 params.insert("timeout".into(), json!(timeout_ms));
             }
             if let Some(contains) = &input.contains {
                 params.insert("contains".into(), json!(contains));
+            }
+            if input.selector.is_none()
+                && input.text.is_none()
+                && input.contains.is_none()
+            {
+                // Stability / fixed-delay mode.
+                match input.position.as_deref() {
+                    Some("network-idle") => {
+                        params.insert("networkIdle".into(), json!(true));
+                    }
+                    Some("dom-stable") | None => {
+                        params.insert("domStable".into(), json!(true));
+                    }
+                    Some(other) => {
+                        anyhow::bail!(
+                            "wait position '{}' is invalid here; use 'dom-stable' or 'network-idle', or wait on a selector/text",
+                            other
+                        );
+                    }
+                }
             }
         }
         "screenshot" => {}
@@ -833,7 +891,7 @@ async fn screenshot_via_bridge(
         .unwrap_or(filename);
 
     let mut output = ToolOutput::new(format!(
-        "Captured browser screenshot to {}.",
+        "Captured browser screenshot to {}.\n\nNote: if the active model does not accept image input, the attached image is dropped by the provider — use `snapshot format=annotated` or `interactables` to verify page state instead (the text views include selectors and hrefs).",
         saved.display()
     ))
     .with_title(title)
@@ -904,10 +962,21 @@ fn format_eval_result(result: &Value) -> String {
         serde_json::to_string_pretty(&value).unwrap_or_else(|_| value.to_string())
     };
 
-    match result.get("type").and_then(|v| v.as_str()) {
-        Some(kind) => format!("{}\n\n(type: {})", rendered, kind),
-        None => rendered,
+    let type_note = match result.get("type").and_then(|v| v.as_str()) {
+        Some(kind) => format!("\n\n(type: {})", kind),
+        None => String::new(),
+    };
+
+    // Warn loudly on undefined so the agent knows to `return` a value or wrap
+    // the expression instead of mistaking null for a real result (BUG-01).
+    if result.get("type").and_then(|v| v.as_str()) == Some("undefined") {
+        return format!(
+            "{}{}\n\nNote: script evaluated to undefined. If you expected a value, end the script with `return <expr>` (statements) or pass a bare expression, which is auto-returned.",
+            rendered, type_note
+        );
     }
+
+    format!("{}{}", rendered, type_note)
 }
 
 fn format_interactables_result(result: &Value) -> String {
