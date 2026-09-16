@@ -177,16 +177,20 @@ mod tests {
 
     #[test]
     fn format_states_focused() {
-        let mut states = xa11y::StateSet::default();
-        states.focused = true;
+        let states = xa11y::StateSet {
+            focused: true,
+            ..Default::default()
+        };
         let formatted = format_states(&states);
         assert!(formatted.contains("focused"));
     }
 
     #[test]
     fn format_states_checked() {
-        let mut states = xa11y::StateSet::default();
-        states.checked = Some(xa11y::Toggled::On);
+        let states = xa11y::StateSet {
+            checked: Some(xa11y::Toggled::On),
+            ..Default::default()
+        };
         let formatted = format_states(&states);
         assert!(formatted.contains("checked"));
     }

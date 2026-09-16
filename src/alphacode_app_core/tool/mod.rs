@@ -818,12 +818,12 @@ impl Registry {
 
         // The model named the action instead of the tool (`desktop_find`,
         // `desktop.snapshot`). Inject it when the call does not carry one.
-        if let Some(action) = resolved.action.as_deref() {
-            if let Some(object) = input.as_object_mut() {
-                object
-                    .entry("action".to_string())
-                    .or_insert(Value::String(action.to_string()));
-            }
+        if let Some(action) = resolved.action.as_deref()
+            && let Some(object) = input.as_object_mut()
+        {
+            object
+                .entry("action".to_string())
+                .or_insert(Value::String(action.to_string()));
         }
 
         // User-configured pre_tool gate: external policy hook that can block

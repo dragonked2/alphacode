@@ -144,7 +144,7 @@ mod tests {
 
     #[test]
     fn max_retries_constant_is_sane() {
-        assert!(MAX_RETRIES > 0);
-        assert!(MAX_RETRIES <= 5);
+        const _: () = assert!(MAX_RETRIES > 0, "MAX_RETRIES must be positive");
+        const _: () = assert!(MAX_RETRIES <= 5, "MAX_RETRIES must be at most 5");
     }
 }

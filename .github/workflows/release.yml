@@ -209,7 +209,11 @@ jobs:
       # Verify the binary version matches the release tag. The build script
       # derives the version from the git tag (via ALPHACODE_BUILD_SEMVER or
       # `git tag --points-at HEAD`), but this guard catches mismatches early.
+      #
+      # Skipped for Windows ARM64: the runner is x86_64 and cannot execute
+      # an aarch64 PE binary (Git Bash reports "Exec format error").
       - name: Verify binary version matches release tag
+        if: matrix.target != 'aarch64-pc-windows-msvc'
         shell: bash
         env:
           ARCHIVE_BASE: ${{ matrix.archive }}
