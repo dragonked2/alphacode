@@ -1,6 +1,6 @@
 <div align="center">
 
-<img src="https://capsule-render.vercel.app/api?type=waving&color=0:0F0C29,50:302B63,100:24243e&height=210&section=header&text=Alphacode&fontSize=60&fontColor=ffffff&animation=fadeIn&fontAlignY=36&desc=The%20Free%2C%20Open-Source%20AI%20Coding%20Agent%20for%20Your%20Terminal&descAlignY=54&descSize=17" width="100%">
+<img src="https://capsule-render.vercel.app/api?type=waving&color=0:0F0C29,50:302B63,100:24243e&height=210&section=header&text=AlphaCode&fontSize=60&fontColor=ffffff&animation=fadeIn&fontAlignY=36&desc=The%20Free%2C%20Open-Source%20AI%20Coding%20Agent%20for%20Your%20Terminal&descAlignY=54&descSize=17" width="100%">
 
 <p>
   <strong>Plan. Edit. Test. Review. Ship. Control your desktop.</strong><br>
@@ -36,19 +36,15 @@
 
 ---
 
-# AlphaCode
-
 ## What is AlphaCode?
 
 **AlphaCode is a terminal-native AI coding agent.** Give it a goal in natural language and it can inspect your project, plan the work, edit files, execute commands, run tests, use browser tooling, coordinate multiple agents, and review the result.
 
-It is designed around a simple operating principle:
+It's built around a simple operating principle:
 
 > **Make the smallest change that solves the problem — then verify it.**
 
-Think of AlphaCode as the execution layer between you and your AI models: instead of only discussing code, the agent can work directly against the repository you opened.
-
-### Core workflow
+Think of AlphaCode as the execution layer between you and your AI models: instead of only *discussing* code, the agent works directly against the repository you opened.
 
 ```mermaid
 flowchart LR
@@ -59,13 +55,13 @@ flowchart LR
     E --> F["Report<br/>Changes + evidence"]
 ```
 
----
+<br>
 
 ## Why AlphaCode?
 
 | Capability | What it means |
 |---|---|
-| **Model-agnostic** | Connect Claude, GPT, Gemini, GitHub Copilot, Cursor, OpenRouter, Bedrock, Azure, or another OpenAI-compatible service. |
+| **Model-agnostic** | Connect Claude, GPT, Gemini, GitHub Copilot, Cursor, OpenRouter, Bedrock, Azure, or any other OpenAI-compatible service. |
 | **Swarm Mode** | Break large tasks into parallel sub-tasks, execute them concurrently, then review the combined result. |
 | **40+ tools** | Editing, search, shell execution, web access, browser control, desktop control, memory, sessions, scheduling, rendering, and more. |
 | **Desktop Control** | Cross-platform native desktop automation via accessibility APIs (Windows UIA, macOS AX, Linux AT-SPI2). |
@@ -75,13 +71,13 @@ flowchart LR
 | **Safety controls** | Destructive operations are blocked and risky actions pass through the permission layer. |
 | **Terminal-first UX** | Rich TUI, syntax highlighting, Mermaid diagrams, LaTeX math, image previews, progress, and live agent activity. |
 
----
+<br>
 
 ## 📊 Performance
 
-> The benchmark figures below are historical snapshots retained for reproducibility and comparison. Treat them as directional rather than current universal measurements.
+> The figures below are historical benchmark snapshots retained for reproducibility and comparison. Treat them as directional rather than as current, universal measurements — see [Reproducing these benchmarks](#reproducing-these-benchmarks) for the full methodology.
 
-### One active session
+**One active session**
 
 | Tool | RAM | Relative to AlphaCode |
 |---|---:|---:|
@@ -94,7 +90,7 @@ flowchart LR
 | OpenCode | 371.5 MB | 13.4× |
 | Claude Code | 386.6 MB | 13.9× |
 
-### Ten concurrent sessions
+**Ten concurrent sessions**
 
 | Tool | RAM | Relative to AlphaCode |
 |---|---:|---:|
@@ -108,19 +104,19 @@ flowchart LR
 | OpenCode | 3,237.2 MB | 27.7× |
 
 <details>
-<summary><strong>Reproducing these benchmarks</strong></summary>
+<summary><strong id="reproducing-these-benchmarks">Reproducing these benchmarks</strong></summary>
 <br>
 
 For a meaningful benchmark, record:
 
-1. AlphaCode version or commit.
-2. OS and hardware.
-3. Release/debug build profile.
-4. Enabled optional features.
-5. Number of active sessions.
-6. Measurement method.
-7. Warm vs. cold state.
-8. Exact workload.
+1. AlphaCode version or commit
+2. OS and hardware
+3. Release/debug build profile
+4. Enabled optional features
+5. Number of active sessions
+6. Measurement method
+7. Warm vs. cold state
+8. Exact workload
 
 See the benchmark methodology in the repository documentation for the full reproducibility process.
 
@@ -128,13 +124,13 @@ See the benchmark methodology in the repository documentation for the full repro
 
 ---
 
-# 🚀 Install
+## 🚀 Install
 
-AlphaCode provides installers for Windows, macOS, and Linux.
+AlphaCode ships installers for Windows, macOS, and Linux, or you can build it from source.
 
-## Windows
+### Windows
 
-Run PowerShell:
+Run in PowerShell:
 
 ```powershell
 iwr -useb https://raw.githubusercontent.com/dragonked2/alphacode/main/scripts/install.ps1 | iex
@@ -142,12 +138,12 @@ iwr -useb https://raw.githubusercontent.com/dragonked2/alphacode/main/scripts/in
 
 The installer:
 
-- detects your CPU architecture
-- downloads the latest release
-- verifies the SHA-256 checksum
-- installs `alphacode.exe`
-- can add AlphaCode to your user `PATH`
-- does not require administrator privileges
+- Detects your CPU architecture
+- Downloads the latest release
+- Verifies the SHA-256 checksum
+- Installs `alphacode.exe`
+- Can add AlphaCode to your user `PATH`
+- Requires **no** administrator privileges
 
 **Pin a version**
 
@@ -161,7 +157,7 @@ iwr -useb ... | iex -Version vX.Y.Z
 iwr -useb ... | iex -FromSource
 ```
 
-## macOS / Linux
+### macOS / Linux
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/dragonked2/alphacode/main/scripts/install.sh | bash
@@ -195,7 +191,7 @@ curl -fsSL https://raw.githubusercontent.com/dragonked2/alphacode/main/scripts/i
 | `ALPHACODE_SOURCE_ONLY=1` | off | Never fall back to source build |
 | `ALPHACODE_SOURCE_REF` | `HEAD` | Branch, tag, or commit to build |
 
-## Build from source
+### Build from source
 
 ```bash
 git clone https://github.com/dragonked2/alphacode.git
@@ -208,12 +204,11 @@ cargo build --release
 
 - Rust 1.91+ / edition 2024
 - `git`
-- A platform C toolchain
-  - Linux: `build-essential`, `pkg-config`, `libssl-dev`, `libxkbcommon-dev`
-    (the Linux accessibility backend links `libxkbcommon`; without the `-dev`
-    package the link step fails with `unable to find library -lxkbcommon`)
-  - macOS: Xcode Command Line Tools
-  - Windows: MSVC Build Tools + Windows SDK
+- A platform C toolchain:
+  - **Linux** — `build-essential`, `pkg-config`, `libssl-dev`, `libxkbcommon-dev`
+    *(the Linux accessibility backend links `libxkbcommon`; without the `-dev` package the link step fails with `unable to find library -lxkbcommon`)*
+  - **macOS** — Xcode Command Line Tools
+  - **Windows** — MSVC Build Tools + Windows SDK
 
 **Optional features**
 
@@ -230,7 +225,7 @@ Enable multiple features together:
 cargo build --release --features bedrock,embeddings,pdf,mermaid-renderer
 ```
 
-## Verify the installation
+### Verify the installation
 
 **macOS / Linux**
 
@@ -239,20 +234,20 @@ which alphacode
 alphacode --version
 ```
 
-**Windows PowerShell**
+**Windows (PowerShell)**
 
 ```powershell
 Get-Command alphacode
 alphacode --version
 ```
 
-`alphacode --version` reports the version of your alphacode , terminal, providers, browser integration, and optional dependencies.
+`alphacode --version` reports the version of AlphaCode itself, along with your terminal, providers, browser integration, and optional dependencies.
 
 ---
 
-# ⚡ Quick Start
+## ⚡ Quick Start
 
-You can start with the built-in free AI lane or connect your own provider.
+Start with the built-in free AI lane, or connect your own provider.
 
 **1. Launch**
 
@@ -290,7 +285,6 @@ review this code for security issues and explain the findings
 
 ---
 
-
 ## 🖥 Desktop Control
 
 Cross-platform native desktop automation through accessibility APIs. AlphaCode can observe and interact with native desktop applications on Windows, macOS, and Linux.
@@ -305,11 +299,11 @@ flowchart TD
     XA11y --> L["Linux AT-SPI2"]
 ```
 
-**How it works:**
+**How it works**
 
 The agent uses semantic accessibility APIs to understand and interact with desktop applications — not coordinates. It discovers applications, reads the UI tree, locates elements by role/name, and performs actions like clicking, typing, and pressing keys.
 
-**Key actions:**
+**Key actions**
 
 | Action | What it does |
 |---|---|
@@ -325,7 +319,7 @@ The agent uses semantic accessibility APIs to understand and interact with deskt
 | `toggle` | Toggle a checkbox or switch |
 | `expand` / `collapse` | Expand or collapse tree items, menus, disclosures |
 
-**Safety features:**
+**Safety features**
 
 - Action timeouts (configurable, max 60s)
 - Emergency stop (kills all desktop operations instantly)
@@ -335,7 +329,7 @@ The agent uses semantic accessibility APIs to understand and interact with deskt
 - Permission detection (clear errors when accessibility permissions are missing)
 - Untrusted input sanitization (UI text is treated as untrusted data)
 
-**Platform support:**
+**Platform support**
 
 | Platform | Backend | Status |
 |---|---|---|
@@ -343,27 +337,27 @@ The agent uses semantic accessibility APIs to understand and interact with deskt
 | macOS | Accessibility API (AX) | Supported |
 | Linux | AT-SPI2 | Supported |
 
-**Example workflow:**
+**Example workflow**
 
-```
+```text
 User: "Open Calculator and calculate 123 * 456"
 
 Agent (one `desktop` tool, dispatched by `action`):
-  1. desktop action="list_windows" → finds Calculator
-  2. desktop action="snapshot" → sees the calculator UI tree
-  3. desktop action="find" role="button" name="1" → gets element_id
-  4. desktop action="click" element_id=desk_42f91 → clicks "1"
-  5. desktop action="click" element_id=desk_42f92 → clicks "2"
-  6. desktop action="click" element_id=desk_42f93 → clicks "3"
-  7. desktop action="click" element_id=desk_42f94 → clicks "*"
-  8. desktop action="click" element_id=desk_42f95 → clicks "4"
-  9. desktop action="click" element_id=desk_42f96 → clicks "5"
-  10. desktop action="click" element_id=desk_42f97 → clicks "6"
-  11. desktop action="click" element_id=desk_42f98 → clicks "="
-  12. desktop action="snapshot" → reads result: 56088
+  1. desktop action="list_windows"                  → finds Calculator
+  2. desktop action="snapshot"                       → sees the calculator UI tree
+  3. desktop action="find" role="button" name="1"    → gets element_id
+  4. desktop action="click" element_id=desk_42f91    → clicks "1"
+  5. desktop action="click" element_id=desk_42f92    → clicks "2"
+  6. desktop action="click" element_id=desk_42f93    → clicks "3"
+  7. desktop action="click" element_id=desk_42f94    → clicks "*"
+  8. desktop action="click" element_id=desk_42f95    → clicks "4"
+  9. desktop action="click" element_id=desk_42f96    → clicks "5"
+ 10. desktop action="click" element_id=desk_42f97    → clicks "6"
+ 11. desktop action="click" element_id=desk_42f98    → clicks "="
+ 12. desktop action="snapshot"                       → reads result: 56088
 ```
 
-**When to use Desktop Control vs Browser:**
+**When to use Desktop Control vs. Browser**
 
 | Use case | Tool |
 |---|---|
@@ -374,19 +368,19 @@ Agent (one `desktop` tool, dispatched by `action`):
 | Certificate/permission prompts | `desktop` |
 | Login forms in browser | `browser` |
 
-# 🌐 Browser Bridge
+---
+
+## 🌐 Browser Bridge
 
 AlphaCode includes browser automation through a local **Browser Agent Bridge**.
 
-The bridge lets AlphaCode interact with a real browser session instead of relying only on HTTP requests. This is useful for pages that require JavaScript execution, authenticated sessions, DOM interaction, scrolling, frames, file uploads, and other browser-native operations.
+The bridge lets AlphaCode interact with a real browser session instead of relying only on HTTP requests — useful for pages that require JavaScript execution, authenticated sessions, DOM interaction, scrolling, frames, file uploads, and other browser-native operations.
 
-The repository ships the bridge extension package here:
+The repository ships the bridge extension package here: **[`browser-agent-bridge.xpi`](./browser-agent-bridge.xpi)**
 
-**[`browser-agent-bridge.xpi`](./browser-agent-bridge.xpi)**
+> **Important —** AlphaCode's current native browser backend is wired to the Firefox Agent Bridge. The bundled `.xpi` is the primary supported path for AlphaCode browser automation. Chromium extension loading is documented below, but installing the package alone does **not** add Chromium backend support.
 
-> **Important:** AlphaCode's current native browser backend is wired to the Firefox Agent Bridge. The bundled `.xpi` is therefore the primary supported path for AlphaCode browser automation. Chromium extension loading is documented below, but installing the package alone does not add Chromium backend support.
-
-## How the integration works
+**How the integration works**
 
 ```mermaid
 flowchart LR
@@ -396,19 +390,19 @@ flowchart LR
     D --> E["Real Browser Session"]
 ```
 
-AlphaCode can also manage its local browser bridge assets under its application data directory. For first-time setup, use:
+AlphaCode can also manage its local browser bridge assets under its application data directory. For first-time setup:
 
 ```bash
 alphacode browser setup
 ```
 
-Check readiness with:
+Check readiness:
 
 ```bash
 alphacode browser status
 ```
 
-## Firefox: install the bundled `.xpi`
+### Firefox — install the bundled `.xpi`
 
 **Method A — let AlphaCode handle setup**
 
@@ -416,9 +410,7 @@ alphacode browser status
 alphacode browser setup
 ```
 
-Then start Firefox and make sure the Browser Agent Bridge extension is enabled.
-
-Verify:
+Then start Firefox and make sure the Browser Agent Bridge extension is enabled. Verify with:
 
 ```bash
 alphacode browser status
@@ -427,17 +419,16 @@ alphacode browser status
 **Method B — install the `.xpi` manually**
 
 1. Download [`browser-agent-bridge.xpi`](./browser-agent-bridge.xpi) from this repository.
-2. Open Firefox.
-3. Open `about:addons`.
-4. Click the gear icon.
-5. Choose **Install Add-on From File…**
-6. Select `browser-agent-bridge.xpi`.
-7. Enable the extension if Firefox asks.
-8. Run `alphacode browser status` to confirm.
+2. Open Firefox and navigate to `about:addons`.
+3. Click the gear icon.
+4. Choose **Install Add-on From File…**
+5. Select `browser-agent-bridge.xpi`.
+6. Enable the extension if Firefox asks.
+7. Run `alphacode browser status` to confirm.
 
 For development/unsigned-extension workflows, Firefox may restrict direct installation of unsigned add-ons depending on the Firefox channel and configuration. In that case, use a development-compatible Firefox build/profile or a properly signed extension package.
 
-## Chrome: load the bridge as an unpacked extension
+### Chrome — load the bridge as an unpacked extension
 
 Chrome does **not** install `.xpi` files directly. An `.xpi` is a ZIP-based WebExtension package, so a Chromium browser requires an extracted extension directory.
 
@@ -460,9 +451,9 @@ unzip browser-agent-bridge.zip -d browser-agent-bridge
 
 Then open `chrome://extensions`, enable **Developer mode** → **Load unpacked** → select the extracted directory.
 
-> **Compatibility note:** loading the package successfully does **not** automatically mean the current AlphaCode browser backend supports Chrome. The current implementation uses Firefox-specific Browser Agent Bridge identifiers and native messaging paths. Chrome support therefore requires a Chromium-compatible bridge build and corresponding AlphaCode backend support. If Chrome reports manifest/API incompatibilities, the bundled Firefox package should not be treated as a supported Chrome backend.
+> **Compatibility note —** loading the package successfully does **not** automatically mean the current AlphaCode browser backend supports Chrome. The current implementation uses Firefox-specific Browser Agent Bridge identifiers and native messaging paths. Chrome support therefore requires a Chromium-compatible bridge build and corresponding AlphaCode backend support. If Chrome reports manifest/API incompatibilities, the bundled Firefox package should not be treated as a supported Chrome backend.
 
-## Brave: load the bridge as an unpacked extension
+### Brave — load the bridge as an unpacked extension
 
 Brave is Chromium-based, so the extension loading flow is the same as Chrome:
 
@@ -475,22 +466,22 @@ Brave is Chromium-based, so the extension loading flow is the same as Chrome:
 
 As with Chrome, installing the extension package is separate from AlphaCode backend compatibility — AlphaCode's current native browser integration is Firefox-oriented.
 
-## Browser setup and diagnostics
+### Browser setup and diagnostics
 
 ```bash
 alphacode browser setup
 alphacode browser status
 ```
 
-A healthy setup should report that the bridge is installed, responding, and compatible with the current AlphaCode build.
+A healthy setup reports that the bridge is installed, responding, and compatible with the current AlphaCode build.
 
 If AlphaCode reports an extension mismatch, update the browser extension package and rerun both commands above.
 
 ---
 
-# 🧩 Features
+## 🧩 Features
 
-## AI providers
+### AI providers
 
 AlphaCode is designed to work with multiple model providers instead of locking the agent to a single vendor.
 
@@ -519,9 +510,9 @@ alphacode model list
 alphacode model use <model>
 ```
 
-Inside the TUI, use `Ctrl+T` for the visual model picker.
+Inside the TUI, press `Ctrl+T` for the visual model picker.
 
-## 🐝 Swarm Mode
+### 🐝 Swarm Mode
 
 Swarm Mode splits large objectives into parallel tasks and coordinates multiple AI agents.
 
@@ -546,14 +537,15 @@ Example:
 /swarm "split this feature into 4 independent implementation tasks"
 ```
 
-The goal is not parallelism for its own sake. Tasks should be decomposable, independently actionable, and reviewable.
+The goal isn't parallelism for its own sake — tasks should be decomposable, independently actionable, and reviewable.
 
+### 🛠 Built-in toolbox
 
-## 🛠 Built-in toolbox
+AlphaCode includes **40+ built-in tools**, organized by capability area:
 
-AlphaCode includes **40+ built-in tools** organized by capability area:
-
-### File Operations
+<details open>
+<summary><strong>File Operations</strong></summary>
+<br>
 
 | Tool | Description |
 |---|---|
@@ -565,7 +557,11 @@ AlphaCode includes **40+ built-in tools** organized by capability area:
 | `apply_patch` | Apply unified diff patches |
 | `ls` | List directory contents |
 
-### Search & Analysis
+</details>
+
+<details open>
+<summary><strong>Search &amp; Analysis</strong></summary>
+<br>
 
 | Tool | Description |
 |---|---|
@@ -573,7 +569,11 @@ AlphaCode includes **40+ built-in tools** organized by capability area:
 | `session_search` | Search conversation history |
 | `conversation_search` | Search within session transcripts |
 
-### Execution
+</details>
+
+<details open>
+<summary><strong>Execution</strong></summary>
+<br>
 
 | Tool | Description |
 |---|---|
@@ -581,7 +581,11 @@ AlphaCode includes **40+ built-in tools** organized by capability area:
 | `batch` | Execute multiple tool calls in sequence |
 | `bg` | Run commands in the background |
 
-### Web & Browser
+</details>
+
+<details open>
+<summary><strong>Web &amp; Browser</strong></summary>
+<br>
 
 | Tool | Description |
 |---|---|
@@ -592,14 +596,22 @@ AlphaCode includes **40+ built-in tools** organized by capability area:
 | `httpflow` | HTTP request/response analysis |
 | `open` | Open files and URLs |
 
-### Desktop Control
+</details>
+
+<details open>
+<summary><strong>Desktop Control</strong></summary>
+<br>
 
 | Tool | Description |
 |---|---|
 | `desktop` | Cross-platform desktop automation via accessibility APIs |
 | `macos_computer_use` | macOS-specific desktop control (macOS only) |
 
-### Intelligence & Memory
+</details>
+
+<details open>
+<summary><strong>Intelligence &amp; Memory</strong></summary>
+<br>
 
 | Tool | Description |
 |---|---|
@@ -608,7 +620,11 @@ AlphaCode includes **40+ built-in tools** organized by capability area:
 | `todo` | Task and todo list management |
 | `plan` | Plan mode for complex tasks |
 
-### Communication & Integration
+</details>
+
+<details open>
+<summary><strong>Communication &amp; Integration</strong></summary>
+<br>
 
 | Tool | Description |
 |---|---|
@@ -618,7 +634,11 @@ AlphaCode includes **40+ built-in tools** organized by capability area:
 | `skill_manage` | Browse and manage skills |
 | `discover_tools` | Discover third-party tool integrations |
 
-### System & Utilities
+</details>
+
+<details open>
+<summary><strong>System &amp; Utilities</strong></summary>
+<br>
 
 | Tool | Description |
 |---|---|
@@ -631,7 +651,9 @@ AlphaCode includes **40+ built-in tools** organized by capability area:
 | `side_panel` | Display content in the side panel |
 | `invalid` | Handle invalid tool calls gracefully |
 
-## 🎓 Built-in skills
+</details>
+
+### 🎓 Built-in skills
 
 Included examples:
 
@@ -649,7 +671,7 @@ Browse available skills inside AlphaCode:
 
 ---
 
-# 🛡 Safety and reliability
+## 🛡 Safety and Reliability
 
 AlphaCode is designed to execute real operations while putting destructive actions behind explicit safeguards.
 
@@ -669,7 +691,7 @@ alphacode --resume
 alphacode sessions list
 ```
 
-Sessions are persisted to disk, allowing work to continue after connection loss, terminal restarts, or interrupted runs.
+Sessions are persisted to disk, so work can continue after connection loss, terminal restarts, or interrupted runs.
 
 Review changes before shipping:
 
@@ -681,7 +703,7 @@ Report security vulnerabilities privately through [`SECURITY.md`](./SECURITY.md)
 
 ---
 
-# 🎯 Code quality model
+## 🎯 Code Quality Model
 
 AlphaCode's agent behavior is centered around four guarantees:
 
@@ -696,40 +718,39 @@ The system prompt and tool implementations enforce these behaviors inside the co
 
 ---
 
-# ⌨️ Command Reference
+## ⌨️ Command Reference
 
-## CLI commands
+### CLI commands
 
 ```bash
-alphacode                          # Launch the TUI
-alphacode login                    # Authenticate with a provider
-alphacode login --provider openai  # Authenticate with a specific provider
+alphacode                             # Launch the TUI
+alphacode login                       # Authenticate with a provider
+alphacode login --provider openai     # Authenticate with a specific provider
 
+alphacode provider list               # List configured providers
+alphacode provider add <name>         # Add an OpenAI-compatible provider
+alphacode provider use <name>         # Select the default provider
+alphacode provider current            # Show current provider/model
 
-alphacode provider list            # List configured providers
-alphacode provider add <name>      # Add an OpenAI-compatible provider
-alphacode provider use <name>      # Select the default provider
-alphacode provider current         # Show current provider/model
-
-alphacode model list               # List models
-alphacode model use <name>         # Select the default model
+alphacode model list                  # List models
+alphacode model use <name>            # Select the default model
 
 alphacode run "fix the failing test"  # Execute one task directly
-alphacode repl                     # Text-only mode
+alphacode repl                        # Text-only mode
 
-alphacode sessions list            # List stored sessions
-alphacode --resume                 # Search and resume a session
-alphacode --resume <id>            # Resume a specific session
+alphacode sessions list               # List stored sessions
+alphacode --resume                    # Search and resume a session
+alphacode --resume <id>               # Resume a specific session
 
-alphacode browser setup             # Install/repair browser bridge
-alphacode browser status            # Check browser bridge readiness
+alphacode browser setup               # Install/repair browser bridge
+alphacode browser status              # Check browser bridge readiness
 
-alphacode update                   # Update AlphaCode
-alphacode --version                # Show version
-alphacode --help                   # Show help
+alphacode update                      # Update AlphaCode
+alphacode --version                   # Show version
+alphacode --help                      # Show help
 ```
 
-## In-app slash commands
+### In-app slash commands
 
 | Command | Purpose |
 |---|---|
@@ -745,19 +766,19 @@ alphacode --help                   # Show help
 
 ---
 
-# 🔄 Updating AlphaCode
+## 🔄 Updating AlphaCode
 
 ```bash
 alphacode update
 ```
 
-You can also run `/reload` inside the TUI to reload the current application state when supported by the active session.
+You can also run `/reload` inside the TUI to reload the current application state, when supported by the active session.
 
 For release history, see [`CHANGELOG.md`](./CHANGELOG.md).
 
 ---
 
-# ⚙️ Configuration
+## ⚙️ Configuration
 
 AlphaCode keeps configuration and session data outside your project directory.
 
@@ -771,7 +792,7 @@ The initial configuration file is created automatically after provider setup.
 
 Full reference: [`docs/configuration.md`](./docs/configuration.md)
 
-### Key configuration sections
+**Key configuration sections**
 
 | Section | Purpose |
 |---|---|
@@ -786,11 +807,9 @@ Full reference: [`docs/configuration.md`](./docs/configuration.md)
 | `[power]` | Prevent sleep while streaming |
 | `[gateway]` | WebSocket gateway for remote access |
 
-
-
 ---
 
-# 🗑 Uninstall
+## 🗑 Uninstall
 
 **macOS / Linux**
 
@@ -815,7 +834,7 @@ Use the script's purge option when you also want local settings, sessions, and l
 
 ---
 
-# 🏗 Project Structure
+## 🏗 Project Structure
 
 ```text
 alphacode/
@@ -835,11 +854,6 @@ alphacode/
 │   │       ├── bash.rs              # Shell execution
 │   │       ├── edit.rs              # File editing
 │   │       └── ...                  # 40+ tools
-│   ├── alphacode_tui*/              # Terminal UI and workspace components
-│   ├── alphacode_tool_core/         # Tool abstractions and shared types
-│   ├── alphacode_provider_*/        # Provider runtimes
-│   ├── alphacode_auth_*/            # Provider authentication
-│   ├── alphacode_swarm_core/        # Multi-agent coordination
 │   ├── alphacode_compaction_core/   # Context compaction
 │   ├── alphacode_memory_types/      # Memory system
 │   ├── alphacode_embedding/         # Local ONNX embeddings (optional)
@@ -858,7 +872,7 @@ Architecture reference: [`docs/architecture.md`](./docs/architecture.md)
 
 ---
 
-# 🧪 Contributing
+## 🧪 Contributing
 
 ```bash
 git clone https://github.com/dragonked2/alphacode.git
@@ -882,20 +896,20 @@ Read [`CONTRIBUTING.md`](./CONTRIBUTING.md) for the full workflow.
 
 ---
 
-# 🩺 Troubleshooting
+## 🩺 Troubleshooting
 
 <details>
 <summary><strong><code>alphacode</code> is not found</strong></summary>
 <br>
 
-**macOS / Linux**
+**macOS / Linux (bash)**
 
 ```bash
 echo 'export PATH="$HOME/.local/bin:$PATH"' >> ~/.bashrc
 source ~/.bashrc
 ```
 
-For Zsh:
+**macOS / Linux (zsh)**
 
 ```bash
 echo 'export PATH="$HOME/.local/bin:$PATH"' >> ~/.zshrc
@@ -928,16 +942,13 @@ For Firefox, confirm the Browser Agent Bridge extension is installed, enabled, a
 
 </details>
 
-
 <details>
 <summary><strong>Desktop control permissions</strong></summary>
 <br>
 
-**macOS:** Grant Accessibility and Screen Recording permissions in System Preferences → Privacy & Security.
-
-**Windows:** No special permissions needed for most applications. Some elevated applications may require running AlphaCode as administrator.
-
-**Linux:** Ensure AT-SPI2 is available (`at-spi2-core` package). Some applications may need `--force-renderer-accessibility` for Electron/Chromium apps.
+- **macOS** — Grant Accessibility and Screen Recording permissions in System Preferences → Privacy & Security.
+- **Windows** — No special permissions needed for most applications. Some elevated applications may require running AlphaCode as administrator.
+- **Linux** — Ensure AT-SPI2 is available (`at-spi2-core` package). Some applications may need `--force-renderer-accessibility` for Electron/Chromium apps.
 
 Run the `desktop` tool with `action='list_windows'` to check if accessibility APIs are working.
 
@@ -985,7 +996,7 @@ Authentication callbacks can be affected by VPNs, firewall rules, browser polici
 
 ---
 
-# ❓ FAQ
+## ❓ FAQ
 
 <details>
 <summary><strong>Do I need to know how to code?</strong></summary>
@@ -1027,7 +1038,6 @@ Yes. AlphaCode includes Browser Agent Bridge integration. The currently supporte
 
 </details>
 
-
 <details>
 <summary><strong>Can AlphaCode control native desktop applications?</strong></summary>
 <br>
@@ -1040,7 +1050,7 @@ Yes. AlphaCode includes cross-platform desktop control via accessibility APIs (W
 <summary><strong>Can I load the <code>.xpi</code> in Chrome or Brave?</strong></summary>
 <br>
 
-Chromium browsers do not install `.xpi` files directly. You can rename the package to `.zip`, extract it, and use **Load unpacked** from the browser's extensions page. However, extension installation and AlphaCode backend support are separate; the current native AlphaCode browser backend is Firefox-oriented.
+Chromium browsers don't install `.xpi` files directly. You can rename the package to `.zip`, extract it, and use **Load unpacked** from the browser's extensions page. However, extension installation and AlphaCode backend support are separate; the current native AlphaCode browser backend is Firefox-oriented.
 
 </details>
 
@@ -1062,7 +1072,7 @@ Use [`SECURITY.md`](./SECURITY.md) for private vulnerability reporting.
 
 ---
 
-# 📚 Documentation
+## 📚 Documentation
 
 - [`docs/`](./docs/) — documentation index
 - [`docs/configuration.md`](./docs/configuration.md) — configuration reference
@@ -1073,7 +1083,7 @@ Use [`SECURITY.md`](./SECURITY.md) for private vulnerability reporting.
 
 ---
 
-# ❤️ Support the Project
+## ❤️ Support the Project
 
 If AlphaCode is useful to you, the highest-value ways to help are:
 
