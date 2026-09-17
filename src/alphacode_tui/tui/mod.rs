@@ -10,6 +10,10 @@ pub mod model_performance;
 pub mod picker_spacing;
 pub mod query_highlight;
 pub mod smart_model_picker;
+pub mod ui_console;
+pub mod ui_empty_state;
+pub mod ui_help;
+pub mod ui_professional;
 
 #[derive(Clone)]
 pub struct ContextSnapshot {

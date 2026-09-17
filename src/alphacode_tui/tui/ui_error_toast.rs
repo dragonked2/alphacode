@@ -101,6 +101,7 @@ pub struct Toast {
     pub severity: Severity,
     pub message: String,
     pub hint: Option<String>,
+    pub recovery: Option<String>,
     pub created_at: Instant,
     pub ttl: Duration,
     /// Whether the toast is expanded to show the full message and hint.
@@ -149,6 +150,63 @@ pub fn push_error(message: impl Into<String>) {
 /// Push an error toast with an extra hint line (e.g. "Try /login again.").
 pub fn push_error_with_hint(message: impl Into<String>, hint: impl Into<String>) {
     push(Severity::Error, message, Some(hint.into()));
+}
+
+/// Push an error toast with a recovery suggestion (e.g. "Did you mean /login?").
+pub fn push_error_with_recovery(message: impl Into<String>, recovery: impl Into<String>) {
+    push_with_recovery(Severity::Error, message, Some(recovery.into()));
+}
+
+/// Push a warning toast with a recovery suggestion.
+pub fn push_warning_with_recovery(message: impl Into<String>, recovery: impl Into<String>) {
+    push_with_recovery(Severity::Warning, message, Some(recovery.into()));
+}
+
+/// Push an info toast with a recovery suggestion.
+pub fn push_info_with_recovery(message: impl Into<String>, recovery: impl Into<String>) {
+    push_with_recovery(Severity::Info, message, Some(recovery.into()));
+}
+
+/// Push an error toast specifically for auth failures with a tailored recovery path.
+pub fn push_auth_error(provider: &str) {
+    let message = format!("{} authentication failed", provider);
+    let hint = "Check your credentials or run /login to re-authenticate.";
+    let recovery = "/login — Re-authenticate with provider";
+    push_with_ttl_and_recovery(
+        Severity::Error,
+        message,
+        Some(hint.to_string()),
+        Some(recovery.to_string()),
+        None,
+        DEFAULT_TTL,
+    );
+}
+
+/// Push a warning toast for rate limits with recovery guidance.
+pub fn push_rate_limit_with_recovery(
+    provider: &str,
+    attempt: u32,
+    max_attempts: u32,
+    retry_after_secs: u64,
+) {
+    let message = format!(
+        "{provider}: rate-limited, retrying in {retry_after_secs}s (attempt {attempt}/{max_attempts})"
+    );
+    let hint = if retry_after_secs >= 5 {
+        "This is normal for free-tier providers; the agent will keep trying."
+    } else {
+        "Retrying now."
+    };
+    let recovery = "/model — Switch to a different provider if this persists";
+    let ttl = Duration::from_secs(retry_after_secs.max(2));
+    push_with_ttl_and_recovery(
+        Severity::Warning,
+        message,
+        Some(hint.to_string()),
+        Some(recovery.to_string()),
+        None,
+        ttl,
+    );
 }
 
 /// Push a warning toast with the default TTL.
@@ -200,6 +258,18 @@ pub fn push_with_ttl(
     hint: Option<String>,
     ttl: Duration,
 ) {
+    push_with_ttl_and_recovery(severity, message, hint, None, None, ttl);
+}
+
+/// Push a toast with explicit severity, hint, recovery suggestion, and TTL.
+pub fn push_with_ttl_and_recovery(
+    severity: Severity,
+    message: impl Into<String>,
+    hint: Option<String>,
+    recovery: Option<String>,
+    _expanded: Option<bool>,
+    ttl: Duration,
+) {
     let mut guard = TOASTS
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
@@ -207,6 +277,7 @@ pub fn push_with_ttl(
         severity,
         message: message.into(),
         hint,
+        recovery,
         created_at: Instant::now(),
         ttl,
         expanded: false,
@@ -218,6 +289,15 @@ pub fn push_with_ttl(
         let drop = len - MAX_VISIBLE_TOASTS;
         guard.drain(0..drop);
     }
+}
+
+/// Push a toast with a recovery suggestion.
+pub fn push_with_recovery(
+    severity: Severity,
+    message: impl Into<String>,
+    recovery: Option<String>,
+) {
+    push_with_ttl_and_recovery(severity, message, None, recovery, None, DEFAULT_TTL);
 }
 
 fn push(severity: Severity, message: impl Into<String>, hint: Option<String>) {
@@ -399,10 +479,26 @@ pub fn draw(frame: &mut ratatui::Frame, area: Rect) {
                     Style::default().fg(role_color(Role::Dim)),
                 )));
             }
-        } else if toast.hint.is_some() {
-            // Collapsed: show "press Enter to expand" hint.
+            // Expanded: show recovery suggestion.
+            if let Some(recovery) = &toast.recovery {
+                lines.push(Line::from(Span::styled(
+                    format!(" ↳ {}", recovery),
+                    Style::default()
+                        .fg(role_color(Role::Success))
+                        .add_modifier(Modifier::ITALIC),
+                )));
+            }
+        } else if toast.hint.is_some() || toast.recovery.is_some() {
+            // Collapsed: show expand indicator.
+            let collapse_hint = if toast.hint.is_some() && toast.recovery.is_some() {
+                "▸ expand for suggestions"
+            } else if toast.hint.is_some() {
+                "press Enter to expand"
+            } else {
+                "▸ expand for suggestions"
+            };
             lines.push(Line::from(Span::styled(
-                "press Enter to expand",
+                collapse_hint,
                 Style::default().fg(role_color(Role::Dim)),
             )));
         }

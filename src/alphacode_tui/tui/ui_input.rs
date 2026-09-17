@@ -19,25 +19,6 @@ fn shell_mode_color() -> Color {
     rgb(100, 225, 155)
 }
 
-/// Accent color for slash command mode badge.
-fn slash_mode_color() -> Color {
-    rgb(170, 140, 255)
-}
-
-/// Background color for mode badges (dark card surface).
-fn badge_bg() -> Color {
-    rgb(18, 20, 30)
-}
-
-/// Border glow color for active mode badges.
-fn badge_border_color(mode: ComposerMode) -> Color {
-    match mode {
-        ComposerMode::ShellLocal | ComposerMode::ShellRemote => rgb(60, 180, 130),
-        ComposerMode::SlashCommand => rgb(130, 110, 200),
-        ComposerMode::Chat => rgb(60, 68, 100),
-    }
-}
-
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum ComposerMode {
     Chat,
@@ -49,25 +30,6 @@ enum ComposerMode {
 impl ComposerMode {
     fn is_shell(self) -> bool {
         matches!(self, Self::ShellLocal | Self::ShellRemote)
-    }
-
-    /// Short label for the mode badge.
-    fn badge_label(self) -> &'static str {
-        match self {
-            Self::ShellLocal => "$ LOCAL",
-            Self::ShellRemote => "$ REMOTE",
-            Self::SlashCommand => "/ CMD",
-            Self::Chat => "",
-        }
-    }
-
-    /// Icon prefix for the mode badge.
-    fn badge_icon(self) -> &'static str {
-        match self {
-            Self::ShellLocal | Self::ShellRemote => "\u{2699}",
-            Self::SlashCommand => "\u{2022}",
-            Self::Chat => "",
-        }
     }
 }
 
@@ -90,43 +52,6 @@ fn shell_mode_hint(mode: ComposerMode) -> Option<&'static str> {
         ComposerMode::ShellLocal => Some("  \u{2699} shell \u{00b7} Enter runs locally"),
         ComposerMode::ShellRemote => Some("  \u{2699} shell \u{00b7} Enter runs on server"),
         _ => None,
-    }
-}
-
-/// Get the mode badge for display in the input area.
-///
-/// Returns a styled badge with border effect and icon that indicates the
-/// current input mode with appropriate color and visual weight.
-#[allow(dead_code)]
-pub(super) fn input_mode_badge(app: &dyn TuiState) -> Option<Span<'static>> {
-    let mode = composer_mode(app.input(), app.is_remote_mode());
-    match mode {
-        ComposerMode::ShellLocal | ComposerMode::ShellRemote => {
-            let _border = badge_border_color(mode);
-            let bg = badge_bg();
-            let fg = shell_mode_color();
-            Some(Span::styled(
-                format!(" {} {} ", mode.badge_icon(), mode.badge_label()),
-                Style::default()
-                    .fg(fg)
-                    .bg(bg)
-                    .add_modifier(Modifier::BOLD)
-                    .add_modifier(Modifier::UNDERLINED),
-            ))
-        }
-        ComposerMode::SlashCommand => {
-            let bg = badge_bg();
-            let fg = slash_mode_color();
-            Some(Span::styled(
-                format!(" {} {} ", mode.badge_icon(), mode.badge_label()),
-                Style::default()
-                    .fg(fg)
-                    .bg(bg)
-                    .add_modifier(Modifier::BOLD)
-                    .add_modifier(Modifier::UNDERLINED),
-            ))
-        }
-        ComposerMode::Chat => None,
     }
 }
 
@@ -479,25 +404,6 @@ pub(super) fn input_prompt(app: &dyn TuiState) -> (&'static str, Color) {
         ("\u{00bb} ", rgb(185, 155, 255))
     } else {
         ("> ", rgb(90, 215, 230))
-    }
-}
-
-/// Get the mode-specific icon for the input area.
-///
-/// Returns a (icon, color, description) tuple for the current input mode.
-#[allow(dead_code)]
-pub(super) fn input_mode_icon(app: &dyn TuiState) -> (&'static str, Color, &'static str) {
-    let mode = composer_mode(app.input(), app.is_remote_mode());
-    if mode.is_shell() {
-        ("$", rgb(100, 225, 155), "Shell mode")
-    } else if app.is_processing() {
-        ("\u{2026}", rgb(245, 195, 95), "Processing")
-    } else if app.active_skill().is_some() {
-        ("\u{00bb}", rgb(185, 155, 255), "Skill active")
-    } else if app.next_prompt_new_session_armed() {
-        ("↗", rgb(115, 185, 255), "New session")
-    } else {
-        (">", rgb(90, 215, 230), "Chat")
     }
 }
 

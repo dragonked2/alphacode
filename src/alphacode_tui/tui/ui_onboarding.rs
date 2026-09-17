@@ -17,7 +17,9 @@ use super::animations;
 use super::dim_color;
 use crate::alphacode_tui::tui::TuiState;
 use crate::alphacode_tui::tui::color_support::rgb;
-use ratatui::{prelude::*, widgets::Paragraph};
+use crate::alphacode_tui::tui::ui_professional::section_banner;
+use ratatui::prelude::*;
+use ratatui::widgets::Paragraph;
 
 const DONUT_HEIGHT: u16 = 18;
 const GAP: u16 = 1;
@@ -723,10 +725,16 @@ fn welcome_body_lines(app: &dyn TuiState) -> Vec<Line<'static>> {
 /// Draw the full onboarding welcome screen into `area`.
 ///
 /// Vertical structure (top to bottom):
-///   telemetry header, gap, title, donut, keyboard hint, gap, phase body.
+///   professional banner, telemetry header, gap, title, donut, keyboard hint, gap, phase body.
 /// The title sits directly above the donut and a one-line keyboard hint sits
 /// directly below it, so the phase body underneath can stay lean.
 pub(super) fn draw_onboarding_welcome(frame: &mut Frame, app: &dyn TuiState, area: Rect) {
+    let version_str = if cfg!(test) {
+        "1.0.52-test"
+    } else {
+        crate::alphacode_build_meta::version()
+    };
+
     if area.width < 4 || area.height < 6 {
         // Too small for the full treatment: fall back to a minimal welcome.
         let mut lines = vec![welcome_title_line()];
@@ -735,29 +743,34 @@ pub(super) fn draw_onboarding_welcome(frame: &mut Frame, app: &dyn TuiState, are
         return;
     }
 
+    let banner_lines = section_banner(&format!("Alphacode v{}", version_str));
+    let _banner_h = banner_lines.len() as u16;
+
     let body = welcome_body_lines(app);
     let body_h = body.len() as u16;
     // Title above the donut, subtitle + keyboard hint below it.
+    const BANNER_H: u16 = 2;
     const TITLE_H: u16 = 1;
     const SUBTITLE_H: u16 = 1;
     const HINT_H: u16 = 1;
     const FOOTER_H: u16 = 1;
 
     // Donut shrinks if the area is short so the welcome text always fits.
-    let donut_h = DONUT_HEIGHT.min(
-        area.height
-            .saturating_sub(TITLE_H + SUBTITLE_H + HINT_H + GAP + body_h + FOOTER_H + 2),
-    );
+    let donut_h = DONUT_HEIGHT
+        .min(area.height.saturating_sub(
+            BANNER_H + TITLE_H + SUBTITLE_H + HINT_H + GAP + body_h + FOOTER_H + 2,
+        ));
     let show_donut_block = donut_h > 0;
 
     let used = if show_donut_block {
-        TITLE_H + SUBTITLE_H + donut_h + HINT_H + GAP + body_h + FOOTER_H
+        BANNER_H + TITLE_H + SUBTITLE_H + donut_h + HINT_H + GAP + body_h + FOOTER_H
     } else {
-        body_h + FOOTER_H
+        BANNER_H + body_h + FOOTER_H
     };
     let pad_top = area.height.saturating_sub(used) / 2;
 
     let mut constraints = vec![Constraint::Length(pad_top)];
+    constraints.push(Constraint::Length(BANNER_H));
     if show_donut_block {
         constraints.push(Constraint::Length(TITLE_H));
         constraints.push(Constraint::Length(SUBTITLE_H));
@@ -774,8 +787,13 @@ pub(super) fn draw_onboarding_welcome(frame: &mut Frame, app: &dyn TuiState, are
         .constraints(constraints)
         .split(area);
 
-    // chunks[0] = top pad, then optional title/subtitle/donut/hint, gap, body, footer.
-    let mut idx = 1;
+    // chunks[0] = top pad, then banner, then optional title/subtitle/donut/hint, gap, body, footer.
+    let mut idx = 1; // skip pad
+    frame.render_widget(
+        Paragraph::new(banner_lines.clone()).alignment(Alignment::Center),
+        chunks[idx],
+    );
+    idx += 1; // banner -> title
     if show_donut_block {
         frame.render_widget(
             Paragraph::new(welcome_title_line()).alignment(Alignment::Center),
