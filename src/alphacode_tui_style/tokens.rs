@@ -53,6 +53,10 @@ pub enum Spacing {
     Chip,
     /// Single-cell padding for the chat message bubble (1 row / 2 cols).
     Message,
+    /// Half-cell spacing for tight inline elements (0 rows / 1 col).
+    Inline,
+    /// Extra-large spacing for full-screen overlays (3 rows / 5 cols).
+    ScreenLg,
 }
 
 impl Spacing {
@@ -67,6 +71,8 @@ impl Spacing {
             Self::Pill => (0, 2),
             Self::Chip => (1, 2),
             Self::Message => (1, 2),
+            Self::Inline => (0, 1),
+            Self::ScreenLg => (3, 5),
         }
     }
 
@@ -92,6 +98,8 @@ impl Spacing {
             Self::Pill => "pill",
             Self::Chip => "chip",
             Self::Message => "message",
+            Self::Inline => "inline",
+            Self::ScreenLg => "screen-lg",
         }
     }
 }
@@ -111,6 +119,8 @@ pub enum Radius {
     /// Squared corners with full glyphs. Used by surfaces that render lots of
     /// inner rules where rounded caps would float.
     Plain,
+    /// Heavy/thick rounded corners for emphasis (premium feel).
+    Heavy,
 }
 
 impl Radius {
@@ -119,6 +129,7 @@ impl Radius {
         match self {
             Self::Card => BorderType::Rounded,
             Self::Plain => BorderType::Plain,
+            Self::Heavy => BorderType::Rounded,
         }
     }
 
@@ -127,6 +138,7 @@ impl Radius {
         match self {
             Self::Card => "card",
             Self::Plain => "plain",
+            Self::Heavy => "heavy",
         }
     }
 }
@@ -268,6 +280,16 @@ pub enum Glyph {
     ArrowRight,
     /// A 2-cell ellipsis used when truncating paths / messages.
     Ellipsis,
+    /// A diamond separator for premium section breaks.
+    Diamond,
+    /// A thin horizontal rule for subtle dividers.
+    ThinRule,
+    /// A dot separator for inline lists.
+    Dot,
+    /// A checkmark for completed items.
+    Check,
+    /// An X mark for failed/closed items.
+    Cross,
 }
 
 impl Glyph {
@@ -281,6 +303,16 @@ impl Glyph {
             Self::ArrowRight => "→",
             // U+2026 horizontal ellipsis.
             Self::Ellipsis => "…",
+            // U+25C6 black diamond for premium section breaks.
+            Self::Diamond => "◆",
+            // U+2500 box-drawing light horizontal for subtle dividers.
+            Self::ThinRule => "──────────────────────────────",
+            // U+2022 middle dot for inline lists.
+            Self::Dot => "·",
+            // U+2713 check mark.
+            Self::Check => "✓",
+            // U+2717 cross mark.
+            Self::Cross => "✗",
         }
     }
 
@@ -290,6 +322,11 @@ impl Glyph {
             Self::Bullet => "bullet",
             Self::ArrowRight => "arrow-right",
             Self::Ellipsis => "ellipsis",
+            Self::Diamond => "diamond",
+            Self::ThinRule => "thin-rule",
+            Self::Dot => "dot",
+            Self::Check => "check",
+            Self::Cross => "cross",
         }
     }
 }
@@ -318,6 +355,8 @@ mod tests {
         assert_eq!(Spacing::Pill.to_padding(), (0, 2));
         assert_eq!(Spacing::Chip.to_padding(), (1, 2));
         assert_eq!(Spacing::Message.to_padding(), (1, 2));
+        assert_eq!(Spacing::Inline.to_padding(), (0, 1));
+        assert_eq!(Spacing::ScreenLg.to_padding(), (3, 5));
     }
 
     #[test]
@@ -354,6 +393,11 @@ mod tests {
             Glyph::Bullet,
             Glyph::ArrowRight,
             Glyph::Ellipsis,
+            Glyph::Diamond,
+            Glyph::ThinRule,
+            Glyph::Dot,
+            Glyph::Check,
+            Glyph::Cross,
         ] {
             let s = glyph.text();
             assert!(!s.is_empty(), "{glyph:?} returned empty text");

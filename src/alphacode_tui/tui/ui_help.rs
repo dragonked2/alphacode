@@ -1,13 +1,14 @@
 //! Professional help system for alphacode.
 //!
 //! Provides organized, searchable command reference with:
-//! - Categorized commands (chat, tools, config, providers, etc.)
-//! - Inline command descriptions
+//! - Categorized commands with color-coded sections
 //! - Keyboard shortcut reference
 //! - Context-aware suggestions
+//! - Professional visual hierarchy
 
 use crate::alphacode_tui::tui::brand_ux::BrandTheme;
 use crate::alphacode_tui::tui::color_support::rgb;
+use ratatui::layout::Alignment;
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 
@@ -48,6 +49,19 @@ impl HelpCategory {
         }
     }
 
+    fn icon(&self) -> &'static str {
+        match self {
+            Self::Chat => "◆",
+            Self::Navigation => "→",
+            Self::Tools => "⚙",
+            Self::Configuration => "◇",
+            Self::Providers => "◈",
+            Self::Session => "◎",
+            Self::Development => "⟡",
+            Self::System => "●",
+        }
+    }
+
     fn color(&self) -> Color {
         match self {
             Self::Chat => BrandTheme::accent(),
@@ -62,20 +76,47 @@ impl HelpCategory {
     }
 }
 
+/// Build a gradient divider line of specified width.
+fn gradient_divider(width: usize) -> Line<'static> {
+    let gradient = BrandTheme::gradient();
+    let chars: Vec<char> = "─".repeat(width).chars().collect();
+    let mut spans = Vec::with_capacity(chars.len());
+    for (i, ch) in chars.iter().enumerate() {
+        let color = gradient[i % gradient.len()];
+        spans.push(Span::styled(ch.to_string(), Style::default().fg(color)));
+    }
+    Line::from(spans)
+}
+
 /// Generate the full help reference organized by category.
 pub fn help_reference() -> Vec<Line<'static>> {
     let commands = build_command_list();
-    let mut lines = Vec::new();
+    let mut lines = vec![
+        Line::from(""),
+        gradient_divider(56).alignment(Alignment::Center),
+        Line::from(""),
+    ];
 
+    // Brand header
     lines.push(
-        Line::from(Span::styled(
-            "  ALPHACODE COMMAND REFERENCE",
-            Style::default()
-                .fg(BrandTheme::accent())
-                .add_modifier(Modifier::BOLD),
-        ))
-        .alignment(ratatui::layout::Alignment::Center),
+        Line::from(vec![
+            Span::styled(
+                "  ◆ ",
+                Style::default()
+                    .fg(BrandTheme::gradient_color(0))
+                    .add_modifier(Modifier::BOLD),
+            ),
+            Span::styled(
+                "ALPHACODE COMMAND REFERENCE",
+                Style::default()
+                    .fg(BrandTheme::accent())
+                    .add_modifier(Modifier::BOLD),
+            ),
+        ])
+        .alignment(Alignment::Center),
     );
+    lines.push(Line::from(""));
+    lines.push(gradient_divider(56).alignment(Alignment::Center));
     lines.push(Line::from(""));
 
     for category in [
@@ -93,64 +134,120 @@ pub fn help_reference() -> Vec<Line<'static>> {
             continue;
         }
 
-        lines.push(Line::from(Span::styled(
-            format!(" {} ", category.display_name()),
-            Style::default()
-                .fg(category.color())
-                .add_modifier(Modifier::BOLD),
-        )));
+        // Category header with icon and color
+        lines.push(
+            Line::from(vec![
+                Span::styled(
+                    format!("  {} ", category.icon()),
+                    Style::default()
+                        .fg(category.color())
+                        .add_modifier(Modifier::BOLD),
+                ),
+                Span::styled(
+                    category.display_name().to_uppercase(),
+                    Style::default()
+                        .fg(category.color())
+                        .add_modifier(Modifier::BOLD),
+                ),
+            ])
+            .alignment(Alignment::Left),
+        );
 
         for cmd in cat_commands {
             let aliases_str = if cmd.aliases.is_empty() {
                 String::new()
             } else {
-                format!(" [aliases: {}]", cmd.aliases.join(", "))
+                format!(" ({})", cmd.aliases.join(", "))
             };
-            lines.push(Line::from(Span::styled(
-                format!("  /{} — {}{}", cmd.name, cmd.description, aliases_str),
-                Style::default().fg(rgb(200, 200, 200)),
-            )));
+
+            let shortcut_display = match &cmd.shortcut {
+                Some(s) => format!("  [{}]", s),
+                None => String::new(),
+            };
+
+            lines.push(
+                Line::from(vec![
+                    Span::styled(
+                        format!("    /{:<14}", cmd.name),
+                        Style::default()
+                            .fg(BrandTheme::accent())
+                            .add_modifier(Modifier::BOLD),
+                    ),
+                    Span::styled(
+                        format!("{:<24}", cmd.description),
+                        Style::default().fg(rgb(200, 200, 220)),
+                    ),
+                    Span::styled(aliases_str, Style::default().fg(BrandTheme::dim())),
+                    Span::styled(
+                        shortcut_display,
+                        Style::default()
+                            .fg(BrandTheme::info())
+                            .add_modifier(Modifier::ITALIC),
+                    ),
+                ])
+                .alignment(Alignment::Left),
+            );
         }
         lines.push(Line::from(""));
     }
 
     // Keyboard shortcuts section
-    lines.push(Line::from(Span::styled(
-        " KEYBOARD SHORTCUTS",
-        Style::default()
-            .fg(BrandTheme::info())
-            .add_modifier(Modifier::BOLD),
-    )));
+    lines.push(gradient_divider(56).alignment(Alignment::Center));
+    lines.push(Line::from(""));
+    lines.push(
+        Line::from(vec![
+            Span::styled(
+                "  → ",
+                Style::default()
+                    .fg(BrandTheme::info())
+                    .add_modifier(Modifier::BOLD),
+            ),
+            Span::styled(
+                "KEYBOARD SHORTCUTS",
+                Style::default()
+                    .fg(BrandTheme::info())
+                    .add_modifier(Modifier::BOLD),
+            ),
+        ])
+        .alignment(Alignment::Center),
+    );
+    lines.push(Line::from(""));
 
-    let shortcuts = [
+    let shortcuts: &[(&str, &str)] = &[
         ("Enter", "Submit prompt"),
-        ("Shift+Enter", "New line"),
+        ("Shift+Enter", "New line in input"),
         ("/ [Tab]", "Show command suggestions"),
         ("Up / Down", "Message history"),
+        ("Ctrl+B", "Toggle model picker"),
         ("Ctrl+K", "Kill to end of line"),
         ("Ctrl+U", "Kill to beginning of line"),
         ("Ctrl+L", "Clear screen"),
         ("Ctrl+C", "Cancel / interrupt"),
-        ("Esc", "Cancel / close"),
-        ("Ctrl+B", "Toggle model picker"),
+        ("Esc", "Cancel / close overlay"),
         ("Ctrl+N", "Favorite / unfavorite model"),
         ("Ctrl+1-4", "Switch side panels"),
         ("Ctrl+5-9", "Jump to prompt (by position)"),
-        ("Ctrl+Shift+;", "New terminal (hotkey)"),
-        ("/model", "Switch model"),
-        ("/theme", "Change theme"),
-        ("/help", "Show this help"),
-        ("/settings", "Open settings"),
     ];
 
-    for (key, desc) in &shortcuts {
-        lines.push(Line::from(Span::styled(
-            format!("  {:<20} {}", key, desc),
-            Style::default().fg(rgb(180, 180, 200)),
-        )));
+    for (key, desc) in shortcuts {
+        lines.push(
+            Line::from(vec![
+                Span::styled(
+                    format!("    {:<20}", key),
+                    Style::default()
+                        .fg(BrandTheme::info())
+                        .add_modifier(Modifier::BOLD),
+                ),
+                Span::styled(desc.to_string(), Style::default().fg(rgb(180, 180, 200))),
+            ])
+            .alignment(Alignment::Left),
+        );
     }
 
     lines.push(Line::from(""));
+    lines.push(gradient_divider(56).alignment(Alignment::Center));
+    lines.push(Line::from(""));
+
     lines
 }
 
@@ -166,7 +263,7 @@ pub fn suggest_commands(input: &str) -> Vec<String> {
                 || c.aliases.iter().any(|a| a.contains(&input_lower))
                 || c.description.to_lowercase().contains(&input_lower)
         })
-        .map(|c| c.name.clone())
+        .map(|c| format!("/{}", c.name))
         .collect();
 
     matches.sort();
@@ -316,14 +413,14 @@ fn build_command_list() -> Vec<HelpCommand> {
             aliases: vec!["/color".to_string()],
             description: "Change color theme".to_string(),
             category: HelpCategory::Configuration,
-            shortcut: Some("/theme".to_string()),
+            shortcut: None,
         },
         HelpCommand {
             name: "settings".to_string(),
             aliases: vec!["/config".to_string()],
             description: "Open settings panel".to_string(),
             category: HelpCategory::Configuration,
-            shortcut: Some("/settings".to_string()),
+            shortcut: None,
         },
         // Providers
         HelpCommand {
@@ -421,9 +518,22 @@ mod tests {
             .map(|l| l.to_string())
             .collect::<Vec<_>>()
             .join("\n");
-        assert!(text.contains("Chat"));
-        assert!(text.contains("Tools"));
-        assert!(text.contains("Configuration"));
+        assert!(text.contains("CHAT"));
+        assert!(text.contains("TOOLS"));
+        assert!(text.contains("CONFIGURATION"));
+    }
+
+    #[test]
+    fn help_reference_has_keyboard_shortcuts() {
+        let lines = help_reference();
+        let text = lines
+            .iter()
+            .map(|l| l.to_string())
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(text.contains("KEYBOARD SHORTCUTS"));
+        assert!(text.contains("Enter"));
+        assert!(text.contains("Ctrl+B"));
     }
 
     #[test]
@@ -442,14 +552,21 @@ mod tests {
     }
 
     #[test]
-    fn commands_have_categories() {
+    fn commands_have_all_categories_represented() {
         let commands = build_command_list();
+        let mut has_chat = false;
+        let mut has_tools = false;
+        let mut has_config = false;
         for cmd in &commands {
-            assert_ne!(
-                cmd.category,
-                HelpCategory::Chat,
-                "every command should have a meaningful category"
-            );
+            match cmd.category {
+                HelpCategory::Chat => has_chat = true,
+                HelpCategory::Tools => has_tools = true,
+                HelpCategory::Configuration => has_config = true,
+                _ => {}
+            }
         }
+        assert!(has_chat, "should have at least one Chat command");
+        assert!(has_tools, "should have at least one Tools command");
+        assert!(has_config, "should have at least one Configuration command");
     }
 }

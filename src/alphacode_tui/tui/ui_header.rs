@@ -1,11 +1,12 @@
 use super::box_utils::render_double_rounded_box;
 use super::changelog::get_unseen_changelog_entries;
-use super::{TuiState, accent_color, dim_color, header_name_color, shorten_model_name};
+use super::{TuiState, dim_color, header_name_color, shorten_model_name};
 #[cfg(test)]
 use super::{semver, warning_color};
 #[cfg(test)]
 use crate::alphacode_tui::auth::AuthState;
 use crate::alphacode_tui::auth::AuthStatus;
+use crate::alphacode_tui::tui::brand_ux::BrandTheme;
 use crate::alphacode_tui_style::rgb;
 use ratatui::prelude::*;
 #[cfg(test)]
@@ -725,24 +726,17 @@ fn push_if_fits<'a>(
 // Brand wordmark
 // ---------------------------------------------------------------------------
 
-/// Theme hue cycle shared by the gradient wordmark and the brand word.
-/// Sophisticated gradient with desaturated, high-legibility tones.
-fn brand_gradient_colors() -> [Color; 6] {
-    [
-        rgb(95, 218, 228),  // teal
-        rgb(105, 190, 255), // blue
-        rgb(185, 155, 255), // purple
-        rgb(240, 140, 195), // rose
-        rgb(110, 225, 155), // green
-        rgb(245, 195, 95),  // amber
-    ]
+/// Shared brand gradient from BrandTheme for consistent theming across all surfaces.
+/// Returns the standard 16-stop gradient used by header, status bar, pickers, etc.
+fn brand_gradient() -> [Color; 16] {
+    BrandTheme::gradient()
 }
 
 /// Render `text` as bold spans whose foreground cycles through the brand's
 /// vibrant gradient, one color per character. Falls back to a single
 /// `header_name_color` span when the gradient is empty or the text is empty.
 fn gradient_text_spans(text: &str) -> Vec<Span<'static>> {
-    let gradient = brand_gradient_colors();
+    let gradient = brand_gradient();
     if text.is_empty() {
         return vec![Span::styled(
             text.to_string(),
@@ -833,7 +827,7 @@ fn build_alpha_banner(width: usize) -> Vec<Line<'static>> {
     // (cyan -> blue -> purple -> pink -> green -> amber) so the logo reads
     // as a flowing multi-color gradient that adapts to the active preset
     // instead of a single flat color.
-    let gradient = brand_gradient_colors();
+    let gradient = brand_gradient();
     let mut lines: Vec<Line<'static>> = art
         .iter()
         .enumerate()
@@ -919,7 +913,7 @@ fn build_brand_line(app: &dyn TuiState, align: Alignment, show_wordmark: bool) -
 /// Gradient separator line that visually divides the header from content.
 /// Uses smooth color blending across the brand gradient for a premium feel.
 fn build_gradient_separator(width: usize) -> Line<'static> {
-    let gradient = brand_gradient_colors();
+    let gradient = brand_gradient();
     let total_chars = width.min(120);
     let mut colors: Vec<Color> = Vec::with_capacity(total_chars);
     for i in 0..total_chars {
@@ -1016,9 +1010,9 @@ fn build_model_line(
     // Subtle connection status dot before the model name — color-coded by state:
     // pulsing green for ready, warm amber for active processing, dim for disconnected.
     let status_dot_color = if app.is_processing() {
-        rgb(255, 200, 115) // warm amber for active
+        BrandTheme::warning() // warm amber for active
     } else {
-        rgb(100, 225, 155) // emerald for ready
+        BrandTheme::success() // emerald for ready
     };
     let status_dot_char = if app.is_processing() {
         "\u{25c9}" // ◉ — active/processing
@@ -1033,10 +1027,16 @@ fn build_model_line(
         Style::default().fg(status_dot_color),
     );
 
+    // Model name with brand theme color for consistency
+    let model_color = if app.is_processing() {
+        BrandTheme::warning() // warm amber when processing
+    } else {
+        BrandTheme::model() // theme-aware model color
+    };
     spans.push(Span::styled(
         nice_model.to_string(),
         Style::default()
-            .fg(rgb(90, 215, 230))
+            .fg(model_color)
             .add_modifier(Modifier::BOLD),
     ));
 
@@ -1155,7 +1155,14 @@ fn build_mcp_line(app: &dyn TuiState, w: usize, align: Alignment) -> Option<Line
         text = format!("mcp: {} servers", mcps.len());
     }
 
-    Some(Line::from(Span::styled(text, Style::default().fg(rgb(78, 88, 115)))).alignment(align))
+    // Use brand theme accent for MCP indicator
+    Some(
+        Line::from(Span::styled(
+            text,
+            Style::default().fg(BrandTheme::accent()),
+        ))
+        .alignment(align),
+    )
 }
 
 fn build_working_dir_line(app: &dyn TuiState, w: usize, align: Alignment) -> Option<Line<'static>> {
@@ -1168,8 +1175,8 @@ fn build_working_dir_line(app: &dyn TuiState, w: usize, align: Alignment) -> Opt
             let dir_part = format!("\u{250c} {}", text);
             let branch_part = format!("  \u{2442} {}", branch);
             let spans = vec![
-                Span::styled(dir_part, Style::default().fg(rgb(108, 120, 150))),
-                Span::styled(branch_part, Style::default().fg(rgb(98, 210, 130))),
+                Span::styled(dir_part, Style::default().fg(BrandTheme::accent())),
+                Span::styled(branch_part, Style::default().fg(BrandTheme::success())),
             ];
             // Ensure total width fits
             let total_width: usize = spans.iter().map(|s| s.content.len()).sum();
@@ -1181,7 +1188,7 @@ fn build_working_dir_line(app: &dyn TuiState, w: usize, align: Alignment) -> Opt
     Some(
         Line::from(Span::styled(
             format!("\u{250c} {}", text),
-            Style::default().fg(rgb(108, 120, 150)),
+            Style::default().fg(BrandTheme::accent()),
         ))
         .alignment(align),
     )
@@ -1233,7 +1240,7 @@ pub(super) fn build_updates_box_lines(width: u16, max_lines: usize) -> Vec<Line<
         .map(|entry| {
             Line::from(Span::styled(
                 format!("• {}", entry),
-                Style::default().fg(dim_color()),
+                Style::default().fg(BrandTheme::dim()),
             ))
         })
         .collect();
@@ -1243,7 +1250,7 @@ pub(super) fn build_updates_box_lines(width: u16, max_lines: usize) -> Vec<Line<
                 "  …{} more · /changelog to see all",
                 new_entries.len() - display_count
             ),
-            Style::default().fg(dim_color()),
+            Style::default().fg(BrandTheme::dim()),
         )));
     }
     if content.is_empty() {
@@ -1254,8 +1261,8 @@ pub(super) fn build_updates_box_lines(width: u16, max_lines: usize) -> Vec<Line<
         "Updates",
         content,
         w.saturating_sub(2),
-        Style::default().fg(dim_color()),
-        Style::default().fg(accent_color()).bold(),
+        Style::default().fg(rgb(60, 75, 110)),
+        Style::default().fg(BrandTheme::accent()).bold(),
     )
     .into_iter()
     .map(|line| line.alignment(Alignment::Left))

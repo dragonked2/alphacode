@@ -215,6 +215,13 @@ pub fn tui_policy_for(
         enable_decorative_animations = false;
     }
 
+    // Windows terminals (cmd.exe, PowerShell, Windows Terminal) don't parse
+    // focus change escape sequences (\x1b[I / \x1b[O) and leak them into
+    // user input as [I[O artifacts. Disable the feature on these terminals.
+    if profile.is_windows_terminal_family() {
+        enable_focus_change = false;
+    }
+
     // Glyph-safe mode for terminals with a fragile GPU glyph atlas (macOS 26
     // VS Code integrated terminal / Apple Terminal). The primary fix lives in
     // `alphacode-tui-style`: colors are quantized to the 256-palette there, which

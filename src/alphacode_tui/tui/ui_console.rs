@@ -101,29 +101,100 @@ impl ConsoleLine {
     }
 }
 
+/// Gradient separator line for visual section breaks.
+pub fn gradient_separator(width: usize) -> Line<'static> {
+    let gradient = BrandTheme::gradient();
+    let total_chars = width.min(120);
+    let mut colors: Vec<Color> = Vec::with_capacity(total_chars);
+    for i in 0..total_chars {
+        let hue_t = i as f32 / total_chars as f32;
+        let seg = hue_t * (gradient.len() - 1) as f32;
+        let idx = seg.floor() as usize;
+        let frac = seg - seg.floor();
+        let c0 = gradient[idx.min(gradient.len() - 1)];
+        let c1 = gradient[(idx + 1).min(gradient.len() - 1)];
+        colors.push(blend_colors(c0, c1, frac));
+    }
+    let mut spans: Vec<Span<'static>> = Vec::with_capacity(total_chars / 6 + 1);
+    let mut run_start = 0;
+    for i in 1..=total_chars {
+        if i == total_chars || colors[i] != colors[i - 1] {
+            let n = i - run_start;
+            let text: String = std::iter::repeat_n('─', n).collect();
+            spans.push(Span::styled(
+                text,
+                Style::default()
+                    .fg(colors[run_start])
+                    .add_modifier(Modifier::DIM),
+            ));
+            run_start = i;
+        }
+    }
+    Line::from(spans)
+}
+
+/// Linearly interpolate between two colors.
+fn blend_colors(a: Color, b: Color, t: f32) -> Color {
+    let (r1, g1, b1) = match a {
+        Color::Rgb(r, g, b) => (r as f32, g as f32, b as f32),
+        _ => return a,
+    };
+    let (r2, g2, b2) = match b {
+        Color::Rgb(r, g, b) => (r as f32, g as f32, b as f32),
+        _ => return b,
+    };
+    rgb(
+        (r1 + (r2 - r1) * t) as u8,
+        (g1 + (g2 - g1) * t) as u8,
+        (b1 + (b2 - b1) * t) as u8,
+    )
+}
+
 /// Professional banner for the application header.
-pub fn app_banner(version: &str) -> Vec<Line<'static>> {
+pub fn app_banner(version: &str, width: usize) -> Vec<Line<'static>> {
     let mut lines = Vec::new();
-    let accent = OutputColor::Accent;
     let _bright = OutputColor::Bright;
     let dim = OutputColor::Dim;
 
-    // ┌─ Alphacode v1.0.52 ──────────────────────────────────────┐
-    lines.push(ConsoleLine::bold(format!("  ⬡  Alphacode v{}  ", version), accent).into_line());
+    // Gradient wordmark
+    let gradient = BrandTheme::gradient();
+    let wordmark = "Alphacode";
+    let mut spans: Vec<Span<'static>> = Vec::new();
+    let mut run_color = gradient[0];
+    let mut run_text = String::new();
+    for (i, ch) in wordmark.chars().enumerate() {
+        let color = gradient[i % gradient.len()];
+        if color != run_color && !run_text.is_empty() {
+            spans.push(Span::styled(
+                std::mem::take(&mut run_text),
+                Style::default().fg(run_color).add_modifier(Modifier::BOLD),
+            ));
+            run_color = color;
+        }
+        run_text.push(ch);
+    }
+    if !run_text.is_empty() {
+        spans.push(Span::styled(
+            run_text,
+            Style::default().fg(run_color).add_modifier(Modifier::BOLD),
+        ));
+    }
+    spans.push(Span::styled(
+        format!(" v{}", version),
+        Style::default().fg(BrandTheme::dim()),
+    ));
+    lines.push(Line::from(spans));
     lines.push(ConsoleLine::new("  Terminal-native AI coding agent", dim).into_line());
+    lines.push(gradient_separator(width));
 
     lines
 }
 
 /// Professional section header for console output.
-pub fn section_header(title: &str) -> Vec<Line<'static>> {
+pub fn section_header(title: &str, width: usize) -> Vec<Line<'static>> {
     vec![
         ConsoleLine::bold(format!("  {} ", title), OutputColor::Accent).into_line(),
-        ConsoleLine::new(
-            format!("  {}", "─".repeat(title.len().saturating_add(2))),
-            OutputColor::Dim,
-        )
-        .into_line(),
+        gradient_separator(width),
     ]
 }
 
@@ -302,14 +373,14 @@ mod tests {
 
     #[test]
     fn banner_has_version() {
-        let lines = app_banner("1.0.52");
+        let lines = app_banner("1.0.52", 80);
         assert!(!lines.is_empty());
         assert!(lines[0].to_string().contains("1.0.52"));
     }
 
     #[test]
     fn section_header_format() {
-        let lines = section_header("Providers");
+        let lines = section_header("Providers", 80);
         assert_eq!(lines.len(), 2);
         assert!(lines[0].to_string().contains("Providers"));
     }

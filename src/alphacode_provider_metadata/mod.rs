@@ -720,12 +720,12 @@ mod tests {
     #[test]
     fn matrix_tui_login_selection_supports_numbers_and_names() {
         let providers = tui_login_providers();
-        // Position 1 is the Free Gift from Alphacode (experiential labs),
-        // surfacing the free tier ahead of every other provider so first-time
-        // setup sees the no-credit-card lane first.
+        // Position 1 is Alphax Free (opencode gateway), surfacing the free
+        // tier ahead of every other provider so first-time setup sees the
+        // no-credit-card lane first.
         assert_eq!(
             resolve_login_selection("1", &providers).map(|provider| provider.id),
-            Some("explabs")
+            Some("alphax-free")
         );
         assert_eq!(
             resolve_login_selection("2", &providers).map(|provider| provider.id),
@@ -735,13 +735,8 @@ mod tests {
             resolve_login_selection("3", &providers).map(|provider| provider.id),
             Some("claude")
         );
-        // Position 4 is TheHive AI (Free Gift from Alphacode).
         assert_eq!(
             resolve_login_selection("4", &providers).map(|provider| provider.id),
-            Some("hive")
-        );
-        assert_eq!(
-            resolve_login_selection("5", &providers).map(|provider| provider.id),
             Some("anthropic-api")
         );
         assert_eq!(
@@ -754,10 +749,10 @@ mod tests {
     #[test]
     fn matrix_cli_login_selection_preserves_existing_order() {
         let providers = cli_login_providers();
-        // 1 is the Free Gift from Alphacode lane, just like in the TUI list.
+        // 1 is Alphax Free, just like in the TUI list.
         assert_eq!(
             resolve_login_selection("1", &providers).map(|provider| provider.id),
-            Some("explabs")
+            Some("alphax-free")
         );
         assert_eq!(
             resolve_login_selection("2", &providers).map(|provider| provider.id),
@@ -767,14 +762,9 @@ mod tests {
             resolve_login_selection("3", &providers).map(|provider| provider.id),
             Some("claude")
         );
-        // TheHive AI sits at 4 in the CLI list.
+        // openai and anthropic-api sit at 4 and 5.
         assert_eq!(
             resolve_login_selection("4", &providers).map(|provider| provider.id),
-            Some("hive")
-        );
-        // openai and anthropic-api sit at 5 and 6.
-        assert_eq!(
-            resolve_login_selection("5", &providers).map(|provider| provider.id),
             Some("anthropic-api")
         );
         assert_eq!(
@@ -802,153 +792,41 @@ mod tests {
             Some("bedrock")
         );
         assert_eq!(
-            resolve_login_selection("thehive", &providers).map(|provider| provider.id),
-            Some("hive")
+            resolve_login_selection("alphax-free", &providers).map(|provider| provider.id),
+            Some("alphax-free")
         );
     }
 
     #[test]
-    fn explabs_profile_is_branded_as_a_free_gift_and_reachable_by_every_alias() {
-        // The Experiential Labs gateway is the "Free Gift from Alphacode" lane,
-        // so the invariants here double as a contract for the branding: the
-        // display label must carry the gift wording, every alias has to resolve
-        // back to the same canonical descriptor (so users can paste `xpl`,
-        // `free-gift`, or `experiential-labs` and land on the same provider),
-        // and the env binding has to follow the standard OpenAI-compatible
-        // profile contract (api_key_env / env_file from the profile metadata).
-        assert_eq!(EXPLABS_PROFILE.id, "explabs");
+    fn alphax_free_profile_is_reachable_by_every_alias() {
+        assert_eq!(ALPHAX_FREE_PROFILE.id, "alphax-free");
         assert_eq!(
-            EXPLABS_PROFILE.api_base,
-            "https://api.experientiallabs.ai/v1"
+            ALPHAX_FREE_PROFILE.api_base,
+            "https://api.kilo.ai/api/gateway"
         );
-        assert_eq!(EXPLABS_PROFILE.api_key_env, "EXPLABS_API_KEY");
-        assert_eq!(EXPLABS_PROFILE.env_file, "explabs.env");
-        const { assert!(EXPLABS_PROFILE.requires_api_key) };
+        assert_eq!(ALPHAX_FREE_PROFILE.api_key_env, "ALPHAX_FREE_API_KEY");
+        assert_eq!(ALPHAX_FREE_PROFILE.env_file, "alphax-free.env");
 
-        // Bundled demo key must look like a real xpl_ bearer and stay overridable.
-        assert!(
-            EXPLABS_BUNDLED_API_KEY.starts_with("xpl_") && EXPLABS_BUNDLED_API_KEY.len() >= 44,
-            "EXPLABS_BUNDLED_API_KEY must be a valid xpl_ bearer (>= 44 chars)"
-        );
-
-        // Curated free-model list must include the default + the four other free
-        // slugs the user confirmed, in the documented strongest-first order.
-        assert_eq!(ALL_EXPLABS_MODELS[0], "gpt-6-astra");
+        assert_eq!(ALL_ALPHAX_FREE_MODELS[0], "kilo-auto/free");
         assert_eq!(
-            EXPLABS_PROFILE.default_model,
-            Some("gpt-6-astra"),
-            "default_model must point at the top free model so first-login auto-selects the strongest lane"
-        );
-        for required in [
-            "gpt-6-astra",
-            "claude-fable-5.1",
-            "gpt-5.6-luna",
-            "qwen3.8-27b",
-            "deepseek-v4-flash",
-        ] {
-            assert!(
-                ALL_EXPLABS_MODELS.contains(&required),
-                "ALL_EXPLABS_MODELS must include free slug {required}"
-            );
-        }
-        assert!(
-            EXPLABS_PROFILE
-                .display_name
-                .contains("Free Gift from Alphacode"),
-            "Free Gift from Alphacode branding missing from profile display_name: {}",
-            EXPLABS_PROFILE.display_name
+            ALPHAX_FREE_PROFILE.default_model,
+            Some("kilo-auto/free"),
+            "default_model must point at the top free model"
         );
 
-        assert_eq!(EXPLABS_LOGIN_PROVIDER.id, "explabs");
-        const { assert!(EXPLABS_LOGIN_PROVIDER.recommended) };
-        assert!(
-            EXPLABS_LOGIN_PROVIDER
-                .display_name
-                .contains("Free Gift from Alphacode"),
-            "Free Gift from Alphacode branding missing from login display_name: {}",
-            EXPLABS_LOGIN_PROVIDER.display_name
-        );
+        assert_eq!(ALPHAX_FREE_LOGIN_PROVIDER.id, "alphax-free");
+        const { assert!(ALPHAX_FREE_LOGIN_PROVIDER.recommended) };
         assert!(matches!(
-            EXPLABS_LOGIN_PROVIDER.target,
-            LoginProviderTarget::OpenAiCompatible(profile) if profile.id == EXPLABS_PROFILE.id
+            ALPHAX_FREE_LOGIN_PROVIDER.target,
+            LoginProviderTarget::OpenAiCompatible(profile) if profile.id == ALPHAX_FREE_PROFILE.id
         ));
-        for alias in EXPLABS_LOGIN_PROVIDER.aliases {
+        for alias in ALPHAX_FREE_LOGIN_PROVIDER.aliases {
             assert_eq!(
                 resolve_login_provider(alias).map(|d| d.id),
-                Some("explabs"),
-                "alias {alias:?} must resolve to explabs"
+                Some("alphax-free"),
+                "alias {alias:?} must resolve to alphax-free"
             );
         }
-
-        // The OpenAI-compatible profile contract is what feeds
-        // `api_key_env_bindings_for_provider` and the login env-file picker,
-        // so assert the env binding the profile declares up-front rather than
-        // re-running the resolver here (the resolver lives in `alphacode_base`,
-        // which would force a circular dev-dependency in this leaf crate).
-        assert_eq!(EXPLABS_PROFILE.api_key_env, "EXPLABS_API_KEY");
-        assert_eq!(EXPLABS_PROFILE.env_file, "explabs.env");
-    }
-
-    #[test]
-    #[allow(clippy::const_is_empty)]
-    fn hive_profile_is_branded_as_a_free_gift_and_reachable_by_every_alias() {
-        // TheHive AI gateway is the "Free Gift from Alphacode" lane, so the
-        // invariants here double as a contract for the branding: the display
-        // label must carry the gift wording, every alias has to resolve back
-        // to the same canonical descriptor, and the env binding has to follow
-        // the standard OpenAI-compatible profile contract.
-        assert_eq!(HIVE_PROFILE.id, "hive");
-        assert_eq!(HIVE_PROFILE.api_base, "https://api-cdn.thehive.ai/api/v3");
-        assert_eq!(HIVE_PROFILE.api_key_env, "HIVE_API_KEY");
-        assert_eq!(HIVE_PROFILE.env_file, "hive.env");
-        const { assert!(HIVE_PROFILE.requires_api_key) };
-
-        // Bundled demo key must be non-empty.
-        assert!(
-            !HIVE_BUNDLED_API_KEY.is_empty(),
-            "HIVE_BUNDLED_API_KEY must not be empty"
-        );
-
-        // Curated free-model list must include the default GLM-5.3-Flash.
-        assert_eq!(ALL_HIVE_MODELS[0], "zai-org/glm-5.3-flash");
-        assert_eq!(
-            HIVE_PROFILE.default_model,
-            Some("zai-org/glm-5.3-flash"),
-            "default_model must point at the free GLM-5.3-Flash model"
-        );
-        assert!(
-            HIVE_PROFILE
-                .display_name
-                .contains("Free Gift from Alphacode"),
-            "Free Gift from Alphacode branding missing from profile display_name: {}",
-            HIVE_PROFILE.display_name
-        );
-
-        assert_eq!(HIVE_LOGIN_PROVIDER.id, "hive");
-        const { assert!(HIVE_LOGIN_PROVIDER.recommended) };
-        assert!(
-            HIVE_LOGIN_PROVIDER
-                .display_name
-                .contains("Free Gift from Alphacode"),
-            "Free Gift from Alphacode branding missing from login display_name: {}",
-            HIVE_LOGIN_PROVIDER.display_name
-        );
-        assert!(matches!(
-            HIVE_LOGIN_PROVIDER.target,
-            LoginProviderTarget::OpenAiCompatible(profile) if profile.id == HIVE_PROFILE.id
-        ));
-        for alias in HIVE_LOGIN_PROVIDER.aliases {
-            assert_eq!(
-                resolve_login_provider(alias).map(|d| d.id),
-                Some("hive"),
-                "alias {alias:?} must resolve to hive"
-            );
-        }
-
-        // The OpenAI-compatible profile contract feeds the login env-file
-        // picker, so assert the env binding up-front.
-        assert_eq!(HIVE_PROFILE.api_key_env, "HIVE_API_KEY");
-        assert_eq!(HIVE_PROFILE.env_file, "hive.env");
     }
 
     #[test]

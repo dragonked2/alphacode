@@ -2137,6 +2137,18 @@ pub(in crate::alphacode_tui::tui::app) fn handle_server_event(
                     .is_some_and(|current| version < current)
                 && version > 2;
             if !stale_regression {
+                // Don't show the "Swarm plan synced" notice for reconnect
+                // replays of plans that have no live work. The server already
+                // filters most of these, but as a defense-in-depth guard:
+                // only flash the notice when at least one item is actively
+                // running/queued/pending.
+                let is_reconnect = reason.as_deref() == Some("reconnect");
+                let has_live_work = items.iter().any(|item| {
+                    matches!(
+                        item.status.as_str(),
+                        "running" | "queued" | "ready" | "pending" | "todo" | "growing"
+                    )
+                });
                 let snapshot = RemoteSwarmPlanSnapshot {
                     swarm_id: swarm_id.clone(),
                     version,
@@ -2157,7 +2169,9 @@ pub(in crate::alphacode_tui::tui::app) fn handle_server_event(
                     snapshot.participants,
                     snapshot.reason,
                 );
-                app.set_status_notice(notice);
+                if !(is_reconnect && !has_live_work) {
+                    app.set_status_notice(notice);
+                }
             }
             false
         }

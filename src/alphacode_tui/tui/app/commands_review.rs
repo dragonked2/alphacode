@@ -280,8 +280,10 @@ pub(crate) fn clear_side_panel_for_new_session(app: &mut App) {
 }
 
 pub(super) fn reset_current_session(app: &mut App) {
+    let old_session_id = app.session.id.clone();
     app.session.mark_closed();
     let _ = app.session.save();
+    crate::todo::clear_session_todos(&old_session_id);
     app.clear_provider_messages();
     app.clear_display_messages();
     // A streaming mermaid preview (STREAMING_PREVIEW_DIAGRAM) belongs to the

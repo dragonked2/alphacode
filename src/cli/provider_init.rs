@@ -116,23 +116,8 @@ pub enum ProviderChoice {
     #[value(alias = "dragon", alias = "dragon-meta", alias = "dmeta")]
     Dragonmeta,
     Chutes,
-    #[value(
-        alias = "experiential-labs",
-        alias = "experientiallabs",
-        alias = "experiential",
-        alias = "xpl",
-        alias = "alphacode-gift",
-        alias = "alphacode-free",
-        alias = "free-gift"
-    )]
-    Explabs,
-    #[value(
-        alias = "thehive",
-        alias = "the-hive",
-        alias = "hive-ai",
-        alias = "hive"
-    )]
-    Hive,
+    #[value(alias = "alphax", alias = "free")]
+    AlphaxFree,
     #[value(alias = "cerebrascode", alias = "cerberascode")]
     Cerebras,
     #[value(
@@ -208,8 +193,7 @@ impl ProviderChoice {
             Self::Ollama => "ollama",
             Self::Dragonmeta => "dragonmeta",
             Self::Chutes => "chutes",
-            Self::Explabs => "explabs",
-            Self::Hive => "hive",
+            Self::AlphaxFree => "alphax-free",
             Self::Cerebras => "cerebras",
             Self::AlibabaCodingPlan => "alibaba-coding-plan",
             Self::Tokenrouter => "tokenrouter",
@@ -400,12 +384,8 @@ const PROVIDER_CHOICE_LOGIN_PROVIDERS: &[(ProviderChoice, LoginProviderDescripto
         crate::provider_catalog::CHUTES_LOGIN_PROVIDER,
     ),
     (
-        ProviderChoice::Explabs,
-        crate::provider_catalog::EXPLABS_LOGIN_PROVIDER,
-    ),
-    (
-        ProviderChoice::Hive,
-        crate::provider_catalog::HIVE_LOGIN_PROVIDER,
+        ProviderChoice::AlphaxFree,
+        crate::provider_catalog::ALPHAX_FREE_LOGIN_PROVIDER,
     ),
     (
         ProviderChoice::Cerebras,
@@ -647,7 +627,7 @@ struct AutoProviderAvailability {
     has_cursor: bool,
     has_openrouter: bool,
     has_tokenrouter: bool,
-    has_hive: bool,
+    has_alphax_free: bool,
 }
 
 impl AutoProviderAvailability {
@@ -660,7 +640,7 @@ impl AutoProviderAvailability {
             || self.has_cursor
             || self.has_openrouter
             || self.has_tokenrouter
-            || self.has_hive
+            || self.has_alphax_free
     }
 }
 
@@ -699,8 +679,8 @@ async fn detect_auto_provider_flags() -> AutoProviderAvailability {
     let has_tokenrouter = crate::provider_catalog::openai_compatible_profile_is_configured(
         crate::provider_catalog::TOKENROUTER_PROFILE,
     );
-    let has_hive = crate::provider_catalog::openai_compatible_profile_is_configured(
-        crate::provider_catalog::HIVE_PROFILE,
+    let has_alphax_free = crate::provider_catalog::openai_compatible_profile_is_configured(
+        crate::provider_catalog::ALPHAX_FREE_PROFILE,
     );
     AutoProviderAvailability {
         has_claude: auth_status.anthropic.has_oauth || auth_status.anthropic.has_api_key,
@@ -711,7 +691,7 @@ async fn detect_auto_provider_flags() -> AutoProviderAvailability {
         has_cursor: auth_status.cursor == auth::AuthState::Available,
         has_openrouter: auth_status.openrouter == auth::AuthState::Available,
         has_tokenrouter,
-        has_hive,
+        has_alphax_free,
         auth_status,
     }
 }
@@ -1627,8 +1607,7 @@ async fn init_provider_with_options(
         | ProviderChoice::Ollama
         | ProviderChoice::Dragonmeta
         | ProviderChoice::Chutes
-        | ProviderChoice::Explabs
-        | ProviderChoice::Hive
+        | ProviderChoice::AlphaxFree
         | ProviderChoice::Cerebras
         | ProviderChoice::AlibabaCodingPlan
         | ProviderChoice::GeminiApi
@@ -1729,7 +1708,7 @@ async fn init_provider_with_options(
                 let mut has_cursor = availability.has_cursor;
                 let mut has_openrouter = availability.has_openrouter;
                 let has_tokenrouter = availability.has_tokenrouter;
-                let has_hive = availability.has_hive;
+                let has_alphax_free = availability.has_alphax_free;
                 let mut has_other_provider = has_claude
                     || has_copilot
                     || has_antigravity
@@ -1737,7 +1716,7 @@ async fn init_provider_with_options(
                     || has_cursor
                     || has_openrouter
                     || has_tokenrouter
-                    || has_hive;
+                    || has_alphax_free;
 
                 if !has_openai {
                     has_openai = maybe_enable_legacy_codex_auth_for_auto(has_other_provider)?;
@@ -1750,7 +1729,7 @@ async fn init_provider_with_options(
                     || has_cursor
                     || has_openrouter
                     || has_tokenrouter
-                    || has_hive;
+                    || has_alphax_free;
 
                 if !has_claude {
                     has_claude =
@@ -1764,7 +1743,7 @@ async fn init_provider_with_options(
                     || has_cursor
                     || has_openrouter
                     || has_tokenrouter
-                    || has_hive;
+                    || has_alphax_free;
 
                 if !has_copilot {
                     has_copilot =
@@ -1778,7 +1757,7 @@ async fn init_provider_with_options(
                     || has_cursor
                     || has_openrouter
                     || has_tokenrouter
-                    || has_hive;
+                    || has_alphax_free;
 
                 if !has_gemini {
                     has_gemini =
@@ -1792,7 +1771,7 @@ async fn init_provider_with_options(
                     || has_cursor
                     || has_openrouter
                     || has_tokenrouter
-                    || has_hive;
+                    || has_alphax_free;
 
                 if !has_cursor {
                     has_cursor =
@@ -1811,7 +1790,7 @@ async fn init_provider_with_options(
                     || has_cursor
                     || has_openrouter
                     || has_tokenrouter
-                    || has_hive;
+                    || has_alphax_free;
 
                 if !has_openrouter {
                     has_openrouter = maybe_enable_external_api_key_auth_for_auto(
@@ -1829,7 +1808,7 @@ async fn init_provider_with_options(
                     has_cursor,
                     has_openrouter,
                     has_tokenrouter,
-                    has_hive,
+                    has_alphax_free,
                 };
                 crate::logging::info(&format!(
                     "[TIMING] auto_provider_bootstrap: detect={}ms, external_import={}, supplemental={}ms, final_has_any={}",

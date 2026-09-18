@@ -1,5 +1,7 @@
 pub mod color;
 pub mod color_tokens;
+pub mod easing;
+pub mod effects;
 pub mod harmony;
 pub mod icons;
 pub mod palette;
@@ -8,9 +10,12 @@ pub mod role;
 pub mod theme;
 pub mod theme_mode;
 pub mod tokens;
+pub mod transition;
 
 pub use color::{ColorCapability, clear_buf, color_capability, has_truecolor, indexed_to_rgb, rgb};
-pub use color_tokens::ColorToken;
+pub use color_tokens::{ColorToken, ensure_contrast};
+pub use easing::{Easing, EasingFn};
+pub use effects::*;
 pub use harmony::{Criterion, HarmonyReport, Oklab, analyze as analyze_harmony, analyze_active};
 pub use icons::{Icon, TerminalClass, force_terminal_class, terminal_class};
 pub use palette::{ALL_ROLES, Palette, Role, palette, role_color, set_palette};
@@ -23,6 +28,7 @@ pub use theme_mode::{
     set_theme_mode, theme_mode,
 };
 pub use tokens::{Frame, Glyph, Indent, Radius, ResolvedFrame, Spacing, tokens_for};
+pub use transition::{BidirectionalTransition, PulseTransition, SequenceTransition, Transition};
 
 /// Restore the terminal, logging any failure instead of printing it.
 ///

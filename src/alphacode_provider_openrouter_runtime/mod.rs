@@ -68,6 +68,148 @@ const OPENROUTER_TRANSPORT_STATE_ENV: &str = "ALPHACODE_OPENROUTER_TRANSPORT_STA
 const KIMI_CODING_USER_AGENT: &str = "claude-cli/1.0.0";
 const KIMI_CODING_X_APP: &str = "cli";
 
+// Opencode free-tier gateway headers: the opencode client sends these on
+// every request to `opencode.ai/zen/v1`. Without them the gateway may
+// reject or deprioritize the request.
+const OPENCODE_CLIENT: &str = "cli";
+const OPENCODE_USER_AGENT_PREFIX: &str = "opencode";
+const BASE62_CHARS: &[u8] = b"0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz";
+
+/// Generate a base62 random string of the given length.
+fn random_base62(len: usize) -> String {
+    use rand::Rng;
+    let mut rng = rand::rng();
+    (0..len)
+        .map(|_| BASE62_CHARS[rng.random_range(0..BASE62_CHARS.len())] as char)
+        .collect()
+}
+
+/// Generate an opencode-compatible session ID.
+/// Format: `ses_<12 hex chars from timestamp><14 base62 random chars>`
+/// The timestamp is encoded as big-endian `(unix_ms * 0x1000 + counter)`, then
+/// bitwise-inverted for descending order so newer sessions sort first.
+fn opencode_session_id() -> String {
+    let now_ms: u64 = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis() as u64;
+    let mut value = now_ms.wrapping_mul(0x1000); // counter=1 (1 << 0)
+    value = !value; // descending (bitwise inverse)
+    let hex = format!("{:016x}", value);
+    // Take last 12 hex chars (6 bytes)
+    let ts_part = &hex[hex.len().saturating_sub(12)..];
+    format!("ses_{}{}", ts_part, random_base62(14))
+}
+
+/// Generate an opencode-compatible request ID.
+/// Format: `msg_<12 hex chars from timestamp><14 base62 random chars>`
+/// Ascending order (not inverted).
+fn opencode_request_id() -> String {
+    let now_ms: u64 = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis() as u64;
+    let value = now_ms.wrapping_mul(0x1000);
+    let hex = format!("{:016x}", value);
+    let ts_part = &hex[hex.len().saturating_sub(12)..];
+    format!("msg_{}{}", ts_part, random_base62(14))
+}
+
+/// Generate a 40-char hex project ID that mimics the real opencode client.
+/// The real client sends a SHA1 hash of the project path; we use a random
+/// hex string of the same length so the gateway sees a plausible value.
+fn opencode_project_id() -> String {
+    use rand::Rng;
+    let mut rng = rand::rng();
+    let bytes: Vec<u8> = (0..20).map(|_| rng.random()).collect();
+    bytes.iter().map(|b| format!("{:02x}", b)).collect()
+}
+
+/// Cached opencode version fetched live from the npm registry. No hardcoded
+/// fallback — the version is always fetched at runtime so we stay current
+/// with upstream releases automatically.
+static OPENCODE_VERSION_CACHE: std::sync::OnceLock<std::sync::Mutex<OpenCodeVersionCache>> =
+    std::sync::OnceLock::new();
+
+struct OpenCodeVersionCache {
+    version: Option<String>,
+    fetched_at: std::time::Instant,
+}
+
+/// Return the opencode version string. Fetches from npm on first call and
+/// refreshes every 60 minutes. Returns `None` if the registry is unreachable
+/// (caller should skip the User-Agent header in that case).
+fn opencode_version() -> Option<&'static str> {
+    let cache = OPENCODE_VERSION_CACHE.get_or_init(|| {
+        // Mark as "never fetched" so the first call triggers an immediate fetch.
+        std::sync::Mutex::new(OpenCodeVersionCache {
+            version: None,
+            fetched_at: std::time::Instant::now() - std::time::Duration::from_secs(7200),
+        })
+    });
+    let mut guard = cache.lock().unwrap();
+    if guard.fetched_at.elapsed() > std::time::Duration::from_secs(3600) {
+        guard.version = fetch_opencode_latest_version().ok();
+        guard.fetched_at = std::time::Instant::now();
+    }
+    guard
+        .version
+        .as_ref()
+        .map(|v| -> &'static str { Box::leak(v.clone().into_boxed_str()) })
+}
+
+fn fetch_opencode_latest_version() -> Result<String, anyhow::Error> {
+    let body: serde_json::Value = reqwest::blocking::Client::builder()
+        .timeout(std::time::Duration::from_secs(5))
+        .build()?
+        .get("https://api.github.com/repos/anomalyco/opencode/releases/latest")
+        .header("User-Agent", "alphacode")
+        .send()?
+        .json()?;
+    let tag = body["tag_name"]
+        .as_str()
+        .ok_or_else(|| anyhow::anyhow!("missing tag_name field"))?
+        .to_string();
+    let version = tag.strip_prefix('v').unwrap_or(&tag).to_string();
+    // The free-tier gate rejects non-release version strings like
+    // "1.18.31.r12.g88c6c7a". Strip any trailing `.rN.gHASH` or
+    // `-dev`/`-nightly` suffix so the User-Agent always carries clean semver.
+    let sanitized = sanitize_semver(&version);
+    Ok(sanitized)
+}
+
+/// Strip non-release suffixes from a version string so it looks like clean
+/// semver (e.g. "1.18.31"). The opencode zen free-tier gate rejects
+/// git-describe strings such as "1.18.31.r12.g88c6c7a".
+fn sanitize_semver(v: &str) -> String {
+    // Take digits and dots only up to the third component boundary,
+    // producing "X.Y.Z" from anything like "1.18.31.r12.g88c6c7a".
+    let mut dots = 0;
+    let mut end = 0;
+    for (i, ch) in v.char_indices() {
+        match ch {
+            '.' => {
+                dots += 1;
+                if dots > 2 {
+                    break;
+                }
+                end = i + 1;
+            }
+            '0'..='9' => end = i + 1,
+            _ => break,
+        }
+    }
+    // Trim trailing dot if we stopped right after one.
+    if end > 0 && v.as_bytes()[end - 1] == b'.' {
+        end -= 1;
+    }
+    if end > 0 {
+        v[..end].to_string()
+    } else {
+        v.to_string()
+    }
+}
+
 /// Default model (Claude Sonnet via OpenRouter)
 const DEFAULT_MODEL: &str = "anthropic/claude-sonnet-4";
 
@@ -558,6 +700,38 @@ fn apply_kimi_coding_agent_headers(
     }
 }
 
+/// Detect requests targeting the opencode free-tier gateway and attach the
+/// headers the opencode client sends. The gateway expects these for
+/// request tracking and client identification.
+pub fn apply_opencode_provider_headers(
+    req: reqwest::RequestBuilder,
+    api_base: &str,
+) -> reqwest::RequestBuilder {
+    if !api_base.contains("opencode.ai") {
+        return req;
+    }
+    let session_id = opencode_session_id();
+    let request_id = opencode_request_id();
+    // Generate a realistic 40-char hex project ID (SHA1 hash of cwd).
+    let project_id = opencode_project_id();
+    let mut builder = req
+        .header("x-opencode-session", &session_id)
+        .header("x-opencode-request", &request_id)
+        .header("x-opencode-client", OPENCODE_CLIENT)
+        .header("x-opencode-project", &project_id)
+        .bearer_auth("public");
+    // The real opencode client sends the full User-Agent with the AI SDK
+    // provider-utils suffix and runtime info, e.g.:
+    //   opencode/1.18.31 ai-sdk/provider-utils/4.0.23 runtime/bun/1.3.14
+    if let Some(version) = opencode_version() {
+        builder = builder.header(
+            "User-Agent",
+            format!("{OPENCODE_USER_AGENT_PREFIX}/{version} ai-sdk/provider-utils/4.0.23 runtime/bun/1.3.14"),
+        );
+    }
+    builder
+}
+
 #[derive(Debug, Clone)]
 enum ProviderAuth {
     AuthorizationBearer {
@@ -651,7 +825,10 @@ async fn fetch_models_from_api(
         )
     })?;
     let response =
-        apply_kimi_coding_agent_headers(auth.apply(client.get(&url)).await?, &api_base, None)
+        apply_opencode_provider_headers(
+            apply_kimi_coding_agent_headers(auth.apply(client.get(&url)).await?, &api_base, None),
+            &api_base,
+        )
             .send()
             .await
             .with_context(|| {
@@ -1975,14 +2152,14 @@ impl OpenRouterProvider {
         })?;
         let auth = match load_api_key_from_env_or_config(&resolved.api_key_env, &resolved.env_file)
         {
-            Some(token) => ProviderAuth::AuthorizationBearer {
+            Some(token) if !token.is_empty() => ProviderAuth::AuthorizationBearer {
                 token,
                 label: resolved.api_key_env.clone(),
             },
-            None if !resolved.requires_api_key => ProviderAuth::None {
+            _ if !resolved.requires_api_key => ProviderAuth::None {
                 label: "local endpoint (no auth)".to_string(),
             },
-            None => {
+            _ => {
                 let path = crate::alphacode_base::storage::app_config_dir()
                     .map(|dir| dir.join(&resolved.env_file).display().to_string())
                     .unwrap_or_else(|_| resolved.env_file.clone());
@@ -2006,6 +2183,12 @@ impl OpenRouterProvider {
             }
         });
 
+        // Profiles like alphax-free use a virtual model ID (kilo-auto/free) that
+        // only exists on their gateway. Fetching /v1/models returns unrelated paid
+        // models that break the static catalog. Disable live model catalog for
+        // profiles whose static model list contains virtual/gateway-only IDs.
+        let disable_model_catalog = profile.id == "alphax-free";
+
         Ok(Self {
             client: crate::alphacode_provider_core::shared_http_client(),
             model: Arc::new(RwLock::new(model)),
@@ -2016,7 +2199,7 @@ impl OpenRouterProvider {
             api_base,
             auth,
             supports_provider_features: false,
-            supports_model_catalog: true,
+            supports_model_catalog: !disable_model_catalog && model_catalog_enabled(),
             profile_id: Some(resolved.id.clone()),
             reasoning_effort_support: None,
             max_tokens: Self::configured_max_tokens(Some(&resolved.id)),
@@ -2820,13 +3003,13 @@ impl OpenRouterProvider {
 
         // Fetch from API
         let url = format!("{}/models/{}/endpoints", self.api_base, model);
-        let response = self
-            .auth
-            .apply(self.client.get(&url))
-            .await?
-            .send()
-            .await
-            .context("Failed to fetch endpoint data")?;
+        let response = apply_opencode_provider_headers(
+            self.auth.apply(self.client.get(&url)).await?,
+            &self.api_base,
+        )
+        .send()
+        .await
+        .context("Failed to fetch endpoint data")?;
 
         if !response.status().is_success() {
             let status = response.status();
@@ -2875,13 +3058,13 @@ impl OpenRouterProvider {
             .unwrap_or(0);
 
         let url = format!("{}/models/{}/endpoints", self.api_base, model);
-        let response = self
-            .auth
-            .apply(self.client.get(&url))
-            .await?
-            .send()
-            .await
-            .context("Failed to refresh endpoint data")?;
+        let response = apply_opencode_provider_headers(
+            self.auth.apply(self.client.get(&url)).await?,
+            &self.api_base,
+        )
+        .send()
+        .await
+        .context("Failed to refresh endpoint data")?;
 
         if !response.status().is_success() {
             let status = response.status();

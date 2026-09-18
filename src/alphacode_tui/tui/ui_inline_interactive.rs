@@ -2,6 +2,51 @@ use super::*;
 use ratatui::widgets::{Block, BorderType, Borders};
 use unicode_width::UnicodeWidthStr;
 
+/// Model tier for visual grouping and styling
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ModelPickerTier {
+    /// Current model in use
+    Current,
+    /// User's favorite models
+    Favorite,
+    /// Recommended/top models
+    Recommended,
+    /// Recently added models
+    New,
+    /// Standard models
+    Standard,
+    /// Older/legacy models
+    Old,
+    /// Unavailable models
+    Unavailable,
+}
+
+impl ModelPickerTier {
+    pub fn icon(&self) -> &'static str {
+        match self {
+            Self::Current => "◆",
+            Self::Favorite => "♥",
+            Self::Recommended => "★",
+            Self::New => "✨",
+            Self::Standard => "·",
+            Self::Old => "○",
+            Self::Unavailable => "×",
+        }
+    }
+
+    pub fn color(&self, gradient: &[Color]) -> Color {
+        match self {
+            Self::Current => gradient[5],     // teal
+            Self::Favorite => gradient[12],   // rose
+            Self::Recommended => gradient[9], // amber
+            Self::New => gradient[3],         // sky blue
+            Self::Standard => gradient[7],    // green
+            Self::Old => Color::Gray,
+            Self::Unavailable => Color::Rgb(180, 120, 120),
+        }
+    }
+}
+
 fn display_width(text: &str) -> usize {
     UnicodeWidthStr::width(text)
 }
@@ -113,15 +158,53 @@ fn picker_entry_pretty_name(entry: &crate::alphacode_tui::tui::PickerEntry) -> S
     }
 }
 
-fn picker_row_marker(is_row_selected: bool, unavailable: bool, limited: bool) -> &'static str {
-    if unavailable {
+/// Determine the visual tier for a picker entry
+fn picker_entry_tier(
+    entry: &crate::alphacode_tui::tui::PickerEntry,
+    route: Option<&crate::alphacode_tui::tui::PickerOption>,
+) -> ModelPickerTier {
+    if route.map(|r| !r.available).unwrap_or(true) {
+        return ModelPickerTier::Unavailable;
+    }
+    if entry.is_current {
+        return ModelPickerTier::Current;
+    }
+    if entry.is_favorite {
+        return ModelPickerTier::Favorite;
+    }
+    if entry.recommended {
+        return ModelPickerTier::Recommended;
+    }
+    let is_new = entry
+        .options
+        .iter()
+        .any(|option| option.detail.contains("recently added"));
+    if is_new {
+        return ModelPickerTier::New;
+    }
+    if entry.old {
+        return ModelPickerTier::Old;
+    }
+    ModelPickerTier::Standard
+}
+
+fn picker_row_marker(
+    entry: &crate::alphacode_tui::tui::PickerEntry,
+    route: Option<&crate::alphacode_tui::tui::PickerOption>,
+    is_row_selected: bool,
+) -> &'static str {
+    let tier = picker_entry_tier(entry, route);
+    if tier == ModelPickerTier::Unavailable {
         "×"
-    } else if limited {
+    } else if route
+        .map(|r| r.available && r.detail_is_limited)
+        .unwrap_or(false)
+    {
         "⚠"
     } else if is_row_selected {
         "▸"
     } else {
-        " "
+        tier.icon()
     }
 }
 
@@ -566,6 +649,7 @@ pub(super) fn draw_inline_interactive(frame: &mut Frame, app: &dyn TuiState, are
     meta_parts.push_str(&count_str);
     header_spans.push(Span::styled(meta_parts, Style::default().fg(dim_color())));
 
+    // Enhanced header hints with all keyboard shortcuts
     if is_preview {
         header_spans.push(Span::styled(
             picker.preview_submit_hint(),
@@ -578,10 +662,14 @@ pub(super) fn draw_inline_interactive(frame: &mut Frame, app: &dyn TuiState, are
         ));
         if picker.shows_default_shortcut_hint() {
             header_spans.push(Span::styled(
-                "  Ctrl-O=set default",
+                "  Ctrl-O=default",
                 Style::default().fg(rgb(60, 60, 80)).italic(),
             ));
         }
+        header_spans.push(Span::styled(
+            "  Ctrl-N=fav",
+            Style::default().fg(rgb(60, 60, 80)).italic(),
+        ));
     }
 
     let row_base_width = if is_account_picker {
@@ -643,13 +731,14 @@ pub(super) fn draw_inline_interactive(frame: &mut Frame, app: &dyn TuiState, are
         let is_row_selected = vi == selected;
         let route = entry.active_option();
         let unavailable = route.map(|r| !r.available).unwrap_or(true);
-
-        let limited = route
+        let _limited = route
             .map(|r| r.available && r.detail_is_limited)
             .unwrap_or(false);
-        let marker = picker_row_marker(is_row_selected, unavailable, limited);
+        let marker = picker_row_marker(entry, route, is_row_selected);
 
         let mut spans: Vec<Span> = Vec::new();
+        let tier = picker_entry_tier(entry, route);
+        let tier_color = tier.color(&gradient);
         spans.push(Span::styled(
             format!(" {} ", marker),
             if unavailable {
@@ -657,7 +746,7 @@ pub(super) fn draw_inline_interactive(frame: &mut Frame, app: &dyn TuiState, are
             } else if is_row_selected {
                 Style::default().fg(Color::White).bold()
             } else {
-                Style::default().fg(dim_color())
+                Style::default().fg(tier_color)
             },
         ));
         let display_name = picker_entry_display_name(entry);
@@ -674,6 +763,8 @@ pub(super) fn draw_inline_interactive(frame: &mut Frame, app: &dyn TuiState, are
             _ => None,
         };
         // Gradient-colored model name styling based on state
+        let tier = picker_entry_tier(entry, route);
+        let tier_color = tier.color(&gradient);
         let primary_style = if unavailable {
             Style::default().fg(rgb(80, 80, 80))
         } else if is_row_selected && col == 0 {
@@ -693,7 +784,7 @@ pub(super) fn draw_inline_interactive(frame: &mut Frame, app: &dyn TuiState, are
         } else if entry.old {
             Style::default().fg(rgb(120, 120, 130))
         } else {
-            Style::default().fg(rgb(210, 215, 230)) // brighter default text
+            Style::default().fg(tier_color) // use tier-based color
         };
 
         if is_account_picker {
@@ -898,6 +989,33 @@ pub(super) fn draw_inline_interactive(frame: &mut Frame, app: &dyn TuiState, are
         lines.push(Line::from(spans));
     }
 
+    // Add footer with keyboard shortcuts (only for non-preview, non-account pickers)
+    if !is_preview
+        && !is_account_picker
+        && picker.kind == crate::alphacode_tui::tui::PickerKind::Model
+    {
+        let footer_spans = vec![
+            Span::styled(" ", Style::default()),
+            Span::styled("↑↓/jk", Style::default().fg(gradient[4]).bold()),
+            Span::styled(" navigate  ", Style::default().fg(dim_color())),
+            Span::styled("←→/hl", Style::default().fg(gradient[4]).bold()),
+            Span::styled(" columns  ", Style::default().fg(dim_color())),
+            Span::styled("Enter", Style::default().fg(gradient[5]).bold()),
+            Span::styled(" select  ", Style::default().fg(dim_color())),
+            Span::styled("Ctrl-O", Style::default().fg(gradient[12]).bold()),
+            Span::styled(" default  ", Style::default().fg(dim_color())),
+            Span::styled("Ctrl-N", Style::default().fg(gradient[9]).bold()),
+            Span::styled(" favorite  ", Style::default().fg(dim_color())),
+            Span::styled("Tab", Style::default().fg(gradient[3]).bold()),
+            Span::styled(" next fav  ", Style::default().fg(dim_color())),
+            Span::styled("/", Style::default().fg(gradient[7]).bold()),
+            Span::styled(" filter  ", Style::default().fg(dim_color())),
+            Span::styled("Esc", Style::default().fg(rgb(180, 120, 120)).bold()),
+            Span::styled(" close", Style::default().fg(dim_color())),
+        ];
+        lines.push(Line::from(footer_spans));
+    }
+
     frame.render_widget(Paragraph::new(lines), inner);
 }
 
@@ -981,13 +1099,47 @@ mod tests {
         assert_eq!(format_elapsed(61.2), "1m 1s");
     }
 
+    fn test_entry(
+        available: bool,
+        detail_is_limited: bool,
+    ) -> (
+        crate::alphacode_tui::tui::PickerEntry,
+        Option<crate::alphacode_tui::tui::PickerOption>,
+    ) {
+        let entry = crate::alphacode_tui::tui::PickerEntry {
+            name: "test".to_string(),
+            options: vec![crate::alphacode_tui::tui::PickerOption {
+                provider: "test".to_string(),
+                api_method: "api_key".to_string(),
+                available,
+                detail_is_limited,
+                ..crate::alphacode_tui::tui::PickerOption::default()
+            }],
+            action: crate::alphacode_tui::tui::PickerAction::Model,
+            selected_option: 0,
+            is_current: false,
+            is_default: false,
+            is_favorite: false,
+            recommended: false,
+            recommendation_rank: 0,
+            usage_score: 0,
+            old: false,
+            created_date: None,
+            effort: None,
+        };
+        let route = entry.active_option().cloned();
+        (entry, route)
+    }
+
     #[test]
     fn fallback_route_details_are_warning_limited() {
         assert!(route_detail_is_limited(
             "https://mkp-api.fptcloud.com; fallback: static provider model list"
         ));
-        assert_eq!(picker_row_marker(true, false, true), "⚠");
-        assert_eq!(picker_row_marker(false, false, true), "⚠");
+        let (entry, route) = test_entry(true, true);
+        assert_eq!(picker_row_marker(&entry, route.as_ref(), true), "⚠");
+        let (entry2, route2) = test_entry(true, true);
+        assert_eq!(picker_row_marker(&entry2, route2.as_ref(), false), "⚠");
     }
 
     #[test]
@@ -1147,14 +1299,36 @@ mod tests {
 
     #[test]
     fn picker_row_marker_uses_explicit_unavailable_marker() {
-        assert_eq!(picker_row_marker(true, true, false), "×");
-        assert_eq!(picker_row_marker(false, true, false), "×");
-        // Limited routes keep their warning marker even when selected, so the
-        // fallback/limited signal never disappears while navigating.
-        assert_eq!(picker_row_marker(true, false, true), "⚠");
-        assert_eq!(picker_row_marker(false, false, true), "⚠");
-        assert_eq!(picker_row_marker(true, false, false), "▸");
-        assert_eq!(picker_row_marker(false, false, false), " ");
+        // Unavailable route (available=false) → "×"
+        let (entry, route) = test_entry(false, false);
+        assert_eq!(picker_row_marker(&entry, route.as_ref(), false), "×");
+        let (entry2, route2) = test_entry(false, false);
+        assert_eq!(picker_row_marker(&entry2, route2.as_ref(), true), "×");
+        // Limited routes keep their warning marker even when selected
+        let (entry3, route3) = test_entry(true, true);
+        assert_eq!(picker_row_marker(&entry3, route3.as_ref(), true), "⚠");
+        let (entry4, route4) = test_entry(true, true);
+        assert_eq!(picker_row_marker(&entry4, route4.as_ref(), false), "⚠");
+        // Available, not limited, selected → "▸"
+        let (entry5, route5) = test_entry(true, false);
+        assert_eq!(picker_row_marker(&entry5, route5.as_ref(), true), "▸");
+        // No route → " " (standard tier icon)
+        let entry6 = crate::alphacode_tui::tui::PickerEntry {
+            name: "test".to_string(),
+            options: vec![],
+            action: crate::alphacode_tui::tui::PickerAction::Model,
+            selected_option: 0,
+            is_current: false,
+            is_default: false,
+            is_favorite: false,
+            recommended: false,
+            recommendation_rank: 0,
+            usage_score: 0,
+            old: false,
+            created_date: None,
+            effort: None,
+        };
+        assert_eq!(picker_row_marker(&entry6, None, false), " ");
     }
 
     #[test]

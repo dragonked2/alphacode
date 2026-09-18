@@ -1167,8 +1167,8 @@ pub struct ProviderConfig {
 impl Default for ProviderConfig {
     fn default() -> Self {
         Self {
-            default_model: Some("MiniMaxAI/MiniMax-M3".to_string()),
-            default_provider: Some("gmicloud".to_string()),
+            default_model: Some("kilo-auto/free".to_string()),
+            default_provider: Some("alphax-free".to_string()),
             openai_reasoning_effort: Some("medium".to_string()),
             anthropic_reasoning_effort: None,
             openai_transport: None,

@@ -681,6 +681,40 @@ pub fn clear_gate_observations(session_id: &str) -> Result<()> {
     Ok(())
 }
 
+/// Remove all persisted todo files for a session (todos, goals, plan, gate
+/// observations). Called by `/clear` and session reset so old-session state
+/// does not leak into a fresh session.
+pub fn clear_session_todos(session_id: &str) {
+    let _ = clear_todos(session_id);
+    let _ = clear_goals(session_id);
+    let _ = clear_plan(session_id);
+    let _ = clear_gate_observations(session_id);
+}
+
+fn clear_todos(session_id: &str) -> Result<()> {
+    let path = todo_path(session_id)?;
+    if path.exists() {
+        std::fs::remove_file(&path)?;
+    }
+    Ok(())
+}
+
+fn clear_goals(session_id: &str) -> Result<()> {
+    let path = goals_path(session_id)?;
+    if path.exists() {
+        std::fs::remove_file(&path)?;
+    }
+    Ok(())
+}
+
+fn clear_plan(session_id: &str) -> Result<()> {
+    let path = plan_path(session_id)?;
+    if path.exists() {
+        std::fs::remove_file(&path)?;
+    }
+    Ok(())
+}
+
 /// Upper bound on retained observations per turn.
 const MAX_GATE_OBSERVATIONS: usize = 256;
 

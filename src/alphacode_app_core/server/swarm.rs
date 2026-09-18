@@ -946,6 +946,19 @@ pub(super) async fn send_swarm_plan_to_session(
         if vp.items.is_empty() {
             return;
         }
+        // Don't send stale plans from a previous session. A plan whose items
+        // are all completed, failed, or only "running_stale" (a crash-recovery
+        // marker) has no real work left. Sending it on reconnect would flash a
+        // misleading "Swarm plan synced" notice for work that is already done.
+        let has_live_work = vp.items.iter().any(|item| {
+            matches!(
+                item.status.as_str(),
+                "running" | "queued" | "ready" | "pending" | "todo" | "growing"
+            )
+        });
+        if !has_live_work {
+            return;
+        }
         let mut participants: Vec<String> = vp.participants.iter().cloned().collect();
         participants.sort();
         ServerEvent::SwarmPlan {

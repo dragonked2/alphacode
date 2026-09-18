@@ -48,15 +48,18 @@ pub fn resolve_openai_compatible_profile_with_api_key_hint(
     apply_profile_key_based_endpoint_overrides(profile, &mut resolved, api_key_hint);
 
     if profile.id != OPENAI_COMPAT_PROFILE.id {
-        // Respect a hardcoded default_model that contains '/' (provider/model
-        // format like `qwen/qwen3.8-max-free`). These are explicit routing
-        // directives the profile author chose; the heuristic cache-based
-        // override should not replace them with a different model.
+        // Respect a hardcoded default_model: profiles like alphax-free set an
+        // explicit default (e.g. "kilo-auto/free") that should not be overridden
+        // by the heuristic cache-based model selection. Only override if the
+        // profile has no hardcoded default or the default contains '/' (a
+        // provider/model routing directive the author chose).
         let dominated_default_is_explicit = resolved
             .default_model
             .as_deref()
             .is_some_and(|m| m.contains('/'));
+        let profile_has_hardcoded_default = profile.default_model.is_some();
         if !dominated_default_is_explicit
+            && !profile_has_hardcoded_default
             && let Some(newest_model) =
                 newest_released_model_for_resolved_openai_compatible_profile(profile.id, &resolved)
         {
@@ -567,6 +570,9 @@ pub fn openai_compatible_profile_static_models(profile: OpenAiCompatibleProfile)
             push("gemini-2.0-flash");
             push("gemini-2.0-flash-lite");
         }
+        "alphax-free" => {
+            push("kilo-auto/free");
+        }
         _ => {}
     }
 
@@ -658,6 +664,24 @@ fn apply_openai_compatible_profile_env_impl(
         crate::alphacode_core::env::set_var("ALPHACODE_OPENROUTER_ENV_FILE", &resolved.env_file);
         crate::alphacode_core::env::set_var("ALPHACODE_OPENROUTER_CACHE_NAMESPACE", &resolved.id);
         crate::alphacode_core::env::set_var("ALPHACODE_OPENROUTER_PROVIDER_FEATURES", "0");
+        // Profiles like alphax-free use a virtual model ID (kilo-auto/free) that
+        // only exists on their gateway. Their /v1/models returns unrelated paid
+        // models. Disable the live model catalog for these profiles.
+        let disable_model_catalog = profile.id == "alphax-free";
+        crate::alphacode_core::env::set_var(
+            "ALPHACODE_OPENROUTER_MODEL_CATALOG",
+            if disable_model_catalog { "0" } else { "1" },
+        );
+        // Propagate the profile's default model so OpenRouterProvider::new()
+        // picks it up instead of falling back to DEFAULT_MODEL.
+        if let Some(model) = resolved
+            .default_model
+            .as_deref()
+            .map(str::trim)
+            .filter(|v| !v.is_empty())
+        {
+            crate::alphacode_core::env::set_var("ALPHACODE_OPENROUTER_MODEL", model);
+        }
         let static_models = openai_compatible_profile_static_models(profile);
         if static_models.is_empty() {
             crate::alphacode_core::env::remove_var("ALPHACODE_OPENROUTER_STATIC_MODELS");

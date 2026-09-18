@@ -1506,7 +1506,14 @@ pub(super) fn handle_model_command(app: &mut App, trimmed: &str) -> bool {
             Err(e) => {
                 let mut msg = model_switch_failure_message(&e.to_string(), app.is_remote);
                 // Hint about TokenRouter/OpenRouter for models with '/' (e.g. qwen/qwen3.8-max-free)
-                if model_name.contains('/') {
+                // but not for the current provider's own virtual model IDs (e.g. kilo-auto/free
+                // on alphax-free).
+                let is_current_provider_model = app
+                    .provider
+                    .available_models_display()
+                    .iter()
+                    .any(|m| m == model_name);
+                if model_name.contains('/') && !is_current_provider_model {
                     msg = format!(
                         "{}\n\n💡 Models with '/' (like '{}') use the 'provider/model' format.\n \
    Try TokenRouter (free tier): `alphacode --provider tokenrouter --model {}`\n \

@@ -270,7 +270,7 @@ pub fn rainbow_prompt_color(distance: usize) -> Color {
 
 /// Convert HSL to RGB. h in 0-360, s and l in 0-1.
 /// This produces perceptually smooth color transitions.
-fn hsl_to_rgb(h: f32, s: f32, l: f32) -> (u8, u8, u8) {
+pub fn hsl_to_rgb(h: f32, s: f32, l: f32) -> (u8, u8, u8) {
     let c = (1.0 - (2.0 * l - 1.0).abs()) * s;
     let x = c * (1.0 - ((h / 60.0) % 2.0 - 1.0).abs());
     let m = l - c / 2.0;

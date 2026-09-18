@@ -4,10 +4,11 @@ use super::tools_ui::{get_tool_activity_detail, summarize_batch_running_tools_co
 use super::visual_debug::{self, FrameCaptureBuilder};
 use super::{
     ProcessingStatus, TuiState, accent_color, ai_color, animated_tool_color, asap_color, dim_color,
-    pending_color, queued_color, rainbow_prompt_color,
+    queued_color, rainbow_prompt_color,
 };
 use crate::alphacode_tui::message::ConnectionPhase;
 use crate::alphacode_tui::tui::app;
+use crate::alphacode_tui::tui::brand_ux::BrandTheme;
 use crate::alphacode_tui::tui::color_support::rgb;
 use crate::alphacode_tui::tui::detect_kv_cache_problem;
 use crate::alphacode_tui::tui::info_widget::occasional_status_tip;
@@ -139,9 +140,9 @@ pub(super) fn draw_prompt_history_search_overlay(
     };
     const VISIBLE_LIMIT: usize = 8;
 
-    let accent = Style::default().fg(rgb(248, 212, 135));
-    let dim = Style::default().fg(rgb(108, 120, 148));
-    let normal = Style::default().fg(rgb(128, 210, 200));
+    let accent = Style::default().fg(BrandTheme::accent());
+    let dim = Style::default().fg(BrandTheme::dim());
+    let normal = Style::default().fg(BrandTheme::info());
 
     let mut lines: Vec<Line<'static>> = Vec::new();
     lines.push(Line::from(vec![
@@ -150,7 +151,7 @@ pub(super) fn draw_prompt_history_search_overlay(
         Span::styled("█", accent),
         Span::styled(
             "  ↑↓ select · ↵ insert · Esc cancel",
-            Style::default().fg(dim_color()),
+            Style::default().fg(BrandTheme::dim()),
         ),
     ]));
 
@@ -246,11 +247,18 @@ fn command_suggestion_lines(
     };
 
     let mut lines = Vec::new();
+    let accent_style = Style::default().fg(BrandTheme::accent());
+    let selected_style = Style::default()
+        .fg(BrandTheme::accent())
+        .add_modifier(Modifier::BOLD);
+    let unselected_style = Style::default().fg(BrandTheme::info());
+    let desc_selected_style = Style::default().fg(BrandTheme::accent());
+    let desc_unselected_style = Style::default().fg(BrandTheme::dim());
+
     if suggestions.len() == 1 {
         let (cmd, desc) = &suggestions[0];
-        let base = Style::default().fg(rgb(248, 210, 120));
-        let mut spans = highlight(cmd, base);
-        spans.push(Span::styled(format!("  {}", desc), base));
+        let mut spans = highlight(cmd, accent_style);
+        spans.push(Span::styled(format!("  {}", desc), accent_style));
         lines.push(Line::from(spans));
     } else if !suggestions.is_empty() {
         let selected = app
@@ -268,28 +276,28 @@ fn command_suggestion_lines(
 
         for (i, (cmd, desc)) in limited.iter().enumerate() {
             let is_selected = i == selected_visible;
-            let description_style = if is_selected {
-                Style::default().fg(rgb(248, 210, 120))
-            } else {
-                Style::default().fg(dim_color())
-            };
             let command_style = if is_selected {
-                Style::default().fg(rgb(248, 210, 120))
+                selected_style
             } else {
-                Style::default().fg(rgb(118, 200, 190))
+                unselected_style
+            };
+            let description_style = if is_selected {
+                desc_selected_style
+            } else {
+                desc_unselected_style
             };
             let mut spans = highlight(cmd, command_style);
             spans.push(Span::styled(format!("  {}", desc), description_style));
             if i == 0 && window_start > 0 {
                 spans.push(Span::styled(
                     format!("  ↑{}", window_start),
-                    Style::default().fg(dim_color()),
+                    Style::default().fg(BrandTheme::dim()),
                 ));
             }
             if i + 1 == limited.len() && more_count > 0 {
                 spans.push(Span::styled(
                     format!("  +{} more", more_count),
-                    Style::default().fg(dim_color()),
+                    Style::default().fg(BrandTheme::dim()),
                 ));
             }
             lines.push(Line::from(spans));
@@ -397,13 +405,13 @@ pub(super) fn send_mode_reserved_width(app: &dyn TuiState) -> usize {
 pub(super) fn input_prompt(app: &dyn TuiState) -> (&'static str, Color) {
     let mode = composer_mode(app.input(), app.is_remote_mode());
     if mode.is_shell() {
-        ("$ ", rgb(100, 225, 155))
+        ("$ ", BrandTheme::success())
     } else if app.is_processing() {
-        ("\u{2026} ", rgb(245, 195, 95))
+        ("\u{2026} ", BrandTheme::warning())
     } else if app.active_skill().is_some() {
-        ("\u{00bb} ", rgb(185, 155, 255))
+        ("\u{00bb} ", BrandTheme::accent())
     } else {
-        ("> ", rgb(90, 215, 230))
+        ("> ", BrandTheme::model())
     }
 }
 
@@ -534,9 +542,13 @@ pub(super) fn draw_queued(frame: &mut Frame, app: &dyn TuiState, area: Rect, sta
             let distance = pending_count.saturating_sub(i);
             let num_color = rainbow_prompt_color(distance);
             let (indicator, indicator_color, msg_color, dim) = match msg_type {
-                QueuedMsgType::Pending => ("↻", pending_color(), pending_color(), false),
-                QueuedMsgType::Interleave => ("⚡", asap_color(), asap_color(), false),
-                QueuedMsgType::Queued => ("⏳", queued_color(), queued_color(), true),
+                QueuedMsgType::Pending => {
+                    ("↻", BrandTheme::warning(), BrandTheme::warning(), false)
+                }
+                QueuedMsgType::Interleave => {
+                    ("⚡", BrandTheme::accent(), BrandTheme::accent(), false)
+                }
+                QueuedMsgType::Queued => ("⏳", BrandTheme::info(), BrandTheme::info(), true),
             };
             let mut msg_style = Style::default().fg(msg_color);
             if dim {
@@ -2914,7 +2926,7 @@ pub(super) fn draw_input(
         hint_line = Some(shell_hint.trim().to_string());
         lines.push(Line::from(Span::styled(
             shell_hint,
-            Style::default().fg(shell_mode_color()),
+            Style::default().fg(BrandTheme::success()),
         )));
     } else if app.next_prompt_new_session_armed() {
         hint_shown = true;
@@ -2923,7 +2935,7 @@ pub(super) fn draw_input(
         lines.push(Line::from(Span::styled(
             hint,
             Style::default()
-                .fg(rgb(128, 208, 255))
+                .fg(BrandTheme::info())
                 .add_modifier(Modifier::ITALIC),
         )));
     } else if app.is_processing() && !input_text.is_empty() {
@@ -2937,7 +2949,7 @@ pub(super) fn draw_input(
         lines.push(Line::from(Span::styled(
             hint,
             Style::default()
-                .fg(rgb(118, 128, 148))
+                .fg(BrandTheme::dim_bright())
                 .add_modifier(Modifier::ITALIC),
         )));
     }

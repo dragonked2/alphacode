@@ -51,7 +51,7 @@ pub const AI302_PROFILE: OpenAiCompatibleProfile = OpenAiCompatibleProfile {
     id: "302ai",
     display_name: "302.AI",
     api_base: "https://api.302.ai/v1",
-    api_key_env: "302AI_API_KEY",
+    api_key_env: "AI302_API_KEY",
     env_file: "302ai.env",
     setup_url: "https://github.com/dragonked2/alphacode#openai-compatible-providers",
     default_model: Some("qwen3-235b-a22b-instruct-2507"),
@@ -437,71 +437,24 @@ pub const ALIBABA_CODING_PLAN_PROFILE: OpenAiCompatibleProfile = OpenAiCompatibl
     requires_api_key: true,
 };
 
-/// Bundled bearer key for the "Free Gift from Alphacode" lane. Used as a
-/// last-resort fallback by `alphacode_provider_env::load_api_key_from_env_or_config`
-/// when the user has not provided their own `EXPLABS_API_KEY` (env var or
-/// `explabs.env`). Overridable — the user's own key always wins. This is a
-/// shared key, so set `EXPLABS_API_KEY` to your own `xpl_...` key for
-/// dedicated rate limits and credit balance.
-pub const EXPLABS_BUNDLED_API_KEY: &str = "xpl_e1e6ed64f7f13f09bf2d72025b735a2b3ff0da77";
+/// No bundled key needed — the Alphax Free tier routes through KiloCode's
+/// anonymous free gateway which requires no authentication.
+pub const ALPHAX_FREE_BUNDLED_API_KEY: &str = "";
 
-/// Curated order of the Experiential Labs free platform-funded lane. The
-/// post-login flagship picker consults this list to rank free models above
-/// the live catalog's first random row. Top-down = picker top-down.
-pub const ALL_EXPLABS_MODELS: &[&str] = &[
-    "gpt-6-astra",
-    "claude-fable-5.1",
-    "gpt-5.6-luna",
-    "qwen3.8-27b",
-    "deepseek-v4-flash",
-];
-
-pub const EXPLABS_PROFILE: OpenAiCompatibleProfile = OpenAiCompatibleProfile {
-    id: "explabs",
-    // Branded as a Free Gift from Alphacode: the Experiential Labs gateway is an
-    // OpenAI-compatible router that hosts curated free models (qwen3.8-27b at
-    // launch, plus experimental GPT6 / Astra / Fable 5.1 etc. as they are added
-    // to the platform-funded lane). Users get to call them with one bearer key
-    // minted at https://platform.experientiallabs.ai/settings/api-keys; alphacode
-    // advertises the lane as a first-class provider so the free GPT6 / Astra /
-    // Fable 5.1 models show up in the model picker without a custom endpoint.
-    display_name: "Experiential Labs (Free Gift from Alphacode)",
-    api_base: "https://api.experientiallabs.ai/v1",
-    api_key_env: "EXPLABS_API_KEY",
-    env_file: "explabs.env",
-    setup_url: "https://platform.experientiallabs.ai/settings/api-keys",
-    // The default is the strongest free model so first-login auto-selects the
-    // best available tier. The post-login catalog refresh still hits /v1/models
-    // and replaces this if the user's key can call something stronger, so the
-    // default just has to be a real callable slug.
-    default_model: Some("gpt-6-astra"),
-    requires_api_key: true,
-};
-
-/// Bundled bearer key for the "Free Gift from Alphacode" TheHive lane. Used as
-/// a last-resort fallback by `alphacode_provider_env::load_api_key_from_env_or_config`
-/// when the user has not provided their own `HIVE_API_KEY` (env var or
-/// `hive.env`). Overridable — the user's own key always wins.
-pub const HIVE_BUNDLED_API_KEY: &str = "HCScyZ//H41wf32rZueJbg==";
-
-/// Curated order of TheHive free models. The post-login flagship picker
+/// Curated order of Alphax Free models. The post-login flagship picker
 /// consults this list to rank free models above the live catalog's first
 /// random row. Top-down = picker top-down.
-pub const ALL_HIVE_MODELS: &[&str] = &["zai-org/glm-5.3-flash"];
+pub const ALL_ALPHAX_FREE_MODELS: &[&str] = &["kilo-auto/free"];
 
-pub const HIVE_PROFILE: OpenAiCompatibleProfile = OpenAiCompatibleProfile {
-    id: "hive",
-    // Branded as a Free Gift from Alphacode: TheHive AI gateway hosts free
-    // models (GLM-5.3-Flash at launch) accessible via OpenAI-compatible
-    // Chat Completions API. Users get a shared bearer key bundled into
-    // alphacode so the free lane works out of the box.
-    display_name: "TheHive AI (Free Gift from Alphacode)",
-    api_base: "https://api-cdn.thehive.ai/api/v3",
-    api_key_env: "HIVE_API_KEY",
-    env_file: "hive.env",
-    setup_url: "https://docs.thehive.ai/docs/chat-completions-openai-compatible-llms",
-    default_model: Some("zai-org/glm-5.3-flash"),
-    requires_api_key: true,
+pub const ALPHAX_FREE_PROFILE: OpenAiCompatibleProfile = OpenAiCompatibleProfile {
+    id: "alphax-free",
+    display_name: "Alphax Free",
+    api_base: "https://api.kilo.ai/api/gateway",
+    api_key_env: "ALPHAX_FREE_API_KEY",
+    env_file: "alphax-free.env",
+    setup_url: "",
+    default_model: Some("kilo-auto/free"),
+    requires_api_key: false,
 };
 
 pub const NVIDIA_NIM_PROFILE: OpenAiCompatibleProfile = OpenAiCompatibleProfile {
@@ -589,7 +542,7 @@ pub const UNOROUTER_PROFILE: OpenAiCompatibleProfile = OpenAiCompatibleProfile {
     requires_api_key: true,
 };
 
-pub(crate) const OPENAI_COMPAT_PROFILES: [OpenAiCompatibleProfile; 46] = [
+pub(crate) const OPENAI_COMPAT_PROFILES: [OpenAiCompatibleProfile; 45] = [
     GMICLOUD_PROFILE,
     OPENCODE_PROFILE,
     OPENCODE_GO_PROFILE,
@@ -625,8 +578,7 @@ pub(crate) const OPENAI_COMPAT_PROFILES: [OpenAiCompatibleProfile; 46] = [
     MINIMAX_PROFILE,
     XAI_PROFILE,
     NVIDIA_NIM_PROFILE,
-    EXPLABS_PROFILE,
-    HIVE_PROFILE,
+    ALPHAX_FREE_PROFILE,
     XIAOMI_MIMO_PROFILE,
     CELERIS_PROFILE,
     AGENTROUTER_PROFILE,
@@ -844,54 +796,17 @@ pub const CHUTES_LOGIN_PROVIDER: LoginProviderDescriptor = LoginProviderDescript
     order: LoginProviderSurfaceOrder::new(Some(8), Some(7), Some(8), Some(7), Some(7)),
 };
 
-pub const EXPLABS_LOGIN_PROVIDER: LoginProviderDescriptor = LoginProviderDescriptor {
-    id: "explabs",
-    // Branded "Free Gift from Alphacode" — see EXPLABS_PROFILE for the
-    // rationale. The display_name is the string the TUI login picker and
-    // `/provider list` rows show, so the gift branding is what users actually
-    // see at first contact.
-    display_name: "Experiential Labs (Free Gift from Alphacode)",
+pub const ALPHAX_FREE_LOGIN_PROVIDER: LoginProviderDescriptor = LoginProviderDescriptor {
+    id: "alphax-free",
+    display_name: "Alphax Free",
     auth_kind: LoginProviderAuthKind::ApiKey,
     auth_state_key: LoginProviderAuthStateKey::OpenRouterLike,
-    auth_status_method: "API key (xpl_...)",
-    aliases: &[
-        "experiential-labs",
-        "experientiallabs",
-        "experiential",
-        "xpl",
-        "alphacode-gift",
-        "alphacode-free",
-        "free-gift",
-    ],
-    menu_detail: "API key, free GPT6 / Astra / Fable 5.1 tier (xpl_... key)",
+    auth_status_method: "no auth required",
+    aliases: &["alphax", "free"],
+    menu_detail: "Free models (no API key needed)",
     recommended: true,
-    target: LoginProviderTarget::OpenAiCompatible(EXPLABS_PROFILE),
-    // Surface the free gift lane at position 0 so it appears first in every
-    // surface (TUI login picker, CLI login list, server bootstrap, auto-init,
-    // auth status). The sort is by `for_surface` then `unwrap_or(u8::MAX)`, so
-    // 0 is the very first row -- right above `auto-import` at 1.
+    target: LoginProviderTarget::OpenAiCompatible(ALPHAX_FREE_PROFILE),
     order: LoginProviderSurfaceOrder::new(Some(0), Some(0), Some(0), Some(0), Some(0)),
-};
-
-pub const HIVE_LOGIN_PROVIDER: LoginProviderDescriptor = LoginProviderDescriptor {
-    id: "hive",
-    // Branded "Free Gift from Alphacode" — see HIVE_PROFILE for the
-    // rationale. The display_name is the string the TUI login picker and
-    // `/provider list` rows show, so the gift branding is what users actually
-    // see at first contact.
-    display_name: "TheHive AI (Free Gift from Alphacode)",
-    auth_kind: LoginProviderAuthKind::ApiKey,
-    auth_state_key: LoginProviderAuthStateKey::OpenRouterLike,
-    auth_status_method: "API key",
-    aliases: &["thehive", "the-hive", "hive-ai"],
-    menu_detail: "API key, free GLM-5.3-Flash tier (bundled key)",
-    recommended: true,
-    target: LoginProviderTarget::OpenAiCompatible(HIVE_PROFILE),
-    // Surface the free gift lane near the top so it appears early in every
-    // surface (TUI login picker, CLI login list, server bootstrap, auto-init,
-    // auth status). Order 2 = same tier as ANTHROPIC_API and OPENAI; HIVE
-    // sorts before them because it appears earlier in LOGIN_PROVIDERS.
-    order: LoginProviderSurfaceOrder::new(Some(2), Some(2), Some(2), Some(2), Some(2)),
 };
 
 pub const ZEROG_LOGIN_PROVIDER: LoginProviderDescriptor = LoginProviderDescriptor {
@@ -1436,11 +1351,10 @@ pub const GOOGLE_LOGIN_PROVIDER: LoginProviderDescriptor = LoginProviderDescript
     order: LoginProviderSurfaceOrder::new(Some(13), None, None, None, None),
 };
 
-pub(crate) const LOGIN_PROVIDERS: [LoginProviderDescriptor; 58] = [
+pub(crate) const LOGIN_PROVIDERS: [LoginProviderDescriptor; 57] = [
     AUTO_IMPORT_LOGIN_PROVIDER,
     CLAUDE_LOGIN_PROVIDER,
-    EXPLABS_LOGIN_PROVIDER,
-    HIVE_LOGIN_PROVIDER,
+    ALPHAX_FREE_LOGIN_PROVIDER,
     ANTHROPIC_API_LOGIN_PROVIDER,
     OPENAI_LOGIN_PROVIDER,
     OPENAI_API_LOGIN_PROVIDER,

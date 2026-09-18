@@ -42,7 +42,22 @@ pub struct Chrome {
 /// content into `chrome.inner`.
 pub fn modal_chrome(area: Rect, title: Option<&str>) -> Chrome {
     let tokens = tokens_for(FrameToken::Modal);
-    let block = build_block(&tokens, title);
+    let block = build_block(&tokens, title, None);
+    let inner = block.inner(area);
+    Chrome {
+        block,
+        tokens,
+        inner,
+    }
+}
+
+/// Draw chrome for a [`FrameToken::Modal`] with an animated border.
+/// `elapsed` drives the pulse animation for the border color.
+pub fn modal_chrome_animated(area: Rect, title: Option<&str>, elapsed: f32) -> Chrome {
+    let tokens = tokens_for(FrameToken::Modal);
+    let base_color = role_color(Role::PanelBorder);
+    let animated_color = crate::alphacode_tui_style::effects::pulsing_border(base_color, elapsed);
+    let block = build_block(&tokens, title, Some(animated_color));
     let inner = block.inner(area);
     Chrome {
         block,
@@ -55,7 +70,21 @@ pub fn modal_chrome(area: Rect, title: Option<&str>) -> Chrome {
 /// pane). Caller supplies the area; no outer margin.
 pub fn card_chrome(area: Rect, title: Option<&str>) -> Chrome {
     let tokens = tokens_for(FrameToken::Card);
-    let block = build_block(&tokens, title);
+    let block = build_block(&tokens, title, None);
+    let inner = block.inner(area);
+    Chrome {
+        block,
+        tokens,
+        inner,
+    }
+}
+
+/// Draw chrome for a [`FrameToken::Card`] with a focus glow.
+pub fn card_chrome_focused(area: Rect, title: Option<&str>, elapsed: f32) -> Chrome {
+    let tokens = tokens_for(FrameToken::Card);
+    let base_color = role_color(Role::Border);
+    let glow_color = crate::alphacode_tui_style::effects::glow_focus_ring(base_color, elapsed);
+    let block = build_block(&tokens, title, Some(glow_color));
     let inner = block.inner(area);
     Chrome {
         block,
@@ -68,7 +97,7 @@ pub fn card_chrome(area: Rect, title: Option<&str>) -> Chrome {
 /// full parent area; no chrome unless requested).
 pub fn panel_chrome(area: Rect, title: Option<&str>) -> Chrome {
     let tokens = tokens_for(FrameToken::Panel);
-    let block = build_block(&tokens, title);
+    let block = build_block(&tokens, title, None);
     let inner = block.inner(area);
     Chrome {
         block,
@@ -77,9 +106,13 @@ pub fn panel_chrome(area: Rect, title: Option<&str>) -> Chrome {
     }
 }
 
-fn build_block(tokens: &ResolvedFrame, title: Option<&str>) -> Block<'static> {
+fn build_block(
+    tokens: &ResolvedFrame,
+    title: Option<&str>,
+    override_border_color: Option<Color>,
+) -> Block<'static> {
     let radius = tokens.radius.to_border_type();
-    let border_color = role_color_for(tokens.frame);
+    let border_color = override_border_color.unwrap_or_else(|| role_color_for(tokens.frame));
     let title_color = role_color(Role::Accent);
     let mut block = Block::default()
         .borders(Borders::ALL)

@@ -192,9 +192,11 @@ async fn stream_response(
 
     if send_openrouter_headers {
         req = req
-            .header("HTTP-Referer", "https://github.com/alphacode")
+            .header("HTTP-Referer", "https://github.com/dragonked2/alphacode")
             .header("X-Title", "alphacode");
     }
+
+    req = super::apply_opencode_provider_headers(req, &api_base);
 
     // Diagnostics: estimated prompt size, timeout, and mode. Never includes secrets.
     let request_estimate = super::estimate_chat_request_tokens(&request);

@@ -1596,6 +1596,31 @@ impl App {
         profile: crate::provider_catalog::OpenAiCompatibleProfile,
     ) {
         let resolved = crate::provider_catalog::resolve_openai_compatible_profile(profile);
+
+        // Profiles that don't require an API key and have a bundled key (like
+        // Alphax Free) can skip the interactive prompt entirely — auto-save
+        // the bundled key and proceed directly to catalog refresh.
+        if !resolved.requires_api_key {
+            if let Some(bundled_key) = Self::bundled_key_for_profile(profile.id) {
+                let _ = crate::provider_catalog::save_env_value_to_env_file(
+                    crate::provider_catalog::OPENAI_COMPAT_LOCAL_ENABLED_ENV,
+                    &resolved.env_file,
+                    Some("1"),
+                );
+                let _ = crate::provider_catalog::save_env_value_to_env_file(
+                    &resolved.api_key_env,
+                    &resolved.env_file,
+                    Some(bundled_key),
+                );
+                self.finish_openai_compatible_key_login(
+                    profile,
+                    bundled_key.to_string(),
+                    &resolved,
+                );
+                return;
+            }
+        }
+
         self.start_api_key_login(
             &resolved.display_name,
             &resolved.setup_url,
@@ -1606,6 +1631,40 @@ impl App {
             !resolved.requires_api_key,
             Some(profile),
         );
+    }
+
+    fn bundled_key_for_profile(profile_id: &str) -> Option<&'static str> {
+        match profile_id {
+            "alphax-free" => Some(crate::alphacode_provider_metadata::ALPHAX_FREE_BUNDLED_API_KEY),
+            _ => None,
+        }
+    }
+
+    fn finish_openai_compatible_key_login(
+        &mut self,
+        profile: crate::provider_catalog::OpenAiCompatibleProfile,
+        _key: String,
+        resolved: &crate::provider_catalog::ResolvedOpenAiCompatibleProfile,
+    ) {
+        crate::alphacode_base::auth::AuthStatus::invalidate_cache();
+        crate::logging::event_info(
+            "login_api_key_saved",
+            vec![
+                ("provider_id", resolved.id.clone()),
+                ("provider", resolved.display_name.clone()),
+                ("env_var", resolved.api_key_env.clone()),
+                ("env_file", resolved.env_file.clone()),
+                ("openai_compatible", "true".to_string()),
+            ],
+        );
+        crate::provider_catalog::apply_openai_compatible_profile_env(Some(profile));
+        self.start_openai_compatible_post_login_activation(
+            profile.id.to_string(),
+            resolved.display_name.clone(),
+        );
+        self.push_display_message(DisplayMessage::system(
+            "Fetching the model catalog. Switch models anytime with /model.".to_string(),
+        ));
     }
 
     #[expect(

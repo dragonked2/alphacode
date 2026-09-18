@@ -330,14 +330,8 @@ fn provider_preferred_model_orders(
         Some("azure-openai") => &[crate::provider::ALL_OPENAI_MODELS],
         // Gemini (Code Assist OAuth) and Antigravity both serve Gemini models.
         Some("gemini") | Some("antigravity") => &[ALL_GEMINI_MODELS],
-        // Experiential Labs (Free Gift from Alphacode): the gateway's free
-        // platform-funded lane is dominated by a small curated set of slugs, so
-        // rank the curated list above the live catalog's first random entry.
-        Some("explabs") => &[crate::alphacode_provider_metadata::ALL_EXPLABS_MODELS],
-        // TheHive AI (Free Gift from Alphacode): the gateway's free lane hosts
-        // GLM-5.3-Flash, rank the curated list above the live catalog's first
-        // random entry.
-        Some("hive") => &[crate::alphacode_provider_metadata::ALL_HIVE_MODELS],
+        // Alphax Free (opencode gateway): rank curated free models first.
+        Some("alphax-free") => &[crate::alphacode_provider_metadata::ALL_ALPHAX_FREE_MODELS],
         _ => &[],
     }
 }
