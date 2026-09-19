@@ -188,6 +188,19 @@ fn should_record_panic_as_crash(status: &session::SessionStatus) -> bool {
 pub fn install_panic_hook() {
     let default_hook = panic::take_hook();
     panic::set_hook(Box::new(move |info| {
+        // Best-effort terminal restore before printing anything. When a panic
+        // fires while the terminal is in raw mode / alternate screen, raw
+        // output produces garbled characters (escape sequences, digits, `[`)
+        // because the cooked-mode echo is still off. Restoring here so the
+        // panic message and resume hint are legible. The TuiRuntimeGuard::Drop
+        // may restore again later; the calls are idempotent.
+        let _ = crossterm::terminal::disable_raw_mode();
+        let _ = crossterm::execute!(
+            std::io::stderr(),
+            crossterm::terminal::LeaveAlternateScreen,
+            crossterm::cursor::Show
+        );
+
         default_hook(info);
 
         if let Some(session_id) = get_current_session() {

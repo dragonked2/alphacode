@@ -319,10 +319,11 @@ impl SelfImproveTool {
 
                 // Skip if we already have a lesson covering this error pattern
                 let exists = skills.iter().any(|s| {
-                    s.id.starts_with("lesson_")
-                        && s.tool_sequence.contains(task_type)
-                        && s.pattern
-                            .contains(&error_pattern[..error_pattern.len().min(40)])
+                    s.id.starts_with("lesson_") && s.tool_sequence.contains(task_type) && {
+                        let safe_end =
+                            error_pattern.floor_char_boundary(error_pattern.len().min(40));
+                        s.pattern.contains(&error_pattern[..safe_end])
+                    }
                 });
                 if exists {
                     continue;

@@ -1223,6 +1223,12 @@ pub(crate) fn render_todos_message(
     let inner_width = card_width.saturating_sub(base_indent.width()).max(1);
 
     let mut lines = Vec::new();
+    // Subtle top separator so the todo card is visually distinct from
+    // surrounding tool rows and assistant text.
+    lines.push(Line::from(vec![Span::styled(
+        format!("{}┄", base_indent),
+        Style::default().fg(rgb(60, 65, 75)),
+    )]));
     push_todo_plan_details(&mut lines, &plan, base_indent, inner_width);
     // Max items to show inline. For long lists, show the most important
     // (in-progress first, then pending) and collapse the rest.
@@ -1504,22 +1510,6 @@ fn push_todo_plan_details(
     base_indent: &str,
     inner_width: usize,
 ) {
-    if let Some(score) = plan.understands_user_intent {
-        lines.push(todo_card_line(
-            vec![
-                Span::styled(
-                    "Understands user intent ",
-                    Style::default().fg(todo_label_color()),
-                ),
-                Span::styled(
-                    format!("{}%", score),
-                    Style::default().fg(todo_score_color()),
-                ),
-            ],
-            base_indent,
-            inner_width,
-        ));
-    }
     if let Some(intention) = plan
         .user_intention
         .as_deref()
@@ -1650,20 +1640,7 @@ fn render_todo_plan_update(
 
     for field in &update.fields {
         match field {
-            crate::todo::TodoPlanField::UnderstandsUserIntent => push_todo_score_update(
-                &mut lines,
-                "Understands user intent",
-                update
-                    .before
-                    .as_ref()
-                    .and_then(|plan| plan.understands_user_intent),
-                update
-                    .after
-                    .as_ref()
-                    .and_then(|plan| plan.understands_user_intent),
-                base_indent,
-                inner_width,
-            ),
+            crate::todo::TodoPlanField::UnderstandsUserIntent => {}
             crate::todo::TodoPlanField::UserIntention => push_todo_text_update(
                 &mut lines,
                 "User intention",
@@ -1862,25 +1839,34 @@ fn render_todo_card_item_line(
 ) -> Line<'static> {
     let blocked = !todo.blocked_by.is_empty() && todo.status != "completed";
     let (glyph, glyph_color) = if blocked {
-        ("⊳", rgb(225, 165, 90))
+        ("◆", rgb(225, 165, 90))
     } else {
         match todo.status.as_str() {
-            "completed" => ("✓", rgb(105, 190, 125)),
-            "in_progress" => ("●", asap_color()),
+            "completed" => ("✓", rgb(105, 200, 135)),
+            "in_progress" => ("▶", asap_color()),
             "cancelled" => ("✗", rgb(190, 105, 115)),
-            _ => ("○", rgb(135, 145, 160)),
+            _ => ("○", rgb(140, 150, 168)),
         }
     };
     let text_color = match todo.status.as_str() {
-        "completed" => rgb(135, 150, 145),
-        "cancelled" => rgb(145, 130, 135),
+        "completed" => rgb(120, 140, 135),
+        "cancelled" => rgb(145, 125, 130),
         "in_progress" => rgb(225, 232, 240),
-        _ => rgb(195, 202, 212),
+        _ => rgb(195, 202, 215),
+    };
+    let text_style = if todo.status == "completed" {
+        Style::default()
+            .fg(text_color)
+            .add_modifier(Modifier::CROSSED_OUT)
+    } else if todo.status == "in_progress" {
+        Style::default().fg(text_color).add_modifier(Modifier::BOLD)
+    } else {
+        Style::default().fg(text_color)
     };
     let mut spans = vec![
         Span::raw("  "),
         Span::styled(format!("{} ", glyph), Style::default().fg(glyph_color)),
-        Span::styled(todo.content.clone(), Style::default().fg(text_color)),
+        Span::styled(todo.content.clone(), text_style),
     ];
     if let Some(label) = todo_card_confidence_label(todo) {
         spans.push(Span::styled(
@@ -4088,18 +4074,34 @@ pub(crate) fn render_tool_message(
         let detail_width = row_width.saturating_sub(4).max(1);
         let command_detail = tools_ui::get_tool_summary_with_budget(tc, 80, Some(detail_width));
         if !command_detail.trim().is_empty() {
+            let stripped = command_detail
+                .trim_start_matches('$')
+                .trim_start()
+                .to_string();
             let detail_line = Line::from(vec![
                 Span::raw("    "),
-                Span::styled(command_detail, Style::default().fg(dim_color())),
+                Span::styled(
+                    "$ ",
+                    Style::default()
+                        .fg(rgb(160, 170, 185))
+                        .add_modifier(Modifier::BOLD),
+                ),
+                Span::styled(stripped, Style::default().fg(dim_color())),
             ]);
             lines.push(super::truncate_line_with_ellipsis_to_width(
                 &detail_line,
                 row_width,
             ));
         } else if !command.trim().is_empty() {
-            let fallback = format!("$ {}", command.trim());
+            let fallback = command.trim().to_string();
             let detail_line = Line::from(vec![
                 Span::raw("    "),
+                Span::styled(
+                    "$ ",
+                    Style::default()
+                        .fg(rgb(160, 170, 185))
+                        .add_modifier(Modifier::BOLD),
+                ),
                 Span::styled(fallback, Style::default().fg(dim_color())),
             ]);
             lines.push(super::truncate_line_with_ellipsis_to_width(

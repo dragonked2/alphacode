@@ -959,7 +959,8 @@ impl MemoryAgent {
 
         let existing: Vec<String> = {
             let context_summary = if context_owned.len() > 2000 {
-                &context_owned[context_owned.len() - 2000..]
+                let start = context_owned.floor_char_boundary(context_owned.len() - 2000);
+                &context_owned[start..]
             } else {
                 &context_owned
             };

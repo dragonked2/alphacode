@@ -592,7 +592,8 @@ impl StatusBar {
         // Error message (truncated if too long)
         let max_msg_width = 40;
         let msg_display = if error_msg.len() > max_msg_width {
-            format!("{}…", &error_msg[..max_msg_width])
+            let safe_end = error_msg.floor_char_boundary(max_msg_width);
+            format!("{}…", &error_msg[..safe_end])
         } else {
             error_msg.to_string()
         };

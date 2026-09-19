@@ -823,7 +823,9 @@ impl StreamingProgress {
         const WINDOW: usize = 2000;
 
         let text = &self.streaming_text;
-        let tail_len = text.len().min(WINDOW);
+        // Use floor_char_boundary to avoid slicing inside a multi-byte
+        // UTF-8 character (the char-boundary panic from issue #...).
+        let tail_len = text.floor_char_boundary(text.len().min(WINDOW));
         if tail_len < MIN_CHUNK * MIN_STREAK as usize {
             self.repetition_streak = 0;
             return false;
@@ -838,14 +840,18 @@ impl StreamingProgress {
             if tail_len < chunk_size * MIN_STREAK as usize {
                 continue;
             }
-            let chunk = &tail[tail_len - chunk_size..];
+            let chunk_end = tail.floor_char_boundary(tail_len);
+            let chunk_start = tail.floor_char_boundary(chunk_end.saturating_sub(chunk_size));
+            let chunk = &tail[chunk_start..chunk_end];
             let mut streak = 1u32;
-            let mut pos = tail_len - chunk_size;
+            let mut pos = chunk_start;
             while pos >= chunk_size {
-                let prev = &tail[pos - chunk_size..pos];
+                let prev_end = pos;
+                let prev_start = tail.floor_char_boundary(prev_end - chunk_size);
+                let prev = &tail[prev_start..prev_end];
                 if prev == chunk {
                     streak += 1;
-                    pos -= chunk_size;
+                    pos = prev_start;
                 } else {
                     break;
                 }

@@ -455,7 +455,7 @@ impl SkillTool {
 
             output.push_str(&format!(
                 "\n## Content Preview\n\n{}\n",
-                &skill.content[..skill.content.len().min(500)]
+                &skill.content[..skill.content.floor_char_boundary(500)]
             ));
             if skill.content.len() > 500 {
                 output.push_str("\n... (use `read` to see full content)\n");
