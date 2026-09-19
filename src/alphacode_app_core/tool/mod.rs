@@ -1153,7 +1153,16 @@ impl Registry {
             tokio::spawn(async move {
                 let (successes, failures) = {
                     let manager = mcp_manager.write().await;
-                    manager.connect_all().await.unwrap_or((0, Vec::new()))
+                    match manager.connect_all().await {
+                        Ok(result) => result,
+                        Err(e) => {
+                            crate::logging::error(&format!(
+                                "MCP: connect_all() failed unexpectedly: {}",
+                                e
+                            ));
+                            (0, Vec::new())
+                        }
+                    }
                 };
 
                 if successes > 0 {

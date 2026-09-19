@@ -103,13 +103,12 @@ fn entry_for<'a>(state: &'a mut State, key: &CallKey) -> &'a mut u32 {
             };
             state.failures.remove(&oldest);
         }
-        state.failures.insert(key.clone(), 0);
         state.order.push_back(key.clone());
     }
-    state
-        .failures
-        .get_mut(key)
-        .expect("key inserted immediately above")
+    // Safety: we just ensured the key exists above (insert or already present).
+    // Using `or_insert` via the entry API to avoid a fallible get_mut after
+    // insertion, which would be fragile under mutex poisoning.
+    state.failures.entry(key.clone()).or_insert(0)
 }
 
 /// How many times this exact call has already failed in `session`. `known` says

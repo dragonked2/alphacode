@@ -83,7 +83,7 @@ pub fn typewriter_cursor(visible: usize, total_chars: usize, elapsed: f32) -> bo
         true // Show cursor while typing
     } else {
         // Blink at 1 Hz after typing is done
-        ((elapsed * 2.0) as usize) % 2 == 0
+        ((elapsed * 2.0) as usize).is_multiple_of(2)
     }
 }
 

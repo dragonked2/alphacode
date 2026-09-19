@@ -1294,6 +1294,25 @@ pub(in crate::alphacode_tui::tui::app) fn handle_server_event(
             {
                 return false;
             }
+            // Transient upstream provider failures (Nvidia overloaded, API
+            // temporarily unavailable, upstream timeout, etc.) are always
+            // retryable. The provider may recover in seconds, so schedule an
+            // auto-retry with a generous budget and keep the pending message
+            // alive rather than falling through to the generic error path
+            // which may not have a message to retry.
+            let is_transient_upstream_error =
+                crate::alphacode_provider_core::retry::is_retryable_message(&message)
+                    && !is_connectivity_error;
+            if is_transient_upstream_error && app.rate_limit_pending_message.is_some() {
+                app.schedule_pending_remote_retry_with_limit(
+                    &format!(
+                        "Transient upstream error ({}); retrying automatically",
+                        message.trim().chars().take(80).collect::<String>()
+                    ),
+                    5, // generous budget for transient upstream errors
+                );
+                return false;
+            }
             // Credential-failure circuit breaker: repeated auth failures mean
             // the login/API key is dead. Resending the identical request can
             // never succeed and (before this breaker) produced runaway retry
@@ -2169,7 +2188,7 @@ pub(in crate::alphacode_tui::tui::app) fn handle_server_event(
                     snapshot.participants,
                     snapshot.reason,
                 );
-                if !(is_reconnect && !has_live_work) {
+                if !is_reconnect || has_live_work {
                     app.set_status_notice(notice);
                 }
             }

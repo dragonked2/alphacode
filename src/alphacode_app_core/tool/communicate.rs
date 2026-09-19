@@ -2776,9 +2776,12 @@ impl Tool for CommunicateTool {
                         let summary = fetch_plan_status(&ctx.session_id).await?;
                         occupied = Some(plan_graph_node_ids(&summary));
                     }
-                    let occupied = occupied
-                        .as_ref()
-                        .expect("occupied ids were initialized above");
+                    let occupied = match occupied.as_ref() {
+                        Some(ids) => ids,
+                        None => {
+                            return Err(anyhow::anyhow!("Seed graph occupied IDs not initialized"));
+                        }
+                    };
                     let (remapped, mut remaps) = remap_conflicting_seed_nodes(
                         &seed_nodes,
                         occupied,
@@ -2787,7 +2790,12 @@ impl Tool for CommunicateTool {
                     );
                     if remaps.is_empty() {
                         ensure_success(&response)?;
-                        unreachable!("a duplicate seed error should have returned above")
+                        // If ensure_success didn't return an error, the server
+                        // returned a non-error, non-collision response — treat
+                        // as an unexpected protocol state rather than panicking.
+                        return Err(anyhow::anyhow!(
+                            "Seed graph returned unexpected response (no remaps and no error)"
+                        ));
                     }
                     seed_nodes = remapped;
                     changes.append(&mut remaps);
@@ -2801,7 +2809,12 @@ impl Tool for CommunicateTool {
                     .map_err(|e| anyhow::anyhow!("Failed to retry task graph seed: {}", e))?;
                 }
                 ensure_success(&response)?;
-                unreachable!("seed retry loop only exhausts while the server returns collisions")
+                // If we exhausted the retry loop without returning, the server
+                // kept returning collisions on every attempt — surface the error
+                // instead of panicking.
+                Err(anyhow::anyhow!(
+                    "Seed graph retry exhausted: server returned collision on every attempt"
+                ))
             }
 
             "expand_node" => {

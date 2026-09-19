@@ -4460,7 +4460,7 @@ impl MessageRole {
             "assistant" => ("🤖", rgb(158, 135, 255)),
             "tool" => ("⚙", rgb(118, 228, 168)),
             "system" => ("⚡", rgb(255, 215, 108)),
-            "error" => ("✗", rgb(255, 118, 118)),
+            "error" => ("🚫", rgb(255, 50, 50)),
             "success" => ("✓", rgb(108, 230, 158)),
             "warning" => ("⚠", rgb(255, 195, 88)),
             "info" => ("ℹ", rgb(148, 188, 255)),
@@ -4488,7 +4488,7 @@ impl MessageRole {
             "assistant" => rgb(68, 55, 95),
             "tool" => rgb(48, 75, 65),
             "system" => rgb(75, 65, 48),
-            "error" => rgb(95, 48, 48),
+            "error" => rgb(255, 50, 50),
             _ => rgb(48, 48, 55),
         }
     }

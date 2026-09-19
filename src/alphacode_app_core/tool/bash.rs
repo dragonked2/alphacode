@@ -1022,8 +1022,14 @@ impl BashTool {
                     task.abort();
                 }
 
-                let stdout = stdout_task.await.unwrap_or_default();
-                let stderr = stderr_task.await.unwrap_or_default();
+                let stdout = stdout_task.await.unwrap_or_else(|e| {
+                    crate::logging::warn(&format!("stdout reader task failed: {e}"));
+                    String::new()
+                });
+                let stderr = stderr_task.await.unwrap_or_else(|e| {
+                    crate::logging::warn(&format!("stderr reader task failed: {e}"));
+                    String::new()
+                });
 
                 let mut output = String::new();
                 if !stdout.is_empty() {

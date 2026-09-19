@@ -1104,7 +1104,7 @@ export -f cargo
                     BuildRequestState::Completed => "completed",
                     BuildRequestState::Failed => "failed",
                     BuildRequestState::Cancelled => "cancelled",
-                    _ => unreachable!(),
+                    _ => "unknown",
                 }
             )));
         }

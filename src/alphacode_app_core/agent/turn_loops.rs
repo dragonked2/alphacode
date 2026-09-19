@@ -316,7 +316,35 @@ impl Agent {
             let mut openai_native_compaction: Option<(String, usize)> = None;
 
             let mut retry_after_compaction = false;
+            // Dead-stream timeout: if no event arrives within this duration,
+            // the stream is considered hung (e.g. TCP half-open after server
+            // crash). 120s is generous enough for slow providers but short
+            // enough to unblock the agent rather than hanging forever.
+            const DEAD_STREAM_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(120);
+            let mut last_stream_event = Instant::now();
             while let Some(event) = stream.next().await {
+                // Dead-stream guard: if the stream has been silent for too
+                // long, break out and surface an error.
+                if last_stream_event.elapsed() > DEAD_STREAM_TIMEOUT {
+                    log_agent_provider_stream_lifecycle(
+                        logging::LogLevel::Error,
+                        self,
+                        "stream_dead_timeout",
+                        api_start,
+                        vec![
+                            ("mode", "blocking".to_string()),
+                            (
+                                "silence_secs",
+                                last_stream_event.elapsed().as_secs().to_string(),
+                            ),
+                        ],
+                    );
+                    return Err(anyhow::anyhow!(
+                        "Provider stream hung: no events received for {}s (dead stream timeout)",
+                        last_stream_event.elapsed().as_secs()
+                    ));
+                }
+                last_stream_event = Instant::now();
                 let event = match event {
                     Ok(event) => event,
                     Err(e) => {

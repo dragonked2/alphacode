@@ -1116,6 +1116,7 @@ pub(super) fn insert_input_text(app: &mut App, text: &str) {
     // without realizing the visible picker is ready to filter.
     if app.cursor_pos == app.input.len()
         && matches!(app.input.trim_start(), "/login" | "/model" | "/models")
+        && !app.input.ends_with(' ')
     {
         app.input.push(' ');
         app.cursor_pos = app.input.len();
@@ -3436,6 +3437,13 @@ impl App {
             self.reasoning_partial_len = 0;
         }
         self.streaming.streaming_text.push_str(text);
+        // Repetition detection: check if the model is stuck in a loop
+        if self.streaming.check_repetition() && self.streaming.repetition_streak == 4 {
+            crate::logging::warn(&format!(
+                "streaming repetition detected: same pattern repeated {} times in tail of output (model may be stuck in a loop)",
+                self.streaming.repetition_streak,
+            ));
+        }
         self.refresh_split_view_if_needed();
     }
 
@@ -3509,6 +3517,7 @@ impl App {
 
     pub(super) fn clear_streaming_render_state(&mut self) {
         self.streaming.streaming_text.clear();
+        self.streaming.reset_repetition();
         self.stream_message_ended = false;
         self.deferred_stream_done_id = None;
         self.reasoning_streaming = false;
@@ -3576,6 +3585,7 @@ impl App {
 
     pub(super) fn take_streaming_text(&mut self) -> String {
         let content = std::mem::take(&mut self.streaming.streaming_text);
+        self.streaming.reset_repetition();
         self.stream_message_ended = false;
         self.deferred_stream_done_id = None;
         self.reasoning_streaming = false;
@@ -3805,6 +3815,23 @@ impl App {
 
         // Leaving the preview should happen as soon as the user acts on it.
         self.onboarding_preview_mode = false;
+
+        // Auto-invoke: if no skill was explicitly invoked via slash command,
+        // check if any auto_invoke skill matches the user's message content.
+        if self.active_skill.is_none() {
+            let skills_snapshot = self.current_skills_snapshot();
+            if let Some(skill_name) = skills_snapshot.find_auto_invoke_match(&input) {
+                self.active_skill = Some(skill_name.clone());
+                self.push_display_message(DisplayMessage {
+                    role: "system".to_string(),
+                    content: format!("Auto-activated skill: {skill_name}"),
+                    tool_calls: vec![],
+                    duration_secs: None,
+                    title: None,
+                    tool_data: None,
+                });
+            }
+        }
 
         // Add user message to display (show placeholder to user, not full paste)
         // Remember the typed prompt so we can restore it to the input box if this

@@ -1600,25 +1600,21 @@ impl App {
         // Profiles that don't require an API key and have a bundled key (like
         // Alphax Free) can skip the interactive prompt entirely — auto-save
         // the bundled key and proceed directly to catalog refresh.
-        if !resolved.requires_api_key {
-            if let Some(bundled_key) = Self::bundled_key_for_profile(profile.id) {
-                let _ = crate::provider_catalog::save_env_value_to_env_file(
-                    crate::provider_catalog::OPENAI_COMPAT_LOCAL_ENABLED_ENV,
-                    &resolved.env_file,
-                    Some("1"),
-                );
-                let _ = crate::provider_catalog::save_env_value_to_env_file(
-                    &resolved.api_key_env,
-                    &resolved.env_file,
-                    Some(bundled_key),
-                );
-                self.finish_openai_compatible_key_login(
-                    profile,
-                    bundled_key.to_string(),
-                    &resolved,
-                );
-                return;
-            }
+        if !resolved.requires_api_key
+            && let Some(bundled_key) = Self::bundled_key_for_profile(profile.id)
+        {
+            let _ = crate::provider_catalog::save_env_value_to_env_file(
+                crate::provider_catalog::OPENAI_COMPAT_LOCAL_ENABLED_ENV,
+                &resolved.env_file,
+                Some("1"),
+            );
+            let _ = crate::provider_catalog::save_env_value_to_env_file(
+                &resolved.api_key_env,
+                &resolved.env_file,
+                Some(bundled_key),
+            );
+            self.finish_openai_compatible_key_login(profile, bundled_key.to_string(), &resolved);
+            return;
         }
 
         self.start_api_key_login(

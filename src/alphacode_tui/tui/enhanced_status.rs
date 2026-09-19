@@ -583,7 +583,7 @@ impl StatusBar {
 
         // Error icon with pulsing effect
         spans.push(Span::styled(
-            "✗ ",
+            "🚫 ",
             Style::default()
                 .fg(BrandTheme::error())
                 .add_modifier(Modifier::BOLD),

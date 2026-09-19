@@ -420,8 +420,8 @@ mod tests {
         let mut p = PulseTransition::new(1.0, Easing::Linear);
         p.tick(Duration::from_millis(500));
         let val = p.value();
-        assert!(val >= 0.0 && val <= 1.0);
-        assert!(p.oscillate() >= -1.0 && p.oscillate() <= 1.0);
+        assert!((0.0..=1.0).contains(&val));
+        assert!((-1.0..=1.0).contains(&p.oscillate()));
     }
 
     #[test]

@@ -1720,14 +1720,15 @@ fn render_message_into(
             acc.raw_plain_lines.push(msg.content.clone());
             let raw_width = unicode_width::UnicodeWidthStr::width(msg.content.as_str());
             let prefix_width =
-                unicode_width::UnicodeWidthStr::width(if centered { "✗ " } else { "  ✗ " });
+                unicode_width::UnicodeWidthStr::width(if centered { "🚫 " } else { "  🚫 " });
+            // Glowing red: bright red with bold modifier for maximum visibility
+            let glowing_red = Style::default()
+                .fg(rgb(255, 50, 50))
+                .add_modifier(ratatui::style::Modifier::BOLD);
             acc.lines.push(
                 Line::from(vec![
-                    Span::styled(
-                        if centered { "✗ " } else { "  ✗ " },
-                        Style::default().fg(Color::Red),
-                    ),
-                    Span::styled(msg.content.clone(), Style::default().fg(Color::Red)),
+                    Span::styled(if centered { "🚫 " } else { "  🚫 " }, glowing_red),
+                    Span::styled(msg.content.clone(), glowing_red),
                 ])
                 .alignment(align),
             );

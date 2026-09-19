@@ -24,12 +24,21 @@ const PASTE_ENTER_SUPPRESS_WINDOW: Duration = Duration::from_millis(500);
 /// for this additional window so late-arriving Enter from conhost is caught.
 const PASTE_POST_WINDOW: Duration = Duration::from_millis(200);
 
+/// Hard safety timeout: if `PASTE_IN_FLIGHT` has been set for longer than
+/// this without a matching end event, force-clear it so Enter is not
+/// permanently swallowed.  Covers torn reads, terminal bugs, or crossterm
+/// delivering a paste-start without a matching end.
+const PASTE_FLIGHT_SAFETY_TIMEOUT: Duration = Duration::from_secs(5);
+
 thread_local! {
     /// Timestamp of the most recent bracketed-paste event (start or end).
     static LAST_PASTE: Cell<Option<Instant>> = const { Cell::new(None) };
     /// Number of newlines counted in the current paste so we can scale the
     /// suppression window proportionally for very long pastes.
     static PASTE_NEWLINE_COUNT: Cell<usize> = const { Cell::new(0) };
+    /// Timestamp when PASTE_IN_FLIGHT was last set, used for the safety
+    /// timeout that prevents Enter from being permanently swallowed.
+    static PASTE_FLIGHT_STARTED: Cell<Option<Instant>> = const { Cell::new(None) };
 }
 
 /// Global flag: true while a bracketed-paste sequence is in flight.
@@ -41,6 +50,7 @@ static PASTE_IN_FLIGHT: AtomicBool = AtomicBool::new(false);
 #[allow(dead_code)]
 pub(super) fn note_paste_start() {
     PASTE_IN_FLIGHT.store(true, Ordering::Relaxed);
+    PASTE_FLIGHT_STARTED.with(|cell| cell.set(Some(Instant::now())));
     LAST_PASTE.with(|cell| cell.set(Some(Instant::now())));
     PASTE_NEWLINE_COUNT.with(|cell| cell.set(0));
 }
@@ -61,12 +71,19 @@ pub(super) fn note_paste() {
         PASTE_NEWLINE_COUNT.with(|cell| cell.set(0));
     }
     LAST_PASTE.with(|cell| cell.set(Some(Instant::now())));
+    // A standalone crossterm paste is a complete start-to-finish sequence,
+    // so clear any lingering in-flight flag from a previous incomplete one.
+    if PASTE_IN_FLIGHT.load(Ordering::Relaxed) {
+        PASTE_IN_FLIGHT.store(false, Ordering::Relaxed);
+        PASTE_FLIGHT_STARTED.with(|cell| cell.set(None));
+    }
 }
 
 /// Record that a bracketed-paste sequence has finished.
 #[allow(dead_code)]
 pub(super) fn note_paste_end() {
     PASTE_IN_FLIGHT.store(false, Ordering::Relaxed);
+    PASTE_FLIGHT_STARTED.with(|cell| cell.set(None));
     // Keep LAST_PASTE so the trailing suppression window still fires.
 }
 
@@ -109,9 +126,26 @@ fn effective_suppress_window() -> Duration {
 /// suppression window after a paste, meaning it belongs to the paste rather
 /// than being a user submit.
 pub(super) fn consume_paste_trailing_enter() -> bool {
-    // If a paste is actively in flight, always suppress Enter.
+    // If a paste is actively in flight, suppress Enter — but only if the
+    // in-flight flag was set recently.  A stale flag (terminal bug, torn read)
+    // would permanently swallow every Enter, freezing input.
     if PASTE_IN_FLIGHT.load(Ordering::Relaxed) {
-        return true;
+        let timed_out = PASTE_FLIGHT_STARTED.with(|cell| {
+            cell.get()
+                .is_some_and(|at| at.elapsed() > PASTE_FLIGHT_SAFETY_TIMEOUT)
+        });
+        if timed_out {
+            // Safety timeout: the paste-start was never followed by a paste-end
+            // (or crossterm delivered the paste payload without a bracketed end).
+            // Force-clear the flag so normal typing resumes.
+            PASTE_IN_FLIGHT.store(false, Ordering::Relaxed);
+            PASTE_FLIGHT_STARTED.with(|cell| cell.set(None));
+            crate::logging::warn(
+                "[paste_guard] PASTE_IN_FLIGHT stuck for >5s; force-cleared to prevent input freeze",
+            );
+        } else {
+            return true;
+        }
     }
     LAST_PASTE.with(|cell| {
         cell.take()

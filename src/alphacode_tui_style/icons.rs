@@ -220,9 +220,9 @@ impl Icon {
             (Self::Warn, TerminalClass::Modern | TerminalClass::Mainstream) => "⚠",
             (Self::Warn, TerminalClass::Minimal) => "!",
 
-            (Self::Error, TerminalClass::Modern) => "⨯",
-            (Self::Error, TerminalClass::Mainstream) => "✕",
-            (Self::Error, TerminalClass::Minimal) => "x",
+            (Self::Error, TerminalClass::Modern) => "🚫",
+            (Self::Error, TerminalClass::Mainstream) => "🚫",
+            (Self::Error, TerminalClass::Minimal) => "!",
 
             (Self::Queued, _) => "…",
 

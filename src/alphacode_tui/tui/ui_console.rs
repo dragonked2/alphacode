@@ -218,7 +218,7 @@ pub fn success_badge(message: &str) -> ConsoleLine {
 
 /// Error badge for failed operations.
 pub fn error_badge(message: &str) -> ConsoleLine {
-    ConsoleLine::bold(format!("  ✗  {}", message), OutputColor::Error)
+    ConsoleLine::bold(format!("  🚫  {}", message), OutputColor::Error)
 }
 
 /// Warning badge for non-fatal issues.

@@ -439,8 +439,8 @@ impl App {
 
         let key_label = crate::alphacode_tui::tui::keybind::fallback_switch_key_label();
         self.push_display_message(DisplayMessage::system(format!(
-            "↪ Reroute available: press {} to switch to {} and resend this request.\n\nGuardrail refusals are model-side; a stronger model often handles the same request (was {}).",
-            key_label, target_label, from_label,
+            "↪ Reroute available: press {} to switch to {} and resend this request.\n\nGuardrail refusals are model-side; a stronger model often handles the same request.",
+            key_label, target_label,
         )));
         self.set_status_notice(format!("Press {} to reroute to {}", key_label, route.model));
         self.pending_fallback_offer = Some(super::PendingFallbackOffer {
@@ -823,6 +823,20 @@ impl App {
                 super::commands::stop_auto_poke_for_non_retryable_error(self, &error);
                 self.stop_overnight_auto_poke_for_non_retryable_error(&error);
             }
+        } else if self.is_remote
+            && crate::alphacode_provider_core::retry::is_retryable_message(&error)
+        {
+            // Transient upstream provider failures (Nvidia overloaded,
+            // temporarily unavailable, upstream timeout, etc.) are always
+            // retryable. Instead of stopping auto-poke or requiring manual
+            // intervention, show a brief notice and let the automatic retry
+            // mechanism resend the request with exponential backoff.
+            self.push_display_message(DisplayMessage::system(format!(
+                "Transient upstream error: {} -- retrying automatically",
+                error.trim().chars().take(120).collect::<String>()
+            )));
+            // Do NOT stop auto-poke or overnight-poke: the provider may
+            // recover in seconds and the retry budget will handle exhaustion.
         } else {
             // Offer a one-keypress switch to the next best model/auth-method
             // (e.g. broken API key -> working OAuth login) before giving up. The

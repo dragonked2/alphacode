@@ -64,7 +64,7 @@ pub fn confirmation_badge(success: bool, label: &str) -> Line<'static> {
     let (icon, color, modifier) = if success {
         (" ✓ ", BrandTheme::success(), Modifier::BOLD)
     } else {
-        (" ✗ ", BrandTheme::error(), Modifier::BOLD)
+        (" 🚫 ", BrandTheme::error(), Modifier::BOLD)
     };
     Line::from(vec![
         Span::styled(icon, Style::default().fg(color).add_modifier(modifier)),
@@ -98,7 +98,7 @@ pub fn status_line(label: &str, status: &status_indicator::Status) -> Line<'stat
     let (icon, color) = match status {
         status_indicator::Status::Active => ("●", BrandTheme::success()),
         status_indicator::Status::Idle => ("○", BrandTheme::dim()),
-        status_indicator::Status::Error => ("✗", BrandTheme::error()),
+        status_indicator::Status::Error => ("🚫", BrandTheme::error()),
         status_indicator::Status::Warning => ("⚠", BrandTheme::warning()),
         status_indicator::Status::Loading => ("◌", BrandTheme::info()),
     };
@@ -316,7 +316,7 @@ mod tests {
     #[test]
     fn confirmation_badge_failure() {
         let line = confirmation_badge(false, "Test");
-        assert!(line.to_string().contains("✗"));
+        assert!(line.to_string().contains("🚫"));
     }
 
     #[test]

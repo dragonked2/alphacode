@@ -233,8 +233,32 @@ pub fn is_retryable_message(error_str: &str) -> bool {
         "bad gateway",
         "gateway timeout",
         "service temporarily unavailable",
+        "service temporarily overloaded",
         "currently handling high load",
         "request failed", // generic server-side failure
+        // Upstream provider forwarding errors (Nvidia, OpenRouter, etc.)
+        "upstream error",
+        "upstream temporarily",
+        "upstream overloaded",
+        "upstream unavailable",
+        "upstream timeout",
+        "upstream provider",
+        "provider temporarily",
+        "provider overloaded",
+        "provider unavailable",
+        "api temporarily",
+        "api overloaded",
+        "api unavailable",
+        "request timeout",
+        "deadline exceeded",
+        "resource exhausted",
+        "quota exceeded",
+        "too many concurrent",
+        "concurrent request",
+        "busy",
+        "temporary failure",
+        "transient error",
+        "try again",
     ] {
         if lower.contains(needle) {
             return true;

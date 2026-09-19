@@ -805,6 +805,74 @@ struct StreamingProgress {
     streaming_tps_observed_output_tokens: u64,
     /// Streaming-only elapsed time corresponding to streaming_tps_observed_output_tokens.
     streaming_tps_observed_elapsed: Duration,
+    /// Repetition detection: number of consecutive times the most recent n-gram
+    /// has appeared at the end of the streaming buffer. Resets when new unique
+    /// content arrives.
+    repetition_streak: u32,
+}
+
+impl StreamingProgress {
+    /// Check whether the tail of `streaming_text` shows a repeating pattern.
+    /// Returns `true` when the model appears stuck in a loop (same n-gram
+    /// repeated `MIN_STREAK` times or more). The check is O(window) and
+    /// intentionally cheap — called on every streaming delta.
+    fn check_repetition(&mut self) -> bool {
+        const MIN_STREAK: u32 = 4;
+        const MIN_CHUNK: usize = 20;
+        const MAX_CHUNK: usize = 120;
+        const WINDOW: usize = 2000;
+
+        let text = &self.streaming_text;
+        let tail_len = text.len().min(WINDOW);
+        if tail_len < MIN_CHUNK * MIN_STREAK as usize {
+            self.repetition_streak = 0;
+            return false;
+        }
+        let tail = &text[text.len() - tail_len..];
+
+        // Try chunk sizes from MIN_CHUNK..=MAX_CHUNK and look for the longest
+        // repeating suffix. We want the *largest* stable chunk because that
+        // catches real model-stuck loops (not coincidental word overlaps).
+        let mut best_streak = 0u32;
+        for chunk_size in (MIN_CHUNK..=MAX_CHUNK).rev() {
+            if tail_len < chunk_size * MIN_STREAK as usize {
+                continue;
+            }
+            let chunk = &tail[tail_len - chunk_size..];
+            let mut streak = 1u32;
+            let mut pos = tail_len - chunk_size;
+            while pos >= chunk_size {
+                let prev = &tail[pos - chunk_size..pos];
+                if prev == chunk {
+                    streak += 1;
+                    pos -= chunk_size;
+                } else {
+                    break;
+                }
+            }
+            if streak >= MIN_STREAK && streak > best_streak {
+                best_streak = streak;
+            }
+            // Early exit: found a long enough streak
+            if best_streak >= MIN_STREAK {
+                break;
+            }
+        }
+
+        if best_streak >= MIN_STREAK {
+            self.repetition_streak = best_streak;
+            true
+        } else {
+            // Decay streak by 1 if new content arrived (allow brief noise)
+            self.repetition_streak = self.repetition_streak.saturating_sub(1);
+            false
+        }
+    }
+
+    /// Reset repetition state at the start of a new turn.
+    fn reset_repetition(&mut self) {
+        self.repetition_streak = 0;
+    }
 }
 
 /// Accumulated session cost and cached per-model pricing.

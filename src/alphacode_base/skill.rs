@@ -20,6 +20,9 @@ pub struct Skill {
     pub content: String,
     pub path: PathBuf,
     search_text: String,
+    /// When `true`, the skill is automatically activated when the user's message
+    /// matches keywords in its description or search text.
+    pub auto_invoke: bool,
     /// Reference files bundled in the skill directory (e.g. `references/*.md`).
     /// Keyed by filename relative to the skill directory.
     pub reference_files: HashMap<String, String>,
@@ -505,7 +508,7 @@ impl SkillRegistry {
             name,
             description,
             allowed_tools,
-            auto_invoke: _,
+            auto_invoke,
             aliases: _,
             sources: _,
         } = frontmatter;
@@ -524,6 +527,7 @@ impl SkillRegistry {
             content: body,
             path: path.to_path_buf(),
             search_text,
+            auto_invoke: auto_invoke.unwrap_or(false),
             reference_files,
         })
     }
@@ -608,7 +612,7 @@ impl SkillRegistry {
             name: frontmatter_name,
             description,
             allowed_tools,
-            auto_invoke: _,
+            auto_invoke,
             aliases: _,
             sources: _,
         } = frontmatter;
@@ -626,6 +630,7 @@ impl SkillRegistry {
             content: body,
             path: PathBuf::from(format!("<embedded:{name}>")),
             search_text,
+            auto_invoke: auto_invoke.unwrap_or(false),
             reference_files,
         })
     }
@@ -721,6 +726,40 @@ impl SkillRegistry {
         let mut skills: Vec<&Skill> = self.skills.values().collect();
         skills.sort_by(|a, b| a.name.cmp(&b.name));
         skills
+    }
+
+    /// Find the first `auto_invoke` skill whose search text matches keywords in
+    /// the user's message. Matching is case-insensitive and requires at least 2
+    /// non-trivial words from the skill's search text to appear in `message`.
+    /// Returns `Some(skill_name)` on match, `None` otherwise.
+    pub fn find_auto_invoke_match(&self, message: &str) -> Option<String> {
+        let msg_lower = message.to_lowercase();
+        let msg_words: Vec<&str> = msg_lower.split_whitespace().collect();
+        if msg_words.len() < 2 {
+            return None;
+        }
+
+        for skill in self.skills.values() {
+            if !skill.auto_invoke {
+                continue;
+            }
+            // Check if any meaningful words from the skill's search text appear
+            // in the user message. We require at least 2 matches to avoid false
+            // positives on generic words like "the", "a", "is".
+            let search_lower = skill.search_text.to_lowercase();
+            let search_words: Vec<&str> = search_lower
+                .split_whitespace()
+                .filter(|w| w.len() > 3)
+                .collect();
+            let matches = search_words
+                .iter()
+                .filter(|sw| msg_words.iter().any(|mw| mw.contains(*sw)))
+                .count();
+            if matches >= 2 {
+                return Some(skill.name.clone());
+            }
+        }
+        None
     }
 
     /// Reload a specific skill by name
@@ -1356,6 +1395,7 @@ mod tests {
             content: content.to_string(),
             path: PathBuf::from(format!("/tmp/{name}/SKILL.md")),
             search_text: build_skill_search_text(name, description, content),
+            auto_invoke: false,
             reference_files: HashMap::new(),
         }
     }

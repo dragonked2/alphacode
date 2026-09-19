@@ -73,7 +73,7 @@ fn swarm_status_style(status: &str) -> (Color, &'static str) {
         "ready" => (rgb(120, 180, 120), "●"),
         "running" => (rgb(255, 200, 100), "▶"),
         "blocked" => (rgb(255, 170, 80), "⏸"),
-        "failed" => (rgb(255, 100, 100), "✗"),
+        "failed" => (rgb(255, 100, 100), "🚫"),
         "completed" => (rgb(100, 200, 100), "✓"),
         "stopped" => (rgb(140, 140, 150), "■"),
         "crashed" => (rgb(255, 80, 80), "!"),

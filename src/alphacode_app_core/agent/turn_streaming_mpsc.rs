@@ -440,10 +440,37 @@ impl Agent {
 
             let mut retry_after_compaction = false;
             let mut keepalive = stream_keepalive_ticker();
+            // Dead-stream detection: track when the last real stream event
+            // arrived. If the keepalive fires and the stream has been silent
+            // for >120s, the stream is considered hung (TCP half-open etc.).
+            let mut last_stream_event = Instant::now();
+            const DEAD_STREAM_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(120);
             loop {
                 let next_event = std::pin::pin!(stream.next());
                 let event = tokio::select! {
                     _ = keepalive.tick() => {
+                        // Dead-stream guard: if no real stream event arrived
+                        // within the timeout, the stream is hung.
+                        if last_stream_event.elapsed() > DEAD_STREAM_TIMEOUT {
+                            log_agent_provider_stream_lifecycle(
+                                logging::LogLevel::Error,
+                                self,
+                                "stream_dead_timeout",
+                                api_start,
+                                vec![
+                                    ("mode", "mpsc".to_string()),
+                                    (
+                                        "silence_secs",
+                                        last_stream_event.elapsed().as_secs().to_string(),
+                                    ),
+                                ],
+                            );
+                            logging::error(&format!(
+                                "Provider stream hung: no events for {}s (dead stream timeout)",
+                                last_stream_event.elapsed().as_secs()
+                            ));
+                            break;
+                        }
                         send_stream_keepalive_mpsc(&event_tx);
                         continue;
                     }
@@ -465,6 +492,9 @@ impl Agent {
                     }
                     event = next_event => event,
                 };
+
+                // A real event arrived — reset the dead-stream timer.
+                last_stream_event = Instant::now();
 
                 if activity_mark_last.elapsed() >= std::time::Duration::from_secs(2) {
                     activity_mark_last = Instant::now();

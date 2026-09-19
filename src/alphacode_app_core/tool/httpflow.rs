@@ -61,6 +61,8 @@ struct HttpFlowInput {
     extract_csrf: Option<bool>,
     #[serde(default)]
     csrf_selector: Option<String>,
+    #[serde(default)]
+    timeout: Option<u64>,
 }
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
@@ -212,6 +214,11 @@ impl HttpFlowTool {
                 "OPTIONS" => self.client.request(reqwest::Method::OPTIONS, &current_url),
                 _ => self.client.get(&current_url),
             };
+
+            // Per-request timeout (default 60s, max 120s) so a slow server
+            // cannot block the agent turn indefinitely.
+            let timeout_secs = params.timeout.unwrap_or(60).min(120);
+            request_builder = request_builder.timeout(std::time::Duration::from_secs(timeout_secs));
 
             // Attach cookies from the jar to this request.
             {

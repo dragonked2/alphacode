@@ -578,7 +578,7 @@ mod tests {
             let t = i as f32 / 200.0;
             let val = ease_out_bounce(t);
             assert!(
-                val >= -0.01 && val <= 1.01,
+                (-0.01..=1.01).contains(&val),
                 "bounce out of bounds at t={t}: {val}"
             );
         }

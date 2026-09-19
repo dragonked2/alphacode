@@ -18,6 +18,43 @@ const MAX_URL_CHARS: usize = 300;
 const DEFAULT_TIMEOUT: u64 = 30;
 const MAX_TIMEOUT: u64 = 120;
 
+/// User-Agent strings tried in order when anti-bot challenges are detected.
+/// The first is a generic bot UA (fast, low footprint); subsequent ones mimic
+/// real browsers to bypass Cloudflare/bot-detection heuristics.
+const USER_AGENTS: &[&str] = &[
+    "Mozilla/5.0 (compatible; Alphacode/1.0)",
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36",
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 14_5) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.5 Safari/605.1.15",
+];
+
+/// Returns `true` when `body` looks like an anti-bot challenge page rather
+/// than real content. These pages typically have very little body text and
+/// contain known challenge markers.
+fn detect_anti_bot_page(body: &str) -> Option<&'static str> {
+    let lower = body.to_ascii_lowercase();
+    // Cloudflare challenge
+    if lower.contains("cf-browser-verification")
+        || lower.contains("checking your browser")
+        || lower.contains("just a moment")
+        || lower.contains("enable javascript and cookies")
+        || lower.contains("ray id")
+    {
+        return Some("Cloudflare challenge");
+    }
+    // PerimeterX / HUMAN
+    if lower.contains("px-captcha") || lower.contains("please verify you are human") {
+        return Some("PerimeterX challenge");
+    }
+    // Generic "access denied" or captcha pages with minimal real content
+    if (lower.contains("access denied") || lower.contains("captcha"))
+        && body.len() < 50_000
+        && body.split_whitespace().count() < 200
+    {
+        return Some("generic captcha/denial page");
+    }
+    None
+}
+
 pub struct WebFetchTool {
     client: reqwest::Client,
 }
@@ -88,140 +125,177 @@ impl Tool for WebFetchTool {
         let timeout = params.timeout.unwrap_or(DEFAULT_TIMEOUT).min(MAX_TIMEOUT);
         let format = params.format.as_deref().unwrap_or("markdown");
 
-        // Use the unified retry policy so a flaky CDN doesn't burn the user's
-        // time on a 5-minute backoff. WebFetch is GET-only, so all retries are
-        // safe by default. The  wrapper pushes a
-        // dismissible toast on every retry so the user sees the countdown.
-        let request = self
-            .client
-            .get(&params.url)
-            .header(
-                reqwest::header::USER_AGENT,
-                "Mozilla/5.0 (compatible; Alphacode/1.0)",
-            )
-            .timeout(Duration::from_secs(timeout))
-            .build()
-            .context("failed to build webfetch request")?;
-        let response = crate::alphacode_provider_core::retry::send_with_retry(
-            &self.client,
-            request,
-            &crate::alphacode_provider_core::retry::policy_with_tui_toast(
-                crate::alphacode_provider_core::retry::RetryPolicy::for_http_tools(),
-            ),
-            "webfetch",
-        )
-        .await?;
+        let mut last_err: Option<anyhow::Error> = None;
 
-        let status = response.status();
-        if !status.is_success() {
-            return Err(anyhow::anyhow!("HTTP error: {}", status));
-        }
+        for (attempt, &ua) in USER_AGENTS.iter().enumerate() {
+            let request = self
+                .client
+                .get(&params.url)
+                .header(reqwest::header::USER_AGENT, ua)
+                .timeout(Duration::from_secs(timeout))
+                .build()
+                .context("failed to build webfetch request")?;
 
-        // Capture key headers before consuming response
-        let resp_headers: HashMap<String, String> = response
-            .headers()
-            .iter()
-            .filter(|(k, _)| {
-                matches!(
-                    k.as_str(),
-                    "set-cookie"
-                        | "location"
-                        | "content-type"
-                        | "x-frame-options"
-                        | "content-security-policy"
+            let response = if attempt == 0 {
+                // First attempt uses the standard retry policy (handles transient HTTP errors).
+                crate::alphacode_provider_core::retry::send_with_retry(
+                    &self.client,
+                    request,
+                    &crate::alphacode_provider_core::retry::policy_with_tui_toast(
+                        crate::alphacode_provider_core::retry::RetryPolicy::for_http_tools(),
+                    ),
+                    "webfetch",
                 )
-            })
-            .map(|(k, v)| (k.to_string(), v.to_str().unwrap_or("").to_string()))
-            .collect();
+                .await
+            } else {
+                // Subsequent attempts (anti-bot fallback) are direct sends — the
+                // first attempt already exhausted transient retries.
+                self.client.execute(request).await.map_err(|e| e.into())
+            };
 
-        // Check content length
-        if let Some(len) = response.content_length()
-            && len as usize > MAX_SIZE
-        {
-            return Err(anyhow::anyhow!(
-                "Response too large: {} bytes (max {} bytes)",
-                len,
-                MAX_SIZE
-            ));
-        }
+            let response = match response {
+                Ok(r) => r,
+                Err(e) => {
+                    last_err = Some(e.into());
+                    continue;
+                }
+            };
 
-        let content_type = response
-            .headers()
-            .get("content-type")
-            .and_then(|v| v.to_str().ok())
-            .unwrap_or("")
-            .to_string();
-
-        let mut body_bytes = Vec::new();
-        let mut truncated = false;
-        let mut stream = response.bytes_stream();
-        while let Some(chunk) = stream.next().await {
-            let chunk = chunk?;
-            let remaining = MAX_SIZE.saturating_sub(body_bytes.len());
-            if chunk.len() > remaining {
-                body_bytes.extend_from_slice(&chunk[..remaining]);
-                truncated = true;
-                break;
+            let status = response.status();
+            if !status.is_success() {
+                last_err = Some(anyhow::anyhow!("HTTP error: {}", status));
+                continue;
             }
-            body_bytes.extend_from_slice(&chunk);
-        }
 
-        let mut body = String::from_utf8_lossy(&body_bytes).into_owned();
-        if truncated {
-            body.push_str(&format!(
-                "...\n\n(truncated, showing first {} bytes)",
-                MAX_SIZE
-            ));
-        }
+            // Capture key headers before consuming response
+            let resp_headers: HashMap<String, String> = response
+                .headers()
+                .iter()
+                .filter(|(k, _)| {
+                    matches!(
+                        k.as_str(),
+                        "set-cookie"
+                            | "location"
+                            | "content-type"
+                            | "x-frame-options"
+                            | "content-security-policy"
+                    )
+                })
+                .map(|(k, v)| (k.to_string(), v.to_str().unwrap_or("").to_string()))
+                .collect();
 
-        // Format output
-        let output = match format {
-            "html" => body,
-            "text" => html_to_text(&body),
-            "markdown" => {
-                if content_type.contains("text/html") {
-                    html_to_markdown(&body)
-                } else {
-                    body
+            // Check content length
+            if let Some(len) = response.content_length()
+                && len as usize > MAX_SIZE
+            {
+                return Err(anyhow::anyhow!(
+                    "Response too large: {} bytes (max {} bytes)",
+                    len,
+                    MAX_SIZE
+                ));
+            }
+
+            let content_type = response
+                .headers()
+                .get("content-type")
+                .and_then(|v| v.to_str().ok())
+                .unwrap_or("")
+                .to_string();
+
+            let mut body_bytes = Vec::new();
+            let mut truncated = false;
+            let mut stream = response.bytes_stream();
+            while let Some(chunk) = stream.next().await {
+                let chunk = chunk?;
+                let remaining = MAX_SIZE.saturating_sub(body_bytes.len());
+                if chunk.len() > remaining {
+                    body_bytes.extend_from_slice(&chunk[..remaining]);
+                    truncated = true;
+                    break;
+                }
+                body_bytes.extend_from_slice(&chunk);
+            }
+
+            let mut body = String::from_utf8_lossy(&body_bytes).into_owned();
+            if truncated {
+                body.push_str(&format!(
+                    "...\n\n(truncated, showing first {} bytes)",
+                    MAX_SIZE
+                ));
+            }
+
+            // Anti-bot detection: if the page looks like a challenge and we
+            // have more User-Agents to try, retry silently.
+            if attempt + 1 < USER_AGENTS.len()
+                && let Some(reason) = detect_anti_bot_page(&body)
+            {
+                crate::logging::info(&format!(
+                    "webfetch: {reason} detected for {}, retrying with fallback User-Agent (attempt {}/{})",
+                    params.url,
+                    attempt + 2,
+                    USER_AGENTS.len(),
+                ));
+                last_err = Some(anyhow::anyhow!(
+                    "anti-bot challenge ({reason}), retrying with different browser fingerprint"
+                ));
+                continue;
+            }
+
+            // Format output
+            let output = match format {
+                "html" => body,
+                "text" => html_to_text(&body),
+                "markdown" => {
+                    if content_type.contains("text/html") {
+                        html_to_markdown(&body)
+                    } else {
+                        body
+                    }
+                }
+                _ => {
+                    if content_type.contains("text/html") {
+                        html_to_markdown(&body)
+                    } else {
+                        body
+                    }
+                }
+            };
+
+            let full_len = output.len();
+            let (output, output_truncated) = truncate_output(output);
+
+            let note = if output_truncated {
+                let saved_k = (full_len - output.len()) / 4 / 1000;
+                format!(
+                    "\n\n[Truncated: ~{saved_k}k tokens saved — fetch a more specific URL or anchor for the rest]"
+                )
+            } else {
+                String::new()
+            };
+
+            // Compact header: show size in KB with one decimal, and line count
+            // for quick context assessment.
+            let line_count = output.lines().count();
+            let mut header = format!(
+                "Fetched {} ({:.1}KB, {} lines)\n",
+                params.url,
+                full_len as f64 / 1024.0,
+                line_count,
+            );
+            if attempt > 0 {
+                header.push_str("(retrieved with fallback User-Agent after anti-bot challenge)\n");
+            }
+            // Show important response headers
+            for h in ["set-cookie", "location", "content-security-policy"] {
+                if let Some(val) = resp_headers.get(h) {
+                    header.push_str(&format!("{}: {}\n", h, val));
                 }
             }
-            _ => {
-                if content_type.contains("text/html") {
-                    html_to_markdown(&body)
-                } else {
-                    body
-                }
-            }
-        };
-
-        let full_len = output.len();
-        let (output, output_truncated) = truncate_output(output);
-
-        let note = if output_truncated {
-            let saved_k = (full_len - output.len()) / 4 / 1000;
-            format!(
-                "\n\n[Truncated: ~{saved_k}k tokens saved — fetch a more specific URL or anchor for the rest]"
-            )
-        } else {
-            String::new()
-        };
-
-        // Compact header: show size in KB with one decimal, and line count
-        // for quick context assessment.
-        let line_count = output.lines().count();
-        let mut header = format!(
-            "Fetched {} ({:.1}KB, {} lines)\n",
-            params.url,
-            full_len as f64 / 1024.0,
-            line_count,
-        );
-        // Show important response headers
-        for h in ["set-cookie", "location", "content-security-policy"] {
-            if let Some(val) = resp_headers.get(h) {
-                header.push_str(&format!("{}: {}\n", h, val));
-            }
+            return Ok(ToolOutput::new(format!("{}\n\n{}{}", header, output, note)));
         }
-        Ok(ToolOutput::new(format!("{}\n\n{}{}", header, output, note)))
+
+        // All User-Agents exhausted
+        Err(last_err.unwrap_or_else(|| anyhow::anyhow!("webfetch: all attempts failed")))
     }
 }
 
