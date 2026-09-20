@@ -7,7 +7,6 @@ use std::path::PathBuf;
 const ALLOW_LEGACY_AUTH_ENV: &str = "ALPHACODE_ALLOW_CODEX_LEGACY_AUTH";
 pub const LEGACY_CODEX_AUTH_SOURCE_ID: &str = "openai_codex_auth_json";
 
-#[derive(Debug, Clone)]
 pub struct CodexCredentials {
     pub access_token: String,
     pub refresh_token: String,
@@ -16,7 +15,19 @@ pub struct CodexCredentials {
     pub expires_at: Option<i64>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+impl std::fmt::Debug for CodexCredentials {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("CodexCredentials")
+            .field("access_token", &redact_token(&self.access_token))
+            .field("refresh_token", &redact_token(&self.refresh_token))
+            .field("id_token", &self.id_token.as_ref().map(|_| "[REDACTED]"))
+            .field("account_id", &self.account_id)
+            .field("expires_at", &self.expires_at)
+            .finish()
+    }
+}
+
+#[derive(Clone, Serialize, Deserialize)]
 pub struct OpenAiAccount {
     pub label: String,
     pub access_token: String,
@@ -29,6 +40,29 @@ pub struct OpenAiAccount {
     pub expires_at: Option<i64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub email: Option<String>,
+}
+
+impl std::fmt::Debug for OpenAiAccount {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("OpenAiAccount")
+            .field("label", &self.label)
+            .field("access_token", &redact_token(&self.access_token))
+            .field("refresh_token", &redact_token(&self.refresh_token))
+            .field("id_token", &self.id_token.as_ref().map(|_| "[REDACTED]"))
+            .field("account_id", &self.account_id)
+            .field("expires_at", &self.expires_at)
+            .field("email", &self.email)
+            .finish()
+    }
+}
+
+/// Redact a token for safe Debug output: show only first 4 and last 4 chars.
+fn redact_token(token: &str) -> String {
+    if token.len() <= 8 {
+        "*".repeat(token.len())
+    } else {
+        format!("{}...{}", &token[..4], &token[token.len() - 4..])
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]

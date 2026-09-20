@@ -3493,7 +3493,9 @@ impl App {
                                     self.session.model = Some(active_model.clone());
                                     self.session.route_api_method =
                                         Some(route_selection.api_method.clone());
-                                    let _ = self.session.save();
+                                    if let Err(e) = self.session.save() {
+                                        crate::logging::warn(&format!("Failed to save session: {e}"));
+                                    }
                                     crate::logging::event_info(
                                         "model_picker_select_applied",
                                         vec![

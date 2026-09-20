@@ -138,6 +138,15 @@ impl App {
                                         self.interleave_message = None;
                                         self.pending_soft_interrupts.clear();
                                         self.pending_soft_interrupt_requests.clear();
+                                        if self.repetition_auto_retry {
+                                            // Auto-retry: silently discard the stuck
+                                            // stream and re-run the turn.
+                                            self.repetition_auto_retry = false;
+                                            self.clear_streaming_render_state();
+                                            self.stream_buffer.clear();
+                                            self.streaming_tool_calls.clear();
+                                            continue 'turn_loop;
+                                        }
                                         self.clear_streaming_render_state();
                                         self.stream_buffer.clear();
                                         self.streaming_tool_calls.clear();
@@ -304,6 +313,15 @@ impl App {
                                         self.interleave_message = None;
                                         self.pending_soft_interrupts.clear();
                                         self.pending_soft_interrupt_requests.clear();
+                                        if self.repetition_auto_retry {
+                                            // Auto-retry: silently discard the stuck
+                                            // stream and re-run the turn.
+                                            self.repetition_auto_retry = false;
+                                            self.clear_streaming_render_state();
+                                            self.stream_buffer.clear();
+                                            self.streaming_tool_calls.clear();
+                                            continue 'turn_loop;
+                                        }
                                         // Save partial assistant response before clearing
                                         if let Some(tool) = current_tool.take() {
                                             tool_calls.push(tool);
@@ -343,7 +361,9 @@ impl App {
                                                     tool_duration_ms: None,
                                                 });
                                                 self.session.add_message(Role::Assistant, content_clone);
-                                                let _ = self.session.save();
+                                                if let Err(e) = self.session.save() {
+                                                    crate::logging::warn(&format!("Failed to save session after partial response: {e}"));
+                                                }
                                             }
                                             // Flush buffer and show partial response
                                             let ops = self.stream_buffer.flush();
@@ -1102,7 +1122,9 @@ impl App {
                     tool_duration_ms: None,
                 });
                 let message_id = self.session.add_message(Role::Assistant, content_clone);
-                let _ = self.session.save();
+                if let Err(e) = self.session.save() {
+                    crate::logging::warn(&format!("Failed to save session after assistant message: {e}"));
+                }
                 for tc in &tool_calls {
                     self.tool_result_ids.insert(tc.id.clone());
                 }
@@ -1180,7 +1202,9 @@ impl App {
                         });
                         self.session.add_message(Role::User, blocks);
                     }
-                    let _ = self.session.save();
+                    if let Err(e) = self.session.save() {
+                        crate::logging::warn(&format!("Failed to save session after image context: {e}"));
+                    }
                     crate::logging::info(
                         "Continuing turn so model can inspect generated image visual context",
                     );
@@ -1482,7 +1506,9 @@ impl App {
                 self.observe_tool_result(&tc, &output, is_error, tool_title.as_deref());
                 self.note_tool_completed(&tc, is_error);
                 self.note_todo_gate_result(&tc, &output, is_error);
-                let _ = self.session.save();
+                if let Err(e) = self.session.save() {
+                    crate::logging::warn(&format!("Failed to save session after tool result: {e}"));
+                }
             }
 
             if !generated_image_contexts.is_empty() {
@@ -1495,7 +1521,9 @@ impl App {
                     });
                     self.session.add_message(Role::User, blocks);
                 }
-                let _ = self.session.save();
+                if let Err(e) = self.session.save() {
+                    crate::logging::warn(&format!("Failed to save session after generated images: {e}"));
+                }
             }
         }
 

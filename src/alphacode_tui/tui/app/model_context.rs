@@ -52,7 +52,9 @@ impl App {
                 self.session.provider_key.as_deref(),
             );
         self.session.model = Some(active_model.clone());
-        let _ = self.session.save();
+        if let Err(e) = self.session.save() {
+            crate::logging::warn(&format!("Failed to save session: {e}"));
+        }
         active_model
     }
 
@@ -499,7 +501,9 @@ impl App {
                     );
                 self.session.model = Some(active_model.clone());
                 self.session.route_api_method = Some(offer.selection.api_method.clone());
-                let _ = self.session.save();
+                if let Err(e) = self.session.save() {
+            crate::logging::warn(&format!("Failed to save session: {e}"));
+        }
                 self.push_display_message(DisplayMessage::system(format!(
                     "↪ Switched to {} and resending (was {}).",
                     offer.target_label, offer.from_label,

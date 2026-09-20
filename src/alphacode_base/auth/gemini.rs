@@ -93,13 +93,33 @@ impl GeminiCliCommand {
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Clone, Serialize, Deserialize)]
 pub struct GeminiTokens {
     pub access_token: String,
     pub refresh_token: String,
     pub expires_at: i64,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub email: Option<String>,
+}
+
+impl std::fmt::Debug for GeminiTokens {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("GeminiTokens")
+            .field("access_token", &redact_token(&self.access_token))
+            .field("refresh_token", &redact_token(&self.refresh_token))
+            .field("expires_at", &self.expires_at)
+            .field("email", &self.email)
+            .finish()
+    }
+}
+
+/// Redact a token for safe Debug output: show only first 4 and last 4 chars.
+fn redact_token(token: &str) -> String {
+    if token.len() <= 8 {
+        "*".repeat(token.len())
+    } else {
+        format!("{}...{}", &token[..4], &token[token.len() - 4..])
+    }
 }
 
 impl GeminiTokens {

@@ -713,7 +713,7 @@ fn push_if_fits<'a>(
     text: String,
     style: Style,
 ) -> bool {
-    let len = text.chars().count();
+    let len = unicode_width::UnicodeWidthStr::width(text.as_str());
     if *running_len + len > fit_width {
         return false;
     }
@@ -1179,7 +1179,10 @@ fn build_working_dir_line(app: &dyn TuiState, w: usize, align: Alignment) -> Opt
                 Span::styled(branch_part, Style::default().fg(BrandTheme::success())),
             ];
             // Ensure total width fits
-            let total_width: usize = spans.iter().map(|s| s.content.len()).sum();
+            let total_width: usize = spans
+                .iter()
+                .map(|s| unicode_width::UnicodeWidthStr::width(s.content.as_ref()))
+                .sum();
             if total_width <= w {
                 return Some(Line::from(spans).alignment(align));
             }

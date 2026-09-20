@@ -4,6 +4,7 @@ use crate::alphacode_tui::side_panel::{
 };
 use crate::alphacode_tui::todo::TodoItem;
 use std::collections::hash_map::DefaultHasher;
+use std::collections::HashMap;
 use std::hash::{Hash, Hasher};
 use std::time::Instant;
 
@@ -417,50 +418,111 @@ fn build_todos_view_markdown(
     }
 
     let total = todos.len();
-    let completed = todos
-        .iter()
-        .filter(|todo| todo.status == "completed")
-        .count();
-    let in_progress = todos
-        .iter()
-        .filter(|todo| todo.status == "in_progress")
-        .count();
-    let pending = todos.iter().filter(|todo| todo.status == "pending").count();
-    let cancelled = todos
-        .iter()
-        .filter(|todo| todo.status == "cancelled")
-        .count();
-    let blocked = todos
-        .iter()
-        .filter(|todo| todo.status != "completed" && !todo.blocked_by.is_empty())
-        .count();
+    let mut completed = 0usize;
+    let mut in_progress = 0usize;
+    let mut pending = 0usize;
+    let mut cancelled = 0usize;
+    let mut blocked = 0usize;
+    let mut weighted_sum = 0u32;
+    let mut total_weight = 0u32;
+    let mut lowest_completed_confidence: Option<u8> = None;
+    let mut missing_completion_confidence = 0usize;
+    for todo in todos {
+        match todo.status.as_str() {
+            "completed" => {
+                completed += 1;
+                if let Some(cc) = todo.completion_confidence {
+                    lowest_completed_confidence = Some(
+                        lowest_completed_confidence.map_or(cc, |current| current.min(cc)),
+                    );
+                } else {
+                    missing_completion_confidence += 1;
+                }
+            }
+            "in_progress" => in_progress += 1,
+            "pending" => pending += 1,
+            "cancelled" => cancelled += 1,
+            _ => {}
+        }
+        if todo.status != "completed" && !todo.blocked_by.is_empty() {
+            blocked += 1;
+        }
+        // Weighted confidence accumulation
+        if todo.status != "cancelled" {
+            let effective = if todo.status == "completed" {
+                todo.completion_confidence.or(todo.confidence)
+            } else {
+                todo.confidence
+            };
+            if let Some(score) = effective {
+                let weight = match todo.priority.as_str() {
+                    "high" => 3u32,
+                    "medium" => 2,
+                    _ => 1,
+                };
+                weighted_sum += u32::from(score) * weight;
+                total_weight += weight;
+            }
+        }
+    }
     let percent = ((completed as f64 / total as f64) * 100.0).round() as u64;
-    let weighted_confidence = weighted_todo_confidence(todos);
-    let lowest_completed_confidence = todos
-        .iter()
-        .filter(|todo| todo.status == "completed")
-        .filter_map(|todo| todo.completion_confidence)
-        .min();
-    let missing_completion_confidence = todos
-        .iter()
-        .filter(|todo| todo.status == "completed" && todo.completion_confidence.is_none())
-        .count();
+    let weighted_confidence = if total_weight == 0 {
+        None
+    } else {
+        Some(((weighted_sum + total_weight / 2) / total_weight) as u8)
+    };
 
     let mut markdown = format!(
-        "# Todos\n\nDedicated todo view for {}.\n\n{}- Progress: **{}/{} completed** ({}%)\n- In progress: {}\n- Pending: {}\n- Blocked: {}\n- Cancelled: {}\n- Weighted confidence: **{}**\n- Lowest completed confidence: **{}**\n- Missing completion confidence: {}\n",
+        "# Todos\n\nDedicated todo view for {}.\n\n{}\n**{}/{} completed** ({}%)\n",
         session_label,
         session_id_line.unwrap_or_default(),
         completed,
         total,
         percent,
-        in_progress,
-        pending,
-        blocked,
-        cancelled,
-        format_confidence_value(weighted_confidence),
-        format_confidence_value(lowest_completed_confidence),
-        missing_completion_confidence,
     );
+    // Visual progress bar: filled/empty blocks
+    {
+        let bar_width = 20usize;
+        let filled = ((percent as f64 / 100.0) * bar_width as f64).round() as usize;
+        let empty = bar_width.saturating_sub(filled);
+        markdown.push_str(&format!(
+            "`{}{}`\n\n",
+            "█".repeat(filled),
+            "░".repeat(empty),
+        ));
+    }
+    // Status summary line (compact)
+    let mut status_parts = Vec::new();
+    if in_progress > 0 {
+        status_parts.push(format!("{} in progress", in_progress));
+    }
+    if pending > 0 {
+        status_parts.push(format!("{} pending", pending));
+    }
+    if blocked > 0 {
+        status_parts.push(format!("{} blocked", blocked));
+    }
+    if cancelled > 0 {
+        status_parts.push(format!("{} cancelled", cancelled));
+    }
+    if !status_parts.is_empty() {
+        markdown.push_str(&format!("{}\n\n", status_parts.join(" · ")));
+    }
+    // Confidence summary
+    markdown.push_str(&format!(
+        "- Weighted confidence: **{}**\n",
+        format_confidence_value(weighted_confidence),
+    ));
+    markdown.push_str(&format!(
+        "- Lowest completed confidence: **{}**\n",
+        format_confidence_value(lowest_completed_confidence),
+    ));
+    if missing_completion_confidence > 0 {
+        markdown.push_str(&format!(
+            "- Missing completion confidence: {}\n",
+            missing_completion_confidence,
+        ));
+    }
 
     markdown.push_str(&format_plan_markdown(plan));
 
@@ -554,9 +616,19 @@ fn format_goal_markdown(goals: &[crate::todo::TodoGoal], group: Option<&str>) ->
 }
 
 /// Plan-level intent lines, shown once for the whole todo list.
-fn format_plan_markdown(_plan: &crate::todo::TodoPlan) -> String {
-    // Intention and intent-score are internal plan metadata, not user-facing.
-    String::new()
+fn format_plan_markdown(plan: &crate::todo::TodoPlan) -> String {
+    let mut line = String::new();
+    if let Some(intention) = plan.user_intention.as_deref().map(str::trim).filter(|v| !v.is_empty())
+    {
+        line.push_str(&format!("- User intention: {}\n", intention));
+    }
+    if let Some(score) = plan.understands_user_intent {
+        line.push_str(&format!("- Understands user intent: **{}%**\n", score));
+    }
+    if !line.is_empty() {
+        line.insert(0, '\n');
+    }
+    line
 }
 
 /// Partition todos into ordered groups (first-seen order, ungrouped last).
@@ -565,12 +637,16 @@ fn grouped_todos_view(todos: &[TodoItem]) -> Option<Vec<(Option<String>, Vec<&To
     if !todos.iter().any(|todo| todo_group_key(todo).is_some()) {
         return None;
     }
+    // Use a map from group key to index in the `groups` vec for O(1) lookup.
+    let mut key_to_index: HashMap<Option<String>, usize> = HashMap::new();
     let mut groups: Vec<(Option<String>, Vec<&TodoItem>)> = Vec::new();
     for todo in todos {
         let key = todo_group_key(todo);
-        if let Some(entry) = groups.iter_mut().find(|(existing, _)| *existing == key) {
-            entry.1.push(todo);
+        if let Some(&idx) = key_to_index.get(&key) {
+            groups[idx].1.push(todo);
         } else {
+            let idx = groups.len();
+            key_to_index.insert(key.clone(), idx);
             groups.push((key, vec![todo]));
         }
     }
@@ -639,40 +715,6 @@ fn format_todo_markdown(todo: &TodoItem) -> String {
         line.push_str(&format!("  - blocked by: {}\n", deps));
     }
     line
-}
-
-fn todo_confidence_weight(priority: &str) -> u32 {
-    match priority {
-        "high" => 3,
-        "medium" => 2,
-        _ => 1,
-    }
-}
-
-fn todo_effective_confidence(todo: &TodoItem) -> Option<u8> {
-    if todo.status == "completed" {
-        todo.completion_confidence.or(todo.confidence)
-    } else {
-        todo.confidence
-    }
-}
-
-fn weighted_todo_confidence(todos: &[TodoItem]) -> Option<u8> {
-    let mut weighted_sum = 0u32;
-    let mut total_weight = 0u32;
-    for todo in todos.iter().filter(|todo| todo.status != "cancelled") {
-        let Some(score) = todo_effective_confidence(todo) else {
-            continue;
-        };
-        let weight = todo_confidence_weight(&todo.priority);
-        weighted_sum += u32::from(score) * weight;
-        total_weight += weight;
-    }
-    if total_weight == 0 {
-        None
-    } else {
-        Some(((weighted_sum + total_weight / 2) / total_weight) as u8)
-    }
 }
 
 fn format_confidence_value(score: Option<u8>) -> String {
@@ -802,7 +844,7 @@ mod tests {
 
         assert!(markdown.contains("- Weighted confidence: **86%**"));
         assert!(markdown.contains("- Lowest completed confidence: **95%**"));
-        assert!(markdown.contains("- Missing completion confidence: 0"));
+        assert!(!markdown.contains("Missing completion confidence"), "should not show 0 missing");
         assert!(markdown.contains("  - confidence: `80%`"));
         assert!(markdown.contains("  - confidence: `70%`"));
         assert!(markdown.contains("  - completion confidence: `95%`"));

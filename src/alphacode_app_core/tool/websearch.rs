@@ -230,47 +230,67 @@ impl WebSearchTool {
         query: &str,
         num_results: usize,
     ) -> Result<Vec<SearchResult>> {
-        // DuckDuckGo's HTML endpoint now serves an anti-bot "anomaly" challenge
-        // (HTTP 202, no results) for plain GET requests. Submitting the query as
-        // a POST form, the same way the real HTML page does, still returns the
-        // standard results markup with a 200.
-        let response = self
-            .client
-            .post("https://html.duckduckgo.com/html/")
-            .header(
-                reqwest::header::USER_AGENT,
-                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 \
-                 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-            )
-            .header(reqwest::header::ACCEPT, "text/html,application/xhtml+xml")
-            .header(
-                reqwest::header::CONTENT_TYPE,
-                "application/x-www-form-urlencoded",
-            )
-            .form(&[("q", query), ("kl", "us-en")])
-            .send_with_retry(&self.client, "websearch")
-            .await?;
+        // DuckDuckGo's HTML endpoint serves an anti-bot "anomaly" challenge
+        // (HTTP 200, no results) for automated requests. Retry up to 2 times
+        // with increasing delay to handle transient triggers.
+        const ANTI_BOT_RETRIES: u32 = 2;
+        const ANTI_BOT_DELAY_MS: u64 = 1500;
 
-        if !response.status().is_success() {
-            return Err(anyhow::anyhow!(
-                "Search failed with status: {}",
-                response.status()
-            ));
+        let mut last_err: Option<anyhow::Error> = None;
+        for attempt in 0..=ANTI_BOT_RETRIES {
+            if attempt > 0 {
+                tokio::time::sleep(std::time::Duration::from_millis(
+                    ANTI_BOT_DELAY_MS * attempt as u64,
+                ))
+                .await;
+            }
+            let response = self
+                .client
+                .post("https://html.duckduckgo.com/html/")
+                .header(
+                    reqwest::header::USER_AGENT,
+                    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 \
+                     (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36",
+                )
+                .header(reqwest::header::ACCEPT, "text/html,application/xhtml+xml")
+                .header(
+                    reqwest::header::CONTENT_TYPE,
+                    "application/x-www-form-urlencoded",
+                )
+                .form(&[("q", query), ("kl", "us-en")])
+                .send_with_retry(&self.client, "websearch")
+                .await;
+
+            let response = match response {
+                Ok(r) => r,
+                Err(e) => {
+                    last_err = Some(e);
+                    continue;
+                }
+            };
+
+            if !response.status().is_success() {
+                last_err = Some(anyhow::anyhow!(
+                    "Search failed with status: {}",
+                    response.status()
+                ));
+                continue;
+            }
+
+            let body = response.text().await?;
+            let results = parse_ddg_results(&body, num_results);
+            if results.is_empty() {
+                if let Some(reason) = detect_anti_bot_page(&body) {
+                    last_err = Some(anyhow::anyhow!(
+                        "DuckDuckGo anti-bot challenge ({reason})"
+                    ));
+                    continue;
+                }
+                return Ok(results);
+            }
+            return Ok(results);
         }
-
-        let body = response.text().await?;
-        let results = parse_ddg_results(&body, num_results);
-        if results.is_empty()
-            && let Some(reason) = detect_anti_bot_page(&body)
-        {
-            return Err(anyhow::anyhow!(
-                "DuckDuckGo served an anti-bot challenge page ({reason}) instead of \
-                 results. This is commonly caused by TLS fingerprinting or IP \
-                 reputation on Linux. Falling back to another engine if configured."
-            ));
-        }
-
-        Ok(results)
+        Err(last_err.unwrap_or_else(|| anyhow::anyhow!("DuckDuckGo search failed")))
     }
 
     async fn search_bing(

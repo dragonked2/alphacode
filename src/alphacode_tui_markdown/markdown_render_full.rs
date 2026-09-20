@@ -1,4 +1,3 @@
-use super::render_support::highlight_code;
 use super::*;
 
 thread_local! {
@@ -488,7 +487,7 @@ pub fn render_markdown_with_width(text: &str, max_width: Option<usize>) -> Vec<L
                     if lang_label.is_empty() {
                         lines.push(
                             Line::from(Span::styled(
-                                "┌─ ┌─ ".to_string(),
+                                "┌─ ".to_string(),
                                 Style::default().fg(md_dim_color()),
                             ))
                             .left_aligned(),
@@ -972,9 +971,8 @@ pub fn render_markdown_with_width(text: &str, max_width: Option<usize>) -> Vec<L
             }
             Event::End(TagEnd::TableHead) => {
                 if !table_row.is_empty() {
-                    table_rows.push(table_row.clone());
+                    table_rows.push(std::mem::take(&mut table_row));
                 }
-                table_row.clear();
                 _is_header_row = false;
             }
             Event::Start(Tag::TableRow) => {
@@ -982,9 +980,8 @@ pub fn render_markdown_with_width(text: &str, max_width: Option<usize>) -> Vec<L
             }
             Event::End(TagEnd::TableRow) => {
                 if !table_row.is_empty() {
-                    table_rows.push(table_row.clone());
+                    table_rows.push(std::mem::take(&mut table_row));
                 }
-                table_row.clear();
             }
             Event::Start(Tag::TableCell) => {
                 current_cell.clear();
@@ -1060,7 +1057,7 @@ pub fn render_markdown_with_width(text: &str, max_width: Option<usize>) -> Vec<L
             )));
 
             // Render code with syntax highlighting
-            let highlighted = highlight_code(&code_block_content, code_block_lang.as_deref());
+            let highlighted = highlight_code_cached(&code_block_content, code_block_lang.as_deref());
             for line in highlighted {
                 let mut prefixed = vec![Span::styled("│ ", Style::default().fg(md_dim_color()))];
                 prefixed.extend(line.spans);

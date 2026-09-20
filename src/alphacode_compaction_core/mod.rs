@@ -561,7 +561,11 @@ impl ImportanceScorer {
     pub fn get_important_indices(messages: &[Message], keep_ratio: f32) -> HashSet<usize> {
         let scored = Self::score_all_messages(messages);
         let mut sorted = scored;
-        sorted.sort_by(|a, b| b.1.score.partial_cmp(&a.1.score).unwrap());
+        sorted.sort_by(|a, b| {
+            b.1.score
+                .partial_cmp(&a.1.score)
+                .unwrap_or(std::cmp::Ordering::Equal)
+        });
 
         let keep_count = (messages.len() as f32 * keep_ratio) as usize;
         let mut indices = HashSet::new();

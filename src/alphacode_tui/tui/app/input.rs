@@ -965,19 +965,28 @@ pub(super) fn strip_terminal_control_sequences(text: &str) -> std::borrow::Cow<'
         if byte == 0x1b {
             index += 1;
             if index < bytes.len() && bytes[index] == b'[' {
+                // CSI sequence: parameter bytes, intermediate bytes, final byte.
                 match csi_run_length(&bytes[index..]) {
                     Some(len) => index += len,
                     // Unterminated: the rest is a truncated sequence, drop it.
                     None => index = bytes.len(),
                 }
+            } else if index < bytes.len()
+                && matches!(bytes[index], b']' | b'P' | b'X' | b'^' | b'_')
+            {
+                // OSC (ESC ]), DCS (ESC P), SOS (ESC X), PM (ESC ^), APC (ESC _):
+                // string sequences terminated by BEL (\x07) or ST (ESC \).
+                index += 1;
+                index = osc_string_end(bytes, index);
             } else if index < bytes.len() {
-                // Two-character escape such as ESC O or ESC ].
+                // Two-character escape such as ESC O.
                 index += 1;
             }
             continue;
         }
         // 8-bit CSI introducer (UTF-8 encoded U+009B).
         if byte == 0xc2 && bytes.get(index + 1) == Some(&0x9b) {
+            // 8-bit CSI introducer (U+009B).
             index += 2;
             if bytes.get(index) == Some(&b'[') {
                 match csi_run_length(&bytes[index..]) {
@@ -985,6 +994,12 @@ pub(super) fn strip_terminal_control_sequences(text: &str) -> std::borrow::Cow<'
                     None => index = bytes.len(),
                 }
             }
+            continue;
+        }
+        // 8-bit OSC/DCS/... introducer (U+009D = C1 OSC).
+        if byte == 0xc2 && bytes.get(index + 1) == Some(&0x9d) {
+            index += 2;
+            index = osc_string_end(bytes, index);
             continue;
         }
         // A bare report-shaped run left behind by a torn read.
@@ -1057,6 +1072,24 @@ fn bare_terminal_report_length(bytes: &[u8]) -> Option<usize> {
     }
     const REPORT_FINALS: [u8; 6] = *b"Mm~RIO";
     REPORT_FINALS.contains(&bytes[len - 1]).then_some(len)
+}
+
+/// Advance past an OSC/DCS/SOS/PM/APC string payload starting at `start`.
+/// Returns the index one past the terminator (BEL or ST). If the string is
+/// unterminated, returns `bytes.len()` to drop the trailing fragment.
+fn osc_string_end(bytes: &[u8], start: usize) -> usize {
+    let mut i = start;
+    while i < bytes.len() {
+        match bytes[i] {
+            // BEL terminates the string.
+            0x07 => return i + 1,
+            // ESC may start ST (ESC \).
+            0x1b if i + 1 < bytes.len() && bytes[i + 1] == b'\\' => return i + 2,
+            _ => i += 1,
+        }
+    }
+    // Unterminated: consume the rest as a truncated sequence.
+    bytes.len()
 }
 
 pub(super) fn insert_input_text(app: &mut App, text: &str) {
@@ -3437,12 +3470,25 @@ impl App {
             self.reasoning_partial_len = 0;
         }
         self.streaming.streaming_text.push_str(text);
-        // Repetition detection: check if the model is stuck in a loop
-        if self.streaming.check_repetition() && self.streaming.repetition_streak == 4 {
-            crate::logging::warn(&format!(
-                "streaming repetition detected: same pattern repeated {} times in tail of output (model may be stuck in a loop)",
-                self.streaming.repetition_streak,
-            ));
+        // Repetition detection: when the model is stuck in a loop, silently
+        // cancel the stream and auto-retry the turn (up to
+        // `REPETITION_AUTO_RETRIES_MAX` times).
+        if self.streaming.check_repetition() && !self.repetition_auto_retry {
+            const REPETITION_AUTO_RETRIES_MAX: u32 = 3;
+            if self.repetition_auto_retries_remaining < REPETITION_AUTO_RETRIES_MAX {
+                crate::logging::info(&format!(
+                    "streaming repetition detected (streak={}); auto-retrying turn ({}/{REPETITION_AUTO_RETRIES_MAX})",
+                    self.streaming.repetition_streak,
+                    self.repetition_auto_retries_remaining + 1,
+                ));
+                self.repetition_auto_retry = true;
+                self.repetition_auto_retries_remaining += 1;
+                self.cancel_requested = true;
+            } else {
+                crate::logging::warn(&format!(
+                    "streaming repetition detected but max auto-retries ({REPETITION_AUTO_RETRIES_MAX}) exhausted; giving up"
+                ));
+            }
         }
         self.refresh_split_view_if_needed();
     }
@@ -4077,11 +4123,23 @@ mod terminal_control_sequence_tests {
             ("[1O", ""),
             // 8-bit CSI introducer.
             ("\u{9b}[<65;50;24M", ""),
+            // OSC sequences (color queries, clipboard, etc.) with BEL terminator.
+            ("\x1b]10;rgb:cccc/cccc/cccc\x07", ""),
+            ("\x1b]11;rgb:0c0c/0c0c/0c0c\x07", ""),
+            ("\x1b]4;1;rgb:00/00/00\x07", ""),
+            // OSC sequences with ST terminator (ESC \).
+            ("\x1b]10;rgb:aaaa/aaaa/aaaa\x1b\\", ""),
+            // OSC embedded in text.
+            ("before\x1b]11;rgb:0000/0000/0000\x07after", "beforeafter"),
+            // 8-bit OSC introducer (U+009D).
+            ("\u{9d}11;rgb:ffff/ffff/ffff\x07", ""),
             // Stray C0 controls, but tabs and newlines survive.
             ("a\x07b", "ab"),
             ("a\tb\nc", "a\tb\nc"),
             // Truncated escape with no final byte: drop the remnant.
             ("\x1b[<65;5", ""),
+            // Unterminated OSC: drop the rest.
+            ("\x1b]11;rgb:", ""),
         ] {
             assert_eq!(
                 strip_terminal_control_sequences(input),

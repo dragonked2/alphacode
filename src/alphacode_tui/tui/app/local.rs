@@ -510,6 +510,8 @@ pub(super) fn finish_turn(app: &mut App) {
     app.thought_line_inserted = false;
     app.thinking_prefix_emitted = false;
     app.thinking_buffer.clear();
+    app.repetition_auto_retry = false;
+    app.repetition_auto_retries_remaining = 0;
     app.note_runtime_memory_event_force("turn_completed", "local_turn_finished");
     let followup_scheduled = app.schedule_turn_end_followups();
     if !followup_scheduled {

@@ -45,7 +45,7 @@ const WEBSOCKET_KEEPALIVE_INTERVAL_SECS: u64 = 20;
 pub struct GatewayConfig {
     /// TCP port to listen on
     pub port: u16,
-    /// Bind address (default: 0.0.0.0 for Tailscale access)
+    /// Bind address (default: 127.0.0.1; override to 0.0.0.0 for Tailscale access)
     pub bind_addr: String,
     /// Whether gateway is enabled
     pub enabled: bool,
@@ -55,7 +55,7 @@ impl Default for GatewayConfig {
     fn default() -> Self {
         Self {
             port: DEFAULT_PORT,
-            bind_addr: "0.0.0.0".to_string(),
+            bind_addr: "127.0.0.1".to_string(),
             enabled: false,
         }
     }

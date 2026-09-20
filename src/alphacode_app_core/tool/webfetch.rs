@@ -27,6 +27,31 @@ const USER_AGENTS: &[&str] = &[
     "Mozilla/5.0 (Macintosh; Intel Mac OS X 14_5) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.5 Safari/605.1.15",
 ];
 
+/// Check if a hostname resolves to an RFC 1918 private IP range.
+/// Used for SSRF protection to prevent fetching internal network resources.
+fn is_private_ip(host: &str) -> bool {
+    // Parse first octet for quick range checks
+    let parts: Vec<&str> = host.split('.').collect();
+    if parts.len() != 4 {
+        return false;
+    }
+    let octets: Vec<u8> = parts.iter().filter_map(|p| p.parse().ok()).collect();
+    if octets.len() != 4 {
+        return false;
+    }
+    match octets[0] {
+        // 10.0.0.0/8
+        10 => true,
+        // 172.16.0.0/12
+        172 if (16..=31).contains(&octets[1]) => true,
+        // 192.168.0.0/16
+        192 if octets[1] == 168 => true,
+        // 169.254.0.0/16 (link-local)
+        169 if octets[1] == 254 => true,
+        _ => false,
+    }
+}
+
 /// Returns `true` when `body` looks like an anti-bot challenge page rather
 /// than real content. These pages typically have very little body text and
 /// contain known challenge markers.
@@ -120,6 +145,43 @@ impl Tool for WebFetchTool {
         // Validate URL
         if !params.url.starts_with("http://") && !params.url.starts_with("https://") {
             return Err(anyhow::anyhow!("URL must start with http:// or https://"));
+        }
+
+        // SSRF protection: block requests to internal/private network addresses,
+        // cloud metadata endpoints, and localhost.
+        if let Ok(parsed) = url::Url::parse(&params.url)
+            && let Some(host) = parsed.host_str()
+        {
+            let host_lower = host.to_ascii_lowercase();
+            // Block localhost variants
+            if host_lower == "localhost"
+                || host_lower == "0.0.0.0"
+                || host_lower == "127.0.0.1"
+                || host_lower == "::1"
+                || host_lower.ends_with(".local")
+            {
+                return Err(anyhow::anyhow!(
+                    "Blocked: URL targets localhost/internal host ({host}). \
+                     Refusing SSRF request."
+                ));
+            }
+            // Block cloud metadata endpoints
+            if host_lower == "169.254.169.254"
+                || host_lower == "100.100.100.200"
+                || host_lower == "metadata.google.internal"
+            {
+                return Err(anyhow::anyhow!(
+                    "Blocked: URL targets cloud metadata endpoint ({host}). \
+                     Refusing SSRF request."
+                ));
+            }
+            // Block RFC 1918 private ranges
+            if is_private_ip(&host_lower) {
+                return Err(anyhow::anyhow!(
+                    "Blocked: URL targets private network address ({host}). \
+                     Refusing SSRF request."
+                ));
+            }
         }
 
         let timeout = params.timeout.unwrap_or(DEFAULT_TIMEOUT).min(MAX_TIMEOUT);

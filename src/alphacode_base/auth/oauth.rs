@@ -47,7 +47,7 @@ pub mod openai {
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Clone, Serialize, Deserialize)]
 pub struct OAuthTokens {
     pub access_token: String,
     pub refresh_token: String,
@@ -56,6 +56,27 @@ pub struct OAuthTokens {
     pub id_token: Option<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub scopes: Vec<String>,
+}
+
+impl std::fmt::Debug for OAuthTokens {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("OAuthTokens")
+            .field("access_token", &redact_token(&self.access_token))
+            .field("refresh_token", &redact_token(&self.refresh_token))
+            .field("expires_at", &self.expires_at)
+            .field("id_token", &self.id_token.as_ref().map(|_| "[REDACTED]"))
+            .field("scopes", &self.scopes)
+            .finish()
+    }
+}
+
+/// Redact a token for safe Debug output: show only first 4 and last 4 chars.
+fn redact_token(token: &str) -> String {
+    if token.len() <= 8 {
+        "*".repeat(token.len())
+    } else {
+        format!("{}...{}", &token[..4], &token[token.len() - 4..])
+    }
 }
 
 fn parse_oauth_scopes(scope: Option<&str>) -> Vec<String> {

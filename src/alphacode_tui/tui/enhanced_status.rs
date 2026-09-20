@@ -68,11 +68,19 @@ fn format_elapsed(d: Duration) -> String {
     } else if secs < 3600.0 {
         let mins = d.as_secs() / 60;
         let rem = d.as_secs() % 60;
-        format!("{}m{}s", mins, rem)
+        if rem == 0 {
+            format!("{}m", mins)
+        } else {
+            format!("{}m{}s", mins, rem)
+        }
     } else {
         let hours = d.as_secs() / 3600;
         let mins = (d.as_secs() % 3600) / 60;
-        format!("{}h{}m", hours, mins)
+        if mins == 0 {
+            format!("{}h", hours)
+        } else {
+            format!("{}h{}m", hours, mins)
+        }
     }
 }
 
@@ -281,7 +289,7 @@ impl StatusBar {
         let mut spans = Vec::with_capacity(6);
 
         // Spinner
-        let spinner_frame = (elapsed.as_millis() / 200) as usize;
+        let spinner_frame = (elapsed.as_millis() / 150) as usize;
         spans.extend(ProgressBar::spinner(spinner_frame));
 
         // Model

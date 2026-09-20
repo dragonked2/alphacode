@@ -264,7 +264,7 @@ mod tests {
         );
         assert!(s.contains("model="));
         assert!(s.contains("task=security"));
-        assert!(s.contains("conn=ok"));
+        assert!(s.contains("● connected"));
         assert!(s.contains("tokens=12k/4k"));
     }
 
@@ -302,6 +302,6 @@ mod tests {
     fn build_status_summary_omits_task_when_empty() {
         let s = build_status_summary(Some("gpt-5"), None, None, false);
         assert!(!s.contains("task="));
-        assert!(s.contains("conn=offline"));
+        assert!(s.contains("○ offline"));
     }
 }

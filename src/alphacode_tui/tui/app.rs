@@ -817,8 +817,8 @@ impl StreamingProgress {
     /// repeated `MIN_STREAK` times or more). The check is O(window) and
     /// intentionally cheap — called on every streaming delta.
     fn check_repetition(&mut self) -> bool {
-        const MIN_STREAK: u32 = 4;
-        const MIN_CHUNK: usize = 20;
+        const MIN_STREAK: u32 = 3;
+        const MIN_CHUNK: usize = 10;
         const MAX_CHUNK: usize = 120;
         const WINDOW: usize = 2000;
 
@@ -1057,6 +1057,11 @@ pub struct App {
     rewind_undo_snapshot: Option<LocalRewindUndoSnapshot>,
     // Cancel flag for interrupting generation
     cancel_requested: bool,
+    // Auto-retry when repetition is detected mid-stream (model stuck in loop).
+    // When the streaming check fires, we silently cancel and re-run the turn
+    // up to `REPETITION_AUTO_RETRIES_MAX` times before giving up.
+    repetition_auto_retry: bool,
+    repetition_auto_retries_remaining: u32,
     // Quit confirmation: tracks when first Ctrl+C was pressed
     quit_pending: Option<Instant>,
     // Debounce redraw storms while the terminal is being resized.
@@ -2415,20 +2420,20 @@ impl App {
         // Documented invalidation between the baseline and now: expected
         // resend, attribute instead of alarm.
         if let Some(cause) = crate::cache_invalidation::most_recent_since(baseline_completed_at) {
-            self.push_display_message(DisplayMessage::system(format!(
-                "ℹ️ KV cache refresh [{}] turn {}: ~{} tokens resent ({}).",
+            crate::logging::info(&format!(
+                "KV cache refresh [{}] turn {}: ~{} tokens resent ({})",
                 cause.source, turn_number, token_label, detail,
-            )));
+            ));
             return;
         }
 
-        self.push_display_message(DisplayMessage::system(format!(
-            "⚠️ KV cache miss [{}] turn {}: ~{} tokens resent ({}). See KV_CACHE_USAGE in logs.",
+        crate::logging::info(&format!(
+            "KV cache miss [{}] turn {}: ~{} tokens resent ({})",
             reason.label(),
             turn_number,
             token_label,
             detail,
-        )));
+        ));
     }
 
     fn classify_kv_cache_miss_reason(

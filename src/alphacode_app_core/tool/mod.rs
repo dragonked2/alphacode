@@ -125,6 +125,10 @@ pub(crate) fn agent_facing_error(tool_name: &str, error: &anyhow::Error) -> Stri
                 Some(
                     "Read the command's stderr above and fix the cause; do not re-run the identical command unchanged.",
                 )
+            } else if base.contains("missing field") {
+                Some(
+                    "The tool call is missing required fields. For bash, provide {\"command\": \"your command here\"}.",
+                )
             } else {
                 None
             }
@@ -133,6 +137,10 @@ pub(crate) fn agent_facing_error(tool_name: &str, error: &anyhow::Error) -> Stri
             if base.contains("binary") || base.contains("too large") || base.contains("oversized") {
                 Some(
                     "Use offset/limit to read a smaller range, or grep to locate the relevant lines first.",
+                )
+            } else if base.contains("missing field") {
+                Some(
+                    "The tool call is missing required fields. For read, provide {\"file_path\": \"/path/to/file\"}.",
                 )
             } else {
                 None
@@ -145,6 +153,10 @@ pub(crate) fn agent_facing_error(tool_name: &str, error: &anyhow::Error) -> Stri
             {
                 Some(
                     "Check whether the path is outside the working directory or read-only; ask the user before writing outside the project.",
+                )
+            } else if base.contains("missing field") {
+                Some(
+                    "The tool call is missing required fields. For write, provide {\"file_path\": \"/path/to/file\", \"content\": \"file content\"}.",
                 )
             } else {
                 None
@@ -159,7 +171,15 @@ pub(crate) fn agent_facing_error(tool_name: &str, error: &anyhow::Error) -> Stri
                 None
             }
         }
-        _ => None,
+        _ => {
+            if base.contains("missing field") {
+                Some(
+                    "The tool call is missing required fields. Check the tool's JSON schema for required parameters.",
+                )
+            } else {
+                None
+            }
+        }
     };
     match hint {
         Some(hint) => format!("Error: {base}\nHint: {hint}"),

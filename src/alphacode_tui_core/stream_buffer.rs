@@ -234,8 +234,9 @@ impl StreamBuffer {
     /// Append a chunk, coalescing with the previous queue entry when it has the
     /// same kind so the queue stays short under token-level feeds.
     fn push_chunk(&mut self, kind: StreamKind, text: &str) {
-        self.backlog_chars += text.chars().count();
-        self.jitter.record_arrival(kind, text.chars().count());
+        let char_count = text.chars().count();
+        self.backlog_chars += char_count;
+        self.jitter.record_arrival(kind, char_count);
         if let Some(QueuedOp::Chunk {
             kind: last_kind,
             text: last_text,

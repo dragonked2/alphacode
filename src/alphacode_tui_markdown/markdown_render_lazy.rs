@@ -890,9 +890,8 @@ pub fn render_markdown_lazy(
             }
             Event::End(TagEnd::TableHead) => {
                 if !table_row.is_empty() {
-                    table_rows.push(table_row.clone());
+                    table_rows.push(std::mem::take(&mut table_row));
                 }
-                table_row.clear();
                 _is_header_row = false;
             }
             Event::Start(Tag::TableRow) => {
@@ -900,9 +899,8 @@ pub fn render_markdown_lazy(
             }
             Event::End(TagEnd::TableRow) => {
                 if !table_row.is_empty() {
-                    table_rows.push(table_row.clone());
+                    table_rows.push(std::mem::take(&mut table_row));
                 }
-                table_row.clear();
             }
             Event::Start(Tag::TableCell) => {
                 current_cell.clear();

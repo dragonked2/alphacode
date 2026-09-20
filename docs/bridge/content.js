@@ -435,7 +435,14 @@ async function handleClick(params) {
     target = querySelectorHasText(params.selector);
   }
   if (!target) target = resolveElement(params || {});
-  if (!target) throw new Error("Element not found");
+  if (!target) {
+    const tried = [];
+    if (params.selector) tried.push(`selector="${params.selector}"`);
+    if (params.text) tried.push(`text="${params.text}"`);
+    if (Number.isFinite(params.x) && Number.isFinite(params.y)) tried.push(`pos=(${params.x},${params.y})`);
+    const detail = tried.length ? ` Tried: ${tried.join(', ')}.` : '';
+    throw new Error(`Element not found.${detail} Use 'snapshot' to inspect the page, or 'wait' with the selector before clicking.`);
+  }
 
   // When matching by text, promote the leaf node to its nearest clickable
   // ancestor (a/button/[role=button]) so the click actually activates the
@@ -593,7 +600,14 @@ function setInputValueReact(el, value) {
 async function handleType(params) {
   if (!params || !params.text) throw new Error("Missing text parameter");
   let target = resolveElement({ ...params, _preferVisible: true });
-  if (!target) throw new Error("Element not found");
+  if (!target) {
+    const tried = [];
+    if (params.selector) tried.push(`selector="${params.selector}"`);
+    if (params.text) tried.push(`text="${params.text}"`);
+    if (Number.isFinite(params.x) && Number.isFinite(params.y)) tried.push(`pos=(${params.x},${params.y})`);
+    const detail = tried.length ? ` Tried: ${tried.join(', ')}.` : '';
+    throw new Error(`Element not found.${detail} Use 'snapshot' to inspect the page, or 'wait' with the selector before typing.`);
+  }
 
   // If target is a custom element with shadow DOM, find the actual editable inside
   if (!target.isContentEditable && target.tagName !== "INPUT" && target.tagName !== "TEXTAREA" &&
