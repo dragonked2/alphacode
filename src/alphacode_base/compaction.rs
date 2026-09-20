@@ -812,6 +812,7 @@ impl CompactionManager {
         let observed = self
             .observed_input_tokens
             .and_then(|tokens| usize::try_from(tokens).ok())
+            .filter(|&tokens| tokens <= self.token_budget)
             .unwrap_or(0);
         estimate.max(observed)
     }
@@ -822,6 +823,7 @@ impl CompactionManager {
         let observed = self
             .observed_input_tokens
             .and_then(|tokens| usize::try_from(tokens).ok())
+            .filter(|&tokens| tokens <= self.token_budget)
             .unwrap_or(0);
         estimate.max(observed)
     }

@@ -78,18 +78,16 @@ impl App {
         }
 
         let reason = match event.trigger.as_str() {
-            "auto_recovery" => "after the context window filled up",
-            _ => "to stay within the context window",
+            "auto_recovery" => "context window full",
+            _ => "approaching limit",
         };
         let strategy = Self::format_compaction_strategy_label(&event.trigger);
-        let mut message = format!(
-            "📦 Context compacted ({}) - older messages were summarized {}.",
-            strategy, reason
-        );
-        let details = Self::format_compaction_detail_segments(event, context_limit, false);
-        if !details.is_empty() {
-            message.push_str("\n\n");
-            message.push_str(&details.join(" · "));
+        let mut message = format!("📦 Compacted ({strategy}) — {reason}");
+        let detail = Self::format_compaction_one_liner(event, context_limit, false);
+        if !detail.is_empty() {
+            message.push_str(&format!(". {detail}"));
+        } else {
+            message.push('.');
         }
         message
     }
@@ -98,94 +96,58 @@ impl App {
         event: &crate::compaction::CompactionEvent,
         context_limit: u64,
     ) -> String {
-        let mut message =
-            "📦 Emergency compaction - older messages were dropped to recover from context pressure. Recent context was kept.".to_string();
-        let details = Self::format_compaction_detail_segments(event, context_limit, true);
-        if !details.is_empty() {
-            message.push_str("\n\n");
-            message.push_str(&details.join(" · "));
+        let mut message = "📦 Emergency compaction — older messages dropped".to_string();
+        let detail = Self::format_compaction_one_liner(event, context_limit, true);
+        if !detail.is_empty() {
+            message.push_str(&format!(". {detail}"));
+        } else {
+            message.push('.');
         }
         message
     }
 
-    fn format_compaction_detail_segments(
+    /// Single compact line: "Took 12s · 45k→12k tokens · 3 messages summarized"
+    fn format_compaction_one_liner(
         event: &crate::compaction::CompactionEvent,
-        context_limit: u64,
+        _context_limit: u64,
         emergency: bool,
-    ) -> Vec<String> {
-        let mut details = Vec::new();
+    ) -> String {
+        let mut parts = Vec::new();
 
-        if let Some(duration_ms) = event.duration_ms {
-            details.push(format!(
-                "Took {}",
-                crate::message::Message::format_duration(duration_ms)
+        // Duration (only if meaningful)
+        if let Some(duration_ms) = event.duration_ms
+            && duration_ms > 0
+        {
+            parts.push(crate::message::Message::format_duration(duration_ms));
+        }
+
+        // Token change: "45k→12k tokens"
+        if let (Some(pre), Some(post)) = (event.pre_tokens, event.post_tokens) {
+            parts.push(format!(
+                "{}→{} tokens",
+                Self::format_compaction_number(pre),
+                Self::format_compaction_number(post),
             ));
-        }
-        if let Some(tokens) = event.pre_tokens {
-            details.push(format!(
-                "before ~{} tokens",
-                Self::format_compaction_number(tokens)
-            ));
-        }
-        if let Some(tokens) = event.post_tokens {
-            let mut segment = format!("now ~{} tokens", Self::format_compaction_number(tokens));
-            if context_limit > 0 {
-                segment.push_str(&format!(
-                    " ({})",
-                    Self::format_compaction_usage(tokens, context_limit)
-                ));
-            }
-            details.push(segment);
-        }
-        if let Some(saved) = event.tokens_saved.filter(|saved| *saved > 0) {
-            details.push(format!(
-                "saved ~{} tokens",
-                Self::format_compaction_number(saved)
+        } else if let Some(saved) = event.tokens_saved.filter(|s| *s > 0) {
+            parts.push(format!(
+                "saved {} tokens",
+                Self::format_compaction_number(saved),
             ));
         }
 
+        // Messages action
         let message_count = event.messages_dropped.or(event.messages_compacted);
         if let Some(count) = message_count {
             let noun = if count == 1 { "message" } else { "messages" };
             let verb = if emergency { "dropped" } else { "summarized" };
-            details.push(format!(
-                "{} {} {}",
-                verb,
+            parts.push(format!(
+                "{} {} {verb}",
                 Self::format_compaction_number(count as u64),
-                noun
+                noun,
             ));
         }
 
-        if let Some(summary_chars) = event.summary_chars.filter(|chars| *chars > 0) {
-            details.push(format!(
-                "summary {} chars",
-                Self::format_compaction_number(summary_chars as u64)
-            ));
-        }
-
-        if let Some(active_messages) = event.active_messages {
-            let noun = if active_messages == 1 {
-                "recent message"
-            } else {
-                "recent messages"
-            };
-            details.push(format!(
-                "kept {} {} live",
-                Self::format_compaction_number(active_messages as u64),
-                noun
-            ));
-        }
-
-        details
-    }
-
-    fn format_compaction_usage(tokens: u64, context_limit: u64) -> String {
-        let percent = (tokens as f64 / context_limit.max(1) as f64) * 100.0;
-        if percent >= 10.0 {
-            format!("{percent:.0}% of window")
-        } else {
-            format!("{percent:.1}% of window")
-        }
+        parts.join(" · ")
     }
 
     pub(super) fn format_compaction_number(value: u64) -> String {
