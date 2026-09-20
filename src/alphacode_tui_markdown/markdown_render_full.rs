@@ -1057,7 +1057,8 @@ pub fn render_markdown_with_width(text: &str, max_width: Option<usize>) -> Vec<L
             )));
 
             // Render code with syntax highlighting
-            let highlighted = highlight_code_cached(&code_block_content, code_block_lang.as_deref());
+            let highlighted =
+                highlight_code_cached(&code_block_content, code_block_lang.as_deref());
             for line in highlighted {
                 let mut prefixed = vec![Span::styled("│ ", Style::default().fg(md_dim_color()))];
                 prefixed.extend(line.spans);

@@ -1123,7 +1123,9 @@ impl App {
                 });
                 let message_id = self.session.add_message(Role::Assistant, content_clone);
                 if let Err(e) = self.session.save() {
-                    crate::logging::warn(&format!("Failed to save session after assistant message: {e}"));
+                    crate::logging::warn(&format!(
+                        "Failed to save session after assistant message: {e}"
+                    ));
                 }
                 for tc in &tool_calls {
                     self.tool_result_ids.insert(tc.id.clone());
@@ -1203,7 +1205,9 @@ impl App {
                         self.session.add_message(Role::User, blocks);
                     }
                     if let Err(e) = self.session.save() {
-                        crate::logging::warn(&format!("Failed to save session after image context: {e}"));
+                        crate::logging::warn(&format!(
+                            "Failed to save session after image context: {e}"
+                        ));
                     }
                     crate::logging::info(
                         "Continuing turn so model can inspect generated image visual context",
@@ -1522,7 +1526,9 @@ impl App {
                     self.session.add_message(Role::User, blocks);
                 }
                 if let Err(e) = self.session.save() {
-                    crate::logging::warn(&format!("Failed to save session after generated images: {e}"));
+                    crate::logging::warn(&format!(
+                        "Failed to save session after generated images: {e}"
+                    ));
                 }
             }
         }

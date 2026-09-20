@@ -3,8 +3,8 @@ use crate::alphacode_tui::side_panel::{
     SidePanelPage, SidePanelPageFormat, SidePanelPageSource, SidePanelSnapshot,
 };
 use crate::alphacode_tui::todo::TodoItem;
-use std::collections::hash_map::DefaultHasher;
 use std::collections::HashMap;
+use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash, Hasher};
 use std::time::Instant;
 
@@ -432,9 +432,8 @@ fn build_todos_view_markdown(
             "completed" => {
                 completed += 1;
                 if let Some(cc) = todo.completion_confidence {
-                    lowest_completed_confidence = Some(
-                        lowest_completed_confidence.map_or(cc, |current| current.min(cc)),
-                    );
+                    lowest_completed_confidence =
+                        Some(lowest_completed_confidence.map_or(cc, |current| current.min(cc)));
                 } else {
                     missing_completion_confidence += 1;
                 }
@@ -618,7 +617,11 @@ fn format_goal_markdown(goals: &[crate::todo::TodoGoal], group: Option<&str>) ->
 /// Plan-level intent lines, shown once for the whole todo list.
 fn format_plan_markdown(plan: &crate::todo::TodoPlan) -> String {
     let mut line = String::new();
-    if let Some(intention) = plan.user_intention.as_deref().map(str::trim).filter(|v| !v.is_empty())
+    if let Some(intention) = plan
+        .user_intention
+        .as_deref()
+        .map(str::trim)
+        .filter(|v| !v.is_empty())
     {
         line.push_str(&format!("- User intention: {}\n", intention));
     }
@@ -844,7 +847,10 @@ mod tests {
 
         assert!(markdown.contains("- Weighted confidence: **86%**"));
         assert!(markdown.contains("- Lowest completed confidence: **95%**"));
-        assert!(!markdown.contains("Missing completion confidence"), "should not show 0 missing");
+        assert!(
+            !markdown.contains("Missing completion confidence"),
+            "should not show 0 missing"
+        );
         assert!(markdown.contains("  - confidence: `80%`"));
         assert!(markdown.contains("  - confidence: `70%`"));
         assert!(markdown.contains("  - completion confidence: `95%`"));

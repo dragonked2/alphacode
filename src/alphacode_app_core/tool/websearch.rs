@@ -281,9 +281,7 @@ impl WebSearchTool {
             let results = parse_ddg_results(&body, num_results);
             if results.is_empty() {
                 if let Some(reason) = detect_anti_bot_page(&body) {
-                    last_err = Some(anyhow::anyhow!(
-                        "DuckDuckGo anti-bot challenge ({reason})"
-                    ));
+                    last_err = Some(anyhow::anyhow!("DuckDuckGo anti-bot challenge ({reason})"));
                     continue;
                 }
                 return Ok(results);

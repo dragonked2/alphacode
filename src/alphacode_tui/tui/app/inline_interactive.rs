@@ -3494,7 +3494,9 @@ impl App {
                                     self.session.route_api_method =
                                         Some(route_selection.api_method.clone());
                                     if let Err(e) = self.session.save() {
-                                        crate::logging::warn(&format!("Failed to save session: {e}"));
+                                        crate::logging::warn(&format!(
+                                            "Failed to save session: {e}"
+                                        ));
                                     }
                                     crate::logging::event_info(
                                         "model_picker_select_applied",
