@@ -4,6 +4,15 @@ use crate::alphacode_harness_api::{
     API_VERSION_MAJOR, ApiEvent, ApiRequest, ClientFrame, ServerFrame,
 };
 use std::io::{self, BufRead, Write};
+use std::time::{Duration, Instant};
+
+/// Default timeout for receiving a non-unknown frame. Prevents hanging
+/// indefinitely when the server only sends Unknown events.
+const DEFAULT_RECV_TIMEOUT: Duration = Duration::from_secs(30);
+
+/// Maximum consecutive Unknown frames before returning an error. Acts as a
+/// circuit breaker against infinite loops of unrecognized events.
+const MAX_CONSECUTIVE_UNKNOWN: usize = 100;
 
 /// Errors from reading or writing a frame.
 #[derive(Debug)]
@@ -12,6 +21,10 @@ pub enum FrameError {
     Json(serde_json::Error),
     /// The stream closed cleanly.
     Eof,
+    /// Timeout waiting for a non-unknown frame.
+    Timeout(Duration),
+    /// Too many consecutive unknown frames received.
+    TooManyUnknowns(usize),
 }
 
 impl std::fmt::Display for FrameError {
@@ -20,6 +33,10 @@ impl std::fmt::Display for FrameError {
             Self::Io(e) => write!(f, "harness API I/O error: {e}"),
             Self::Json(e) => write!(f, "harness API JSON error: {e}"),
             Self::Eof => write!(f, "harness API stream closed"),
+            Self::Timeout(d) => write!(f, "harness API recv timeout after {d:?}"),
+            Self::TooManyUnknowns(n) => {
+                write!(f, "harness API received {n} consecutive unknown frames")
+            }
         }
     }
 }
@@ -106,10 +123,33 @@ impl<R: BufRead, W: Write> HarnessClient<R, W> {
     }
 
     /// Receive the next server frame, skipping unknown event kinds.
+    ///
+    /// Returns an error if too many consecutive unknown frames are received
+    /// (circuit breaker) or if reading fails.
     pub fn recv(&mut self) -> Result<ServerFrame, FrameError> {
+        self.recv_with_timeout(DEFAULT_RECV_TIMEOUT)
+    }
+
+    /// Receive the next server frame with a timeout for the overall operation.
+    ///
+    /// Skips unknown events but returns `FrameError::Timeout` if a non-unknown
+    /// frame is not received within `timeout`. Also applies a circuit breaker
+    /// on consecutive unknown frames to prevent infinite loops.
+    pub fn recv_with_timeout(&mut self, timeout: Duration) -> Result<ServerFrame, FrameError> {
+        let deadline = Instant::now() + timeout;
+        let mut consecutive_unknowns = 0usize;
+
         loop {
+            if Instant::now() >= deadline {
+                return Err(FrameError::Timeout(timeout));
+            }
+
             let frame: ServerFrame = read_frame(&mut self.reader)?;
             if matches!(frame.event, ApiEvent::Unknown) {
+                consecutive_unknowns += 1;
+                if consecutive_unknowns >= MAX_CONSECUTIVE_UNKNOWN {
+                    return Err(FrameError::TooManyUnknowns(consecutive_unknowns));
+                }
                 continue;
             }
             return Ok(frame);

@@ -1042,9 +1042,10 @@ enum TodoCardPayload {
 // Todo cards sit directly on the terminal background, so the global
 // `dim_color()` (RGB 80) is too faint for meaningful metadata. Keep a compact
 // semantic palette here: cool colors describe structure/state, while amber is
-// reserved for priority and blocked work.
+// reserved for priority and blocked work. Group labels use info blue —
+// never purple/pink.
 fn todo_group_color() -> Color {
-    rgb(190, 165, 235)
+    rgb(148, 188, 255)
 }
 
 fn todo_label_color() -> Color {
@@ -2816,7 +2817,7 @@ fn swarm_notification_style(title: Option<&str>) -> (&'static str, Color, Color)
         t if t.starts_with("DM from ") => ("✉", rgb(120, 180, 255), rgb(214, 232, 255)),
         t if t.starts_with('#') => ("#", rgb(90, 210, 200), rgb(214, 247, 244)),
         t if t.starts_with("Broadcast") => ("📣", rgb(255, 193, 94), rgb(255, 240, 214)),
-        t if t.starts_with("Shared context") => ("🧠", rgb(120, 210, 160), rgb(221, 247, 232)),
+        t if t.starts_with("Shared context") => ("💾", rgb(120, 210, 160), rgb(221, 247, 232)),
         t if t.starts_with("File activity") => ("⚠", rgb(255, 160, 120), rgb(255, 228, 214)),
         t if t.starts_with("Task") => ("⚑", rgb(130, 184, 255), rgb(220, 236, 255)),
         // U+2261 IDENTICAL TO, not U+2630 TRIGRAM FOR HEAVEN: the trigram
@@ -2826,7 +2827,7 @@ fn swarm_notification_style(title: Option<&str>) -> (&'static str, Color, Color)
         // disagreement shears every row it appears on (issue seen 2026-07-02:
         // info-widget borders pushed off-screen). Stick to glyphs whose width
         // is stable across Unicode versions.
-        t if t.starts_with("Plan") => ("≡", rgb(186, 139, 255), rgb(238, 228, 255)),
+        t if t.starts_with("Plan") => ("≡", rgb(148, 188, 255), rgb(220, 236, 255)),
         _ => ("◦", rgb(160, 160, 180), rgb(225, 225, 235)),
     }
 }
@@ -2914,7 +2915,7 @@ fn compact_swarm_notification(title: &str) -> Option<CompactSwarmNotification<'_
         } else if let Some(sender) = title.strip_prefix("Broadcast · ") {
             (sender, "📣 ".to_string(), false, rgb(255, 240, 214), false)
         } else if let Some(sender) = title.strip_prefix("Shared context · ") {
-            (sender, "🧠 ".to_string(), false, rgb(221, 247, 232), false)
+            (sender, "💾 ".to_string(), false, rgb(221, 247, 232), false)
         } else if let Some(sender) = title.strip_prefix("File activity · ") {
             (sender, "✎ ".to_string(), false, rgb(255, 228, 214), true)
         } else if let Some(sender) = title.strip_prefix("File conflict · ") {
@@ -3041,7 +3042,7 @@ fn render_compact_plan_graph(title: &str, content: &str, width: u16) -> Option<V
     let body_width = width.saturating_sub(3).max(1) as usize;
     let mut lines = vec![Line::from(vec![
         Span::styled("🐝 ", Style::default().fg(rgb(255, 200, 100))),
-        Span::styled("Plan", Style::default().fg(rgb(186, 139, 255)).bold()),
+        Span::styled("Plan", Style::default().fg(rgb(148, 188, 255)).bold()),
         Span::styled(
             format!(" · {version}"),
             Style::default().fg(rgb(150, 150, 160)),
@@ -3078,7 +3079,7 @@ fn render_compact_plan_update(
     let mut lines = vec![super::truncate_line_with_ellipsis_to_width(
         &Line::from(vec![
             Span::styled("🐝 ", Style::default().fg(rgb(255, 200, 100))),
-            Span::styled("Plan", Style::default().fg(rgb(186, 139, 255)).bold()),
+            Span::styled("Plan", Style::default().fg(rgb(148, 188, 255)).bold()),
             Span::styled(
                 format!(" · {}", content.trim()),
                 Style::default().fg(rgb(225, 225, 235)),
@@ -3819,7 +3820,7 @@ pub(crate) fn render_tool_message(
             .and_then(|v| v.as_str())
             .or_else(|| tc.input.get("tag").and_then(|v| v.as_str()))
             .unwrap_or("fact");
-        let title = format!("🧠 saved ({}) · {}", category, token_badge.label.as_str());
+        let title = format!("💾 saved ({}) · {}", category, token_badge.label.as_str());
         let border_style = Style::default().fg(rgb(255, 200, 100));
         let text_style = Style::default().fg(dim_color());
         let max_box = (width.saturating_sub(4) as usize).min(72);
@@ -3872,7 +3873,7 @@ pub(crate) fn render_tool_message(
             let count = entries.len();
             let tiles = group_into_tiles(entries);
             let header_text = format!(
-                "🧠 recalled {} memor{} · {}",
+                "💾 recalled {} memor{} · {}",
                 count,
                 if count == 1 { "y" } else { "ies" },
                 token_badge.label.as_str()

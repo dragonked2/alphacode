@@ -218,7 +218,7 @@ pub fn success_badge(message: &str) -> ConsoleLine {
 
 /// Error badge for failed operations.
 pub fn error_badge(message: &str) -> ConsoleLine {
-    ConsoleLine::bold(format!("  🚫  {}", message), OutputColor::Error)
+    ConsoleLine::bold(format!("  ✖  {}", message), OutputColor::Error)
 }
 
 /// Warning badge for non-fatal issues.
@@ -228,7 +228,7 @@ pub fn warning_badge(message: &str) -> ConsoleLine {
 
 /// Info badge for informational messages.
 pub fn info_badge(message: &str) -> ConsoleLine {
-    ConsoleLine::bold(format!("  ℹ  {}", message), OutputColor::Info)
+    ConsoleLine::bold(format!("  i  {}", message), OutputColor::Info)
 }
 
 /// Provider/model info card for console display.
@@ -367,6 +367,230 @@ pub fn adapt_width(width: usize, max_width: usize) -> usize {
     width.min(max_width).max(20)
 }
 
+// ── Professional Screen & Terminal Management ─────────────
+
+/// ANSI escape sequences for terminal screen management.
+pub mod screen {
+    /// Clear entire screen and move cursor home.
+    pub const CLEAR: &str = "\x1b[2J\x1b[H";
+    /// Move cursor to home position.
+    pub const HOME: &str = "\x1b[H";
+    /// Hide cursor.
+    pub const HIDE_CURSOR: &str = "\x1b[?25l";
+    /// Show cursor.
+    pub const SHOW_CURSOR: &str = "\x1b[?25h";
+    /// Save cursor position.
+    pub const SAVE: &str = "\x1b7";
+    /// Restore cursor position.
+    pub const RESTORE: &str = "\x1b8";
+    /// Clear from cursor to end of screen.
+    pub const CLEAR_AFTER: &str = "\x1b[0J";
+    /// Clear current line.
+    pub const CLEAR_LINE: &str = "\x1b[2K";
+    /// Clear from cursor to beginning of screen.
+    pub const CLEAR_BEFORE: &str = "\x1b[1J";
+    /// Enable alternate screen (full-screen TUI).
+    pub const ALT_SCREEN_ON: &str = "\x1b[?1049h";
+    /// Disable alternate screen.
+    pub const ALT_SCREEN_OFF: &str = "\x1b[?1049l";
+    /// Enable bracketed paste mode.
+    pub const BRACKETED_PASTE_ON: &str = "\x1b[?2004h";
+    /// Disable bracketed paste mode.
+    pub const BRACKETED_PASTE_OFF: &str = "\x1b[?2004l";
+    /// Enable mouse tracking.
+    pub const MOUSE_ON: &str = "\x1b[?1000h";
+    /// Disable mouse tracking.
+    pub const MOUSE_OFF: &str = "\x1b[?1000l";
+    /// Enable focus tracking.
+    pub const FOCUS_ON: &str = "\x1b[?1004h";
+    /// Disable focus tracking.
+    pub const FOCUS_OFF: &str = "\x1b[?1004l";
+}
+
+/// Professional status line renderer for the TUI bottom bar.
+pub mod status {
+    use super::*;
+
+    /// Render a professional status line with left, center, and right sections.
+    pub fn render_bar(
+        left: &[Span<'static>],
+        center: &[Span<'static>],
+        right: &[Span<'static>],
+        width: u16,
+    ) -> Line<'static> {
+        let left_w: usize = left
+            .iter()
+            .map(|s| unicode_width::UnicodeWidthStr::width(s.content.as_ref()))
+            .sum();
+        let right_w: usize = right
+            .iter()
+            .map(|s| unicode_width::UnicodeWidthStr::width(s.content.as_ref()))
+            .sum();
+        let center_w = (width as usize).saturating_sub(left_w + right_w);
+
+        let mut spans: Vec<Span<'static>> = Vec::new();
+        spans.extend_from_slice(left);
+
+        if center_w > 0 && !center.is_empty() {
+            let center_text: String = center.iter().map(|s| s.content.as_ref()).collect();
+            let padded = format!("{:^width$}", center_text, width = center_w);
+            spans.push(Span::raw(padded));
+        } else if center_w > 0 {
+            spans.push(Span::raw(" ".repeat(center_w)));
+        }
+
+        spans.extend_from_slice(right);
+        Line::from(spans)
+    }
+
+    /// Render a simple single-section status line.
+    pub fn render_simple(content: &[Span<'static>], width: u16) -> Line<'static> {
+        let content_w: usize = content
+            .iter()
+            .map(|s| unicode_width::UnicodeWidthStr::width(s.content.as_ref()))
+            .sum();
+        if content_w >= width as usize {
+            return Line::from(content.to_vec());
+        }
+        let mut spans = Vec::with_capacity(content.len() + 1);
+        spans.extend_from_slice(content);
+        spans.push(Span::raw(" ".repeat(width as usize - content_w)));
+        Line::from(spans)
+    }
+}
+
+/// Professional table renderer for console output.
+pub mod table {
+    use super::*;
+
+    /// Render a table with headers, rows, and column widths.
+    pub fn render(headers: &[&str], rows: &[Vec<&str>], widths: &[usize]) -> Vec<Line<'static>> {
+        let mut lines = Vec::new();
+
+        // Header
+        lines.push(Line::from(render_row(headers, widths, true)));
+
+        // Separator
+        lines.push(Line::from(render_separator(widths)));
+
+        // Rows
+        for row in rows {
+            lines.push(Line::from(render_row(row, widths, false)));
+        }
+
+        lines
+    }
+
+    fn render_row(cells: &[&str], widths: &[usize], is_header: bool) -> Vec<Span<'static>> {
+        let mut spans = Vec::new();
+        let prefix_style = if is_header {
+            Style::default()
+                .fg(BrandTheme::accent())
+                .add_modifier(Modifier::BOLD)
+        } else {
+            Style::default()
+        };
+        let _suffix_style = if is_header {
+            Style::default()
+        } else {
+            Style::default()
+        };
+
+        for (i, cell) in cells.iter().enumerate() {
+            let w = widths.get(i).copied().unwrap_or(15);
+            let display = if cell.len() > w.saturating_sub(1) {
+                format!("{}…", &cell[..w.saturating_sub(2)])
+            } else {
+                cell.to_string()
+            };
+            let padded = format!(" {:<w$} ", display, w = w);
+            spans.push(Span::styled(padded, prefix_style));
+        }
+        spans
+    }
+
+    fn render_separator(widths: &[usize]) -> Vec<Span<'static>> {
+        let mut spans = Vec::new();
+        for w in widths {
+            let sep = "─".repeat(w.saturating_sub(2));
+            spans.push(Span::styled(
+                format!(" {} ", sep),
+                Style::default()
+                    .fg(BrandTheme::dim())
+                    .add_modifier(Modifier::DIM),
+            ));
+        }
+        spans
+    }
+}
+
+/// Professional progress bar renderer with animation support.
+pub mod progress {
+    use super::*;
+
+    /// Render a progress bar as styled spans with gradient fill.
+    pub fn render(label: &str, progress: f32, width: usize, frame: usize) -> Line<'static> {
+        let filled = (progress.clamp(0.0, 1.0) * width as f32).round() as usize;
+        let empty = width.saturating_sub(filled);
+        let gradient = BrandTheme::gradient();
+
+        let mut spans: Vec<Span<'static>> = Vec::new();
+
+        // Left bracket
+        spans.push(Span::styled("[", Style::default().fg(BrandTheme::dim())));
+
+        // Filled portion with gradient
+        if filled > 0 {
+            let seg_count = gradient.len().min(filled);
+            let seg_size = filled / seg_count;
+            let remainder = filled - seg_size * seg_count;
+            for seg in 0..seg_count {
+                let n = seg_size + if seg < remainder { 1 } else { 0 };
+                if n == 0 {
+                    continue;
+                }
+                let color = gradient[(seg + frame) % gradient.len()];
+                spans.push(Span::styled("█".repeat(n), Style::default().fg(color)));
+            }
+        }
+
+        // Empty portion
+        if empty > 0 {
+            spans.push(Span::styled(
+                "░".repeat(empty),
+                Style::default().fg(BrandTheme::dim()),
+            ));
+        }
+
+        // Right bracket
+        spans.push(Span::styled("]", Style::default().fg(BrandTheme::dim())));
+
+        // Percentage
+        let pct = (progress * 100.0) as u32;
+        let pct_color = if progress >= 1.0 {
+            BrandTheme::success()
+        } else if progress > 0.5 {
+            BrandTheme::info()
+        } else {
+            BrandTheme::warning()
+        };
+        spans.push(Span::styled(
+            format!(" {:.0}%", pct),
+            Style::default().fg(pct_color).add_modifier(Modifier::BOLD),
+        ));
+
+        // Label
+        if !label.is_empty() {
+            spans.push(Span::styled(
+                format!(" {}", label),
+                Style::default().fg(BrandTheme::dim_bright()),
+            ));
+        }
+
+        Line::from(spans)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -437,5 +661,41 @@ mod tests {
         ] {
             assert_ne!(color.to_color(), Color::Reset);
         }
+    }
+
+    #[test]
+    fn screen_constants_are_not_empty() {
+        assert!(!screen::CLEAR.is_empty());
+        assert!(!screen::HIDE_CURSOR.is_empty());
+        assert!(!screen::SHOW_CURSOR.is_empty());
+        assert!(!screen::ALT_SCREEN_ON.is_empty());
+        assert!(!screen::ALT_SCREEN_OFF.is_empty());
+    }
+
+    #[test]
+    fn status_bar_render() {
+        let left = vec![Span::styled("left", Style::default())];
+        let center = vec![Span::styled("center", Style::default())];
+        let right = vec![Span::styled("right", Style::default())];
+        let line = status::render_bar(&left, &center, &right, 80);
+        assert!(!line.spans.is_empty());
+    }
+
+    #[test]
+    fn table_render() {
+        let headers = ["Name", "Status", "Version"];
+        let rows = vec![
+            vec!["alphacode", "active", "1.0.0"],
+            vec!["tool", "idle", "2.1.0"],
+        ];
+        let widths = &[12usize, 10, 10];
+        let lines = table::render(&headers, &rows, widths);
+        assert_eq!(lines.len(), 4); // header + separator + 2 rows
+    }
+
+    #[test]
+    fn progress_render() {
+        let line = progress::render("test", 0.5, 20, 0);
+        assert!(!line.spans.is_empty());
     }
 }

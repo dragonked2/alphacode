@@ -28,6 +28,7 @@ use super::{
 use crate::alphacode_app_core::memory_manager::{
     MemoryManager, ProjectIndex, ProjectState, ProjectStatistics,
 };
+use std::sync::Arc;
 
 /// The Main Brain — orchestrates the entire autonomous agent system.
 ///
@@ -65,6 +66,8 @@ pub struct MainBrain {
     conflicts: Vec<FileConflict>,
     /// Current project index (from analyzer).
     index: ProjectIndex,
+    /// Decision Plane integration for bounded judgment inference.
+    decision_plane: Option<Arc<crate::alphacode_decision_core::DecisionIntegration>>,
 }
 
 impl MainBrain {
@@ -92,7 +95,28 @@ impl MainBrain {
             completed_reports: Vec::new(),
             conflicts: Vec::new(),
             index: ProjectIndex::default(),
+            decision_plane: Self::init_decision_plane(),
         })
+    }
+
+    /// Initialize Decision Plane from config.
+    fn init_decision_plane() -> Option<Arc<crate::alphacode_decision_core::DecisionIntegration>> {
+        let cfg = crate::config::config();
+        let dp_cfg = &cfg.features.decisions;
+        if dp_cfg.mode == crate::alphacode_config_types::DecisionPlaneMode::Off {
+            return None;
+        }
+        let decision_cfg =
+            crate::alphacode_decision_core::DecisionConfig::from_config_types(dp_cfg);
+        let engine = Arc::new(crate::alphacode_decision_core::DecisionEngine::heuristic(
+            decision_cfg,
+        ));
+        Some(Arc::new(
+            crate::alphacode_decision_core::DecisionIntegration::new(
+                crate::alphacode_decision_core::DecisionConfig::from_config_types(dp_cfg),
+                engine,
+            ),
+        ))
     }
 
     /// Configure the system with custom limits.
@@ -205,6 +229,27 @@ impl MainBrain {
             anyhow::bail!("invalid agent report: missing agent_id or summary");
         }
 
+        // Decision Plane observation: evaluate report trustworthiness
+        if let Some(ref dp) = self.decision_plane {
+            let dp = dp.clone();
+            let agent_id = report.agent_id.clone();
+            let confidence = report.confidence;
+            let completed = report.completed_tasks.len() as u32;
+            let files_mod = report.files_modified.len() as u32;
+            let summary_len = report.summary.len();
+            tokio::spawn(async move {
+                let _ = dp
+                    .decide_report_trustworthy(
+                        &agent_id,
+                        confidence,
+                        completed,
+                        files_mod,
+                        summary_len,
+                    )
+                    .await;
+            });
+        }
+
         // Remove agent from active list.
         self.memory.update_state(|s| {
             s.active_agents.retain(|id| id != &report.agent_id);
@@ -231,6 +276,29 @@ impl MainBrain {
         // Detect conflicts with all other reports.
         self.conflicts = detect_file_conflicts(&self.completed_reports);
 
+        // Decision Plane observation: evaluate merge coherence
+        if !self.conflicts.is_empty() {
+            if let Some(ref dp) = self.decision_plane {
+                let dp = dp.clone();
+                let agents: Vec<String> = self
+                    .completed_reports
+                    .iter()
+                    .map(|r| r.agent_id.clone())
+                    .collect();
+                let files: Vec<String> = self
+                    .conflicts
+                    .iter()
+                    .flat_map(|c| c.conflicting_files.iter().cloned())
+                    .collect();
+                let conflict_count = self.conflicts.len() as u32;
+                tokio::spawn(async move {
+                    let _ = dp
+                        .decide_merge_coherent(&agents, &files, conflict_count)
+                        .await;
+                });
+            }
+        }
+
         Ok(())
     }
 
@@ -249,6 +317,31 @@ impl MainBrain {
         &mut self,
         quality_gate_result: QualityGateResult,
     ) -> Result<PhaseAdvance> {
+        // Decision Plane observation: evaluate quality gate
+        if let Some(ref dp) = self.decision_plane {
+            let dp = dp.clone();
+            let impl_complete = quality_gate_result.implementation_complete;
+            let tests = quality_gate_result.tests_pass;
+            let build = quality_gate_result.build_passes;
+            let docs = quality_gate_result.documentation_updated;
+            let no_crit = quality_gate_result.no_critical_issues;
+            let review = quality_gate_result.review_approved;
+            let checkpoint = quality_gate_result.checkpoint_created;
+            tokio::spawn(async move {
+                let _ = dp
+                    .decide_quality_gate(
+                        impl_complete,
+                        tests,
+                        build,
+                        docs,
+                        no_crit,
+                        review,
+                        checkpoint,
+                    )
+                    .await;
+            });
+        }
+
         if !quality_gate_result.all_pass() {
             return Ok(PhaseAdvance::Blocked(quality_gate_result.failed_checks));
         }

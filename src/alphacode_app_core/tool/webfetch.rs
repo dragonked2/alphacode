@@ -99,6 +99,12 @@ struct WebFetchInput {
     format: Option<String>,
     #[serde(default)]
     timeout: Option<u64>,
+    #[serde(default)]
+    method: Option<String>,
+    #[serde(default)]
+    headers: Option<std::collections::HashMap<String, String>>,
+    #[serde(default)]
+    body: Option<String>,
 }
 
 #[async_trait]
@@ -109,11 +115,10 @@ impl Tool for WebFetchTool {
 
     fn description(&self) -> &str {
         "Fetch a URL and return its body as text, markdown, or raw HTML. \
-         Use this to read public pages, API responses, or in-scope bug \
-         bounty target responses. The previous secret-reflection gate has \
-         been removed; authorized security testing against a target that \
-         requires your own Authorization header or session cookie is now \
-         expected and supported."
+         Supports GET, POST, PUT, DELETE methods. Can send custom headers \
+         (including cookies for session auth) and request body. \
+         Use for reading pages, API calls, form submissions, and authorized \
+         security testing against in-scope targets."
     }
 
     fn parameters_schema(&self) -> Value {
@@ -125,6 +130,19 @@ impl Tool for WebFetchTool {
                 "url": {
                     "type": "string",
                     "description": "URL."
+                },
+                "method": {
+                    "type": "string",
+                    "enum": ["GET", "POST", "PUT", "DELETE", "PATCH"],
+                    "description": "HTTP method. Default: GET."
+                },
+                "headers": {
+                    "type": "object",
+                    "description": "Custom HTTP headers as key-value pairs. Use for cookies, auth tokens, content-type, etc."
+                },
+                "body": {
+                    "type": "string",
+                    "description": "Request body for POST/PUT/PATCH."
                 },
                 "format": {
                     "type": "string",
@@ -186,15 +204,54 @@ impl Tool for WebFetchTool {
 
         let timeout = params.timeout.unwrap_or(DEFAULT_TIMEOUT).min(MAX_TIMEOUT);
         let format = params.format.as_deref().unwrap_or("markdown");
+        let method = params.method.as_deref().unwrap_or("GET").to_uppercase();
 
         let mut last_err: Option<anyhow::Error> = None;
 
         for (attempt, &ua) in USER_AGENTS.iter().enumerate() {
-            let request = self
-                .client
-                .get(&params.url)
+            // Build request with method
+            let mut request_builder = match method.as_str() {
+                "POST" => self.client.post(&params.url),
+                "PUT" => self.client.put(&params.url),
+                "DELETE" => self.client.delete(&params.url),
+                "PATCH" => self.client.patch(&params.url),
+                _ => self.client.get(&params.url),
+            };
+
+            // Add User-Agent
+            request_builder = request_builder
                 .header(reqwest::header::USER_AGENT, ua)
-                .timeout(Duration::from_secs(timeout))
+                .timeout(Duration::from_secs(timeout));
+
+            // Add custom headers
+            if let Some(ref headers) = params.headers {
+                for (key, value) in headers {
+                    request_builder = request_builder.header(key.as_str(), value.as_str());
+                }
+            }
+
+            // Add body for POST/PUT/PATCH
+            if let Some(ref body) = params.body {
+                // Auto-detect JSON if body starts with { or [
+                let content_type =
+                    if body.trim_start().starts_with('{') || body.trim_start().starts_with('[') {
+                        "application/json"
+                    } else {
+                        "application/x-www-form-urlencoded"
+                    };
+                // Allow user-specified Content-Type to override
+                let final_ct = params
+                    .headers
+                    .as_ref()
+                    .and_then(|h| h.get("content-type").or_else(|| h.get("Content-Type")))
+                    .map(|s| s.as_str())
+                    .unwrap_or(content_type);
+                request_builder = request_builder
+                    .header(reqwest::header::CONTENT_TYPE, final_ct)
+                    .body(body.clone());
+            }
+
+            let request = request_builder
                 .build()
                 .context("failed to build webfetch request")?;
 

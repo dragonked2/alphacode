@@ -377,6 +377,115 @@ fn build_todo_output(
         .with_metadata(metadata))
 }
 
+/// Build a minimal todo item from a plain-text task description.
+///
+/// Providers sometimes send `todos` (or one entry) as a bare string instead
+/// of an array of objects. Salvaging it as a pending item keeps the write
+/// useful instead of failing with `invalid type: string`.
+fn minimal_todo_item(text: &str) -> Value {
+    let slug: String = text
+        .to_ascii_lowercase()
+        .chars()
+        .map(|ch| if ch.is_ascii_alphanumeric() { ch } else { '-' })
+        .collect::<String>()
+        .split('-')
+        .filter(|part| !part.is_empty())
+        .take(6)
+        .collect::<Vec<_>>()
+        .join("-");
+    let slug = slug.chars().take(40).collect::<String>();
+    json!({
+        "content": text,
+        "status": "pending",
+        "priority": "medium",
+        "id": if slug.is_empty() { "todo-1".to_string() } else { slug },
+    })
+}
+
+/// Fill defaults for todo-item fields providers commonly omit.
+///
+/// A missing `status`/`priority`/`id` fails strict deserialization with
+/// `missing field ...`. Defaulting them keeps the write useful; `content`
+/// stays required so a truly empty item still errors precisely.
+fn default_todo_item_fields(fields: &mut serde_json::Map<String, Value>) {
+    fields
+        .entry("status")
+        .or_insert(Value::String("pending".to_string()));
+    fields
+        .entry("priority")
+        .or_insert(Value::String("medium".to_string()));
+    if !fields.contains_key("id") {
+        let slug: String = fields
+            .get("content")
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+            .to_ascii_lowercase()
+            .chars()
+            .map(|ch| if ch.is_ascii_alphanumeric() { ch } else { '-' })
+            .collect::<String>()
+            .split('-')
+            .filter(|part| !part.is_empty())
+            .take(6)
+            .collect::<Vec<_>>()
+            .join("-");
+        let slug = slug.chars().take(40).collect::<String>();
+        fields.insert(
+            "id".to_string(),
+            Value::String(if slug.is_empty() {
+                "todo-1".to_string()
+            } else {
+                slug
+            }),
+        );
+    }
+    // Tool-maintained trails sent as strings by the model: reset instead of
+    // failing. The tool rebuilds them from stored state.
+    if fields
+        .get("confidence_history")
+        .is_some_and(|value| !value.is_array())
+    {
+        fields.insert("confidence_history".to_string(), Value::Array(Vec::new()));
+    }
+    if let Some(blocked) = fields.get_mut("blocked_by") {
+        match blocked {
+            Value::String(raw) => {
+                let text = raw.trim();
+                *blocked = if text.is_empty() {
+                    Value::Array(Vec::new())
+                } else {
+                    Value::Array(vec![Value::String(text.to_string())])
+                };
+            }
+            Value::Array(_) | Value::Null => {}
+            _ => {
+                *blocked = Value::Array(Vec::new());
+            }
+        }
+    }
+    // `group` sent as a number/bool/object: stringify scalars, drop the rest.
+    if let Some(group) = fields.get_mut("group") {
+        match group {
+            Value::String(_) | Value::Null => {}
+            Value::Number(n) => *group = Value::String(n.to_string()),
+            Value::Bool(b) => *group = Value::String(b.to_string()),
+            _ => *group = Value::Null,
+        }
+    }
+}
+
+/// Normalize a goal object in place: stringify scalar `group` labels, since
+/// providers occasionally send them as numbers.
+fn default_goal_fields(fields: &mut serde_json::Map<String, Value>) {
+    if let Some(group) = fields.get_mut("group") {
+        match group {
+            Value::String(_) | Value::Null => {}
+            Value::Number(n) => *group = Value::String(n.to_string()),
+            Value::Bool(b) => *group = Value::String(b.to_string()),
+            _ => *group = Value::Null,
+        }
+    }
+}
+
 /// Leniently normalize raw todo-tool arguments before strict deserialization.
 ///
 /// Some providers (notably Claude tool calling) intermittently emit tool
@@ -433,6 +542,12 @@ fn normalize_todo_input(input: Value) -> Value {
                 // plan. Treat as user_intention.
                 *plan = json!({"user_intention": trimmed});
             }
+        } else if matches!(plan, Value::Bool(_) | Value::Array(_)) {
+            // Plan is optional: a bool/array carries no intent, so drop it
+            // instead of failing the write with `invalid type`.
+            *plan = Value::Null;
+        } else if let Value::Number(n) = plan {
+            *plan = json!({"understands_user_intent": n});
         }
         if let Some(fields) = plan.as_object_mut() {
             for key in [
@@ -460,36 +575,84 @@ fn normalize_todo_input(input: Value) -> Value {
                 serde_json::from_str::<Value>(trimmed)
             {
                 *entries = parsed;
+            } else if key == "todos" {
+                // Plain-text task description, not JSON: salvage as a single
+                // minimal item instead of failing the whole write with
+                // `invalid type: string, expected sequence`.
+                *entries = Value::Array(vec![minimal_todo_item(trimmed)]);
+            } else {
+                // Goals are optional: drop an unparseable blob rather than
+                // failing the todo write around it.
+                *entries = Value::Null;
             }
         }
 
+        // A single object sent where an array belongs: wrap it.
+        if key == "todos" && entries.is_object() {
+            *entries = Value::Array(vec![entries.clone()]);
+        } else if key == "goals" && entries.is_object() {
+            *entries = Value::Array(vec![entries.clone()]);
+        }
+
+        // Numbers/bools where an array (or null) belongs: goals are
+        // optional so Null is safe; todos fall through to serde for a
+        // precise error.
+        if key == "goals" && !entries.is_array() && !entries.is_null() {
+            *entries = Value::Null;
+        }
+
         if let Value::Array(items) = entries {
-            for item in items.iter_mut() {
+            let mut normalized: Vec<Value> = Vec::with_capacity(items.len());
+            for mut item in items.drain(..) {
                 // Individual item sent as a stringified JSON object.
-                if let Value::String(raw) = item
+                if let Value::String(raw) = &item
                     && let Ok(parsed @ Value::Object(_)) = serde_json::from_str::<Value>(raw.trim())
                 {
-                    *item = parsed;
+                    item = parsed;
                 }
-                let Some(fields) = item.as_object_mut() else {
-                    continue;
-                };
-                for key in [
-                    "confidence",
-                    "completion_confidence",
-                    "alignment_score",
-                    "user_intention_alignment",
-                    "closed_feedback_loop",
-                    // Pre-rename alias; some prompts and replayed transcripts
-                    // still carry the old key.
-                    "hill_climbability",
-                    "end_to_end_ownership",
-                ] {
-                    if let Some(value) = fields.get_mut(key) {
-                        coerce_value_to_integer(value);
+                // Plain-text item: salvage as a minimal todo instead of
+                // failing the whole write with `invalid type: string`.
+                if let Value::String(raw) = &item {
+                    let text = raw.trim();
+                    if text.is_empty() {
+                        continue;
                     }
+                    if key == "todos" {
+                        normalized.push(minimal_todo_item(text));
+                    }
+                    // Goals need structured scores; a bare string carries
+                    // none, so skip it.
+                    continue;
+                }
+                if let Value::Object(fields) = &mut item {
+                    if key == "todos" {
+                        default_todo_item_fields(fields);
+                    } else {
+                        default_goal_fields(fields);
+                    }
+                    for field in [
+                        "confidence",
+                        "completion_confidence",
+                        "alignment_score",
+                        "user_intention_alignment",
+                        "closed_feedback_loop",
+                        // Pre-rename alias; some prompts and replayed transcripts
+                        // still carry the old key.
+                        "hill_climbability",
+                        "end_to_end_ownership",
+                    ] {
+                        if let Some(value) = fields.get_mut(field) {
+                            coerce_value_to_integer(value);
+                        }
+                    }
+                    normalized.push(Value::Object(fields.clone()));
+                } else {
+                    // Numbers, bools, nested arrays: keep for serde to
+                    // report precisely.
+                    normalized.push(item);
                 }
             }
+            *entries = Value::Array(normalized);
         }
     }
     Value::Object(obj)
@@ -634,7 +797,16 @@ impl Tool for TodoTool {
     }
 
     async fn execute(&self, input: Value, ctx: ToolContext) -> Result<ToolOutput> {
-        let params: TodoInput = serde_json::from_value(normalize_todo_input(input))?;
+        let params: TodoInput =
+            serde_json::from_value(normalize_todo_input(input)).map_err(|err| {
+                anyhow::anyhow!(
+                    "todo arguments not understood ({err}). Send an object like \
+                 {{\"todos\": [{{\"content\": \"...\", \"status\": \"pending\", \
+                 \"priority\": \"medium\", \"id\": \"...\", \"confidence\": 80}}]}}. \
+                 `todos` must be an array of objects (not a string), each item \
+                 needs content/status/priority/id, and scores must be numbers 0-100."
+                )
+            })?;
         let is_write = params.todos.is_some() || params.goals.is_some() || params.plan.is_some();
         let operation = if is_write { "write" } else { "read" };
         let result = if is_write {
@@ -1723,8 +1895,44 @@ mod tests {
     }
 
     #[test]
-    fn garbage_string_still_errors() {
-        assert!(parse(json!({"todos": "not json at all"})).is_err());
+    fn plain_string_todos_salvaged_as_single_pending_item() {
+        // Providers sometimes send a bare task description instead of an
+        // array of objects. Salvage it rather than failing the write.
+        let parsed = parse(json!({"todos": "not json at all"})).expect("plain string salvaged");
+        let todos = parsed.todos.expect("todos present");
+        assert_eq!(todos.len(), 1);
+        assert_eq!(todos[0].content, "not json at all");
+        assert_eq!(todos[0].status, "pending");
+    }
+
+    #[test]
+    fn single_object_todos_wrapped_in_array() {
+        let parsed = parse(json!({"todos": {"content": "a", "status": "pending"}}))
+            .expect("single object wrapped");
+        let todos = parsed.todos.expect("todos present");
+        assert_eq!(todos.len(), 1);
+        assert_eq!(todos[0].priority, "medium");
+        assert!(!todos[0].id.is_empty());
+    }
+
+    #[test]
+    fn plain_string_items_salvaged_and_empties_dropped() {
+        let parsed = parse(json!({"todos": ["write tests", "  ", "{\"content\":\"b\"}"]}))
+            .expect("string items salvaged");
+        let todos = parsed.todos.expect("todos present");
+        assert_eq!(todos.len(), 2);
+        assert_eq!(todos[0].content, "write tests");
+        assert_eq!(todos[0].status, "pending");
+        assert_eq!(todos[1].content, "b");
+    }
+
+    #[test]
+    fn single_object_goals_wrapped_and_junk_goals_dropped() {
+        let parsed = parse(json!({"goals": {"closed_feedback_loop": 80}}))
+            .expect("single goal object wrapped");
+        assert_eq!(parsed.goals.expect("goals present").len(), 1);
+        let parsed = parse(json!({"goals": "just some text"})).expect("junk goals dropped");
+        assert!(parsed.goals.is_none());
     }
 
     /// Sessions and model calls written before the rename carry

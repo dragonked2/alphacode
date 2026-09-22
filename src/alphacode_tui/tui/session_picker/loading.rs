@@ -1818,7 +1818,7 @@ fn load_codex_session_stub(path: &Path) -> Result<Option<SessionInfo>> {
         id: format!("codex:{session_id}"),
         parent_id: None,
         short_name,
-        icon: "🧠".to_string(),
+        icon: "💾".to_string(),
         title,
         message_count: 0,
         user_message_count: 0,

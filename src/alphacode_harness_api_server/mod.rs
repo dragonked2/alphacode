@@ -21,6 +21,7 @@ use crate::alphacode_harness_api::{API_VERSION_MAJOR, ApiEvent, ErrorCode, Serve
 use anyhow::{Context, Result};
 use serde_json::Value;
 use std::path::PathBuf;
+use std::time::Duration;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::net::{UnixListener, UnixStream};
 
@@ -28,6 +29,12 @@ use tokio::net::{UnixListener, UnixStream};
 // resolve different directories (they once did, and the desktop app could not
 // connect as a result).
 pub use crate::alphacode_harness_api::{api_socket_path, legacy_socket_path};
+
+/// Maximum number of retry attempts when connecting to the legacy daemon.
+const MAX_CONNECT_RETRIES: u32 = 3;
+
+/// Delay between connection retry attempts.
+const CONNECT_RETRY_DELAY: Duration = Duration::from_millis(100);
 
 /// Run the bridge accept loop forever.
 pub async fn run_bridge(api_socket: PathBuf, legacy_socket: PathBuf) -> Result<()> {
@@ -51,6 +58,29 @@ pub async fn run_bridge(api_socket: PathBuf, legacy_socket: PathBuf) -> Result<(
             }
         });
     }
+}
+
+/// Connect to the legacy daemon with retry logic for transient failures.
+async fn connect_legacy_with_retry(legacy_socket: &PathBuf) -> Result<UnixStream> {
+    let mut last_err = None;
+
+    for attempt in 0..MAX_CONNECT_RETRIES {
+        match UnixStream::connect(legacy_socket).await {
+            Ok(stream) => return Ok(stream),
+            Err(e) => {
+                last_err = Some(e);
+                if attempt < MAX_CONNECT_RETRIES - 1 {
+                    tokio::time::sleep(CONNECT_RETRY_DELAY).await;
+                }
+            }
+        }
+    }
+
+    Err(last_err.unwrap()).context(format!(
+        "connect legacy socket {} after {} retries",
+        legacy_socket.display(),
+        MAX_CONNECT_RETRIES
+    ))
 }
 
 async fn handle_api_client(stream: UnixStream, legacy_socket: PathBuf) -> Result<()> {
@@ -86,10 +116,8 @@ async fn handle_api_client(stream: UnixStream, legacy_socket: PathBuf) -> Result
     );
     write_json_line(&mut write_half, &hello_ok).await?;
 
-    // 2. Dial the legacy daemon for this client.
-    let legacy = UnixStream::connect(&legacy_socket)
-        .await
-        .with_context(|| format!("connect legacy socket {}", legacy_socket.display()))?;
+    // 2. Dial the legacy daemon for this client with retry logic.
+    let legacy = connect_legacy_with_retry(&legacy_socket).await?;
     let (legacy_read, mut legacy_write) = legacy.into_split();
     let mut legacy_reader = BufReader::new(legacy_read);
 

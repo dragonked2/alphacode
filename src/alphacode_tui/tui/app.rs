@@ -825,12 +825,14 @@ impl StreamingProgress {
         let text = &self.streaming_text;
         // Use floor_char_boundary to avoid slicing inside a multi-byte
         // UTF-8 character (the char-boundary panic from issue #...).
-        let tail_len = text.floor_char_boundary(text.len().min(WINDOW));
+        let window = text.len().min(WINDOW);
+        let tail_start = text.floor_char_boundary(text.len().saturating_sub(window));
+        let tail_len = text.len() - tail_start;
         if tail_len < MIN_CHUNK * MIN_STREAK as usize {
             self.repetition_streak = 0;
             return false;
         }
-        let tail = &text[text.len() - tail_len..];
+        let tail = &text[tail_start..];
 
         // Try chunk sizes from MIN_CHUNK..=MAX_CHUNK and look for the longest
         // repeating suffix. We want the *largest* stable chunk because that
@@ -1006,6 +1008,10 @@ pub struct App {
     pending_turn: bool,
     // When armed by /poke, automatically continue prompting until todos are complete.
     auto_poke_incomplete_todos: bool,
+    /// How many times we've poked for incomplete todos in this cycle.
+    /// Stops after MAX_AUTO_POKE_INCOMPLETE_ATTEMPTS to avoid infinite loops
+    /// when the agent says "done" without actually completing todos.
+    auto_poke_incomplete_attempts: u8,
     /// Whether the current auto-poke cycle has already challenged an abrupt
     /// final confidence increase. Low or missing completion confidence keeps
     /// retrying, but a spike gets one dedicated independent-validation turn.
@@ -1765,6 +1771,10 @@ impl App {
     /// full API call per nudge. The counter resets whenever a nudge actually
     /// changes the stored todos (progress) or auto-poke is re-armed.
     const TODO_COMPLETION_GATE_MAX_ATTEMPTS: u8 = 5;
+    /// Maximum times we poke for incomplete todos before giving up.
+    /// Prevents infinite loops when the agent says "done" but doesn't
+    /// actually complete the todo.
+    const MAX_AUTO_POKE_INCOMPLETE_ATTEMPTS: u8 = 3;
     /// Consecutive guardrail/refusal-stopped turns tolerated before automatic
     /// continuation paths (auto-poke, overnight poke) are stopped. Guardrail
     /// refusals are deterministic for the same request, so re-poking the same

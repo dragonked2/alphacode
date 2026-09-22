@@ -18,7 +18,7 @@ impl BrowserTool {
 }
 
 fn browser_tool_description_text() -> &'static str {
-    "Control the browser. Check action='status' first; run setup only if not ready."
+    "Control the browser. Check action='status' first; run setup only if not ready. To navigate to a URL, use action='open' with url parameter. The 'open' action requires url."
 }
 
 #[derive(Debug, Deserialize)]
@@ -188,7 +188,7 @@ impl Tool for BrowserTool {
                     "fill_form", "select",                    "wait", "screenshot", "eval", "scroll", "upload",
                     "press", "provider_command"
                 ],
-                "description": "Action. Check 'status' first; run 'setup' only when the bridge is not ready. wait also accepts timeout_ms alone (fixed delay) or position='dom-stable'/'network-idle'."
+                "description": "Action. Check 'status' first; run 'setup' only when the bridge is not ready. To navigate to a URL, use 'open' with url parameter. 'navigate' is not valid. eval may be blocked by CSP on some sites - use click/type/snapshot instead. wait also accepts timeout_ms alone (fixed delay) or position='dom-stable'/'network-idle'."
             }),
         );
         properties.insert(

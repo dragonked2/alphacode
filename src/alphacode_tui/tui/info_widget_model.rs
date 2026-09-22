@@ -28,7 +28,7 @@ pub(super) fn render_model_widget(data: &InfoWidgetData, inner: Rect) -> Vec<Lin
         Span::styled(
             truncate_smart(&short_name, max_len.saturating_sub(2)),
             Style::default()
-                .fg(rgb(255, 148, 205))
+                .fg(rgb(125, 195, 255))
                 .add_modifier(ratatui::style::Modifier::BOLD),
         ),
     ];

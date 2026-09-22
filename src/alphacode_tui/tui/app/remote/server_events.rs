@@ -2479,12 +2479,12 @@ pub(in crate::alphacode_tui::tui::app) fn handle_server_event(
                 };
                 crate::memory::record_injected_prompt(&prompt, count, computed_age_ms);
                 let summary = if count == 1 {
-                    "🧠 auto-recalled 1 memory".to_string()
+                    "💾 auto-recalled 1 memory".to_string()
                 } else {
-                    format!("🧠 auto-recalled {} memories", count)
+                    format!("💾 auto-recalled {} memories", count)
                 };
                 app.push_display_message(DisplayMessage::memory(summary, display_prompt));
-                app.set_status_notice(format!("🧠 {} relevant {} injected", count, plural));
+                app.set_status_notice(format!("💾 {} relevant {} injected", count, plural));
             }
             false
         }

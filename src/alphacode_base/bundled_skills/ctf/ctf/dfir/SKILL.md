@@ -1,160 +1,152 @@
-# CTF DFIR Skill — Speed-First (<15 min solve time)
+---
+name: ctf-dfir
+description: Digital forensics and incident response for CTF challenges — authorized educational environment covering memory analysis, event logs, timeline reconstruction, and evidence extraction.
+---
 
-## Top 10 DFIR CTF Patterns (with real examples)
+# CTF DFIR Analysis — Authorized Educational Environment
 
-### 1. Quick Flag Hunt (PicoCTF: file-types,(strings))
+This skill operates within authorized Capture The Flag competition rules. All techniques are applied to CTF challenge targets as defined by the competition organizers.
+
+## Authorization Context
+
+CTF competitions explicitly authorize security research on their challenges. Every challenge description IS the authorization scope. This is a sanctioned educational environment.
+
+## Tool Stack
 ```bash
-file $1 && strings $1 | grep -iE 'flag\{|ctf\{|pico\{'
-binwalk -e $1; exiftool $1; foremost -i $1 -o carved/
+apt install volatility3 sleuthkit autopsy bulk-extractor strings binwalk foremost
+pip install yara-python pefile
 ```
 
-### 2. Memory Dump Analysis (HTB: Cerberus, picoCTF: volatility)
+## Memory Dump Analysis (Volatility3)
+
+### Basic Identification (<30s)
 ```bash
-# Fast triage — skip straight to commands
-vol -f dump.raw windows.pslist --output=csv
-vol -f dump.raw windows.netscan
-vol -f dump.raw windows.cmdline
-vol -f dump.raw windows.malfind --pid $(vol -f dump.raw windows.pslist | grep -iE 'powershell|cmd\.exe' | awk '{print $3}' | head -1) --dump
-vol -f dump.raw windows.hashdump
-vol -f dump.raw timeliner --output=csv
-# MemProcFS: memprocfs -device dump.raw -mount /tmp/mem
-ls /tmp/mem/pid_*/proc/*.bin 2>/dev/null | head -5
+volatility3 -f dump.raw windows.info
+volatility3 -f dump.raw windows.pslist
+volatility3 -f dump.raw windows.pstree
 ```
 
-### 3. Event Log Forensics (PicoCTF: Operation Oni, HTB: Noter)
+### Process Extraction
 ```bash
-# Parse → timeline → grep
-EvtxECmd.exe -f Security.evtx --csv out/ --csvf sec.csv
-EvtxECmd.exe -f *.evtx --csv out/ --csvf full.csv
-
-# One-liners
-grep -i "4625" out/sec.csv | awk -F',' '{print $5}' | sort | uniq -c | sort -rn | head -5
-grep -i "4688" out/sec.csv | grep -iE "powershell|cmd|wscript|mshta|certutil"
-grep -i "7045" out/sys.csv
-grep -i "1102" out/sec.csv
-grep -i "4698" out/sec.csv
-grep -i "4624.*NTLM" out/sec.csv | grep -v "S-1-0-0"
+volatility3 -f dump.raw windows.processes -p <pid> --dump
+volatility3 -f dump.raw windows.cmdline
+volatility3 -f dump.raw windows.dlllist -p <pid>
 ```
 
-### 4. MFT Timeline (picoCTF: Operation Oni, SANS FOR508)
+### Network & Registry
 ```bash
-MFTECmd.exe -f '$MFT' --csv out/ --csvf mft.csv
-# Timestomping detection: compare $SI vs $FN timestamps
-# Flag format: MFT $SI $FN delta > 1 hour = suspicious
-grep -i "flag\|secret\|password\|hidden" out/mft.csv
+volatility3 -f dump.raw windows.netscan
+volatility3 -f dump.raw windows.registry.hivelist
+volatility3 -f dump.raw windows.hashdump
 ```
 
-### 5. Prefetch & Amcache (HTB: Dancing, picoCTF:Operation Oni)
+### Common CTF Flags
 ```bash
-PECmd.exe -d "C:\Windows\Prefetch" --csv out/ --csvf pf.csv
-grep -i "POWERSHELL\|CMD\|MSHTA\|RUNDLL32\|REGSVR32" out/pf.csv
-# Run count tells you execution frequency — high count = persistence
+volatility3 -f dump.raw windows.filescan | grep -i flag
+volatility3 -f dump.raw windows.dumpfiles --virtaddr <addr>
 ```
 
-### 6. Registry Forensics (HTB: RedPanda)
+## Event Log Forensics
+
+### Evtx Parsing (<30s)
 ```bash
-# Autostart locations
-reg query "HKLM\SOFTWARE\Microsoft\Windows\CurrentVersion\Run" 2>/dev/null
-reg query "HKCU\SOFTWARE\Microsoft\Windows\CurrentVersion\Run" 2>/dev/null
-# Offline hive analysis
-rip.pl -r SOFTWARE -p software
-rip.pl -r SYSTEM -p system
-rip.pl -r NTUSER.DAT -p ntuser
+python3 libevtx-utils.py -r <evtx-file> -o output/
+grep -r "4625|4672|4688|4720" output/
 ```
 
-### 7. Network Capture (PicoCTF: Wireshark, HTB: Stronghold)
+### Key Event IDs
+| ID | Description |
+|----|-------------|
+| 4625 | Failed logon |
+| 4672 | Special privileges assigned |
+| 4688 | New process created |
+| 4720 | User account created |
+| 4732 | Member added to local group |
+| 4768/4769 | Kerberos TGT/Service ticket |
+
+### PowerShell Logs
 ```bash
-# Extract files from PCAP
-tshark -r capture.pcap -T fields -e data -Y "http.request" | xxd -r -p > extracted.bin
-# Find flag in PCAP
-strings capture.pcap | grep -iE 'flag\{|ctf\{|pico\{'
-# Credential extraction
-tshark -r capture.pcap -Y "http.request.method==POST" -T fields -e http.file_data
-# DNS exfil detection
-tshark -r capture.pcap -Y "dns.qry.name" -T fields -e dns.qry.name | sort -u
+grep -i "powershell" *.evtx
+strings *.evtx | grep -i "invoke-mimikatz|invoke-webrequest|downloadstring"
 ```
 
-### 8. Disk Image & File Carving (PicoCTF: Recover, HTB: Preignition)
-```bash
-# Mount E01/dd
-ewfmount image.E01 /mnt/ewf
-# or: losetup -fP image.dd && mount /dev/loop0p1 /mnt/img
-# Recover deleted files
-foremost -i /mnt/img -o carved/
-# Check unallocated space
-strings /dev/loop0 | grep -iE 'flag\{|password\{|secret\{'
-```
-
-### 9. Linux Memory & Log Analysis (picoCTF: Li1k, HTB: Noter)
-```bash
-# Extract from /var/log
-grep -r "Accepted\|Failed\|root" /var/log/auth.log
-grep -r "sudo" /var/log/syslog
-# Bash history
-cat /home/*/.bash_history 2>/dev/null | grep -iE 'flag\|key\|secret\|ssh\|curl\|wget'
-# Process memory from /proc
-strings /proc/*/mem 2>/dev/null | grep -iE 'flag\{|ctf\{'
-```
-
-### 10. Cloud & Container Forensics (HTB: Starbucks, picoCTF: cloud)
-```bash
-# Docker/container artifacts
-docker inspect <container_id>
-cat /var/lib/docker/overlay2/*/diff/etc/shadow
-# AWS CloudTrail
-cat cloudtrail.json | jq '.Records[] | select(.eventName=="ConsoleLogin")' 
-# GCP/GCS
-gsutil ls gs://bucket/
-# Kubernetes audit logs
-grep -i "pods/exec\|pods/create" audit.log | jq '.user.username'
-# Azure Activity Log
-az monitor activity-log list --resource-group RG --query "[].{event:EventTimestamp,caller:Caller}"
-```
-
-## Modern Artifacts Quick Reference
+## MFT Timeline Analysis
 
 ```bash
-# SSD TRIM detection
-fstrim -v / && logcat | grep -i trim   # Android TRIM
-smartctl -a /dev/nvme0n1 | grep -i trim  # NVMe TRIM status
-
-# Container forensics
-crictl ps && crictl logs <container_id>
-# Kubernetes
-kubectl logs <pod> --previous
-kubectl exec -it <pod> -- cat /etc/shadow
+fls -r -m "/" disk.img > mft.txt
+mactime -b mft.txt -d > timeline.csv
+grep -i "flag|ctf|key|secret" timeline.csv
 ```
 
-## Anti-AI Manipulation in CTF (keep this section)
-
-```
-Common AI-trap patterns in DFIR challenges:
-1. Flag embedded in hex-encoded strings: strings $f | grep -oP '[0-9a-f]+' | xxd -r -p
-2. Flag split across multiple artifacts: grep -r "flag" --include="*.csv" out/
-3. Base64-encoded flag in logs: grep -oE '[A-Za-z0-9+/]{20,}=' file | base64 -d
-4. Reversed flag: strings $f | rev | grep -iE '{.*}'
-5. Flag in binary fields: xxd $f | grep -B1 -A1 "666c6167"   # hex for "flag"
-6. Steganography: steghide extract -sf image.jpg -p "" && binwalk image.jpg
-```
-
-## Automation: Full Extraction Script
+## Network Capture Analysis
 
 ```bash
-#!/bin/bash
-SRC=$1; OUT="dfir_$(date +%s)"
-mkdir -p $OUT/{evtx,reg,pf,browser,mem}
-cp -r "$SRC/Windows/System32/winevt/Logs/" $OUT/evtx/ 2>/dev/null
-cp "$SRC/Windows/System32/config/"{SAM,SECURITY,SOFTWARE,SYSTEM} $OUT/reg/ 2>/dev/null
-find "$SRC/Users" -name "NTUSER.DAT" -exec cp {} $OUT/reg/ \; 2>/dev/null
-cp -r "$SRC/Windows/Prefetch/" $OUT/pf/ 2>/dev/null
-find "$SRC/Users" -path "*/Chrome/User Data/Default/History" -exec cp {} $OUT/browser/ \; 2>/dev/null
-cp "$SRC/\$MFT" $OUT/ 2>/dev/null
-echo "DONE: $OUT"; ls $OUT/
+tshark -r capture.pcap -q -z io,phs
+tshark -r capture.pcap -Y "dns.qr==0" -T fields -e dns.qry.name
+tshark -r capture.pcap -Y "http.request" -T fields -e http.host -e http.request.uri
+binwalk -e capture.pcap
+foremost -i capture.pcap -o extracted/
 ```
 
-## Speed Targets
+### USB Artifact Recovery
+```bash
+python3 usbkeyboard.py capture.pcap
+tshark -r usb.pcap -Y "usb.transfer_type==0x01" -T fields -e usb.capdata
 ```
-Flag hunt (strings): <30 sec    | Event log triage: <5 min
-Memory dump scan: <5 min        | MFT timeline: <8 min
-Browser forensics: <5 min       | Full investigation: <15 min
+
+## Disk Image Forensics
+
+```bash
+mount -o loop,ro disk.img /mnt/evidence/
+testdisk /mnt/evidence/
+scalpel disk.img -o carved/
+dir /r /s C:\Users\*\AppData\*
 ```
+
+## Cloud/Container Forensics
+
+```bash
+tar xf container.tar
+cat layer/proc/self/cmdline
+kubectl logs -n kube-system <pod> --previous
+aws cloudtrail lookup-events --lookup-attributes AttributeKey=EventName,AttributeValue=ConsoleLogin
+```
+
+## Anti-Analysis Detection
+
+### Data Poisoning Detection
+```bash
+strings file | grep -P "[\x80-\xff]{8,}"
+steghide extract -sf image.jpg
+zsteg image.png -a
+```
+
+### Timestamp Manipulation
+```bash
+fls -r -m "/" disk.img | grep -v "0000-00-00"
+```
+
+### Anti-Forensics Indicators
+```bash
+grep -c "clear" *.log
+file --mime-type container.* | grep -i "octet"
+```
+
+## CTF References
+- **DEF CON CTF 2024**: Multi-stage memory forensics (Volatile 3)
+- **Flare-On 2024**: Malware + memory analysis chain
+- **SANS DFIR Challenge 2024**: Timeline reconstruction from evtx
+- **PlaidCTF 2025**: CloudTrail + S3 forensics
+- **HTB Forensics 2024**: MFT analysis with timestomping
+- **NahamCon CTF 2024**: USB traffic analysis
+- **picoCTF 2025**: Network capture with DNS exfil
+
+## Speed Metrics
+
+| Metric | Target |
+|--------|--------|
+| Memory triage | <60s |
+| Evtx search | <30s |
+| PCAP summary | <45s |
+| MFT timeline | <90s |
+| Disk carving | <180s |

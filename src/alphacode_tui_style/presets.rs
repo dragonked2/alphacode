@@ -89,7 +89,9 @@ impl ThemeSeed {
             (Role::UserBg, self.surface),
             (Role::Ai, self.green),
             (Role::AiText, self.fg),
-            (Role::System, self.magenta),
+            // System notices read as information, never magenta: magenta
+            // collides with errors and with the brand accent.
+            (Role::System, self.blue),
             // Tools
             (Role::Tool, self.fg_muted),
             (Role::ToolBg, self.surface),
@@ -104,7 +106,8 @@ impl ThemeSeed {
             (Role::HeaderIcon, self.cyan),
             (Role::HeaderName, self.blue),
             (Role::HeaderSession, self.fg),
-            (Role::ModelName, self.magenta),
+            // Model name in blue: magenta/pink glare is gone from all themes.
+            (Role::ModelName, self.blue),
             // Status
             (Role::Success, self.green),
             (Role::Warning, self.orange),

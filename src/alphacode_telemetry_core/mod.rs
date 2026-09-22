@@ -26,6 +26,7 @@ use std::time::{Duration, Instant};
 const TELEMETRY_ENDPOINT: &str = "https://telemetry.alphacode.sh/v1/event";
 const ASYNC_SEND_TIMEOUT: Duration = Duration::from_secs(5);
 const BACKGROUND_QUEUE_CAPACITY: usize = 2048;
+#[allow(dead_code)]
 const BLOCKING_INSTALL_TIMEOUT: Duration = Duration::from_millis(1200);
 const BLOCKING_LIFECYCLE_TIMEOUT: Duration = Duration::from_millis(800);
 const TELEMETRY_SCHEMA_VERSION: u32 = 6;
@@ -1470,14 +1471,13 @@ pub fn record_install_if_first_run() {
         install_conversion_id,
     };
     if let Ok(payload) = serde_json::to_value(&event)
-        && send_payload(payload, DeliveryMode::Blocking(BLOCKING_INSTALL_TIMEOUT))
+        && send_payload(payload, DeliveryMode::Background)
     {
         mark_install_recorded(&id);
         clear_install_conversion_id();
     }
     if first_run {
         emit_onboarding_step_once("first_run", None, None);
-        show_first_run_notice();
     }
     mark_current_version_recorded();
 }
@@ -2142,26 +2142,6 @@ pub fn current_provider_model() -> Option<(String, String)> {
             .as_ref()
             .map(|state| (state.provider_start.clone(), state.model_start.clone()))
     })
-}
-
-fn show_first_run_notice() {
-    // This can print before any terminal setup enables VT processing. Legacy
-    // Windows consoles (conhost without ENABLE_VIRTUAL_TERMINAL_PROCESSING,
-    // exactly the double-click-the-exe path) render raw escapes as `←[90m`
-    // garbage (issue #498), so only colorize when the console accepts ANSI
-    // (the helper also opportunistically enables VT mode on Windows).
-    let (dim, reset) = if crate::alphacode_core::console::stderr_supports_ansi() {
-        ("\x1b[90m", "\x1b[0m")
-    } else {
-        ("", "")
-    };
-    eprintln!("{dim}");
-    eprintln!("  alphacode collects anonymous usage statistics (install count, version, OS,");
-    eprintln!("  session activity, tool counts, and crash/exit reasons). No code, filenames,");
-    eprintln!("  prompts, or personal data is sent.");
-    eprintln!("  To opt out: export ALPHACODE_NO_TELEMETRY=1");
-    eprintln!("  Details: https://github.com/dragonked2/alphacode/blob/master/TELEMETRY.md");
-    eprintln!("{reset}");
 }
 
 #[cfg(test)]

@@ -49,7 +49,7 @@ fn render_memory_header_line(info: &MemoryInfo, max_width: usize) -> Line<'stati
     // The icon is two columns plus its trailing space; reserving exactly that
     // (rather than flooring the remainder at 6) keeps the row inside a narrow
     // rail instead of drawing past it.
-    let icon = "🧠 ";
+    let icon = "💾 ";
     Line::from(vec![
         Span::styled(icon, Style::default().fg(rgb(200, 150, 255))),
         Span::styled(
@@ -550,7 +550,7 @@ pub(super) fn render_memory_compact(info: &MemoryInfo, inner_width: u16) -> Vec<
     };
 
     let mut spans = vec![
-        Span::styled("🧠 ", Style::default().fg(rgb(200, 150, 255))),
+        Span::styled("💾 ", Style::default().fg(rgb(200, 150, 255))),
         Span::styled(title, Style::default().fg(rgb(180, 180, 190)).bold()),
     ];
     if show_activity {

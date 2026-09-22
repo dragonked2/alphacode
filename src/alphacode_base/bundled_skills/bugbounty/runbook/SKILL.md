@@ -7,6 +7,10 @@ description: Structured security runbooks — Predefined workflows for common se
 
 **Structured workflows that keep you moving through real tasks, not random tool calls.**
 
+> Bug bounty assessments ALSO follow section 10 (operating rules):
+> scope file, checkpointing, priority order, kill rules, differential
+> testing, chain analysis, output discipline, no-finding checklist.
+
 ---
 
 ## 1. AVAILABLE RUNBOOKS
@@ -370,3 +374,104 @@ PHASE 5: BUSINESS LOGIC (10 min)
 - [ ] Create PoCs
 - [ ] Write report
 ```
+
+---
+
+## 10. BUG BOUNTY ASSESSMENT OPERATING RULES
+
+Mandatory for any bug bounty / pentest engagement. These fix the
+recurring failure modes: lost context, wasted tests, scope drift,
+unreadable reports.
+
+### 10.1 Scope file (see scope skill)
+
+Write it before any testing. Check every new host against it.
+Out-of-scope or ambiguous → skip, log one line, move on.
+
+### 10.2 Checkpointing (never lose work to compaction)
+
+Every ~5 minutes of testing, append to the running assessment notes:
+
+```markdown
+## Checkpoint <time>
+- Tested: <what, with what>
+- Found: <findings or "nothing — killed H-3">
+- Next: <next hypothesis>
+```
+
+Keep findings, scope file, and hypothesis ledger (10.4) in these
+notes so a fresh session resumes without re-testing.
+
+### 10.3 Target prioritization (test in this order)
+
+1. Authentication and authorization endpoints (biggest impact).
+2. User-controlled input reaching backend (SQLi, command injection, SSRF).
+3. Business logic flows (payment, transactions, permissions).
+4. Information disclosure enabling further attacks.
+5. UI-only issues LAST (XSS without auth context, bare open redirect).
+
+### 10.4 Hypothesis ledger with kill rules
+
+Track each hypothesis with a kill criterion and a time budget:
+
+```markdown
+| ID | Hypothesis | Kill rule | Budget | State |
+|----|-----------|-----------|--------|-------|
+| H-1 | /api/v2/* exists | 3× 404 on variants | 10 min | KILLED |
+| H-2 | Circle API CORS → CSRF | no authed impact | 15 min | TESTING |
+```
+
+Kill rules (strict):
+
+- 3 variations, same result (404 / 401 / sanitized) → KILL.
+- No response change after 2 more attempts → KILL.
+- Framework guess contradicts fingerprint → KILL immediately.
+
+A killed hypothesis stays dead. Do not re-test it under a new name.
+
+### 10.5 Differential testing
+
+Every auth-adjacent test runs twice: authenticated vs
+unauthenticated (and role vs role when two identities exist).
+The DIFFERENCE is the finding. Single-sided tests prove nothing
+about authorization.
+
+### 10.6 Chain analysis
+
+After each validated finding ask "what does this enable?" and take
+at most 2 chaining steps before reporting:
+
+```
+IDOR read → other users' data? → privilege escalation? → admin ops?
+Info disclosure → secrets? → auth bypass? → config read?
+Open redirect → + XSS → convincing phishing?
+```
+
+### 10.7 Output discipline
+
+- Filter at fetch time: `grep`, `head -c`, `head -100`, `--max-time 20`.
+- Status-code-only questions get `-o /dev/null -w "%{http_code}"`.
+- Headers-only questions get `-I`.
+- Never dump a full bundle, header set, or crawl into the transcript;
+  save to `evidence/` and quote the 5 relevant lines.
+
+### 10.8 Script execution
+
+- Prefer inline `bash -c '...'` for one-off tests.
+- If you write a script file, run `pwd && ls` first and execute by
+  the verified path — never assume `/tmp` or CWD.
+- Never `find /` — target specific directories only.
+- Kill orphaned background processes at session start; keep
+  background task IDs in the session log.
+
+### 10.9 No-finding validation checklist
+
+Before declaring "no critical findings", verify ALL of:
+
+1. [ ] All major classes tested: RCE, SQLi, XSS, SSRF, auth bypass,
+       IDOR, XXE, deserialization, race conditions.
+2. [ ] Client-side code analyzed (recon-js) — no untested bundle endpoints.
+3. [ ] Auth mechanisms tested for BYPASS, not just rejection.
+4. [ ] API responses checked for leakage enabling further attacks.
+5. [ ] Third-party integrations tested for their specific patterns.
+6. [ ] Severity filter applied to the report (see report skill).

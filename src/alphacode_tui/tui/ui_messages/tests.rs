@@ -2629,7 +2629,7 @@ fn render_tool_message_memory_recall_centered_mode_left_aligns_with_padding() {
     assert!(
         rendered[0]
             .trim_start()
-            .starts_with("🧠 recalled 2 memories"),
+            .starts_with("💾 recalled 2 memories"),
         "unexpected recall header: {rendered:?}"
     );
 

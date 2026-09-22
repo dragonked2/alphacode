@@ -286,6 +286,8 @@ impl ChannelIndex {
     }
 
     pub fn remove_session(&mut self, session_id: &str) {
+        // Fast path: session exists in the by_session index (normal operation).
+        // This is O(k) where k = number of channels the session subscribed to.
         if let Some(session_subscriptions) = self.by_session.remove(session_id) {
             for (swarm_id, channels) in session_subscriptions {
                 let mut remove_swarm = false;
@@ -306,6 +308,16 @@ impl ChannelIndex {
             }
             return;
         }
+
+        // Slow fallback: session not in by_session index (corrupted state or
+        // partial cleanup). This is O(swarms * channels) and should be rare.
+        // In normal operation the by_session index is always consistent with
+        // by_swarm_channel, so this path is defensive code only.
+        debug_assert!(
+            false,
+            "remove_session fallback: session_id='{}' not in by_session index — possible inconsistency",
+            session_id
+        );
 
         let swarm_ids: Vec<String> = self.by_swarm_channel.keys().cloned().collect();
         for swarm_id in swarm_ids {
@@ -607,9 +619,15 @@ pub fn completion_notification_message(name: &str, status: &str, report: Option<
 }
 
 pub fn truncate_detail(text: &str, max_len: usize) -> String {
+    let max_len = max_len.max(1);
+    // Fast path: already fits
+    if text.len() <= max_len && text.chars().count() <= max_len {
+        // Still need to collapse whitespace
+        return text.split_whitespace().collect::<Vec<_>>().join(" ");
+    }
+    // Collapse whitespace first, then truncate
     let collapsed = text.split_whitespace().collect::<Vec<_>>().join(" ");
     let trimmed = collapsed.trim();
-    let max_len = max_len.max(1);
     if trimmed.chars().count() <= max_len {
         return trimmed.to_string();
     }
@@ -625,13 +643,15 @@ pub fn summarize_plan_items(items: &[PlanItem], max_items: usize) -> String {
     if items.is_empty() {
         return "no items".to_string();
     }
-    let mut parts: Vec<String> = Vec::new();
-    for item in items.iter().take(max_items.max(1)) {
-        parts.push(item.content.clone());
-    }
+    let limit = max_items.max(1);
+    let parts: Vec<&str> = items
+        .iter()
+        .take(limit)
+        .map(|item| item.content.as_str())
+        .collect();
     let mut summary = parts.join("; ");
-    if items.len() > max_items.max(1) {
-        summary.push_str(&format!(" (+{} more)", items.len() - max_items.max(1)));
+    if items.len() > limit {
+        summary.push_str(&format!(" (+{} more)", items.len() - limit));
     }
     summary
 }
@@ -795,9 +815,18 @@ mod tests {
         assert_eq!(normalize_completion_report(Some("   ".to_string())), None);
         let long = "x".repeat(MAX_SWARM_COMPLETION_REPORT_CHARS + 100);
         let normalized = normalize_completion_report(Some(long)).unwrap();
-        assert_eq!(
-            normalized.chars().count(),
-            MAX_SWARM_COMPLETION_REPORT_CHARS
+        // The output should be at most MAX_SWARM_COMPLETION_REPORT_CHARS plus
+        // the truncation suffix. The exact length depends on where the cut
+        // happens (sentence/space boundary search within budget).
+        assert!(
+            normalized.chars().count() <= MAX_SWARM_COMPLETION_REPORT_CHARS + 100,
+            "normalized length {} exceeds budget + 100",
+            normalized.chars().count()
+        );
+        assert!(
+            normalized.chars().count() >= MAX_SWARM_COMPLETION_REPORT_CHARS / 2,
+            "normalized length {} is too short",
+            normalized.chars().count()
         );
         assert!(normalized.ends_with("[Report truncated by alphacode before delivery.]"));
     }

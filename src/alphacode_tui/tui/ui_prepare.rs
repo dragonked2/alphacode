@@ -1661,9 +1661,9 @@ fn render_message_into(
             let header_text = if let Some(title) = &msg.title {
                 title.clone()
             } else if count == 1 {
-                "🧠 1 memory".to_string()
+                "💾 1 memory".to_string()
             } else {
-                format!("🧠 {} memories", count)
+                format!("💾 {} memories", count)
             };
             let header = Line::from(Span::styled(header_text, border_style)).alignment(align);
 

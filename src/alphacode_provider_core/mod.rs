@@ -447,6 +447,28 @@ pub trait Provider: Send + Sync {
             .unwrap_or(DEFAULT_CONTEXT_LIMIT)
     }
 
+    // ========================================================================
+    // Decision Plane capability
+    // ========================================================================
+
+    /// Returns true if this provider supports native decision inference.
+    ///
+    /// Native decision providers can answer bounded judgment questions
+    /// (probability, choice, score) without going through full generative
+    /// reasoning. Most providers return false — the Decision Plane will
+    /// fall back to heuristic or LLM-emulated decisions.
+    fn supports_decision_inference(&self) -> bool {
+        false
+    }
+
+    /// Create a fork suitable for decision inference (independent mutable state).
+    ///
+    /// The default returns `None`, causing the Decision Plane to use its own
+    /// built-in heuristic or LLM-emulated provider.
+    fn fork_for_decisions(&self) -> Option<Arc<dyn Provider>> {
+        None
+    }
+
     /// Create a new provider instance with independent mutable state.
     fn fork(&self) -> Arc<dyn Provider>;
 

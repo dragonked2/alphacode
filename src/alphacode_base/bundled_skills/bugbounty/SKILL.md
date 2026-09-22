@@ -13,10 +13,20 @@ description: Elite bug bounty hunting — differential testing, 7-gate validatio
 - Generate hypotheses BEFORE payloads
 - Chain low bugs → high payout ($500 → $50K)
 
-## WORKFLOW: RECON → MAP → HUNT → VALIDATE → REPORT
+## WORKFLOW: SCOPE → RECON → MAP → HUNT → VALIDATE → REPORT
 
-### PHASE 0: RECON (5 min)
+### PHASE -1: SCOPE (first, always — see scope skill)
+
+Write the scope file (IN-SCOPE / OUT-OF-SCOPE / severity focus).
+Check every new host against it. No scope file → no testing.
+
+### PHASE 0: RECON (5 min — see recon, recon-js, tool-doctor)
+
 ```bash
+# 1. Tools one at a time (tool-doctor); missing → fallback, never stall
+# 2. Fingerprint first (headers, framework, WAF) — framework routes, not generic wordlists
+# 3. JS bundle before fuzzing (recon-js): chunks → endpoints → secrets
+# 4. Subdomains via native tools only — NEVER websearch for enumeration
 subfinder -d TARGET -all | dnsx -resp | httpx -sc -title -tech-detect
 ffuf -u TARGET/FUZZ -w common.txt -mc 200
 katana -u TARGET -d 3 -jc | grep -oE "/api/[a-zA-Z0-9/_-]+" | sort -u
@@ -71,6 +81,18 @@ Fix: 1-2 sentences
 Score = Impact(1-5) × Exploitability(1-5) × Confidence(1-5)
 60-125 → TEST NOW | 30-59 → TEST NEXT | <30 → SKIP
 ```
+
+Track hypotheses with kill rules and time budgets (see runbook 10.4):
+3 identical results (404/401/sanitized) → KILL. Killed stays dead.
+
+## OPERATING RULES (see runbook section 10)
+
+Priority order: auth/authZ → backend-reaching input → business logic →
+info disclosure → UI-only last. Checkpoint notes every ~5 min.
+Differential testing (authed vs unauthed) for everything auth-adjacent.
+Chain each finding ("what does this enable?", ≤2 steps). Filter at
+fetch time (`head`, `--max-time`, status-only flags). No-finding
+checklist before declaring clean.
 
 ## CHAIN BUILDING
 ```

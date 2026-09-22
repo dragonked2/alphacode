@@ -554,6 +554,33 @@ impl ToolCall {
     pub fn normalize_input_to_object(input: serde_json::Value) -> serde_json::Value {
         match input {
             serde_json::Value::Object(_) => input,
+            // Models (and some provider bridges) sometimes emit arguments as a
+            // JSON-encoded *string* instead of an object, e.g.
+            // `"{\"action\":\"request\",\"url\":\"https://...\"}"`. Unwrap up to
+            // a few levels so a double-encoded httpflow call still executes
+            // instead of surfacing "arguments must be a JSON object, got
+            // string".
+            serde_json::Value::String(text) => {
+                let mut current = text.trim().to_string();
+                for _ in 0..3 {
+                    if current.is_empty() {
+                        break;
+                    }
+                    match serde_json::from_str::<serde_json::Value>(&current) {
+                        Ok(serde_json::Value::Object(_)) => {
+                            return serde_json::from_str(&current)
+                                .unwrap_or(serde_json::Value::Object(serde_json::Map::new()));
+                        }
+                        Ok(serde_json::Value::String(inner)) => {
+                            current = inner;
+                            continue;
+                        }
+                        Ok(_) => break,
+                        Err(_) => break,
+                    }
+                }
+                serde_json::Value::Object(serde_json::Map::new())
+            }
             _ => serde_json::Value::Object(serde_json::Map::new()),
         }
     }
@@ -580,11 +607,30 @@ impl ToolCall {
         }
 
         if !self.input.is_object() {
-            return Some(format!(
+            let mut message = format!(
                 "Invalid tool call for '{}': arguments must be a JSON object, got {}.",
                 self.name,
                 json_value_kind(&self.input)
-            ));
+            );
+            // Tools that providers most often call with stringified or
+            // truncated arguments: tell the model the exact expected shape
+            // so the retry succeeds instead of repeating the error.
+            let hint = match self.name.trim() {
+                "httpflow" => Some(
+                    " Send an object like {\"action\": \"request\", \
+                     \"url\": \"https://...\", \"method\": \"GET\"}.",
+                ),
+                "todo" => Some(
+                    " Send an object like {\"todos\": [{\"content\": \"...\", \
+                     \"status\": \"pending\", \"priority\": \"medium\", \
+                     \"id\": \"...\", \"confidence\": 80}]}.",
+                ),
+                _ => None,
+            };
+            if let Some(hint) = hint {
+                message.push_str(hint);
+            }
+            return Some(message);
         }
 
         None

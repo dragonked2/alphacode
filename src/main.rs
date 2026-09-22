@@ -34,7 +34,9 @@ fn configure_system_allocator() {}
 
 #[cfg(windows)]
 fn main() -> Result<()> {
-    const WINDOWS_MAIN_STACK_SIZE: usize = 8 * 1024 * 1024;
+    // Increased from 8MB to 16MB stack for deep recursion in agent/swarm loops,
+    // heavy async combinator nesting, and large serialized payloads.
+    const WINDOWS_MAIN_STACK_SIZE: usize = 16 * 1024 * 1024;
     match std::thread::Builder::new()
         .name("alphacode-main".to_string())
         .stack_size(WINDOWS_MAIN_STACK_SIZE)
@@ -56,8 +58,8 @@ fn run_main() -> Result<()> {
 
     // Short-circuit before installing the rustls crypto provider. The macOS
     // hotkey listener and the setup-hotkey notification path don't open any
-    // TLS sockets; the ~5-20ms init cost of aws_lc_rs can dominate startup
-    // for those subcommands, which are expected to return quickly.
+    // TLS sockets; the init cost of the ring crypto provider can dominate
+    // startup for those subcommands, which are expected to return quickly.
     if let Some(source) = cli_launch_hint_source_invocation() {
         return alphacode::setup_hints::run_setup_hotkey(false, false, false, Some(&source));
     }
@@ -66,10 +68,26 @@ fn run_main() -> Result<()> {
         return alphacode::setup_hints::run_macos_hotkey_listener_main_thread();
     }
 
-    let _ = rustls::crypto::aws_lc_rs::default_provider().install_default();
+    let _ = rustls::crypto::ring::default_provider().install_default();
+
+    // Optimize tokio runtime: pin thread count based on available CPUs,
+    // enable both IO and time drivers, and configure the scheduler for
+    // low-latency agent workloads.
+    let worker_threads = std::env::var("ALPHACODE_WORKER_THREADS")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or_else(|| {
+            let cpus = std::thread::available_parallelism()
+                .map(|n| n.get())
+                .unwrap_or(4);
+            // Use all available cores but cap at 32 to avoid thread overhead
+            cpus.min(32)
+        });
 
     let runtime = tokio::runtime::Builder::new_multi_thread()
+        .worker_threads(worker_threads)
         .enable_all()
+        .thread_name("alphacode-worker")
         .build()?;
 
     runtime.block_on(async { alphacode::run().await })

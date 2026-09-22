@@ -1350,7 +1350,7 @@ fn render_single_widget(frame: &mut Frame, placement: &WidgetPlacement, data: &I
         WidgetKind::ModelInfo => {
             block = block.title(Span::styled(
                 " \u{2699} Model ",
-                Style::default().fg(rgb(205, 168, 255)),
+                Style::default().fg(rgb(125, 195, 255)),
             ));
         }
         WidgetKind::ContextUsage => {
@@ -2068,7 +2068,7 @@ fn format_event_for_expanded(
             rgb(120, 220, 180),
         ),
         MemoryEventKind::ExtractionStarted { reason } => (
-            "🧠",
+            "💾",
             truncate_with_ellipsis(&format!("extracting: {}", reason), max_width),
             rgb(200, 150, 255),
         ),

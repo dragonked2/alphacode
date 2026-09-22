@@ -214,14 +214,19 @@ impl Icon {
             (Self::Cancel, TerminalClass::Minimal) => "X",
 
             (Self::Info, TerminalClass::Modern) => "ℹ",
-            (Self::Info, TerminalClass::Mainstream) => "ⓘ",
+            // "ⓘ" (U+24D8) misses on Windows Console / many fonts and falls
+            // back to "?" — use plain "i" on Mainstream so info toasts never
+            // show a mystery "?" badge.
+            (Self::Info, TerminalClass::Mainstream) => "i",
             (Self::Info, TerminalClass::Minimal) => "i",
 
             (Self::Warn, TerminalClass::Modern | TerminalClass::Mainstream) => "⚠",
             (Self::Warn, TerminalClass::Minimal) => "!",
 
+            // Emoji "🚫" misses on Windows Console / minimal fonts and renders
+            // as "?" — Mainstream gets ASCII-safe "!" instead.
             (Self::Error, TerminalClass::Modern) => "🚫",
-            (Self::Error, TerminalClass::Mainstream) => "🚫",
+            (Self::Error, TerminalClass::Mainstream) => "!",
             (Self::Error, TerminalClass::Minimal) => "!",
 
             (Self::Queued, _) => "…",

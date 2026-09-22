@@ -282,6 +282,9 @@ pub struct Agent {
     /// Budget enforcer for the current goal contract. Tracks per-phase call
     /// counts, wall-clock time, and consecutive tool failures.
     pub(crate) budget_enforcer: budget_enforcer::BudgetEnforcer,
+    /// Decision Plane integration for bounded judgment inference.
+    /// `None` when Decision Plane is disabled.
+    decision_plane: Option<Arc<crate::alphacode_decision_core::DecisionIntegration>>,
 }
 
 impl Agent {
@@ -337,6 +340,7 @@ impl Agent {
             inline_tail: inline_tail::InlineTailBuffer::default(),
             goal_contract: None,
             budget_enforcer: budget_enforcer::BudgetEnforcer::new(),
+            decision_plane: Self::init_decision_plane(),
         };
         crate::tool::set_session_tool_policy(
             &agent.session.id,
@@ -344,6 +348,27 @@ impl Agent {
             agent.disabled_tools.clone(),
         );
         agent
+    }
+
+    /// Initialize the Decision Plane from config, if enabled.
+    fn init_decision_plane() -> Option<Arc<crate::alphacode_decision_core::DecisionIntegration>> {
+        let cfg = crate::config::config();
+        let dp_cfg = &cfg.features.decisions;
+        let mode = dp_cfg.mode;
+        if mode == crate::alphacode_config_types::DecisionPlaneMode::Off {
+            return None;
+        }
+        let decision_cfg =
+            crate::alphacode_decision_core::DecisionConfig::from_config_types(dp_cfg);
+        let engine = Arc::new(crate::alphacode_decision_core::DecisionEngine::heuristic(
+            decision_cfg,
+        ));
+        Some(Arc::new(
+            crate::alphacode_decision_core::DecisionIntegration::new(
+                crate::alphacode_decision_core::DecisionConfig::from_config_types(dp_cfg),
+                engine,
+            ),
+        ))
     }
 
     fn current_skills_snapshot(&self) -> Arc<SkillRegistry> {

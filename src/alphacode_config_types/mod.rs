@@ -1035,6 +1035,9 @@ pub struct FeatureConfig {
     pub kv_cache_miss_notices: bool,
     /// Update channel: "stable" (releases only) or "main" (latest commits)
     pub update_channel: UpdateChannel,
+    /// Decision Plane configuration for bounded judgment inference.
+    #[serde(default)]
+    pub decisions: DecisionPlaneConfig,
 }
 
 impl Default for FeatureConfig {
@@ -1048,8 +1051,123 @@ impl Default for FeatureConfig {
             persist_memory_injections: false,
             kv_cache_miss_notices: true,
             update_channel: UpdateChannel::default(),
+            decisions: DecisionPlaneConfig::default(),
         }
     }
+}
+
+/// Configuration for the Decision Plane.
+///
+/// The Decision Plane provides bounded, typed judgment capabilities that
+/// complement the existing generative reasoning system. It handles small,
+/// repeated decisions (tool-result sufficiency, retry classification, loop
+/// detection) without requiring a full LLM generation cycle.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct DecisionPlaneConfig {
+    /// Operating mode: "off", "observe", "shadow", or "active".
+    ///
+    /// - **off**: Decision Plane disabled, existing behavior preserved.
+    /// - **observe**: Records decisions without influencing behavior.
+    /// - **shadow**: Records decisions for A/B comparison.
+    /// - **active**: Decisions can influence approved decision points.
+    #[serde(default)]
+    pub mode: DecisionPlaneMode,
+    /// Which provider to use for decisions ("auto" uses the primary provider).
+    #[serde(default = "default_decision_provider")]
+    pub provider: String,
+    /// Which model to use for decisions ("auto" uses the primary model).
+    #[serde(default = "default_decision_model")]
+    pub model: String,
+    /// Whether to fall back to generative reasoning on decision failure.
+    #[serde(default = "default_true")]
+    pub fallback_enabled: bool,
+    /// Whether to cache decisions.
+    #[serde(default = "default_true")]
+    pub cache_enabled: bool,
+    /// Whether to record telemetry.
+    #[serde(default = "default_true")]
+    pub telemetry_enabled: bool,
+    /// Maximum number of cached decisions (0 = unlimited).
+    #[serde(default = "default_decision_cache_max")]
+    pub cache_max_entries: usize,
+    /// Cache TTL in seconds (0 = no expiry).
+    #[serde(default = "default_decision_cache_ttl")]
+    pub cache_ttl_secs: u64,
+}
+
+/// The operating mode of the Decision Plane.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Hash, Default)]
+#[serde(rename_all = "lowercase")]
+pub enum DecisionPlaneMode {
+    /// Decision Plane disabled. Existing AlphaCode behavior preserved.
+    Off,
+    /// Records decisions without influencing behavior.
+    #[default]
+    Observe,
+    /// Records decisions for A/B comparison.
+    Shadow,
+    /// Decisions can influence approved decision points.
+    Active,
+}
+
+impl DecisionPlaneMode {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::Off => "off",
+            Self::Observe => "observe",
+            Self::Shadow => "shadow",
+            Self::Active => "active",
+        }
+    }
+
+    pub fn parse(input: &str) -> Option<Self> {
+        match input.trim().to_ascii_lowercase().as_str() {
+            "off" => Some(Self::Off),
+            "observe" => Some(Self::Observe),
+            "shadow" => Some(Self::Shadow),
+            "active" => Some(Self::Active),
+            _ => None,
+        }
+    }
+
+    pub fn is_enabled(&self) -> bool {
+        !matches!(self, Self::Off)
+    }
+
+    pub fn can_influence(&self) -> bool {
+        matches!(self, Self::Active)
+    }
+}
+
+impl Default for DecisionPlaneConfig {
+    fn default() -> Self {
+        Self {
+            mode: DecisionPlaneMode::default(),
+            provider: "auto".to_string(),
+            model: "auto".to_string(),
+            fallback_enabled: true,
+            cache_enabled: true,
+            telemetry_enabled: true,
+            cache_max_entries: 1024,
+            cache_ttl_secs: 300,
+        }
+    }
+}
+
+fn default_decision_provider() -> String {
+    "auto".to_string()
+}
+
+fn default_decision_model() -> String {
+    "auto".to_string()
+}
+
+fn default_decision_cache_max() -> usize {
+    1024
+}
+
+fn default_decision_cache_ttl() -> u64 {
+    300
 }
 
 /// Search engine used by the websearch tool.

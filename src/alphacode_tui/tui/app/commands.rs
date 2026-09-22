@@ -238,6 +238,7 @@ pub(super) fn poke_triggered_display_message(incomplete_count: usize) -> String 
 pub(super) fn activate_auto_poke(app: &mut App) -> PokeActivation {
     let incomplete = incomplete_poke_todos(app);
     app.auto_poke_incomplete_todos = true;
+    app.auto_poke_incomplete_attempts = 0;
     app.todo_confidence_spike_challenged = false;
     app.todo_completion_gate_attempts = 0;
     // Re-arming starts a fresh review cycle, so the deferred quality digest is

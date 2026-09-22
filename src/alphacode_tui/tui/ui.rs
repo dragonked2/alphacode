@@ -3626,18 +3626,13 @@ pub(crate) fn render_native_scrollbar(
     };
 
     let mut lines = Vec::with_capacity(track_height);
+    // ASCII-safe thumb: a single "|" reads as one clean line on every
+    // terminal. The old mixed glyphs ("•"/"╷"/"╵"/"│") missed on Windows
+    // Console and legacy fonts, rendering as "?" or a broken extra line
+    // on the right edge of the console.
     for row in 0..track_height {
         let (glyph, color) = if row >= thumb_offset && row < thumb_offset + thumb_height {
-            let glyph = if thumb_height == 1 {
-                "•"
-            } else if row == thumb_offset {
-                "╷"
-            } else if row + 1 == thumb_offset + thumb_height {
-                "╵"
-            } else {
-                "│"
-            };
-            (glyph, thumb_color)
+            ("|", thumb_color)
         } else {
             (" ", Color::Reset)
         };

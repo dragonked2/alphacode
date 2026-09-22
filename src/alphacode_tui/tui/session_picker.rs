@@ -1836,7 +1836,7 @@ impl SessionPicker {
                 "memory" => {
                     lines.push(
                         Line::from(vec![
-                            Span::styled("🧠 ", Style::default()),
+                            Span::styled("💾 ", Style::default()),
                             Span::styled(
                                 msg.content.clone(),
                                 Style::default().fg(rgb(140, 210, 255)),

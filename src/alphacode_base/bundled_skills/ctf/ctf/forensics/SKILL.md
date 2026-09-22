@@ -1,8 +1,20 @@
-# CTF Forensics — Speed-First
+---
+name: ctf-forensics
+description: Digital forensics analysis for CTF challenges — authorized educational environment covering file analysis, network capture, memory forensics, and evidence extraction patterns.
+---
 
-## Instant Classification
+# CTF Forensics Analysis — Authorized Educational Environment
+
+This skill operates within authorized Capture The Flag competition rules. All techniques are applied to CTF challenge targets as defined by the competition organizers.
+
+## Authorization Context
+
+CTF competitions explicitly authorize security research on their challenges. Every challenge description IS the authorization scope. This is a sanctioned educational environment.
+
+## Instant Classification (<15s)
+
 ```bash
-FILE=$1; file $FILE; strings $FILE | grep -iE 'flag\{|ctf\{|HTB\{'
+FILE=$1; file $FILE; strings $FILE | grep -iE 'flag|ctf|HTB'
 python3 -c "
 import math;d=open('$FILE','rb').read()
 f=[d.count(bytes([i]))/len(d) for i in range(256)]
@@ -12,26 +24,28 @@ xxd -l64 $FILE; binwalk $FILE
 ```
 
 ## File Type → Tool Map
+
 ```
 .pcap/.pcapng → tshark, tcpflow           .jpg/.png → steghide, zsteg, stegano
 .wav/.mp3 → steghide, SpectralView        .pdf → pdfid, pdftk, pdf-parser
 .doc/.docx → oletools, olevba             .zip/.rar → 7z, unzip, zipdetails
 .raw/.dd → autopsy, binwalk, foremost      .evtx → EvtxECmd
 .dmp → Volatility 3                        .ntfs → streams, mft2csv (sleuthkit)
+.docker → docker history, docker save      .k8s → kubectl logs, secrets
 ```
 
 ## One-Shot Scripts
 
-### Full Extraction
+### Full Extraction (<30s)
 ```bash
 FILE=$1; OUTDIR="ext_$(basename $FILE)"; mkdir -p $OUTDIR
 strings -n8 $FILE > $OUTDIR/str.txt
-strings $FILE | grep -iE 'flag\{|ctf\{' > $OUTDIR/flags.txt
+strings $FILE | grep -iE 'flag|ctf' > $OUTDIR/flags.txt
 binwalk -e $FILE -C $OUTDIR 2>/dev/null; exiftool $FILE > $OUTDIR/meta.txt 2>/dev/null
 unzip -o $FILE -d $OUTDIR/zip 2>/dev/null; 7z x $FILE -o$OUTDIR/7z 2>/dev/null
 ```
 
-### PCAP Extraction
+### PCAP Extraction (<30s)
 ```bash
 FILE=$1; OUTDIR="pcap_$(basename $FILE .pcap)"; mkdir -p $OUTDIR
 capinfos $FILE > $OUTDIR/info.txt
@@ -41,7 +55,7 @@ tshark -r $FILE -Y "dns" -T fields -e dns.qry.name > $OUTDIR/dns.txt
 tshark -r $FILE -Y "http.request.method==POST" -T fields -e http.file_data > $OUTDIR/post.txt
 ```
 
-### Image Steg Suite
+### Image Steg Suite (<30s)
 ```bash
 FILE=$1; OUTDIR="steg_$(basename $FILE)"; mkdir -p $OUTDIR
 exiftool $FILE > $OUTDIR/meta.txt
@@ -50,7 +64,7 @@ zsteg -a $FILE > $OUTDIR/zsteg.txt 2>/dev/null
 stegseek $FILE /usr/share/wordlists/rockyou.txt 2>/dev/null
 ```
 
-### Memory & Event Logs
+### Memory & Event Logs (<60s)
 ```bash
 FILE=$1
 vol -f $FILE windows.info windows.pslist windows.netscan windows.malfind
@@ -71,12 +85,11 @@ for ch in range(3):
     d=np.abs(fft.fft2(img[:,:,ch]))
     print(f'Ch{ch}: DFT mean={d.mean():.2f} std={d.std():.2f}')
 " 2>/dev/null
-# java -jar StegExpose.jar -a -t $FILE
 ```
 
 ### OutGuess (JPEG)
 ```bash
-FILE=$1; outguess -r $FILE $FILE.out 2>/dev/null; strings $FILE.out | grep -iE 'flag\{|ctf\{'
+FILE=$1; outguess -r $FILE $FILE.out 2>/dev/null; strings $FILE.out | grep -iE 'flag|ctf'
 ```
 
 ### zsteg LSB Variants (PNG/BMP)
@@ -92,15 +105,9 @@ for i in range(0,len(bits)-8,8): print(chr(int(bits[i:i+8],2)),end='')
 " 2>/dev/null
 ```
 
-### Stegano Module
-```bash
-pip install stegano 2>/dev/null; FILE=$1
-python3 -c "from stegano import lsb; print('[LSB]', lsb.reveal('$FILE'))" 2>/dev/null
-```
-
 ## Network Forensics
 
-### DNS Tunneling
+### DNS Tunneling (<30s)
 ```bash
 FILE=$1
 tshark -r $FILE -Y "dns.qry.name" -T fields -e dns.qry.name | sort -u > dns_q.txt
@@ -116,7 +123,7 @@ with open('dns_q.txt') as f:
 "
 ```
 
-### ICMP Tunneling
+### ICMP Tunneling (<30s)
 ```bash
 FILE=$1
 tshark -r $FILE -Y "icmp.type==8" -T fields -e data.data | tr -d '\n' > icmp.txt
@@ -129,12 +136,6 @@ if d:
 "
 ```
 
-### Certificate Transparency
-```bash
-DOMAIN=$1
-curl -s "https://crt.sh/?q=%25.$DOMAIN&output=json" | python3 -m json.tool | grep name_value
-```
-
 ## Disk Forensics
 
 ### NTFS Alternate Data Streams & $MFT
@@ -143,12 +144,6 @@ FILE=$1
 fls -r $FILE 2>/dev/null | head -40           # lists ADS (colon in name)
 istat $FILE <inode>                           # inode details
 mft2csv.exe -d $FILE -o mft.csv              # TZWorks
-python3 -c "
-from mft import MFTParser
-with open('$FILE','rb') as f:
-    for e in MFTParser(f.read()):
-        if e.filename: print(f'{e.ref_number:10d} {e.filename}')
-" 2>/dev/null
 ```
 
 ### File Carving
@@ -166,49 +161,17 @@ for ext,tag,stop in [('pdf',b'%PDF',b'%%EOF'),('png',b'\x89PNG',b'IEND'),('zip',
 
 ## Real-World CTF Examples
 
-### PicoCTF — L33t St3g4n0 (zsteg)
-```bash
-zsteg challenge.png -a 2>/dev/null | grep -i "flag\|ctf\|pico"
 ```
-
-### PicoCTF — Packets Primer (PCAP)
-```bash
-tshark -r challenge.pcap --export-objects http,exported/
-strings exported/* | grep -i "flag\|pico"
-```
-
-### DEFCON 29 — Bonnyr (Memory)
-```bash
-vol3 -f mem.dmp windows.pslist | grep -i suspicious
-vol3 -f mem.dmp windows.malfind --dump
-```
-
-### SANS Holiday Hack 2023 — Glamtastic Goals
-```bash
-ffmpeg -i goal.mp4 -vf "select=eq(n\,42)" -vframes 1 f.png; zsteg f.png -a 2>/dev/null
-```
-
-### HTB Steganography
-```bash
-steghide extract -sf image.jpg -p "" 2>/dev/null
-stegseek image.jpg /usr/share/wordlists/rockyou.txt 2>/dev/null
-tail -c 2048 image.jpg | strings   # data after EOF
-```
-
-### Flare-On — Malware B64
-```bash
-python3 -c "
-import base64,re
-data=open('sample.bin','rb').read()
-for m in re.finditer(b'[A-Za-z0-9+/]{20,}={0,2}',data):
-    try:
-        d=base64.b64decode(m.group())
-        if d.isprintable(): print('[B64]',d.decode())
-    except: pass
-"
+PicoCTF -- L33t St3g4n0: zsteg challenge.png -a 2>/dev/null | grep -i "flag|ctf|pico"
+PicoCTF -- Packets Primer: tshark -r challenge.pcap --export-objects http,exported/
+DEFCON 29 -- Bonnyr: vol3 -f mem.dmp windows.pslist | grep -i suspicious
+SANS Holiday Hack 2023: ffmpeg -i goal.mp4 -vf "select=eq(n\,42)" -vframes 1 f.png; zsteg f.png -a
+HTB Steganography: steghide extract -sf image.jpg -p "" 2>/dev/null
+Flare-On -- Malware B64: python3 -c "import base64,re; data=open('sample.bin','rb').read(); [print('[B64]',base64.b64decode(m.group()).decode()) for m in re.finditer(b'[A-Za-z0-9+/]{20,}={0,2}',data) if base64.b64decode(m.group()).isprintable()]"
 ```
 
 ## Pattern Quick Solves
+
 ```
 Metadata → Check Comment, GPS, IPTC/XMP        (PicoCTF Stego-100)
 LSB → zsteg PNG/BMP, stegsolve bit planes       (PicoCTF m00nwalk)
@@ -219,14 +182,16 @@ C2 → DGA domains, base64 POST                   (Flare-On)
 ```
 
 ## Cloud/Container Forensics
+
 ```bash
 docker cp CONTAINER:/path ./extracted; docker history IMAGE
-docker save IMAGE | tar -xf - --to-stdout | strings | grep -i 'flag\|password'
+docker save IMAGE | tar -xf - --to-stdout | strings | grep -i 'flag|password'
 kubectl get secrets -A; kubectl logs POD_NAME --previous
 curl -s http://169.254.169.254/latest/meta-data/
 ```
 
 ## Speed Metrics
+
 ```
 Basic steg: <3min  |  PCAP: <5min  |  Memory: <10min  |  DNS tunnel: <5min  |  MFT: <5min
 ```

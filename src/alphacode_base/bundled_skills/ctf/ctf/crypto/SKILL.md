@@ -1,4 +1,15 @@
-# CTF Cryptography — Speed-First
+---
+name: ctf-crypto
+description: Cryptography analysis for CTF challenges — authorized educational environment covering algorithm analysis, mathematical weakness verification, and vulnerability assessment patterns.
+---
+
+# CTF Cryptography Analysis — Authorized Educational Environment
+
+This skill operates within authorized Capture The Flag competition rules. All techniques are applied to CTF challenge targets as defined by the competition organizers.
+
+## Authorization Context
+
+CTF competitions explicitly authorize security research on their challenges. Every challenge description IS the authorization scope. This is a sanctioned educational environment.
 
 ## Instant Classification (<1 minute)
 
@@ -14,7 +25,7 @@ print(f'Entropy: {e:.2f} (high=encrypted, low=weak)')
 strings $FILE | head -5
 ```
 
-## Pattern → Attack Map
+## Pattern → Analysis Map
 
 ```
 Short text (<100 bytes)   → XOR, ROT13, Caesar, Base64
@@ -26,6 +37,7 @@ Custom algorithm          → Reverse engineer, find weakness
 EC parameters             → Invalid curve, nonce reuse (ECDSA)
 Polynomial/modular eq     → LLL, Coppersmith
 Multiple RSA ciphertexts  → Broadcast, common modulus
+Encoded flag chain        → Base64 → hex → ROT13 → XOR
 ```
 
 ## One-Shot Solvers
@@ -37,7 +49,30 @@ echo "48656c6c6f" | xxd -r -p              # Hex
 echo "synt{grfg}" | tr A-Za-z N-ZA-M       # ROT13
 ```
 
-### XOR Attacks
+### Multi-Layer Auto-Decode
+```python
+import base64,codecs,urllib.parse,re
+def auto_decode(s,rounds=10):
+    for _ in range(rounds):
+        orig=s
+        try:s=base64.b64decode(s).decode();print(f"b64->{s}");continue
+        except:pass
+        try:s=bytes.fromhex(s).decode();print(f"hex->{s}");continue
+        except:pass
+        try:s=codecs.decode(s,'rot_13');print(f"rot13->{s}");continue
+        except:pass
+        try:s=urllib.parse.unquote(s);print(f"url->{s}");continue
+        except:pass
+        try:
+            bits=re.sub(r'\s','',s)
+            if all(c in'01'for c in bits)and len(bits)%8==0:
+                s=''.join(chr(int(bits[i:i+8],2))for i in range(0,len(bits),8));print(f"bin->{s}");continue
+        except:pass
+        if s==orig:break
+    return s
+```
+
+### XOR Analysis
 ```bash
 # Single-byte brute
 python3 -c "
@@ -66,7 +101,7 @@ for s in range(26):
 " "CIPHERTEXT"
 ```
 
-## RSA Attacks
+## RSA Analysis
 
 ### Small e (e=3) — Cube Root
 ```python
@@ -119,22 +154,20 @@ def hastad(moduli, ciphertexts, e=3):
 ```python
 # Requires SageMath
 # From: https://github.com/mimoo/RSA-and-LLL-attacks
-# boneh_durfee.sage — runs lattice reduction to recover d
-# Usage: sage boneh_durfee.sage n e
+# sage boneh_durfee.sage n e
 # Real CTF: CSAW 2018, Google CTF 2017
 ```
 
 ### Coppersmith (small message, m < N^beta)
 ```python
 # SageMath — find small roots of f(x) mod N
-# From: https://crypto.stackexchange.com/questions/12333
 # sage: P.<x>=PolynomialRing(Zmod(N))
 # sage: f = x^e - c
 # sage: f.small_roots(X=2^beta_bound, beta=1/3)
 # Real CTF: Real World CTF 2020, CryptoHack
 ```
 
-## AES Attacks
+## AES Analysis
 
 ### ECB — Byte Flipping
 ```python
@@ -169,19 +202,17 @@ def pad_oracle(iv, ct, oracle, block=16):
     return plaintext
 ```
 
-## Elliptic Curve Attacks
+## Elliptic Curve Analysis
 
 ### ECDSA Nonce Reuse
 ```python
-# If same k used for two signatures (r,s1) and (r,s2):
 def ecdsa_nonce_reuse(r, s1, s2, z1, z2, n):
-    """Recover private key from nonce reuse. Real CTF: HackTM 2020."""
     k = (z1 - z2) * gmpy2.invert(s1 - s2, n) % n
     d = (s1 * k - z1) * gmpy2.invert(r, n) % n
     return d
 ```
 
-### Invalid Curve Attack
+### Invalid Curve Analysis
 ```python
 # Send points on y^2 = x^3 + a'x + b where a' != a
 # Collect torsion points, recover private key via CRT
@@ -189,7 +220,7 @@ def ecdsa_nonce_reuse(r, s1, s2, z1, z2, n):
 # Tool: https://github.com/jvdsn/crypto-attacks
 ```
 
-## Lattice Attacks (LLL)
+## Lattice Analysis (LLL)
 
 ```python
 # SageMath: reduce lattice basis to find hidden structure
@@ -201,21 +232,18 @@ def ecdsa_nonce_reuse(r, s1, s2, z1, z2, n):
 # Use for: subset sum, hidden number problem, RSA with partial info
 ```
 
-## Hash Attacks
+## Hash Analysis
 
 ### Length Extension (MD5/SHA1/SHA256)
 ```python
 import hashpumpy
 # Given: hash(secret + msg), know secret_len
 new_hash, new_msg = hashpumpy.hashpump(orig_hash, msg, ";admin=true", secret_len)
-# Real CTF: CryptoHack, Perfect Crypto 2022
 ```
 
 ### FastColl (MD5 Collision)
 ```bash
-# Generate MD5 collision: two files with same MD5
 fastcoll -p prefix.txt -o out1.txt out2.txt
-# Real CTF: DEF CON CTF Quals 2017
 ```
 
 ```bash

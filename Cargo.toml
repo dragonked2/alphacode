@@ -1,6 +1,6 @@
 [package]
 name = "alphacode"
-version = "1.0.58"
+version = "1.0.60"
 authors = ["Ali Essam <tlbbeg313@gmail.com>"]
 description = "A coding agent for the terminal. Multi-model orchestration, swarm coordination, and 40+ tools working together — built so the changes it makes are the smallest ones that solve the problem."
 edition = "2024"
@@ -34,7 +34,7 @@ tokio-rustls = { version = "0.26", default-features = false, features = ["ring",
 
 # HTTP client
 reqwest = { version = "0.12", default-features = false, features = ["json", "stream", "blocking", "charset", "http2", "rustls-tls", "rustls-tls-native-roots"] }
-rustls = { version = "0.23", default-features = false, features = ["aws_lc_rs"] }
+rustls = { version = "0.23", default-features = false, features = ["ring"] }
 
 # Serialization
 serde = { version = "1", features = ["derive"] }
@@ -257,18 +257,21 @@ codegen-units = 1
 
 # Dev/test builds are tuned for compile speed, not runtime speed.
 #
-# First-party code runs at `opt-level = 1` with incremental caching; third-party
-# dependencies build at `opt-level = 2` (was 3) which noticeably speeds up cold
-# builds while keeping hot dependency code (ratatui, crossterm, tokio) fast.
-# `debug = "line-tables-only"` keeps usable backtraces without the cost of full
-# debug info. The heavy optional stacks (embeddings, pdf) are no longer in
-# `default`, so cold builds skip ~150 dependency crates entirely.
+# First-party code runs at `opt-level = 1` with incremental caching and 32
+# codegen units (up from the cargo default of 16) for faster incremental
+# recompilation during development; third-party dependencies build at
+# `opt-level = 2` (was 3) which noticeably speeds up cold builds while
+# keeping hot dependency code (ratatui, crossterm, tokio) fast.
+# `debug = "line-tables-only"` keeps usable backtraces without the cost of
+# full debug info. The heavy optional stacks (embeddings, pdf) are no longer
+# in `default`, so cold builds skip ~150 dependency crates entirely.
 #
 # `panic = "abort"` is deliberately absent from `[profile.test]`: the test
 # harness needs unwinding to catch and report `#[should_panic]` and failed
 # assertions, and cargo ignores the key there anyway.
 [profile.dev]
 opt-level = 1
+codegen-units = 32
 debug = "line-tables-only"
 incremental = true
 
@@ -277,6 +280,7 @@ opt-level = 2
 
 [profile.test]
 opt-level = 1
+codegen-units = 32
 debug = "line-tables-only"
 incremental = true
 

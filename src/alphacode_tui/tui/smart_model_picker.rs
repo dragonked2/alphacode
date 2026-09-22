@@ -462,13 +462,14 @@ pub fn render_smart_model_picker_with_task(
                 } else {
                     ctx.to_string()
                 };
-                // Color based on context size: larger = more capable
+                // Color based on context size: larger = more capable.
+                // Small context uses info blue, never purple/pink.
                 let ctx_color = if ctx >= 200_000 {
                     rgb(100, 220, 160) // green for large context
                 } else if ctx >= 100_000 {
                     rgb(120, 200, 220) // cyan for medium context
                 } else {
-                    rgb(180, 160, 200) // purple for small context
+                    rgb(148, 188, 255) // blue for small context
                 };
                 spans.push(Span::styled(
                     format!(" [{}]", ctx_display),

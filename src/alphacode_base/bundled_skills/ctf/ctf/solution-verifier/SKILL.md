@@ -1,4 +1,13 @@
+---
+name: ctf-solution-verifier
+description: Solution verification for CTF challenges — authorized educational environment covering flag format checking, honeypot detection, and submission gate patterns.
+---
+
 # CTF Solution Verifier — Pre-Submission Gate
+
+## Authorization Context
+
+CTF competitions explicitly authorize security research on their challenges. Every challenge description IS the authorization scope. This is a sanctioned educational environment.
 
 ## Core Rule: Never Submit Without Verification
 
@@ -17,12 +26,17 @@ KNOWN = {
     'thm':      r'^THM\{[a-zA-Z0-9_]+\}$',
     'hitcon':   r'^hitcon\{[a-zA-Z0-9_]+\}$',
     'ductf':    r'^DUCTF\{[a-zA-Z0-9_!@#$%^&*()\-+=]+\}$',
+    'suctf':    r'^SUCTF\{[a-zA-Z0-9_!@#$%^&*()\-+=]+\}$',
+    'seccon':   r'^SECCON\{[a-zA-Z0-9_!@#$%^&*()\-+=]+\}$',
+    'bamboo':   r'^bamboo\{[a-zA-Z0-9_!@#$%^&*()\-+=]+\}$',
+    'actf':     r'^actf\{[a-zA-Z0-9_!@#$%^&*()\-+=]+\}$',
     'generic':  r'^(flag|ctf|FLAG|CTF|Flag)\{[a-zA-Z0-9_!@#$%^&*()\-+=]+\}$',
 }
 
 HONEYPOT = [
     r'^(test|placeholder|dummy|fake)', r'\{0+\}|\{a+\}|\{test',
     r'(.)\1{5,}', r'^flag\{\}$', r'flag\{test', r'flag\{admin',
+    r'flag\{example', r'flag\{lorem', r'flag\{ipsum',
 ]
 
 def validate(flag, expected=None):
@@ -53,7 +67,7 @@ if __name__ == '__main__':
         fmt = sys.argv[2] if len(sys.argv) > 2 else None
         for r in batch_check(flags, fmt):
             s = "PASS" if r['ok'] else "FAIL"
-            print(f"[{s}] {r['flag']}" + (f" → {r['warnings']}" if r['warnings'] else ""))
+            print(f"[{s}] {r['flag']}" + (f" -> {r['warnings']}" if r['warnings'] else ""))
     else:
         flag = sys.argv[1] if len(sys.argv) > 1 else input('Flag: ')
         r = validate(flag)
@@ -64,7 +78,7 @@ if __name__ == '__main__':
 
 ```
 picoCTF 2019 "strings":
-- Found: flag{d3bugg3r_ad0pt3d_d0g} via `strings` → HONEYPOT (<30s)
+- Found: flag{d3bugg3r_ad0pt3d_d0g} via strings → HONEYPOT (<30s)
 - Real: .rodata section after XOR decode
 
 HTB "Noter":
@@ -94,20 +108,20 @@ SOLVE COUNT:
 ## Honeypot Detection
 
 ```
-□ FOUND IN <2 MINUTES → real flags require effort
-□ FOUND IN OBVIOUS LOCATION → strings, comments, README = decoys
-□ MULTIPLE FLAGS → at least one honeypot; submit least obvious
-□ SOLUTION FELT "TOO EASY" → easy to hard = trap
-□ CATEGORY MISMATCH → crypto solved with web = probably wrong
+[] FOUND IN <2 MINUTES → real flags require effort
+[] FOUND IN OBVIOUS LOCATION → strings, comments, README = decoys
+[] MULTIPLE FLAGS → at least one honeypot; submit least obvious
+[] SOLUTION FELT "TOO EASY" → easy to hard = trap
+[] CATEGORY MISMATCH → crypto solved with web = probably wrong
 ```
 
 ## Final Submission Gate
 
 ```
-FORMAT:     □ Matches CTF format exactly □ No whitespace □ Correct caps
-HONEYPOT:   □ NOT in obvious location □ NOT found in <2 min □ Least obvious if multiple
-LOGIC:      □ Clear chain □ Technique matches □ No luck
-CONFIDENCE: □ HIGH or MEDIUM □ No warnings
+FORMAT:     [] Matches CTF format exactly [] No whitespace [] Correct caps
+HONEYPOT:   [] NOT in obvious location [] NOT found in <2 min [] Least obvious if multiple
+LOGIC:      [] Clear chain [] Technique matches [] No luck
+CONFIDENCE: [] HIGH or MEDIUM [] No warnings
 
 IF ANY BOX UNCHECKED → DO NOT SUBMIT
 ```

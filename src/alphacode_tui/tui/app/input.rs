@@ -1710,6 +1710,7 @@ impl App {
                 return false;
             }
             self.auto_poke_incomplete_todos = false;
+            self.auto_poke_incomplete_attempts = 0;
             self.todo_confidence_spike_challenged = false;
             // A finished cycle re-arms the review for whatever work comes next;
             // without this a session could only ever deliver one digest.
@@ -1723,6 +1724,26 @@ impl App {
             return false;
         }
 
+        // Stop poking after max attempts to avoid infinite loops
+        if self.auto_poke_incomplete_attempts >= Self::MAX_AUTO_POKE_INCOMPLETE_ATTEMPTS {
+            crate::logging::warn(&format!(
+                "Auto-poke stopped after {} attempts; {} incomplete todos remain. Agent said it was done but didn't complete them.",
+                self.auto_poke_incomplete_attempts,
+                incomplete.len(),
+            ));
+            self.push_display_message(DisplayMessage::system(format!(
+                "⚠️ Stopped poking after {} attempts. {} incomplete todo{} remain{} but the agent isn't completing them. Use /poke off to disable.",
+                self.auto_poke_incomplete_attempts,
+                incomplete.len(),
+                if incomplete.len() == 1 { "" } else { "s" },
+                if incomplete.len() == 1 { "s" } else { "" },
+            )));
+            self.auto_poke_incomplete_todos = false;
+            self.auto_poke_incomplete_attempts = 0;
+            return false;
+        }
+
+        self.auto_poke_incomplete_attempts += 1;
         self.push_display_message(DisplayMessage::system(format!(
             "👉 {} incomplete todo{}. We poked it for you. /poke off to stop.",
             incomplete.len(),

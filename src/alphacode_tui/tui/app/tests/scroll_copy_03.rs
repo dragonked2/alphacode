@@ -1585,7 +1585,7 @@ fn overscroll_reveal_does_not_relayout_transcript() {
                     // legitimately moves with the one-row elastic slide.
                     let mut normalized = row
                         .trim_end()
-                        .trim_end_matches(['│', '╷', '╵', '•'])
+                        .trim_end_matches(['│', '╷', '╵', '•', '|'])
                         .trim_end()
                         .to_string();
                     // These fixture rows have a known logical end. Keep every

@@ -146,6 +146,38 @@ Severity: [Critical/High/Medium/Low/Info]
 
 ---
 
+## SEVERITY FILTERING
+
+When the user scopes the report ("Critical only", "High and above"):
+
+1. Parse the filter at assessment start and record it in the scope
+   file (see scope skill) — e.g. `Severity focus: Critical only`.
+2. Tag EVERY finding with a severity DURING testing, not at report time.
+3. At report time, include only matching findings. State explicitly
+   what was tested but filtered out:
+   `Tested: XSS, open redirect, headers (below Critical threshold — excluded).`
+4. Critical means: RCE, SQLi with data exfiltration, SSRF with
+   internal-network access, auth bypass / ATO. Never inflate a
+   Medium to fill a Critical-only report — report "no Critical
+   findings" with the no-finding checklist (see runbook 10.9) instead.
+
+---
+
+## EVIDENCE STANDARD
+
+Every finding ships with request + response + status code + impact
+analysis (full templates live in the evidence-locker skill):
+
+- Auth findings: demonstrated with real authenticated requests —
+  an unauthenticated CORS/CSRF observation without authed impact
+  is not a finding.
+- RCE: full command-execution output.
+- Data exposure: the exposed data and why it is sensitive.
+- Link each finding to its evidence IDs (EVD-001…); no evidence,
+  no report.
+
+---
+
 ## WRITING BEST PRACTICES
 
 ### Title

@@ -398,6 +398,15 @@ fn config_env_fingerprint() -> Vec<(String, String)> {
     values
 }
 
+/// Force the config cache to load immediately, ignoring the throttle.
+///
+/// Called from a background thread at process startup so the first config
+/// read (file I/O + TOML parse + env overrides) overlaps with other
+/// initialization work rather than blocking the critical path.
+pub fn prewarm_config_cache() {
+    let _ = config();
+}
+
 pub fn invalidate_config_cache() {
     let mut cache = CONFIG_CACHE
         .write()

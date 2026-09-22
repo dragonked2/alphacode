@@ -21,6 +21,13 @@ pub async fn run() -> Result<()> {
     terminal::install_panic_hook();
     startup_profile::mark("panic_hook");
 
+    // Start system-profile detection on a background thread as early as
+    // possible — the TUI needs the perf policy from it, and the earlier we
+    // start, the more likely the detection finishes before `profile()` is
+    // first called during terminal init.
+    perf::init_background();
+    startup_profile::mark("perf_init");
+
     logging::init();
     startup_profile::mark("logging_init");
     // Old log pruning now runs on a background thread inside logging::init(),
@@ -35,6 +42,16 @@ pub async fn run() -> Result<()> {
     std::thread::Builder::new()
         .name("alphacode-session-bak-prune".to_string())
         .spawn(crate::session::prune_old_session_backups)
+        .ok();
+    // Pre-warm the config cache on a background thread so the first config
+    // read (file I/O + TOML parse + env overrides) overlaps with the
+    // provider-registration calls below instead of blocking the critical
+    // path. If the background thread is still running when sync_output_style
+    // below calls config(), the read lock will wait — still no worse than
+    // synchronous loading, but in the common case the cache is already hot.
+    std::thread::Builder::new()
+        .name("alphacode-config-prewarm".to_string())
+        .spawn(crate::config::prewarm_config_cache)
         .ok();
     logging::info("alphacode starting");
 
@@ -107,15 +124,17 @@ pub async fn run() -> Result<()> {
         })
     }));
 
-    crate::alphacode_tui::tui::keybind::log_keybinding_default_warnings();
+    // Keybinding default warnings are non-critical: fire them on a detached
+    // thread so they never add to the perceived startup latency.
+    std::thread::Builder::new()
+        .name("alphacode-keybind-warn".to_string())
+        .spawn(crate::alphacode_tui::tui::keybind::log_keybinding_default_warnings)
+        .ok();
     crate::platform::raise_nofile_limit_best_effort(8_192);
     startup_profile::mark("nofile_limit");
 
     storage::harden_user_config_permissions();
     startup_profile::mark("perm_harden");
-
-    perf::init_background();
-    startup_profile::mark("perf_init");
 
     // Initialize the month-of-uptime health monitor: register core
     // subsystems and start a background reporter that emits a JSON health

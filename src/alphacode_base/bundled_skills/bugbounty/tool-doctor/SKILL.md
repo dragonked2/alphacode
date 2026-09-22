@@ -9,6 +9,36 @@ description: Local tool readiness check — Inspect which security tools are ins
 
 ---
 
+## 0. CROSS-PLATFORM AND NON-FATAL RULES (READ FIRST)
+
+The big readiness script in section 1 is Linux/bash-only (`command -v`,
+bash arrays, `&>/dev/null`, `((missing++))`). It FAILS on Windows
+(PowerShell) and on minimal shells. Rules:
+
+1. **Check ONE tool at a time, never the whole script at once.**
+   A single failed check must never abort the engagement.
+   ```bash
+   # Linux / macOS / Git Bash
+   command -v subfinder && subfinder -version 2>&1 | head -1
+   ```
+   ```powershell
+   # Windows PowerShell
+   Get-Command subfinder -ErrorAction SilentlyContinue
+   ```
+2. **A missing tool is routine, not an error.** Record it
+   (`subfinder: MISSING → fallback: assetfinder, crt.sh via httpflow`)
+   and switch to section 4 alternatives immediately. Never retry a
+   failed install more than twice.
+3. **Prefer tools already inside this agent**: the `httpflow` tool
+   replaces `curl | jq` chains (crt.sh, header fetches), `bash`
+   replaces ad-hoc scripting. External binaries are accelerators,
+   not prerequisites.
+4. On Windows without Go/Python toolchains, use Docker images
+   (`docker run projectdiscovery/subfinder`) or the httpflow/curl
+   fallbacks — do not burn the engagement on toolchain setup.
+
+---
+
 ## 1. TOOL READINESS CHECK
 
 Run this to see what's available on the current machine:

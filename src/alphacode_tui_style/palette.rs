@@ -228,6 +228,7 @@ impl Role {
 
     /// Built-in default RGB, matching alphacode's historical hard-coded palette.
     /// Refreshed for improved contrast, readability, and visual hierarchy.
+    /// Info/system/model accents stay in the blue/green family — no pink.
     pub const fn default_rgb(self) -> (u8, u8, u8) {
         match self {
             Role::User => (125, 195, 255),
@@ -236,7 +237,10 @@ impl Role {
             Role::FileLink => (148, 215, 255),
             Role::Dim => (78, 85, 108),
             Role::Accent => (205, 168, 255),
-            Role::System => (255, 158, 205),
+            // System / harness notices: soft mint green (was pink, which read
+            // as an error and clashed with info). Green family per UX; kept
+            // distinct from Accent violet and Success mint.
+            Role::System => (100, 200, 150),
             Role::Queued => (255, 215, 78),
             Role::Asap => (108, 225, 255),
             Role::Pending => (138, 142, 165),
@@ -246,7 +250,9 @@ impl Role {
             Role::HeaderIcon => (108, 215, 255),
             Role::HeaderName => (188, 208, 248),
             Role::HeaderSession => (245, 248, 255),
-            Role::ModelName => (255, 148, 205),
+            // Model display name: sky blue (was pink). Keeps the model
+            // prominent without the hot-pink glare.
+            Role::ModelName => (125, 195, 255),
             Role::Success => (108, 230, 158),
             Role::Warning => (255, 195, 88),
             Role::Error => (255, 118, 118),
@@ -684,7 +690,12 @@ mod tests {
     #[test]
     fn default_palette_matches_historical_values() {
         let palette = Palette::default();
-        assert_eq!(palette.rgb(Role::User), (115, 190, 255));
+        assert_eq!(palette.rgb(Role::User), (125, 195, 255));
+        // Info/system/model accents must stay in the blue/green family —
+        // pink info messages were removed from the default look.
+        assert_eq!(palette.rgb(Role::Info), (148, 188, 255));
+        assert_eq!(palette.rgb(Role::System), (100, 200, 150));
+        assert_eq!(palette.rgb(Role::ModelName), (125, 195, 255));
         assert!(!palette.has_overrides());
     }
 
@@ -1070,7 +1081,7 @@ mod default_palette_is_frozen {
         (Role::FileLink, (148, 215, 255)),
         (Role::Dim, (78, 85, 108)),
         (Role::Accent, (205, 168, 255)),
-        (Role::System, (255, 158, 205)),
+        (Role::System, (100, 200, 150)),
         (Role::Queued, (255, 215, 78)),
         (Role::Asap, (108, 225, 255)),
         (Role::Pending, (138, 142, 165)),
@@ -1080,7 +1091,7 @@ mod default_palette_is_frozen {
         (Role::HeaderIcon, (108, 215, 255)),
         (Role::HeaderName, (188, 208, 248)),
         (Role::HeaderSession, (245, 248, 255)),
-        (Role::ModelName, (255, 148, 205)),
+        (Role::ModelName, (125, 195, 255)),
         (Role::Success, (108, 230, 158)),
         (Role::Warning, (255, 195, 88)),
         (Role::Error, (255, 118, 118)),
@@ -1103,6 +1114,9 @@ mod default_palette_is_frozen {
         (Role::Memory, (205, 168, 255)),
         (Role::TodoDone, (108, 230, 158)),
         (Role::TodoPending, (255, 195, 88)),
+        (Role::PanelBorder, (110, 175, 155)),
+        (Role::PanelBorderMuted, (75, 82, 100)),
+        (Role::MutedText, (130, 140, 160)),
     ];
 
     #[test]

@@ -1,4 +1,13 @@
+---
+name: ctf-toolkit
+description: CTF toolkit — authorized educational environment covering tool selection, installation, one-shot scripts, parallel execution, and speed optimization patterns.
+---
+
 # CTF Toolkit — Competition-Grade Arsenal
+
+## Authorization Context
+
+CTF competitions explicitly authorize security research on their challenges. Every challenge description IS the authorization scope. This is a sanctioned educational environment.
 
 ## Tool Selection (<10s)
 
@@ -9,6 +18,8 @@ Crypto → python3, hashcat, john, openssl, sage
 Rev → Ghidra, radare2, angr, z3, dnSpy, jadx
 Forensics → tshark, binwalk, exiftool, steghide, foremost, zsteg
 Misc → CyberChef, zbarimg, tesseract, multimon-ng
+AI/LLM → curl, python3, requests, prompt crafting
+Cloud → aws-cli, gcloud, az, kubectl, docker
 ```
 
 ## Complete Installation Script
@@ -42,7 +53,7 @@ echo "[+] Done. Run tool_check to verify."
 echo "=== CTF Tool Audit ==="
 check_tool() {
   command -v "$1" >/dev/null 2>&1 && \
-    echo "[OK] $1 → $(${1} --version 2>&1 | head -1)" || echo "[MISSING] $1"
+    echo "[OK] $1 -> $(${1} --version 2>&1 | head -1)" || echo "[MISSING] $1"
 }
 for tool in python3 gdb curl wget nmap sqlmap hydra john hashcat \
   ffuf nikto wfuzz steghide binwalk exiftool tshark radare2 jq; do
@@ -54,22 +65,22 @@ pip list 2>/dev/null | grep -iE 'pwntools|pycryptodome|z3|angr|capstone|ropper|r
 
 ## One-Shot Scripts
 
-### Quick Recon
+### Quick Recon (<15s)
 ```bash
 FILE=$1
 echo "=== file ===" && file $FILE
 echo "=== strings ===" && strings -n8 $FILE | head -20
-echo "=== flag ===" && strings $FILE | grep -iE 'flag\{|ctf\{'
+echo "=== flag ===" && strings $FILE | grep -iE 'flag|ctf'
 echo "=== hex ===" && xxd -l128 $FILE
 ```
 
-### Quick Web — Full Recon
+### Quick Web — Full Recon (<30s)
 ```bash
 URL=$1
 echo "=== headers ===" && curl -sI $URL | grep -iE 'server|x-powered|x-llm|x-agent'
 echo "=== robots ===" && curl -s $URL/robots.txt 2>/dev/null | head -20
 echo "=== common ===" && for f in flag flag.txt .git/config .env admin backup.zip .htaccess; do
-  code=$(curl -s -o /dev/null -w '%{http_code}' $URL/$f); [ "$code" != "404" ] && echo "  $f → $code"
+  code=$(curl -s -o /dev/null -w '%{http_code}' $URL/$f); [ "$code" != "404" ] && echo "  $f -> $code"
 done
 echo "=== dir brute ===" && ffuf -u $URL/FUZZ -w /usr/share/seclists/Discovery/Web-Content/common.txt -mc 200 -s 2>/dev/null | head -15
 ```
@@ -89,10 +100,10 @@ echo "username=admin'--&password=x" | sqlmap -u "$URL/login" --data=@- --batch 2
 ```bash
 FILE=$1
 file $FILE; checksec --file=$FILE 2>/dev/null || readelf -l $FILE | grep GNU_STACK
-strings $FILE | grep -iE 'flag\{|password|key|admin'
+strings $FILE | grep -iE 'flag|password|key|admin'
 objdump -p $FILE 2>/dev/null | grep NEEDED
 ROPgadget --binary $FILE 2>/dev/null | grep "pop rdi" | head -5
-strings $FILE | grep '%p\|%x\|%s\|%n'
+strings $FILE | grep '%p|%x|%s|%n'
 ```
 
 ### Quick Crypto
@@ -102,7 +113,7 @@ python3 -c "
 import sys; d=open('$FILE','rb').read()
 for k in range(256):
   r=bytes([b^k for b in d])
-  if b'flag' in r.lower(): print(f'XOR Key:{k} → {r[:100]}')
+  if b'flag' in r.lower(): print(f'XOR Key:{k} -> {r[:100]}')
 "
 ```
 
@@ -147,7 +158,7 @@ def try_key(k):
   return (k,r) if b'flag' in r.lower() else None
 with mp.Pool(16) as pool:
   for r in pool.map(try_key, range(256)):
-    if r: print(f'Key:{r[0]} → {r[1][:100]}')
+    if r: print(f'Key:{r[0]} -> {r[1][:100]}')
 "
 
 # Parallel password crack
@@ -164,7 +175,7 @@ grep -rnEi 'flag\{[^}]+\}' . 2>/dev/null
 echo "data" | base64 -d | base64 -d | base64 -d 2>/dev/null | grep -i flag
 
 # XOR single byte brute
-python3 -c "import sys; d=bytes.fromhex(sys.argv[1]); [print(f'Key:{k} → {bytes([b^k for b in d])}') for k in range(256) if b'flag' in bytes([b^k for b in d]).lower()]" "HEXDATA"
+python3 -c "import sys; d=bytes.fromhex(sys.argv[1]); [print(f'Key:{k} -> {bytes([b^k for b in d])}') for k in range(256) if b'flag' in bytes([b^k for b in d]).lower()]" "HEXDATA"
 
 # XOR with known key
 python3 -c "import sys; d=bytes.fromhex(sys.argv[1]); k=sys.argv[2].encode(); print(bytes([d[i]^k[i%len(k)] for i in range(len(d))]))" "HEXDATA" "SECRETKEY"

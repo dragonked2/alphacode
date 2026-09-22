@@ -40,7 +40,7 @@ fn test_render_rounded_box_emoji_title_aligned() {
         Line::from("memory content line two"),
     ];
     let style = Style::default();
-    let lines = render_rounded_box("🧠 recalled 2 memories", content, 50, style);
+    let lines = render_rounded_box("💾 recalled 2 memories", content, 50, style);
     assert!(lines.len() >= 4);
     let top_width = lines[0].width();
     let bottom_width = lines[lines.len() - 1].width();
@@ -171,7 +171,7 @@ fn test_render_channel_and_shared_context_as_compact_agent_rows() {
         .collect::<Vec<_>>();
 
     assert_eq!(channel_lines, vec!["🦊 #dev · Can someone review this?"]);
-    assert_eq!(context_lines, vec!["🦊 🧠 branch · feature/auth"]);
+    assert_eq!(context_lines, vec!["🦊 💾 branch · feature/auth"]);
 }
 
 #[test]
@@ -309,7 +309,7 @@ Modified via apply_patch
 
 #[test]
 fn test_truncate_line_to_width_uses_display_width() {
-    let line = Line::from(Span::raw("🧠 hello world"));
+    let line = Line::from(Span::raw("💾 hello world"));
     let truncated = truncate_line_to_width(&line, 8);
     let w = truncated.width();
     assert!(w <= 8, "truncated line display width {} should be <= 8", w);
@@ -388,7 +388,7 @@ fn test_render_memory_tiles_allows_boxes_below_other_boxes() {
         120,
         Style::default(),
         Style::default(),
-        Some(Line::from("🧠 recalled 5 memories")),
+        Some(Line::from("💾 recalled 5 memories")),
     );
     let rendered: Vec<String> = lines.iter().map(extract_line_text).collect();
 
@@ -434,7 +434,7 @@ fn test_render_memory_tiles_uses_full_row_width_for_stable_alignment() {
         96,
         Style::default(),
         Style::default(),
-        Some(Line::from("🧠 recalled 4 memories")),
+        Some(Line::from("💾 recalled 4 memories")),
     );
     let rendered: Vec<String> = lines.iter().skip(1).map(extract_line_text).collect();
 
@@ -477,7 +477,7 @@ fn test_render_memory_tiles_shows_updated_age_line() {
         60,
         Style::default(),
         Style::default(),
-        Some(Line::from("🧠 recalled 1 memory")),
+        Some(Line::from("💾 recalled 1 memory")),
     );
     let rendered: Vec<String> = lines.iter().map(extract_line_text).collect();
 
@@ -499,7 +499,7 @@ fn test_render_memory_tiles_do_not_use_background_tint() {
         60,
         Style::default(),
         Style::default(),
-        Some(Line::from("🧠 recalled 1 memory")),
+        Some(Line::from("💾 recalled 1 memory")),
     );
 
     assert!(

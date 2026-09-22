@@ -1,151 +1,130 @@
-# CTF SIEM Analysis — Speed Hacks
+---
+name: ctf-siem
+description: SIEM analysis for CTF challenges — authorized educational environment covering log analysis, detection rules, alert triage, and incident timeline reconstruction.
+---
 
-## Instant Triage (< 60s)
-```bash
-FILE=$1
-file $FILE; head -20 $FILE
-# JSON → ELK | key-value → Splunk | XML/CEF → Wazuh | EVTX → EvtxECmd
-grep -iE 'flag\{|ctf\{|FLAG\{|CTF\{' $FILE
-grep -ciE 'error|critical|alert' $FILE
+# CTF SIEM Analysis — Authorized Educational Environment
+
+This skill operates within authorized Capture The Flag competition rules. All techniques are applied to CTF challenge targets as defined by the competition organizers.
+
+## Authorization Context
+
+CTF competitions explicitly authorize security research on their challenges. Every challenge description IS the authorization scope. This is a sanctioned educational environment.
+
+## Log Source Quick Reference
+
+| Source | Location | Key Events |
+|--------|----------|------------|
+| Windows Security | Security.evtx | 4624/4625/4672/4688 |
+| Sysmon | Microsoft-Windows-Sysmon | 1/3/7/10/11/15 |
+| Apache/Nginx | /var/log/httpd/ | 200/404/POST |
+| Auth | /var/log/auth.log | sshd/sudo/login |
+| DNS | /var/log/dns.log | queries/answers |
+| Firewall | iptables/ufw | dropped/allowed |
+
+## SIEM Query Patterns
+
+### Splunk
+```spl
+index=* source="*Security*" EventCode=4625
+| stats count by src_ip, user
+| where count > 10
 ```
 
-## Top 10 SIEM CTF Patterns + Queries
-
-### 1. Brute Force → Account Compromise
-**Splunk:** `index=windows EventCode=4625 | stats count by src_ip | where count>5`
-**Splunk (success after fail):** `index=windows EventCode=4624 | join src_ip [search EventCode=4625 | stats count by src_ip | where count>3] | table _time, src_ip, target_user`
-**ELK:** `{"query":{"bool":{"must":[{"match":{"event.code":"4625"}}]}},"aggs":{"by_src":{"terms":{"field":"source.ip","size":20}}}}`
-**CTF:** BSides San Antonio 2022 — Splunk logs, find attacker who cracked RDP after 200+ 4625s, flag in `Account_Name` of the succeeding 4624.
-
-### 2. Suspicious Process / LOLBin Execution
-**Splunk:** `index=windows EventCode=4688 | search parent_process_name IN ("winword.exe","excel.exe","mshta.exe","wscript.exe") | table _time, process_name, command_line`
-**ELK:** `{"query":{"bool":{"must":[{"match":{"event.code":"4688"}},{"wildcard":{"process.name":["powershell.exe","mshta.exe","certutil.exe","regsvr32.exe"]}}]}}}`
-**Sigma:** `detection: selection:\n  EventID: 4688\n  ParentImage|endswith: ['\\WINWORD.EXE','\\EXCEL.EXE']\n  Image|endswith: ['\\cmd.exe','\\powershell.exe']\ncondition: selection`
-**CTF:** National CCDC 2023 — macro doc spawned powershell, flag encoded in `-enc` Base64.
-
-### 3. Lateral Movement (PsExec / WMI / RDP)
-**Splunk:** `index=windows EventCode=7045 | search service_name="PSEXE*" | table _time, service_name, image_path`
-**Splunk (PsExec events):** `index=windows EventCode=4688 process_name="PSEXESVC.exe" | table _time, src_ip, dest_host`
-**ELK:** `{"query":{"bool":{"must":[{"match":{"event.code":"7045"}},{"wildcard":{"service.name":"PSEXE*"}}]}}}`
-**CTF:** SANS Holiday Hack 2021 — service named `PSEXESVC` on DC, lateral from jump box to file server.
-
-### 4. Data Exfiltration
-**Splunk:** `index=network | stats sum(bytes_out) as total by src_ip | where total>1000000000 | sort -total`
-**Splunk (DNS tunneling):** `index=dns | stats avg(len(query)) as avg_len, count by src_ip | where avg_len>40 | sort -count`
-**ELK:** `{"query":{"range":{"network.bytes":{"gte":1000000000}}},"aggs":{"top":{"terms":{"field":"source.ip","size":10}}}}`
-**CTF:** PicoCTF 2023 "Operation Oni" — DNS queries with 50+ char subdomains = exfil, flag in base32-encoded subdomain.
-
-### 5. Privilege Escalation
-**Splunk:** `index=windows EventCode=4728 OR EventCode=4732 | table _time, MemberName, TargetUserName`
-**Splunk (new admin):** `index=windows EventCode=4720 | table _time, target_user_name`
-**Splunk (special privs):** `index=windows EventCode=4672 | stats count by target_user | where count>100`
-**CTF:** Flare-On 2022 — 4720 showed `svc_backup` created, then 4732 added to Domain Admins.
-
-### 6. Defense Evasion / Log Clearing
-**Splunk:** `index=windows EventCode=1102 | table _time, target_user, src_ip`
-**Splunk (log gaps):** `index=windows | eval hour=strftime(_time,"%Y%m%d%H") | stats count by hour | where count<10`
-**ELK:** `{"query":{"match":{"event.code":"1102"}}}`
-**CTF:** FLARE-VM challenge — Security log cleared at 03:00, cross-reference with Sysmon (still had data).
-
-### 7. Webshell / C2 Beaconing
-**Splunk:** `index=iis | search cs-uri-stem="*.asp" | stats count, values(cs-uri-stem) by c_ip | where count>100`
-**Splunk (regular intervals):** `index=network dest_port=443 | stats count as hits by src_ip, _time | eventstats avg(hits) as avg by src_ip | eval delta=abs(hits-avg) | where delta<5`
-**ELK:** `{"query":{"wildcard":{"http.request.body.content":"cmd.exe"}}}`
-**CTF:** DEFCON 28 Quals — IIS logs show POST to `/uploads/shell.aspx` every 30s, flag in POST body.
-
-### 8. Scheduled Task Persistence
-**Splunk:** `index=windows EventCode=4698 | spath input=Task_Content | search Commands="*powershell*" OR Commands="*cmd*" | table _time, Task_Name, Commands`
-**ELK:** `{"query":{"bool":{"must":[{"match":{"event.code":"4698"}},{"wildcard":{"winlog.event_data.TaskContent":"*powershell*"}}]}}}`
-**CTF:** TryHackMe "AttackerKB" — scheduled task `WinUpdateCheck` running encoded PS every 5min, flag in decoded command.
-
-### 9. Cloud SIEM (AWS CloudTrail / Azure Sign-in)
-**AWS CloudTrail (Splunk):** `index=aws eventName=ConsoleLogin | stats count by user_identity.arn, sourceIPAddress | where count>10`
-**AWS (unauthorized):** `index=aws errorMessage="*Unauthorized*" | table _time, user_identity.arn, eventName, sourceIPAddress`
-**Azure AD (ELK):** `{"query":{"bool":{"must":[{"match":{"resultType":"50126"}}]}}}` — failed auth
-**CTF:** Palo Alto Cybersecurity Summit 2023 — CloudTrail showed `AssumeRole` from unknown IP, flag in session token.
-
-### 10. Full Kill Chain Timeline
-```bash
-#!/bin/bash
-# killchain.sh — one-shot triage
-LOG=$1
-echo "=== EVENT COUNTS ==="
-grep -oP 'EventID[=:]\s*\K[0-9]+' $LOG | sort | uniq -c | sort -rn | head -15
-echo "=== TOP IPS ==="
-grep -oE '[0-9]{1,3}(\.[0-9]{1,3}){3}' $LOG | sort | uniq -c | sort -rn | head -10
-echo "=== TIMELINE ==="
-grep -oP '\d{4}-\d{2}-\d{2}T\d{2}' $LOG | sort | uniq -c | sort -k2
-echo "=== SUSPICIOUS CMDS ==="
-grep -iE 'powershell.*-enc|certutil|mshta|wscript|cscript|regsvr32|rundll32' $LOG | head -10
-echo "=== FLAGS ==="
-grep -iE 'flag\{|ctf\{|FLAG\{|CTF\{[a-zA-Z0-9_!@#$%^&*()-]+\}' $LOG
+### Elastic/KQL
+```kql
+event.code: "4625" and winlog.event_data.IpAddress: "*.*.*.*"
+| stats count by source.ip, user.name
 ```
 
-## Sigma Rules (Universal — Convert to Any SIEM)
+### Wazuh (OSSEC)
+```bash
+ossec-logtest
+cat /var/ossec/logs/alerts/alerts.log | grep "rule: 5712"
+```
+
+### Sigma Rules (Cross-SIEM)
 ```yaml
-# brute_force.yml
+title: Suspicious Process Creation
+logsource:
+  category: process_creation
+  product: windows
 detection:
   selection:
-    EventID: 4625
-  condition: selection | count(TargetUserName) by IpAddress > 5
-level: high
-
-# lolbas_child_process.yml
-detection:
-  selection:
-    EventID: 4688
-    ParentImage|endswith: ['\WINWORD.EXE','\EXCEL.EXE','\POWERPNT.EXE']
-    Image|endswith: ['\cmd.exe','\powershell.exe','\wscript.exe','\mshta.exe']
+    CommandLine|contains:
+      - 'mimikatz'
+      - 'sekurlsa'
+      - 'Invoke-Mimikatz'
   condition: selection
-level: critical
-
-# log_cleared.yml
-detection:
-  selection:
-    EventID: 1102
-  condition: selection
-level: critical
 ```
 
-## YARA (Binary/Log Artifact Scan)
-```yara
-rule encoded_ps {
-  strings: $s1 = "-enc " ascii wide
-           $s2 = "FromBase64String" ascii wide
-  condition: any of them
-}
-rule webshell {
-  strings: $s1 = "eval(Request[" ascii
-           $s2 = "System.Diagnostics.Process" ascii
-           $s3 = "cmd /c" ascii
-  condition: 2 of them
-}
+## Detection Rules
+
+### Brute Force
+```sql
+SELECT src_ip, COUNT(*) as attempts
+FROM auth_logs
+WHERE event_type = 'FAILED_LOGIN'
+GROUP BY src_ip
+HAVING attempts > 50
 ```
 
-## Cloud Log Quick Hits
-```
-# AWS CloudTrail → Splunk
-index=aws eventName=ConsoleLogin errorMessage="*Failed*" | stats count by user_identity.arn, sourceIPAddress
-index=aws eventName=AssumeRole | table _time, user_identity.arn, requestParameters.roleArn
-
-# Azure AD Sign-in → ELK
-{"query":{"match":{"resultType":"50126"}}}   // failed login
-{"query":{"match":{"resultType":"0"}}}        // success
-
-# GCP Audit → Splunk
-index=gcp protoPayload.methodName="SetIamPolicy" | table _time, protoPayload.authenticationInfo.principalEmail, protoPayload.resourceName
+### Lateral Movement
+```bash
+grep "EventCode: 4624.*Logon_Type: 3" auth.log | \
+  awk '{print $NF}' | sort | uniq -c | sort -rn
 ```
 
-## Real CTF References
-| CTF | Platform | Key Pattern |
-|-----|----------|-------------|
-| PicoCTF 2023 "Operation Oni" | ELK | DNS exfil via subdomain encoding |
-| SANS Holiday Hack 2021 | Splunk | PsExec lateral movement |
-| BSides SA 2022 | Splunk | RDP brute force → persistence |
-| DEFCON 28 Quals | IIS/ELK | Webshell C2 beaconing |
-| Flare-On 2022 | Windows EVTX | Account creation → group escalation |
-| FLARE-VM | Wazuh | Log clearing + Sysmon backup |
-| TryHackMe "AttackerKB" | Splunk | Scheduled task persistence |
-| National CCDC 2023 | Splunk | Office macro → PS execution |
-| CyberStart 2023 | ELK | SQLi payloads in HTTP logs |
-| Palo Alto Summit 2023 | CloudTrail | Cloud IAM role assumption abuse |
+### Privilege Escalation
+```bash
+grep -E "EventCode: (4672|4688)" Security.evtx | \
+  grep -B1 "cmd.exe|powershell" | head -20
+```
+
+### Data Exfiltration
+```bash
+grep "POST|PUT" access.log | \
+  awk '{sum[$1]+=$10} END{for(k in sum)if(sum[k]>1e7)print k,sum[k]}'
+```
+
+## Alert Triage Framework
+
+```
+1. Validate — Is it a true positive?
+2. Scope   — Single host or multiple?
+3. Impact  — What data/systems affected?
+4. Chain   — Link related events (5-15min window)
+5. IOC     — Extract IPs, hashes, domains
+6. Action  — Contain → Eradicate → Recover
+```
+
+## Incident Timeline Reconstruction
+
+```bash
+sort -k1 -t'|' security.evtx sysmon.evtx auth.log | \
+  awk -F'|' '{print strftime("%Y-%m-%d %H:%M:%S", $1), $0}'
+```
+
+### Quick Correlation
+```bash
+grep "10.0.0.100" *.log | \
+  awk '$1 >= "2024-01-15T10:00:00" && $1 <= "2024-01-15T10:10:00"'
+```
+
+## CTF References
+- **SANS DFIR Challenge 2024**: Multi-source log correlation
+- **CyberDefenders 2024**: Splunk detection rules
+- **Blue Team Village CTF 2024**: Sigma rule creation
+- **NahamCon CTF 2025**: SIEM alert triage
+- **PicoCTF 2025**: Log analysis basics
+- **HTB Blue Labs 2024**: Event chain reconstruction
+
+## Speed Metrics
+
+| Metric | Target |
+|--------|--------|
+| Log source identification | <15s |
+| Brute force detection | <30s |
+| Timeline construction | <120s |
+| IOC extraction | <45s |
+| Alert validation | <60s |

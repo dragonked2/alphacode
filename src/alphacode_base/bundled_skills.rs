@@ -83,6 +83,14 @@ pub(super) const BUNDLED_SKILLS: &[BundledSkill] = &[
                 include_str!("bundled_skills/bugbounty/recon/SKILL.md"),
             ),
             (
+                "recon-js",
+                include_str!("bundled_skills/bugbounty/recon-js/SKILL.md"),
+            ),
+            (
+                "scope",
+                include_str!("bundled_skills/bugbounty/scope/SKILL.md"),
+            ),
+            (
                 "report",
                 include_str!("bundled_skills/bugbounty/report/SKILL.md"),
             ),
@@ -408,6 +416,10 @@ pub(super) const BUNDLED_SKILLS: &[BundledSkill] = &[
             (
                 "api-security",
                 include_str!("bundled_skills/ctf/ctf/api-security/SKILL.md"),
+            ),
+            (
+                "master-brain",
+                include_str!("bundled_skills/ctf/ctf/master-brain/SKILL.md"),
             ),
         ],
     },

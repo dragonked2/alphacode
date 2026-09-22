@@ -1138,7 +1138,9 @@ pub(super) fn draw_messages(
                 width: 1,
                 height: 1,
             };
-            let bar = Paragraph::new(Span::styled("│", Style::default().fg(user_color())));
+            // Subtle edge tick for user rows: dim so it never reads as a
+            // second scrollbar next to the native "|" thumb.
+            let bar = Paragraph::new(Span::styled("│", Style::default().fg(dim_color())));
             frame.render_widget(bar, bar_area);
         }
     }

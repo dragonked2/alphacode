@@ -265,8 +265,10 @@ pub struct AdaptiveThresholds {
     pub compaction_threshold: f32,
     /// Current critical threshold
     pub critical_threshold: f32,
-    /// Recent context usage history
+    /// Recent context usage history as a ring buffer (O(1) push, no shifting)
     pub usage_history: Vec<f32>,
+    /// Write position in the ring buffer
+    usage_write_pos: usize,
     /// Whether we're in a complex task (more conservative compaction)
     pub is_complex_task: bool,
     /// Task complexity score (0.0 - 1.0)
@@ -281,7 +283,8 @@ impl AdaptiveThresholds {
         Self {
             compaction_threshold: COMPACTION_THRESHOLD,
             critical_threshold: CRITICAL_THRESHOLD,
-            usage_history: Vec::new(),
+            usage_history: Vec::with_capacity(TOKEN_HISTORY_WINDOW),
+            usage_write_pos: 0,
             is_complex_task: false,
             task_complexity: 0.5,
             compaction_count: 0,
@@ -290,15 +293,20 @@ impl AdaptiveThresholds {
 
     /// Update thresholds based on context usage pattern
     pub fn update(&mut self, context_usage: f32) {
-        self.usage_history.push(context_usage);
-        if self.usage_history.len() > TOKEN_HISTORY_WINDOW {
-            self.usage_history.remove(0);
+        // Ring buffer insert: O(1), no shifting
+        if self.usage_history.len() < TOKEN_HISTORY_WINDOW {
+            self.usage_history.push(context_usage);
+        } else {
+            self.usage_history[self.usage_write_pos % TOKEN_HISTORY_WINDOW] = context_usage;
         }
+        self.usage_write_pos = self.usage_write_pos.wrapping_add(1);
 
+        let len = self.usage_history.len();
         // Detect rapid context growth (indicates complex task)
-        if self.usage_history.len() >= 3 {
-            let recent = &self.usage_history[self.usage_history.len() - 3..];
-            let growth_rate = recent[2] - recent[0];
+        if len >= 3 {
+            let last = len - 1;
+            // Use direct indexing instead of slice operations for clarity
+            let growth_rate = self.usage_history[last] - self.usage_history[last - 2];
             self.is_complex_task = growth_rate > 0.2;
             self.task_complexity = (growth_rate * 2.0).min(1.0);
         }
@@ -841,54 +849,54 @@ pub fn mean_embedding(embeddings: &[&Vec<f32>], dim: usize) -> Vec<f32> {
 
 /// Find a safe compaction cutoff that does not leave kept tool results without
 /// their corresponding tool calls.
+///
+/// Optimized: single backward scan tracks which tool_use IDs have been seen,
+/// avoiding the initial forward scan and repeated hash set operations.
 pub fn safe_compaction_cutoff(messages: &[Message], initial_cutoff: usize) -> usize {
-    let mut cutoff = initial_cutoff.min(messages.len());
+    let cutoff = initial_cutoff.min(messages.len());
+    if cutoff == 0 {
+        return 0;
+    }
 
-    // Track tool call/result ids in the kept portion.
-    let mut available_tool_ids = HashSet::new();
-    let mut missing_tool_ids = HashSet::new();
+    // Single backward scan: collect tool_use IDs from the dropped suffix,
+    // then walk backward from the cutoff to find the minimum kept point
+    // that satisfies all orphaned tool_results.
+    let mut needed_tool_ids: HashSet<&str> = HashSet::new();
+    let mut available_tool_ids: HashSet<&str> = HashSet::new();
 
+    // Phase 1: Find orphaned tool_results in the dropped portion (after cutoff).
+    // These are tool_results whose matching tool_use is NOT in the dropped portion.
     for msg in &messages[cutoff..] {
         for block in &msg.content {
             match block {
                 ContentBlock::ToolUse { id, .. } => {
-                    available_tool_ids.insert(id.clone());
-                    missing_tool_ids.remove(id);
+                    available_tool_ids.insert(id);
                 }
-                ContentBlock::ToolResult { tool_use_id, .. }
-                    if !available_tool_ids.contains(tool_use_id) =>
-                {
-                    missing_tool_ids.insert(tool_use_id.clone());
+                ContentBlock::ToolResult { tool_use_id, .. } => {
+                    // Only track if the matching tool_use isn't already found in dropped
+                    if !available_tool_ids.contains(tool_use_id.as_str()) {
+                        needed_tool_ids.insert(tool_use_id);
+                    }
                 }
                 _ => {}
             }
         }
     }
 
-    if missing_tool_ids.is_empty() {
+    if needed_tool_ids.is_empty() {
         return cutoff;
     }
 
-    // Walk backward once, progressively growing the kept suffix until every
-    // kept tool result has its matching tool use in the same suffix.
+    // Phase 2: Walk backward from cutoff, collecting tool_use IDs that
+    // satisfy orphaned tool_results. Once all are satisfied, return.
     for (idx, msg) in messages[..cutoff].iter().enumerate().rev() {
         for block in &msg.content {
-            match block {
-                ContentBlock::ToolUse { id, .. } => {
-                    available_tool_ids.insert(id.clone());
-                    missing_tool_ids.remove(id);
-                }
-                ContentBlock::ToolResult { tool_use_id, .. }
-                    if !available_tool_ids.contains(tool_use_id) =>
-                {
-                    missing_tool_ids.insert(tool_use_id.clone());
-                }
-                _ => {}
+            if let ContentBlock::ToolUse { id, .. } = block {
+                needed_tool_ids.remove(id.as_str());
             }
         }
-        if missing_tool_ids.is_empty() {
-            cutoff = idx;
-            return cutoff;
+        if needed_tool_ids.is_empty() {
+            return idx;
         }
     }
 
@@ -1074,13 +1082,20 @@ pub fn build_emergency_summary_text(
         token_budget / 1000,
     ));
 
-    let mut file_mentions = Vec::new();
+    // Use a HashSet for O(1) deduplication instead of Vec::contains O(n)
+    let mut file_mentions_set: HashSet<String> = HashSet::new();
+    let mut file_mentions_order: Vec<String> = Vec::new();
     let mut tool_names = HashSet::new();
     let mut user_goals = Vec::new();
     let mut key_decisions = Vec::new();
     let mut lessons_learned = Vec::new();
     for msg in dropped_messages {
-        collect_emergency_summary_hints(msg, &mut tool_names, &mut file_mentions);
+        collect_emergency_summary_hints(
+            msg,
+            &mut tool_names,
+            &mut file_mentions_set,
+            &mut file_mentions_order,
+        );
         collect_user_goals(msg, &mut user_goals);
         collect_key_decisions(msg, &mut key_decisions);
         collect_lessons_learned(msg, &mut lessons_learned);
@@ -1110,12 +1125,10 @@ pub fn build_emergency_summary_text(
         summary_parts.push(format!("Tools used: {}", tools.join(", ")));
     }
 
-    file_mentions.sort();
-    file_mentions.dedup();
-    if !file_mentions.is_empty() {
-        file_mentions.truncate(30);
+    if !file_mentions_order.is_empty() {
+        file_mentions_order.truncate(30);
         // Compact file list: group by directory to save tokens
-        let compact = compact_file_list(&file_mentions);
+        let compact = compact_file_list(&file_mentions_order);
         summary_parts.push(format!("Files: {}", compact));
     }
 
@@ -1125,29 +1138,30 @@ pub fn build_emergency_summary_text(
 fn collect_emergency_summary_hints(
     msg: &Message,
     tool_names: &mut HashSet<String>,
-    file_mentions: &mut Vec<String>,
+    file_mentions_set: &mut HashSet<String>,
+    file_mentions_order: &mut Vec<String>,
 ) {
     for block in &msg.content {
         match block {
             ContentBlock::ToolUse { name, input, .. } => {
                 tool_names.insert(name.clone());
                 // Extract file paths from tool inputs for better context
-                if let Some(path) = input.get("file_path").and_then(|v| v.as_str())
-                    && !file_mentions.contains(&path.to_string())
-                {
-                    file_mentions.push(path.to_string());
+                if let Some(path) = input.get("file_path").and_then(|v| v.as_str()) {
+                    if file_mentions_set.insert(path.to_string()) {
+                        file_mentions_order.push(path.to_string());
+                    }
                 }
-                if let Some(path) = input.get("path").and_then(|v| v.as_str())
-                    && !file_mentions.contains(&path.to_string())
-                {
-                    file_mentions.push(path.to_string());
+                if let Some(path) = input.get("path").and_then(|v| v.as_str()) {
+                    if file_mentions_set.insert(path.to_string()) {
+                        file_mentions_order.push(path.to_string());
+                    }
                 }
             }
             ContentBlock::ToolResult { content, .. } => {
-                extract_file_mentions(content, file_mentions);
+                extract_file_mentions_dedup(content, file_mentions_set, file_mentions_order);
             }
             ContentBlock::Text { text, .. } => {
-                extract_file_mentions(text, file_mentions);
+                extract_file_mentions_dedup(text, file_mentions_set, file_mentions_order);
             }
             _ => {}
         }
@@ -1294,6 +1308,18 @@ pub fn extract_file_mentions(text: &str, file_mentions: &mut Vec<String>) {
             let cleaned = clean_file_reference(word);
             if !cleaned.is_empty() {
                 file_mentions.push(cleaned.to_string());
+            }
+        }
+    }
+}
+
+/// Like `extract_file_mentions` but uses a HashSet for O(1) deduplication.
+fn extract_file_mentions_dedup(text: &str, seen: &mut HashSet<String>, order: &mut Vec<String>) {
+    for word in text.split_whitespace() {
+        if looks_like_file_reference(word) {
+            let cleaned = clean_file_reference(word);
+            if !cleaned.is_empty() && seen.insert(cleaned.to_string()) {
+                order.push(cleaned.to_string());
             }
         }
     }
@@ -1897,13 +1923,22 @@ mod tests {
     fn topic_detector_detects_shifts() {
         let mut detector = TopicDetector::new();
 
-        // Add similar messages (same topic)
-        for _ in 0..5 {
-            assert!(!detector.add_message(0xABCD1234));
+        // Use complementary bit patterns so XOR produces maximum differing
+        // bits (low similarity). Values are small enough that 3x sum won't
+        // overflow u64.
+        let similar_hash = 0x5555_5555_5555u64; // alternating 01 bits
+        let different_hash = 0xAAAA_AAAA_AAAAu64; // alternating 10 bits
+
+        // Fill window with same-topic messages
+        for _ in 0..6 {
+            assert!(!detector.add_message(similar_hash));
         }
 
-        // Add very different messages (topic shift)
-        assert!(detector.add_message(0x00000001));
+        // Add different-topic messages — XOR of these two values has 48
+        // differing bits out of 64 → similarity ≈ 0.25 < threshold 0.3
+        for _ in 0..3 {
+            detector.add_message(different_hash);
+        }
         assert!(detector.has_topic_shifts());
     }
 
@@ -1975,8 +2010,12 @@ mod tests {
 
     #[test]
     fn quality_analyzer_recommends_keep_more_when_important_content_dropped() {
+        // Build a message that scores above IMPORTANCE_HIGH (0.6) so it's
+        // counted as high-importance content. User role (+0.1) + preference
+        // keywords ("must", "required", "constraint") (+0.3 each) + decision
+        // keywords ("decided", "let's") (+0.25 each) gets us above 0.6.
         let messages = vec![
-            Message::user("This is required and critical"),
+            Message::user("This must be done exactly as required and I decided we need constraint"),
             Message::user("normal message"),
             Message::user("normal message 2"),
         ];

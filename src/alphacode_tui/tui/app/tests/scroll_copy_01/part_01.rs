@@ -375,7 +375,9 @@ fn test_chat_native_scrollbar_hidden_when_content_fits() {
     let text = render_and_snap(&app, &mut terminal);
 
     assert_eq!(crate::alphacode_tui::tui::ui::last_max_scroll(), 0);
-    for glyph in ["╷", "╵", "╎"] {
+    for glyph in ["╷", "╵", "╎", "|"] {
+        // "|" is the ASCII-safe scrollbar thumb; none of the old mixed
+        // glyphs nor the new thumb may appear when content fits.
         assert!(
             !text.contains(glyph),
             "did not expect scrollbar glyph {glyph:?} when content fits:\n{text}"
@@ -404,8 +406,8 @@ fn test_chat_native_scrollbar_hides_scroll_counters() {
     let remaining = crate::alphacode_tui::tui::ui::last_max_scroll().saturating_sub(scroll);
 
     assert!(
-        text.contains('╷') || text.contains('•'),
-        "expected native scrollbar thumb to render:\n{text}"
+        text.contains('|'),
+        "expected native scrollbar thumb '|' to render:\n{text}"
     );
     assert!(
         !text.contains('╎'),

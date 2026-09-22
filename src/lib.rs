@@ -30,6 +30,7 @@ pub mod alphacode_command_risk;
 pub mod alphacode_compaction_core;
 pub mod alphacode_config_types;
 pub mod alphacode_core;
+pub mod alphacode_decision_core;
 #[cfg(feature = "embeddings")]
 pub mod alphacode_embedding;
 pub mod alphacode_fuzzy;
@@ -69,6 +70,7 @@ pub mod alphacode_provider_openai_runtime;
 pub mod alphacode_provider_openrouter;
 pub mod alphacode_provider_openrouter_runtime;
 pub mod alphacode_render_core;
+pub mod alphacode_security_core;
 pub mod alphacode_selfdev_types;
 pub mod alphacode_session_types;
 pub mod alphacode_setup_hints;

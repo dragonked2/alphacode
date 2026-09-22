@@ -307,75 +307,63 @@ where
     T: Send + 'static,
 {
     let total = tools.len();
-    let cap = max_concurrency.max(1).min(total.max(1));
-    let mut out: Vec<Option<ParallelResult<T>>> = (0..total).map(|_| None).collect();
+    if total == 0 {
+        return Vec::new();
+    }
+
+    let cap = max_concurrency.max(1).min(total);
     let cancel = cancel.clone();
 
-    // Stream tool invocations through a bounded channel so we never start
-    // more than `cap` futures at once.
-    let (tx, mut rx) = tokio::sync::mpsc::channel::<usize>(cap);
-    let tools_arc: Vec<Option<F>> = tools.into_iter().map(Some).collect();
-    let tools_arc = std::sync::Arc::new(tokio::sync::Mutex::new(tools_arc));
+    // Pre-check cancel before any allocation or spawning.
+    if cancel.is_set() {
+        return (0..total)
+            .map(|i| ParallelResult {
+                index: i,
+                result: Err("cancelled before start".to_string()),
+                elapsed: std::time::Duration::ZERO,
+            })
+            .collect();
+    }
 
-    // Producer: hand out indices up to the concurrency cap.
-    let producer = {
-        let cancel = cancel.clone();
-        let tools_arc = std::sync::Arc::clone(&tools_arc);
-        let tx = tx.clone();
-        async move {
-            let mut next_index = 0usize;
-            loop {
-                if cancel.is_set() {
-                    break;
-                }
-                if next_index >= total {
-                    break;
-                }
-                let permit = {
-                    let g = tools_arc.lock().await;
-                    if g[next_index].is_none() {
-                        next_index += 1;
-                        continue;
-                    }
-                    Some(next_index)
-                };
-                let Some(idx) = permit else { continue };
-                if tx.send(idx).await.is_err() {
-                    break;
-                }
-                next_index += 1;
-            }
-        }
-    };
-
-    // Consumer: spawn at most `cap` workers; each one pulls a tool, runs it,
-    // and reports back. We also spawn the producer so the channel can be
-    // filled as workers become free.
-    let _producer_handle = tokio::spawn(producer);
-    drop(tx); // producer owns the only other sender
-
+    // Move tools into owned slots and use a semaphore to control concurrency.
+    // This eliminates the producer-consumer mutex entirely: each worker grabs
+    // a permit before spawning, then takes its tool by index — no shared
+    // mutable state on the hot path.
+    let mut slots: Vec<Option<F>> = tools.into_iter().map(Some).collect();
+    let semaphore = std::sync::Arc::new(tokio::sync::Semaphore::new(cap));
     let mut join_set: tokio::task::JoinSet<(usize, Result<T, String>, std::time::Duration)> =
         tokio::task::JoinSet::new();
 
-    while let Some(idx) = rx.recv().await {
-        let tool = {
-            let mut g = tools_arc.lock().await;
-            g[idx].take()
-        };
+    // Spawn workers for all tools, but each one must acquire a semaphore
+    // permit before it actually runs. This naturally caps concurrency
+    // without a producer loop or channel overhead.
+    for idx in 0..total {
+        let tool = slots[idx].take();
         let Some(tool) = tool else { continue };
         let cancel = cancel.clone();
+        let semaphore = semaphore.clone();
+
         join_set.spawn(async move {
-            let start = std::time::Instant::now();
-            // Pre-check the cancel: if the user already fired the signal, do
-            // not even start the tool — its caller asked to stop and starting
-            // it would be wasted work.
-            if cancel.is_set() {
-                return (
+            // Wait for a concurrency slot. If cancelled while waiting,
+            // return immediately without starting the tool.
+            let _permit = tokio::select! {
+                biased;
+                _ = cancel.notified() => return (
                     idx,
                     Err("cancelled before start".to_string()),
-                    start.elapsed(),
-                );
-            }
+                    std::time::Duration::ZERO,
+                ),
+                permit = semaphore.acquire() => match permit {
+                    Ok(p) => p,
+                    Err(_) => return (
+                        idx,
+                        Err("cancelled before start".to_string()),
+                        std::time::Duration::ZERO,
+                    ),
+                },
+            };
+
+            let start = std::time::Instant::now();
             // Race the tool future against the cancel signal. Whichever
             // finishes first wins; on cancel we report the cancel reason.
             let result = tokio::select! {
@@ -388,21 +376,11 @@ where
             };
             (idx, result, start.elapsed())
         });
-        // Bound the join set size so we never accumulate more than `cap`
-        // pending futures — this is the real concurrency cap.
-        while join_set.len() >= cap
-            && let Some(joined) = join_set.join_next().await
-            && let Ok((idx, result, elapsed)) = joined
-        {
-            out[idx] = Some(ParallelResult {
-                index: idx,
-                result,
-                elapsed,
-            });
-        }
     }
 
-    // Drain anything still running.
+    // Collect results in input order as they complete.
+    let mut out: Vec<Option<ParallelResult<T>>> = (0..total).map(|_| None).collect();
+
     while let Some(joined) = join_set.join_next().await {
         if let Ok((idx, result, elapsed)) = joined {
             out[idx] = Some(ParallelResult {

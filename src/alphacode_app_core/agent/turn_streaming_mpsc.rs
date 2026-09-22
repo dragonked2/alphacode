@@ -1297,6 +1297,21 @@ impl Agent {
                                 message: notice,
                             });
                         }
+                        // Decision Plane observation: record end-of-turn with no tool calls
+                        if let Some(ref dp) = self.decision_plane {
+                            let _ = dp
+                                .decide_continue_or_escalate(
+                                    "turn_end",
+                                    &format!(
+                                        "stop_reason={:?}, text_len={}, no tools",
+                                        stop_reason,
+                                        text_content.len()
+                                    ),
+                                    0,
+                                    1,
+                                )
+                                .await;
+                        }
                         break;
                     }
                     NoToolCallOutcome::ContinueWithoutEvent => continue,
@@ -1538,6 +1553,14 @@ impl Agent {
                         tc.name,
                         tool_elapsed.as_secs_f64()
                     ));
+
+                    // Capture decision plane observation data before result is consumed
+                    let dp_is_error = result.is_err();
+                    let dp_output_preview = match &result {
+                        Ok(o) => o.output.chars().take(200).collect::<String>(),
+                        Err(e) => format!("{e}"),
+                    };
+
                     if inline_output_tap {
                         // Update the tool marker in place with duration/error.
                         self.inline_tail
@@ -1601,6 +1624,18 @@ impl Agent {
                             );
                             tool_results_dirty = true;
                         }
+                    }
+
+                    // Decision Plane observation: record tool result for loop detection
+                    if let Some(ref dp) = self.decision_plane {
+                        let _ = dp
+                            .decide_tool_result_sufficient(
+                                &tc.name,
+                                &dp_output_preview,
+                                dp_is_error,
+                                (tool_index + 1) as u32,
+                            )
+                            .await;
                     }
                 } else if self.is_graceful_shutdown() {
                     // Server reload - abort tool and save interrupted result
