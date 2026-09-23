@@ -1,0 +1,564 @@
+//! Terminal image display support
+//!
+//! Supports Kitty graphics protocol (Kitty, Ghostty, Handterm), iTerm2 inline images,
+//! and Sixel graphics (xterm, foot, mlterm, WezTerm).
+//! Falls back to a simple placeholder if no image protocol is available.
+
+use base64::{Engine, engine::general_purpose::STANDARD as BASE64};
+use std::io::{self, IsTerminal, Write};
+use std::path::Path;
+use std::process::Command;
+use std::sync::LazyLock;
+
+/// Cache whether ImageMagick is available for Sixel conversion
+static HAS_IMAGEMAGICK: LazyLock<bool> = LazyLock::new(|| {
+    Command::new("convert")
+        .arg("--version")
+        .output()
+        .map(|o| o.status.success())
+        .unwrap_or(false)
+});
+
+/// Terminal image protocol support
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum ImageProtocol {
+    /// Kitty graphics protocol (most feature-rich)
+    Kitty,
+    /// iTerm2 inline images
+    ITerm2,
+    /// Sixel graphics (xterm, foot, mlterm, WezTerm)
+    Sixel,
+    /// No image support
+    None,
+}
+
+impl ImageProtocol {
+    /// Detect the best available image protocol for the current terminal
+    pub fn detect() -> Self {
+        // Check for Kitty first (most capable)
+        if std::env::var("KITTY_WINDOW_ID").is_ok() {
+            return Self::Kitty;
+        }
+
+        // Check TERM for Kitty-compatible terminals.
+        if let Ok(term) = std::env::var("TERM")
+            && is_kitty_terminal_name(&term)
+        {
+            return Self::Kitty;
+        }
+
+        // Check TERM_PROGRAM for Kitty-compatible terminals.
+        if let Ok(term_program) = std::env::var("TERM_PROGRAM") {
+            if is_kitty_terminal_name(&term_program) {
+                return Self::Kitty;
+            }
+            if term_program == "iTerm.app" {
+                return iterm2_protocol();
+            }
+            // WezTerm supports Sixel
+            if term_program == "WezTerm" {
+                return Self::Sixel;
+            }
+        }
+
+        // Check LC_TERMINAL for iTerm2
+        if let Ok(lc_terminal) = std::env::var("LC_TERMINAL")
+            && lc_terminal == "iTerm2"
+        {
+            return iterm2_protocol();
+        }
+
+        // Check for Sixel-capable terminals
+        if Self::detect_sixel() {
+            return Self::Sixel;
+        }
+
+        Self::None
+    }
+
+    /// Detect if terminal supports Sixel graphics
+    fn detect_sixel() -> bool {
+        // Only enable Sixel if we have ImageMagick to do the conversion
+        if !*HAS_IMAGEMAGICK {
+            return false;
+        }
+
+        if let Ok(term) = std::env::var("TERM") {
+            let term_lower = term.to_lowercase();
+            // Known Sixel-capable terminals
+            if term_lower.contains("xterm")
+                || term_lower.contains("foot")
+                || term_lower.contains("mlterm")
+                || term_lower.contains("yaft")
+                || term_lower.contains("mintty")
+                || term_lower.contains("contour")
+            {
+                return true;
+            }
+        }
+
+        // Check TERM_PROGRAM for other Sixel terminals
+        if let Ok(prog) = std::env::var("TERM_PROGRAM")
+            && (prog == "mintty" || prog == "contour")
+        {
+            return true;
+        }
+
+        false
+    }
+
+    /// Check if image display is supported
+    pub fn is_supported(&self) -> bool {
+        *self != Self::None
+    }
+}
+
+/// Terminal multiplexer escape wrapping, mirroring ratatui-image's
+/// `Parser::escape_tmux`. tmux swallows unknown OSC/APC sequences unless they
+/// are wrapped in its passthrough form with doubled escapes, which silently
+/// drops image payloads (or leaks them as garbage text) inside tmux.
+fn escape_tmux(is_tmux: bool) -> (&'static str, &'static str, &'static str) {
+    if is_tmux {
+        ("\x1bPtmux;", "\x1b\x1b", "\x1b\\")
+    } else {
+        ("", "\x1b", "")
+    }
+}
+
+fn in_tmux() -> bool {
+    std::env::var("TMUX").is_ok_and(|v| !v.trim().is_empty())
+        || std::env::var("TERM").is_ok_and(|t| t.starts_with("tmux"))
+}
+
+/// iTerm2's inline-image protocol corrupts alphacode's TUI output in real iTerm2,
+/// so image display is disabled there unless the user opts back in with
+/// `ALPHACODE_ITERM2_IMAGES=1`.
+fn iterm2_images_enabled() -> bool {
+    matches!(
+        std::env::var("ALPHACODE_ITERM2_IMAGES")
+            .unwrap_or_default()
+            .trim()
+            .to_ascii_lowercase()
+            .as_str(),
+        "1" | "true" | "yes" | "on"
+    )
+}
+
+fn iterm2_protocol() -> ImageProtocol {
+    if iterm2_images_enabled() {
+        ImageProtocol::ITerm2
+    } else {
+        ImageProtocol::None
+    }
+}
+
+fn is_kitty_terminal_name(value: &str) -> bool {
+    let value = value.to_ascii_lowercase();
+    value.contains("kitty") || value.contains("ghostty") || value.contains("handterm")
+}
+
+/// Display parameters for terminal images
+#[derive(Debug, Clone)]
+pub struct ImageDisplayParams {
+    /// Maximum width in terminal columns
+    pub max_cols: u16,
+    /// Maximum height in terminal rows
+    pub max_rows: u16,
+}
+
+impl Default for ImageDisplayParams {
+    fn default() -> Self {
+        Self {
+            max_cols: 80,
+            max_rows: 24,
+        }
+    }
+}
+
+impl ImageDisplayParams {
+    /// Create display params based on terminal size
+    pub fn from_terminal() -> Self {
+        let (cols, rows) = crossterm::terminal::size().unwrap_or((120, 40));
+
+        // Use about 2/3 of terminal width, capped at 100 columns
+        // Use about 1/2 of terminal height, capped at 30 rows
+        Self {
+            max_cols: (cols * 2 / 3).clamp(40, 100),
+            max_rows: (rows / 2).clamp(10, 30),
+        }
+    }
+}
+
+/// Display an image in the terminal
+///
+/// Returns Ok(true) if the image was displayed, Ok(false) if not supported,
+/// or an error if something went wrong.
+pub fn display_image(path: &Path, params: &ImageDisplayParams) -> io::Result<bool> {
+    let protocol = ImageProtocol::detect();
+
+    // Protocol environment variables such as TERM are often inherited by
+    // headless commands whose stdout is redirected to an NDJSON file. Trying
+    // to render in that case is both incorrect and can deadlock when the
+    // caller already holds stdout's lock for the duration of the command.
+    if !can_display_to_stdout(protocol, io::stdout().is_terminal()) {
+        return Ok(false);
+    }
+
+    // Read the image file
+    let data = std::fs::read(path)?;
+
+    // Get image dimensions to calculate aspect ratio
+    let (img_width, img_height) = get_image_dimensions(&data).unwrap_or((0, 0));
+
+    match protocol {
+        ImageProtocol::Kitty => display_kitty(&data, params, img_width, img_height),
+        ImageProtocol::ITerm2 => display_iterm2(&data, path, params, img_width, img_height),
+        ImageProtocol::Sixel => display_sixel(path, params, img_width, img_height),
+        ImageProtocol::None => Ok(false),
+    }
+}
+
+fn can_display_to_stdout(protocol: ImageProtocol, stdout_is_terminal: bool) -> bool {
+    stdout_is_terminal && protocol.is_supported()
+}
+
+/// Get image dimensions from raw data
+fn get_image_dimensions(data: &[u8]) -> Option<(u32, u32)> {
+    // PNG: check signature and parse IHDR chunk
+    if data.len() > 24 && &data[0..8] == b"\x89PNG\r\n\x1a\n" {
+        let width = u32::from_be_bytes([data[16], data[17], data[18], data[19]]);
+        let height = u32::from_be_bytes([data[20], data[21], data[22], data[23]]);
+        return Some((width, height));
+    }
+
+    // JPEG: look for SOF0/SOF2 markers
+    if data.len() > 2 && data[0] == 0xFF && data[1] == 0xD8 {
+        let mut i = 2;
+        while i + 9 < data.len() {
+            if data[i] != 0xFF {
+                i += 1;
+                continue;
+            }
+            let marker = data[i + 1];
+            // SOF0 (baseline) or SOF2 (progressive)
+            if marker == 0xC0 || marker == 0xC2 {
+                let height = u16::from_be_bytes([data[i + 5], data[i + 6]]) as u32;
+                let width = u16::from_be_bytes([data[i + 7], data[i + 8]]) as u32;
+                return Some((width, height));
+            }
+            // Skip to next marker
+            if i + 3 < data.len() {
+                let len = u16::from_be_bytes([data[i + 2], data[i + 3]]) as usize;
+                i += 2 + len;
+            } else {
+                break;
+            }
+        }
+    }
+
+    // GIF: parse header
+    if data.len() > 10 && (&data[0..6] == b"GIF87a" || &data[0..6] == b"GIF89a") {
+        let width = u16::from_le_bytes([data[6], data[7]]) as u32;
+        let height = u16::from_le_bytes([data[8], data[9]]) as u32;
+        return Some((width, height));
+    }
+
+    // WebP: parse RIFF header
+    if data.len() > 30 && &data[0..4] == b"RIFF" && &data[8..12] == b"WEBP" {
+        // VP8 chunk
+        if &data[12..16] == b"VP8 " && data.len() > 30 {
+            // VP8 bitstream starts at offset 23, dimensions at offset 26
+            if data[23] == 0x9D && data[24] == 0x01 && data[25] == 0x2A {
+                let width = (u16::from_le_bytes([data[26], data[27]]) & 0x3FFF) as u32;
+                let height = (u16::from_le_bytes([data[28], data[29]]) & 0x3FFF) as u32;
+                return Some((width, height));
+            }
+        }
+        // VP8L (lossless)
+        if &data[12..16] == b"VP8L" && data.len() > 25 {
+            let bits = u32::from_le_bytes([data[21], data[22], data[23], data[24]]);
+            let width = (bits & 0x3FFF) + 1;
+            let height = ((bits >> 14) & 0x3FFF) + 1;
+            return Some((width, height));
+        }
+    }
+
+    None
+}
+
+/// Calculate display size maintaining aspect ratio
+fn calculate_display_size(
+    img_width: u32,
+    img_height: u32,
+    max_cols: u16,
+    max_rows: u16,
+) -> (u16, u16) {
+    if img_width == 0 || img_height == 0 {
+        return (max_cols.min(40), max_rows.min(20));
+    }
+
+    // Terminal cells are typically ~2:1 aspect ratio (taller than wide)
+    // So we need to account for that when calculating display size
+    let cell_aspect = 2.0; // height/width ratio of a terminal cell
+
+    let img_aspect = img_width as f64 / img_height as f64;
+    let max_width = max_cols as f64;
+    let max_height = max_rows as f64 * cell_aspect; // Convert rows to "width units"
+
+    let (display_width, display_height) = if img_aspect > max_width / max_height {
+        // Image is wider than available space
+        (max_width, max_width / img_aspect)
+    } else {
+        // Image is taller than available space
+        (max_height * img_aspect, max_height)
+    };
+
+    (
+        (display_width as u16).max(10),
+        (display_height / cell_aspect) as u16, // Convert back to rows
+    )
+}
+
+/// Display image using Kitty graphics protocol
+fn display_kitty(
+    data: &[u8],
+    params: &ImageDisplayParams,
+    img_width: u32,
+    img_height: u32,
+) -> io::Result<bool> {
+    let (cols, rows) =
+        calculate_display_size(img_width, img_height, params.max_cols, params.max_rows);
+
+    // Encode image data as base64
+    let encoded = BASE64.encode(data);
+
+    let mut stdout = io::stdout().lock();
+
+    // Kitty graphics protocol:
+    // \x1b_G<key>=<value>,...;<payload>\x1b\\
+    //
+    // Keys:
+    //   a=T - action: transmit and display
+    //   f=100 - format: auto-detect
+    //   c=<cols> - display width in cells
+    //   r=<rows> - display height in cells
+    //   m=1 - more data follows (chunked)
+    //   m=0 - final chunk
+
+    // Send in chunks (max 4096 bytes per chunk for safety)
+    const CHUNK_SIZE: usize = 4096;
+    let chunks: Vec<&str> = encoded
+        .as_bytes()
+        .chunks(CHUNK_SIZE)
+        .map(|c| std::str::from_utf8(c).unwrap_or(""))
+        .collect();
+
+    for (i, chunk) in chunks.iter().enumerate() {
+        let is_first = i == 0;
+        let is_last = i == chunks.len() - 1;
+        let more = if is_last { 0 } else { 1 };
+
+        if is_first {
+            // First chunk includes all parameters
+            write!(
+                stdout,
+                "\x1b_Ga=T,f=100,c={},r={},m={};{}\x1b\\",
+                cols, rows, more, chunk
+            )?;
+        } else {
+            // Subsequent chunks only have m flag
+            write!(stdout, "\x1b_Gm={};{}\x1b\\", more, chunk)?;
+        }
+    }
+
+    // Newline after image
+    writeln!(stdout)?;
+    stdout.flush()?;
+
+    Ok(true)
+}
+
+/// Display image using iTerm2 inline image protocol
+fn display_iterm2(
+    data: &[u8],
+    path: &Path,
+    params: &ImageDisplayParams,
+    img_width: u32,
+    img_height: u32,
+) -> io::Result<bool> {
+    let (cols, rows) =
+        calculate_display_size(img_width, img_height, params.max_cols, params.max_rows);
+
+    // Encode image data as base64
+    let encoded = BASE64.encode(data);
+
+    let filename = path
+        .file_name()
+        .map(|s| s.to_string_lossy().to_string())
+        .unwrap_or_else(|| "image".to_string());
+    let filename_b64 = BASE64.encode(filename.as_bytes());
+
+    let payload = iterm2_payload(&filename_b64, data.len(), cols, rows, &encoded, in_tmux());
+
+    let mut stdout = io::stdout().lock();
+    stdout.write_all(payload.as_bytes())?;
+    // Newline after image
+    writeln!(stdout)?;
+    stdout.flush()?;
+
+    Ok(true)
+}
+
+/// Build the iTerm2 inline-image escape sequence.
+///
+/// iTerm2 inline image protocol:
+/// `ESC ]1337;File=name=<b64>;size=<n>;inline=1;width=<cols>;height=<rows>;preserveAspectRatio=1:<b64data> BEL`
+///
+/// Both `width` and `height` must be given in cells. With only `width`, iTerm2
+/// derives the row count from the image's pixel aspect ratio, so it consumes a
+/// different number of rows than we reserved and the surrounding output gets
+/// pushed around or overwritten. Inside tmux the whole sequence also needs
+/// passthrough wrapping, or tmux drops it.
+fn iterm2_payload(
+    filename_b64: &str,
+    byte_len: usize,
+    cols: u16,
+    rows: u16,
+    encoded: &str,
+    is_tmux: bool,
+) -> String {
+    let (start, escape, end) = escape_tmux(is_tmux);
+    format!(
+        "{start}{escape}]1337;File=name={filename_b64};size={byte_len};inline=1;\
+         width={cols};height={rows};preserveAspectRatio=1:{encoded}\x07{end}"
+    )
+}
+
+/// Display image using Sixel graphics protocol
+///
+/// Uses ImageMagick's `convert` command to generate Sixel output.
+/// This is the same approach used by image.nvim and other terminal image tools.
+fn display_sixel(
+    path: &Path,
+    params: &ImageDisplayParams,
+    img_width: u32,
+    img_height: u32,
+) -> io::Result<bool> {
+    if !*HAS_IMAGEMAGICK {
+        return Ok(false);
+    }
+
+    let (cols, rows) =
+        calculate_display_size(img_width, img_height, params.max_cols, params.max_rows);
+
+    // Calculate pixel dimensions based on typical terminal cell size
+    // Assuming ~8px wide x 16px tall cells (common default)
+    let pixel_width = (cols as u32) * 8;
+    let pixel_height = (rows as u32) * 16;
+
+    // Use ImageMagick to convert to Sixel
+    // -geometry: resize to fit
+    // -colors 256: limit palette for Sixel
+    // sixel:-: output Sixel to stdout
+    let output = Command::new("convert")
+        .arg(path)
+        .arg("-geometry")
+        .arg(format!("{}x{}>", pixel_width, pixel_height))
+        .arg("-colors")
+        .arg("256")
+        .arg("sixel:-")
+        .output()?;
+
+    if !output.status.success() {
+        return Ok(false);
+    }
+
+    let mut stdout = io::stdout().lock();
+    stdout.write_all(&output.stdout)?;
+    writeln!(stdout)?;
+    stdout.flush()?;
+
+    Ok(true)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_protocol_detection() {
+        // This test just verifies the detection doesn't panic
+        let protocol = ImageProtocol::detect();
+        println!("Detected protocol: {:?}", protocol);
+    }
+
+    #[test]
+    fn redirected_stdout_disables_every_image_protocol() {
+        for protocol in [
+            ImageProtocol::Kitty,
+            ImageProtocol::ITerm2,
+            ImageProtocol::Sixel,
+            ImageProtocol::None,
+        ] {
+            assert!(!can_display_to_stdout(protocol, false));
+        }
+    }
+
+    #[test]
+    fn terminal_stdout_still_allows_supported_image_protocols() {
+        assert!(can_display_to_stdout(ImageProtocol::Kitty, true));
+        assert!(can_display_to_stdout(ImageProtocol::ITerm2, true));
+        assert!(can_display_to_stdout(ImageProtocol::Sixel, true));
+        assert!(!can_display_to_stdout(ImageProtocol::None, true));
+    }
+
+    #[test]
+    fn iterm2_payload_sets_both_cell_dimensions() {
+        let payload = iterm2_payload("bmFtZQ==", 1234, 40, 12, "QUJD", false);
+        assert!(payload.starts_with("\x1b]1337;File="), "{payload}");
+        assert!(payload.contains("size=1234"), "{payload}");
+        // Height in cells must be explicit so iTerm2 does not reflow rows.
+        assert!(payload.contains("width=40;height=12"), "{payload}");
+        assert!(payload.contains("preserveAspectRatio=1"), "{payload}");
+        assert!(payload.ends_with("QUJD\x07"), "{payload}");
+    }
+
+    #[test]
+    fn iterm2_payload_uses_tmux_passthrough_inside_tmux() {
+        let payload = iterm2_payload("bmFtZQ==", 1, 4, 2, "QQ==", true);
+        assert!(payload.starts_with("\x1bPtmux;\x1b\x1b]1337;"), "{payload}");
+        assert!(payload.ends_with("\x07\x1b\\"), "{payload}");
+    }
+
+    #[test]
+    fn iterm2_images_are_disabled_unless_opted_in() {
+        // Default (no opt-in env var in test process): iTerm2 is treated as
+        // having no usable image protocol.
+        assert_eq!(iterm2_protocol(), ImageProtocol::None);
+        assert!(!iterm2_images_enabled());
+    }
+
+    #[test]
+    fn handterm_uses_kitty_graphics_protocol() {
+        assert!(is_kitty_terminal_name("handterm"));
+        assert!(is_kitty_terminal_name("HandTerm"));
+    }
+
+    #[test]
+    fn test_calculate_display_size() {
+        // Wide image
+        let (w, h) = calculate_display_size(1920, 1080, 80, 24);
+        assert!(w <= 80);
+        assert!(h <= 24);
+
+        // Tall image
+        let (w, h) = calculate_display_size(1080, 1920, 80, 24);
+        assert!(w <= 80);
+        assert!(h <= 24);
+
+        // Square image
+        let (w, h) = calculate_display_size(500, 500, 80, 24);
+        assert!(w <= 80);
+        assert!(h <= 24);
+    }
+}

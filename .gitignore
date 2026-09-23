@@ -1,0 +1,52 @@
+/target
+**/*.rs.bk
+*.pdb
+*.swp
+*.swo
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+*.iml
+*.log
+logs/
+
+# Cargo
+.cargo-ok
+.cargo/
+
+# Local build artifacts
+target/
+build/
+
+# Environment
+.env
+.env.local
+
+# Logs and traces
+*.log
+*.trace
+*.stackdump
+
+# Editor
+*~
+\#*\#
+.\#*
+
+# CI/CD caches
+.cache/
+dist/
+
+# Local PowerShell debug helpers (hardcoded to the author's machine,
+# not portable — never commit). Dot-prefixed names keep them out of
+# casual `ls` and out of the repo.
+scripts/.[a-zA-Z0-9_-]*.ps1
+
+# Local dev artifacts (alphacode runtime state, agent session dump,
+# scratch search helpers). These are produced by daily use of the
+# editor; they must not be committed.
+.alphacode/
+.tmp-*/
+.tmp-*.ps1
+.scratch_*.ps1
+.release_jobs.json

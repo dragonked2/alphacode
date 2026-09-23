@@ -1,0 +1,289 @@
+name: release
+
+on:
+  push:
+    tags: ["v*.*.*"]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  create-release:
+    name: create github release
+    runs-on: ubuntu-latest
+    # The build jobs below attach their archives + checksums to the release
+    # this job creates. Doing it here (instead of in each parallel build job)
+    # avoids a race where all six jobs try to create the same release at once.
+    steps:
+      - uses: actions/checkout@v4
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.ref_name }}
+          generate_release_notes: true
+          draft: true
+          fail_on_unmatched_files: false
+
+  build:
+    name: build ${{ matrix.archive }}
+    needs: create-release
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # install.sh expects: alphacode-{linux,macos}-{x86_64,arm64}.tar.gz
+          # Linux artifacts are built on 22.04 (glibc 2.35), not 24.04 (glibc
+          # 2.39). The runner's glibc is a *floor* for everyone who runs the
+          # binary: a 24.04 build refuses to start on Ubuntu 22.04 LTS / Debian
+          # 12 with "GLIBC_2.39 not found", which is what the previous releases
+          # shipped. Only raise these labels when the dependency tree really
+          # needs a newer glibc.
+          - target: x86_64-unknown-linux-gnu
+            os: ubuntu-22.04
+            archive: alphacode-linux-x86_64
+          # Build arm64 natively on GitHub's arm64 runner. It used to run on
+          # ubuntu-latest, where `upload-rust-binary-action` silently switched
+          # to `cross` for this target — i.e. the build happened inside
+          # ghcr.io/cross-rs/aarch64-unknown-linux-gnu:0.2.5, an Ubuntu 16.04
+          # container that has no libxkbcommon (the same hard link-time dep
+          # that broke x86_64) and whose apt sources are long EOL, so it cannot
+          # simply `apt-get install` the missing lib. Native also means the
+          # binary can be smoke-tested by the version check below, which the
+          # x64 host could never run.
+          - target: aarch64-unknown-linux-gnu
+            os: ubuntu-22.04-arm
+            archive: alphacode-linux-arm64
+          - target: x86_64-apple-darwin
+            os: macos-latest
+            archive: alphacode-macos-x86_64
+          - target: aarch64-apple-darwin
+            os: macos-latest
+            archive: alphacode-macos-arm64
+          # install.ps1 expects: alphacode-windows-{x86_64,arm64}.zip
+          - target: x86_64-pc-windows-msvc
+            os: windows-latest
+            archive: alphacode-windows-x86_64
+          - target: aarch64-pc-windows-msvc
+            os: windows-latest
+            archive: alphacode-windows-arm64
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      # `xa11y`'s Linux accessibility backend links the system libxkbcommon, so
+      # every Linux build here needs the -dev package (it provides the
+      # `libxkbcommon.so` symlink that `-lxkbcommon` looks for). Without it the
+      # build dies in the link step with:
+      #   rust-lld: error: unable to find library -lxkbcommon
+      # Both Linux targets build natively (x86_64 on ubuntu-22.04, arm64 on
+      # ubuntu-22.04-arm), so one `runner.os` check covers both.
+      - name: Install Linux system deps
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends libxkbcommon-dev
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          # Pin to the highest MSRV required by our current dependency tree.
+          # As of 2026-09: the aws-sdk/bedrock stack (aws-config 1.9+,
+          # aws-sdk-bedrock 1.148+, aws-smithy-* ) requires 1.94.1, so pin
+          # 1.94.1 (mdwright-latex 0.1.3 only needs 1.91). Keep this in sync
+          # with rust-toolchain.toml. If a dep pushes MSRV higher, bump both.
+          toolchain: 1.94.1
+          targets: ${{ matrix.target }}
+
+      - name: Cache cargo
+        uses: actions/cache@v4
+        with:
+          path: |
+              ~/.cargo/registry
+              ~/.cargo/git
+              target
+          key: release-${{ matrix.target }}-${{ hashFiles('Cargo.lock') }}
+
+      # Extract the release version from the git tag and expose it as
+      # ALPHACODE_BUILD_SEMVER so the build script embeds the *exact* tag
+      # version (e.g. 1.0.28) into the binary instead of computing a
+      # phantom patch number from commit count (the old behavior produced
+      # v1.0.34 when the release tag was v1.0.27).
+      - name: Set build version from tag
+        shell: bash
+        run: |
+          VERSION="${GITHUB_REF_NAME#v}"
+          echo "ALPHACODE_BUILD_SEMVER=$VERSION" >> "$GITHUB_ENV"
+          echo "Release version: $VERSION"
+
+      # Every target here now builds natively (the matrix pairs each triple
+      # with a matching runner), so the action never reaches for `cross` —
+      # macOS/Windows cross-arch targets are handled by cargo/the MSVC
+      # toolchain, which cross doesn't support anyway. It produces:
+      #   - $archive.tar.gz on Linux/macOS runners
+      #   - $archive.zip    on Windows runners
+      #   - $archive.sha256 (containing the .tar.gz or .zip hash)
+      #   - and uploads the archive + checksum to the GitHub release.
+      #
+      # `locked: false` (override of the default true): the project's
+      # Cargo.lock was checked in without macOS-only deps like
+      # core-graphics, and the build runs on Linux/macOS/Windows without
+      # local cargo pre-warming. Letting cargo update the lockfile in CI
+      # locally for the macOS dep and committed, this can be tightened
+      # back to `locked: true`.
+      #
+      # `env: ALPHACODE_RELEASE_BUILD=1` makes the embedded version string
+      # the clean `v{version} ({git_hash})` form (see build.rs::emit_build_environment)
+      # instead of the dev-tagged `v{version}-dev ({git_hash}, dirty)` form.
+      # Without this, a tagged release still embedded `-dev` and `(dirty)` into
+      # the binary, so `alphacode --version` reported e.g.
+      #   `v1.0.2-dev (579910d, dirty)` on a real release.
+      # `ALPHACODE_BUILD_GIT_DIRTY=0` is belt-and-suspenders: the build script
+      # also auto-detects dirtiness via `git status --porcelain`, and we don't
+      # want a stray untracked file in the build checkout to leak into the
+      # version string even after the release flag is set.
+      - name: Build + archive + checksum + upload
+        uses: taiki-e/upload-rust-binary-action@v1
+        env:
+          ALPHACODE_RELEASE_BUILD: "1"
+          ALPHACODE_BUILD_GIT_DIRTY: "0"
+        with:
+          bin: alphacode
+          target: ${{ matrix.target }}
+          archive: ${{ matrix.archive }}
+          checksum: sha256
+          locked: false
+          profile: release
+
+      # Surface the per-target files as workflow artifacts so the publish
+      # job below can also merge the per-asset SHA256SUMS into one file.
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.archive }}
+          path: |
+            ${{ matrix.archive }}.tar.gz
+            ${{ matrix.archive }}.zip
+            ${{ matrix.archive }}.sha256
+          if-no-files-found: ignore
+
+      # Regression guard: every published alphacode binary must contain the
+      # bundled `/bugbounty` skill (and its key subskills) embedded at
+      # compile time so users on any machine/working directory can invoke it.
+      # If this fails the release artifact is broken even if cargo build
+      # succeeded — typically because a contributor deleted a SKILL.md,
+      # removed an `include_str!` entry from `bundled_skills.rs`, or a
+      # platform-conditional cfg stripped the module.
+      - name: Verify bundled /bugbounty skill is in the release binary
+        shell: bash
+        env:
+          ARCHIVE_BASE: ${{ matrix.archive }}
+        run: |
+          set -euo pipefail
+          TMP_DIR="$(mktemp -d)"
+          trap 'rm -rf "$TMP_DIR"' EXIT
+          if [ -f "${ARCHIVE_BASE}.zip" ]; then
+            unzip -q "${ARCHIVE_BASE}.zip" -d "$TMP_DIR"
+          elif [ -f "${ARCHIVE_BASE}.tar.gz" ]; then
+            tar -xzf "${ARCHIVE_BASE}.tar.gz" -C "$TMP_DIR"
+          else
+            echo "::error::no archive found for ${ARCHIVE_BASE}"
+            exit 1
+          fi
+          # The action unpacks binaries straight into the archive root or one
+          # level deep; find whatever alphacode-named executable landed.
+          BIN="$(find "$TMP_DIR" -maxdepth 3 -type f \( -name alphacode -o -name alphacode.exe \) -print -quit)"
+          if [ -z "$BIN" ]; then
+            echo "::error::could not locate alphacode binary inside ${ARCHIVE_BASE} archive"
+            exit 1
+          fi
+          echo "Checking $BIN for bundled /bugbounty skill content ..."
+          for needle in bugbounty pentest-ops knowledge-broker findings-lifecycle evidence-locker tool-doctor runbook network-cloud-triage redteam-ops advanced-techniques hunt-sqli hunt-xss hunt-ssrf hunt-idor hunt-api hunt-graphql hunt-oauth hunt-memory credential-attack client-reverse recon llm-redteam web3-audit security-arsenal report; do
+            if ! grep -aq -- "$needle" "$BIN"; then
+              echo "::error file=src/alphacode_base/bundled_skills/bugbounty/SKILL.md::bundled subskill '$needle' missing from $BIN — the /bugbounty skill is incomplete in this release"
+              exit 1
+            fi
+          done
+          echo "OK: bundled /bugbounty skill is present in the release binary ($BIN)"
+
+      # Verify the binary version matches the release tag. The build script
+      # derives the version from the git tag (via ALPHACODE_BUILD_SEMVER or
+      # `git tag --points-at HEAD`), but this guard catches mismatches early.
+      #
+      # Skipped for Windows ARM64: the runner is x86_64 and cannot execute
+      # an aarch64 PE binary (Git Bash reports "Exec format error").
+      - name: Verify binary version matches release tag
+        if: matrix.target != 'aarch64-pc-windows-msvc'
+        shell: bash
+        env:
+          ARCHIVE_BASE: ${{ matrix.archive }}
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          TMP_DIR="$(mktemp -d)"
+          trap 'rm -rf "$TMP_DIR"' EXIT
+          if [ -f "${ARCHIVE_BASE}.zip" ]; then
+            unzip -q "${ARCHIVE_BASE}.zip" -d "$TMP_DIR"
+          elif [ -f "${ARCHIVE_BASE}.tar.gz" ]; then
+            tar -xzf "${ARCHIVE_BASE}.tar.gz" -C "$TMP_DIR"
+          fi
+          BIN="$(find "$TMP_DIR" -maxdepth 3 -type f \( -name alphacode -o -name alphacode.exe \) -print -quit)"
+          if [ -z "$BIN" ]; then
+            echo "::error::no binary found for version check"
+            exit 1
+          fi
+          # Run --version and extract the version number. Unlike the parse
+          # check below, *running* the artifact is a hard gate: a binary that
+          # links but cannot start (missing shared library, wrong CPU arch,
+          # a glibc newer than the target machine) is a broken release, and we
+          # would rather fail the release job than ship it.
+          set +e
+          VERSION_OUTPUT="$("$BIN" --version 2>&1)"
+          VERSION_STATUS=$?
+          set -e
+          echo "Binary version output: $VERSION_OUTPUT"
+          if [ "$VERSION_STATUS" -ne 0 ]; then
+            echo "::error::${ARCHIVE_BASE}: 'alphacode --version' exited ${VERSION_STATUS} on the build runner — the packaged binary does not run"
+            exit 1
+          fi
+          # Extract version: expect v{semver} ... — strip the 'v' prefix
+          BIN_VERSION="$(echo "$VERSION_OUTPUT" | sed -n 's/.*v\([0-9][0-9]*\.[0-9][0-9]*\.[0-9][0-9]*\).*/\1/p' | head -1)"
+          EXPECTED_VERSION="$(echo "$RELEASE_TAG" | sed 's/^v//')"
+          if [ -z "$BIN_VERSION" ]; then
+            echo "::warning::Could not parse version from binary output: $VERSION_OUTPUT"
+          elif [ "$BIN_VERSION" != "$EXPECTED_VERSION" ]; then
+            echo "::error::Version mismatch: binary reports v${BIN_VERSION} but release tag is ${RELEASE_TAG}"
+            exit 1
+          else
+            echo "OK: binary version v${BIN_VERSION} matches release tag ${RELEASE_TAG}"
+          fi
+
+  release:
+    name: publish release
+    needs: build
+    runs-on: ubuntu-latest
+    # The build job already uploaded the archive assets directly to the
+    # release. Here we only need to merge the per-asset .sha256 files into
+    # one combined SHA256SUMS so `sha256sum -c SHA256SUMS` works after
+    # downloading the whole release.
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+      - name: Merge per-asset SHA256SUMS
+        shell: bash
+        run: |
+          set -euo pipefail
+          : > SHA256SUMS
+          for f in artifacts/*/*.sha256; do
+            [ -f "$f" ] || continue
+            cat "$f" >> SHA256SUMS
+          done
+          sort -u -o SHA256SUMS SHA256SUMS
+      - name: Upload combined SHA256SUMS
+        uses: softprops/action-gh-release@v2
+        with:
+          files: SHA256SUMS
+          fail_on_unmatched_files: false

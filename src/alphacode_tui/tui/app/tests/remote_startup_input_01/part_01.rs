@@ -1,0 +1,1162 @@
+#[test]
+fn test_finish_turn_without_followup_clears_visible_turn_started() {
+    let mut app = create_test_app();
+    app.is_processing = true;
+    app.visible_turn_started = Some(Instant::now() - Duration::from_secs(15));
+
+    local::finish_turn(&mut app);
+
+    assert!(app.visible_turn_started.is_none());
+}
+
+#[test]
+fn test_finish_turn_does_not_duplicate_existing_poke_followup() {
+    with_temp_alphacode_home(|| {
+        let mut app = create_test_app();
+        crate::todo::save_todos(
+            &app.session.id,
+            &[crate::todo::TodoItem {
+                group: None,
+                id: "todo-1".to_string(),
+                content: "Keep going".to_string(),
+                status: "pending".to_string(),
+                priority: "high".to_string(),
+                blocked_by: Vec::new(),
+                assigned_to: None,
+                confidence: None,
+                completion_confidence: None,
+                confidence_history: Vec::new(),
+            }],
+        )
+        .expect("save todos");
+
+        app.auto_poke_incomplete_todos = true;
+        app.is_processing = true;
+        app.queued_messages.push("existing poke".to_string());
+        local::finish_turn(&mut app);
+
+        assert_eq!(app.queued_messages(), &["existing poke"]);
+    });
+}
+
+#[test]
+fn test_review_prefers_openai_oauth_gpt_5_4_when_available() {
+    with_temp_alphacode_home(|| {
+        let auth_path = crate::storage::alphacode_dir()
+            .expect("alphacode dir")
+            .join("openai-auth.json");
+        std::fs::write(
+            &auth_path,
+            serde_json::json!({
+                "openai_accounts": [
+                    {
+                        "label": "openai-1",
+                        "access_token": "at_test",
+                        "refresh_token": "rt_test",
+                        "account_id": "acct_test"
+                    }
+                ],
+                "active_openai_account": "openai-1"
+            })
+            .to_string(),
+        )
+        .expect("write auth file");
+
+        assert_eq!(
+            commands::preferred_one_shot_review_override(),
+            Some((
+                commands::REVIEW_PREFERRED_MODEL.to_string(),
+                "openai".to_string()
+            ))
+        );
+    });
+}
+
+#[test]
+fn test_pending_split_launch_shows_processing_status_in_ui() {
+    let mut app = create_test_app();
+    app.is_remote = true;
+    app.pending_split_started_at = Some(Instant::now());
+
+    assert!(app.is_processing());
+    assert!(crate::alphacode_tui::tui::TuiState::is_processing(&app));
+    assert!(matches!(
+        crate::alphacode_tui::tui::TuiState::status(&app),
+        ProcessingStatus::Sending
+    ));
+    assert!(crate::alphacode_tui::tui::TuiState::elapsed(&app).is_some());
+}
+
+#[test]
+fn test_expired_pending_split_launch_no_longer_shows_processing_status() {
+    let mut app = create_test_app();
+    app.is_remote = true;
+    app.pending_split_started_at = Some(Instant::now() - Duration::from_millis(400));
+
+    assert!(!app.is_processing());
+    assert!(!crate::alphacode_tui::tui::TuiState::is_processing(&app));
+    assert!(matches!(
+        crate::alphacode_tui::tui::TuiState::status(&app),
+        ProcessingStatus::Idle
+    ));
+    assert!(crate::alphacode_tui::tui::TuiState::elapsed(&app).is_none());
+}
+
+#[test]
+fn test_pending_remote_dispatch_counts_as_processing_for_tui_state() {
+    let mut app = create_test_app();
+    app.is_remote = true;
+    app.pending_queued_dispatch = true;
+
+    assert!(app.is_processing());
+    assert!(crate::alphacode_tui::tui::TuiState::is_processing(&app));
+    assert!(matches!(
+        crate::alphacode_tui::tui::TuiState::status(&app),
+        ProcessingStatus::Sending
+    ));
+}
+
+#[test]
+fn test_startup_message_restore_uses_hidden_system_queue() {
+    with_temp_alphacode_home(|| {
+        let session_id = "startup-hidden-queue-test";
+        App::save_startup_message_for_session(
+            session_id,
+            "internal startup prompt".to_string(),
+        );
+
+        let restored = App::restore_input_for_reload(session_id)
+            .expect("startup message should restore");
+        assert!(restored.queued_messages.is_empty());
+        assert_eq!(
+            restored.hidden_queued_system_messages,
+            vec!["internal startup prompt".to_string()]
+        );
+    });
+}
+
+#[test]
+fn test_review_and_judge_startup_prompts_are_analysis_only() {
+    let prompts = [
+        commands::build_autoreview_startup_message("session_parent"),
+        commands::build_review_startup_message("session_parent"),
+        commands::build_autojudge_startup_message("session_parent"),
+        commands::build_judge_startup_message("session_parent"),
+    ];
+
+    for prompt in prompts {
+        assert!(prompt.contains("analysis-only"));
+        assert!(prompt.contains("Do not do the work yourself"));
+        assert!(prompt.contains("Do not modify files or repo state"));
+        assert!(prompt.contains("send exactly one DM"));
+        assert!(prompt.contains("Do not continue implementation"));
+    }
+}
+
+#[test]
+fn test_autojudge_prompt_is_continue_or_stop_manager() {
+    let prompt = commands::build_autojudge_startup_message("session_parent");
+
+    assert!(prompt.contains("act like a strong completion manager/reviewer"));
+    assert!(prompt.contains("tell it exactly what to do next"));
+    assert!(prompt.contains("Default to `CONTINUE:` unless you are genuinely convinced"));
+    assert!(prompt.contains("Start with either `CONTINUE:` or `STOP:`"));
+    assert!(prompt.contains("Address the DM to the parent agent, not to the user"));
+}
+
+#[test]
+fn test_judge_startup_prompts_describe_visible_mirror_context() {
+    let prompts = [
+        commands::build_autojudge_startup_message("session_parent"),
+        commands::build_judge_startup_message("session_parent"),
+    ];
+
+    for prompt in prompts {
+        assert!(prompt.contains("user-visible mirror of the parent conversation"));
+        assert!(prompt.contains("shallow summaries of visible tool calls"));
+        assert!(prompt.contains("omits deep tool-result details"));
+    }
+}
+
+#[test]
+fn test_prepare_review_spawned_session_uses_visible_transcript_for_judge_sessions() {
+    with_temp_alphacode_home(|| {
+        for title in ["judge", "autojudge"] {
+            let parent_id = format!("parent_{title}_visible_context");
+            let child_id = format!("child_{title}_visible_context");
+            let tool_id = format!("tool_{title}_visible_context");
+
+            let mut parent = crate::session::Session::create_with_id(
+                parent_id.clone(),
+                None,
+                Some("parent".to_string()),
+            );
+            parent.add_message(
+                Role::User,
+                vec![ContentBlock::Text {
+                    text: "please review what happened".to_string(),
+                    cache_control: None,
+                }],
+            );
+            parent.add_message(
+                Role::Assistant,
+                vec![
+                    ContentBlock::Text {
+                        text: "I inspected the repo.".to_string(),
+                        cache_control: None,
+                    },
+                    ContentBlock::ToolUse {
+                        id: tool_id.clone(),
+                        name: "bash".to_string(),
+                        input: serde_json::json!({"command": "git diff --stat"}),
+                        thought_signature: None,
+                    },
+                ],
+            );
+            parent.add_message(
+                Role::User,
+                vec![ContentBlock::ToolResult {
+                    tool_use_id: tool_id.clone(),
+                    content: "SECRET_TOOL_OUTPUT_SHOULD_NOT_APPEAR".to_string(),
+                    is_error: None,
+                }],
+            );
+            parent.add_message(
+                Role::Assistant,
+                vec![
+                    ContentBlock::Reasoning {
+                        text: "hidden reasoning should never leak".to_string(),
+                    },
+                    ContentBlock::Text {
+                        text: "Final visible answer.".to_string(),
+                        cache_control: None,
+                    },
+                ],
+            );
+            parent.save().expect("save parent session");
+
+            let mut child = crate::session::Session::create_with_id(
+                child_id.clone(),
+                Some(parent_id.clone()),
+                Some(title.to_string()),
+            );
+            child.replace_messages(parent.messages.clone());
+            child.compaction = Some(crate::session::StoredCompactionState {
+                summary_text: "stale compaction".to_string(),
+                openai_encrypted_content: None,
+                covers_up_to_turn: 1,
+                original_turn_count: 1,
+                compacted_count: 1,
+            });
+            child.save().expect("save child session");
+
+            commands::prepare_review_spawned_session(
+                &child_id,
+                commands::build_judge_startup_message(&parent_id),
+                None,
+                None,
+                Some(title.to_string()),
+                Some(parent_id.clone()),
+            );
+
+            let prepared = crate::session::Session::load(&child_id).expect("reload child session");
+            let transcript = prepared
+                .messages
+                .iter()
+                .flat_map(|msg| msg.content.iter())
+                .filter_map(|block| match block {
+                    ContentBlock::Text { text, .. } => Some(text.as_str()),
+                    _ => None,
+                })
+                .collect::<Vec<_>>()
+                .join("\n\n");
+
+            assert!(transcript.contains("please review what happened"));
+            assert!(transcript.contains("I inspected the repo."));
+            assert!(transcript.contains("Final visible answer."));
+            assert!(transcript.contains("Visible tool call"));
+            assert!(transcript.contains("git diff --stat"));
+            assert!(!transcript.contains("SECRET_TOOL_OUTPUT_SHOULD_NOT_APPEAR"));
+            assert!(!transcript.contains("hidden reasoning should never leak"));
+            assert_eq!(prepared.parent_id.as_deref(), Some(parent_id.as_str()));
+            assert!(prepared.compaction.is_none());
+        }
+    });
+}
+
+#[test]
+fn test_queue_autojudge_remote_targets_original_non_judge_session() {
+    with_temp_alphacode_home(|| {
+        let mut app = create_test_app();
+        app.is_remote = true;
+
+        let mut root = crate::session::Session::create(None, Some("task".to_string()));
+        root.save().expect("save root session");
+
+        let mut review =
+            crate::session::Session::create(Some(root.id.clone()), Some("review".to_string()));
+        review.save().expect("save review session");
+
+        let mut judge =
+            crate::session::Session::create(Some(review.id.clone()), Some("judge".to_string()));
+        judge.save().expect("save judge session");
+
+        app.session = judge.clone();
+        app.remote_session_id = Some(judge.id.clone());
+        app.autojudge_enabled = true;
+
+        commands::queue_autojudge_remote(&mut app);
+
+        assert_eq!(
+            app.pending_split_parent_session_id.as_deref(),
+            Some(root.id.as_str())
+        );
+        let startup = app
+            .pending_split_startup_message
+            .as_deref()
+            .expect("autojudge startup message");
+        assert!(startup.contains(root.id.as_str()));
+        assert!(!startup.contains(review.id.as_str()));
+        assert!(!startup.contains(judge.id.as_str()));
+    });
+}
+
+#[test]
+fn test_new_for_remote_restores_spawn_startup_hints_and_dispatch_state() {
+    with_temp_alphacode_home(|| {
+        let session_id = "session_spawn_child";
+        let mut session = crate::session::Session::create_with_id(
+            session_id.to_string(),
+            None,
+            Some("spawn child".to_string()),
+        );
+        session.save().expect("save spawned child session");
+
+        App::save_startup_message_for_session(
+            session_id,
+            commands::build_autojudge_startup_message("session_parent_123"),
+        );
+
+        let mut app = App::new_for_remote(Some(session_id.to_string()));
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        let _guard = rt.enter();
+        let mut remote = crate::alphacode_tui::tui::backend::RemoteConnection::dummy();
+
+        assert!(!app.pending_queued_dispatch);
+        assert!(!app.is_processing());
+        assert!(app.processing_started.is_none());
+        assert!(matches!(
+            crate::alphacode_tui::tui::TuiState::status(&app),
+            ProcessingStatus::Idle
+        ));
+        assert_eq!(
+            app.status_notice(),
+            Some("Restored queued follow-up after reload".to_string())
+        );
+        assert_eq!(app.hidden_queued_system_messages.len(), 1);
+
+        let startup_banner = app
+            .display_messages()
+            .last()
+            .expect("spawned session should show startup banner");
+        assert_eq!(startup_banner.role, "system");
+        assert_eq!(startup_banner.title.as_deref(), Some("Autojudge"));
+        assert!(startup_banner.content.contains("analysis-only"));
+        assert!(
+            startup_banner
+                .content
+                .contains("send exactly one DM back telling the parent either to `CONTINUE:`")
+        );
+        assert!(startup_banner.content.contains("user-visible mirror"));
+        assert!(startup_banner.content.contains("session_parent_123"));
+
+        rt.block_on(remote::process_remote_followups(
+            &mut app,
+            &mut remote,
+        ));
+        assert_eq!(app.hidden_queued_system_messages.len(), 1);
+        assert!(!app.is_processing());
+
+        remote.mark_history_loaded();
+        rt.block_on(remote::process_remote_followups(
+            &mut app,
+            &mut remote,
+        ));
+
+        assert!(app.hidden_queued_system_messages.is_empty());
+        assert!(app.is_processing());
+        assert!(matches!(
+            crate::alphacode_tui::tui::TuiState::status(&app),
+            ProcessingStatus::Sending
+        ));
+        assert!(app.current_message_id.is_some());
+    });
+}
+
+#[test]
+fn test_remote_startup_done_event_does_not_cancel_pending_judge_launch() {
+    with_temp_alphacode_home(|| {
+        let session_id = "session_judge_startup_done_guard";
+        let mut session = crate::session::Session::create_with_id(
+            session_id.to_string(),
+            None,
+            Some("judge child".to_string()),
+        );
+        session.save().expect("save judge child session");
+
+        App::save_startup_message_for_session(
+            session_id,
+            commands::build_judge_startup_message("session_parent_guard"),
+        );
+
+        let mut app = App::new_for_remote(Some(session_id.to_string()));
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        let _guard = rt.enter();
+        let mut remote = crate::alphacode_tui::tui::backend::RemoteConnection::dummy();
+
+        assert!(!app.pending_queued_dispatch);
+        assert!(!app.is_processing());
+        assert_eq!(app.current_message_id, None);
+        assert_eq!(app.hidden_queued_system_messages.len(), 1);
+
+        app.handle_server_event(crate::protocol::ServerEvent::Done { id: 1 }, &mut remote);
+
+        assert!(!app.pending_queued_dispatch);
+        assert!(!app.is_processing());
+        assert!(matches!(
+            crate::alphacode_tui::tui::TuiState::status(&app),
+            ProcessingStatus::Idle
+        ));
+        assert_eq!(app.current_message_id, None);
+        assert_eq!(app.hidden_queued_system_messages.len(), 1);
+
+        remote.mark_history_loaded();
+        rt.block_on(remote::process_remote_followups(
+            &mut app,
+            &mut remote,
+        ));
+
+        assert!(app.hidden_queued_system_messages.is_empty());
+        assert!(app.is_processing());
+        assert!(matches!(
+            crate::alphacode_tui::tui::TuiState::status(&app),
+            ProcessingStatus::Sending
+        ));
+        assert!(app.current_message_id.is_some());
+    });
+}
+
+#[test]
+fn test_remote_startup_judge_hidden_prompt_dispatches_once_history_is_loaded() {
+    with_temp_alphacode_home(|| {
+        let session_id = "session_judge_startup_dispatch";
+        let mut session = crate::session::Session::create_with_id(
+            session_id.to_string(),
+            None,
+            Some("judge child".to_string()),
+        );
+        session.save().expect("save judge child session");
+
+        App::save_startup_message_for_session(
+            session_id,
+            commands::build_judge_startup_message("session_parent_dispatch"),
+        );
+
+        let mut app = App::new_for_remote(Some(session_id.to_string()));
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        let _guard = rt.enter();
+        let mut remote = crate::alphacode_tui::tui::backend::RemoteConnection::dummy();
+
+        assert!(!app.pending_queued_dispatch);
+        assert!(!app.is_processing());
+        assert_eq!(app.current_message_id, None);
+
+        rt.block_on(remote::process_remote_followups(
+            &mut app,
+            &mut remote,
+        ));
+        assert_eq!(app.hidden_queued_system_messages.len(), 1);
+        assert!(!app.is_processing());
+
+        remote.mark_history_loaded();
+        rt.block_on(remote::process_remote_followups(
+            &mut app,
+            &mut remote,
+        ));
+
+        assert!(app.hidden_queued_system_messages.is_empty());
+        assert!(app.is_processing());
+        assert!(matches!(
+            crate::alphacode_tui::tui::TuiState::status(&app),
+            ProcessingStatus::Sending
+        ));
+        assert!(app.current_message_id.is_some());
+    });
+}
+
+#[test]
+fn test_new_for_remote_fresh_spawn_restores_local_transcript() {
+    with_temp_alphacode_home(|| {
+        let session_id = "session_spawn_fresh_skip";
+        let mut session = crate::session::Session::create_with_id(
+            session_id.to_string(),
+            None,
+            Some("spawn fresh".to_string()),
+        );
+        session.model = Some("gpt-5.4".to_string());
+        session.append_stored_message(crate::session::StoredMessage {
+            id: "msg_spawn_fresh_skip".to_string(),
+            role: crate::message::Role::Assistant,
+            content: vec![crate::message::ContentBlock::Text {
+                text: "persisted transcript should be restored locally".to_string(),
+                cache_control: None,
+            }],
+            display_role: None,
+            timestamp: None,
+            tool_duration_ms: None,
+            token_usage: None,
+        });
+        session.save().expect("save spawned child session");
+
+        App::save_startup_message_for_session(
+            session_id,
+            commands::build_autojudge_startup_message("session_parent_123"),
+        );
+
+        let mut app = App::new_for_remote_with_options(Some(session_id.to_string()), true);
+
+        assert_eq!(crate::alphacode_tui::tui::TuiState::provider_model(&app), "gpt-5.4");
+        assert!(!app.pending_queued_dispatch);
+        assert!(!app.is_processing());
+        assert_eq!(app.hidden_queued_system_messages.len(), 1);
+        assert_eq!(app.display_messages().len(), 2);
+        assert!(
+            app.display_messages().iter().any(|message| message
+                .content
+                .contains("persisted transcript should be restored locally")),
+            "fresh-spawn resumes should render persisted parent transcript immediately"
+        );
+        let startup_banner = app.display_messages().last().expect("startup banner");
+        assert_eq!(startup_banner.role, "system");
+        assert_eq!(startup_banner.title.as_deref(), Some("Autojudge"));
+
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        let _guard = rt.enter();
+        let mut remote = crate::alphacode_tui::tui::backend::RemoteConnection::dummy();
+        rt.block_on(remote::process_remote_followups(
+            &mut app,
+            &mut remote,
+        ));
+        assert_eq!(app.hidden_queued_system_messages.len(), 1);
+        assert!(!app.is_processing());
+
+        remote.mark_history_loaded();
+        rt.block_on(remote::process_remote_followups(
+            &mut app,
+            &mut remote,
+        ));
+        assert!(app.hidden_queued_system_messages.is_empty());
+        assert!(app.is_processing());
+        assert!(app.current_message_id.is_some());
+    });
+}
+
+#[test]
+fn test_new_for_remote_restores_display_history_without_retaining_session_transcript() {
+    with_temp_alphacode_home(|| {
+        let session_id = "session_remote_restore_lightweight";
+        let mut session = crate::session::Session::create_with_id(
+            session_id.to_string(),
+            None,
+            Some("remote resume".to_string()),
+        );
+        session.model = Some("gpt-5.4".to_string());
+        session.append_stored_message(crate::session::StoredMessage {
+            id: "msg_remote_restore_1".to_string(),
+            role: crate::message::Role::Assistant,
+            content: vec![crate::message::ContentBlock::Text {
+                text: "persisted transcript should render once".to_string(),
+                cache_control: None,
+            }],
+            display_role: None,
+            timestamp: None,
+            tool_duration_ms: None,
+            token_usage: None,
+        });
+        session.save().expect("save remote restore session");
+
+        let app = App::new_for_remote_with_options(Some(session_id.to_string()), false);
+
+        assert_eq!(crate::alphacode_tui::tui::TuiState::provider_model(&app), "gpt-5.4");
+        assert_eq!(app.display_messages().len(), 1);
+        assert_eq!(
+            app.display_messages()[0].content,
+            "persisted transcript should render once"
+        );
+        assert!(app.session.messages.is_empty());
+        assert!(app.session.compaction.is_none());
+    });
+}
+
+#[test]
+fn test_restore_session_restores_local_judge_processing_state() {
+    with_temp_alphacode_home(|| {
+        let session_id = "session_local_judge_child";
+        let mut session = crate::session::Session::create_with_id(
+            session_id.to_string(),
+            None,
+            Some("judge".to_string()),
+        );
+        session.save().expect("save child session");
+
+        App::save_startup_message_for_session(
+            session_id,
+            commands::build_judge_startup_message("session_parent_local"),
+        );
+
+        let mut app = create_test_app();
+        app.restore_session(session_id);
+
+        assert!(app.is_processing());
+        assert!(app.pending_turn);
+        assert!(app.processing_started.is_some());
+        assert!(matches!(
+            crate::alphacode_tui::tui::TuiState::status(&app),
+            ProcessingStatus::Sending
+        ));
+        assert_eq!(app.status_notice(), Some("Judge starting".to_string()));
+        assert_eq!(app.hidden_queued_system_messages.len(), 1);
+
+        let startup_banner = app
+            .display_messages()
+            .iter()
+            .find(|msg| msg.title.as_deref() == Some("Judge"))
+            .expect("judge restore should show startup banner");
+        assert!(startup_banner.content.contains("session_parent_local"));
+        assert!(startup_banner.content.contains("user-visible mirror"));
+    });
+}
+
+#[test]
+fn test_subagent_command_suggestions_include_manual_launch_and_model_policy() {
+    let app = create_test_app();
+
+    let subagent = app.get_suggestions_for("/subagent");
+    assert!(subagent.iter().any(|(cmd, _)| cmd == "/subagent "));
+
+    let model = app.get_suggestions_for("/subagent-model ");
+    assert!(
+        model
+            .iter()
+            .any(|(cmd, _)| cmd == "/subagent-model inherit")
+    );
+
+    let review = app.get_suggestions_for("/review");
+    assert!(review.iter().any(|(cmd, _)| cmd == "/review"));
+
+    let judge = app.get_suggestions_for("/judge");
+    assert!(judge.iter().any(|(cmd, _)| cmd == "/judge"));
+
+    let autojudge = app.get_suggestions_for("/autojudge");
+    assert!(autojudge.iter().any(|(cmd, _)| cmd == "/autojudge status"));
+}
+
+fn configure_test_remote_models_with_copilot(app: &mut App) {
+    app.is_remote = true;
+    app.remote_provider_model = Some("claude-sonnet-4".to_string());
+    app.remote_available_entries = vec![
+        "claude-sonnet-4-6".to_string(),
+        "gpt-5.3-codex".to_string(),
+        "claude-opus-4.6".to_string(),
+        "gemini-3-pro-preview".to_string(),
+        "grok-code-fast-1".to_string(),
+    ];
+}
+
+fn configure_test_remote_models_with_cursor(app: &mut App) {
+    app.is_remote = true;
+    app.remote_provider_name = Some("cursor".to_string());
+    app.remote_provider_model = Some("composer-1.5".to_string());
+    app.remote_available_entries = vec![
+        "composer-2-fast".to_string(),
+        "composer-2".to_string(),
+        "composer-1.5".to_string(),
+    ];
+    app.remote_model_options = app
+        .remote_available_entries
+        .iter()
+        .cloned()
+        .map(|model| crate::provider::ModelRoute {
+            model,
+            provider: "Cursor".to_string(),
+            api_method: "cursor".to_string(),
+            available: true,
+            detail: String::new(),
+            cheapness: None,
+        })
+        .collect();
+}
+
+#[test]
+fn test_model_picker_includes_copilot_models_in_remote_mode() {
+    // Temp home: opening the picker with empty remote_model_options hydrates
+    // the persisted remote catalog cache, so a shared test home lets routes
+    // written by other tests leak into this picker.
+    with_temp_alphacode_home(|| {
+        let mut app = create_test_app();
+        configure_test_remote_models_with_copilot(&mut app);
+
+        app.open_model_picker();
+
+        let picker = app
+            .inline_interactive_state
+            .as_ref()
+            .expect("model picker should be open");
+
+        let model_names: Vec<&str> = picker.entries.iter().map(|m| m.name.as_str()).collect();
+
+        // Effort metadata (a process-global catalog) may expand a model into
+        // "name (effort)" rows, so match the bare name or an effort-suffixed row.
+        let has_model = |model: &str| {
+            model_names
+                .iter()
+                .any(|name| *name == model || name.starts_with(&format!("{model} (")))
+        };
+        assert!(
+            has_model("claude-opus-4.6"),
+            "picker should contain copilot model claude-opus-4.6, got: {:?}",
+            model_names
+        );
+        assert!(
+            has_model("gemini-3-pro-preview"),
+            "picker should contain copilot model gemini-3-pro-preview, got: {:?}",
+            model_names
+        );
+        assert!(
+            has_model("grok-code-fast-1"),
+            "picker should contain copilot model grok-code-fast-1, got: {:?}",
+            model_names
+        );
+    });
+}
+
+#[test]
+fn test_available_models_updated_event_surfaces_authed_provider_in_remote_model_picker() {
+    let mut app = create_test_app();
+    let rt = tokio::runtime::Runtime::new().unwrap();
+    let _guard = rt.enter();
+    let mut remote = crate::alphacode_tui::tui::backend::RemoteConnection::dummy();
+
+    app.is_remote = true;
+    app.handle_server_event(
+        crate::protocol::ServerEvent::AvailableModelsUpdated {
+            provider_name: Some("Copilot".to_string()),
+            provider_model: Some("claude-opus-4.6".to_string()),
+            available_models: vec![
+                "claude-opus-4.6".to_string(),
+                "grok-code-fast-1".to_string(),
+            ],
+            available_model_routes: vec![
+                crate::provider::ModelRoute {
+                    model: "claude-opus-4.6".to_string(),
+                    provider: "Copilot".to_string(),
+                    api_method: "copilot".to_string(),
+                    available: true,
+                    detail: String::new(),
+                    cheapness: None,
+                },
+                crate::provider::ModelRoute {
+                    model: "grok-code-fast-1".to_string(),
+                    provider: "Copilot".to_string(),
+                    api_method: "copilot".to_string(),
+                    available: true,
+                    detail: String::new(),
+                    cheapness: None,
+                },
+            ],
+        },
+        &mut remote,
+    );
+
+    app.open_model_picker();
+
+    let picker = app
+        .inline_interactive_state
+        .as_ref()
+        .expect("model picker should be open");
+
+    let copilot_entry = picker
+        .entries
+        .iter()
+        .find(|entry| entry.name == "claude-opus-4.6")
+        .expect("copilot model should be shown after AvailableModelsUpdated");
+
+    assert!(
+        picker
+            .entries
+            .iter()
+            .any(|entry| entry.name == "grok-code-fast-1"),
+        "all auth-updated remote models should appear in /model"
+    );
+    assert!(copilot_entry.options.iter().any(|route| {
+        route.provider == "Copilot" && route.api_method == "copilot" && route.available
+    }));
+}
+
+#[test]
+fn test_duplicate_available_models_updated_event_is_a_no_op() {
+    // Temp home: handling the event persists the remote catalog cache, which
+    // must not leak into other tests that hydrate from a shared test home.
+    with_temp_alphacode_home(|| {
+        let mut app = create_test_app();
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        let _guard = rt.enter();
+        let mut remote = crate::alphacode_tui::tui::backend::RemoteConnection::dummy();
+
+        app.is_remote = true;
+        let event = || crate::protocol::ServerEvent::AvailableModelsUpdated {
+            provider_name: Some("Copilot".to_string()),
+            provider_model: Some("claude-opus-4.6".to_string()),
+            available_models: vec!["claude-opus-4.6".to_string()],
+            available_model_routes: vec![crate::provider::ModelRoute {
+                model: "claude-opus-4.6".to_string(),
+                provider: "Copilot".to_string(),
+                api_method: "copilot".to_string(),
+                available: true,
+                detail: String::new(),
+                cheapness: None,
+            }],
+        };
+
+        let first_redraw = app.handle_server_event(event(), &mut remote);
+        assert!(first_redraw, "first catalog update should request a redraw");
+        let generation_after_first = app.remote_model_catalog_generation;
+
+        // Shared-server bus chatter redelivers identical catalog snapshots to
+        // every connected client. A byte-identical follow-up must not
+        // invalidate caches, bump the generation, or request a redraw (that
+        // starved the input line).
+        let second_redraw = app.handle_server_event(event(), &mut remote);
+        assert!(
+            !second_redraw,
+            "duplicate catalog update must not request a redraw"
+        );
+        assert_eq!(
+            app.remote_model_catalog_generation, generation_after_first,
+            "duplicate catalog update must not bump the catalog generation"
+        );
+    });
+}
+
+#[test]
+fn test_remote_final_catalog_replaces_post_login_loading_state_in_place() {
+    let mut app = create_test_app();
+    let rt = tokio::runtime::Runtime::new().unwrap();
+    let _guard = rt.enter();
+    let mut remote = crate::alphacode_tui::tui::backend::RemoteConnection::dummy();
+
+    app.is_remote = true;
+    app.remote_provider_model = Some("gpt-5.4".to_string());
+    app.remote_available_entries = vec!["gpt-5.4".to_string()];
+    app.remote_model_options = vec![crate::provider::ModelRoute {
+        model: "gpt-5.4".to_string(),
+        provider: "OpenAI".to_string(),
+        api_method: "openai-oauth".to_string(),
+        available: true,
+        detail: String::new(),
+        cheapness: None,
+    }];
+    app.auth_catalog_refresh_pending = true;
+    app.open_model_picker();
+
+    let picker = app.inline_interactive_state.as_ref().unwrap();
+    assert!(
+        picker.entries[0].options[0]
+            .detail
+            .contains("updating model list")
+    );
+
+    app.handle_server_event(
+        crate::protocol::ServerEvent::AvailableModelsUpdated {
+            provider_name: Some("Anthropic".to_string()),
+            provider_model: Some("claude-opus-4.6".to_string()),
+            available_models: vec!["claude-opus-4.6".to_string()],
+            available_model_routes: vec![crate::provider::ModelRoute {
+                model: "claude-opus-4.6".to_string(),
+                provider: "Anthropic".to_string(),
+                api_method: "anthropic-oauth".to_string(),
+                available: true,
+                detail: String::new(),
+                cheapness: None,
+            }],
+        },
+        &mut remote,
+    );
+
+    assert!(
+        app.auth_catalog_refresh_pending,
+        "an intermediate catalog snapshot must not release queued prompts"
+    );
+    assert!(
+        app.inline_interactive_state.as_ref().unwrap().entries[0].options[0]
+            .detail
+            .contains("updating model list")
+    );
+
+    app.handle_server_event(
+        crate::protocol::ServerEvent::Notification {
+            from_session: "alphacode".to_string(),
+            from_name: Some("Alphacode".to_string()),
+            notification_type: crate::protocol::NotificationType::Message {
+                scope: Some("catalog_activity".to_string()),
+                channel: None,
+                tldr: None,
+            },
+            message: "**Model ready:** `claude-opus-4.6`\nAnthropic catalog changed: models +1/-0, routes +1/-0/~0. Use `/model`.".to_string(),
+        },
+        &mut remote,
+    );
+
+    assert!(!app.auth_catalog_refresh_pending);
+    let picker = app
+        .inline_interactive_state
+        .as_ref()
+        .expect("server catalog should replace loading picker");
+    assert!(
+        picker
+            .entries
+            .iter()
+            .any(|entry| entry.name.starts_with("claude-opus-4.6")),
+        "fresh Anthropic model should replace the loading state"
+    );
+    assert!(!picker.entries.iter().any(|entry| {
+        entry
+            .options
+            .iter()
+            .any(|option| option.detail.contains("updating model list"))
+    }));
+}
+
+#[test]
+fn test_remote_model_switch_failure_shows_actionable_guidance() {
+    let mut app = create_test_app();
+    let rt = tokio::runtime::Runtime::new().unwrap();
+    let _guard = rt.enter();
+    let mut remote = crate::alphacode_tui::tui::backend::RemoteConnection::dummy();
+
+    app.is_remote = true;
+    app.handle_server_event(
+        crate::protocol::ServerEvent::ModelChanged {
+            id: 7,
+            model: "claude-opus-4.6".to_string(),
+            provider_name: Some("Copilot".to_string()),
+            error: Some("credentials expired".to_string()),
+        },
+        &mut remote,
+    );
+
+    assert_eq!(app.status_notice(), Some("Model switch failed".to_string()));
+
+    let last = app.display_messages.last().expect("display message");
+    assert_eq!(last.role, "error");
+    assert!(last.content.contains("credentials expired"));
+    assert!(last.content.contains("/model"));
+    assert!(last.content.contains("/login"));
+    assert!(last.content.contains("reconnect"));
+}
+
+#[test]
+fn test_remote_prompt_defers_while_model_switch_is_in_flight() {
+    let mut app = create_test_app();
+    let rt = tokio::runtime::Runtime::new().unwrap();
+    let mut remote = rt.block_on(async { crate::alphacode_tui::tui::backend::RemoteConnection::dummy() });
+
+    app.is_remote = true;
+    app.remote_model_switch_in_flight = true;
+
+    rt.block_on(crate::alphacode_tui::tui::app::remote::submit_prepared_remote_input(
+        &mut app,
+        &mut remote,
+        crate::alphacode_tui::tui::app::input::PreparedInput {
+            raw_input: "hello after model switch".to_string(),
+            expanded: "hello after model switch".to_string(),
+            images: vec![("image/png".to_string(), "abc123".to_string())],
+        },
+    ))
+    .expect("queued prompt should not try to send while model switch is pending");
+
+    assert!(!app.is_processing);
+    assert_eq!(
+        app.status_notice(),
+        Some("Prompt queued until model switch completes".to_string())
+    );
+    let queued = app
+        .pending_prompt_after_model_switch
+        .as_ref()
+        .expect("prompt should be deferred until ModelChanged arrives");
+    assert_eq!(queued.raw_input, "hello after model switch");
+    assert_eq!(queued.images.len(), 1);
+    assert!(
+        app.display_messages
+            .iter()
+            .all(|message| message.role != "user")
+    );
+}
+
+#[test]
+fn test_remote_prompt_defers_while_post_login_model_setup_is_pending() {
+    let mut app = create_test_app();
+    let rt = tokio::runtime::Runtime::new().unwrap();
+    let mut remote = rt.block_on(async { crate::alphacode_tui::tui::backend::RemoteConnection::dummy() });
+
+    app.is_remote = true;
+    app.auth_catalog_refresh_pending = true;
+
+    rt.block_on(crate::alphacode_tui::tui::app::remote::submit_prepared_remote_input(
+        &mut app,
+        &mut remote,
+        crate::alphacode_tui::tui::app::input::PreparedInput {
+            raw_input: "review my project".to_string(),
+            expanded: "review my project".to_string(),
+            images: Vec::new(),
+        },
+    ))
+    .expect("post-login prompt should queue until the final model snapshot");
+
+    assert!(!app.is_processing);
+    assert_eq!(
+        app.status_notice(),
+        Some("Prompt queued until model setup completes".to_string())
+    );
+    assert_eq!(
+        app.pending_prompt_after_model_switch
+            .as_ref()
+            .map(|prepared| prepared.raw_input.as_str()),
+        Some("review my project")
+    );
+    assert!(
+        app.display_messages
+            .iter()
+            .all(|message| message.role != "user")
+    );
+}
+
+#[test]
+fn test_remote_model_switch_failure_restores_deferred_prompt() {
+    let mut app = create_test_app();
+    let rt = tokio::runtime::Runtime::new().unwrap();
+    let _guard = rt.enter();
+    let mut remote = crate::alphacode_tui::tui::backend::RemoteConnection::dummy();
+
+    app.is_remote = true;
+    app.remote_model_switch_in_flight = true;
+    app.pending_prompt_after_model_switch = Some(crate::alphacode_tui::tui::app::input::PreparedInput {
+        raw_input: "please use the selected model".to_string(),
+        expanded: "please use the selected model".to_string(),
+        images: vec![("image/jpeg".to_string(), "def456".to_string())],
+    });
+
+    app.handle_server_event(
+        crate::protocol::ServerEvent::ModelChanged {
+            id: 8,
+            model: "Qwen/Qwen3-32B-TEE".to_string(),
+            provider_name: Some("Chutes".to_string()),
+            error: Some("model switch failed".to_string()),
+        },
+        &mut remote,
+    );
+
+    assert!(!app.remote_model_switch_in_flight);
+    assert!(app.pending_prompt_after_model_switch.is_none());
+    assert_eq!(app.input, "please use the selected model");
+    assert_eq!(app.cursor_pos, app.input.len());
+    assert_eq!(app.pending_images.len(), 1);
+    assert_eq!(app.status_notice(), Some("Model switch failed".to_string()));
+}
+
+#[test]
+fn test_model_picker_remote_falls_back_to_current_model_when_catalog_empty() {
+    // Temp home: an empty remote catalog triggers hydration of the persisted
+    // remote catalog cache, so a shared test home would replace the fallback
+    // entry with whatever routes another test cached.
+    with_temp_alphacode_home(|| {
+        let mut app = create_test_app();
+        app.is_remote = true;
+        app.remote_provider_name = Some("openrouter".to_string());
+        app.remote_provider_model = Some("anthropic/claude-sonnet-4".to_string());
+        app.remote_available_entries.clear();
+        app.remote_model_options.clear();
+
+        app.open_model_picker();
+
+        let picker = app
+            .inline_interactive_state
+            .as_ref()
+            .expect("model picker should open with current-model fallback");
+
+        assert_eq!(picker.entries.len(), 1);
+        assert_eq!(picker.entries[0].name, "anthropic/claude-sonnet-4");
+        assert_eq!(picker.entries[0].options.len(), 1);
+        assert_eq!(picker.entries[0].options[0].provider, "openrouter");
+        assert_eq!(picker.entries[0].options[0].api_method, "current");
+        assert!(picker.entries[0].options[0].available);
+    });
+}
+
+/// A names-only catalog (what the server sends when the fully-routed frame is
+/// oversized) leaves placeholder routes in place. The detailed catalog that
+/// follows carries the same model names, so the no-op fast path must still
+/// recognize it as a change and let the real routes land.
+#[test]
+fn test_detailed_catalog_replaces_placeholder_routes_after_names_only_update() {
+    with_temp_alphacode_home(|| {
+        let mut app = create_test_app();
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        let _guard = rt.enter();
+        let mut remote = crate::alphacode_tui::tui::backend::RemoteConnection::dummy();
+
+        app.is_remote = true;
+        app.remote_provider_name = Some("Copilot".to_string());
+
+        // Names-only frame: same model list, no route expansion.
+        app.handle_server_event(
+            crate::protocol::ServerEvent::AvailableModelsUpdated {
+                provider_name: Some("Copilot".to_string()),
+                provider_model: Some("claude-opus-4.6".to_string()),
+                available_models: vec!["claude-opus-4.6".to_string()],
+                available_model_routes: Vec::new(),
+            },
+            &mut remote,
+        );
+
+        // Detailed frame with identical model names but real routes.
+        let detailed_redraw = app.handle_server_event(
+            crate::protocol::ServerEvent::AvailableModelsUpdated {
+                provider_name: Some("Copilot".to_string()),
+                provider_model: Some("claude-opus-4.6".to_string()),
+                available_models: vec!["claude-opus-4.6".to_string()],
+                available_model_routes: vec![crate::provider::ModelRoute {
+                    model: "claude-opus-4.6".to_string(),
+                    provider: "Copilot".to_string(),
+                    api_method: "copilot".to_string(),
+                    available: true,
+                    detail: String::new(),
+                    cheapness: None,
+                }],
+            },
+            &mut remote,
+        );
+
+        assert!(
+            detailed_redraw,
+            "detailed routes arriving after a names-only frame must repaint"
+        );
+        assert!(
+            app.remote_model_options
+                .iter()
+                .any(|route| route.api_method == "copilot"),
+            "detailed routes must replace the names-only placeholder state"
+        );
+    });
+}
+

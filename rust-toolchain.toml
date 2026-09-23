@@ -1,0 +1,16 @@
+# Pinned Rust toolchain for Alphacode contributors.
+#
+# Having this in the repo means `cargo build`, `cargo test`, `cargo clippy`,
+# and `cargo fmt` all run on the same Rust version CI uses, with no manual
+# `rustup install 1.94` step. The CI matrix also pins 1.94, so any divergence
+# is caught here rather than at PR time.
+#
+# Bumping this: edit this file *and* the `toolchain:` line in
+# `.github/workflows/release.yml` in the same commit.
+#
+# History: 1.91 -> 1.94.1 because the aws-sdk/bedrock dependency tree
+# (aws-config 1.9+, aws-sdk-bedrock 1.148+, aws-smithy-* etc.) declares
+# `rust-version = 1.94.1`; cargo refuses to build them on anything older.
+[toolchain]
+channel = "1.94.1"
+components = ["clippy", "rustfmt"]
