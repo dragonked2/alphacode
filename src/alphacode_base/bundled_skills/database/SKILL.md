@@ -1,6 +1,6 @@
 ---
 name: database
-description: Expert database engineering — SQL queries, schema design, migrations, indexing, query optimization, ORM patterns, transactions, and production database management for PostgreSQL, MySQL, SQLite, and MongoDB.
+description: "Expert database engineering — SQL queries, schema design, migrations, indexing, query optimization, ORM patterns, transactions, and production database management for PostgreSQL, MySQL, SQLite, and MongoDB."
 ---
 
 # Database — AlphaCode Edition

@@ -1,6 +1,6 @@
 ---
 name: observability
-description: Implement observability: structured logging, distributed tracing, metrics collection, and alerting strategies.
+description: "Implement observability: structured logging, distributed tracing, metrics collection, and alerting strategies."
 ---
 
 # Observability Skill

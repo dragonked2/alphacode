@@ -1,6 +1,6 @@
 ---
 name: api-design
-description: RESTful and GraphQL API design: OpenAPI specs, pagination, rate limiting, error schemas, versioning, and backwards compatibility.
+description: "RESTful and GraphQL API design: OpenAPI specs, pagination, rate limiting, error schemas, versioning, and backwards compatibility."
 ---
 
 # API Design Skill

@@ -1,6 +1,6 @@
 ---
 name: docker
-description: Expert Docker and container engineering — Dockerfiles, multi-stage builds, Docker Compose, optimization, security hardening, networking, volumes, and production-ready container configurations.
+description: "Expert Docker and container engineering — Dockerfiles, multi-stage builds, Docker Compose, optimization, security hardening, networking, volumes, and production-ready container configurations."
 ---
 
 # Docker — AlphaCode Edition

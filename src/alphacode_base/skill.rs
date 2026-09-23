@@ -1603,37 +1603,75 @@ mod tests {
         );
     }
 
+    /// Regression test: every skill embedded in the binary must parse and
+    /// load through `reload_global` — including `web3-security-research`
+    /// with all of its subskill references. A skill that fails to parse is
+    /// silently skipped (warn-only), so without this test a broken SKILL.md
+    /// would simply vanish from the binary.
+    #[test]
+    fn reload_global_loads_every_bundled_skill() {
+        use crate::alphacode_base::bundled_skills::BUNDLED_SKILLS;
+        let mut registry = SkillRegistry::default();
+        registry.reload_global().expect("reload");
+        for skill in BUNDLED_SKILLS {
+            let loaded = registry.get(skill.name).unwrap_or_else(|| {
+                panic!(
+                    "bundled skill '{}' is embedded but did not load",
+                    skill.name
+                )
+            });
+            assert_eq!(
+                loaded.reference_files.len(),
+                skill.references.len(),
+                "bundled skill '{}' lost references on load",
+                skill.name
+            );
+            for (ref_name, _) in skill.references {
+                assert!(
+                    loaded.reference_files.contains_key(*ref_name),
+                    "bundled skill '{}' is missing reference '{}'",
+                    skill.name,
+                    ref_name
+                );
+            }
+        }
+        let web3 = registry
+            .get("web3-security-research")
+            .expect("web3-security-research must be loaded");
+        assert_eq!(
+            web3.reference_files.len(),
+            14,
+            "web3-security-research must carry all 14 subskill references"
+        );
+    }
+
     /// Regression test: reload_global must preserve bundled (compiled-in)
     /// skills. Without this, any skill reload clears bundled skills like
     /// `/bugbounty` because they were only loaded during the initial
     /// `load_global()` call at startup.
     #[test]
     fn reload_global_preserves_bundled_skills() {
+        use crate::alphacode_base::bundled_skills::BUNDLED_SKILLS;
         let mut registry = SkillRegistry::default();
         // First reload to populate bundled skills.
         registry.reload_global().expect("initial reload");
-        let names_before: std::collections::BTreeSet<_> = registry
-            .list()
-            .into_iter()
-            .map(|s| s.name.clone())
-            .collect();
-        assert!(
-            names_before.contains("bugbounty"),
-            "bundled bugbounty must be present after initial reload"
-        );
-
-        // Second reload must still have bundled skills.
+        // Second reload must still have bundled skills. Assert subset (not
+        // exact equality): user-level skills from ~/.alphacode/skills may
+        // legitimately appear between reloads and must not fail this test.
         registry.reload_global().expect("second reload");
         let names_after: std::collections::BTreeSet<_> = registry
             .list()
             .into_iter()
             .map(|s| s.name.clone())
             .collect();
-        assert_eq!(
-            names_before, names_after,
-            "reload_global must not drop bundled skills; before={:?} after={:?}",
-            names_before, names_after
-        );
+        for skill in BUNDLED_SKILLS {
+            assert!(
+                names_after.contains(skill.name),
+                "reload_global dropped bundled skill '{}'; after={:?}",
+                skill.name,
+                names_after
+            );
+        }
     }
 
     /// Regression test: CRLF line endings in YAML frontmatter must not

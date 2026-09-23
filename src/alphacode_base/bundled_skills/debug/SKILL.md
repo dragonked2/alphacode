@@ -1,6 +1,6 @@
 ---
 name: debug
-description: Expert debugging methodology — systematic error diagnosis, root cause analysis, logging strategies, debugging tools, and problem-solving techniques that find bugs fast instead of guessing.
+description: "Expert debugging methodology — systematic error diagnosis, root cause analysis, logging strategies, debugging tools, and problem-solving techniques that find bugs fast instead of guessing."
 ---
 
 # Debug — AlphaCode Edition

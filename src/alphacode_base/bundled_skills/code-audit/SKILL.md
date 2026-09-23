@@ -1,6 +1,6 @@
 ---
 name: code-audit
-description: Deep code audit for vulnerabilities: taint analysis, data flow tracing, unsafe patterns, race conditions, and memory safety issues.
+description: "Deep code audit for vulnerabilities: taint analysis, data flow tracing, unsafe patterns, race conditions, and memory safety issues."
 ---
 
 # Code Audit Skill

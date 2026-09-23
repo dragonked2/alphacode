@@ -1,6 +1,6 @@
 ---
 name: crypto-audit
-description: Cryptographic implementation audit: weak algorithms, key management flaws, TLS misconfigurations, JWT vulnerabilities, and random number generation issues.
+description: "Cryptographic implementation audit: weak algorithms, key management flaws, TLS misconfigurations, JWT vulnerabilities, and random number generation issues."
 ---
 
 # Crypto Audit Skill

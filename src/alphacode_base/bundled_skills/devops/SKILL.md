@@ -1,6 +1,6 @@
 ---
 name: devops
-description: Expert DevOps engineering — CI/CD pipelines, GitHub Actions, deployment strategies, monitoring, infrastructure as code, and production operations that ship code safely and reliably.
+description: "Expert DevOps engineering — CI/CD pipelines, GitHub Actions, deployment strategies, monitoring, infrastructure as code, and production operations that ship code safely and reliably."
 ---
 
 # DevOps — AlphaCode Edition

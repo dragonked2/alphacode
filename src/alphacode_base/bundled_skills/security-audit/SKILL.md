@@ -1,6 +1,6 @@
 ---
 name: security-audit
-description: Comprehensive code security audit: OWASP Top 10, CWE mapping, SAST/DAST methodology, and structured findings with CVSS scoring.
+description: "Comprehensive code security audit: OWASP Top 10, CWE mapping, SAST/DAST methodology, and structured findings with CVSS scoring."
 ---
 
 # Security Audit Skill

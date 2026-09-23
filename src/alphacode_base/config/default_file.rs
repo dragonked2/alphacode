@@ -180,8 +180,6 @@ latex_rendering = "image"
 # many terminals. Leave this off for the cleanest experience; set it to
 # true if you want the wordmark in addition to the empty-screen chrome.
 idle_animation = false
-# Show idle animation before first prompt (default: false)
-idle_animation = false
 
 # Briefly animate a user prompt line when it enters the viewport (default: true)
 prompt_entry_animation = true

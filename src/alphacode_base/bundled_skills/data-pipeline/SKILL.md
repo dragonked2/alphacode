@@ -1,6 +1,6 @@
 ---
 name: data-pipeline
-description: Design and optimize data pipelines: ETL patterns, stream processing, batch jobs, and data validation.
+description: "Design and optimize data pipelines: ETL patterns, stream processing, batch jobs, and data validation."
 ---
 
 # Data Pipeline Skill

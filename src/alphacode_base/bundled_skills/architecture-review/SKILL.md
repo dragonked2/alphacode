@@ -1,6 +1,6 @@
 ---
 name: architecture-review
-description: Review system architecture: module boundaries, dependency direction, coupling analysis, and scalability assessment.
+description: "Review system architecture: module boundaries, dependency direction, coupling analysis, and scalability assessment."
 ---
 
 # Architecture Review Skill

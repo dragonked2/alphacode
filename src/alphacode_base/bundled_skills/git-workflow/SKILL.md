@@ -1,6 +1,6 @@
 ---
 name: git-workflow
-description: Expert git workflows — branching strategies, rebasing, stashing, conflict resolution, bisect, interactive rebase, cherry-pick, and clean commit hygiene. Turns messy git histories into clean, reviewable, professional output.
+description: "Expert git workflows — branching strategies, rebasing, stashing, conflict resolution, bisect, interactive rebase, cherry-pick, and clean commit hygiene. Turns messy git histories into clean, reviewable, professional output."
 ---
 
 # Git Workflow — AlphaCode Edition

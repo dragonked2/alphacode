@@ -816,13 +816,18 @@ mod newest_reload_candidate_integration_tests {
     fn install_versioned_binary(version: &str, mtime: SystemTime) -> std::path::PathBuf {
         // A real, distinct file per version so mtimes are independently settable
         // (install hard-links the source, which would share an inode/mtime).
+        // The payload starts with an MZ header so it passes the production
+        // `is_valid_executable` magic-bytes check: channel resolution rejects
+        // files that merely exist but are not runnable binaries.
         let dir = build::builds_dir()
             .expect("builds dir")
             .join("versions")
             .join(version);
         std::fs::create_dir_all(&dir).expect("create version dir");
         let path = dir.join(build::binary_name());
-        std::fs::write(&path, format!("binary for {version}")).expect("write binary");
+        let mut payload = vec![0x4Du8, 0x5A];
+        payload.extend_from_slice(format!("binary for {version}").as_bytes());
+        std::fs::write(&path, payload).expect("write binary");
         std::fs::OpenOptions::new()
             .write(true)
             .open(&path)

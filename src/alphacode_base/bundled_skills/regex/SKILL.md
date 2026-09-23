@@ -1,6 +1,6 @@
 ---
 name: regex
-description: Expert regular expressions — pattern building, common patterns, debugging, performance, and language-specific regex for JavaScript, Python, Rust, Go, and command-line tools (grep, sed, awk).
+description: "Expert regular expressions — pattern building, common patterns, debugging, performance, and language-specific regex for JavaScript, Python, Rust, Go, and command-line tools (grep, sed, awk)."
 ---
 
 # Regex — AlphaCode Edition

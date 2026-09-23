@@ -1,6 +1,6 @@
 ---
 name: vuln-hunter
-description: Hunt for security vulnerabilities: OWASP Top 10, CWE mapping, injection patterns, auth bypass, SSRF, XSS, SQLi, and deserialization flaws with structured PoC generation.
+description: "Hunt for security vulnerabilities: OWASP Top 10, CWE mapping, injection patterns, auth bypass, SSRF, XSS, SQLi, and deserialization flaws with structured PoC generation."
 ---
 
 # Vulnerability Hunter Skill

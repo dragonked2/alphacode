@@ -1,6 +1,6 @@
 ---
 name: api-security
-description: API security testing: authentication bypass, authorization flaws, rate limiting, input validation, GraphQL introspection, and REST endpoint enumeration.
+description: "API security testing: authentication bypass, authorization flaws, rate limiting, input validation, GraphQL introspection, and REST endpoint enumeration."
 ---
 
 # API Security Skill

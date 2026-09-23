@@ -1023,7 +1023,7 @@ A Nerd Font such as JetBrains Mono Nerd Font or Cascadia Code Nerd Font can impr
 <summary><strong>Browser login opens but does not complete</strong></summary>
 <br>
 
-Authentication callbacks can be affected by VPNs, firewall rules, browser policies, or local networking configuration.
+Authentication callbacks can be affected by VPNs, firewall rules, browser policies, or local networking configuration. The OpenAI (Codex) login listens for its callback at `http://localhost:1455/auth/callback` — if port `1455` is busy, free it and retry. See [OAUTH.md](./OAUTH.md) for all callback URLs.
 
 </details>
 

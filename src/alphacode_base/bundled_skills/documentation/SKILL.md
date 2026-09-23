@@ -1,6 +1,6 @@
 ---
 name: documentation
-description: Expert technical documentation — README files, API documentation, inline comments, changelogs, architecture decision records, and writing that developers actually want to read.
+description: "Expert technical documentation — README files, API documentation, inline comments, changelogs, architecture decision records, and writing that developers actually want to read."
 ---
 
 # Documentation — AlphaCode Edition

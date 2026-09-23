@@ -1,6 +1,6 @@
 ---
 name: testing
-description: Expert software testing — unit tests, integration tests, end-to-end tests, mocking, test design patterns, coverage strategy, and test architecture that catches real bugs without slowing development.
+description: "Expert software testing — unit tests, integration tests, end-to-end tests, mocking, test design patterns, coverage strategy, and test architecture that catches real bugs without slowing development."
 ---
 
 # Testing — AlphaCode Edition

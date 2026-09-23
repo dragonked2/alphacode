@@ -1095,19 +1095,16 @@ async fn submit_suggestion(
     // and a 409 Conflict means "already recorded", which is success — the
     // retry layer would otherwise re-fire against a gone server and mask the
     // duplicate receipt as a transport error.
-    let response = request
-        .send()
-        .await
-        .map_err(|err| DiscoveryFetchError {
-            message: format!("catalog suggestion unavailable: {err}"),
-            failure_reason: if err.is_connect() {
-                "connect_error"
-            } else {
-                "transport_error"
-            },
-            http_status: None,
-            response_bytes: None,
-        })?;
+    let response = request.send().await.map_err(|err| DiscoveryFetchError {
+        message: format!("catalog suggestion unavailable: {err}"),
+        failure_reason: if err.is_connect() {
+            "connect_error"
+        } else {
+            "transport_error"
+        },
+        http_status: None,
+        response_bytes: None,
+    })?;
     let status = response.status();
     let duplicate = status == reqwest::StatusCode::CONFLICT;
     if !status.is_success() && !duplicate {

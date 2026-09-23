@@ -1,6 +1,6 @@
 ---
 name: cloud-security
-description: Cloud security assessment: IAM misconfigurations, S3 bucket exposure, SSRF via cloud metadata, container escape, and Kubernetes RBAC bypass.
+description: "Cloud security assessment: IAM misconfigurations, S3 bucket exposure, SSRF via cloud metadata, container escape, and Kubernetes RBAC bypass."
 ---
 
 # Cloud Security Skill

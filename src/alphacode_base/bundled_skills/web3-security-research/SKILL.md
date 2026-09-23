@@ -1,6 +1,6 @@
 ---
 name: web3-security-research
-description: Deep Web3/DeFi security research — protocol modeling, asset-flow graphs, invariant reasoning, accounting/oracle/bridge/governance analysis, multi-transaction exploit chains, economic viability checks, and 12-gate verification. Use for any Solidity/EVM audit, DeFi review, bridge/cross-chain assessment, or when hunting fund-loss, insolvency, or privilege-escalation bugs.
+description: "Deep Web3/DeFi security research — protocol modeling, asset-flow graphs, invariant reasoning, accounting/oracle/bridge/governance analysis, multi-transaction exploit chains, economic viability checks, and 12-gate verification. Use for any Solidity/EVM audit, DeFi review, bridge/cross-chain assessment, or when hunting fund-loss, insolvency, or privilege-escalation bugs."
 ---
 
 # WEB3 SECURITY RESEARCH — VALUE-FLOW AUDITING

@@ -1,6 +1,6 @@
 ---
 name: frontend-design
-description: Expert-level frontend design and engineering skill. Produces distinctive, production-grade UI with world-class animations, responsive layouts, accessibility, and UX polish. Outperforms generic AI-generated UI by 100x through systematic design thinking, motion design, and pixel-perfect execution.
+description: "Expert-level frontend design and engineering skill. Produces distinctive, production-grade UI with world-class animations, responsive layouts, accessibility, and UX polish. Outperforms generic AI-generated UI by 100x through systematic design thinking, motion design, and pixel-perfect execution."
 ---
 
 # Frontend Design — AlphaCode Edition

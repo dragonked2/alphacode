@@ -1,6 +1,6 @@
 ---
 name: bug-bounty-methodology
-description: Real-world bug bounty methodology with program-specific workflows, time management, and earning optimization. Structured for maximum validated findings/hour.
+description: "Real-world bug bounty methodology with program-specific workflows, time management, and earning optimization. Structured for maximum validated findings/hour."
 ---
 
 # Bug Bounty Methodology — Real World

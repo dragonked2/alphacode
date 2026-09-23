@@ -1,6 +1,6 @@
 ---
 name: api-builder
-description: Expert REST API design and implementation — endpoint design, authentication, error handling, rate limiting, versioning, pagination, and production-ready API patterns that developers love to use.
+description: "Expert REST API design and implementation — endpoint design, authentication, error handling, rate limiting, versioning, pagination, and production-ready API patterns that developers love to use."
 ---
 
 # API Builder — AlphaCode Edition

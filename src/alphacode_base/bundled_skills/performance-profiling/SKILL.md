@@ -1,6 +1,6 @@
 ---
 name: performance-profiling
-description: Identify performance bottlenecks: CPU profiling, memory analysis, I/O optimization, and benchmarking strategies.
+description: "Identify performance bottlenecks: CPU profiling, memory analysis, I/O optimization, and benchmarking strategies."
 ---
 
 # Performance Profiling Skill

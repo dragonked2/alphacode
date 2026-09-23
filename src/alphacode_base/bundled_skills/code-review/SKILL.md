@@ -1,6 +1,6 @@
 ---
 name: code-review
-description: Expert code review — systematic PR review methodology that catches bugs, security issues, performance problems, and design flaws. Provides actionable, specific feedback that improves code quality without being pedantic.
+description: "Expert code review — systematic PR review methodology that catches bugs, security issues, performance problems, and design flaws. Provides actionable, specific feedback that improves code quality without being pedantic."
 ---
 
 # Code Review — AlphaCode Edition

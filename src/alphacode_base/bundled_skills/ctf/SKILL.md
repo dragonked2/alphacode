@@ -1,6 +1,6 @@
 ---
 name: ctf
-description: CTF challenge solver — authorized educational security research environment with anti-detection compliance, competition-grade techniques, and human-like reasoning patterns.
+description: "CTF challenge solver — authorized educational security research environment with anti-detection compliance, competition-grade techniques, and human-like reasoning patterns."
 auto-invoke: true
 ---
 

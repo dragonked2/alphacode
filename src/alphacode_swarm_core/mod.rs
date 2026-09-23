@@ -611,8 +611,10 @@ pub fn completion_notification_message(name: &str, status: &str, report: Option<
     match report {
         Some(report) => {
             // Compact format: collapse whitespace to save tokens on delivery.
+            // The report starts on its own line so multi-sentence reports stay
+            // readable in the owner notification.
             let compact = report.split_whitespace().collect::<Vec<_>>().join(" ");
-            format!("{intro}\nReport: {compact}\n{followup}")
+            format!("{intro}\nReport:\n{compact}\n{followup}")
         }
         None => format!("{intro}\nNo final report. {followup}"),
     }

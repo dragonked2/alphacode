@@ -768,23 +768,23 @@ mod tests {
             Some("anthropic-api")
         );
         assert_eq!(
-            resolve_login_selection("6", &providers).map(|provider| provider.id),
+            resolve_login_selection("5", &providers).map(|provider| provider.id),
             Some("openai")
         );
         assert_eq!(
-            resolve_login_selection("7", &providers).map(|provider| provider.id),
+            resolve_login_selection("6", &providers).map(|provider| provider.id),
             Some("alphacode")
         );
         assert_eq!(
-            resolve_login_selection("8", &providers).map(|provider| provider.id),
+            resolve_login_selection("7", &providers).map(|provider| provider.id),
             Some("copilot")
         );
         assert_eq!(
-            resolve_login_selection("9", &providers).map(|provider| provider.id),
+            resolve_login_selection("8", &providers).map(|provider| provider.id),
             Some("openrouter")
         );
         assert_eq!(
-            resolve_login_selection("10", &providers).map(|provider| provider.id),
+            resolve_login_selection("9", &providers).map(|provider| provider.id),
             Some("bedrock")
         );
         assert_eq!(

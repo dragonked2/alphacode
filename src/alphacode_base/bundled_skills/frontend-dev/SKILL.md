@@ -1,6 +1,6 @@
 ---
 name: frontend-dev
-description: Comprehensive frontend development methodology covering modern SPA architecture, component design, state management, performance optimization, testing, and deployment workflows.
+description: "Comprehensive frontend development methodology covering modern SPA architecture, component design, state management, performance optimization, testing, and deployment workflows."
 ---
 
 # Frontend Development Skill

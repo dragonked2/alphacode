@@ -1,6 +1,6 @@
 ---
 name: backend-dev
-description: Comprehensive backend development methodology covering API design, authentication, database design, caching, testing, deployment, and monitoring. Full lifecycle from requirements through production.
+description: "Comprehensive backend development methodology covering API design, authentication, database design, caching, testing, deployment, and monitoring. Full lifecycle from requirements through production."
 ---
 
 # Backend Development Skill Suite

@@ -302,6 +302,14 @@ const ALL_GEMINI_MODELS: &[&str] = &[
     "gemini-1.5-flash",
 ];
 
+/// Curated flagship-first order for the Experiential Labs free-gift catalog.
+/// `gpt-6-astra` is the flagship and must win even when weaker free models
+/// are listed first in the live catalog.
+const ALL_EXPLABS_MODELS: &[&str] = &["gpt-6-astra", "qwen3.8-27b", "deepseek-v4-flash"];
+
+/// TheHive AI free-gift catalog ships a single model, which is the flagship.
+const ALL_HIVE_MODELS: &[&str] = &["zai-org/glm-5.3-flash"];
+
 /// Flagship-first preference tiers used only to break ties when falling back to
 /// an arbitrary matching route after a login. Each inner slice is one curated
 /// family ordered best-first; earlier families outrank later ones. Returns an
@@ -332,6 +340,9 @@ fn provider_preferred_model_orders(
         Some("gemini") | Some("antigravity") => &[ALL_GEMINI_MODELS],
         // Alphax Free (opencode gateway): rank curated free models first.
         Some("alphax-free") => &[crate::alphacode_provider_metadata::ALL_ALPHAX_FREE_MODELS],
+        // Experiential Labs + TheHive AI free-gift catalogs: flagship first.
+        Some("explabs") => &[ALL_EXPLABS_MODELS],
+        Some("hive") => &[ALL_HIVE_MODELS],
         _ => &[],
     }
 }
@@ -2362,6 +2373,7 @@ mod tests {
         "azure-openai",
         "gemini",
         "antigravity",
+        "alphax-free",
         "explabs",
         "hive",
     ];
@@ -2384,11 +2396,13 @@ mod tests {
     #[test]
     fn post_auth_model_selection_classifies_every_login_provider() {
         let mut ranked_seen: std::collections::BTreeSet<String> = Default::default();
+        let mut reachable: std::collections::BTreeSet<String> = Default::default();
         for descriptor in crate::provider_catalog::login_providers() {
             let Some(provider_id) = normalized_auth_provider_id(Some(descriptor.id)) else {
                 // AutoImport / non-runtime descriptors have no activation id.
                 continue;
             };
+            reachable.insert(provider_id.to_string());
             let activation = activation_for_provider_id(provider_id);
             let ranked = !provider_preferred_model_orders(&activation).is_empty();
             let expected = RANKED_PROVIDER_IDS.contains(&provider_id);
@@ -2403,9 +2417,13 @@ mod tests {
                 ranked_seen.insert(provider_id.to_string());
             }
         }
+        // Ranked ids that are not login-catalog members (explabs/hive are
+        // profile-configured free gifts) cannot be reached by this walk; the
+        // flagship test covers them directly instead.
         let expected_ranked: std::collections::BTreeSet<String> = RANKED_PROVIDER_IDS
             .iter()
             .map(|id| id.to_string())
+            .filter(|id| reachable.contains(id))
             .collect();
         assert_eq!(
             ranked_seen, expected_ranked,
@@ -2527,6 +2545,15 @@ mod tests {
                 "TheHive AI (Free Gift from Alphacode)",
                 &["zai-org/glm-5.3-flash"],
                 "zai-org/glm-5.3-flash",
+            ),
+            // Alphax Free serves a single curated free model; it must win
+            // even when the live catalog lists other rows first.
+            (
+                "alphax-free",
+                "openai-compatible:alphax-free",
+                "Alphax Free",
+                &["deepseek-v4-flash", "kilo-auto/free"],
+                "kilo-auto/free",
             ),
         ];
 

@@ -1,6 +1,6 @@
 ---
 name: test-writer
-description: Generate comprehensive test suites: unit tests, integration tests, edge cases, property-based tests, and mutation testing targets.
+description: "Generate comprehensive test suites: unit tests, integration tests, edge cases, property-based tests, and mutation testing targets."
 ---
 
 # Test Writer Skill

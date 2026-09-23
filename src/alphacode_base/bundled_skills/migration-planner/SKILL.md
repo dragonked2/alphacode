@@ -1,6 +1,6 @@
 ---
 name: migration-planner
-description: Plan and execute migrations: database schema changes, API versioning, breaking changes, and rollback procedures.
+description: "Plan and execute migrations: database schema changes, API versioning, breaking changes, and rollback procedures."
 ---
 
 # Migration Planner Skill

@@ -1,6 +1,6 @@
 ---
 name: incident-response
-description: Structured incident response: root cause analysis, rollback strategies, post-mortem templates, and prevention patterns.
+description: "Structured incident response: root cause analysis, rollback strategies, post-mortem templates, and prevention patterns."
 ---
 
 # Incident Response Skill

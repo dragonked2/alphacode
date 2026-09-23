@@ -1,6 +1,6 @@
 ---
 name: dependency-audit
-description: Audit project dependencies for known vulnerabilities, outdated packages, license compliance, and supply chain risks.
+description: "Audit project dependencies for known vulnerabilities, outdated packages, license compliance, and supply chain risks."
 ---
 
 # Dependency Audit Skill

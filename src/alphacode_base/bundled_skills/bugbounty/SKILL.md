@@ -1,6 +1,6 @@
 ---
 name: bugbounty
-description: Elite bug bounty hunting — differential testing, 7-gate validation, hypothesis-driven. Optimized for validated findings/hour. When user mentions bug bounty, hacking, pentesting, security testing, vuln research, recon, exploitation, or offensive security.
+description: "Elite bug bounty hunting — differential testing, 7-gate validation, hypothesis-driven. Optimized for validated findings/hour. When user mentions bug bounty, hacking, pentesting, security testing, vuln research, recon, exploitation, or offensive security."
 ---
 
 # BUG BOUNTY HUNTER — VALIDATED FINDINGS PER HOUR

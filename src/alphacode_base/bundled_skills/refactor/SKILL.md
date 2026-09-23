@@ -1,6 +1,6 @@
 ---
 name: refactor
-description: Systematic code refactoring: detect code smells, extract functions, simplify conditionals, remove duplication, and improve readability while preserving behavior.
+description: "Systematic code refactoring: detect code smells, extract functions, simplify conditionals, remove duplication, and improve readability while preserving behavior."
 ---
 
 # Refactoring Skill
