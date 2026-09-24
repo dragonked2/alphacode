@@ -23,6 +23,11 @@ fn idle_donut_active_with_policy(
     state: &dyn TuiState,
     policy: &crate::perf::TuiPerfPolicy,
 ) -> bool {
+    // Accessibility: `NO_COLOR` / `ALPHACODE_REDUCED_MOTION` disables purely
+    // decorative motion. Functional spinners (processing/streaming) still run.
+    if crate::alphacode_tui_style::color::reduced_motion_requested() {
+        return false;
+    }
     if state.remote_startup_phase_active() {
         return false;
     }

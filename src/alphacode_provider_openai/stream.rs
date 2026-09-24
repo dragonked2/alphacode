@@ -17,10 +17,38 @@ static RECOVERED_TEXT_WRAPPED_TOOL_CALLS: AtomicU64 = AtomicU64::new(0);
 static NORMALIZED_NULL_TOOL_ARGUMENTS: AtomicU64 = AtomicU64::new(0);
 
 fn truncated_stream_payload_context(data: &str) -> String {
-    crate::alphacode_core::util::truncate_str(&data.trim().replace("\n", "\\n"), 240).to_string()
+    // Avoid allocating a full `replace()` copy for the common case (no newline).
+    let trimmed = data.trim();
+    if trimmed.contains('\n') {
+        crate::alphacode_core::util::truncate_str(&trimmed.replace("\n", "\\n"), 240).to_string()
+    } else {
+        crate::alphacode_core::util::truncate_str(trimmed, 240).to_string()
+    }
 }
 
 fn is_structured_response_event(data: &str) -> bool {
+    // Fast path: most chunks are `response.output_text.delta` etc. Peek at the
+    // raw `"type"` string without a full `serde_json::Value` parse (which
+    // allocates a map per chunk on the hot streaming path).
+    let trimmed = data.trim_start();
+    if !trimmed.starts_with('{') {
+        return false;
+    }
+    // Find `"type"` key quickly. This is only a fast-`true` peek: the first
+    // `"type"` occurrence may belong to a nested object (serde_json emits map
+    // keys alphabetically, so `response` sorts before the top-level `type`),
+    // so a non-match must fall through to the full parse, never return false.
+    if let Some(type_pos) = trimmed.find("\"type\"") {
+        let after = &trimmed[type_pos + 6..];
+        // Skip whitespace + colon + whitespace + quote.
+        let mut chars = after.chars().skip_while(|c| c.is_whitespace() || *c == ':');
+        if chars.next() == Some('"') {
+            let rest: String = chars.collect();
+            if rest.starts_with("response.") || rest.starts_with("error\"") {
+                return true;
+            }
+        }
+    }
     let Ok(value) = serde_json::from_str::<serde_json::Value>(data) else {
         return false;
     };
@@ -124,11 +152,37 @@ pub fn parse_text_wrapped_tool_call(text: &str) -> Option<(String, String, Strin
 
     let tool_name = after_marker[..tool_name_end].to_string();
     let remaining = &after_marker[tool_name_end..];
-    let mut fallback: Option<(String, String, String, String)> = None;
-    for (brace_idx, ch) in remaining.char_indices() {
-        if ch != '{' {
-            continue;
+    // PERF: cap brace attempts — the old loop ran a full JSON deserializer at
+    // *every* `{` position (O(n^2) on tool args with many braces). Most real
+    // calls have the JSON at the first or last brace; trying a bounded window
+    // from both ends preserves accuracy while bounding worst-case work.
+    const MAX_BRACE_ATTEMPTS: usize = 8;
+    let brace_positions: Vec<usize> = remaining
+        .char_indices()
+        .filter(|(_, ch)| *ch == '{')
+        .map(|(idx, _)| idx)
+        .collect();
+    if brace_positions.is_empty() {
+        return None;
+    }
+    // Build a small candidate set: first N + last N positions (deduped).
+    let mut candidates: Vec<usize> =
+        Vec::with_capacity(MAX_BRACE_ATTEMPTS.min(brace_positions.len()));
+    for &pos in brace_positions.iter().take(MAX_BRACE_ATTEMPTS / 2) {
+        candidates.push(pos);
+    }
+    for &pos in brace_positions.iter().rev().take(MAX_BRACE_ATTEMPTS / 2) {
+        if !candidates.contains(&pos) {
+            candidates.push(pos);
         }
+    }
+    // If the JSON is small, also ensure we didn't miss a middle position by
+    // falling back to a full scan only for short payloads (<2KB).
+    if brace_positions.len() <= MAX_BRACE_ATTEMPTS {
+        candidates = brace_positions;
+    }
+    let mut fallback: Option<(String, String, String, String)> = None;
+    for brace_idx in candidates {
         let slice = &remaining[brace_idx..];
         let mut stream = serde_json::Deserializer::from_str(slice).into_iter::<Value>();
         let parsed = match stream.next() {
@@ -189,6 +243,64 @@ fn stream_text_or_recovered_tool_call(
     }
 
     Some(StreamEvent::TextDelta(text.to_string()))
+}
+
+/// Extract a `StreamEvent::Error` from a JSON payload that failed to parse as
+/// a `ResponseSseEvent` — typically a provider/proxy error envelope without a
+/// top-level `type` field (e.g. `{"error": {"message","type","code"}}` or
+/// `{"error": "plain message"}`). Returns `None` when the payload carries no
+/// recognizable error, so genuinely malformed chunks are still skipped.
+fn error_event_from_unshaped_payload(data: &str) -> Option<StreamEvent> {
+    let value: Value = serde_json::from_str(data.trim()).ok()?;
+    let error = value.get("error")?;
+    if let Some(message) = error.as_str() {
+        if message.trim().is_empty() {
+            return None;
+        }
+        return Some(StreamEvent::Error {
+            message: message.to_string(),
+            retry_after_secs: None,
+        });
+    }
+    if let Some(obj) = error.as_object() {
+        let message = obj
+            .get("message")
+            .and_then(|v| v.as_str())
+            .filter(|s| !s.trim().is_empty())
+            .unwrap_or("OpenAI response stream error (unknown)");
+        // Enrich with type/code when present, mirroring extract_error_with_retry.
+        let error_type = obj.get("type").and_then(|v| v.as_str());
+        let code = obj.get("code").and_then(|v| v.as_str());
+        let message_lower = message.to_lowercase();
+        let message = match (error_type, code) {
+            (Some(t), Some(c))
+                if !message_lower.contains(&t.to_lowercase())
+                    && !message_lower.contains(&c.to_lowercase()) =>
+            {
+                format!("{t} ({c}): {message}")
+            }
+            (Some(t), _) if !message_lower.contains(&t.to_lowercase()) => {
+                format!("{t}: {message}")
+            }
+            (_, Some(c)) if !message_lower.contains(&c.to_lowercase()) => {
+                format!("{c}: {message}")
+            }
+            _ => message.to_string(),
+        };
+        let retry_after_secs = obj
+            .get("retry_after")
+            .and_then(|v| v.as_u64())
+            .or_else(|| value.get("retry_after").and_then(|v| v.as_u64()));
+        // Avoid surfacing empty/placeholder errors as fatal stream errors.
+        if message.trim().is_empty() {
+            return None;
+        }
+        return Some(StreamEvent::Error {
+            message,
+            retry_after_secs,
+        });
+    }
+    None
 }
 
 fn sanitize_recovered_tool_suffix(suffix: &str) -> String {
@@ -320,6 +432,14 @@ pub fn parse_openai_response_event(
     let event: ResponseSseEvent = match serde_json::from_str(data) {
         Ok(parsed) => parsed,
         Err(error) => {
+            // A provider/proxy error payload rarely matches the Responses SSE
+            // shape (e.g. `{"error": {"message": ...}}` has no top-level
+            // `type`). Dropping it here used to hang the turn forever waiting
+            // for a completion that never comes. Surface it as an Error event
+            // so the agent loop can retry/report instead of stalling.
+            if let Some(err_event) = error_event_from_unshaped_payload(data) {
+                return Some(err_event);
+            }
             crate::alphacode_logging::warn(&format!(
                 "OpenAI SSE JSON parse failed: {} payload={}",
                 error,
@@ -789,10 +909,15 @@ impl OpenAIResponsesStream {
         }
 
         while let Some(pos) = self.buffer.find("\n\n") {
-            let event_str = self.buffer[..pos].to_string();
-            self.buffer = self.buffer[pos + 2..].to_string();
+            // PERF: `drain` moves bytes once instead of cloning the head AND
+            // the tail (`to_string` x2 = 2x memcpy of the whole buffer per
+            // event, O(n^2) on long streams).
+            let event_str: String = self.buffer.drain(..pos + 2).collect();
+            // Strip the trailing "\n\n" without a second allocation.
+            let event_str = event_str.trim_end_matches('\n');
 
-            let mut data_lines = Vec::new();
+            // Pre-size: most SSE events have 1-2 data lines.
+            let mut data_lines: Vec<&str> = Vec::with_capacity(2);
             for line in event_str.lines() {
                 if let Some(data) = crate::alphacode_core::util::sse_data_line(line) {
                     data_lines.push(data);
@@ -803,7 +928,22 @@ impl OpenAIResponsesStream {
                 continue;
             }
 
-            let data = data_lines.join("\n");
+            // Avoid `join` alloc when there's a single data line (common).
+            let data_owned;
+            let data: &str = if data_lines.len() == 1 {
+                data_lines[0]
+            } else {
+                let total: usize = data_lines.iter().map(|s| s.len() + 1).sum();
+                let mut buf = String::with_capacity(total);
+                for (i, s) in data_lines.iter().enumerate() {
+                    if i > 0 {
+                        buf.push('\n');
+                    }
+                    buf.push_str(s);
+                }
+                data_owned = buf;
+                &data_owned
+            };
             if let Some(event) = parse_openai_response_event(
                 &data,
                 &mut self.saw_text_delta,
@@ -944,6 +1084,33 @@ mod tests {
             matches!(event, Some(StreamEvent::MessageEnd { .. })),
             "expected MessageEnd, got {event:?}"
         );
+    }
+
+    #[test]
+    fn unshaped_error_envelope_surfaces_as_error_not_silence() {
+        // Regression: provider/proxy error payloads without a top-level
+        // `type` field used to fail ResponseSseEvent deserialization and get
+        // dropped, hanging the turn forever waiting for a completion.
+        for payload in [
+            r#"{"error": {"message": "quota exceeded", "type": "rate_limit", "code": "insufficient_quota"}}"#,
+            r#"{"error": "plain failure message"}"#,
+        ] {
+            let mut saw_text_delta = false;
+            let mut streaming_tool_calls = HashMap::new();
+            let mut completed_tool_items = HashSet::new();
+            let mut pending = VecDeque::new();
+            let event = parse_openai_response_event(
+                payload,
+                &mut saw_text_delta,
+                &mut streaming_tool_calls,
+                &mut completed_tool_items,
+                &mut pending,
+            );
+            assert!(
+                matches!(event, Some(StreamEvent::Error { .. })),
+                "expected Error for {payload}, got {event:?}"
+            );
+        }
     }
 
     #[test]

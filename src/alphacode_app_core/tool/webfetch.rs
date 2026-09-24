@@ -282,6 +282,14 @@ impl Tool for WebFetchTool {
 
             let status = response.status();
             if !status.is_success() {
+                // Smart 404: don't waste UA retries on a missing page, and tell
+                // the agent to discover the URL instead of guessing variants.
+                if status == reqwest::StatusCode::NOT_FOUND {
+                    return Err(anyhow::anyhow!(
+                        "HTTP error: 404 Not Found for {}. URL does not exist — do NOT retry with different User-Agents or guess similar deep URLs (e.g. /uniswap/ vs /uniswap-v3/). Use websearch to discover the correct URL, try the site index, or check trailing-slash variant once.",
+                        params.url
+                    ));
+                }
                 last_err = Some(anyhow::anyhow!("HTTP error: {}", status));
                 continue;
             }

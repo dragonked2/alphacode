@@ -452,9 +452,17 @@ impl HighlightCache {
     }
 
     fn insert(&mut self, hash: u64, lines: Vec<Line<'static>>) {
-        // Evict if cache is too large — clear oldest entries
+        // Bounded eviction: clear ~half instead of all to avoid a
+        // thundering-herd where every streaming chunk re-highlights after
+        // a full clear. Keeps hot entries (recent code blocks) alive.
         if self.entries.len() >= HIGHLIGHT_CACHE_LIMIT {
-            self.entries.clear();
+            let drain_n = HIGHLIGHT_CACHE_LIMIT / 2;
+            // HashMap iteration order is arbitrary but stable enough for
+            // sampling; draining half bounds memory without tracking LRU.
+            let keys: Vec<u64> = self.entries.keys().take(drain_n).copied().collect();
+            for k in keys {
+                self.entries.remove(&k);
+            }
         }
         self.entries.insert(hash, lines);
     }

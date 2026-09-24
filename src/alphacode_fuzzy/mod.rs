@@ -37,7 +37,7 @@ pub struct FuzzyMatch {
 /// free [`PositionSummary`] tracker. Highlighting callers use `Vec<usize>`.
 /// Both trackers produce identical scores because tie-breaking only inspects
 /// the match count and the anchor check only inspects the first position.
-trait PositionTracker: Clone + Default {
+trait PositionTracker: Clone + Default + 'static {
     fn push_pos(&mut self, pos: usize);
     fn pos_count(&self) -> usize;
     fn first_pos(&self) -> Option<usize>;
@@ -172,14 +172,16 @@ fn prefilter(pat: &[char], hay: &[char], max_err: u8) -> bool {
     }
 
     // Stage 2: multiplicity-aware counting for candidates that passed.
+    // Non-ASCII path uses a small hashmap instead of Vec + position +
+    // swap_remove (O(n^2) on long CJK haystacks).
     let mut ascii = [0u16; 128];
-    let mut other: Vec<char> = Vec::new();
+    let mut other: std::collections::HashMap<char, u16> = std::collections::HashMap::new();
     for &c in hay {
         let idx = c as usize;
         if idx < 128 {
-            ascii[idx] += 1;
+            ascii[idx] = ascii[idx].saturating_add(1);
         } else {
-            other.push(c);
+            *other.entry(c).or_insert(0) = other.get(&c).copied().unwrap_or(0).saturating_add(1);
         }
     }
     let mut missing = 0u8;
@@ -196,11 +198,17 @@ fn prefilter(pat: &[char], hay: &[char], max_err: u8) -> bool {
                 } else {
                     false
                 }
-            } else if let Some(pos) = other.iter().position(|&h| h == c) {
-                other.swap_remove(pos);
-                true
             } else {
-                false
+                match other.get_mut(&c) {
+                    Some(count) if *count > 0 => {
+                        *count -= 1;
+                        if *count == 0 {
+                            other.remove(&c);
+                        }
+                        true
+                    }
+                    _ => false,
+                }
             }
         };
         if !present {
@@ -382,7 +390,72 @@ fn run_dp<P: PositionTracker>(
     answer
 }
 
-fn fuzzy_match_impl<P: PositionTracker>(
+std::thread_local! {
+    static REUSED_ROWS_SUMMARY: std::cell::RefCell<(
+        Vec<Option<Cell<PositionSummary>>>,
+        Vec<Option<Cell<PositionSummary>>>,
+        Vec<Option<Cell<PositionSummary>>>,
+    )> = std::cell::RefCell::new((Vec::new(), Vec::new(), Vec::new()));
+    static REUSED_ROWS_VEC: std::cell::RefCell<(
+        Vec<Option<Cell<Vec<usize>>>>,
+        Vec<Option<Cell<Vec<usize>>>>,
+        Vec<Option<Cell<Vec<usize>>>>,
+    )> = std::cell::RefCell::new((Vec::new(), Vec::new(), Vec::new()));
+}
+
+// Hot-path overrides: reuse thread-local DP rows instead of allocating three
+// fresh `Vec<Option<Cell>>` per entry per keystroke. Rows are taken out of
+// the thread-local, used, then put back (even on early return paths inside
+// `run_dp` there is no early return, so a single put-back suffices).
+trait ReusedRows: PositionTracker {
+    fn run_reused_inner(
+        pat: &[char],
+        hay: &[char],
+        max_err: u8,
+        require_true_tail: bool,
+    ) -> Option<Cell<Self>>;
+}
+
+impl ReusedRows for PositionSummary {
+    fn run_reused_inner(
+        pat: &[char],
+        hay: &[char],
+        max_err: u8,
+        require_true_tail: bool,
+    ) -> Option<Cell<Self>> {
+        REUSED_ROWS_SUMMARY.with(|cell| {
+            let (mut a, mut b, mut c) = std::mem::take(&mut *cell.borrow_mut());
+            let ans = run_dp(pat, hay, max_err, &mut a, &mut b, &mut c, require_true_tail);
+            // Return capacity to the thread-local; clear contents but keep allocs.
+            a.clear();
+            b.clear();
+            c.clear();
+            *cell.borrow_mut() = (a, b, c);
+            ans
+        })
+    }
+}
+
+impl ReusedRows for Vec<usize> {
+    fn run_reused_inner(
+        pat: &[char],
+        hay: &[char],
+        max_err: u8,
+        require_true_tail: bool,
+    ) -> Option<Cell<Self>> {
+        REUSED_ROWS_VEC.with(|cell| {
+            let (mut a, mut b, mut c) = std::mem::take(&mut *cell.borrow_mut());
+            let ans = run_dp(pat, hay, max_err, &mut a, &mut b, &mut c, require_true_tail);
+            a.clear();
+            b.clear();
+            c.clear();
+            *cell.borrow_mut() = (a, b, c);
+            ans
+        })
+    }
+}
+
+fn fuzzy_match_impl<P: ReusedRows + 'static>(
     needle: &str,
     haystack: &str,
     anchor_first_true_match: bool,
@@ -432,18 +505,7 @@ fn fuzzy_match_impl<P: PositionTracker>(
     if !prefilter(&pat, &hay, max_err) {
         return None;
     }
-    let mut row_prev2: Vec<Option<Cell<P>>> = Vec::new();
-    let mut row_prev: Vec<Option<Cell<P>>> = Vec::new();
-    let mut row_cur: Vec<Option<Cell<P>>> = Vec::new();
-    let answer = run_dp(
-        &pat,
-        &hay,
-        max_err,
-        &mut row_prev2,
-        &mut row_prev,
-        &mut row_cur,
-        require_true_tail,
-    );
+    let answer = P::run_reused_inner(&pat, &hay, max_err, require_true_tail);
 
     let cell = answer?;
     if anchor_first_true_match && cell.positions.first_pos() != Some(0) {
@@ -521,9 +583,12 @@ pub fn fuzzy_score_tokens(needle: &str, haystack: &str) -> Option<i32> {
 /// pattern lowercase/error-budget work and the DP scratch rows are prepared
 /// here once and reused across every entry instead of being reallocated for
 /// each token of each entry.
+///
+/// `scratch` uses a `Mutex` (not `RefCell`) so the query is `Send + Sync` and
+/// picker filtering can run on a worker thread pool without UI jank.
 pub struct PreparedTokenQuery {
     words: Vec<PreparedWord>,
-    scratch: std::cell::RefCell<ScoreScratch>,
+    scratch: std::sync::Mutex<ScoreScratch>,
 }
 
 struct PreparedWord {
@@ -558,7 +623,7 @@ impl PreparedTokenQuery {
             .collect();
         Self {
             words,
-            scratch: std::cell::RefCell::new(ScoreScratch::default()),
+            scratch: std::sync::Mutex::new(ScoreScratch::default()),
         }
     }
 
@@ -567,7 +632,10 @@ impl PreparedTokenQuery {
         if self.words.is_empty() {
             return Some(0);
         }
-        let mut scratch = self.scratch.borrow_mut();
+        let mut scratch = self
+            .scratch
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
         let mut total = 0i32;
         for word in &self.words {
             let best = haystack

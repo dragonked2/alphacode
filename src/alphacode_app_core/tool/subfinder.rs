@@ -27,7 +27,7 @@ impl Tool for SubfinderTool {
     }
 
     fn description(&self) -> &str {
-        "Passive subdomain enumeration using subfinder. Discovers subdomains via multiple sources including crt.sh, virustotal, and others."
+        "Passive subdomain enumeration using subfinder. Use ONLY when task is organization/domain-scope enumeration (user gave a base domain/org and asks to discover assets). Do NOT use for single-service work where user gave exactly one URL to test directly — there is nothing to enumerate."
     }
 
     fn parameters_schema(&self) -> Value {
@@ -65,7 +65,7 @@ impl Tool for SubfinderTool {
     }
 
     async fn execute(&self, input: Value, _ctx: ToolContext) -> Result<ToolOutput> {
-        let params: SubfinderInput = serde_json::from_value(input)?;
+        let params: SubfinderInput = normalize_subfinder_input(&input)?;
         let args = build_args(&params);
 
         let output = tokio::process::Command::new("subfinder")
@@ -78,8 +78,25 @@ impl Tool for SubfinderTool {
             })?;
 
         if !output.status.success() {
-            let stderr = String::from_utf8_lossy(&output.stderr);
-            return Err(anyhow::anyhow!("subfinder exited with error: {stderr}"));
+            let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+            let stdout = String::from_utf8_lossy(&output.stdout).trim().to_string();
+            // Prefer stderr, fall back to stdout: some builds report the
+            // failure on stdout, and an empty message leaves the model with
+            // nothing to adapt to (it then repeats the call until refused).
+            let detail = if !stderr.is_empty() {
+                crate::alphacode_core::util::truncate_str(&stderr, 500).to_string()
+            } else if !stdout.is_empty() {
+                crate::alphacode_core::util::truncate_str(&stdout, 500).to_string()
+            } else {
+                format!(
+                    "no output for domain '{}' (exit non-zero with empty stderr; \
+                     the target may have no passive sources, the network may block \
+                     source APIs, or provider keys may be missing — try `\"all\": true` \
+                     or verify the domain resolves)",
+                    params.domain
+                )
+            };
+            return Err(anyhow::anyhow!("subfinder exited with error: {detail}"));
         }
 
         let stdout = String::from_utf8_lossy(&output.stdout).to_string();
@@ -117,6 +134,52 @@ impl SubfinderTool {
     }
 }
 
+/// Accept the key spellings models actually send (`target`, `host`, `d`)
+/// in addition to the canonical `domain`, so a wrong key name becomes a
+/// working call instead of a `missing field` failure loop.
+fn normalize_subfinder_input(input: &Value) -> Result<SubfinderInput> {
+    if let Ok(params) = serde_json::from_value::<SubfinderInput>(input.clone()) {
+        return Ok(params);
+    }
+    let obj = input.as_object().ok_or_else(|| {
+        anyhow::anyhow!(
+            "subfinder expects a JSON object with `domain`, e.g. \
+             {{\"domain\": \"example.com\"}}"
+        )
+    })?;
+    let domain = ["domain", "target", "host", "domain_name", "d"]
+        .iter()
+        .find_map(|k| obj.get(*k).and_then(|v| v.as_str()))
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .ok_or_else(|| {
+            let mut keys: Vec<&String> = obj.keys().collect();
+            keys.sort();
+            let keys = keys
+                .iter()
+                .map(|k| format!("`{k}`"))
+                .collect::<Vec<_>>()
+                .join(", ");
+            anyhow::anyhow!(
+                "missing field `domain`. Received keys: {keys}. \
+                 Provide the base domain as `domain`, e.g. \
+                 {{\"domain\": \"example.com\"}}"
+            )
+        })?;
+    Ok(SubfinderInput {
+        domain: domain.to_string(),
+        all: obj.get("all").and_then(|v| v.as_bool()).unwrap_or(false),
+        threads: obj
+            .get("threads")
+            .and_then(|v| v.as_u64())
+            .map(|n| n as usize),
+        verbose: obj
+            .get("verbose")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false),
+    })
+}
+
 fn build_args(params: &SubfinderInput) -> Vec<String> {
     let mut args = Vec::new();
     args.push("-d".to_string());
@@ -141,6 +204,18 @@ fn build_args(params: &SubfinderInput) -> Vec<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn test_normalize_accepts_domain_aliases() {
+        for payload in [
+            serde_json::json!({"target": "example.com"}),
+            serde_json::json!({"host": "example.com"}),
+        ] {
+            let params = normalize_subfinder_input(&payload).expect("normalize");
+            assert_eq!(params.domain, "example.com");
+        }
+        assert!(normalize_subfinder_input(&serde_json::json!({})).is_err());
+    }
 
     #[test]
     fn test_build_args_basic() {

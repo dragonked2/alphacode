@@ -26,10 +26,16 @@ struct MessageCacheState {
 }
 
 impl MessageCacheState {
+    #[allow(dead_code)]
     fn get(&self, key: &MessageCacheKey) -> Option<Vec<Line<'static>>> {
         self.entries.get(key).map(|arc| arc.as_ref().clone())
     }
 
+    fn get_shared(&self, key: &MessageCacheKey) -> Option<Arc<Vec<Line<'static>>>> {
+        self.entries.get(key).cloned()
+    }
+
+    #[allow(dead_code)]
     fn insert(&mut self, key: MessageCacheKey, lines: Vec<Line<'static>>) {
         let arc = Arc::new(lines);
         if let std::collections::hash_map::Entry::Occupied(mut entry) =
@@ -40,6 +46,24 @@ impl MessageCacheState {
         }
 
         self.entries.insert(key.clone(), arc);
+        self.order.push_back(key);
+
+        while self.order.len() > MESSAGE_CACHE_LIMIT {
+            if let Some(oldest) = self.order.pop_front() {
+                self.entries.remove(&oldest);
+            }
+        }
+    }
+
+    fn insert_shared(&mut self, key: MessageCacheKey, lines: Arc<Vec<Line<'static>>>) {
+        if let std::collections::hash_map::Entry::Occupied(mut entry) =
+            self.entries.entry(key.clone())
+        {
+            entry.insert(lines);
+            return;
+        }
+
+        self.entries.insert(key.clone(), lines);
         self.order.push_back(key);
 
         while self.order.len() > MESSAGE_CACHE_LIMIT {
@@ -105,8 +129,26 @@ pub fn get_cached_message_lines<F>(
 where
     F: FnOnce(&DisplayMessage, u16, DiffDisplayMode) -> Vec<Line<'static>>,
 {
+    get_cached_message_lines_shared(msg, width, diff_mode, context, render)
+        .as_ref()
+        .clone()
+}
+
+/// Zero-copy variant: returns `Arc` so hot per-frame hits share the cached
+/// `Vec<Line>` without deep-cloning every `Span`/`String`. Prefer this in
+/// render loops; only clone to `Vec` at the final draw boundary if needed.
+pub fn get_cached_message_lines_shared<F>(
+    msg: &DisplayMessage,
+    width: u16,
+    diff_mode: DiffDisplayMode,
+    context: MessageCacheContext,
+    render: F,
+) -> Arc<Vec<Line<'static>>>
+where
+    F: FnOnce(&DisplayMessage, u16, DiffDisplayMode) -> Vec<Line<'static>>,
+{
     if cfg!(test) {
-        return render(msg, width, diff_mode);
+        return Arc::new(render(msg, width, diff_mode));
     }
 
     let key = MessageCacheKey {
@@ -122,16 +164,27 @@ where
         tool_call_details: context.tool_call_details,
     };
 
+    // Fast path: shared hit with a single lock, no deep clone.
+    {
+        let cache = match message_cache().lock() {
+            Ok(c) => c,
+            Err(poisoned) => poisoned.into_inner(),
+        };
+        if let Some(shared) = cache.get_shared(&key) {
+            return shared;
+        }
+    }
+
+    let lines = Arc::new(render(msg, width, diff_mode));
     let mut cache = match message_cache().lock() {
         Ok(c) => c,
         Err(poisoned) => poisoned.into_inner(),
     };
-    if let Some(lines) = cache.get(&key) {
-        return lines;
+    // Re-check under lock: another thread may have inserted while rendering.
+    if let Some(shared) = cache.get_shared(&key) {
+        return shared;
     }
-
-    let lines = render(msg, width, diff_mode);
-    cache.insert(key, lines.clone());
+    cache.insert_shared(key, Arc::clone(&lines));
     lines
 }
 

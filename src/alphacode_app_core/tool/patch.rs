@@ -59,7 +59,47 @@ impl Tool for PatchTool {
     }
 
     async fn execute(&self, input: Value, ctx: ToolContext) -> Result<ToolOutput> {
-        let params: PatchInput = serde_json::from_value(input)?;
+        // Alias-tolerant extraction (parity with apply_patch): models often
+        // send `patch`, `content`, or `diff` instead of `patch_text`.
+        let patch_text = if let Some(obj) = input.as_object() {
+            let mut found: Option<String> = None;
+            for key in [
+                "patch_text",
+                "patch",
+                "patch_content",
+                "content",
+                "diff",
+                "text",
+            ] {
+                if let Some(value) = obj.get(key).and_then(|v| v.as_str()) {
+                    found = Some(value.to_string());
+                    break;
+                }
+            }
+            match found {
+                Some(text) => text,
+                None => {
+                    let mut keys: Vec<&String> = obj.keys().collect();
+                    keys.sort();
+                    let keys = keys
+                        .iter()
+                        .map(|k| format!("`{k}`"))
+                        .collect::<Vec<_>>()
+                        .join(", ");
+                    anyhow::bail!(
+                        "missing field `patch_text`. Received keys: {keys}. \
+                         Send the unified diff as a string under `patch_text`."
+                    );
+                }
+            }
+        } else {
+            anyhow::bail!(
+                "missing field `patch_text`: expected a JSON object with a `patch_text` string"
+            );
+        };
+        let params = PatchInput {
+            patch_text: patch_text.clone(),
+        };
 
         let patches = parse_patch(&params.patch_text)?;
 

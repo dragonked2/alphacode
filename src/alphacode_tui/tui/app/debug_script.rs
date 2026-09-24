@@ -126,17 +126,13 @@ impl App {
                 },
                 "matches" => match (&actual, &expected) {
                     (serde_json::Value::String(a), serde_json::Value::String(pattern)) => {
-                        regex::Regex::new(pattern)
-                            .map(|re| re.is_match(a))
-                            .unwrap_or(false)
+                        cached_debug_regex(pattern).is_some_and(|re| re.is_match(a))
                     }
                     _ => false,
                 },
                 "not_matches" => match (&actual, &expected) {
                     (serde_json::Value::String(a), serde_json::Value::String(pattern)) => {
-                        regex::Regex::new(pattern)
-                            .map(|re| !re.is_match(a))
-                            .unwrap_or(true)
+                        cached_debug_regex(pattern).is_some_and(|re| !re.is_match(a))
                     }
                     _ => true,
                 },
@@ -553,4 +549,25 @@ impl App {
         self.handle_key_event(key_event);
         Ok(format!("injected {:?} with {:?}", key_code, modifiers))
     }
+}
+
+/// Cached debug-script regexes: `matches`/`not_matches` assertions previously
+/// compiled a fresh `Regex` per assertion per step (100µs+ each). Cache
+/// process-global with `Box::leak` since patterns repeat across script runs.
+fn cached_debug_regex(pattern: &str) -> Option<&'static regex::Regex> {
+    use std::collections::HashMap;
+    use std::sync::{Mutex, OnceLock};
+    static CACHE: OnceLock<Mutex<HashMap<String, &'static regex::Regex>>> = OnceLock::new();
+    let lock = CACHE.get_or_init(|| Mutex::new(HashMap::new()));
+    if let Ok(guard) = lock.lock()
+        && let Some(&re) = guard.get(pattern)
+    {
+        return Some(re);
+    }
+    let re = regex::Regex::new(pattern).ok()?;
+    let leaked: &'static regex::Regex = Box::leak(Box::new(re));
+    if let Ok(mut guard) = lock.lock() {
+        guard.insert(pattern.to_string(), leaked);
+    }
+    Some(leaked)
 }

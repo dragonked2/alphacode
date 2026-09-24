@@ -153,7 +153,7 @@ impl Default for BrowserTool {
 }
 
 fn browser_tool_description_text() -> &'static str {
-    "Control the browser. Check action='status' first; run setup only if not ready. To navigate, use action='open' with url ('navigate' is an alias; 'open' requires url). \
+    "Control the browser for JS-heavy INTERACTIVE pages only (login flows, dynamic DOM, click-through). For read-only research/listings/docs/APIs use webfetch/websearch FIRST — never browser. Check action='status' ONCE; if not ready, fall back immediately to webfetch/websearch and do NOT retry open/setup in a loop (max 1 setup per session). To navigate, use action='open' with url ('navigate' is an alias; 'open' requires url). \
      For cookies use 'get_cookies' (real bridge call, sees HttpOnly) or 'list_cookies' (legacy eval, misses HttpOnly); 'set_cookies'/'delete_cookie' to write. \
      For eval scripts use `return <expr>` for values; top-level `await` IS supported. \
      Do NOT use Playwright/Response APIs - fetch() already resolves text. \
@@ -702,7 +702,7 @@ async fn ensure_firefox_ready() -> Result<Option<String>> {
     }
 
     let mut message = String::from(
-        "Browser automation is not ready yet. Use the browser tool with action='status' to confirm current state. Only run action='setup' or `alphacode browser setup` for first-time install or repair when the bridge is not already ready.\n",
+        "Browser automation is not ready yet. Check action='status' ONCE to confirm, then STOP retrying browser open/setup (max 1 setup per session). For read-only research/listings/docs fall back immediately to webfetch/websearch — do not loop on browser actions until ready.\n",
     );
     if !status.binary_installed {
         message.push_str("Browser bridge binary is not installed yet.\n");
@@ -719,7 +719,7 @@ async fn ensure_firefox_ready() -> Result<Option<String>> {
         message.push_str("Browser bridge binaries are installed, but the live Firefox bridge is not responding.\n");
     }
     message.push_str(
-        "Normal browser tool calls will not reopen the installer automatically anymore. Do not retry browser actions until status reports ready. Continue with another available capability; if the goal requires an external capability unavailable in this session, use capability discovery.",
+        "Normal browser tool calls will not reopen the installer automatically anymore. Do not retry browser actions until status reports ready. Use webfetch for direct HTTP reads and websearch to discover correct URLs; only return to browser for JS-heavy interactive pages webfetch cannot render.",
     );
     anyhow::bail!(message)
 }

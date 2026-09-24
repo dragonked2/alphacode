@@ -126,6 +126,7 @@ fn main() {
 
     emit_build_environment(&info);
     configure_mmdr();
+    configure_browser_bridge(&repo_root);
 }
 
 fn default_build_version(base: Version) -> String {
@@ -474,6 +475,66 @@ fn configure_mmdr() {
 
     if !disabled && explicitly_available {
         println!("cargo:rustc-cfg={CFG_MMDR_SIZE_API}");
+    }
+}
+
+// -----------------------------------------------------------------------------
+// Browser bridge (Firefox extension)
+// -----------------------------------------------------------------------------
+//
+// The Firefox extension `browser-agent-bridge.xpi` lives at the repository
+// root and is compiled into the binary via
+// `include_bytes!("../../browser-agent-bridge.xpi")` in
+// `src/alphacode_base/browser.rs`. Cargo tracks `include_bytes!` inputs
+// automatically, but an explicit `rerun-if-changed` makes the dependency
+// obvious and guarantees every `cargo build` / `cargo check` re-embeds the
+// current XPI. This function also validates the file early so a missing or
+// corrupt XPI fails with a clear message instead of a cryptic
+// `include_bytes!` error, and exposes its size as a build-time env var.
+fn configure_browser_bridge(repo_root: &Path) {
+    let xpi = repo_root.join("browser-agent-bridge.xpi");
+    println!("cargo:rerun-if-changed={}", xpi.display());
+
+    // Track the extension source docs as well: if they change, remind the
+    // maintainer to rebuild the XPI. They are optional (the prebuilt XPI is
+    // the source of truth — docs/bridge is currently only a partial mirror).
+    let bridge_src = repo_root.join("docs").join("bridge");
+    for candidate in ["manifest.json", "background.js", "content.js"] {
+        println!(
+            "cargo:rerun-if-changed={}",
+            bridge_src.join(candidate).display()
+        );
+    }
+
+    match fs::metadata(&xpi) {
+        Ok(meta) => {
+            println!("cargo:rustc-env=ALPHACODE_BROWSER_XPI_BYTES={}", meta.len());
+            if meta.len() == 0 {
+                println!(
+                    "cargo:warning=browser-agent-bridge.xpi is empty; `browser setup` will install an empty extension"
+                );
+            }
+            // Lightweight zip sanity check: an XPI is a ZIP archive, so it
+            // must start with the PK magic bytes.
+            if let Ok(bytes) = fs::read(&xpi) {
+                let is_zip = bytes.len() >= 4
+                    && bytes[0] == b'P'
+                    && bytes[1] == b'K'
+                    && (bytes[2] == 0x03 || bytes[2] == 0x05 || bytes[2] == 0x07)
+                    && (bytes[3] == 0x04 || bytes[3] == 0x06 || bytes[3] == 0x08);
+                if !is_zip {
+                    println!(
+                        "cargo:warning=browser-agent-bridge.xpi does not look like a ZIP archive; Firefox may refuse to install it"
+                    );
+                }
+            }
+        }
+        Err(_) => {
+            println!(
+                "cargo:warning=browser-agent-bridge.xpi not found at {}; the build will fail in `include_bytes!` — restore the file from git or rebuild the extension",
+                xpi.display()
+            );
+        }
     }
 }
 

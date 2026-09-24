@@ -800,6 +800,7 @@ impl BashTool {
 
 #[derive(Deserialize)]
 struct BashInput {
+    #[serde(alias = "cmd", alias = "commands", alias = "script", alias = "shell")]
     command: String,
     #[serde(default)]
     intent: Option<String>,
@@ -845,7 +846,44 @@ impl Tool for BashTool {
     }
 
     async fn execute(&self, input: Value, ctx: ToolContext) -> Result<ToolOutput> {
-        let mut params: BashInput = serde_json::from_value(input)?;
+        // Alias-tolerant parse first: models often send `cmd`/`script`.
+        // Falls back to a key-listing error so the retry can actually fix it.
+        let mut params: BashInput = match serde_json::from_value(input.clone()) {
+            Ok(params) => params,
+            Err(_) => {
+                let obj = input.as_object().ok_or_else(|| {
+                    anyhow::anyhow!(
+                        "bash expects a JSON object with `command`, e.g. \
+                         {{\"command\": \"ls -la\"}}"
+                    )
+                })?;
+                let command = ["command", "cmd", "commands", "script", "shell"]
+                    .iter()
+                    .find_map(|k| obj.get(*k).and_then(|v| v.as_str()))
+                    .ok_or_else(|| {
+                        let mut keys: Vec<&String> = obj.keys().collect();
+                        keys.sort();
+                        let keys = keys
+                            .iter()
+                            .map(|k| format!("`{k}`"))
+                            .collect::<Vec<_>>()
+                            .join(", ");
+                        anyhow::anyhow!(
+                            "missing field `command`. Received keys: {keys}. \
+                             Provide the shell command as `command`, e.g. \
+                             {{\"command\": \"ls -la\"}}"
+                        )
+                    })?;
+                let mut value = input.clone();
+                if let Some(obj) = value.as_object_mut() {
+                    obj.insert(
+                        "command".to_string(),
+                        serde_json::Value::String(command.to_string()),
+                    );
+                }
+                serde_json::from_value(value)?
+            }
+        };
         let run_in_background = params.run_in_background.unwrap_or(false);
 
         // Destructive-command gate: refuse only commands that would destroy a

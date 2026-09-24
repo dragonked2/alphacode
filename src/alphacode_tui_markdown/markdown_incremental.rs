@@ -1,8 +1,11 @@
 use super::*;
 
 pub struct IncrementalMarkdownRenderer {
-    /// Previously rendered lines
+    /// Previously rendered lines, shared so streaming hits avoid a deep
+    /// `Vec<Line>` clone per token batch. `rendered_lines` mirrors the Arc
+    /// for legacy `update()` callers; new code should use `update_shared()`.
     rendered_lines: Vec<Line<'static>>,
+    rendered_shared: std::sync::Arc<Vec<Line<'static>>>,
     /// Text that was rendered (for comparison)
     rendered_text: String,
     /// Position of last safe checkpoint (after complete block)
@@ -27,6 +30,7 @@ impl IncrementalMarkdownRenderer {
     pub fn new(max_width: Option<usize>) -> Self {
         Self {
             rendered_lines: Vec::new(),
+            rendered_shared: std::sync::Arc::new(Vec::new()),
             rendered_text: String::new(),
             last_checkpoint: 0,
             lines_at_checkpoint: 0,
@@ -44,7 +48,19 @@ impl IncrementalMarkdownRenderer {
     /// 2. Finding safe re-render points (after complete blocks)
     /// 3. Only re-rendering from the last safe point
     pub fn update(&mut self, full_text: &str) -> Vec<Line<'static>> {
-        with_streaming_render_context(|| self.update_internal(full_text))
+        self.update_shared(full_text).as_ref().clone()
+    }
+
+    /// Zero-copy variant: shares the cached `Vec<Line>` via `Arc`.
+    /// Streaming render loops should prefer this to avoid cloning every
+    /// `Span`/`String` on each token batch.
+    pub fn update_shared(&mut self, full_text: &str) -> std::sync::Arc<Vec<Line<'static>>> {
+        with_streaming_render_context(|| self.update_internal_shared(full_text))
+    }
+
+    /// Borrow the last rendered lines without cloning.
+    pub fn last_lines(&self) -> &[Line<'static>] {
+        &self.rendered_lines
     }
 
     pub fn debug_memory_profile(&self) -> serde_json::Value {
@@ -60,7 +76,12 @@ impl IncrementalMarkdownRenderer {
         })
     }
 
+    #[allow(dead_code)]
     fn update_internal(&mut self, full_text: &str) -> Vec<Line<'static>> {
+        self.update_internal_shared(full_text).as_ref().clone()
+    }
+
+    fn update_internal_shared(&mut self, full_text: &str) -> std::sync::Arc<Vec<Line<'static>>> {
         // Fast path: text unchanged. Not taken while a deferred mermaid
         // placeholder is baked into the cached lines and the deferred render
         // epoch has advanced: the background render finished, so re-render to
@@ -69,7 +90,7 @@ impl IncrementalMarkdownRenderer {
             && !(self.rendered_mermaid_pending
                 && mermaid::deferred_render_epoch() != self.rendered_mermaid_epoch)
         {
-            return self.rendered_lines.clone();
+            return std::sync::Arc::clone(&self.rendered_shared);
         }
 
         // Full re-render required.
@@ -82,19 +103,29 @@ impl IncrementalMarkdownRenderer {
         // The epoch is read *before* rendering: if a background diagram render
         // completes mid-render, the stamp is already older than the new epoch
         // and the next update re-renders instead of waiting forever.
+        //
+        // PERF: skip re-render when only a single streaming char was appended
+        // inside an open fence/math block tail AND the text is very long?
+        // Full parse is still required for correctness, but we avoid a second
+        // `String` copy by reusing capacity and share lines via `Arc`.
         let mermaid_epoch_before = mermaid::deferred_render_epoch();
-        self.rendered_lines = render_markdown_with_width(full_text, self.max_width);
-        self.rendered_text = full_text.to_string();
-        self.rendered_mermaid_pending = self
-            .rendered_lines
-            .iter()
-            .any(line_is_mermaid_pending_placeholder);
+        let lines = render_markdown_with_width(full_text, self.max_width);
+        self.rendered_mermaid_pending = lines.iter().any(line_is_mermaid_pending_placeholder);
         self.rendered_mermaid_epoch = mermaid_epoch_before;
+
+        // Reuse the text buffer capacity across streaming deltas.
+        self.rendered_text.clear();
+        self.rendered_text.push_str(full_text);
+        self.rendered_lines = lines;
+        self.rendered_shared = std::sync::Arc::new(std::mem::take(&mut self.rendered_lines));
+        // Keep the `Vec` mirror for `last_lines()` without a second deep clone
+        // on the next fast path: clone once here, share afterwards.
+        self.rendered_lines = self.rendered_shared.as_ref().clone();
 
         // Find checkpoint for next incremental update
         self.refresh_checkpoint(full_text, true);
 
-        self.rendered_lines.clone()
+        std::sync::Arc::clone(&self.rendered_shared)
     }
 
     /// Find the last complete block in text
@@ -237,6 +268,7 @@ impl IncrementalMarkdownRenderer {
     /// Reset the renderer state
     pub fn reset(&mut self) {
         self.rendered_lines.clear();
+        self.rendered_shared = std::sync::Arc::new(Vec::new());
         self.rendered_text.clear();
         self.last_checkpoint = 0;
         self.lines_at_checkpoint = 0;

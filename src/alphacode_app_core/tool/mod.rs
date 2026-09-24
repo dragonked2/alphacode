@@ -153,7 +153,7 @@ pub(crate) fn agent_facing_error(tool_name: &str, error: &anyhow::Error) -> Stri
                 None
             }
         }
-        "write" | "apply_patch" | "patch" => {
+        "write" => {
             if base.contains("permission")
                 || base.contains("read-only")
                 || base.contains("readonly")
@@ -164,6 +164,22 @@ pub(crate) fn agent_facing_error(tool_name: &str, error: &anyhow::Error) -> Stri
             } else if base.contains("missing field") {
                 Some(
                     "The tool call is missing required fields. For write, provide {\"file_path\": \"/path/to/file\", \"content\": \"file content\"}.",
+                )
+            } else {
+                None
+            }
+        }
+        "apply_patch" | "patch" => {
+            if base.contains("permission")
+                || base.contains("read-only")
+                || base.contains("readonly")
+            {
+                Some(
+                    "Check whether the path is outside the working directory or read-only; ask the user before writing outside the project.",
+                )
+            } else if base.contains("missing field") {
+                Some(
+                    "The tool call is missing required fields. For apply_patch, provide {\"patch_text\": \"*** Begin Patch\\n*** Update File: path/to/file\\n@@\\n- old\\n+ new\\n*** End Patch\"}.",
                 )
             } else {
                 None
@@ -853,10 +869,28 @@ impl Registry {
         let prior_failures =
             repeat_guard::prior_failures(&ctx.session_id, resolved_name, true, &input);
         if prior_failures >= repeat_guard::IDENTICAL_FAILURE_LIMIT {
+            // Quote the last failure so the model knows WHAT to change: a
+            // generic "change the arguments" gives it nothing to adapt to and
+            // it repeats the call byte-identically until this guard fires.
+            let last_error = repeat_guard::last_error(&ctx.session_id, resolved_name, true, &input)
+                .map(|e| format!("\nLast error: {e}"))
+                .unwrap_or_default();
+            let received_keys = input
+                .as_object()
+                .map(|obj| {
+                    let mut keys: Vec<&String> = obj.keys().collect();
+                    keys.sort();
+                    keys.iter()
+                        .map(|k| format!("`{k}`"))
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                })
+                .map(|keys| format!("\nReceived keys: {keys}"))
+                .unwrap_or_default();
             let msg = format!(
                 "Refusing to run `{resolved_name}` again: this identical call already failed \
-                 {prior_failures} times in this session. Change the arguments or the approach — \
-                 repeating it cannot succeed. Use a different tool if the input is already correct."
+                 {prior_failures} times in this session. Repeating it cannot succeed — \
+                 change the arguments or use a different tool.{last_error}{received_keys}"
             );
             crate::logging::warn(&format!(
                 "Repeat-failure guard blocked '{resolved_name}' (prior failures: {prior_failures}) \
@@ -912,7 +946,13 @@ impl Registry {
         let latency_ms = started_at.elapsed().as_millis().min(u128::from(u64::MAX)) as u64;
         match &result {
             Ok(_) => repeat_guard::record_success(&ctx.session_id, resolved_name, &input),
-            Err(_) => repeat_guard::record_failure(&ctx.session_id, resolved_name, true, &input),
+            Err(error) => repeat_guard::record_failure_with_error(
+                &ctx.session_id,
+                resolved_name,
+                true,
+                &input,
+                Some(&crate::util::format_error_chain(error)),
+            ),
         }
 
         crate::telemetry::record_tool_execution(resolved_name, &input, result.is_ok(), latency_ms);

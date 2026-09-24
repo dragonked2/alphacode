@@ -30,7 +30,9 @@ pub(crate) fn generic_batch_schema() -> Value {
                     "additionalProperties": true
                 },
                 "minItems": 1,
-                "maxItems": 10
+                // Keep in sync with MAX_PARALLEL: a mismatch teaches the model
+                // a wrong limit (accuracy) and rejects valid plans.
+                "maxItems": 20
             }
         }
     })
@@ -280,13 +282,16 @@ impl Tool for BatchTool {
         // Restore original order
         results.sort_by_key(|(i, _, _)| *i);
 
-        // Format results
-        let mut output = String::new();
+        // Format results: pre-size to avoid O(n^2) regrowth on large
+        // fan-outs (20 x 50KB outputs). Estimate 4KB per tool upfront.
+        let mut output = String::with_capacity(num_tools * 4096);
         let mut success_count = 0;
         let mut error_count = 0;
         let mut failed_tools = Vec::new();
 
         for (i, tool_name, result) in results {
+            // Single `format!` per subcall (not per chunk) is fine; the
+            // `with_capacity` above avoids regrowth on large outputs.
             output.push_str(&format!("--- [{}] {} ---\n", i + 1, tool_name));
             match result {
                 Ok(out) => {

@@ -123,7 +123,14 @@ impl Tool for HttpxTool {
     }
 
     async fn execute(&self, input: Value, _ctx: ToolContext) -> Result<ToolOutput> {
-        let params: HttpxInput = serde_json::from_value(input)?;
+        let params: HttpxInput = normalize_httpx_input(&input)?;
+        if params.targets.is_empty() && params.list.is_none() {
+            return Err(anyhow::anyhow!(
+                "httpx needs targets: provide `targets` (array of URLs/hosts) or `list` \
+                 (path to a file with one target per line), e.g. \
+                 {{\"targets\": [\"https://example.com\"], \"title\": true, \"tech_detect\": true}}"
+            ));
+        }
         let args = build_args(&params);
 
         let output = tokio::process::Command::new("httpx")
@@ -136,8 +143,36 @@ impl Tool for HttpxTool {
             })?;
 
         if !output.status.success() {
-            let stderr = String::from_utf8_lossy(&output.stderr);
-            return Err(anyhow::anyhow!("httpx exited with error: {stderr}"));
+            let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+            let stdout = String::from_utf8_lossy(&output.stdout).trim().to_string();
+            // The Python `httpx` CLI (a different tool with the same name) prints
+            // `Usage: httpx [OPTIONS] URL`. When it shadows ProjectDiscovery's
+            // httpx on PATH, every probe fails with a usage error — detect it
+            // and tell the user how to fix PATH instead of a cryptic usage line.
+            if stderr.contains("Usage: httpx [OPTIONS] URL")
+                || stdout.contains("Usage: httpx [OPTIONS] URL")
+            {
+                return Err(anyhow::anyhow!(
+                    "httpx failed: the `httpx` on PATH is the Python HTTP client, not \
+                     ProjectDiscovery's httpx. Install the right binary \
+                     (go install github.com/projectdiscovery/httpx/cmd/httpx@latest) \
+                     and make sure it comes first on PATH (`where httpx` on Windows, \
+                     `which -a httpx` elsewhere)."
+                ));
+            }
+            let detail = if stderr.is_empty() {
+                if stdout.is_empty() {
+                    "no output (binary exited non-zero with empty stderr; \
+                     check that the targets are reachable and the httpx binary is \
+                     ProjectDiscovery's httpx)"
+                        .to_string()
+                } else {
+                    crate::alphacode_core::util::truncate_str(&stdout, 500).to_string()
+                }
+            } else {
+                crate::alphacode_core::util::truncate_str(&stderr, 500).to_string()
+            };
+            return Err(anyhow::anyhow!("httpx exited with error: {detail}"));
         }
 
         let stdout = String::from_utf8_lossy(&output.stdout).to_string();
@@ -173,6 +208,56 @@ impl HttpxTool {
     }
 }
 
+/// Accept the key spellings models actually send: `target`/`url`/`host`
+/// (singular string or array) in addition to the canonical `targets` array.
+fn normalize_httpx_input(input: &Value) -> Result<HttpxInput> {
+    let mut params: HttpxInput = serde_json::from_value(input.clone()).unwrap_or(HttpxInput {
+        list: None,
+        targets: Vec::new(),
+        status_codes: None,
+        title: false,
+        tech_detect: false,
+        web_server: false,
+        content_type: false,
+        response_size: false,
+        method: false,
+        tls: false,
+        cdn: false,
+        chains: false,
+        threads: None,
+        timeout: None,
+        follow_redirects: false,
+        no_color: false,
+    });
+    if !params.targets.is_empty() {
+        return Ok(params);
+    }
+    let obj = match input.as_object() {
+        Some(obj) => obj,
+        None => return Ok(params),
+    };
+    let mut extra: Vec<String> = Vec::new();
+    for key in ["targets", "target", "url", "urls", "host", "hosts", "u"] {
+        if let Some(value) = obj.get(key) {
+            if let Some(s) = value.as_str() {
+                if !s.trim().is_empty() {
+                    extra.push(s.trim().to_string());
+                }
+            } else if let Some(arr) = value.as_array() {
+                for item in arr {
+                    if let Some(s) = item.as_str()
+                        && !s.trim().is_empty()
+                    {
+                        extra.push(s.trim().to_string());
+                    }
+                }
+            }
+        }
+    }
+    params.targets.extend(extra);
+    Ok(params)
+}
+
 fn build_args(params: &HttpxInput) -> Vec<String> {
     let mut args = Vec::new();
 
@@ -180,8 +265,9 @@ fn build_args(params: &HttpxInput) -> Vec<String> {
         args.push("-l".to_string());
         args.push(list.clone());
     } else if !params.targets.is_empty() {
+        // `-u` is the long-standing per-target flag across httpx releases.
         for target in &params.targets {
-            args.push("-target".to_string());
+            args.push("-u".to_string());
             args.push(target.clone());
         }
     }
@@ -239,6 +325,24 @@ fn build_args(params: &HttpxInput) -> Vec<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn test_normalize_accepts_singular_aliases() {
+        for payload in [
+            serde_json::json!({"target": "https://example.com"}),
+            serde_json::json!({"url": "https://example.com"}),
+            serde_json::json!({"targets": "https://example.com"}),
+            serde_json::json!({"hosts": ["a.com", "b.com"]}),
+        ] {
+            let params = normalize_httpx_input(&payload).expect("normalize");
+            assert!(
+                !params.targets.is_empty(),
+                "expected targets from {payload}"
+            );
+        }
+        let empty = normalize_httpx_input(&serde_json::json!({})).expect("normalize");
+        assert!(empty.targets.is_empty());
+    }
 
     #[test]
     fn test_build_args_with_list() {

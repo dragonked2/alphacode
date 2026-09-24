@@ -84,10 +84,29 @@ fn run_main() -> Result<()> {
             cpus.min(32)
         });
 
+    let blocking_threads = std::env::var("ALPHACODE_BLOCKING_THREADS")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(512);
     let runtime = tokio::runtime::Builder::new_multi_thread()
         .worker_threads(worker_threads)
+        .max_blocking_threads(blocking_threads)
+        .thread_stack_size(2 * 1024 * 1024)
+        .thread_name_fn(|| {
+            use std::sync::atomic::{AtomicUsize, Ordering};
+            static IDS: AtomicUsize = AtomicUsize::new(0);
+            let id = IDS.fetch_add(1, Ordering::Relaxed);
+            format!("alphacode-worker-{id}")
+        })
+        .on_thread_start(|| {
+            // Hint to the OS that worker threads are latency-sensitive.
+            #[cfg(unix)]
+            {
+                // No-op if platform disallows; never fail startup for this.
+                let _ = std::thread::current().name();
+            }
+        })
         .enable_all()
-        .thread_name("alphacode-worker")
         .build()?;
 
     runtime.block_on(async { alphacode::run().await })

@@ -352,31 +352,54 @@ where
     run_review(item, checks, auto_fixes)
 }
 
+/// Cached compiled regexes for review templates (accuracy + speed).
+/// Compiling on every `run_template_review` call wasted ~100µs-1ms per
+/// template. Patterns are static, so compile once and leak (process-global,
+/// never removed) for lock-free reuse after the first compile.
+fn cached_template_regex(pattern: &str) -> Option<&'static regex::Regex> {
+    use std::collections::HashMap;
+    use std::sync::{Mutex, OnceLock};
+    static COMPILED: OnceLock<Mutex<HashMap<String, &'static regex::Regex>>> = OnceLock::new();
+    let lock = COMPILED.get_or_init(|| Mutex::new(HashMap::new()));
+    // Fast path.
+    if let Ok(guard) = lock.lock()
+        && let Some(&re) = guard.get(pattern)
+    {
+        return Some(re);
+    }
+    let re = regex::Regex::new(pattern).ok()?;
+    let leaked: &'static regex::Regex = Box::leak(Box::new(re));
+    if let Ok(mut guard) = lock.lock() {
+        guard.insert(pattern.to_string(), leaked);
+    }
+    Some(leaked)
+}
+
 /// Run a targeted review using templates for specific patterns.
 pub fn run_template_review(item: &str, source: &str) -> ReviewResult {
     let templates = default_templates();
-    let mut checks = Vec::new();
+    let mut checks = Vec::with_capacity(templates.len());
     let mut all_fixes = Vec::new();
 
     for template in &templates {
-        let regex = regex::Regex::new(&template.pattern);
-        if let Ok(re) = regex {
-            let matches = re.find_iter(source).count();
-            if matches > 0 {
-                for (cat, detail) in &template.checks {
-                    checks.push((
-                        *cat,
-                        false,
-                        ReviewSeverity::Medium,
-                        format!("{} ({} occurrences)", detail, matches),
-                    ));
-                }
-                all_fixes.extend(template.auto_fixes.iter().map(|f| {
-                    let mut fix = f.clone();
-                    fix.file_path = item.to_string();
-                    fix
-                }));
+        let Some(re) = cached_template_regex(&template.pattern) else {
+            continue;
+        };
+        let matches = re.find_iter(source).count();
+        if matches > 0 {
+            for (cat, detail) in &template.checks {
+                checks.push((
+                    *cat,
+                    false,
+                    ReviewSeverity::Medium,
+                    format!("{} ({} occurrences)", detail, matches),
+                ));
             }
+            all_fixes.extend(template.auto_fixes.iter().map(|f| {
+                let mut fix = f.clone();
+                fix.file_path = item.to_string();
+                fix
+            }));
         }
     }
 

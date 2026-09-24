@@ -3,15 +3,32 @@ use std::path::PathBuf;
 
 use crate::{platform, storage};
 
-const GITHUB_API_LATEST: &str = "https://api.github.com/repos/dragonked2/alphacode/releases/latest";
+const GITHUB_API_LATEST: &str =
+    "https://api.github.com/repos/1jehuang/firefox-agent-bridge/releases/latest";
 
-// Native host name stays `firefox_agent_bridge` for wire compat with already
-// installed extensions; the user-visible branding is AlphaCode.
-const NATIVE_HOST_NAME: &str = "firefox_agent_bridge";
+// Centralized browser-bridge identity (see ChatGPT review + XPI verification).
+//
+// The bundled `browser-agent-bridge.xpi` (v1.4.1, "AlphaCode Browser Agent")
+// declares:
+//   gecko.id = "alpha-agent@alpha-agent.local"
+//   background.js NATIVE_HOSTS = ["alpha_agent", "firefox_agent_bridge"]
+// Firefox enforces `allowed_extensions` before launching the native host, so
+// the whitelist MUST contain the canonical ID or the bridge can never connect.
+// Old IDs are kept for backward compat during the transition — do NOT drop
+// them until the old XPIs are fully retired.
+pub const BROWSER_EXTENSION_ID: &str = "alpha-agent@alpha-agent.local";
+pub const NATIVE_HOST_NAME_CANONICAL: &str = "alpha_agent";
+/// Legacy host name kept for wire compat: the XPI falls back to it if
+/// `alpha_agent` is not registered, and existing installs already reference it.
+pub const NATIVE_HOST_NAME_LEGACY: &str = "firefox_agent_bridge";
 const EXTENSION_ID_LISTED: &str = "browser-agent-bridge@alphacode.dev";
 // Previous extension ID kept as fallback so existing installs keep working.
 const EXTENSION_ID_LISTED_LEGACY: &str = "browser-agent-bridge@1jehuang.github.io";
 const EXTENSION_ID_LOCAL: &str = "alphacode-browser-bridge@local";
+// The ID of the XPI compiled into this binary (see EMBEDDED_XPI). This is the
+// canonical extension ID for this build; the manifest whitelist must include
+// it or Firefox refuses the native host connection.
+const EXTENSION_ID_EMBEDDED: &str = BROWSER_EXTENSION_ID;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct BrowserStatus {
@@ -71,8 +88,46 @@ fn host_binary_path() -> PathBuf {
     }
 }
 
-fn xpi_path() -> PathBuf {
+pub fn xpi_path() -> PathBuf {
     browser_dir().join("browser-agent-bridge.xpi")
+}
+
+/// The Firefox extension, compiled into the binary from the repository-root
+/// `browser-agent-bridge.xpi`. Every rebuild picks up the current file, so
+/// `browser setup` never needs to download the extension and works offline.
+/// (The native CLI + host binaries are separate programs from an external
+/// release and cannot be embedded — only the XPI lives in this repo.)
+///
+/// `build.rs` emits `cargo:rerun-if-changed` for the XPI so any update to
+/// the file forces a rebuild and refreshes these bytes.
+const EMBEDDED_XPI: &[u8] = include_bytes!("../../browser-agent-bridge.xpi");
+
+/// Raw bytes of the embedded Firefox extension. Exposed so diagnostics,
+/// tests, and the release guard can verify the bridge was compiled in.
+pub fn embedded_xpi_bytes() -> &'static [u8] {
+    EMBEDDED_XPI
+}
+
+/// Length of the embedded XPI in bytes. Used by `browser status` diagnostics
+/// and to keep `EMBEDDED_XPI` referenced even in builds that skip setup.
+pub fn embedded_xpi_len() -> usize {
+    EMBEDDED_XPI.len()
+}
+
+/// Install the embedded extension to the browser dir when it is missing or
+/// differs (a rebuild with a new XPI refreshes the installed copy).
+/// Returns `true` when it wrote the file.
+fn install_embedded_xpi() -> Result<bool> {
+    let path = xpi_path();
+    let current = std::fs::read(&path).ok();
+    if current.as_deref() == Some(EMBEDDED_XPI) {
+        return Ok(false);
+    }
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    write_file_atomically(&path, EMBEDDED_XPI, false)?;
+    Ok(true)
 }
 
 fn setup_marker_path() -> PathBuf {
@@ -240,6 +295,25 @@ pub async fn ensure_browser_setup() -> Result<String> {
 
     std::fs::create_dir_all(browser_dir())?;
 
+    // Step 0 (offline-first): install the XPI compiled into this binary via
+    // `include_bytes!("../../browser-agent-bridge.xpi")`. This guarantees the
+    // extension is available even with no network, and refreshes the installed
+    // copy whenever a rebuild bundles a new XPI. It also keeps
+    // `EMBEDDED_XPI` / `install_embedded_xpi` referenced so `cargo check`
+    // does not report them as dead code.
+    match install_embedded_xpi() {
+        Ok(true) => log.push_str(&format!(
+            "[0/3] Embedded extension ({} bytes, compiled in)... installed to {}\n",
+            embedded_xpi_len(),
+            xpi_path().display()
+        )),
+        Ok(false) => log.push_str("[0/3] Embedded extension... already up to date\n"),
+        Err(e) => log.push_str(&format!(
+            "[0/3] Embedded extension... failed to install: {}\n",
+            e
+        )),
+    }
+
     let initial_status = ensure_browser_ready_noninteractive().await?;
     if initial_status.ready {
         log.push_str("Browser bridge is already set up and responding.\n");
@@ -263,18 +337,33 @@ pub async fn ensure_browser_setup() -> Result<String> {
         log.push_str("Browser bridge is not installed yet. Starting setup...\n");
     }
 
-    // Step 1: Check/download browser bridge assets
+    // Step 1: Check/download native CLI + host binaries.
+    // The XPI is already handled in step 0 from the bytes compiled into this
+    // binary, so a network failure here must not abort setup — the extension
+    // can still be installed manually and the manifest step below can still
+    // run. This matters on Windows where no `browser-windows-x64.exe` /
+    // `host-windows-x64.exe` release assets exist yet.
     if !browser_binary_path().exists()
         || !host_binary_path().exists()
-        || !xpi_path().exists()
         || (initial_status.responding && !initial_status.compatible)
     {
-        log.push_str("[1/3] Downloading browser bridge assets... ");
+        log.push_str("[1/3] Downloading browser bridge binaries... ");
         match download_browser_binary().await {
-            Ok(()) => log.push_str("done\n"),
+            Ok(()) => {
+                log.push_str("done\n");
+                // `download_browser_binary` may have replaced the XPI with the
+                // release copy; restore the compiled-in build so the installed
+                // file always matches this binary.
+                if let Ok(true) = install_embedded_xpi() {
+                    log.push_str("       Restored embedded extension to match this build.\n");
+                }
+            }
             Err(e) => {
                 log.push_str(&format!("failed: {}\n", e));
-                return Ok(log);
+                log.push_str("       Continuing with the embedded extension; native binaries remain missing.\n");
+                // Best-effort: make sure the embedded XPI is on disk even when
+                // the download failed before it could save anything.
+                let _ = install_embedded_xpi();
             }
         }
     } else {
@@ -428,11 +517,15 @@ async fn download_browser_binary() -> Result<()> {
             .await
             .context("Failed to fetch latest release info")?
     } else if status.as_u16() == 404 {
+        // Still leave the compiled-in extension on disk so manual install works.
+        let _ = install_embedded_xpi();
         anyhow::bail!(
             "Browser bridge GitHub release not found (HTTP 404). \
              The release repository 'dragonked2/alphacode' has no browser assets for this platform. \
-             Please check the GITHUB_API_LATEST constant in browser.rs or manually install \
-             the browser bridge binaries into ~/.alphacode/browser/"
+             The embedded Firefox extension ({} bytes) was saved to {} — install it via Firefox > about:addons > Install from file. \
+             For native binaries, manually install the browser bridge binaries into ~/.alphacode/browser/",
+            embedded_xpi_len(),
+            xpi_path().display()
         );
     } else {
         let body = response.text().await.unwrap_or_default();
@@ -446,49 +539,91 @@ async fn download_browser_binary() -> Result<()> {
     let assets = release_info["assets"]
         .as_array()
         .context("No assets in release")?;
+    let available_assets = || {
+        assets
+            .iter()
+            .filter_map(|a| a["name"].as_str())
+            .collect::<Vec<_>>()
+            .join(", ")
+    };
 
     // Find the browser CLI binary
     let browser_asset = assets
         .iter()
-        .find(|a| a["name"].as_str() == Some(&asset_name))
-        .context(format!("No asset found for platform: {}", asset_name))?;
-
-    let download_url = browser_asset["browser_download_url"]
-        .as_str()
-        .context("No download URL")?;
+        .find(|a| a["name"].as_str() == Some(&asset_name));
+    let browser_missing = browser_asset.is_none();
 
     // Find the XPI
-    let xpi_asset = assets
-        .iter()
-        .find(|a| {
-            a["name"]
-                .as_str()
-                .map(|n| n.ends_with(".xpi"))
-                .unwrap_or(false)
-        })
-        .context("No XPI asset found in release")?;
-
-    let xpi_url = xpi_asset["browser_download_url"]
-        .as_str()
-        .context("No XPI download URL")?;
+    let xpi_asset = assets.iter().find(|a| {
+        a["name"]
+            .as_str()
+            .map(|n| n.ends_with(".xpi"))
+            .unwrap_or(false)
+    });
 
     // Find the host binary
     let host_asset_name = get_host_asset_name();
     let host_asset = assets
         .iter()
-        .find(|a| a["name"].as_str() == Some(&host_asset_name))
+        .find(|a| a["name"].as_str() == Some(&host_asset_name));
+    let host_missing = host_asset.is_none();
+
+    // When the release publishes no binaries for this platform (currently the
+    // case for Windows: no `browser-windows-x64.exe` / `host-windows-x64.exe`
+    // assets), fail with the exact expected names plus the full asset list so
+    // the user can confirm the gap instead of guessing. The compiled-in XPI
+    // is installed first so the Firefox extension can still be installed
+    // manually even when the native binaries are unavailable.
+    if browser_missing || host_missing {
+        // Prefer the XPI compiled into this binary (offline, always matches
+        // this build). Fall back to the release XPI only if the embedded
+        // install fails.
+        let embedded_ok = install_embedded_xpi().unwrap_or(false) || xpi_path().exists();
+        if !embedded_ok
+            && let Some(xpi) = xpi_asset
+            && let Some(xpi_url) = xpi["browser_download_url"].as_str()
+        {
+            match client.get(xpi_url).send().await {
+                Ok(response) => match response.bytes().await {
+                    Ok(xpi_bytes) => {
+                        let _ = write_file_atomically(&xpi_path(), &xpi_bytes, false);
+                    }
+                    Err(_) => {}
+                },
+                Err(_) => {}
+            }
+        }
+        let mut missing = Vec::new();
+        if browser_missing {
+            missing.push(format!("browser CLI '{}'", asset_name));
+        }
+        if host_missing {
+            missing.push(format!("native host '{}'", host_asset_name));
+        }
+        anyhow::bail!(
+            "Browser bridge has no {} for this platform ({}-{}). Expected release \
+             asset(s): {}. Available release assets: {}. The Firefox extension (XPI, {} bytes, compiled into this binary) \
+             was saved to {} — install it via Firefox > about:addons > Install from \
+             file. For the missing CLI binaries, build them from source or copy \
+             compatible binaries into {} and re-run `alphacode browser setup`.",
+            missing.join(" and "),
+            std::env::consts::OS,
+            std::env::consts::ARCH,
+            missing.join(", "),
+            available_assets(),
+            embedded_xpi_len(),
+            xpi_path().display(),
+            browser_dir().display()
+        );
+    }
+
+    let download_url = browser_asset
+        .and_then(|a| a["browser_download_url"].as_str())
         .with_context(|| {
-            let available = assets
-                .iter()
-                .filter_map(|a| a["name"].as_str())
-                .collect::<Vec<_>>()
-                .join(", ");
             format!(
-                "No native host asset found for platform: {}. Expected release asset '{}' alongside '{}'. Available assets: {}",
-                std::env::consts::OS,
-                host_asset_name,
+                "Release asset '{}' has no download URL. Available assets: {}",
                 asset_name,
-                available
+                available_assets()
             )
         })?;
 
@@ -504,20 +639,27 @@ async fn download_browser_binary() -> Result<()> {
     let bin_path = browser_binary_path();
     write_file_atomically(&bin_path, &browser_bytes, true)?;
 
-    // Download XPI
-    let xpi_bytes = client
-        .get(xpi_url)
-        .send()
-        .await?
-        .bytes()
-        .await
-        .context("Failed to download XPI")?;
-
-    write_file_atomically(&xpi_path(), &xpi_bytes, false)?;
+    // Install the XPI compiled into this binary as the source of truth.
+    // Older releases may not publish an XPI asset at all; the embedded copy
+    // always matches this build, so prefer it and only fall back to the
+    // release download when the embedded install fails.
+    if install_embedded_xpi().is_err()
+        && let Some(xpi) = xpi_asset
+        && let Some(xpi_url) = xpi["browser_download_url"].as_str()
+    {
+        let xpi_bytes = client
+            .get(xpi_url)
+            .send()
+            .await?
+            .bytes()
+            .await
+            .context("Failed to download XPI")?;
+        write_file_atomically(&xpi_path(), &xpi_bytes, false)?;
+    }
 
     // Download host binary
-    let host_url = host_asset["browser_download_url"]
-        .as_str()
+    let host_url = host_asset
+        .and_then(|a| a["browser_download_url"].as_str())
         .context("No host download URL")?;
     let host_bytes = client
         .get(host_url)
@@ -606,21 +748,65 @@ fn get_host_asset_name() -> String {
     base.replace("browser-", "host-")
 }
 
-fn install_native_host_manifest() -> Result<bool> {
-    let manifest_dir = native_messaging_hosts_dir()?;
-    let manifest_path = manifest_dir.join(format!("{}.json", NATIVE_HOST_NAME));
+fn manifest_allows_canonical(value: &serde_json::Value) -> bool {
+    value
+        .get("allowed_extensions")
+        .and_then(|v| v.as_array())
+        .is_some_and(|list| {
+            list.iter().any(|entry| {
+                entry.as_str() == Some(EXTENSION_ID_EMBEDDED)
+                    || entry.as_str() == Some(BROWSER_EXTENSION_ID)
+            })
+        })
+}
 
-    // Check if an existing manifest is already valid (from independent install or previous setup)
+fn install_single_host_manifest(
+    manifest_dir: &std::path::Path,
+    host_name: &str,
+    effective_host: &str,
+) -> Result<bool> {
+    let manifest_path = manifest_dir.join(format!("{}.json", host_name));
+
+    // Reuse only when the existing manifest already points at a real binary
+    // AND already whitelists the canonical extension ID. Older setups lack
+    // `alpha-agent@alpha-agent.local`, which is exactly the bug that broke
+    // the bridge — those must be rewritten, not skipped.
     if manifest_path.exists()
         && let Ok(contents) = std::fs::read_to_string(&manifest_path)
         && let Ok(existing) = serde_json::from_str::<serde_json::Value>(&contents)
         && let Some(existing_path) = existing["path"].as_str()
         && std::path::Path::new(existing_path).exists()
+        && manifest_allows_canonical(&existing)
+        && existing["name"].as_str() == Some(host_name)
     {
         #[cfg(target_os = "windows")]
-        register_windows_native_host_manifest(&manifest_path)?;
+        register_windows_native_host_manifest(&manifest_path, host_name)?;
         return Ok(false);
     }
+
+    let manifest = serde_json::json!({
+        "name": host_name,
+        "description": "AlphaCode Browser Agent native messaging host (managed by alphacode)",
+        "path": effective_host,
+        "type": "stdio",
+        "allowed_extensions": [
+            EXTENSION_ID_EMBEDDED,
+            EXTENSION_ID_LOCAL,
+            EXTENSION_ID_LISTED,
+            EXTENSION_ID_LISTED_LEGACY,
+        ]
+    });
+
+    std::fs::write(&manifest_path, serde_json::to_string_pretty(&manifest)?)?;
+
+    #[cfg(target_os = "windows")]
+    register_windows_native_host_manifest(&manifest_path, host_name)?;
+
+    Ok(true)
+}
+
+fn install_native_host_manifest() -> Result<bool> {
+    let manifest_dir = native_messaging_hosts_dir()?;
 
     let host_path = host_binary_path();
     let browser_bin = browser_binary_path();
@@ -638,32 +824,23 @@ fn install_native_host_manifest() -> Result<bool> {
 
     std::fs::create_dir_all(&manifest_dir)?;
 
-    let manifest = serde_json::json!({
-        "name": NATIVE_HOST_NAME,
-        "description": "Native host for Firefox Agent Bridge (managed by alphacode)",
-        "path": effective_host,
-        "type": "stdio",
-        "allowed_extensions": [
-            EXTENSION_ID_LOCAL,
-            EXTENSION_ID_LISTED,
-            EXTENSION_ID_LISTED_LEGACY,
-        ]
-    });
+    // The XPI tries `alpha_agent` first, then `firefox_agent_bridge`
+    // (see background.js NATIVE_HOSTS). Install both manifests pointing at
+    // the same host binary so either handshake path works.
+    let canonical =
+        install_single_host_manifest(&manifest_dir, NATIVE_HOST_NAME_CANONICAL, &effective_host)?;
+    let legacy =
+        install_single_host_manifest(&manifest_dir, NATIVE_HOST_NAME_LEGACY, &effective_host)?;
 
-    std::fs::write(&manifest_path, serde_json::to_string_pretty(&manifest)?)?;
-
-    #[cfg(target_os = "windows")]
-    register_windows_native_host_manifest(&manifest_path)?;
-
-    Ok(true)
+    Ok(canonical || legacy)
 }
 
 #[cfg(target_os = "windows")]
-fn register_windows_native_host_manifest(manifest_path: &std::path::Path) -> Result<()> {
-    let key = format!(
-        r"HKCU\Software\Mozilla\NativeMessagingHosts\{}",
-        NATIVE_HOST_NAME
-    );
+fn register_windows_native_host_manifest(
+    manifest_path: &std::path::Path,
+    host_name: &str,
+) -> Result<()> {
+    let key = format!(r"HKCU\Software\Mozilla\NativeMessagingHosts\{}", host_name);
     let output = std::process::Command::new("reg")
         .args([
             "add",
@@ -837,7 +1014,44 @@ pub async fn inspect_browser_status() -> Result<BrowserStatus> {
     })
 }
 
+/// Silent, offline-first asset install: embedded XPI + both native-host
+/// manifests (`alpha_agent` + `firefox_agent_bridge`). No network, no Firefox
+/// prompt, no 15s ping wait. Safe to call on every startup / status check —
+/// it only writes when files are missing or stale. This is what lets the
+/// browser work without the user ever typing `alphacode browser setup`.
+pub fn ensure_browser_assets_installed_silent() -> String {
+    let mut log = String::new();
+    if std::fs::create_dir_all(browser_dir()).is_err() {
+        return log;
+    }
+    match install_embedded_xpi() {
+        Ok(true) => log.push_str("embedded extension installed; "),
+        Ok(false) => {}
+        Err(e) => log.push_str(&format!("embedded extension failed: {}; ", e)),
+    }
+    // Install/update both host manifests; ignore errors here (setup will
+    // surface them with full context).
+    match install_native_host_manifest() {
+        Ok(true) => log.push_str("native host installed; "),
+        Ok(false) => {}
+        Err(e) => log.push_str(&format!("native host skipped: {}; ", e)),
+    }
+    // Zero-click extension paths (sideload + policy). Best-effort: no admin =
+    // no write, and the manual prompt in `install_extension` stays fallback.
+    if !install_extension_sideload_sync().is_empty() {
+        log.push_str("extension sideloaded; ");
+    }
+    if !install_extension_policy_sync().is_empty() {
+        log.push_str("extension policy written; ");
+    }
+    log
+}
+
 pub async fn ensure_browser_ready_noninteractive() -> Result<BrowserStatus> {
+    // Self-heal file assets on every status check so a fresh machine gets
+    // binaries manifests without ever running `browser setup` explicitly.
+    // Only file work — no network, no prompt, no wait.
+    let _ = ensure_browser_assets_installed_silent();
     let mut status = inspect_browser_status().await?;
     if status.ready && !status.setup_complete {
         mark_setup_complete().ok();
@@ -891,6 +1105,156 @@ fn should_prompt_extension_install(status: &BrowserStatus) -> bool {
     status.binary_installed && !status.responding
 }
 
+/// Firefox install roots we know how to sideload/policy into.
+///
+/// Keep this to well-known locations only — no new dependencies, no registry
+/// reads. Missing dirs are skipped silently.
+fn firefox_install_dirs() -> Vec<PathBuf> {
+    let mut dirs = Vec::new();
+    #[cfg(target_os = "windows")]
+    {
+        for candidate in [
+            std::env::var("ProgramFiles")
+                .ok()
+                .map(|p| PathBuf::from(p).join("Mozilla Firefox")),
+            std::env::var("ProgramFiles(x86)")
+                .ok()
+                .map(|p| PathBuf::from(p).join("Mozilla Firefox")),
+            std::env::var("LOCALAPPDATA")
+                .ok()
+                .map(|p| PathBuf::from(p).join("Mozilla Firefox")),
+        ]
+        .into_iter()
+        .flatten()
+        {
+            if candidate.is_dir() {
+                dirs.push(candidate);
+            }
+        }
+    }
+    #[cfg(target_os = "macos")]
+    {
+        let app = PathBuf::from("/Applications/Firefox.app/Contents/Resources");
+        if app.is_dir() {
+            dirs.push(app);
+        }
+    }
+    #[cfg(target_os = "linux")]
+    {
+        for candidate in [
+            PathBuf::from("/usr/lib/firefox"),
+            PathBuf::from("/usr/lib64/firefox"),
+            PathBuf::from("/opt/firefox"),
+            PathBuf::from("/snap/firefox/current/usr/lib/firefox"),
+        ] {
+            if candidate.is_dir() {
+                dirs.push(candidate);
+            }
+        }
+    }
+    dirs
+}
+
+fn sideload_filename() -> String {
+    format!("{}.xpi", BROWSER_EXTENSION_ID)
+}
+
+/// Best-effort zero-click sideload: copy the embedded XPI to
+/// `<firefox>/distribution/extensions/<id>.xpi` so Firefox picks it up on next
+/// start without the file-picker. Returns paths written. Failures (e.g. no
+/// admin for `C:\Program Files`) are silently skipped — the manual prompt
+/// below remains the fallback.
+fn install_extension_sideload_sync() -> Vec<String> {
+    let mut written = Vec::new();
+    for root in firefox_install_dirs() {
+        let dest_dir = root.join("distribution").join("extensions");
+        if std::fs::create_dir_all(&dest_dir).is_err() {
+            continue;
+        }
+        let dest = dest_dir.join(sideload_filename());
+        let current = std::fs::read(&dest).ok();
+        if current.as_deref() == Some(embedded_xpi_bytes()) {
+            continue;
+        }
+        if write_file_atomically(&dest, embedded_xpi_bytes(), false).is_ok() {
+            written.push(dest.display().to_string());
+        }
+    }
+    written
+}
+
+/// Merge our force-install entry into an existing (or empty) policies object,
+/// preserving any admin-configured keys.
+fn merge_extension_policy(
+    existing: Option<serde_json::Value>,
+    install_url: &str,
+) -> serde_json::Value {
+    let mut root = existing.unwrap_or_else(|| serde_json::json!({}));
+    if !root.is_object() {
+        root = serde_json::json!({});
+    }
+    let policies = root
+        .as_object_mut()
+        .expect("checked is_object")
+        .entry("policies")
+        .or_insert_with(|| serde_json::json!({}));
+    if !policies.is_object() {
+        *policies = serde_json::json!({});
+    }
+    let settings = policies
+        .as_object_mut()
+        .expect("checked is_object")
+        .entry("ExtensionSettings")
+        .or_insert_with(|| serde_json::json!({}));
+    if !settings.is_object() {
+        *settings = serde_json::json!({});
+    }
+    settings.as_object_mut().expect("checked is_object").insert(
+        BROWSER_EXTENSION_ID.to_string(),
+        serde_json::json!({
+            "installation_mode": "force_installed",
+            "install_url": install_url,
+            // Helps unsigned builds on ESR/Developer/Nightly; Release
+            // still enforces signing regardless of policy.
+            "temporarily_allow_weak_signatures": true,
+        }),
+    );
+    root
+}
+
+/// Best-effort enterprise-policy install: write/merge
+/// `<firefox>/distribution/policies.json` with a `force_installed` entry for
+/// the canonical extension ID. Returns policies written. Like sideload, admin
+/// rights may be needed — failures are skipped, manual prompt stays fallback.
+fn install_extension_policy_sync() -> Vec<String> {
+    let mut written = Vec::new();
+    let install_url = url::Url::from_file_path(xpi_path())
+        .map(|u| u.to_string())
+        .unwrap_or_default();
+    if install_url.is_empty() {
+        return written;
+    }
+    for root in firefox_install_dirs() {
+        let dist = root.join("distribution");
+        if std::fs::create_dir_all(&dist).is_err() {
+            continue;
+        }
+        let path = dist.join("policies.json");
+        let existing = std::fs::read_to_string(&path)
+            .ok()
+            .and_then(|s| serde_json::from_str(&s).ok());
+        let merged = merge_extension_policy(existing, &install_url);
+        let text = serde_json::to_string_pretty(&merged).unwrap_or_default();
+        if text.is_empty() {
+            continue;
+        }
+        if std::fs::write(&path, format!("{text}\n")).is_ok() {
+            written.push(path.display().to_string());
+        }
+    }
+    written
+}
+
 async fn install_extension() -> Result<String> {
     let xpi = xpi_path();
     let mut msg = String::new();
@@ -899,7 +1263,20 @@ async fn install_extension() -> Result<String> {
         return Err(anyhow::anyhow!("XPI file not found at {}", xpi.display()));
     }
 
-    // Try to open Firefox with the XPI to trigger install prompt
+    // Zero-click attempts first: sideload + enterprise policy. Either one
+    // removes the file-picker step — Firefox installs on next start.
+    for path in install_extension_sideload_sync() {
+        msg.push_str(&format!("       Sideloaded extension to {path}\n"));
+    }
+    for path in install_extension_policy_sync() {
+        msg.push_str(&format!("       Wrote enterprise policy to {path}\n"));
+    }
+    if msg.contains("Sideloaded") || msg.contains("enterprise policy") {
+        msg.push_str("       Restart Firefox to pick up the force-installed extension.\n");
+        msg.push_str("       Note: Firefox Release still requires a signed XPI; this unsigned build installs cleanly on ESR/Developer/Nightly (or after AMO signing).\n");
+    }
+
+    // Manual fallback: open Firefox with the XPI to trigger install prompt
     let xpi_url = url::Url::from_file_path(&xpi)
         .map_err(|_| anyhow::anyhow!("Could not convert XPI path to file URL: {}", xpi.display()))?
         .to_string();

@@ -1267,11 +1267,20 @@ pub(super) fn draw_messages(
     }
 
     if let Some(scrollbar_area) = scrollbar_area {
+        // The sticky top band (pinned todos + previous-prompt preview) shrinks
+        // the content viewport while scrolled, so the true scroll range
+        // (`max_scroll`, which accounts for the band) is larger than
+        // `total_lines - visible_height`. Passing raw `total_lines` makes the
+        // scrollbar compute a smaller internal max and clamp the thumb: it
+        // pins at the bottom early and never represents the top, looking
+        // broken. Pass the effective total so the thumb maps the real range.
+        // `max` with `total_lines` keeps the thumb exact when no band is shown.
+        let effective_total = max_scroll.saturating_add(visible_height).max(total_lines);
         super::render_native_scrollbar(
             frame,
             scrollbar_area,
             scroll,
-            total_lines,
+            effective_total,
             visible_height,
             false,
         );

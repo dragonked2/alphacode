@@ -61,6 +61,9 @@ enum CallKey {
 #[derive(Default)]
 struct State {
     failures: HashMap<CallKey, u32>,
+    /// Last error message per key, so the refusal can remind the model what
+    /// actually failed instead of a generic "change the arguments".
+    last_error: HashMap<CallKey, String>,
     /// Insertion order, for bounded eviction.
     order: VecDeque<CallKey>,
 }
@@ -123,6 +126,18 @@ pub fn prior_failures(session: &str, name: &str, known: bool, input: &Value) -> 
 
 /// Record that this call failed. Safe to call from every failure path.
 pub fn record_failure(session: &str, name: &str, known: bool, input: &Value) {
+    record_failure_with_error(session, name, known, input, None);
+}
+
+/// Record a failure together with its error message, so a later refusal can
+/// quote what actually went wrong and how to fix it.
+pub fn record_failure_with_error(
+    session: &str,
+    name: &str,
+    known: bool,
+    input: &Value,
+    error: Option<&str>,
+) {
     if session.is_empty() {
         return;
     }
@@ -130,6 +145,25 @@ pub fn record_failure(session: &str, name: &str, known: bool, input: &Value) {
     let key = key_for(session, name, known, input);
     let count = entry_for(&mut state, &key);
     *count = count.saturating_add(1);
+    if let Some(message) = error {
+        // Bound stored length: error chains can be long; the refusal only
+        // quotes the head.
+        let mut short = message.trim().to_string();
+        if short.len() > 500 {
+            short.truncate(500);
+            short.push_str("…");
+        }
+        state.last_error.insert(key, short);
+    }
+}
+
+/// The last recorded error for this exact call, if any.
+pub fn last_error(session: &str, name: &str, known: bool, input: &Value) -> Option<String> {
+    if session.is_empty() {
+        return None;
+    }
+    let key = key_for(session, name, known, input);
+    state().last_error.get(&key).cloned()
 }
 
 /// Record that this call succeeded, clearing any failure streak for it.
@@ -241,5 +275,19 @@ mod tests {
     fn limits_are_the_documented_values() {
         assert_eq!(IDENTICAL_FAILURE_LIMIT, 2);
         assert_eq!(UNKNOWN_NAME_LIMIT, 1);
+    }
+
+    #[test]
+    fn last_error_is_quoted_for_refusal_messages() {
+        let session = "test-guard-last-error";
+        let input = json!({"command": "false"});
+        assert_eq!(last_error(session, "bash", true, &input), None);
+        record_failure_with_error(session, "bash", true, &input, Some("exit code 1"));
+        assert_eq!(
+            last_error(session, "bash", true, &input).as_deref(),
+            Some("exit code 1")
+        );
+        record_success(session, "bash", &input);
+        clear_session(session);
     }
 }

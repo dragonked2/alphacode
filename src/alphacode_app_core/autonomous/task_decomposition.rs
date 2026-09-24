@@ -404,6 +404,82 @@ fn file_count_penalty(file_count: usize) -> f64 {
     (file_count as f64).ln() * 0.3 + 0.3
 }
 
+/// What kind of security work the user actually handed us.
+///
+/// Smart classification based on observables (counts + intent signals),
+/// never on hard-coded domain names:
+/// - one live URL to interact with -> SingleService (direct-test, no enum)
+/// - base domain / org + enumerate/scope intent -> DomainScope (enum is correct)
+/// - files / binaries / captures -> OfflineArtifact (local analysis)
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TargetKind {
+    SingleService,
+    DomainScope,
+    OfflineArtifact,
+    General,
+}
+
+/// Classify the objective into a target kind.
+///
+/// Rules (generic, no domain blocklist):
+/// - explicit enumeration intent (`subdomain`, `enumerate`, `amass`,
+///   `bug bounty`, `attack surface`, `scope`, `*.`) + domain-like target
+///   => DomainScope, even if a URL is present.
+/// - else exactly one http(s) URL + (`solve`, `lab`, `challenge`, `ctf`,
+///   single `target`/`url`/`endpoint`) and no enum intent => SingleService.
+/// - else file/blob signals (`.elf`, `.pcap`, `binary`, `attached file`, …)
+///   with no live URL => OfflineArtifact.
+/// - otherwise General.
+pub fn classify_target(objective: &str) -> TargetKind {
+    let lower = objective.to_lowercase();
+    let url_count = lower.matches("https://").count() + lower.matches("http://").count();
+
+    let has_enum_intent = lower.contains("subdomain")
+        || lower.contains("enumerate")
+        || lower.contains("enumeration")
+        || lower.contains("amass")
+        || lower.contains("bug bounty")
+        || lower.contains("attack surface")
+        || lower.contains("scope")
+        || lower.contains("*.")
+        || lower.contains("all subdomains")
+        || lower.contains("find subdomains");
+
+    if has_enum_intent {
+        return TargetKind::DomainScope;
+    }
+
+    let has_artifact_signal = lower.contains(".elf")
+        || lower.contains(".pcap")
+        || lower.contains(".pcapng")
+        || lower.contains("binary")
+        || lower.contains("attached file")
+        || lower.contains("challenge file")
+        || lower.contains("download")
+            && (lower.contains("zip") || lower.contains("tar") || lower.contains("file"));
+
+    if url_count == 0 && has_artifact_signal {
+        return TargetKind::OfflineArtifact;
+    }
+
+    let has_single_service_signal = lower.contains("solve")
+        || lower.contains("lab")
+        || lower.contains("challenge")
+        || lower.contains("ctf")
+        || lower.contains("target url")
+        || lower.contains("this url")
+        || lower.contains("endpoint");
+
+    if url_count == 1 && (has_single_service_signal || !has_artifact_signal) {
+        // One URL, no enum request: user wants THAT service tested directly.
+        // Extra guard: if they literally pasted one URL and little else,
+        // it is almost certainly direct-test, not org mapping.
+        return TargetKind::SingleService;
+    }
+
+    TargetKind::General
+}
+
 /// Estimate the complexity of a task based on heuristics.
 ///
 /// This is a heuristic estimate; in a full system the LLM would provide it.
@@ -444,6 +520,14 @@ pub fn estimate_complexity(objective: &str, file_count: usize) -> TaskComplexity
         } else {
             TaskComplexity::Trivial
         };
+    }
+
+    // Smart cap: a single live service to test directly (one URL, no enum
+    // request) must NOT become a multi-agent recon swarm. Keep orchestration
+    // to a single focused phase; the worker can still do multi-step testing
+    // internally. This is classification-based, not domain-based.
+    if classify_target(objective) == TargetKind::SingleService && file_count <= 5 {
+        return TaskComplexity::Low;
     }
 
     // Compute domain-specific signals.
@@ -1229,6 +1313,51 @@ mod tests {
                 20
             ),
             TaskComplexity::Extreme
+        );
+    }
+
+    #[test]
+    fn test_classify_single_service_lab() {
+        // One URL + solve/lab intent, no enum request => direct-test.
+        assert_eq!(
+            classify_target("solve this lab https://example.com/abc123"),
+            TargetKind::SingleService
+        );
+        assert_eq!(
+            classify_target("Solve challenge at http://target:8080/ with login bypass"),
+            TargetKind::SingleService
+        );
+    }
+
+    #[test]
+    fn test_classify_domain_scope_enumeration() {
+        assert_eq!(
+            classify_target("enumerate subdomains for example.com for bug bounty"),
+            TargetKind::DomainScope
+        );
+        assert_eq!(
+            classify_target("map attack surface for *.example.com, find subdomains"),
+            TargetKind::DomainScope
+        );
+    }
+
+    #[test]
+    fn test_classify_offline_artifact() {
+        assert_eq!(
+            classify_target("analyze attached binary challenge file"),
+            TargetKind::OfflineArtifact
+        );
+    }
+
+    #[test]
+    fn test_single_service_caps_complexity_to_low() {
+        // Even with security keywords, a single URL lab stays orchestration-light.
+        assert_eq!(
+            estimate_complexity(
+                "solve this lab https://example.com/abc test for SQL injection XSS auth bypass",
+                0
+            ),
+            TaskComplexity::Low
         );
     }
 }

@@ -19,7 +19,48 @@ impl ApplyPatchTool {
 struct ApplyPatchInput {
     #[serde(default)]
     intent: Option<String>,
-    patch_text: String,
+}
+
+/// Pull the patch text out of a raw input object, accepting the common key
+/// aliases models actually send (`patch`, `content`, `diff`, ...). Returns a
+/// descriptive error listing the received keys when nothing matches, so the
+/// model can correct the call instead of repeating it byte-identically until
+/// the repeat guard refuses it.
+fn extract_patch_text(input: &Value) -> Result<(String, Option<String>), anyhow::Error> {
+    if let Some(obj) = input.as_object() {
+        for key in [
+            "patch_text",
+            "patch",
+            "patch_content",
+            "content",
+            "diff",
+            "text",
+        ] {
+            if let Some(value) = obj.get(key).and_then(|v| v.as_str()) {
+                let intent = obj
+                    .get("intent")
+                    .and_then(|v| v.as_str())
+                    .map(str::to_string);
+                return Ok((value.to_string(), intent));
+            }
+        }
+        let mut keys: Vec<&String> = obj.keys().collect();
+        keys.sort();
+        let keys = keys
+            .iter()
+            .map(|k| format!("`{k}`"))
+            .collect::<Vec<_>>()
+            .join(", ");
+        anyhow::bail!(
+            "missing field `patch_text`. Received keys: {keys}. \
+             Send the patch as a string under `patch_text`, e.g. \
+             {{\"patch_text\": \"*** Begin Patch\\n*** Update File: a.txt\\n@@\\n- old\\n+ new\\n*** End Patch\"}}"
+        );
+    }
+    anyhow::bail!(
+        "missing field `patch_text`: expected a JSON object with a `patch_text` string, \
+         e.g. {{\"patch_text\": \"*** Begin Patch\\n*** End Patch\"}}"
+    );
 }
 
 #[derive(Debug, Clone)]
@@ -75,8 +116,18 @@ impl Tool for ApplyPatchTool {
     }
 
     async fn execute(&self, input: Value, ctx: ToolContext) -> Result<ToolOutput> {
-        let params: ApplyPatchInput = serde_json::from_value(input)?;
-        let hunks = parse_apply_patch(&params.patch_text)?;
+        // Tolerant extraction first (alias-aware error), then strict struct for
+        // the remaining optional fields.
+        let (patch_text, intent) = extract_patch_text(&input)?;
+        let intent = intent.or_else(|| {
+            serde_json::from_value::<ApplyPatchInput>(input.clone())
+                .ok()
+                .and_then(|p| p.intent)
+        });
+        // `patch_text` is guaranteed present by extract_patch_text; rebuild the
+        // struct so downstream `params.intent` uses keep working unchanged.
+        let params = ApplyPatchInput { intent };
+        let hunks = parse_apply_patch(&patch_text)?;
 
         // Pre-flight: deny catastrophic targets BEFORE any writes (atomic safety).
         // Previously only DeleteFile was checked; Add/Update/Move could overwrite

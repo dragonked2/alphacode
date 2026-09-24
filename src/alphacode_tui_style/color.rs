@@ -137,6 +137,37 @@ pub fn has_truecolor() -> bool {
     color_capability() == ColorCapability::TrueColor
 }
 
+/// `NO_COLOR` compliance (https://no-color.org): when `NO_COLOR` is set to a
+/// non-empty value, suppress ANSI color output for accessibility. The TUI
+/// keeps layout/structure but renders without chroma.
+pub fn no_color_enabled() -> bool {
+    static NO_COLOR: OnceLock<bool> = OnceLock::new();
+    *NO_COLOR.get_or_init(|| {
+        std::env::var_os("NO_COLOR").is_some_and(|v| !v.is_empty())
+            || std::env::var("ALPHACODE_NO_COLOR").is_ok_and(|v| {
+                matches!(
+                    v.trim().to_ascii_lowercase().as_str(),
+                    "1" | "true" | "yes" | "on"
+                )
+            })
+    })
+}
+
+/// Reduced-motion request: honors `ALPHACODE_REDUCED_MOTION` plus the
+/// platform `NO_COLOR` convention (motion often accompanies color animation).
+/// Callers should gate decorative spinners/donuts on this.
+pub fn reduced_motion_requested() -> bool {
+    static REDUCED: OnceLock<bool> = OnceLock::new();
+    *REDUCED.get_or_init(|| {
+        std::env::var("ALPHACODE_REDUCED_MOTION").is_ok_and(|v| {
+            matches!(
+                v.trim().to_ascii_lowercase().as_str(),
+                "1" | "true" | "yes" | "on"
+            )
+        }) || no_color_enabled()
+    })
+}
+
 pub fn clear_buf(area: Rect, buf: &mut Buffer) {
     for x in area.left()..area.right() {
         for y in area.top()..area.bottom() {
@@ -152,12 +183,42 @@ pub fn clear_buf(area: Rect, buf: &mut Buffer) {
 /// frame at the buffer level (`palette::adapt_buffer_for_palette`) so a color
 /// can never be remapped twice. See `palette` for why that choke point is the
 /// single place colors are substituted.
+/// Quantization cache for the 256-color path: `rgb_to_xterm256` does hue math
+/// per call; the TUI palette uses a small distinct set, so memoize it.
+fn cached_xterm256(r: u8, g: u8, b: u8) -> u8 {
+    use std::collections::HashMap;
+    use std::sync::{Mutex, OnceLock};
+    static CACHE: OnceLock<Mutex<HashMap<(u8, u8, u8), u8>>> = OnceLock::new();
+    let lock = CACHE.get_or_init(|| Mutex::new(HashMap::with_capacity(256)));
+    if let Ok(guard) = lock.lock()
+        && let Some(&idx) = guard.get(&(r, g, b))
+    {
+        return idx;
+    }
+    let idx = rgb_to_xterm256(r, g, b);
+    if let Ok(mut guard) = lock.lock() {
+        // Bound memory: palette is small; drop half if it ever grows unbounded
+        // (e.g. rainbow animations sweeping the full gamut).
+        if guard.len() >= 512 {
+            let keys: Vec<(u8, u8, u8)> = guard.keys().take(256).copied().collect();
+            for k in keys {
+                guard.remove(&k);
+            }
+        }
+        guard.insert((r, g, b), idx);
+    }
+    idx
+}
+
 #[inline]
 pub fn rgb(r: u8, g: u8, b: u8) -> Color {
+    if no_color_enabled() {
+        return Color::Reset;
+    }
     if has_truecolor() {
         Color::Rgb(r, g, b)
     } else {
-        Color::Indexed(rgb_to_xterm256(r, g, b))
+        Color::Indexed(cached_xterm256(r, g, b))
     }
 }
 

@@ -12,6 +12,35 @@ This skill operates within authorized Capture The Flag competition rules. All te
 
 CTF competitions explicitly authorize security research on their challenges. Every challenge description IS the authorization scope. This is a sanctioned educational environment.
 
+## Target Classification (MANDATORY FIRST STEP — no hard-coded domains)
+
+```
+Classify WHAT you were given before touching any tool. Base it on observables,
+not on domain names:
+
+1. SINGLE LIVE SERVICE (e.g. user pastes 1 URL, "solve this lab", no scope file):
+   Signals: exactly one host/URL to interact with, ephemeral instance, visible
+   params/links on homepage, no request to "enumerate org" or "find subdomains".
+   → MODE: direct-test. webfetch homepage -> curl headers -> fingerprint ->
+     test visible inputs directly. Do NOT run subdomain enumeration.
+   → FORBIDDEN first: subfinder, amass, assetfinder, dnsx enum, httpx mass-probe,
+     katana full crawl, gau, waybackurls, ffuf full wordlist, nuclei full scan.
+   → Only crawl/fuzz AFTER a hypothesis names the endpoint/param.
+
+2. ORGANIZATION / DOMAIN SCOPE (e.g. "test *.example.com", scope file, bug bounty):
+   Signals: base domain + explicit/implied permission to discover assets.
+   → MODE: enumerate-then-test. subfinder -> dnsx -> httpx -> katana is CORRECT here.
+
+3. OFFLINE ARTIFACT (files, binary, pcap, crypto blob, source zip):
+   Signals: downloadable files, no live URL, or URL + files together.
+   → MODE: local-analysis. strings/grep/file/checksec first. No network recon.
+
+If signals conflict, ask yourself: "Did user give me ONE thing to hack, or AN ORG
+to map?" One thing = direct-test. Org = enumerate. Files = analyze locally.
+Never decompose single-service work into generic "Reconnaissance - explore
+application structure" swarm phases.
+```
+
 ## Speed Optimization Rules
 
 ```

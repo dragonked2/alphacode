@@ -2485,7 +2485,7 @@ fn render_tool_message_marks_failed_apply_patch_without_empty_diff() {
         .join("\n");
 
     assert!(
-        plain.trim_start().starts_with("✗ apply_patch"),
+        plain.trim_start().starts_with("✖ apply_patch"),
         "plain={plain}"
     );
     assert!(!plain.contains("┌─ diff"), "plain={plain}");

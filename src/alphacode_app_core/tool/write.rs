@@ -19,8 +19,67 @@ impl WriteTool {
 struct WriteInput {
     #[serde(default)]
     intent: Option<String>,
+    #[serde(
+        alias = "path",
+        alias = "file",
+        alias = "filename",
+        alias = "file_name"
+    )]
     file_path: String,
+    #[serde(alias = "text", alias = "data", alias = "body", alias = "file_content")]
     content: String,
+}
+
+/// Alias-aware extraction so a model that sends `path`/`text` (instead of
+/// `file_path`/`content`) gets its file written instead of a bare
+/// "missing field" failure that it then repeats until the repeat guard
+/// refuses the call.
+fn extract_write_input(input: &Value) -> Result<WriteInput, anyhow::Error> {
+    if let Ok(params) = serde_json::from_value::<WriteInput>(input.clone()) {
+        return Ok(params);
+    }
+    let obj = input.as_object().ok_or_else(|| {
+        anyhow::anyhow!(
+            "write expects a JSON object with `file_path` and `content`, e.g. \
+             {{\"file_path\": \"/path/to/file\", \"content\": \"...\"}}"
+        )
+    })?;
+    let file_path = ["file_path", "path", "file", "filename", "file_name"]
+        .iter()
+        .find_map(|k| obj.get(*k).and_then(|v| v.as_str()))
+        .ok_or_else(|| {
+            let mut keys: Vec<&String> = obj.keys().collect();
+            keys.sort();
+            let keys = keys
+                .iter()
+                .map(|k| format!("`{k}`"))
+                .collect::<Vec<_>>()
+                .join(", ");
+            anyhow::anyhow!(
+                "missing field `file_path`. Received keys: {keys}. \
+                 Provide the destination as `file_path`, e.g. \
+                 {{\"file_path\": \"/path/to/file\", \"content\": \"...\"}}"
+            )
+        })?;
+    let content = ["content", "text", "data", "body", "file_content"]
+        .iter()
+        .find_map(|k| obj.get(*k).and_then(|v| v.as_str()))
+        .ok_or_else(|| {
+            anyhow::anyhow!(
+                "missing field `content` for file `{file_path}`. \
+                 Provide the file body as `content`, e.g. \
+                 {{\"file_path\": \"{file_path}\", \"content\": \"...\"}}"
+            )
+        })?;
+    let intent = obj
+        .get("intent")
+        .and_then(|v| v.as_str())
+        .map(str::to_string);
+    Ok(WriteInput {
+        intent,
+        file_path: file_path.to_string(),
+        content: content.to_string(),
+    })
 }
 
 #[async_trait]
@@ -52,7 +111,7 @@ impl Tool for WriteTool {
     }
 
     async fn execute(&self, input: Value, ctx: ToolContext) -> Result<ToolOutput> {
-        let params: WriteInput = serde_json::from_value(input)?;
+        let params: WriteInput = extract_write_input(&input)?;
 
         let path = ctx.resolve_path(Path::new(&params.file_path));
 

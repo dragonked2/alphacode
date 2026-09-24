@@ -480,7 +480,20 @@ impl StatusSpinnerRenderer {
                     .count()
             });
         let total_cells = Some(completed.buffer.content.len());
-        let completed_buffer = completed.buffer.clone();
+        // PERF: wasted full frames (0 cells changed, e.g. 63/sec on a static
+        // picker) previously cloned the entire buffer (7680 cells) just to
+        // replace `last_frame` with an identical copy. Skip the clone when
+        // nothing changed and no forced invalidation is active.
+        let zero_change_wasted = changed_cells == Some(0) && !force_full_redraw;
+        let completed_buffer = if zero_change_wasted {
+            // Keep the previous buffer; it is already identical.
+            match self.last_frame.take() {
+                Some(prev) => prev,
+                None => completed.buffer.clone(),
+            }
+        } else {
+            completed.buffer.clone()
+        };
         // `completed` borrows the terminal; it is unused past this point, so the
         // borrow ends here (NLL) before we touch the backend again below.
         if sync {

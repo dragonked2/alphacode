@@ -48,7 +48,7 @@ impl Tool for KatanaTool {
     }
 
     fn description(&self) -> &str {
-        "Fast, passive web crawler. Crawls URLs from the target domain and outputs discovered endpoints. Great for mapping the attack surface."
+        "Fast, passive web crawler. Use AFTER direct-test triage (webfetch homepage + headers + fingerprint + visible params) has produced a crawl hypothesis, or for organization-scope mapping. Do NOT use as the first step on single-service work — fetch the homepage directly first."
     }
 
     fn parameters_schema(&self) -> Value {
