@@ -457,6 +457,17 @@ pub const ALPHAX_FREE_PROFILE: OpenAiCompatibleProfile = OpenAiCompatibleProfile
     requires_api_key: false,
 };
 
+/// User-facing display name for internal/virtual model ids that must never
+/// surface raw (e.g. `kilo-auto/free` is a routing alias, not a real model
+/// the user chose). Returns `None` for ordinary ids so callers pass them
+/// through unchanged.
+pub fn internal_model_display_name<'a>(model: &'a str) -> Option<&'a str> {
+    if ALL_ALPHAX_FREE_MODELS.contains(&model) {
+        return Some(ALPHAX_FREE_PROFILE.display_name);
+    }
+    None
+}
+
 pub const NVIDIA_NIM_PROFILE: OpenAiCompatibleProfile = OpenAiCompatibleProfile {
     id: "nvidia-nim",
     display_name: "NVIDIA NIM",

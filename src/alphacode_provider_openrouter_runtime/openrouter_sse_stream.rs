@@ -19,6 +19,49 @@ fn local_endpoint_troubleshooting_hint(api_base: &str, model: &str) -> &'static 
     "Hint: check network connectivity, DNS/TLS, that the base URL includes the API version (usually /v1), and that the model exists on the provider."
 }
 
+/// Status-aware hint for a completed-but-failed HTTP response. The generic
+/// network/DNS hint above only applies to *send* failures (connection never
+/// established); once the server answered with an error status, blaming DNS
+/// misleads the user — name what the status actually means instead.
+fn http_status_troubleshooting_hint(
+    status: reqwest::StatusCode,
+    api_base: &str,
+    model: &str,
+    request_estimate: usize,
+) -> String {
+    // Local servers keep their server-specific advice (model not loaded, etc).
+    let lower = api_base.to_ascii_lowercase();
+    let is_local =
+        lower.contains("localhost") || lower.contains("127.0.0.1") || lower.contains("[::1]");
+    if is_local {
+        return local_endpoint_troubleshooting_hint(api_base, model).to_string();
+    }
+    match status.as_u16() {
+        400 => format!(
+            "Hint: the provider rejected the request (HTTP 400). The prompt (~{} tokens) may exceed this model's context window, or a request field is unsupported — try /compact to shrink context, or switch model (/model). The provider's exact reason is in the response body above.",
+            request_estimate
+        ),
+        401 | 403 => format!(
+            "Hint: authentication failed (HTTP {}). Run /login or check the API key for this provider.",
+            status.as_u16()
+        ),
+        404 => "Hint: endpoint or model not found (HTTP 404) — check that the base URL includes the API version (usually /v1) and that the model exists on the provider (/model).".to_string(),
+        402 => "Hint: payment or quota required (HTTP 402) — this model needs credits on the provider account; switch model (/model) or top up.".to_string(),
+        429 => format!(
+            "Hint: rate limited (HTTP 429) — wait before retrying, or switch model (/model). Context estimate ~{} tokens.",
+            request_estimate
+        ),
+        s if (500..600).contains(&s) => format!(
+            "Hint: provider-side server error (HTTP {}) — retry shortly, or switch model (/model).",
+            s
+        ),
+        _ => format!(
+            "Hint: the provider returned HTTP {} — see the response body above for the reason.",
+            status.as_u16()
+        ),
+    }
+}
+
 // ============================================================================
 // SSE Stream Parser
 // ============================================================================
@@ -169,12 +212,17 @@ async fn stream_response(
         .await;
     let connect_start = std::time::Instant::now();
     let stream_idle_timeout = super::effective_stream_idle_timeout(&api_base);
+    // User-facing diagnostics show the product name; the raw routing id stays
+    // in logs and in the outbound request body only.
+    let model_label = crate::alphacode_provider_metadata::internal_model_display_name(&model)
+        .unwrap_or(&model)
+        .to_string();
 
     let url = super::resolve_chat_completions_url(&api_base).ok_or_else(|| {
         anyhow::anyhow!(
             "OpenAI-compatible chat request failed\n  endpoint: invalid base '{}'\n  model: {}\n  auth: {}\n  mode: streaming",
             api_base,
-            model,
+            model_label,
             auth.label()
         )
     })?;
@@ -210,7 +258,7 @@ async fn stream_response(
         format!(
             "Failed to send OpenAI-compatible chat request\n  endpoint: {}\n  model: {}\n  auth: {}\n  mode: streaming\n  context_estimate: ~{} tokens\n  timeout: {}s\n{}",
             url,
-            model,
+            model_label,
             auth.label(),
             request_estimate,
             stream_idle_timeout.as_secs(),
@@ -230,7 +278,8 @@ async fn stream_response(
         let retry_after =
             crate::alphacode_provider_core::retry_after::retry_after(response.headers());
         let body = crate::alphacode_base::util::http_error_body(response, "HTTP error").await;
-        let mut hint = local_endpoint_troubleshooting_hint(&api_base, &model).to_string();
+        let mut hint =
+            http_status_troubleshooting_hint(status, &api_base, &model, request_estimate);
         if super::response_body_reports_context_overflow(&body) {
             hint = format!(
                 "{}\nContext hint: the prompt (~{} tokens) exceeded the server context. Compact the session (/compact), drop large tool outputs, or restart llama-server with a larger `-c` (e.g. `-c 16384`).",
@@ -242,7 +291,7 @@ async fn stream_response(
                 format!(
                     "OpenAI-compatible chat request failed\n  endpoint: {}\n  model: {}\n  auth: {}\n  mode: streaming\n  context_estimate: ~{} tokens\n  timeout: {}s\n  status: {}\n  response: {}\n{}",
                     url,
-                    model,
+                    model_label,
                     auth.label(),
                     request_estimate,
                     stream_idle_timeout.as_secs(),
@@ -276,7 +325,7 @@ async fn stream_response(
             Ok(Some(Err(e))) => anyhow::bail!(
                 "OpenAI-compatible stream error\n  endpoint: {}\n  model: {}\n  auth: {}\n  mode: streaming\n  error: {}",
                 url,
-                model,
+                model_label,
                 auth.label(),
                 e
             ),
@@ -289,7 +338,7 @@ async fn stream_response(
                 anyhow::bail!(
                     "OpenAI-compatible stream timeout\n  endpoint: {}\n  model: {}\n  auth: {}\n  mode: streaming\n  timeout: no data received for {} seconds\n{}",
                     url,
-                    model,
+                    model_label,
                     auth.label(),
                     idle_timeout_secs,
                     local_endpoint_troubleshooting_hint(&api_base, &model)
@@ -416,5 +465,45 @@ mod tests {
         assert!(!is_retryable_error(
             "chat request failed\n  status: 429 Too Many Requests"
         ));
+    }
+
+    #[test]
+    fn http_status_hint_blames_the_status_not_the_network() {
+        use reqwest::StatusCode;
+        let remote = "https://api.kilo.ai/api/gateway";
+        let hint = http_status_troubleshooting_hint(
+            StatusCode::BAD_REQUEST,
+            remote,
+            "kilo-auto/free",
+            163_116,
+        );
+        assert!(
+            !hint.contains("network connectivity") && !hint.contains("DNS"),
+            "HTTP 400 must not suggest a network fault, got: {hint}"
+        );
+        assert!(hint.contains("HTTP 400"), "hint names the status: {hint}");
+        assert!(hint.contains("/compact"), "hint suggests shrinking context");
+
+        let auth = http_status_troubleshooting_hint(StatusCode::UNAUTHORIZED, remote, "m", 10);
+        assert!(auth.contains("/login"), "401 points at /login: {auth}");
+
+        let not_found = http_status_troubleshooting_hint(StatusCode::NOT_FOUND, remote, "m", 10);
+        assert!(
+            not_found.contains("/v1"),
+            "404 still mentions the base-URL form: {not_found}"
+        );
+
+        let server =
+            http_status_troubleshooting_hint(StatusCode::SERVICE_UNAVAILABLE, remote, "m", 10);
+        assert!(server.contains("HTTP 503"), "5xx named: {server}");
+
+        // Local endpoints keep their server-specific advice regardless of status.
+        let local = http_status_troubleshooting_hint(
+            StatusCode::BAD_REQUEST,
+            "http://localhost:11434/v1",
+            "llama3.2",
+            10,
+        );
+        assert!(local.contains("Ollama"), "local hint preserved: {local}");
     }
 }

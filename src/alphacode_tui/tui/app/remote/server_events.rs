@@ -2262,13 +2262,17 @@ pub(in crate::alphacode_tui::tui::app) fn handle_server_event(
                     app.remote_provider_name = Some(pname.clone());
                 }
                 app.invalidate_model_picker_cache();
+                let pretty_model =
+                    crate::alphacode_provider_metadata::internal_model_display_name(&model)
+                        .unwrap_or(&model)
+                        .to_string();
                 if !app.auth_catalog_refresh_pending {
                     app.push_display_message(DisplayMessage::system(format!(
                         "✓ Switched to model: {}",
-                        model
+                        pretty_model
                     )));
                 }
-                app.set_status_notice(format!("Model → {}", model));
+                app.set_status_notice(format!("Model → {}", pretty_model));
             }
             false
         }

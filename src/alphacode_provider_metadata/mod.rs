@@ -814,6 +814,14 @@ mod tests {
             "default_model must point at the top free model"
         );
 
+        // The virtual routing id must never surface to users as-is.
+        assert_eq!(
+            internal_model_display_name("kilo-auto/free"),
+            Some("Alphax Free")
+        );
+        assert_eq!(internal_model_display_name("gpt-5.5"), None);
+        assert_eq!(internal_model_display_name(""), None);
+
         assert_eq!(ALPHAX_FREE_LOGIN_PROVIDER.id, "alphax-free");
         const { assert!(ALPHAX_FREE_LOGIN_PROVIDER.recommended) };
         assert!(matches!(

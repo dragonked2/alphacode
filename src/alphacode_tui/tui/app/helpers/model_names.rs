@@ -31,6 +31,11 @@ pub(crate) fn pretty_model_display_name(model: &str) -> String {
     if model.is_empty() {
         return "your default model".to_string();
     }
+    // Internal virtual ids (e.g. kilo-auto/free) are routing aliases, never
+    // user-facing model names — map them to their product display name.
+    if let Some(name) = crate::alphacode_provider_metadata::internal_model_display_name(model) {
+        return name.to_string();
+    }
 
     // Preserve bracketed route suffixes (`[1m]`, `[web]`) and re-attach them as
     // a parenthetical, since they are alphacode-side route markers rather than part
@@ -270,6 +275,12 @@ fn prettify_bedrock(model: &str) -> Option<String> {
 /// their exact spelling. Used by the `/model` picker, where hiding the real id
 /// would break copy-paste and provider-specific naming.
 pub(crate) fn pretty_known_model_family(model: &str) -> Option<String> {
+    // Internal virtual ids stay hidden even in list surfaces: the picker still
+    // filters on the raw entry.name (see PickerAction::Model filter_text), so
+    // hiding the id here does not break copy-free search.
+    if let Some(name) = crate::alphacode_provider_metadata::internal_model_display_name(model) {
+        return Some(name.to_string());
+    }
     let (core, _) = split_bracket_suffix(model);
     if core.contains('.') && core.contains('-') {
         // Possibly a Bedrock id; `gpt-5.5` and `gemini-2.5-pro` also contain a
@@ -566,6 +577,16 @@ mod tests {
         assert_eq!(
             pretty_model_display_name("some-new-model"),
             "Some New Model"
+        );
+    }
+
+    #[test]
+    fn pretty_names_hide_internal_virtual_model_ids() {
+        // kilo-auto/free is a routing alias users must never see.
+        assert_eq!(pretty_model_display_name("kilo-auto/free"), "Alphax Free");
+        assert_eq!(
+            pretty_known_model_family("kilo-auto/free").as_deref(),
+            Some("Alphax Free")
         );
     }
 

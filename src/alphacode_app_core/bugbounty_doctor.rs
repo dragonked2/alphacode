@@ -287,8 +287,10 @@ pub fn render_markdown(report: &[ToolReport]) -> String {
     }
 
     md.push_str(
-        "\nThis command does not install anything. To install a missing tool, copy the suggested command and run it in your shell. \
-         Or, in a future release, `/bugbounty install-tools` will offer an explicit per-tool confirmation flow.",
+        "\nThis command does not install anything. Install missing tools with the bundled script:\n\
+         `bash scripts/install_bugbounty_tools.sh all` (or `go` / `apt` / `pip` / `nuclei` / `wordlists`).\n\
+         Verify afterwards: `bash scripts/install_bugbounty_tools.sh --verify`.\n\
+         Or copy an individual install hint above and run it in your shell.",
     );
 
     md

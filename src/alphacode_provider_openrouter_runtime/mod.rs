@@ -776,6 +776,16 @@ impl ProviderAuth {
     }
 }
 
+/// Diagnostic label for a keyless (`requires_api_key: false`) endpoint.
+/// Remote gateways (e.g. api.kilo.ai) must not claim to be a "local endpoint".
+fn no_auth_label(api_base: &str) -> String {
+    if openai_compat_base_is_local(api_base) {
+        "local endpoint (no auth)".to_string()
+    } else {
+        "no auth required".to_string()
+    }
+}
+
 fn add_cache_breakpoint(messages: &mut [Message]) -> bool {
     let mut cache_index = None;
     for (idx, msg) in messages.iter().enumerate().rev() {
@@ -1184,7 +1194,7 @@ pub fn maybe_schedule_openai_compatible_profile_catalog_refresh(
         }
     } else if !resolved.requires_api_key {
         ProviderAuth::None {
-            label: "local endpoint (no auth)".to_string(),
+            label: no_auth_label(&api_base),
         }
     } else {
         finish_profile_catalog_refresh(&resolved.id);
@@ -1790,7 +1800,7 @@ impl OpenRouterProvider {
             .or_else(|| profile.api_key.clone());
         let auth = match profile.auth {
             crate::alphacode_base::config::NamedProviderAuth::None => ProviderAuth::None {
-                label: "local endpoint (no auth)".to_string(),
+                label: no_auth_label(&api_base),
             },
             crate::alphacode_base::config::NamedProviderAuth::Bearer => {
                 ProviderAuth::AuthorizationBearer {
@@ -2157,7 +2167,7 @@ impl OpenRouterProvider {
                 label: resolved.api_key_env.clone(),
             },
             _ if !resolved.requires_api_key => ProviderAuth::None {
-                label: "local endpoint (no auth)".to_string(),
+                label: no_auth_label(&api_base),
             },
             _ => {
                 let path = crate::alphacode_base::storage::app_config_dir()
@@ -2883,7 +2893,7 @@ impl OpenRouterProvider {
                 });
             }
             return Ok(ProviderAuth::None {
-                label: "local endpoint (no auth)".to_string(),
+                label: no_auth_label(&configured_api_base()),
             });
         }
 
@@ -3257,7 +3267,7 @@ mod llamacpp_compat_tests {
             reasoning_effort: std::sync::Arc::new(tokio::sync::RwLock::new(None)),
             api_base: "http://127.0.0.1:8080/v1".to_string(),
             auth: ProviderAuth::None {
-                label: "local endpoint (no auth)".to_string(),
+                label: no_auth_label("http://127.0.0.1:8080/v1"),
             },
             supports_provider_features: false,
             supports_model_catalog: true,
@@ -3445,5 +3455,21 @@ mod llamacpp_compat_tests {
                 "{base}"
             );
         }
+    }
+
+    #[test]
+    fn no_auth_label_does_not_call_a_cloud_gateway_local() {
+        assert_eq!(
+            no_auth_label("https://api.kilo.ai/api/gateway"),
+            "no auth required"
+        );
+        assert_eq!(
+            no_auth_label("http://127.0.0.1:8080/v1"),
+            "local endpoint (no auth)"
+        );
+        assert_eq!(
+            no_auth_label("http://localhost:11434/v1"),
+            "local endpoint (no auth)"
+        );
     }
 }

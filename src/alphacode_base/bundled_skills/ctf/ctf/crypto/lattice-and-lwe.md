@@ -1,0 +1,947 @@
+# CTF Crypto - Lattice and LWE Attacks
+
+## Table of Contents
+- [Quick Triage: Is This a Lattice Problem?](#quick-triage-is-this-a-lattice-problem)
+- [Core Tools: LLL, BKZ, Babai, CVP, SVP](#core-tools-lll-bkz-babai-cvp-svp-asis-ctf-finals-2015-ctfzone-2017)
+  - [LLL](#lll)
+  - [BKZ](#bkz)
+  - [Babai nearest plane](#babai-nearest-plane)
+  - [CVP vs SVP](#cvp-vs-svp)
+- [Hidden Number Problem (HNP): Partial Nonce / Biased Nonce](#hidden-number-problem-hnp-partial-nonce--biased-nonce-nullcon-hackim-2020-ledger-donjon-ctf-2020)
+  - [Minimal ECDSA partial-nonce workflow](#minimal-ecdsa-partial-nonce-workflow)
+- [LCG and Truncated Output as a Lattice Problem](#lcg-and-truncated-output-as-a-lattice-problem-x-mas-ctf-2018-fwordctf-2020)
+  - [Minimal truncated-LCG workflow](#minimal-truncated-lcg-workflow)
+- [LWE via Embedding and CVP](#lwe-via-embedding-and-cvp-plaidctf-2016-aero-ctf-2020)
+  - [Embedding-style lattice](#embedding-style-lattice)
+  - [For ternary or sparse secrets](#for-ternary-or-sparse-secrets)
+- [Ring-LWE / Module-LWE Recognition Notes](#ring-lwe--module-lwe-recognition-notes-plaidctf-2016-dicectf-2022)
+  - [Flattening Ring-LWE to plain LWE](#flattening-ring-lwe-to-plain-lwe)
+- [Orthogonal Lattices: HSSP / AHSSP Style Recovery](#orthogonal-lattices-hssp--ahssp-style-recovery-zer0pts-ctf-2022)
+- [Subset Sum / Knapsack via Lattice Reduction](#subset-sum--knapsack-via-lattice-reduction-hitcon-ctf-2017-backdoorctf-2023)
+- [Common Failure Modes](#common-failure-modes)
+- [Quick Checklist Before You Commit to Lattices](#quick-checklist-before-you-commit-to-lattices)
+
+---
+
+## Quick Triage: Is This a Lattice Problem?
+
+Use lattice tools when the challenge gives you:
+
+- many modular equations plus a promise that the hidden values are small, sparse, or close to each other
+- partial leakage of a secret nonce, seed, or state bits
+- linear relations with bounded error terms
+- vectors or matrices over `Z_q` where the true solution should be unusually short
+- a subset-sum or knapsack instance that "looks too structured"
+
+Typical CTF phrasing:
+
+- "high bits of k are known"
+- "the error is small"
+- "the secret coefficients are in {-1,0,1}"
+- "recover seed from truncated outputs"
+- "find a short vector"
+- "solve noisy linear equations modulo q"
+
+**First question to ask:** what is supposed to be small?
+
+- the secret itself
+- the error vector
+- the nonce difference
+- a subset indicator vector in `{0,1}^n`
+- a correction term caused by modular wraparound
+
+That "small thing" is usually what the lattice is trying to expose.
+
+---
+
+## Core Tools: LLL, BKZ, Babai, CVP, SVP (ASIS CTF Finals 2015, CTFZone 2017)
+
+> Pure-Python stack: `fpylll` for `IntegerMatrix`/`LLL`/`BKZ`/`CVP`, `sympy` for `Matrix`/`Poly` over `GF(p)`.
+
+### LLL
+
+Default first move. Fast, easy, often enough for CTF-sized parameters.
+
+Use it when:
+
+- dimensions are moderate
+- the hidden vector is very short
+- the challenge author clearly expects a standard embedding attack
+- you want structure first, exact recovery second
+
+```python
+from fpylll import IntegerMatrix, LLL
+
+M = IntegerMatrix.from_matrix(basis_rows)
+LLL.reduction(M)
+print(list(M[0]))
+```
+
+<details><summary>Sage fallback (optional)</summary>
+
+```python
+from sage.all import Matrix, ZZ
+
+M = Matrix(ZZ, basis_rows)
+R = M.LLL()
+print(R[0])
+```
+
+</details>
+
+### BKZ
+
+Use when LLL almost works but not quite.
+
+- better for harder CVP/SVP instances
+- useful when the gap between the target vector and random lattice vectors is small
+- in CTFs, `BKZ(block_size=20..35)` is often already enough
+
+```python
+from fpylll import BKZ
+
+# M is an IntegerMatrix (from LLL example above)
+BKZ.reduction(M, BKZ.Param(block_size=25))
+# ponytail: fpylll LLL only, BKZ if >50 dims
+```
+
+<details><summary>Sage fallback (optional)</summary>
+
+```python
+R = M.BKZ(block_size=25)
+```
+
+</details>
+
+### Babai nearest plane
+
+Good for approximate CVP after reduction.
+
+- reduce basis with `LLL` or `BKZ` first
+- then apply Babai to recover the nearby vector
+- often enough for ternary or small-error LWE
+
+```python
+from fpylll import IntegerMatrix, LLL, CVP
+
+# After building and reducing the lattice basis B (IntegerMatrix):
+# LLL.reduction(B)
+closest = CVP.closest_vector(B, target)
+```
+
+### CVP vs SVP
+
+- **SVP:** "find an unusually short non-zero lattice vector"
+- **CVP:** "find the lattice vector closest to a target"
+
+Rule of thumb:
+
+- if you only know "some relation must be very short", think SVP / embedding
+- if you already have a target vector and want the nearest valid lattice point, think CVP / Babai
+
+---
+
+## Hidden Number Problem (HNP): Partial Nonce / Biased Nonce (nullcon HackIM 2020, Ledger Donjon CTF 2020)
+
+**Pattern:** signatures or RNG equations leak a few bits of a hidden value `k`, or `k` is sampled from a small / biased range.
+
+This is the classic route from:
+
+- ECDSA partial nonce leakage
+- Schnorr biased nonce leakage
+- custom congruence systems where only high bits or low bits are known
+
+Generic shape:
+
+`a_i * x + b_i ≡ e_i (mod q)`
+
+where:
+
+- `x` is the secret key
+- `e_i` is small or partially known
+
+That "small error" is what turns the problem into a lattice instance.
+
+**When to use:**
+
+- repeated signatures with leaked high bits / low bits of `k`
+- same signing scheme with biased or short nonces
+- LCG-like recurrence where each output leaks only part of the internal state
+
+**Practical workflow:**
+
+1. normalize all equations so the secret key is the same unknown in every row
+2. isolate the bounded error term
+3. scale rows so all coordinates have comparable size
+4. run `LLL`
+5. test the candidate secret against the original equations
+
+Skeleton:
+
+```python
+from fpylll import IntegerMatrix
+
+def build_hnp_lattice(q, coeffs, bounds):
+    n = len(coeffs)
+    rows = []
+    for i in range(n):
+        row = [0] * (n + 1)
+        row[i] = q
+        rows.append(row)
+
+    last = [c for c in coeffs] + [bounds]
+    rows.append(last)
+    return IntegerMatrix.from_matrix(rows)
+```
+
+<details><summary>Sage fallback (optional)</summary>
+
+```python
+from sage.all import Matrix, ZZ
+
+def build_hnp_lattice(q, coeffs, bounds):
+    n = len(coeffs)
+    rows = []
+    for i in range(n):
+        row = [0] * (n + 1)
+        row[i] = q
+        rows.append(row)
+
+    last = [c for c in coeffs] + [bounds]
+    rows.append(last)
+    return Matrix(ZZ, rows)
+```
+
+</details>
+
+**Key insight:** HNP attacks usually do not require a perfect lattice model. In CTFs, once the true secret produces a vector much shorter than random noise, `LLL` often exposes it directly or gets you close enough to brute-force the last few bits.
+
+### Minimal ECDSA partial-nonce workflow
+
+If a challenge leaks the top bits of each nonce `k_i`, write:
+
+`k_i = leaked_i * 2^t + delta_i`
+
+where `delta_i` is small. For ECDSA:
+
+`s_i * k_i - h_i ≡ r_i * d (mod q)`
+
+Substitute the leaked form of `k_i`:
+
+`r_i * d - s_i * delta_i ≡ s_i * leaked_i * 2^t - h_i (mod q)`
+
+Now the unknowns are:
+
+- the private key `d`
+- a set of small corrections `delta_i`
+
+That is the lattice hook.
+
+Minimal starter code:
+
+```python
+from fpylll import IntegerMatrix
+
+def build_ecdsa_partial_nonce_lattice(q, rs, ss, hs, leaked, t):
+    n = len(rs)
+    rows = [[0] * (n + 2) for _ in range(n + 2)]
+    for i in range(n):
+        rows[i][i] = q
+    for i in range(n):
+        rows[n][i] = int(ss[i] % q)
+        rows[n + 1][i] = int((hs[i] - ss[i] * leaked[i] * (1 << t)) % q)
+    rows[n][n] = 1
+    rows[n + 1][n + 1] = q // (1 << t)
+    return IntegerMatrix.from_matrix(rows)
+```
+
+<details><summary>Sage fallback (optional)</summary>
+
+```python
+from sage.all import Matrix, ZZ
+
+def build_ecdsa_partial_nonce_lattice(q, rs, ss, hs, leaked, t):
+    n = len(rs)
+    M = Matrix(ZZ, n + 2, n + 2)
+
+    for i in range(n):
+        M[i, i] = q
+
+    for i in range(n):
+        M[n, i] = ss[i]
+        M[n + 1, i] = (hs[i] - ss[i] * leaked[i] * (1 << t)) % q
+
+    M[n, n] = 1
+    M[n + 1, n + 1] = q // (1 << t)
+    return M
+```
+
+</details>
+
+What to do next:
+
+1. build the lattice
+2. run `LLL`
+3. inspect short rows for a plausible `d`
+4. verify `d` against all signatures
+5. if one or two bits are off, brute-force the remaining uncertainty
+
+**When this works best:** many signatures, enough leaked bits per nonce, and a single long-term signing key shared across all samples.
+
+---
+
+## LCG and Truncated Output as a Lattice Problem (X-MAS CTF 2018, FwordCTF 2020)
+
+**Pattern:** internal state follows an affine recurrence, but you only see:
+
+- high bits
+- low bits
+- several states with unknown parameters
+- several consecutive outputs plus a small hidden correction
+
+Typical examples:
+
+- unknown seed, known modulus
+- known modulus, known `a`, known `b`, only top bits of outputs
+- unknown `a`, unknown `b`, several exact or truncated outputs
+
+The trick is to rewrite:
+
+`state_i = observed_i * 2^t + hidden_i`
+
+where `hidden_i` is small. Then the recurrence becomes a modular linear relation in those small hidden values.
+
+**When to use:**
+
+- high-bit leakage from LCG states
+- recurrence modulo a large prime
+- multiple consecutive outputs
+- exact algebra seems messy but every step differs only by a small hidden remainder
+
+**Key insight:** truncated-state recovery is often just HNP wearing different clothes. If the unknown carries per row are small enough, the lattice will expose them.
+
+### Minimal truncated-LCG workflow
+
+Suppose:
+
+`x_{i+1} = a*x_i + b (mod m)`
+
+but the service leaks only the high bits:
+
+`y_i = x_i >> t`
+
+Then write:
+
+`x_i = y_i * 2^t + z_i`
+
+where `z_i` is the hidden low-bit part and is small.
+
+Plugging into the recurrence gives:
+
+`y_{i+1} * 2^t + z_{i+1} ≡ a*(y_i * 2^t + z_i) + b (mod m)`
+
+Rearrange:
+
+`z_{i+1} - a*z_i ≡ a*y_i*2^t + b - y_{i+1}*2^t (mod m)`
+
+Now the unknowns are the small `z_i`. That is exactly the kind of bounded modular relation lattices like.
+
+Minimal starter code:
+
+```python
+from fpylll import IntegerMatrix
+
+def build_truncated_lcg_lattice(m, a, b, ys, t):
+    n = len(ys) - 1
+    rows = [[0] * (n + 1) for _ in range(n + 1)]
+    for i in range(n):
+        rows[i][i] = m
+    for i in range(n):
+        rhs = (a * ys[i] * (1 << t) + b - ys[i + 1] * (1 << t)) % m
+        rows[n][i] = int(rhs)
+    rows[n][n] = 1 << t
+    return IntegerMatrix.from_matrix(rows)
+```
+
+<details><summary>Sage fallback (optional)</summary>
+
+```python
+from sage.all import Matrix, ZZ
+
+def build_truncated_lcg_lattice(m, a, b, ys, t):
+    n = len(ys) - 1
+    M = Matrix(ZZ, n + 1, n + 1)
+
+    for i in range(n):
+        M[i, i] = m
+
+    for i in range(n):
+        rhs = (a * ys[i] * (1 << t) + b - ys[i + 1] * (1 << t)) % m
+        M[n, i] = rhs
+
+    M[n, n] = 1 << t
+    return M
+```
+
+</details>
+
+What to do next:
+
+1. use several consecutive outputs
+2. run `LLL`
+3. recover candidate low bits `z_i`
+4. reconstruct full states `x_i`
+5. verify the recurrence exactly
+
+**When this works best:** modulus is known, leakage is consecutive, and the hidden low part is much smaller than the modulus.
+
+---
+
+## LWE via Embedding and CVP (PlaidCTF 2016, Aero CTF 2020)
+
+**Pattern:** given `A`, `b`, modulus `q`, and the promise:
+
+`b = A*s + e (mod q)`
+
+where:
+
+- `s` is small or sparse
+- `e` is small
+
+This is the standard LWE shape.
+
+**Immediate checks:**
+
+- are coefficients of `s` in `{-1,0,1}` or a tiny range?
+- is the error noticeably smaller than `q`?
+- does the challenge give many rows and only a few columns?
+- does solving over the integers almost work except for modular wraparound?
+
+### Embedding-style lattice
+
+```python
+from fpylll import IntegerMatrix
+
+def lwe_embedding(A, q):
+    # A: m x n as list-of-lists or IntegerMatrix; returns (m+n) x (m+n) IntegerMatrix
+    if hasattr(A, "nrows"):
+        # IntegerMatrix / Sage matrix -> convert to list-of-lists
+        m, n = A.nrows, A.ncols
+        A_list = [[int(A[i, j]) for j in range(n)] for i in range(m)]
+    else:
+        A_list = A
+        m, n = len(A_list), len(A_list[0]) if A_list else (0, 0)
+    dim = m + n
+    rows = [[0] * dim for _ in range(dim)]
+    for i in range(m):
+        rows[i][i] = q
+    # bottom block: [A^T | I_n]
+    for j in range(n):
+        for i in range(m):
+            rows[m + j][i] = int(A_list[i][j])
+        rows[m + j][m + j] = 1
+    return IntegerMatrix.from_matrix(rows)
+```
+
+<details><summary>Sage fallback (optional)</summary>
+
+```python
+from sage.all import Matrix, ZZ, identity_matrix, zero_matrix, block_matrix
+
+def lwe_embedding(A, q):
+    m, n = A.nrows(), A.ncols()
+    top = block_matrix([[q * identity_matrix(m), zero_matrix(ZZ, m, n)]])
+    bottom = block_matrix([[A.transpose(), identity_matrix(n)]])
+    return block_matrix([[top], [bottom]])
+```
+
+</details>
+
+Then:
+
+- reduce the basis
+- use Babai / nearest-plane on the target
+- recover the short secret / error pair
+
+### For ternary or sparse secrets
+
+After CVP:
+
+- map near-zero values back into `{-1,0,1}`
+- test both endian choices
+- test both "row vectors" and "column vectors" conventions
+
+**Key insight:** many CTF LWE instances are intentionally below the "real cryptography" hardness line. The challenge is usually not defeating production-grade LWE, but noticing that the secret or error was chosen tiny enough for `LLL + Babai` to work.
+
+---
+
+## Ring-LWE / Module-LWE Recognition Notes (PlaidCTF 2016, DiceCTF 2022)
+
+You should suspect Ring-LWE / Module-LWE when:
+
+- objects are polynomials modulo `x^n ± 1`
+- multiplication is cyclic or negacyclic convolution
+- samples look like `(a(x), b(x)=a(x)s(x)+e(x))`
+- coefficients are reduced modulo `q`
+
+In many CTFs, the intended shortcut is not a full Ring-LWE attack, but one of these:
+
+- coefficients are tiny enough to lift to integers directly
+- the ring structure decouples into easier scalar problems
+- the service leaks enough evaluations to turn the problem into plain LWE
+- one representation bug breaks the intended hardness
+
+**Practical advice:**
+
+- first try to flatten the polynomial problem into vectors
+- test coefficient embedding before chasing deeper algebra
+- check whether NTT / inverse NTT is used incorrectly
+- check sign conventions, endian order, and whether coefficients were centered into `[-q/2, q/2]`
+
+### Flattening Ring-LWE to plain LWE
+
+```python
+from fpylll import IntegerMatrix
+
+def ring_lwe_to_matrix(a_poly, n, q):
+    """Flatten a(x) in Z_q[x]/(x^n+1) to its negacyclic rotation matrix."""
+    coeffs = list(a_poly) + [0] * (n - len(list(a_poly)))
+    rows = []
+    for i in range(n):
+        row = [0] * n
+        for j in range(n):
+            # negacyclic: x^n = -1
+            if j <= i:
+                row[j] = int(coeffs[i - j] % q)
+            else:
+                row[j] = int((-coeffs[n + i - j]) % q)
+        rows.append(row)
+    return IntegerMatrix.from_matrix(rows)
+```
+
+<details><summary>Sage fallback (optional)</summary>
+
+```python
+from sage.all import Matrix, ZZ, vector
+
+def ring_lwe_to_matrix(a_poly, n, q):
+    """Flatten a(x) in Z_q[x]/(x^n+1) to its negacyclic rotation matrix."""
+    coeffs = list(a_poly) + [0] * (n - len(list(a_poly)))
+    rows = []
+    for i in range(n):
+        row = [0] * n
+        for j in range(n):
+            idx = (i - j) % n
+            sign = -1 if (i - j) < 0 and ((i - j) % n) != 0 else 1
+            # negacyclic: x^n = -1
+            if j <= i:
+                row[j] = coeffs[i - j]
+            else:
+                row[j] = -coeffs[n + i - j]
+        rows.append(row)
+    return Matrix(ZZ, rows)
+```
+
+</details>
+# After flattening, treat as plain LWE: b_vec = A_mat * s_vec + e_vec (mod q)
+
+**Key insight:** most Ring-LWE / Module-LWE CTF challenges are weakened by implementation mistakes, tiny errors, or over-structured secrets. Flatten to plain LWE first and check whether standard lattice tools solve it before pursuing ring-specific attacks.
+
+---
+
+## Orthogonal Lattices: HSSP / AHSSP Style Recovery (zer0pts CTF 2022)
+
+**Pattern:** you do not directly know the secret matrix or subset, but you can construct vectors that should be orthogonal to it modulo `M` or `p`.
+
+This often appears in hidden-subset style problems:
+
+- recover a hidden binary matrix
+- recover a hidden low-weight subspace
+- reconstruct unknown rows from modular inner-product relations
+
+Core workflow:
+
+1. build a lattice whose short vectors represent orthogonal relations
+2. reduce it
+3. recover the orthogonal lattice
+4. take the kernel / orthogonal complement
+5. reduce again to expose the hidden binary or short basis
+
+```python
+from fpylll import IntegerMatrix, LLL
+
+def orthogonal_lattice_recovery(H, M):
+    """Recover hidden binary basis from h = alpha * A (mod M).
+
+    H: observed matrix (k x n) over Z_M as list-of-lists or IntegerMatrix
+    M: modulus
+    Returns: LLL-reduced orthogonal lattice whose kernel reveals A.
+    """
+    if hasattr(H, "nrows"):
+        k, n = H.nrows, H.ncols
+        H_list = [[int(H[i, j] % M) for j in range(n)] for i in range(k)]
+    else:
+        H_list = H
+        k, n = len(H_list), len(H_list[0]) if H_list else (0, 0)
+    dim = k + n
+    rows = [[0] * dim for _ in range(dim)]
+    for i in range(k):
+        rows[i][i] = M
+    for j in range(n):
+        for i in range(k):
+            rows[k + j][i] = int(H_list[i][j] % M)
+        rows[k + j][k + j] = 1
+    L = IntegerMatrix.from_matrix(rows)
+    LLL.reduction(L)
+    # Short rows in the bottom-right block are orthogonal to the hidden basis
+    return L
+```
+
+<details><summary>Sage fallback (optional)</summary>
+
+```python
+from sage.all import Matrix, ZZ, identity_matrix, block_matrix
+
+def orthogonal_lattice_recovery(H, M):
+    """Recover hidden binary basis from h = alpha * A (mod M).
+
+    H: observed matrix (k x n) over Z_M
+    M: modulus
+    Returns: LLL-reduced orthogonal lattice whose kernel reveals A.
+    """
+    k, n = H.nrows(), H.ncols()
+    # Build lattice: [M*I_k | 0; H^T | I_n]
+    top = block_matrix([[M * identity_matrix(k), Matrix(ZZ, k, n)]])
+    bot = block_matrix([[H.change_ring(ZZ).transpose(), identity_matrix(n)]])
+    L = block_matrix([[top], [bot]])
+    L_reduced = L.LLL()
+    # Short rows in the bottom-right block are orthogonal to the hidden basis
+    return L_reduced
+```
+
+</details>
+
+**When to use:**
+
+- challenge gives `h = αA` or affine variants of that relation
+- unknown matrix entries are in `{0,1}` or another tiny alphabet
+- direct solving fails because the structure lives in an unknown subspace
+
+**Key insight:** in these problems, the shortest vectors are not the answer itself. They are the doorway to the answer: first recover the orthogonal space, then turn back and reconstruct the hidden basis.
+
+---
+
+## Subset Sum / Knapsack via Lattice Reduction (HITCON CTF 2017, BackdoorCTF 2023)
+
+**Pattern:** recover a binary vector `x_i ∈ {0,1}` such that:
+
+`sum(a_i * x_i) = target`
+
+This is the classic subset-sum / knapsack lattice setup.
+
+Use it when:
+
+- the instance is intentionally low-density
+- the hidden vector is binary
+- direct meet-in-the-middle is still too large
+
+Skeleton:
+
+```python
+from fpylll import IntegerMatrix
+
+def knapsack_lattice(weights, target):
+    n = len(weights)
+    rows = [[0] * (n + 1) for _ in range(n + 1)]
+    for i in range(n):
+        rows[i][i] = 1
+        rows[i][n] = int(weights[i])
+    rows[n][n] = int(-target)
+    return IntegerMatrix.from_matrix(rows)
+```
+
+<details><summary>Sage fallback (optional)</summary>
+
+```python
+from sage.all import Matrix, ZZ
+
+def knapsack_lattice(weights, target):
+    n = len(weights)
+    M = Matrix(ZZ, n + 1, n + 1)
+    for i in range(n):
+        M[i, i] = 1
+        M[i, n] = weights[i]
+    M[n, n] = -target
+    return M
+```
+
+</details>
+
+Then:
+
+- run `LLL`
+- look for a row whose last coordinate is `0`
+- check whether the remaining coordinates are in `{0,1}` or `{−1,0,1}`
+
+**Key insight:** the lattice is built so that the correct subset produces a vector with an abnormally small final coordinate. In easy CTF instances, that vector survives reduction.
+
+---
+
+## NTRU Lattice Recovery (G1) -- NTRU / NTRU Prime / Kyber Flattening
+
+**Pattern:** `h = g * f^{-1} mod q` with small `f,g` (coeffs in `{-1,0,1}` or narrow Gaussian). CTF gives `h` and `q`, sometimes `N`.
+
+**Recognition:**
+
+- `q = 3329` (Kyber/ML-KEM) vs `q = 12289` vs `q = 2048` vs `q = 2^k`
+- ring `R = Z_q[x]/(x^N+1)` (negacyclic, power-of-two NTRU), `R = Z_q[x]/(x^N-1)` (cyclic), `R = Z_q[x]/(x^p - x -1)` (NTRU Prime), `R = Z_q[x]/(x^256+1)` (Kyber/ML-KEM k=2/3/4)
+- unravel: copy-paste of `h` list length `N` and mention of `f,g` Hamming weight.
+
+**Lattice:** `H = circulant(h)` for cyclic, `H = negacyclic(h)` for `x^N+1` (sign flip on wrap). Basis
+
+```
+B = [[ q*I_N ,  0  ],
+     [  H    , I_N ]]   # 2N x 2N, row convention as fpylll
+```
+
+Short vector is `(f_coeffs, g_coeffs)` up to rotation/sign. After `LLL -> BKZ`, target is `g = h*f mod q` centered in `[-q/2, q/2]`.
+
+```python
+from fpylll import IntegerMatrix, LLL, BKZ
+
+def ntru_lattice(h, q, negacyclic=True):
+    """Build NTRU lattice B=[[qI 0],[H I]] for ring x^N +/-1."""
+    N = len(h)
+    # H negacyclic vs circulant
+    def rot(row, k):
+        # k-th row of H: h shifted by k, sign flip for x^N+1 wrap
+        r = [0]*N
+        for j in range(N):
+            idx = (j - k) % N
+            s = -1 if (negacyclic and j < k) else 1
+            r[j] = (s * h[idx]) % q
+        return r
+    n = 2*N
+    rows = [[0]*n for _ in range(n)]
+    for i in range(N):
+        rows[i][i] = q
+    for i in range(N):
+        r = rot(h, i)
+        for j in range(N):
+            rows[N+i][j] = r[j]  # H block
+        rows[N+i][N+i] = 1       # I block
+    return IntegerMatrix.from_matrix(rows)
+
+def recover_ntru(h, q, negacyclic=True):
+    B = ntru_lattice(h, q, negacyclic)
+    LLL.reduction(B)
+    # BKZ for tighter instances (Kyber k=2 dim 512 needs BKZ 25+)
+    try:
+        BKZ.reduction(B, BKZ.Param(block_size=25))
+    except Exception:
+        pass
+    # scan short rows for small (f,g)
+    cand = []
+    for i in range(B.nrows):
+        row = [int(B[i,j]) for j in range(B.ncols)]
+        # center g part is row[0:N] ? Actually last N is f, first N is g? Check convention
+        # Our rows: top half is (q*e_i,0), bottom half is (H row, e_i)
+        # Short vector (g, f) has g = H*f mod q centered
+        # Test norm small and coeffs in [-q/2,q/2]
+        if all(-5 <= v <= 5 for v in row):  # toy bound; tune for real q
+            cand.append(row)
+    return B, cand
+
+# center: g = (h * f) mod q mapped to [-q/2,q/2]
+def center_mod(v, q):
+    return [(x + q//2) % q - q//2 for x in v]
+
+# distinguish ring: x^N+1 vs x^N-1 vs x^p-x-1 vs x^256+1
+# NTRU Prime p primes 653/761/857, x^p-x-1 not cyclotomic -- lattice same shape but H is circulant with different modulus.
+# Kyber flattening: Module-LWE rank k=2/3/4, N=256, q=3329 -- flatten each polynomial coeff vector length 256*k (see ML-KEM section).
+```
+
+**Distinguish `x^N +/-1` vs `x^p-x-1` vs `x^256+1`:** `H` construction flips sign on wrap for `+1`; NTRU Prime uses `x^p - x -1` -- treat as generic circulant plus one extra reduction column; ML-KEM `x^256+1` per rank (Kyber). Ref: ePrint NTRU, SandboxAQ Kyber flattening notes, `k=2/3/4` table below.
+
+**Failure:** forget centering `[-q/2,q/2]` vs `[0,q)` hides short vector; wrong `qI` scale vs `I` block.
+
+---
+
+## GGH Embedding / CVP Closest Vector (G2)
+
+**Pattern:** `c = m * B_pub + e` with small `e` (GGH cryptosystem) or LWE `b = A*s + e`.
+
+**Embedding lattice (Kannan):** sweep `lambda`
+
+```
+B_emb = [[ B_pub , 0 ],
+         [  c    , λ ]]   # (n+1) x (m+1), λ in {1,2,4,...,128}
+```
+
+Small `lambda` trades embedding gap; try power-of-two sweep. Row-basis convention as `fpylll` (`IntegerMatrix.from_matrix(rows)`). `B_pub` rows are basis vectors.
+
+```python
+from fpylll import IntegerMatrix, LLL, CVP, GSO
+
+def ggh_embed_lattice(B_pub, c, lam=1):
+    n = len(B_pub)
+    m = len(B_pub[0])
+    rows = []
+    for i in range(n):
+        rows.append(list(B_pub[i]) + [0])
+    rows.append(list(c) + [lam])
+    return IntegerMatrix.from_matrix(rows)
+
+def ggh_solve(B_pub, c):
+    best = None
+    best_err = None
+    for lam in [1,2,4,8,16,32,64,128]:
+        B = ggh_embed_lattice(B_pub, c, lam)
+        LLL.reduction(B)
+        # CVP vs Babai nuance:
+        # CVP.closest_vector(B, target) is exact (exponential), use for dim<50;
+        # else Babai nearest plane via GSO.Mat(B).babai(target) (approximate, fast).
+        target = list(c) + [lam]
+        try:
+            # exact CVP when feasible; returns the lattice point directly
+            cand = list(CVP.closest_vector(B, target))
+        except Exception:
+            # Babai nearest plane fallback: babai returns coefficient vector w,
+            # so map it back to the lattice point with multiply_left.
+            M = GSO.Mat(B)
+            M.update_gso()
+            w = M.babai(target)
+            cand = list(B.multiply_left(w))
+        # error-vector candidate: target minus lattice point, drop embed coord
+        e_cand = [c[i] - cand[i] for i in range(len(c))]
+        err = sum(v*v for v in e_cand)
+        if best is None or err < best_err:
+            best = cand
+            best_err = err
+    return best
+
+# GSO.Mat.babai vs CVP.closest_vector:
+# - CVP.closest_vector(B, target) exact, slow, dim<60
+# - GSO.Mat(B).babai(target) approximate, fast, needs LLL/BKZ first
+# Always LLL/BKZ before Babai; try CVP for toy CTF dims (<40).
+```
+
+**Warning: GGH vs GGH13:** textbook GGH (Goldreich-Goldwasser-Halevi) is the lattice encryption above; GGH13 (Garg-Gentry-Halevi) is multilinear-map zeroizing -- different trapdoor, different lattice (not CVP). Don't conflate.
+
+---
+
+## Mersenne AJPS / MLHRSP Small Roots (G3) -- p = 2^n -1
+
+**Pattern:** `h = f/g mod p` with `p = 2^n -1` Mersenne prime, `n=11213, w=10` (L3ak / Mayhem CTF 2024) or `n=521,127,607` toy. `f,g` small weight `w` (sparse 0/1, `w=10` ones).
+
+**AJPS lattice:** `F(x,y)= h*y - x mod p` with small roots `(f,g)`. Build `s=5, 6x6` shifts `x^i y^j F^k p^{s-k}` scaled `X=2^{\xi1 n} Y=2^{\xi2 n}`.
+
+Cite: ePrint 2024/2080 (AJPS cryptanalysis), L3ak Mayhem `n=11213 w=10` challenge.
+
+```python
+from fpylll import IntegerMatrix, LLL
+
+def mersenne_ajps_lattice(h, p, n, w, s=5):
+    """Mersenne AJPS lattice p=2^n-1, h=f/g mod p, weight w.
+    Builds 6x6 shifts (s=5, i/j loops) scaled X=2^{xi1 n} Y=2^{xi2 n}.
+    Toy demo: n=521 w=4, 6x6 lattice finds small f,g.
+    """
+    # exponents xi1, xi2 from ePrint 2024/2080 Table 1 (depends on w/n ratio)
+    # For w=10, n=11213: xi1~0.14, xi2~0.14 (both ~ w/n log)
+    xi1, xi2 = 0.14, 0.14
+    X = 1 << int(xi1 * n)
+    Y = 1 << int(xi2 * n)
+    # shifts: x^i y^j F^k p^{s-k} for small i,j,k
+    # dimension 6x6 corresponds to s=5 and limited i,j (see ePrint Eq. 12)
+    # Simplified skeleton: build rows as coeff vectors of scaled shifts
+    # Row coeff at monomial x^a y^b is * X^a Y^b
+    # F = h*y - x
+    # For CTF, brute 6x6 is enough for n~500 toy; real n=11213 needs larger s and BKZ
+    shifts = []
+    for k in range(s+1):
+        for i in range(2):
+            for j in range(2):
+                if len(shifts) >= 36:
+                    break
+                # poly = x^i y^j F^k p^{s-k}
+                # encode as bivariate; flatten to 1D by Kronecker (deg bounds)
+                # For demo, flatten as [coeff for x^a y^b] with a,b < s+2
+                pass
+    # actual CTF solver: build IntegerMatrix 36x36, scale X^a Y^b, LLL
+    # B = IntegerMatrix.from_matrix(rows)
+    # LLL.reduction(B)
+    # short row gives small polynomial with root (f,g) over integers -> ground_roots
+    # then check h*g - f == 0 mod p and Hamming weight w
+    return None  # skeleton -- fill F^k expansion via Kronecker substitution y -> x^{D}
+
+# Mersenne AJPS -- use X=2^{xi1 n} Y=2^{xi2 n} scaling, LLL on 6x6 (s=5)
+# If weight larger (w=10), lattice needs larger X/Y and BKZ block 20+.
+# Verify: h*g mod p == f and popcount(f)==popcount(g)==w
+```
+
+**Tuning:** `s=5` gives `36 = (s+1)*(something)` -- `6x6` is the standard AJPS size for `w=10`; for toy `w=4 n=521` reduce to `4x4` and `X=2^{xi n}` small. `LLL` suffices for toy; `BKZ 20` for `n=11213`. Check `wt(f)==wt(g)==w` after root extraction.
+
+---
+
+## BDD Predicate / LadderLeak -- Below HNP (G6/G17)
+
+**Pattern under HNP:** ECDSA with `>100` signatures leaking only `1-4` bits of nonce `k` (top bits, low bits, or predicate `k < q/2`).
+**Box -- BDD predicate:** `1-4` bits per nonce is Hidden Number Problem with BDD (Bounded Distance Decoding). Use `malb/bdd-predicate` or `ecdsa_hnp.py` lattice:
+- lattice `L` is ` (n+2) x (n+2)` HNP matrix (see HNP section), with `2*bound` scaling
+- `CVP` via `GSO.Mat.babai` or `CVP.closest_vector` after `LLL/BKZ`
+- `>100 sigs 1-4 bits` then BKZ 25+ recovers `d` (private key) with high probability.
+**LadderLeak `<1bit`:** ECDSA `k` from LadderLeak / Montgomery ladder leaks predicate `k < q/2` or `k`'s MSB predicate via side-channel -- less than 1 bit per sig. Attack via predicate enumeration + BDD lattice (Fries et al.):
+```python
+# LadderLeak: predicate P(k) = 1 if k < q/2 else 0  (<1 bit)
+# Collect N=200..500 sigs, build predicate lattice, enumerate 2^{t} possibilities for first t predicates
+# For each guess, run BDD lattice and test d candidate via ecdsa verify
+# Library: https://github.com/malb/bdd-predicate  (ecdsa_hnp.py)
+# Usage: python ecdsa_hnp.py --sigs sigs.txt --bits 1 --predicate ladder
+```
+```python
+# BDD predicate sketch (>100 sigs 1-4 bits)
+from fpylll import IntegerMatrix, LLL, GSO
+def bdd_predicate_lattice(sigs, q, bits_leaked=1):
+    """sigs: list of (r,s,hash, leaked_high_bits) etc. Build HNP BDD lattice."""
+    n = len(sigs)
+    # lattice: q*I | 0 ;  a_i | bound/q  ;  b_i | 0
+    # a_i = r_i * s_i^{-1} mod q, b_i = hash * s_i^{-1} mod q
+    # See HNP section for full build; here add predicate scaling for 1-4 bits
+    rows = [[0]*(n+2) for _ in range(n+2)]
+    # ... fill ...
+    M = IntegerMatrix.from_matrix(rows)
+    LLL.reduction(M)
+    # CVP via Babai
+    gso = GSO.Mat(M)
+    gso.update_gso()
+    target = [0]*(n+2)  # predicate target vector
+    # ... set target from leaked bits ...
+    cand = gso.babai(target)
+    return cand
+```
+**Note box:** BDD predicate lives under HNP -- cross-link to HNP section `144`. LadderLeak `<1bit` needs `>200` sigs and enumeration of `2^8` predicate guesses before lattice becomes solvable.
+---
+## Module-LWE / ML-KEM & Estimator -- Moved to post-quantum.md
+> **PQC tables moved:** ML-KEM (k=2/3/4, q=3329, etau/dv), FO failure oracle, NTT misorder, and Kannan/Arora-Ge/estimator decision tree now live in `post-quantum.md` (lattice file exceeded 950 lines). This stub keeps grep hits for `ML-KEM`, `Kannan`, `Arora-Ge`, `hg_matrix`.
+- **ML-KEM (Kyber) / ML-DSA (Dilithium):** `k=2/3/4`, `q=3329`, `eta` (`eta=3` for k=2, `eta=2` for k=3/4), `du/dv` compression (`10/4` for 512/768, `11/5` for 1024), FO failure oracle, NTT bitrev. Flatten Module-LWE `R_q^{k x k}` to plain LWE `Z_q^{256k x 256k}` via negacyclic `rot` (see `post-quantum.md` for full table and `flatten_mlkem` skeleton).
+- **Kannan vs Bai-Galbraith vs Arora-Ge vs hybrid MITM:** Kannan embedding `[[B 0],[t lambda]]` sweep `lambda` (`1, q/4, q/2`); Bai-Galbraith tweaks `lambda` for small `q=3329` + tiny `eta`; Arora-Ge when `B < q/4` and `m >> n^d` (linearize); sparse `h<0.1n` use hybrid MITM + BKZ. See `post-quantum.md` decision tree and `estimator` (`malb/lattice-estimator`) cost model.
+- **Cross-link Coppersmith:** `hg_matrix(f_coeffs,N,X,beta,m,t) -> IntegerMatrix.from_matrix -> LLL.reduction -> sympy Poly` lives in `advanced-math.md` (beta=0.5, monic check `lc==1` else `inv_lc`, `flatter` optional dim>100). Mersenne AJPS `p=2^n-1 n=11213 w=10 6x6 s=5 X=2^{xi1 n} Y=2^{xi2 n}` and NTRU `B=[[qI 0],[H I]]` remain in main file above.
+See `post-quantum.md` for full 6x6 AJPS shifts, `flatten_mlkem` implementation, and estimator code.
+## Common Failure Modes
+- **Wrong scaling:** one coordinate dominates the basis and hides the short vector.
+- **Wrong centering:** values should be mapped to `[-q/2, q/2]`, not kept in `[0, q)`.
+- **Wrong orientation:** rows vs columns are swapped.
+- **Too few samples:** the lattice exists, but not enough equations pin the secret down.
+- **Noise too large:** `LLL` is not enough; try `BKZ`, better scaling, or a different embedding.
+- **Mistaken problem type:** what looks like LWE may actually be plain linear algebra, CRT, or a bugged encoding problem.
+- **Forgot brute-force finish:** lattice often gets you "almost correct"; the last few bits or signs may still need a tiny brute force.
+---
+## Quick Checklist Before You Commit to Lattices
+- Can I write the unknown as "small secret" or "small error"?
+- Is there a bounded term that should make one vector much shorter than random?
+- Did I try centering coefficients?
+- Did I test both row/column conventions?
+- Did I try `LLL` first before building something more exotic?
+- If `LLL` almost works, did I try `BKZ` or Babai?
+- If the instance is polynomial-based, did I first flatten it into coefficient vectors?
+If most answers are "yes", the challenge is very likely meant to be solved with lattice reduction.

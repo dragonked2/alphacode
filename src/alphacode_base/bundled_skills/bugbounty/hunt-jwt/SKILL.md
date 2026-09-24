@@ -34,5 +34,5 @@ Refresh token abuse: test if valid after password change/logout
 None algorithm → admin access → Critical
 Alg confusion → forge admin token → Critical
 Claim manipulation → privilege escalation → Critical
-Key brute → forge任意token → Critical
+Key brute → forge any token → Critical
 ```

@@ -3417,12 +3417,18 @@ impl App {
                         // confirmation. Show just the model in that case.
                         let placeholder_route =
                             placeholder_routes::is_placeholder_route_method(&route.api_method);
+                        let pretty_entry_name =
+                            crate::alphacode_provider_metadata::internal_model_display_name(
+                                &entry.name,
+                            )
+                            .unwrap_or(&entry.name)
+                            .to_string();
                         let notice = if placeholder_route {
-                            format!("Model → {}", entry.name)
+                            format!("Model → {}", pretty_entry_name)
                         } else {
                             format!(
                                 "Model → {} via {} ({})",
-                                entry.name, route.provider, method_label
+                                pretty_entry_name, route.provider, method_label
                             )
                         };
                         let route_detail = if placeholder_route {

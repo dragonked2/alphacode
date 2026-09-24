@@ -23,10 +23,12 @@ Check every new host against it. No scope file → no testing.
 ### PHASE 0: RECON (5 min — see recon, recon-js, tool-doctor)
 
 ```bash
-# 1. Tools one at a time (tool-doctor); missing → fallback, never stall
-# 2. Fingerprint first (headers, framework, WAF) — framework routes, not generic wordlists
-# 3. JS bundle before fuzzing (recon-js): chunks → endpoints → secrets
-# 4. Subdomains via native tools only — NEVER websearch for enumeration
+# 0. Tools one at a time (tool-doctor); missing → install or fallback, never stall
+#    bash scripts/install_bugbounty_tools.sh go     # ProjectDiscovery pipeline
+#    bash scripts/install_bugbounty_tools.sh --verify
+# 1. Fingerprint first (headers, framework, WAF) — framework routes, not generic wordlists
+# 2. JS bundle before fuzzing (recon-js): chunks → endpoints → secrets
+# 3. Subdomains via native tools only — NEVER websearch for enumeration
 subfinder -d TARGET -all | dnsx -resp | httpx -sc -title -tech-detect
 ffuf -u TARGET/FUZZ -w common.txt -mc 200
 katana -u TARGET -d 3 -jc | grep -oE "/api/[a-zA-Z0-9/_-]+" | sort -u
@@ -57,7 +59,7 @@ Version: /v2 auth'd, /v1 unauth'd → should FAIL
 ### PHASE 3: 7-GATE VALIDATION (MANDATORY)
 ```
 G1 SCOPE → G2 BOUNDARY → G3 ATTACKER → G4 REPRODUCIBLE → G5 IMPACT → G6 NO FALSE POSITIVE → G7 PROGRAM ACCEPTS
-FAIL任何一个 → REJECT. No exceptions.
+FAIL any gate → REJECT. No exceptions.
 ```
 
 **Gate 6 — Don't report:**
@@ -113,6 +115,37 @@ Secrets: trufflehog, gitleaks
 Takeover: subzy, dnsreaper
 Analysis: semgrep
 ```
+
+### Install tools
+
+```bash
+# Detect platform (Windows / Debian / CentOS-RHEL / Alpine / Arch / SUSE / macOS / WSL policy)
+bash scripts/install_bugbounty_tools.sh --platform
+
+# Full toolkit (Go + OS packages + pip + nuclei templates + wordlists)
+bash scripts/install_bugbounty_tools.sh all
+
+# Preview without installing
+bash scripts/install_bugbounty_tools.sh --dry-run all
+
+# One family only
+bash scripts/install_bugbounty_tools.sh go        # cross-platform Go tools
+bash scripts/install_bugbounty_tools.sh os        # auto: apt|dnf|yum|apk|pacman|zypper|brew|win
+bash scripts/install_bugbounty_tools.sh wordlists
+bash scripts/install_bugbounty_tools.sh --verify
+```
+
+Windows native (no WSL required):
+
+```powershell
+powershell -ExecutionPolicy Bypass -File scripts/install_bugbounty_tools.ps1
+powershell -ExecutionPolicy Bypass -File scripts/install_bugbounty_tools.ps1 -DryRun
+powershell -ExecutionPolicy Bypass -File scripts/install_bugbounty_tools.ps1 -VerifyOnly
+```
+
+**WSL policy:** WSL is used only if `wsl.exe` exists **and** a distro is `Running` (`--platform` prints `WSL: ready`). Otherwise install natively (winget/scoop/choco on Windows; apt/dnf/yum/apk/pacman/zypper on Linux).
+
+Missing tools mid-engagement → use tool-doctor fallbacks; never stall on install.
 
 ## WAF BYPASS QUICK
 ```

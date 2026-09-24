@@ -11,6 +11,8 @@ description: Local tool readiness check — Inspect which security tools are ins
 
 ## 0. CROSS-PLATFORM AND NON-FATAL RULES (READ FIRST)
 
+Supported install targets: **Windows native**, Debian/Ubuntu/Kali, **RHEL/CentOS/Rocky/Alma/Fedora**, Alpine, Arch, openSUSE, macOS, and WSL (only when installed + Running).
+
 The big readiness script in section 1 is Linux/bash-only (`command -v`,
 bash arrays, `&>/dev/null`, `((missing++))`). It FAILS on Windows
 (PowerShell) and on minimal shells. Rules:
@@ -36,6 +38,9 @@ bash arrays, `&>/dev/null`, `((missing++))`). It FAILS on Windows
 4. On Windows without Go/Python toolchains, use Docker images
    (`docker run projectdiscovery/subfinder`) or the httpflow/curl
    fallbacks — do not burn the engagement on toolchain setup.
+5. **WSL only when ready.** Never assume WSL. Use it only if
+   `wsl -l -v` shows a distro with `State: Running` (installer
+   prints `WSL: ready`). Prefer native winget/scoop/choco installs.
 
 ---
 
@@ -140,13 +145,27 @@ echo ""
 if [ "$missing" -gt 0 ]; then
     echo "⚠️  $missing tools missing. Install them for full coverage."
     echo ""
-    echo "QUICK INSTALL (Debian/Kali/Ubuntu):"
-    echo "  apt install nmap sqlmap ffuf gobuster nikto nuclei trivy checksec"
+    echo "BUNDLED INSTALLER (preferred — auto-detects OS):"
+    echo "  bash scripts/install_bugbounty_tools.sh --platform"
+    echo "  bash scripts/install_bugbounty_tools.sh all"
+    echo "  bash scripts/install_bugbounty_tools.sh --verify"
     echo ""
-    echo "QUICK INSTALL (macOS):"
-    echo "  brew install nmap sqlmap ffuf gobuster nikto nuclei trivy checksec"
+    echo "WINDOWS NATIVE (no WSL):"
+    echo "  powershell -ExecutionPolicy Bypass -File scripts/install_bugbounty_tools.ps1"
     echo ""
-    echo "GO TOOLS (from source):"
+    echo "DEBIAN/KALI/UBUNTU:"
+    echo "  sudo apt install nmap sqlmap ffuf gobuster nikto jq"
+    echo ""
+    echo "RHEL/CENTOS/FEDORA:"
+    echo "  sudo dnf install nmap sqlmap jq    # or: sudo yum install nmap sqlmap jq"
+    echo ""
+    echo "ALPINE/ARCH/SUSE/macOS:"
+    echo "  sudo apk add nmap sqlmap jq"
+    echo "  sudo pacman -S nmap sqlmap jq"
+    echo "  sudo zypper install nmap sqlmap jq"
+    echo "  brew install nmap sqlmap jq"
+    echo ""
+    echo "GO TOOLS (all platforms):"
     echo "  go install github.com/projectdiscovery/subfinder/v2/cmd/subfinder@latest"
     echo "  go install github.com/projectdiscovery/httpx/cmd/httpx@latest"
     echo "  go install github.com/projectdiscovery/nuclei/v3/cmd/nuclei@latest"
@@ -155,6 +174,8 @@ if [ "$missing" -gt 0 ]; then
     echo "  go install github.com/projectdiscovery/naabu/v2/cmd/naabu@latest"
     echo "  go install github.com/hahwul/dalfox/v2@latest"
     echo "  go install github.com/ffuf/ffuf/v2@latest"
+    echo ""
+    echo "WSL: only if wsl -l -v shows State: Running; otherwise install natively."
 else
     echo "✅ All tools ready! You're fully equipped."
 fi
@@ -191,17 +212,93 @@ Track tool status for your engagement:
 
 ## 3. TOOL INSTALLATION
 
+### One-shot installer (bundled) — all OSes
+
+```bash
+# Detect platform + WSL policy
+bash scripts/install_bugbounty_tools.sh --platform
+
+# Full toolkit: Go tools + OS packages + pip + nuclei templates + wordlists
+bash scripts/install_bugbounty_tools.sh all
+
+# Preview only
+bash scripts/install_bugbounty_tools.sh --dry-run all
+
+# Single family (auto-detect uses `os`)
+bash scripts/install_bugbounty_tools.sh go
+bash scripts/install_bugbounty_tools.sh os
+bash scripts/install_bugbounty_tools.sh pip
+bash scripts/install_bugbounty_tools.sh nuclei
+bash scripts/install_bugbounty_tools.sh wordlists
+
+# After install
+bash scripts/install_bugbounty_tools.sh --verify
+```
+
+`os` dispatches automatically:
+
+| Family | Distro examples | Manager |
+|--------|-----------------|---------|
+| apt | Debian, Ubuntu, Kali, Parrot | `apt-get` |
+| dnf | Fedora, RHEL 8+, Rocky, Alma | `dnf` |
+| yum | CentOS 7, RHEL 7, Amazon Linux | `yum` |
+| apk | Alpine | `apk` |
+| pacman | Arch, Manjaro | `pacman` |
+| zypper | openSUSE, SLES | `zypper` |
+| brew | macOS | `brew` |
+| win | Windows native (Git Bash/MSYS) | winget → scoop → choco |
+
+Windows native PowerShell installer (no WSL):
+
+```powershell
+powershell -ExecutionPolicy Bypass -File scripts/install_bugbounty_tools.ps1
+powershell -ExecutionPolicy Bypass -File scripts/install_bugbounty_tools.ps1 -DryRun
+powershell -ExecutionPolicy Bypass -File scripts/install_bugbounty_tools.ps1 -VerifyOnly
+```
+
+**WSL:** used only when status is `ready` (`wsl.exe` present + distro `Running`). Never required.
+
+Script location (reference): `scripts/install_bugbounty_tools.sh` and `scripts/install_bugbounty_tools.ps1` under the `bugbounty` skill.
+
 ### Quick Install by OS
 
 ```bash
 # ═══════════════════════════════════════════════════════════
 # DEBIAN / KALI / UBUNTU
 # ═══════════════════════════════════════════════════════════
+apt update && apt install -y nmap sqlmap ffuf gobuster nikto jq
 
-# Core tools
-apt update && apt install -y nmap sqlmap ffuf gobuster nikto
+# ═══════════════════════════════════════════════════════════
+# RHEL / CENTOS / ROCKY / ALMA / FEDORA
+# ═══════════════════════════════════════════════════════════
+sudo dnf install -y nmap sqlmap jq          # CentOS/RHEL 8+, Fedora
+sudo yum install -y nmap sqlmap jq          # CentOS/RHEL 7, Amazon Linux
+# ffuf/gobuster often missing from repos → install via Go (below)
 
-# Go tools
+# ═══════════════════════════════════════════════════════════
+# ALPINE / ARCH / OPENSUSE
+# ═══════════════════════════════════════════════════════════
+sudo apk add nmap sqlmap jq
+sudo pacman -S nmap sqlmap jq
+sudo zypper install nmap sqlmap jq
+
+# ═══════════════════════════════════════════════════════════
+# macOS
+# ═══════════════════════════════════════════════════════════
+brew install nmap sqlmap jq
+
+# ═══════════════════════════════════════════════════════════
+# WINDOWS NATIVE (no WSL)
+# ═══════════════════════════════════════════════════════════
+winget install GoLang.Go
+winget install Python.Python.3.12
+winget install Insecure.Nmap
+winget install Microsoft jq
+# or: powershell -ExecutionPolicy Bypass -File scripts/install_bugbounty_tools.ps1
+
+# ═══════════════════════════════════════════════════════════
+# GO TOOLS (all platforms — preferred for ProjectDiscovery)
+# ═══════════════════════════════════════════════════════════
 go install github.com/projectdiscovery/subfinder/v2/cmd/subfinder@latest
 go install github.com/projectdiscovery/httpx/cmd/httpx@latest
 go install github.com/projectdiscovery/nuclei/v3/cmd/nuclei@latest
@@ -211,31 +308,21 @@ go install github.com/projectdiscovery/naabu/v2/cmd/naabu@latest
 go install github.com/hahwul/dalfox/v2@latest
 go install github.com/ffuf/ffuf/v2@latest
 go install github.com/OJ/gobuster/v3@latest
-
-# Update nuclei templates
 nuclei -update-templates
 
 # ═══════════════════════════════════════════════════════════
-# macOS
+# WSL (ONLY if installed AND Running)
 # ═══════════════════════════════════════════════════════════
-
-# Homebrew tools
-brew install nmap sqlmap ffuf gobuster nikto
-
-# Go tools (same as Linux)
-# ...
+wsl -l -v    # must show State: Running
+# then inside: use apt/dnf as appropriate for that distro
 
 # ═══════════════════════════════════════════════════════════
 # DOCKER (all platforms)
 # ═══════════════════════════════════════════════════════════
-
-# ProjectDiscovery tools
 docker pull projectdiscovery/subfinder:latest
 docker pull projectdiscovery/httpx:latest
 docker pull projectdiscovery/nuclei:latest
 docker pull projectdiscovery/katana:latest
-
-# sqlmap
 docker pull paoloo/sqlmap
 ```
 
@@ -292,14 +379,22 @@ df -h . | tail -1 | awk '{print "Disk: " $4 " available"}'
 ## 6. QUICK COMMANDS
 
 ```bash
+# Platform + WSL policy
+bash scripts/install_bugbounty_tools.sh --platform
+
 # Run tool doctor
 /doctor
 
 # Check specific tool
 /doctor check nuclei
 
-# Install missing tools
-/doctor install
+# Install missing tools (bundled installer — all OSes)
+bash scripts/install_bugbounty_tools.sh all
+bash scripts/install_bugbounty_tools.sh --verify
+
+# Windows native (no WSL)
+powershell -ExecutionPolicy Bypass -File scripts/install_bugbounty_tools.ps1
+powershell -ExecutionPolicy Bypass -File scripts/install_bugbounty_tools.ps1 -VerifyOnly
 
 # Show tool alternatives
 /doctor alternatives sqlmap

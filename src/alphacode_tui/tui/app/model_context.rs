@@ -246,9 +246,18 @@ impl App {
     }
 
     /// Short label for a route, e.g. "claude-sonnet-4 via OAuth (Anthropic)".
+    /// Internal virtual ids are rendered by their product name, and the
+    /// meaningless `(auto)` provider tag is dropped.
     fn describe_route(route: &crate::provider::ModelRoute) -> String {
         let method = crate::provider::ModelRouteApiMethod::parse(&route.api_method).display_label();
-        format!("{} via {} ({})", route.model, method, route.provider)
+        let model = crate::alphacode_provider_metadata::internal_model_display_name(&route.model)
+            .unwrap_or(&route.model);
+        let provider = route.provider.trim();
+        if provider.is_empty() || provider.eq_ignore_ascii_case("auto") {
+            format!("{} via {}", model, method)
+        } else {
+            format!("{} via {} ({})", model, method, provider)
+        }
     }
 
     /// After a provider turn error, compute the next best available route and, if
@@ -338,7 +347,12 @@ impl App {
             "↪ {} failed. Fallback available: press {} to switch to {} and resend.",
             from_label, key_label, target_label,
         )));
-        self.set_status_notice(format!("Press {} to switch to {}", key_label, route.model));
+        self.set_status_notice(format!(
+            "Press {} to switch to {}",
+            key_label,
+            crate::alphacode_provider_metadata::internal_model_display_name(&route.model)
+                .unwrap_or(&route.model)
+        ));
         self.pending_fallback_offer = Some(super::PendingFallbackOffer {
             selection: crate::provider::RouteSelection::from_model_route(&route),
             target_label,
@@ -429,11 +443,17 @@ impl App {
         let current_api_method = self.current_route_api_method().unwrap_or_default();
         let from_method = crate::provider::ModelRouteApiMethod::parse(&current_api_method);
         let from_label = if current_api_method.is_empty() {
-            format!("{} ({})", current_model, current_provider)
+            format!(
+                "{} ({})",
+                crate::alphacode_provider_metadata::internal_model_display_name(&current_model)
+                    .unwrap_or(&current_model),
+                current_provider
+            )
         } else {
             format!(
                 "{} ({} via {})",
-                current_model,
+                crate::alphacode_provider_metadata::internal_model_display_name(&current_model)
+                    .unwrap_or(&current_model),
                 current_provider,
                 from_method.display_label()
             )
@@ -444,7 +464,12 @@ impl App {
             "↪ Reroute available: press {} to switch to {} and resend this request.\n\nGuardrail refusals are model-side; a stronger model often handles the same request.",
             key_label, target_label,
         )));
-        self.set_status_notice(format!("Press {} to reroute to {}", key_label, route.model));
+        self.set_status_notice(format!(
+            "Press {} to reroute to {}",
+            key_label,
+            crate::alphacode_provider_metadata::internal_model_display_name(&route.model)
+                .unwrap_or(&route.model)
+        ));
         self.pending_fallback_offer = Some(super::PendingFallbackOffer {
             selection: crate::provider::RouteSelection::from_model_route(&route),
             target_label,
@@ -508,7 +533,11 @@ impl App {
                     "↪ Switched to {} and resending (was {}).",
                     offer.target_label, offer.from_label,
                 )));
-                self.set_status_notice(format!("Switched → {} (retrying)", active_model));
+                self.set_status_notice(format!(
+                    "Switched → {} (retrying)",
+                    crate::alphacode_provider_metadata::internal_model_display_name(&active_model)
+                        .unwrap_or(&active_model)
+                ));
                 self.pending_turn = true;
                 true
             }
@@ -552,11 +581,15 @@ impl App {
                     .active_auth_method_label()
                     .map(|method| format!(" (via {})", method))
                     .unwrap_or_default();
+                let pretty_next =
+                    crate::alphacode_provider_metadata::internal_model_display_name(&next_model)
+                        .unwrap_or(&next_model)
+                        .to_string();
                 self.push_display_message(DisplayMessage::system(format!(
                     "✓ Switched to model: {}{}",
-                    next_model, auth_suffix
+                    pretty_next, auth_suffix
                 )));
-                self.set_status_notice(format!("Model → {}", next_model));
+                self.set_status_notice(format!("Model → {}", pretty_next));
             }
             Err(e) => {
                 self.push_display_message(DisplayMessage::error(format!(
@@ -1511,15 +1544,19 @@ pub(super) fn handle_model_command(app: &mut App, trimmed: &str) -> bool {
                     .active_auth_method_label()
                     .map(|method| format!(" (via {})", method))
                     .unwrap_or_default();
+                let pretty_active =
+                    crate::alphacode_provider_metadata::internal_model_display_name(&active_model)
+                        .unwrap_or(&active_model)
+                        .to_string();
                 app.push_display_message(DisplayMessage {
                     role: "system".to_string(),
-                    content: format!("✓ Switched to model: {}{}", active_model, auth_suffix),
+                    content: format!("✓ Switched to model: {}{}", pretty_active, auth_suffix),
                     tool_calls: vec![],
                     duration_secs: None,
                     title: None,
                     tool_data: None,
                 });
-                app.set_status_notice(format!("Model → {}", model_name));
+                app.set_status_notice(format!("Model → {}", pretty_active));
             }
             Err(e) => {
                 let mut msg = model_switch_failure_message(&e.to_string(), app.is_remote);

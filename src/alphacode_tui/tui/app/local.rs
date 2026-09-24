@@ -224,7 +224,11 @@ pub(super) fn handle_bus_event(
                     message,
                 ));
             }
-            app.set_status_notice(format!("Model → {}", model));
+            app.set_status_notice(format!(
+                "Model → {}",
+                crate::alphacode_provider_metadata::internal_model_display_name(&model)
+                    .unwrap_or(&model)
+            ));
             if open_picker {
                 app.open_model_picker();
             }

