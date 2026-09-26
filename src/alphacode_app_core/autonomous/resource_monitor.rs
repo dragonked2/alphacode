@@ -209,12 +209,15 @@ impl ResourceMonitor {
 
     /// Decay older history entries to free memory (multi-day execution).
     pub fn prune(&self, max_age: Duration) {
-        let cutoff = Instant::now() - max_age;
+        let now = Instant::now();
         let mut history = self
             .history
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
-        history.retain(|(t, _)| *t >= cutoff);
+        history.retain(|(sampled_at, _)| {
+            now.checked_duration_since(*sampled_at)
+                .is_some_and(|age| age <= max_age)
+        });
 
         // Also prune pressure history to keep bounded.
         let mut pressure = self
@@ -275,6 +278,19 @@ mod tests {
         monitor.prune(Duration::from_secs(0));
         let history = monitor.history.lock().unwrap();
         assert!(history.is_empty());
+    }
+
+    #[test]
+    fn test_prune_accepts_unrepresentable_cutoff() {
+        let monitor = ResourceMonitor::new(AgentLimits::default());
+        monitor.record(ResourceSnapshot::now(1, 0));
+
+        // Subtracting this duration from Instant::now() would panic on a
+        // freshly booted machine. Age-based filtering must remain safe.
+        monitor.prune(Duration::MAX);
+
+        let history = monitor.history.lock().unwrap();
+        assert_eq!(history.len(), 1);
     }
 
     #[test]

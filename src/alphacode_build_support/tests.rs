@@ -21,6 +21,14 @@ fn with_temp_alphacode_home<T>(f: impl FnOnce() -> T) -> T {
     result
 }
 
+fn git_available() -> bool {
+    std::process::Command::new("git")
+        .arg("--version")
+        .output()
+        .map(|output| output.status.success())
+        .unwrap_or(false)
+}
+
 fn create_git_repo_fixture() -> tempfile::TempDir {
     let temp = tempfile::tempdir().expect("tempdir");
     std::fs::create_dir_all(temp.path().join(".git")).expect("create .git dir");
@@ -278,6 +286,11 @@ fn test_canary_status_serialization() {
 
 #[test]
 fn dirty_source_state_uses_fingerprint_in_version_label() {
+    if !git_available() {
+        // Source-state fingerprinting is intentionally unavailable on hosts
+        // without Git; keep the unit suite runnable there.
+        return;
+    }
     let repo = create_git_repo_fixture();
     std::fs::write(repo.path().join("notes.txt"), "dirty change\n").expect("write dirty file");
 

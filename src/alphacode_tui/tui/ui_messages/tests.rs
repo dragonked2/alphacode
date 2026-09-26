@@ -524,7 +524,7 @@ fn render_todos_message_shows_grouped_card_with_status_glyphs() {
         .unwrap();
     assert_eq!(other_header.matches('○').count(), 1, "{plain}");
     assert!(plain.contains("✓ Wire the hotkey"), "{plain}");
-    assert!(plain.contains("● Render the card"), "{plain}");
+    assert!(plain.contains("▶ Render the card"), "{plain}");
     assert!(plain.contains("○ Unrelated cleanup"), "{plain}");
     // Completed items show completion confidence; open ones planning confidence.
     assert!(plain.contains("80→95%"), "{plain}");
@@ -582,7 +582,7 @@ fn render_todos_message_shows_goal_scores_and_feedback() {
         "{plain}"
     );
     // Plan-level intent renders once, above the groups.
-    assert!(plain.contains("Understands user intent 98%"), "{plain}");
+    assert!(plain.contains("Understands user intent · 98%"), "{plain}");
     assert!(
         plain.contains("User intention · Keep the agent aligned with the user's request"),
         "{plain}"
@@ -591,7 +591,7 @@ fn render_todos_message_shows_goal_scores_and_feedback() {
         plain.contains("Feedback · Inspect a debug frame"),
         "{plain}"
     );
-    assert!(plain.contains("● Render the card · 85%"), "{plain}");
+    assert!(plain.contains("▶ Render the card · 85%"), "{plain}");
     assert!(!plain.contains("(high)"), "{plain}");
 }
 
@@ -635,7 +635,7 @@ fn render_todos_message_uses_readable_semantic_colors() {
 
     assert_eq!(color_for("todo rendering"), Some(todo_group_color()));
     assert_eq!(color_for("Readable metadata"), Some(todo_meta_color()));
-    assert_eq!(color_for("● "), Some(asap_color()));
+    assert_eq!(color_for("▶ "), Some(asap_color()));
     assert_eq!(color_for(" (high)"), None);
     assert_eq!(color_for(" · 85%"), Some(todo_confidence_color()));
     assert_ne!(todo_meta_color(), dim_color());
@@ -753,7 +753,7 @@ fn render_todo_tool_result_uses_borderless_card_with_goal_scores() {
         plain.contains("Closed feedback loop 95% · Ownership 92%"),
         "{plain}"
     );
-    assert!(plain.contains("● Render the todo result · 92%"), "{plain}");
+    assert!(plain.contains("▶ Render the todo result · 92%"), "{plain}");
     assert!(!plain.contains("(high)"), "{plain}");
     assert!(
         !plain.contains('╭'),
@@ -1042,7 +1042,7 @@ fn unbiased_visual_prompt_retry_renders_complete_feedback_change() {
         "revised feedback loop was truncated:\n{revised}"
     );
     let goal_details = revised
-        .split("● Implement")
+        .split("▶ Implement")
         .next()
         .expect("todo item should follow the goal details");
     assert!(
@@ -1303,7 +1303,7 @@ fn render_assistant_message_renders_plan_block_as_card() {
         .join("\n");
 
     assert!(plain.contains("Here is the plan:"), "plain: {plain}");
-    assert!(plain.contains("⛭ Ship compact mode"), "plain: {plain}");
+    assert!(plain.contains("📋 Ship compact mode"), "plain: {plain}");
     assert!(plain.contains('╭'), "expected card border: {plain}");
     assert!(plain.contains('╰'), "expected card border: {plain}");
     assert!(plain.contains("Add a compact message mode."));
@@ -1328,7 +1328,7 @@ fn render_assistant_message_plan_card_survives_unterminated_fence() {
         .collect::<Vec<_>>()
         .join("\n");
 
-    assert!(plain.contains("⛭ Streaming plan"), "plain: {plain}");
+    assert!(plain.contains("📋 Streaming plan"), "plain: {plain}");
     assert!(plain.contains("step one"), "plain: {plain}");
 }
 
@@ -1348,7 +1348,7 @@ fn render_assistant_message_plan_card_keeps_nested_fences_inside() {
         .collect::<Vec<_>>()
         .join("\n");
 
-    assert!(plain.contains("⛭ Validation plan"), "plain: {plain}");
+    assert!(plain.contains("📋 Validation plan"), "plain: {plain}");
     assert!(
         plain.contains("cargo test -p alphacode-tui"),
         "plain: {plain}"
@@ -1756,12 +1756,31 @@ fn render_tool_message_shows_intent_and_technical_preview_on_one_line() {
 
     let lines = render_tool_message(&msg, 120, crate::config::DiffDisplayMode::Off);
     let rendered = extract_line_text(&lines[0]);
+    let rendered_all = lines
+        .iter()
+        .map(extract_line_text)
+        .collect::<Vec<_>>()
+        .join("\n");
 
     assert!(rendered.contains("bash · Verify compact progress card · $ cargo test"));
+    // The command preview lives on the row itself, never on a second line, and
+    // the only extra line allowed is the short result preview.
     assert_eq!(
-        lines.len(),
+        lines
+            .iter()
+            .map(extract_line_text)
+            .filter(|line| line.contains("cargo test"))
+            .count(),
         1,
-        "intent should not add vertical space: {rendered}"
+        "the command preview must not be repeated on its own line: {rendered_all}"
+    );
+    assert!(
+        lines
+            .iter()
+            .map(extract_line_text)
+            .filter(|line| !line.contains("cargo test"))
+            .all(|line| line.trim() == "ok" || line.trim().is_empty()),
+        "only the short output preview may follow the row: {rendered_all}"
     );
     crate::alphacode_tui::tui::ui::tools_ui::tests_tool_call_details_override::set(false);
 }
@@ -1800,7 +1819,20 @@ fn render_tool_message_hides_technical_preview_by_default() {
         !rendered.contains("cargo test"),
         "technical detail should be hidden by default: {rendered}"
     );
-    assert_eq!(lines.len(), 1, "no extra detail line expected: {rendered}");
+    // No `$ command` preview line is added when details are off; the only extra
+    // line may be the short result preview for a successful call.
+    assert!(
+        lines
+            .iter()
+            .map(extract_line_text)
+            .all(|line| !line.contains("cargo test")),
+        "the command must not appear on a separate line: {}",
+        lines
+            .iter()
+            .map(extract_line_text)
+            .collect::<Vec<_>>()
+            .join("\n")
+    );
 }
 
 /// Even with details off, a failed tool row keeps its error summary so

@@ -125,6 +125,15 @@ impl SystemProfile {
 
 static PROFILE: OnceLock<SystemProfile> = OnceLock::new();
 
+#[cfg(test)]
+pub fn profile() -> &'static SystemProfile {
+    // Unit tests must not inherit whichever host profile happened to win the
+    // first initialization race; animation, scroll, and layout expectations
+    // are written against the synthetic full-tier profile.
+    PROFILE.get_or_init(|| synthetic_profile(SyntheticSystemProfile::Native))
+}
+
+#[cfg(not(test))]
 pub fn profile() -> &'static SystemProfile {
     PROFILE.get_or_init(detect)
 }

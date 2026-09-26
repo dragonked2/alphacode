@@ -18,7 +18,7 @@ jobs:
       fail-fast: false
       matrix:
         os: [ubuntu-latest, macos-latest, windows-latest]
-        profile: [dev]
+        profile: [release]
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
@@ -36,6 +36,7 @@ jobs:
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
         with:
+          toolchain: 1.94.1
           components: clippy, rustfmt
 
       - name: Cache cargo registry & target
@@ -45,7 +46,7 @@ jobs:
             ~/.cargo/registry
             ~/.cargo/git
             target
-          key: cargo-${{ matrix.os }}-${{ matrix.profile }}-${{ hashFiles('Cargo.lock', '.cargo/config.toml') }}
+          key: release-${{ matrix.os }}-${{ matrix.profile }}-${{ hashFiles('Cargo.lock') }}
           restore-keys: |
             cargo-${{ matrix.os }}-${{ matrix.profile }}-
             cargo-${{ matrix.os }}-
@@ -74,7 +75,9 @@ jobs:
           # See the build job: libxkbcommon is a hard link-time dep on Linux.
           sudo apt-get install -y --no-install-recommends libxkbcommon-dev
       - uses: dtolnay/rust-toolchain@stable
-        with: { components: clippy }
+        with:
+          toolchain: 1.94.1
+          components: clippy
       - uses: actions/cache@v4
         with:
           path: |
@@ -82,7 +85,8 @@ jobs:
             ~/.cargo/git
             target
           key: cargo-test-${{ matrix.os }}-${{ hashFiles('Cargo.lock') }}
-      - run: cargo test --lib
+      - run: cargo test --lib --locked
+      - run: cargo test --test llamacpp_compat --locked
 
   lint:
     name: clippy
@@ -96,7 +100,9 @@ jobs:
           # See the build job: libxkbcommon is a hard link-time dep on Linux.
           sudo apt-get install -y --no-install-recommends libxkbcommon-dev
       - uses: dtolnay/rust-toolchain@stable
-        with: { components: clippy }
+        with:
+          toolchain: 1.94.1
+          components: clippy
       - uses: actions/cache@v4
         with:
           path: |
@@ -104,7 +110,7 @@ jobs:
             ~/.cargo/git
             target
           key: cargo-lint-${{ hashFiles('Cargo.lock') }}
-      - run: cargo clippy --lib --all-targets -- -D warnings
+      - run: cargo clippy --locked --lib --all-targets -- -D warnings
 
   installer-smoke:
     name: installer smoke

@@ -241,14 +241,13 @@ impl Agent {
             let messages_with_memory: &[Message] =
                 messages_with_memory_buf.as_deref().unwrap_or(&messages);
 
-            crate::logging::info_throttled(
-                "api_call_starting",
-                &format!(
+            crate::logging::info_throttled_with("api_call_starting", || {
+                format!(
                     "API call starting: {} messages, {} tools",
                     messages_with_memory.len(),
                     tools.len()
-                ),
-            );
+                )
+            });
             let api_start = Instant::now();
 
             let stamped = crate::config::config()
@@ -1342,10 +1341,9 @@ impl Agent {
                 break;
             }
 
-            crate::logging::info_throttled(
-                "turn_tool_call_count",
-                &format!("Turn has {} tool calls to execute", tool_calls.len()),
-            );
+            crate::logging::info_throttled_with("turn_tool_call_count", || {
+                format!("Turn has {} tool calls to execute", tool_calls.len())
+            });
 
             if self.provider.handles_tools_internally() {
                 tool_calls.retain(|tc| ALPHACODE_NATIVE_TOOLS.contains(&tc.name.as_str()));
@@ -1480,10 +1478,9 @@ impl Agent {
 
                 // Shared throttle key: the paired "finished" line below
                 // still carries exact per-call timing.
-                crate::logging::info_throttled(
-                    "tool_starting",
-                    &format!("Tool starting: {}", tc.name),
-                );
+                crate::logging::info_throttled_with("tool_starting", || {
+                    format!("Tool starting: {}", tc.name)
+                });
                 crate::session_metrics::record_activity(&self.session.id);
                 if inline_output_tap {
                     // Surface the tool execution on the coordinator's inline

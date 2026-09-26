@@ -17,6 +17,7 @@
 //! defaults to dark, which keeps every existing code path byte-identical.
 
 use ratatui::buffer::Buffer;
+use ratatui::layout::Rect;
 use ratatui::style::Color;
 use std::sync::atomic::{AtomicU8, Ordering};
 
@@ -184,6 +185,35 @@ pub fn adapt_buffer(buf: &mut Buffer, mode: ThemeMode) {
         cell.fg = adapt(cell.fg);
         cell.bg = adapt(cell.bg);
         cell.underline_color = adapt(cell.underline_color);
+    }
+}
+
+/// Region-scoped [`adapt_buffer_for_theme`].
+///
+/// Partial repaints reuse a buffer whose other cells have *already* been
+/// adapted; the light-mode flip is not idempotent, so re-running the whole-buffer
+/// pass would flip the reused cells back. Callers that repaint a sub-rectangle
+/// use this to adapt exactly the cells they rewrote, matching what a full frame
+/// would have produced.
+pub fn adapt_region_for_theme(buf: &mut Buffer, area: Rect) {
+    if theme_mode() != ThemeMode::Light {
+        return;
+    }
+    let area = area.intersection(*buf.area());
+    let mut cache: std::collections::HashMap<Color, Color> = std::collections::HashMap::new();
+    let mut adapt = |c: Color| -> Color {
+        if c == Color::Reset {
+            return c;
+        }
+        *cache.entry(c).or_insert_with(|| adapt_color_for_light(c))
+    };
+    for y in area.top()..area.bottom() {
+        for x in area.left()..area.right() {
+            let cell = &mut buf[(x, y)];
+            cell.fg = adapt(cell.fg);
+            cell.bg = adapt(cell.bg);
+            cell.underline_color = adapt(cell.underline_color);
+        }
     }
 }
 

@@ -586,7 +586,7 @@ use self::state::{
 pub use crate::alphacode_app_core::plan::{SwarmTaskProgress, VersionedPlan};
 
 pub use self::await_members_state::pending_await_members_for_session;
-use self::reload_state::clear_reload_marker_if_stale_for_pid;
+use self::reload_state::reconcile_reload_marker_for_pid;
 #[cfg(test)]
 pub(crate) use self::reload_state::subscribe_reload_signal_for_tests;
 pub use self::reload_state::{
@@ -1187,16 +1187,18 @@ impl Server {
 
         crate::logging::info("Accept loop tasks spawned");
 
-        // Signal readiness to the spawning client only after the accept loops
-        // are live, so a "ready" server can immediately handle requests.
+        // Start the optional remote gateway before publishing readiness. Its
+        // supervisor owns bind retries and exposes live state; the local socket
+        // remains usable if a configured remote port is temporarily occupied.
+        self.spawn_gateway(runtime.clone()).await;
+
+        // Signal readiness only after every required local accept loop and the
+        // gateway startup path have been launched.
         publish_reload_socket_ready();
         signal_ready_fd();
 
         // Persist auxiliary discovery metadata after the server is already live.
         self.spawn_registry_metadata_publisher(registry_info);
-
-        // Spawn WebSocket gateway for iOS/web clients (if enabled)
-        self.spawn_gateway(runtime.clone()).await;
 
         // Startup recovery can be expensive in multi-session reloads. Run it
         // only after the replacement daemon is already accepting reconnects.
@@ -2246,9 +2248,10 @@ impl Server {
             mark_close_on_exec(&debug_listener);
         }
 
-        // Preserve an in-flight reload marker for exec-based reloads owned by this
-        // process, but clear stale markers from unrelated/stale processes.
-        clear_reload_marker_if_stale_for_pid(std::process::id());
+        // Preserve and adopt an in-flight reload request now that this process
+        // owns the successfully bound local listener. This is required for
+        // Windows replacements, which necessarily have a new PID.
+        reconcile_reload_marker_for_pid(std::process::id());
 
         match reload_recovery::collect_garbage() {
             Ok(stats) if stats.removed > 0 || stats.errors > 0 => {

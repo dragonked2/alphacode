@@ -21,6 +21,14 @@ static CLEANUP_STARTED: AtomicBool = AtomicBool::new(false);
 static TASK_LOG_CONTEXTS: OnceLock<Mutex<HashMap<String, LogContext>>> = OnceLock::new();
 static RATE_LIMITS: OnceLock<Mutex<HashMap<String, RateLimitState>>> = OnceLock::new();
 
+/// Whether verbose diagnostics are enabled for this process.
+///
+/// Presence is sufficient; even a non-Unicode value should enable tracing.
+#[inline]
+pub fn trace_enabled() -> bool {
+    std::env::var_os("ALPHACODE_TRACE").is_some()
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum LogLevel {
     Info,
@@ -40,7 +48,7 @@ impl LogLevel {
     }
 
     fn is_enabled(self) -> bool {
-        !matches!(self, Self::Debug) || std::env::var("ALPHACODE_TRACE").is_ok()
+        !matches!(self, Self::Debug) || trace_enabled()
     }
 }
 
@@ -153,13 +161,10 @@ fn context_prefix_for(ctx: &LogContext) -> String {
         parts.push(format!("srv:{}", server));
     }
     if let Some(ref session) = ctx.session {
-        // Truncate session name if too long
-        let short = if session.len() > 20 {
-            &session[..20]
-        } else {
-            session
-        };
-        parts.push(format!("ses:{}", short));
+        // Truncate on a character boundary. Session names can contain Unicode,
+        // so slicing the first 20 bytes can panic in the logging path.
+        let short = session.chars().take(20).collect::<String>();
+        parts.push(format!("ses:{short}"));
     }
     if let Some(ref provider) = ctx.provider {
         parts.push(format!("prv:{}", provider));
@@ -276,23 +281,38 @@ static THROTTLE_STATE: std::sync::LazyLock<
 /// cost. The message argument is not formatted by the caller until this
 /// returns true — gate the `format!` on the returned bool.
 pub fn info_throttled(key: &'static str, message: &str) -> bool {
-    let now = std::time::Instant::now();
-    let should_log = {
-        let Ok(mut state) = THROTTLE_STATE.lock() else {
-            return false;
-        };
-        match state.get(key) {
-            Some(last) if now.duration_since(*last) < THROTTLE_INTERVAL => false,
-            _ => {
-                state.insert(key, now);
-                true
-            }
-        }
-    };
-    if should_log {
+    if should_emit_throttled(key) {
         info(message);
+        true
+    } else {
+        false
     }
-    should_log
+}
+
+/// Lazy variant of [`info_throttled`] for hot paths whose message formatting
+/// is more expensive than the throttle lookup itself.
+pub fn info_throttled_with(key: &'static str, message: impl FnOnce() -> String) -> bool {
+    if should_emit_throttled(key) {
+        info(&message());
+        true
+    } else {
+        false
+    }
+}
+
+fn should_emit_throttled(key: &'static str) -> bool {
+    let now = std::time::Instant::now();
+    let mut state = match THROTTLE_STATE.lock() {
+        Ok(state) => state,
+        Err(poisoned) => poisoned.into_inner(),
+    };
+    match state.get(key) {
+        Some(last) if now.saturating_duration_since(*last) < THROTTLE_INTERVAL => false,
+        _ => {
+            state.insert(key, now);
+            true
+        }
+    }
 }
 
 /// Log an error message
@@ -339,7 +359,7 @@ pub fn truncate_for_log(value: &str, max_chars: usize) -> String {
     reason = "Debug logging keeps env gating and logger access explicit"
 )]
 pub fn debug(message: &str) {
-    if std::env::var("ALPHACODE_TRACE").is_ok() {
+    if trace_enabled() {
         if let Ok(mut guard) = LOGGER.lock() {
             if let Some(logger) = guard.as_mut() {
                 logger.write("DEBUG", message);
@@ -781,6 +801,38 @@ mod tests {
                 "diagnostic field `{name}` should not be redacted",
             );
         }
+    }
+
+    #[test]
+    fn context_prefix_truncates_unicode_session_safely() {
+        let ctx = LogContext {
+            session: Some("é".repeat(21)),
+            ..Default::default()
+        };
+        let prefix = context_prefix_for(&ctx);
+        assert_eq!(prefix, format!("[ses:{}] ", "é".repeat(20)));
+    }
+
+    #[test]
+    fn lazy_throttle_does_not_format_suppressed_messages() {
+        let formatted = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let first_counter = std::sync::Arc::clone(&formatted);
+        assert!(info_throttled_with(
+            "test_lazy_throttle_does_not_format",
+            move || {
+                first_counter.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                "first".to_string()
+            }
+        ));
+        let second_counter = std::sync::Arc::clone(&formatted);
+        assert!(!info_throttled_with(
+            "test_lazy_throttle_does_not_format",
+            move || {
+                second_counter.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                "second".to_string()
+            }
+        ));
+        assert_eq!(formatted.load(std::sync::atomic::Ordering::SeqCst), 1);
     }
 
     #[test]

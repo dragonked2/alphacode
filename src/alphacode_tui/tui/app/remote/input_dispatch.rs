@@ -23,6 +23,7 @@ pub(in crate::alphacode_tui::tui::app) async fn begin_remote_send(
         )
         .await?;
     app.current_message_id = Some(msg_id);
+    app.recovered_queue_held_for_user_submit = false;
     app.deferred_stream_done_id = None;
     app.is_processing = true;
     app.status = ProcessingStatus::Sending;

@@ -482,9 +482,9 @@ fn configure_mmdr() {
 // Browser bridge (Firefox extension)
 // -----------------------------------------------------------------------------
 //
-// The Firefox extension `browser-agent-bridge.xpi` lives at the repository
+// The Firefox extension `AlphaCode-Browser-Agent-1.6.0.xpi` lives at the repository
 // root and is compiled into the binary via
-// `include_bytes!("../../browser-agent-bridge.xpi")` in
+// `include_bytes!("../../AlphaCode-Browser-Agent-1.6.0.xpi")` in
 // `src/alphacode_base/browser.rs`. Cargo tracks `include_bytes!` inputs
 // automatically, but an explicit `rerun-if-changed` makes the dependency
 // obvious and guarantees every `cargo build` / `cargo check` re-embeds the
@@ -492,7 +492,7 @@ fn configure_mmdr() {
 // corrupt XPI fails with a clear message instead of a cryptic
 // `include_bytes!` error, and exposes its size as a build-time env var.
 fn configure_browser_bridge(repo_root: &Path) {
-    let xpi = repo_root.join("browser-agent-bridge.xpi");
+    let xpi = repo_root.join("AlphaCode-Browser-Agent-1.6.0.xpi");
     println!("cargo:rerun-if-changed={}", xpi.display());
 
     // Track the extension source docs as well: if they change, remind the
@@ -511,7 +511,7 @@ fn configure_browser_bridge(repo_root: &Path) {
             println!("cargo:rustc-env=ALPHACODE_BROWSER_XPI_BYTES={}", meta.len());
             if meta.len() == 0 {
                 println!(
-                    "cargo:warning=browser-agent-bridge.xpi is empty; `browser setup` will install an empty extension"
+                    "cargo:warning=AlphaCode-Browser-Agent-1.6.0.xpi is empty; `browser setup` will install an empty extension"
                 );
             }
             // Lightweight zip sanity check: an XPI is a ZIP archive, so it
@@ -524,14 +524,14 @@ fn configure_browser_bridge(repo_root: &Path) {
                     && (bytes[3] == 0x04 || bytes[3] == 0x06 || bytes[3] == 0x08);
                 if !is_zip {
                     println!(
-                        "cargo:warning=browser-agent-bridge.xpi does not look like a ZIP archive; Firefox may refuse to install it"
+                        "cargo:warning=AlphaCode-Browser-Agent-1.6.0.xpi does not look like a ZIP archive; Firefox may refuse to install it"
                     );
                 }
             }
         }
         Err(_) => {
             println!(
-                "cargo:warning=browser-agent-bridge.xpi not found at {}; the build will fail in `include_bytes!` — restore the file from git or rebuild the extension",
+                "cargo:warning=AlphaCode-Browser-Agent-1.6.0.xpi not found at {}; the build will fail in `include_bytes!` — restore the file from git or rebuild the extension",
                 xpi.display()
             );
         }

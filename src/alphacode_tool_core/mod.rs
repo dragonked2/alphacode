@@ -87,6 +87,25 @@ pub enum ToolExecutionMode {
     Direct,
 }
 
+/// Scheduler-visible side-effect class for a tool.
+///
+/// The default is deliberately conservative. Tools only opt into
+/// [`ReadOnly`](Self::ReadOnly) after verifying that concurrent calls do not
+/// mutate shared state or produce external side effects.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ToolExecutionClass {
+    /// Safe to run concurrently when the scheduler has an available slot.
+    ReadOnly,
+    /// Changes local state; mutating calls remain ordered by default.
+    Mutating,
+    /// Requires exclusive access to a session-scoped resource.
+    Exclusive,
+    /// Starts work and returns a job handle.
+    Background,
+    /// Changes a remote system or otherwise consumes an external side effect.
+    ExternalEffect,
+}
+
 impl ToolContext {
     pub fn for_subcall(&self, tool_call_id: String) -> Self {
         Self {
@@ -122,6 +141,13 @@ pub trait Tool: Send + Sync {
 
     /// JSON Schema for the input parameters.
     fn parameters_schema(&self) -> Value;
+
+    /// Scheduler-visible side-effect class for this specific input. Unknown and
+    /// third-party tools stay serialized unless they explicitly opt into a
+    /// different contract.
+    fn execution_class(&self, _input: &Value) -> ToolExecutionClass {
+        ToolExecutionClass::Mutating
+    }
 
     /// Execute the tool with the given input.
     async fn execute(&self, input: Value, ctx: ToolContext) -> Result<ToolOutput>;

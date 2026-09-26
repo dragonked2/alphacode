@@ -183,14 +183,13 @@ impl Agent {
             let messages_with_memory: &[Message] =
                 messages_with_memory_buf.as_deref().unwrap_or(&messages);
 
-            crate::logging::info_throttled(
-                "api_call_starting",
-                &format!(
+            crate::logging::info_throttled_with("api_call_starting", || {
+                format!(
                     "API call starting: {} messages, {} tools",
                     messages_with_memory.len(),
                     tools.len()
-                ),
-            );
+                )
+            });
             let api_start = Instant::now();
 
             // Publish status for TUI to show during Task execution
@@ -983,10 +982,9 @@ impl Agent {
                 break;
             }
 
-            crate::logging::info_throttled(
-                "turn_tool_call_count",
-                &format!("Turn has {} tool calls to execute", tool_calls.len()),
-            );
+            crate::logging::info_throttled_with("turn_tool_call_count", || {
+                format!("Turn has {} tool calls to execute", tool_calls.len())
+            });
 
             // If provider handles tools internally (like Claude Code CLI), only run native tools locally
             if self.provider.handles_tools_internally() {
@@ -1234,10 +1232,9 @@ impl Agent {
                 // per known tool is not possible; throttle by a single
                 // shared key instead — the paired "finished" line below
                 // still carries exact timing for every call.
-                crate::logging::info_throttled(
-                    "tool_starting",
-                    &format!("Tool starting: {}", tc.name),
-                );
+                crate::logging::info_throttled_with("tool_starting", || {
+                    format!("Tool starting: {}", tc.name)
+                });
                 let tool_start = Instant::now();
 
                 // Publish status for TUI to show during Task execution

@@ -127,12 +127,11 @@ jobs:
       #   - $archive.sha256 (containing the .tar.gz or .zip hash)
       #   - and uploads the archive + checksum to the GitHub release.
       #
-      # `locked: false` (override of the default true): the project's
-      # Cargo.lock was checked in without macOS-only deps like
-      # core-graphics, and the build runs on Linux/macOS/Windows without
-      # local cargo pre-warming. Letting cargo update the lockfile in CI
-      # locally for the macOS dep and committed, this can be tightened
-      # back to `locked: true`.
+      # Release artifacts must use the committed dependency graph exactly.
+      # Cargo lockfiles include target-specific dependencies, so the same lock
+      # is valid across every target in this matrix. Never let a release mutate
+      # Cargo.lock in CI: doing so makes source archives non-reproducible and
+      # can publish dependencies that were never reviewed in CI.
       #
       # `env: ALPHACODE_RELEASE_BUILD=1` makes the embedded version string
       # the clean `v{version} ({git_hash})` form (see build.rs::emit_build_environment)
@@ -154,7 +153,7 @@ jobs:
           target: ${{ matrix.target }}
           archive: ${{ matrix.archive }}
           checksum: sha256
-          locked: false
+          locked: true
           profile: release
 
       # Surface the per-target files as workflow artifacts so the publish

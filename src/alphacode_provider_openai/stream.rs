@@ -945,7 +945,7 @@ impl OpenAIResponsesStream {
                 &data_owned
             };
             if let Some(event) = parse_openai_response_event(
-                &data,
+                data,
                 &mut self.saw_text_delta,
                 &mut self.streaming_tool_calls,
                 &mut self.completed_tool_items,

@@ -1243,6 +1243,9 @@ fn test_split_command_local_is_alias_for_fork() {
 
 #[test]
 fn test_git_command_shows_repo_status_for_working_directory() {
+    if !git_available() {
+        return;
+    }
     let repo = create_real_git_repo_fixture();
     std::fs::write(repo.path().join("tracked.txt"), "after\n").expect("update tracked file");
 

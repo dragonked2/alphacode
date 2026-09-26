@@ -80,6 +80,10 @@ impl Tool for ConversationSearchTool {
         })
     }
 
+    fn execution_class(&self, _input: &Value) -> super::ToolExecutionClass {
+        super::ToolExecutionClass::ReadOnly
+    }
+
     async fn execute(&self, input: Value, ctx: ToolContext) -> Result<ToolOutput> {
         let params: SearchInput = serde_json::from_value(input)?;
         let manager = self.compaction.read().await;

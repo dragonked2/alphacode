@@ -97,8 +97,8 @@ pub fn record_rss(rss_bytes: u64) {
 
 /// Check whether the session needs recovery and return the action.
 ///
-/// This is the main watchdog check. It should be called periodically
-/// (e.g., every 30 seconds) by the health reporter thread.
+/// This is the main watchdog check. It is called by the health reporter thread
+/// once per [`crate::alphacode_app_core::health::REPORT_INTERVAL`].
 pub fn check_health() -> RecoveryAction {
     let s = state();
     let now = Instant::now();
@@ -116,6 +116,22 @@ pub fn check_health() -> RecoveryAction {
     RecoveryAction::None
 }
 
+/// Return samples no older than `max_age`, excluding anomalous timestamps in
+/// the future.
+///
+/// Comparing ages directly is important on platforms whose monotonic-clock
+/// epoch is the machine boot. Constructing `now - max_age` can underflow and
+/// panic when the machine has been up for less than `max_age`.
+fn samples_within_window(samples: &[(Instant, u64)], now: Instant, max_age: Duration) -> Vec<u64> {
+    samples
+        .iter()
+        .filter_map(|(sampled_at, rss_bytes)| {
+            let age = now.checked_duration_since(*sampled_at)?;
+            (age <= max_age).then_some(*rss_bytes)
+        })
+        .collect()
+}
+
 /// Check if RSS has been growing monotonically for the monitoring window.
 fn check_memory_trend(s: &WatchdogState, now: Instant) -> Option<RecoveryAction> {
     let samples = s.rss_samples.lock().unwrap_or_else(|p| p.into_inner());
@@ -123,14 +139,25 @@ fn check_memory_trend(s: &WatchdogState, now: Instant) -> Option<RecoveryAction>
         return None;
     }
 
-    let window = now - Duration::from_secs(MEMORY_WINDOW_SECS);
-    let recent: Vec<u64> = samples
-        .iter()
-        .filter(|(t, _)| *t >= window)
-        .map(|(_, v)| *v)
-        .collect();
+    let window = Duration::from_secs(MEMORY_WINDOW_SECS);
+    let recent = samples_within_window(&samples, now, window);
 
     if recent.len() < 5 {
+        return None;
+    }
+
+    // Do not diagnose a "30-minute leak" from only a few minutes of data. This
+    // also prevents a short-lived but sharp growth spike from repeatedly
+    // forcing compaction before the full observation window has elapsed.
+    // Require the *oldest retained sample* to span the complete window. Using
+    // `samples.first()` here would let one ancient sample satisfy the age gate
+    // even when the retained in-window data covers only a few minutes.
+    let oldest_recent_age = samples
+        .iter()
+        .filter_map(|(sampled_at, _)| now.checked_duration_since(*sampled_at))
+        .filter(|age| *age <= window)
+        .max()?;
+    if oldest_recent_age < window {
         return None;
     }
 
@@ -147,7 +174,7 @@ fn check_memory_trend(s: &WatchdogState, now: Instant) -> Option<RecoveryAction>
         crate::logging::warn(&format!(
             "session_watchdog: RSS grew {:.1}% over {} minutes ({} -> {} bytes)",
             (*last as f64 / *first as f64 - 1.0) * 100.0,
-            MEMORY_WINDOW_SECS / 60,
+            window.as_secs() / 60,
             first,
             last
         ));
@@ -258,5 +285,122 @@ mod tests {
     fn test_check_health_does_not_panic() {
         init();
         let _action = check_health();
+    }
+
+    fn state_with_samples(samples: Vec<(Instant, u64)>) -> WatchdogState {
+        WatchdogState {
+            last_recovery: Mutex::new(Instant::now()),
+            recovery_count: AtomicU64::new(0),
+            memory_monitoring_enabled: AtomicBool::new(true),
+            rss_samples: Mutex::new(samples),
+        }
+    }
+
+    fn increasing_samples(
+        start: Instant,
+        elapsed: Duration,
+        first: u64,
+        increment: u64,
+    ) -> Vec<(Instant, u64)> {
+        (0..10)
+            .map(|index| {
+                let sample_at = start
+                    .checked_add(elapsed.mul_f64(index as f64 / 9.0))
+                    .expect("test instant should be representable");
+                (sample_at, first + index * increment)
+            })
+            .collect()
+    }
+
+    #[test]
+    fn ten_samples_do_not_panic_before_full_window() {
+        let start = Instant::now();
+        let elapsed = Duration::from_secs(MEMORY_WINDOW_SECS - 1);
+        let state = state_with_samples(increasing_samples(start, elapsed, 100, 4));
+        let now = start
+            .checked_add(elapsed)
+            .expect("test instant should be representable");
+
+        assert_eq!(check_memory_trend(&state, now), None);
+    }
+
+    #[test]
+    fn flat_full_window_does_not_trigger_compaction() {
+        let start = Instant::now();
+        let samples = increasing_samples(start, Duration::from_secs(MEMORY_WINDOW_SECS), 100, 0);
+        let state = state_with_samples(samples);
+        let now = start
+            .checked_add(Duration::from_secs(MEMORY_WINDOW_SECS))
+            .expect("test instant should be representable");
+
+        assert_eq!(check_memory_trend(&state, now), None);
+    }
+
+    #[test]
+    fn monotonic_full_window_growth_triggers_compaction() {
+        let start = Instant::now();
+        let samples = increasing_samples(start, Duration::from_secs(MEMORY_WINDOW_SECS), 100, 4);
+        let state = state_with_samples(samples);
+        let now = start
+            .checked_add(Duration::from_secs(MEMORY_WINDOW_SECS))
+            .expect("test instant should be representable");
+
+        assert_eq!(
+            check_memory_trend(&state, now),
+            Some(RecoveryAction::ForcedCompaction)
+        );
+    }
+
+    #[test]
+    fn non_monotonic_growth_does_not_trigger_compaction() {
+        let start = Instant::now();
+        let mut samples =
+            increasing_samples(start, Duration::from_secs(MEMORY_WINDOW_SECS), 100, 4);
+        samples[5].1 = 1;
+        let state = state_with_samples(samples);
+        let now = start
+            .checked_add(Duration::from_secs(MEMORY_WINDOW_SECS))
+            .expect("test instant should be representable");
+
+        assert_eq!(check_memory_trend(&state, now), None);
+    }
+
+    #[test]
+    fn an_ancient_sample_does_not_make_a_short_recent_run_look_full_window() {
+        let now = Instant::now();
+        let mut samples = Vec::new();
+        samples.push((
+            now.checked_sub(Duration::from_secs(MEMORY_WINDOW_SECS * 2))
+                .expect("test instant should be representable"),
+            1,
+        ));
+        for index in 0..10 {
+            samples.push((
+                now.checked_sub(Duration::from_secs(300 - index * 10))
+                    .expect("test instant should be representable"),
+                100 + index,
+            ));
+        }
+        let state = state_with_samples(samples);
+        assert_eq!(check_memory_trend(&state, now), None);
+    }
+
+    #[test]
+    fn sample_window_excludes_old_and_future_timestamps() {
+        let sampled_at = Instant::now();
+        let now = sampled_at
+            .checked_add(Duration::from_secs(MEMORY_WINDOW_SECS + 1))
+            .expect("test instant should be representable");
+        let future = now
+            .checked_add(Duration::from_secs(1))
+            .expect("test instant should be representable");
+
+        let recent = samples_within_window(
+            &[(sampled_at, 1), (now, 2), (future, 3)],
+            now,
+            Duration::from_secs(MEMORY_WINDOW_SECS),
+        );
+
+        assert_eq!(recent, vec![2]);
     }
 }

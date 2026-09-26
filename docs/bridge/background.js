@@ -1,1186 +1,1105 @@
-/* eslint-env browser */
-const NATIVE_APP_NAME = "firefox_agent_bridge";
+const EXT = 'alpha-agent';
+const PROTOCOL_VERSION = '1.3.0';
+const NATIVE_HOSTS = ['alpha_agent', 'firefox_agent_bridge'];
+const DEFAULT_TIMEOUT = 20000;
+const MAX_PARALLEL_BRANCHES = 24;
+const MAX_BATCH_COMMANDS = 200;
+const MAX_NATIVE_CHUNK_SIZE = 16 * 1024 * 1024;
+const MAX_RECENT_ACTIONS = 40;
+const MAX_NETWORK_LOG = 600;
+const MAX_CHUNK_TRANSFERS = 32;
+const STARTED_AT = now();
+const STATUS_BROADCAST_MS = 120;
+let statusBroadcastTimer = null;
+let persistTimer = null;
+let lastError = null;
+let completedRequests = 0;
+let failedRequests = 0;
+let lastActionAt = null;
+const CHUNK_TTL_MS = 120000;
 
 let nativePort = null;
+let nativeHost = null;
 let reconnectTimer = null;
-let cachedActiveTabId = null;
+let reconnectAttempts = 0;
+let cachedTabId = null;
 let cachedWindowId = null;
-
-// Fork tracking
-const activeForks = new Map(); // forkName -> {tabId, createdAt, parentTabId}
-
-// AI control tracking
-let isConnected = false;
+let cachedTabAt = 0;
 let activeRequests = 0;
 let recentActions = [];
-const MAX_RECENT_ACTIONS = 20;
-let badgeResetTimer = null;
+let badgeTimer = null;
+let networkLog = [];
+const activeForks = new Map();
+const tabLocks = new Map();
+const pendingChunks = new Map();
+const authRequests = new Map();
 
-// Auth config defaults
 const DEFAULT_AUTH_CONFIG = {
   authNotifications: true,
-  authMode: "always-allow", // "ask" | "always-allow" | "always-deny"
-  siteRules: {},   // domain -> "allow" | "deny"
+  authMode: 'always-allow',
+  siteRules: {},
   notifyOnAuthPage: true
 };
-
 let authConfig = { ...DEFAULT_AUTH_CONFIG };
-let pendingAuthRequests = new Map(); // notificationId -> { tabId, domain, resolve, reject }
 
-// Load auth config on startup
-async function loadAuthConfig() {
+function now() { return Date.now(); }
+function sleep(ms) { return new Promise(resolve => setTimeout(resolve, ms)); }
+function num(value, fallback = 0) { return Number.isFinite(Number(value)) ? Number(value) : fallback; }
+function int(value, fallback = 0) { return Number.isInteger(value) ? value : fallback; }
+function bool(value, fallback = false) { return typeof value === 'boolean' ? value : fallback; }
+function clamp(value, min, max) { return Math.min(max, Math.max(min, value)); }
+function errMessage(error) { return error && error.message ? error.message : String(error); }
+function roundMs(value) { return Math.round(value * 100) / 100; }
+function jsonSafe(value) {
+  try { return JSON.parse(JSON.stringify(value)); } catch { return null; }
+}
+async function withTabLock(tabId, task) {
+  const previous = tabLocks.get(tabId) || Promise.resolve();
+  let release;
+  const gate = new Promise(resolve => { release = resolve; });
+  tabLocks.set(tabId, gate);
+  await previous;
+  try { return await task(); }
+  finally { release?.(); if (tabLocks.get(tabId) === gate) tabLocks.delete(tabId); }
+}
+
+function safeUrl(url) {
+  try { return new URL(url); } catch { return null; }
+}
+function domainOf(url) {
+  const parsed = safeUrl(url);
+  return parsed ? parsed.hostname : null;
+}
+function summarizeTab(tab) {
+  if (!tab) return null;
+  return {
+    tabId: tab.id,
+    windowId: tab.windowId,
+    index: tab.index,
+    active: tab.active,
+    pinned: tab.pinned,
+    muted: tab.mutedInfo ? tab.mutedInfo.muted : undefined,
+    discarded: tab.discarded,
+    status: tab.status,
+    title: tab.title || '',
+    url: tab.url || '',
+    favIconUrl: tab.favIconUrl || null,
+    openerTabId: tab.openerTabId || null
+  };
+}
+
+async function loadState() {
   try {
-    const stored = await browser.storage.local.get("authConfig");
-    if (stored.authConfig) {
-      authConfig = { ...DEFAULT_AUTH_CONFIG, ...stored.authConfig };
-    }
-  } catch (err) {
-    console.error("Failed to load auth config:", err);
+    const stored = await browser.storage.local.get(['authConfig', 'recentActions']);
+    if (stored.authConfig) authConfig = { ...DEFAULT_AUTH_CONFIG, ...stored.authConfig, siteRules: { ...DEFAULT_AUTH_CONFIG.siteRules, ...(stored.authConfig.siteRules || {}) } };
+    if (Array.isArray(stored.recentActions)) recentActions = stored.recentActions.slice(0, MAX_RECENT_ACTIONS);
+  } catch (error) {
+    console.error(`[${EXT}] state load failed`, error);
   }
 }
 
-async function saveAuthConfig() {
+async function persistState() {
   try {
-    await browser.storage.local.set({ authConfig });
-  } catch (err) {
-    console.error("Failed to save auth config:", err);
+    await browser.storage.local.set({ authConfig, recentActions });
+  } catch (error) {
+    lastError = { code: 'STATE_SAVE_FAILED', message: errMessage(error), time: now() };
+    console.error(`[${EXT}] state save failed`, error);
   }
 }
 
-function getDomainFromUrl(url) {
-  try {
-    return new URL(url).hostname;
-  } catch {
-    return null;
-  }
+function schedulePersist() {
+  if (persistTimer) clearTimeout(persistTimer);
+  persistTimer = setTimeout(() => {
+    persistTimer = null;
+    persistState().catch(() => {});
+  }, 180);
 }
 
-function maskEmail(email) {
-  if (!email || !email.includes("@")) return email;
-  const [local, domain] = email.split("@");
-  if (local.length <= 2) return `${local[0]}***@${domain}`;
-  return `${local[0]}***${local[local.length - 1]}@${domain}`;
+function broadcastStatus() {
+  if (statusBroadcastTimer) return;
+  statusBroadcastTimer = setTimeout(() => {
+    statusBroadcastTimer = null;
+    browser.runtime.sendMessage({ type: 'statusUpdate', state: getStatus() }).catch(() => {});
+  }, STATUS_BROADCAST_MS);
 }
 
-async function showAuthNotification(tabId, authInfo) {
-  if (!authConfig.authNotifications) return { allowed: authConfig.authMode === "always-allow" };
-
-  const domain = getDomainFromUrl(authInfo.url);
-
-  // Check site rules first
-  if (domain && authConfig.siteRules[domain]) {
-    return { allowed: authConfig.siteRules[domain] === "allow", cached: true };
-  }
-
-  // Check global mode
-  if (authConfig.authMode === "always-allow") return { allowed: true };
-  if (authConfig.authMode === "always-deny") return { allowed: false };
-
-  // Ask mode - show notification
-  const maskedAccounts = (authInfo.availableAccounts || []).map(maskEmail);
-  const accountText = maskedAccounts.length > 0
-    ? `Account: ${maskedAccounts[0]}`
-    : "No saved account detected";
-
-  const notificationId = `auth-${Date.now()}`;
-
-  return new Promise((resolve) => {
-    browser.notifications.create(notificationId, {
-      type: "basic",
-      iconUrl: browser.runtime.getURL("icons/icon-48.png"),
-      title: `🔐 Auth: ${authInfo.detectedProvider || domain || "Login"}`,
-      message: `${accountText}\nPage: ${authInfo.pageTitle || domain}\nReason: ${authInfo.reason || "Agent requested access"}`
-    });
-
-    pendingAuthRequests.set(notificationId, {
-      tabId,
-      domain,
-      authInfo,
-      resolve,
-      timeout: setTimeout(() => {
-        pendingAuthRequests.delete(notificationId);
-        browser.notifications.clear(notificationId);
-        resolve({ allowed: false, reason: "timeout" });
-      }, 30000) // 30 second timeout
-    });
-  });
-}
-
-// Handle notification clicks (allow)
-browser.notifications.onClicked.addListener((notificationId) => {
-  const pending = pendingAuthRequests.get(notificationId);
-  if (pending) {
-    clearTimeout(pending.timeout);
-    pendingAuthRequests.delete(notificationId);
-    browser.notifications.clear(notificationId);
-    pending.resolve({ allowed: true, userApproved: true });
-  }
-});
-
-// Handle notification closed (deny)
-browser.notifications.onClosed.addListener((notificationId, byUser) => {
-  const pending = pendingAuthRequests.get(notificationId);
-  if (pending) {
-    clearTimeout(pending.timeout);
-    pendingAuthRequests.delete(notificationId);
-    if (byUser) {
-      pending.resolve({ allowed: false, userDenied: true });
-    }
-  }
-});
-
-loadAuthConfig();
-
-function updateBadge() {
-  if (activeRequests > 0) {
-    browser.browserAction.setBadgeText({ text: "AI" });
-    browser.browserAction.setBadgeBackgroundColor({ color: "#4ade80" });
-    browser.browserAction.setTitle({ title: "Browser Agent Bridge - AI Active" });
-  } else if (!isConnected) {
-    browser.browserAction.setBadgeText({ text: "!" });
-    browser.browserAction.setBadgeBackgroundColor({ color: "#ef4444" });
-    browser.browserAction.setTitle({ title: "Browser Agent Bridge - Disconnected" });
-  } else {
-    browser.browserAction.setBadgeText({ text: "" });
-    browser.browserAction.setTitle({ title: "Browser Agent Bridge - Idle" });
-  }
+function recordAction(action, ok = null, meta = {}) {
+  const time = now();
+  lastActionAt = time;
+  recentActions.unshift({ action, ok, time, ...meta });
+  recentActions = recentActions.slice(0, MAX_RECENT_ACTIONS);
+  updateBadge();
   broadcastStatus();
-}
-
-function logAction(action) {
-  recentActions.unshift({ action, time: Date.now() });
-  if (recentActions.length > MAX_RECENT_ACTIONS) {
-    recentActions.pop();
-  }
 }
 
 function getStatus() {
   return {
-    connected: isConnected,
+    name: EXT,
+    product: 'AlphaCode Browser Agent',
+    project: 'AlphaCode',
+    version: browser.runtime.getManifest().version,
+    protocol: PROTOCOL_VERSION,
+    connected: Boolean(nativePort),
+    nativeHost,
     active: activeRequests > 0,
-    recentActions: recentActions.slice(0, 10)
+    activeRequests,
+    activeTabId: cachedTabId,
+    recentActions: recentActions.slice(0, 15),
+    networkEntries: networkLog.length,
+    forks: activeForks.size,
+    reconnectAttempts,
+    uptimeMs: Math.max(0, now() - STARTED_AT),
+    completedRequests,
+    failedRequests,
+    lastActionAt,
+    lastError,
+    lastNetworkAt: networkLog.length ? networkLog[networkLog.length - 1].timeStamp : null
   };
 }
 
-function broadcastStatus() {
-  browser.runtime.sendMessage({ type: "statusUpdate", state: getStatus() }).catch(() => {});
+function updateBadge() {
+  if (activeRequests > 0) {
+    browser.browserAction.setBadgeText({ text: 'AI' }).catch(() => {});
+    browser.browserAction.setBadgeBackgroundColor({ color: '#2563eb' }).catch(() => {});
+    browser.browserAction.setTitle({ title: 'AlphaCode Browser Agent — active' }).catch(() => {});
+  } else if (!nativePort) {
+    browser.browserAction.setBadgeText({ text: '!' }).catch(() => {});
+    browser.browserAction.setBadgeBackgroundColor({ color: '#dc2626' }).catch(() => {});
+    browser.browserAction.setTitle({ title: 'AlphaCode Browser Agent — native host disconnected' }).catch(() => {});
+  } else {
+    browser.browserAction.setBadgeText({ text: '' }).catch(() => {});
+    browser.browserAction.setTitle({ title: 'AlphaCode Browser Agent — idle' }).catch(() => {});
+  }
+  if (badgeTimer) clearTimeout(badgeTimer);
+  badgeTimer = setTimeout(() => { badgeTimer = null; broadcastStatus(); }, 40);
 }
 
-function roundMs(value) {
-  return Math.round(value * 100) / 100;
-}
-
-function shouldProfile(message, params) {
-  return Boolean(message && (message.profile || (params && params.profile)));
+async function sendNative(payload) {
+  if (!nativePort) throw new Error('Native host is not connected');
+  nativePort.postMessage(payload);
 }
 
 function scheduleReconnect() {
   if (reconnectTimer) return;
+  const delay = Math.min(30000, 1000 * Math.pow(1.5, reconnectAttempts));
   reconnectTimer = setTimeout(() => {
     reconnectTimer = null;
     connectNative();
-  }, 1500);
+  }, delay);
 }
 
 function connectNative() {
   if (nativePort) return;
-  try {
-    nativePort = browser.runtime.connectNative(NATIVE_APP_NAME);
-    nativePort.onMessage.addListener(handleNativeMessage);
-    nativePort.onDisconnect.addListener(() => {
-      nativePort = null;
-      isConnected = false;
-      updateBadge();
-      scheduleReconnect();
-    });
-    nativePort.postMessage({ type: "hello", version: "0.2.0" });
-    isConnected = true;
-    updateBadge();
-  } catch (err) {
-    console.error("Failed to connect native host", err);
+  let connected = false;
+  for (const host of NATIVE_HOSTS) {
+    try {
+      const port = browser.runtime.connectNative(host);
+      port.onMessage.addListener(handleNativeMessage);
+      port.onDisconnect.addListener(() => {
+        if (nativePort !== port) return;
+        nativePort = null;
+        nativeHost = null;
+        reconnectAttempts++;
+        updateBadge();
+        scheduleReconnect();
+      });
+      nativePort = port;
+      nativeHost = host;
+      reconnectAttempts = 0;
+      port.postMessage({ type: 'hello', client: EXT, product: 'AlphaCode Browser Agent', author: 'AliEssam', version: PROTOCOL_VERSION, capabilities: getCapabilities() });
+      connected = true;
+      break;
+    } catch (error) {
+      console.warn(`[${EXT}] native host ${host} unavailable:`, errMessage(error));
+    }
+  }
+  if (!connected) {
     nativePort = null;
-    isConnected = false;
+    nativeHost = null;
+    reconnectAttempts++;
     updateBadge();
     scheduleReconnect();
+  } else {
+    updateBadge();
   }
 }
 
-// Chunked file transfer reassembly
-const pendingChunks = new Map(); // transferId -> { fileName, mimeType, totalChunks, chunks: [] }
+function getCapabilities() {
+  return [
+    'tabs', 'windows', 'navigation', 'frames', 'dom', 'events', 'keyboard', 'pointer',
+    'forms', 'files', 'screenshots', 'storage', 'cookies', 'history', 'downloads',
+    'sessions', 'zoom', 'network-log', 'parallel', 'forks', 'auth', 'evaluate', 'page-inventory', 'page-state', 'outputs', 'page-errors', 'script-injection'
+  ];
+}
 
-function reassembleChunkedData(message) {
-  if (!message.params) return;
-  const action = message.action;
-
-  if (action === "fillForm" && Array.isArray(message.params.fields)) {
-    for (const field of message.params.fields) {
-      if (field.file && field.file.chunkedTransfer) {
-        const transferId = field.file.chunkedTransfer;
-        const transfer = pendingChunks.get(transferId);
-        if (transfer) {
-          field.file.data = transfer.chunks.join("");
-          delete field.file.chunkedTransfer;
-          pendingChunks.delete(transferId);
-        }
-      }
-    }
-  } else if (action === "dropFile" && message.params.chunkedTransfer) {
-    const transferId = message.params.chunkedTransfer;
-    const transfer = pendingChunks.get(transferId);
-    if (transfer) {
-      message.params.data = transfer.chunks.join("");
-      delete message.params.chunkedTransfer;
-      pendingChunks.delete(transferId);
-    }
+function cleanupDeadTab(tabId) {
+  if (cachedTabId === tabId) {
+    cachedTabId = null;
+    cachedWindowId = null;
+    cachedTabAt = 0;
+  }
+  for (const [name, fork] of activeForks) {
+    if (fork.tabId === tabId) activeForks.delete(name);
   }
 }
 
-async function handleNativeMessage(message) {
-  if (!message) return;
-
-  // Handle chunked file transfer messages
-  if (message.type === "chunk_start") {
-    pendingChunks.set(message.transferId, {
-      fileName: message.fileName,
-      mimeType: message.mimeType,
-      totalSize: message.totalSize,
-      totalChunks: message.totalChunks,
-      chunks: new Array(message.totalChunks)
-    });
-    return;
-  }
-  if (message.type === "chunk_data") {
-    const transfer = pendingChunks.get(message.transferId);
-    if (transfer) {
-      transfer.chunks[message.chunkIndex] = message.data;
-    }
-    return;
-  }
-
-  if (message.type && !message.action) return;
-
-  const id = message.id;
-  const action = message.action;
-  const profile = shouldProfile(message, message.params);
-  const started = profile ? performance.now() : 0;
-
-  // Track AI activity
-  activeRequests++;
-  logAction(action);
-  updateBadge();
-
-  // Reset badge after brief delay when request completes
-  function finishRequest() {
-    activeRequests = Math.max(0, activeRequests - 1);
-    if (badgeResetTimer) clearTimeout(badgeResetTimer);
-    badgeResetTimer = setTimeout(() => {
-      updateBadge();
-    }, 500);
-  }
-
-  try {
-    // Reassemble chunked file data before dispatching
-    reassembleChunkedData(message);
-    const result = await dispatchAction(action, message.params || {}, profile);
-    if (profile) {
-      const timing = { extensionMs: roundMs(performance.now() - started) };
-      if (result && result.__timing) {
-        if (typeof result.__timing.contentMs === "number") {
-          timing.contentMs = result.__timing.contentMs;
-        }
-        delete result.__timing;
-      }
-      sendNative({ id, ok: true, result, timing });
-    } else {
-      sendNative({ id, ok: true, result });
-    }
-  } catch (err) {
-    const payload = { id, ok: false, error: err && err.message ? err.message : String(err) };
-    if (profile) {
-      payload.timing = { extensionMs: roundMs(performance.now() - started) };
-    }
-    sendNative(payload);
-  } finally {
-    finishRequest();
-  }
-}
-
-function sendNative(payload) {
-  if (!nativePort) throw new Error("Native host not connected");
-  nativePort.postMessage(payload);
-}
-
-async function dispatchAction(action, params, profile) {
-  // Handle fork targeting - if params.fork is set, resolve to that fork's tabId
-  if (params && params.fork && activeForks.has(params.fork)) {
-    params = { ...params, tabId: activeForks.get(params.fork).tabId };
-  }
-
-  switch (action) {
-    case "ping":
-      return { pong: true, time: Date.now() };
-
-    case "reload":
-      // Reload the extension - response sent before reload happens
-      setTimeout(() => browser.runtime.reload(), 100);
-      return { reloading: true, message: "Extension will reload in 100ms" };
-
-    // Frame discovery (for cross-origin iframes like Apple sign-in)
-    case "listFrames":
-      return listFrames(params);
-
-    // Session/Tab Management
-    case "listTabs":
-      return listAllTabs();
-    case "switchTab":
-      return setActiveTab({ ...params, focus: true });
-    case "listDownloads":
-      return listDownloads(params);
-    case "newSession":
-      return newSession(params);
-    case "setActiveTab":
-      return setActiveTab(params);
-    case "getActiveTab":
-      return getActiveTabInfo();
-
-    // Navigation
-    case "navigate":
-      return navigateTo(params);
-
-    // Interaction
-    case "click":
-      return sendToContent("click", params, profile);
-    case "type":
-      return sendToContent("type", params, profile);
-    case "fillForm":
-      return sendToContent("fillForm", params, profile);
-    case "waitFor":
-      return sendToContent("waitFor", params, profile);
-    case "uploadFile":
-      return sendToContent("uploadFile", params, profile);
-    case "dropFile":
-      return sendToContent("dropFile", params, profile);
-
-    // Page Content
-    case "getContent":
-      return sendToContent("getContent", params, profile);
-    case "getInteractables":
-      return sendToContent("getInteractables", params, profile);
-    case "preexplore":
-      return sendToContent("preexplore", params, profile);
-    case "screenshot":
-      return captureScreenshot(params);
-
-    // Control Flow
-    case "tryUntil":
-      return sendToContent("tryUntil", params, profile);
-    case "fork":
-      return executeFork(params, profile);
-    case "killFork":
-      return killFork(params);
-    case "listForks":
-      return listForks();
-    case "parallel":
-      return executeParallel(params, profile);
-    case "scout":
-      return executeScout(params, profile);
-
-    // Auth
-    case "getAuthContext":
-      return getAuthContext(params, profile);
-    case "requestAuth":
-      return requestAuth(params);
-
-    // Secure credential fill (only from native host, never from WS client)
-    // Try all frames — login forms are often in cross-origin iframes (e.g., Apple ID)
-    case "secureAutoFill": {
-      const tabId = await resolveTabId(params || {});
-      const message = { type: "agent-bridge", action: "secureAutoFill", params: params || {} };
-      if (profile) message.profile = true;
-      return sendToContentFirstSuccess(tabId, message, (r) => r && (r.username || r.password));
-    }
-
-    // JavaScript evaluation
-    case "evaluate":
-      return sendToContent("evaluate", params, profile);
-
-    // Scrolling
-    case "scroll":
-      return sendToContent("scroll", params, profile);
-
-    // Legacy (keeping for backwards compat)
-    case "batch":
-      return executeBatch(params, profile);
-    case "branch":
-      return sendToContent("tryUntil", params, profile); // Alias to tryUntil
-
-    default:
-      throw new Error(`Unknown action: ${action}`);
-  }
-}
-
-async function executeBatch(params, profile) {
-  if (!params.commands || !Array.isArray(params.commands)) {
-    throw new Error("batch requires commands array");
-  }
-
-  const results = [];
-  const timings = [];
-  const stopOnError = params.stopOnError !== false;
-
-  for (let i = 0; i < params.commands.length; i++) {
-    const cmd = params.commands[i];
-    const cmdStart = profile ? performance.now() : 0;
-
+async function resolveTabId(params = {}) {
+  if (Number.isInteger(params.tabId)) return params.tabId;
+  if (typeof params.fork === 'string' && activeForks.has(params.fork)) return activeForks.get(params.fork).tabId;
+  if (Number.isInteger(cachedTabId) && now() - cachedTabAt < 900) {
     try {
-      const result = await dispatchAction(cmd.action, cmd.params || {}, false);
-      results.push({ index: i, action: cmd.action, ok: true, result });
-      if (profile) {
-        timings.push({ index: i, action: cmd.action, ms: roundMs(performance.now() - cmdStart) });
-      }
-    } catch (err) {
-      const errorResult = { index: i, action: cmd.action, ok: false, error: err.message };
-      results.push(errorResult);
-      if (profile) {
-        timings.push({ index: i, action: cmd.action, ms: roundMs(performance.now() - cmdStart), error: true });
-      }
-      if (stopOnError) {
-        break;
-      }
+      const cached = await browser.tabs.get(cachedTabId);
+      if (cached.active || params.allowInactiveCached === true) return cachedTabId;
+    } catch {
+      cachedTabId = null;
+      cachedWindowId = null;
+      cachedTabAt = 0;
     }
   }
-
-  const response = { batch: true, results, completed: results.length, total: params.commands.length };
-  if (profile) {
-    response.timings = timings;
-  }
-  return response;
-}
-
-async function executeScout(params, profile) {
-  const startTime = profile ? performance.now() : 0;
-  const goal = params.goal || '';
-  const maxDepth = Math.min(params.depth || 1, 2);  // Max 2 levels deep
-  const maxPages = Math.min(params.maxPages || 5, 10);  // Max 10 pages
-  const startUrl = params.url;
-
-  if (!startUrl) throw new Error("scout requires url parameter");
-
-  const visited = new Set();
-  const results = [];
-  const createdTabs = [];
-
-  try {
-    // Create a background tab for scouting
-    const tab = await browser.tabs.create({ url: startUrl, active: false });
-    createdTabs.push(tab.id);
-    await waitForTabComplete(tab.id, 15000);
-    await new Promise(r => setTimeout(r, 200));
-
-    // Get initial page info
-    const startPage = await browser.tabs.sendMessage(tab.id,
-      { type: "agent-bridge", action: "preexplore", params: { goal, maxLinks: 10 } },
-      { frameId: 0 }
-    );
-    visited.add(startUrl);
-    results.push({ depth: 0, ...startPage });
-
-    // Explore linked pages if depth > 0
-    if (maxDepth > 0 && startPage.links) {
-      const linksToVisit = startPage.links
-        .filter(l => l.href && !visited.has(l.href) && l.href.startsWith('http'))
-        .slice(0, maxPages - 1);
-
-      for (const link of linksToVisit) {
-        if (results.length >= maxPages) break;
-        if (visited.has(link.href)) continue;
-
-        try {
-          visited.add(link.href);
-          await browser.tabs.update(tab.id, { url: link.href });
-          await waitForTabComplete(tab.id, 10000);
-          await new Promise(r => setTimeout(r, 150));
-
-          const pageInfo = await browser.tabs.sendMessage(tab.id,
-            { type: "agent-bridge", action: "preexplore", params: { goal, maxLinks: 5 } },
-            { frameId: 0 }
-          );
-          results.push({ depth: 1, fromLink: link.text, ...pageInfo });
-        } catch (err) {
-          results.push({ depth: 1, url: link.href, error: err.message });
-        }
-      }
-    }
-
-    // Cleanup
-    await browser.tabs.remove(tab.id);
-
-    // Build summary for agent
-    const summary = {
-      goal,
-      pagesExplored: results.length,
-      startUrl,
-      sitemap: results.map(r => ({
-        depth: r.depth,
-        url: r.url,
-        title: r.title,
-        headings: r.headings,
-        buttons: r.buttons,
-        formCount: r.forms?.length || 0,
-        linkCount: r.links?.length || 0,
-        relevantLinks: r.links?.filter(l => l.score > 0).slice(0, 3) || []
-      })),
-      allForms: results.flatMap(r => (r.forms || []).map(f => ({
-        page: r.title,
-        url: r.url,
-        ...f
-      }))),
-      suggestedActions: []
-    };
-
-    // Generate suggested actions based on goal
-    if (goal) {
-      const goalLower = goal.toLowerCase();
-      for (const page of results) {
-        // Check buttons
-        for (const btn of (page.buttons || [])) {
-          if (btn.toLowerCase().includes(goalLower)) {
-            summary.suggestedActions.push({
-              type: 'click',
-              text: btn,
-              page: page.title,
-              url: page.url
-            });
-          }
-        }
-        // Check links
-        for (const link of (page.links || [])) {
-          if (link.score > 5) {
-            summary.suggestedActions.push({
-              type: 'navigate',
-              text: link.text,
-              href: link.href,
-              score: link.score
-            });
-          }
-        }
-      }
-    }
-
-    if (profile) {
-      summary.timing = { totalMs: roundMs(performance.now() - startTime) };
-    }
-
-    return summary;
-
-  } catch (err) {
-    // Cleanup on error
-    for (const tabId of createdTabs) {
-      try { await browser.tabs.remove(tabId); } catch (e) {}
-    }
-    throw err;
-  }
-}
-
-async function getAuthContext(params, profile) {
-  const tabId = await resolveTabId(params);
-  const tab = await browser.tabs.get(tabId);
-
-  // Get auth detection from content script
-  const authInfo = await sendToContent("detectAuth", params, false);
-
-  return {
-    ...authInfo,
-    url: tab.url,
-    pageTitle: tab.title,
-    config: {
-      authMode: authConfig.authMode,
-      siteRule: authConfig.siteRules[getDomainFromUrl(tab.url)] || null
-    }
-  };
-}
-
-async function requestAuth(params) {
-  const tabId = await resolveTabId(params);
-  const tab = await browser.tabs.get(tabId);
-
-  // Get current auth context
-  const authInfo = await sendToContent("detectAuth", params, false);
-
-  // Add reason from agent
-  authInfo.reason = params.reason || "Agent requested authentication";
-  authInfo.url = tab.url;
-  authInfo.pageTitle = tab.title;
-
-  // Show notification and wait for response
-  const result = await showAuthNotification(tabId, authInfo);
-
-  return {
-    ...result,
-    authContext: authInfo
-  };
-}
-
-async function executeParallel(params, profile) {
-  if (!params.branches || !Array.isArray(params.branches)) {
-    throw new Error("parallel requires branches array");
-  }
-
-  const startTime = profile ? performance.now() : 0;
-  const createdTabs = [];
-
-  try {
-    // Create a new tab for each branch
-    const branchPromises = params.branches.map(async (branch, branchIndex) => {
-      const branchStart = profile ? performance.now() : 0;
-
-      // Create new tab for this branch
-      const tab = await browser.tabs.create({ url: branch.url || "about:blank", active: false });
-      createdTabs.push(tab.id);
-
-      // Wait for page load if URL provided
-      if (branch.url) {
-        await waitForTabComplete(tab.id, branch.timeoutMs || 15000);
-        // Small delay for content script
-        await new Promise(r => setTimeout(r, 100));
-      }
-
-      // Execute commands in this tab
-      const results = [];
-      const commands = branch.commands || [];
-
-      for (let i = 0; i < commands.length; i++) {
-        const cmd = commands[i];
-        try {
-          // Force commands to use this specific tab
-          const cmdParams = { ...cmd.params, tabId: tab.id };
-          const result = await dispatchAction(cmd.action, cmdParams, false);
-          results.push({ index: i, action: cmd.action, ok: true, result });
-        } catch (err) {
-          results.push({ index: i, action: cmd.action, ok: false, error: err.message });
-          if (branch.stopOnError !== false) break;
-        }
-      }
-
-      // Close tab if requested
-      if (branch.closeTab !== false && !branch.keepTab) {
-        try {
-          await browser.tabs.remove(tab.id);
-          createdTabs.splice(createdTabs.indexOf(tab.id), 1);
-        } catch (e) { /* tab may already be closed */ }
-      }
-
-      return {
-        branchIndex,
-        tabId: tab.id,
-        url: branch.url,
-        results,
-        completed: results.length,
-        total: commands.length,
-        timing: profile ? { ms: roundMs(performance.now() - branchStart) } : undefined
-      };
-    });
-
-    // Wait for all branches to complete
-    const branchResults = await Promise.all(branchPromises);
-
-    return {
-      parallel: true,
-      branches: branchResults,
-      totalBranches: params.branches.length,
-      timing: profile ? { totalMs: roundMs(performance.now() - startTime) } : undefined
-    };
-
-  } catch (err) {
-    // Clean up any created tabs on error
-    for (const tabId of createdTabs) {
-      try { await browser.tabs.remove(tabId); } catch (e) { }
-    }
-    throw err;
-  }
-}
-
-async function resolveTabId(params) {
-  if (params && Number.isInteger(params.tabId)) return params.tabId;
-  if (Number.isInteger(cachedActiveTabId) && Number.isInteger(cachedWindowId)) {
-    return cachedActiveTabId;
-  }
-  const tabs = await browser.tabs.query({ active: true, currentWindow: true });
-  if (!tabs.length) throw new Error("No active tab found");
-  cachedActiveTabId = tabs[0].id;
+  const tabs = await browser.tabs.query(Number.isInteger(params.windowId) ? { active: true, windowId: params.windowId } : { active: true, currentWindow: true });
+  if (!tabs.length) throw new Error('No active tab found');
+  cachedTabId = tabs[0].id;
   cachedWindowId = tabs[0].windowId;
+  cachedTabAt = now();
   return tabs[0].id;
 }
 
-async function getActiveTabInfo() {
-  const tabId = await resolveTabId({});
-  const tab = await browser.tabs.get(tabId);
-  return { tabId: tab.id, url: tab.url, title: tab.title, windowId: tab.windowId };
-}
-
-// List all open tabs across all windows
-async function listFrames(params) {
-  const tabId = await resolveTabId(params || {});
-  const frames = await browser.webNavigation.getAllFrames({ tabId });
-  if (!frames || frames.length === 0) {
-    return { frames: [], tabId };
-  }
-
-  const results = [];
-  for (const frame of frames) {
-    const info = {
-      frameId: frame.frameId,
-      parentFrameId: frame.parentFrameId,
-      url: frame.url,
-    };
-
-    // Try to get content summary from each frame
-    try {
-      const message = { type: "agent-bridge", action: "getInteractables", params: {} };
-      const result = await browser.tabs.sendMessage(tabId, message, { frameId: frame.frameId });
-      if (result) {
-        info.title = result.title || null;
-        const elements = result.elements || [];
-        info.interactableCount = elements.length;
-        info.inputs = elements.filter(e => e.type === 'input').map(e => ({
-          name: e.name || e.label,
-          inputType: e.inputType,
-          selector: e.selector
-        }));
-        info.clickables = elements.filter(e => e.type === 'clickable').map(e => e.text).slice(0, 10);
-        info.hasContent = true;
-      }
-    } catch (e) {
-      info.hasContent = false;
-    }
-
-    results.push(info);
-  }
-
-  return { frames: results, tabId };
-}
-
-async function listAllTabs() {
-  const tabs = await browser.tabs.query({});
-  const windows = await browser.windows.getAll();
-
-  const tabsByWindow = {};
-  for (const win of windows) {
-    tabsByWindow[win.id] = {
-      windowId: win.id,
-      focused: win.focused,
-      tabs: []
-    };
-  }
-
-  for (const tab of tabs) {
-    if (tabsByWindow[tab.windowId]) {
-      tabsByWindow[tab.windowId].tabs.push({
-        tabId: tab.id,
-        url: tab.url,
-        title: tab.title,
-        active: tab.active,
-        index: tab.index
-      });
-    }
-  }
-
-  return {
-    activeTabId: cachedActiveTabId,
-    windows: Object.values(tabsByWindow),
-    totalTabs: tabs.length
-  };
-}
-
-// Create a new session (new tab)
-async function newSession(params) {
-  const url = params?.url || "about:blank";
-  const sandbox = params?.sandbox === true;
-  let tab;
-
-  if (sandbox) {
-    // Create a private (incognito) window for sandbox mode
-    // This gives us a clean slate: no cookies, no logins, no cache
-    const privateWindow = await browser.windows.create({
-      url,
-      incognito: true,
-      focused: params?.focus === true
-    });
-    tab = privateWindow.tabs[0];
-  } else {
-    tab = await browser.tabs.create({ url, active: params?.focus === true });
-  }
-
-  if (url !== "about:blank" && params?.wait !== false) {
-    await waitForTabComplete(tab.id, params?.timeoutMs || 15000);
-  }
-
-  cachedActiveTabId = tab.id;
+async function getTab(params = {}) {
+  const tab = await browser.tabs.get(await resolveTabId(params));
+  cachedTabId = tab.id;
   cachedWindowId = tab.windowId;
-
-  // Re-read the tab after load so url/title reflect the final navigated page,
-  // not the about:blank snapshot captured mid-creation (BUG-12).
-  const finalTab = await browser.tabs.get(tab.id);
-
-  const result = {
-    tabId: tab.id,
-    windowId: finalTab.windowId,
-    url: finalTab.url,
-    title: finalTab.title,
-    sandbox
-  };
-
-  // Return content by default (or if explicitly requested). Retry a few times
-  // while SPA content scripts hydrate (BUG-12/BUG-16).
-  if (url !== "about:blank" && params?.returnContent !== false) {
-    const format = params?.contentFormat || "annotated";
-    for (let attempt = 0; attempt < 3; attempt++) {
-      try {
-        await new Promise(r => setTimeout(r, 100)); // Wait for content script
-        const content = await sendToContent("getContent", { format }, false);
-        result.content = content;
-        break;
-      } catch (err) {
-        if (attempt === 2) result.contentError = err.message;
-      }
-    }
-  }
-
-  return result;
+  cachedTabAt = now();
+  return summarizeTab(tab);
 }
 
-// Set which tab the agent is working on
-async function setActiveTab(params) {
-  if (!params?.tabId) throw new Error("setActiveTab requires tabId");
-
-  const tab = await browser.tabs.get(params.tabId);
-  cachedActiveTabId = tab.id;
-  cachedWindowId = tab.windowId;
-
-  // Optionally focus the tab in the browser (default: no focus stealing)
-  if (params.focus === true) {
-    await browser.tabs.update(tab.id, { active: true });
-    await browser.windows.update(tab.windowId, { focused: true });
-  }
-
-  return {
-    tabId: tab.id,
-    windowId: tab.windowId,
-    url: tab.url,
-    title: tab.title
-  };
-}
-
-// Fork: duplicate current tab into multiple paths
-async function executeFork(params, profile) {
-  if (!params?.paths || !Array.isArray(params.paths)) {
-    throw new Error("fork requires paths array");
-  }
-
-  const startTime = profile ? performance.now() : 0;
-  const sourceTabId = await resolveTabId(params);
-  const sourceTab = await browser.tabs.get(sourceTabId);
-
-  const forks = [];
-
-  for (const path of params.paths) {
-    const name = path.name || `fork-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`;
-
-    // Duplicate the tab
-    const newTab = await browser.tabs.duplicate(sourceTabId);
-
-    // Store fork info
-    activeForks.set(name, {
-      tabId: newTab.id,
-      parentTabId: sourceTabId,
-      parentUrl: sourceTab.url,
-      createdAt: Date.now(),
-      name
-    });
-
-    // Run initial commands if provided
-    const results = [];
-    if (path.commands && Array.isArray(path.commands)) {
-      for (const cmd of path.commands) {
-        try {
-          const cmdParams = { ...cmd.params, tabId: newTab.id };
-          const result = await dispatchAction(cmd.action, cmdParams, false);
-          results.push({ action: cmd.action, ok: true, result });
-        } catch (err) {
-          results.push({ action: cmd.action, ok: false, error: err.message });
-          if (path.stopOnError !== false) break;
-        }
-      }
-    }
-
-    // Get current state of fork
-    const forkTab = await browser.tabs.get(newTab.id);
-
-    forks.push({
-      name,
-      tabId: newTab.id,
-      url: forkTab.url,
-      title: forkTab.title,
-      commandResults: results
-    });
-  }
-
-  return {
-    forked: true,
-    sourceTabId,
-    sourceUrl: sourceTab.url,
-    forks,
-    timing: profile ? { ms: roundMs(performance.now() - startTime) } : undefined
-  };
-}
-
-// Kill a fork (close the tab)
-async function killFork(params) {
-  const name = params?.fork || params?.name;
-  if (!name) throw new Error("killFork requires fork name");
-
-  const fork = activeForks.get(name);
-  if (!fork) throw new Error(`Fork not found: ${name}`);
-
-  try {
-    await browser.tabs.remove(fork.tabId);
-  } catch (err) {
-    // Tab may already be closed
-  }
-
-  activeForks.delete(name);
-
-  return { killed: true, fork: name };
-}
-
-// List all active forks
-async function listForks() {
-  const forks = [];
-
-  for (const [name, fork] of activeForks) {
-    try {
-      const tab = await browser.tabs.get(fork.tabId);
-      forks.push({
-        name,
-        tabId: fork.tabId,
-        url: tab.url,
-        title: tab.title,
-        parentTabId: fork.parentTabId,
-        createdAt: fork.createdAt,
-        alive: true
-      });
-    } catch (err) {
-      // Tab was closed externally
-      forks.push({
-        name,
-        tabId: fork.tabId,
-        alive: false,
-        error: "Tab no longer exists"
-      });
-      activeForks.delete(name);
-    }
-  }
-
-  return { forks, count: forks.length };
-}
-
-async function waitForTabComplete(tabId, timeoutMs = 15000) {
+async function waitForTabComplete(tabId, timeoutMs = DEFAULT_TIMEOUT) {
+  const tab = await browser.tabs.get(tabId).catch(() => null);
+  if (tab && tab.status === 'complete') return summarizeTab(tab);
   return new Promise((resolve, reject) => {
-    const timer = setTimeout(() => {
-      cleanup();
-      reject(new Error("Timed out waiting for page load"));
-    }, timeoutMs);
-
-    function onUpdated(updatedTabId, info) {
-      if (updatedTabId === tabId && info.status === "complete") {
-        cleanup();
-        resolve({ tabId });
-      }
-    }
-
-    function cleanup() {
+    let done = false;
+    const timer = setTimeout(() => finish(new Error(`Timed out waiting for tab ${tabId} to load`)), timeoutMs);
+    const onUpdated = (updatedId, changeInfo) => {
+      if (updatedId !== tabId) return;
+      if (changeInfo.status === 'complete') finish();
+    };
+    function finish(error) {
+      if (done) return;
+      done = true;
       clearTimeout(timer);
       browser.tabs.onUpdated.removeListener(onUpdated);
+      if (error) reject(error);
+      else browser.tabs.get(tabId).then(t => resolve(summarizeTab(t))).catch(reject);
     }
-
     browser.tabs.onUpdated.addListener(onUpdated);
+    browser.tabs.get(tabId).then(current => { if (current?.status === 'complete') finish(); }).catch(() => {});
   });
 }
 
-async function navigateTo(params) {
-  if (!params || !params.url) throw new Error("Missing url parameter");
-  let tabId;
-
-  if (params.newTab) {
-    const tab = await browser.tabs.create({ url: params.url, active: true });
-    tabId = tab.id;
-    if (params.wait !== false) await waitForTabComplete(tabId, params.timeoutMs);
-  } else {
-    tabId = await resolveTabId(params);
-    await browser.tabs.update(tabId, { url: params.url });
-    if (params.wait !== false) await waitForTabComplete(tabId, params.timeoutMs);
+async function waitForTabQuiet(tabId, quietMs = 500, timeoutMs = 10000) {
+  const started = now();
+  let last = now();
+  const listener = (updatedId) => { if (updatedId === tabId) last = now(); };
+  browser.tabs.onUpdated.addListener(listener);
+  try {
+    while (now() - started < timeoutMs) {
+      if (now() - last >= quietMs) return true;
+      await sleep(50);
+    }
+    return false;
+  } finally {
+    browser.tabs.onUpdated.removeListener(listener);
   }
+}
 
-  // Update cache to the tab we actually navigated
-  const tab = await browser.tabs.get(tabId);
-  cachedActiveTabId = tabId;
-  cachedWindowId = tab.windowId;
+async function sendContent(action, params = {}, options = {}) {
+  const tabId = await resolveTabId(params);
+  return withTabLock(tabId, async () => {
+    const message = { type: 'agent-bridge', action, params: { ...params, tabId } };
+    if (options.profile || params.profile) message.profile = true;
+    if (Number.isInteger(params.frameId)) return sendWithRetry(tabId, message, params.frameId);
+    if (params.frameUrl || params.allFrames || params.firstSuccess) return sendToFrames(tabId, message, params);
+    return sendWithRetry(tabId, message, 0);
+  });
+}
 
-  // Report the final URL after load — SPA redirects can change it (BUG-12).
-  const result = { tabId, url: tab.url, title: tab.title };
+async function sendWithRetry(tabId, message, frameId = 0) {
+  let lastError = null;
+  const attempts = clamp(int(message.params?.contentAttempts, 4), 1, 8);
+  for (let attempt = 0; attempt < attempts; attempt++) {
+    try { return await browser.tabs.sendMessage(tabId, message, { frameId }); }
+    catch (error) {
+      lastError = error;
+      if (attempt + 1 < attempts) await sleep(80 * Math.pow(2, attempt));
+    }
+  }
+  throw lastError || new Error(`No content script response for ${message.action}`);
+}
 
-  // Return content by default (annotated format) - always from the navigated
-  // tab. SPA frameworks render after load event; retry getContent until the
-  // content script responds (BUG-16: open returned empty content instantly).
-  if (params.returnContent !== false) {
-    const format = params.contentFormat || "annotated";
-    for (let attempt = 0; attempt < 3; attempt++) {
+async function getFrames(tabId) {
+  if (!browser.webNavigation || !browser.webNavigation.getAllFrames) return [{ frameId: 0, parentFrameId: -1, url: '' }];
+  const frames = await browser.webNavigation.getAllFrames({ tabId }).catch(() => null);
+  return Array.isArray(frames) && frames.length ? frames : [{ frameId: 0, parentFrameId: -1, url: '' }];
+}
+
+async function sendToFrames(tabId, message, params = {}) {
+  const frames = await getFrames(tabId);
+  const targetUrl = params.frameUrl ? String(params.frameUrl) : null;
+  const normalizedTarget = targetUrl ? safeUrl(targetUrl) : null;
+  const candidates = targetUrl ? frames.filter(frame => {
+    if (!frame.url) return false;
+    if (frame.url === targetUrl) return true;
+    const parsed = safeUrl(frame.url);
+    return Boolean(parsed && normalizedTarget && parsed.origin === normalizedTarget.origin && `${parsed.pathname}${parsed.search}` === `${normalizedTarget.pathname}${normalizedTarget.search}`);
+  }) : frames;
+  if (targetUrl && !candidates.length && params.fallbackAllFrames !== true) {
+    throw new Error(`No frame matched frameUrl: ${targetUrl}`);
+  }
+  const ordered = [...(candidates.length ? candidates : frames)].sort((a, b) => a.frameId - b.frameId);
+  if (params.firstSuccess) {
+    for (const frame of ordered) {
       try {
-        await new Promise(r => setTimeout(r, 150));
-        const content = await sendToContent("getContent", { format, tabId }, false);
-        const text = content && (content.content || content.text);
-        // Retry when the page is still blank — a SPA may not have rendered yet.
-        if (text && text.trim().length > 0) {
-          result.content = content;
-          break;
-        }
-        if (attempt === 2) result.content = content;
-      } catch (err) {
-        if (attempt === 2) result.contentError = err.message;
-      }
+        const result = await sendWithRetry(tabId, message, frame.frameId);
+        return result && typeof result === 'object'
+          ? { ...result, frameId: frame.frameId, frameUrl: frame.url }
+          : { value: result, frameId: frame.frameId, frameUrl: frame.url };
+      } catch {}
     }
+    throw new Error(`No content frame responded to ${message.action}`);
   }
-
-  // Legacy: also return interactables if explicitly requested
-  if (params.returnInteractables) {
+  const results = (await Promise.all(ordered.map(async frame => {
     try {
-      const interactables = await sendToContent("getInteractables", { tabId }, false);
-      result.interactables = interactables;
-    } catch (err) {
-      result.interactablesError = err.message;
+      const result = await sendWithRetry(tabId, message, frame.frameId);
+      return result && typeof result === 'object'
+        ? { ...result, frameId: frame.frameId, frameUrl: frame.url }
+        : { value: result, frameId: frame.frameId, frameUrl: frame.url };
+    } catch {
+      return null;
     }
-  }
-
-  return result;
+  }))).filter(Boolean);
+  if (!results.length) throw new Error(`No content frame responded to ${message.action}`);
+  return params.allFrames === false ? results[0] : results;
 }
 
-async function sendToContent(action, params, profile) {
-  const tabId = await resolveTabId(params || {});
-  const message = { type: "agent-bridge", action, params: params || {} };
-  if (profile) message.profile = true;
-  // Support allFrames param to try all frames (needed for cross-origin iframes like Apple sign-in)
-  if (params && params.allFrames) {
-    return sendToContentAllFrames(tabId, message);
-  }
-  // Default to main frame (frameId: 0) to avoid responding from iframes like Stripe trackers
-  const frameId = (params && Number.isInteger(params.frameId)) ? params.frameId : 0;
-  return browser.tabs.sendMessage(tabId, message, { frameId });
+function isChunkStart(message) { return message && message.type === 'chunk_start'; }
+function isChunkData(message) { return message && message.type === 'chunk_data'; }
+
+function acceptChunk(message) {
+  if (!message.transferId) throw new Error('chunk_start requires transferId');
+  if (pendingChunks.size >= MAX_CHUNK_TRANSFERS) throw new Error('Too many active chunked transfers');
+  const totalChunks = clamp(int(message.totalChunks, 0), 1, 10000);
+  const declaredSize = Math.max(0, num(message.totalSize, 0));
+  if (declaredSize > MAX_NATIVE_CHUNK_SIZE) throw new Error(`Transfer exceeds ${MAX_NATIVE_CHUNK_SIZE} byte limit`);
+  const transfer = {
+    transferId: String(message.transferId),
+    fileName: String(message.fileName || 'file'),
+    mimeType: String(message.mimeType || 'application/octet-stream'),
+    totalSize: declaredSize,
+    totalChunks,
+    receivedBytes: 0,
+    chunks: new Array(totalChunks),
+    received: 0,
+    createdAt: now()
+  };
+  pendingChunks.set(transfer.transferId, transfer);
+  return { ok: true, transferId: transfer.transferId, totalChunks };
 }
 
-async function sendToContentAllFrames(tabId, message) {
-  const frames = await browser.webNavigation.getAllFrames({ tabId });
-  if (!frames || frames.length === 0) {
-    return browser.tabs.sendMessage(tabId, message, { frameId: 0 });
-  }
-  const results = [];
-  for (const frame of frames) {
-    try {
-      const result = await browser.tabs.sendMessage(tabId, message, { frameId: frame.frameId });
-      if (result && typeof result === "object") {
-        result.__frameId = frame.frameId;
-        result.__frameUrl = frame.url;
-      }
-      results.push(result);
-    } catch (e) {
-      // Frame may not have content script injected (e.g., about:blank) — skip
+function acceptChunkData(message) {
+  const transfer = pendingChunks.get(String(message.transferId));
+  if (!transfer) throw new Error(`Unknown transfer ${message.transferId}`);
+  const index = int(message.chunkIndex, -1);
+  if (index < 0 || index >= transfer.totalChunks) throw new Error('Invalid chunk index');
+  const data = String(message.data || '');
+  if (data.length > 2 * 1024 * 1024) throw new Error('Individual chunk exceeds 2 MB');
+  if (transfer.chunks[index] === undefined) {
+    if (transfer.receivedBytes + data.length > MAX_NATIVE_CHUNK_SIZE) {
+      pendingChunks.delete(transfer.transferId);
+      throw new Error(`Transfer exceeds ${MAX_NATIVE_CHUNK_SIZE} byte limit`);
     }
+    transfer.receivedBytes += data.length;
+    transfer.received++;
   }
-  if (results.length === 0) {
-    throw new Error("No frames responded to " + message.action);
-  }
-  if (results.length === 1) return results[0];
-  return results;
+  transfer.chunks[index] = data;
+  if (transfer.received === transfer.totalChunks) return finalizeChunk(transfer.transferId);
+  return { ok: true, transferId: transfer.transferId, received: transfer.received, totalChunks: transfer.totalChunks, receivedBytes: transfer.receivedBytes };
 }
 
-async function sendToContentFirstSuccess(tabId, message, successTest) {
-  const frames = await browser.webNavigation.getAllFrames({ tabId });
-  if (!frames || frames.length === 0) {
-    return browser.tabs.sendMessage(tabId, message, { frameId: 0 });
-  }
-  // Try main frame first (frameId 0), then subframes
-  const sorted = frames.slice().sort((a, b) => a.frameId - b.frameId);
-  for (const frame of sorted) {
-    try {
-      const result = await browser.tabs.sendMessage(tabId, message, { frameId: frame.frameId });
-      if (successTest(result)) {
-        if (result && typeof result === "object") {
-          result.__frameId = frame.frameId;
-          result.__frameUrl = frame.url;
-        }
-        return result;
-      }
-    } catch (e) {
-      // Skip frames that don't respond
-    }
-  }
-  // If no frame succeeded, try main frame as fallback
-  return browser.tabs.sendMessage(tabId, message, { frameId: 0 });
-}
-
-async function captureScreenshot(params) {
-  const tabId = await resolveTabId(params || {});
-  const tab = await browser.tabs.get(tabId);
-  // Make the target tab active temporarily so captureVisibleTab captures it
-  const wasActive = tab.active;
-  if (!wasActive) {
-    await browser.tabs.update(tabId, { active: true });
-    await new Promise(r => setTimeout(r, 150)); // Wait for tab to render
-  }
-  const dataUrl = await browser.tabs.captureVisibleTab(tab.windowId, { format: "png" });
-  return { tabId, dataUrl };
-}
-
-async function listDownloads(params) {
-  const query = { orderBy: ["-startTime"], limit: (params && params.limit) || 10 };
-  if (params && params.filenameRegex) query.filenameRegex = params.filenameRegex;
-  const items = await browser.downloads.search(query);
+function finalizeChunk(transferId) {
+  const transfer = pendingChunks.get(transferId);
+  if (!transfer) throw new Error('Transfer not found');
+  if (transfer.chunks.some(chunk => chunk === undefined)) throw new Error('Transfer is incomplete');
+  const data = transfer.chunks.join('');
+  if (data.length > MAX_NATIVE_CHUNK_SIZE) { pendingChunks.delete(transferId); throw new Error('Combined transfer is too large'); }
+  pendingChunks.delete(transferId);
   return {
-    downloads: items.map(d => ({
-      id: d.id,
-      filename: d.filename,
-      url: d.url,
-      state: d.state,
-      bytesReceived: d.bytesReceived,
-      totalBytes: d.totalBytes,
-      startTime: d.startTime,
-      exists: d.exists
-    }))
+    ok: true,
+    complete: true,
+    transferId,
+    data,
+    file: { name: transfer.fileName, type: transfer.mimeType, size: transfer.totalSize || data.length }
   };
 }
 
-connectNative();
+function cleanupChunks() {
+  const cutoff = now() - CHUNK_TTL_MS;
+  for (const [id, transfer] of pendingChunks) {
+    if (transfer.createdAt < cutoff) pendingChunks.delete(id);
+  }
+}
+setInterval(cleanupChunks, 30000);
+
+function injectTransferData(params) {
+  if (!params) return params;
+  const transferId = params.chunkedTransfer;
+  if (transferId && pendingChunks.has(transferId)) {
+    const completed = finalizeChunk(transferId);
+    params.data = completed.data;
+    delete params.chunkedTransfer;
+  }
+  if (Array.isArray(params.fields)) {
+    params.fields = params.fields.map(field => {
+      if (!field || !field.file || !field.file.chunkedTransfer) return field;
+      const id = field.file.chunkedTransfer;
+      if (!pendingChunks.has(id)) return field;
+      const completed = finalizeChunk(id);
+      const file = { ...field.file, data: completed.data };
+      delete file.chunkedTransfer;
+      return { ...field, file };
+    });
+  }
+  return params;
+}
+
+async function handleNativeMessage(message) {
+  cleanupChunks();
+  if (!message) return;
+  if (isChunkStart(message) || isChunkData(message)) {
+    try {
+      const result = isChunkStart(message) ? acceptChunk(message) : acceptChunkData(message);
+      if (message.id) await sendNative({ id: message.id, ok: true, result });
+    } catch (error) {
+      lastError = { code: 'TRANSFER_ERROR', message: errMessage(error), time: now() };
+      if (message.id) await sendNative({ id: message.id, ok: false, error: errMessage(error), errorType: error?.name || 'Error' }).catch(() => {});
+    }
+    return;
+  }
+  if (!message.action) return;
+
+  const id = message.id || `alpha-${now()}-${Math.random().toString(36).slice(2, 8)}`;
+  const action = String(message.action);
+  let params = message.params && typeof message.params === 'object' ? { ...message.params } : {};
+  const profile = Boolean(message.profile || params.profile);
+  const started = performance.now();
+  activeRequests++;
+  recordAction(action, null);
+
+  try {
+    params = injectTransferData(params);
+    const result = await dispatchAction(action, params, profile);
+    const payload = { id, ok: true, result };
+    if (profile) payload.timing = { extensionMs: roundMs(performance.now() - started) };
+    await sendNative(payload);
+    completedRequests++;
+    recordAction(action, true);
+  } catch (error) {
+    const messageText = errMessage(error);
+    lastError = { code: 'ACTION_FAILED', action, message: messageText, time: now() };
+    failedRequests++;
+    const payload = { id, ok: false, error: messageText, errorType: error && error.name ? error.name : 'Error', errorCode: error?.code || 'ACTION_FAILED', retryable: Boolean(error?.retryable) };
+    if (profile) payload.timing = { extensionMs: roundMs(performance.now() - started) };
+    try { await sendNative(payload); } catch {}
+    recordAction(action, false, { error: messageText, errorCode: payload.errorCode });
+  } finally {
+    activeRequests = Math.max(0, activeRequests - 1);
+    updateBadge();
+    schedulePersist();
+  }
+}
+
+async function navigate(params = {}) {
+  if (!params.url) throw new Error('navigate requires url');
+  const url = String(params.url);
+  let tab;
+  if (params.newTab) {
+    tab = await browser.tabs.create({ url, active: params.focus === true, windowId: Number.isInteger(params.windowId) ? params.windowId : undefined });
+  } else {
+    const tabId = await resolveTabId(params);
+    tab = await browser.tabs.update(tabId, { url, active: params.focus === true ? true : undefined });
+  }
+  cachedTabId = tab.id;
+  cachedWindowId = tab.windowId;
+  cachedTabAt = now();
+  if (params.wait !== false) await waitForTabComplete(tab.id, clamp(int(params.timeoutMs, DEFAULT_TIMEOUT), 1000, 120000));
+  if (params.quietMs) await waitForTabQuiet(tab.id, clamp(int(params.quietMs, 400), 50, 10000), clamp(int(params.quietTimeoutMs, 5000), 1000, 30000));
+  const finalTab = await browser.tabs.get(tab.id);
+  const result = { tab: summarizeTab(finalTab) };
+  if (params.returnContent !== false) {
+    try {
+      result.content = await sendContent('getContent', { tabId: finalTab.id, format: params.contentFormat || 'annotated', maxChars: params.maxChars });
+    } catch (error) {
+      result.contentError = errMessage(error);
+    }
+  }
+  return result;
+}
+
+async function createTab(params = {}) {
+  if (params.sandbox === true) {
+    const win = await browser.windows.create({ url: params.url || 'about:blank', focused: params.focus === true, incognito: true });
+    const tab = win.tabs?.[0];
+    if (!tab) throw new Error('Sandbox window created without a tab');
+    cachedTabId = tab.id; cachedWindowId = tab.windowId; cachedTabAt = now();
+    if (params.url && params.wait !== false) await waitForTabComplete(tab.id, clamp(int(params.timeoutMs, DEFAULT_TIMEOUT), 1000, 120000));
+    return { ...summarizeTab(await browser.tabs.get(tab.id)), sandbox: true };
+  }
+  const tab = await browser.tabs.create({
+    url: params.url || 'about:blank', active: params.focus === true,
+    pinned: params.pinned === true, windowId: Number.isInteger(params.windowId) ? params.windowId : undefined
+  });
+  cachedTabId = tab.id; cachedWindowId = tab.windowId; cachedTabAt = now();
+  if (params.url && params.wait !== false) await waitForTabComplete(tab.id, clamp(int(params.timeoutMs, DEFAULT_TIMEOUT), 1000, 120000));
+  return summarizeTab(await browser.tabs.get(tab.id));
+}
+
+async function updateTab(params = {}) {
+  const tabId = await resolveTabId(params);
+  const update = {};
+  for (const key of ['url', 'active', 'pinned', 'muted']) if (key in params && params[key] !== undefined) update[key] = params[key];
+  if (Number.isInteger(params.index)) update.index = params.index;
+  if (!Object.keys(update).length) throw new Error('updateTab requires at least one update field');
+  const tab = await browser.tabs.update(tabId, update);
+  cachedTabId = tab.id; cachedWindowId = tab.windowId; cachedTabAt = now();
+  return summarizeTab(tab);
+}
+
+async function closeOtherTabs(params = {}) {
+  const keepTabId = await resolveTabId(params);
+  const current = await browser.tabs.get(keepTabId);
+  const tabs = await browser.tabs.query({ windowId: Number.isInteger(params.windowId) ? params.windowId : current.windowId });
+  const targets = tabs.filter(tab => tab.id !== keepTabId && (params.includePinned || !tab.pinned));
+  await Promise.all(targets.map(tab => browser.tabs.remove(tab.id).catch(() => null)));
+  return { closed: targets.length, keptTabId: keepTabId };
+}
+
+async function moveTab(params = {}) {
+  const tabId = await resolveTabId(params);
+  if (!Number.isInteger(params.index)) throw new Error('moveTab requires index');
+  return summarizeTab(await browser.tabs.move(tabId, { windowId: Number.isInteger(params.windowId) ? params.windowId : undefined, index: params.index }));
+}
+
+async function listTabs(params = {}) {
+  const query = {};
+  for (const key of ['windowId', 'index', 'id', 'status']) if (Number.isInteger(params[key])) query[key] = params[key];
+  if (params.url) query.url = params.url;
+  for (const key of ['active', 'pinned', 'muted']) if (typeof params[key] === 'boolean') query[key] = params[key];
+  if (params.currentWindow) query.currentWindow = true;
+  const tabs = await browser.tabs.query(query);
+  return { activeTabId: cachedTabId, tabs: tabs.map(summarizeTab), count: tabs.length };
+}
+
+async function listWindows(params = {}) {
+  const windows = await browser.windows.getAll({ populate: true });
+  const selected = params.includeAllTypes ? windows : windows.filter(win => win.type === 'normal' || win.type === 'popup');
+  return { windows: selected.map(win => ({ windowId: win.id, focused: win.focused, incognito: win.incognito, type: win.type, state: win.state, alwaysOnTop: win.alwaysOnTop, tabs: (win.tabs || []).map(summarizeTab) })) };
+}
+
+async function manageWindow(action, params = {}) {
+  switch (action) {
+    case 'createWindow': {
+      const win = await browser.windows.create({ url: params.url || 'about:blank', focused: params.focus !== false, incognito: params.incognito === true, type: params.type || 'normal' });
+      cachedWindowId = win.id; cachedTabId = win.tabs && win.tabs[0] ? win.tabs[0].id : null; cachedTabAt = now();
+      return { windowId: win.id, focused: win.focused, incognito: win.incognito, state: win.state, tabs: (win.tabs || []).map(summarizeTab) };
+    }
+    case 'updateWindow': {
+      if (!Number.isInteger(params.windowId)) throw new Error('updateWindow requires windowId');
+      const update = {};
+      for (const key of ['focused', 'state']) if (key in params) update[key] = params[key];
+      const win = await browser.windows.update(params.windowId, update);
+      return { windowId: win.id, focused: win.focused, state: win.state, incognito: win.incognito };
+    }
+    case 'closeWindow':
+      if (!Number.isInteger(params.windowId)) throw new Error('closeWindow requires windowId');
+      await browser.windows.remove(params.windowId); return { closed: true, windowId: params.windowId };
+    default: throw new Error('Unsupported window action');
+  }
+}
+
+async function reloadTab(params = {}) {
+  const tabId = await resolveTabId(params);
+  await browser.tabs.reload(tabId, { bypassCache: params.bypassCache === true });
+  if (params.wait !== false) await waitForTabComplete(tabId, clamp(int(params.timeoutMs, DEFAULT_TIMEOUT), 1000, 120000));
+  return summarizeTab(await browser.tabs.get(tabId));
+}
+
+async function navigationAction(kind, params = {}) {
+  const tabId = await resolveTabId(params);
+  if (kind === 'stop') {
+    return { stopped: false, supported: false, tabId, reason: 'Firefox WebExtensions does not expose a direct tab-load cancellation API to extensions.' };
+  }
+  if (kind === 'back') await browser.tabs.goBack(tabId);
+  else if (kind === 'forward') await browser.tabs.goForward(tabId);
+  else throw new Error('Unknown navigation action');
+  if (params.wait !== false) await waitForTabComplete(tabId, clamp(int(params.timeoutMs, DEFAULT_TIMEOUT), 1000, 120000));
+  return summarizeTab(await browser.tabs.get(tabId));
+}
+
+async function screenshot(params = {}) {
+  const tabId = await resolveTabId(params);
+  const tab = await browser.tabs.get(tabId);
+  if (browser.tabs.captureTab) {
+    const dataUrl = await browser.tabs.captureTab(tabId, { format: params.format || 'png', quality: params.quality });
+    return { tabId, dataUrl, method: 'captureTab' };
+  }
+  if (!tab.active) await browser.tabs.update(tabId, { active: true });
+  const dataUrl = await browser.tabs.captureVisibleTab(tab.windowId, { format: params.format || 'png', quality: params.quality });
+  return { tabId, dataUrl, method: 'captureVisibleTab' };
+}
+
+async function downloads(params = {}) {
+  if (!browser.downloads) throw new Error('downloads API unavailable');
+  if (params.action === 'pause') { await browser.downloads.pause(Number(params.id)); return { paused: true, id: Number(params.id) }; }
+  if (params.action === 'resume') { await browser.downloads.resume(Number(params.id)); return { resumed: true, id: Number(params.id) }; }
+  if (params.action === 'cancel') { await browser.downloads.cancel(Number(params.id)); return { canceled: true, id: Number(params.id) }; }
+  if (params.action === 'erase') { const erased = await browser.downloads.erase({ id: Number(params.id) }); return { erased: true, id: Number(params.id), count: erased }; }
+  const query = { orderBy: ['-startTime'], limit: clamp(int(params.limit, 25), 1, 100) };
+  for (const key of ['query', 'filename', 'url', 'state', 'id', 'startTime', 'endTime']) if (params[key] !== undefined) query[key] = params[key];
+  const items = await browser.downloads.search(query);
+  if (params.cancelId !== undefined) await browser.downloads.cancel(Number(params.cancelId));
+  return { downloads: items.map(item => ({ id: item.id, url: item.url, filename: item.filename, state: item.state, bytesReceived: item.bytesReceived, totalBytes: item.totalBytes, startTime: item.startTime, endTime: item.endTime, exists: item.exists, danger: item.danger, mime: item.mime, paused: item.paused, error: item.error, referrer: item.referrer })) };
+}
+
+
+async function cookieAction(action, params = {}) {
+  if (!browser.cookies) throw new Error('cookies API unavailable');
+  if (action === 'listCookies') return { cookies: await browser.cookies.getAll({ url: params.url, domain: params.domain, name: params.name, storeId: params.storeId }) };
+  if (action === 'getCookie') return { cookie: await browser.cookies.get({ url: params.url, name: params.name, storeId: params.storeId }) };
+  if (action === 'setCookie') return { cookie: await browser.cookies.set({ url: params.url, name: params.name, value: params.value, domain: params.domain, path: params.path, secure: params.secure, httpOnly: params.httpOnly, expirationDate: params.expirationDate, sameSite: params.sameSite, storeId: params.storeId }) };
+  if (action === 'removeCookie') return { removed: true, details: await browser.cookies.remove({ url: params.url, name: params.name, storeId: params.storeId }) };
+  throw new Error('Unknown cookie action');
+}
+
+async function historyAction(action, params = {}) {
+  if (action === 'searchHistory') return { history: await browser.history.search({ text: params.text || '', startTime: params.startTime, endTime: params.endTime, maxResults: clamp(int(params.maxResults, 100), 1, 1000) }) };
+  if (action === 'deleteHistory') return { deleted: true, removed: await browser.history.deleteRange({ startTime: params.startTime || 0, endTime: params.endTime || now() }) };
+  if (action === 'deleteHistoryUrl') { await browser.history.deleteUrl({ url: params.url }); return { deleted: true, url: params.url }; }
+  if (action === 'addHistory') return { item: await browser.history.addUrl({ url: params.url, title: params.title }) };
+  throw new Error('Unknown history action');
+}
+
+async function sessionAction(action, params = {}) {
+  if (action === 'recentlyClosed') return { sessions: await browser.sessions.getRecentlyClosed({ maxResults: clamp(int(params.maxResults, 25), 1, 100) }) };
+  if (action === 'restoreSession') return { restored: await browser.sessions.restore(params.sessionId) };
+  throw new Error('Unknown session action');
+}
+
+async function zoomAction(action, params = {}) {
+  const tabId = await resolveTabId(params);
+  if (action === 'getZoom') return { tabId, zoom: await browser.tabs.getZoom(tabId), settings: await browser.tabs.getZoomSettings(tabId).catch(() => null) };
+  const zoom = clamp(num(params.zoom, 1), 0.3, 5);
+  await browser.tabs.setZoom(tabId, zoom);
+  return { tabId, zoom: await browser.tabs.getZoom(tabId) };
+}
+
+function recordNetwork(details, stage, extra = {}) {
+  const entry = {
+    id: `${details.requestId}:${stage}:${now()}`,
+    requestId: details.requestId,
+    tabId: details.tabId,
+    frameId: details.frameId,
+    type: details.type,
+    method: details.method,
+    url: details.url,
+    timeStamp: details.timeStamp,
+    stage,
+    statusCode: details.statusCode,
+    fromCache: details.fromCache,
+    ip: details.ip,
+    error: details.error,
+    ...extra
+  };
+  networkLog.push(entry);
+  if (networkLog.length > MAX_NETWORK_LOG) networkLog.splice(0, networkLog.length - MAX_NETWORK_LOG);
+}
+
+async function getNetworkLog(params = {}) {
+  const max = clamp(int(params.limit, 100), 1, MAX_NETWORK_LOG);
+  let entries = networkLog;
+  if (Number.isInteger(params.tabId)) entries = entries.filter(item => item.tabId === params.tabId);
+  if (params.urlIncludes) entries = entries.filter(item => String(item.url).includes(String(params.urlIncludes)));
+  if (params.type) entries = entries.filter(item => item.type === params.type);
+  if (params.method) entries = entries.filter(item => String(item.method || '').toUpperCase() === String(params.method).toUpperCase());
+  return { entries: entries.slice(-max), count: entries.length, totalBuffered: networkLog.length };
+}
+function clearNetworkLog() { const count = networkLog.length; networkLog.length = 0; return { cleared: true, count }; }
+
+async function executeScript(params = {}) {
+  if (params.code == null && !Array.isArray(params.files)) throw new Error('executeScript requires code or files');
+  const tabId = await resolveTabId(params);
+  const details = {
+    code: params.code != null ? String(params.code) : undefined,
+    file: params.file, files: Array.isArray(params.files) ? params.files : undefined,
+    frameId: Number.isInteger(params.frameId) ? params.frameId : undefined,
+    allFrames: Number.isInteger(params.frameId) ? false : params.allFrames === true,
+    runAt: params.runAt || 'document_idle'
+  };
+  if (typeof browser.scripting?.executeScript === 'function' && params.code == null && Array.isArray(params.files)) {
+    const target = { tabId }; if (Number.isInteger(params.frameId)) target.frameIds = [params.frameId]; else if (params.allFrames) target.allFrames = true;
+    const result = await browser.scripting.executeScript({ target, files: params.files });
+    return { tabId, result, api: 'scripting.executeScript' };
+  }
+  if (typeof browser.tabs.executeScript !== 'function') throw new Error('No supported script injection API is available');
+  const result = await browser.tabs.executeScript(tabId, details);
+  return { tabId, result, api: 'tabs.executeScript' };
+}
+
+async function injectCss(params = {}) {
+  const tabId = await resolveTabId(params);
+  if (params.css == null && !params.file && !params.files) throw new Error('injectCss requires css or file/files');
+  if (typeof browser.scripting?.insertCSS === 'function' && (params.files || params.file)) {
+    const target = { tabId }; if (Number.isInteger(params.frameId)) target.frameIds = [params.frameId]; else if (params.allFrames) target.allFrames = true;
+    const files = params.files || [params.file]; await browser.scripting.insertCSS({ target, files }); return { injected: true, tabId, api: 'scripting.insertCSS' };
+  }
+  if (typeof browser.tabs.insertCSS !== 'function') throw new Error('No supported CSS injection API is available');
+  await browser.tabs.insertCSS(tabId, { code: params.css != null ? String(params.css) : undefined, file: params.file, runAt: params.runAt || 'document_idle', frameId: Number.isInteger(params.frameId) ? params.frameId : undefined, allFrames: Number.isInteger(params.frameId) ? false : params.allFrames === true });
+  return { injected: true, tabId, api: 'tabs.insertCSS' };
+}
+
+async function removeCss(params = {}) {
+  const tabId = await resolveTabId(params);
+  if (typeof browser.tabs.removeCSS !== 'function') throw new Error('tabs.removeCSS unavailable');
+  await browser.tabs.removeCSS(tabId, { code: params.css != null ? String(params.css) : undefined, file: params.file, frameId: Number.isInteger(params.frameId) ? params.frameId : undefined, allFrames: Number.isInteger(params.frameId) ? false : params.allFrames === true });
+  return { removed: true, tabId };
+}
+
+
+async function getBrowserState(params = {}) {
+  const [windows, tab] = await Promise.all([listWindows(), getTab(params).catch(() => null)]);
+  return { activeTab: tab, windows: windows.windows, native: { connected: Boolean(nativePort), host: nativeHost, reconnectAttempts }, status: getStatus() };
+}
+
+async function waitForNavigation(params = {}) {
+  const tabId = await resolveTabId(params);
+  const timeout = clamp(int(params.timeoutMs, DEFAULT_TIMEOUT), 250, 120000);
+  const started = now();
+  const want = params.urlContains ? String(params.urlContains) : null;
+  if (params.readyState === 'complete') {
+    const current = await browser.tabs.get(tabId).catch(() => null);
+    if (current?.status === 'complete' && (!want || String(current.url || '').includes(want))) return summarizeTab(current);
+  }
+  return new Promise((resolve, reject) => {
+    let settled = false;
+    const timer = setTimeout(() => finish(new Error(`Navigation wait timed out after ${timeout}ms`)), timeout);
+    const finish = error => {
+      if (settled) return; settled = true; clearTimeout(timer); browser.tabs.onUpdated.removeListener(onUpdated); browser.webNavigation?.onCompleted?.removeListener(onCompleted);
+      if (error) reject(error); else browser.tabs.get(tabId).then(resolve).catch(reject);
+    };
+    const matches = (url, status) => (!want || String(url || '').includes(want)) && (!params.readyState || status === params.readyState);
+    const onUpdated = (updatedId, changeInfo, tab) => { if (updatedId === tabId && matches(tab?.url || changeInfo.url, changeInfo.status)) finish(); };
+    const onCompleted = details => { if (details.tabId === tabId && (!Number.isInteger(params.frameId) || params.frameId === details.frameId) && matches(details.url, 'complete')) finish(); };
+    browser.tabs.onUpdated.addListener(onUpdated);
+    browser.webNavigation?.onCompleted?.addListener(onCompleted);
+  }).then(summarizeTab);
+}
+
+async function openLink(params = {}) {
+  let url = params.url ? String(params.url) : null;
+  if (!url && (params.selector || params.text || params.role || params.x !== undefined)) {
+    const found = await sendContent('getElement', params);
+    url = found?.href || null;
+  }
+  if (!url) throw new Error('openLink requires url or a target link element');
+  const tab = await browser.tabs.create({ url, active: params.active !== false, windowId: Number.isInteger(params.windowId) ? params.windowId : undefined, pinned: params.pinned === true });
+  cachedTabId = tab.id; cachedWindowId = tab.windowId; cachedTabAt = now();
+  if (params.wait) await waitForTabComplete(tab.id, clamp(int(params.timeoutMs, DEFAULT_TIMEOUT), 1000, 120000));
+  return summarizeTab(await browser.tabs.get(tab.id));
+}
+
+async function storageAction(action, params = {}) {
+  const area = params.area === 'sync' && browser.storage.sync ? browser.storage.sync : browser.storage.local;
+  if (action === 'storageGet') return { area: params.area === 'sync' ? 'sync' : 'local', data: await area.get(params.keys == null ? null : params.keys) };
+  if (action === 'storageSet') { await area.set(params.data || params.items || {}); return { stored: true, area: params.area === 'sync' ? 'sync' : 'local' }; }
+  if (action === 'storageRemove') { const keys = Array.isArray(params.keys) ? params.keys : [params.key]; await area.remove(keys.filter(k => k != null)); return { removed: true, keys: keys.filter(k => k != null) }; }
+  if (action === 'storageClear') { await area.clear(); return { cleared: true, area: params.area === 'sync' ? 'sync' : 'local' }; }
+  throw new Error(`Unknown storage action: ${action}`);
+}
+
+async function setActiveTab(params = {}) {
+  if (!Number.isInteger(params.tabId)) throw new Error('setActiveTab requires tabId');
+  const tab = await browser.tabs.get(params.tabId);
+  cachedTabId = tab.id; cachedWindowId = tab.windowId; cachedTabAt = now();
+  if (params.focus !== false) {
+    await browser.tabs.update(tab.id, { active: true });
+    await browser.windows.update(tab.windowId, { focused: true }).catch(() => {});
+  }
+  return summarizeTab(await browser.tabs.get(tab.id));
+}
+
+async function frameList(params = {}) {
+  const tabId = await resolveTabId(params);
+  const frames = await getFrames(tabId);
+  const output = [];
+  for (const frame of frames) {
+    const item = { frameId: frame.frameId, parentFrameId: frame.parentFrameId, url: frame.url, responded: false };
+    try {
+      const data = await browser.tabs.sendMessage(tabId, { type: 'agent-bridge', action: 'getInteractables', params: { limit: 5 } }, { frameId: frame.frameId });
+      item.responded = true;
+      item.title = data && data.title;
+      item.interactableCount = data && data.count;
+    } catch {}
+    output.push(item);
+  }
+  return { tabId, frames: output };
+}
+
+async function batch(params = {}, profile = false) {
+  if (!Array.isArray(params.commands)) throw new Error('batch requires commands array');
+  if (params.commands.length > MAX_BATCH_COMMANDS) throw new Error(`batch exceeds ${MAX_BATCH_COMMANDS} commands`);
+  const started = performance.now();
+  const results = [];
+  for (let index = 0; index < params.commands.length; index++) {
+    const command = params.commands[index] || {};
+    const stepStarted = performance.now();
+    try {
+      const result = await dispatchAction(command.action, command.params || {}, false);
+      results.push({ index, action: command.action, ok: true, result, ms: profile ? roundMs(performance.now() - stepStarted) : undefined });
+    } catch (error) {
+      results.push({ index, action: command.action, ok: false, error: errMessage(error), ms: profile ? roundMs(performance.now() - stepStarted) : undefined });
+      if (params.stopOnError !== false) break;
+    }
+  }
+  return { batch: true, results, completed: results.length, total: params.commands.length, timing: profile ? { totalMs: roundMs(performance.now() - started) } : undefined };
+}
+
+async function parallel(params = {}, profile = false) {
+  if (!Array.isArray(params.branches)) throw new Error('parallel requires branches array');
+  if (params.branches.length > MAX_PARALLEL_BRANCHES) throw new Error(`parallel exceeds ${MAX_PARALLEL_BRANCHES} branches`);
+  const branches = await Promise.all(params.branches.map(async (branch, branchIndex) => {
+    const tab = await browser.tabs.create({ url: branch.url || 'about:blank', active: false });
+    try {
+      if (branch.url && branch.wait !== false) await waitForTabComplete(tab.id, branch.timeoutMs || DEFAULT_TIMEOUT);
+      const result = await batch({ commands: (branch.commands || []).map(cmd => ({ action: cmd.action, params: { ...(cmd.params || {}), tabId: tab.id } })), stopOnError: branch.stopOnError }, profile);
+      return { branchIndex, tabId: tab.id, url: (await browser.tabs.get(tab.id)).url, ...result };
+    } finally {
+      if (branch.keepTab !== true && branch.closeTab !== false) await browser.tabs.remove(tab.id).catch(() => {});
+    }
+  }));
+  return { parallel: true, branches, totalBranches: branches.length };
+}
+
+async function fork(params = {}, profile = false) {
+  if (!Array.isArray(params.paths)) throw new Error('fork requires paths array');
+  const sourceTabId = await resolveTabId(params);
+  const source = await browser.tabs.get(sourceTabId);
+  const forks = [];
+  for (const path of params.paths) {
+    const name = path.name || `fork-${now()}-${Math.random().toString(36).slice(2, 7)}`;
+    const tab = await browser.tabs.duplicate(sourceTabId);
+    activeForks.set(name, { tabId: tab.id, parentTabId: sourceTabId, createdAt: now(), name });
+    let batchResult = { results: [] };
+    if (Array.isArray(path.commands)) batchResult = await batch({ commands: path.commands.map(cmd => ({ action: cmd.action, params: { ...(cmd.params || {}), tabId: tab.id } })), stopOnError: path.stopOnError }, profile);
+    const finalTab = await browser.tabs.get(tab.id);
+    forks.push({ name, tabId: tab.id, url: finalTab.url, title: finalTab.title, commandResults: batchResult.results });
+  }
+  return { forked: true, sourceTabId, sourceUrl: source.url, forks };
+}
+
+async function killFork(params = {}) {
+  const name = params.fork || params.name;
+  if (!name || !activeForks.has(name)) throw new Error(`Fork not found: ${name}`);
+  const forkInfo = activeForks.get(name);
+  await browser.tabs.remove(forkInfo.tabId).catch(() => {});
+  activeForks.delete(name);
+  return { killed: true, fork: name };
+}
+
+async function listForks() {
+  const forks = [];
+  for (const [name, info] of activeForks) {
+    try {
+      const tab = await browser.tabs.get(info.tabId);
+      forks.push({ name, alive: true, ...info, tab: summarizeTab(tab) });
+    } catch {
+      forks.push({ name, alive: false, ...info });
+      activeForks.delete(name);
+    }
+  }
+  return { forks, count: forks.length };
+}
+
+async function authConfigAction(action, params = {}) {
+  if (action === 'getAuthConfig') return authConfig;
+  if (action === 'setAuthConfig') {
+    authConfig = { ...authConfig, ...params };
+    schedulePersist();
+    return authConfig;
+  }
+  if (action === 'setSiteAuthRule') {
+    if (!params.domain) throw new Error('domain is required');
+    authConfig.siteRules = { ...authConfig.siteRules, [params.domain]: params.rule };
+    schedulePersist();
+    return authConfig;
+  }
+  throw new Error('Unknown auth config action');
+}
+
+async function requestAuth(params = {}) {
+  const tabId = await resolveTabId(params);
+  const tab = await browser.tabs.get(tabId);
+  const context = await sendContent('detectAuth', { tabId }, { profile: false });
+  const domain = domainOf(tab.url);
+  const rule = domain ? authConfig.siteRules[domain] : null;
+  if (!authConfig.authNotifications || authConfig.authMode === 'always-allow' || rule === 'allow') return { allowed: true, cached: Boolean(rule), authContext: context };
+  if (authConfig.authMode === 'always-deny' || rule === 'deny') return { allowed: false, cached: Boolean(rule), authContext: context };
+  const notificationId = `alpha-auth-${now()}-${Math.random().toString(36).slice(2, 7)}`;
+  return new Promise(resolve => {
+    const timeout = setTimeout(() => {
+      authRequests.delete(notificationId);
+      browser.notifications.clear(notificationId).catch(() => {});
+      resolve({ allowed: false, reason: 'timeout', authContext: context });
+    }, 30000);
+    authRequests.set(notificationId, { resolve, timeout, authContext: context, domain });
+    browser.notifications.create(notificationId, {
+      type: 'basic', iconUrl: browser.runtime.getURL('icons/icon-48.png'),
+      title: `AlphaCode Browser Agent — authentication request`,
+      message: `${context.detectedProvider || domain || 'Login'} · ${context.authType || 'authentication'}\n${params.reason || 'Agent requested authentication access'}`
+    });
+  });
+}
+
+async function dispatchAction(action, params, profile) {
+  switch (action) {
+    case 'ping': return { pong: true, time: now(), version: PROTOCOL_VERSION, capabilities: getCapabilities() };
+    case 'status': case 'getStatus': return getStatus();
+    case 'reloadExtension': setTimeout(() => browser.runtime.reload(), 100); return { reloading: true };
+    case 'getActiveTab': case 'getTab': return getTab(params);
+    case 'listTabs': return listTabs(params);
+    case 'getBrowserState': case 'browserState': return getBrowserState(params);
+    case 'createTab': case 'newSession': return createTab(params);
+    case 'updateTab': return updateTab(params);
+    case 'closeOtherTabs': return closeOtherTabs(params);
+    case 'closeTab': { const tabId = await resolveTabId(params); await browser.tabs.remove(tabId); cleanupDeadTab(tabId); return { closed: true, tabId }; }
+    case 'discardTab': { const tabId = await resolveTabId(params); if (!browser.tabs.discard) throw new Error('tabs.discard unavailable'); await browser.tabs.discard(tabId); return { discarded: true, tabId }; }
+    case 'duplicateTab': { const tabId = await resolveTabId(params); const tab = await browser.tabs.duplicate(tabId); cachedTabId = tab.id; cachedWindowId = tab.windowId; cachedTabAt = now(); return summarizeTab(tab); }
+    case 'moveTab': return moveTab(params);
+    case 'setActiveTab': case 'switchTab': return setActiveTab({ ...params, focus: params.focus !== false });
+    case 'listWindows': return listWindows(params);
+    case 'createWindow': case 'updateWindow': case 'closeWindow': return manageWindow(action, params);
+    case 'navigate': case 'openUrl': return navigate(params);
+    case 'openLink': return openLink(params);
+    case 'reload': return reloadTab(params);
+    case 'back': case 'forward': case 'stop': return navigationAction(action, params);
+    case 'screenshot': case 'captureTab': return screenshot(params);
+    case 'listFrames': case 'getFrames': return frameList(params);
+    case 'waitForNavigation': return waitForNavigation(params);
+    case 'click': case 'tap': case 'type': case 'fill': case 'clear': case 'press': case 'hotkey': case 'keyDown': case 'keyUp': case 'doubleClick': case 'dblclick': case 'rightClick': case 'contextClick': case 'hover': case 'moveMouse': case 'move': case 'focus': case 'blur': case 'selectOption': case 'select': case 'check': case 'uncheck': case 'toggle': case 'submit': case 'submitForm': case 'drag': case 'scroll': case 'scrollBy': case 'scrollIntoView': case 'waitFor': case 'waitForText': case 'waitForStable': case 'getContent': case 'snapshot': case 'getPageInventory': case 'inventory': case 'preexplore': case 'getPageState': case 'pageState': case 'getElement': case 'getInteractables': case 'getInputs': case 'getButtons': case 'getLinks': case 'getOutputs': case 'getDialogs': case 'getPageErrors': case 'getForms': case 'extract': case 'evaluate': case 'setAttribute': case 'getAttribute': case 'setProperty': case 'getProperty': case 'highlight': case 'clipboardRead': case 'clipboardWrite': case 'uploadFile': case 'dropFile': case 'selectText': case 'getSelection': case 'getScrollState': case 'detectAuth': case 'secureAutoFill': case 'tryUntil': case 'branch': case 'print': case 'printPage': return sendContent(action, params, { profile });
+    case 'fillForm': return sendContent('fillForm', params, { profile });
+    case 'executeScript': return executeScript(params);
+    case 'removeCss': return removeCss(params);
+    case 'injectCss': return injectCss(params);
+    case 'downloads': case 'listDownloads': case 'searchDownloads': return downloads(params);
+    case 'pauseDownload': return downloads({ ...params, action: 'pause' });
+    case 'resumeDownload': return downloads({ ...params, action: 'resume' });
+    case 'cancelDownload': return downloads({ ...params, action: 'cancel' });
+    case 'eraseDownload': return downloads({ ...params, action: 'erase' });
+    case 'download': { if (!params.url) throw new Error('download requires url'); const id = await browser.downloads.download({ url: params.url, filename: params.filename, saveAs: params.saveAs === true, conflictAction: params.conflictAction }); return { started: true, id }; }
+    case 'openDownload': { await browser.downloads.open(params.id); return { opened: true, id: params.id }; }
+    case 'removeDownload': { await browser.downloads.erase({ id: params.id }); return { removed: true, id: params.id }; }
+    case 'listCookies': case 'getCookie': case 'setCookie': case 'removeCookie': return cookieAction(action, params);
+    case 'searchHistory': case 'deleteHistory': case 'deleteHistoryUrl': case 'addHistory': return historyAction(action, params);
+    case 'recentlyClosed': case 'restoreSession': return sessionAction(action, params);
+    case 'getZoom': case 'setZoom': return zoomAction(action, params);
+    case 'storageGet': case 'storageSet': case 'storageRemove': case 'storageClear': return storageAction(action, params);
+    case 'getNetworkLog': return getNetworkLog(params);
+    case 'clearNetworkLog': return clearNetworkLog();
+    case 'batch': return batch(params, profile);
+    case 'parallel': return parallel(params, profile);
+    case 'fork': return fork(params, profile);
+    case 'killFork': return killFork(params);
+    case 'listForks': return listForks();
+    case 'requestAuth': return requestAuth(params);
+    case 'getAuthConfig': case 'setAuthConfig': case 'setSiteAuthRule': return authConfigAction(action, params);
+    default: throw new Error(`Unknown action: ${action}`);
+  }
+}
+
+browser.notifications.onClicked.addListener(notificationId => {
+  const request = authRequests.get(notificationId);
+  if (!request) return;
+  clearTimeout(request.timeout);
+  authRequests.delete(notificationId);
+  browser.notifications.clear(notificationId).catch(() => {});
+  request.resolve({ allowed: true, userApproved: true, authContext: request.authContext });
+});
+
+browser.notifications.onClosed.addListener((notificationId, byUser) => {
+  const request = authRequests.get(notificationId);
+  if (!request || !byUser) return;
+  clearTimeout(request.timeout);
+  authRequests.delete(notificationId);
+  request.resolve({ allowed: false, userDenied: true, authContext: request.authContext });
+});
 
 browser.tabs.onActivated.addListener(({ tabId, windowId }) => {
-  cachedActiveTabId = tabId;
-  cachedWindowId = windowId;
+  cachedTabId = tabId; cachedWindowId = windowId; cachedTabAt = now(); updateBadge();
+});
+browser.tabs.onRemoved.addListener(tabId => { cleanupDeadTab(tabId); updateBadge(); });
+browser.tabs.onUpdated.addListener((tabId, changeInfo, tab) => {
+  if (tab?.active) { cachedTabId = tabId; cachedWindowId = tab.windowId; cachedTabAt = now(); }
+});
+browser.windows.onFocusChanged.addListener(windowId => {
+  cachedWindowId = windowId >= 0 ? windowId : null;
+  cachedTabId = null;
+  cachedTabAt = 0;
+  if (windowId >= 0) resolveTabId({}).catch(() => {});
 });
 
-browser.tabs.onRemoved.addListener((tabId) => {
-  if (tabId === cachedActiveTabId) {
-    cachedActiveTabId = null;
-    cachedWindowId = null;
-  }
+if (browser.webRequest) {
+  browser.webRequest.onBeforeRequest.addListener(details => recordNetwork(details, 'request'), { urls: ['<all_urls>'] });
+  browser.webRequest.onCompleted.addListener(details => recordNetwork(details, 'completed'), { urls: ['<all_urls>'] });
+  browser.webRequest.onErrorOccurred.addListener(details => recordNetwork(details, 'error'), { urls: ['<all_urls>'] });
+}
+
+browser.commands?.onCommand?.addListener(async command => {
+  try {
+    if (command === 'ping-agent') { await sendNative({ type: 'command', action: 'ping', source: EXT }); }
+    if (command === 'reconnect-agent') { connectNative(); }
+  } catch {}
 });
 
-browser.windows.onFocusChanged.addListener((windowId) => {
-  cachedWindowId = windowId;
-  cachedActiveTabId = null;
-});
-
-// Handle messages from popup
 browser.runtime.onMessage.addListener((msg, sender, sendResponse) => {
-  if (msg.type === "getStatus") {
-    sendResponse(getStatus());
+  if (!msg) return false;
+  if (msg.type === 'getStatus') { sendResponse(getStatus()); return false; }
+  if (msg.type === 'clearRecentActions') { recentActions = []; schedulePersist(); sendResponse({ ok: true }); return false; }
+  if (msg.type === 'reconnect') { connectNative(); sendResponse(getStatus()); return false; }
+  if (msg.type === 'getCapabilities') { sendResponse({ protocol: PROTOCOL_VERSION, capabilities: getCapabilities() }); return false; }
+  if (msg.type === 'getBrowserState') { getBrowserState({}).then(sendResponse).catch(error => sendResponse({ error: errMessage(error) })); return true; }
+  if (msg.type === 'getActiveTab') {
+    getTab({}).then(sendResponse).catch(error => sendResponse({ error: errMessage(error) }));
+    return true;
+  }
+  if (msg.type === 'uiAction') {
+    const allowed = new Set(['ping', 'reload', 'back', 'forward', 'newSession', 'closeTab', 'screenshot', 'snapshot', 'getBrowserState', 'getPageInventory', 'getPageState']);
+    if (!allowed.has(msg.action)) { sendResponse({ error: `UI action not allowed: ${msg.action}` }); return false; }
+    const params = msg.params && typeof msg.params === 'object' ? { ...msg.params } : {};
+    const action = String(msg.action);
+    dispatchAction(action, params, false).then(result => {
+      recordAction(action, true, { source: 'popup' });
+      if (action === 'screenshot' && result && typeof result === 'object' && result.dataUrl) {
+        const dataUrlLength = String(result.dataUrl).length;
+        sendResponse({ tabId: result.tabId, method: result.method, captured: true, dataUrlLength });
+      } else {
+        sendResponse(result);
+      }
+    }).catch(error => {
+      recordAction(action, false, { source: 'popup', error: errMessage(error) });
+      sendResponse({ error: errMessage(error), errorType: error?.name || 'Error' });
+    });
+    return true;
   }
   return false;
+});
+
+loadState().finally(() => {
+  updateBadge();
+  connectNative();
 });

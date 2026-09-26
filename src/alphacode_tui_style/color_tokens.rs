@@ -399,43 +399,40 @@ mod tests {
         }
     }
 
+    /// `rgb()` quantizes to `Color::Indexed` on 256-color terminals, so compare
+    /// colors after normalizing instead of assuming truecolor support.
+    fn as_rgb(color: Color) -> (u8, u8, u8) {
+        match color {
+            Color::Rgb(r, g, b) => (r, g, b),
+            Color::Indexed(index) => crate::alphacode_tui_style::color::indexed_to_rgb(index),
+            other => panic!("Expected an RGB-mappable color, got {other:?}"),
+        }
+    }
+
     #[test]
     fn contrast_check_returns_color() {
         let fg = rgb(200, 200, 200);
         let bg = rgb(30, 30, 40);
         let safe = ensure_contrast(fg, bg, 4.5);
-        // Should return a valid color
-        match safe {
-            Color::Rgb(_, _, _) => {}
-            _ => panic!("Expected RGB color"),
-        }
+        // Should return a valid, mappable color (`as_rgb` panics otherwise).
+        let _ = as_rgb(safe);
     }
 
     #[test]
     fn brightened_is_brighter() {
         let c = rgb(100, 100, 100);
-        let b = brighten_color(c, 0.3);
-        match b {
-            Color::Rgb(r, g, b) => {
-                assert!(r > 100);
-                assert!(g > 100);
-                assert!(b > 100);
-            }
-            _ => panic!("Expected RGB"),
-        }
+        let (r, g, b) = as_rgb(brighten_color(c, 0.3));
+        assert!(r > 100, "expected a brighter red channel, got {r}");
+        assert!(g > 100, "expected a brighter green channel, got {g}");
+        assert!(b > 100, "expected a brighter blue channel, got {b}");
     }
 
     #[test]
     fn dimmed_is_darker() {
         let c = rgb(200, 200, 200);
-        let d = dim_color(c, 0.4);
-        match d {
-            Color::Rgb(r, g, b) => {
-                assert!(r < 200);
-                assert!(g < 200);
-                assert!(b < 200);
-            }
-            _ => panic!("Expected RGB"),
-        }
+        let (r, g, b) = as_rgb(dim_color(c, 0.4));
+        assert!(r < 200, "expected a darker red channel, got {r}");
+        assert!(g < 200, "expected a darker green channel, got {g}");
+        assert!(b < 200, "expected a darker blue channel, got {b}");
     }
 }

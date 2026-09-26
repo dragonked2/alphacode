@@ -89,6 +89,14 @@ fn onboarding_strongest_model_only_runs_without_explicit_defaults() {
         let previous_explicit = std::env::var_os("ALPHACODE_INITIAL_PROVIDER_EXPLICIT");
         crate::alphacode_core::env::remove_var("ALPHACODE_INITIAL_PROVIDER_EXPLICIT");
 
+        // `ProviderConfig::default` now ships a default model and provider, so
+        // "no explicit defaults" has to be established explicitly rather than
+        // assumed from an untouched config file.
+        let mut baseline = crate::config::Config::load();
+        baseline.provider.default_model = None;
+        baseline.provider.default_provider = None;
+        baseline.save().expect("clear default model/provider defaults");
+
         let mut app = onboarding_test_app();
         assert!(app.onboarding_should_prefer_strongest_model());
 
@@ -601,12 +609,11 @@ fn import_review_decline_all_falls_back_to_manual_login() {
 }
 
 #[test]
-fn answering_no_on_continue_prompt_shows_suggestions() {
-    // The default OpenAI-compatible profile advertises `requires_api_key:
-    // false`, which makes openrouter look "Available" even with no
-    // credentials, emptying `suggestion_prompts()` and skipping the
-    // suggestions phase. Pin the gate off (and restore afterwards) so this
-    // stays deterministic regardless of ambient config.
+fn answering_no_on_continue_prompt_finishes_into_the_new_session_screen() {
+    // `suggestion_prompts()` is deliberately empty (a canned prompt list went
+    // stale faster than the product), so the suggestions phase immediately
+    // resolves into the "start a new session" screen. The "No" path must still
+    // never open the session picker.
     struct AllowNoAuthGuard(Option<String>);
     impl Drop for AllowNoAuthGuard {
         fn drop(&mut self) {
@@ -633,10 +640,17 @@ fn answering_no_on_continue_prompt_shows_suggestions() {
             };
         }
         app.onboarding_answer_continue(false);
-        assert!(matches!(
+        // No suggestion list, so the flow completes and the user lands on the
+        // idle composer with a ready notice.
+        assert_eq!(
             app.onboarding_phase(),
-            Some(OnboardingPhase::Suggestions)
-        ));
+            None,
+            "an empty suggestion set must finish onboarding"
+        );
+        assert_eq!(
+            app.status_notice(),
+            Some("You're all set, type anything to start".to_string())
+        );
         // No session picker overlay opened on the "No" path.
         assert!(app.session_picker_overlay.is_none());
     });
@@ -728,21 +742,18 @@ fn startup_check_ignores_synthetic_scaffolding_messages() {
 
         app.maybe_begin_onboarding_flow_on_startup();
 
-        // The guard must not be tripped by scaffolding alone. In a temp home with
-        // no working credentials the flow begins at the in-TUI Login phase (the
-        // fresh-install path no longer logs in at the CLI before the TUI).
-        // Parallel tests can leak credential env vars (ANTHROPIC_API_KEY etc.),
-        // which legitimately routes the fresh install through the credentialed
-        // post-login path instead. Either way, the flow must have *started*:
-        // scaffolding messages must not be mistaken for real activity.
+        // Scaffolding must not be mistaken for real activity, and first-run
+        // onboarding is intentionally *not* auto-started: the TUI opens a
+        // normal new-session screen. The one-shot guard still commits so later
+        // ticks stay a no-op.
         assert!(
             !app.display_messages.is_empty(),
             "precondition: scaffolding messages present"
         );
         assert!(app.onboarding_startup_checked);
         assert!(
-            app.onboarding_flow_active(),
-            "scaffolding-only sessions must still enter first-run onboarding"
+            !app.onboarding_flow_active(),
+            "startup must not auto-start the suppressed first-run flow"
         );
     });
 }
@@ -987,10 +998,11 @@ fn startup_check_skips_user_with_established_session_history() {
 }
 
 #[test]
-fn startup_check_imported_transcripts_do_not_count_as_history() {
+fn startup_check_commits_its_guard_even_with_imported_transcripts() {
     with_temp_alphacode_home(|| {
         // Imported Codex/Claude transcripts exist on genuinely fresh installs
-        // that chose to import history; they must not suppress onboarding.
+        // that chose to import history. First-run onboarding is suppressed, so
+        // the startup check must simply commit its one-shot guard.
         let sessions_dir = crate::storage::alphacode_dir()
             .expect("alphacode dir")
             .join("sessions");
@@ -1011,8 +1023,8 @@ fn startup_check_imported_transcripts_do_not_count_as_history() {
 
         assert!(app.onboarding_startup_checked);
         assert!(
-            app.onboarding_flow.is_some(),
-            "imported transcripts alone should still onboard a fresh install"
+            app.onboarding_flow.is_none(),
+            "imported transcripts do not auto-start the suppressed flow"
         );
     });
 }
@@ -1451,8 +1463,9 @@ fn import_continue_reaches_ready_quality_first_openai_model() {
                 login.message
             );
             assert_eq!(
-                login.provider, "openai-api",
-                "import completion must preserve the concrete provider route"
+                login.provider, "openai",
+                "the login event reports the coarse auth-channel label; the \
+                 concrete route is asserted on ProviderModelActivated below"
             );
             assert!(
                 app.onboarding_should_prefer_strongest_model(),
@@ -1697,10 +1710,12 @@ fn recent_project_review_falls_back_cleanly_when_no_repo_is_known() {
 
         assert!(!app.pending_turn);
         assert!(app.queued_messages.is_empty());
-        assert!(
-            matches!(app.onboarding_phase(), Some(OnboardingPhase::Suggestions)),
-            "expected Suggestions phase, got {:?}",
-            app.onboarding_phase()
+        // With no repo to review there is nothing to suggest, so the flow
+        // completes rather than parking on a screen with no content.
+        assert_eq!(
+            app.onboarding_phase(),
+            None,
+            "the no-repo fallback finishes onboarding"
         );
         assert!(app.status_notice.as_ref().is_some_and(|(notice, _)| {
             notice.contains("No recent Git repository found")

@@ -1,0 +1,346 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+  <meta name="color-scheme" content="dark">
+  <title>AlphaCode Browser Agent by AliEssam</title>
+  <style>
+    :root {
+      color-scheme: dark;
+      --bg: #070914;
+      --bg-2: #0b0e1d;
+      --panel: rgba(13,17,34,.94);
+      --panel-2: rgba(19,24,46,.92);
+      --panel-3: rgba(9,13,28,.86);
+      --line: rgba(255,255,255,.08);
+      --line-strong: rgba(133,93,255,.44);
+      --text: #f7f8ff;
+      --muted: #9da6bf;
+      --muted-2: #68728d;
+      --purple: #8b5cf6;
+      --purple-2: #a78bfa;
+      --cyan: #22d3ee;
+      --blue: #3b82f6;
+      --green: #34d399;
+      --yellow: #fbbf24;
+      --red: #fb7185;
+      --shadow: 0 28px 70px rgba(0,0,0,.5);
+      --radius: 16px;
+    }
+    * { box-sizing: border-box; }
+    html, body { margin:0; min-width: 400px; width:100%; min-height: 620px; max-width: 520px; background: var(--bg); }
+    body { color:var(--text); font: 12px/1.45 Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; overflow-x:hidden; }
+    button, input { font:inherit; }
+    button { color:inherit; }
+    button:focus-visible, a:focus-visible, input:focus-visible { outline: 2px solid var(--purple-2); outline-offset: 2px; }
+    .app {
+      min-height: 620px;
+      background:
+        radial-gradient(circle at 82% -18%, rgba(129,72,255,.33), transparent 34%),
+        radial-gradient(circle at 8% 9%, rgba(34,211,238,.09), transparent 28%),
+        radial-gradient(circle at 70% 72%, rgba(59,130,246,.07), transparent 28%),
+        linear-gradient(180deg, #070914 0%, #060812 100%);
+    }
+    .shell { padding: 12px; }
+    .topbar {
+      position: sticky; top:0; z-index:20;
+      display:flex; align-items:center; gap:10px;
+      padding: 10px 10px 9px;
+      background: rgba(7,9,20,.88);
+      backdrop-filter: blur(22px);
+      border-bottom:1px solid var(--line);
+    }
+    .brand { display:flex; align-items:center; gap:10px; min-width:0; flex:1; }
+    .brand img { width:38px; height:38px; border-radius:11px; box-shadow:0 0 30px rgba(139,92,246,.28); flex:0 0 auto; }
+    .brand-copy { min-width:0; }
+    .brand-line { display:flex; align-items:center; gap:7px; min-width:0; }
+    .brand-name { font-size:14px; font-weight:900; letter-spacing:-.025em; white-space:nowrap; }
+    .brand-name span { color:var(--purple-2); }
+    .author-pill { padding:3px 6px; border-radius:999px; background:rgba(34,211,238,.07); color:#a8f3fb; border:1px solid rgba(34,211,238,.16); font-size:8px; font-weight:800; letter-spacing:.04em; }
+    .brand-pill { padding:3px 6px; border-radius:999px; background:rgba(139,92,246,.12); color:#d8cbff; border:1px solid rgba(139,92,246,.22); font-size:8px; font-weight:800; letter-spacing:.08em; text-transform:uppercase; }
+    .brand-sub { color:var(--muted-2); font-size:9px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+    .top-actions { display:flex; gap:6px; }
+    .icon-btn { width:31px; height:31px; display:grid; place-items:center; border:1px solid var(--line); border-radius:9px; background:rgba(255,255,255,.025); cursor:pointer; }
+    .icon-btn:hover { border-color:var(--line-strong); background:rgba(139,92,246,.08); transform:translateY(-1px); }
+    .icon-btn svg { width:15px; height:15px; fill:none; stroke:currentColor; stroke-width:1.75; stroke-linecap:round; stroke-linejoin:round; }
+
+    .status-wrap { display:flex; align-items:center; gap:6px; min-width:0; }
+    .status-reconnect { padding:5px 7px; font-size:8px; }
+    .statusbar { display:flex; align-items:center; justify-content:space-between; gap:8px; padding:8px 2px 0; }
+    .status { display:inline-flex; align-items:center; gap:7px; padding:6px 9px; border-radius:999px; border:1px solid var(--line); background:rgba(255,255,255,.025); color:var(--muted); font-size:9px; font-weight:700; }
+    .status-dot { width:7px; height:7px; border-radius:50%; background:#64748b; box-shadow:0 0 0 3px rgba(100,116,139,.1); }
+    .status[data-state="online"] { color:#cbfbe9; border-color:rgba(52,211,153,.24); background:rgba(52,211,153,.06); }
+    .status[data-state="online"] .status-dot { background:var(--green); box-shadow:0 0 0 3px rgba(52,211,153,.1); }
+    .status[data-state="active"] { color:#d3f9ff; border-color:rgba(34,211,238,.24); background:rgba(34,211,238,.06); }
+    .status[data-state="active"] .status-dot { background:var(--cyan); box-shadow:0 0 0 3px rgba(34,211,238,.1); animation:pulse 1.2s ease-in-out infinite; }
+    .status[data-state="offline"] { color:#ffdfe4; border-color:rgba(251,113,133,.24); background:rgba(251,113,133,.06); }
+    .status[data-state="offline"] .status-dot { background:var(--red); box-shadow:0 0 0 3px rgba(251,113,133,.1); }
+    .bridge-id { color:var(--muted-2); font-size:9px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+    @keyframes pulse { 50% { transform:scale(1.35); opacity:.65; } }
+
+    .nav { display:flex; gap:4px; margin-top:9px; padding:4px; border:1px solid var(--line); border-radius:12px; background:rgba(255,255,255,.02); }
+    .nav-btn { flex:1; border:0; padding:7px 10px; border-radius:9px; background:transparent; color:var(--muted); cursor:pointer; font-size:10px; font-weight:700; }
+    .nav-btn:hover { color:var(--text); }
+    .nav-btn[aria-selected="true"] { color:var(--text); background:linear-gradient(135deg, rgba(139,92,246,.3), rgba(34,211,238,.08)); box-shadow: inset 0 0 0 1px rgba(139,92,246,.18); }
+
+    .main { padding: 10px 2px 14px; }
+    .page { display:none; }
+    .page.active { display:block; animation:pageIn .14s ease-out; }
+    @keyframes pageIn { from { opacity:.6; transform:translateY(3px); } to { opacity:1; transform:none; } }
+
+    .hero {
+      border:1px solid rgba(139,92,246,.20); border-radius:var(--radius); padding:14px;
+      background:linear-gradient(145deg, rgba(22,25,52,.94), rgba(10,13,27,.94)); box-shadow:var(--shadow); position:relative; overflow:hidden;
+    }
+    .hero:after { content:""; position:absolute; width:160px; height:160px; right:-60px; top:-80px; border-radius:50%; background:radial-gradient(circle, rgba(167,139,250,.22), transparent 68%); pointer-events:none; }
+    .eyebrow { color:#a99af7; text-transform:uppercase; letter-spacing:.12em; font-size:8px; font-weight:900; }
+    .hero-title { margin-top:4px; font-size:17px; font-weight:900; letter-spacing:-.025em; max-width:92%; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+    .hero-desc { margin-top:4px; color:var(--muted); font-size:10px; }
+    .url-row { display:flex; align-items:center; gap:7px; margin-top:9px; }
+    .url { flex:1; min-width:0; padding:7px 9px; border-radius:9px; background:rgba(0,0,0,.22); border:1px solid var(--line); color:#b8c1d7; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+    .mini-btn { border:1px solid var(--line); background:rgba(255,255,255,.02); color:var(--muted); border-radius:8px; padding:6px 8px; cursor:pointer; }
+    .mini-btn:hover { border-color:var(--line-strong); color:var(--text); }
+    .metrics { display:grid; grid-template-columns:repeat(4,1fr); gap:6px; margin-top:11px; }
+    .metric { padding:8px; border:1px solid var(--line); border-radius:10px; background:rgba(255,255,255,.018); min-width:0; }
+    .metric-label { color:var(--muted-2); font-size:8px; text-transform:uppercase; letter-spacing:.08em; }
+    .metric-value { margin-top:2px; font-size:11px; font-weight:900; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+
+    .section { margin-top:12px; }
+    .section-head { display:flex; align-items:center; justify-content:space-between; gap:8px; margin-bottom:7px; }
+    .section-title { font-size:10px; font-weight:900; letter-spacing:.02em; }
+    .section-sub { color:var(--muted-2); font-size:9px; }
+    .section-link { border:0; background:transparent; color:#c2b4ff; font-size:9px; cursor:pointer; padding:2px; }
+    .section-link:hover { color:#eee8ff; }
+
+    .quick-grid { display:grid; grid-template-columns:repeat(4,1fr); gap:6px; }
+    .quick { min-width:0; min-height:72px; padding:9px; border:1px solid var(--line); border-radius:12px; background:linear-gradient(145deg, rgba(16,21,41,.9), rgba(9,12,24,.9)); cursor:pointer; text-align:left; }
+    .quick:hover { border-color:rgba(139,92,246,.34); background:linear-gradient(145deg, rgba(29,24,57,.92), rgba(9,12,24,.92)); transform:translateY(-1px); }
+    .quick-icon { width:25px; height:25px; display:grid; place-items:center; border-radius:8px; color:#d2c5ff; background:rgba(139,92,246,.13); border:1px solid rgba(139,92,246,.18); }
+    .quick-icon svg { width:14px; height:14px; fill:none; stroke:currentColor; stroke-width:1.7; stroke-linecap:round; stroke-linejoin:round; }
+    .quick-title { margin-top:7px; font-size:9px; font-weight:800; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+    .quick-sub { margin-top:1px; color:var(--muted-2); font-size:8px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+
+    .activity { display:grid; gap:6px; }
+    .activity-row { display:flex; align-items:center; gap:8px; padding:8px 9px; border:1px solid var(--line); border-radius:10px; background:rgba(255,255,255,.016); }
+    .activity-dot { width:7px; height:7px; flex:0 0 auto; border-radius:50%; background:#64748b; }
+    .activity-dot.ok { background:var(--green); box-shadow:0 0 0 3px rgba(52,211,153,.08); }
+    .activity-dot.bad { background:var(--red); box-shadow:0 0 0 3px rgba(251,113,133,.08); }
+    .activity-copy { min-width:0; flex:1; }
+    .activity-action { font-weight:800; font-size:9px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+    .activity-meta { color:var(--muted-2); font-size:8px; margin-top:1px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+    .activity-time { color:var(--muted-2); font-size:8px; white-space:nowrap; }
+
+    .search-wrap { position:relative; }
+    .search { width:100%; height:35px; padding:0 30px 0 10px; border:1px solid var(--line); border-radius:10px; background:rgba(255,255,255,.025); color:var(--text); outline:none; }
+    .search:focus { border-color:rgba(139,92,246,.44); box-shadow:0 0 0 3px rgba(139,92,246,.08); }
+    .search-icon { position:absolute; right:10px; top:50%; transform:translateY(-50%); width:13px; height:13px; color:var(--muted-2); }
+    .search-icon svg { width:100%; height:100%; fill:none; stroke:currentColor; stroke-width:1.7; }
+    .action-toolbar { display:flex; align-items:center; justify-content:space-between; gap:8px; margin-top:8px; }
+    .counter { color:var(--muted-2); font-size:8px; }
+    .action-list { display:grid; gap:6px; margin-top:7px; max-height:390px; overflow:auto; padding-right:1px; }
+    .action-row { display:flex; align-items:center; gap:9px; padding:9px; border:1px solid var(--line); border-radius:10px; background:rgba(255,255,255,.016); }
+    .action-row:hover { border-color:rgba(139,92,246,.25); }
+    .action-glyph { width:26px; height:26px; display:grid; place-items:center; border-radius:8px; background:rgba(34,211,238,.08); color:#c7fbff; border:1px solid rgba(34,211,238,.16); font-size:9px; font-weight:900; }
+    .action-copy { flex:1; min-width:0; }
+    .action-name { font-size:9px; font-weight:800; }
+    .action-surface { color:var(--muted-2); font-size:8px; margin-top:1px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+    .badge { padding:3px 6px; border-radius:999px; border:1px solid var(--line); color:var(--muted); background:rgba(255,255,255,.02); font-size:7px; font-weight:800; }
+
+    .diag-grid { display:grid; grid-template-columns:1fr 1fr; gap:6px; }
+    .diag-card.wide { grid-column:1 / -1; }
+    .diag-card { padding:9px; border:1px solid var(--line); border-radius:10px; background:rgba(255,255,255,.016); }
+    .diag-label { color:var(--muted-2); font-size:8px; text-transform:uppercase; letter-spacing:.07em; }
+    .diag-value { margin-top:3px; font-size:9px; font-weight:800; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+    .log { display:grid; gap:6px; max-height:300px; overflow:auto; }
+    .log-empty { padding:18px 10px; border:1px dashed var(--line); border-radius:10px; color:var(--muted-2); text-align:center; font-size:9px; }
+
+    .cap-grid { display:flex; flex-wrap:wrap; gap:5px; margin-top:8px; }
+    .chip { padding:4px 6px; border-radius:999px; background:rgba(139,92,246,.08); border:1px solid rgba(139,92,246,.15); color:#d5cbff; font-size:8px; font-weight:700; }
+
+    .about-hero { padding:15px; border:1px solid rgba(139,92,246,.22); border-radius:16px; background:linear-gradient(145deg, rgba(26,25,57,.94), rgba(10,13,27,.95)); }
+    .about-brand { display:flex; align-items:center; gap:11px; }
+    .about-brand img { width:46px; height:46px; border-radius:13px; box-shadow:0 0 28px rgba(139,92,246,.28); }
+    .about-title { font-size:15px; font-weight:900; letter-spacing:-.02em; }
+    .about-sub { margin-top:2px; color:var(--muted); font-size:9px; }
+    .about-copy { margin-top:12px; color:#b4bdd2; font-size:10px; }
+    .about-copy strong { color:#f0efff; }
+    .link-grid { display:grid; grid-template-columns:1fr 1fr; gap:6px; margin-top:11px; }
+    .link-card { padding:10px; border:1px solid var(--line); border-radius:11px; background:rgba(255,255,255,.018); text-decoration:none; color:inherit; cursor:pointer; }
+    .link-card:hover { border-color:rgba(139,92,246,.32); background:rgba(139,92,246,.05); }
+    .link-title { font-size:9px; font-weight:900; }
+    .link-url { margin-top:2px; color:var(--muted-2); font-size:8px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+    .feature-list { display:grid; gap:6px; margin-top:9px; }
+    .feature-row { display:flex; gap:8px; align-items:flex-start; padding:8px 9px; border:1px solid var(--line); border-radius:10px; background:rgba(255,255,255,.014); }
+    .feature-mark { width:20px; height:20px; flex:0 0 auto; display:grid; place-items:center; border-radius:6px; background:rgba(139,92,246,.1); color:#d4c7ff; font-size:9px; font-weight:900; }
+    .feature-text strong { display:block; font-size:9px; }
+    .feature-text span { display:block; margin-top:1px; color:var(--muted-2); font-size:8px; }
+
+    .footer { display:flex; align-items:center; justify-content:space-between; gap:8px; margin-top:10px; padding:8px 3px 2px; color:var(--muted-2); font-size:8px; }
+    .footer strong { color:#bfb4ef; font-weight:800; }
+    .footer .mono { font-family:ui-monospace, SFMono-Regular, Menlo, monospace; }
+    .footer-links { display:flex; gap:8px; }
+    .footer-links a { color:#a99af7; text-decoration:none; font-weight:800; }
+    .footer-links a:hover { color:#ddd6ff; }
+
+    .toast { position:fixed; left:16px; right:16px; bottom:14px; z-index:50; transform:translateY(14px); opacity:0; pointer-events:none; transition:.18s ease; padding:10px 11px; border:1px solid var(--line); border-radius:12px; background:rgba(10,13,26,.96); box-shadow:var(--shadow); display:flex; gap:9px; align-items:flex-start; }
+    .toast.show { opacity:1; transform:none; }
+    .toast-icon { width:18px; height:18px; display:grid; place-items:center; border-radius:6px; background:rgba(52,211,153,.1); color:#b5f7df; font-size:10px; font-weight:900; }
+    .toast[data-tone="bad"] .toast-icon { background:rgba(251,113,133,.1); color:#ffd6dd; }
+    .toast-title { font-size:9px; font-weight:900; }
+    .toast-copy { margin-top:1px; color:var(--muted-2); font-size:8px; }
+    .spinner { width:12px; height:12px; border:2px solid rgba(255,255,255,.24); border-top-color:#fff; border-radius:50%; animation:spin .7s linear infinite; display:inline-block; }
+    @keyframes spin { to { transform:rotate(360deg); } }
+    .disabled { pointer-events:none; opacity:.65; }
+    .hidden { display:none !important; }
+  </style>
+</head>
+<body>
+  <div class="app">
+    <header class="topbar">
+      <div class="brand">
+        <img src="icons/icon-96.png" alt="AlphaCode">
+        <div class="brand-copy">
+          <div class="brand-line">
+            <div class="brand-name">Alpha<span>Code</span></div>
+            <div class="brand-pill">Browser Agent</div><div class="author-pill">by AliEssam</div>
+          </div>
+          <div class="brand-sub">Fast, resilient browser execution for AlphaCode agent workflows</div>
+        </div>
+      </div>
+      <div class="top-actions">
+        <button class="icon-btn" id="refreshBtn" title="Refresh bridge state" aria-label="Refresh bridge state">
+          <svg viewBox="0 0 24 24"><path d="M20 11a8.1 8.1 0 0 0-14.7-4.7L4 8"/><path d="M4 4v4h4"/><path d="M4 13a8.1 8.1 0 0 0 14.7 4.7L20 16"/><path d="M20 20v-4h-4"/></svg>
+        </button>
+        <button class="icon-btn" id="aboutBtn" title="About AlphaCode" aria-label="About AlphaCode">
+          <svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M12 10v6"/><path d="M12 7h.01"/></svg>
+        </button>
+      </div>
+    </header>
+
+    <div class="shell">
+      <div class="statusbar">
+        <div class="status-wrap"><div class="status" id="statusPill" data-state="offline"><span class="status-dot"></span><span id="statusText">Offline</span></div><button class="mini-btn status-reconnect" id="statusReconnect">Reconnect</button></div>
+        <div class="bridge-id" id="bridgeId">Native bridge unavailable</div>
+      </div>
+
+      <nav class="nav" aria-label="Primary">
+        <button class="nav-btn" data-page="overview" aria-selected="true">Overview</button>
+        <button class="nav-btn" data-page="actions" aria-selected="false">Capabilities</button>
+        <button class="nav-btn" data-page="diagnostics" aria-selected="false">Diagnostics</button>
+        <button class="nav-btn" data-page="about" aria-selected="false">About</button>
+      </nav>
+
+      <main class="main">
+        <section class="page active" id="overview">
+          <div class="hero">
+            <div class="eyebrow">Current browser context</div>
+            <div class="hero-title" id="tabTitle">No active tab</div>
+            <div class="hero-desc" id="tabContext">Open a web page to inspect and control the active tab.</div>
+            <div class="url-row">
+              <div class="url" id="tabUrl">about:blank</div>
+              <button class="mini-btn" id="copyUrl">Copy</button>
+            </div>
+            <div class="metrics">
+              <div class="metric"><div class="metric-label">Tab</div><div class="metric-value" id="metricTab">—</div></div>
+              <div class="metric"><div class="metric-label">Window</div><div class="metric-value" id="metricWindow">—</div></div>
+              <div class="metric"><div class="metric-label">Requests</div><div class="metric-value" id="metricRequests">0</div></div>
+              <div class="metric"><div class="metric-label">Network</div><div class="metric-value" id="metricNetwork">0</div></div>
+            </div>
+          </div>
+
+          <div class="section">
+            <div class="section-head"><div><div class="section-title">Quick actions</div><div class="section-sub">Operate the active tab without leaving the console</div></div><button class="section-link" id="switchActions">View all</button></div>
+            <div class="quick-grid">
+              <button class="quick" data-action="back" title="Go back">
+                <span class="quick-icon"><svg viewBox="0 0 24 24"><path d="M19 12H5"/><path d="m12 19-7-7 7-7"/></svg></span><div class="quick-title">Back</div><div class="quick-sub">History</div>
+              </button>
+              <button class="quick" data-action="forward" title="Go forward">
+                <span class="quick-icon"><svg viewBox="0 0 24 24"><path d="M5 12h14"/><path d="m12 5 7 7-7 7"/></svg></span><div class="quick-title">Forward</div><div class="quick-sub">History</div>
+              </button>
+              <button class="quick" data-action="reload" title="Reload active tab">
+                <span class="quick-icon"><svg viewBox="0 0 24 24"><path d="M20 11a8 8 0 0 0-14.7-4.7L4 8"/><path d="M4 4v4h4"/><path d="M4 13a8 8 0 0 0 14.7 4.7L20 16"/><path d="M20 20v-4h-4"/></svg></span><div class="quick-title">Reload</div><div class="quick-sub">Refresh page</div>
+              </button>
+              <button class="quick" data-action="screenshot" title="Capture the active tab">
+                <span class="quick-icon"><svg viewBox="0 0 24 24"><path d="M4 7h4l2-2h4l2 2h4v12H4z"/><circle cx="12" cy="13" r="3.5"/></svg></span><div class="quick-title">Capture</div><div class="quick-sub">Screenshot</div>
+              </button>
+              <button class="quick" data-action="ping" title="Test the bridge">
+                <span class="quick-icon"><svg viewBox="0 0 24 24"><path d="M4 12h3l2.2-6 4.1 12 2.5-6H20"/></svg></span><div class="quick-title">Ping</div><div class="quick-sub">Bridge test</div>
+              </button>
+            </div>
+          </div>
+
+          <div class="section">
+            <div class="section-head"><div><div class="section-title">Recent activity</div><div class="section-sub">Actions reported by the browser bridge</div></div><button class="section-link" id="clearActivity">Clear</button></div>
+            <div class="activity" id="recentLog"></div>
+          </div>
+        </section>
+
+        <section class="page" id="actions">
+          <div class="hero">
+            <div class="eyebrow">Agent surface</div>
+            <div class="hero-title">Browser capabilities</div>
+            <div class="hero-desc">Search the available browser, DOM, input, form, output, file, download, session, authentication, and telemetry surfaces.</div>
+          </div>
+          <div class="section">
+            <div class="search-wrap">
+              <input class="search" id="actionSearch" type="search" placeholder="Search actions, selectors, browser APIs…" autocomplete="off" spellcheck="false">
+              <span class="search-icon"><svg viewBox="0 0 24 24"><circle cx="11" cy="11" r="7"/><path d="m20 20-4-4"/></svg></span>
+            </div>
+            <div class="action-toolbar"><div class="counter" id="actionCount">0 surfaces</div><div class="counter">Press / to focus search</div></div>
+            <div class="action-list" id="actionList"></div>
+          </div>
+        </section>
+
+        <section class="page" id="diagnostics">
+          <div class="hero">
+            <div class="eyebrow">Bridge health</div>
+            <div class="hero-title">Diagnostics & runtime state</div>
+            <div class="hero-desc">Native connection, active requests, browser context and execution telemetry.</div>
+          </div>
+          <div class="section">
+            <div class="diag-grid">
+              <div class="diag-card"><div class="diag-label">Bridge</div><div class="diag-value" id="diagBridge">Disconnected</div></div>
+              <div class="diag-card"><div class="diag-label">Protocol</div><div class="diag-value" id="diagProtocol">—</div></div>
+              <div class="diag-card"><div class="diag-label">Native host</div><div class="diag-value" id="diagHost">—</div></div>
+              <div class="diag-card"><div class="diag-label">Activity</div><div class="diag-value" id="diagActivity">Idle</div></div>
+              <div class="diag-card"><div class="diag-label">Forks</div><div class="diag-value" id="diagForks">0</div></div>
+              <div class="diag-card"><div class="diag-label">Completed</div><div class="diag-value" id="diagSuccess">0</div></div>
+              <div class="diag-card"><div class="diag-label">Failed</div><div class="diag-value" id="diagFailures">0</div></div>
+              <div class="diag-card"><div class="diag-label">Uptime</div><div class="diag-value" id="diagUptime">0ms</div></div>
+              <div class="diag-card"><div class="diag-label">Tab status</div><div class="diag-value" id="diagTabStatus">—</div></div>
+              <div class="diag-card wide"><div class="diag-label">Last error</div><div class="diag-value" id="diagLastError">None</div></div>
+            </div>
+          </div>
+          <div class="section">
+            <div class="section-head"><div><div class="section-title">Execution log</div><div class="section-sub">Latest bridge events</div></div><button class="mini-btn" id="reconnectBtn">Reconnect</button></div>
+            <div class="log" id="diagLog"></div>
+          </div>
+          <div class="section"><div class="section-head"><div><div class="section-title">Capability groups</div><div class="section-sub">Published by the extension</div></div><button class="mini-btn" id="copyCaps">Copy all</button></div><div class="cap-grid" id="capGrid"></div></div>
+        </section>
+
+        <section class="page" id="about">
+          <div class="about-hero">
+            <div class="about-brand"><img src="icons/icon-96.png" alt="AlphaCode logo"><div><div class="about-title">AlphaCode Browser Agent</div><div class="about-sub">A Firefox companion for AlphaCode's agentic browser workflows.</div></div></div>
+            <div class="about-copy"><strong>AlphaCode Browser Agent</strong> is the Firefox execution layer for AlphaCode. It connects terminal-native agent workflows to real browser tabs and pages with resilient navigation, DOM targeting, input control, frames, forms, screenshots, downloads, sessions and telemetry. <strong>Built and maintained by AliEssam.</strong></div>
+            <div class="link-grid">
+              <a class="link-card" href="https://alphacli.github.io/" data-external="https://alphacli.github.io/"><div class="link-title">AlphaCode website</div><div class="link-url">alphacli.github.io</div></a>
+              <a class="link-card" href="https://github.com/dragonked2/alphacode" data-external="https://github.com/dragonked2/alphacode"><div class="link-title">AlphaCode source</div><div class="link-url">github.com/dragonked2/alphacode</div></a>
+            </div>
+          </div>
+          <div class="section"><div class="section-title">What the bridge adds</div><div class="feature-list">
+            <div class="feature-row"><div class="feature-mark">01</div><div class="feature-text"><strong>Real browser control</strong><span>Tabs, windows, navigation, screenshots, downloads, sessions and more.</span></div></div>
+            <div class="feature-row"><div class="feature-mark">02</div><div class="feature-text"><strong>Deep web interaction</strong><span>DOM targeting, forms, keyboard, pointer, frames and Shadow DOM.</span></div></div>
+            <div class="feature-row"><div class="feature-mark">03</div><div class="feature-text"><strong>Agent-ready execution</strong><span>Native messaging, retries, batching, parallel workflows and runtime diagnostics.</span></div></div>
+            <div class="feature-row"><div class="feature-mark">04</div><div class="feature-text"><strong>Designed for AlphaCode</strong><span>Branding, terminology and project links point back to the main AlphaCode project.</span></div></div>
+          </div></div>
+          <div class="footer"><span>AlphaCode Browser Agent <strong>v<span id="versionText">—</span></strong></span><span class="footer-links"><a href="https://alphacli.github.io/" data-external="https://alphacli.github.io/">AlphaCode</a><a href="https://github.com/dragonked2" data-external="https://github.com/dragonked2">AliEssam</a></span></div>
+        </section>
+      </main>
+    </div>
+  </div>
+
+  <div class="toast" id="toast" data-tone="good"><div class="toast-icon">✓</div><div><div class="toast-title" id="toastTitle">Done</div><div class="toast-copy" id="toastCopy">Action completed.</div></div></div>
+  <script src="popup.js"></script>
+</body>
+</html>

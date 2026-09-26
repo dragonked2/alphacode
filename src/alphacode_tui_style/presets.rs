@@ -1,15 +1,15 @@
 //! Curated built-in theme presets.
 //!
-//! Before this module the only way to restyle the TUI was to write 39 hex
+//! Before this module the only way to restyle the TUI was to write 42 hex
 //! values into `[display.colors]` by hand. That is a lot of work to get a
 //! coherent result, and an incoherent palette is worse than the default one:
 //! the roles are related (diff-add should agree with success, todo-pending with
 //! warning), so picking them independently tends to produce a set that fights
 //! itself.
 //!
-//! A preset is therefore not 39 free colors. It is a small [`ThemeSeed`] — the
+//! A preset is therefore not 42 free colors. It is a small [`ThemeSeed`] — the
 //! ~14 colors a terminal theme actually defines — and [`ThemeSeed::palette`]
-//! derives all 39 roles from it. Adding a theme means transcribing its published
+//! derives all 42 roles from it. Adding a theme means transcribing its published
 //! palette, not inventing role assignments, and every theme stays internally
 //! consistent by construction.
 //!
@@ -65,7 +65,7 @@ pub struct ThemeSeed {
 }
 
 impl ThemeSeed {
-    /// Derive the full 39-role palette.
+    /// Derive the full 42-role palette.
     ///
     /// Every role is assigned, so a preset never leaves a role sitting on the
     /// built-in default and clashing with the rest of the theme. The mapping is
@@ -81,7 +81,7 @@ impl ThemeSeed {
     }
 
     /// Role → color for this seed. Exposed so tests can assert full coverage.
-    pub fn role_assignments(&self) -> [(Role, Rgb); 39] {
+    pub fn role_assignments(&self) -> [(Role, Rgb); 42] {
         [
             // Conversation
             (Role::User, self.blue),
@@ -136,6 +136,10 @@ impl ThemeSeed {
             (Role::Memory, self.accent),
             (Role::TodoDone, self.green),
             (Role::TodoPending, self.yellow),
+            // Extended chrome roles
+            (Role::PanelBorder, self.accent),
+            (Role::PanelBorderMuted, self.fg_subtle),
+            (Role::MutedText, self.fg_muted),
         ]
     }
 }

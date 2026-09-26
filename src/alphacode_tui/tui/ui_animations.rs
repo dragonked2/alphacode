@@ -142,12 +142,14 @@ pub(crate) fn last_idle_animation_area() -> Option<Rect> {
 
 /// Repaint just the idle-animation rows of an already-rendered frame buffer.
 ///
-/// The surrounding cells were already theme/emoji adapted when the full frame
-/// was drawn, so adaptation is applied to the freshly written animation cells
-/// only: `adapt_buffer_for_theme` inverts colors on light terminals and is not
-/// idempotent, so re-running it over the reused buffer would flip everything
-/// back. The animation writes plain box/shade glyphs and a foreground color, so
-/// per-cell foreground adaptation is the complete equivalent here.
+/// The surrounding cells were already finalized when the full frame was drawn,
+/// so the same three finalization passes a full frame runs (light-theme
+/// adaptation, configured-palette substitution, emoji re-encoding) are applied
+/// to the repainted region only. Scoping matters: `adapt_buffer_for_theme`
+/// inverts colors on light terminals and is not idempotent, so re-running it
+/// over the reused buffer would flip everything back. The animation writes box
+/// and shade glyphs with a foreground color, so the result is byte-identical to
+/// a full frame at the same animation time.
 pub(crate) fn render_idle_animation_into(buf: &mut Buffer, area: Rect, elapsed: f32) {
     let area = area.intersection(*buf.area());
     // A full frame clears the whole surface before drawing, so the animation
@@ -160,12 +162,9 @@ pub(crate) fn render_idle_animation_into(buf: &mut Buffer, area: Rect, elapsed: 
         }
     }
     render_idle_animation(buf, area, elapsed);
-    for y in area.top()..area.bottom() {
-        for x in area.left()..area.right() {
-            let cell = &mut buf[(x, y)];
-            cell.fg = crate::alphacode_tui_style::adapt_color_for_theme(cell.fg);
-        }
-    }
+    crate::alphacode_tui_style::theme_mode::adapt_region_for_theme(buf, area);
+    crate::alphacode_tui_style::palette::adapt_region_for_palette(buf, area);
+    crate::alphacode_tui::tui::ui::output_style::adapt_region_for_emoji_preference(buf, area);
 }
 
 // Pure math kernels (3D samplers, glyph chooser, HSV->RGB) live in the
@@ -321,6 +320,7 @@ pub(crate) fn render_idle_animation(buf: &mut Buffer, area: Rect, elapsed: f32) 
     // in many terminals, so the default is now a single line of theme-tinted
     // text that does not move.
     let variant = idle_animation_variant();
+    eprintln!("PROBE render_idle_animation variant={variant} area={area:?} elapsed={elapsed}");
     if variant == "static_logo" {
         render_idle_wordmark(buf, area);
         return;

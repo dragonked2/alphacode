@@ -29,6 +29,41 @@ fn prepare_server_exec(cmd: &mut std::process::Command, socket_path: &std::path:
         .stderr(Stdio::null());
 }
 
+/// Replace the daemon with a new server process, serializing the Windows
+/// handoff through the binary's detached reload helper. The helper waits until
+/// this process releases the named-pipe listener before starting the target.
+fn replace_server_process(binary: &std::path::Path, socket: &std::path::Path) -> std::io::Error {
+    #[cfg(unix)]
+    {
+        let mut cmd = std::process::Command::new(binary);
+        cmd.arg("serve").arg("--socket").arg(socket.as_os_str());
+        prepare_server_exec(&mut cmd, socket);
+        crate::platform::replace_process(&mut cmd)
+    }
+    #[cfg(windows)]
+    {
+        let current_exe = match std::env::current_exe() {
+            Ok(path) => path,
+            Err(error) => return error,
+        };
+        let mut helper = std::process::Command::new(current_exe);
+        helper
+            .arg("--internal-reload-helper")
+            .arg("--reload-target")
+            .arg(binary)
+            .arg("--parent-pid")
+            .arg(std::process::id().to_string())
+            .arg("--socket")
+            .arg(socket.as_os_str())
+            .arg("serve");
+        prepare_server_exec(&mut helper, socket);
+        match crate::platform::spawn_detached_process(&mut helper) {
+            Ok(_) => std::process::exit(0),
+            Err(error) => error,
+        }
+    }
+}
+
 async fn receive_reload_signal(
     rx: &mut watch::Receiver<Option<crate::alphacode_app_core::server::ReloadSignal>>,
     last_request_id: &mut Option<String>,
@@ -60,8 +95,6 @@ pub(super) async fn await_reload_signal(
     shutdown_signals: Arc<RwLock<HashMap<String, InterruptSignal>>>,
     swarm_event_tx: broadcast::Sender<SwarmEvent>,
 ) {
-    use std::process::Command as ProcessCommand;
-
     let mut rx = super::reload_state::reload_signal().1.clone();
     // Treat any signal already sitting in the (process-global) reload channel as
     // already handled: a server should only react to reload signals issued after
@@ -199,10 +232,7 @@ pub(super) async fn await_reload_signal(
                         "elapsed_ms": reload_started.elapsed().as_millis(),
                     }),
                 );
-                let mut cmd = ProcessCommand::new(&binary);
-                cmd.arg("serve").arg("--socket").arg(socket.as_os_str());
-                prepare_server_exec(&mut cmd, &socket);
-                let err = crate::platform::replace_process(&mut cmd);
+                let err = replace_server_process(&binary, &socket);
                 crate::alphacode_app_core::server::write_reload_state(
                     &signal.request_id,
                     &signal.hash,

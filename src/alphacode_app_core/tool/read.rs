@@ -162,6 +162,10 @@ impl Tool for ReadTool {
         })
     }
 
+    fn execution_class(&self, _input: &Value) -> super::ToolExecutionClass {
+        super::ToolExecutionClass::ReadOnly
+    }
+
     async fn execute(&self, input: Value, ctx: ToolContext) -> Result<ToolOutput> {
         let params: ReadInput = serde_json::from_value(input)?;
         let range = normalize_read_range(&params)?;

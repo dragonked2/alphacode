@@ -457,6 +457,14 @@ fn create_alphacode_repo_fixture() -> tempfile::TempDir {
     temp
 }
 
+fn git_available() -> bool {
+    std::process::Command::new("git")
+        .arg("--version")
+        .output()
+        .map(|output| output.status.success())
+        .unwrap_or(false)
+}
+
 fn create_real_git_repo_fixture() -> tempfile::TempDir {
     let temp = tempfile::tempdir().expect("tempdir");
     std::process::Command::new("git")
@@ -547,7 +555,7 @@ fn test_handle_turn_error_failover_prompt_countdown_can_switch_and_retry() {
         let last = app.display_messages.last().expect("display message");
         assert!(
             last.content
-                .contains("cross_provider_failover = \"manual\"")
+                .contains("cross_provider_failover = \"countdown\"")
         );
     });
 }

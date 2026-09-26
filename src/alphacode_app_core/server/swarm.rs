@@ -1944,15 +1944,16 @@ mod tests {
         fresh_terminal.status = "completed".to_string();
         assert!(member_in_status_broadcast(&fresh_terminal, retention));
 
+        // A terminal member is excluded once its age reaches the retention
+        // boundary. Use a zero retention here instead of subtracting a large
+        // duration from `Instant`, which can underflow on freshly booted hosts.
         let (mut stale_terminal, _rx) = swarm_member("stale", "agent", false);
         stale_terminal.status = "stopped".to_string();
-        stale_terminal.last_status_change = Instant::now() - Duration::from_secs(901);
-        assert!(!member_in_status_broadcast(&stale_terminal, retention));
+        assert!(!member_in_status_broadcast(&stale_terminal, Duration::ZERO));
 
         // A stale *live* status is never filtered, no matter how old.
-        let (mut old_live, _rx) = swarm_member("old-live", "agent", false);
-        old_live.last_status_change = Instant::now() - Duration::from_secs(100_000);
-        assert!(member_in_status_broadcast(&old_live, retention));
+        let (old_live, _rx) = swarm_member("old-live", "agent", false);
+        assert!(member_in_status_broadcast(&old_live, Duration::ZERO));
     }
 
     #[test]

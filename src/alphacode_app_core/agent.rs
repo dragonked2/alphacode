@@ -740,23 +740,22 @@ impl Agent {
                         self.note_compaction_applied();
                         self.persist_session_best_effort("compaction completion");
                     }
-                    // Called every turn-loop iteration; the full summary only
-                    // matters under trace. Throttling keeps the file log from
-                    // filling with an identical line per tool call.
-                    let user_count = messages
-                        .iter()
-                        .filter(|message| matches!(message.role, Role::User))
-                        .count();
-                    let assistant_count = messages.len().saturating_sub(user_count);
-                    crate::logging::info_throttled(
-                        "messages_for_provider_compaction",
-                        &format!(
+                    // This runs on every turn-loop iteration. Avoid even the
+                    // message-count scan and formatting unless verbose tracing
+                    // was explicitly requested.
+                    if logging::trace_enabled() {
+                        let user_count = messages
+                            .iter()
+                            .filter(|message| matches!(message.role, Role::User))
+                            .count();
+                        let assistant_count = messages.len().saturating_sub(user_count);
+                        logging::debug(&format!(
                             "messages_for_provider (compaction): returning {} messages (user={}, assistant={})",
                             messages.len(),
                             user_count,
                             assistant_count,
-                        ),
-                    );
+                        ));
+                    }
                     return (messages, event);
                 }
                 Err(_) => {
@@ -767,20 +766,19 @@ impl Agent {
 
         let all_messages = self.session.provider_messages();
         let messages = all_messages.to_vec();
-        let user_count = messages
-            .iter()
-            .filter(|message| matches!(message.role, Role::User))
-            .count();
-        let assistant_count = messages.len().saturating_sub(user_count);
-        crate::logging::info_throttled(
-            "messages_for_provider_session",
-            &format!(
+        if logging::trace_enabled() {
+            let user_count = messages
+                .iter()
+                .filter(|message| matches!(message.role, Role::User))
+                .count();
+            let assistant_count = messages.len().saturating_sub(user_count);
+            logging::debug(&format!(
                 "messages_for_provider (session): returning {} messages (user={}, assistant={})",
                 messages.len(),
                 user_count,
                 assistant_count,
-            ),
-        );
+            ));
+        }
         (messages, None)
     }
 

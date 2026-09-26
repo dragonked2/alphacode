@@ -9,6 +9,70 @@ fn allow_runtime_identity_mismatch() -> bool {
     std::env::var_os("ALPHACODE_ALLOW_SERVER_VERSION_MISMATCH").is_some()
 }
 
+/// Title prefix of the client-only inline plan-graph card.
+const PLAN_GRAPH_TITLE_PREFIX: &str = "Plan graph · ";
+
+/// Upsert the inline plan-graph card for a `SwarmPlan` broadcast.
+///
+/// The transcript carries at most one diagram, which coalesces in place so a
+/// swarm that ticks several times a second cannot flood the transcript. A
+/// version bump rewrites the existing card; if unrelated messages (a DM, a
+/// tool row) landed after it, the card is moved back to the bottom so the plan
+/// stays the newest thing in view. An emptied plan drops the card, and with
+/// mermaid rendering disabled no card is ever created — the live plan is still
+/// shown by the swarm strip and the dedicated swarm page either way.
+///
+/// Returns whether the transcript changed.
+fn upsert_swarm_plan_graph_message(
+    app: &mut App,
+    version: u64,
+    items: &[crate::plan::PlanItem],
+) -> bool {
+    let diagram = if crate::alphacode_tui::tui::markdown::mermaid_rendering_enabled() {
+        crate::plan::mermaid::swarm_plan_mermaid(items)
+    } else {
+        None
+    };
+    let existing = app.display_messages.iter().position(|message| {
+        message
+            .title
+            .as_deref()
+            .is_some_and(|title| title.starts_with(PLAN_GRAPH_TITLE_PREFIX))
+    });
+
+    let Some(diagram) = diagram else {
+        return match existing {
+            Some(index) => {
+                app.display_messages.remove(index);
+                app.bump_display_messages_version();
+                true
+            }
+            None => false,
+        };
+    };
+
+    let title = format!("{PLAN_GRAPH_TITLE_PREFIX}v{version}");
+    let content = format!("```mermaid\n{diagram}\n```");
+    match existing {
+        Some(index) if index + 1 == app.display_messages.len() => {
+            let message = &mut app.display_messages[index];
+            if message.title.as_deref() == Some(title.as_str()) && message.content == content {
+                return false;
+            }
+            message.title = Some(title);
+            message.content = content;
+        }
+        Some(index) => {
+            app.display_messages.remove(index);
+            app.push_display_message(DisplayMessage::swarm(title, content));
+            return true;
+        }
+        None => app.push_display_message(DisplayMessage::swarm(title, content)),
+    }
+    app.bump_display_messages_version();
+    true
+}
+
 /// Parse a alphacode version string into an orderable `(major, minor, patch)`, but
 /// only for *clean release* builds.
 ///
@@ -1210,7 +1274,11 @@ pub(in crate::alphacode_tui::tui::app) fn handle_server_event(
             }
             completed_current_message || auto_poked
         }
-        ServerEvent::Error { message, .. } => {
+        ServerEvent::Error {
+            id,
+            message,
+            retry_after_secs,
+        } => {
             // The server rejects a Message request with this error while its
             // previous turn is still running. This typically happens when a
             // reload/reconnect raced the turn-end dispatch: the history
@@ -1239,13 +1307,11 @@ pub(in crate::alphacode_tui::tui::app) fn handle_server_event(
                 );
                 return true;
             }
-            app.clear_pending_remote_retry();
             let is_failover_prompt =
                 crate::provider::parse_failover_prompt_message(&message).is_some();
-            // Snapshot the failed turn's payload before the cleanup below (and
-            // the retry-budget bookkeeping) clears it, so a fallback offer
-            // armed at a terminal no-retry point can resend it after the user
-            // accepts a switch to a working route.
+            // Snapshot the failed turn's payload before any retry-budget or
+            // terminal-error cleanup can clear it. This is required for both
+            // fallback offers and the retry paths below.
             let failed_fallback_payload = app.rate_limit_pending_message.as_ref().map(|pending| {
                 app_mod::FallbackResendPayload {
                     content: pending.content.clone(),
@@ -1256,6 +1322,9 @@ pub(in crate::alphacode_tui::tui::app) fn handle_server_event(
                     raw_input: app.last_submitted_input.clone(),
                 }
             });
+            if app.current_message_id == Some(id) {
+                app.current_message_id = None;
+            }
             app.push_display_message(DisplayMessage {
                 role: "error".to_string(),
                 content: message.clone(),
@@ -1280,6 +1349,24 @@ pub(in crate::alphacode_tui::tui::app) fn handle_server_event(
             }
             remote.clear_pending();
             remote.reset_call_output_tokens_seen();
+            if let Some(seconds) = retry_after_secs
+                && let Some(pending) = app.rate_limit_pending_message.as_mut()
+            {
+                // The server told us exactly how long to wait. Honor it instead
+                // of the generic backoff, and keep the payload so the retry can
+                // actually resend it.
+                let seconds = seconds.max(1);
+                pending.auto_retry = true;
+                let retry_at = Instant::now() + std::time::Duration::from_secs(seconds);
+                pending.retry_at = Some(retry_at);
+                app.rate_limit_reset = Some(retry_at);
+                let unit = if seconds == 1 { "second" } else { "seconds" };
+                let notice =
+                    format!("Rate limited by the server. Will auto-retry in {seconds} {unit}.");
+                app.push_display_message(DisplayMessage::system(notice.clone()));
+                app.set_status_notice(notice);
+                return false;
+            }
             // Connectivity failures (DNS, connection reset, no route, transient
             // TLS, timeouts) are always transient: the request never reached the
             // provider. Hold the turn and resume when the network recovers,
@@ -1292,6 +1379,34 @@ pub(in crate::alphacode_tui::tui::app) fn handle_server_event(
             if is_connectivity_error
                 && app.schedule_pending_remote_network_wait_with_force(&message, true)
             {
+                return false;
+            }
+            // Deterministic model/endpoint-capability failures (e.g. Volcengine
+            // Ark's coding-plan endpoint returning 404 UnsupportedModel, or a
+            // model-not-found) can never succeed by resending the identical
+            // request. This is checked *before* the transient-upstream branch:
+            // those error bodies usually contain generic wording such as "chat
+            // request failed", which the retry classifier would otherwise treat
+            // as a transient upstream failure and burn the retry budget on a
+            // guaranteed 4xx (#387).
+            if crate::alphacode_tui::tui::app::commands::is_fatal_model_endpoint_error(&message) {
+                app.clear_pending_remote_retry();
+                if app.auto_poke_incomplete_todos {
+                    crate::alphacode_tui::tui::app::commands::stop_auto_poke_for_non_retryable_error(
+                        app, &message,
+                    );
+                }
+                app.push_display_message(DisplayMessage::system(
+                    "🛑 Not retrying: the model is not valid for the configured endpoint (e.g. an Ark coding-plan endpoint rejecting a model without the coding plan feature, or a model-not-found). Check the model name and base URL (the coding endpoint `/api/coding/v3` only accepts coding-plan models; use `/api/v3` otherwise), then send again.".to_string(),
+                ));
+                app.set_status_notice("Stopped: model/endpoint mismatch");
+                app.restore_failed_input_to_box();
+                // Switching models is exactly the right fix for a
+                // model/endpoint mismatch: offer the next best route.
+                app.offer_fallback_after_error_with_payload(
+                    &message,
+                    failed_fallback_payload.clone(),
+                );
                 return false;
             }
             // Transient upstream provider failures (Nvidia overloaded, API
@@ -1320,31 +1435,6 @@ pub(in crate::alphacode_tui::tui::app) fn handle_server_event(
             // automatic resend path and tell the user to /login or /model.
             if !is_connectivity_error && app.note_error_for_credential_breaker(&message) {
                 app.trip_credential_failure_breaker(&message);
-                app.offer_fallback_after_error_with_payload(
-                    &message,
-                    failed_fallback_payload.clone(),
-                );
-                return false;
-            }
-            // Deterministic model/endpoint-capability failures (e.g. Volcengine
-            // Ark's coding-plan endpoint returning 404 UnsupportedModel, or a
-            // model-not-found) can never succeed by resending the identical
-            // request. Fail fast with an actionable hint instead of burning the
-            // auto-retry budget on guaranteed 4xx responses (#387).
-            if crate::alphacode_tui::tui::app::commands::is_fatal_model_endpoint_error(&message) {
-                app.clear_pending_remote_retry();
-                if app.auto_poke_incomplete_todos {
-                    crate::alphacode_tui::tui::app::commands::stop_auto_poke_for_non_retryable_error(
-                        app, &message,
-                    );
-                }
-                app.push_display_message(DisplayMessage::system(
-                    "🛑 Not retrying: the model is not valid for the configured endpoint (e.g. an Ark coding-plan endpoint rejecting a model without the coding plan feature, or a model-not-found). Check the model name and base URL (the coding endpoint `/api/coding/v3` only accepts coding-plan models; use `/api/v3` otherwise), then send again.".to_string(),
-                ));
-                app.set_status_notice("Stopped: model/endpoint mismatch");
-                app.restore_failed_input_to_box();
-                // Switching models is exactly the right fix for a
-                // model/endpoint mismatch: offer the next best route.
                 app.offer_fallback_after_error_with_payload(
                     &message,
                     failed_fallback_payload.clone(),
@@ -2155,44 +2245,45 @@ pub(in crate::alphacode_tui::tui::app) fn handle_server_event(
                     .swarm_plan_version
                     .is_some_and(|current| version < current)
                 && version > 2;
-            if !stale_regression {
-                // Don't show the "Swarm plan synced" notice for reconnect
-                // replays of plans that have no live work. The server already
-                // filters most of these, but as a defense-in-depth guard:
-                // only flash the notice when at least one item is actively
-                // running/queued/pending.
-                let is_reconnect = reason.as_deref() == Some("reconnect");
-                let has_live_work = items.iter().any(|item| {
-                    matches!(
-                        item.status.as_str(),
-                        "running" | "queued" | "ready" | "pending" | "todo" | "growing"
-                    )
-                });
-                let snapshot = RemoteSwarmPlanSnapshot {
-                    swarm_id: swarm_id.clone(),
-                    version,
-                    items: items.clone(),
-                    participants: participants.clone(),
-                    reason: reason.clone(),
-                    summary,
-                };
-                let notice = snapshot.status_notice();
-                app.swarm_plan_swarm_id = Some(snapshot.swarm_id.clone());
-                app.swarm_plan_version = Some(snapshot.version);
-                app.swarm_plan_items = snapshot.items.clone();
-                persist_swarm_plan_snapshot(
-                    app,
-                    snapshot.swarm_id,
-                    snapshot.version,
-                    snapshot.items,
-                    snapshot.participants,
-                    snapshot.reason,
-                );
-                if !is_reconnect || has_live_work {
-                    app.set_status_notice(notice);
-                }
+            if stale_regression {
+                return false;
             }
-            false
+            // Don't show the "Swarm plan synced" notice for reconnect
+            // replays of plans that have no live work. The server already
+            // filters most of these, but as a defense-in-depth guard:
+            // only flash the notice when at least one item is actively
+            // running/queued/pending.
+            let is_reconnect = reason.as_deref() == Some("reconnect");
+            let has_live_work = items.iter().any(|item| {
+                matches!(
+                    item.status.as_str(),
+                    "running" | "queued" | "ready" | "pending" | "todo" | "growing"
+                )
+            });
+            let snapshot = RemoteSwarmPlanSnapshot {
+                swarm_id: swarm_id.clone(),
+                version,
+                items: items.clone(),
+                participants: participants.clone(),
+                reason: reason.clone(),
+                summary,
+            };
+            let notice = snapshot.status_notice();
+            app.swarm_plan_swarm_id = Some(snapshot.swarm_id.clone());
+            app.swarm_plan_version = Some(snapshot.version);
+            app.swarm_plan_items = snapshot.items.clone();
+            persist_swarm_plan_snapshot(
+                app,
+                snapshot.swarm_id,
+                snapshot.version,
+                snapshot.items,
+                snapshot.participants,
+                snapshot.reason,
+            );
+            if !is_reconnect || has_live_work {
+                app.set_status_notice(notice);
+            }
+            upsert_swarm_plan_graph_message(app, version, &items)
         }
         ServerEvent::SwarmPlanProposal {
             swarm_id,

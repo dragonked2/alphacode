@@ -151,7 +151,7 @@ pub fn record_failure_with_error(
         let mut short = message.trim().to_string();
         if short.len() > 500 {
             short.truncate(500);
-            short.push_str("…");
+            short.push('…');
         }
         state.last_error.insert(key, short);
     }
@@ -164,6 +164,22 @@ pub fn last_error(session: &str, name: &str, known: bool, input: &Value) -> Opti
     }
     let key = key_for(session, name, known, input);
     state().last_error.get(&key).cloned()
+}
+
+/// Clear a failure streak for one exact call without touching other calls.
+///
+/// Input/usage errors are intentionally not a reason to block the next
+/// attempt: the model must be able to correct the shape of a call after a
+/// schema/argument error. Execution failures still use [`record_failure`].
+pub fn clear_failure(session: &str, name: &str, input: &Value) {
+    if session.is_empty() {
+        return;
+    }
+    let mut state = state();
+    let key = key_for(session, name, true, input);
+    state.failures.remove(&key);
+    state.last_error.remove(&key);
+    state.order.retain(|existing| existing != &key);
 }
 
 /// Record that this call succeeded, clearing any failure streak for it.
@@ -269,6 +285,20 @@ mod tests {
         let input = json!({});
         record_failure("", "ls", false, &input);
         assert_eq!(prior_failures("", "ls", false, &input), 0);
+    }
+
+    #[test]
+    fn validation_failure_can_be_corrected_without_repeat_guard_lockout() {
+        let session = "test-guard-validation-correction";
+        let invalid = json!({});
+        let corrected = json!({"command": "echo ok"});
+        record_failure(session, "bash", true, &invalid);
+        record_failure(session, "bash", true, &invalid);
+        assert_eq!(prior_failures(session, "bash", true, &invalid), 2);
+        clear_failure(session, "bash", &invalid);
+        assert_eq!(prior_failures(session, "bash", true, &invalid), 0);
+        assert_eq!(prior_failures(session, "bash", true, &corrected), 0);
+        clear_session(session);
     }
 
     #[test]

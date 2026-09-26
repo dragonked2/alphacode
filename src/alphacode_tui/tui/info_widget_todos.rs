@@ -650,11 +650,11 @@ fn todos_widget_label(data: &InfoWidgetData) -> &'static str {
 
 /// Render todos widget content
 pub(super) fn render_todos_widget(data: &InfoWidgetData, inner: Rect) -> Vec<Line<'static>> {
+    // Like the other info widgets (git collapses when uninteresting), an
+    // empty list renders nothing so the widget collapses instead of holding
+    // a placeholder line.
     if data.todos.is_empty() {
-        return vec![Line::from(vec![Span::styled(
-            "No tasks yet",
-            Style::default().fg(rgb(80, 80, 90)).italic(),
-        )])];
+        return Vec::new();
     }
 
     let mut lines: Vec<Line> = Vec::new();
@@ -743,10 +743,6 @@ pub(super) fn render_todos_widget(data: &InfoWidgetData, inner: Rect) -> Vec<Lin
 pub(super) fn render_todos_expanded(data: &InfoWidgetData, inner: Rect) -> Vec<Line<'static>> {
     let mut lines: Vec<Line> = Vec::new();
     if data.todos.is_empty() {
-        lines.push(Line::from(vec![Span::styled(
-            "No tasks assigned yet",
-            Style::default().fg(rgb(80, 80, 90)).italic(),
-        )]));
         return lines;
     }
 
@@ -828,11 +824,11 @@ pub(super) fn render_todos_expanded(data: &InfoWidgetData, inner: Rect) -> Vec<L
 }
 
 pub(super) fn render_todos_compact(data: &InfoWidgetData, inner: Rect) -> Vec<Line<'static>> {
+    // An empty list renders nothing, matching the expanded and widget forms.
+    // The rail only shows this panel when there is work to report, so a
+    // placeholder would be permanent noise in every other session.
     if data.todos.is_empty() {
-        return vec![Line::from(vec![Span::styled(
-            "No todos yet",
-            Style::default().fg(rgb(80, 80, 90)).italic(),
-        )])];
+        return Vec::new();
     }
     let counts = count_todos(&data.todos);
     let actionable = counts.actionable();

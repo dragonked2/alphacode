@@ -564,8 +564,7 @@ pub fn estimate_complexity(objective: &str, file_count: usize) -> TaskComplexity
 
     // Extreme: system-wide with many files, a rewrite/redesign spanning
     // multiple files, or very high signal density.
-    if (mentions_many_files && mentions_system)
-        || (mentions_multiple_files && mentions_system)
+    if (mentions_many_files || mentions_multiple_files) && mentions_system
         || (raises >= 4 && mentions_multiple_files)
         || (score >= 10 && is_migration)
     {

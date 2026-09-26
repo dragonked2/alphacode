@@ -183,6 +183,12 @@ const SESSION_NAMES: &[(&str, &str)] = &[
     ("herb", "🌿"),
 ];
 
+/// Legacy animal identities retained for sessions created before the
+/// tech-themed name table was introduced. Keep these aliases stable so old
+/// transcripts, resumed sessions, and swarm members do not change identity
+/// after an upgrade.
+const LEGACY_SESSION_NAMES: &[(&str, &str)] = &[("fox", "🦊"), ("sheep", "🐑"), ("cow", "🐄")];
+
 /// Default session icon for identities the icon table does not know about
 /// (e.g. new UUID-based sessions, or legacy names that predate the table).
 const DEFAULT_SESSION_ICON: &str = "💫";
@@ -232,6 +238,7 @@ pub fn session_icon(name: &str) -> &'static str {
     SESSION_NAMES
         .iter()
         .find(|(n, _)| *n == name)
+        .or_else(|| LEGACY_SESSION_NAMES.iter().find(|(n, _)| *n == name))
         .map(|(_, icon)| *icon)
         .unwrap_or_else(|| {
             // Hex-only short names are UUIDs; everything else (e.g. legacy
@@ -429,7 +436,7 @@ mod tests {
     fn test_legacy_names_still_have_icons() {
         // The name table is retained so that sessions whose short
         // name is still a legacy name keep their original icon.
-        for (name, expected_icon) in SESSION_NAMES {
+        for (name, expected_icon) in SESSION_NAMES.iter().chain(LEGACY_SESSION_NAMES.iter()) {
             let icon = session_icon(name);
             assert_eq!(icon, *expected_icon, "Icon mismatch for '{}'", name);
             assert_ne!(icon, "💫", "Name '{}' should have a specific icon", name);

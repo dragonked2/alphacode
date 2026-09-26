@@ -233,7 +233,7 @@ cargo build --release
 
 **Requirements**
 
-- Rust 1.91+ / edition 2024
+- Rust 1.94.1 / edition 2024 (pinned in `rust-toolchain.toml`)
 - `git`
 - A platform C toolchain:
   - **Linux** — `build-essential`, `pkg-config`, `libssl-dev`, `libxkbcommon-dev`
@@ -409,7 +409,7 @@ AlphaCode includes browser automation through a local **Browser Agent Bridge**.
 
 The bridge lets AlphaCode interact with a real browser session instead of relying only on HTTP requests — useful for pages that require JavaScript execution, authenticated sessions, DOM interaction, scrolling, frames, file uploads, and other browser-native operations.
 
-The repository ships the bridge extension package here: **[`browser-agent-bridge.xpi`](./browser-agent-bridge.xpi)**
+The repository ships the bridge extension package here: **[`AlphaCode-Browser-Agent-1.6.0.xpi`](./AlphaCode-Browser-Agent-1.6.0.xpi)**
 
 > **Important —** AlphaCode's current native browser backend is wired to the Firefox Agent Bridge. The bundled `.xpi` is the primary supported path for AlphaCode browser automation. Chromium extension loading is documented below, but installing the package alone does **not** add Chromium backend support.
 
@@ -451,11 +451,11 @@ alphacode browser status
 
 **Method B — install the `.xpi` manually**
 
-1. Download [`browser-agent-bridge.xpi`](./browser-agent-bridge.xpi) from this repository.
+1. Download [`AlphaCode-Browser-Agent-1.6.0.xpi`](./AlphaCode-Browser-Agent-1.6.0.xpi) from this repository.
 2. Open Firefox and navigate to `about:addons`.
 3. Click the gear icon.
 4. Choose **Install Add-on From File…**
-5. Select `browser-agent-bridge.xpi`.
+5. Select `AlphaCode-Browser-Agent-1.6.0.xpi`.
 6. Enable the extension if Firefox asks.
 7. Run `alphacode browser status` to confirm.
 
@@ -467,8 +467,8 @@ Chrome does **not** install `.xpi` files directly. An `.xpi` is a ZIP-based WebE
 
 **Windows**
 
-1. Download [`browser-agent-bridge.xpi`](./browser-agent-bridge.xpi).
-2. Copy and rename it from `browser-agent-bridge.xpi` to `browser-agent-bridge.zip`.
+1. Download [`AlphaCode-Browser-Agent-1.6.0.xpi`](./AlphaCode-Browser-Agent-1.6.0.xpi).
+2. Copy and rename it from `AlphaCode-Browser-Agent-1.6.0.xpi` to `browser-agent-bridge.zip`.
 3. Extract the ZIP to a normal directory.
 4. Open `chrome://extensions`.
 5. Enable **Developer mode**.
@@ -478,7 +478,7 @@ Chrome does **not** install `.xpi` files directly. An `.xpi` is a ZIP-based WebE
 **Linux / macOS**
 
 ```bash
-cp browser-agent-bridge.xpi browser-agent-bridge.zip
+cp AlphaCode-Browser-Agent-1.6.0.xpi browser-agent-bridge.zip
 unzip browser-agent-bridge.zip -d browser-agent-bridge
 ```
 
@@ -490,7 +490,7 @@ Then open `chrome://extensions`, enable **Developer mode** → **Load unpacked**
 
 Brave is Chromium-based, so the extension loading flow is the same as Chrome:
 
-1. Download [`browser-agent-bridge.xpi`](./browser-agent-bridge.xpi).
+1. Download [`AlphaCode-Browser-Agent-1.6.0.xpi`](./AlphaCode-Browser-Agent-1.6.0.xpi).
 2. Rename it from `.xpi` to `.zip`, then extract it.
 3. Open `brave://extensions`.
 4. Enable **Developer mode**.
@@ -892,7 +892,7 @@ alphacode/
 │   ├── alphacode_embedding/         # Local ONNX embeddings (optional)
 │   ├── alphacode_mcp/               # Model Context Protocol
 │   └── cli/                         # CLI entrypoint
-├── browser-agent-bridge.xpi         # Bundled Browser Agent Bridge package
+├── AlphaCode-Browser-Agent-1.6.0.xpi         # Bundled Browser Agent Bridge package
 ├── docs/                            # Architecture and configuration docs
 ├── scripts/                         # Installer/uninstaller scripts
 ├── CONTRIBUTING.md
@@ -1067,7 +1067,7 @@ Yes, where supported by the provider integration. You can authenticate through `
 <summary><strong>Can AlphaCode automate a real browser?</strong></summary>
 <br>
 
-Yes. AlphaCode includes Browser Agent Bridge integration. The currently supported native path is Firefox-based, with the bundled `browser-agent-bridge.xpi` package available in the repository.
+Yes. AlphaCode includes Browser Agent Bridge integration. The currently supported native path is Firefox-based, with the bundled `AlphaCode-Browser-Agent-1.6.0.xpi` package available in the repository.
 
 </details>
 

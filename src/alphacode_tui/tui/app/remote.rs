@@ -775,7 +775,8 @@ pub(super) async fn handle_remote_event<B: Backend>(
         RemoteRead::Event(ServerEvent::Reloading { new_socket }) => {
             let _ = new_socket;
             state.server_reload_in_progress = true;
-            state.reload_recovery_attempted = false;
+            state.reload_recovery_attempts = 0;
+            state.reload_recovery_next_attempt = None;
             state.last_disconnect_reason = Some("server reload in progress".to_string());
             let needs_redraw =
                 handle_server_event(app, ServerEvent::Reloading { new_socket: None }, remote);
@@ -916,7 +917,8 @@ pub(super) fn handle_disconnect(
     app.clear_visible_turn_started();
     state.disconnect_start = Some(Instant::now());
     state.reconnect_attempts = state.reconnect_attempts.max(1);
-    state.reload_recovery_attempted = false;
+    state.reload_recovery_attempts = 0;
+    state.reload_recovery_next_attempt = None;
     app.push_display_message(DisplayMessage {
         role: "system".to_string(),
         content: reconnect_status_message(app, state, &detail),
@@ -1139,6 +1141,11 @@ pub(super) async fn process_remote_followups(app: &mut App, remote: &mut RemoteC
     }
 
     let _ = recover_stranded_soft_interrupts(app, remote).await;
+
+    if app.recovered_queue_held_for_user_submit {
+        note_startup_submit_deferred(app, "recovered reload queue awaits explicit submit");
+        return;
+    }
 
     if app.pending_queued_dispatch {
         note_startup_submit_deferred(app, "pending_queued_dispatch in progress");

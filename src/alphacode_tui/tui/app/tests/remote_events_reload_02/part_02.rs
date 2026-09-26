@@ -300,7 +300,7 @@ fn test_handle_server_event_compaction_shows_completion_message_in_remote_mode()
     assert_eq!(last.role, "system");
     assert_eq!(
         last.content,
-        "📦 Compacted (semantic) — approaching limit. 1.5s · 12,345→4,321 tokens · 24 messages summarized"
+        "Context compacted (semantic) — approaching limit. 1.5s · 12,345→4,321 tokens · 24 messages summarized"
     );
 }
 

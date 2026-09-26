@@ -220,15 +220,28 @@ impl Drop for PinTodosEnvGuard {
 #[test]
 fn pinned_todos_payload_stays_empty_when_config_off() {
     let _env_lock = crate::storage::lock_test_env();
+    // `display.pin_todos` defaults to on, so "off" has to be established
+    // explicitly for this contract to be observable at all.
+    let mut config = crate::config::Config::load();
+    let previous = config.display.pin_todos;
+    config.display.pin_todos = false;
+    config.save().expect("disable pinned todos");
+    crate::config::invalidate_config_cache();
+
     let mut app = create_test_app();
     let session_id = app.session.id.clone();
     crate::todo::save_todos(&session_id, &[pinned_band_todo("t1", "pin me", "pending")]).unwrap();
 
-    // display.pin_todos defaults to false: no payload, no redraw churn.
+    // Off: no payload, no redraw churn.
     assert!(!app.refresh_pinned_todos_if_needed());
     assert!(app.pinned_todos_payload_ref().is_none());
 
     let _ = crate::todo::save_todos(&session_id, &[]);
+
+    let mut config = crate::config::Config::load();
+    config.display.pin_todos = previous;
+    config.save().expect("restore pinned todos setting");
+    crate::config::invalidate_config_cache();
 }
 
 #[test]

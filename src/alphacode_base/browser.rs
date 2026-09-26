@@ -8,7 +8,7 @@ const GITHUB_API_LATEST: &str =
 
 // Centralized browser-bridge identity (see ChatGPT review + XPI verification).
 //
-// The bundled `browser-agent-bridge.xpi` (v1.4.1, "AlphaCode Browser Agent")
+// The bundled `AlphaCode-Browser-Agent-1.6.0.xpi` ("AlphaCode Browser Agent")
 // declares:
 //   gecko.id = "alpha-agent@alpha-agent.local"
 //   background.js NATIVE_HOSTS = ["alpha_agent", "firefox_agent_bridge"]
@@ -42,14 +42,42 @@ pub struct BrowserStatus {
     pub ready: bool,
 }
 
+/// Every bridge wire action the tool can emit, paired with params chosen to
+/// prove the action exists WITHOUT side effects: unknown ids/empty objects
+/// make the bridge fail validation (proving the action is implemented)
+/// instead of acting.
+///
+/// Deliberately skipped: `newSession`/`createTab` (opens a tab), `reload`/
+/// `back`/`forward` (act on the active tab), and `screenshot` (heavy). Those
+/// are long-standing core actions; probing them would disturb the user's
+/// session.
 const REQUIRED_BRIDGE_ACTION_PROBES: &[(&str, &str)] = &[
-    ("evaluate", r#"{"script":"return 1"}"#),
+    (
+        "evaluate",
+        r#"{"script":"return await Promise.resolve(1)"}"#,
+    ),
+    ("listTabs", "{}"),
+    ("getActiveTab", "{}"),
+    ("setActiveTab", r#"{"tabId":-1}"#),
+    ("closeTab", r#"{"tabId":-1}"#),
     ("listFrames", "{}"),
+    ("navigate", "{}"),
+    ("getContent", "{}"),
+    ("getInteractables", "{}"),
+    ("click", "{}"),
+    ("hover", "{}"),
+    ("type", "{}"),
+    ("fillForm", "{}"),
+    ("drag", "{}"),
+    ("waitFor", r#"{"timeoutMs":100}"#),
     ("scroll", r#"{"position":"top"}"#),
     (
         "uploadFile",
         r#"{"selector":"input[type=file]","filePath":"/tmp/alphacode-browser-capability-probe"}"#,
     ),
+    ("listCookies", r#"{"url":"https://example.invalid"}"#),
+    ("setCookie", "{}"),
+    ("removeCookie", "{}"),
 ];
 
 fn alphacode_dir() -> PathBuf {
@@ -88,19 +116,28 @@ fn host_binary_path() -> PathBuf {
     }
 }
 
+pub const EMBEDDED_XPI_FILENAME: &str = "AlphaCode-Browser-Agent-1.6.0.xpi";
+
+/// Path used for the extension bundled with this binary.
+///
+/// Keep the version in the filename: Firefox can keep an XPI mapped for the
+/// lifetime of the process on Windows, so overwriting the historical
+/// `browser-agent-bridge.xpi` can fail with ERROR_USER_MAPPED_FILE. A new
+/// versioned path makes setup refreshable without requiring Firefox to be
+/// closed first.
 pub fn xpi_path() -> PathBuf {
-    browser_dir().join("browser-agent-bridge.xpi")
+    browser_dir().join(EMBEDDED_XPI_FILENAME)
 }
 
 /// The Firefox extension, compiled into the binary from the repository-root
-/// `browser-agent-bridge.xpi`. Every rebuild picks up the current file, so
-/// `browser setup` never needs to download the extension and works offline.
+/// `AlphaCode-Browser-Agent-1.6.0.xpi`. Every rebuild picks up the current file,
+/// so `browser setup` never needs to download the extension and works offline.
 /// (The native CLI + host binaries are separate programs from an external
 /// release and cannot be embedded — only the XPI lives in this repo.)
 ///
 /// `build.rs` emits `cargo:rerun-if-changed` for the XPI so any update to
 /// the file forces a rebuild and refreshes these bytes.
-const EMBEDDED_XPI: &[u8] = include_bytes!("../../browser-agent-bridge.xpi");
+const EMBEDDED_XPI: &[u8] = include_bytes!("../../AlphaCode-Browser-Agent-1.6.0.xpi");
 
 /// Raw bytes of the embedded Firefox extension. Exposed so diagnostics,
 /// tests, and the release guard can verify the bridge was compiled in.
@@ -296,7 +333,7 @@ pub async fn ensure_browser_setup() -> Result<String> {
     std::fs::create_dir_all(browser_dir())?;
 
     // Step 0 (offline-first): install the XPI compiled into this binary via
-    // `include_bytes!("../../browser-agent-bridge.xpi")`. This guarantees the
+    // `include_bytes!("../../AlphaCode-Browser-Agent-1.6.0.xpi")`. This guarantees the
     // extension is available even with no network, and refreshes the installed
     // copy whenever a rebuild bundles a new XPI. It also keeps
     // `EMBEDDED_XPI` / `install_embedded_xpi` referenced so `cargo check`
@@ -582,16 +619,10 @@ async fn download_browser_binary() -> Result<()> {
         if !embedded_ok
             && let Some(xpi) = xpi_asset
             && let Some(xpi_url) = xpi["browser_download_url"].as_str()
+            && let Ok(response) = client.get(xpi_url).send().await
+            && let Ok(xpi_bytes) = response.bytes().await
         {
-            match client.get(xpi_url).send().await {
-                Ok(response) => match response.bytes().await {
-                    Ok(xpi_bytes) => {
-                        let _ = write_file_atomically(&xpi_path(), &xpi_bytes, false);
-                    }
-                    Err(_) => {}
-                },
-                Err(_) => {}
-            }
+            let _ = write_file_atomically(&xpi_path(), &xpi_bytes, false);
         }
         let mut missing = Vec::new();
         if browser_missing {
@@ -1340,4 +1371,63 @@ pub async fn run_setup_command() -> Result<()> {
     }
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::io::{Cursor, Read};
+
+    fn embedded_xpi_text(name: &str) -> String {
+        let mut archive = zip::ZipArchive::new(Cursor::new(EMBEDDED_XPI))
+            .expect("embedded XPI must be a valid ZIP archive");
+        let mut file = archive
+            .by_name(name)
+            .unwrap_or_else(|error| panic!("embedded XPI is missing {name}: {error}"));
+        let mut text = String::new();
+        file.read_to_string(&mut text)
+            .expect("embedded XPI text must be UTF-8");
+        text
+    }
+
+    #[test]
+    fn installed_xpi_uses_versioned_path() {
+        assert_eq!(
+            xpi_path().file_name().and_then(|name| name.to_str()),
+            Some(EMBEDDED_XPI_FILENAME)
+        );
+    }
+
+    #[test]
+    fn embedded_xpi_uses_function_body_eval_with_return_and_await_support() {
+        let content = embedded_xpi_text("content.js");
+        assert!(
+            content.contains("new AsyncFunction(body).call(window)"),
+            "browser eval must execute inside an async function body"
+        );
+        assert!(
+            !content.contains("globalThis['eval'](code)"),
+            "the bridge 1.4.1 raw-eval path must not return"
+        );
+    }
+
+    #[test]
+    fn embedded_xpi_has_bounded_native_transfer_accounting() {
+        let background = embedded_xpi_text("background.js");
+        assert!(background.contains("receivedBytes"));
+        assert!(background.contains("params = injectTransferData(params)"));
+        assert!(background.contains("data.length > MAX_NATIVE_CHUNK_SIZE"));
+        assert!(!background.contains("MAX_NATIVE_CHUNK_SIZE * 2"));
+    }
+
+    #[test]
+    fn embedded_xpi_version_and_identity_match_the_binary() {
+        let manifest: serde_json::Value = serde_json::from_str(&embedded_xpi_text("manifest.json"))
+            .expect("embedded manifest must be valid JSON");
+        assert_eq!(manifest["version"], "1.6.1");
+        assert_eq!(
+            manifest["browser_specific_settings"]["gecko"]["id"],
+            BROWSER_EXTENSION_ID
+        );
+    }
 }

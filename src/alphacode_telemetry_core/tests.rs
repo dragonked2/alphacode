@@ -15,6 +15,43 @@ fn global_test_lock() -> std::sync::MutexGuard<'static, ()> {
     crate::alphacode_base::storage::lock_test_env()
 }
 
+struct TestHomeGuard {
+    previous: Option<std::ffi::OsString>,
+    _temp: tempfile::TempDir,
+}
+
+impl TestHomeGuard {
+    fn new() -> Self {
+        let previous = std::env::var_os("ALPHACODE_HOME");
+        let temp = tempfile::tempdir().expect("create telemetry test home");
+        crate::alphacode_core::env::set_var("ALPHACODE_HOME", temp.path());
+        Self {
+            previous,
+            _temp: temp,
+        }
+    }
+}
+
+impl Drop for TestHomeGuard {
+    fn drop(&mut self) {
+        if let Some(previous) = self.previous.take() {
+            crate::alphacode_core::env::set_var("ALPHACODE_HOME", previous);
+        } else {
+            crate::alphacode_core::env::remove_var("ALPHACODE_HOME");
+        }
+    }
+}
+
+fn reset_test_session() {
+    let session_id = current_session_id();
+    if let Ok(mut session) = SESSION_STATE.lock() {
+        *session = None;
+    }
+    if let Some(session_id) = session_id {
+        unregister_active_session(&session_id);
+    }
+}
+
 #[test]
 fn permanent_telemetry_statuses_trip_the_process_breaker() {
     assert!(telemetry_status_is_permanent(400));
@@ -113,12 +150,10 @@ fn test_is_ci_detects_ci_env() {
 #[test]
 fn test_error_counters() {
     let _guard = lock_telemetry_test_state();
-    let _env_lock = lock_test_env();
+    let _home = TestHomeGuard::new();
     crate::alphacode_core::env::remove_var("ALPHACODE_NO_TELEMETRY");
     crate::alphacode_core::env::remove_var("DO_NOT_TRACK");
-    if let Ok(mut session) = SESSION_STATE.lock() {
-        *session = None;
-    }
+    reset_test_session();
     begin_session_with_mode("openai", "gpt-5.4", None, false);
     record_error(ErrorCategory::ProviderTimeout);
     record_error(ErrorCategory::ProviderTimeout);
@@ -132,20 +167,16 @@ fn test_error_counters() {
         assert_eq!(errors.provider_timeout, 2);
         assert_eq!(errors.tool_error, 1);
     }
-    if let Ok(mut session) = SESSION_STATE.lock() {
-        *session = None;
-    }
+    reset_test_session();
 }
 
 #[test]
 fn test_error_counter_caps_per_session() {
     let _guard = lock_telemetry_test_state();
-    let _env_lock = lock_test_env();
+    let _home = TestHomeGuard::new();
     crate::alphacode_core::env::remove_var("ALPHACODE_NO_TELEMETRY");
     crate::alphacode_core::env::remove_var("DO_NOT_TRACK");
-    if let Ok(mut session) = SESSION_STATE.lock() {
-        *session = None;
-    }
+    reset_test_session();
     begin_session_with_mode("openai", "gpt-5.4", None, false);
     // A runaway retry loop once logged 18k+ auth failures in one session and
     // distorted daily aggregates. The counter must saturate at the cap.
@@ -157,20 +188,17 @@ fn test_error_counter_caps_per_session() {
         let state = guard.as_ref().expect("session telemetry state");
         assert_eq!(state.error_auth_failed, 500);
     }
-    if let Ok(mut session) = SESSION_STATE.lock() {
-        *session = None;
-    }
+    reset_test_session();
 }
 
 #[test]
 fn test_error_counters_no_session_is_noop() {
     let _guard = lock_telemetry_test_state();
+    let _home = TestHomeGuard::new();
     // Errors recorded with no active session must not bump any counter that a
     // future session could observe (issue #394: counts drifting across the
     // session boundary).
-    if let Ok(mut session) = SESSION_STATE.lock() {
-        *session = None;
-    }
+    reset_test_session();
     record_error(ErrorCategory::AuthFailed);
     record_provider_switch();
     record_model_switch();
@@ -182,9 +210,7 @@ fn test_error_counters_no_session_is_noop() {
         assert_eq!(state.provider_switches, 0);
         assert_eq!(state.model_switches, 0);
     }
-    if let Ok(mut session) = SESSION_STATE.lock() {
-        *session = None;
-    }
+    reset_test_session();
 }
 
 #[test]
@@ -447,12 +473,10 @@ fn test_session_end_event_serialization() {
 #[test]
 fn test_record_token_usage_aggregates_session_and_turn() {
     let _guard = lock_telemetry_test_state();
-    let _env_lock = lock_test_env();
+    let _home = TestHomeGuard::new();
     crate::alphacode_core::env::remove_var("ALPHACODE_NO_TELEMETRY");
     crate::alphacode_core::env::remove_var("DO_NOT_TRACK");
-    if let Ok(mut session) = SESSION_STATE.lock() {
-        *session = None;
-    }
+    reset_test_session();
     begin_session_with_mode("openai", "gpt-5.4", None, false);
     record_turn();
     record_token_usage(100, 25, Some(200), Some(10));
@@ -473,20 +497,16 @@ fn test_record_token_usage_aggregates_session_and_turn() {
         assert_eq!(turn.cache_creation_input_tokens, 12);
         assert_eq!(turn.total_tokens, 392);
     }
-    if let Ok(mut session) = SESSION_STATE.lock() {
-        *session = None;
-    }
+    reset_test_session();
 }
 
 #[test]
 fn test_record_todo_tool_and_gates_aggregate_session_and_turn() {
     let _guard = lock_telemetry_test_state();
-    let _env_lock = lock_test_env();
+    let _home = TestHomeGuard::new();
     crate::alphacode_core::env::remove_var("ALPHACODE_NO_TELEMETRY");
     crate::alphacode_core::env::remove_var("DO_NOT_TRACK");
-    if let Ok(mut session) = SESSION_STATE.lock() {
-        *session = None;
-    }
+    reset_test_session();
     begin_session_with_mode("openai", "gpt-5.4", None, false);
     record_turn();
     record_tool_execution("todo", &serde_json::json!({}), true, 5);
@@ -521,20 +541,16 @@ fn test_record_todo_tool_and_gates_aggregate_session_and_turn() {
         assert_eq!(turn.todo_gate_completion_count, 1);
         assert_eq!(turn.todo_gate_spike_count, 1);
     }
-    if let Ok(mut session) = SESSION_STATE.lock() {
-        *session = None;
-    }
+    reset_test_session();
 }
 
 #[test]
 fn test_record_connection_type_buckets_transport() {
     let _guard = lock_telemetry_test_state();
-    let _env_lock = lock_test_env();
+    let _home = TestHomeGuard::new();
     crate::alphacode_core::env::remove_var("ALPHACODE_NO_TELEMETRY");
     crate::alphacode_core::env::remove_var("DO_NOT_TRACK");
-    if let Ok(mut session) = SESSION_STATE.lock() {
-        *session = None;
-    }
+    reset_test_session();
     begin_session_with_mode("openai", "gpt-5.4", None, false);
     record_connection_type("websocket/persistent-fresh");
     record_connection_type("websocket/persistent-reuse");
@@ -553,9 +569,7 @@ fn test_record_connection_type_buckets_transport() {
         assert_eq!(state.transport_cli_subprocess, 1);
         assert_eq!(state.transport_other, 1);
     }
-    if let Ok(mut session) = SESSION_STATE.lock() {
-        *session = None;
-    }
+    reset_test_session();
 }
 
 #[test]

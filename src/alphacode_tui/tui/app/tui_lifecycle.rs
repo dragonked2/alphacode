@@ -30,8 +30,39 @@ impl App {
         if let Some((title, message)) = restored.startup_display_message {
             self.push_display_message(DisplayMessage::system(message).with_title(title));
         }
+
+        // Preserve every client-only unsent item in one ordered queue. The
+        // reload snapshot intentionally keeps the interleave and soft-interrupt
+        // fields separate, but the next remote send path consumes all of them
+        // from `queued_messages`; dropping them here loses user input across a
+        // reconnect. `pending_soft_interrupt_resend` is authoritative when it is
+        // present: `pending_soft_interrupts` also contains acknowledged previews
+        // that must not be sent again. Legacy snapshots without that field fall
+        // back to the older staged-preview list.
+        let mut recovered_queue = Vec::new();
+        if let Some(message) = restored.interleave_message {
+            recovered_queue.push(message);
+        }
+        if let Some(messages) = restored.pending_soft_interrupt_resend {
+            recovered_queue.extend(messages);
+        } else {
+            recovered_queue.extend(restored.pending_soft_interrupts);
+        }
+        recovered_queue.extend(restored.queued_messages);
         self.interleave_message = None;
         self.interleave_images.clear();
+        self.pending_soft_interrupts.clear();
+        self.pending_soft_interrupt_requests.clear();
+        self.queued_messages = recovered_queue;
+        self.recovered_queue_held_for_user_submit = !self.queued_messages.is_empty();
+        let recovered_followup_count = self.queued_messages.len();
+        if recovered_followup_count > 0 {
+            self.set_status_notice(format!(
+                "Restored {} queued prompt(s) after reload - press Enter to send",
+                recovered_followup_count
+            ));
+        }
+
         self.rate_limit_pending_message = restored.rate_limit_pending_message;
         self.rate_limit_reset = restored.rate_limit_reset;
         self.observe_page_markdown = restored.observe_page_markdown;
@@ -40,27 +71,6 @@ impl App {
         self.set_split_view_enabled(restored.split_view_enabled, restored.split_view_enabled);
         self.set_todos_view_enabled(restored.todos_view_enabled, restored.todos_view_enabled);
         self.todo_confidence_spike_challenged = restored.todo_confidence_spike_challenged;
-
-        // Recovered queued follow-ups and soft-interrupts are *kept* in the
-        // queue (so a future explicit submit can pick them up), but we do NOT
-        // auto-start a turn here. Auto-starting a turn on every reload was the
-        // source of the "inputpreserved prevents typing" bug: the local event
-        // loop dispatched the recovered system reminder immediately, leaving
-        // `is_processing = true` for the duration of the round-trip. During
-        // that window the input field rendered a cursor but every keypress
-        // was consumed by the in-flight dispatch path, so the user appeared
-        // to be locked out of typing. The system reminder is already visible
-        // in the chat transcript (pushed by `restore_session` when it queued
-        // the reload continuation); keeping the entries in `queued_messages`
-        // lets the user re-submit or modify them manually.
-        self.queued_messages = restored.queued_messages;
-        let recovered_followup_count = self.queued_messages.len();
-        if recovered_followup_count > 0 {
-            self.set_status_notice(format!(
-                "Restored {} queued prompt(s) after reload - press Enter to send",
-                recovered_followup_count
-            ));
-        }
 
         // Make sure the input is in a known-good editable state. If the
         // restored cursor ended up past the end of the input (truncated
@@ -688,6 +698,7 @@ impl App {
             queue_mode: display.queue_mode,
             auto_server_reload: display.auto_server_reload,
             pending_queued_dispatch: false,
+            recovered_queue_held_for_user_submit: false,
             tab_completion_state: None,
             command_suggestion_selected: 0,
             app_started: Instant::now(),
@@ -1131,6 +1142,7 @@ impl App {
             queue_mode: display.queue_mode,
             auto_server_reload: display.auto_server_reload,
             pending_queued_dispatch: false,
+            recovered_queue_held_for_user_submit: false,
             tab_completion_state: None,
             command_suggestion_selected: 0,
             app_started: Instant::now(),

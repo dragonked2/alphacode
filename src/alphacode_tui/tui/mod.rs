@@ -1529,8 +1529,10 @@ impl PickerOption {
         detail: String,
         estimated_reference_cost_micros: Option<u64>,
     ) -> Self {
+        // NOTE: the second parameter is `unavailable`, not `available` —
+        // passing `available` here once inverted every marker/notice.
         let (detail_display, detail_is_limited, detail_severity) =
-            precompute_route_detail(&detail, available);
+            precompute_route_detail(&detail, !available);
         Self {
             provider,
             api_method,

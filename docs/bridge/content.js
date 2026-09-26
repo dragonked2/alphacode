@@ -1,2076 +1,1341 @@
-/* eslint-env browser */
-function roundMs(value) {
-  return Math.round(value * 100) / 100;
+/* AlphaCode Browser Agent content runtime.
+ * Designed for resilient DOM inspection and deterministic interaction.
+ */
+const ALPHA = 'alpha-agent';
+const VERSION = '1.5.0';
+const MAX_TEXT = 250000;
+const MAX_HTML = 750000;
+const TELEMETRY_LIMIT = 120;
+
+const selectorCache = new WeakMap();
+const pageTelemetry = {
+  startedAt: Date.now(),
+  errors: [],
+  rejections: [],
+  messages: []
+};
+
+function sleep(ms) { return new Promise(resolve => setTimeout(resolve, ms)); }
+function roundMs(value) { return Math.round(Number(value) * 100) / 100; }
+function clamp(value, min, max) { return Math.min(max, Math.max(min, value)); }
+function int(value, fallback = 0) { return Number.isInteger(value) ? value : fallback; }
+function str(value, fallback = '') { return value === null || value === undefined ? fallback : String(value); }
+function normalizeText(value) { return str(value).replace(/\s+/g, ' ').trim(); }
+function cssEscape(value) {
+  if (globalThis.CSS?.escape) return globalThis.CSS.escape(str(value));
+  return str(value).replace(/[^a-zA-Z0-9_-]/g, ch => `\\${ch}`);
+}
+function quoteAttr(value) { return str(value).replace(/\\/g, '\\\\').replace(/"/g, '\\"'); }
+function safeNumber(value, fallback = 0) { const n = Number(value); return Number.isFinite(n) ? n : fallback; }
+
+function recordTelemetry(bucket, payload) {
+  const entry = { time: Date.now(), ...payload };
+  pageTelemetry[bucket].push(entry);
+  if (pageTelemetry[bucket].length > TELEMETRY_LIMIT) pageTelemetry[bucket].splice(0, pageTelemetry[bucket].length - TELEMETRY_LIMIT);
 }
 
-function runInPageWorld(code) {
-  return new Promise((resolve) => {
-    try {
-      const pageWin = window.wrappedJSObject;
-      if (!pageWin) {
-        resolve({ ok: false, error: 'no wrappedJSObject' });
-        return;
-      }
-      const wrapped = '(function(){' + code + '})()';
-      const result = pageWin.eval(wrapped);
-      if (result && typeof result === 'object' && typeof result.then === 'function') {
-        const resultKey = '__fab_eval_' + Date.now() + '_' + Math.random().toString(36).slice(2);
-        pageWin.eval(
-          '(' + JSON.stringify(wrapped) + ').then ? void 0 : void 0;' +
-          'Promise.resolve(' + wrapped + ').then(function(r){' +
-          'window["' + resultKey + '"]=JSON.stringify({ok:true,value:r})' +
-          '}).catch(function(e){' +
-          'window["' + resultKey + '"]=JSON.stringify({ok:false,error:e.message})' +
-          '})'
-        );
-        let attempts = 0;
-        const poll = () => {
-          let raw;
-          try { raw = pageWin[resultKey]; } catch(e) { raw = undefined; }
-          if (raw && raw !== 'null') {
-            try { delete pageWin[resultKey]; } catch(e) {}
-            try { resolve(JSON.parse(raw)); } catch(e) { resolve({ok:true, value: raw}); }
-            return;
-          }
-          if (++attempts > 150) { resolve({ok:false, error:'timeout'}); return; }
-          setTimeout(poll, 20);
-        };
-        setTimeout(poll, 10);
-      } else {
-        const value = (result && typeof result === 'object') ? JSON.parse(JSON.stringify(result)) : result;
-        resolve({ ok: true, value: value });
-      }
-    } catch (e) {
-      resolve({ ok: false, error: e.message || String(e) });
-    }
-  });
+window.addEventListener('error', event => recordTelemetry('errors', {
+  message: str(event.message, 'Unknown page error').slice(0, 1000),
+  source: str(event.filename).slice(0, 500),
+  line: int(event.lineno, 0),
+  column: int(event.colno, 0),
+  error: event.error ? { name: str(event.error.name), message: str(event.error.message), stack: str(event.error.stack).slice(0, 3000) } : null
+}));
+window.addEventListener('unhandledrejection', event => recordTelemetry('rejections', {
+  reason: (() => { try { return serializeValue(event.reason); } catch { return str(event.reason); } })()
+}));
+
+function textOf(el) {
+  if (!el) return '';
+  const aria = el.getAttribute?.('aria-label');
+  if (aria) return normalizeText(aria);
+  const alt = el.getAttribute?.('alt');
+  if (alt) return normalizeText(alt);
+  const title = el.getAttribute?.('title');
+  if (title) return normalizeText(title);
+  const inner = el.innerText || el.textContent;
+  if (inner) return normalizeText(inner);
+  if ('value' in el && !/password/i.test(el.type || '')) return normalizeText(el.value);
+  return '';
 }
 
-function simulateEnterKey(el) {
-  const opts = { key: 'Enter', code: 'Enter', keyCode: 13, which: 13, bubbles: true, cancelable: true };
-  el.dispatchEvent(new KeyboardEvent('keydown', opts));
-  el.dispatchEvent(new KeyboardEvent('keypress', opts));
-  el.dispatchEvent(new InputEvent('beforeinput', { bubbles: true, cancelable: true, inputType: 'insertParagraph' }));
-  el.dispatchEvent(new InputEvent('input', { bubbles: true, cancelable: false, inputType: 'insertParagraph' }));
-  el.dispatchEvent(new KeyboardEvent('keyup', opts));
+function isDisabled(el) {
+  if (!el || !(el instanceof Element)) return true;
+  if (el.matches?.(':disabled') || el.getAttribute('aria-disabled') === 'true') return true;
+  const fieldset = el.closest?.('fieldset[disabled]');
+  if (!fieldset) return false;
+  const firstLegend = Array.from(fieldset.children).find(child => child.tagName === 'LEGEND');
+  return !(firstLegend && firstLegend.contains(el));
 }
 
-function contentEditableInsertText(el, text, clear) {
-  try {
-    const pageWin = window.wrappedJSObject;
-    if (!pageWin) return { ok: false, error: 'no wrappedJSObject' };
-    el.focus();
-    const sel = window.getSelection();
+function enabled(el) { return Boolean(el && !isDisabled(el)); }
 
-    function clearViaExecCommand() {
-      sel.selectAllChildren(el);
-      pageWin.document.execCommand('delete', false, null);
-    }
-
-    const hasNewlines = text.includes('\n');
-    const lines = hasNewlines ? text.split('\n') : null;
-
-    // Strategy 1: beforeinput events via cloneInto (page-world events that Lexical etc. can read)
-    // Must check defaultPrevented to know if a framework actually handled the event
-    try {
-      if (clear) {
-        sel.selectAllChildren(el);
-        const delOpts = cloneInto({ bubbles: true, cancelable: true, inputType: 'deleteContentBackward' }, pageWin);
-        const delEv = new pageWin.InputEvent('beforeinput', delOpts);
-        el.dispatchEvent(delEv);
-      }
-      let anyPrevented = false;
-      if (!hasNewlines) {
-        const textOpts = cloneInto({ bubbles: true, cancelable: true, inputType: 'insertText', data: text }, pageWin);
-        const ev = new pageWin.InputEvent('beforeinput', textOpts);
-        el.dispatchEvent(ev);
-        anyPrevented = ev.defaultPrevented;
-      } else {
-        for (let i = 0; i < lines.length; i++) {
-          if (i > 0) {
-            const paraOpts = cloneInto({ bubbles: true, cancelable: true, inputType: 'insertParagraph' }, pageWin);
-            const pEv = new pageWin.InputEvent('beforeinput', paraOpts);
-            el.dispatchEvent(pEv);
-            if (pEv.defaultPrevented) anyPrevented = true;
-          }
-          if (lines[i].length > 0) {
-            const textOpts = cloneInto({ bubbles: true, cancelable: true, inputType: 'insertText', data: lines[i] }, pageWin);
-            const tEv = new pageWin.InputEvent('beforeinput', textOpts);
-            el.dispatchEvent(tEv);
-            if (tEv.defaultPrevented) anyPrevented = true;
-          }
-        }
-      }
-      if (anyPrevented) {
-        const paraCount = el.querySelectorAll('p').length;
-        return { ok: true, text: el.textContent, paragraphs: paraCount > 0 ? paraCount : undefined };
-      }
-    } catch (e) { /* cloneInto/beforeinput not available */ }
-
-    // Strategy 2: execCommand (works for Draft.js, TinyMCE, ProseMirror, simple contenteditable)
-    if (clear) clearViaExecCommand();
-    else sel.collapseToEnd();
-
-    if (!hasNewlines) {
-      const ok = pageWin.document.execCommand('insertText', false, text);
-      if (!ok) return { ok: false, error: 'execCommand returned false' };
-      return { ok: true, text: el.textContent };
-    }
-    for (let i = 0; i < lines.length; i++) {
-      if (i > 0) pageWin.document.execCommand('insertParagraph', false, null);
-      if (lines[i].length > 0) pageWin.document.execCommand('insertText', false, lines[i]);
-    }
-    return { ok: true, text: el.textContent };
-  } catch (e) {
-    return { ok: false, error: e.message || String(e) };
+function visible(el, options = {}) {
+  if (!el || !(el instanceof Element)) return false;
+  if (el.hidden || el.getAttribute('aria-hidden') === 'true') return false;
+  let node = el;
+  for (let depth = 0; node && node.nodeType === 1 && depth < 12; depth++, node = node.parentElement) {
+    const style = getComputedStyle(node);
+    if (style.display === 'none' || style.visibility === 'hidden' || style.visibility === 'collapse' || Number(style.opacity) === 0) return false;
+    if (node !== el && node.hasAttribute('hidden')) return false;
   }
-}
-
-function querySelectorDeep(root, selector, opts = {}) {
-  const { preferVisible = true, all = false } = opts;
-  const results = [];
-  function search(node) {
-    try {
-      const matches = node.querySelectorAll(selector);
-      for (const m of matches) results.push(m);
-    } catch (e) {}
-    const children = node.querySelectorAll('*');
-    for (const child of children) {
-      if (child.shadowRoot) search(child.shadowRoot);
-    }
-    if (node.shadowRoot) search(node.shadowRoot);
-  }
-  search(root);
-  if (all) return results;
-  if (!preferVisible || results.length <= 1) return results[0] || null;
-  const visible = results.find(el => isElementVisible(el));
-  return visible || results[0];
-}
-
-function findEditableInShadow(el) {
-  if (!el || !el.shadowRoot) return null;
-  const sr = el.shadowRoot;
-  const textarea = sr.querySelector('textarea');
-  if (textarea) return textarea;
-  const input = sr.querySelector('input:not([type=hidden])');
-  if (input) return input;
-  const ce = sr.querySelector('[contenteditable=true]');
-  if (ce) return ce;
-  for (const child of sr.querySelectorAll('*')) {
-    if (child.shadowRoot) {
-      const found = findEditableInShadow(child);
-      if (found) return found;
-    }
-  }
-  return null;
-}
-
-function textIncludes(haystack, needleLower) {
-  return haystack && needleLower && haystack.toLowerCase().includes(needleLower);
-}
-
-function isElementVisible(el) {
-  if (!el) return false;
   const rect = el.getBoundingClientRect();
-  // Must have non-zero dimensions
-  if (rect.width === 0 || rect.height === 0) return false;
-  // Must be within viewport (or at least partially)
-  if (rect.bottom < 0 || rect.top > window.innerHeight) return false;
-  // Check computed style
-  const style = window.getComputedStyle(el);
-  if (style.display === 'none' || style.visibility === 'hidden' || style.opacity === '0') return false;
+  if (rect.width <= 0 || rect.height <= 0) return false;
+  if (options.inViewport === true) {
+    if (rect.bottom < 0 || rect.right < 0 || rect.top > innerHeight || rect.left > innerWidth) return false;
+  }
   return true;
 }
 
-function findByText(text) {
-  if (!text) return null;
-  const needleLower = text.toLowerCase();
-  const root = currentModalRoot() || document.body || document.documentElement;
-  if (!root) return null;
-  let fallback = null;
-  function walkNode(node) {
-    const walker = document.createTreeWalker(node, NodeFilter.SHOW_TEXT);
-    let textNode = walker.nextNode();
-    while (textNode) {
-      if (textIncludes(textNode.nodeValue, needleLower)) {
-        const el = textNode.parentElement || textNode.parentNode;
-        if (isElementVisible(el)) return el;
-        if (!fallback) fallback = el;
-      }
-      textNode = walker.nextNode();
-    }
-    const allEls = node.querySelectorAll('*');
-    for (const el of allEls) {
-      if (el.shadowRoot) {
-        const found = walkNode(el.shadowRoot);
-        if (found) return found;
-      }
-    }
-    return null;
-  }
-  return walkNode(root) || fallback;
+function focusable(el) {
+  if (!el || !visible(el) || !enabled(el)) return false;
+  if (el.matches?.('[tabindex="-1"]')) return false;
+  if (el.matches?.('input[type="hidden"],input[type="file"]')) return !isDisabled(el);
+  if (el.matches?.('a[href],area[href],button,input,textarea,select,summary,[contenteditable="true"],[role="button"],[role="link"],[role="textbox"],[tabindex]')) return true;
+  return false;
 }
 
-// Returns the topmost visible modal/dialog root when one is open, so that
-// text/selector resolution is scoped to the open overlay instead of matching
-// identical elements on the base page (e.g. a messaging inbox search box
-// behind an edit modal). BUG-05.
 function currentModalRoot() {
-  const selectors = [
-    'dialog[open]',
-    '[role="dialog"][aria-modal="true"]',
-    '[role="dialog"]',
-    '[role="alertdialog"]',
-    '.modal:not([style*="display: none"])',
-    '[class*="modal"][class*="open" i]',
-    '[class*="Modal"]',
-    '[class*="overlay"][class*="active" i]',
-    '[class*="popup"][class*="open" i]'
-  ];
-  let best = null;
-  for (const sel of selectors) {
-    let nodes = [];
-    try { nodes = Array.from(document.querySelectorAll(sel)); } catch (e) {}
-    for (const node of nodes) {
-      if (!isElementVisible(node)) continue;
-      // Prefer the innermost/topmost modal container (largest z-index wins,
-      // then DOM order: later nodes tend to be on top).
-      if (!best) { best = node; continue; }
-      const zA = parseInt(window.getComputedStyle(node).zIndex, 10) || 0;
-      const zB = parseInt(window.getComputedStyle(best).zIndex, 10) || 0;
-      if (zA >= zB && best.contains(node)) best = node;
-      else if (zA > zB) best = node;
-    }
-  }
-  return best;
+  const candidates = deepQueryAll(document, 'dialog[open],[role="dialog"],[role="alertdialog"],[aria-modal="true"]').filter(visible);
+  if (!candidates.length) return null;
+  return candidates.sort((a, b) => {
+    const za = Number.parseInt(getComputedStyle(a).zIndex, 10) || 0;
+    const zb = Number.parseInt(getComputedStyle(b).zIndex, 10) || 0;
+    const ra = a.getBoundingClientRect();
+    const rb = b.getBoundingClientRect();
+    return (zb - za) || ((rb.width * rb.height) - (ra.width * ra.height));
+  })[0] || null;
 }
 
-function resolveElement(params) {
-  // When a modal is open, resolve inside it first (BUG-05).
-  const modalRoot = currentModalRoot();
+function collectShadowRoots(root) {
+  const roots = [];
+  try {
+    const nodes = root.querySelectorAll ? root.querySelectorAll('*') : [];
+    for (const node of nodes) if (node.shadowRoot) roots.push(node.shadowRoot);
+    if (root.shadowRoot) roots.push(root.shadowRoot);
+  } catch {}
+  return roots;
+}
+
+function deepQueryAll(root, selector) {
+  const out = [];
+  const seenRoots = new Set();
+  const queue = [root];
+  while (queue.length) {
+    const current = queue.shift();
+    if (!current || seenRoots.has(current)) continue;
+    seenRoots.add(current);
+    try { out.push(...current.querySelectorAll(selector)); } catch {}
+    queue.push(...collectShadowRoots(current));
+  }
+  return [...new Set(out)];
+}
+
+function getLabelFor(el) {
+  if (!el) return '';
+  const aria = el.getAttribute?.('aria-label');
+  if (aria) return normalizeText(aria);
+  const labelledBy = el.getAttribute?.('aria-labelledby');
+  if (labelledBy) {
+    const value = labelledBy.split(/\s+/).map(id => document.getElementById(id)).filter(Boolean).map(textOf).join(' ');
+    if (value) return normalizeText(value);
+  }
+  if (el.labels?.length) {
+    const value = Array.from(el.labels).map(textOf).join(' ');
+    if (value) return normalizeText(value);
+  }
+  const parentLabel = el.closest?.('label');
+  if (parentLabel) {
+    const value = normalizeText(parentLabel.innerText || parentLabel.textContent);
+    if (value) return value;
+  }
+  return normalizeText(el.getAttribute?.('placeholder') || el.getAttribute?.('title') || el.getAttribute?.('alt') || '');
+}
+
+function accessibleName(el) {
+  return normalizeText(getLabelFor(el) || textOf(el)).slice(0, 300);
+}
+
+function uniqueForElementRoot(el, selector) {
+  try {
+    const root = el.getRootNode?.() || document;
+    return root.querySelectorAll(selector).length === 1;
+  } catch { return false; }
+}
+
+function stableSelector(el) {
+  if (!el?.tagName) return null;
+  const signature = [el.id || '', el.getAttribute?.('data-testid') || '', el.getAttribute?.('data-test-id') || '', el.getAttribute?.('data-test') || '', el.getAttribute?.('name') || '', el.getAttribute?.('aria-label') || ''].join('\u001f');
+  const cached = selectorCache.get(el);
+  if (cached && cached.signature === signature) return cached.selector;
+  let answer = null;
+  if (el.id) {
+    const selector = `#${cssEscape(el.id)}`;
+    if (uniqueForElementRoot(el, selector)) answer = selector;
+  }
+  if (!answer) {
+    for (const attr of ['data-testid', 'data-test-id', 'data-test', 'data-cy', 'data-qa']) {
+      const value = el.getAttribute?.(attr);
+      if (!value) continue;
+      const selector = `[${attr}="${quoteAttr(value)}"]`;
+      if (uniqueForElementRoot(el, selector)) { answer = selector; break; }
+    }
+  }
+  if (!answer) {
+    const name = el.getAttribute?.('name');
+    if (name && /^(input|textarea|select|button|form)$/i.test(el.tagName)) {
+      const selector = `${el.tagName.toLowerCase()}[name="${quoteAttr(name)}"]`;
+      if (uniqueForElementRoot(el, selector)) answer = selector;
+    }
+  }
+  if (!answer) {
+    const aria = el.getAttribute?.('aria-label');
+    if (aria) {
+      const selector = `[aria-label="${quoteAttr(aria)}"]`;
+      if (uniqueForElementRoot(el, selector)) answer = selector;
+    }
+  }
+  if (!answer) {
+    const path = [];
+    let node = el;
+    for (let depth = 0; node && node.nodeType === 1 && depth < 9; depth++) {
+      let part = node.tagName.toLowerCase();
+      const parent = node.parentElement;
+      if (!parent) { path.unshift(part); break; }
+      const sameTag = Array.from(parent.children).filter(child => child.tagName === node.tagName);
+      if (sameTag.length > 1) part += `:nth-of-type(${sameTag.indexOf(node) + 1})`;
+      path.unshift(part);
+      if (parent === document.body || parent === document.documentElement) break;
+      node = parent;
+    }
+    answer = path.join(' > ') || null;
+  }
+  if (answer) selectorCache.set(el, { signature, selector: answer });
+  return answer;
+}
+
+function xpathFor(el) {
+  if (!el || !(el instanceof Element)) return null;
+  if (el.id) return `//*[@id=${JSON.stringify(el.id)}]`;
+  const parts = [];
+  let node = el;
+  while (node && node.nodeType === 1 && node !== document.body && parts.length < 12) {
+    let index = 1;
+    for (let sibling = node.previousElementSibling; sibling; sibling = sibling.previousElementSibling) if (sibling.tagName === node.tagName) index++;
+    parts.unshift(`${node.tagName.toLowerCase()}[${index}]`);
+    node = node.parentElement;
+  }
+  return `/${parts.join('/')}`;
+}
+
+function parseSelector(selector) {
+  const raw = str(selector).trim();
+  const hasText = raw.match(/^(.*?):has-text\((?:"([\s\S]*)"|'([\s\S]*)')\)(.*)$/i);
+  if (hasText) return { css: `${hasText[1]}${hasText[4]}`.trim() || '*', text: normalizeText(hasText[2] ?? hasText[3] ?? '') };
+  if (/^(?:\/\/|\.\/|\/)[\s\S]*/.test(raw)) return { css: null, xpath: raw, text: null };
+  return { css: raw, xpath: null, text: null };
+}
+
+function elementFromXPath(xpath, root = document) {
+  try {
+    const result = document.evaluate(xpath, root, null, XPathResult.ORDERED_NODE_SNAPSHOT_TYPE, null);
+    for (let i = 0; i < result.snapshotLength; i++) {
+      const node = result.snapshotItem(i);
+      if (node instanceof Element) return node;
+    }
+  } catch {}
+  return null;
+}
+
+function findByText(text, root = document) {
+  const needle = normalizeText(text).toLowerCase();
+  if (!needle) return null;
+  const scope = currentModalRoot() || root;
+  const selector = 'button,a,[role="button"],[role="link"],[role="menuitem"],label,input,textarea,[contenteditable="true"],summary,option,select,[onclick],[tabindex]';
+  const candidates = deepQueryAll(scope, selector).filter(el => visible(el));
+  const exact = candidates.filter(el => normalizeText(accessibleName(el) || textOf(el)).toLowerCase() === needle);
+  if (exact.length) return exact.sort((a, b) => (a.outerHTML?.length || 0) - (b.outerHTML?.length || 0))[0];
+  const contains = candidates.filter(el => normalizeText(accessibleName(el) || textOf(el)).toLowerCase().includes(needle));
+  return contains.sort((a, b) => textOf(a).length - textOf(b).length)[0] || null;
+}
+
+function queryByRole(role, name, root = document) {
+  const wanted = normalizeText(role).toLowerCase();
+  const selectors = {
+    button: 'button,[role="button"],input[type="button"],input[type="submit"],input[type="reset"]',
+    link: 'a[href],[role="link"]',
+    textbox: 'input:not([type="hidden"]),textarea,[contenteditable="true"],[role="textbox"]',
+    checkbox: 'input[type="checkbox"],[role="checkbox"]',
+    radio: 'input[type="radio"],[role="radio"]',
+    combobox: 'select,[role="combobox"]',
+    listbox: 'select[multiple],[role="listbox"]',
+    option: 'option,[role="option"]',
+    heading: 'h1,h2,h3,h4,h5,h6,[role="heading"]',
+    tab: '[role="tab"]',
+    menuitem: '[role="menuitem"]',
+    dialog: 'dialog,[role="dialog"],[role="alertdialog"]',
+    slider: 'input[type="range"],[role="slider"]',
+    switch: 'input[type="checkbox"][role="switch"],[role="switch"]',
+    img: 'img,[role="img"]',
+    table: 'table,[role="table"]',
+    row: 'tr,[role="row"]',
+    cell: 'td,th,[role="cell"],[role="gridcell"]'
+  };
+  const selector = selectors[wanted] || `[role="${cssEscape(wanted)}"]`;
+  const candidates = deepQueryAll(root, selector);
+  if (!name) return candidates.find(visible) || candidates[0] || null;
+  const needle = normalizeText(name).toLowerCase();
+  return candidates.find(el => visible(el) && accessibleName(el).toLowerCase() === needle)
+    || candidates.find(el => visible(el) && accessibleName(el).toLowerCase().includes(needle))
+    || candidates.find(el => accessibleName(el).toLowerCase().includes(needle)) || null;
+}
+
+function resolveElement(params = {}) {
+  if (typeof params === 'string') params = { selector: params };
+  params ||= {};
+  const modal = currentModalRoot();
+  const roots = modal ? [modal, document] : [document];
 
   if (params.selector) {
-    for (const scope of [modalRoot, document]) {
-      if (!scope) continue;
-      let el = null;
-      try { el = scope.querySelector(params.selector); } catch (e) {}
-      if (el) {
-        if (!params._preferVisible) return el;
-        let all = [];
-        try { all = Array.from(scope.querySelectorAll(params.selector)); } catch (e) {}
-        if (all.length <= 1) return el;
-        for (const candidate of all) {
-          if (isElementVisible(candidate)) return candidate;
-        }
-        return el;
+    const parsed = parseSelector(params.selector);
+    if (parsed.xpath) {
+      const found = elementFromXPath(parsed.xpath);
+      if (found && (params.includeHidden || visible(found))) return found;
+    }
+    if (parsed.css) {
+      for (const root of roots) {
+        const matches = deepQueryAll(root, parsed.css);
+        const usable = params.includeHidden ? matches : matches.filter(visible);
+        if (Number.isInteger(params.index)) return usable[params.index] || matches[params.index] || null;
+        if (usable.length) return usable[0];
+        if (matches.length) return matches[0];
       }
-      const deep = querySelectorDeep(scope, params.selector, { preferVisible: true });
-      if (deep) return deep;
+      if (parsed.text) return findByText(parsed.text);
     }
   }
-
+  if (params.testId) {
+    const selector = `[data-testid="${quoteAttr(params.testId)}"],[data-test-id="${quoteAttr(params.testId)}"]`;
+    const found = deepQueryAll(document, selector).find(el => params.includeHidden || visible(el));
+    if (found) return found;
+  }
+  if (params.role) {
+    const found = queryByRole(params.role, params.name ?? params.text, modal || document);
+    if (found) return found;
+  }
+  if (params.label) {
+    const needle = normalizeText(params.label).toLowerCase();
+    const fields = deepQueryAll(document, 'input,textarea,select,[contenteditable="true"]');
+    const exact = fields.find(el => normalizeText(getLabelFor(el)).toLowerCase() === needle && (params.includeHidden || visible(el)));
+    const partial = fields.find(el => normalizeText(getLabelFor(el)).toLowerCase().includes(needle) && (params.includeHidden || visible(el)));
+    if (exact || partial) return exact || partial;
+  }
+  if (params.placeholder) {
+    const needle = normalizeText(params.placeholder).toLowerCase();
+    const found = deepQueryAll(document, '[placeholder]').find(el => normalizeText(el.getAttribute('placeholder')).toLowerCase().includes(needle) && (params.includeHidden || visible(el)));
+    if (found) return found;
+  }
+  if (params.name) {
+    const selector = `[name="${quoteAttr(params.name)}"]`;
+    const found = deepQueryAll(document, selector).find(el => params.includeHidden || visible(el));
+    if (found) return found;
+  }
   if (params.text) {
-    const el = findByText(params.text);
-    if (el) return el;
+    const found = findByText(params.text);
+    if (found) return found;
   }
-
-  if (Number.isFinite(params.x) && Number.isFinite(params.y)) {
-    return document.elementFromPoint(params.x, params.y);
+  if (Number.isFinite(Number(params.x)) && Number.isFinite(Number(params.y))) {
+    const point = document.elementFromPoint(Number(params.x), Number(params.y));
+    if (point) return params.promote === false ? point : promoteClickable(point);
   }
-
-  if (params.selector && params.smartFallback !== false) {
-    const fallbacks = generateSelectorFallbacks(params.selector);
-    for (const fb of fallbacks) {
-      for (const scope of [modalRoot, document]) {
-        if (!scope) continue;
-        try {
-          const el = scope.querySelector(fb);
-          if (el) return el;
-          const deep = querySelectorDeep(scope, fb, { preferVisible: true });
-          if (deep) return deep;
-        } catch (e) {}
-      }
-    }
-
-    const textMatch = params.selector.match(/["']([^"']+)["']/);
-    if (textMatch) {
-      const el = findByText(textMatch[1]);
-      if (el) return el;
-    }
-  }
-
+  if (params.active === true && document.activeElement) return document.activeElement;
   return null;
 }
 
-// Translate a Playwright-style `:has-text("...")` pseudo-class into a plain
-// CSS selector + text filter pair. Returns {selector, text} or null.
-// BUG-07: `:has-text()` was rejected as an invalid selector before.
-function translateHasTextSelector(selector) {
-  if (!selector || !selector.includes(':has-text(')) return null;
-  const match = selector.match(/^(.*?):has-text\(["']([^"']*)["']\)(.*)$/);
-  if (!match) return null;
-  return { prefix: match[1], text: match[2], suffix: match[3] };
+function promoteClickable(el) {
+  if (!el) return null;
+  return el.closest?.('button,a,[role="button"],[role="link"],[role="menuitem"],summary,[onclick],input[type="submit"],input[type="button"]') || el;
 }
 
-function querySelectorHasText(selector) {
-  const parsed = translateHasTextSelector(selector);
-  if (!parsed) return null;
-  const baseSelector = (parsed.prefix + ' ' + parsed.suffix).trim();
-  const scopes = [currentModalRoot(), document.body || document.documentElement].filter(Boolean);
-  for (const scope of scopes) {
-    let candidates = [];
-    try {
-      candidates = baseSelector ? Array.from(scope.querySelectorAll(baseSelector)) : [scope];
-    } catch (e) { continue; }
-    const needle = parsed.text.toLowerCase();
-    for (const cand of candidates) {
-      const text = (cand.innerText || cand.textContent || '').toLowerCase();
-      if (text.includes(needle) && isElementVisible(cand)) return cand;
-    }
-    for (const cand of candidates) {
-      const text = (cand.innerText || cand.textContent || '').toLowerCase();
-      if (text.includes(needle)) return cand;
-    }
-  }
-  return null;
-}
-
-function generateSelectorFallbacks(selector) {
-  const fallbacks = [];
-
-  // If it's an ID selector, try as class or name
-  if (selector.startsWith('#')) {
-    const id = selector.slice(1);
-    fallbacks.push(`[id*="${id}"]`);  // Partial ID match
-    fallbacks.push(`.${id}`);          // As class
-    fallbacks.push(`[name="${id}"]`);  // As name
-  }
-
-  // If it's a class selector, try partial match
-  if (selector.startsWith('.')) {
-    const cls = selector.slice(1).split('.')[0];
-    fallbacks.push(`[class*="${cls}"]`);
-  }
-
-  // If it's an attribute selector, try variations
-  const attrMatch = selector.match(/\[(\w+)=["']?([^"'\]]+)["']?\]/);
-  if (attrMatch) {
-    const [, attr, value] = attrMatch;
-    fallbacks.push(`[${attr}*="${value}"]`);  // Contains
-    fallbacks.push(`[${attr}^="${value}"]`);  // Starts with
-  }
-
-  // Try aria-label if selector looks like a button/link
-  if (selector.includes('button') || selector.includes('btn') || selector.includes('link')) {
-    const textPart = selector.match(/[.#]([a-z-]+)/i);
-    if (textPart) {
-      const label = textPart[1].replace(/[-_]/g, ' ');
-      fallbacks.push(`[aria-label*="${label}" i]`);
-    }
-  }
-
-  return fallbacks;
-}
-
-function elementSummary(el) {
+function elementSummary(el, detailed = false) {
   if (!el) return null;
   const rect = el.getBoundingClientRect();
-  return {
-    tag: el.tagName,
+  const type = str(el.getAttribute?.('type') || el.type || el.tagName?.toLowerCase());
+  const result = {
+    tag: el.tagName?.toLowerCase() || null,
     id: el.id || null,
-    classes: el.className || null,
-    text: el.innerText ? el.innerText.slice(0, 200) : null,
-    rect: {
-      x: rect.x,
-      y: rect.y,
-      width: rect.width,
-      height: rect.height
-    }
+    name: el.getAttribute?.('name') || null,
+    type,
+    role: el.getAttribute?.('role') || null,
+    nameAccessible: accessibleName(el),
+    text: textOf(el).slice(0, 500),
+    ariaLabel: el.getAttribute?.('aria-label') || null,
+    placeholder: el.getAttribute?.('placeholder') || null,
+    value: ('value' in el && !/password/i.test(type)) ? str(el.value).slice(0, 1000) : null,
+    checked: 'checked' in el ? Boolean(el.checked) : undefined,
+    selected: 'selected' in el ? Boolean(el.selected) : undefined,
+    required: 'required' in el ? Boolean(el.required) : undefined,
+    disabled: isDisabled(el),
+    readonly: 'readOnly' in el ? Boolean(el.readOnly) : undefined,
+    visible: visible(el),
+    focused: document.activeElement === el,
+    href: el.href || null,
+    rect: { x: rect.x, y: rect.y, width: rect.width, height: rect.height },
+    selector: stableSelector(el),
+    xpath: xpathFor(el)
   };
+  if (el instanceof HTMLSelectElement) result.options = Array.from(el.options).slice(0, 100).map(o => ({ index: o.index, value: o.value, label: o.label, selected: o.selected, disabled: o.disabled }));
+  if (detailed) {
+    result.html = str(el.outerHTML).slice(0, 8000);
+    result.attributes = el.getAttributeNames?.().reduce((acc, name) => { acc[name] = el.getAttribute(name); return acc; }, {}) || {};
+  }
+  return result;
 }
 
-function occlusionReport(el) {
-  // Hit-test the element's center to detect invisible full-page overlays that
-  // would swallow the click. BUG-03: clicks reported success while an overlay
-  // div actually received the event.
-  try {
-    const rect = el.getBoundingClientRect();
-    if (rect.width === 0 || rect.height === 0) {
-      return { occluded: true, zeroSize: true, reason: 'element has zero size (hidden or not rendered)' };
-    }
-    const cx = rect.left + rect.width / 2;
-    const cy = rect.top + rect.height / 2;
-    const top = document.elementFromPoint(cx, cy);
-    if (!top) return { occluded: false };
-    if (el === top || el.contains(top) || top.contains(el)) return { occluded: false };
-    return {
-      occluded: true,
-      zeroSize: false,
-      reason: 'target is covered by another element at its center point',
-      occludedBy: elementSummary(top)
-    };
-  } catch (e) {
-    return { occluded: false };
+function pointerEvent(el, type, options = {}) {
+  const rect = el.getBoundingClientRect();
+  const clientX = Number(options.clientX ?? rect.left + rect.width / 2);
+  const clientY = Number(options.clientY ?? rect.top + rect.height / 2);
+  const init = {
+    bubbles: true, cancelable: true, composed: true, view: window,
+    detail: int(options.clickCount, 1), button: int(options.button, 0), buttons: int(options.buttons, 0),
+    clientX, clientY, screenX: clientX, screenY: clientY,
+    ctrlKey: Boolean(options.ctrlKey), shiftKey: Boolean(options.shiftKey), altKey: Boolean(options.altKey), metaKey: Boolean(options.metaKey)
+  };
+  const pointerCapable = /^(mouseover|mousemove|mousedown|mouseup|click|mouseenter|mouseleave|pointerdown|pointerup|pointermove)$/i.test(type);
+  if (pointerCapable && typeof PointerEvent === 'function') {
+    try {
+      const pointerType = type.startsWith('pointer') ? type : `pointer${type.replace(/^mouse/, '')}`;
+      el.dispatchEvent(new PointerEvent(pointerType, { ...init, pointerId: 1, pointerType: 'mouse', isPrimary: true }));
+    } catch {}
   }
+  el.dispatchEvent(new MouseEvent(type, init));
 }
 
-function findClickableAncestor(el, maxDepth = 5) {
-  let current = el;
-  let depth = 0;
-  while (current && depth < maxDepth) {
-    if (isInteractable(current) || current.closest && current.closest('a, button, [role=button], [onclick]')) {
-      return current;
-    }
-    current = current.parentElement;
-    depth++;
+function clickElement(target, params = {}) {
+  let el = promoteClickable(target);
+  if (!el) throw new Error('Element not found');
+  if (!params.allowDisabled && isDisabled(el)) throw new Error('Element is disabled');
+  if (params.scrollIntoView !== false) el.scrollIntoView({ block: params.block || 'center', inline: params.inline || 'center', behavior: 'auto' });
+  if (params.focus !== false && typeof el.focus === 'function') { try { el.focus({ preventScroll: true }); } catch { el.focus(); } }
+  const button = int(params.button, 0);
+  if (button === 2 || params.contextMenu) return rightClickElement(el, params);
+  if (params.dispatchEvents !== false) {
+    pointerEvent(el, 'mouseover', { button, buttons: 0, ...params });
+    pointerEvent(el, 'mousemove', { button, buttons: 0, ...params });
+    pointerEvent(el, 'mousedown', { button, buttons: 1, ...params });
+    pointerEvent(el, 'mouseup', { button, buttons: 0, ...params });
   }
+  if (params.useNativeClick !== false && typeof el.click === 'function') el.click();
+  else if (params.dispatchEvents !== false) pointerEvent(el, 'click', { button, buttons: 0, clickCount: 1, ...params });
+  return { clicked: true, element: elementSummary(el), action: 'click' };
+}
+
+function rightClickElement(el, params = {}) {
+  if (!params.allowDisabled && isDisabled(el)) throw new Error('Element is disabled');
+  if (params.scrollIntoView !== false) el.scrollIntoView({ block: 'center', inline: 'center' });
+  pointerEvent(el, 'mousedown', { button: 2, buttons: 2, ...params });
+  pointerEvent(el, 'mouseup', { button: 2, buttons: 0, ...params });
+  pointerEvent(el, 'contextmenu', { button: 2, buttons: 0, ...params });
+  return { clicked: true, button: 'right', element: elementSummary(el), action: 'rightClick' };
+}
+
+function inputPrototypeFor(el) {
+  if (el instanceof HTMLTextAreaElement) return HTMLTextAreaElement.prototype;
+  if (el instanceof HTMLInputElement) return HTMLInputElement.prototype;
+  if (el instanceof HTMLSelectElement) return HTMLSelectElement.prototype;
   return null;
 }
 
-async function handleClick(params) {
-  let target = null;
-
-  // Support Playwright-style :has-text() selectors (BUG-07).
-  if (params.selector && params.selector.includes(':has-text(')) {
-    target = querySelectorHasText(params.selector);
-  }
-  if (!target) target = resolveElement(params || {});
-  if (!target) {
-    const tried = [];
-    if (params.selector) tried.push(`selector="${params.selector}"`);
-    if (params.text) tried.push(`text="${params.text}"`);
-    if (Number.isFinite(params.x) && Number.isFinite(params.y)) tried.push(`pos=(${params.x},${params.y})`);
-    const detail = tried.length ? ` Tried: ${tried.join(', ')}.` : '';
-    throw new Error(`Element not found.${detail} Use 'snapshot' to inspect the page, or 'wait' with the selector before clicking.`);
-  }
-
-  // When matching by text, promote the leaf node to its nearest clickable
-  // ancestor (a/button/[role=button]) so the click actually activates the
-  // control rather than a non-interactive span/label. BUG-07/BUG-15.
-  if (params.text && !params.selector) {
-    const clickable = findClickableParent(target, 4);
-    if (clickable && clickable !== target) target = clickable;
-  }
-
-  // Prefer visible instance when the resolved element is hidden (BUG-15:
-  // hidden 0x0 elements reported clicked:true).
-  if (!isElementVisible(target)) {
-    if (params.selector) {
-      let visibleAlt = null;
-      try {
-        const all = Array.from((currentModalRoot() || document).querySelectorAll(params.selector));
-        visibleAlt = all.find(isElementVisible) || null;
-      } catch (e) {}
-      if (!visibleAlt && params.text) visibleAlt = findByText(params.text);
-      if (visibleAlt) target = visibleAlt;
-    } else if (params.text) {
-      const visibleAlt = findByText(params.text);
-      if (visibleAlt) target = visibleAlt;
-    }
-  }
-
-  if (params.scrollIntoView !== false && target.scrollIntoView) {
-    target.scrollIntoView({ block: "center", inline: "center" });
-  }
-  if (target.focus) target.focus({ preventScroll: true });
-
-  // Occlusion diagnostics: report when an overlay would intercept the click
-  // instead of silently hitting the wrong element.
-  const occlusion = occlusionReport(target);
-
-  // Special handling for checkboxes and radio buttons - set .checked directly
-  const isCheckbox = target.tagName === "INPUT" && target.type === "checkbox";
-  const isRadio = target.tagName === "INPUT" && target.type === "radio";
-
-  const baseResult = occlusion.occluded
-    ? { clicked: true, occluded: true, occlusionReason: occlusion.reason, occludedBy: occlusion.occludedBy || null }
-    : { clicked: true };
-
-  if (isCheckbox || isRadio) {
-    const oldChecked = target.checked;
-    if (isCheckbox) {
-      // Toggle checkbox, or set to specific value if provided
-      target.checked = params.checked !== undefined ? Boolean(params.checked) : !target.checked;
-    } else {
-      // Radio buttons are always set to checked
-      target.checked = true;
-    }
-    // Dispatch change event if state changed
-    if (target.checked !== oldChecked) {
-      target.dispatchEvent(new Event("change", { bubbles: true }));
-    }
-    return { ...baseResult, checked: target.checked, element: elementSummary(target) };
-  }
-
-  // Standard click handling for other elements
-  if (params.dispatchEvents !== false) {
-    const eventInit = { bubbles: true, cancelable: true, view: window };
-    target.dispatchEvent(new MouseEvent("mouseover", eventInit));
-    target.dispatchEvent(new MouseEvent("mousedown", eventInit));
-    target.dispatchEvent(new MouseEvent("mouseup", eventInit));
-    target.dispatchEvent(new MouseEvent("click", eventInit));
-  }
-  if (typeof target.click === "function") target.click();
-
-  return { ...baseResult, element: elementSummary(target) };
+function setNativeValue(el, value) {
+  const proto = inputPrototypeFor(el);
+  const setter = proto ? Object.getOwnPropertyDescriptor(proto, 'value')?.set : null;
+  if (setter) setter.call(el, str(value)); else el.value = str(value);
+  try { delete el._valueTracker; } catch {}
 }
 
-function isEditable(el) {
-  if (!el) return false;
-  const tag = el.tagName;
-  if (el.isContentEditable || tag === "INPUT" || tag === "TEXTAREA" ||
-      el.getAttribute("contenteditable") === "true") return true;
-  if (el.shadowRoot && findEditableInShadow(el)) return true;
+function dispatchInputSequence(el, inputType = 'insertText', data = null) {
+  try { el.dispatchEvent(new InputEvent('beforeinput', { bubbles: true, cancelable: true, inputType, data })); } catch {}
+  try { el.dispatchEvent(new InputEvent('input', { bubbles: true, inputType, data, composed: true })); }
+  catch { el.dispatchEvent(new Event('input', { bubbles: true, composed: true })); }
+}
+
+function typeInto(el, text, params = {}) {
+  if (!el) throw new Error('Element not found');
+  if (isDisabled(el)) throw new Error('Target is disabled');
+  const value = str(text);
+  try { el.focus({ preventScroll: true }); } catch { el.focus?.(); }
+  if (el.isContentEditable || el.getAttribute('contenteditable') === 'true') {
+    const append = Boolean(params.append);
+    if (!append && params.clear !== false) {
+      const selection = window.getSelection();
+      if (selection) {
+        const range = document.createRange(); range.selectNodeContents(el); selection.removeAllRanges(); selection.addRange(range);
+      }
+      if (!document.execCommand?.('delete', false, null)) el.textContent = '';
+    }
+    if (!document.execCommand?.('insertText', false, value)) {
+      el.textContent = append ? `${el.textContent || ''}${value}` : value;
+      dispatchInputSequence(el, 'insertText', value);
+    }
+    try { el.dispatchEvent(new Event('change', { bubbles: true })); } catch {}
+  } else if (el instanceof HTMLInputElement || el instanceof HTMLTextAreaElement) {
+    const current = str(el.value);
+    let next;
+    if (params.append) next = current + value;
+    else if (params.replaceSelection && typeof el.selectionStart === 'number') next = current.slice(0, el.selectionStart) + value + current.slice(el.selectionEnd);
+    else next = value;
+    setNativeValue(el, next);
+    if (params.dispatchEvents !== false) dispatchInputSequence(el, 'insertText', value);
+    if (params.change !== false) el.dispatchEvent(new Event('change', { bubbles: true, composed: true }));
+  } else {
+    throw new Error('Target is not editable');
+  }
+  return { typed: true, length: value.length, valueLength: value.length, element: elementSummary(el) };
+}
+
+function clearElement(params = {}) {
+  const el = resolveElement(params);
+  if (!el) throw new Error('Element not found');
+  if (el instanceof HTMLInputElement || el instanceof HTMLTextAreaElement) return typeInto(el, '', { clear: true });
+  if (el.isContentEditable) return typeInto(el, '', { clear: true });
+  throw new Error('Target is not editable');
+}
+
+function keyEvent(target, type, params = {}) {
+  const key = str(params.key || params.code);
+  if (!key) throw new Error('key is required');
+  const code = str(params.code || (key.length === 1 ? `Key${key.toUpperCase()}` : key));
+  const event = new KeyboardEvent(type, {
+    key, code, bubbles: true, cancelable: true, composed: true,
+    repeat: Boolean(params.repeat), ctrlKey: Boolean(params.ctrlKey), shiftKey: Boolean(params.shiftKey), altKey: Boolean(params.altKey), metaKey: Boolean(params.metaKey), location: int(params.location, 0)
+  });
+  target.dispatchEvent(event);
+  return { dispatched: true, type, key, code, trusted: event.isTrusted === true, element: elementSummary(target) };
+}
+
+function textSelection(el) {
+  if (!(el instanceof HTMLInputElement || el instanceof HTMLTextAreaElement)) return null;
+  return { start: el.selectionStart, end: el.selectionEnd, direction: el.selectionDirection };
+}
+
+function modifyTextForKey(el, key, params = {}) {
+  if (!(el instanceof HTMLInputElement || el instanceof HTMLTextAreaElement)) return false;
+  if (el.readOnly || isDisabled(el)) return false;
+  const type = (el.type || 'text').toLowerCase();
+  if (!['text','search','url','email','tel','password','number'].includes(type)) return false;
+  const value = str(el.value);
+  let start = Number.isInteger(el.selectionStart) ? el.selectionStart : value.length;
+  let end = Number.isInteger(el.selectionEnd) ? el.selectionEnd : start;
+  if (key === 'Backspace') {
+    if (start === end && start > 0) start = Math.max(0, start - 1);
+    setNativeValue(el, value.slice(0, start) + value.slice(end));
+    el.setSelectionRange(start, start);
+    dispatchInputSequence(el, 'deleteContentBackward', null);
+    el.dispatchEvent(new Event('change', { bubbles: true }));
+    return true;
+  }
+  if (key === 'Delete') {
+    if (start === end && end < value.length) end += 1;
+    setNativeValue(el, value.slice(0, start) + value.slice(end));
+    el.setSelectionRange(start, start);
+    dispatchInputSequence(el, 'deleteContentForward', null);
+    el.dispatchEvent(new Event('change', { bubbles: true }));
+    return true;
+  }
+  if (key === 'Home') { el.setSelectionRange(0, 0); return true; }
+  if (key === 'End') { el.setSelectionRange(value.length, value.length); return true; }
+  if (key === 'ArrowLeft') { const pos = Math.max(0, start - 1); el.setSelectionRange(pos, pos); return true; }
+  if (key === 'ArrowRight') { const pos = Math.min(value.length, end + 1); el.setSelectionRange(pos, pos); return true; }
+  if (/^Arrow(Up|Down)$/.test(key) && type === 'number') {
+    const step = safeNumber(el.step, 1) || 1;
+    const delta = key === 'ArrowUp' ? step : -step;
+    const next = safeNumber(el.value, 0) + delta;
+    setNativeValue(el, String(next)); dispatchInputSequence(el, 'insertText', String(next)); el.dispatchEvent(new Event('change', { bubbles: true }));
+    return true;
+  }
   return false;
 }
 
-// React-compatible input value setter
-// Uses multiple strategies to ensure React sees the input change
-function setInputValueReact(el, value) {
-  // Focus the element
-  el.focus();
+function focusNext(current, reverse = false) {
+  const nodes = deepQueryAll(document, 'a[href],button,input:not([type="hidden"]),textarea,select,summary,[contenteditable="true"],[role="button"],[role="link"],[role="textbox"],[tabindex]').filter(focusable);
+  const index = nodes.indexOf(current);
+  const next = index < 0 ? (reverse ? nodes[nodes.length - 1] : nodes[0]) : nodes[(index + (reverse ? -1 : 1) + nodes.length) % nodes.length];
+  if (!next) return null;
+  try { next.focus({ preventScroll: false }); } catch { next.focus?.(); }
+  return next;
+}
 
-  // Get native setter for the element type
-  const tagName = el.tagName;
-  let nativeSetter = null;
-  if (tagName === 'INPUT') {
-    nativeSetter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')?.set;
-  } else if (tagName === 'TEXTAREA') {
-    nativeSetter = Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value')?.set;
-  }
-
-  // Clear existing content first
-  if (el.select) el.select();
-
-  // Set the value using native setter
-  if (nativeSetter) {
-    nativeSetter.call(el, value);
-  } else {
-    el.value = value;
-  }
-
-  // CRITICAL: React tracks input values in _valueTracker
-  // We need to make React think the value changed
-  // Method 1: Delete the tracker entirely
-  if (el._valueTracker) {
-    delete el._valueTracker;
-  }
-
-  // Method 2: Also try to find and call React's onChange directly
-  // React stores event handlers in a special property
-  const reactKey = Object.keys(el).find(key =>
-    key.startsWith('__reactProps$') ||
-    key.startsWith('__reactEventHandlers$') ||
-    key.startsWith('__reactFiber$')
-  );
-
-  if (reactKey && el[reactKey]) {
-    const props = el[reactKey];
-    // Try to call onChange directly if it exists
-    if (props.onChange) {
-      try {
-        // Create a synthetic-like event
-        const syntheticEvent = {
-          target: el,
-          currentTarget: el,
-          type: 'change',
-          bubbles: true,
-          preventDefault: () => {},
-          stopPropagation: () => {},
-          nativeEvent: new Event('input', { bubbles: true })
-        };
-        props.onChange(syntheticEvent);
-      } catch (e) {
-        // onChange call failed, continue with events
+async function press(params = {}) {
+  let current = resolveElement(params) || document.activeElement || document.body;
+  const keyList = Array.isArray(params.keys) ? params.keys.map(str) : [str(params.key || params.text || '')];
+  const results = [];
+  for (const key of keyList) {
+    if (!key) throw new Error('key is required');
+    const keyTarget = current;
+    keyEvent(keyTarget, 'keydown', { ...params, key });
+    let applied = false;
+    const ctrlOrMeta = Boolean(params.ctrlKey || params.metaKey);
+    if (/^a$/i.test(key) && ctrlOrMeta && (keyTarget instanceof HTMLInputElement || keyTarget instanceof HTMLTextAreaElement)) {
+      keyTarget.select(); applied = true;
+    } else if (key === 'Tab') {
+      const next = focusNext(keyTarget, Boolean(params.shiftKey));
+      applied = Boolean(next); if (next) current = next;
+    } else if (key === 'Escape') {
+      if (params.dismiss !== false) {
+        const dialog = currentModalRoot();
+        if (dialog instanceof HTMLDialogElement && dialog.open) { try { dialog.close(); applied = true; } catch {} }
+        else if (keyTarget && typeof keyTarget.blur === 'function') { keyTarget.blur(); applied = true; }
       }
+    } else if (key === 'Enter') {
+      const form = keyTarget?.form || keyTarget?.closest?.('form');
+      const shouldSubmit = params.submit === true || (params.submit !== false && keyTarget.tagName !== 'TEXTAREA' && Boolean(form));
+      if (shouldSubmit && form) { try { form.requestSubmit?.(); applied = true; } catch {} }
+      else if (keyTarget.matches?.('button,input[type="submit"],input[type="button"]') && typeof keyTarget.click === 'function') { keyTarget.click(); applied = true; }
+      else if (params.clickOnEnter) { const clickable = promoteClickable(keyTarget); if (clickable && typeof clickable.click === 'function') { clickable.click(); applied = true; } }
+    } else if (key === ' ') {
+      const clickable = promoteClickable(keyTarget);
+      if (clickable?.matches?.('button,[role="button"],summary') && typeof clickable.click === 'function') { clickable.click(); applied = true; }
+      else if (keyTarget.matches?.('input[type="checkbox"],input[type="radio"]')) { setCheckbox(keyTarget, keyTarget.type === 'radio' ? true : !keyTarget.checked); applied = true; }
+    } else if (params.executeDefault !== false) {
+      applied = modifyTextForKey(keyTarget, key, params);
     }
+    keyEvent(keyTarget, 'keyup', { ...params, key });
+    results.push({ key, applied });
+    if (params.interKeyDelayMs) await sleep(clamp(int(params.interKeyDelayMs, 0), 0, 2000));
   }
-
-  // Dispatch standard events as fallback
-  el.dispatchEvent(new InputEvent('input', {
-    bubbles: true,
-    cancelable: true,
-    inputType: 'insertText',
-    data: value
-  }));
-
-  el.dispatchEvent(new Event('change', { bubbles: true }));
+  return { pressed: results.length, keys: keyList, results, element: elementSummary(current) };
 }
 
-async function handleType(params) {
-  if (!params || !params.text) throw new Error("Missing text parameter");
-  let target = resolveElement({ ...params, _preferVisible: true });
-  if (!target) {
-    const tried = [];
-    if (params.selector) tried.push(`selector="${params.selector}"`);
-    if (params.text) tried.push(`text="${params.text}"`);
-    if (Number.isFinite(params.x) && Number.isFinite(params.y)) tried.push(`pos=(${params.x},${params.y})`);
-    const detail = tried.length ? ` Tried: ${tried.join(', ')}.` : '';
-    throw new Error(`Element not found.${detail} Use 'snapshot' to inspect the page, or 'wait' with the selector before typing.`);
+async function hotkey(params = {}) {
+  const keys = Array.isArray(params.keys) ? params.keys.map(str).filter(Boolean) : str(params.keys).split('+').map(s => s.trim()).filter(Boolean);
+  if (!keys.length) throw new Error('hotkey requires keys');
+  const target = resolveElement(params) || document.activeElement || document.body;
+  const modifiers = {
+    ctrlKey: keys.some(k => /^ctrl$/i.test(k)), shiftKey: keys.some(k => /^shift$/i.test(k)),
+    altKey: keys.some(k => /^alt$/i.test(k)), metaKey: keys.some(k => /^(meta|cmd|command)$/i.test(k))
+  };
+  const main = keys.find(k => !/^(ctrl|shift|alt|meta|cmd|command)$/i.test(k)) || keys[keys.length - 1];
+  const modifierKeys = [['ctrl', 'Control'], ['shift', 'Shift'], ['alt', 'Alt'], ['meta', 'Meta']].filter(([name]) => modifiers[`${name}Key`]);
+  for (const [, key] of modifierKeys) keyEvent(target, 'keydown', { ...params, key, code: key, ...modifiers });
+  keyEvent(target, 'keydown', { ...params, key: main, code: params.code || main, ...modifiers });
+  let applied = false;
+  if (/^(a)$/i.test(main) && (modifiers.ctrlKey || modifiers.metaKey) && (target instanceof HTMLInputElement || target instanceof HTMLTextAreaElement)) { target.select(); applied = true; }
+  else if (/^(c|copy)$/i.test(main) && (modifiers.ctrlKey || modifiers.metaKey)) {
+    try { await clipboardWrite({ text: window.getSelection()?.toString() || target.value?.slice(target.selectionStart || 0, target.selectionEnd || 0) || '' }); applied = true; } catch {}
+  } else if (/^(v|paste)$/i.test(main) && (modifiers.ctrlKey || modifiers.metaKey)) {
+    try { const clip = await clipboardRead(); typeInto(target, clip.text, { clear: false, append: false, replaceSelection: true }); applied = true; } catch {}
+  } else if (/^(x|cut)$/i.test(main) && (modifiers.ctrlKey || modifiers.metaKey)) {
+    try { const selected = window.getSelection()?.toString() || target.value?.slice(target.selectionStart || 0, target.selectionEnd || 0) || ''; await clipboardWrite({ text: selected }); modifyTextForKey(target, 'Delete'); applied = true; } catch {}
+  } else if (/^tab$/i.test(main)) {
+    applied = Boolean(focusNext(target, modifiers.shiftKey));
+  } else if (/^enter$/i.test(main)) {
+    const form = target?.form || target?.closest?.('form');
+    if (form && params.submit !== false) { try { form.requestSubmit?.(); applied = true; } catch {} }
+    else if (target.matches?.('button,input[type="submit"],input[type="button"]') && typeof target.click === 'function') { target.click(); applied = true; }
   }
-
-  // If target is a custom element with shadow DOM, find the actual editable inside
-  if (!target.isContentEditable && target.tagName !== "INPUT" && target.tagName !== "TEXTAREA" &&
-      target.getAttribute("contenteditable") !== "true" && target.shadowRoot) {
-    const inner = findEditableInShadow(target);
-    if (inner) target = inner;
-  }
-
-  if (!isEditable(target)) throw new Error("Target element is not editable");
-
-  if (params.scrollIntoView !== false && target.scrollIntoView) {
-    target.scrollIntoView({ block: "center", inline: "center" });
-  }
-  if (target.focus) target.focus({ preventScroll: true });
-
-  const text = String(params.text);
-  const append = Boolean(params.append);
-  const clear = params.clear !== false;
-
-  if (target.isContentEditable || target.getAttribute("contenteditable") === "true") {
-    const ceResult = contentEditableInsertText(target, text, clear && !append);
-    if (ceResult && ceResult.ok) {
-      return { typed: true, element: elementSummary(target), length: text.length, richEditor: true };
-    }
-    if (clear) target.textContent = "";
-    target.textContent = append ? `${target.textContent}${text}` : text;
-    if (params.dispatchEvents !== false) {
-      target.dispatchEvent(new Event("input", { bubbles: true }));
-      target.dispatchEvent(new Event("change", { bubbles: true }));
-    }
-  } else {
-    // Use React-compatible setter for input/textarea elements
-    const currentValue = target.value || "";
-    const newValue = clear ? (append ? text : text) : (append ? `${currentValue}${text}` : text);
-    if (params.dispatchEvents !== false) {
-      setInputValueReact(target, newValue);
-    } else {
-      target.value = newValue;
-    }
-  }
-
-  if (params.submit) {
-    // First try form submit if available
-    if (target.form) {
-      target.form.dispatchEvent(new Event("submit", { bubbles: true, cancelable: true }));
-      if (typeof target.form.submit === "function") target.form.submit();
-    } else {
-      // No form - simulate Enter key press (works for React/JS apps)
-      const enterEvent = new KeyboardEvent("keydown", {
-        key: "Enter",
-        code: "Enter",
-        keyCode: 13,
-        which: 13,
-        bubbles: true,
-        cancelable: true
-      });
-      target.dispatchEvent(enterEvent);
-      target.dispatchEvent(new KeyboardEvent("keyup", {
-        key: "Enter",
-        code: "Enter",
-        keyCode: 13,
-        which: 13,
-        bubbles: true
-      }));
-    }
-  }
-
-  return { typed: true, element: elementSummary(target), length: text.length };
+  keyEvent(target, 'keyup', { ...params, key: main, code: params.code || main, ...modifiers });
+  for (let i = modifierKeys.length - 1; i >= 0; i--) { const [, key] = modifierKeys[i]; keyEvent(target, 'keyup', { ...params, key, code: key, ...modifiers }); }
+  return { pressed: true, keys, mainKey: main, modifiers, applied };
 }
 
-function getSelector(el) {
-  if (!el) return null;
-  if (el.id) return `#${el.id}`;
-  if (el.name) return `[name="${el.name}"]`;
-  // Build a path-based selector that is unique in the document. Two elements
-  // in one snapshot must never share a byte-identical selector (BUG-05): add
-  // :nth-of-type disambiguation until document.querySelector resolves this
-  // element and not a sibling earlier in DOM order.
-  const path = [];
-  let current = el;
-  while (current && current !== document.body && path.length < 5) {
-    let selector = current.tagName.toLowerCase();
-    if (current.id) {
-      path.unshift(`#${current.id}`);
-      break;
-    }
-    if (current.className && typeof current.className === 'string') {
-      const firstClass = current.className.split(' ').filter(c => c && !c.includes(':'))[0];
-      if (firstClass) selector += `.${firstClass}`;
-    }
-    // Disambiguate among same-tag same-class siblings.
-    const parent = current.parentElement;
-    if (parent) {
-      const sameKind = Array.from(parent.children).filter(s =>
-        s.tagName === current.tagName &&
-        (typeof current.className === 'string' ? s.className === current.className : true)
-      );
-      if (sameKind.length > 1) {
-        selector += `:nth-of-type(${sameKind.indexOf(current) + 1})`;
-      }
-    }
-    path.unshift(selector);
-    current = current.parentElement;
+function setCheckbox(el, desired) {
+  if (!el) throw new Error('Element not found');
+  const target = el.matches?.('input[type="checkbox"],input[type="radio"]') ? el : el.querySelector?.('input[type="checkbox"],input[type="radio"]') || el;
+  if (!(target instanceof HTMLInputElement) || !/^(checkbox|radio)$/i.test(target.type)) throw new Error('Target is not checkable');
+  if (isDisabled(target)) throw new Error('Target is disabled');
+  const old = Boolean(target.checked);
+  const proto = HTMLInputElement.prototype;
+  const setter = Object.getOwnPropertyDescriptor(proto, 'checked')?.set;
+  if (setter) setter.call(target, target.type === 'radio' ? true : Boolean(desired)); else target.checked = target.type === 'radio' ? true : Boolean(desired);
+  if (old !== Boolean(target.checked)) {
+    try { target.dispatchEvent(new Event('input', { bubbles: true, composed: true })); } catch {}
+    target.dispatchEvent(new Event('change', { bubbles: true, composed: true }));
   }
-  let joined = path.join(' > ');
-  // If the resulting selector matches a different element first, append an
-  // index suffix disambiguator relative to the body.
-  try {
-    const first = document.querySelector(joined);
-    if (first && first !== el) {
-      const all = Array.from(document.querySelectorAll(joined));
-      const idx = all.indexOf(el);
-      if (idx > 0) joined = `${joined}:nth-match(${idx + 1})`;
-    }
-  } catch (e) {}
-  return joined;
+  return { checked: Boolean(target.checked), changed: old !== Boolean(target.checked), element: elementSummary(target) };
 }
 
-function isInteractable(el) {
-  if (!el || !el.tagName) return false;
-  const tag = el.tagName.toUpperCase();
-  if (tag === 'BUTTON' || tag === 'A' || tag === 'SELECT') return true;
-  if (tag === 'INPUT' && el.type !== 'hidden') return true;
-  if (tag === 'TEXTAREA') return true;
-  if (el.getAttribute('role') === 'button') return true;
-  if (el.onclick || el.getAttribute('onclick')) return true;
-  return false;
+function selectOption(el, params = {}) {
+  if (!(el instanceof HTMLSelectElement)) throw new Error('Target is not a select element');
+  if (isDisabled(el)) throw new Error('Target is disabled');
+  let values = [];
+  if (params.values !== undefined) values = Array.isArray(params.values) ? params.values.map(str) : [str(params.values)];
+  else if (params.value !== undefined) values = [str(params.value)];
+  else if (params.labels !== undefined) values = Array.isArray(params.labels) ? params.labels.map(str) : [str(params.labels)];
+  else if (params.label !== undefined) values = [str(params.label)];
+  const indexes = new Set(Array.isArray(params.indexes) ? params.indexes.filter(Number.isInteger) : []);
+  if (!values.length && !indexes.size) throw new Error('selectOption requires value, values, label, labels, or indexes');
+  const matching = Array.from(el.options).filter(option => indexes.has(option.index) || values.some(value => value === option.value || value === option.label));
+  if (!matching.length && params.allowEmpty !== true) throw new Error('No matching option found');
+  let matched = 0;
+  Array.from(el.options).forEach(option => {
+    const shouldSelect = matching.includes(option);
+    if (el.multiple) option.selected = shouldSelect;
+    else if (shouldSelect && matched === 0) { option.selected = true; matched++; }
+    else if (!el.multiple) option.selected = false;
+  });
+  const selected = Array.from(el.selectedOptions).map(option => ({ index: option.index, value: option.value, label: option.label }));
+  el.dispatchEvent(new Event('input', { bubbles: true, composed: true }));
+  el.dispatchEvent(new Event('change', { bubbles: true, composed: true }));
+  return { selected, multiple: el.multiple, matched: matching.length, element: elementSummary(el) };
+}
+
+function submitElement(el, params = {}) {
+  if (!el) throw new Error('Element not found');
+  const form = el.form || el.closest?.('form');
+  if (form) {
+    if (params.validate !== false && typeof form.requestSubmit === 'function') {
+      const submitter = params.submitSelector ? resolveElement({ selector: params.submitSelector }) : null;
+      form.requestSubmit(submitter || undefined);
+      return { submitted: true, via: 'requestSubmit', validated: true };
+    }
+    if (typeof form.submit === 'function') { form.submit(); return { submitted: true, via: 'form.submit', validated: false }; }
+  }
+  if (typeof el.click === 'function' && /submit|button/i.test(el.type || el.tagName || '')) { el.click(); return { submitted: true, via: 'click' }; }
+  keyEvent(el, 'keydown', { key: 'Enter', code: 'Enter' });
+  keyEvent(el, 'keyup', { key: 'Enter', code: 'Enter' });
+  return { submitted: true, via: 'enter' };
+}
+
+function dragElement(source, target, params = {}) {
+  if (!source || !target) throw new Error('drag requires source and target');
+  if (typeof DataTransfer !== 'function') throw new Error('DataTransfer is unavailable');
+  const sr = source.getBoundingClientRect();
+  const tr = target.getBoundingClientRect();
+  const sx = sr.left + sr.width / 2, sy = sr.top + sr.height / 2;
+  const tx = tr.left + tr.width / 2, ty = tr.top + tr.height / 2;
+  const steps = clamp(int(params.steps, 6), 1, 40);
+  const dataTransfer = new DataTransfer();
+  if (params.text != null) dataTransfer.setData('text/plain', str(params.text));
+  if (params.url != null) dataTransfer.setData('text/uri-list', str(params.url));
+  const emit = (el, type, x, y) => {
+    const init = { bubbles: true, cancelable: true, composed: true, view: window, clientX: x, clientY: y, buttons: 1, dataTransfer };
+    try { el.dispatchEvent(new DragEvent(type, init)); } catch { el.dispatchEvent(new Event(type, { bubbles: true, cancelable: true, composed: true })); }
+  };
+  emit(source, 'dragstart', sx, sy);
+  for (let i = 1; i <= steps; i++) {
+    const x = sx + (tx - sx) * i / steps;
+    const y = sy + (ty - sy) * i / steps;
+    emit(target, i === 1 ? 'dragenter' : 'dragover', x, y);
+  }
+  emit(target, 'drop', tx, ty);
+  emit(source, 'dragend', tx, ty);
+  return { dragged: true, steps, source: elementSummary(source), target: elementSummary(target) };
+}
+
+function getScrollState(container = null) {
+  const root = container || document.scrollingElement || document.documentElement;
+  const scrollWidth = Number(root?.scrollWidth || document.documentElement.scrollWidth || 0);
+  const scrollHeight = Number(root?.scrollHeight || document.documentElement.scrollHeight || 0);
+  const clientWidth = Number(root?.clientWidth || innerWidth || 0);
+  const clientHeight = Number(root?.clientHeight || innerHeight || 0);
+  const scrollLeft = Number(root?.scrollLeft || window.scrollX || 0);
+  const scrollTop = Number(root?.scrollTop || window.scrollY || 0);
+  return { scrollX: scrollLeft, scrollY: scrollTop, documentWidth: scrollWidth, documentHeight: scrollHeight, viewportWidth: clientWidth, viewportHeight: clientHeight, atLeft: scrollLeft <= 1, atTop: scrollTop <= 1, atRight: scrollLeft + clientWidth >= scrollWidth - 2, atBottom: scrollTop + clientHeight >= scrollHeight - 2 };
+}
+
+function scroll(params = {}) {
+  const behavior = ['auto','smooth'].includes(params.behavior) ? params.behavior : 'auto';
+  const container = params.containerSelector ? resolveElement({ selector: params.containerSelector }) : null;
+  if (params.selector || params.text || params.role) {
+    const el = resolveElement(params);
+    if (!el) throw new Error('Scroll target not found');
+    el.scrollIntoView({ block: params.block || 'center', inline: params.inline || 'center', behavior });
+    return { scrolled: true, target: elementSummary(el), ...getScrollState(container) };
+  }
+  const dx = safeNumber(params.x, 0), dy = safeNumber(params.y, 0);
+  if (params.position === 'top') (container || window).scrollTo({ top: 0, left: container ? container.scrollLeft : 0, behavior });
+  else if (params.position === 'bottom') (container || window).scrollTo({ top: container ? container.scrollHeight : document.documentElement.scrollHeight, left: container ? container.scrollLeft : 0, behavior });
+  else if (params.position === 'left') (container || window).scrollTo({ left: 0, top: container ? container.scrollTop : window.scrollY, behavior });
+  else if (params.position === 'right') (container || window).scrollTo({ left: container ? container.scrollWidth : document.documentElement.scrollWidth, top: container ? container.scrollTop : window.scrollY, behavior });
+  else if (params.scrollTo) (container || window).scrollTo({ left: safeNumber(params.scrollTo.x, 0), top: safeNumber(params.scrollTo.y, 0), behavior });
+  else if (container) container.scrollBy({ left: dx, top: dy, behavior });
+  else window.scrollBy({ left: dx, top: dy, behavior });
+  return { scrolled: true, ...getScrollState(container) };
 }
 
 function getInteractableType(el) {
-  const tag = el.tagName.toUpperCase();
-  if (tag === 'A') return 'link';
-  if (tag === 'BUTTON' || el.getAttribute('role') === 'button') return 'button';
-  if (tag === 'INPUT') return `input:${el.type || 'text'}`;
-  if (tag === 'TEXTAREA') return 'textarea';
-  if (tag === 'SELECT') return 'select';
+  const tag = str(el.tagName).toLowerCase();
+  if (tag === 'a') return 'link';
+  if (tag === 'button') return 'button';
+  if (tag === 'select') return el.multiple ? 'select-multiple' : 'select';
+  if (tag === 'textarea') return 'textarea';
+  if (tag === 'input') return `input:${el.type || 'text'}`;
+  const role = el.getAttribute('role');
+  if (role) return role;
+  if (el.isContentEditable) return 'contenteditable';
   return 'clickable';
 }
 
-function findClickableParent(el, maxDepth = 3) {
-  // Walk up to find if this element is inside a clickable parent
-  let current = el;
-  let depth = 0;
-  while (current && depth < maxDepth) {
-    if (isInteractable(current) && isElementVisible(current)) {
-      return current;
-    }
-    current = current.parentElement;
-    depth++;
-  }
-  return null;
+function isInteractable(el) {
+  if (!el || !visible(el)) return false;
+  const tag = str(el.tagName).toLowerCase();
+  if (['a','button','select','textarea','summary','option'].includes(tag)) return true;
+  if (tag === 'input' && el.type !== 'hidden') return true;
+  if (el.isContentEditable) return true;
+  if (/^(button|link|checkbox|radio|combobox|listbox|textbox|menuitem|tab|option|switch|slider)$/i.test(el.getAttribute('role') || '')) return true;
+  return el.hasAttribute('onclick') || el.hasAttribute('tabindex');
 }
 
-function truncateUrl(url, maxLen = 60) {
-  if (!url || url.length <= maxLen) return url;
+function collectInteractables(params = {}) {
+  const root = currentModalRoot() || document;
+  const selector = 'a[href],button,input:not([type="hidden"]),textarea,select,summary,option,[contenteditable="true"],[role="button"],[role="link"],[role="checkbox"],[role="radio"],[role="combobox"],[role="listbox"],[role="textbox"],[role="menuitem"],[role="tab"],[role="switch"],[role="slider"],[onclick],[tabindex]';
+  let elements = deepQueryAll(root, selector).filter(isInteractable);
+  if (params.text) {
+    const needle = normalizeText(params.text).toLowerCase();
+    elements = elements.filter(el => accessibleName(el).toLowerCase().includes(needle) || textOf(el).toLowerCase().includes(needle));
+  }
+  if (params.type) elements = elements.filter(el => getInteractableType(el) === str(params.type));
+  if (params.enabledOnly) elements = elements.filter(enabled);
+  const limit = clamp(int(params.limit, 250), 1, 2000);
+  return elements.slice(0, limit).map((el, index) => ({
+    index,
+    type: getInteractableType(el),
+    name: accessibleName(el),
+    text: textOf(el).slice(0, 240),
+    value: ('value' in el && !/password/i.test(el.type || '')) ? str(el.value).slice(0, 300) : null,
+    href: el.href || null,
+    checked: 'checked' in el ? Boolean(el.checked) : undefined,
+    selected: 'selected' in el ? Boolean(el.selected) : undefined,
+    disabled: isDisabled(el),
+    selector: stableSelector(el),
+    xpath: xpathFor(el),
+    element: elementSummary(el)
+  }));
+}
+
+function getInputs(params = {}) {
+  const limit = clamp(int(params.limit, 500), 1, 2000);
+  let inputs = deepQueryAll(currentModalRoot() || document, 'input,textarea,select,[contenteditable="true"]').filter(el => params.includeHidden || visible(el));
+  if (params.type) inputs = inputs.filter(el => str(el.type || el.tagName).toLowerCase() === str(params.type).toLowerCase());
+  return inputs.slice(0, limit).map((el, index) => ({ index, ...elementSummary(el), label: getLabelFor(el), autocomplete: el.getAttribute('autocomplete'), min: el.getAttribute('min'), max: el.getAttribute('max'), step: el.getAttribute('step'), pattern: el.getAttribute('pattern') }));
+}
+
+function getButtons(params = {}) {
+  const selector = 'button,input[type="button"],input[type="submit"],input[type="reset"],[role="button"],a[role="button"],summary';
+  const limit = clamp(int(params.limit, 500), 1, 2000);
+  return deepQueryAll(currentModalRoot() || document, selector).filter(el => (params.includeHidden || visible(el))).slice(0, limit).map((el, index) => ({ index, type: getInteractableType(el), name: accessibleName(el), text: textOf(el).slice(0, 240), disabled: isDisabled(el), selector: stableSelector(el), xpath: xpathFor(el), element: elementSummary(el) }));
+}
+function getLinks(params = {}) { return deepQueryAll(currentModalRoot() || document, 'a[href],[role="link"]').filter(el => params.includeHidden || visible(el)).slice(0, clamp(int(params.limit, 500), 1, 2000)).map((el, index) => ({ index, ...elementSummary(el), rel: el.rel || null, target: el.target || null, download: el.getAttribute('download') || null })); }
+
+function formsSnapshot() {
+  const fieldNodes = deepQueryAll(document, 'input,textarea,select,[contenteditable="true"]');
+  const formNodes = deepQueryAll(document, 'form');
+  const forms = formNodes.map((form, index) => {
+    const fields = fieldNodes.filter(field => field.closest?.('form') === form || field.form === form).map(field => ({
+      ...elementSummary(field), label: getLabelFor(field), autocomplete: field.getAttribute('autocomplete'), required: Boolean(field.required),
+      value: /password/i.test(field.type || '') ? null : ('value' in field ? str(field.value).slice(0, 500) : textOf(field).slice(0, 500))
+    }));
+    return { index, selector: stableSelector(form), action: form.action || location.href, method: (form.method || 'get').toUpperCase(), enctype: form.enctype || null, target: form.target || null, noValidate: Boolean(form.noValidate), fieldCount: fields.length, fields };
+  });
+  const orphanFields = fieldNodes.filter(field => !field.closest?.('form')).slice(0, 500).map((field, index) => ({ index, ...elementSummary(field), label: getLabelFor(field) }));
+  return { forms, orphanFields, count: forms.length, fieldCount: fieldNodes.length };
+}
+
+function getOutputs(params = {}) {
+  const selector = 'output,meter,progress,[role="status"],[role="alert"],[role="log"],[aria-live],pre,code,[data-output],[data-testid*="output" i],[class*="toast" i],[class*="error" i],[class*="result" i]';
+  const limit = clamp(int(params.limit, 200), 1, 1000);
+  return deepQueryAll(currentModalRoot() || document, selector).filter(el => params.includeHidden || visible(el)).slice(0, limit).map((el, index) => ({ index, role: el.getAttribute('role') || null, live: el.getAttribute('aria-live') || null, kind: el.tagName.toLowerCase(), text: textOf(el).slice(0, 2000), selector: stableSelector(el), element: elementSummary(el) }));
+}
+
+function getDialogs(params = {}) {
+  return deepQueryAll(document, 'dialog[open],[role="dialog"],[role="alertdialog"]').filter(el => params.includeHidden || visible(el)).slice(0, 100).map((el, index) => ({ index, modal: el.getAttribute('aria-modal') === 'true', name: accessibleName(el), ...elementSummary(el, Boolean(params.detailed)) }));
+}
+
+function headingsAndLandmarks() {
+  return {
+    title: document.title,
+    url: location.href,
+    readyState: document.readyState,
+    headings: deepQueryAll(document, 'h1,h2,h3,h4,h5,h6,[role="heading"]').filter(visible).slice(0, 100).map(el => ({ level: /^H[1-6]$/i.test(el.tagName) ? el.tagName.toLowerCase() : el.getAttribute('aria-level') || null, text: textOf(el).slice(0, 400), selector: stableSelector(el) })),
+    landmarks: deepQueryAll(document, 'main,nav,header,footer,aside,section,[role="main"],[role="navigation"],[role="banner"],[role="contentinfo"],[role="complementary"],[role="search"]')
+      .filter(visible).slice(0, 100).map(el => ({ role: el.getAttribute('role') || el.tagName.toLowerCase(), label: accessibleName(el).slice(0, 300), selector: stableSelector(el) }))
+  };
+}
+
+function textSnapshot(params = {}) {
+  const maxChars = clamp(int(params.maxChars, 30000), 1000, MAX_TEXT);
+  const root = currentModalRoot() || document.body || document.documentElement;
+  if (!root) return '';
+  let text = '';
   try {
-    const u = new URL(url);
-    // Just show pathname, truncated
-    const path = u.pathname + u.search;
-    if (path.length > maxLen) {
-      return path.slice(0, maxLen - 3) + '...';
-    }
-    return path;
-  } catch {
-    return url.slice(0, maxLen - 3) + '...';
-  }
+    text = root.innerText || root.textContent || '';
+  } catch { text = ''; }
+  return str(text).replace(/\u00a0/g, ' ').replace(/[ \t]+\n/g, '\n').replace(/\n[ \t]+/g, '\n').replace(/\n{3,}/g, '\n\n').trim().slice(0, maxChars);
 }
 
-function buildAnnotatedContent(root) {
-  const lines = [];
-  const seen = new Set();
-  const processedElements = new WeakSet();
-
-  function addInteractable(el) {
-    if (processedElements.has(el)) return;
-    processedElements.add(el);
-
-    const text = (el.innerText || el.value || el.getAttribute('aria-label') || el.placeholder || '').trim().slice(0, 100);
-    const type = getInteractableType(el);
-    const selector = getSelector(el);
-
-    // Create a unique key to avoid duplicates
-    const key = `${type}:${text}:${selector}`;
-    if (!text || seen.has(key)) return;
-    seen.add(key);
-
-    if (type === 'link') {
-      // Truncate href, omit if we have a good selector
-      const hasGoodSelector = selector && (selector.startsWith('#') || selector.startsWith('[name='));
-      if (hasGoodSelector) {
-        lines.push(`[${type}: "${text}" | selector: ${selector}]`);
-      } else {
-        const shortHref = truncateUrl(el.href);
-        lines.push(`[${type}: "${text}" | href: ${shortHref} | selector: ${selector}]`);
-      }
-    } else if (type === 'input:checkbox' || type === 'input:radio') {
-      // Show checked state for checkboxes and radio buttons
-      const checked = el.checked ? 'true' : 'false';
-      const label = text || el.name || el.id || 'unnamed';
-      lines.push(`[${type}: "${label}" | checked: ${checked} | selector: ${selector}]`);
-    } else if (type === 'select') {
-      // Show selected option for dropdowns
-      const selectedOption = el.options && el.options[el.selectedIndex];
-      const selected = selectedOption ? selectedOption.text.slice(0, 50) : '';
-      const label = text || el.name || el.id || 'unnamed';
-      lines.push(`[${type}: "${label}" | selected: "${selected}" | selector: ${selector}]`);
-    } else if (type.startsWith('input:') || type === 'textarea') {
-      const value = el.value ? ` | value: "${el.value.slice(0, 50)}"` : '';
-      lines.push(`[${type}: "${text || el.name || el.id || 'unnamed'}"${value} | selector: ${selector}]`);
-    } else {
-      lines.push(`[${type}: "${text}" | selector: ${selector}]`);
-    }
-  }
-
-  function walk(node) {
-    if (!node) return;
-
-    // Skip hidden elements
-    if (node.nodeType === Node.ELEMENT_NODE) {
-      const style = window.getComputedStyle(node);
-      if (style.display === 'none' || style.visibility === 'hidden') return;
-    }
-
-    // Handle text nodes
-    if (node.nodeType === Node.TEXT_NODE) {
-      const text = node.textContent.trim();
-      if (text) {
-        // Check if this text is inside a clickable element
-        const clickableParent = findClickableParent(node.parentElement);
-        if (clickableParent && isElementVisible(clickableParent)) {
-          addInteractable(clickableParent);
-        } else {
-          lines.push(text);
-        }
-      }
-      return;
-    }
-
-    // Handle element nodes
-    if (node.nodeType === Node.ELEMENT_NODE) {
-      const el = node;
-
-      // Check if this is an interactable element
-      if (isInteractable(el) && isElementVisible(el)) {
-        addInteractable(el);
-        return; // Don't recurse into interactables
-      }
-
-      // Recurse into children
-      for (const child of el.childNodes) {
-        walk(child);
-      }
-    }
-  }
-
-  walk(root);
-
-  // Clean up: remove excessive blank lines and join
-  return lines
-    .filter(line => line.trim())
-    .join('\n')
-    .replace(/\n{3,}/g, '\n\n');
+function annotatedSnapshot(params = {}) {
+  const info = headingsAndLandmarks();
+  const interactables = collectInteractables({ limit: clamp(int(params.interactableLimit, 300), 1, 1000) });
+  const forms = formsSnapshot();
+  const outputs = getOutputs({ limit: clamp(int(params.outputLimit, 80), 1, 200) });
+  const lines = [`# ${info.title || '(untitled)'}`, `URL: ${location.href}`, `Ready: ${info.readyState}`];
+  if (info.headings.length) { lines.push('## Headings'); for (const h of info.headings) lines.push(`- ${h.level || 'heading'}: ${h.text} | ${h.selector}`); }
+  if (info.landmarks.length) { lines.push('## Landmarks'); for (const x of info.landmarks) lines.push(`- [${x.role}] ${x.label || '(unnamed)'} | ${x.selector}`); }
+  if (interactables.length) { lines.push('## Interactables'); for (const item of interactables) { const extra = item.href ? ` | href=${item.href}` : item.value != null ? ` | value=${item.value}` : ''; lines.push(`- [${item.type}] ${item.name || item.text || '(unnamed)'} | ${item.selector || item.xpath}${extra}`); } }
+  if (forms.forms.length) { lines.push('## Forms'); forms.forms.forEach(form => lines.push(`- Form ${form.index + 1}: ${form.method} ${form.action} | ${form.fieldCount} fields | ${form.selector}`)); }
+  if (outputs.length) { lines.push('## Outputs'); outputs.forEach(output => lines.push(`- [${output.kind}] ${output.text.slice(0, 500)} | ${output.selector}`)); }
+  lines.push('## Text', textSnapshot({ maxChars: params.textMaxChars || 30000 }));
+  return lines.join('\n').slice(0, clamp(int(params.maxChars, 60000), 1000, MAX_TEXT));
 }
 
-async function handleGetContent(params) {
-  const format = params && params.format ? params.format : "html";
-  let target = null;
-  if (params && params.selector) {
-    target = params.selector.includes(':has-text(')
-      ? querySelectorHasText(params.selector)
-      : document.querySelector(params.selector);
-  }
-  // Default html scope to main content when available to avoid dumping
-  // megabytes of boilerplate (BUG-09).
-  if (!target && format === "html" && !params.selector) {
-    target = document.querySelector('main, [role="main"], article') || null;
-  }
-
-  if (format === "title") {
-    return { title: document.title, url: window.location.href };
-  }
-
-  const root = target || document.body || document.documentElement;
-
-  if (format === "text") {
-    const text = root.innerText;
-    return { text, url: window.location.href, title: document.title };
-  }
-
-  if (format === "textFast") {
-    const text = root.textContent;
-    return { text, url: window.location.href, title: document.title };
-  }
-
-  if (format === "annotated") {
-    const content = buildAnnotatedContent(root);
-    return { content, url: window.location.href, title: document.title };
-  }
-
-  // html: strip <style>/<script> blocks, cap length. BUG-09: full-document
-  // HTML dumped 222k tokens into the context window.
-  let html = target ? target.outerHTML : document.documentElement.outerHTML;
-  if (target === null || target === document.body || target === document.documentElement) {
-    html = html
-      .replace(/<style\b[^>]*>[\s\S]*?<\/style>/gi, '')
-      .replace(/<script\b[^>]*>[\s\S]*?<\/script>/gi, '');
-  }
-  const maxLen = Number(params && params.maxLength) || 60000;
-  let truncated = false;
-  if (html.length > maxLen) {
-    html = html.slice(0, maxLen);
-    truncated = true;
-  }
-  return { html, url: window.location.href, title: document.title, truncated };
+function getPageInventory(params = {}) {
+  const interactables = collectInteractables({ limit: clamp(int(params.interactableLimit, 500), 1, 2000) });
+  const inputs = getInputs({ limit: clamp(int(params.inputLimit, 500), 1, 2000) });
+  const outputs = getOutputs({ limit: clamp(int(params.outputLimit, 200), 1, 1000) });
+  const links = getLinks({ limit: clamp(int(params.linkLimit, 300), 1, 1500) });
+  const forms = formsSnapshot();
+  const dialogs = getDialogs({ limit: clamp(int(params.dialogLimit, 50), 1, 200) });
+  const media = deepQueryAll(document, 'img,video,audio,canvas,svg,iframe,embed,object').filter(el => params.includeHidden || visible(el)).slice(0, 300).map((el, index) => ({ index, kind: el.tagName.toLowerCase(), src: el.currentSrc || el.src || el.getAttribute('data') || null, alt: el.alt || null, title: el.title || null, selector: stableSelector(el), rect: (() => { const r = el.getBoundingClientRect(); return { x: r.x, y: r.y, width: r.width, height: r.height }; })() }));
+  const structure = headingsAndLandmarks();
+  return { version: VERSION, url: location.href, title: document.title, readyState: document.readyState, counts: { interactables: interactables.length, inputs: inputs.length, links: links.length, forms: forms.forms.length, outputs: outputs.length, dialogs: dialogs.length, media: media.length }, interactables, inputs, links, forms, outputs, dialogs, media, headings: structure.headings, landmarks: structure.landmarks, scroll: getScrollState(), activeElement: elementSummary(document.activeElement) };
 }
 
-async function handleFillForm(params) {
-  if (!params.fields || !Array.isArray(params.fields)) {
-    throw new Error("Missing fields array");
+function getContent(params = {}) {
+  const format = str(params.format || 'annotated').toLowerCase();
+  if (format === 'text') return { format, content: textSnapshot(params), ...headingsAndLandmarks() };
+  if (format === 'html') {
+    let html = document.documentElement?.outerHTML || '';
+    if (params.stripScripts !== false) {
+      const template = document.createElement('template');
+      template.innerHTML = html;
+      template.content.querySelectorAll('script,style,noscript,template').forEach(node => node.remove());
+      html = template.innerHTML;
+    }
+    return { format, content: html.slice(0, clamp(int(params.maxChars, 150000), 1000, MAX_HTML)) };
   }
-
-  const results = [];
-
-  for (const field of params.fields) {
-    let el = null;
-    if (field.selector) {
-      // Modal scope first so shared generic selectors resolve inside the open
-      // dialog, not to look-alike elements on the base page (BUG-05).
-      const modalRoot = currentModalRoot();
-      const scopes = [modalRoot, document].filter(Boolean);
-      for (const scope of scopes) {
-        if (field.selector.includes(':has-text(')) {
-          el = querySelectorHasText(field.selector);
-        } else {
-          try { el = scope.querySelector(field.selector); } catch (e) { el = null; }
-        }
-        if (el) break;
-        el = querySelectorDeep(scope, field.selector, { preferVisible: true });
-        if (el) break;
-      }
-    }
-    if (!el) {
-      results.push({ selector: field.selector, ok: false, error: "Element not found" });
-      continue;
-    }
-
-    try {
-      // If el is a custom element with shadow DOM containing an editable, unwrap it
-      let actual = el;
-      const tagName = actual.tagName;
-      const inputType = actual.type ? actual.type.toLowerCase() : "";
-
-      if (tagName !== "INPUT" && tagName !== "TEXTAREA" && tagName !== "SELECT" &&
-          !actual.isContentEditable && actual.getAttribute("contenteditable") !== "true") {
-        const inner = findEditableInShadow(actual);
-        if (inner) actual = inner;
-      }
-
-      const actualTag = actual.tagName;
-      const actualType = actual.type ? actual.type.toLowerCase() : "";
-
-      // Handle different field types
-      if (actualTag === "INPUT" && actualType === "checkbox") {
-        const shouldCheck = field.checked !== false && field.value !== false;
-        if (actual.checked !== shouldCheck) {
-          actual.checked = shouldCheck;
-          actual.dispatchEvent(new Event("change", { bubbles: true }));
-        }
-        results.push({ selector: field.selector, ok: true, type: "checkbox", checked: actual.checked });
-
-      } else if (actualTag === "INPUT" && actualType === "radio") {
-        actual.checked = true;
-        actual.dispatchEvent(new Event("change", { bubbles: true }));
-        results.push({ selector: field.selector, ok: true, type: "radio", checked: true });
-
-      } else if (actualTag === "SELECT") {
-        actual.value = field.value || "";
-        actual.dispatchEvent(new Event("change", { bubbles: true }));
-        results.push({ selector: field.selector, ok: true, type: "select", value: actual.value });
-
-      } else if (actualTag === "INPUT" && actualType === "file") {
-        if (!field.file || !field.file.data) {
-          results.push({ selector: field.selector, ok: false, error: "Missing file data" });
-          continue;
-        }
-        try {
-          const byteString = atob(field.file.data);
-          const ab = new ArrayBuffer(byteString.length);
-          const ia = new Uint8Array(ab);
-          for (let i = 0; i < byteString.length; i++) {
-            ia[i] = byteString.charCodeAt(i);
-          }
-          const blob = new Blob([ab], { type: field.file.type || "application/octet-stream" });
-          const file = new File([blob], field.file.name || "file", { type: blob.type });
-          const dataTransfer = new DataTransfer();
-          dataTransfer.items.add(file);
-          actual.files = dataTransfer.files;
-          actual.dispatchEvent(new Event("change", { bubbles: true }));
-          results.push({ selector: field.selector, ok: true, type: "file", filename: file.name });
-        } catch (fileErr) {
-          results.push({ selector: field.selector, ok: false, error: fileErr.message });
-        }
-
-      } else if (actualTag === "TEXTAREA" || actualTag === "INPUT") {
-        actual.focus();
-        setInputValueReact(actual, field.value || "");
-        results.push({ selector: field.selector, ok: true, type: "text", value: actual.value });
-
-      } else if (actual.isContentEditable || actual.getAttribute("contenteditable") === "true") {
-        actual.focus();
-        const ceResult = contentEditableInsertText(actual, field.value || "", true);
-        if (ceResult && ceResult.ok) {
-          results.push({ selector: field.selector, ok: true, type: "richEditor", value: ceResult.text || field.value });
-        } else {
-          actual.textContent = field.value || "";
-          actual.dispatchEvent(new Event("input", { bubbles: true }));
-          results.push({ selector: field.selector, ok: true, type: "contenteditable", value: actual.textContent });
-        }
-
-      } else {
-        results.push({ selector: field.selector, ok: false, error: "Unknown field type: " + actualTag });
-      }
-    } catch (err) {
-      results.push({ selector: field.selector, ok: false, error: err.message });
-    }
-  }
-
-  const successCount = results.filter(r => r.ok).length;
-  return { filled: true, results, success: successCount, total: params.fields.length };
+  if (format === 'json' || format === 'snapshot' || format === 'inventory') return { format: format === 'snapshot' ? 'json' : format, ...getPageInventory(params) };
+  return { format: 'annotated', content: annotatedSnapshot(params), ...headingsAndLandmarks(), interactableCount: collectInteractables({ limit: 2000 }).length };
 }
 
-async function handleWaitFor(params) {
-  const timeout = params.timeout || 5000;
-  const interval = params.interval || 100;
-  const startTime = performance.now();
-
-  // Fixed-delay wait: no selector/text/contains needed (BUG-08). SPAs render
-  // after navigation; agents previously had no clean "pause" primitive.
-  if (!params.selector && !params.text && !params.contains && !params.domStable && !params.networkIdle) {
-    const delay = Math.min(timeout, 30000);
-    await new Promise(r => setTimeout(r, delay));
-    return { waited: true, mode: 'delay', ms: delay };
-  }
-
+async function waitFor(params = {}) {
+  const timeout = clamp(int(params.timeoutMs, 15000), 100, 120000);
+  const interval = clamp(int(params.intervalMs, 100), 20, 3000);
+  const started = performance.now();
+  let observer = null;
+  let poll = null;
+  let timer = null;
+  const check = () => {
+    if (params.selector || params.text || params.role || params.label || params.placeholder || params.testId) {
+      const el = resolveElement(params);
+      if (params.state === 'hidden') return !el || !visible(el);
+      if (params.state === 'enabled') return Boolean(el && enabled(el));
+      if (params.state === 'disabled') return Boolean(el && !enabled(el));
+      if (params.state === 'attached') return Boolean(el);
+      return Boolean(el && visible(el));
+    }
+    if (params.urlContains) return location.href.includes(str(params.urlContains));
+    if (params.urlEquals) return location.href === str(params.urlEquals);
+    if (params.titleContains) return document.title.toLowerCase().includes(str(params.titleContains).toLowerCase());
+    if (params.textContains) return textSnapshot({ maxChars: 100000 }).toLowerCase().includes(str(params.textContains).toLowerCase());
+    if (params.property) return Boolean(str(params.property).split('.').reduce((obj, key) => obj == null ? undefined : obj[key], window));
+    return document.readyState === 'complete' || document.readyState === 'interactive';
+  };
+  if (check()) return { matched: true, ms: 0 };
   return new Promise((resolve, reject) => {
-    let lastDomChange = performance.now();
-    const domObserver = (params.domStable || params.networkIdle)
-      ? new MutationObserver(() => { lastDomChange = performance.now(); })
-      : null;
-    if (domObserver) {
-      try {
-        domObserver.observe(document.body || document.documentElement, {
-          childList: true, subtree: true, attributes: true, characterData: true
-        });
-      } catch (e) { /* fall through to timeout-based stability */ }
-    }
-
-    const check = () => {
-      // Check for selector
-      if (params.selector) {
-        const el = params.selector.includes(':has-text(')
-          ? querySelectorHasText(params.selector)
-          : document.querySelector(params.selector);
-        if (el) {
-          if (domObserver) domObserver.disconnect();
-          return resolve({ found: true, selector: params.selector, element: elementSummary(el) });
-        }
-      }
-
-      // Check for text
-      if (params.text) {
-        const el = findByText(params.text);
-        if (el) {
-          if (domObserver) domObserver.disconnect();
-          return resolve({ found: true, text: params.text, element: elementSummary(el) });
-        }
-      }
-
-      // Check for text content contains
-      if (params.contains) {
-        const root = document.body || document.documentElement;
-        if (root && root.textContent && root.textContent.toLowerCase().includes(params.contains.toLowerCase())) {
-          if (domObserver) domObserver.disconnect();
-          return resolve({ found: true, contains: params.contains });
-        }
-      }
-
-      // DOM-stability wait: resolve after quietMs with no mutations (BUG-08).
-      if ((params.domStable || params.networkIdle) && performance.now() - lastDomChange >= 600) {
-        if (domObserver) domObserver.disconnect();
-        return resolve({ found: true, mode: params.networkIdle ? 'networkIdle' : 'domStable' });
-      }
-
-      // Check timeout
-      if (performance.now() - startTime >= timeout) {
-        if (domObserver) domObserver.disconnect();
-        if (params.domStable || params.networkIdle) {
-          // Stability waits resolve successfully at timeout — best effort.
-          return resolve({ found: true, mode: 'timeout-best-effort' });
-        }
-        return reject(new Error(`Timeout waiting for: ${params.selector || params.text || params.contains}`));
-      }
-
-      // Keep polling
-      setTimeout(check, interval);
+    let settled = false;
+    const finish = (error, result) => {
+      if (settled) return;
+      settled = true;
+      if (timer) clearTimeout(timer);
+      if (poll) clearInterval(poll);
+      observer?.disconnect();
+      if (error) reject(error); else resolve(result);
     };
-
-    check();
+    poll = setInterval(() => { try { if (check()) finish(null, { matched: true, ms: roundMs(performance.now() - started) }); } catch {} }, interval);
+    timer = setTimeout(() => finish(new Error(`waitFor timed out after ${timeout}ms`)), timeout);
+    try {
+      observer = new MutationObserver(() => { try { if (check()) finish(null, { matched: true, ms: roundMs(performance.now() - started) }); } catch {} });
+      observer.observe(document.documentElement || document, { subtree: true, childList: true, attributes: true, characterData: true });
+    } catch {}
   });
 }
 
-async function handleTryUntil(params) {
-  if (!params.alternatives || !Array.isArray(params.alternatives)) {
-    throw new Error("tryUntil requires alternatives array");
+async function waitForStable(params = {}) {
+  const quietMs = clamp(int(params.quietMs, 500), 50, 10000);
+  const timeout = clamp(int(params.timeoutMs, 15000), quietMs, 120000);
+  const started = performance.now();
+  let lastMutation = performance.now();
+  let mutations = 0;
+  let observer = null;
+  try { observer = new MutationObserver(list => { mutations += list.length; lastMutation = performance.now(); }); observer.observe(document.documentElement || document, { subtree: true, childList: true, attributes: true, characterData: true }); } catch {}
+  while (performance.now() - started < timeout) {
+    if (performance.now() - lastMutation >= quietMs) { observer?.disconnect(); return { stable: true, ms: roundMs(performance.now() - started), mutations }; }
+    await sleep(50);
   }
+  observer?.disconnect();
+  return { stable: false, ms: roundMs(performance.now() - started), mutations };
+}
 
-  const timeout = params.timeout || 5000;
-  const startTime = performance.now();
-  const errors = [];
-
-  // Try each alternative until one succeeds
-  for (const alt of params.alternatives) {
-    if (performance.now() - startTime > timeout) {
-      break;
-    }
-
+async function fillForm(params = {}) {
+  if (!Array.isArray(params.fields)) throw new Error('fillForm requires fields array');
+  const results = [];
+  for (let index = 0; index < params.fields.length; index++) {
+    const field = params.fields[index] || {};
+    const el = resolveElement(field);
+    if (!el) { results.push({ index, ok: false, error: 'field not found' }); if (params.stopOnError !== false) break; continue; }
     try {
       let result;
-      switch (alt.action) {
-        case "click":
-          result = await handleClick(alt.params || {});
-          break;
-        case "type":
-          result = await handleType(alt.params || {});
-          break;
-        case "waitFor":
-          result = await handleWaitFor({ ...alt.params, timeout: Math.min(alt.params?.timeout || 1000, 2000) });
-          break;
-        default:
-          continue;
-      }
-
-      // Success! Return with info about which alternative worked
-      return {
-        branch: true,
-        success: true,
-        alternativeIndex: params.alternatives.indexOf(alt),
-        action: alt.action,
-        result
-      };
-    } catch (err) {
-      errors.push({ action: alt.action, params: alt.params, error: err.message });
+      if (el instanceof HTMLSelectElement) result = selectOption(el, field);
+      else if (el.matches?.('input[type="checkbox"],input[type="radio"]') || /^(checkbox|radio)$/i.test(field.type || '')) result = setCheckbox(el, field.checked !== undefined ? Boolean(field.checked) : true);
+      else if (field.file || field.files) result = await uploadFiles(field.file || field.files, field.selector || stableSelector(el));
+      else if (field.clear === true) result = clearElement({ selector: stableSelector(el) });
+      else result = typeInto(el, field.value ?? field.text ?? '', field);
+      results.push({ index, ok: true, result });
+    } catch (error) {
+      results.push({ index, ok: false, error: str(error?.message || error) });
+      if (params.stopOnError !== false) break;
     }
   }
-
-  // All alternatives failed
-  return {
-    branch: true,
-    success: false,
-    errors,
-    message: "All alternatives failed"
-  };
-}
-
-function extractLinks(root, limit = 20) {
-  const links = [];
-  const seen = new Set();
-  const anchors = root.querySelectorAll('a[href]');
-
-  for (const a of anchors) {
-    if (links.length >= limit) break;
-    const href = a.href;
-    const text = (a.innerText || a.getAttribute('aria-label') || '').trim().slice(0, 80);
-
-    // Skip empty, javascript, anchor-only, or duplicate links
-    if (!href || href.startsWith('javascript:') || href === '#' || seen.has(href)) continue;
-    if (!text || text.length < 2) continue;
-
-    seen.add(href);
-    links.push({ href, text });
+  let submitted = false;
+  if (params.submit) {
+    const submitTarget = params.submitSelector ? resolveElement({ selector: params.submitSelector }) : resolveElement({ role: 'button', name: params.submitText }) || deepQueryAll(document, 'button[type="submit"],input[type="submit"]').find(visible);
+    if (submitTarget) { submitElement(submitTarget, params); submitted = true; }
+    else if (params.submitLast !== false) { const last = resolveElement({ selector: params.fields.at(-1)?.selector }) || document.activeElement; if (last) { submitElement(last, params); submitted = true; } }
   }
-  return links;
+  return { filled: true, results, completed: results.length, total: params.fields.length, submitted };
 }
 
-function extractPageSummary(maxChars = 500) {
-  // Get main content area if it exists
-  const main = document.querySelector('main, [role="main"], article, .content, #content') || document.body;
-
-  // Get headings for structure
-  const headings = [];
-  main.querySelectorAll('h1, h2, h3').forEach((h, i) => {
-    if (i < 6) headings.push(h.innerText.trim().slice(0, 60));
-  });
-
-  // Get first paragraph or main text
-  let summary = '';
-  const p = main.querySelector('p');
-  if (p) {
-    summary = p.innerText.trim().slice(0, maxChars);
-  } else {
-    summary = main.innerText.trim().slice(0, maxChars);
+function serializeValue(value, depth = 0, seen = new WeakSet()) {
+  if (depth > 6) return '[MaxDepth]';
+  if (value === undefined) return null;
+  if (value === null || typeof value === 'string' || typeof value === 'number' || typeof value === 'boolean') return value;
+  if (typeof value === 'bigint') return `${value}n`;
+  if (typeof value === 'function') return `[Function ${value.name || 'anonymous'}]`;
+  if (value instanceof Element) return elementSummary(value, true);
+  if (value instanceof NodeList || value instanceof HTMLCollection) return Array.from(value).slice(0, 100).map(item => serializeValue(item, depth + 1, seen));
+  if (value instanceof Date) return value.toISOString();
+  if (value instanceof Error) return { name: value.name, message: value.message, stack: value.stack };
+  if (typeof value === 'object') {
+    if (seen.has(value)) return '[Circular]';
+    seen.add(value);
+    if (Array.isArray(value)) return value.slice(0, 200).map(item => serializeValue(item, depth + 1, seen));
+    try {
+      const entries = Object.entries(value).slice(0, 150);
+      const output = {};
+      for (const [key, item] of entries) output[key] = serializeValue(item, depth + 1, seen);
+      return output;
+    } catch { return str(value); }
   }
-
-  return { headings, summary };
+  return str(value);
 }
 
-async function handlePreexplore(params) {
-  const root = document.body;
-  if (!root) return { error: 'No body element' };
-
-  const goal = (params.goal || '').toLowerCase();
-  const maxLinks = params.maxLinks || 15;
-
-  // Get page basics
-  const url = window.location.href;
-  const title = document.title;
-  const { headings, summary } = extractPageSummary(params.summaryLength || 300);
-
-  // Get all links
-  const allLinks = extractLinks(root, 50);
-
-  // Score and filter links by relevance to goal
-  let rankedLinks = allLinks;
-  if (goal) {
-    rankedLinks = allLinks.map(link => {
-      let score = 0;
-      const textLower = link.text.toLowerCase();
-      const hrefLower = link.href.toLowerCase();
-
-      // Exact word match in text
-      if (textLower.includes(goal)) score += 10;
-      // Partial match
-      goal.split(/\s+/).forEach(word => {
-        if (word.length > 2 && textLower.includes(word)) score += 3;
-        if (word.length > 2 && hrefLower.includes(word)) score += 2;
-      });
-      // Navigation-like links get bonus
-      if (/nav|menu|sidebar/i.test(link.text)) score += 1;
-
-      return { ...link, score };
-    }).sort((a, b) => b.score - a.score);
-  }
-
-  // Get top links
-  const topLinks = rankedLinks.slice(0, maxLinks).map(l => ({
-    text: l.text,
-    href: l.href,
-    score: l.score || 0
-  }));
-
-  // Get key interactables (condensed)
-  const forms = [];
-  document.querySelectorAll('form').forEach((form, i) => {
-    if (i >= 3) return;
-    const inputs = [];
-    form.querySelectorAll('input:not([type="hidden"]), textarea, select').forEach((inp, j) => {
-      if (j >= 5) return;
-      inputs.push({
-        type: inp.type || inp.tagName.toLowerCase(),
-        name: inp.name || inp.placeholder || inp.id || ''
-      });
-    });
-    const submit = form.querySelector('button[type="submit"], input[type="submit"]');
-    forms.push({
-      action: form.action || '',
-      inputs,
-      submitText: submit ? (submit.innerText || submit.value || 'Submit').slice(0, 30) : null
-    });
-  });
-
-  // Get key buttons (non-form)
-  const buttons = [];
-  document.querySelectorAll('button:not([type="submit"]), [role="button"]').forEach((btn, i) => {
-    if (i >= 10) return;
-    const text = (btn.innerText || btn.getAttribute('aria-label') || '').trim();
-    if (text && text.length > 1 && text.length < 50) {
-      buttons.push(text);
-    }
-  });
-
-  return {
-    url,
-    title,
-    headings,
-    summary,
-    links: topLinks,
-    forms,
-    buttons: [...new Set(buttons)].slice(0, 10),
-    goal: goal || null
-  };
-}
-
-async function handleGetInteractables(params) {
-  // Scope to the open modal when one is present so the listing matches what
-  // the agent can actually interact with right now (BUG-14).
-  const scopeRoot = currentModalRoot();
-  const root = (scopeRoot || (params.selector ? document.querySelector(params.selector) : null) || document.body);
-  if (!root) return { elements: [], scopedToModal: Boolean(scopeRoot) };
-
-  const interactables = [];
-  const seen = new Set();
-  const seenSelectors = new Set();
-
-  // Collect from the requested root plus visible below-fold content: walk the
-  // whole DOM subtree of the root, not just viewport-visible items, so the
-  // list stays consistent with snapshots (BUG-14: viewport-only lists).
-  function addElement(el, type) {
-    if (!el || interactables.length > 120) return;
-    const text = (el.innerText || el.value || el.getAttribute('aria-label') || el.placeholder || '').trim().slice(0, 100);
-    const name = el.name || el.id || el.placeholder || '';
-    const key = `${type}:${text || name}`;
-    if (!text && !name) return;
-    if (seen.has(key)) return;
-    seen.add(key);
-
-    const selector = getSelector(el);
-    // Unique selectors only — a selector that resolves to a different element
-    // is worse than none (BUG-14: inputs listed with selector '-').
-    let uniqueSelector = null;
-    if (selector) {
-      try {
-        uniqueSelector = document.querySelector(selector) === el ? selector : null;
-      } catch (e) { uniqueSelector = null; }
-    }
-    if (uniqueSelector && seenSelectors.has(uniqueSelector)) uniqueSelector = null;
-    if (uniqueSelector) seenSelectors.add(uniqueSelector);
-
-    const rect = el.getBoundingClientRect();
-    interactables.push({
-      type,
-      tag: el.tagName,
-      text: text || name,
-      selector: uniqueSelector,
-      inViewport: rect.top < window.innerHeight && rect.bottom > 0,
-      rect: { x: rect.x, y: rect.y, width: rect.width, height: rect.height }
-    });
-  }
-
-  // Clickable elements — full subtree walk with shadow DOM
-  const clickSelector = 'button, a, [role="button"], [onclick], input[type="submit"], input[type="button"]';
-  const clickables = querySelectorDeep(root, clickSelector, { preferVisible: false, all: true }) || [];
-  clickables.forEach(el => {
-    if (!isElementVisible(el)) return;
-    addElement(el, 'clickable');
-  });
-
-  // Input fields — full subtree walk
-  const inputSelector = 'input:not([type="hidden"]), textarea, select';
-  const inputs = querySelectorDeep(root, inputSelector, { preferVisible: false, all: true }) || [];
-  inputs.forEach(el => {
-    if (!isElementVisible(el)) return;
-    if (el.tagName === 'INPUT' && (el.type === 'submit' || el.type === 'button')) return;
-    addElement(el, 'input');
-  });
-
-  return {
-    url: window.location.href,
-    title: document.title,
-    scopedToModal: Boolean(scopeRoot),
-    elements: interactables
-  };
-}
-
-// Auth page detection patterns
-const AUTH_URL_PATTERNS = [
-  /\/login/i, /\/signin/i, /\/sign-in/i, /\/auth/i, /\/oauth/i,
-  /\/authorize/i, /\/authenticate/i, /\/sso/i,
-  /accounts\.google/i, /github\.com\/login/i, /microsoft.*login/i,
-  /login\.microsoftonline/i, /auth0\.com/i, /okta\.com/i
-];
-
-const OAUTH_PROVIDERS = [
-  { name: "Google", patterns: [/google/i, /gmail/i] },
-  { name: "GitHub", patterns: [/github/i] },
-  { name: "Microsoft", patterns: [/microsoft/i, /azure/i, /outlook/i] },
-  { name: "Facebook", patterns: [/facebook/i, /meta/i] },
-  { name: "Apple", patterns: [/apple/i, /icloud/i] },
-  { name: "Twitter", patterns: [/twitter/i, /x\.com/i] }
-];
-
-function detectAuthType() {
-  const url = window.location.href.toLowerCase();
-  const body = document.body;
-
-  // Check for 2FA page
-  const has2FAIndicators = body && (
-    body.innerText.match(/two.?factor|2fa|verification code|authenticator|security code/i) ||
-    document.querySelector('input[name*="otp" i], input[name*="code" i], input[name*="totp" i]')
-  );
-  if (has2FAIndicators) return "2fa";
-
-  // Check for password reset
-  if (url.match(/reset|forgot|recover/i) && document.querySelector('input[type="password"], input[type="email"]')) {
-    return "password-reset";
-  }
-
-  // Check for OAuth consent page
-  if (url.match(/consent|authorize|permission|scope/i)) {
-    return "oauth";
-  }
-
-  // Standard login
-  const hasPassword = document.querySelector('input[type="password"]');
-  const hasUsername = document.querySelector('input[name*="user" i], input[name*="email" i], input[name*="login" i], input[type="email"]');
-  if (hasPassword || hasUsername) return "login";
-
-  return null;
-}
-
-function detectProvider() {
-  const url = window.location.href;
-  const html = document.documentElement.outerHTML;
-
-  for (const provider of OAUTH_PROVIDERS) {
-    for (const pattern of provider.patterns) {
-      if (pattern.test(url) || pattern.test(html.slice(0, 5000))) {
-        return provider.name;
-      }
-    }
-  }
-
-  // Check for OAuth buttons
-  const oauthButtons = [];
-  document.querySelectorAll('button, a').forEach(el => {
-    const text = (el.innerText || el.getAttribute('aria-label') || '').toLowerCase();
-    if (text.match(/sign in with|login with|continue with/i)) {
-      for (const provider of OAUTH_PROVIDERS) {
-        if (provider.patterns.some(p => p.test(text))) {
-          oauthButtons.push(provider.name);
-        }
-      }
-    }
-  });
-
-  return oauthButtons.length > 0 ? oauthButtons : null;
-}
-
-function findVisibleAccounts() {
-  const accounts = [];
-  const seen = new Set();
-
-  // Email patterns
-  const emailRegex = /[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}/g;
-
-  // Check visible text (limited scope to avoid picking up unrelated emails)
-  const searchAreas = [
-    document.querySelector('[class*="account" i], [class*="profile" i], [class*="user" i]'),
-    document.querySelector('header, nav, [role="banner"]'),
-    document.querySelector('[data-email], [data-user]')
-  ].filter(Boolean);
-
-  for (const area of searchAreas) {
-    const text = area.innerText || '';
-    const matches = text.match(emailRegex) || [];
-    for (const email of matches) {
-      if (!seen.has(email)) {
-        seen.add(email);
-        accounts.push(email);
-      }
-    }
-  }
-
-  // Check pre-filled input fields
-  document.querySelectorAll('input[type="email"], input[name*="email" i], input[name*="user" i]').forEach(input => {
-    if (input.value && input.value.includes('@') && !seen.has(input.value)) {
-      seen.add(input.value);
-      accounts.push(input.value);
-    }
-  });
-
-  // Check account picker/switcher elements
-  document.querySelectorAll('[class*="account" i] img[alt], [class*="avatar" i][title]').forEach(el => {
-    const text = el.alt || el.title || '';
-    const match = text.match(emailRegex);
-    if (match && !seen.has(match[0])) {
-      seen.add(match[0]);
-      accounts.push(match[0]);
-    }
-  });
-
-  return accounts.slice(0, 5); // Limit to 5 accounts
-}
-
-function getFormFields() {
-  const fields = [];
-  document.querySelectorAll('input:not([type="hidden"]):not([type="submit"])').forEach(input => {
-    const type = input.type || 'text';
-    const name = input.name || input.id || input.placeholder || type;
-    if (!fields.includes(name)) {
-      fields.push(name);
-    }
-  });
-  return fields.slice(0, 10);
-}
-
-function getOAuthOptions() {
-  const options = [];
-  const seen = new Set();
-
-  document.querySelectorAll('button, a, [role="button"]').forEach(el => {
-    const text = (el.innerText || el.getAttribute('aria-label') || '').trim();
-    if (text.match(/sign in with|login with|continue with/i)) {
-      const providerMatch = text.match(/with\s+(\w+)/i);
-      if (providerMatch && !seen.has(providerMatch[1])) {
-        seen.add(providerMatch[1]);
-        options.push(providerMatch[1]);
-      }
-    }
-  });
-
-  return options;
-}
-
-async function handleDetectAuth() {
-  const url = window.location.href;
-
-  // Check if URL matches auth patterns
-  const isAuthUrl = AUTH_URL_PATTERNS.some(p => p.test(url));
-
-  // Detect auth type from page content
-  const authType = detectAuthType();
-  const isAuthPage = isAuthUrl || authType !== null;
-
-  if (!isAuthPage) {
-    return {
-      isAuthPage: false,
-      authType: null,
-      detectedProvider: null,
-      availableAccounts: [],
-      formFields: [],
-      oauthOptions: []
-    };
-  }
-
-  return {
-    isAuthPage: true,
-    authType: authType || "login",
-    detectedProvider: detectProvider(),
-    availableAccounts: findVisibleAccounts(),
-    formFields: getFormFields(),
-    oauthOptions: getOAuthOptions()
-  };
-}
-
-async function handleEvaluate(params) {
-  if (!params || !params.script) {
-    throw new Error("Missing script parameter");
-  }
-
+async function evaluate(params = {}) {
+  const source = str(params.script).trim();
+  if (!source) throw new Error('evaluate requires script');
+  if (source.length > 1_000_000) throw new Error('evaluate script exceeds the 1 MB limit');
+  const timeoutMs = clamp(int(params.timeoutMs, 10000), 100, 120000);
   if (params.pageWorld) {
-    const result = await runInPageWorld(params.script);
-    if (!result.ok) throw new Error(result.error || 'Page world eval failed');
-    return { result: result.value, type: typeof result.value, pageWorld: true };
+    const page = window.wrappedJSObject;
+    if (!page || typeof page.eval !== 'function') throw new Error('Page-world evaluation is unavailable in this Firefox context');
+    const token = `__alpha_eval_${Date.now()}_${Math.random().toString(36).slice(2)}`;
+    const key = JSON.stringify(token);
+    const trimmed = source.replace(/^\s*javascript:/i, '').trim();
+    const expression = /^(return|throw|if|for|while|const|let|var|function|class|switch|try|do|await|\{|;)/.test(trimmed) ? `(async function(){${trimmed}})()` : `(async function(){return (${trimmed})})()`;
+    const runner = `(async function(){try{var v=await (${expression});window[${key}]={ok:true,value:v}}catch(e){window[${key}]={ok:false,error:{name:String(e&&e.name||'Error'),message:String(e&&e.message||e),stack:String(e&&e.stack||'')}}}})()`;
+    page.eval(runner);
+    const deadline = Date.now() + timeoutMs;
+    try {
+      while (Date.now() < deadline) {
+        const state = page[token];
+        if (state) {
+          try { delete page[token]; } catch {}
+          if (!state.ok) throw new Error(`Evaluate error: ${state.error.name}: ${state.error.message}`);
+          return { result: serializeValue(state.value), type: state.value === null ? 'null' : typeof state.value, pageWorld: true };
+        }
+        await sleep(25);
+      }
+      throw new Error(`Evaluate timed out after ${timeoutMs}ms`);
+    } finally { try { delete page[token]; } catch {} }
   }
-
+  const code = source.replace(/^\s*javascript:/i, '').trim();
+  const startsStatement = /^(return|throw|if|for|while|const|let|var|function|class|switch|try|do|await|\{|;)/.test(code);
+  const body = startsStatement ? code : `return (${code});`;
   try {
-    // Auto-return: if the script doesn't start with `return` / `await` and is
-    // a plain expression, wrap it so the expression's value is returned.
-    // BUG-01: `new Function("1+1")` returned undefined for every expression,
-    // making eval always report `null (type: undefined)`.
-    let source = params.script.trim();
-    const startsWithStatement = /^(return\b|await\b|let\b|const\b|var\b|if\b|for\b|while\b|function\b|class\b|\{|;|\/)/.test(source);
-    if (!startsWithStatement) {
-      source = `return (${source})`;
-    }
-    // Top-level `await` is common in agent scripts (fetch, Supabase, etc.)
-    // but `new Function` creates a sync function where `await` is a syntax
-    // error ("await is only valid in async functions"). Detect it and build
-    // an async function instead so both sync and async scripts just work.
-    const needsAsync = /\bawait\b/.test(source);
-    const fn = needsAsync
-      ? new (Object.getPrototypeOf(async function () {}).constructor)(source)
-      : new Function(source);
-    const result = fn();
-
-    // Handle promises
-    const resolvedResult = result instanceof Promise ? await result : result;
-
-    // Serialize the result appropriately
-    if (resolvedResult === undefined) {
-      return { result: null, type: 'undefined' };
-    }
-    if (resolvedResult === null) {
-      return { result: null, type: 'null' };
-    }
-    if (typeof resolvedResult === 'function') {
-      return { result: resolvedResult.toString(), type: 'function' };
-    }
-    if (resolvedResult instanceof Element) {
-      return { result: elementSummary(resolvedResult), type: 'element' };
-    }
-    if (resolvedResult instanceof NodeList || resolvedResult instanceof HTMLCollection) {
-      return { result: Array.from(resolvedResult).map(el => elementSummary(el)), type: 'nodelist' };
-    }
-
-    // Try to serialize as JSON, fallback to string
-    try {
-      // Test if it's JSON-serializable
-      JSON.stringify(resolvedResult);
-      return { result: resolvedResult, type: typeof resolvedResult };
-    } catch {
-      return { result: String(resolvedResult), type: 'string' };
-    }
-  } catch (err) {
-    throw new Error(`Evaluate error: ${err.message}`);
+    const AsyncFunction = Object.getPrototypeOf(async function() {}).constructor;
+    const result = await new AsyncFunction(body).call(window);
+    return { result: serializeValue(result), type: result === null ? 'null' : typeof result, pageWorld: false };
+  } catch (error) {
+    throw new Error(`Evaluate error: ${str(error?.name, 'Error')}: ${str(error?.message, error)}`);
   }
 }
 
-// Find the actual scrollable ancestor chain. Many SPAs scroll a nested
-// container (overflow: auto/scroll) instead of the window — BUG-02.
-function findScrollableContainers() {
-  const containers = [];
-  const all = document.querySelectorAll('*');
-  for (const el of all) {
-    if (el.scrollHeight - el.clientHeight < 5 && el.scrollWidth - el.clientWidth < 5) continue;
-    const style = window.getComputedStyle(el);
-    const oy = style.overflowY, ox = style.overflowX;
-    const scrollableY = (oy === 'auto' || oy === 'scroll') && el.scrollHeight - el.clientHeight >= 5;
-    const scrollableX = (ox === 'auto' || ox === 'scroll') && el.scrollWidth - el.clientWidth >= 5;
-    if (scrollableY || scrollableX) containers.push(el);
-  }
-  // Largest scrollable area first — usually the main content column.
-  containers.sort((a, b) =>
-    (b.scrollHeight * b.scrollWidth) - (a.scrollHeight * a.scrollWidth));
-  return containers;
-}
-
-function reportScrollPosition() {
-  let container = null;
-  try { container = findScrollableContainers()[0] || null; } catch (e) {}
-  return {
-    scrollX: window.scrollX,
-    scrollY: window.scrollY,
-    containerScrollTop: container ? container.scrollTop : null,
-    containerTag: container ? (container.tagName + (container.className && typeof container.className === 'string' ? '.' + container.className.split(' ')[0] : '')) : null
-  };
-}
-
-async function handleScroll(params) {
-  if (!params) {
-    throw new Error("Missing scroll parameters");
-  }
-
-  // Scroll by pixel amount
-  if (params.y !== undefined || params.x !== undefined) {
-    const dx = params.x || 0;
-    const dy = params.y || 0;
-    window.scrollBy({ left: dx, top: dy, behavior: params.behavior || 'auto' });
-    // Also scroll the largest nested scrollable container — SPAs often render
-    // into a container with overflow:auto while window.scrollY stays 0 (BUG-02).
-    let containerUsed = null;
-    try {
-      const containers = findScrollableContainers();
-      const c = containers[0];
-      if (c && Math.abs(dy) > 0) {
-        const before = c.scrollTop;
-        c.scrollBy({ top: dy, left: dx, behavior: params.behavior || 'auto' });
-        if (Math.abs(c.scrollTop - before) < 1 && Math.abs(window.scrollY) < 1) {
-          containerUsed = null; // container didn't move either
-        } else {
-          containerUsed = true;
-        }
-      }
-    } catch (e) {}
-    const pos = reportScrollPosition();
-    const moved = Math.abs(pos.scrollY) > 0 || (pos.containerScrollTop || 0) > 0;
-    return {
-      scrolled: moved || Boolean(containerUsed),
-      type: 'by',
-      x: dx,
-      y: dy,
-      ...pos
-    };
-  }
-
-  // Scroll element into view
-  if (params.selector) {
-    const el = params.selector.includes(':has-text(')
-      ? querySelectorHasText(params.selector)
-      : document.querySelector(params.selector);
-    if (!el) {
-      throw new Error(`Element not found: ${params.selector}`);
-    }
-    el.scrollIntoView({
-      block: params.block || 'center',
-      inline: params.inline || 'center',
-      behavior: params.behavior || 'auto'
-    });
-    return {
-      scrolled: true,
-      type: 'element',
-      selector: params.selector,
-      element: elementSummary(el),
-      ...reportScrollPosition()
-    };
-  }
-
-  // Scroll to position (top/bottom)
-  if (params.position) {
-    const pos = params.position.toLowerCase();
-    const containers = findScrollableContainers();
-    if (pos === 'top') {
-      window.scrollTo({ top: 0, left: 0, behavior: params.behavior || 'auto' });
-      for (const c of containers.slice(0, 3)) c.scrollTop = 0;
-    } else if (pos === 'bottom') {
-      window.scrollTo({
-        top: document.documentElement.scrollHeight,
-        left: 0,
-        behavior: params.behavior || 'auto'
-      });
-      for (const c of containers.slice(0, 3)) c.scrollTop = c.scrollHeight;
-    } else if (pos === 'left') {
-      window.scrollTo({ top: window.scrollY, left: 0, behavior: params.behavior || 'auto' });
-      for (const c of containers.slice(0, 3)) c.scrollLeft = 0;
-    } else if (pos === 'right') {
-      window.scrollTo({
-        top: window.scrollY,
-        left: document.documentElement.scrollWidth,
-        behavior: params.behavior || 'auto'
-      });
-      for (const c of containers.slice(0, 3)) c.scrollLeft = c.scrollWidth;
-    } else {
-      throw new Error(`Unknown position: ${params.position}. Use top, bottom, left, or right.`);
-    }
-    return {
-      scrolled: true,
-      type: 'position',
-      position: pos,
-      ...reportScrollPosition()
-    };
-  }
-
-  // Scroll to absolute coordinates
-  if (params.scrollTo) {
-    const targetY = params.scrollTo.y || 0;
-    const targetX = params.scrollTo.x || 0;
-    window.scrollTo({
-      top: targetY,
-      left: targetX,
-      behavior: params.behavior || 'auto'
-    });
-    // Mirror onto nested containers when the window itself can't scroll far.
-    try {
-      const containers = findScrollableContainers();
-      const c = containers[0];
-      if (c && Math.abs(window.scrollY - targetY) > 5) {
-        c.scrollTop = targetY;
-      }
-    } catch (e) {}
-    const after = reportScrollPosition();
-    const reached = Math.abs(after.scrollY - targetY) <= 5 || Math.abs((after.containerScrollTop || 0) - targetY) <= 5;
-    return {
-      scrolled: reached,
-      type: 'absolute',
-      targetY,
-      ...after
-    };
-  }
-
-  throw new Error('scroll requires y/x (relative), selector, position (top/bottom), or scrollTo ({x, y})');
-}
-
-// Handle file upload - finds file inputs and sets files via DataTransfer
-// params.selector - optional selector for specific file input
-// params.file - { name, type, data (base64) }
-// params.files - array of { name, type, data } for multiple files
-function handleUploadFile(params) {
-  const files = params.files || (params.file ? [params.file] : []);
-  if (files.length === 0) {
-    throw new Error('uploadFile requires file or files parameter with {name, type, data (base64)}');
-  }
-
-  // Find the file input
-  let fileInput = null;
-  if (params.selector) {
-    fileInput = document.querySelector(params.selector);
-  } else {
-    // Find all file inputs and use the first visible one, or first one
-    const allFileInputs = document.querySelectorAll('input[type="file"]');
-    for (const inp of allFileInputs) {
-      if (isElementVisible(inp)) {
-        fileInput = inp;
-        break;
-      }
-    }
-    // Fallback to first file input even if hidden (common pattern)
-    if (!fileInput && allFileInputs.length > 0) {
-      fileInput = allFileInputs[0];
-    }
-  }
-
-  if (!fileInput) {
-    throw new Error('No file input found on page');
-  }
-
-  // Create File objects from base64 data
-  const dataTransfer = new DataTransfer();
-  const uploadedFiles = [];
-
-  for (const fileData of files) {
-    if (!fileData.data) {
-      throw new Error('File data (base64) is required');
-    }
-    try {
-      const byteString = atob(fileData.data);
-      const ab = new ArrayBuffer(byteString.length);
-      const ia = new Uint8Array(ab);
-      for (let i = 0; i < byteString.length; i++) {
-        ia[i] = byteString.charCodeAt(i);
-      }
-      const mimeType = fileData.type || 'application/octet-stream';
-      const blob = new Blob([ab], { type: mimeType });
-      const file = new File([blob], fileData.name || 'file', { type: mimeType });
-      dataTransfer.items.add(file);
-      uploadedFiles.push({ name: file.name, type: file.type, size: file.size });
-    } catch (err) {
-      throw new Error(`Failed to process file ${fileData.name}: ${err.message}`);
-    }
-  }
-
-  // Set the files on the input
-  fileInput.files = dataTransfer.files;
-  
-  // Dispatch change event to trigger any listeners
-  fileInput.dispatchEvent(new Event('change', { bubbles: true }));
-  
-  // Some sites also listen for input event
-  fileInput.dispatchEvent(new Event('input', { bubbles: true }));
-
-  return {
-    uploaded: true,
-    count: uploadedFiles.length,
-    files: uploadedFiles,
-    inputSelector: fileInput.id ? `#${fileInput.id}` : fileInput.name ? `[name="${fileInput.name}"]` : 'input[type="file"]'
-  };
-}
-
-// Handle file drop - simulates drag-and-drop onto a target element
-// Uses page world (wrappedJSObject) so DataTransfer.files survives to page handlers
-// params.selector - CSS selector for drop target (e.g., compose body)
-// params.file - { name, type, data (base64) }
-// params.files - array of { name, type, data } for multiple files
-function handleDropFile(params) {
-  const fileSpecs = params.files || (params.file ? [params.file] : []);
-  if (fileSpecs.length === 0) {
-    throw new Error('dropFile requires file or files parameter with {name, type, data (base64)}');
-  }
-
-  const target = params.selector
-    ? document.querySelector(params.selector)
-    : document.querySelector('[contenteditable="true"]') || document.body;
-
-  if (!target) {
-    throw new Error('No drop target found');
-  }
-
-  const uploadedFiles = [];
-
-  // Build file data array for page-world injection
-  const fileDataArray = fileSpecs.map(fileData => {
-    if (!fileData.data) throw new Error('File data (base64) is required');
-    uploadedFiles.push({
-      name: fileData.name || 'file',
-      type: fileData.type || 'application/octet-stream',
-      size: Math.ceil((fileData.data.length * 3) / 4)
-    });
-    return {
-      name: fileData.name || 'file',
-      type: fileData.type || 'application/octet-stream',
-      data: fileData.data
-    };
+function extract(params = {}) {
+  let elements = params.selector ? deepQueryAll(document, str(params.selector)) : [resolveElement(params)].filter(Boolean);
+  if (params.text) elements = elements.filter(el => textOf(el).toLowerCase().includes(str(params.text).toLowerCase()));
+  const limit = clamp(int(params.limit, 100), 1, 2000);
+  const values = elements.slice(0, limit).map(el => {
+    if (params.attribute) return el.getAttribute(params.attribute);
+    if (params.property) return str(params.property).split('.').reduce((obj, key) => obj == null ? undefined : obj[key], el);
+    if (params.html === true) return str(el.outerHTML).slice(0, 8000);
+    return textOf(el);
   });
-
-  // Execute drop in page world so DataTransfer.files is visible to page handlers
-  const pageWin = window.wrappedJSObject;
-  if (pageWin) {
-    try {
-      const filesJson = JSON.stringify(fileDataArray);
-      const sel = (params.selector || '').replace(/'/g, "\\'");
-      const code = `(function(){
-        var target = document.querySelector('${sel}') || document.querySelector('[contenteditable="true"]') || document.body;
-        var files = ${filesJson};
-        var dt = new DataTransfer();
-        for (var i = 0; i < files.length; i++) {
-          var f = files[i];
-          var bytes = atob(f.data);
-          var ab = new ArrayBuffer(bytes.length);
-          var ia = new Uint8Array(ab);
-          for (var j = 0; j < bytes.length; j++) ia[j] = bytes.charCodeAt(j);
-          var blob = new Blob([ab], {type: f.type});
-          var file = new File([blob], f.name, {type: f.type});
-          dt.items.add(file);
-        }
-        var props = {bubbles: true, cancelable: true, dataTransfer: dt};
-        target.dispatchEvent(new DragEvent('dragenter', props));
-        target.dispatchEvent(new DragEvent('dragover', props));
-        target.dispatchEvent(new DragEvent('drop', props));
-        return dt.files.length;
-      })()`;
-      pageWin.eval(code);
-    } catch (e) {
-      // Fallback to content-script dispatch (may not carry files through)
-      const dataTransfer = new DataTransfer();
-      for (const fileData of fileSpecs) {
-        const byteString = atob(fileData.data);
-        const ab = new ArrayBuffer(byteString.length);
-        const ia = new Uint8Array(ab);
-        for (let i = 0; i < byteString.length; i++) ia[i] = byteString.charCodeAt(i);
-        const blob = new Blob([ab], { type: fileData.type || 'application/octet-stream' });
-        const file = new File([blob], fileData.name || 'file', { type: blob.type });
-        dataTransfer.items.add(file);
-      }
-      const eventProps = { bubbles: true, cancelable: true, dataTransfer };
-      target.dispatchEvent(new DragEvent('dragenter', eventProps));
-      target.dispatchEvent(new DragEvent('dragover', eventProps));
-      target.dispatchEvent(new DragEvent('drop', eventProps));
-    }
-  } else {
-    // No wrappedJSObject — fallback
-    const dataTransfer = new DataTransfer();
-    for (const fileData of fileSpecs) {
-      const byteString = atob(fileData.data);
-      const ab = new ArrayBuffer(byteString.length);
-      const ia = new Uint8Array(ab);
-      for (let i = 0; i < byteString.length; i++) ia[i] = byteString.charCodeAt(i);
-      const blob = new Blob([ab], { type: fileData.type || 'application/octet-stream' });
-      const file = new File([blob], fileData.name || 'file', { type: blob.type });
-      dataTransfer.items.add(file);
-    }
-    const eventProps = { bubbles: true, cancelable: true, dataTransfer };
-    target.dispatchEvent(new DragEvent('dragenter', eventProps));
-    target.dispatchEvent(new DragEvent('dragover', eventProps));
-    target.dispatchEvent(new DragEvent('drop', eventProps));
-  }
-
-  return {
-    dropped: true,
-    count: uploadedFiles.length,
-    files: uploadedFiles,
-    target: params.selector || '[contenteditable="true"]'
-  };
+  return { count: values.length, values };
 }
 
-async function handleSecureAutoFill(params) {
-  const { username, password, submit } = params;
+function setAttribute(params = {}) {
+  const el = resolveElement(params); if (!el) throw new Error('Element not found');
+  const name = str(params.name).trim(); if (!name) throw new Error('attribute name is required');
+  if (params.value === null || params.value === undefined) el.removeAttribute(name); else el.setAttribute(name, str(params.value));
+  return { updated: true, name, element: elementSummary(el, true) };
+}
+function getAttribute(params = {}) {
+  const el = resolveElement(params); if (!el) throw new Error('Element not found');
+  const name = str(params.name).trim(); if (!name) throw new Error('attribute name is required');
+  return { name, value: el.getAttribute(name), element: elementSummary(el) };
+}
+function setProperty(params = {}) {
+  const el = resolveElement(params); if (!el) throw new Error('Element not found');
+  const path = str(params.path || params.name).trim(); if (!path) throw new Error('property name/path is required');
+  const keys = path.split('.').filter(Boolean);
+  if (!keys.length) throw new Error('property name/path is required');
+  let target = el;
+  for (let i = 0; i < keys.length - 1; i++) { if (target[keys[i]] == null) target[keys[i]] = {}; target = target[keys[i]]; }
+  target[keys[keys.length - 1]] = params.value;
+  if (el instanceof HTMLInputElement || el instanceof HTMLTextAreaElement || el instanceof HTMLSelectElement || el.isContentEditable) dispatchInputSequence(el, 'insertText', null);
+  el.dispatchEvent(new Event('change', { bubbles: true, composed: true }));
+  return { updated: true, path, value: serializeValue(target[keys[keys.length - 1]]), element: elementSummary(el, true) };
+}
+function getProperty(params = {}) {
+  const el = resolveElement(params); if (!el) throw new Error('Element not found');
+  const path = str(params.path || params.name).trim(); if (!path) throw new Error('property name/path is required');
+  const value = path.split('.').filter(Boolean).reduce((obj, key) => obj == null ? undefined : obj[key], el);
+  return { path, value: serializeValue(value), element: elementSummary(el) };
+}
+
+function highlight(params = {}) {
+  const el = resolveElement(params); if (!el) throw new Error('Element not found');
+  const key = `data-${ALPHA}-highlight`;
+  deepQueryAll(document, `[${key}]`).forEach(node => node.removeAttribute(key));
+  el.setAttribute(key, params.value === false ? 'false' : 'true');
+  if (params.scroll !== false) el.scrollIntoView({ block: 'center', inline: 'center' });
+  return { highlighted: true, element: elementSummary(el) };
+}
+
+async function clipboardRead() {
+  if (navigator.clipboard?.readText) return { text: await navigator.clipboard.readText(), method: 'clipboard-api' };
+  throw new Error('Clipboard read is unavailable in this page context');
+}
+async function clipboardWrite(params = {}) {
+  const value = str(params.text);
+  if (navigator.clipboard?.writeText) { await navigator.clipboard.writeText(value); return { written: true, length: value.length, method: 'clipboard-api' }; }
+  const area = document.createElement('textarea');
+  area.value = value; area.setAttribute('readonly', ''); area.style.position = 'fixed'; area.style.opacity = '0'; area.style.pointerEvents = 'none';
+  document.body.appendChild(area); area.select();
+  const ok = document.execCommand?.('copy'); area.remove();
+  if (!ok) throw new Error('Clipboard write failed');
+  return { written: true, length: value.length, method: 'execCommand' };
+}
+
+function base64ToFile(spec = {}) {
+  const raw = str(spec.data).replace(/^data:[^,]+,/, '');
+  if (!raw) throw new Error('File data is empty');
+  const binary = atob(raw);
+  const bytes = new Uint8Array(binary.length);
+  for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
+  return new File([bytes], str(spec.name, 'file'), { type: str(spec.type, 'application/octet-stream'), lastModified: safeNumber(spec.lastModified, Date.now()) });
+}
+async function uploadFiles(specs, selector) {
+  const files = Array.isArray(specs) ? specs : [specs];
+  if (!files.length || !files[0]) throw new Error('uploadFile requires file or files');
+  const input = selector ? resolveElement({ selector }) : deepQueryAll(document, 'input[type="file"]').find(visible) || deepQueryAll(document, 'input[type="file"]')[0];
+  if (!(input instanceof HTMLInputElement) || input.type !== 'file') throw new Error('No file input found');
+  if (isDisabled(input)) throw new Error('File input is disabled');
+  if (typeof DataTransfer !== 'function') throw new Error('DataTransfer is unavailable');
+  const dt = new DataTransfer();
+  const uploaded = [];
+  for (const spec of files) {
+    const file = base64ToFile(spec); dt.items.add(file); uploaded.push({ name: file.name, type: file.type, size: file.size });
+  }
+  input.files = dt.files;
+  dispatchInputSequence(input, 'insertFromFile', null); input.dispatchEvent(new Event('change', { bubbles: true, composed: true }));
+  return { uploaded: true, count: uploaded.length, files: uploaded, input: elementSummary(input) };
+}
+async function dropFiles(params = {}) {
+  const specs = params.files || (params.file ? [params.file] : []);
+  if (!specs.length) throw new Error('dropFile requires file or files');
+  if (typeof DataTransfer !== 'function') throw new Error('DataTransfer is unavailable');
+  const target = resolveElement(params) || document.body;
+  if (!target) throw new Error('Drop target not found');
+  const dt = new DataTransfer();
+  const files = specs.map(base64ToFile); files.forEach(file => dt.items.add(file));
+  const rect = target.getBoundingClientRect();
+  const base = { bubbles: true, cancelable: true, composed: true, dataTransfer: dt, clientX: rect.left + rect.width / 2, clientY: rect.top + rect.height / 2 };
+  try { target.dispatchEvent(new DragEvent('dragenter', base)); target.dispatchEvent(new DragEvent('dragover', base)); target.dispatchEvent(new DragEvent('drop', base)); }
+  catch { target.dispatchEvent(new Event('drop', { bubbles: true, cancelable: true, composed: true })); }
+  return { dropped: true, count: files.length, files: files.map(file => ({ name: file.name, type: file.type, size: file.size })), target: elementSummary(target) };
+}
+
+function selectText(params = {}) {
+  const el = resolveElement(params);
+  if (!el) throw new Error('Element not found');
+  if (el instanceof HTMLInputElement || el instanceof HTMLTextAreaElement) {
+    if (params.start !== undefined || params.end !== undefined) {
+      el.setSelectionRange(int(params.start, 0), int(params.end, String(el.value).length), params.direction || 'none');
+    } else el.select();
+    return { selected: true, selection: textSelection(el), element: elementSummary(el) };
+  }
+  const selection = window.getSelection();
+  const range = document.createRange(); range.selectNodeContents(el); selection?.removeAllRanges(); selection?.addRange(range);
+  return { selected: true, text: selection?.toString() || '', element: elementSummary(el) };
+}
+
+function getSelectionState() {
+  const selection = window.getSelection();
+  return { text: selection?.toString() || '', anchor: elementSummary(selection?.anchorNode?.parentElement), focus: elementSummary(selection?.focusNode?.parentElement), rangeCount: selection?.rangeCount || 0 };
+}
+
+async function detectAuth() {
+  const url = location.href;
+  const bodyText = textSnapshot({ maxChars: 30000 });
+  const hasPassword = Boolean(deepQueryAll(document, 'input[type="password"]').length);
+  const hasUsername = Boolean(deepQueryAll(document, 'input[type="email"],input[autocomplete="username"],[name*="user" i],[name*="email" i],[name*="login" i]').length);
+  const twoFactor = /two.?factor|2fa|verification code|authenticator|security code|one.?time password/i.test(bodyText) || Boolean(deepQueryAll(document, 'input[autocomplete="one-time-code"],[name*="otp" i],[name*="totp" i]').length);
+  const oauth = /oauth|authorize|consent|scope=/i.test(url) || /continue with|sign in with|log in with/i.test(bodyText);
+  const reset = /reset|forgot|recover/i.test(url) && Boolean(deepQueryAll(document, 'input[type="password"],input[type="email"]').length);
+  const patterns = [{ name: 'Google', re: /google|gmail/i }, { name: 'GitHub', re: /github/i }, { name: 'Microsoft', re: /microsoft|azure|outlook/i }, { name: 'Apple', re: /apple|icloud/i }, { name: 'Facebook', re: /facebook|meta/i }, { name: 'X', re: /twitter|x\.com/i }];
+  const provider = patterns.find(candidate => candidate.re.test(url) || candidate.re.test(bodyText.slice(0, 12000)))?.name || null;
+  const accounts = [...new Set((bodyText.match(/[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}/gi) || []).slice(0, 12))];
+  return { isAuthPage: hasPassword || hasUsername || twoFactor || oauth || reset, authType: twoFactor ? '2fa' : reset ? 'password-reset' : oauth ? 'oauth' : hasPassword || hasUsername ? 'login' : null, detectedProvider: provider, availableAccounts: accounts, formFields: formsSnapshot().forms.flatMap(form => form.fields).slice(0, 30), oauthOptions: collectInteractables({ limit: 120 }).filter(item => /sign in with|continue with|log in with/i.test(item.name || item.text)).map(item => item.name || item.text).slice(0, 30) };
+}
+
+async function secureAutoFill(params = {}) {
+  const usernameTarget = resolveElement({ selector: params.usernameSelector })
+    || resolveElement({ role: 'textbox', name: params.usernameLabel || 'email' })
+    || deepQueryAll(document, 'input[type="email"],input[autocomplete="username"],input[name*="user" i],input[name*="email" i],input[name*="login" i]').find(visible);
+  const passwordTarget = resolveElement({ selector: params.passwordSelector }) || deepQueryAll(document, 'input[type="password"],input[autocomplete="current-password"]').find(visible);
   const filled = { username: false, password: false, submitted: false };
-
-  const usernameSelectors = [
-    'input[type="email"]',
-    'input[name*="user" i]',
-    'input[name*="email" i]',
-    'input[name*="login" i]',
-    'input[id*="user" i]',
-    'input[id*="email" i]',
-    'input[id*="login" i]',
-    'input[autocomplete="username"]',
-    'input[autocomplete="email"]',
-    'input[placeholder*="email" i]',
-    'input[placeholder*="user" i]',
-  ];
-
-  const passwordSelectors = [
-    'input[type="password"]',
-    'input[autocomplete="current-password"]',
-    'input[name*="pass" i]',
-    'input[id*="pass" i]',
-  ];
-
-  function fillField(selectors, value) {
-    for (const sel of selectors) {
-      const el = document.querySelector(sel);
-      if (el && isElementVisible(el)) {
-        el.focus();
-        el.value = value;
-        el.dispatchEvent(new Event('input', { bubbles: true }));
-        el.dispatchEvent(new Event('change', { bubbles: true }));
-        return true;
-      }
-    }
-    return false;
+  if (params.username != null && usernameTarget) { typeInto(usernameTarget, params.username, { clear: true }); filled.username = true; }
+  if (params.password != null && passwordTarget) { typeInto(passwordTarget, params.password, { clear: true }); filled.password = true; }
+  if (params.submit && (filled.username || filled.password)) {
+    await sleep(75);
+    const submit = resolveElement({ selector: params.submitSelector }) || deepQueryAll(document, 'button[type="submit"],input[type="submit"]').find(visible);
+    if (submit) { submitElement(submit); filled.submitted = true; }
   }
-
-  if (username) {
-    filled.username = fillField(usernameSelectors, username);
-  }
-
-  if (password) {
-    filled.password = fillField(passwordSelectors, password);
-  }
-
-  if (submit && (filled.username || filled.password)) {
-    await new Promise(r => setTimeout(r, 100));
-
-    const submitButton = document.querySelector(
-      'button[type="submit"], input[type="submit"], ' +
-      'button:not([type])[class*="login" i], button:not([type])[class*="sign" i], ' +
-      'button[name*="login" i], button[name*="sign" i]'
-    );
-
-    if (submitButton) {
-      submitButton.click();
-      filled.submitted = true;
-    } else {
-      const form = document.querySelector('form');
-      if (form) {
-        form.submit();
-        filled.submitted = true;
-      }
-    }
-  }
-
   return filled;
 }
 
-browser.runtime.onMessage.addListener((message) => {
-  if (!message || message.type !== "agent-bridge") return undefined;
-  const params = message.params || {};
-  const profile = Boolean(message.profile || params.profile);
-  const started = profile ? performance.now() : 0;
-
-  const run = async () => {
-    switch (message.action) {
-      case "click":
-        return handleClick(params);
-      case "type":
-        return handleType(params);
-      case "getContent":
-        return handleGetContent(params);
-      case "waitFor":
-        return handleWaitFor(params);
-      case "fillForm":
-        return handleFillForm(params);
-      case "tryUntil":
-      case "branch":  // Legacy alias
-        return handleTryUntil(params);
-      case "getInteractables":
-        return handleGetInteractables(params);
-      case "preexplore":
-        return handlePreexplore(params);
-      case "detectAuth":
-        return handleDetectAuth();
-      case "secureAutoFill":
-        return handleSecureAutoFill(params);
-      case "evaluate":
-        return handleEvaluate(params);
-      case "scroll":
-        return handleScroll(params);
-      case "uploadFile":
-        return handleUploadFile(params);
-      case "dropFile":
-        return handleDropFile(params);
-      default:
-        throw new Error(`Unknown content action: ${message.action}`);
+async function tryUntil(params = {}) {
+  const timeout = clamp(int(params.timeoutMs, 15000), 100, 120000);
+  const start = performance.now();
+  const retryMs = clamp(int(params.retryMs, 250), 25, 2000);
+  const alternatives = Array.isArray(params.alternatives) ? params.alternatives : Array.isArray(params.actions) ? params.actions : [];
+  while (performance.now() - start < timeout) {
+    for (const alt of alternatives) {
+      try {
+        const spec = { ...(alt.params || {}), ...alt };
+        delete spec.params; delete spec.action;
+        if (alt.selector || alt.text || alt.role || alt.label || alt.placeholder || alt.testId) {
+          const target = resolveElement(spec);
+          if (!target || (!spec.includeHidden && !visible(target))) continue;
+        }
+        const result = await routeAction(alt.action || 'click', spec);
+        return { success: true, alternative: alt, result, ms: roundMs(performance.now() - start) };
+      } catch {}
     }
-  };
+    await sleep(retryMs);
+  }
+  throw new Error(`tryUntil timed out after ${timeout}ms`);
+}
 
-  return run().then((result) => {
-    if (!profile) return result;
-    const timing = { contentMs: roundMs(performance.now() - started) };
-    if (result && typeof result === "object") {
-      result.__timing = timing;
-      return result;
+async function preexplore(params = {}) {
+  const inventory = getPageInventory({ ...params, interactableLimit: clamp(int(params.maxInteractables, 200), 20, 1000) });
+  return { ...inventory, text: params.includeText === false ? undefined : textSnapshot({ maxChars: clamp(int(params.textMaxChars, 24000), 1000, 100000) }) };
+}
+
+function pageState(params = {}) {
+  const active = document.activeElement;
+  return { url: location.href, title: document.title, readyState: document.readyState, visibility: document.visibilityState, hidden: document.hidden, online: navigator.onLine, language: document.documentElement?.lang || navigator.language || null, scroll: getScrollState(), selection: getSelectionState(), activeElement: elementSummary(active, Boolean(params.detailed)), outputs: getOutputs({ limit: clamp(int(params.outputLimit, 100), 1, 500) }), errors: pageTelemetry.errors.slice(-30), rejections: pageTelemetry.rejections.slice(-30), uptimeMs: Date.now() - pageTelemetry.startedAt };
+}
+
+function printPage() { window.print(); return { printed: true }; }
+
+async function routeAction(action, params = {}) {
+  const normalized = str(action).trim();
+  const target = () => { const el = resolveElement(params); if (!el) throw new Error('Element not found'); return el; };
+  switch (normalized) {
+    case 'click': case 'tap': return clickElement(target(), params);
+    case 'doubleClick': case 'dblclick': {
+      const el = target();
+      if (isDisabled(el)) throw new Error('Element is disabled');
+      if (params.scrollIntoView !== false) el.scrollIntoView({ block: 'center', inline: 'center' });
+      for (let i = 1; i <= 2; i++) { if (params.dispatchEvents !== false) { pointerEvent(el, 'mousedown', { clickCount: i, buttons: 1, ...params }); pointerEvent(el, 'mouseup', { clickCount: i, buttons: 0, ...params }); } if (params.useNativeClick !== false && typeof el.click === 'function') el.click(); else pointerEvent(el, 'click', { clickCount: i, ...params }); }
+      if (params.dispatchEvents !== false) pointerEvent(el, 'dblclick', { clickCount: 2, ...params });
+      return { clicked: true, double: true, element: elementSummary(el), action: 'doubleClick' };
     }
-    return { value: result, __timing: timing };
+    case 'rightClick': case 'contextClick': return rightClickElement(target(), params);
+    case 'hover': {
+      const el = target(); if (params.scrollIntoView !== false) el.scrollIntoView({ block: 'center', inline: 'center' });
+      pointerEvent(el, 'mouseover', params); pointerEvent(el, 'mouseenter', params); pointerEvent(el, 'mousemove', params); return { hovered: true, element: elementSummary(el) };
+    }
+    case 'moveMouse': case 'move': { const el = target(); pointerEvent(el, 'mousemove', params); return { moved: true, element: elementSummary(el) }; }
+    case 'type': case 'fill': return typeInto(target(), params.text ?? params.value ?? '', params);
+    case 'clear': return clearElement(params);
+    case 'press': return press(params);
+    case 'hotkey': return hotkey(params);
+    case 'keyDown': return keyEvent(target(), 'keydown', params);
+    case 'keyUp': return keyEvent(target(), 'keyup', params);
+    case 'focus': { const el = target(); try { el.focus({ preventScroll: params.preventScroll === true ? true : false }); } catch { el.focus?.(); } return { focused: document.activeElement === el, element: elementSummary(el) }; }
+    case 'blur': { const el = target(); el.blur?.(); return { blurred: true, element: elementSummary(el) }; }
+    case 'check': return setCheckbox(target(), true);
+    case 'uncheck': return setCheckbox(target(), false);
+    case 'toggle': { const el = target(); return setCheckbox(el, !el.checked); }
+    case 'selectOption': case 'select': return selectOption(target(), params);
+    case 'submit': case 'submitForm': return submitElement(target(), params);
+    case 'drag': { const source = resolveElement(typeof params.source === 'string' ? { selector: params.source } : params.source || params); const destination = resolveElement(typeof (params.target || params.to) === 'string' ? { selector: params.target || params.to } : (params.target || params.to || {})); return dragElement(source, destination, params); }
+    case 'scroll': case 'scrollBy': return scroll(params);
+    case 'scrollIntoView': { const el = target(); el.scrollIntoView({ block: params.block || 'center', inline: params.inline || 'center', behavior: params.behavior || 'auto' }); return { scrolled: true, element: elementSummary(el), ...getScrollState() }; }
+    case 'waitFor': return waitFor(params);
+    case 'waitForText': return waitFor({ ...params, text: params.text });
+    case 'waitForStable': return waitForStable(params);
+    case 'getContent': case 'snapshot': return getContent(params);
+    case 'getPageInventory': case 'inventory': case 'preexplore': return preexplore(params);
+    case 'getPageState': case 'pageState': return pageState(params);
+    case 'getElement': return elementSummary(target(), true);
+    case 'getInteractables': { const elements = collectInteractables(params); return { elements, count: elements.length, title: document.title, url: location.href }; }
+    case 'getInputs': { const inputs = getInputs(params); return { inputs, count: inputs.length }; }
+    case 'getButtons': { const buttons = getButtons(params); return { buttons, count: buttons.length }; }
+    case 'getLinks': { const links = getLinks(params); return { links, count: links.length }; }
+    case 'getOutputs': { const outputs = getOutputs(params); return { outputs, count: outputs.length }; }
+    case 'getDialogs': { const dialogs = getDialogs(params); return { dialogs, count: dialogs.length }; }
+    case 'getForms': return formsSnapshot();
+    case 'extract': return extract(params);
+    case 'evaluate': return evaluate(params);
+    case 'setAttribute': return setAttribute(params);
+    case 'getAttribute': return getAttribute(params);
+    case 'setProperty': return setProperty(params);
+    case 'getProperty': return getProperty(params);
+    case 'highlight': return highlight(params);
+    case 'clipboardRead': return clipboardRead();
+    case 'clipboardWrite': return clipboardWrite(params);
+    case 'fillForm': return fillForm(params);
+    case 'uploadFile': return uploadFiles(params.files || (params.file ? [params.file] : []), params.selector);
+    case 'dropFile': return dropFiles(params);
+    case 'selectText': return selectText(params);
+    case 'getSelection': return getSelectionState();
+    case 'getScrollState': return getScrollState();
+    case 'detectAuth': return detectAuth();
+    case 'secureAutoFill': return secureAutoFill(params);
+    case 'tryUntil': case 'branch': return tryUntil(params);
+    case 'print': case 'printPage': return printPage();
+    case 'getPageErrors': return { errors: pageTelemetry.errors.slice(-clamp(int(params.limit, 50), 1, TELEMETRY_LIMIT)), rejections: pageTelemetry.rejections.slice(-clamp(int(params.limit, 50), 1, TELEMETRY_LIMIT)) };
+    default: throw new Error(`Unknown content action: ${normalized}`);
+  }
+}
+
+browser.runtime.onMessage.addListener(message => {
+  if (!message || message.type !== 'agent-bridge') return undefined;
+  const started = performance.now();
+  return Promise.resolve().then(() => routeAction(message.action, message.params || {})).then(result => {
+    pageTelemetry.messages.push({ time: Date.now(), action: str(message.action), ok: true });
+    if (pageTelemetry.messages.length > TELEMETRY_LIMIT) pageTelemetry.messages.shift();
+    if (message.profile || message.params?.profile) {
+      if (result && typeof result === 'object') result.__timing = { contentMs: roundMs(performance.now() - started) };
+      else result = { value: result, __timing: { contentMs: roundMs(performance.now() - started) } };
+    }
+    return result;
+  }).catch(error => {
+    pageTelemetry.messages.push({ time: Date.now(), action: str(message.action), ok: false, error: str(error?.message || error) });
+    if (pageTelemetry.messages.length > TELEMETRY_LIMIT) pageTelemetry.messages.shift();
+    throw error;
   });
 });

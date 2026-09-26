@@ -157,6 +157,20 @@ impl Tool for WebFetchTool {
         })
     }
 
+    fn execution_class(&self, input: &Value) -> super::ToolExecutionClass {
+        let method = input
+            .get("method")
+            .and_then(Value::as_str)
+            .unwrap_or("GET")
+            .trim()
+            .to_ascii_uppercase();
+        if method == "GET" {
+            super::ToolExecutionClass::ReadOnly
+        } else {
+            super::ToolExecutionClass::ExternalEffect
+        }
+    }
+
     async fn execute(&self, input: Value, _ctx: ToolContext) -> Result<ToolOutput> {
         let params: WebFetchInput = serde_json::from_value(input)?;
 

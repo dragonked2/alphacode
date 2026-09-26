@@ -605,6 +605,14 @@ pub(super) async fn handle_client(
                 ));
                 break;
             }
+            if let Err(error) = w.flush().await {
+                let event_desc = crate::logging::truncate_for_log(&format!("{:?}", event), 200);
+                crate::logging::warn(&format!(
+                    "event_forwarder flush failed for connection {} while sending {}: {}",
+                    client_connection_id_for_events, event_desc, error
+                ));
+                break;
+            }
         }
     });
 
@@ -895,7 +903,7 @@ pub(super) async fn handle_client(
                     };
                     let json = encode_event(&event);
                     let mut w = writer.lock().await;
-                    if w.write_all(json.as_bytes()).await.is_err() {
+                    if w.write_all(json.as_bytes()).await.is_err() || w.flush().await.is_err() {
                         break;
                     }
                     continue;
@@ -1023,7 +1031,7 @@ pub(super) async fn handle_client(
         {
             let ack_start = Instant::now();
             let mut w = writer.lock().await;
-            if w.write_all(json.as_bytes()).await.is_err() {
+            if w.write_all(json.as_bytes()).await.is_err() || w.flush().await.is_err() {
                 if request_lifecycle_logged {
                     let mut fields =
                         server_request_lifecycle_fields(ServerRequestLifecycleFields {
@@ -1334,7 +1342,7 @@ pub(super) async fn handle_client(
             Request::Ping { id } => {
                 let json = encode_event(&ServerEvent::Pong { id });
                 let mut w = writer.lock().await;
-                if w.write_all(json.as_bytes()).await.is_err() {
+                if w.write_all(json.as_bytes()).await.is_err() || w.flush().await.is_err() {
                     break;
                 }
             }
@@ -1471,31 +1479,19 @@ pub(super) async fn handle_client(
                             break;
                         }
                     } else {
-                        handle_subscribe(
+                        // Never silently substitute a fresh temporary session
+                        // for a requested target that no longer exists. Doing so
+                        // disconnects the TUI from the work it is trying to resume
+                        // and makes a reconnect look successful.
+                        let _ = client_event_tx.send(ServerEvent::Error {
                             id,
-                            subscribe_working_dir,
-                            selfdev,
-                            true,
-                            &mut client_selfdev,
-                            &client_session_id,
-                            &client_connection_id,
-                            &friendly_name,
-                            &agent,
-                            &registry,
-                            swarm_enabled,
-                            &swarm_members,
-                            &swarms_by_id,
-                            &channel_subscriptions,
-                            &channel_subscriptions_by_session,
-                            &swarm_plans,
-                            &swarm_coordinators,
-                            &client_event_tx,
-                            &mcp_pool,
-                            &event_history,
-                            &event_counter,
-                            &swarm_event_tx,
-                        )
-                        .await;
+                            message: format!(
+                                "requested session '{}' does not exist on the server",
+                                target_session_id
+                            ),
+                            retry_after_secs: None,
+                        });
+                        continue;
                     }
                 } else {
                     handle_subscribe(

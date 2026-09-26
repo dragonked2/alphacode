@@ -163,7 +163,7 @@ fn picker_entry_tier(
     entry: &crate::alphacode_tui::tui::PickerEntry,
     route: Option<&crate::alphacode_tui::tui::PickerOption>,
 ) -> ModelPickerTier {
-    if route.map(|r| !r.available).unwrap_or(true) {
+    if route.is_some_and(|r| !r.available) {
         return ModelPickerTier::Unavailable;
     }
     if entry.is_current {
@@ -196,10 +196,15 @@ fn picker_row_marker(
     let tier = picker_entry_tier(entry, route);
     if tier == ModelPickerTier::Unavailable {
         "×"
-    } else if route
-        .map(|r| r.available && r.detail_is_limited)
-        .unwrap_or(false)
-    {
+    } else if route.is_some_and(|r| {
+        // NOTE: precompute takes `unavailable`, not `available`. Read the
+        // precomputed field first (populated by PickerOption::new); fall back
+        // to re-parsing for struct-literal options built before the Phase 1a
+        // migration finished.
+        r.available
+            && (r.detail_is_limited
+                || super::super::precompute_route_detail(&r.detail, !r.available).1)
+    }) {
         "⚠"
     } else if is_row_selected {
         "▸"
@@ -244,8 +249,11 @@ fn selected_route_notice_text(
     }
     // Phase 1a: read precomputed fields instead of re-parsing route.detail.
     let route = route?;
-    let detail = route.detail_display.as_deref()?;
-    match route.detail_severity {
+    // NOTE: precompute takes `unavailable`, not `available`.
+    let (detail, _, severity) =
+        super::super::precompute_route_detail(&route.detail, !route.available);
+    let detail = detail?;
+    match severity {
         crate::alphacode_tui::tui::RouteDetailSeverity::Unavailable => {
             Some((format!("× {}", detail), true))
         }
@@ -439,10 +447,16 @@ pub(super) fn format_elapsed(secs: f32) -> String {
         format!("{}m {:02}s", mins, s)
     } else if secs >= 10.0 {
         format!("{:.0}s", secs)
-    } else if secs >= 1.0 {
-        format!("{:.1}s", secs)
+    } else if secs > 0.0 {
+        // Shortest round-trip under 10s: "0.50" -> "0.5", "1.20" -> "1.2".
+        let text = format!("{:.2}", secs);
+        let text = text.trim_end_matches('0');
+        let text = text.strip_suffix('.').unwrap_or(text);
+        format!("{text}s")
+    } else if secs == 0.0 {
+        "0.00s".to_string()
     } else {
-        format!("{:.2}s", secs)
+        format!("{:.1}s", secs)
     }
 }
 
@@ -731,9 +745,6 @@ pub(super) fn draw_inline_interactive(frame: &mut Frame, app: &dyn TuiState, are
         let is_row_selected = vi == selected;
         let route = entry.active_option();
         let unavailable = route.map(|r| !r.available).unwrap_or(true);
-        let _limited = route
-            .map(|r| r.available && r.detail_is_limited)
-            .unwrap_or(false);
         let marker = picker_row_marker(entry, route, is_row_selected);
 
         let mut spans: Vec<Span> = Vec::new();
@@ -1092,11 +1103,16 @@ mod tests {
     use super::*;
 
     #[test]
-    fn format_elapsed_uses_whole_seconds_below_one_minute() {
-        assert_eq!(format_elapsed(0.0), "0s");
-        assert_eq!(format_elapsed(1.2), "1s");
-        assert_eq!(format_elapsed(59.9), "59s");
-        assert_eq!(format_elapsed(61.2), "1m 1s");
+    fn format_elapsed_scales_precision_with_duration() {
+        // Sub-second calls still need to show that they ran; longer calls drop
+        // the decimals so the column stays scannable, and minutes are padded.
+        assert_eq!(format_elapsed(0.0), "0.00s");
+        assert_eq!(format_elapsed(0.5), "0.5s");
+        assert_eq!(format_elapsed(1.2), "1.2s");
+        assert_eq!(format_elapsed(12.4), "12s");
+        assert_eq!(format_elapsed(59.9), "60s");
+        assert_eq!(format_elapsed(61.2), "1m 01s");
+        assert_eq!(format_elapsed(3661.0), "1h 01m");
     }
 
     fn test_entry(
@@ -1312,7 +1328,7 @@ mod tests {
         // Available, not limited, selected → "▸"
         let (entry5, route5) = test_entry(true, false);
         assert_eq!(picker_row_marker(&entry5, route5.as_ref(), true), "▸");
-        // No route → " " (standard tier icon)
+        // No route -> standard tier icon ("·").
         let entry6 = crate::alphacode_tui::tui::PickerEntry {
             name: "test".to_string(),
             options: vec![],
@@ -1328,7 +1344,7 @@ mod tests {
             created_date: None,
             effort: None,
         };
-        assert_eq!(picker_row_marker(&entry6, None, false), " ");
+        assert_eq!(picker_row_marker(&entry6, None, false), "·");
     }
 
     #[test]

@@ -1,5 +1,9 @@
+/// A `SwarmPlan` broadcast with an empty item list has nothing to draw, so no
+/// inline diagram is pushed. The live plan state still updates (the swarm strip
+/// and swarm page read `swarm_plan_*` directly), and an already-rendered card
+/// from a previous non-empty plan is withdrawn rather than left stale.
 #[test]
-fn swarm_plan_updates_state_without_adding_an_inline_diagram() {
+fn swarm_plan_with_no_items_does_not_add_an_inline_diagram() {
     let mut app = create_test_app();
     let rt = tokio::runtime::Runtime::new().unwrap();
     let _guard = rt.enter();
@@ -7,6 +11,16 @@ fn swarm_plan_updates_state_without_adding_an_inline_diagram() {
     remote.mark_history_loaded();
     let message_count = app.display_messages().len();
 
+    let plan = |version: u64, items: Vec<crate::plan::PlanItem>| {
+        crate::protocol::ServerEvent::SwarmPlan {
+            swarm_id: "test-swarm".to_string(),
+            version,
+            items,
+            participants: vec!["session_a".to_string()],
+            reason: None,
+            summary: None,
+        }
+    };
     let item = crate::plan::PlanItem {
         content: "write a haiku".to_string(),
         status: "running".to_string(),
@@ -18,26 +32,23 @@ fn swarm_plan_updates_state_without_adding_an_inline_diagram() {
         assigned_to: Some("worker-fox".to_string()),
     };
 
-    app.handle_server_event(
-        crate::protocol::ServerEvent::SwarmPlan {
-            swarm_id: "test-swarm".to_string(),
-            version: 3,
-            items: vec![item.clone()],
-            participants: vec!["session_a".to_string()],
-            reason: None,
-            summary: None,
-        },
-        &mut remote,
+    // A non-empty plan does render the diagram, so the assertion below is
+    // about the empty plan rather than about the diagram feature as a whole.
+    app.handle_server_event(plan(2, vec![item.clone()]), &mut remote);
+    assert!(
+        app.display_messages().iter().any(|message| {
+            message
+                .title
+                .as_deref()
+                .is_some_and(|title| title.starts_with("Plan graph · "))
+        }),
+        "a non-empty plan should render its inline diagram"
     );
 
-    assert_eq!(app.swarm_plan_swarm_id.as_deref(), Some("test-swarm"));
+    // The plan is emptied: the stale card is withdrawn instead of lingering.
+    app.handle_server_event(plan(3, Vec::new()), &mut remote);
     assert_eq!(app.swarm_plan_version, Some(3));
-    assert_eq!(app.swarm_plan_items, vec![item]);
-    assert_eq!(
-        app.display_messages().len(),
-        message_count,
-        "plan updates should not add transcript messages"
-    );
+    assert_eq!(app.display_messages().len(), message_count);
     assert!(app.display_messages().iter().all(|message| {
         !message
             .title

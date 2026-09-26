@@ -132,30 +132,33 @@ static OPENCODE_VERSION_CACHE: std::sync::OnceLock<std::sync::Mutex<OpenCodeVers
     std::sync::OnceLock::new();
 
 struct OpenCodeVersionCache {
-    version: Option<String>,
-    fetched_at: std::time::Instant,
+    version: Option<Arc<str>>,
+    fetched_at: Option<std::time::Instant>,
 }
 
 /// Return the opencode version string. Fetches from npm on first call and
 /// refreshes every 60 minutes. Returns `None` if the registry is unreachable
 /// (caller should skip the User-Agent header in that case).
-fn opencode_version() -> Option<&'static str> {
+fn opencode_version() -> Option<Arc<str>> {
     let cache = OPENCODE_VERSION_CACHE.get_or_init(|| {
-        // Mark as "never fetched" so the first call triggers an immediate fetch.
         std::sync::Mutex::new(OpenCodeVersionCache {
             version: None,
-            fetched_at: std::time::Instant::now() - std::time::Duration::from_secs(7200),
+            fetched_at: None,
         })
     });
-    let mut guard = cache.lock().unwrap();
-    if guard.fetched_at.elapsed() > std::time::Duration::from_secs(3600) {
-        guard.version = fetch_opencode_latest_version().ok();
-        guard.fetched_at = std::time::Instant::now();
+    let mut guard = cache
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let should_fetch = guard
+        .fetched_at
+        .is_none_or(|fetched_at| fetched_at.elapsed() > std::time::Duration::from_secs(3600));
+    if should_fetch {
+        if let Ok(version) = fetch_opencode_latest_version() {
+            guard.version = Some(Arc::from(version));
+        }
+        guard.fetched_at = Some(std::time::Instant::now());
     }
-    guard
-        .version
-        .as_ref()
-        .map(|v| -> &'static str { Box::leak(v.clone().into_boxed_str()) })
+    guard.version.clone()
 }
 
 fn fetch_opencode_latest_version() -> Result<String, anyhow::Error> {
@@ -3226,8 +3229,8 @@ mod profile_catalog_backoff_tests {
             profile_catalog_retry_delay_secs(3),
             MODEL_CATALOG_REFRESH_RETRY_SECS * 8
         );
-        // Capped at one hour no matter how many failures accumulate.
-        assert_eq!(profile_catalog_retry_delay_secs(20), 60 * 60);
+        // Capped at two hours no matter how many failures accumulate.
+        assert_eq!(profile_catalog_retry_delay_secs(20), 2 * 60 * 60);
     }
 }
 

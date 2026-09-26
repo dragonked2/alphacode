@@ -390,17 +390,22 @@ fn run_dp<P: PositionTracker>(
     answer
 }
 
+type ReusedSummaryRows = (
+    Vec<Option<Cell<PositionSummary>>>,
+    Vec<Option<Cell<PositionSummary>>>,
+    Vec<Option<Cell<PositionSummary>>>,
+);
+type ReusedVecRows = (
+    Vec<Option<Cell<Vec<usize>>>>,
+    Vec<Option<Cell<Vec<usize>>>>,
+    Vec<Option<Cell<Vec<usize>>>>,
+);
+
 std::thread_local! {
-    static REUSED_ROWS_SUMMARY: std::cell::RefCell<(
-        Vec<Option<Cell<PositionSummary>>>,
-        Vec<Option<Cell<PositionSummary>>>,
-        Vec<Option<Cell<PositionSummary>>>,
-    )> = std::cell::RefCell::new((Vec::new(), Vec::new(), Vec::new()));
-    static REUSED_ROWS_VEC: std::cell::RefCell<(
-        Vec<Option<Cell<Vec<usize>>>>,
-        Vec<Option<Cell<Vec<usize>>>>,
-        Vec<Option<Cell<Vec<usize>>>>,
-    )> = std::cell::RefCell::new((Vec::new(), Vec::new(), Vec::new()));
+    static REUSED_ROWS_SUMMARY: std::cell::RefCell<ReusedSummaryRows> =
+        const { std::cell::RefCell::new((Vec::new(), Vec::new(), Vec::new())) };
+    static REUSED_ROWS_VEC: std::cell::RefCell<ReusedVecRows> =
+        const { std::cell::RefCell::new((Vec::new(), Vec::new(), Vec::new())) };
 }
 
 // Hot-path overrides: reuse thread-local DP rows instead of allocating three

@@ -1519,6 +1519,15 @@ fn push_todo_plan_details(
     {
         push_todo_wrapped_detail(lines, "User intention", intention, base_indent, inner_width);
     }
+    if let Some(score) = plan.understands_user_intent {
+        push_todo_wrapped_detail(
+            lines,
+            "Understands user intent",
+            &format!("{score}%"),
+            base_indent,
+            inner_width,
+        );
+    }
 }
 
 /// Wrap one labeled detail line to the card width.
@@ -1641,7 +1650,20 @@ fn render_todo_plan_update(
 
     for field in &update.fields {
         match field {
-            crate::todo::TodoPlanField::UnderstandsUserIntent => {}
+            crate::todo::TodoPlanField::UnderstandsUserIntent => push_todo_score_update(
+                &mut lines,
+                "Understands user intent",
+                update
+                    .before
+                    .as_ref()
+                    .and_then(|plan| plan.understands_user_intent),
+                update
+                    .after
+                    .as_ref()
+                    .and_then(|plan| plan.understands_user_intent),
+                base_indent,
+                inner_width,
+            ),
             crate::todo::TodoPlanField::UserIntention => push_todo_text_update(
                 &mut lines,
                 "User intention",

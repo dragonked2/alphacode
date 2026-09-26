@@ -12,6 +12,7 @@ use crate::alphacode_tui::transport::{Stream, WriteHalf};
 use crate::alphacode_tui::tui::remote_diff::RemoteDiffTracker;
 use anyhow::Result;
 use serde::{Deserialize, Serialize};
+use std::collections::VecDeque;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
@@ -255,10 +256,16 @@ pub struct RemoteConnection {
     #[cfg(test)]
     protocol_bytes_scanned: usize,
     has_loaded_history: bool,
+    /// Events consumed while proving protocol attachment. They must be replayed
+    /// to the main loop in their original arrival order after `connect` returns.
+    pending_events: VecDeque<ServerEvent>,
     call_output_tokens_seen: u64,
 }
 
 const DETACHED_REQUEST_TIMEOUT: Duration = Duration::from_secs(2);
+/// Maximum time allowed for Subscribe + session identity + History. A raw
+/// transport write is not a successful reconnect; the protocol must attach.
+const REMOTE_BOOTSTRAP_TIMEOUT: Duration = Duration::from_secs(30);
 const MAX_STRAY_REMOTE_PROTOCOL_LINES: usize = 32;
 /// Hard cap for one newline-delimited server event. History events can be large
 /// because they may contain images, but an authenticated or compromised peer
@@ -309,7 +316,10 @@ impl RemoteConnection {
     /// Connect to the server and optionally resume a specific session.
     ///
     /// When `client_has_local_history` is true, the client already restored the
-    /// transcript locally and only needs lightweight session metadata from the server.
+    /// transcript locally. The server still returns authoritative bootstrap
+    /// metadata/history so reconnect validation cannot report success before the
+    /// session is actually attached; the TUI may reuse the local rendering when
+    /// the payload matches.
     pub async fn connect_with_session(
         resume_session: Option<&str>,
         client_instance_id: Option<&str>,
@@ -336,17 +346,17 @@ impl RemoteConnection {
             #[cfg(test)]
             protocol_bytes_scanned: 0,
             has_loaded_history: false,
+            pending_events: VecDeque::new(),
             call_output_tokens_seen: 0,
         };
 
         // Subscribe to events
         let subscribe_start = Instant::now();
         let (working_dir, selfdev) = super::subscribe_metadata(remote_working_dir);
-        let resume_target = resume_session
-            .filter(|session_id| crate::session::session_exists(session_id))
-            .map(|session_id| session_id.to_string());
+        let resume_target = resume_session.map(|session_id| session_id.to_string());
+        let subscribe_id = conn.next_request_id;
         conn.send_request(Request::Subscribe {
-            id: conn.next_request_id,
+            id: subscribe_id,
             working_dir,
             selfdev,
             target_session_id: resume_target.clone(),
@@ -363,15 +373,15 @@ impl RemoteConnection {
         // that session and returns History, so avoid a second bootstrap request.
         let bootstrap_request_start = Instant::now();
         let mut bootstrap_request = "get_history";
-        if resume_target.is_none() {
-            conn.send_request(Request::GetHistory {
-                id: conn.next_request_id,
-            })
-            .await?;
+        let history_request_id = if resume_target.is_none() {
+            let id = conn.next_request_id;
+            conn.send_request(Request::GetHistory { id }).await?;
             conn.next_request_id += 1;
+            Some(id)
         } else {
             bootstrap_request = "subscribe_resume";
-        }
+            None
+        };
         // Avoid a reconnect/reload thundering herd: every headed client used to
         // request the full expanded model catalog immediately after attach. On
         // large OpenRouter catalogs this is ~800KB per client and can make many
@@ -387,6 +397,9 @@ impl RemoteConnection {
             conn.next_request_id += 1;
         }
 
+        conn.await_protocol_bootstrap(subscribe_id, history_request_id, resume_target.as_deref())
+            .await?;
+
         let bootstrap_request_ms = bootstrap_request_start.elapsed().as_millis();
 
         crate::logging::info(&format!(
@@ -400,6 +413,124 @@ impl RemoteConnection {
         ));
 
         Ok(conn)
+    }
+
+    /// Wait until the new transport is actually attached to a server session.
+    /// Socket connect + request write alone is insufficient: the peer can close
+    /// immediately after rejecting Subscribe, and the old reconnect loop would
+    /// briefly report success and reset its backoff.
+    async fn await_protocol_bootstrap(
+        &mut self,
+        subscribe_id: u64,
+        history_request_id: Option<u64>,
+        expected_session_id: Option<&str>,
+    ) -> Result<()> {
+        self.await_protocol_bootstrap_with_timeout(
+            subscribe_id,
+            history_request_id,
+            expected_session_id,
+            REMOTE_BOOTSTRAP_TIMEOUT,
+        )
+        .await
+    }
+
+    async fn await_protocol_bootstrap_with_timeout(
+        &mut self,
+        subscribe_id: u64,
+        history_request_id: Option<u64>,
+        expected_session_id: Option<&str>,
+        timeout: Duration,
+    ) -> Result<()> {
+        let deadline = Instant::now()
+            .checked_add(timeout)
+            .unwrap_or_else(Instant::now);
+        let mut got_session_id = false;
+        let mut got_subscribe_done = false;
+        let mut got_history = history_request_id.is_none();
+        let mut bootstrap_events = VecDeque::new();
+
+        while !(got_session_id && got_subscribe_done && got_history) {
+            let remaining = deadline.saturating_duration_since(Instant::now());
+            if remaining.is_zero() {
+                anyhow::bail!(
+                    "server bootstrap timed out after {:?} (session={}, subscribe_done={}, history={})",
+                    timeout,
+                    got_session_id,
+                    got_subscribe_done,
+                    got_history
+                );
+            }
+            let event = tokio::time::timeout(remaining, self.next_event())
+                .await
+                .map_err(|_| {
+                    anyhow::anyhow!(
+                        "server bootstrap timed out after {:?} (session={}, subscribe_done={}, history={})",
+                        timeout,
+                        got_session_id,
+                        got_subscribe_done,
+                        got_history
+                    )
+                })?;
+            let event = match event {
+                RemoteRead::Event(event) => event,
+                RemoteRead::Disconnected(reason) => {
+                    anyhow::bail!("server disconnected during protocol bootstrap: {reason:?}")
+                }
+            };
+
+            if let ServerEvent::Error { id, message, .. } = &event
+                && (*id == subscribe_id || history_request_id == Some(*id) || *id == 0)
+            {
+                anyhow::bail!("server rejected protocol bootstrap: {message}");
+            }
+            if let ServerEvent::SessionId { session_id } = &event {
+                if session_id.is_empty() {
+                    anyhow::bail!("server returned an empty session id during bootstrap");
+                }
+                if expected_session_id.is_some_and(|expected| expected != session_id) {
+                    anyhow::bail!(
+                        "server attached to unexpected session '{}' (requested '{}')",
+                        session_id,
+                        expected_session_id.unwrap_or_default()
+                    );
+                }
+                self.session_id = Some(session_id.clone());
+                got_session_id = true;
+            }
+            if let ServerEvent::History { session_id, .. } = &event
+                && expected_session_id.is_some_and(|expected| expected != session_id)
+            {
+                anyhow::bail!(
+                    "server returned history for unexpected session '{}' (requested '{}')",
+                    session_id,
+                    expected_session_id.unwrap_or_default()
+                );
+            }
+            if matches!(&event, ServerEvent::History { .. }) {
+                self.has_loaded_history = true;
+                got_history = true;
+            }
+            if matches!(&event, ServerEvent::Done { id } if *id == subscribe_id) {
+                got_subscribe_done = true;
+            }
+
+            // The main loop has not started yet. Keep bootstrap events in a
+            // local queue until the attach is complete; putting them into
+            // `self.pending_events` immediately would make the next
+            // `next_event()` call replay the first event instead of reading
+            // the next wire frame.
+            bootstrap_events.push_back(event);
+        }
+
+        self.pending_events.extend(bootstrap_events);
+        crate::logging::info(&format!(
+            "Remote protocol bootstrap attached session={:?} subscribe_id={} history_id={:?} pending_events={}",
+            self.session_id,
+            subscribe_id,
+            history_request_id,
+            self.pending_events.len()
+        ));
+        Ok(())
     }
 
     fn interrupt_request_log_fields(
@@ -455,7 +586,10 @@ impl RemoteConnection {
         let mut w = self.writer.lock().await;
         let writer_wait_ms = writer_wait_start.elapsed().as_millis();
         let write_start = Instant::now();
-        let result = w.write_all(json.as_bytes()).await;
+        let result = match w.write_all(json.as_bytes()).await {
+            Ok(()) => w.flush().await,
+            Err(error) => Err(error),
+        };
         if let Some(fields) = &interrupt_log {
             match &result {
                 Ok(()) => crate::logging::info(&format!(
@@ -1044,6 +1178,9 @@ impl RemoteConnection {
     /// protocol line" warnings, the real `History` was discarded, and the
     /// session stayed stuck on "loading session…" until a manual `/restart`.
     pub async fn next_event(&mut self) -> RemoteRead {
+        if let Some(event) = self.pending_events.pop_front() {
+            return RemoteRead::Event(event);
+        }
         let mut stray_lines = 0usize;
         loop {
             // Serve any complete line already buffered before touching the
@@ -1261,6 +1398,7 @@ impl RemoteConnection {
             #[cfg(test)]
             protocol_bytes_scanned: 0,
             has_loaded_history: false,
+            pending_events: VecDeque::new(),
             call_output_tokens_seen: 0,
         }
     }
@@ -1421,6 +1559,199 @@ impl RemoteEventState for ReplayRemoteState {
 mod tests {
     use super::*;
     use std::time::Duration;
+
+    fn empty_history_event(id: u64, session_id: &str) -> ServerEvent {
+        ServerEvent::History {
+            id,
+            session_id: session_id.to_string(),
+            messages: Vec::new(),
+            images: Vec::new(),
+            provider_name: None,
+            provider_model: None,
+            available_models: Vec::new(),
+            available_model_routes: Vec::new(),
+            mcp_servers: Vec::new(),
+            skills: Vec::new(),
+            total_tokens: None,
+            token_usage_totals: None,
+            all_sessions: Vec::new(),
+            client_count: Some(1),
+            is_canary: Some(false),
+            server_version: None,
+            server_name: None,
+            server_icon: None,
+            server_has_update: Some(false),
+            was_interrupted: Some(false),
+            reload_recovery: None,
+            connection_type: None,
+            status_detail: None,
+            upstream_provider: None,
+            resolved_credential: None,
+            reasoning_effort: None,
+            service_tier: None,
+            subagent_model: None,
+            autoreview_enabled: None,
+            autojudge_enabled: None,
+            compaction_mode: Default::default(),
+            activity: None,
+            side_panel: Default::default(),
+        }
+    }
+
+    #[tokio::test]
+    async fn protocol_bootstrap_waits_for_identity_history_and_replays_events() {
+        let mut remote = RemoteConnection::dummy();
+        let peer = remote
+            ._dummy_peer
+            .take()
+            .expect("dummy remote should retain peer stream");
+        let (_reader, mut writer) = peer.into_split();
+        let payload = [
+            ServerEvent::SessionId {
+                session_id: "session-1".to_string(),
+            },
+            empty_history_event(8, "session-1"),
+            ServerEvent::Done { id: 7 },
+        ]
+        .iter()
+        .map(crate::protocol::encode_event)
+        .collect::<String>();
+        writer
+            .write_all(payload.as_bytes())
+            .await
+            .expect("bootstrap events should write");
+        writer.flush().await.expect("bootstrap events should flush");
+
+        remote
+            .await_protocol_bootstrap(7, Some(8), Some("session-1"))
+            .await
+            .expect("protocol bootstrap should attach");
+        assert_eq!(remote.session_id(), Some("session-1"));
+        assert!(remote.has_loaded_history());
+        assert_eq!(remote.pending_events.len(), 3);
+
+        assert!(matches!(
+            remote.next_event().await,
+            RemoteRead::Event(ServerEvent::SessionId { .. })
+        ));
+        assert!(matches!(
+            remote.next_event().await,
+            RemoteRead::Event(ServerEvent::History { .. })
+        ));
+        assert!(matches!(
+            remote.next_event().await,
+            RemoteRead::Event(ServerEvent::Done { id: 7 })
+        ));
+    }
+
+    #[tokio::test]
+    async fn protocol_bootstrap_rejects_request_error_instead_of_reporting_connected() {
+        let mut remote = RemoteConnection::dummy();
+        let peer = remote
+            ._dummy_peer
+            .take()
+            .expect("dummy remote should retain peer stream");
+        let (_reader, mut writer) = peer.into_split();
+        writer
+            .write_all(
+                crate::protocol::encode_event(&ServerEvent::Error {
+                    id: 7,
+                    message: "requested session does not exist".to_string(),
+                    retry_after_secs: None,
+                })
+                .as_bytes(),
+            )
+            .await
+            .expect("bootstrap error should write");
+
+        let error = remote
+            .await_protocol_bootstrap(7, None, Some("missing-session"))
+            .await
+            .expect_err("request error must fail bootstrap");
+        assert!(error.to_string().contains("does not exist"));
+    }
+
+    #[tokio::test]
+    async fn protocol_bootstrap_waits_for_delayed_history() {
+        let mut remote = RemoteConnection::dummy();
+        let peer = remote
+            ._dummy_peer
+            .take()
+            .expect("dummy remote should retain peer stream");
+        let (_reader, mut writer) = peer.into_split();
+        tokio::spawn(async move {
+            let payload = [
+                ServerEvent::SessionId {
+                    session_id: "session-delayed".to_string(),
+                },
+                ServerEvent::Done { id: 7 },
+            ]
+            .iter()
+            .map(crate::protocol::encode_event)
+            .collect::<String>();
+            writer
+                .write_all(payload.as_bytes())
+                .await
+                .expect("bootstrap events should write");
+            writer.flush().await.expect("bootstrap events should flush");
+            tokio::time::sleep(Duration::from_millis(50)).await;
+            writer
+                .write_all(
+                    crate::protocol::encode_event(&empty_history_event(8, "session-delayed"))
+                        .as_bytes(),
+                )
+                .await
+                .expect("delayed history should write");
+            writer.flush().await.expect("delayed history should flush");
+        });
+
+        remote
+            .await_protocol_bootstrap_with_timeout(
+                7,
+                Some(8),
+                Some("session-delayed"),
+                Duration::from_secs(1),
+            )
+            .await
+            .expect("delayed history should still satisfy bootstrap");
+        assert!(remote.has_loaded_history());
+        assert_eq!(remote.pending_events.len(), 3);
+    }
+
+    #[tokio::test]
+    async fn protocol_bootstrap_has_a_bounded_timeout_when_history_never_arrives() {
+        let mut remote = RemoteConnection::dummy();
+        let peer = remote
+            ._dummy_peer
+            .take()
+            .expect("dummy remote should retain peer stream");
+        let (_reader, mut writer) = peer.into_split();
+        let payload = [
+            ServerEvent::SessionId {
+                session_id: "session-timeout".to_string(),
+            },
+            ServerEvent::Done { id: 7 },
+        ]
+        .iter()
+        .map(crate::protocol::encode_event)
+        .collect::<String>();
+        writer
+            .write_all(payload.as_bytes())
+            .await
+            .expect("bootstrap events should write");
+        writer.flush().await.expect("bootstrap events should flush");
+
+        let error = remote
+            .await_protocol_bootstrap_with_timeout(
+                7,
+                Some(8),
+                Some("session-timeout"),
+                Duration::from_millis(40),
+            )
+            .await
+            .expect_err("missing history must not leave bootstrap pending forever");
+        assert!(error.to_string().contains("history=false"));
+    }
 
     #[tokio::test]
     async fn detached_auth_changed_notification_does_not_wait_for_writer_lock() {

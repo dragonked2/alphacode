@@ -11,5 +11,9 @@ pub(super) async fn write_direct_event(
     let json = encode_event(event);
     let mut w = writer.lock().await;
     w.write_all(json.as_bytes()).await?;
+    // Make the complete newline-delimited frame visible before the next
+    // protocol await. This matters for Windows named pipes, where a write may
+    // be buffered independently of the following event-loop turn.
+    w.flush().await?;
     Ok(())
 }

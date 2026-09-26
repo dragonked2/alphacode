@@ -91,6 +91,8 @@ pub struct RemoteStatus {
     pub connect_host: String,
     /// True when we could not work out a reachable name for this machine.
     pub host_unknown: bool,
+    /// Live listener state from the gateway supervisor, rather than config alone.
+    pub runtime_state: String,
     pub devices: Vec<DeviceSummary>,
 }
 
@@ -98,12 +100,14 @@ impl RemoteStatus {
     /// Gather current gateway state.
     pub fn load() -> Self {
         let config = crate::config::config().gateway.clone();
-        Self::from_parts(
+        let mut status = Self::from_parts(
             config.enabled,
             config.port,
             &config.bind_addr,
             DeviceRegistry::load(),
-        )
+        );
+        status.runtime_state = super::gateway_runtime_summary();
+        status
     }
 
     fn from_parts(enabled: bool, port: u16, bind_addr: &str, registry: DeviceRegistry) -> Self {
@@ -114,6 +118,11 @@ impl RemoteStatus {
             bind_addr: bind_addr.to_string(),
             host_unknown: connect_host == super::UNKNOWN_CONNECT_HOST,
             connect_host,
+            runtime_state: if enabled {
+                "starting".to_string()
+            } else {
+                "disabled".to_string()
+            },
             devices: registry
                 .devices
                 .into_iter()
@@ -129,7 +138,11 @@ impl RemoteStatus {
 
     /// `host:port` a remote client should dial.
     pub fn dial_address(&self) -> String {
-        format!("{}:{}", self.connect_host, self.port)
+        if self.connect_host.contains(':') && !self.connect_host.starts_with('[') {
+            format!("[{}]:{}", self.connect_host, self.port)
+        } else {
+            format!("{}:{}", self.connect_host, self.port)
+        }
     }
 
     /// Render status as markdown for the TUI transcript.
@@ -138,8 +151,8 @@ impl RemoteStatus {
 
         if self.enabled {
             out.push_str(&format!(
-                "- Gateway: **on**, listening on `{}:{}`\n",
-                self.bind_addr, self.port
+                "- Gateway: **on**, configured on `{}:{}` — runtime: {}\n",
+                self.bind_addr, self.port, self.runtime_state
             ));
             out.push_str(&format!(
                 "- Dial from another machine: `{}`\n",

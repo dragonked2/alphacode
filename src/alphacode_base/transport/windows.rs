@@ -39,31 +39,13 @@ pub struct Listener {
 impl Listener {
     pub fn bind(path: &Path) -> io::Result<Self> {
         let pipe_name = path_to_pipe_name(path);
-        match ServerOptions::new()
+        let current_server = ServerOptions::new()
             .first_pipe_instance(true)
-            .create(&pipe_name)
-        {
-            Ok(server) => Ok(Self {
-                pipe_name,
-                current_server: server,
-            }),
-            Err(e)
-                if e.raw_os_error()
-                    == Some(windows_sys::Win32::Foundation::ERROR_ACCESS_DENIED as i32) =>
-            {
-                eprintln!(
-                    "[windows] Named pipe {} busy (access denied), retrying without first_pipe_instance",
-                    pipe_name
-                );
-                std::thread::sleep(std::time::Duration::from_millis(200));
-                let server = ServerOptions::new().create(&pipe_name)?;
-                Ok(Self {
-                    pipe_name,
-                    current_server: server,
-                })
-            }
-            Err(e) => Err(e),
-        }
+            .create(&pipe_name)?;
+        Ok(Self {
+            pipe_name,
+            current_server,
+        })
     }
 
     pub async fn accept(&mut self) -> io::Result<(Stream, PipeAddr)> {

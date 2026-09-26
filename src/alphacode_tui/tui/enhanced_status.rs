@@ -76,11 +76,9 @@ fn format_elapsed(d: Duration) -> String {
     } else {
         let hours = d.as_secs() / 3600;
         let mins = (d.as_secs() % 3600) / 60;
-        if mins == 0 {
-            format!("{}h", hours)
-        } else {
-            format!("{}h{}m", hours, mins)
-        }
+        // Always render minutes (even zero): "1h0m", matching the doc comment
+        // and keeping the width stable as minutes tick over.
+        format!("{}h{}m", hours, mins)
     }
 }
 

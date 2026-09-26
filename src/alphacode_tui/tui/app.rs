@@ -1599,6 +1599,10 @@ pub struct App {
     // After an interrupt, wait one redraw before auto-dispatching queued followups so
     // the queued preview can render in the interrupted state first.
     pending_queued_dispatch: bool,
+    // Reload recovery may restore unsent prompts into the queue. Hold them
+    // until the user explicitly submits so reconnect cannot auto-dispatch a
+    // half-typed or client-only continuation.
+    recovered_queue_held_for_user_submit: bool,
     // Tab completion state: (base_input, suggestion_index)
     // base_input is the original input before cycling, suggestion_index is current position
     tab_completion_state: Option<(String, usize)>,

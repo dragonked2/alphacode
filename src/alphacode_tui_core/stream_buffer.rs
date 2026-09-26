@@ -43,7 +43,7 @@ const REVEAL_BACKLOG_GAIN: f32 = 4.0;
 /// several terminal rows appearing at once. Capping by elapsed time (rather
 /// than by a fixed chars-per-frame value) keeps 16ms and 50ms redraw loops at
 /// the same visual rate while still draining a large burst in a few seconds.
-const MAX_REVEAL_CPS: f32 = 1440.0;
+const MAX_REVEAL_CPS: f32 = 960.0;
 
 /// Maximum elapsed time credited to a single reveal step. Without this, a long
 /// idle gap before the first/next burst would bank a huge budget and dump the

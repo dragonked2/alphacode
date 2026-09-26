@@ -91,6 +91,11 @@ pub(super) fn render_git_widget(data: &InfoWidgetData, inner: Rect) -> Vec<Line<
 
 pub(super) fn render_git_compact(info: &GitInfo, width: u16) -> Vec<Line<'static>> {
     let w = width as usize;
+    // A zero-width rail (a collapsed panel, or a transient layout pass) has no
+    // room for even the icon, so render nothing instead of overflowing.
+    if w == 0 {
+        return Vec::new();
+    }
     let mut parts: Vec<Span> = Vec::new();
 
     // Measure the stats that will actually be pushed, so the branch truncation
@@ -124,6 +129,14 @@ pub(super) fn render_git_compact(info: &GitInfo, width: u16) -> Vec<Line<'static
     }
 
     let icon_width = " ".width();
+    // A narrow rail may not fit the icon plus every stat: shed stat spans
+    // from the right until the fixed chrome fits, so the row never runs
+    // past the panel. The branch then takes whatever budget remains.
+    while icon_width + stats_width > w && !stat_spans.is_empty() {
+        if let Some((text, _)) = stat_spans.pop() {
+            stats_width -= text.width();
+        }
+    }
     let branch_budget = w.saturating_sub(icon_width + stats_width);
     let branch_display = truncate_smart(&info.branch, branch_budget);
 

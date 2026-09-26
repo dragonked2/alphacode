@@ -844,6 +844,11 @@ async fn write_event(writer: &Arc<Mutex<WriteHalf>>, event: &ServerEvent) -> Res
     buf.push(b'\n');
     let mut writer = writer.lock().await;
     writer.write_all(&buf).await?;
+    // Explicitly flush protocol frames. This is effectively a no-op for Unix
+    // streams, while Windows named pipes may otherwise retain a complete
+    // newline-delimited frame until a later write/close; bootstrap then appears
+    // to receive only SessionId and waits forever for Done/History.
+    writer.flush().await?;
     drop(buf);
     Ok(())
 }

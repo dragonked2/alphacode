@@ -1,4 +1,4 @@
-use super::{Registry, Tool, ToolContext, ToolOutput};
+use super::{Registry, Tool, ToolContext, ToolExecutionClass, ToolOutput};
 use crate::alphacode_app_core::bus::{BatchSubcallProgress, BatchSubcallState};
 use crate::alphacode_app_core::message::ToolCall;
 use anyhow::Result;
@@ -8,6 +8,7 @@ use serde_json::{Value, json};
 use std::collections::HashMap;
 
 const MAX_PARALLEL: usize = 20;
+const MAX_CONCURRENT_READ_ONLY: usize = 4;
 
 pub(crate) fn generic_batch_schema() -> Value {
     json!({
@@ -70,6 +71,34 @@ fn ordered_batch_subcalls(
         .collect();
     ordered.sort_by_key(|entry| entry.index);
     ordered
+}
+
+#[allow(clippy::too_many_arguments)]
+fn record_batch_completion(
+    session_id: &str,
+    parent_tool_call_id: &str,
+    total: usize,
+    completed_count: usize,
+    index: usize,
+    tool_name: &str,
+    failed: bool,
+    subcalls: &[(usize, String, Value)],
+    running: &mut HashMap<usize, ToolCall>,
+    failures: &mut HashMap<usize, bool>,
+) {
+    running.remove(&index);
+    failures.insert(index, failed);
+    crate::bus::Bus::global().publish(crate::bus::BusEvent::BatchProgress(
+        crate::bus::BatchProgress {
+            session_id: session_id.to_string(),
+            tool_call_id: parent_tool_call_id.to_string(),
+            total,
+            completed: completed_count,
+            last_completed: Some(tool_name.to_string()),
+            running: running.values().cloned().collect(),
+            subcalls: ordered_batch_subcalls(subcalls, running, failures),
+        },
+    ));
 }
 
 pub struct BatchTool {
@@ -172,7 +201,7 @@ impl Tool for BatchTool {
     }
 
     fn description(&self) -> &str {
-        "Run multiple independent tool calls in parallel. Use when tool calls don't depend on each other to save time. Each sub-call has its own error handling."
+        "Run multiple independent tool calls efficiently. Read-only calls run concurrently (up to 4); mutating and external-effect calls stay ordered. Use when calls do not depend on each other. Each sub-call has its own error handling."
     }
 
     fn parameters_schema(&self) -> Value {
@@ -243,43 +272,102 @@ impl Tool for BatchTool {
             },
         ));
 
-        let mut stream: futures::stream::FuturesUnordered<_> = subcalls
-            .iter()
-            .map(|(i, tool_name, parameters)| {
-                let registry = self.registry.clone();
-                let i = *i;
-                let tool_name = tool_name.clone();
-                let parameters = parameters.clone();
-                let sub_ctx = ctx.for_subcall(format!("batch-{}-{}", i + 1, tool_name.clone()));
-                async move {
-                    let result = registry.execute(&tool_name, parameters, sub_ctx).await;
-                    (i, tool_name, result)
-                }
-            })
-            .collect();
-
         let mut results: Vec<(usize, String, Result<ToolOutput>)> = Vec::with_capacity(num_tools);
         let mut failures: HashMap<usize, bool> = HashMap::new();
         let mut completed_count = 0usize;
-        while let Some((i, tool_name, result)) = stream.next().await {
+        let mut read_group: Vec<(usize, String, Value)> = Vec::new();
+
+        for (index, tool_name, parameters) in &subcalls {
+            let class = self
+                .registry
+                .execution_class(tool_name, (*parameters).clone())
+                .await;
+            if class == ToolExecutionClass::ReadOnly {
+                read_group.push((*index, tool_name.clone(), (*parameters).clone()));
+                continue;
+            }
+
+            // Flush the independent read-only prefix before any mutation. This
+            // preserves the caller's ordering barrier for writes and external
+            // effects while still overlapping safe work.
+            let pending = std::mem::take(&mut read_group);
+            let futures = pending.into_iter().map(|(i, name, input)| {
+                let registry = self.registry.clone();
+                let sub_ctx = ctx.for_subcall(format!("batch-{}-{}", i + 1, name.clone()));
+                async move {
+                    let result = registry.execute(&name, input, sub_ctx).await;
+                    (i, name, result)
+                }
+            });
+            let mut stream =
+                futures::stream::iter(futures).buffer_unordered(MAX_CONCURRENT_READ_ONLY);
+            while let Some((i, name, result)) = stream.next().await {
+                completed_count += 1;
+                record_batch_completion(
+                    &ctx.session_id,
+                    &ctx.tool_call_id,
+                    num_tools,
+                    completed_count,
+                    i,
+                    &name,
+                    result.is_err(),
+                    &subcalls,
+                    &mut running,
+                    &mut failures,
+                );
+                results.push((i, name, result));
+            }
+
+            let sub_ctx = ctx.for_subcall(format!("batch-{}-{}", index + 1, tool_name));
+            let result = self
+                .registry
+                .execute(tool_name, (*parameters).clone(), sub_ctx)
+                .await;
             completed_count += 1;
-            let failed = result.is_err();
-            running.remove(&i);
-            failures.insert(i, failed);
-            crate::bus::Bus::global().publish(crate::bus::BusEvent::BatchProgress(
-                crate::bus::BatchProgress {
-                    session_id: ctx.session_id.clone(),
-                    tool_call_id: ctx.tool_call_id.clone(),
-                    total: num_tools,
-                    completed: completed_count,
-                    last_completed: Some(tool_name.clone()),
-                    running: running.values().cloned().collect(),
-                    subcalls: ordered_batch_subcalls(&subcalls, &running, &failures),
-                },
-            ));
-            results.push((i, tool_name, result));
+            record_batch_completion(
+                &ctx.session_id,
+                &ctx.tool_call_id,
+                num_tools,
+                completed_count,
+                *index,
+                tool_name,
+                result.is_err(),
+                &subcalls,
+                &mut running,
+                &mut failures,
+            );
+            results.push((*index, tool_name.clone(), result));
         }
-        // Restore original order
+
+        // Final read-only suffix.
+        let pending = std::mem::take(&mut read_group);
+        let futures = pending.into_iter().map(|(i, name, input)| {
+            let registry = self.registry.clone();
+            let sub_ctx = ctx.for_subcall(format!("batch-{}-{}", i + 1, name.clone()));
+            async move {
+                let result = registry.execute(&name, input, sub_ctx).await;
+                (i, name, result)
+            }
+        });
+        let mut stream = futures::stream::iter(futures).buffer_unordered(MAX_CONCURRENT_READ_ONLY);
+        while let Some((i, name, result)) = stream.next().await {
+            completed_count += 1;
+            record_batch_completion(
+                &ctx.session_id,
+                &ctx.tool_call_id,
+                num_tools,
+                completed_count,
+                i,
+                &name,
+                result.is_err(),
+                &subcalls,
+                &mut running,
+                &mut failures,
+            );
+            results.push((i, name, result));
+        }
+
+        // Restore original order for provider/model correlation.
         results.sort_by_key(|(i, _, _)| *i);
 
         // Format results: pre-size to avoid O(n^2) regrowth on large
@@ -333,5 +421,138 @@ impl Tool for BatchTool {
         ));
 
         Ok(ToolOutput::new(output))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::alphacode_tool_core::{ToolContext, ToolExecutionMode};
+    use async_trait::async_trait;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::{Arc, Mutex};
+    use std::time::Duration;
+
+    #[derive(Default)]
+    struct ProbeState {
+        read_active: AtomicUsize,
+        read_max: AtomicUsize,
+        write_active: AtomicUsize,
+        write_max: AtomicUsize,
+        write_order: Mutex<Vec<String>>,
+    }
+
+    struct ProbeTool {
+        class: ToolExecutionClass,
+        state: Arc<ProbeState>,
+    }
+
+    #[async_trait]
+    impl Tool for ProbeTool {
+        fn name(&self) -> &str {
+            match self.class {
+                ToolExecutionClass::ReadOnly => "probe_read",
+                _ => "probe_write",
+            }
+        }
+
+        fn description(&self) -> &str {
+            "scheduler probe"
+        }
+
+        fn parameters_schema(&self) -> Value {
+            json!({
+                "type": "object",
+                "properties": { "id": { "type": "string" } }
+            })
+        }
+
+        fn execution_class(&self, _input: &Value) -> ToolExecutionClass {
+            self.class
+        }
+
+        async fn execute(&self, input: Value, _ctx: ToolContext) -> Result<ToolOutput> {
+            let id = input
+                .get("id")
+                .and_then(Value::as_str)
+                .unwrap_or("unknown")
+                .to_string();
+            let (active, max) = match self.class {
+                ToolExecutionClass::ReadOnly => (&self.state.read_active, &self.state.read_max),
+                _ => (&self.state.write_active, &self.state.write_max),
+            };
+            let now = active.fetch_add(1, Ordering::SeqCst) + 1;
+            max.fetch_max(now, Ordering::SeqCst);
+            if !matches!(self.class, ToolExecutionClass::ReadOnly) {
+                self.state.write_order.lock().unwrap().push(id.clone());
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+            active.fetch_sub(1, Ordering::SeqCst);
+            Ok(ToolOutput::new(id))
+        }
+    }
+
+    fn probe_context() -> ToolContext {
+        ToolContext {
+            session_id: "batch-scheduler-test".to_string(),
+            message_id: "message".to_string(),
+            tool_call_id: "batch".to_string(),
+            working_dir: None,
+            stdin_request_tx: None,
+            graceful_shutdown_signal: None,
+            execution_mode: ToolExecutionMode::Direct,
+        }
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn batch_overlaps_read_only_groups_but_caps_and_serializes_writes() {
+        let state = Arc::new(ProbeState::default());
+        let registry = Registry::empty();
+        {
+            let mut tools = registry.tools.write().await;
+            tools.insert(
+                "probe_read".to_string(),
+                Arc::new(ProbeTool {
+                    class: ToolExecutionClass::ReadOnly,
+                    state: Arc::clone(&state),
+                }),
+            );
+            tools.insert(
+                "probe_write".to_string(),
+                Arc::new(ProbeTool {
+                    class: ToolExecutionClass::Mutating,
+                    state: Arc::clone(&state),
+                }),
+            );
+        }
+        let batch = BatchTool::new(registry);
+        let result = batch
+            .execute(
+                json!({
+                    "tool_calls": [
+                        {"tool": "probe_read", "parameters": {"id": "r1"}},
+                        {"tool": "probe_read", "parameters": {"id": "r2"}},
+                        {"tool": "probe_read", "parameters": {"id": "r3"}},
+                        {"tool": "probe_read", "parameters": {"id": "r4"}},
+                        {"tool": "probe_read", "parameters": {"id": "r5"}},
+                        {"tool": "probe_write", "parameters": {"id": "w1"}},
+                        {"tool": "probe_write", "parameters": {"id": "w2"}}
+                    ]
+                }),
+                probe_context(),
+            )
+            .await
+            .expect("batch probe should execute");
+
+        let read_max = state.read_max.load(Ordering::SeqCst);
+        let write_max = state.write_max.load(Ordering::SeqCst);
+        assert!((2..=4).contains(&read_max), "read cap/overlap: {read_max}");
+        assert_eq!(write_max, 1, "mutations must remain serialized");
+        assert_eq!(
+            *state.write_order.lock().unwrap(),
+            vec!["w1".to_string(), "w2".to_string()]
+        );
+        assert!(result.output.contains("--- [1] probe_read ---"));
+        assert!(result.output.contains("--- [7] probe_write ---"));
     }
 }

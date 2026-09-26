@@ -45,16 +45,15 @@ fn onboarding_welcome_shows_telemetry_title_and_suggestions() {
     let state = onboarding_state();
     let text = render_onboarding(&state, 80, 30);
 
+    // The footer is deliberately one compact line: what the data is, and the
+    // one command that changes it. The verbose opt-out recipe moved to
+    // `/telemetry`, so the welcome screen does not teach an env var.
     assert!(
-        text.contains("anonymous usage statistics"),
-        "telemetry notice should be rendered:\n{text}"
+        text.contains("Anonymous usage stats only · /telemetry to change"),
+        "telemetry footer should be rendered:\n{text}"
     );
     assert!(
-        text.contains("ALPHACODE_NO_TELEMETRY=1"),
-        "telemetry opt-out hint should be rendered:\n{text}"
-    );
-    assert!(
-        text.contains("Welcome to alphacode onboarding"),
+        text.contains("Welcome to alphacode"),
         "welcome title should be rendered:\n{text}"
     );
     assert!(
@@ -84,12 +83,13 @@ fn onboarding_welcome_login_suggestion_shows_typed_command() {
 #[test]
 fn onboarding_welcome_renders_on_tiny_area_without_panicking() {
     // Below the donut/full-treatment threshold: should fall back gracefully.
-    // The title may be truncated at narrow widths, so only assert its prefix.
+    // A 20x5 area is narrower than the title, so only the leading word of the
+    // title is guaranteed to fit.
     let state = onboarding_state();
     let text = render_onboarding(&state, 20, 5);
     assert!(
-        text.contains("Welcome to alphacode"),
-        "minimal fallback should still show the title:\n{text}"
+        text.contains("Welcome"),
+        "minimal fallback should still show the start of the title:\n{text}"
     );
 }
 

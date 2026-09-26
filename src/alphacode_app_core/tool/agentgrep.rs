@@ -235,6 +235,10 @@ impl Tool for AgentGrepTool {
         })
     }
 
+    fn execution_class(&self, _input: &Value) -> super::ToolExecutionClass {
+        super::ToolExecutionClass::ReadOnly
+    }
+
     async fn execute(&self, input: Value, ctx: ToolContext) -> Result<ToolOutput> {
         let params: AgentGrepInput = serde_json::from_value(input)?;
         // The search shells out to ripgrep and walks/reads files (and for

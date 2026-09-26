@@ -826,7 +826,7 @@ mod tests {
                 Some("Improve menu labels"),
                 false
             ),
-            "🐃 Improve menu labels"
+            "💫 Improve menu labels"
         );
         assert_eq!(
             format_session_menu_item_title_with_display(
@@ -834,7 +834,7 @@ mod tests {
                 Some("Improve menu labels"),
                 true
             ),
-            "🐃 Improve menu labels · streaming"
+            "💫 Improve menu labels · streaming"
         );
     }
 
@@ -843,7 +843,7 @@ mod tests {
         let session_id = "session_buffalo_1781229104969_6d487ff77287de4f";
         assert_eq!(
             format_session_menu_item_title_with_display(session_id, None, false),
-            "🐃"
+            "💫"
         );
         assert_eq!(
             format_session_menu_item_title_with_display("weird-id", None, false),
@@ -884,7 +884,7 @@ mod tests {
 
         assert_eq!(
             format_session_menu_item_title(session_id, false),
-            "🐃 Meaningful menu labels"
+            "💫 Meaningful menu labels"
         );
 
         if let Some(previous_home) = previous_home {

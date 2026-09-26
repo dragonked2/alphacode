@@ -1433,16 +1433,12 @@ pub(super) fn expand_paste_placeholders(app: &mut App, input: &str) -> String {
     let mut result = input.to_string();
     for content in app.pasted_contents.iter().rev() {
         let placeholder = paste_placeholder(content);
-        if let Some(first) = result.find(&placeholder) {
-            // Replace every occurrence of this placeholder, left to
-            // right. Each replacement preserves the offset of the next
-            // match by advancing past the inserted content.
-            let mut cursor = first;
-            while let Some(pos) = result[cursor..].find(&placeholder) {
-                let abs = cursor + pos;
-                result.replace_range(abs..abs + placeholder.len(), content);
-                cursor = abs + content.len();
-            }
+        // Replace exactly one rightmost occurrence per recorded paste. Two
+        // different pastes can have the same line count and therefore the
+        // same display placeholder; replacing every occurrence would map both
+        // tokens to whichever content happened to be visited first.
+        if let Some(abs) = result.rfind(&placeholder) {
+            result.replace_range(abs..abs + placeholder.len(), content);
         }
     }
     result
@@ -3741,6 +3737,9 @@ impl App {
         if self.activate_picker_from_preview() {
             return;
         }
+        // An explicit composer submit releases a reload-recovered queue; the
+        // remote follow-up loop may then dispatch it after this turn.
+        self.recovered_queue_held_for_user_submit = false;
 
         let raw_input = std::mem::take(&mut self.input);
         // Persist to cross-session prompt history (no-op for slash/shell

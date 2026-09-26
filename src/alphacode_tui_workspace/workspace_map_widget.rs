@@ -276,7 +276,14 @@ mod tests {
         render_workspace_map(&mut buf, Rect::new(0, 0, 20, 6), &rows, 0);
 
         let has_greenish_fg = buf.content().iter().any(|cell| {
-            matches!(cell.style().fg, Some(ratatui::style::Color::Rgb(r, g, b)) if g > r && g > b)
+            let (r, g, b) = match cell.style().fg {
+                Some(ratatui::style::Color::Rgb(r, g, b)) => (r, g, b),
+                Some(ratatui::style::Color::Indexed(index)) => {
+                    crate::alphacode_tui_style::color::indexed_to_rgb(index)
+                }
+                _ => return false,
+            };
+            g > r && g > b
         });
         assert!(has_greenish_fg);
     }

@@ -12,11 +12,12 @@
 //! to the server's existing handle_client(); the other is bridged to WebSocket
 //! frames by a relay task.
 
-use anyhow::Result;
+use anyhow::{Context, Result};
 use futures::SinkExt;
 use futures::stream::StreamExt;
 use std::net::SocketAddr;
-use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Arc, OnceLock};
 use std::time::Duration;
 use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
 use tokio::net::TcpListener;
@@ -73,47 +74,186 @@ impl Default for GatewayConfig {
 /// 3. Create a UnixStream::pair() - one end for the bridge, one for handle_client
 /// 4. Spawn a relay task that converts WebSocket frames <-> newline-delimited JSON
 /// 5. Return the server-side UnixStream for handle_client to consume
+const MAX_GATEWAY_RETRY_DELAY: Duration = Duration::from_secs(5);
+const GATEWAY_HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(10);
+const MAX_GATEWAY_REQUEST_HEAD_BYTES: usize = 16 * 1024;
+
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize)]
+pub enum GatewayRuntimeState {
+    Disabled,
+    Binding,
+    Ready {
+        local_addr: String,
+        generation: u64,
+    },
+    Backoff {
+        attempt: u32,
+        retry_in_ms: u64,
+        error: String,
+    },
+}
+
+static GATEWAY_STATE: OnceLock<std::sync::RwLock<GatewayRuntimeState>> = OnceLock::new();
+static GATEWAY_GENERATION: AtomicU64 = AtomicU64::new(0);
+
+fn gateway_state_store() -> &'static std::sync::RwLock<GatewayRuntimeState> {
+    GATEWAY_STATE.get_or_init(|| std::sync::RwLock::new(GatewayRuntimeState::Disabled))
+}
+
+fn set_gateway_state(state: GatewayRuntimeState) {
+    *gateway_state_store()
+        .write()
+        .unwrap_or_else(|poisoned| poisoned.into_inner()) = state;
+}
+
+pub fn gateway_runtime_state() -> GatewayRuntimeState {
+    gateway_state_store()
+        .read()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .clone()
+}
+
+pub fn gateway_runtime_summary() -> String {
+    match gateway_runtime_state() {
+        GatewayRuntimeState::Disabled => "disabled".to_string(),
+        GatewayRuntimeState::Binding => "binding".to_string(),
+        GatewayRuntimeState::Ready {
+            local_addr,
+            generation,
+        } => format!("ready on {local_addr} (generation {generation})"),
+        GatewayRuntimeState::Backoff {
+            attempt,
+            retry_in_ms,
+            error,
+        } => format!("retrying in {retry_in_ms}ms (attempt {attempt}): {error}"),
+    }
+}
+
+fn gateway_retry_delay(attempt: u32) -> Duration {
+    let exponent = attempt.saturating_sub(1).min(6);
+    Duration::from_millis(100u64.saturating_mul(1u64 << exponent)).min(MAX_GATEWAY_RETRY_DELAY)
+}
+
 pub async fn run_gateway(
     config: GatewayConfig,
     client_tx: tokio::sync::mpsc::UnboundedSender<GatewayClient>,
 ) -> Result<()> {
-    let addr = format!("{}:{}", config.bind_addr, config.port);
-    let listener = TcpListener::bind(&addr).await?;
-    logging::info(&format!("WebSocket gateway listening on {}", addr));
+    if !config.enabled {
+        set_gateway_state(GatewayRuntimeState::Disabled);
+        return Ok(());
+    }
 
     let registry = Arc::new(tokio::sync::RwLock::new(DeviceRegistry::load()));
+    let mut retry_attempt = 0u32;
 
     loop {
-        let (tcp_stream, peer_addr) = listener.accept().await?;
-        let registry = Arc::clone(&registry);
-        let client_tx = client_tx.clone();
-
-        tokio::spawn(async move {
-            if let Err(e) = handle_connection(tcp_stream, peer_addr, registry, client_tx).await {
-                logging::error(&format!(
-                    "Gateway connection error from {}: {}",
-                    peer_addr, e
+        set_gateway_state(GatewayRuntimeState::Binding);
+        match TcpListener::bind((config.bind_addr.as_str(), config.port)).await {
+            Ok(listener) => {
+                let local_addr = listener
+                    .local_addr()
+                    .unwrap_or_else(|_| SocketAddr::from(([0, 0, 0, 0], config.port)));
+                let generation = GATEWAY_GENERATION.fetch_add(1, Ordering::Relaxed) + 1;
+                set_gateway_state(GatewayRuntimeState::Ready {
+                    local_addr: local_addr.to_string(),
+                    generation,
+                });
+                logging::info(&format!(
+                    "WebSocket gateway listening on {local_addr} (generation {generation})"
                 ));
+                retry_attempt = 0;
+
+                loop {
+                    match listener.accept().await {
+                        Ok((tcp_stream, peer_addr)) => {
+                            retry_attempt = 0;
+                            let registry = Arc::clone(&registry);
+                            let client_tx = client_tx.clone();
+                            tokio::spawn(async move {
+                                if let Err(error) =
+                                    handle_connection(tcp_stream, peer_addr, registry, client_tx)
+                                        .await
+                                {
+                                    logging::error(&format!(
+                                        "Gateway connection error from {peer_addr}: {error}"
+                                    ));
+                                }
+                            });
+                        }
+                        Err(error) => {
+                            retry_attempt = retry_attempt.saturating_add(1);
+                            let delay = gateway_retry_delay(retry_attempt);
+                            set_gateway_state(GatewayRuntimeState::Backoff {
+                                attempt: retry_attempt,
+                                retry_in_ms: delay.as_millis() as u64,
+                                error: error.to_string(),
+                            });
+                            logging::error(&format!(
+                                "Gateway accept loop failed on {local_addr}; rebinding in {}ms: {error}",
+                                delay.as_millis()
+                            ));
+                            tokio::time::sleep(delay).await;
+                            break;
+                        }
+                    }
+                }
             }
-        });
+            Err(error) => {
+                retry_attempt = retry_attempt.saturating_add(1);
+                let delay = gateway_retry_delay(retry_attempt);
+                set_gateway_state(GatewayRuntimeState::Backoff {
+                    attempt: retry_attempt,
+                    retry_in_ms: delay.as_millis() as u64,
+                    error: error.to_string(),
+                });
+                logging::error(&format!(
+                    "Gateway bind to {}:{} failed; retrying in {}ms (attempt {}): {error}",
+                    config.bind_addr,
+                    config.port,
+                    delay.as_millis(),
+                    retry_attempt
+                ));
+                tokio::time::sleep(delay).await;
+            }
+        }
+    }
+}
+
+async fn peek_request_head(tcp_stream: &tokio::net::TcpStream) -> Result<String> {
+    let mut buf = vec![0u8; MAX_GATEWAY_REQUEST_HEAD_BYTES];
+    let deadline = tokio::time::Instant::now() + GATEWAY_HANDSHAKE_TIMEOUT;
+    loop {
+        let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
+        if remaining.is_zero() {
+            anyhow::bail!("timed out waiting for complete gateway request headers");
+        }
+        let n = tokio::time::timeout(remaining, tcp_stream.peek(&mut buf))
+            .await
+            .context("timed out waiting for gateway request headers")??;
+        if n == 0 {
+            return Ok(String::new());
+        }
+        let head = String::from_utf8_lossy(&buf[..n]);
+        if head.contains("\r\n\r\n") || head.contains("\n\n") || n == buf.len() {
+            return Ok(head.into_owned());
+        }
+        tokio::time::sleep(Duration::from_millis(2)).await;
     }
 }
 
 /// Route an incoming TCP connection: either plain HTTP (pair/health) or WebSocket.
 ///
-/// We peek at the first chunk to check for the Upgrade: websocket header.
-/// Plain HTTP requests get handled inline; WebSocket connections proceed to
-/// the existing auth + bridge flow.
+/// We peek until the complete request head is available to classify the
+/// protocol. A single short TCP segment must not make a valid WebSocket
+/// handshake look like plain HTTP (and `peek` leaves the bytes untouched for
+/// the protocol-specific handler).
 async fn handle_connection(
     tcp_stream: tokio::net::TcpStream,
     peer_addr: SocketAddr,
     registry: Arc<tokio::sync::RwLock<DeviceRegistry>>,
     client_tx: tokio::sync::mpsc::UnboundedSender<GatewayClient>,
 ) -> Result<()> {
-    let mut peek_buf = [0u8; 2048];
-    let n = tcp_stream.peek(&mut peek_buf).await?;
-    let request_head = String::from_utf8_lossy(&peek_buf[..n]);
-
+    let request_head = peek_request_head(&tcp_stream).await?;
     let is_websocket = request_head.lines().any(|line| {
         let lower = line.to_lowercase();
         lower.starts_with("upgrade:") && lower.contains("websocket")
@@ -151,33 +291,37 @@ async fn handle_ws_connection(
     let auth = Arc::new(std::sync::Mutex::new(None::<(WsAuth, AuthorizedDevice)>));
     let auth_cb = Arc::clone(&auth);
 
-    let ws_stream = tokio_tungstenite::accept_hdr_async(
-        tcp_stream,
-        #[expect(
-            clippy::result_large_err,
-            reason = "Tungstenite handshake APIs require returning ErrorResponse directly"
-        )]
-        |request: &tokio_tungstenite::tungstenite::handshake::server::Request,
-         response: tokio_tungstenite::tungstenite::handshake::server::Response| {
-            if request.uri().path() != "/ws" {
-                return Err(ws_error_response(
-                    404,
-                    "Not Found",
-                    "WebSocket endpoint not found",
-                ));
-            }
+    let ws_stream = tokio::time::timeout(
+        GATEWAY_HANDSHAKE_TIMEOUT,
+        tokio_tungstenite::accept_hdr_async(
+            tcp_stream,
+            #[expect(
+                clippy::result_large_err,
+                reason = "Tungstenite handshake APIs require returning ErrorResponse directly"
+            )]
+            |request: &tokio_tungstenite::tungstenite::handshake::server::Request,
+             response: tokio_tungstenite::tungstenite::handshake::server::Response| {
+                if request.uri().path() != "/ws" {
+                    return Err(ws_error_response(
+                        404,
+                        "Not Found",
+                        "WebSocket endpoint not found",
+                    ));
+                }
 
-            let ws_auth = extract_ws_auth(request)?;
-            // Reload from disk to pick up newly paired or revoked devices.
-            let device = authorize_ws_device(&DeviceRegistry::load(), &ws_auth.token)?;
-            let mut guard = auth_cb
-                .lock()
-                .unwrap_or_else(|poisoned| poisoned.into_inner());
-            *guard = Some((ws_auth, device));
-            Ok(response)
-        },
+                let ws_auth = extract_ws_auth(request)?;
+                // Reload from disk to pick up newly paired or revoked devices.
+                let device = authorize_ws_device(&DeviceRegistry::load(), &ws_auth.token)?;
+                let mut guard = auth_cb
+                    .lock()
+                    .unwrap_or_else(|poisoned| poisoned.into_inner());
+                *guard = Some((ws_auth, device));
+                Ok(response)
+            },
+        ),
     )
-    .await?;
+    .await
+    .context("WebSocket handshake timed out")??;
 
     let (auth, device) = auth
         .lock()
@@ -418,6 +562,7 @@ async fn handle_http(
                 "status": "ok",
                 "version": crate::alphacode_build_meta::version(),
                 "gateway": true,
+                "gateway_runtime": gateway_runtime_state(),
             });
             http_response(200, "OK", &body.to_string())
         }
@@ -609,5 +754,19 @@ fn system_hostname() -> Option<String> {
             ));
             None
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn gateway_retry_delay_is_bounded_exponential_backoff() {
+        assert_eq!(gateway_retry_delay(1), Duration::from_millis(100));
+        assert_eq!(gateway_retry_delay(2), Duration::from_millis(200));
+        assert_eq!(gateway_retry_delay(6), Duration::from_millis(3200));
+        assert_eq!(gateway_retry_delay(7), MAX_GATEWAY_RETRY_DELAY);
+        assert_eq!(gateway_retry_delay(u32::MAX), MAX_GATEWAY_RETRY_DELAY);
     }
 }

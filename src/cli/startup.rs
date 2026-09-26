@@ -153,15 +153,25 @@ pub async fn run() -> Result<()> {
         .spawn(|| {
             loop {
                 std::thread::sleep(health::REPORT_INTERVAL);
-                if let Some(rss) = health::current_rss_bytes() {
-                    health::record_rss_sample(rss);
-                    crate::session_watchdog::record_rss(rss);
-                }
-                health::report();
-                // Run watchdog health check periodically.
-                let action = crate::session_watchdog::check_health();
-                if action != crate::session_watchdog::RecoveryAction::None {
-                    crate::session_watchdog::record_recovery(action);
+                // A reporter is a best-effort observability task. Keep a bad
+                // sample, serialization bug, or watchdog regression from
+                // terminating the process (or silently killing the reporter).
+                let iteration = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                    if let Some(rss) = health::current_rss_bytes() {
+                        health::record_rss_sample(rss);
+                        crate::session_watchdog::record_rss(rss);
+                    }
+                    health::report();
+                    // Run watchdog health check periodically.
+                    let action = crate::session_watchdog::check_health();
+                    if action != crate::session_watchdog::RecoveryAction::None {
+                        crate::session_watchdog::record_recovery(action);
+                    }
+                }));
+                if iteration.is_err() {
+                    crate::logging::error(
+                        "health reporter iteration panicked; continuing with the next sample",
+                    );
                 }
             }
         })

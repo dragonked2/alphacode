@@ -48,7 +48,9 @@ fn buffer_rows(terminal: &Terminal<TestBackend>) -> Vec<String> {
 }
 
 fn fact_test_state(input: String, scheduled: bool) -> TestState {
-    let home = std::env::var("HOME").unwrap_or_else(|_| "/home/test".to_string());
+    // Keep the fixture platform-independent; production directory shortening
+    // should not depend on a Unix-only HOME variable being present.
+    let home = "~";
     let ambient_info = scheduled.then(|| info_widget::AmbientWidgetData {
         show_widget: false,
         status: crate::ambient::AmbientStatus::Idle,

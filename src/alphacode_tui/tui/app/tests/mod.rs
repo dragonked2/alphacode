@@ -81,18 +81,68 @@ pub mod tests {
     fn create_fast_test_app() -> App {
         create_test_app_inner()
     }
+
+    struct SwitchableProvider {
+        active: Arc<std::sync::Mutex<String>>,
+    }
+
+    #[async_trait::async_trait]
+    impl crate::alphacode_provider_core::Provider for SwitchableProvider {
+        async fn complete(
+            &self,
+            _messages: &[crate::alphacode_message_types::Message],
+            _tools: &[crate::alphacode_message_types::ToolDefinition],
+            _system: &str,
+            _resume_session_id: Option<&str>,
+        ) -> Result<crate::alphacode_provider_core::EventStream> {
+            unimplemented!("SwitchableProvider")
+        }
+        fn name(&self) -> &str {
+            "switchable"
+        }
+        fn model(&self) -> String {
+            match self.active.lock().unwrap().as_str() {
+                "claude" => "claude-test".to_string(),
+                _ => "gpt-test".to_string(),
+            }
+        }
+        fn fork(&self) -> Arc<dyn crate::alphacode_provider_core::Provider> {
+            Arc::new(Self {
+                active: Arc::clone(&self.active),
+            })
+        }
+        fn switch_active_provider_to(&self, provider: &str) -> Result<()> {
+            *self.active.lock().unwrap() = provider.to_string();
+            Ok(())
+        }
+    }
+
     fn create_switchable_test_app(
-        _provider: &str,
+        provider: &str,
     ) -> (App, std::sync::Arc<std::sync::Mutex<String>>) {
-        let app = create_test_app_inner();
-        let active = std::sync::Arc::new(std::sync::Mutex::new(_provider.to_string()));
+        let active = std::sync::Arc::new(std::sync::Mutex::new(provider.to_string()));
+        let provider = Arc::new(SwitchableProvider {
+            active: Arc::clone(&active),
+        });
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        let registry = rt.block_on(crate::tool::Registry::new(provider.clone()));
+        let mut app = App::new_for_test_harness(provider, registry);
+        app.queue_mode = false;
+        app.diff_mode = crate::config::DiffDisplayMode::Inline;
         (app, active)
     }
     fn create_gemini_test_app() -> App {
         create_test_app_inner()
     }
 
-    fn write_test_config(_contents: &str) {}
+    fn write_test_config(contents: &str) {
+        let path = crate::config::Config::path().expect("test config path");
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent).expect("create test config directory");
+        }
+        std::fs::write(path, contents).expect("write test config");
+        crate::config::invalidate_config_cache();
+    }
     fn failover_error_message(prompt: &crate::provider::ProviderFailoverPrompt) -> String {
         prompt.to_error_message()
     }
@@ -176,6 +226,24 @@ pub mod tests {
             fn fork(&self) -> Arc<dyn crate::alphacode_provider_core::Provider> {
                 Arc::new(Self)
             }
+            fn model_routes(&self) -> Vec<crate::alphacode_provider_core::ModelRoute> {
+                [
+                    ("claude-opus-4.6", "Copilot", "copilot", "recently added"),
+                    ("grok-code-fast-1", "Copilot", "copilot", ""),
+                ]
+                .into_iter()
+                .map(|(model, provider, api_method, detail)| {
+                    crate::alphacode_provider_core::ModelRoute {
+                        model: model.to_string(),
+                        provider: provider.to_string(),
+                        api_method: api_method.to_string(),
+                        available: true,
+                        detail: detail.to_string(),
+                        cheapness: None,
+                    }
+                })
+                .collect()
+            }
         }
 
         let provider = Arc::new(AuthRefreshProvider);
@@ -214,14 +282,23 @@ pub mod tests {
                 Arc::new(Self)
             }
             fn model_routes(&self) -> Vec<crate::alphacode_provider_core::ModelRoute> {
-                vec![crate::alphacode_provider_core::ModelRoute {
-                    model: "antigravity-model".to_string(),
-                    provider: "Antigravity".to_string(),
-                    api_method: "antigravity".to_string(),
-                    available: true,
-                    detail: "".to_string(),
-                    cheapness: None,
-                }]
+                [
+                    ("antigravity-model", "Antigravity", "antigravity", ""),
+                    ("claude-sonnet-4-6", "Antigravity", "cli", ""),
+                    ("gpt-oss-120b-medium", "Antigravity", "cli", ""),
+                ]
+                .into_iter()
+                .map(|(model, provider, api_method, detail)| {
+                    crate::alphacode_provider_core::ModelRoute {
+                        model: model.to_string(),
+                        provider: provider.to_string(),
+                        api_method: api_method.to_string(),
+                        available: true,
+                        detail: detail.to_string(),
+                        cheapness: None,
+                    }
+                })
+                .collect()
             }
         }
 
@@ -261,14 +338,49 @@ pub mod tests {
                 Arc::new(Self)
             }
             fn model_routes(&self) -> Vec<crate::alphacode_provider_core::ModelRoute> {
-                vec![crate::alphacode_provider_core::ModelRoute {
-                    model: "login-smoke-model".to_string(),
-                    provider: "LoginSmoke".to_string(),
-                    api_method: "api".to_string(),
-                    available: true,
-                    detail: "recently added".to_string(),
-                    cheapness: None,
-                }]
+                [
+                    ("login-smoke-model", "LoginSmoke", "api", ""),
+                    ("gpt-5.4", "OpenAI", "oauth", ""),
+                    ("gpt-5.4", "OpenAI", "api key", ""),
+                    (
+                        "glm-51-nvfp4",
+                        "Comtegra GPU Cloud",
+                        "openai-compatible:comtegra",
+                        "https://llm.comtegra.cloud/v1",
+                    ),
+                    ("claude-opus-4.6", "Copilot", "oauth", ""),
+                    (
+                        "deepseek/deepseek-v4-pro",
+                        "OpenRouter",
+                        "openai-compatible:openrouter",
+                        "auto",
+                    ),
+                    (
+                        "deepseek/deepseek-v4-pro",
+                        "DeepSeek",
+                        "openai-compatible:deepseek",
+                        "provider",
+                    ),
+                    ("moonshotai/kimi-k2.5", "Kimi", "openai-compatible:kimi", ""),
+                    (
+                        "openai/gpt-5.5",
+                        "OpenRouter",
+                        "openai-compatible:openrouter",
+                        "",
+                    ),
+                ]
+                .into_iter()
+                .map(|(model, provider, api_method, detail)| {
+                    crate::alphacode_provider_core::ModelRoute {
+                        model: model.to_string(),
+                        provider: provider.to_string(),
+                        api_method: api_method.to_string(),
+                        available: true,
+                        detail: detail.to_string(),
+                        cheapness: None,
+                    }
+                })
+                .collect()
             }
         }
 

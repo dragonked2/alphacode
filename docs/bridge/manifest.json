@@ -1,13 +1,16 @@
 {
   "manifest_version": 2,
-  "name": "Browser Agent Bridge",
-  "version": "0.9.8",
-  "description": "Bridge AI agent commands to the active browser tab via native messaging.",
+  "name": "AlphaCode Browser Agent",
+  "short_name": "AlphaCode",
+  "version": "1.5.0",
+  "description": "AlphaCode Browser Agent by AliEssam: a resilient Firefox execution bridge for agent-controlled tabs, navigation, frames, DOM, buttons, forms, inputs, outputs, files, screenshots, downloads, sessions, cookies, history and browser telemetry.",
+  "author": "AliEssam",
   "icons": {
     "16": "icons/icon-16.png",
     "32": "icons/icon-32.png",
     "48": "icons/icon-48.png",
-    "96": "icons/icon-96.png"
+    "96": "icons/icon-96.png",
+    "128": "icons/icon-128.png"
   },
   "permissions": [
     "tabs",
@@ -18,12 +21,19 @@
     "webNavigation",
     "webRequest",
     "downloads",
-    "<all_urls>"
+    "history",
+    "cookies",
+    "sessions",
+    "clipboardRead",
+    "clipboardWrite",
+    "<all_urls>",
+    "scripting"
   ],
   "background": {
     "scripts": [
       "background.js"
-    ]
+    ],
+    "persistent": true
   },
   "content_scripts": [
     {
@@ -33,7 +43,7 @@
       "js": [
         "content.js"
       ],
-      "run_at": "document_idle",
+      "run_at": "document_start",
       "all_frames": true
     }
   ],
@@ -42,18 +52,42 @@
       "16": "icons/icon-16.png",
       "32": "icons/icon-32.png"
     },
-    "default_title": "Browser Agent Bridge - Idle",
+    "default_title": "AlphaCode Browser Agent",
     "default_popup": "popup.html"
+  },
+  "commands": {
+    "ping-agent": {
+      "suggested_key": {
+        "default": "Ctrl+Shift+Y"
+      },
+      "description": "Ping the AlphaCode browser bridge and return capabilities"
+    },
+    "reconnect-agent": {
+      "suggested_key": {
+        "default": "Ctrl+Shift+U"
+      },
+      "description": "Reconnect the AlphaCode native messaging bridge"
+    }
   },
   "browser_specific_settings": {
     "gecko": {
-      "id": "browser-agent-bridge@alphacode.dev",
-      "strict_min_version": "91.0",
+      "id": "alpha-agent@alpha-agent.local",
+      "strict_min_version": "142.0",
       "data_collection_permissions": {
         "required": [
-          "none"
+          "websiteActivity",
+          "websiteContent"
+        ],
+        "optional": [
+          "authenticationInfo",
+          "browsingActivity",
+          "technicalAndInteraction"
         ]
       }
+    },
+    "gecko_android": {
+      "strict_min_version": "142.0"
     }
-  }
+  },
+  "homepage_url": "https://alphacli.github.io/"
 }

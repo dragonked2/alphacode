@@ -26,13 +26,23 @@ pub fn clear_reload_marker() {
     let _ = std::fs::remove_file(reload_marker_path());
 }
 
-pub(super) fn clear_reload_marker_if_stale_for_pid(current_pid: u32) {
-    if let Some(state) = ReloadState::load() {
-        if state.phase == ReloadPhase::Starting && state.pid == current_pid {
-            return;
-        }
-        clear_reload_marker();
+pub(super) fn reconcile_reload_marker_for_pid(current_pid: u32) {
+    let Some(state) = ReloadState::load() else {
+        return;
+    };
+    if state.phase == ReloadPhase::Starting {
+        // Reaching this point means this process successfully bound the local
+        // listener. On Unix exec the PID is unchanged; on Windows the detached
+        // handoff helper starts only after its predecessor exits, so adopting the
+        // marker here preserves the original request/hash across the PID change.
+        state.write_as(current_pid);
+        crate::logging::info(&format!(
+            "Adopted reload handoff request {} from pid {} to current pid {}",
+            state.request_id, state.pid, current_pid
+        ));
+        return;
     }
+    clear_reload_marker();
 }
 
 pub fn reload_marker_exists() -> bool {
@@ -120,25 +130,7 @@ pub fn publish_reload_socket_ready() {
 }
 
 pub fn reload_process_alive(pid: u32) -> bool {
-    if pid == 0 {
-        return false;
-    }
-
-    #[cfg(unix)]
-    {
-        let rc = unsafe { libc::kill(pid as i32, 0) };
-        if rc == 0 {
-            return true;
-        }
-        let err = std::io::Error::last_os_error();
-        matches!(err.raw_os_error(), Some(libc::EPERM))
-    }
-
-    #[cfg(not(unix))]
-    {
-        let _ = pid;
-        true
-    }
+    pid != 0 && crate::platform::is_process_running(pid)
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -224,34 +216,43 @@ pub async fn await_reload_handoff(
 ) -> ReloadWaitStatus {
     let mut last_known_pid = None;
     crate::logging::info(&format!(
-        "await_reload_handoff: begin socket={} max_age_ms={} state={}",
+        "await_reload_handoff: begin socket={} timeout_ms={} state={}",
         socket_path.display(),
         max_age.as_millis(),
         reload_state_summary(max_age)
     ));
 
-    loop {
-        match inspect_reload_wait_status(socket_path, max_age, last_known_pid).await {
-            ReloadWaitStatus::Waiting { pid } => {
-                last_known_pid = pid;
-                crate::logging::info(&format!(
-                    "await_reload_handoff: waiting for reload event socket={} pid={:?}",
-                    socket_path.display(),
-                    pid
-                ));
-                wait_for_reload_handoff_event(pid, socket_path).await;
-            }
-            other => {
-                crate::logging::info(&format!(
-                    "await_reload_handoff: completed socket={} result={:?} state={}",
-                    socket_path.display(),
-                    other,
-                    reload_state_summary(max_age)
-                ));
-                return other;
+    let wait = async {
+        loop {
+            match inspect_reload_wait_status(socket_path, max_age, last_known_pid).await {
+                ReloadWaitStatus::Waiting { pid } => {
+                    last_known_pid = pid;
+                    crate::logging::info(&format!(
+                        "await_reload_handoff: waiting for reload event socket={} pid={:?}",
+                        socket_path.display(),
+                        pid
+                    ));
+                    wait_for_reload_handoff_event(pid, socket_path).await;
+                }
+                other => return other,
             }
         }
-    }
+    };
+
+    let result = match tokio::time::timeout(max_age, wait).await {
+        Ok(result) => result,
+        Err(_) => ReloadWaitStatus::Failed(Some(format!(
+            "reload handoff did not complete within {} seconds",
+            max_age.as_secs()
+        ))),
+    };
+    crate::logging::info(&format!(
+        "await_reload_handoff: completed socket={} result={:?} state={}",
+        socket_path.display(),
+        result,
+        reload_state_summary(max_age)
+    ));
+    result
 }
 
 pub async fn wait_for_reload_handoff_event(
@@ -435,6 +436,13 @@ pub struct ReloadState {
 impl ReloadState {
     fn path() -> PathBuf {
         reload_marker_path()
+    }
+
+    fn write_as(&self, pid: u32) {
+        let mut adopted = self.clone();
+        adopted.pid = pid;
+        adopted.timestamp = chrono::Utc::now().to_rfc3339();
+        adopted.write();
     }
 
     pub(crate) fn write(&self) {
@@ -643,6 +651,36 @@ mod tests {
 
     #[tokio::test]
     #[allow(clippy::await_holding_lock)]
+    async fn inspect_reload_wait_status_reports_dead_starting_predecessor() {
+        let _lock = crate::storage::lock_test_env();
+        let temp = tempfile::tempdir().expect("tempdir");
+        let _guard = EnvGuard::set_runtime_dir(temp.path());
+        ReloadState {
+            request_id: "req-dead-predecessor".to_string(),
+            hash: "hash-dead".to_string(),
+            phase: ReloadPhase::Starting,
+            pid: u32::MAX,
+            timestamp: chrono::Utc::now().to_rfc3339(),
+            detail: None,
+        }
+        .write();
+
+        let status = inspect_reload_wait_status(
+            &temp.path().join("missing.sock"),
+            Duration::from_secs(5),
+            None,
+        )
+        .await;
+        match status {
+            ReloadWaitStatus::Failed(Some(detail)) => {
+                assert!(detail.contains("exited before becoming ready"), "{detail}");
+            }
+            other => panic!("expected dead predecessor failure, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    #[allow(clippy::await_holding_lock)]
     async fn inspect_reload_wait_status_returns_ready_for_socket_ready_marker() {
         let _lock = crate::storage::lock_test_env();
         let temp = tempfile::tempdir().expect("tempdir");
@@ -779,7 +817,7 @@ mod tests {
 
     #[tokio::test]
     #[allow(clippy::await_holding_lock)]
-    async fn clear_reload_marker_if_stale_for_pid_keeps_own_starting_marker() {
+    async fn reconcile_reload_marker_for_pid_keeps_own_starting_marker() {
         let _lock = crate::storage::lock_test_env();
         let temp = tempfile::tempdir().expect("tempdir");
         let _guard = EnvGuard::set_runtime_dir(temp.path());
@@ -795,7 +833,7 @@ mod tests {
         }
         .write();
 
-        clear_reload_marker_if_stale_for_pid(current);
+        reconcile_reload_marker_for_pid(current);
         assert!(
             reload_marker_exists(),
             "an in-flight Starting marker owned by this pid must survive cleanup"
@@ -804,30 +842,34 @@ mod tests {
 
     #[tokio::test]
     #[allow(clippy::await_holding_lock)]
-    async fn clear_reload_marker_if_stale_for_pid_clears_foreign_or_completed_markers() {
+    async fn reconcile_reload_marker_for_pid_adopts_handoff_and_clears_completed_marker() {
         let _lock = crate::storage::lock_test_env();
         let temp = tempfile::tempdir().expect("tempdir");
         let _guard = EnvGuard::set_runtime_dir(temp.path());
 
         let current = std::process::id();
 
-        // Foreign pid still in Starting -> stale, must be cleared.
+        // A Windows replacement has a new PID. Once it reaches the successful
+        // bind point it must adopt the original request/hash rather than erase
+        // the handoff record.
         ReloadState {
             request_id: "req-foreign".to_string(),
             hash: "hash-foreign".to_string(),
             phase: ReloadPhase::Starting,
             pid: current.wrapping_add(1),
             timestamp: chrono::Utc::now().to_rfc3339(),
-            detail: None,
+            detail: Some("handoff".to_string()),
         }
         .write();
-        clear_reload_marker_if_stale_for_pid(current);
-        assert!(
-            !reload_marker_exists(),
-            "a foreign Starting marker must be cleared"
-        );
+        reconcile_reload_marker_for_pid(current);
+        let adopted = ReloadState::load().expect("starting handoff should survive");
+        assert_eq!(adopted.request_id, "req-foreign");
+        assert_eq!(adopted.hash, "hash-foreign");
+        assert_eq!(adopted.pid, current);
+        assert_eq!(adopted.phase, ReloadPhase::Starting);
 
-        // Own pid but already completed (SocketReady) -> not an in-flight boot.
+        // SocketReady is a completed startup record and should be cleaned up
+        // during the next ordinary server boot.
         ReloadState {
             request_id: "req-ready".to_string(),
             hash: "hash-ready".to_string(),
@@ -837,10 +879,10 @@ mod tests {
             detail: None,
         }
         .write();
-        clear_reload_marker_if_stale_for_pid(current);
+        reconcile_reload_marker_for_pid(current);
         assert!(
             !reload_marker_exists(),
-            "a completed marker must be cleared on stale check"
+            "a completed marker must be cleared on a later server boot"
         );
     }
 
@@ -906,6 +948,33 @@ mod tests {
             !reload_marker_active(Duration::from_secs(5)),
             "a Failed reload must not look active"
         );
+    }
+
+    #[tokio::test]
+    #[allow(clippy::await_holding_lock)]
+    async fn await_reload_handoff_has_an_absolute_deadline() {
+        let _lock = crate::storage::lock_test_env();
+        let temp = tempfile::tempdir().expect("tempdir");
+        let _guard = EnvGuard::set_runtime_dir(temp.path());
+        ReloadState {
+            request_id: "req-timeout".to_string(),
+            hash: "hash-timeout".to_string(),
+            phase: ReloadPhase::Starting,
+            pid: std::process::id(),
+            timestamp: chrono::Utc::now().to_rfc3339(),
+            detail: None,
+        }
+        .write();
+
+        let status =
+            await_reload_handoff(&temp.path().join("missing.sock"), Duration::from_millis(50))
+                .await;
+        match status {
+            ReloadWaitStatus::Failed(Some(detail)) => {
+                assert!(detail.contains("did not complete within"));
+            }
+            other => panic!("expected bounded reload failure, got {other:?}"),
+        }
     }
 
     #[cfg(unix)]

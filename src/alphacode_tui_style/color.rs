@@ -188,7 +188,8 @@ pub fn clear_buf(area: Rect, buf: &mut Buffer) {
 fn cached_xterm256(r: u8, g: u8, b: u8) -> u8 {
     use std::collections::HashMap;
     use std::sync::{Mutex, OnceLock};
-    static CACHE: OnceLock<Mutex<HashMap<(u8, u8, u8), u8>>> = OnceLock::new();
+    type Xterm256Cache = HashMap<(u8, u8, u8), u8>;
+    static CACHE: OnceLock<Mutex<Xterm256Cache>> = OnceLock::new();
     let lock = CACHE.get_or_init(|| Mutex::new(HashMap::with_capacity(256)));
     if let Ok(guard) = lock.lock()
         && let Some(&idx) = guard.get(&(r, g, b))

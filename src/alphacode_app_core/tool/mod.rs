@@ -63,7 +63,9 @@ use std::sync::{LazyLock, RwLock as StdRwLock};
 use tokio::sync::RwLock;
 
 pub(crate) use crate::alphacode_tool_core::intent_schema_property;
-pub use crate::alphacode_tool_core::{StdinInputRequest, Tool, ToolContext, ToolExecutionMode};
+pub use crate::alphacode_tool_core::{
+    StdinInputRequest, Tool, ToolContext, ToolExecutionClass, ToolExecutionMode,
+};
 pub use crate::alphacode_tool_types::{ToolImage, ToolOutput};
 pub(crate) use session_search::spawn_recent_index_warmup;
 
@@ -115,6 +117,21 @@ fn session_tool_policy(session_id: &str) -> Option<SessionToolPolicy> {
 /// spirals (#104): models recover in one retry when the error names the fix.
 /// Hints are capped at one short line each so the history does not fill with
 /// coaching text.
+/// Input/schema failures are recoverable by changing the call shape. They
+/// should remain visible to the model without exhausting the repeat guard,
+/// which is reserved for executions that failed after a valid request was
+/// dispatched.
+pub(crate) fn is_input_validation_error(error: &anyhow::Error) -> bool {
+    let message = error.to_string().to_ascii_lowercase();
+    message.contains("missing field")
+        || message.contains("expects a json object")
+        || message.contains("invalid request")
+        || message.contains("is required")
+        || message.contains("requires a non-empty")
+        || message.contains("unsupported browser action")
+        || message.contains("unknown action")
+}
+
 pub(crate) fn agent_facing_error(tool_name: &str, error: &anyhow::Error) -> String {
     let base = error.to_string();
     let hint = match tool_name {
@@ -792,6 +809,18 @@ impl Registry {
     /// Even if we have room, a single output shouldn't dominate the context.
     const SINGLE_OUTPUT_MAX_FRACTION: f32 = 0.30;
 
+    /// Return the scheduler-visible side-effect class for a concrete call.
+    /// Unknown and unclassified tools remain serialized by default.
+    pub async fn execution_class(&self, name: &str, input: Value) -> ToolExecutionClass {
+        let input = crate::alphacode_message_types::ToolCall::normalize_input_to_object(input);
+        let tools = self.tools.read().await;
+        let resolved = Self::resolve_tool_call(name, &tools);
+        tools
+            .get(&resolved.name)
+            .map(|tool| tool.execution_class(&input))
+            .unwrap_or(ToolExecutionClass::Mutating)
+    }
+
     /// Execute a tool by name
     pub async fn execute(
         &self,
@@ -946,6 +975,12 @@ impl Registry {
         let latency_ms = started_at.elapsed().as_millis().min(u128::from(u64::MAX)) as u64;
         match &result {
             Ok(_) => repeat_guard::record_success(&ctx.session_id, resolved_name, &input),
+            Err(error) if is_input_validation_error(error) => {
+                // Do not turn a correctable schema/argument mistake into a
+                // three-attempt lockout. The model should see the concrete
+                // error, fix the shape, and try again.
+                repeat_guard::clear_failure(&ctx.session_id, resolved_name, &input);
+            }
             Err(error) => repeat_guard::record_failure_with_error(
                 &ctx.session_id,
                 resolved_name,

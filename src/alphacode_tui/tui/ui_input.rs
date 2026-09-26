@@ -1641,6 +1641,23 @@ mod tests {
         assert_eq!(command_suggestions_overlay_rect(full, 3, frame), None);
     }
 
+    /// Concatenated text of a span list. The batch progress row is assembled
+    /// from several styled fragments (count, bar, percentage, status), so tests
+    /// assert the rendered text rather than an internal span count.
+    fn joined(spans: &[Span<'static>]) -> String {
+        spans.iter().map(|span| span.content.as_ref()).collect()
+    }
+
+    /// `rgb()` quantizes on 256-color terminals; normalize so color assertions
+    /// work on every host.
+    fn as_rgb_triple(color: Color) -> (u8, u8, u8) {
+        match color {
+            Color::Rgb(r, g, b) => (r, g, b),
+            Color::Indexed(index) => crate::alphacode_tui_style::color::indexed_to_rgb(index),
+            other => panic!("expected an RGB-mappable color, got {other:?}"),
+        }
+    }
+
     #[test]
     fn batch_progress_spans_use_batch_chroma_for_initial_count() {
         let mut spans = Vec::new();
@@ -1648,10 +1665,13 @@ mod tests {
 
         append_batch_progress_spans(&mut spans, anim_color, None, Some(3));
 
-        assert_eq!(spans.len(), 1);
-        assert_eq!(spans[0].content.as_ref(), " · 0/3 done");
-        assert_eq!(spans[0].style.fg, Some(anim_color));
-        assert!(spans[0].style.add_modifier.contains(Modifier::BOLD));
+        assert_eq!(joined(&spans), " · 0/3 done ░░░░░░░░░░   0%");
+        let count = spans
+            .iter()
+            .find(|span| span.content.as_ref().contains("0/3 done"))
+            .expect("count span");
+        assert_eq!(count.style.fg, Some(anim_color));
+        assert!(count.style.add_modifier.contains(Modifier::BOLD));
     }
 
     #[test]
@@ -1673,9 +1693,10 @@ mod tests {
             Some(3),
         );
 
-        assert_eq!(spans.len(), 2);
-        assert_eq!(spans[0].content.as_ref(), " · 1/3 done");
-        assert_eq!(spans[1].content.as_ref(), " · last done: read");
+        assert_eq!(
+            joined(&spans),
+            " · 1/3 done ███░░░░░░░  33% · last done: read"
+        );
     }
 
     #[test]
@@ -1697,8 +1718,9 @@ mod tests {
             Some(3),
         );
 
-        assert_eq!(spans.len(), 1);
-        assert_eq!(spans[0].content.as_ref(), " · 3/3 done");
+        // A finished batch reports only its position; "last done" would be
+        // redundant once the bar already reads 100%.
+        assert_eq!(joined(&spans), " · 3/3 done ██████████ 100%");
     }
 
     #[test]
@@ -1726,9 +1748,10 @@ mod tests {
             Some(2),
         );
 
-        assert_eq!(spans.len(), 2);
-        assert_eq!(spans[0].content.as_ref(), " · 0/2 done");
-        assert_eq!(spans[1].content.as_ref(), " · running: #1 bash");
+        assert_eq!(
+            joined(&spans),
+            " · 0/2 done ░░░░░░░░░░   0% · running: #1 bash"
+        );
     }
 
     #[test]
@@ -1772,9 +1795,10 @@ mod tests {
             Some(3),
         );
 
-        assert_eq!(spans.len(), 2);
-        assert_eq!(spans[0].content.as_ref(), " · 0/3 done");
-        assert_eq!(spans[1].content.as_ref(), " · running: #1 bash +2");
+        assert_eq!(
+            joined(&spans),
+            " · 0/3 done ░░░░░░░░░░   0% · running: #1 bash +2"
+        );
     }
 
     #[test]
@@ -1789,11 +1813,16 @@ mod tests {
     fn streaming_liveness_label_shows_quiet_stream_warning_before_message_end() {
         assert_eq!(
             streaming_liveness_label("4.2s".to_string(), Some(3.4), false),
-            "(no tokens 3s) · 4.2s"
+            "(quiet 3s) · 4.2s"
         );
         assert_eq!(
             streaming_liveness_label("12.0s".to_string(), Some(12.1), false),
-            "(stalled 12s) · 12.0s"
+            "(idle 12s) · 12.0s"
+        );
+        // Past the stall threshold the warning escalates with a ⚠ marker.
+        assert_eq!(
+            streaming_liveness_label("20.0s".to_string(), Some(16.2), false),
+            "⚠ stalled 16s · 20.0s"
         );
     }
 
@@ -1913,20 +1942,38 @@ mod tests {
 
     #[test]
     fn shell_mode_hint_reflects_execution_target() {
+        // The hint is glyph-prefixed so the mode is recognizable at a glance,
+        // and it must name where the command actually runs.
         assert_eq!(
             shell_mode_hint(ComposerMode::ShellLocal),
-            Some("  shell mode · Enter runs locally")
+            Some("  ⚙ shell · Enter runs locally")
         );
         assert_eq!(
             shell_mode_hint(ComposerMode::ShellRemote),
-            Some("  shell mode · Enter runs on server")
+            Some("  ⚙ shell · Enter runs on server")
         );
         assert_eq!(shell_mode_hint(ComposerMode::Chat), None);
     }
 
+    /// The shell color must read as a deliberate accent, distinct from the
+    /// default composer text. Asserting the semantic property (not one exact
+    /// RGB triple) keeps the test meaningful when the palette is retuned.
     #[test]
     fn shell_mode_color_is_distinct() {
-        assert_eq!(shell_mode_color(), rgb(110, 214, 151));
+        let shell = as_rgb_triple(shell_mode_color());
+        let text = as_rgb_triple(rgb(180, 180, 190));
+        let distance = (shell.0 as f32 - text.0 as f32).powi(2)
+            + (shell.1 as f32 - text.1 as f32).powi(2)
+            + (shell.2 as f32 - text.2 as f32).powi(2);
+        assert!(
+            distance.sqrt() > 40.0,
+            "shell color {shell:?} is too close to composer text {text:?}"
+        );
+        // It is a green: shell mode reads as "terminal", not as an error.
+        assert!(
+            shell.1 > shell.0 && shell.1 > shell.2,
+            "shell color {shell:?} should read green"
+        );
     }
 
     #[test]

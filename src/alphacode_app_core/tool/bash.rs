@@ -26,7 +26,10 @@ use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
 use tokio::process::Command as TokioCommand;
 
 const MAX_OUTPUT_LEN: usize = 30000;
-const DEFAULT_TIMEOUT_MS: u64 = 120000;
+// Five minutes is long enough for ordinary repository audits and test suites
+// while still promoting genuinely stuck work to the background manager. Callers
+// that need longer can opt into `run_in_background` or pass an explicit timeout.
+const DEFAULT_TIMEOUT_MS: u64 = 300000;
 // 100 ms feels instant to the user on a local terminal but still keeps
 // the `stdin_detect` syscall (inotify on Linux, lsof elsewhere) cheap.
 // Previously this was 500 ms, which made interactive commands such as
@@ -524,21 +527,32 @@ static GIT_BASH_PATH: LazyLock<Option<String>> = LazyLock::new(|| {
         }
     }
     // Fallback: check if `bash` is on PATH (Git Bash often adds itself).
+    // WindowsApps exposes a `bash.exe` alias which launches WSL. Treating
+    // that shim as Git Bash makes ordinary commands hang when the WSL
+    // registration is broken, so explicitly reject WSL/store shims.
     if let Ok(output) = std::process::Command::new("where").arg("bash").output()
         && output.status.success()
     {
-        let first_line = String::from_utf8_lossy(&output.stdout)
-            .lines()
-            .next()
-            .unwrap_or("")
-            .trim()
-            .to_string();
-        if !first_line.is_empty() && std::path::Path::new(&first_line).exists() {
-            return Some(first_line);
+        for line in String::from_utf8_lossy(&output.stdout).lines() {
+            let candidate = line.trim();
+            if candidate.is_empty() || is_wsl_bash_shim(candidate) {
+                continue;
+            }
+            if std::path::Path::new(candidate).exists() {
+                return Some(candidate.to_string());
+            }
         }
     }
     None
 });
+
+#[cfg(windows)]
+fn is_wsl_bash_shim(path: &str) -> bool {
+    let lower = path.to_ascii_lowercase().replace('/', "\\");
+    lower.contains("\\windowsapps\\")
+        || lower.ends_with("\\system32\\bash.exe")
+        || lower.ends_with("\\sysnative\\bash.exe")
+}
 
 fn build_shell_command(cmd_str: &str) -> TokioCommand {
     #[cfg(windows)]
@@ -693,7 +707,40 @@ fn format_command_output(mut output: String, exit_code: Option<i32>) -> String {
 mod utf8_truncation_tests {
     #[cfg(any(windows, unix))]
     use super::build_shell_command;
-    use super::format_command_output;
+    use super::{BashTool, Tool, ToolContext, format_command_output};
+    use serde_json::json;
+
+    #[cfg(windows)]
+    #[test]
+    fn windows_store_bash_alias_is_not_treated_as_git_bash() {
+        assert!(super::is_wsl_bash_shim(
+            r"C:\Users\runner\AppData\Local\Microsoft\WindowsApps\bash.exe"
+        ));
+        assert!(super::is_wsl_bash_shim(r"C:\Windows\System32\bash.exe"));
+        assert!(!super::is_wsl_bash_shim(
+            r"C:\Program Files\Git\bin\bash.exe"
+        ));
+    }
+
+    #[tokio::test]
+    async fn empty_command_is_rejected_before_spawn() {
+        let error = BashTool::new()
+            .execute(
+                json!({"command": "   "}),
+                ToolContext {
+                    session_id: "bash-empty-command-test".to_string(),
+                    message_id: "message".to_string(),
+                    tool_call_id: "tool".to_string(),
+                    working_dir: None,
+                    stdin_request_tx: None,
+                    graceful_shutdown_signal: None,
+                    execution_mode: super::super::ToolExecutionMode::Direct,
+                },
+            )
+            .await
+            .expect_err("blank shell command should not spawn a process");
+        assert!(error.to_string().contains("non-empty `command`"));
+    }
 
     #[test]
     fn format_command_output_truncates_on_utf8_boundary() {
@@ -885,6 +932,11 @@ impl Tool for BashTool {
             }
         };
         let run_in_background = params.run_in_background.unwrap_or(false);
+        if params.command.trim().is_empty() {
+            return Err(anyhow::anyhow!(
+                "bash requires a non-empty `command` string. Provide the shell command to run, e.g. {{\"command\":\"ls -la\"}}."
+            ));
+        }
 
         // Destructive-command gate: refuse only commands that would destroy a
         // protected path (home directory, credential store, or system root).

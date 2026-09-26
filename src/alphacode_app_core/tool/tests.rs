@@ -4,7 +4,7 @@ use super::*;
 use crate::alphacode_app_core::message::{Message, ToolDefinition};
 use crate::alphacode_app_core::provider::{EventStream, Provider};
 use async_trait::async_trait;
-use serde_json::Value;
+use serde_json::{Value, json};
 
 struct MockProvider;
 
@@ -29,6 +29,42 @@ impl Provider for MockProvider {
     fn fork(&self) -> Arc<dyn Provider> {
         Arc::new(MockProvider)
     }
+}
+
+#[test]
+fn input_validation_errors_are_not_repeatable_execution_failures() {
+    let missing = anyhow::anyhow!("missing field `command`. Received keys: ");
+    let runtime = anyhow::anyhow!("command exited with status 1");
+    assert!(super::is_input_validation_error(&missing));
+    assert!(!super::is_input_validation_error(&runtime));
+}
+
+#[tokio::test]
+async fn repeated_missing_bash_command_stays_correctable_until_arguments_change() {
+    let provider: Arc<dyn Provider> = Arc::new(MockProvider);
+    let registry = Registry::new(provider).await;
+    let ctx = ToolContext {
+        session_id: format!("bash-validation-{}", std::process::id()),
+        message_id: "message".to_string(),
+        tool_call_id: "tool".to_string(),
+        working_dir: None,
+        stdin_request_tx: None,
+        graceful_shutdown_signal: None,
+        execution_mode: ToolExecutionMode::Direct,
+    };
+    for _ in 0..3 {
+        let error = registry
+            .execute("bash", json!({}), ctx.clone())
+            .await
+            .expect_err("empty bash call should fail validation");
+        assert!(error.to_string().contains("missing field `command`"));
+    }
+    let corrected = registry
+        .execute("bash", json!({"command": "echo ok"}), ctx)
+        .await
+        .expect("corrected bash call should execute");
+    assert!(corrected.output.contains("ok"));
+    clear_session_tool_policy(&format!("bash-validation-{}", std::process::id()));
 }
 
 #[tokio::test]

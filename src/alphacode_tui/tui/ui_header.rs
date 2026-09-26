@@ -126,7 +126,7 @@ fn prettify_slashed_model_name(model: &str) -> String {
                 format!("{}{}", display_prefix, title_case_tokens(inner))
             }
         }
-        None => title_case_tokens(stem),
+        None => title_case_tokens(stem).trim().to_string(),
     }
 }
 
@@ -1439,129 +1439,36 @@ mod tests {
         assert_eq!(rendered, semver_minor());
     }
 
+    /// The persistent header is deliberately compact: it carries the brand,
+    /// connection status, and active model, and nothing else. Version identity
+    /// moved to `/version` rather than costing two header lines on every frame.
+    /// This test pins that so a reintroduced `server:`/`client:` line is caught.
     #[test]
-    fn persistent_header_labels_server_and_client_versions() {
-        let mut app = create_test_app();
-        app.set_remote_server_identity_for_tests(
-            Some("blazing"),
-            Some("🔥"),
-            Some("v0.14.2-dev (old1234)"),
-            Some("session_fox_1705012345678"),
-        );
-
-        let lines = rendered_header_lines(&app, 120);
-        let server_line = lines
-            .iter()
-            .find(|line| line.contains("server:"))
-            .expect("server line");
-        let client_line = lines
-            .iter()
-            .find(|line| line.contains("client:"))
-            .expect("client line");
-
-        // Clean version-only labels: no pet/server names, no emoji.
-        assert!(
-            server_line.contains("server: v0.14.2-dev"),
-            "server line should carry the compact server version: {server_line}"
-        );
-        let client_version = compact_version_label(crate::alphacode_build_meta::version());
-        assert!(
-            client_line.contains(&format!("client: {}", client_version)),
-            "client line should carry the compact client version: {client_line}"
-        );
-        assert!(
-            !server_line.contains("Blazing") && !server_line.contains('🔥'),
-            "server line must not show the pet name or emoji: {server_line}"
-        );
-        assert!(
-            !client_line.contains("Fox") && !client_line.contains('🦊'),
-            "client line must not show the session name or emoji: {client_line}"
-        );
-    }
-
-    #[test]
-    fn persistent_header_collapses_matching_server_and_client_versions() {
-        let mut app = create_test_app();
-        // The real-world single-install case: server and client report the
-        // exact same full build string, so the header must not repeat it.
-        let full_version = crate::alphacode_build_meta::version().to_string();
-        app.set_remote_server_identity_for_tests(
-            Some("blazing"),
-            None,
-            Some(&full_version),
-            Some("session_fox_1705012345678"),
-        );
-
-        let lines = rendered_header_lines(&app, 120);
-        let version_lines: Vec<&String> = lines
-            .iter()
-            .filter(|line| line.contains("server:") || line.contains("client:"))
-            .collect();
-
-        // Identical versions collapse to a single "server/client:" line.
-        assert_eq!(
-            version_lines.len(),
-            1,
-            "matching versions should render one line: {lines:?}"
-        );
-        let compact = compact_version_label(&full_version);
-        assert!(
-            version_lines[0].contains(&format!("server/client: {}", compact)),
-            "collapsed line should carry the shared compact version: {}",
-            version_lines[0]
-        );
-    }
-
-    #[test]
-    fn persistent_header_keeps_git_hash_when_semvers_match_but_builds_differ() {
-        let mut app = create_test_app();
-        let client_semver = compact_version_label(crate::alphacode_build_meta::version());
-        let fake_server_version = format!("{} (0000000)", client_semver);
-        app.set_remote_server_identity_for_tests(
-            Some("blazing"),
-            None,
-            Some(&fake_server_version),
-            Some("session_fox_1705012345678"),
-        );
-
-        let lines = rendered_header_lines(&app, 160);
-        let server_line = lines
-            .iter()
-            .find(|line| line.contains("server:"))
-            .expect("server line");
-        let client_line = lines
-            .iter()
-            .find(|line| line.contains("client:"))
-            .expect("client line");
-
-        assert!(
-            server_line.contains("(0000000)"),
-            "same-semver mismatch should keep the server git hash: {server_line}"
-        );
-        assert!(
-            client_line.contains(&format!(
-                "client: {}",
-                crate::alphacode_build_meta::version()
-            )),
-            "same-semver mismatch should keep the client git hash: {client_line}"
-        );
-    }
-
-    #[test]
-    fn persistent_header_omits_server_version_when_too_narrow() {
-        let mut app = create_test_app();
-        app.set_remote_server_identity_for_tests(
-            Some("blazing"),
-            Some("🔥"),
-            Some("v0.14.2-dev (old1234)"),
-            Some("session_fox_1705012345678"),
-        );
-
-        let lines = rendered_header_lines(&app, 12);
-        assert!(
-            !lines.iter().any(|line| line.contains("v0.14.2")),
-            "narrow widths should drop the server version entirely: {lines:?}"
-        );
+    fn persistent_header_omits_version_lines() {
+        for server_version in [
+            "v0.14.2-dev (old1234)",
+            // The single-install case: server and client are byte-identical.
+            crate::alphacode_build_meta::version(),
+        ] {
+            let mut app = create_test_app();
+            app.set_remote_server_identity_for_tests(
+                Some("blazing"),
+                Some("🔥"),
+                Some(server_version),
+                Some("session_fox_1705012345678"),
+            );
+            for width in [12u16, 80, 120, 160] {
+                let lines = rendered_header_lines(&app, width);
+                assert!(
+                    !lines.iter().any(|line| line.contains("server:")),
+                    "server version must not occupy a header line (width {width}): {lines:?}"
+                );
+                assert!(
+                    !lines.iter().any(|line| line.contains("client:")),
+                    "client version must not occupy a header line (width {width}): {lines:?}"
+                );
+            }
+        }
     }
 
     #[test]
@@ -1580,8 +1487,12 @@ mod tests {
         );
     }
 
+    /// The header's brand line reports the connection *transport* (the bare
+    /// `client`/`https/sse` status item), never version or session identity.
+    /// Version identity belongs to `/version`, and the session's pet name and
+    /// emoji stay out of the chrome entirely.
     #[test]
-    fn persistent_header_client_line_is_clean_version_only() {
+    fn persistent_header_brand_line_reports_transport_without_identity() {
         let mut app = create_test_app();
         app.set_remote_server_identity_for_tests(
             Some("blazing"),
@@ -1594,21 +1505,16 @@ mod tests {
         let lines = rendered_header_lines(&app, 120);
         let client_line = lines
             .iter()
-            .find(|line| line.contains("client:"))
-            .expect("client line");
+            .find(|line| line.contains("client"))
+            .unwrap_or_else(|| panic!("brand/status line should be present: {lines:?}"));
 
-        let client_version = compact_version_label(crate::alphacode_build_meta::version());
         assert!(
-            client_line.contains(&format!("client: {}", client_version)),
-            "client line should carry the compact client version: {client_line}"
+            !client_line.contains("Ram") && !client_line.contains('🐏'),
+            "header must not show the session name or its emoji: {client_line}"
         );
-        // No session name, no animal emoji, no connection icon — just the version.
         assert!(
-            !client_line.contains("Ram")
-                && !client_line.contains('🐏')
-                && !client_line.contains('🌐')
-                && !client_line.contains('🔌'),
-            "client line should be clean version-only: {client_line}"
+            !client_line.contains("v0.14.2") && !client_line.contains("Blazing"),
+            "header must not show version or server identity: {client_line}"
         );
     }
 
@@ -1703,7 +1609,7 @@ mod tests {
         // Slashed ids keep the provider label form.
         assert_eq!(
             header_model_display_name("deepseek/deepseek-chat", "OpenRouter"),
-            "OpenRouter: deepseek/deepseek-chat"
+            "OpenRouter: Deepseek Chat"
         );
         // Placeholders pass through untouched.
         assert_eq!(
@@ -2049,17 +1955,17 @@ mod tests {
         // active provider's display name, not the fixed "OpenRouter" aggregator.
         assert_eq!(
             format_model_name("nvidia/nemotron-3-super-120b-a12b", "NVIDIA NIM"),
-            "NVIDIA NIM: nvidia/nemotron-3-super-120b-a12b"
+            "NVIDIA NIM: Nemotron 3 Super 120b A12b"
         );
         // The public aggregator still reads "OpenRouter".
         assert_eq!(
             format_model_name("anthropic/claude-sonnet-4", "OpenRouter"),
-            "OpenRouter: anthropic/claude-sonnet-4"
+            "OpenRouter: Claude Sonnet 4"
         );
         // Missing provider name falls back to "OpenRouter" rather than an empty label.
         assert_eq!(
             format_model_name("deepseek/deepseek-chat", ""),
-            "OpenRouter: deepseek/deepseek-chat"
+            "OpenRouter: Deepseek Chat"
         );
         // Non-slashed models are unaffected by the provider label.
         assert_eq!(

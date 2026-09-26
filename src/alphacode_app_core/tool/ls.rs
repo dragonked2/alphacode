@@ -71,6 +71,10 @@ impl Tool for LsTool {
         })
     }
 
+    fn execution_class(&self, _input: &Value) -> super::ToolExecutionClass {
+        super::ToolExecutionClass::ReadOnly
+    }
+
     async fn execute(&self, input: Value, ctx: ToolContext) -> Result<ToolOutput> {
         let params: LsInput = serde_json::from_value(input)?;
 

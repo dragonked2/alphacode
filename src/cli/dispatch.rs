@@ -1515,6 +1515,7 @@ fn run_reload_helper(args: &Args) -> Result<()> {
         .as_deref()
         .ok_or_else(|| anyhow::anyhow!("--reload-target is required for reload helper"))?;
     let target_path = std::path::PathBuf::from(target);
+    let server_mode = matches!(&args.command, Some(Command::Serve { .. }));
     let session_id = args.resume.as_deref().unwrap_or("");
     let parent_pid = args.parent_pid;
 
@@ -1523,6 +1524,19 @@ fn run_reload_helper(args: &Args) -> Result<()> {
         parent_pid.unwrap_or(0),
         target_path
     );
+
+    let mark_failed = |detail: String| {
+        if let Some(state) = crate::alphacode_app_core::server::recent_reload_state(
+            std::time::Duration::from_secs(60),
+        ) {
+            crate::alphacode_app_core::server::write_reload_state(
+                &state.request_id,
+                &state.hash,
+                crate::alphacode_app_core::server::ReloadPhase::Failed,
+                Some(detail),
+            );
+        }
+    };
 
     // Wait for the parent process to exit by polling.
     if let Some(pid) = parent_pid {
@@ -1533,6 +1547,8 @@ fn run_reload_helper(args: &Args) -> Result<()> {
             type Dword = u32;
             const PROCESS_QUERY_LIMITED_INFORMATION: Dword = 0x1000;
             const WAIT_OBJECT_0: Dword = 0;
+            const WAIT_FAILED: Dword = 0xFFFF_FFFF;
+            const ERROR_INVALID_PARAMETER: i32 = 87;
 
             unsafe extern "system" {
                 fn OpenProcess(access: Dword, inherit: i32, pid: Dword) -> Handle;
@@ -1543,17 +1559,44 @@ fn run_reload_helper(args: &Args) -> Result<()> {
             unsafe {
                 let handle = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid);
                 if !handle.is_null() {
-                    // Wait up to 30 seconds; if the parent doesn't exit, proceed anyway.
+                    // Wait up to 30 seconds; never launch the replacement while
+                    // the predecessor may still own the named-pipe endpoint.
                     let wait_result = WaitForSingleObject(handle, 30_000);
                     CloseHandle(handle);
                     if wait_result == WAIT_OBJECT_0 {
                         eprintln!("[reload-helper] Parent process exited.");
+                    } else if wait_result == WAIT_FAILED {
+                        let detail = format!(
+                            "reload helper failed waiting for predecessor pid {pid} (WaitForSingleObject error {})",
+                            std::io::Error::last_os_error()
+                        );
+                        eprintln!("[reload-helper] {detail}");
+                        mark_failed(detail.clone());
+                        return Err(anyhow::anyhow!(detail));
                     } else {
-                        eprintln!("[reload-helper] Parent wait timed out, proceeding anyway.");
+                        let detail = format!(
+                            "reload helper timed out waiting for predecessor pid {pid} to exit"
+                        );
+                        eprintln!("[reload-helper] {detail}");
+                        mark_failed(detail.clone());
+                        return Err(anyhow::anyhow!(detail));
                     }
                 } else {
-                    // Process not found — already exited.
-                    eprintln!("[reload-helper] Parent process not found (already exited).");
+                    let error = std::io::Error::last_os_error();
+                    if error.raw_os_error() == Some(ERROR_INVALID_PARAMETER) {
+                        // Process not found — already exited.
+                        eprintln!("[reload-helper] Parent process not found (already exited).");
+                    } else {
+                        // Access denied and other failures do not prove that the
+                        // predecessor exited. Starting now would reintroduce the
+                        // split-brain named-pipe race this helper prevents.
+                        let detail = format!(
+                            "reload helper could not inspect predecessor pid {pid}: {error}"
+                        );
+                        eprintln!("[reload-helper] {detail}");
+                        mark_failed(detail.clone());
+                        return Err(anyhow::anyhow!(detail));
+                    }
                 }
             }
         }
@@ -1567,6 +1610,13 @@ fn run_reload_helper(args: &Args) -> Result<()> {
                 }
                 std::thread::sleep(std::time::Duration::from_millis(100));
             }
+            if crate::platform::is_process_running(pid) {
+                let detail =
+                    format!("reload helper timed out waiting for predecessor pid {pid} to exit");
+                eprintln!("[reload-helper] {detail}");
+                mark_failed(detail.clone());
+                return Err(anyhow::anyhow!(detail));
+            }
         }
     } else {
         // No parent PID provided; wait a fixed duration as fallback.
@@ -1574,17 +1624,30 @@ fn run_reload_helper(args: &Args) -> Result<()> {
         std::thread::sleep(std::time::Duration::from_secs(2));
     }
 
-    eprintln!(
-        "[reload-helper] Launching {:?} with --resume {} --no-update",
-        target_path, session_id
-    );
-
-    // Exec into the new binary. On Unix this replaces the helper process;
-    // on Windows it spawns and the helper exits.
     let mut cmd = ProcessCommand::new(&target_path);
-    cmd.arg("--resume")
-        .arg(session_id)
-        .arg("--no-update")
+    cmd.arg("--no-update");
+    if server_mode {
+        let socket = args.socket.as_deref().ok_or_else(|| {
+            let detail = "server reload helper requires --socket".to_string();
+            mark_failed(detail.clone());
+            anyhow::anyhow!(detail)
+        })?;
+        eprintln!(
+            "[reload-helper] Launching replacement server {:?} on socket {}",
+            target_path, socket
+        );
+        cmd.arg("--socket").arg(socket).arg("serve");
+    } else {
+        eprintln!(
+            "[reload-helper] Launching {:?} with --resume {} --no-update",
+            target_path, session_id
+        );
+        cmd.arg("--resume").arg(session_id);
+    }
+    cmd.env_remove("ALPHACODE_READY_FD")
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
         .current_dir(std::env::current_dir().unwrap_or_else(|_| {
             target_path
                 .parent()
@@ -1592,5 +1655,7 @@ fn run_reload_helper(args: &Args) -> Result<()> {
                 .to_path_buf()
         }));
     let err = crate::platform::replace_process(&mut cmd);
-    Err(anyhow::anyhow!("Failed to exec {:?}: {}", target_path, err))
+    let detail = format!("failed to launch reload target {:?}: {}", target_path, err);
+    mark_failed(detail.clone());
+    Err(anyhow::anyhow!(detail))
 }

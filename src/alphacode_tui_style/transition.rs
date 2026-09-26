@@ -206,8 +206,13 @@ pub struct BidirectionalTransition {
 impl BidirectionalTransition {
     /// Create a new bidirectional transition.
     pub fn new(initial: f32, duration: Duration) -> Self {
+        let mut transition = Transition::new(initial, initial, duration);
+        // There is no direction-specific work to do until the caller asks
+        // for forward/reverse. Starting as completed lets the first request
+        // establish its direction regardless of the initial value.
+        transition.finish();
         Self {
-            transition: Transition::new(initial, initial, duration),
+            transition,
             forward: true,
         }
     }

@@ -41,7 +41,9 @@ fn test_provider_failover_countdown_expires() {
         app.handle_turn_error(failover_error_message(&prompt));
         assert!(app.pending_provider_failover.is_some());
 
-        std::thread::sleep(std::time::Duration::from_secs(2));
+        if let Some(pending) = app.pending_provider_failover.as_mut() {
+            pending.deadline = Instant::now() - Duration::from_secs(1);
+        }
         app.maybe_progress_provider_failover_countdown();
         assert!(app.pending_provider_failover.is_none());
     });

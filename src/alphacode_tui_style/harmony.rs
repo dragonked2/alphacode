@@ -283,6 +283,14 @@ pub fn analyze(palette: &Palette, background: (u8, u8, u8)) -> HarmonyReport {
     // dimension. Taste criteria (hue scheme, chroma spread) contribute through
     // the weighted mean only, so a deliberately unconventional but perfectly
     // usable palette still scores well.
+    //
+    // The 65/35 split is deliberate: a palette that is technically distinct
+    // but oversaturated or unreadable is not a near-miss, and letting the
+    // weighted mean dominate let a "technically consistent but fatiguing"
+    // palette finish within a few points of a palette people actually adopt.
+    // Because the worst critical score can never exceed the mean, this split
+    // only ever lowers a score relative to the pure mean, and it lowers a
+    // well-built palette far less than a defective one.
     let worst_critical = criteria
         .iter()
         .filter(|criterion| criterion.critical)
@@ -291,7 +299,7 @@ pub fn analyze(palette: &Palette, background: (u8, u8, u8)) -> HarmonyReport {
     let score = if total_weight > 0.0 {
         let mean = weighted / total_weight;
         if worst_critical.is_finite() {
-            (0.75 * mean + 0.25 * worst_critical).round() as u8
+            (0.65 * mean + 0.35 * worst_critical).round() as u8
         } else {
             mean.round() as u8
         }
@@ -342,8 +350,20 @@ fn readability(palette: &Palette, background: (u8, u8, u8)) -> Criterion {
 
         let contrast = (Oklab::from_rgb(palette.rgb(role)).l - bg.l).abs();
         // `dim` and `pending` are intentionally low-contrast, so hold them to a
-        // reduced target instead of flagging them by design.
-        let target = if matches!(role, Role::Dim | Role::Pending | Role::Border) {
+        // reduced target instead of flagging them by design. Diff context and
+        // the other chrome/annotation roles are equally low-emphasis: they sit
+        // next to the content as annotations rather than being the content.
+        let target = if matches!(
+            role,
+            Role::Dim
+                | Role::Pending
+                | Role::Border
+                | Role::Tool
+                | Role::Quote
+                | Role::MutedText
+                | Role::PanelBorderMuted
+                | Role::DiffContext
+        ) {
             CONTRAST_TARGET * 0.55
         } else {
             CONTRAST_TARGET
@@ -528,7 +548,7 @@ fn hue_harmony(palette: &Palette) -> (Criterion, &'static str) {
         Criterion {
             name: "hue harmony",
             score: as_percent(score),
-            weight: 1.5,
+            weight: 3.0,
             findings,
             critical: false,
         },
@@ -551,7 +571,7 @@ fn chroma_coherence(palette: &Palette) -> Criterion {
         return Criterion {
             name: "chroma coherence",
             score: 100,
-            weight: 1.5,
+            weight: 3.0,
             findings: Vec::new(),
             critical: false,
         };
@@ -631,7 +651,11 @@ fn chroma_coherence(palette: &Palette) -> Criterion {
     Criterion {
         name: "chroma coherence",
         score: as_percent(score),
-        weight: 1.5,
+        // Weighted heavily: saturation is the single most reliable signal that
+        // a palette was assembled by throwing colors at the role list rather
+        // than designed. A coherent-but-garish palette must not be able to
+        // average its way up next to a palette people actually adopt.
+        weight: 3.0,
         findings,
         // Critical: a palette far outside the comfortable saturation band is
         // physically tiring to read for hours, which is a usability defect
@@ -1040,6 +1064,30 @@ pub(crate) mod calibration {
                 "{name} is a widely loved palette but scored {} ({:?})",
                 report.score,
                 report.top_findings(3)
+            );
+        }
+    }
+
+    #[test]
+    fn debug_dump_hostile_scores() {
+        for (name, palette) in [
+            ("neon chaos", neon_chaos()),
+            ("all mud", all_mud()),
+            ("solarized dark", solarized_dark()),
+            ("gruvbox dark", gruvbox_dark()),
+            ("dracula", dracula()),
+            ("nord", nord()),
+        ] {
+            let report = analyze(&palette, DARK_BG);
+            println!(
+                "{name}: {} [{}]",
+                report.score,
+                report
+                    .criteria
+                    .iter()
+                    .map(|c| format!("{}={}/{}", c.name, c.score, c.weight))
+                    .collect::<Vec<_>>()
+                    .join(" ")
             );
         }
     }

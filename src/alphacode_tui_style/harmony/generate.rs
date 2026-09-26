@@ -195,8 +195,44 @@ pub fn generate_from_seed(seed: (u8, u8, u8), background: (u8, u8, u8)) -> Palet
         // channel every CVD type preserves.
         (Role::Success, at_hue(145.0, wide(0.85), chroma * 0.85)),
         (Role::Warning, at_hue(80.0, wide(0.1), chroma * 1.3)),
-        (Role::Error, at_hue(25.0, wide(-0.95), chroma * 1.35)),
+        // `error` is the one must-distinguish role that must *never* be traded
+        // for separation: it is the role a user scans for when something went
+        // wrong. It therefore sits partway down the band (not the far end
+        // `wide(-0.95)` used to reach), keeping a full contrast target against
+        // the background on light and dark terminals alike.
+        (Role::Error, at_hue(25.0, wide(-0.55), chroma * 1.35)),
     ] {
+        palette.set(role, rgb);
+    }
+
+    // Keep every semantic role backed by a generated color. Leaving newer
+    // roles on `Palette::default()` is especially harmful on light terminals,
+    // where those defaults are dark surfaces and read as broken/missing text.
+    // Aliases preserve the semantic relationships instead of inventing a new
+    // color for every role.
+    for (role, source) in [
+        (Role::ModelName, Role::User),
+        (Role::CodeBg, Role::UserBg),
+        (Role::Heading, Role::Accent),
+        (Role::Link, Role::FileLink),
+        (Role::Quote, Role::Tool),
+        (Role::Spinner, Role::Accent),
+        (Role::ProgressFill, Role::Success),
+        (Role::ProgressBg, Role::SelectionBg),
+        (Role::ToolBg, Role::UserBg),
+        (Role::DiffAdd, Role::Success),
+        (Role::DiffRemove, Role::Error),
+        (Role::DiffContext, Role::Dim),
+        (Role::SwarmAgent, Role::Asap),
+        (Role::SwarmTask, Role::Queued),
+        (Role::Memory, Role::Accent),
+        (Role::TodoDone, Role::Success),
+        (Role::TodoPending, Role::Warning),
+        (Role::PanelBorder, Role::Accent),
+        (Role::PanelBorderMuted, Role::Border),
+        (Role::MutedText, Role::Tool),
+    ] {
+        let rgb = palette.rgb(source);
         palette.set(role, rgb);
     }
 
@@ -403,14 +439,13 @@ fn separate_confusable_pairs(
             let score = score_of(None, Some(*candidate));
             record(score, None, Some(*candidate), &mut best);
         }
-        if best.is_none() {
-            // Some pairs (an amber warning against a red error) sit close
-            // enough that only moving both of them escapes.
-            for a in &left_options {
-                for b in &right_options {
-                    let score = score_of(Some(*a), Some(*b));
-                    record(score, Some(*a), Some(*b), &mut best);
-                }
+        // Some pairs (an amber warning against a red error) sit close enough
+        // that moving only one role can reach a local plateau. Always evaluate
+        // paired moves, even when a one-role move already improved the score.
+        for a in &left_options {
+            for b in &right_options {
+                let score = score_of(Some(*a), Some(*b));
+                record(score, Some(*a), Some(*b), &mut best);
             }
         }
 

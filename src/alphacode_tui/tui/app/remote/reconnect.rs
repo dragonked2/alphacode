@@ -13,6 +13,7 @@ use std::time::{Duration, Instant};
 use tokio::time::MissedTickBehavior;
 
 const RELOAD_MARKER_MAX_AGE: Duration = Duration::from_secs(30);
+const RELOAD_HANDOFF_DEADLINE: Duration = Duration::from_secs(30);
 
 #[derive(Default)]
 pub(in crate::alphacode_tui::tui::app) struct RemoteRunState {
@@ -22,7 +23,8 @@ pub(in crate::alphacode_tui::tui::app) struct RemoteRunState {
     pub initial_server_start: bool,
     pub last_disconnect_reason: Option<String>,
     pub server_reload_in_progress: bool,
-    pub reload_recovery_attempted: bool,
+    pub reload_recovery_attempts: u32,
+    pub reload_recovery_next_attempt: Option<Instant>,
     pub last_reload_pid: Option<u32>,
 }
 
@@ -45,6 +47,14 @@ pub(in crate::alphacode_tui::tui::app) enum PostConnectOutcome {
 pub(in crate::alphacode_tui::tui::app) struct ReloadReconnectHints {
     pub reload_ctx_for_session: Option<ReloadContext>,
     pub has_client_reload_marker: bool,
+}
+
+fn connect_error_is_terminal(error: &anyhow::Error) -> bool {
+    let message = error.to_string().to_ascii_lowercase();
+    message.contains("requested session") && message.contains("does not exist")
+        || message.contains("attached to unexpected session")
+        || message.contains("empty session id")
+        || message.contains("returned history for unexpected session")
 }
 
 pub(super) fn format_disconnect_reason(reason: &RemoteDisconnectReason) -> String {
@@ -214,7 +224,9 @@ async fn wait_for_reload_handoff_before_reconnect(
     event_stream: &mut EventStream,
     state: &mut RemoteRunState,
 ) -> Result<Option<ConnectOutcome>> {
-    if !reload_handoff_active(state) {
+    let has_recent_reload_state =
+        crate::alphacode_app_core::server::recent_reload_state(RELOAD_MARKER_MAX_AGE).is_some();
+    if !reload_handoff_active(state) && !has_recent_reload_state {
         return Ok(None);
     }
 
@@ -287,10 +299,23 @@ async fn wait_for_reload_handoff_before_reconnect(
             let wait =
                 crate::alphacode_app_core::server::wait_for_reload_handoff_event(pid, &socket_path);
             tokio::pin!(wait);
+            let deadline = state
+                .disconnect_start
+                .unwrap_or_else(Instant::now)
+                .checked_add(RELOAD_HANDOFF_DEADLINE)
+                .unwrap_or_else(Instant::now);
+            let deadline_sleep = tokio::time::sleep_until(tokio::time::Instant::from_std(deadline));
+            tokio::pin!(deadline_sleep);
             let mut redraw = disconnected_redraw_interval(false);
             loop {
                 tokio::select! {
                     _ = &mut wait => break,
+                    _ = &mut deadline_sleep => {
+                        state.server_reload_in_progress = false;
+                        let detail = "reload handoff exceeded its 30-second deadline; starting a replacement server";
+                        let _ = recover_reloading_server(app, terminal, state, detail).await?;
+                        return Ok(Some(ConnectOutcome::Retry));
+                    }
                     _ = redraw.tick() => {
                         terminal.draw(|frame| crate::alphacode_tui::tui::ui::draw(frame, app))?;
                     }
@@ -312,11 +337,24 @@ async fn recover_reloading_server(
     state: &mut RemoteRunState,
     detail: &str,
 ) -> Result<bool> {
-    if state.reload_recovery_attempted || crate::server_spawn::is_running().await {
+    if crate::server_spawn::is_running().await {
+        return Ok(false);
+    }
+    let now = Instant::now();
+    if state
+        .reload_recovery_next_attempt
+        .is_some_and(|next| next > now)
+    {
         return Ok(false);
     }
 
-    state.reload_recovery_attempted = true;
+    state.reload_recovery_attempts = state.reload_recovery_attempts.saturating_add(1);
+    let retry_delay = if state.reload_recovery_attempts == 1 {
+        Duration::ZERO
+    } else {
+        Duration::from_secs(1u64 << (state.reload_recovery_attempts - 2).min(5))
+    };
+    state.reload_recovery_next_attempt = now.checked_add(retry_delay);
     state.last_disconnect_reason = Some(detail.to_string());
 
     let content = reconnect_status_message(app, state, detail);
@@ -336,6 +374,10 @@ async fn recover_reloading_server(
     match crate::server_spawn::spawn_default_server().await {
         Ok(()) => {
             state.initial_server_start = true;
+            // Keep a short guard after a successful spawn. The child can be
+            // registered before its listener is ready; immediately spawning a
+            // second replacement during that window risks split-brain daemons.
+            state.reload_recovery_next_attempt = Instant::now().checked_add(Duration::from_secs(1));
             state.last_disconnect_reason =
                 Some("replacement server started; reconnecting".to_string());
             crate::logging::info("Replacement shared server started after stalled reload");
@@ -416,11 +458,21 @@ pub(in crate::alphacode_tui::tui::app) async fn connect_with_retry(
             }
             state.disconnect_start = None;
             state.last_disconnect_reason = None;
-            state.reload_recovery_attempted = false;
+            state.reload_recovery_attempts = 0;
+            state.reload_recovery_next_attempt = None;
             state.last_reload_pid = None;
             Ok(ConnectOutcome::Connected(remote))
         }
         Err(e) => {
+            if connect_error_is_terminal(&e) {
+                let message = format!(
+                    "Server connection rejected: {e}. Check the requested session, then retry from the command line."
+                );
+                set_disconnect_status_message(app, state, message);
+                terminal.draw(|frame| crate::alphacode_tui::tui::ui::draw(frame, app))?;
+                tokio::time::sleep(Duration::from_secs(2)).await;
+                return Ok(ConnectOutcome::Quit);
+            }
             if state.reconnect_attempts == 0 && !app.server_spawning {
                 return Err(anyhow::anyhow!(
                     "Failed to connect to server. Is `alphacode serve` running? Error: {}",
@@ -457,7 +509,10 @@ pub(in crate::alphacode_tui::tui::app) async fn connect_with_retry(
             set_disconnect_status_message(app, state, msg_content);
             terminal.draw(|frame| crate::alphacode_tui::tui::ui::draw(frame, app))?;
 
-            if reload_handoff_active(state) {
+            let has_recent_reload_state =
+                crate::alphacode_app_core::server::recent_reload_state(RELOAD_MARKER_MAX_AGE)
+                    .is_some();
+            if reload_handoff_active(state) || has_recent_reload_state {
                 let socket_path = crate::alphacode_app_core::server::socket_path();
                 match crate::alphacode_app_core::server::inspect_reload_wait_status(
                     &socket_path,
@@ -523,10 +578,24 @@ pub(in crate::alphacode_tui::tui::app) async fn connect_with_retry(
                             &socket_path,
                         );
                         tokio::pin!(wait);
+                        let deadline = state
+                            .disconnect_start
+                            .unwrap_or_else(Instant::now)
+                            .checked_add(RELOAD_HANDOFF_DEADLINE)
+                            .unwrap_or_else(Instant::now);
+                        let deadline_sleep =
+                            tokio::time::sleep_until(tokio::time::Instant::from_std(deadline));
+                        tokio::pin!(deadline_sleep);
                         let mut redraw = disconnected_redraw_interval(false);
                         loop {
                             tokio::select! {
                                 _ = &mut wait => break,
+                                _ = &mut deadline_sleep => {
+                                    state.server_reload_in_progress = false;
+                                    let detail = "reload handoff exceeded its 30-second deadline; starting a replacement server";
+                                    let _ = recover_reloading_server(app, terminal, state, detail).await?;
+                                    return Ok(ConnectOutcome::Retry);
+                                }
                                 _ = redraw.tick() => {
                                     terminal.draw(|frame| crate::alphacode_tui::tui::ui::draw(frame, app))?;
                                 }
@@ -551,15 +620,25 @@ pub(in crate::alphacode_tui::tui::app) async fn connect_with_retry(
             // tight reconnect loop and surface a clear resume hint instead of
             // spinning "attempt 5... attempt 6..." forever.
             const MAX_SILENT_RECONNECTS: u32 = 10;
-            if state.reconnect_attempts >= MAX_SILENT_RECONNECTS && !reload_handoff_active(state) {
+            const MAX_RELOAD_RECOVERY_ATTEMPTS: u32 = 8;
+            let reload_recovery_exhausted =
+                state.reload_recovery_attempts >= MAX_RELOAD_RECOVERY_ATTEMPTS;
+            if (state.reconnect_attempts >= MAX_SILENT_RECONNECTS && !reload_handoff_active(state))
+                || reload_recovery_exhausted
+            {
                 let detail = state
                     .last_disconnect_reason
                     .clone()
                     .unwrap_or_else(|| "server closed the connection".to_string());
+                let attempt_label = if reload_recovery_exhausted {
+                    format!("{} replacement attempts", state.reload_recovery_attempts)
+                } else {
+                    format!("{} reconnect attempts", state.reconnect_attempts)
+                };
                 let hinted = format!(
-                    "{} — stopped retrying after {} attempts. Resume with `{}` or restart the server.",
+                    "{} — stopped retrying after {}. Resume with `{}` or restart the server.",
                     detail,
-                    state.reconnect_attempts,
+                    attempt_label,
                     app.remote_session_id
                         .as_ref()
                         .and_then(|id| crate::id::extract_session_name(id))
@@ -925,5 +1004,33 @@ pub(in crate::alphacode_tui::tui::app) fn finalize_reload_reconnect(
                 .to_string(),
         ));
         app.reload_info.clear();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::connect_error_is_terminal;
+
+    #[test]
+    fn missing_or_mismatched_target_sessions_are_terminal_reconnect_errors() {
+        assert!(connect_error_is_terminal(&anyhow::anyhow!(
+            "server rejected protocol bootstrap: requested session 'missing' does not exist on the server"
+        )));
+        assert!(connect_error_is_terminal(&anyhow::anyhow!(
+            "server attached to unexpected session 'other' (requested 'wanted')"
+        )));
+        assert!(connect_error_is_terminal(&anyhow::anyhow!(
+            "server returned an empty session id during bootstrap"
+        )));
+    }
+
+    #[test]
+    fn transient_socket_and_bootstrap_timeouts_remain_retryable() {
+        assert!(!connect_error_is_terminal(&anyhow::anyhow!(
+            "server bootstrap timed out after 30s"
+        )));
+        assert!(!connect_error_is_terminal(&anyhow::anyhow!(
+            "connection reset by server"
+        )));
     }
 }

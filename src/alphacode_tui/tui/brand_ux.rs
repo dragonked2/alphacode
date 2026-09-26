@@ -302,7 +302,7 @@ impl BrandTheme {
         let primary = (elapsed_secs * std::f32::consts::PI * 2.0 / 3.0).sin();
         let secondary = (elapsed_secs * std::f32::consts::PI * 2.0 / 1.7).sin() * 0.3;
         let combined = primary + secondary;
-        (combined + 1.0) / 2.0
+        ((combined + 1.0) / 2.0).clamp(0.0, 1.0)
     }
 
     /// Faster breathing for high-energy states (thinking, streaming).
@@ -827,7 +827,7 @@ impl SplashScreen {
         // chips fit on one line. Otherwise the strip would wrap and look
         // messy; the splash screen would rather drop it than show a torn
         // version.
-        if with_features && max_width >= 60 {
+        if with_features && max_width >= SplashScreen::elite_feature_row_width() {
             lines.push(Line::from(""));
             lines.push(SplashScreen::elite_feature_row());
         }
@@ -906,6 +906,26 @@ impl SplashScreen {
         ])
     }
 
+    /// Columns the feature chip row needs. The splash gates the row on this
+    /// measured width rather than a guessed constant, so adding or resizing a
+    /// chip can never push the strip past the terminal edge.
+    pub fn elite_feature_row_width() -> usize {
+        const CHIPS: &[(&str, &str)] = &[
+            ("45+", "tools"),
+            ("swarm", "agents"),
+            ("memory", "context"),
+            ("multi", "model"),
+            ("open", "source"),
+        ];
+        // 2 leading columns, then each chip as " label " + " sub " (four
+        // padding columns plus the two texts), then one gap between chips.
+        2 + CHIPS
+            .iter()
+            .map(|(label, sub)| label.chars().count() + sub.chars().count() + 4)
+            .sum::<usize>()
+            + CHIPS.len().saturating_sub(1)
+    }
+
     /// Build the elite feature row shown on the splash screen, listing the
     /// capabilities that ship in this build. Each chip is its own span so
     /// the chips use independent gradient colors and the row reads as a
@@ -938,7 +958,7 @@ impl SplashScreen {
                     .add_modifier(Modifier::BOLD),
             ));
             if i + 1 < chips.len() {
-                spans.push(Span::styled("  ", Style::default().fg(BrandTheme::dim())));
+                spans.push(Span::styled(" ", Style::default().fg(BrandTheme::dim())));
             }
         }
         Line::from(spans)
