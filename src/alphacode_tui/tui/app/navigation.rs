@@ -70,7 +70,7 @@ fn is_mouse_scroll_kind(kind: MouseEventKind) -> bool {
 }
 
 impl App {
-    const MOUSE_SCROLL_INTENT_LINES: i16 = 1;
+    const MOUSE_SCROLL_INTENT_LINES: i16 = 3;
     /// Upper bound on lines enqueued per wheel notch after velocity
     /// acceleration. Kept close to the base intent so the boost is only a subtle
     /// nudge on fast flicks rather than a large jump.

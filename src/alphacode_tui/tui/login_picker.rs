@@ -1069,7 +1069,13 @@ mod tests {
             OVERLAY_PERCENT_Y,
             Rect::new(0, 0, 50, 14),
         );
-        let probe = &terminal.backend().buffer()[(overlay.x + overlay.width - 3, overlay.y + 2)];
+        assert!(
+            !overlay.contains(ratatui::layout::Position::new(0, 0)),
+            "probe corner must be outside the overlay"
+        );
+        // Probe a corner well outside the centered panel: the overlay must
+        // not paint a backdrop over the whole screen.
+        let probe = &terminal.backend().buffer()[(0, 0)];
         assert_eq!(probe.symbol(), "X");
         // The overlay must not paint a full-screen backdrop: whatever the
         // underlying content had must still be showing through. Compare against

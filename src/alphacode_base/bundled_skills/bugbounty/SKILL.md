@@ -1,6 +1,10 @@
 ---
 name: bugbounty
 description: "Security assessment and review — differential testing, 7-gate validation, hypothesis-driven, evidence-first. Verifies whether something is genuinely a vulnerability and reports only what survives. Use when the user mentions bug bounty, security review, authorized pentesting, vulnerability research, recon, or defensive security testing."
+auto-invoke: true
+aliases:
+  - bug bounty
+  - bug bounties
 ---
 
 # SECURITY REVIEW — EVIDENCE OVER IMPACT CHASING

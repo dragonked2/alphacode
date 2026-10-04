@@ -170,7 +170,6 @@ impl WidgetKind {
             WidgetKind::Todos,
             WidgetKind::ContextUsage,
             WidgetKind::UsageLimits,
-            WidgetKind::KvCache,
             WidgetKind::MemoryActivity,
             WidgetKind::ModelInfo,
             WidgetKind::Compaction,
@@ -229,7 +228,6 @@ pub(crate) fn is_overview_mergeable(kind: WidgetKind) -> bool {
             | WidgetKind::Compaction
             | WidgetKind::ModelInfo
             | WidgetKind::UsageLimits
-            | WidgetKind::KvCache
             | WidgetKind::GitStatus
     )
 }
@@ -2002,10 +2000,6 @@ fn render_sections(
         && info.available
     {
         lines.extend(render_usage_compact(info, inner.width));
-    }
-
-    if let Some(cache) = data.cache_hit_info.as_ref() {
-        lines.push(render_kv_cache_summary_line(cache));
     }
 
     // Git info

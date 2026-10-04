@@ -78,8 +78,6 @@ pub struct DisplayConfig {
     pub animation_fps: u32,
     /// FPS for active redraw (processing, streaming): 1-120 (default: 60)
     pub redraw_fps: u32,
-    /// Show a truncated preview of the previous prompt at the top when it scrolls out of view (default: true)
-    pub prompt_preview: bool,
     /// Render swarm/file-activity notifications in a compact single-line form
     /// instead of the full multi-line card with diff preview (default: false)
     pub compact_notifications: bool,
@@ -173,7 +171,6 @@ impl Default for DisplayConfig {
             performance: String::new(),
             animation_fps: 20,
             redraw_fps: 60,
-            prompt_preview: true,
             compact_notifications: false,
             copy_badge_alt_label: String::new(),
             show_agentgrep_output: false,

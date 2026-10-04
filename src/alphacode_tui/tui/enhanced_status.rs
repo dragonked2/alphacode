@@ -523,16 +523,20 @@ impl StatusBar {
             spans.push(Span::styled(" ", Style::default()));
         }
 
-        // Connection type with icon
-        let (type_icon, type_color) = match connection_type.to_lowercase().as_str() {
-            "websocket" | "ws" => ("🔌", BrandTheme::info()),
-            "stdio" | "subprocess" | "cli" => ("⚙", BrandTheme::tool()),
-            "tcp" => ("📡", BrandTheme::accent()),
-            _ => ("🔗", BrandTheme::dim_bright()),
-        };
+        // Connection channel. Rendered as a named, alphacode-branded channel
+        // tier rather than the raw transport string: "websocket" and "https"
+        // are implementation details, and a reader glancing at the status bar
+        // cares about *how trusted* the link is, not which protocol carries it.
+        let channel = crate::alphacode_tui::tui::connection_channel(Some(connection_type));
         spans.push(Span::styled(
-            format!("{} {}", type_icon, connection_type),
-            Style::default().fg(type_color),
+            channel.label(),
+            Style::default()
+                .fg(channel.color())
+                .add_modifier(Modifier::DIM),
+        ));
+        spans.push(Span::styled(
+            connection_type.to_lowercase(),
+            Style::default().fg(channel.color()),
         ));
 
         Line::from(spans)

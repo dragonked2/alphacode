@@ -25,6 +25,32 @@ NEVER_RELEASE="${ALPHACODE_NEVER_RELEASE:-}"
 # If set, the ref (branch / tag / sha) to check out when building from source.
 SOURCE_REF="${ALPHACODE_SOURCE_REF:-}"
 
+# Globals used by the EXIT trap that build_from_source() installs. They are
+# declared here so they always exist, which is what lets the trap fire safely
+# under `set -u` once the installing function has returned (see the long note
+# at the trap itself).
+_ac_src_dir=""
+_ac_prev_tmp=""
+
+# Recursive-delete helper used by that trap.
+#
+# Keeping the delete inside one named function leaves the trap itself a single
+# trivial statement, and gives exactly one place to refuse a dangerous target.
+# Without the guard, a mistake in either interpolated variable would turn into
+# a recursive delete of an arbitrary path -- which is exactly the failure mode
+# that a bare `rm -rf "$var"` in a trap represents.
+_ac_rm() {
+  # Cleans every argument, skipping empty ones.
+  local p
+  for p in "$@"; do
+    [ -n "$p" ] || continue
+    case "$p" in
+      /tmp/*|/var/tmp/*|"${TMPDIR:-/nonexistent}"/*) rm -rf -- "$p" ;;
+      *) warn "refusing to remove unexpected path: $p" ;;
+    esac
+  done
+}
+
 print() { printf "\033[1;36m==>\033[0m %s\n" "$*"; }
 warn()  { printf "\033[1;33m[warn]\033[0m %s\n" "$*" >&2; }
 fail()  { printf "\033[1;31m[fail]\033[0m %s\n" "$*" >&2; exit 1; }
@@ -41,13 +67,15 @@ Flags:
   --version <v>     Release tag to install (default: latest)
   --prefix <dir>    Install prefix (default: ~/.local)
   --bin-dir <dir>   Override the binary directory (default: <prefix>/bin)
-  --add-path        Append the bin dir to your shell profile so `alphacode`
-                    is on PATH in new shells. Detects bash/zsh/fish/nushell/
-                    csh/ksh and is idempotent across re-runs.
+  --add-path        (now the default; kept for compatibility) Append the bin
+                    dir to your shell profile so `alphacode` is on PATH in
+                    future shells. Detects bash/zsh/fish/nushell/csh/ksh and
+                    is idempotent across re-runs.
   --link            Also symlink the binary into a system bin dir
                     (default /usr/local/bin) so no PATH change is needed at
                     all. Needs write access — re-run with sudo.
-  --no-path         Do not print or configure PATH instructions at the end
+  --no-path         Do not touch PATH at all: no profile edit and no
+                    activation in the current shell
   --from-source     Skip the release download and always build from source
   --source-only     Never fall back to building from source (release-only)
   --source-ref <r>  When building from source, check out this ref (branch/tag/sha)
@@ -114,9 +142,21 @@ build_from_source() {
 
   local src_dir
   src_dir="$(mktemp -d)"
-  # Chain the cleanup so we remove the build dir AND any earlier TMP.
-  local _prev_tmp="${TMP:-}"
-  trap 'rm -rf "$src_dir" ${_prev_tmp:+"$_prev_tmp"}' EXIT
+  # Cleanup path for the EXIT trap.
+  #
+  # Both variables are deliberately GLOBAL, and that is the fix. The previous
+  # version declared `local _prev_tmp` here and referenced `$src_dir` (also
+  # local) from a single-quoted trap body. A single-quoted body is not expanded
+  # when the trap is set -- it is expanded when it FIRES, which is after this
+  # function has returned and its locals are gone. Under `set -u` the trap then
+  # died with "src_dir: unbound variable" before doing any work, so:
+  #   * the temporary clone was never removed (a full repo clone plus a target/
+  #     tree left behind in the temp dir on every source install), and
+  #   * the trap's failure became the script's exit status, masking the real one.
+  # Global names with an _ac_ prefix cannot collide with anything else here.
+  _ac_src_dir="$src_dir"
+  _ac_prev_tmp="${TMP:-}"
+  trap '_ac_rm "$_ac_src_dir" ${_ac_prev_tmp:+"$_ac_prev_tmp"}' EXIT
 
   print "Cloning $REPO into a temporary build directory …"
   if [ -n "$SOURCE_REF" ]; then
@@ -454,31 +494,53 @@ if [ -n "${LINK_BIN:-}" ]; then
   link_into_system_bin || warn "symlink not created; '$BIN_DIR' still works"
 fi
 
+# --- PATH activation ----------------------------------------------------------
+#
+# Applied by DEFAULT now, matching install.ps1 on Windows.
+#
+# The old behaviour required `--add-path`. That is the wrong default for a
+# one-line installer: the most common first-run experience was "install
+# finished, but `alphacode` is not a command", followed by a manual dotfile
+# edit. A user who has to know a flag exists has not been served by the thing
+# the flag lives in.
+#
+# Two different things are kept apart here, because their risk profiles differ:
+#
+#   * the PROFILE edit (--add-path, now implied) is persistent. It appends one
+#     marked, idempotent block to the detected shell's rc file and never
+#     reorders anything already there.
+#   * the SESSION prepend below is not persistent at all. It affects only this
+#     process and its children, so `alphacode` works on the very next line the
+#     user types -- which is the actual complaint -- without editing a dotfile
+#     behind their back or disturbing any other terminal.
+#
+# Editing a dotfile on the user's behalf is still the one intrusive action, so
+# it stays constrained: skipped when the shell cannot be identified, when there
+# is no rc file we know how to extend, when the dir already resolves, or when
+# --no-path is passed.
+SESSION_PATH_ADDED=0
 if [ -z "${NO_PATH:-}" ] && ! command -v alphacode >/dev/null 2>&1; then
-  # Try the automatic route first when asked. If it cannot (unknown shell, no
-  # profile), fall through to the manual instructions rather than leaving the
-  # user with a warning and nothing to copy.
-  if ! { [ -n "${ADD_PATH:-}" ] && add_bin_dir_to_path; }; then
+  # Activate it here and now, whether or not a profile edit follows.
+  case ":$PATH:" in
+    *":$BIN_DIR:"*) ;;
+    *) PATH="$BIN_DIR:$PATH"; export PATH; SESSION_PATH_ADDED=1 ;;
+  esac
+
+  # Persist for future shells. Failure is not fatal: the binary is already
+  # installed and already callable in this session.
+  if ! add_bin_dir_to_path; then
     echo
-    printf "\033[1;33mNext step:\033[0m add '%s' to your PATH.\n" "$BIN_DIR"
-    printf "\033[0;90mOr re-run the installer with --add-path to do it for you.\033[0m\n"
-    case ":$PATH:" in
-      *":$BIN_DIR:"*) ;;
-      *)
-        cat <<PATH
-
-  # Bash / Zsh — append to your ~/.bashrc or ~/.zshrc:
-  export PATH="$BIN_DIR:\$PATH"
-
-  # Fish:
-  fish_add_path "$BIN_DIR"
-
-  # Nushell:
-  \$env.PATH = [ "$BIN_DIR" ...\$env.PATH ]
-PATH
-        ;;
-    esac
+    printf "\033[1;33mCould not update your shell profile automatically.\033[0m\n"
+    printf "\033[0;90mTo make it permanent, add this to your shell profile:\033[0m\n"
+    printf "  export PATH=\"%s:\$PATH\"\n" "$BIN_DIR"
   fi
 fi
 
-print "Run \`alphacode login\` to connect a model, then \`alphacode\` to start."
+if [ "$SESSION_PATH_ADDED" = "1" ]; then
+  print "Ready to use -- \`alphacode\` is available in this shell now."
+fi
+
+echo
+print "Next:"
+printf "  alphacode login    # connect a model provider\n"
+printf "  alphacode          # start the TUI\n"

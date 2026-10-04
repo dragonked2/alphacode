@@ -703,7 +703,7 @@ pub(super) fn handle_paste(app: &mut App, text: String) {
 fn format_dropped_path(path: &std::path::Path, quote_whitespace: bool) -> String {
     let value = path.to_string_lossy();
     if quote_whitespace && value.chars().any(char::is_whitespace) {
-        format!("\"{}\"", value.replace('\\', "\\\\").replace('"', "\\\""))
+        format!("\"{}\"", value.replace('"', "\\\""))
     } else {
         value.into_owned()
     }

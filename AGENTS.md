@@ -2,6 +2,68 @@
 
 This document describes how to use the available tools for bug bounty hunting and security testing within authorized environments.
 
+## Build & Verification Commands
+
+**This repository is a SINGLE cargo package named `alphacode`.** Every
+`src/alphacode_*/` directory is a *module* of that one crate, not a separate
+package, so cargo has exactly one package ID.
+
+```bash
+cargo check --workspace      # compile check
+cargo check --workspace --tests
+cargo test --lib             # library suite
+cargo clippy --lib -- -D warnings
+```
+
+**Never pass `-p`/`--package` with a `src/alphacode_*` module name.** It fails with
+`error: package ID specification 'alphacode_base' did not match any packages`.
+There is also no `src/Cargo.toml`; the manifest is the repository-root
+`Cargo.toml` (`[lib] path = "src/lib.rs"`).
+
+### Two environment requirements (Windows)
+
+**1. Never build inside OneDrive.** The repo lives under `C:\Users\or0to\OneDrive\`.
+A `target/` directory inside OneDrive breaks native (C) dependencies, because
+OneDrive's file locking breaks MSVC's debug-record writing. It surfaces as:
+
+```
+cl : Command line error D8050 : cannot execute '...\c1.dll': failed to get
+command line into debug records
+error occurred in cc-rs: ... (the `ring` build script)
+```
+
+The message blames `c1.dll`, not OneDrive, so it is very misleading. The same
+locking also causes `Access is denied. (os error 5)` when a build must
+overwrite a running `.exe` (e.g. the live shared server under
+`%LOCALAPPDATA%\alphacode\builds\shared-server\`).
+
+`CARGO_TARGET_DIR` is set (user scope) to
+`C:\Users\or0to\AppData\Local\Temp\alphacode-target`, outside OneDrive. Keep it
+that way. Changing it forces one full rebuild.
+
+**2. Load the MSVC environment.** A plain shell has empty `INCLUDE`/`LIB`, so any
+C dependency fails to find headers — `stddef.h` is not in the MSVC include dir,
+it comes from the Windows SDK `ucrt`. Import the environment *and* build in the
+same command, because these vars last only for the current process:
+
+```powershell
+$vc = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\2022\BuildTools\VC\Auxiliary\Build\vcvars64.bat"
+cmd /c "`"$vc`" >nul 2>&1 && set" | ForEach-Object {
+  if ($_ -match '^([^=]+)=(.*)$') { [Environment]::SetEnvironmentVariable($matches[1], $matches[2], 'Process') }
+}
+$env:CARGO_TARGET_DIR = "C:\Users\or0to\AppData\Local\Temp\alphacode-target"
+cargo test --lib --no-run
+```
+
+Using a Developer PowerShell for VS 2022 is equivalent and simpler.
+
+### Concurrent agents
+
+Several agents work in this tree at once. Before reverting or `git stash`ing a
+file, check whether it holds someone else's in-flight work — `git checkout --`
+on a shared file silently destroys it. Prefer surgical edits, and check
+`git log -1 -- <file>` plus `git diff` to attribute a change before undoing it.
+
 ## Tool Categories for Bug Bounty Hunting
 
 ### Native Recon Tools (Built-in)

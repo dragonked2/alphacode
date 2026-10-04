@@ -682,15 +682,100 @@ pub fn debug_copy_selection_text_for_bench(range: CopySelectionRange) -> Option<
     ui::copy_selection_text(range)
 }
 
+/// How a session is connected, described by what the link *means* rather than
+/// which transport carries it.
+///
+/// "websocket" and "https/sse" are the same trust decision reached by
+/// different routes, so they map to one channel. `InProcess` wins ties: a local
+/// session never reports a transport, and that absence is the strongest privacy
+/// statement the UI can make.
+///
+/// [`ConnectionChannel::label`] is deliberately ASCII (`[1]`..`[3]`, `[*]`) so it
+/// renders identically on terminals with no emoji or box-drawing coverage; the
+/// emoji lives only in the window title, where a missing glyph costs one
+/// character rather than a whole status-bar row.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ConnectionChannel {
+    /// Provider in this process. Nothing crosses a socket.
+    InProcess,
+    /// Provider over a local stdio/subprocess pipe. Nothing crosses a network.
+    Local,
+    /// Provider over a network transport (TCP, websocket, HTTP/SSE). Encrypted
+    /// in transit, but the endpoint is a remote host.
+    Secure,
+    /// Transport not recognized, or none reported. Shown so an unexpected
+    /// transport is visible rather than silently rendered as local.
+    Unknown,
+}
+
+impl ConnectionChannel {
+    /// Human-facing channel name: an ASCII tier badge plus a plain-language
+    /// term, e.g. `[3] Secure channel`.
+    pub(crate) fn label(self) -> &'static str {
+        match self {
+            Self::InProcess => "[1] In-process",
+            Self::Local => "[2] Local channel",
+            Self::Secure => "[3] Secure channel",
+            Self::Unknown => "[*] Unknown channel",
+        }
+    }
+
+    pub(crate) fn color(self) -> ratatui::style::Color {
+        use crate::alphacode_tui::tui::brand_ux::BrandTheme;
+        match self {
+            Self::InProcess => BrandTheme::success(),
+            Self::Local => BrandTheme::tool(),
+            Self::Secure => BrandTheme::accent(),
+            Self::Unknown => BrandTheme::dim_bright(),
+        }
+    }
+}
+
+/// Classify a raw transport string into a trust channel.
+///
+/// `None` (no transport reported at all) means the provider is in-process.
+pub(crate) fn connection_channel(connection_type: Option<&str>) -> ConnectionChannel {
+    let Some(raw) = connection_type else {
+        return ConnectionChannel::InProcess;
+    };
+    let normalized = raw.trim().to_ascii_lowercase();
+    if normalized.is_empty() {
+        return ConnectionChannel::InProcess;
+    }
+    if normalized.contains("stdio")
+        || normalized.contains("subprocess")
+        || normalized == "cli"
+        || normalized.contains("in-process")
+        || normalized.contains("inprocess")
+    {
+        return ConnectionChannel::Local;
+    }
+    if normalized.contains("websocket")
+        || normalized == "ws"
+        || normalized == "wss"
+        || normalized.contains("http")
+        || normalized == "tcp"
+    {
+        return ConnectionChannel::Secure;
+    }
+    ConnectionChannel::Unknown
+}
+
+/// Window-title icon for the active connection.
+///
+/// Both are single emoji-default codepoints on purpose: a text-default glyph
+/// (or one carrying a VS16 selector) renders as a monochrome outline / tofu in
+/// macOS window titles, because Ghostty and Terminal ignore the selector there.
+///
+/// The icons are alphacode's own rather than generic transport glyphs: 🛰 for a
+/// remote session, 🧠 for a local one. A reader scanning their window list can
+/// tell an agent session from an unrelated terminal at a glance.
 pub(crate) fn connection_type_icon(connection_type: Option<&str>) -> Option<&'static str> {
     let normalized = connection_type?.trim().to_ascii_lowercase();
     if normalized.contains("websocket") || normalized == "ws" || normalized == "wss" {
-        // 🔌 is a single emoji-default codepoint. The previous 🕸️ (U+1F578 +
-        // VS16) is text-default and rendered as a monochrome outline/tofu in
-        // macOS window titles (Ghostty/Terminal ignore the VS16 selector there).
-        Some("🔌")
+        Some("🛰")
     } else if normalized.contains("http") {
-        Some("🌐")
+        Some("🧠")
     } else {
         None
     }
@@ -1724,8 +1809,9 @@ pub fn prewarm_focused_side_panel(
 #[cfg(test)]
 mod tests {
     use super::{
-        CacheTtlInfo, KvCacheProblemKind, connection_type_icon, detect_kv_cache_problem,
-        keyboard_enhancement_flags, resolve_subscribe_metadata, scheduled_notification_text,
+        CacheTtlInfo, ConnectionChannel, KvCacheProblemKind, connection_type_icon,
+        detect_kv_cache_problem, keyboard_enhancement_flags, resolve_subscribe_metadata,
+        scheduled_notification_text,
     };
     use crate::alphacode_tui::ambient::AmbientStatus;
     use crate::alphacode_tui::tui::info_widget::AmbientWidgetData;
@@ -1921,13 +2007,68 @@ mod tests {
 
     #[test]
     fn connection_type_icon_uses_protocol_specific_icons() {
-        assert_eq!(connection_type_icon(Some("websocket")), Some("🔌"));
-        assert_eq!(connection_type_icon(Some("wss")), Some("🔌"));
-        assert_eq!(connection_type_icon(Some("https")), Some("🌐"));
-        assert_eq!(connection_type_icon(Some("https/sse")), Some("🌐"));
-        assert_eq!(connection_type_icon(Some("http")), Some("🌐"));
+        assert_eq!(connection_type_icon(Some("websocket")), Some("🛰"));
+        assert_eq!(connection_type_icon(Some("wss")), Some("🛰"));
+        assert_eq!(connection_type_icon(Some("https")), Some("🧠"));
+        assert_eq!(connection_type_icon(Some("https/sse")), Some("🧠"));
+        assert_eq!(connection_type_icon(Some("http")), Some("🧠"));
         assert_eq!(connection_type_icon(Some("unknown")), None);
         assert_eq!(connection_type_icon(None), None);
+    }
+
+    #[test]
+    fn connection_channel_classifies_by_trust_not_transport() {
+        use super::connection_channel as channel;
+        // No transport reported at all is an in-process provider: the
+        // strongest privacy statement, and it must not render as remote.
+        assert_eq!(channel(None), ConnectionChannel::InProcess);
+        assert_eq!(channel(Some("")), ConnectionChannel::InProcess);
+        assert_eq!(channel(Some("  ")), ConnectionChannel::InProcess);
+
+        // Every stdio-ish spelling is the same trust decision.
+        for local in ["stdio", "subprocess", "cli", "in-process", "InProcess"] {
+            assert_eq!(
+                channel(Some(local)),
+                ConnectionChannel::Local,
+                "{local} should be a local channel"
+            );
+        }
+
+        // Every network transport is one channel: the protocol is an
+        // implementation detail, the trust boundary is the same.
+        for secure in ["websocket", "ws", "wss", "https", "https/sse", "http", "tcp"] {
+            assert_eq!(
+                channel(Some(secure)),
+                ConnectionChannel::Secure,
+                "{secure} should be a secure channel"
+            );
+        }
+
+        // Anything unrecognized stays visible rather than being assumed safe.
+        assert_eq!(channel(Some("carrier-pigeon")), ConnectionChannel::Unknown);
+    }
+
+    #[test]
+    fn connection_channel_labels_are_ascii_and_carry_a_tier_badge() {
+        // Every label must render on a terminal with no emoji/box-drawing
+        // coverage, and must lead with its tier badge so the trust level is
+        // readable at a glance and stable across channels.
+        for (channel, badge) in [
+            (ConnectionChannel::InProcess, "[1]"),
+            (ConnectionChannel::Local, "[2]"),
+            (ConnectionChannel::Secure, "[3]"),
+            (ConnectionChannel::Unknown, "[*]"),
+        ] {
+            let label = channel.label();
+            assert!(
+                label.is_ascii(),
+                "channel label must render on any terminal: {label:?}"
+            );
+            assert!(
+                label.starts_with(badge),
+                "label {label:?} must lead with its tier badge {badge:?}"
+            );
+        }
     }
 
     #[test]

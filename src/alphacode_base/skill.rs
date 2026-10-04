@@ -23,14 +23,14 @@ pub struct Skill {
     /// When `true`, the skill is automatically activated when the user's message
     /// matches keywords in its description or search text.
     pub auto_invoke: bool,
+    pub aliases: Vec<String>,
     /// Reference files bundled in the skill directory (e.g. `references/*.md`).
     /// Keyed by filename relative to the skill directory.
     pub reference_files: HashMap<String, String>,
 }
 
 #[derive(Debug, Deserialize)]
-#[allow(dead_code)] // auto_invoke / aliases are read for Claude Code
-// forward-compat but not yet wired into the alphacode runtime.
+#[allow(dead_code)] // sources is read for forward-compat but unused at runtime.
 struct SkillFrontmatter {
     name: String,
     description: String,
@@ -509,7 +509,7 @@ impl SkillRegistry {
             description,
             allowed_tools,
             auto_invoke,
-            aliases: _,
+            aliases,
             sources: _,
         } = frontmatter;
 
@@ -528,6 +528,7 @@ impl SkillRegistry {
             path: path.to_path_buf(),
             search_text,
             auto_invoke: auto_invoke.unwrap_or(false),
+            aliases: normalize_aliases(aliases),
             reference_files,
         })
     }
@@ -613,7 +614,7 @@ impl SkillRegistry {
             description,
             allowed_tools,
             auto_invoke,
-            aliases: _,
+            aliases,
             sources: _,
         } = frontmatter;
         let allowed_tools =
@@ -631,6 +632,7 @@ impl SkillRegistry {
             path: PathBuf::from(format!("<embedded:{name}>")),
             search_text,
             auto_invoke: auto_invoke.unwrap_or(false),
+            aliases: normalize_aliases(aliases),
             reference_files,
         })
     }
@@ -743,19 +745,31 @@ impl SkillRegistry {
             if !skill.auto_invoke {
                 continue;
             }
-            // Check if any meaningful words from the skill's search text appear
-            // in the user message. We require at least 2 matches to avoid false
-            // positives on generic words like "the", "a", "is".
-            let search_lower = skill.search_text.to_lowercase();
+            // Match only the skill's own name(/aliases) and description, not the
+            // full body text. The body is hundreds of words of prose — common
+            // terms like "first", "line" and "step" appear in nearly every
+            // SKILL.md and used to auto-fire the wrong skill on mundane input.
+            // Whole-word (not substring) matching so "research" does not fire
+            // on "recherche" and "ctf" stays "ctf".
+            let mut keywords = Vec::new();
+            keywords.push(skill.name.as_str());
+            keywords.extend(skill.aliases.iter().map(String::as_str));
+            keywords.push(skill.description.as_str());
+            let search_lower = keywords.join("\n").to_lowercase();
             let search_words: Vec<&str> = search_lower
                 .split_whitespace()
                 .filter(|w| w.len() > 3)
                 .collect();
             let matches = search_words
                 .iter()
-                .filter(|sw| msg_words.iter().any(|mw| mw.contains(*sw)))
+                .filter(|sw| msg_words.iter().any(|mw| *mw == **sw))
                 .count();
             if matches >= 2 {
+                return Some(skill.name.clone());
+            }
+            // A full name/alias mention ("ctf challenge", "/bug bounty this")
+            // is explicit enough on its own.
+            if skill_name_is_mentioned(message, skill) {
                 return Some(skill.name.clone());
             }
         }
@@ -1367,6 +1381,44 @@ fn build_skill_search_text(name: &str, description: &str, content: &str) -> Stri
     normalize_skill_search_text(&format!("{}\n{}\n{}", name, description, content))
 }
 
+/// True when the message explicitly names the skill (name or an alias as
+/// stand-alone tokens), e.g. "ctf challenge walkthrough" or "/bug bounty this".
+/// Token matching (not substring) so "rage" does not fire on "courage".
+fn skill_name_is_mentioned(message: &str, skill: &Skill) -> bool {
+    let tokens: Vec<String> = message
+        .split(|c: char| c.is_whitespace() || c == '/')
+        .map(|t| {
+            t.trim_matches(|c: char| !c.is_alphanumeric() && c != '-')
+                .to_lowercase()
+        })
+        .filter(|t| !t.is_empty())
+        .collect();
+    let mentions = |raw: &str| {
+        let lowered = raw.to_lowercase();
+        let want: Vec<&str> = lowered
+            .split_whitespace()
+            .map(|t| t.trim_matches(|c: char| !c.is_alphanumeric() && c != '-'))
+            .filter(|t| !t.is_empty())
+            .collect();
+        !want.is_empty() && want.iter().all(|w| tokens.iter().any(|t| t == w))
+    };
+    mentions(&skill.name) || skill.aliases.iter().any(|alias| mentions(alias))
+}
+
+/// Normalize frontmatter aliases: trim, drop empties/duplicates, keep order.
+fn normalize_aliases(aliases: Option<Vec<String>>) -> Vec<String> {
+    let mut out = Vec::new();
+    if let Some(list) = aliases {
+        for alias in list {
+            let trimmed = alias.trim();
+            if !trimmed.is_empty() && !out.iter().any(|seen| seen == trimmed) {
+                out.push(trimmed.to_string());
+            }
+        }
+    }
+    out
+}
+
 fn normalize_skill_search_text(text: &str) -> String {
     text.to_lowercase()
         .chars()
@@ -1396,6 +1448,7 @@ mod tests {
             path: PathBuf::from(format!("/tmp/{name}/SKILL.md")),
             search_text: build_skill_search_text(name, description, content),
             auto_invoke: false,
+            aliases: Vec::new(),
             reference_files: HashMap::new(),
         }
     }
@@ -1964,6 +2017,60 @@ mod tests {
         let temp = tempfile::tempdir().expect("tempdir");
         let missing = temp.path().join("does-not-exist");
         assert!(SkillRegistry::plugin_skill_dirs_under(&missing).is_empty());
+    }
+
+    /// The bundled `bugbounty` skill must actually opt into auto-activation and
+    /// declare its natural-spelling aliases.
+    ///
+    /// Without this, the frontmatter flags are only exercised by whatever task
+    /// the user happens to run first, so a typo (`auto_invoke` vs `auto-invoke`)
+    /// or a dropped `aliases:` block would ship silently — the skill would
+    /// still answer to `/bugbounty` while never auto-loading from a plain task
+    /// description, which is exactly the reported symptom.
+    #[test]
+    fn bundled_bugbounty_opts_into_auto_invoke_with_aliases() {
+        use crate::alphacode_base::bundled_skills::BUNDLED_SKILLS;
+
+        let entry = BUNDLED_SKILLS
+            .iter()
+            .find(|skill| skill.name == "bugbounty")
+            .expect("bugbounty must be bundled");
+        let parsed = SkillRegistry::parse_embedded_skill(entry.name, entry.body, entry.references)
+            .expect("bundled bugbounty SKILL.md must parse cleanly");
+
+        assert!(
+            parsed.auto_invoke,
+            "bugbounty must declare `auto-invoke: true`, otherwise describing a \
+             bug-bounty task never loads the skill (the reported bug)"
+        );
+        assert!(
+            parsed.aliases.iter().any(|a| a == "bug bounty"),
+            "bugbounty must alias the spaced spelling so `/bug bounty` and \
+             \"run a bug bounty\" both resolve; got {:?}",
+            parsed.aliases
+        );
+    }
+
+    /// A realistic task description must auto-activate the bundled skill.
+    ///
+    /// End-to-end through `SkillRegistry::load()` (not a hand-built registry) so
+    /// the test also proves bundled skills survive `reload_global` and carry
+    /// their frontmatter into the live registry.
+    #[test]
+    fn bundled_bugbounty_auto_activates_from_a_task_description() {
+        let registry = SkillRegistry::load().expect("load skills");
+        assert_eq!(
+            registry.find_auto_invoke_match("run a bug bounty on this api and report findings"),
+            Some("bugbounty".to_string()),
+            "a task naming the skill's alias must auto-activate it"
+        );
+        // A message with nothing to route must stay unrouted: activating the
+        // wrong skill injects wrong instructions into the whole turn.
+        assert_eq!(
+            registry.find_auto_invoke_match("thanks, that worked"),
+            None,
+            "unrelated small talk must not activate any skill"
+        );
     }
 
     // --- Regression tests: ensure every alphacode binary ships with the

@@ -413,25 +413,38 @@ AlphaCode is written in Rust and designed to keep its runtime footprint small.
 irm https://raw.githubusercontent.com/dragonked2/alphacode/main/scripts/install.ps1 | iex
 ```
 
-The installer detects your CPU architecture, downloads the latest release, verifies SHA-256 checksums, installs `alphacode.exe` to `%LOCALAPPDATA%\Programs\alphacode\bin\`, and runs **without administrator privileges**.
+The installer detects your CPU architecture, downloads the latest release, verifies the
+SHA-256 checksum, installs `alphacode.exe` to `%LOCALAPPDATA%\Programs\alphacode\bin\`,
+adds that folder to your **user** `Path`, and activates it in the current window. No
+administrator rights are required.
 
-Options such as `-Version`, `-FromSource`, `-AddPath` and `-PathDryRun` are script parameters. A piped `iex` cannot accept them, so invoke the script as a script block:
+PATH is configured automatically, so `alphacode` runs as soon as the installer finishes.
+The persisted change stays deliberately conservative: it writes only
+`HKCU\Environment\Path` (never the machine-wide PATH), appends rather than prepends, is a
+no-op on re-run, and broadcasts `WM_SETTINGCHANGE` so new terminals pick it up too. The
+running shell is only *prepended to* in-process, never rebuilt from the registry, so no
+session-only PATH entry is lost. `%USERPROFILE%`-style entries keep working because the
+value is read and written unexpanded.
+
+Options are script parameters. A piped `iex` cannot accept them, so invoke the script as
+a script block:
 
 ```powershell
 # Pin a version
 & ([scriptblock]::Create((irm https://raw.githubusercontent.com/dragonked2/alphacode/main/scripts/install.ps1))) -Version vX.Y.Z
 
-# Build from source
+# Build from source instead of downloading a release
 & ([scriptblock]::Create((irm https://raw.githubusercontent.com/dragonked2/alphacode/main/scripts/install.ps1))) -FromSource
 
-# Add to your user PATH
-& ([scriptblock]::Create((irm https://raw.githubusercontent.com/dragonked2/alphacode/main/scripts/install.ps1))) -AddPath
+# Preview the PATH change without writing anything
+& ([scriptblock]::Create((irm https://raw.githubusercontent.com/dragonked2/alphacode/main/scripts/install.ps1))) -PathDryRun
 
-# Preview what -AddPath would change, without writing anything
-& ([scriptblock]::Create((irm https://raw.githubusercontent.com/dragonked2/alphacode/main/scripts/install.ps1))) -AddPath -PathDryRun
+# Do not touch PATH at all
+& ([scriptblock]::Create((irm https://raw.githubusercontent.com/dragonked2/alphacode/main/scripts/install.ps1))) -NoPath
+
+# Install somewhere else (e.g. a portable, no-PATH setup)
+& ([scriptblock]::Create((irm https://raw.githubusercontent.com/dragonked2/alphacode/main/scripts/install.ps1))) -Prefix "$env:LOCALAPPDATA\Programs\alphacode"
 ```
-
-`-AddPath` is deliberately conservative: it writes only `HKCU\Environment\Path` (never the machine-wide PATH), appends rather than prepends, is a no-op on re-run, and broadcasts `WM_SETTINGCHANGE` so new terminals pick it up. It does not modify the PATH of the current shell, so open a new terminal afterwards. `%USERPROFILE%`-style entries keep working because the value is read and written unexpanded.
 
 ### macOS / Linux
 
@@ -439,15 +452,26 @@ Options such as `-Version`, `-FromSource`, `-AddPath` and `-PathDryRun` are scri
 curl -fsSL https://raw.githubusercontent.com/dragonked2/alphacode/main/scripts/install.sh | bash
 ```
 
-The script downloads the latest release, verifies its checksum, puts the `alphacode` binary in `~/.local/bin`, and prints PATH instructions if that directory isn't on your PATH yet.
+The script downloads the latest release, verifies its checksum, puts the `alphacode`
+binary in `~/.local/bin`, adds that directory to your shell profile, and activates it in
+the current shell so `alphacode` runs immediately.
 
 ```bash
 # Pin a release
 curl -fsSL https://raw.githubusercontent.com/dragonked2/alphacode/main/scripts/install.sh | bash -s -- --version vX.Y.Z
 
-# Add to your shell profile (bash/zsh/fish/nushell/csh/ksh, idempotent)
-curl -fsSL https://raw.githubusercontent.com/dragonked2/alphacode/main/scripts/install.sh | bash -s -- --add-path
+# Do not touch PATH at all
+curl -fsSL https://raw.githubusercontent.com/dragonked2/alphacode/main/scripts/install.sh | bash -s -- --no-path
+
+# Symlink into /usr/local/bin instead, so no PATH change is needed at all
+curl -fsSL https://raw.githubusercontent.com/dragonked2/alphacode/main/scripts/install.sh | bash -s -- --link
+
+# Install somewhere else
+curl -fsSL https://raw.githubusercontent.com/dragonked2/alphacode/main/scripts/install.sh | bash -s -- --prefix ~/.local
 ```
+
+The profile edit detects bash, zsh, fish, nushell, csh and ksh, and is idempotent across
+re-runs, so running the installer twice will not append a second copy.
 
 Verify the install:
 
@@ -466,7 +490,10 @@ cargo build --release
 ./target/release/alphacode --version
 ```
 
-The Rust version (edition 2024) is pinned in [`rust-toolchain.toml`](rust-toolchain.toml), and you need a C toolchain for your platform. The default build skips heavy optional stacks (Bedrock, embeddings, PDF, Mermaid rendering) to keep cold builds fast. Opt in when you need them:
+The Rust version (edition 2024) is pinned in [`rust-toolchain.toml`](rust-toolchain.toml),
+and you need a C toolchain for your platform. The default build skips the heavy optional
+stacks (Bedrock, embeddings, PDF, Mermaid rendering) to keep cold builds fast. Opt in when
+you need them:
 
 ```bash
 cargo build --release --features bedrock,embeddings,pdf,renderer

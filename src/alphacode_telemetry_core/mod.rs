@@ -123,7 +123,7 @@ struct TurnTelemetry {
 }
 
 #[derive(Debug, Clone)]
-struct SessionTelemetry {
+pub(crate) struct SessionTelemetry {
     session_id: String,
     started_at: Instant,
     started_at_utc: DateTime<Utc>,
@@ -1926,42 +1926,51 @@ pub fn record_token_usage(
 }
 
 pub fn record_error(category: ErrorCategory) {
-    /// Per-session ceiling for each error counter. A runaway retry loop once
-    /// logged 18k+ auth failures in one session, which distorted daily sums
-    /// (one session looked like a fleet-wide auth outage). Past a few hundred
-    /// occurrences the count carries no extra diagnostic signal, only skew.
-    const ERROR_COUNT_SESSION_CAP: u32 = 500;
-
-    fn capped_increment(counter: &mut u32) {
-        *counter = counter.saturating_add(1).min(ERROR_COUNT_SESSION_CAP);
-    }
-
     if let Ok(mut guard) = SESSION_STATE.lock()
         && let Some(ref mut state) = *guard
     {
-        observe_session_concurrency(state);
-        if let Some(turn) = state.current_turn.as_mut() {
-            update_turn_activity_timestamp(turn, Instant::now());
-        }
-        match category {
-            ErrorCategory::ProviderTimeout => {
-                capped_increment(&mut state.error_provider_timeout);
-            }
-            ErrorCategory::AuthFailed => {
-                capped_increment(&mut state.error_auth_failed);
-            }
-            ErrorCategory::ToolError => {
-                capped_increment(&mut state.error_tool_error);
-            }
-            ErrorCategory::McpError => {
-                capped_increment(&mut state.error_mcp_error);
-            }
-            ErrorCategory::RateLimited => {
-                capped_increment(&mut state.error_rate_limited);
-            }
-        }
+        record_error_in_state(state, category);
     }
     maybe_emit_session_start();
+}
+
+/// Per-session ceiling for each error counter... A runaway retry loop once
+/// logged 18k+ auth failures in one session, which distorted daily sums
+/// (one session looked like a fleet-wide auth outage). Past a few hundred
+/// occurrences the count carries no extra diagnostic signal, only skew.
+const ERROR_COUNT_SESSION_CAP: u32 = 500;
+
+fn capped_error_increment(counter: &mut u32) {
+    *counter = counter.saturating_add(1).min(ERROR_COUNT_SESSION_CAP);
+}
+
+/// The state-mutating half of [`record_error`], split out so tests can drive
+/// the counter while holding the `SESSION_STATE` lock themselves (the wrapper
+/// takes that lock, and it is not reentrant). Holding the lock across a burst
+/// of increments keeps a concurrent `begin_session` from resetting the counters
+/// mid-assertion.
+pub(crate) fn record_error_in_state(state: &mut SessionTelemetry, category: ErrorCategory) {
+    observe_session_concurrency(state);
+    if let Some(turn) = state.current_turn.as_mut() {
+        update_turn_activity_timestamp(turn, Instant::now());
+    }
+    match category {
+        ErrorCategory::ProviderTimeout => {
+            capped_error_increment(&mut state.error_provider_timeout);
+        }
+        ErrorCategory::AuthFailed => {
+            capped_error_increment(&mut state.error_auth_failed);
+        }
+        ErrorCategory::ToolError => {
+            capped_error_increment(&mut state.error_tool_error);
+        }
+        ErrorCategory::McpError => {
+            capped_error_increment(&mut state.error_mcp_error);
+        }
+        ErrorCategory::RateLimited => {
+            capped_error_increment(&mut state.error_rate_limited);
+        }
+    }
 }
 
 pub fn record_provider_switch() {

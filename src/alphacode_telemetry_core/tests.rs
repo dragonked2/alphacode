@@ -159,7 +159,7 @@ fn test_error_counters() {
     record_error(ErrorCategory::ProviderTimeout);
     record_error(ErrorCategory::ToolError);
     {
-        let guard = SESSION_STATE.lock().unwrap();
+        let guard = SESSION_STATE.lock().unwrap_or_else(|e| e.into_inner());
         let state = guard.as_ref().expect("session telemetry state");
         assert_eq!(state.error_provider_timeout, 2);
         assert_eq!(state.error_tool_error, 1);
@@ -180,14 +180,17 @@ fn test_error_counter_caps_per_session() {
     begin_session_with_mode("openai", "gpt-5.4", None, false);
     // A runaway retry loop once logged 18k+ auth failures in one session and
     // distorted daily aggregates. The counter must saturate at the cap.
+    // Hold the SESSION_STATE lock across the burst so a concurrent
+    // `begin_session` from another test binary flow cannot reset the counters
+    // mid-assertion (the wrapper `record_error` takes the same non-reentrant
+    // lock, so drive the state half directly here).
+    let mut guard = SESSION_STATE.lock().unwrap_or_else(|e| e.into_inner());
+    let state = guard.as_mut().expect("session telemetry state");
     for _ in 0..600 {
-        record_error(ErrorCategory::AuthFailed);
+        record_error_in_state(state, ErrorCategory::AuthFailed);
     }
-    {
-        let guard = SESSION_STATE.lock().unwrap();
-        let state = guard.as_ref().expect("session telemetry state");
-        assert_eq!(state.error_auth_failed, 500);
-    }
+    assert_eq!(state.error_auth_failed, 500);
+    drop(guard);
     reset_test_session();
 }
 
@@ -204,7 +207,7 @@ fn test_error_counters_no_session_is_noop() {
     record_model_switch();
     begin_session_with_mode("openai", "gpt-5.4", None, false);
     {
-        let guard = SESSION_STATE.lock().unwrap();
+        let guard = SESSION_STATE.lock().unwrap_or_else(|e| e.into_inner());
         let state = guard.as_ref().expect("session telemetry state");
         assert_eq!(state.error_auth_failed, 0);
         assert_eq!(state.provider_switches, 0);
@@ -483,7 +486,7 @@ fn test_record_token_usage_aggregates_session_and_turn() {
     record_token_usage(50, 5, None, Some(2));
 
     {
-        let guard = SESSION_STATE.lock().unwrap();
+        let guard = SESSION_STATE.lock().unwrap_or_else(|e| e.into_inner());
         let state = guard.as_ref().expect("session telemetry state");
         assert_eq!(state.input_tokens, 150);
         assert_eq!(state.output_tokens, 30);
@@ -520,7 +523,7 @@ fn test_record_todo_tool_and_gates_aggregate_session_and_turn() {
     record_todo_gate(TodoGateKind::ClosedFeedbackLoop);
 
     {
-        let guard = SESSION_STATE.lock().unwrap();
+        let guard = SESSION_STATE.lock().unwrap_or_else(|e| e.into_inner());
         let state = guard.as_ref().expect("session telemetry state");
         assert_eq!(state.tool_cat_todo, 2);
         assert!(state.feature_todo_used);
@@ -560,7 +563,7 @@ fn test_record_connection_type_buckets_transport() {
     record_connection_type("weird-transport");
 
     {
-        let guard = SESSION_STATE.lock().unwrap();
+        let guard = SESSION_STATE.lock().unwrap_or_else(|e| e.into_inner());
         let state = guard.as_ref().expect("session telemetry state");
         assert_eq!(state.transport_persistent_ws_fresh, 1);
         assert_eq!(state.transport_persistent_ws_reuse, 1);

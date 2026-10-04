@@ -5,9 +5,11 @@
 //!
 //! During a real security audit, a Windows shell invocation like:
 //!
-//!     curl -A "Mozilla/5.0 (compatible) SecurityAudit" \
-//!       "https://example.com/api?a=1&b=2&c=3" | powershell -NoProfile \
-//!       -Command "Get-Content" | findstr "match"
+//! ```text
+//! curl -A "Mozilla/5.0 (compatible) SecurityAudit" \
+//!   "https://example.com/api?a=1&b=2&c=3" | powershell -NoProfile \
+//!   -Command "Get-Content" | findstr "match"
+//! ```
 //!
 //! was rejected by the shell with a confusing parse error. The actual
 //! failure was that the `&` in the URL was interpreted by `cmd.exe` as

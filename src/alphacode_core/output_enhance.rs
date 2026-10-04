@@ -212,7 +212,7 @@ pub mod box_chars {
 /// banners and section dividers.
 ///
 /// Example: `box_top("security-audit · 12 findings")`
-/// ```
+/// ```text
 /// ─── security-audit · 12 findings ─────────────────
 /// ```
 pub fn box_top(label: &str, width: usize) -> String {

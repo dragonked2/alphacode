@@ -64,6 +64,7 @@ mod tests {
                     path: PathBuf::from(format!("/tmp/{name}/SKILL.md")),
                     search_text: build_skill_search_text(name, "Test skill", "content"),
                     auto_invoke: false,
+                    aliases: Vec::new(),
                     reference_files: HashMap::new(),
                 },
             );

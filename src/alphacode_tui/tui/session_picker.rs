@@ -202,11 +202,6 @@ struct PreviewRenderCache {
     key: PreviewCacheKey,
     /// Wrapped lines at the final (post-scrollbar-decision) width.
     wrapped_lines: Vec<Line<'static>>,
-    /// For each pre-wrap source line, the index of its first wrapped line. Used
-    /// to locate user prompts for the sticky "previous prompt" header.
-    prewrap_to_wrapped: Vec<usize>,
-    /// (pre-wrap line index, display number, text) for every user prompt.
-    user_prompt_markers: Vec<(usize, usize, String)>,
     /// Whether the content overflows and a scrollbar column is reserved.
     show_scrollbar: bool,
     /// First wrapped-line index that contains a highlighted search match, if
@@ -1451,22 +1446,6 @@ impl SessionPicker {
         };
         frame.render_widget(Paragraph::new(visible_lines), content_area);
 
-        // Sticky "previous prompt" header: when the view is scrolled past a user
-        // prompt, pin a dimmed `N› …` line at the top of the content area, just
-        // like the main TUI's `prompt_preview`.
-        if scroll > 0 {
-            let user_color: Color = rgb(138, 180, 248);
-            let user_text: Color = rgb(245, 245, 255);
-            self.render_preview_prompt_header(
-                frame,
-                content_area,
-                scroll,
-                user_color,
-                user_text,
-                align,
-            );
-        }
-
         if let Some(scrollbar_area) = scrollbar_area {
             super::ui::render_native_scrollbar(
                 frame,
@@ -1697,10 +1676,6 @@ impl SessionPicker {
         // Messages preview - styled like the actual TUI
         let mut prompt_num = 0;
         let mut rendered_messages = 0usize;
-        // Track the pre-wrap line index + display number + text of every user
-        // prompt so we can render a sticky "previous prompt" header (matching the
-        // main TUI's `prompt_preview`) once it scrolls out of view.
-        let mut user_prompt_markers: Vec<(usize, usize, String)> = Vec::new();
         for msg in &session.messages_preview {
             if msg.content.trim().is_empty() {
                 continue;
@@ -1722,11 +1697,6 @@ impl SessionPicker {
             match msg.role.as_str() {
                 "user" => {
                     prompt_num += 1;
-                    user_prompt_markers.push((
-                        lines.len(),
-                        prompt_num,
-                        display_msg.content.clone(),
-                    ));
                     lines.push(
                         Line::from(vec![
                             Span::styled(
@@ -1901,36 +1871,31 @@ impl SessionPicker {
         // (matching the main chat viewport): wrap at the full inner width, and if
         // that overflows the viewport we re-wrap one column narrower to leave room
         // for the scrollbar. Narrowing only ever adds lines, so the decision is
-        // stable. We also record, for each pre-wrap line, its first wrapped-line
-        // index so we can locate user prompts for the sticky header.
+        // stable.
         let visible_height = inner.height as usize;
         let source_lines = lines;
-        let wrap_lines_tracked = |width: usize| -> (Vec<Line<'static>>, Vec<usize>) {
-            let mut mapped = Vec::with_capacity(source_lines.len() + 1);
+        let wrap_all = |width: usize| -> Vec<Line<'static>> {
             let mut wrapped: Vec<Line> = Vec::new();
             for line in source_lines.iter().cloned() {
-                mapped.push(wrapped.len());
                 if width > 0 {
                     wrapped.extend(markdown::wrap_lines(vec![line], width));
                 } else {
                     wrapped.push(line);
                 }
             }
-            mapped.push(wrapped.len());
-            (wrapped, mapped)
+            wrapped
         };
 
         let full_width = inner.width as usize;
-        let (full_lines, full_map) = wrap_lines_tracked(full_width);
+        let full_lines = wrap_all(full_width);
         let show_scrollbar =
             super::ui::native_scrollbar_visible(true, full_lines.len(), visible_height);
 
-        let (mut wrapped_lines, prewrap_to_wrapped) = if show_scrollbar {
+        let mut wrapped_lines = if show_scrollbar {
             let content_width = inner.width.saturating_sub(1) as usize;
-            wrap_lines_tracked(content_width)
+            wrap_all(content_width)
         } else {
-            // Reuse the full-width wrap; the map already matches.
-            (full_lines, full_map)
+            full_lines
         };
 
         // Highlight active search matches in the wrapped preview body and record
@@ -1943,8 +1908,6 @@ impl SessionPicker {
         PreviewRenderCache {
             key,
             wrapped_lines,
-            prewrap_to_wrapped,
-            user_prompt_markers,
             show_scrollbar,
             first_match_line,
         }
@@ -1982,105 +1945,6 @@ impl SessionPicker {
         first_match
     }
 
-    /// Render the pinned "previous prompt" header for the preview pane. Mirrors
-    /// the main chat viewport's `prompt_preview`: find the last user prompt whose
-    /// wrapped start has scrolled above the viewport and draw it dimmed at the top.
-    fn render_preview_prompt_header(
-        &self,
-        frame: &mut Frame,
-        content_area: Rect,
-        scroll: usize,
-        user_color: Color,
-        user_text: Color,
-        align: Alignment,
-    ) {
-        // Read the prompt markers + wrap map from the cached preview content so
-        // the header costs nothing extra during a scroll burst.
-        let Some(cache) = self.preview_cache.as_ref() else {
-            return;
-        };
-        let prewrap_to_wrapped = &cache.prewrap_to_wrapped;
-        // The last prompt whose wrapped start index is above the current scroll.
-        let Some((_, prompt_num, text)) =
-            cache
-                .user_prompt_markers
-                .iter()
-                .rev()
-                .find(|(prewrap_idx, _, _)| {
-                    prewrap_to_wrapped
-                        .get(*prewrap_idx)
-                        .is_some_and(|wrapped_start| *wrapped_start < scroll)
-                })
-        else {
-            return;
-        };
-
-        let text_flat = text.replace('\n', " ");
-        let text_flat = text_flat.trim();
-        if text_flat.is_empty() {
-            return;
-        }
-
-        let num_str = format!("{}", prompt_num);
-        let prefix_len = num_str.len() + 2;
-        let content_width = (content_area.width as usize).saturating_sub(prefix_len + 1);
-        if content_width == 0 {
-            return;
-        }
-        let dim_style = Style::default().dim();
-        let dim_num = rgb(80, 80, 80);
-        let user_bg = rgb(30, 34, 42);
-
-        let text_chars: Vec<char> = text_flat.chars().collect();
-        let is_long = text_chars.len() > content_width;
-        let preview_lines: Vec<Line<'static>> = if !is_long {
-            vec![
-                Line::from(vec![
-                    Span::styled(num_str.clone(), dim_style.fg(dim_num).bg(user_bg)),
-                    Span::styled("› ", dim_style.fg(user_color).bg(user_bg)),
-                    Span::styled(text_flat.to_string(), dim_style.fg(user_text).bg(user_bg)),
-                ])
-                .alignment(align),
-            ]
-        } else {
-            let half = content_width.max(4);
-            let head: String = text_chars[..half.min(text_chars.len())].iter().collect();
-            let tail_start = text_chars.len().saturating_sub(half);
-            let tail: String = text_chars[tail_start..].iter().collect();
-            let first = Line::from(vec![
-                Span::styled(num_str.clone(), dim_style.fg(dim_num).bg(user_bg)),
-                Span::styled("› ", dim_style.fg(user_color).bg(user_bg)),
-                Span::styled(
-                    format!("{} ...", head.trim_end()),
-                    dim_style.fg(user_text).bg(user_bg),
-                ),
-            ])
-            .alignment(align);
-            let padding: String = " ".repeat(prefix_len);
-            let second = Line::from(vec![
-                Span::styled(padding, dim_style.bg(user_bg)),
-                Span::styled(
-                    format!("... {}", tail.trim_start()),
-                    dim_style.fg(user_text).bg(user_bg),
-                ),
-            ])
-            .alignment(align);
-            vec![first, second]
-        };
-
-        let line_count = (preview_lines.len() as u16).min(content_area.height);
-        if line_count == 0 {
-            return;
-        }
-        let header_area = Rect {
-            x: content_area.x,
-            y: content_area.y,
-            width: content_area.width,
-            height: line_count,
-        };
-        frame.render_widget(Clear, header_area);
-        frame.render_widget(Paragraph::new(preview_lines), header_area);
-    }
 
     /// Render the suggested first-run prompt as the primary centered action,
     /// with the blank-session escape hatch kept secondary in the bottom-right.

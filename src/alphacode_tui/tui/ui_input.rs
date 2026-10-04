@@ -322,7 +322,12 @@ fn command_suggestion_needle(input: &str) -> Option<String> {
 fn highlight_command_spans(cmd: &str, needle: Option<&str>, base: Style) -> Vec<Span<'static>> {
     let positions: Vec<usize> = match needle {
         Some(n) if !n.is_empty() && n != "/" => {
-            crate::alphacode_tui::tui::fuzzy::fuzzy_match_positions(n, cmd)
+            let mut positions = crate::alphacode_tui::tui::fuzzy::fuzzy_match_positions(n, cmd);
+            // The leading '/' of a command token is structurally part of the
+            // decoration, never part of the matched keyword — render it dimmed
+            // like the rest of the command chrome, not brightened.
+            positions.retain(|pos| *pos != 0);
+            positions
         }
         _ => Vec::new(),
     };
@@ -402,16 +407,19 @@ pub(super) fn send_mode_reserved_width(app: &dyn TuiState) -> usize {
     if icon.is_empty() { 0 } else { icon.len() + 1 }
 }
 
-pub(super) fn input_prompt(app: &dyn TuiState) -> (&'static str, Color) {
+pub(super) fn input_prompt(app: &dyn TuiState) -> (String, Color) {
     let mode = composer_mode(app.input(), app.is_remote_mode());
     if mode.is_shell() {
-        ("$ ", BrandTheme::success())
+        ("$ ".to_string(), BrandTheme::success())
     } else if app.is_processing() {
-        ("\u{2026} ", BrandTheme::warning())
-    } else if app.active_skill().is_some() {
-        ("\u{00bb} ", BrandTheme::accent())
+        ("\u{2026} ".to_string(), BrandTheme::warning())
+    } else if let Some(skill) = app.active_skill() {
+        // Realtime skill indicator: the composer prefix names the loaded skill
+        // so the user can see which skill body is active for the next turn
+        // (slash command or auto-invoke).
+        (format!("\u{00bb} {skill}"), BrandTheme::accent())
     } else {
-        ("> ", BrandTheme::model())
+        ("> ".to_string(), BrandTheme::model())
     }
 }
 
@@ -443,7 +451,7 @@ pub(super) fn wrapped_input_line_count(
         app.cursor_pos(),
         line_width,
         &num_str,
-        prompt_char,
+        &prompt_char,
         caret_color,
         prompt_len,
     );
@@ -2970,7 +2978,7 @@ pub(super) fn draw_input(
         cursor_pos,
         line_width,
         &num_str,
-        prompt_char,
+        &prompt_char,
         caret_color,
         prompt_len,
     );
@@ -3141,9 +3149,13 @@ pub(super) fn draw_input(
     // Subtle top border on the input area for visual separation from the
     // transcript above. Uses a dim gradient that matches the brand theme.
     if area.height > 0 && area.width > 2 {
+        // NOTE: static phase (0.0) rather than `animation_elapsed()` — a
+        // breathing border would be frozen mid-breath between full frames by
+        // the idle-animation partial repaint, which only patches the animated
+        // rows and copies everything else from the previous frame.
         let border_line = crate::alphacode_tui::tui::brand_ux::BrandTheme::breathing_separator(
             area.width as usize,
-            app.animation_elapsed(),
+            0.0,
         );
         let border_area = Rect {
             x: area.x,
@@ -3408,15 +3420,20 @@ pub(crate) fn input_cursor_pos_from_screen(
     ))
 }
 
-pub(crate) fn wrap_input_text<'a>(
+pub(crate) fn wrap_input_text(
     input: &str,
     cursor_pos: usize,
     line_width: usize,
     num_str: &str,
-    prompt_char: &'a str,
+    prompt_char: &str,
     caret_color: Color,
     prompt_len: usize,
-) -> (Vec<Line<'a>>, usize, usize) {
+) -> (Vec<Line<'static>>, usize, usize) {
+    // Every span built below is owned (`to_string()` / `segment.text.clone()`),
+    // so the returned Lines never borrow `prompt_char`. Dropping the lifetime
+    // lets callers build the prefix at runtime — it now embeds the active
+    // skill name — without borrowing a local binding that dies before the
+    // frame is drawn.
     let cursor_char_pos =
         crate::alphacode_tui::tui::core::byte_offset_to_char_index(input, cursor_pos);
     let wrapped_segments = wrap_input_segments(input, line_width);
@@ -3448,7 +3465,7 @@ pub(crate) fn wrap_input_text<'a>(
 
         if idx == 0 {
             let num_color = rainbow_prompt_color(0);
-            let mut first_row_spans: Vec<Span<'a>> = vec![
+            let mut first_row_spans: Vec<Span<'static>> = vec![
                 Span::styled(num_str.to_string(), Style::default().fg(num_color)),
                 Span::styled(prompt_char.to_string(), Style::default().fg(caret_color)),
             ];

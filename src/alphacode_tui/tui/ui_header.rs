@@ -944,37 +944,6 @@ fn build_gradient_separator(width: usize) -> Line<'static> {
     Line::from(spans).alignment(Alignment::Left)
 }
 
-/// Animated gradient separator with breathing effect for the header.
-/// Subtly pulses the separator line to create a living, premium feel.
-fn build_animated_separator(width: usize, elapsed_secs: f32) -> Line<'static> {
-    let base = build_gradient_separator(width);
-    let intensity = 0.7 + 0.3 * (elapsed_secs * 0.5).sin();
-    // Apply subtle intensity modulation to the base separator
-    let spans: Vec<Span<'static>> = base
-        .spans
-        .into_iter()
-        .map(|span| {
-            let style = span.style;
-            if let Some(fg) = style.fg {
-                match fg {
-                    Color::Rgb(r, g, b) => {
-                        let scaled = Color::Rgb(
-                            ((r as f32) * intensity) as u8,
-                            ((g as f32) * intensity) as u8,
-                            ((b as f32) * intensity) as u8,
-                        );
-                        span.style(Style::default().fg(scaled).add_modifier(Modifier::DIM))
-                    }
-                    _ => span.style(style),
-                }
-            } else {
-                span
-            }
-        })
-        .collect();
-    Line::from(spans).alignment(Alignment::Left)
-}
-
 /// Linearly interpolate between two colors.
 fn blend_colors(a: Color, b: Color, t: f32) -> Color {
     let (r1, g1, b1) = match a {
@@ -1143,9 +1112,12 @@ fn build_persistent_header_with_auth(
     let banner_rendered = !banner.is_empty();
     let mut lines: Vec<Line> = banner;
     lines.push(build_brand_line(app, align, !banner_rendered));
-    // Visual separator between header brand and content area
-    // Uses animated breathing effect for a living, premium feel
-    lines.push(build_animated_separator(w, app.animation_elapsed()));
+    // Visual separator between header brand and content area.
+    // NOTE: intentionally static rather than breathing. A time-dependent
+    // separator breaks the idle-animation partial repaint, which reproduces
+    // every cell outside the animated rows from the previous frame; a
+    // breathing separator would freeze mid-breath between full frames.
+    lines.push(build_gradient_separator(w));
 
     if let Some(model_line) = build_model_line(app, &model, &nice_model, auth, active, fit_width) {
         lines.push(model_line);
@@ -1439,11 +1411,11 @@ mod tests {
     }
 
     #[test]
-    fn animated_separator_produces_output() {
-        let line = build_animated_separator(80, 0.0);
+    fn gradient_separator_produces_output() {
+        let line = build_gradient_separator(80);
         assert!(
             !line.spans.is_empty(),
-            "animated separator should produce output"
+            "gradient separator should produce output"
         );
     }
 

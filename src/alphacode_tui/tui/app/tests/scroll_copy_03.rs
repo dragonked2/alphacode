@@ -77,11 +77,12 @@ fn test_scroll_render_bottom() {
         text.contains("stretch content"),
         "expected filler content at bottom position"
     );
-    // Should have scroll indicator or prompt preview since content extends above viewport.
-    // The prompt preview (N›) renders on top of the ↑ indicator, so check for either.
+    // At bottom in auto-follow the transcript pins to the latest content, so
+    // the scrolled-up overflow indicators (↑ / N›) must not appear. The prompt
+    // preview row was removed, along with those indicators at the bottom.
     assert!(
-        text.contains('↑') || text.contains('›'),
-        "expected ↑ indicator or prompt preview when content extends above viewport"
+        !text.contains('↑'),
+        "no ↑ indicator should render while auto-scroll pins the bottom"
     );
 }
 
@@ -107,60 +108,6 @@ fn test_scroll_render_scrolled_up() {
     assert!(
         text_scrolled.contains('↓'),
         "expected ↓ indicator when paused above bottom"
-    );
-}
-
-#[test]
-fn test_prompt_preview_reserves_rows_without_overwriting_visible_history() {
-    let _render_lock = scroll_render_test_lock();
-    let mut app = create_test_app();
-    app.display_messages = vec![
-        DisplayMessage {
-            role: "user".to_string(),
-            content: "This is a deliberately long prompt preview that should wrap into two preview rows at the top of the viewport".to_string(),
-            tool_calls: vec![],
-            duration_secs: None,
-            title: None,
-            tool_data: None,
-        },
-        DisplayMessage {
-            role: "assistant".to_string(),
-            content: App::build_scroll_test_content(0, 20, None),
-            tool_calls: vec![],
-            duration_secs: None,
-            title: None,
-            tool_data: None,
-        },
-    ];
-    app.bump_display_messages_version();
-    app.scroll_offset = 0;
-    app.auto_scroll_paused = false;
-    app.is_processing = false;
-    app.streaming.streaming_text.clear();
-    app.status = ProcessingStatus::Idle;
-    app.session.short_name = Some("test".to_string());
-
-    let backend = ratatui::backend::TestBackend::new(40, 8);
-    let mut terminal = ratatui::Terminal::new(backend).expect("failed to create test terminal");
-
-    let text = render_and_snap(&app, &mut terminal);
-
-    assert!(
-        text.contains("1›"),
-        "expected sticky prompt preview, got:\n{}",
-        text
-    );
-    assert!(
-        text.contains("..."),
-        "expected two-line preview truncation, got:\n{}",
-        text
-    );
-    let visible_history = text.lines().skip(2).collect::<Vec<_>>().join(" ");
-    let normalized_history = visible_history.split_whitespace().collect::<Vec<_>>().join(" ");
-    assert!(
-        normalized_history.contains("Intro line 20 - quick brown fox jumps over the lazy dog."),
-        "latest visible content should remain visible below preview, got:\n{}",
-        text
     );
 }
 

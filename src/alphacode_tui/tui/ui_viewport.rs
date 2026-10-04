@@ -355,18 +355,14 @@ pub(super) fn draw_messages(
     let wrapped_user_indices = &prepared.wrapped_user_indices;
     let wrapped_user_prompt_starts = &prepared.wrapped_user_prompt_starts;
     let wrapped_user_prompt_ends = &prepared.wrapped_user_prompt_ends;
-    let user_prompt_texts = &prepared.user_prompt_texts;
 
     let total_lines = prepared.total_wrapped_lines();
     let viewport_height = render_area.height as usize;
     // Pinned todo band (display.pin_todos): the full todo card rendered at the
-    // very top of the viewport while the transcript is scrolled, like the
-    // sticky previous-prompt preview below it.
+    // very top of the viewport while the transcript is scrolled.
     let pinned_todo_band = pinned_todo_band_lines(app, text_render_area.width, render_area.height);
-    let max_scroll = compute_max_scroll_with_prompt_preview(
+    let max_scroll = compute_max_scroll_with_top_band(
         total_lines,
-        wrapped_user_prompt_starts,
-        user_prompt_texts,
         text_render_area,
         pinned_todo_band.len() as u16,
     );
@@ -402,24 +398,14 @@ pub(super) fn draw_messages(
     super::set_last_total_wrapped_lines(total_lines);
     super::set_last_resolved_chat_scroll(scroll);
 
-    let prompt_preview_lines = if crate::config::config().display.prompt_preview && scroll > 0 {
-        compute_prompt_preview_line_count(
-            wrapped_user_prompt_starts,
-            user_prompt_texts,
-            scroll,
-            text_render_area.width,
-        )
-    } else {
-        0u16
-    };
+    // Total synthetic rows reserved at the top of the viewport (the
+    // pinned todo band; the previous-prompt preview was removed).
     let pinned_todo_lines = if scroll > 0 {
         pinned_todo_band.len() as u16
     } else {
         0u16
     };
-    // Total synthetic rows reserved at the top of the viewport (todo band
-    // first, then the previous-prompt preview, then transcript content).
-    let top_band_lines = pinned_todo_lines + prompt_preview_lines;
+    let top_band_lines = pinned_todo_lines;
 
     let content_area = Rect {
         x: text_render_area.x,
@@ -1173,82 +1159,6 @@ pub(super) fn draw_messages(
         frame.render_widget(Paragraph::new(pinned_todo_band), band_area);
     }
 
-    if crate::config::config().display.prompt_preview && scroll > 0 {
-        let last_offscreen_prompt_idx =
-            lower_bound(wrapped_user_prompt_starts, scroll).checked_sub(1);
-
-        if let Some(prompt_order) = last_offscreen_prompt_idx
-            && let Some(prompt_text) = user_prompt_texts.get(prompt_order)
-        {
-            let prompt_text = prompt_text.trim();
-            if !prompt_text.is_empty() {
-                let prompt_num = prompt_order + 1 + app.compacted_hidden_user_prompts();
-                let num_str = format!("{}", prompt_num);
-                let prefix_len = num_str.len() + 2;
-                let content_width =
-                    render_area.width.saturating_sub(prefix_len as u16 + 2) as usize;
-                let dim_style = Style::default().dim();
-                let align = if app.centered_mode() {
-                    ratatui::layout::Alignment::Center
-                } else {
-                    ratatui::layout::Alignment::Left
-                };
-
-                let text_flat = prompt_text.replace('\n', " ");
-                let text_chars: Vec<char> = text_flat.chars().collect();
-                let is_long = text_chars.len() > content_width;
-
-                let preview_lines: Vec<Line<'static>> = if !is_long {
-                    vec![
-                        Line::from(vec![
-                            Span::styled(num_str.clone(), dim_style.fg(dim_color()).bg(user_bg())),
-                            Span::styled("› ", dim_style.fg(user_color()).bg(user_bg())),
-                            Span::styled(text_flat, dim_style.fg(user_text()).bg(user_bg())),
-                        ])
-                        .alignment(align),
-                    ]
-                } else {
-                    let half = content_width.max(4);
-                    let head: String = text_chars[..half.min(text_chars.len())].iter().collect();
-                    let tail_start = text_chars.len().saturating_sub(half);
-                    let tail: String = text_chars[tail_start..].iter().collect();
-
-                    let first = Line::from(vec![
-                        Span::styled(num_str.clone(), dim_style.fg(dim_color()).bg(user_bg())),
-                        Span::styled("› ", dim_style.fg(user_color()).bg(user_bg())),
-                        Span::styled(
-                            format!("{} ...", head.trim_end()),
-                            dim_style.fg(user_text()).bg(user_bg()),
-                        ),
-                    ])
-                    .alignment(align);
-
-                    let padding: String = " ".repeat(prefix_len);
-                    let second = Line::from(vec![
-                        Span::styled(padding, dim_style.bg(user_bg())),
-                        Span::styled(
-                            format!("... {}", tail.trim_start()),
-                            dim_style.fg(user_text()).bg(user_bg()),
-                        ),
-                    ])
-                    .alignment(align);
-
-                    vec![first, second]
-                };
-
-                let line_count = preview_lines.len() as u16;
-                let preview_area = Rect {
-                    x: content_area.x,
-                    y: render_area.y.saturating_add(pinned_todo_lines),
-                    width: content_area.width.saturating_sub(1),
-                    height: line_count,
-                };
-                clear_area(frame, preview_area);
-                frame.render_widget(Paragraph::new(preview_lines), preview_area);
-            }
-        }
-    }
-
     if !show_native_scrollbar && app.auto_scroll_paused() && scroll < max_scroll {
         let indicator = format!("↓{}", max_scroll - scroll);
         let indicator_area = Rect {
@@ -1410,66 +1320,26 @@ fn pinned_todo_band_lines(
     lines
 }
 
-fn compute_prompt_preview_line_count(
-    wrapped_user_prompt_starts: &[usize],
-    user_prompt_texts: &[String],
-    scroll: usize,
-    area_width: u16,
-) -> u16 {
-    let last_offscreen = lower_bound(wrapped_user_prompt_starts, scroll).checked_sub(1);
-    let Some(prompt_order) = last_offscreen else {
-        return 0;
-    };
-    let Some(prompt_text) = user_prompt_texts.get(prompt_order) else {
-        return 0;
-    };
-    let prompt_text = prompt_text.trim();
-    if prompt_text.is_empty() {
-        return 0;
-    }
-    let num_str = format!("{}", prompt_order + 1);
-    let prefix_len = num_str.len() + 2;
-    let content_width = area_width.saturating_sub(prefix_len as u16 + 2) as usize;
-    let text_flat = prompt_text.replace('\n', " ");
-    let display_width = UnicodeWidthStr::width(text_flat.as_str());
-    if display_width > content_width { 2 } else { 1 }
-}
-
-fn compute_max_scroll_with_prompt_preview(
+/// Largest absolute scroll offset the transcript can show.
+///
+/// The pinned todo band (`display.pin_todos`) occupies a fixed number
+    /// of rows at the top of the viewport whenever the view is scrolled,
+    /// shrinking the content window and enlarging the true scroll range
+    /// by exactly the band height. The band height does not depend on the
+    /// scroll position, so a single adjustment replaces the old fixed-point
+    /// loop (which only existed because the removed prompt-preview band
+    /// changed height as the scroll position moved).
+fn compute_max_scroll_with_top_band(
     total_lines: usize,
-    wrapped_user_prompt_starts: &[usize],
-    user_prompt_texts: &[String],
     area: Rect,
     pinned_todo_lines: u16,
 ) -> usize {
-    let mut max_scroll = total_lines.saturating_sub(area.height as usize);
-    let preview_enabled = crate::config::config().display.prompt_preview;
-    if max_scroll == 0 || (!preview_enabled && pinned_todo_lines == 0) {
+    let max_scroll = total_lines.saturating_sub(area.height as usize);
+    if max_scroll == 0 || pinned_todo_lines == 0 {
         return max_scroll;
     }
-
-    for _ in 0..4 {
-        let prompt_preview_lines = if preview_enabled {
-            compute_prompt_preview_line_count(
-                wrapped_user_prompt_starts,
-                user_prompt_texts,
-                max_scroll,
-                area.width,
-            )
-        } else {
-            0
-        };
-        let content_height =
-            area.height
-                .saturating_sub(prompt_preview_lines + pinned_todo_lines) as usize;
-        let adjusted = total_lines.saturating_sub(content_height);
-        if adjusted == max_scroll {
-            break;
-        }
-        max_scroll = adjusted;
-    }
-
-    max_scroll
+    let content_height = area.height.saturating_sub(pinned_todo_lines) as usize;
+    total_lines.saturating_sub(content_height)
 }
 
 #[cfg(test)]
