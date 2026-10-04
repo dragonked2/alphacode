@@ -1945,7 +1945,6 @@ impl SessionPicker {
         first_match
     }
 
-
     /// Render the suggested first-run prompt as the primary centered action,
     /// with the blank-session escape hatch kept secondary in the bottom-right.
     fn render_onboarding_band(&self, frame: &mut Frame, area: Rect) {

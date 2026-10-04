@@ -2036,7 +2036,15 @@ mod tests {
 
         // Every network transport is one channel: the protocol is an
         // implementation detail, the trust boundary is the same.
-        for secure in ["websocket", "ws", "wss", "https", "https/sse", "http", "tcp"] {
+        for secure in [
+            "websocket",
+            "ws",
+            "wss",
+            "https",
+            "https/sse",
+            "http",
+            "tcp",
+        ] {
             assert_eq!(
                 channel(Some(secure)),
                 ConnectionChannel::Secure,

@@ -1323,12 +1323,12 @@ fn pinned_todo_band_lines(
 /// Largest absolute scroll offset the transcript can show.
 ///
 /// The pinned todo band (`display.pin_todos`) occupies a fixed number
-    /// of rows at the top of the viewport whenever the view is scrolled,
-    /// shrinking the content window and enlarging the true scroll range
-    /// by exactly the band height. The band height does not depend on the
-    /// scroll position, so a single adjustment replaces the old fixed-point
-    /// loop (which only existed because the removed prompt-preview band
-    /// changed height as the scroll position moved).
+/// of rows at the top of the viewport whenever the view is scrolled,
+/// shrinking the content window and enlarging the true scroll range
+/// by exactly the band height. The band height does not depend on the
+/// scroll position, so a single adjustment replaces the old fixed-point
+/// loop (which only existed because the removed prompt-preview band
+/// changed height as the scroll position moved).
 fn compute_max_scroll_with_top_band(
     total_lines: usize,
     area: Rect,
