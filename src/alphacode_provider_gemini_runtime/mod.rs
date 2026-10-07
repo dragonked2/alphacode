@@ -1132,7 +1132,7 @@ fn is_vpc_sc_error(err: &anyhow::Error) -> bool {
 
 fn gemini_http_client() -> reqwest::Client {
     reqwest::Client::builder()
-        .user_agent("alphacode/1.0 (gemini)")
+        .user_agent(crate::alphacode_provider_core::ALPHACODE_USER_AGENT)
         .http1_only()
         .connect_timeout(Duration::from_secs(20))
         .timeout(Duration::from_secs(90))

@@ -1,44 +1,40 @@
 #[test]
 fn test_new_for_remote_restored_soft_interrupt_resend_triggers_dispatch_state() {
-    let mut app = create_test_app();
-    let session_id = format!("test-remote-soft-interrupt-dispatch-{}", std::process::id());
+    with_temp_alphacode_home(|| {
+        let mut app = create_test_app();
+        let session_id = format!("test-remote-soft-interrupt-dispatch-{}", std::process::id());
 
-    app.pending_soft_interrupts = vec!["sent interrupt".to_string()];
-    app.pending_soft_interrupt_requests = vec![(55, "sent interrupt".to_string())];
-    app.save_input_for_reload(&session_id);
+        app.pending_soft_interrupts = vec!["sent interrupt".to_string()];
+        app.pending_soft_interrupt_requests = vec![(55, "sent interrupt".to_string())];
+        app.save_input_for_reload(&session_id);
 
-    let mut restored = App::new_for_remote(Some(session_id));
-    assert!(restored.interleave_message.is_none());
-    assert_eq!(restored.queued_messages(), &["sent interrupt"]);
-    assert!(!restored.pending_queued_dispatch);
-    assert!(!restored.is_processing);
-    assert!(matches!(restored.status, ProcessingStatus::Idle));
+        let mut restored = App::new_for_remote(Some(session_id));
+        assert!(restored.interleave_message.is_none());
+        assert_eq!(restored.queued_messages(), &["sent interrupt"]);
+        assert!(!restored.pending_queued_dispatch);
+        assert!(!restored.is_processing);
+        assert!(matches!(restored.status, ProcessingStatus::Idle));
 
-    let rt = tokio::runtime::Runtime::new().unwrap();
-    let _guard = rt.enter();
-    let mut remote = crate::alphacode_tui::tui::backend::RemoteConnection::dummy();
-    rt.block_on(remote::process_remote_followups(
-        &mut restored,
-        &mut remote,
-    ));
-    assert_eq!(restored.queued_messages(), &["sent interrupt"]);
-    assert!(!restored.is_processing);
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        let _guard = rt.enter();
+        let mut remote = crate::alphacode_tui::tui::backend::RemoteConnection::dummy();
+        rt.block_on(remote::process_remote_followups(&mut restored, &mut remote));
+        assert_eq!(restored.queued_messages(), &["sent interrupt"]);
+        assert!(!restored.is_processing);
 
-    remote.mark_history_loaded();
-    rt.block_on(remote::process_remote_followups(
-        &mut restored,
-        &mut remote,
-    ));
+        remote.mark_history_loaded();
+        rt.block_on(remote::process_remote_followups(&mut restored, &mut remote));
 
-    assert!(restored.queued_messages().is_empty());
-    assert!(restored.is_processing);
-    assert!(matches!(restored.status, ProcessingStatus::Sending));
-    assert!(
-        restored
-            .display_messages()
-            .iter()
-            .any(|message| message.role == "user" && message.content == "sent interrupt")
-    );
+        assert!(restored.queued_messages().is_empty());
+        assert!(restored.is_processing);
+        assert!(matches!(restored.status, ProcessingStatus::Sending));
+        assert!(
+            restored
+                .display_messages()
+                .iter()
+                .any(|message| message.role == "user" && message.content == "sent interrupt")
+        );
+    });
 }
 
 #[test]
@@ -70,20 +66,14 @@ fn test_new_for_remote_does_not_requeue_acked_pending_soft_interrupts() {
         let rt = tokio::runtime::Runtime::new().unwrap();
         let _guard = rt.enter();
         let mut remote = crate::alphacode_tui::tui::backend::RemoteConnection::dummy();
-        rt.block_on(remote::process_remote_followups(
-            &mut restored,
-            &mut remote,
-        ));
+        rt.block_on(remote::process_remote_followups(&mut restored, &mut remote));
         assert_eq!(
             restored.queued_messages(),
             &["local interleave", "queued later"]
         );
 
         remote.mark_history_loaded();
-        rt.block_on(remote::process_remote_followups(
-            &mut restored,
-            &mut remote,
-        ));
+        rt.block_on(remote::process_remote_followups(&mut restored, &mut remote));
 
         assert!(restored.queued_messages().is_empty());
         assert!(restored.is_processing);
@@ -323,4 +313,3 @@ fn test_handle_server_event_updates_connection_type() {
 
     assert_eq!(app.connection_type.as_deref(), Some("websocket"));
 }
-

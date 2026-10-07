@@ -267,14 +267,15 @@ impl Provider for OpenRouterProvider {
                         format!("{}/chat/completions", self.api_base.trim_end_matches('/'))
                     });
                 anyhow::bail!(
-                    "OpenAI-compatible request exceeds context\n  endpoint: {}\n  model: {}\n  mode: streaming\n  context_estimate: ~{} prompt tokens + ~{} reserved output = ~{} tokens\n  context_window: {} tokens\n  timeout: {}s\nHint: compact the session (/compact), drop large tool outputs, or restart the server with a larger context (llama-server `-c 16384`).",
+                    "OpenAI-compatible request exceeds context\n  endpoint: {}\n  model: {}\n  mode: streaming\n  context_estimate: ~{} prompt tokens + ~{} reserved output = ~{} tokens\n  context_window: {} tokens\n  timeout: {}s\n{}",
                     endpoint,
                     model,
                     estimated_prompt,
                     reserved_output,
                     estimated_prompt.saturating_add(reserved_output),
                     context_window,
-                    super::effective_stream_idle_timeout(&self.api_base).as_secs()
+                    super::effective_stream_idle_timeout(&self.api_base).as_secs(),
+                    super::local_endpoint_context_hint(&self.api_base),
                 );
             }
         }
@@ -698,6 +699,19 @@ impl Provider for OpenRouterProvider {
         let before_models = self.available_models_display();
         let before_routes = self.model_routes();
 
+        // Static-route providers (notably Alphax Free) use a virtual model
+        // alias that the gateway resolves automatically. There is no live
+        // catalog to refresh, so keep the static route and return immediately
+        // instead of probing the endpoint's /models path.
+        if !self.supports_model_catalog {
+            return Ok(summarize_model_catalog_refresh(
+                before_models.clone(),
+                before_models,
+                before_routes.clone(),
+                before_routes,
+            ));
+        }
+
         let refreshed_models = self.refresh_models().await?;
 
         if self.supports_provider_features {
@@ -776,6 +790,14 @@ impl Provider for OpenRouterProvider {
         {
             return ctx as usize;
         }
+        // A local/direct server that already rejected a request with an
+        // explicit `n_ctx` is the most authoritative source available: the
+        // runtime window it was actually started with. It beats the live
+        // catalog here because Ollama-style servers advertise the model's
+        // *trained* window in `/v1/models` while serving far less.
+        if let Some(learned) = super::learned_context_limit(&self.api_base, &model_id) {
+            return learned;
+        }
         let normalized_model_id = model_id.trim().to_ascii_lowercase();
         if let Some(limit) = self.static_context_limits.get(&normalized_model_id) {
             return *limit;
@@ -792,21 +814,26 @@ impl Provider for OpenRouterProvider {
             &model_id,
             Some(self.name()),
         ) {
-            // The open-weight family classifier returns 2M for `alpha`/GLM/Kimi
-            // style ids, which is correct for hosted gateways but wildly wrong
-            // for a local llama.cpp server started with `-c 8192/16384`. For
-            // direct local endpoints without live catalog data, prefer the
-            // conservative local fallback so prompt budgeting cannot approve a
-            // doomed 11K-token request against a 2B window.
+            // The open-weight family classifier returns the model's *trained*
+            // window: 2M for `alpha`/GLM/Kimi style ids, 131072 for
+            // qwen3-coder. That is right for a hosted gateway but wrong for a
+            // local llama.cpp/Ollama server, where the window is whatever the
+            // operator passed to `-c` / OLLAMA_CONTEXT_LENGTH (commonly 4096
+            // or 8192) and `/v1/models` never reports it.
+            //
+            // So for a direct local endpoint without authoritative data, cap
+            // the classifier's answer at the conservative local fallback
+            // instead of only doing so for absurd >= 1M values. A smaller
+            // classifier answer is still respected (the cap is a `min`), so a
+            // genuinely small model is unaffected. The bound self-corrects:
+            // the first request the server rejects teaches us its real `n_ctx`
+            // (see `learned_context_limit`), which then wins outright.
             if !self.supports_provider_features
                 && crate::alphacode_base::provider_catalog::openai_compat_base_is_local(
                     &self.api_base,
                 )
-                && limit >= 1_000_000
             {
-                // Only the live catalog (checked above) is authoritative for
-                // local servers; without it, use the local default.
-                return super::local_direct_context_fallback();
+                return limit.min(super::local_direct_context_fallback());
             }
             return limit;
         }

@@ -925,9 +925,9 @@ impl App {
         }
     }
 
-    /// Drop into the suggestion-card state (the "No" / no-OAuth path). Prints
-    /// the same starter prompts the empty-screen welcome offers, as an inline
-    /// numbered list the user can pick by typing the number or anything else.
+    /// Drop into the optional onboarding suggestion-card state (the "No" /
+    /// no-OAuth path). Its auth-aware suggestions stay separate from the
+    /// reusable quick-start prompts shown in an ordinary empty chat.
     ///
     /// This is also the "Start a new session" landing screen on first run. We
     /// intentionally keep it clean: the usual login/import system chatter is

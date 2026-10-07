@@ -246,10 +246,9 @@ pub fn save_env_value_to_env_file(
 mod tests {
     use super::*;
     use std::ffi::OsString;
-    use std::sync::MutexGuard;
 
     struct EnvGuard {
-        _lock: MutexGuard<'static, ()>,
+        _lock: crate::storage::TestEnvGuard,
         saved: Vec<(&'static str, Option<OsString>)>,
     }
 

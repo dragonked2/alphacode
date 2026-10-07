@@ -148,7 +148,7 @@ fn test_wrap_input_text_multiple_newlines() {
 }
 
 #[test]
-fn test_wrapped_input_line_count_respects_two_digit_prompt_width() {
+fn test_wrapped_input_line_count_does_not_reserve_hidden_message_number() {
     let mut app = TestState {
         input: "abcdefghijk".to_string(),
         cursor_pos: "abcdefghijk".len(),
@@ -165,11 +165,10 @@ fn test_wrapped_input_line_count_respects_two_digit_prompt_width() {
         });
     }
 
-    // Old layout math effectively used width 11 here (14 total - hardcoded prompt width 3),
-    // which incorrectly fit this input on a single line. The real prompt is "10> ", width 4,
-    // so the wrapped renderer only has 10 columns and must use 2 lines.
-    assert_eq!(calculate_input_lines(app.input(), 11), 1);
-    assert_eq!(input_ui::wrapped_input_line_count(&app, 14, 10), 2);
+    // The editable composer shows the two-column `> ` mode prefix. Its width
+    // must not grow with the number of messages already sent.
+    assert_eq!(calculate_input_lines(app.input(), 12), 1);
+    assert_eq!(input_ui::wrapped_input_line_count(&app, 14, 10), 1);
 }
 
 #[test]
@@ -231,7 +230,14 @@ fn test_copy_badge_reserves_right_margin_for_info_widgets() {
     };
     let copy_badge_ui = crate::alphacode_tui::tui::app::CopyBadgeUiState::default();
 
-    reserve_copy_badge_margins(&mut margins, 10, 13, &[(11, 'a')], &copy_badge_ui, Instant::now());
+    reserve_copy_badge_margins(
+        &mut margins,
+        10,
+        13,
+        &[(11, 'a')],
+        &copy_badge_ui,
+        Instant::now(),
+    );
 
     assert_eq!(margins.right_widths[0], 30);
     assert_eq!(margins.right_widths[1], 16);
@@ -305,7 +311,10 @@ fn test_copy_badge_truncation_marks_cut_content_with_ellipsis() {
         .iter()
         .map(|span| span.content.as_ref())
         .collect();
-    assert!(text.ends_with('…'), "cut content must show ellipsis: {text:?}");
+    assert!(
+        text.ends_with('…'),
+        "cut content must show ellipsis: {text:?}"
+    );
     assert!(line.width() <= 10);
 
     // Content that fits is left intact (trailing spaces trimmed only).
@@ -359,4 +368,3 @@ fn test_idle_donut_reserved_height_absorbs_composer_growth() {
     // Pathologically tall composer: reservation bottoms out at zero.
     assert_eq!(idle_donut_reserved_height(true, 40), 0);
 }
-

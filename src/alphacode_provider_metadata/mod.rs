@@ -700,6 +700,14 @@ mod tests {
             resolve_login_provider("unorouter-api").map(|provider| provider.id),
             Some("unorouter")
         );
+        assert_eq!(
+            resolve_login_provider("codecraft-api").map(|provider| provider.id),
+            Some("codecraft")
+        );
+        assert_eq!(
+            resolve_login_provider("getunikey").map(|provider| provider.id),
+            Some("unikey")
+        );
     }
 
     #[test]
@@ -838,6 +846,57 @@ mod tests {
                 Some("alphax-free"),
                 "alias {alias:?} must resolve to alphax-free"
             );
+        }
+    }
+
+    #[test]
+    fn codecraft_and_unikey_profiles_use_documented_openai_compatible_configuration() {
+        assert_eq!(CODECRAFT_PROFILE.id, "codecraft");
+        assert_eq!(CODECRAFT_PROFILE.display_name, "CodeCraft API");
+        assert_eq!(CODECRAFT_PROFILE.api_base, "https://codecraftapi.com/v1");
+        assert_eq!(CODECRAFT_PROFILE.api_key_env, "CODECRAFT_API_KEY");
+        assert_eq!(CODECRAFT_PROFILE.env_file, "codecraft.env");
+        assert_eq!(CODECRAFT_PROFILE.setup_url, "https://codecraftapi.com/docs");
+        // The 33-model catalog is dynamic; the live /v1/models
+        // refresh supplies models post-login.
+        assert_eq!(CODECRAFT_PROFILE.default_model, None);
+        const { assert!(CODECRAFT_PROFILE.requires_api_key) };
+
+        assert_eq!(UNIKEY_PROFILE.id, "unikey");
+        assert_eq!(UNIKEY_PROFILE.display_name, "UniKey");
+        assert_eq!(UNIKEY_PROFILE.api_base, "https://www.getunikey.ai/v1");
+        assert_eq!(UNIKEY_PROFILE.api_key_env, "UNIKEY_API_KEY");
+        assert_eq!(UNIKEY_PROFILE.env_file, "unikey.env");
+        assert_eq!(UNIKEY_PROFILE.setup_url, "https://www.getunikey.ai/keys");
+        assert_eq!(UNIKEY_PROFILE.default_model, Some("gpt-5.2"));
+        const { assert!(UNIKEY_PROFILE.requires_api_key) };
+
+        for (descriptor, profile) in [
+            (CODECRAFT_LOGIN_PROVIDER, &CODECRAFT_PROFILE),
+            (UNIKEY_LOGIN_PROVIDER, &UNIKEY_PROFILE),
+        ] {
+            assert_eq!(
+                descriptor.auth_kind,
+                LoginProviderAuthKind::ApiKey,
+                "{} must authenticate with an API key",
+                descriptor.id
+            );
+            assert_eq!(
+                descriptor.auth_state_key,
+                LoginProviderAuthStateKey::OpenRouterLike
+            );
+            assert!(matches!(
+                descriptor.target,
+                LoginProviderTarget::OpenAiCompatible(target) if target.id == profile.id
+            ));
+            for alias in descriptor.aliases {
+                assert_eq!(
+                    resolve_login_provider(alias).map(|d| d.id),
+                    Some(profile.id),
+                    "alias {alias:?} must resolve to {}",
+                    profile.id
+                );
+            }
         }
     }
 

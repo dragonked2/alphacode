@@ -21,6 +21,7 @@ const DEFAULT_PIPELINE: &[&str] = &[
     "gau",
     "waybackurls",
     "ffuf",
+    "dalfox",
     "nuclei",
 ];
 

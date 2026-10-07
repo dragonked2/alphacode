@@ -12,6 +12,10 @@ const DEFAULT_LIMIT: usize = 5000;
 const MAX_LINE_LEN: usize = 2000;
 const BINARY_DETECT_SIZE: usize = 8192;
 const BINARY_NULL_THRESHOLD: f64 = 0.1;
+const MAX_IMAGE_READ_BYTES: u64 = 64 * 1024 * 1024;
+const MAX_PDF_READ_BYTES: u64 = 100 * 1024 * 1024;
+#[cfg(feature = "pdf")]
+const MAX_PDF_OUTPUT_CHARS: usize = 100_000;
 
 pub struct ReadTool;
 
@@ -41,7 +45,7 @@ impl ReadInput {
         value
             .as_u64()
             .or_else(|| value.as_str().and_then(|s| s.trim().parse::<u64>().ok()))
-            .map(|n| n as usize)
+            .map(|n| usize::try_from(n).unwrap_or(usize::MAX))
     }
 
     fn from_value(input: &Value) -> Result<Self> {
@@ -84,11 +88,11 @@ struct NormalizedReadRange {
 
 impl NormalizedReadRange {
     fn next_offset(self) -> usize {
-        self.offset + self.limit
+        self.offset.saturating_add(self.limit)
     }
 
     fn next_start_line(self) -> usize {
-        self.next_offset() + 1
+        self.next_offset().saturating_add(1)
     }
 }
 
@@ -133,7 +137,7 @@ fn normalize_read_range(params: &ReadInput) -> Result<NormalizedReadRange> {
                     start_line
                 ));
             }
-            end_line - start_line + 1
+            end_line.saturating_sub(start_line).saturating_add(1)
         } else {
             params.limit.unwrap_or(DEFAULT_LIMIT)
         };
@@ -232,61 +236,15 @@ impl Tool for ReadTool {
             )));
         }
 
-        // Read file
-        let content = tokio::fs::read_to_string(&path).await?;
-
-        // Build the requested slice and stop as soon as the window is
-        // full. The original code walked the full file even for the
-        // common case of "read the first 5000 lines of a 5M-line log".
-        // We still need `total_lines` to drive the "lines remaining"
-        // hint, so when the request hits the limit we pay one extra
-        // O(remaining) pass.
-        let mut output = String::with_capacity(range.limit.min(2000) * 80);
-        let mut total_lines = 0usize;
-        let mut truncated_line_count = 0usize;
-        let end_exclusive = range.offset + range.limit;
-        let mut hit_limit = true;
-        {
-            use std::fmt::Write;
-            for (offset, line) in content
-                .lines()
-                .enumerate()
-                .skip(range.offset)
-                .take(range.limit)
-            {
-                let line_num = offset + 1;
-                total_lines = line_num;
-                if line.len() > MAX_LINE_LEN {
-                    truncated_line_count += 1;
-                    let _ = writeln!(
-                        output,
-                        "{:>5}\t{}...",
-                        line_num,
-                        crate::util::truncate_str(line, MAX_LINE_LEN)
-                    );
-                } else {
-                    let _ = writeln!(output, "{:>5}\t{}", line_num, line);
-                }
-            }
-            // If the iterator returned fewer than `range.limit` items the
-            // file ended before the window did, so `total_lines` is the
-            // true file length and we do not need to count the rest.
-            if total_lines < end_exclusive {
-                hit_limit = false;
-            }
-        }
-
-        let end = end_exclusive.min(total_lines);
-        if hit_limit {
-            // The request filled the limit; count remaining lines so
-            // the "lines remaining" hint is honest. Only runs when the
-            // file was at least as long as the requested window.
-            let mut rest = 0usize;
-            for _ in content.lines().skip(end_exclusive) {
-                rest += 1;
-            }
-            total_lines = total_lines.saturating_add(rest);
-        }
+        // Stream instead of loading the entire file. This keeps memory bounded
+        // for large logs and counts lines in the same pass.
+        let (mut output, total_lines, truncated_line_count) = read_text_range(&path, range).await?;
+        let returned_lines = total_lines.saturating_sub(range.offset).min(range.limit);
+        let end = if returned_lines == 0 {
+            range.offset.min(total_lines)
+        } else {
+            range.offset.saturating_add(returned_lines)
+        };
 
         // Publish file touch event for swarm coordination
         Bus::global().publish(BusEvent::FileTouch(FileTouch {
@@ -296,7 +254,7 @@ impl Tool for ReadTool {
             intent: None,
             summary: Some(format!(
                 "read lines {}-{} of {}",
-                range.offset + 1,
+                range.offset.saturating_add(1),
                 end,
                 total_lines
             )),
@@ -309,7 +267,7 @@ impl Tool for ReadTool {
                 params.file_path,
                 ctx.session_id,
                 ctx.tool_call_id,
-                range.offset + 1,
+                range.offset.saturating_add(1),
                 end,
                 total_lines,
                 truncated_line_count
@@ -336,11 +294,16 @@ impl Tool for ReadTool {
         }
 
         if output.is_empty() {
-            Ok(ToolOutput::new("(empty file)").with_metadata(json!({
+            let message = if total_lines == 0 {
+                "(empty file)".to_string()
+            } else {
+                format!("(no lines in the requested range; file contains {total_lines} lines)")
+            };
+            Ok(ToolOutput::new(message).with_metadata(json!({
                 "tool": "read",
                 "path": params.file_path,
                 "lines": 0,
-                "total_lines": 0,
+                "total_lines": total_lines,
             })))
         } else {
             Ok(ToolOutput::new(output)
@@ -348,13 +311,141 @@ impl Tool for ReadTool {
                 .with_metadata(json!({
                     "tool": "read",
                     "path": params.file_path,
-                    "start_line": range.offset + 1,
+                    "start_line": range.offset.saturating_add(1),
                     "end_line": end,
                     "total_lines": total_lines,
                     "truncated_lines": truncated_line_count,
                 })))
         }
     }
+}
+
+/// Read only enough bytes from each requested line to render its bounded
+/// preview while counting all lines in the same streaming pass.
+async fn read_text_range(
+    path: &Path,
+    range: NormalizedReadRange,
+) -> Result<(String, usize, usize)> {
+    use tokio::io::AsyncBufReadExt as _;
+
+    let file = tokio::fs::File::open(path).await?;
+    let mut reader = tokio::io::BufReader::new(file);
+    let mut output = String::with_capacity(range.limit.min(2000) * 80);
+    let mut line_bytes = Vec::with_capacity(MAX_LINE_LEN + 1);
+    let mut line_len = 0usize;
+    let mut last_byte = None;
+    let mut total_lines = 0usize;
+    let mut truncated_line_count = 0usize;
+    let end_exclusive = range.next_offset();
+
+    loop {
+        let (consumed, ended_line, at_eof) = {
+            let buffer = reader.fill_buf().await?;
+            if buffer.is_empty() {
+                (0, false, true)
+            } else {
+                let newline = buffer.iter().position(|byte| *byte == b'\n');
+                let content_len = newline.unwrap_or(buffer.len());
+                let selected = total_lines >= range.offset && total_lines < end_exclusive;
+                if selected {
+                    let remaining_capture = (MAX_LINE_LEN + 1).saturating_sub(line_bytes.len());
+                    line_bytes.extend_from_slice(&buffer[..content_len.min(remaining_capture)]);
+                }
+                if content_len > 0 {
+                    line_len = line_len.saturating_add(content_len);
+                    last_byte = Some(buffer[content_len - 1]);
+                }
+                let ended_line = newline.is_some();
+                let consumed = content_len + usize::from(ended_line);
+                (consumed, ended_line, false)
+            }
+        };
+
+        if at_eof {
+            // `str::lines` does not add an extra row after a trailing newline.
+            if line_len > 0 {
+                append_read_line(
+                    &mut output,
+                    ReadLinePreview {
+                        index: total_lines,
+                        len: line_len,
+                        last_byte,
+                        ended_with_newline: false,
+                        bytes: &line_bytes,
+                    },
+                    range,
+                    &mut truncated_line_count,
+                )?;
+                total_lines = total_lines.saturating_add(1);
+            }
+            break;
+        }
+
+        reader.consume(consumed);
+        if ended_line {
+            append_read_line(
+                &mut output,
+                ReadLinePreview {
+                    index: total_lines,
+                    len: line_len,
+                    last_byte,
+                    ended_with_newline: true,
+                    bytes: &line_bytes,
+                },
+                range,
+                &mut truncated_line_count,
+            )?;
+            total_lines = total_lines.saturating_add(1);
+            line_len = 0;
+            last_byte = None;
+            line_bytes.clear();
+        }
+    }
+
+    Ok((output, total_lines, truncated_line_count))
+}
+
+struct ReadLinePreview<'a> {
+    index: usize,
+    len: usize,
+    last_byte: Option<u8>,
+    ended_with_newline: bool,
+    bytes: &'a [u8],
+}
+
+fn append_read_line(
+    output: &mut String,
+    line: ReadLinePreview<'_>,
+    range: NormalizedReadRange,
+    truncated_line_count: &mut usize,
+) -> Result<()> {
+    use std::fmt::Write as _;
+
+    if line.index < range.offset || line.index >= range.next_offset() {
+        return Ok(());
+    }
+
+    let line_num = line.index.saturating_add(1);
+    let effective_len = line.len.saturating_sub(usize::from(
+        line.ended_with_newline && line.last_byte == Some(b'\r'),
+    ));
+    if effective_len > MAX_LINE_LEN {
+        *truncated_line_count = truncated_line_count.saturating_add(1);
+        let prefix_len = MAX_LINE_LEN.min(line.bytes.len());
+        let prefix = match std::str::from_utf8(&line.bytes[..prefix_len]) {
+            Ok(prefix) => prefix,
+            Err(error) if error.error_len().is_none() => {
+                std::str::from_utf8(&line.bytes[..error.valid_up_to()])?
+            }
+            Err(error) => return Err(error.into()),
+        };
+        let _ = writeln!(output, "{line_num:>5}\t{prefix}...");
+    } else {
+        let bytes = &line.bytes[..effective_len.min(line.bytes.len())];
+        let content = std::str::from_utf8(bytes)?;
+        let _ = writeln!(output, "{line_num:>5}\t{content}");
+    }
+    Ok(())
 }
 
 #[cfg(test)]
@@ -384,11 +475,25 @@ fn is_binary_file(path: &Path) -> bool {
             if null_count as f64 > n as f64 * BINARY_NULL_THRESHOLD {
                 return true;
             }
-            let text_chars = buf[..n]
-                .iter()
-                .filter(|&&b| b.is_ascii_graphic() || b == b'\t' || b == b'\n' || b == b'\r')
+            // UTF-8 text outside ASCII (for example Japanese source or Arabic
+            // logs) is still text. Classify by decoding and control characters
+            // instead of requiring most bytes to be ASCII-printable.
+            let sample = match std::str::from_utf8(&buf[..n]) {
+                Ok(sample) => sample,
+                Err(error) if error.error_len().is_none() => {
+                    match std::str::from_utf8(&buf[..error.valid_up_to()]) {
+                        Ok(sample) => sample,
+                        Err(_) => return true,
+                    }
+                }
+                Err(_) => return true,
+            };
+            let char_count = sample.chars().count();
+            let control_count = sample
+                .chars()
+                .filter(|ch| ch.is_control() && !matches!(ch, '\t' | '\n' | '\r' | '\u{000c}'))
                 .count();
-            if text_chars < n / 2 {
+            if char_count > 0 && control_count.saturating_mul(10) > char_count {
                 return true;
             }
         }
@@ -520,10 +625,30 @@ fn is_image_file(path: &Path) -> bool {
 
 /// Handle reading an image file - display in terminal if supported AND return base64 for model vision
 fn handle_image_file(path: &Path, file_path: &str) -> Result<ToolOutput> {
+    let metadata = std::fs::metadata(path)?;
+    let file_size = metadata.len();
+    if file_size > MAX_IMAGE_READ_BYTES {
+        return Ok(ToolOutput::new(format!(
+            "Image: {file_path} ({:.1} MB)\nImage exceeds the safe read limit of {} MB and was not loaded.",
+            file_size as f64 / 1024.0 / 1024.0,
+            MAX_IMAGE_READ_BYTES / (1024 * 1024)
+        ))
+        .with_title(format!("📷 {file_path}")));
+    }
+
     let protocol = ImageProtocol::detect();
 
-    let data = std::fs::read(path)?;
-    let file_size = data.len() as u64;
+    use std::io::Read as _;
+    let mut data = Vec::with_capacity(file_size as usize);
+    std::fs::File::open(path)?
+        .take(MAX_IMAGE_READ_BYTES.saturating_add(1))
+        .read_to_end(&mut data)?;
+    if data.len() as u64 > MAX_IMAGE_READ_BYTES {
+        return Ok(ToolOutput::new(format!(
+            "Image: {file_path}\nImage grew beyond the safe read limit and was not loaded."
+        ))
+        .with_title(format!("📷 {file_path}")));
+    }
 
     let dimensions = get_image_dimensions_from_data(&data);
 
@@ -656,6 +781,14 @@ fn handle_pdf_file(path: &Path, file_path: &str) -> Result<ToolOutput> {
     let metadata = std::fs::metadata(path)?;
     let file_size = metadata.len();
 
+    if file_size > MAX_PDF_READ_BYTES {
+        return Ok(ToolOutput::new(format!(
+            "PDF: {file_path} ({:.1} MB)\nPDF exceeds the safe extraction limit of {} MB and was not loaded.",
+            file_size as f64 / 1024.0 / 1024.0,
+            MAX_PDF_READ_BYTES / (1024 * 1024)
+        )));
+    }
+
     let size_str = if file_size < 1024 {
         format!("{} bytes", file_size)
     } else if file_size < 1024 * 1024 {
@@ -671,25 +804,41 @@ fn handle_pdf_file(path: &Path, file_path: &str) -> Result<ToolOutput> {
             output.push_str(&format!("PDF: {} ({})\n", file_path, size_str));
             output.push_str(&format!("{}\n", "=".repeat(60)));
 
-            // Split into pages (pdf_extract uses form feed \x0c as page separator)
-            let pages: Vec<&str> = text.split('\x0c').collect();
-            let page_count = pages.len();
+            // pdf_extract uses form feed `\x0c` as the page separator. Count
+            // without collecting a potentially huge vector of page slices.
+            let page_count = text.matches('\x0c').count() + 1;
 
             output.push_str(&format!("Pages: {}\n\n", page_count));
 
-            for (i, page) in pages.iter().enumerate() {
+            let mut output_chars = output.chars().count();
+            let mut output_truncated = false;
+            for (i, page) in text.split('\x0c').enumerate() {
                 let page_text = page.trim();
                 if !page_text.is_empty() {
+                    if output_chars >= MAX_PDF_OUTPUT_CHARS {
+                        output_truncated = true;
+                        break;
+                    }
                     output.push_str(&format!("--- Page {} ---\n", i + 1));
-                    // Limit each page to reasonable length
-                    if page_text.len() > 10000 {
-                        output.push_str(crate::util::truncate_str(page_text, 10000));
+                    output_chars += format!("--- Page {} ---\n", i + 1).chars().count();
+                    // Cap both individual pages and total returned text.
+                    let remaining_chars = MAX_PDF_OUTPUT_CHARS.saturating_sub(output_chars);
+                    let page_limit = 10_000.min(remaining_chars);
+                    if page_text.chars().count() > page_limit {
+                        output.push_str(crate::util::truncate_str(page_text, page_limit));
                         output.push_str("\n... (page truncated)\n");
+                        output_chars = MAX_PDF_OUTPUT_CHARS;
+                        output_truncated = true;
+                        break;
                     } else {
                         output.push_str(page_text);
+                        output_chars += page_text.chars().count();
                     }
                     output.push_str("\n\n");
                 }
+            }
+            if output_truncated {
+                output.push_str("\n[PDF text output capped at 100,000 characters.]\n");
             }
 
             Ok(ToolOutput::new(output))
@@ -709,6 +858,14 @@ fn handle_pdf_file(path: &Path, file_path: &str) -> Result<ToolOutput> {
 fn handle_pdf_file(path: &Path, file_path: &str) -> Result<ToolOutput> {
     let metadata = std::fs::metadata(path)?;
     let file_size = metadata.len();
+
+    if file_size > MAX_PDF_READ_BYTES {
+        return Ok(ToolOutput::new(format!(
+            "PDF: {file_path} ({:.1} MB)\nPDF exceeds the safe inspection limit of {} MB.",
+            file_size as f64 / 1024.0 / 1024.0,
+            MAX_PDF_READ_BYTES / (1024 * 1024)
+        )));
+    }
 
     let size_str = if file_size < 1024 {
         format!("{} bytes", file_size)

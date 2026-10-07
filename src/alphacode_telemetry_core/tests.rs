@@ -9,7 +9,7 @@ use super::*;
 // as `None`; the session test's `expect(...)` panicked while holding the
 // `SESSION_STATE` lock and poisoned it, cascading into `PoisonError` failures
 // in every other session test.
-fn global_test_lock() -> std::sync::MutexGuard<'static, ()> {
+fn global_test_lock() -> crate::alphacode_base::storage::TestEnvGuard {
     // Crate-wide test-env lock: the env-opt-out tests flip ALPHACODE_NO_TELEMETRY
     // while other modules' tests mutate ALPHACODE_HOME in parallel runs.
     crate::alphacode_base::storage::lock_test_env()
@@ -96,11 +96,11 @@ fn telemetry_endpoint_uses_production_custom_domain() {
     );
 }
 
-fn lock_test_env() -> std::sync::MutexGuard<'static, ()> {
+fn lock_test_env() -> crate::alphacode_base::storage::TestEnvGuard {
     global_test_lock()
 }
 
-fn lock_telemetry_test_state() -> std::sync::MutexGuard<'static, ()> {
+fn lock_telemetry_test_state() -> crate::alphacode_base::storage::TestEnvGuard {
     global_test_lock()
 }
 

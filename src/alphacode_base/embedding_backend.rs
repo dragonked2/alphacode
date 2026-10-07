@@ -183,6 +183,7 @@ impl OpenAiEmbeddingBackend {
             scope
                 .spawn(move || -> Result<Vec<Vec<f32>>> {
                     let client = reqwest::blocking::Client::builder()
+                        .user_agent(crate::alphacode_provider_core::ALPHACODE_USER_AGENT)
                         .timeout(std::time::Duration::from_secs(60))
                         .build()?;
                     let body = serde_json::json!({

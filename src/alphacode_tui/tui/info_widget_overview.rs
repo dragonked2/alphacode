@@ -1,4 +1,4 @@
-use super::info_widget::{AuthMethod, InfoWidgetData, UsageProvider, is_traceworthy_memory_event};
+use super::info_widget::{InfoWidgetData, is_traceworthy_memory_event};
 
 pub(crate) const MAX_TODO_LINES: usize = 12;
 
@@ -35,6 +35,20 @@ pub(crate) fn compute_page_layout(
         };
     }
 
+    // Always keep the compact Session card useful in a small margin pocket.
+    // The renderer prioritizes the model and combined context/usage/memory row,
+    // then clips lower-priority details when the pocket is short.
+    if compact_height > inner_height {
+        return PageLayout {
+            pages: vec![InfoPage {
+                kind: InfoPageKind::CompactOnly,
+                height: inner_height,
+            }],
+            max_page_height: inner_height,
+            show_dots: false,
+        };
+    }
+
     let mut candidates: Vec<InfoPage> = Vec::new();
     let todos_compact = compact_todos_height(data);
 
@@ -46,12 +60,13 @@ pub(crate) fn compute_page_layout(
         });
     }
 
-    let memory_compact = compact_memory_height(data);
     let memory_expanded = expanded_memory_height(data);
     if memory_expanded > 0 {
+        let telemetry_compact = compact_telemetry_height(data, true);
+        let telemetry_without_memory = compact_telemetry_height(data, false);
         candidates.push(InfoPage {
             kind: InfoPageKind::MemoryExpanded,
-            height: compact_height - memory_compact + memory_expanded,
+            height: compact_height - telemetry_compact + telemetry_without_memory + memory_expanded,
         });
     }
 
@@ -103,53 +118,32 @@ pub(crate) fn compute_page_layout(
     }
 }
 
-fn compact_context_height(data: &InfoWidgetData) -> u16 {
-    if let Some(info) = &data.context_info
-        && info.total_chars > 0
-    {
-        return 1;
-    }
-    0
+fn compact_queue_height(data: &InfoWidgetData) -> u16 {
+    u16::from(data.queue_mode.is_some())
 }
 
 fn compact_todos_height(data: &InfoWidgetData) -> u16 {
     if data.todos.is_empty() { 0 } else { 2 }
 }
 
-fn compact_memory_height(data: &InfoWidgetData) -> u16 {
-    if let Some(info) = &data.memory_info
-        && info.should_render()
-    {
-        return 1;
-    }
-    0
+fn compact_model_height(data: &InfoWidgetData) -> u16 {
+    u16::from(data.model.is_some())
 }
 
-fn compact_model_height(data: &InfoWidgetData) -> u16 {
-    if data.model.is_some() {
-        let mut lines = 1u16;
-        let has_provider = data
-            .provider_name
-            .as_deref()
-            .map(str::trim)
-            .filter(|s| !s.is_empty())
-            .is_some();
-        if has_provider || data.auth_method != AuthMethod::Unknown {
-            lines += 1;
-        }
-        // Mirror render_model_info: a blank session name alone produces no line.
-        let has_session_line = data.session_count.is_some()
-            || data
-                .session_name
-                .as_deref()
-                .is_some_and(|s| !s.trim().is_empty());
-        if has_session_line {
-            lines += 1;
-        }
-        lines
-    } else {
-        0
-    }
+fn compact_telemetry_height(data: &InfoWidgetData, include_memory: bool) -> u16 {
+    let has_context = data.context_info_stale
+        || data
+            .context_info
+            .as_ref()
+            .is_some_and(|info| info.total_chars > 0)
+        || data.observed_context_tokens.is_some();
+    let has_usage = data.usage_info.as_ref().is_some_and(|info| info.available);
+    let has_memory = include_memory
+        && data
+            .memory_info
+            .as_ref()
+            .is_some_and(|info| info.should_render());
+    u16::from(has_context || has_usage || has_memory)
 }
 
 fn compact_background_height(data: &InfoWidgetData) -> u16 {
@@ -163,30 +157,12 @@ fn compact_background_height(data: &InfoWidgetData) -> u16 {
     0
 }
 
-fn compact_usage_height(data: &InfoWidgetData) -> u16 {
-    if let Some(info) = &data.usage_info
-        && info.available
-    {
-        // Must mirror render_usage_compact exactly, otherwise the compact
-        // overview page either clips its last lines or reserves blank rows.
-        if matches!(info.provider, UsageProvider::CostBased) {
-            // Single "$cost · tokens" line.
-            return 1;
-        }
-        // Subscription-style providers render an optional provider label plus
-        // whichever primary, secondary, and Spark windows are actually present.
-        let label = info.provider.label();
-        let label_line = u16::from(!label.is_empty());
-        let primary_line = u16::from(info.primary_limit_label.is_some());
-        let secondary_line = u16::from(info.secondary_limit_label.is_some());
-        let spark_line = u16::from(info.spark.is_some());
-        return label_line + primary_line + secondary_line + spark_line;
-    }
-    0
-}
-
 fn compact_kv_cache_height(data: &InfoWidgetData) -> u16 {
     if data.cache_hit_info.is_some() { 1 } else { 0 }
+}
+
+fn compact_compaction_height(data: &InfoWidgetData) -> u16 {
+    if data.compaction_info.is_some() { 2 } else { 0 }
 }
 
 fn compact_git_height(data: &InfoWidgetData) -> u16 {
@@ -200,12 +176,12 @@ fn compact_git_height(data: &InfoWidgetData) -> u16 {
 
 fn compact_overview_height(data: &InfoWidgetData) -> u16 {
     compact_model_height(data)
-        + compact_context_height(data)
+        + compact_queue_height(data)
+        + compact_telemetry_height(data, true)
         + compact_todos_height(data)
-        + compact_memory_height(data)
         + compact_background_height(data)
-        + compact_usage_height(data)
         + compact_kv_cache_height(data)
+        + compact_compaction_height(data)
         + compact_git_height(data)
 }
 
@@ -247,8 +223,11 @@ fn expanded_memory_height(data: &InfoWidgetData) -> u16 {
 #[cfg(test)]
 mod tests {
     use super::{InfoPageKind, compute_page_layout};
+    use crate::alphacode_tui::prompt::ContextInfo;
     use crate::alphacode_tui::todo::TodoItem;
-    use crate::alphacode_tui::tui::info_widget::{InfoWidgetData, MemoryInfo};
+    use crate::alphacode_tui::tui::info_widget::{
+        InfoWidgetData, MemoryInfo, WidgetKind, is_overview_mergeable,
+    };
     use std::collections::HashMap;
 
     #[test]
@@ -308,5 +287,55 @@ mod tests {
                 .iter()
                 .any(|page| page.kind == InfoPageKind::MemoryExpanded)
         );
+    }
+
+    #[test]
+    fn session_overview_combines_model_context_and_memory() {
+        let data = InfoWidgetData {
+            model: Some("gpt-test".to_string()),
+            context_info: Some(ContextInfo {
+                total_chars: 1_200,
+                ..Default::default()
+            }),
+            memory_info: Some(MemoryInfo {
+                total_count: 3,
+                project_count: 2,
+                global_count: 1,
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+
+        assert!(data.has_data_for(WidgetKind::Overview));
+        assert!(is_overview_mergeable(WidgetKind::ContextUsage));
+        assert!(is_overview_mergeable(WidgetKind::MemoryActivity));
+        assert!(is_overview_mergeable(WidgetKind::UsageLimits));
+        let layout = compute_page_layout(&data, 40, 5);
+        assert!(layout.max_page_height >= 2);
+    }
+
+    #[test]
+    fn compact_overview_survives_a_short_margin_pocket() {
+        let data = InfoWidgetData {
+            model: Some("gpt-test".to_string()),
+            context_info: Some(ContextInfo {
+                total_chars: 1_200,
+                ..Default::default()
+            }),
+            queue_mode: Some(true),
+            memory_info: Some(MemoryInfo {
+                total_count: 3,
+                project_count: 2,
+                global_count: 1,
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+
+        let layout = compute_page_layout(&data, 40, 2);
+
+        assert_eq!(layout.pages.len(), 1);
+        assert_eq!(layout.pages[0].kind, InfoPageKind::CompactOnly);
+        assert_eq!(layout.max_page_height, 2);
     }
 }

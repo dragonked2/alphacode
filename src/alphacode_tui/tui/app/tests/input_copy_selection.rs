@@ -21,11 +21,7 @@ fn input_pane_screen_points(
     points
 }
 
-fn drag_copy(
-    app: &mut App,
-    start: (u16, u16),
-    end: (u16, u16),
-) -> String {
+fn drag_copy(app: &mut App, start: (u16, u16), end: (u16, u16)) -> String {
     let copied = std::sync::Arc::new(std::sync::Mutex::new(String::new()));
     let copied_for_closure = copied.clone();
     app.handle_copy_selection_mouse_with(
@@ -58,7 +54,7 @@ fn drag_copy(
             true
         },
     );
-    
+
     copied.lock().unwrap().clone()
 }
 
@@ -78,7 +74,10 @@ fn test_input_composer_drag_selects_and_copies_typed_text() {
         crate::alphacode_tui::tui::ui::input_pane_line_text(0).as_deref(),
         Some("select this draft")
     );
-    assert_eq!(crate::alphacode_tui::tui::ui::input_pane_line_count(), Some(1));
+    assert_eq!(
+        crate::alphacode_tui::tui::ui::input_pane_line_count(),
+        Some(1)
+    );
 
     let points = input_pane_screen_points(80, 24);
     assert!(
@@ -115,8 +114,12 @@ fn test_input_composer_selection_never_includes_prompt_prefix() {
     let backend = ratatui::backend::TestBackend::new(80, 24);
     let mut terminal = ratatui::Terminal::new(backend).expect("failed to create test terminal");
     let rendered = render_and_snap(&app, &mut terminal);
-    // Sanity: the prompt decoration is actually on screen ("1>" for the first prompt).
-    assert!(rendered.contains("1>"), "expected prompt prefix on screen");
+    // Sanity: the mode prefix is actually on screen. Message numbers are
+    // attached to sent prompts, not the editable composer.
+    assert!(
+        rendered.contains("> no prompt here"),
+        "expected composer prefix on screen"
+    );
 
     let points = input_pane_screen_points(80, 24);
     let row = points.first().map(|(_, r, _)| *r).expect("composer row");
@@ -148,7 +151,10 @@ fn test_input_composer_multiline_selection_preserves_newlines() {
     let mut terminal = ratatui::Terminal::new(backend).expect("failed to create test terminal");
     render_and_snap(&app, &mut terminal);
 
-    assert_eq!(crate::alphacode_tui::tui::ui::input_pane_line_count(), Some(2));
+    assert_eq!(
+        crate::alphacode_tui::tui::ui::input_pane_line_count(),
+        Some(2)
+    );
     assert_eq!(
         crate::alphacode_tui::tui::ui::input_pane_line_text(0).as_deref(),
         Some("alpha one")
@@ -188,7 +194,8 @@ fn test_input_composer_soft_wrapped_selection_copies_unwrapped_text() {
     let mut terminal = ratatui::Terminal::new(backend).expect("failed to create test terminal");
     render_and_snap(&app, &mut terminal);
 
-    let wrapped_rows = crate::alphacode_tui::tui::ui::input_pane_line_count().expect("input snapshot");
+    let wrapped_rows =
+        crate::alphacode_tui::tui::ui::input_pane_line_count().expect("input snapshot");
     assert!(
         wrapped_rows >= 2,
         "expected the input to soft-wrap, got {wrapped_rows} rows"
@@ -252,7 +259,9 @@ fn test_chat_drag_into_composer_clamps_to_chat_pane() {
         .flat_map(|row| (0..80u16).map(move |col| (col, row)))
         .find_map(|(col, row)| {
             crate::alphacode_tui::tui::ui::copy_point_from_screen(col, row)
-                .filter(|p| p.pane == crate::alphacode_tui::tui::CopySelectionPane::Chat && *p != chat_point)
+                .filter(|p| {
+                    p.pane == crate::alphacode_tui::tui::CopySelectionPane::Chat && *p != chat_point
+                })
                 .map(|p| (col, row, p))
         })
         .expect("a second distinct chat cell");
@@ -417,4 +426,3 @@ fn test_input_composer_drag_then_release_copies_via_full_mouse_path() {
         app.status_notice()
     );
 }
-

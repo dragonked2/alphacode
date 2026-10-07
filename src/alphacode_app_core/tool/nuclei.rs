@@ -269,6 +269,7 @@ fn build_args(params: &NucleiInput) -> Result<Vec<String>> {
     args.push("-c".to_string());
     args.push(threads.to_string());
 
+    super::recon_common::append_default_user_agent_header(&mut args, &params.headers);
     for header in &params.headers {
         args.push("-H".to_string());
         args.push(header.clone());

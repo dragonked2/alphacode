@@ -15,7 +15,15 @@ impl Agent {
     ) {
         let system_tokens = split.estimated_tokens();
         let tool_tokens = ToolDefinition::aggregate_prompt_token_estimate(tools);
-        let prefix_tokens = system_tokens + tool_tokens;
+        let prefix_tokens = system_tokens.saturating_add(tool_tokens);
+        // The default estimate is necessarily a guess because neither the
+        // compaction manager nor the provider API owns the assembled tool
+        // schemas. Once this request's prefix exists, give the measured size
+        // back to compaction so small-window models reserve the space they
+        // actually need for their system prompt and tools.
+        if let Ok(mut manager) = self.registry.compaction().try_write() {
+            manager.set_prompt_overhead_tokens(prefix_tokens);
+        }
         let tier_label = match tier {
             crate::prompt::PromptTier::Minimal => "minimal",
             crate::prompt::PromptTier::Standard => "standard",

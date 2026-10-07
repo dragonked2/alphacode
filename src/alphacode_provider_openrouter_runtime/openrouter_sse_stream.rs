@@ -19,6 +19,46 @@ fn local_endpoint_troubleshooting_hint(api_base: &str, model: &str) -> &'static 
     "Hint: check network connectivity, DNS/TLS, that the base URL includes the API version (usually /v1), and that the model exists on the provider."
 }
 
+fn is_alphax_free_gateway(api_base: &str) -> bool {
+    url::Url::parse(api_base).is_ok_and(|url| {
+        url.host_str()
+            .is_some_and(|host| host.eq_ignore_ascii_case("api.kilo.ai"))
+            && url.path().starts_with("/api/gateway")
+    })
+}
+
+fn user_facing_endpoint_label(api_base: &str, endpoint: &str) -> String {
+    if is_alphax_free_gateway(api_base) {
+        "Alphax Free endpoint".to_string()
+    } else {
+        endpoint.to_string()
+    }
+}
+
+fn redact_alphax_gateway_brand(api_base: &str, detail: &str) -> String {
+    if !is_alphax_free_gateway(api_base) {
+        return detail.to_string();
+    }
+
+    static GATEWAY_URL: std::sync::LazyLock<regex::Regex> = std::sync::LazyLock::new(|| {
+        regex::Regex::new(r#"(?i)(?:https?://)?(?:api\.)?kilo\.ai(?:/[^\s"'<>),]*)?"#)
+            .expect("valid gateway URL redaction pattern")
+    });
+    static ROUTE_ALIAS: std::sync::LazyLock<regex::Regex> = std::sync::LazyLock::new(|| {
+        regex::Regex::new(r"(?i)kilo-auto/[a-z0-9._/-]+")
+            .expect("valid gateway route redaction pattern")
+    });
+    static BRAND_NAME: std::sync::LazyLock<regex::Regex> = std::sync::LazyLock::new(|| {
+        regex::Regex::new(r"(?i)\bkilo(?:code)?\b").expect("valid gateway brand redaction pattern")
+    });
+
+    let without_url = GATEWAY_URL.replace_all(detail, "Alphax Free service");
+    let without_route = ROUTE_ALIAS.replace_all(&without_url, "automatic free route");
+    BRAND_NAME
+        .replace_all(&without_route, "the service")
+        .into_owned()
+}
+
 /// Status-aware hint for a completed-but-failed HTTP response. The generic
 /// network/DNS hint above only applies to *send* failures (connection never
 /// established); once the server answered with an error status, blaming DNS
@@ -218,14 +258,16 @@ async fn stream_response(
         .unwrap_or(&model)
         .to_string();
 
+    let invalid_endpoint_label = user_facing_endpoint_label(&api_base, &api_base);
     let url = super::resolve_chat_completions_url(&api_base).ok_or_else(|| {
         anyhow::anyhow!(
             "OpenAI-compatible chat request failed\n  endpoint: invalid base '{}'\n  model: {}\n  auth: {}\n  mode: streaming",
-            api_base,
+            invalid_endpoint_label,
             model_label,
             auth.label()
         )
     })?;
+    let endpoint_label = user_facing_endpoint_label(&api_base, url.as_str());
     let mut req = apply_kimi_coding_agent_headers(
         auth.apply(
             client
@@ -240,30 +282,42 @@ async fn stream_response(
 
     if send_openrouter_headers {
         req = req
-            .header("HTTP-Referer", "https://github.com/dragonked2/alphacode")
-            .header("X-Title", "alphacode");
+            .header(
+                "HTTP-Referer",
+                crate::alphacode_provider_core::ALPHACODE_HOMEPAGE,
+            )
+            .header("X-Title", "Alphacode");
     }
 
     req = super::apply_opencode_provider_headers(req, &api_base);
 
     // Diagnostics: estimated prompt size, timeout, and mode. Never includes secrets.
     let request_estimate = super::estimate_chat_request_tokens(&request);
+    let suppress_upstream_error_details = is_alphax_free_gateway(&api_base);
     let response = crate::alphacode_provider_core::transport::send_with_initial_response_timeout(
         req.json(&request),
         stream_idle_timeout,
     )
     .await
-    .with_context(|| {
+    .map_err(|error| {
         let hint = local_endpoint_troubleshooting_hint(&api_base, &model);
-        format!(
+        let message = format!(
             "Failed to send OpenAI-compatible chat request\n  endpoint: {}\n  model: {}\n  auth: {}\n  mode: streaming\n  context_estimate: ~{} tokens\n  timeout: {}s\n{}",
-            url,
+            endpoint_label,
             model_label,
             auth.label(),
             request_estimate,
             stream_idle_timeout.as_secs(),
             hint
-        )
+        );
+        if suppress_upstream_error_details {
+            // reqwest's source chain may embed the upstream URL. Keep useful
+            // status and troubleshooting context while preventing that
+            // implementation detail from leaking into user-visible errors.
+            anyhow::anyhow!(message)
+        } else {
+            error.context(message)
+        }
     })?;
 
     let connect_ms = connect_start.elapsed().as_millis();
@@ -278,19 +332,35 @@ async fn stream_response(
         let retry_after =
             crate::alphacode_provider_core::retry_after::retry_after(response.headers());
         let body = crate::alphacode_base::util::http_error_body(response, "HTTP error").await;
+        let body = redact_alphax_gateway_brand(&api_base, &body);
         let mut hint =
             http_status_troubleshooting_hint(status, &api_base, &model, request_estimate);
         if super::response_body_reports_context_overflow(&body) {
-            hint = format!(
-                "{}\nContext hint: the prompt (~{} tokens) exceeded the server context. Compact the session (/compact), drop large tool outputs, or restart llama-server with a larger `-c` (e.g. `-c 16384`).",
-                hint, request_estimate
-            );
+            // The server just told us its real context window. Persist it
+            // so the pre-flight guard and the compaction budget stop
+            // trusting the model-family default (which is the model's
+            // trained window, not the window this server was started
+            // with) for every later request on this endpoint.
+            let learned = super::parse_reported_context_tokens(&body);
+            if let Some(limit) = learned {
+                super::record_learned_context_limit(&api_base, &model, limit);
+            }
+            hint = match learned {
+                Some(limit) => format!(
+                    "{}\nContext hint: the prompt (~{} tokens) exceeded the server context. This endpoint reported a {}-token window (n_ctx), which is now used for prompt budgeting. Compact the session (/compact), drop large tool outputs, or restart the server with a larger context.",
+                    hint, request_estimate, limit
+                ),
+                None => format!(
+                    "{}\nContext hint: the prompt (~{} tokens) exceeded the server context. Compact the session (/compact), drop large tool outputs, or restart llama-server with a larger `-c` (e.g. `-c 16384`).",
+                    hint, request_estimate
+                ),
+            };
         }
         return Err(
             crate::alphacode_provider_core::retry_after::error_with_retry_after(
                 format!(
                     "OpenAI-compatible chat request failed\n  endpoint: {}\n  model: {}\n  auth: {}\n  mode: streaming\n  context_estimate: ~{} tokens\n  timeout: {}s\n  status: {}\n  response: {}\n{}",
-                    url,
+                    endpoint_label,
                     model_label,
                     auth.label(),
                     request_estimate,
@@ -322,13 +392,20 @@ async fn stream_response(
     loop {
         let event = match tokio::time::timeout(stream_idle_timeout, stream.next()).await {
             Ok(Some(Ok(event))) => event,
-            Ok(Some(Err(e))) => anyhow::bail!(
-                "OpenAI-compatible stream error\n  endpoint: {}\n  model: {}\n  auth: {}\n  mode: streaming\n  error: {}",
-                url,
-                model_label,
-                auth.label(),
-                e
-            ),
+            Ok(Some(Err(error))) => {
+                let detail = if suppress_upstream_error_details {
+                    "the automatic route returned an invalid stream".to_string()
+                } else {
+                    error.to_string()
+                };
+                anyhow::bail!(
+                    "OpenAI-compatible stream error\n  endpoint: {}\n  model: {}\n  auth: {}\n  mode: streaming\n  error: {}",
+                    endpoint_label,
+                    model_label,
+                    auth.label(),
+                    detail
+                );
+            }
             Ok(None) => break, // stream ended normally
             Err(_) => {
                 crate::alphacode_base::logging::warn(&format!(
@@ -337,13 +414,33 @@ async fn stream_response(
                 ));
                 anyhow::bail!(
                     "OpenAI-compatible stream timeout\n  endpoint: {}\n  model: {}\n  auth: {}\n  mode: streaming\n  timeout: no data received for {} seconds\n{}",
-                    url,
+                    endpoint_label,
                     model_label,
                     auth.label(),
                     idle_timeout_secs,
                     local_endpoint_troubleshooting_hint(&api_base, &model)
                 );
             }
+        };
+        let event = if suppress_upstream_error_details {
+            match event {
+                StreamEvent::Error {
+                    message,
+                    retry_after_secs,
+                } => StreamEvent::Error {
+                    message: redact_alphax_gateway_brand(&api_base, &message),
+                    retry_after_secs,
+                },
+                StreamEvent::UpstreamProvider { .. } => StreamEvent::UpstreamProvider {
+                    provider: "Alphax Free".to_string(),
+                },
+                StreamEvent::StatusDetail { detail } => StreamEvent::StatusDetail {
+                    detail: redact_alphax_gateway_brand(&api_base, &detail),
+                },
+                event => event,
+            }
+        } else {
+            event
         };
         if tx.send(Ok(event)).await.is_err() {
             return Ok(());
@@ -391,6 +488,25 @@ fn is_retryable_error(error_str: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn alphax_error_details_hide_gateway_brand_and_routing_ids() {
+        let detail = "Request to https://api.kilo.ai/api/gateway/v1 failed for kilo-auto/free: KiloCode is unavailable";
+        let redacted = redact_alphax_gateway_brand("https://api.kilo.ai/api/gateway", detail);
+
+        assert!(redacted.contains("Alphax Free service"));
+        assert!(redacted.contains("automatic free route"));
+        assert!(!redacted.to_ascii_lowercase().contains("kilo"));
+    }
+
+    #[test]
+    fn other_provider_error_details_are_unchanged() {
+        let detail = "https://api.kilo.ai is shown as a user supplied proxy URL";
+        assert_eq!(
+            redact_alphax_gateway_brand("https://api.openrouter.ai/api/v1", detail),
+            detail
+        );
+    }
 
     #[test]
     fn local_endpoint_hint_mentions_ollama_actions() {

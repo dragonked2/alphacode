@@ -1329,14 +1329,23 @@ impl App {
             current_effort,
             &available_efforts,
         );
-        if current_signature != pending.signature {
-            return false;
-        }
+        // A *superseded* request was already rejected above by `request_id`. A
+        // drifted signature is a different thing: the process-global config
+        // (default model/provider) changed while the routes were loading - a
+        // `config.toml` write from a server task, or in tests from a sibling
+        // test that scopes its own home. Returning here discarded the reply and
+        // left the picker parked on "updating model list…" forever, so take the
+        // routes we have and cache them under the signature that is current now.
+        let signature = if current_signature == pending.signature {
+            pending.signature
+        } else {
+            current_signature
+        };
 
         match received {
             Ok(result) => {
                 self.open_model_picker_with_routes(
-                    pending.signature,
+                    signature,
                     pending.picker_started,
                     result.routes,
                     result.routes_ms,
@@ -3420,7 +3429,12 @@ impl App {
 
                 let route = &entry.options[entry.selected_option];
 
-                if !route.available {
+                // Model rows report an unavailable route through the
+                // `PickerAction::Model` arm below, which explains how to recover
+                // and deliberately leaves the picker open so the user can pick
+                // another model. Every other picker kind has no richer message,
+                // so it keeps the terse close-and-notice behaviour.
+                if !route.available && !matches!(entry.action, PickerAction::Model) {
                     let detail = if route.detail.is_empty() {
                         "not available".to_string()
                     } else {
@@ -3515,7 +3529,7 @@ impl App {
                                     self.is_remote,
                                 ),
                             ));
-                            self.set_status_notice("Model unavailable");
+                            self.set_status_notice("Model switch failed");
                             return Ok(());
                         }
 

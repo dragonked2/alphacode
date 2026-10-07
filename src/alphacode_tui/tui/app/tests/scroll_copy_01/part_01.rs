@@ -29,6 +29,7 @@ fn create_scroll_test_app(
     diagrams: usize,
     padding: usize,
 ) -> (App, ratatui::Terminal<ratatui::backend::TestBackend>) {
+    let _diagram_lock = crate::alphacode_tui::tui::mermaid::active_diagram_test_lock();
     crate::alphacode_tui::tui::mermaid::clear_active_diagrams();
     crate::alphacode_tui::tui::mermaid::clear_streaming_preview_diagram();
 

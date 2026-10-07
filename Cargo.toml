@@ -1,8 +1,10 @@
 [package]
 name = "alphacode"
-version = "1.0.68"
+version = "1.0.70"
 authors = ["Ali Essam <tlbbeg313@gmail.com>"]
-description = "A coding agent for the terminal. Multi-model orchestration, swarm coordination, and 40+ tools working together — built so the changes it makes are the smallest ones that solve the problem."
+description = "Terminal-native coding agent with multi-model orchestration, swarm coordination, and 40+ tools — built to make the smallest change that solves the problem."
+homepage = "https://alphacli.github.io/"
+repository = "https://github.com/dragonked2/alphacode"
 edition = "2024"
 
 [workspace]

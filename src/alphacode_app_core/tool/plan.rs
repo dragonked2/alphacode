@@ -3,6 +3,11 @@ use crate::alphacode_tool_types::ToolOutput;
 use anyhow::Result;
 use async_trait::async_trait;
 use serde_json::{Value, json};
+use std::path::Path;
+use std::time::Duration;
+
+const MAX_PLAN_FILE_PREVIEW_BYTES: usize = 8_000;
+const MAX_PLAN_DIRECTORY_ENTRIES: usize = 500;
 
 /// Plan Mode tool - read-only exploration of the codebase.
 ///
@@ -58,37 +63,50 @@ impl Tool for PlanModeTool {
             .and_then(|v| v.as_str())
             .unwrap_or("summary");
 
-        let workdir = ctx
-            .working_dir
-            .as_ref()
-            .map(|p| p.to_string_lossy().to_string())
-            .unwrap_or_else(|| ".".to_string());
+        let workdir_path = ctx.resolve_path_guarded(Path::new("."))?;
+        let workdir = workdir_path.to_string_lossy().into_owned();
 
         match action {
             "read_file" => {
                 let path = input.get("path").and_then(|v| v.as_str()).unwrap_or(".");
-                let full_path = if std::path::Path::new(path).is_absolute() {
-                    std::path::PathBuf::from(path)
-                } else {
-                    std::path::PathBuf::from(&workdir).join(path)
-                };
+                let full_path = ctx.resolve_path_guarded(Path::new(path))?;
 
-                match std::fs::read_to_string(&full_path) {
-                    Ok(content) => {
-                        let total_len = content.len();
-                        let preview = if total_len > 8000 {
+                let read_preview = async {
+                    use tokio::io::AsyncReadExt as _;
+
+                    let metadata = tokio::fs::metadata(&full_path).await?;
+                    let file = tokio::fs::File::open(&full_path).await?;
+                    let mut bytes = Vec::with_capacity(MAX_PLAN_FILE_PREVIEW_BYTES + 1);
+                    let mut limited = file.take((MAX_PLAN_FILE_PREVIEW_BYTES + 1) as u64);
+                    limited.read_to_end(&mut bytes).await?;
+                    Ok::<_, std::io::Error>((metadata.len(), bytes))
+                }
+                .await;
+
+                match read_preview {
+                    Ok((total_bytes, mut bytes)) => {
+                        let truncated = total_bytes > MAX_PLAN_FILE_PREVIEW_BYTES as u64;
+                        bytes.truncate(MAX_PLAN_FILE_PREVIEW_BYTES);
+                        // If a valid UTF-8 codepoint was split by the byte
+                        // limit, back up to its start rather than rendering a
+                        // replacement character at the end of the preview.
+                        if truncated {
+                            while std::str::from_utf8(&bytes).is_err() {
+                                bytes.pop();
+                            }
+                        }
+                        let preview = String::from_utf8_lossy(&bytes);
+                        let note = if truncated {
                             format!(
-                                "{}...\n\n[File truncated: {} total chars, showing first 8000]",
-                                &content[..content.floor_char_boundary(8000)],
-                                total_len
+                                "\n\n[File truncated: {total_bytes} total bytes, showing the first {} bytes]",
+                                bytes.len()
                             )
                         } else {
-                            content
+                            String::new()
                         };
                         Ok(ToolOutput::new(format!(
-                            "📄 {} ({} chars):\n\n{}",
+                            "📄 {} ({total_bytes} bytes):\n\n{}{note}",
                             full_path.display(),
-                            total_len,
                             preview
                         )))
                     }
@@ -100,44 +118,64 @@ impl Tool for PlanModeTool {
             }
             "list_dir" => {
                 let path = input.get("path").and_then(|v| v.as_str()).unwrap_or(".");
-                let full_path = if std::path::Path::new(path).is_absolute() {
-                    std::path::PathBuf::from(path)
-                } else {
-                    std::path::PathBuf::from(&workdir).join(path)
-                };
+                let full_path = ctx.resolve_path_guarded(Path::new(path))?;
 
-                match std::fs::read_dir(&full_path) {
-                    Ok(entries) => {
-                        let mut dirs = Vec::new();
-                        let mut files = Vec::new();
-                        for entry in entries.flatten() {
-                            let name = entry.file_name().to_string_lossy().to_string();
-                            if name.starts_with('.') {
-                                continue;
-                            }
-                            let metadata = entry.metadata().ok();
-                            let is_dir = metadata.as_ref().map(|m| m.is_dir()).unwrap_or(false);
-                            let size = metadata.as_ref().map(|m| m.len()).unwrap_or(0);
-                            if is_dir {
-                                dirs.push(format!("  📁 {name}/"));
-                            } else {
-                                let size_str = if size > 1024 * 1024 {
-                                    format!(" ({:.1}MB)", size as f64 / 1024.0 / 1024.0)
-                                } else if size > 1024 {
-                                    format!(" ({:.1}KB)", size as f64 / 1024.0)
-                                } else {
-                                    format!(" ({size}B)")
-                                };
-                                files.push(format!("  📄 {name}{size_str}"));
-                            }
+                let list_directory = async {
+                    let mut entries = tokio::fs::read_dir(&full_path).await?;
+                    let mut dirs = Vec::new();
+                    let mut files = Vec::new();
+                    let mut truncated = false;
+                    let mut visible_entries = 0usize;
+                    let mut scanned_entries = 0usize;
+                    while let Some(entry) = entries.next_entry().await? {
+                        scanned_entries += 1;
+                        if scanned_entries > MAX_PLAN_DIRECTORY_ENTRIES * 4 {
+                            truncated = true;
+                            break;
                         }
+                        let name = entry.file_name().to_string_lossy().to_string();
+                        if name.starts_with('.') {
+                            continue;
+                        }
+                        if visible_entries == MAX_PLAN_DIRECTORY_ENTRIES {
+                            truncated = true;
+                            break;
+                        }
+                        visible_entries += 1;
+                        let metadata = entry.metadata().await.ok();
+                        let is_dir = metadata.as_ref().map(|m| m.is_dir()).unwrap_or(false);
+                        let size = metadata.as_ref().map(|m| m.len()).unwrap_or(0);
+                        if is_dir {
+                            dirs.push(format!("  📁 {name}/"));
+                        } else {
+                            let size_str = if size > 1024 * 1024 {
+                                format!(" ({:.1}MB)", size as f64 / 1024.0 / 1024.0)
+                            } else if size > 1024 {
+                                format!(" ({:.1}KB)", size as f64 / 1024.0)
+                            } else {
+                                format!(" ({size}B)")
+                            };
+                            files.push(format!("  📄 {name}{size_str}"));
+                        }
+                    }
+                    Ok::<_, std::io::Error>((dirs, files, truncated))
+                }
+                .await;
+
+                match list_directory {
+                    Ok((mut dirs, mut files, truncated)) => {
                         dirs.sort();
                         files.sort();
                         let mut output = format!(
-                            "📁 {} ({} dirs, {} files):\n\n",
+                            "📁 {} ({} dirs, {} files{}):\n\n",
                             full_path.display(),
                             dirs.len(),
-                            files.len()
+                            files.len(),
+                            if truncated {
+                                ", first 500 entries shown"
+                            } else {
+                                ""
+                            }
                         );
                         for d in &dirs {
                             output.push_str(d);
@@ -161,43 +199,68 @@ impl Tool for PlanModeTool {
                     return Ok(ToolOutput::new("Error: 'pattern' required.".to_string()));
                 }
 
-                use std::process::Command;
-                let output = Command::new("grep")
-                    .args([
-                        "-rn",
-                        "--include=*.rs",
-                        "--include=*.ts",
-                        "--include=*.js",
-                        "--include=*.py",
-                        "--include=*.go",
-                        "--include=*.toml",
-                        "--include=*.json",
-                        "--include=*.yaml",
-                        "--include=*.yml",
-                        "--include=*.md",
-                        pattern,
-                        &workdir,
-                    ])
-                    .output();
+                let mut command = tokio::process::Command::new("rg");
+                command.args([
+                    "--line-number",
+                    "--no-heading",
+                    "--color=never",
+                    "--max-columns=400",
+                    "--max-columns-preview",
+                    // Restrict per-file output as a second guard in addition
+                    // to the shared process capture cap.
+                    "--max-count=31",
+                    "--glob=*.rs",
+                    "--glob=*.ts",
+                    "--glob=*.js",
+                    "--glob=*.py",
+                    "--glob=*.go",
+                    "--glob=*.toml",
+                    "--glob=*.json",
+                    "--glob=*.yaml",
+                    "--glob=*.yml",
+                    "--glob=*.md",
+                    "--",
+                    pattern,
+                    &workdir,
+                ]);
+                let output = super::recon_common::run_command_bounded(
+                    command,
+                    "ripgrep",
+                    Duration::from_secs(30),
+                )
+                .await;
 
                 match output {
-                    Ok(out) => {
+                    Ok(out) if out.status.success() || out.status.code() == Some(1) => {
                         let stdout = String::from_utf8_lossy(&out.stdout);
                         let lines: Vec<&str> = stdout.lines().collect();
-                        let total = lines.len();
-                        let display = if total > 30 {
-                            format!(
-                                "{} matches (showing first 30 of {}):\n\n{}",
-                                total,
-                                total,
-                                lines[..30].join("\n")
-                            )
+                        let shown = lines.len().min(30);
+                        let display = if shown == 0 {
+                            "0 matches.".to_string()
                         } else {
-                            format!("{} matches:\n\n{}", total, stdout)
+                            let count = if lines.len() > 30 {
+                                format!("{} matches (showing first 30)", lines.len())
+                            } else {
+                                format!("{} matches", lines.len())
+                            };
+                            format!("{count}:\n\n{}", lines[..shown].join("\n"))
                         };
                         Ok(ToolOutput::new(display))
                     }
-                    Err(e) => Ok(ToolOutput::new(format!("Search error: {e}"))),
+                    Ok(out) => {
+                        let detail = String::from_utf8_lossy(&out.stderr);
+                        let detail = if detail.trim().is_empty() {
+                            String::from_utf8_lossy(&out.stdout).into_owned()
+                        } else {
+                            detail.into_owned()
+                        };
+                        Ok(ToolOutput::new(format!(
+                            "Search failed ({}): {}",
+                            out.status,
+                            crate::alphacode_core::util::truncate_str(detail.trim(), 800)
+                        )))
+                    }
+                    Err(error) => Ok(ToolOutput::new(format!("Search error: {error}"))),
                 }
             }
             "analyze" => {
@@ -208,15 +271,27 @@ impl Tool for PlanModeTool {
 
                 let mut output = String::from("🔍 Project Analysis:\n\n");
 
+                const MAX_ANALYZED_ENTRIES: usize = 2_000;
                 let mut counts: std::collections::HashMap<String, usize> =
                     std::collections::HashMap::new();
-                if let Ok(entries) = std::fs::read_dir(&workdir) {
-                    for entry in entries.flatten() {
+                let mut entries_scanned = 0usize;
+                let mut analysis_truncated = false;
+                if let Ok(mut entries) = tokio::fs::read_dir(&workdir_path).await {
+                    loop {
+                        let entry = match entries.next_entry().await {
+                            Ok(Some(entry)) => entry,
+                            Ok(None) | Err(_) => break,
+                        };
+                        entries_scanned += 1;
+                        if entries_scanned > MAX_ANALYZED_ENTRIES {
+                            analysis_truncated = true;
+                            break;
+                        }
                         let name = entry.file_name().to_string_lossy().to_string();
                         if name.starts_with('.') || name == "target" || name == "node_modules" {
                             continue;
                         }
-                        let ext = std::path::Path::new(&name)
+                        let ext = Path::new(&name)
                             .extension()
                             .and_then(|e| e.to_str())
                             .unwrap_or("other")
@@ -230,6 +305,9 @@ impl Tool for PlanModeTool {
                 sorted.sort_by(|a, b| b.1.cmp(&a.1));
                 for (ext, count) in sorted.iter().take(15) {
                     output.push_str(&format!("  .{ext}: {count} files\n"));
+                }
+                if analysis_truncated {
+                    output.push_str("\nAnalysis was capped after 2,000 directory entries.\n");
                 }
 
                 output.push_str(&format!("\nQuery: {query}"));

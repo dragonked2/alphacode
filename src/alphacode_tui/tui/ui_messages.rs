@@ -2370,13 +2370,25 @@ fn split_resume_hint(detail: &str) -> (&str, Option<&str>) {
 }
 
 fn truncate_connection_line(input: &str, width: usize) -> String {
-    if input.chars().count() <= width {
+    if UnicodeWidthStr::width(input) <= width {
         return input.to_string();
     }
-    if width <= 1 {
+    if width == 0 {
+        return String::new();
+    }
+    if width == 1 {
         return "…".to_string();
     }
-    let mut out: String = input.chars().take(width.saturating_sub(1)).collect();
+    let mut out = String::new();
+    let mut used_width = 0;
+    for grapheme in unicode_segmentation::UnicodeSegmentation::graphemes(input, true) {
+        let grapheme_width = UnicodeWidthStr::width(grapheme);
+        if used_width + grapheme_width > width - 1 {
+            break;
+        }
+        out.push_str(grapheme);
+        used_width += grapheme_width;
+    }
     out.push('…');
     out
 }

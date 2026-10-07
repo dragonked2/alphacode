@@ -88,19 +88,21 @@ pub(super) fn save_agent_model_override(
     target: AgentModelTarget,
     model: Option<&str>,
 ) -> anyhow::Result<()> {
-    let mut cfg = crate::config::Config::load();
     let value = model
         .map(str::trim)
         .filter(|value| !value.is_empty())
         .map(str::to_string);
-    match target {
+    // `mutate_config` rather than a bare `Config::load` + `save`: every other
+    // config mutator rewrites the whole document, so two of them racing would
+    // both write a snapshot taken before the other's change and the loser
+    // would be silently reverted.
+    crate::config::Config::mutate_config(|cfg| match target {
         AgentModelTarget::Swarm => cfg.agents.swarm_model = value,
         AgentModelTarget::Review => cfg.autoreview.model = value,
         AgentModelTarget::Judge => cfg.autojudge.model = value,
         AgentModelTarget::Memory => cfg.agents.memory_model = value,
         AgentModelTarget::Ambient => cfg.ambient.model = value,
-    }
-    cfg.save()
+    })
 }
 
 pub(super) fn model_entry_base_name(entry: &PickerEntry) -> String {

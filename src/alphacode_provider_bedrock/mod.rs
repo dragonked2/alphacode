@@ -1540,7 +1540,6 @@ impl Provider for BedrockProvider {
 mod tests {
     use super::*;
     use std::ffi::{OsStr, OsString};
-    use std::sync::MutexGuard;
 
     #[cfg(feature = "aws-sdk")]
     #[test]
@@ -1566,7 +1565,7 @@ mod tests {
         assert_eq!(normalized["required"], json!(["category"]));
     }
 
-    fn lock_test_env() -> MutexGuard<'static, ()> {
+    fn lock_test_env() -> crate::alphacode_base::storage::TestEnvGuard {
         // Crate-wide test-env lock: these tests sandbox ALPHACODE_HOME and the
         // AWS env vars, which other modules' tests mutate in parallel runs.
         crate::alphacode_base::storage::lock_test_env()

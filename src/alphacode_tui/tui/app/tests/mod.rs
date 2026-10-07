@@ -43,51 +43,16 @@ pub mod tests {
     // Stub implementations for test helpers that no longer exist but are still
     // referenced by legacy `include!`-ed test files.
 
-    fn create_test_app_inner() -> App {
-        ensure_test_alphacode_home_if_unset();
-        clear_persisted_test_ui_state();
-        crate::alphacode_tui::tui::ui::clear_test_render_state_for_tests();
-        struct StubProvider;
-        #[async_trait::async_trait]
-        impl crate::alphacode_provider_core::Provider for StubProvider {
-            async fn complete(
-                &self,
-                _messages: &[crate::alphacode_message_types::Message],
-                _tools: &[crate::alphacode_message_types::ToolDefinition],
-                _system: &str,
-                _resume_session_id: Option<&str>,
-            ) -> Result<crate::alphacode_provider_core::EventStream> {
-                unimplemented!("StubProvider")
-            }
-            fn name(&self) -> &str {
-                "stub"
-            }
-            fn model(&self) -> String {
-                "stub-model".to_string()
-            }
-            fn fork(&self) -> Arc<dyn crate::alphacode_provider_core::Provider> {
-                Arc::new(Self)
-            }
-        }
-        let provider = Arc::new(StubProvider);
-        let rt = tokio::runtime::Runtime::new().unwrap();
-        let registry = rt.block_on(crate::tool::Registry::new(provider.clone()));
-        let mut app = App::new_for_test_harness(provider, registry);
-        app.queue_mode = false;
-        app.diff_mode = crate::config::DiffDisplayMode::Inline;
-        app
-    }
-
     /// A stub that models the one provider capability the fast-mode tests
     /// exercise.
     ///
-    /// `create_test_app_inner`'s `StubProvider` inherits the trait's default
-    /// `set_service_tier`, which returns `Err("This provider does not support
-    /// service tier switching")`. `save_openai_fast_setting_local` discards that
-    /// error with `let _ =`, so the config was written correctly while the
-    /// in-memory provider kept reporting `None` — and the test failed on the
-    /// session half of the behaviour with no indication of why. A stub that
-    /// supports the feature is the only honest way to test that it is applied.
+    /// A provider that inherits the trait's default `set_service_tier` gets
+    /// `Err("This provider does not support service tier switching")`.
+    /// `save_openai_fast_setting_local` discards that error with `let _ =`, so
+    /// the config was written correctly while the in-memory provider kept
+    /// reporting `None` — and the test failed on the session half of the
+    /// behaviour with no indication of why. A stub that supports the feature is
+    /// the only honest way to test that it is applied.
     struct FastProvider {
         service_tier: Arc<std::sync::Mutex<Option<String>>>,
     }
@@ -187,8 +152,46 @@ pub mod tests {
         app.diff_mode = crate::config::DiffDisplayMode::Inline;
         (app, active)
     }
+    /// A stub that reports the identity the *real* Gemini runtime reports.
+    ///
+    /// The info widget derives provider identity from the live provider
+    /// (`name()` plus `model()`), so a generic stub makes `widget_route_info` fall
+    /// through to `Unknown` and the widget cannot exercise the Gemini branch at
+    /// all. Mirroring `GeminiProvider`'s identity is what makes the test meaningful.
+    struct GeminiIdentityProvider;
+    #[async_trait::async_trait]
+    impl crate::alphacode_provider_core::Provider for GeminiIdentityProvider {
+        async fn complete(
+            &self,
+            _messages: &[crate::alphacode_message_types::Message],
+            _tools: &[crate::alphacode_message_types::ToolDefinition],
+            _system: &str,
+            _resume_session_id: Option<&str>,
+        ) -> Result<crate::alphacode_provider_core::EventStream> {
+            unimplemented!("GeminiIdentityProvider")
+        }
+        fn name(&self) -> &str {
+            "gemini"
+        }
+        fn model(&self) -> String {
+            "gemini-2.5-pro".to_string()
+        }
+        fn fork(&self) -> Arc<dyn crate::alphacode_provider_core::Provider> {
+            Arc::new(Self)
+        }
+    }
+
     fn create_gemini_test_app() -> App {
-        create_test_app_inner()
+        ensure_test_alphacode_home_if_unset();
+        clear_persisted_test_ui_state();
+        crate::alphacode_tui::tui::ui::clear_test_render_state_for_tests();
+        let provider = Arc::new(GeminiIdentityProvider);
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        let registry = rt.block_on(crate::tool::Registry::new(provider.clone()));
+        let mut app = App::new_for_test_harness(provider, registry);
+        app.queue_mode = false;
+        app.diff_mode = crate::config::DiffDisplayMode::Inline;
+        app
     }
 
     fn write_test_config(contents: &str) {
@@ -316,7 +319,9 @@ pub mod tests {
         clear_persisted_test_ui_state();
         crate::alphacode_tui::tui::ui::clear_test_render_state_for_tests();
 
-        struct AntigravityProvider;
+        struct AntigravityProvider {
+            model: Arc<std::sync::Mutex<String>>,
+        }
         #[async_trait::async_trait]
         impl crate::alphacode_provider_core::Provider for AntigravityProvider {
             async fn complete(
@@ -328,14 +333,25 @@ pub mod tests {
             ) -> Result<crate::alphacode_provider_core::EventStream> {
                 unimplemented!("AntigravityProvider")
             }
+            // Matches the display name `MultiProvider` reports for its
+            // Antigravity slot, which is what the production composition root
+            // hands the App. The picker asserts the provider label is preserved
+            // across a model selection, so a lowercase key here would test the
+            // stub rather than the behaviour.
             fn name(&self) -> &str {
-                "antigravity"
+                "Antigravity"
             }
             fn model(&self) -> String {
-                "antigravity-model".to_string()
+                self.model.lock().unwrap().clone()
+            }
+            fn set_model(&self, model: &str) -> Result<()> {
+                *self.model.lock().unwrap() = model.trim().to_string();
+                Ok(())
             }
             fn fork(&self) -> Arc<dyn crate::alphacode_provider_core::Provider> {
-                Arc::new(Self)
+                Arc::new(AntigravityProvider {
+                    model: Arc::clone(&self.model),
+                })
             }
             fn model_routes(&self) -> Vec<crate::alphacode_provider_core::ModelRoute> {
                 [
@@ -358,7 +374,9 @@ pub mod tests {
             }
         }
 
-        let provider = Arc::new(AntigravityProvider);
+        let provider = Arc::new(AntigravityProvider {
+            model: Arc::new(std::sync::Mutex::new("antigravity-model".to_string())),
+        });
         let rt = tokio::runtime::Runtime::new().unwrap();
         let registry = rt.block_on(crate::tool::Registry::new(provider.clone()));
         let mut app = App::new_for_test_harness(provider, registry);

@@ -1661,7 +1661,17 @@ impl App {
             resolved.display_name.clone(),
         );
         self.push_display_message(DisplayMessage::system(
-            "Fetching the model catalog. Switch models anytime with /model.".to_string(),
+            if profile.id == crate::alphacode_provider_metadata::ALPHAX_FREE_PROFILE_ID {
+                if self.is_remote {
+                    "Credentials are saved. The connected session is activating Alphax Free and will select an available free model automatically.".to_string()
+                } else {
+                    "Alphax Free is ready and automatically routes each request to an available free model. Use /model to choose one yourself.".to_string()
+                }
+            } else if self.is_remote {
+                "Credentials are saved. The connected session is refreshing its model catalog.".to_string()
+            } else {
+                "Fetching the model catalog. Switch models anytime with /model.".to_string()
+            },
         ));
     }
 
@@ -1778,106 +1788,117 @@ impl App {
         self.set_status_notice("Login: copilot device flow...");
         self.begin_pending_login(PendingLogin::Copilot);
 
-        tokio::spawn(async move {
-            let client = crate::provider::shared_http_client();
-
-            let device_resp =
-                match crate::alphacode_base::auth::copilot::initiate_device_flow(&client).await {
-                    Ok(resp) => resp,
-                    Err(e) => {
-                        Bus::global().publish(BusEvent::LoginCompleted(LoginCompleted {
-                            provider: "copilot".to_string(),
-                            success: false,
-                            message: format!("Copilot device flow failed: {}", e),
-                        }));
-                        return;
-                    }
-                };
-
-            let user_code = device_resp.user_code.clone();
-            let verification_uri = device_resp.verification_uri.clone();
-
-            let clipboard_ok = copy_to_clipboard(&user_code);
-            let clipboard_msg = if clipboard_ok {
-                " (copied to clipboard - just paste it!)"
-            } else {
-                ""
-            };
-
-            Bus::global().publish(BusEvent::LoginCompleted(LoginCompleted {
-                provider: "copilot_code".to_string(),
-                success: true,
-                message: {
-                    let qr_section = crate::login_qr::markdown_section_for_tui(
-                        &verification_uri,
-                        "Scan this on another device to open the GitHub verification page:",
-                    )
-                    .map(|section| format!("\n\n{section}"))
-                    .unwrap_or_default();
-                    format!(
-                        "GitHub Copilot Login\n\n\
-                         Your code: {}{}\n\n\
-                         Opening browser to {} ...\n\
-                         Paste the code there and authorize.{}\n\n\
-                         Waiting for authorization... (type /cancel to abort)",
-                        user_code, clipboard_msg, verification_uri, qr_section
-                    )
-                },
-            }));
-
-            tokio::time::sleep(std::time::Duration::from_millis(500)).await;
-            let _ = Self::open_auth_browser(&verification_uri);
-
-            let token = match crate::alphacode_base::auth::copilot::poll_for_access_token(
-                &client,
-                &device_resp.device_code,
-                device_resp.interval,
-            )
-            .await
-            {
-                Ok(t) => t,
-                Err(e) => {
-                    Bus::global().publish(BusEvent::LoginCompleted(LoginCompleted {
-                        provider: "copilot".to_string(),
-                        success: false,
-                        message: format!("Copilot login failed: {}", e),
-                    }));
-                    return;
-                }
-            };
-
-            let username =
-                crate::alphacode_base::auth::copilot::fetch_github_username(&client, &token)
-                    .await
-                    .unwrap_or_else(|_| "unknown".to_string());
-
-            match crate::alphacode_base::auth::copilot::save_github_token(&token, &username) {
-                Ok(()) => {
-                    Bus::global().publish(BusEvent::LoginCompleted(LoginCompleted {
-                        provider: "copilot".to_string(),
-                        success: true,
-                        message: format!(
-                            "Authenticated as {} via GitHub Copilot.\n\n\
-                             Copilot models are now available in /model.",
-                            username
-                        ),
-                    }));
-                }
-                Err(e) => {
-                    Bus::global().publish(BusEvent::LoginCompleted(LoginCompleted {
-                        provider: "copilot".to_string(),
-                        success: false,
-                        message: format!("Failed to save Copilot token: {}", e),
-                    }));
-                }
-            }
-        });
-
         self.push_display_message(DisplayMessage::system(
             "GitHub Copilot Login\n\n\
              Starting device flow... please wait. Type /cancel to abort."
                 .to_string(),
         ));
+
+        // Reachable straight from a synchronous key handler, so a bare
+        // `tokio::spawn` would panic when no runtime is entered (tests, exotic
+        // embeddings). Fall back to a dedicated thread with its own runtime.
+        if let Ok(handle) = tokio::runtime::Handle::try_current() {
+            handle.spawn(Self::copilot_device_flow());
+        } else if let Ok(runtime) = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+        {
+            std::thread::spawn(move || runtime.block_on(Self::copilot_device_flow()));
+        }
+    }
+
+    async fn copilot_device_flow() {
+        let client = crate::provider::shared_http_client();
+
+        let device_resp =
+            match crate::alphacode_base::auth::copilot::initiate_device_flow(&client).await {
+                Ok(resp) => resp,
+                Err(e) => {
+                    Bus::global().publish(BusEvent::LoginCompleted(LoginCompleted {
+                        provider: "copilot".to_string(),
+                        success: false,
+                        message: format!("Copilot device flow failed: {}", e),
+                    }));
+                    return;
+                }
+            };
+
+        let user_code = device_resp.user_code.clone();
+        let verification_uri = device_resp.verification_uri.clone();
+
+        let clipboard_ok = copy_to_clipboard(&user_code);
+        let clipboard_msg = if clipboard_ok {
+            " (copied to clipboard - just paste it!)"
+        } else {
+            ""
+        };
+
+        Bus::global().publish(BusEvent::LoginCompleted(LoginCompleted {
+            provider: "copilot_code".to_string(),
+            success: true,
+            message: {
+                let qr_section = crate::login_qr::markdown_section_for_tui(
+                    &verification_uri,
+                    "Scan this on another device to open the GitHub verification page:",
+                )
+                .map(|section| format!("\n\n{section}"))
+                .unwrap_or_default();
+                format!(
+                    "GitHub Copilot Login\n\n\
+                         Your code: {}{}\n\n\
+                         Opening browser to {} ...\n\
+                         Paste the code there and authorize.{}\n\n\
+                         Waiting for authorization... (type /cancel to abort)",
+                    user_code, clipboard_msg, verification_uri, qr_section
+                )
+            },
+        }));
+
+        tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+        let _ = Self::open_auth_browser(&verification_uri);
+
+        let token = match crate::alphacode_base::auth::copilot::poll_for_access_token(
+            &client,
+            &device_resp.device_code,
+            device_resp.interval,
+        )
+        .await
+        {
+            Ok(t) => t,
+            Err(e) => {
+                Bus::global().publish(BusEvent::LoginCompleted(LoginCompleted {
+                    provider: "copilot".to_string(),
+                    success: false,
+                    message: format!("Copilot login failed: {}", e),
+                }));
+                return;
+            }
+        };
+
+        let username = crate::alphacode_base::auth::copilot::fetch_github_username(&client, &token)
+            .await
+            .unwrap_or_else(|_| "unknown".to_string());
+
+        match crate::alphacode_base::auth::copilot::save_github_token(&token, &username) {
+            Ok(()) => {
+                Bus::global().publish(BusEvent::LoginCompleted(LoginCompleted {
+                    provider: "copilot".to_string(),
+                    success: true,
+                    message: format!(
+                        "Authenticated as {} via GitHub Copilot.\n\n\
+                             Copilot models are now available in /model.",
+                        username
+                    ),
+                }));
+            }
+            Err(e) => {
+                Bus::global().publish(BusEvent::LoginCompleted(LoginCompleted {
+                    provider: "copilot".to_string(),
+                    success: false,
+                    message: format!("Failed to save Copilot token: {}", e),
+                }));
+            }
+        }
     }
 
     fn start_antigravity_login(&mut self) {
@@ -3021,11 +3042,47 @@ impl App {
         }
     }
 
+    /// Refresh the active provider's model catalog off the input/render thread.
+    ///
+    /// Login completion must not block on a network round trip, so this is spawned
+    /// onto the ambient Tokio runtime when there is one and onto a dedicated thread
+    /// with its own runtime otherwise (a synchronous key handler has no ambient
+    /// runtime in tests and in exotic embeddings).
+    fn spawn_post_login_catalog_refresh(&mut self) {
+        let provider = Arc::clone(&self.provider);
+        if let Ok(handle) = tokio::runtime::Handle::try_current() {
+            handle.spawn(async move {
+                if let Err(error) = provider.refresh_model_catalog().await {
+                    crate::logging::info(&format!(
+                        "Post-login model catalog refresh failed: {error}"
+                    ));
+                }
+            });
+        } else {
+            std::thread::spawn(move || {
+                if let Ok(runtime) = tokio::runtime::Builder::new_current_thread()
+                    .enable_all()
+                    .build()
+                {
+                    runtime.block_on(async move {
+                        if let Err(error) = provider.refresh_model_catalog().await {
+                            crate::logging::info(&format!(
+                                "Post-login model catalog refresh failed: {error}"
+                            ));
+                        }
+                    });
+                }
+            });
+        }
+    }
+
     pub(super) fn start_openai_compatible_post_login_activation(
         &mut self,
         provider_id: String,
         provider_label: String,
     ) {
+        let is_alphax_free =
+            provider_id == crate::alphacode_provider_metadata::ALPHAX_FREE_PROFILE_ID;
         crate::logging::event_info(
             "login_post_activation_started",
             vec![
@@ -3037,15 +3094,48 @@ impl App {
         crate::bus::Bus::global().publish(crate::bus::BusEvent::UiActivity(
             crate::bus::UiActivity::catalog(
                 Some(self.session.id.clone()),
-                format!(
-                    "{} Model Discovery Started\n\nSaved credentials are active. Alphacode is fetching the live model catalog, will only switch to a model returned by that catalog, and will show what changed when discovery finishes.",
-                    provider_label
-                ),
-                Some(format!("{}: fetching models...", provider_label)),
+                if is_alphax_free {
+                    format!(
+                        "{} is activating its automatic free route. The service selects an available free model for each request; no model list refresh is needed.",
+                        provider_label
+                    )
+                } else {
+                    format!(
+                        "{} Model Discovery Started\n\nSaved credentials are active. Alphacode is fetching the live model catalog, will only switch to a model returned by that catalog, and will show what changed when discovery finishes.",
+                        provider_label
+                    )
+                },
+                Some(if is_alphax_free {
+                    format!("{}: activating automatic route...", provider_label)
+                } else {
+                    format!("{}: fetching models...", provider_label)
+                }),
             ),
         ));
-        self.set_status_notice(format!("{}: fetching models...", provider_label));
+        self.set_status_notice(if is_alphax_free {
+            format!("{}: activating automatic route...", provider_label)
+        } else {
+            format!("{}: fetching models...", provider_label)
+        });
         self.invalidate_model_picker_cache();
+
+        // A remote client's provider is intentionally inert. The server owns
+        // the provider runtime and must activate newly saved credentials; a
+        // client-side set_model call only produces a misleading capability
+        // error and leaves the session on its previous provider.
+        if self.is_remote {
+            self.post_login_profile_activation_pending = true;
+            if is_alphax_free {
+                crate::bus::Bus::global().publish(crate::bus::BusEvent::LoginCompleted(
+                    crate::bus::LoginCompleted {
+                        provider: provider_label,
+                        success: true,
+                        message: "Credentials are saved. Alphax Free is activating for this session and will automatically select an available free model.".to_string(),
+                    },
+                ));
+            }
+            return;
+        }
 
         // Make the newly saved OpenAI-compatible credentials usable in this
         // session immediately. The normal LoginCompleted path also calls this,
@@ -3053,8 +3143,76 @@ impl App {
         // without requiring a restart or a second user action.
         let provider = Arc::clone(&self.provider);
         let session_id = self.session.id.clone();
-        let before_routes = provider.model_routes();
+        let before_routes = if is_alphax_free {
+            Vec::new()
+        } else {
+            provider.model_routes()
+        };
         self.provider.on_auth_changed();
+        // Record that this flow owns post-login selection, so
+        // `handle_login_completed` does not start a competing model refresh.
+        // Manual API-key login publishes `LoginCompleted` afterward and uses
+        // this flag to suppress a duplicate catalog request. Alphax Free's
+        // bundled-key path completes inline without that event or a catalog
+        // refresh, so it must not leave the flag set for a later login.
+        self.post_login_profile_activation_pending = !is_alphax_free;
+
+        if is_alphax_free {
+            // Alphax Free exposes an internal automatic-routing model alias.
+            // The gateway chooses a concrete free model per request, so asking
+            // it for `/v1/models` is unnecessary and risks replacing the alias
+            // with a paid model from the gateway's broader catalog.
+            let model = crate::provider_catalog::openai_compatible_profile_by_id(&provider_id)
+                .and_then(|profile| profile.default_model)
+                .map(str::to_string)
+                .unwrap_or_else(|| "kilo-auto/free".to_string());
+            let model_request = format!("{provider_id}:{model}");
+            match provider.set_model(&model_request) {
+                Ok(()) => {
+                    let provider_key =
+                        crate::provider::MultiProvider::session_provider_key_for_model_request(
+                            &model_request,
+                            provider.name(),
+                        );
+                    crate::logging::event_info(
+                        "login_post_activation_auto_route_selected",
+                        vec![("provider_id", provider_id), ("model", model.clone())],
+                    );
+                    crate::bus::Bus::global().publish_models_updated();
+                    crate::bus::Bus::global().publish(
+                        crate::bus::BusEvent::ProviderModelActivated {
+                            session_id,
+                            model,
+                            provider_key,
+                            message: format!(
+                                "{} is ready and automatically routes each request to an available free model. Use /model to choose a specific free model.",
+                                provider_label
+                            ),
+                            open_picker: false,
+                        },
+                    );
+                }
+                Err(error) => {
+                    crate::logging::event_error(
+                        "login_post_activation_auto_route_failed",
+                        vec![
+                            ("provider_id", provider_id),
+                            ("model", model),
+                            ("error", error.to_string()),
+                        ],
+                    );
+                    crate::bus::Bus::global().publish(crate::bus::BusEvent::LoginCompleted(
+                        crate::bus::LoginCompleted {
+                            provider: provider_label,
+                            success: false,
+                            message: "Credentials are saved, but Alphax Free could not be activated. Run `alphacode auth status` and `alphacode auth doctor` for a structured diagnosis.".to_string(),
+                        },
+                    ));
+                }
+            }
+            crate::bus::Bus::global().publish(crate::bus::BusEvent::AuthCatalogRefreshReady);
+            return;
+        }
 
         if let Ok(handle) = tokio::runtime::Handle::try_current() {
             handle.spawn(async move {
@@ -3305,6 +3463,19 @@ impl App {
                     prefer_strongest,
                     !profile_activation_owns_selection,
                 );
+                // `Provider::on_auth_changed` is a documented no-op by default
+                // (and a `MultiProvider`'s own post-auth prefetch only covers its
+                // internal slots), so nothing on this path actually refreshes the
+                // catalog - yet `auth_catalog_refresh_pending` is set above and
+                // the UI waits for the `AuthCatalogRefreshReady` that
+                // `trigger_provider_auth_changed` publishes. Run the refresh here
+                // so the flag can actually clear. Skipped when the direct
+                // OpenAI-compatible paste flow already launched the same
+                // refresh, which would otherwise double the network work and
+                // race its model activation.
+                if !std::mem::take(&mut self.post_login_profile_activation_pending) {
+                    self.spawn_post_login_catalog_refresh();
+                }
             }
             // First-run onboarding: once the user has authenticated on a fresh
             // install, walk them through model selection -> continue/suggestions.

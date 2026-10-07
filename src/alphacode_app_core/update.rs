@@ -175,7 +175,9 @@ pub fn fetch_latest_release_blocking() -> Result<GitHubRelease> {
 
     let client = reqwest::blocking::Client::builder()
         .timeout(UPDATE_CHECK_TIMEOUT)
-        .user_agent("alphacode-updater")
+        .user_agent(crate::alphacode_provider_core::with_alphacode_brand(
+            "Alphacode updater",
+        ))
         .build()?;
 
     let mut last_error = None;
@@ -252,7 +254,9 @@ fn latest_main_sha_blocking() -> Result<String> {
     let url = format!("https://api.github.com/repos/{}/commits/main", GITHUB_REPO);
     let client = reqwest::blocking::Client::builder()
         .timeout(UPDATE_CHECK_TIMEOUT)
-        .user_agent("alphacode-updater")
+        .user_agent(crate::alphacode_provider_core::with_alphacode_brand(
+            "Alphacode updater",
+        ))
         .build()?;
 
     let response = github_api_request(&client, &url)
@@ -1200,7 +1204,9 @@ pub fn download_and_install_blocking_with_progress(
     let client = reqwest::blocking::Client::builder()
         .connect_timeout(DOWNLOAD_CONNECT_TIMEOUT)
         .timeout(DOWNLOAD_ATTEMPT_TIMEOUT)
-        .user_agent("alphacode-updater")
+        .user_agent(crate::alphacode_provider_core::with_alphacode_brand(
+            "Alphacode updater",
+        ))
         .build()?;
 
     let total_hint = if asset._size > 0 {

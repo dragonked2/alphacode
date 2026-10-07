@@ -11,7 +11,8 @@
 //! 2. **Unbounded output.** `.output()` buffers all of stdout *and* stderr in
 //!    memory before anything is parsed. `gau` against a large domain routinely
 //!    produces 10^5-10^6 URLs, and ffuf against a large wordlist more.
-//!    [`parse_lines`] caps both the line count and the byte volume.
+//!    [`run_bounded`] now caps captured process output, while [`parse_lines`]
+//!    applies the smaller user-facing result cap.
 //! 3. **Wrong flag names silently fatal.** These are all `goflags` or stdlib
 //!    `flag` programs: an unrecognised flag makes them print usage and exit 2.
 //!    Crucially, goflags directs flag errors to **stdout**, not stderr, so
@@ -26,6 +27,7 @@
 use std::time::Duration;
 
 use anyhow::Result;
+use std::path::Path;
 
 /// Default wall-clock budget for a single recon invocation.
 ///
@@ -41,6 +43,27 @@ pub const MAX_OUTPUT_LINES: usize = 5_000;
 /// Cap on retained output bytes, applied in addition to [`MAX_OUTPUT_LINES`].
 pub const MAX_OUTPUT_BYTES: usize = 2 * 1024 * 1024;
 
+/// Hard per-stream process capture limit. Parsing retains only a small fraction
+/// of this, but allowing some headroom avoids rejecting ordinary large scans.
+const MAX_CAPTURE_BYTES: usize = 16 * 1024 * 1024;
+
+/// Add Alphacode identification to scanners that accept repeated `-H` request
+/// headers. Preserve an explicitly supplied User-Agent.
+pub fn append_default_user_agent_header(args: &mut Vec<String>, headers: &[String]) {
+    let has_user_agent = headers.iter().any(|header| {
+        header
+            .split_once(':')
+            .is_some_and(|(name, _)| name.trim().eq_ignore_ascii_case("user-agent"))
+    });
+    if !has_user_agent {
+        args.push("-H".to_string());
+        args.push(format!(
+            "User-Agent: {}",
+            crate::alphacode_provider_core::ALPHACODE_USER_AGENT
+        ));
+    }
+}
+
 /// Run an external tool with a hard deadline, killing the child on expiry.
 ///
 /// Returns the captured output, or a human-readable error naming the tool and
@@ -50,14 +73,80 @@ pub async fn run_bounded(
     args: &[String],
     timeout: Duration,
 ) -> Result<std::process::Output, String> {
-    // Spawn the Go-installed build when there is one. Done here rather than in
-    // each wrapper so every recon tool gets it: `httpx` collides with the
-    // Python HTTP client, and Go's `~/go/bin` is not on PATH by default on
-    // Windows, so the collision is the common case, not an edge case. The
-    // caller-supplied name is still what errors refer to.
-    let resolved = resolve_program(program);
+    run_bounded_in(program, args, None, timeout).await
+}
 
-    let mut cmd = tokio::process::Command::new(resolved);
+/// Variant of [`run_bounded`] that runs the child from a chosen working
+/// directory. The same timeout, cancellation, and per-stream output caps apply.
+pub async fn run_bounded_in(
+    program: &str,
+    args: &[String],
+    working_dir: Option<&Path>,
+    timeout: Duration,
+) -> Result<std::process::Output, String> {
+    let child = spawn_recon_tool(program, args, working_dir).await?;
+    wait_bounded(child, program, timeout).await
+}
+
+/// Spawn a known recon program, automatically setting up a missing Go tool
+/// once and retrying. Only names with a Go install plan are eligible; arbitrary
+/// command arguments and non-Go tools never trigger an install.
+async fn spawn_recon_tool(
+    program: &str,
+    args: &[String],
+    working_dir: Option<&Path>,
+) -> Result<tokio::process::Child, String> {
+    let mut cmd = recon_command(program, args, working_dir);
+    match cmd.spawn() {
+        Ok(child) => Ok(child),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            let Some(step) = automatic_go_install_plan(program) else {
+                return Err(format!("failed to run {program}: {error}"));
+            };
+
+            let outcome = crate::alphacode_app_core::bugbounty_install::install_one(&step).await;
+            match outcome {
+                crate::alphacode_app_core::bugbounty_install::InstallOutcome::Installed {
+                    ..
+                }
+                | crate::alphacode_app_core::bugbounty_install::InstallOutcome::AlreadyPresent {
+                    ..
+                } => {
+                    let mut retry = recon_command(program, args, working_dir);
+                    retry.spawn().map_err(|retry_error| {
+                        format!(
+                            "Could not launch {program} after successful setup: {retry_error}. Check `alphacode bugbounty doctor {program}`."
+                        )
+                    })
+                }
+                outcome => Err(format!(
+                    "Automatic setup for `{program}` did not complete: {}. Retry with `alphacode bugbounty install {program}`.",
+                    crate::alphacode_app_core::bugbounty_install::install_failure_description(
+                        &outcome
+                    )
+                )),
+            }
+        }
+        Err(error) => Err(format!("failed to run {program}: {error}")),
+    }
+}
+
+fn automatic_go_install_plan(
+    program: &str,
+) -> Option<crate::alphacode_app_core::bugbounty_install::InstallStep> {
+    crate::alphacode_app_core::bugbounty_install::plan_for(program).filter(|step| {
+        step.family == crate::alphacode_app_core::bugbounty_install::InstallFamily::Go
+    })
+}
+
+fn recon_command(
+    program: &str,
+    args: &[String],
+    working_dir: Option<&Path>,
+) -> tokio::process::Command {
+    // Prefer the Go build over a same-named executable on PATH (notably the
+    // Python `httpx` CLI), and find Go tools in the default Go bin directory.
+    let mut cmd = tokio::process::Command::new(resolve_program(program));
     cmd.args(args)
         // Without this, dropping the `Child` on timeout detaches the process
         // instead of killing it and it keeps running in the background.
@@ -65,16 +154,138 @@ pub async fn run_bounded(
         .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped());
-
-    match tokio::time::timeout(timeout, cmd.output()).await {
-        Err(_) => Err(format!(
-            "{program} timed out after {}s and was terminated. \
-             Narrow the target or raise the tool's own timeout.",
-            timeout.as_secs()
-        )),
-        Ok(Err(e)) => Err(format!("failed to run {program}: {e}")),
-        Ok(Ok(out)) => Ok(out),
+    if let Some(working_dir) = working_dir {
+        cmd.current_dir(working_dir);
     }
+    cmd
+}
+
+/// Run a configured command with the same timeout and output guarantees as
+/// [`run_bounded`]. This lets tools keep command-specific environment and
+/// working-directory setup without reintroducing unbounded `output()` calls.
+pub async fn run_command_bounded(
+    mut cmd: tokio::process::Command,
+    program: &str,
+    timeout: Duration,
+) -> Result<std::process::Output, String> {
+    cmd.kill_on_drop(true)
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped());
+
+    let child = cmd
+        .spawn()
+        .map_err(|error| format!("failed to run {program}: {error}"))?;
+    wait_bounded(child, program, timeout).await
+}
+
+/// Collect a spawned child's output with a deadline and per-stream byte cap.
+/// The child must have piped stdout/stderr and `kill_on_drop` enabled.
+pub async fn wait_bounded(
+    mut child: tokio::process::Child,
+    program: &str,
+    timeout: Duration,
+) -> Result<std::process::Output, String> {
+    let stdout = child
+        .stdout
+        .take()
+        .ok_or_else(|| format!("failed to capture {program} stdout"))?;
+    let stderr = child
+        .stderr
+        .take()
+        .ok_or_else(|| format!("failed to capture {program} stderr"))?;
+    let (overflow_tx, mut overflow_rx) = tokio::sync::mpsc::unbounded_channel();
+    let mut stdout_task = tokio::spawn(capture_stream(stdout, overflow_tx.clone()));
+    let mut stderr_task = tokio::spawn(capture_stream(stderr, overflow_tx));
+
+    let wait_for_output = async {
+        let status = tokio::select! {
+            status = child.wait() => status
+                .map_err(|error| format!("failed waiting for {program}: {error}"))?,
+            Some(()) = overflow_rx.recv() => {
+                return Err(output_limit_error(program));
+            }
+        };
+        let stdout = tokio::select! {
+            result = &mut stdout_task => result
+                .map_err(|error| format!("failed reading {program} stdout: {error}"))?
+                .map_err(|error| format!("failed reading {program} stdout: {error}"))?,
+            Some(()) = overflow_rx.recv() => return Err(output_limit_error(program)),
+        };
+        let stderr = tokio::select! {
+            result = &mut stderr_task => result
+                .map_err(|error| format!("failed reading {program} stderr: {error}"))?
+                .map_err(|error| format!("failed reading {program} stderr: {error}"))?,
+            Some(()) = overflow_rx.recv() => return Err(output_limit_error(program)),
+        };
+        Ok::<_, String>((status, stdout, stderr))
+    };
+
+    let (status, (stdout, stdout_truncated), (stderr, stderr_truncated)) =
+        match tokio::time::timeout(timeout, wait_for_output).await {
+            Err(_) => {
+                // The wait future was cancelled by the timeout. Kill the child
+                // before returning so it cannot outlive the tool.
+                let _ = child.kill().await;
+                stdout_task.abort();
+                stderr_task.abort();
+                return Err(format!(
+                    "{program} timed out after {}s and was terminated. \
+                     Narrow the target or raise the tool's own timeout.",
+                    timeout.as_secs()
+                ));
+            }
+            Ok(Err(error)) => {
+                let _ = child.kill().await;
+                stdout_task.abort();
+                stderr_task.abort();
+                return Err(error);
+            }
+            Ok(Ok(output)) => output,
+        };
+
+    debug_assert!(!stdout_truncated && !stderr_truncated);
+
+    Ok(std::process::Output {
+        status,
+        stdout,
+        stderr,
+    })
+}
+
+async fn capture_stream<R>(
+    mut stream: R,
+    overflow_tx: tokio::sync::mpsc::UnboundedSender<()>,
+) -> std::io::Result<(Vec<u8>, bool)>
+where
+    R: tokio::io::AsyncRead + Unpin + Send + 'static,
+{
+    use tokio::io::AsyncReadExt as _;
+
+    let mut captured = Vec::with_capacity(MAX_CAPTURE_BYTES.min(64 * 1024));
+    let mut truncated = false;
+    let mut chunk = [0u8; 16 * 1024];
+    loop {
+        let read = stream.read(&mut chunk).await?;
+        if read == 0 {
+            break;
+        }
+        let remaining = MAX_CAPTURE_BYTES.saturating_sub(captured.len());
+        let keep = read.min(remaining);
+        captured.extend_from_slice(&chunk[..keep]);
+        if keep < read && !truncated {
+            truncated = true;
+            let _ = overflow_tx.send(());
+        }
+    }
+    Ok((captured, truncated))
+}
+
+fn output_limit_error(program: &str) -> String {
+    format!(
+        "{program} produced more than {} MiB of output; it was stopped and partial results were discarded to protect memory and avoid treating incomplete results as complete. Narrow the target or filter the output, then retry.",
+        MAX_CAPTURE_BYTES / (1024 * 1024)
+    )
 }
 
 /// Build the error text for a non-zero exit.
@@ -241,10 +452,8 @@ pub fn truncation_notice(shown: usize, total: usize) -> String {
 
 /// Actionable install hint for a recon binary.
 ///
-/// Delegated to the installer module so there is exactly one place that knows
-/// how each tool is obtained, and so the hint stays correct as tool specs
-/// change. Never installs anything implicitly: a bug-bounty run should not
-/// quietly pull binaries onto the user's machine.
+/// Delegated to the installer module so there is one source of truth for how
+/// each tool is obtained. This hint is used if automatic setup does not work.
 pub fn install_hint(binary: &str) -> String {
     crate::alphacode_app_core::bugbounty_install::install_hint_for(binary)
 }
@@ -282,6 +491,21 @@ pub fn resolve_program(binary: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn automatic_install_is_limited_to_known_go_security_tools() {
+        for binary in ["dalfox", "ffuf"] {
+            let step = automatic_go_install_plan(binary)
+                .unwrap_or_else(|| panic!("{binary} should have a Go install plan"));
+            assert_eq!(
+                step.family,
+                crate::alphacode_app_core::bugbounty_install::InstallFamily::Go
+            );
+            assert_eq!(step.args.first().map(String::as_str), Some("install"));
+        }
+        assert!(automatic_go_install_plan("unknown-tool").is_none());
+        assert!(automatic_go_install_plan("curl").is_none());
+    }
 
     #[test]
     fn resolve_program_prefers_the_go_bin_copy_when_present() {

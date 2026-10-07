@@ -144,20 +144,22 @@ pub fn init() {
 
     let _ = SLOW_OPS.get_or_init(|| Mutex::new(Vec::new()));
     let _ = SUBSYSTEMS.get_or_init(|| Mutex::new(Vec::new()));
-    let _ = ERROR_BUCKETS.get_or_init(|| {
-        Mutex::new(
-            BUCKETS
-                .iter()
-                .map(|&w| ErrorBucket {
-                    window_secs: w,
-                    slots: VecDeque::with_capacity(w as usize),
-                })
-                .collect(),
-        )
-    });
+    let _ = ERROR_BUCKETS.get_or_init(error_buckets);
     let _ = RSS_SAMPLES.get_or_init(|| Mutex::new(VecDeque::with_capacity(HISTORY_CAP)));
 
     crate::logging::info("health: monitor started (month-of-uptime mode)");
+}
+
+fn error_buckets() -> Mutex<Vec<ErrorBucket>> {
+    Mutex::new(
+        BUCKETS
+            .iter()
+            .map(|&w| ErrorBucket {
+                window_secs: w,
+                slots: VecDeque::with_capacity(w as usize),
+            })
+            .collect(),
+    )
 }
 
 /// Register a named subsystem so we can track per-subsystem liveness.
@@ -211,10 +213,13 @@ pub fn record_error() {
 }
 
 fn record_error_into_buckets() {
-    let bucket = match ERROR_BUCKETS.get() {
-        Some(b) => b,
-        None => return,
-    };
+    // `get_or_init`, not `get`: `init()` early-returns once `STARTED` is set, so
+    // with two threads racing to start the monitor a caller can reach
+    // `record_error` after the winner flipped `STARTED` but before it built the
+    // buckets. `get` then saw `None`, dropped the windowed record, and the
+    // 60s/5m/1h error rates silently under-reported the event that
+    // `errors_total` counted.
+    let bucket = ERROR_BUCKETS.get_or_init(error_buckets);
     let now = unix_secs_now();
     let mut guard = bucket.lock().unwrap_or_else(|p| p.into_inner());
     for b in guard.iter_mut() {
@@ -291,10 +296,9 @@ pub fn record_slow_op(label: &str, elapsed: Duration) {
 /// major checkpoints (auto-compact, large session save).  Detects monotonic
 /// growth on idle sessions by comparing current sample to running peak.
 pub fn record_rss_sample(rss_bytes: u64) {
-    let bucket = match RSS_SAMPLES.get() {
-        Some(b) => b,
-        None => return,
-    };
+    // Same `get_or_init` reasoning as `record_error_into_buckets`: an RSS
+    // sample taken before `init()` finished must still land in the series.
+    let bucket = RSS_SAMPLES.get_or_init(|| Mutex::new(VecDeque::with_capacity(HISTORY_CAP)));
     let mut guard = bucket.lock().unwrap_or_else(|p| p.into_inner());
     let now = Instant::now();
     let peak = guard.iter().map(|(_, v)| *v).max().unwrap_or(0);

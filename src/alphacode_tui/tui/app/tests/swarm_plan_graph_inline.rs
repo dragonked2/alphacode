@@ -118,6 +118,7 @@ fn test_upsert_in_place_plan_bump_accumulates_stale_active_diagrams() {
     let mut remote = crate::alphacode_tui::tui::backend::RemoteConnection::dummy();
     remote.mark_history_loaded();
 
+    let _diagram_lock = crate::alphacode_tui::tui::mermaid::active_diagram_test_lock();
     crate::alphacode_tui::tui::mermaid::clear_active_diagrams();
 
     // v1: task running.
@@ -231,6 +232,7 @@ fn test_upsert_in_place_plan_bump_accumulates_stale_active_diagrams() {
         "claim 1 REFINED: accumulation is per distinct graph content, not per version"
     );
 
+    let _diagram_lock = crate::alphacode_tui::tui::mermaid::active_diagram_test_lock();
     crate::alphacode_tui::tui::mermaid::clear_active_diagrams();
 }
 
@@ -245,6 +247,7 @@ fn test_new_registration_silently_shifts_parked_diagram_selection() {
     app.diagram_mode = crate::config::DiagramDisplayMode::Pinned;
     app.diagram_pane_enabled = true;
 
+    let _diagram_lock = crate::alphacode_tui::tui::mermaid::active_diagram_test_lock();
     crate::alphacode_tui::tui::mermaid::clear_active_diagrams();
     crate::alphacode_tui::tui::mermaid::register_active_diagram(0xA, 100, 80, None);
     crate::alphacode_tui::tui::mermaid::register_active_diagram(0xB, 100, 80, None);
@@ -261,6 +264,7 @@ fn test_new_registration_silently_shifts_parked_diagram_selection() {
     assert_eq!(app.last_visible_diagram_hash, Some(0xB));
 
     // A new diagram registers (e.g. a plan bump): everything shifts by one.
+    let _diagram_lock = crate::alphacode_tui::tui::mermaid::active_diagram_test_lock();
     crate::alphacode_tui::tui::mermaid::register_active_diagram(0xD, 100, 80, None);
     let after = crate::alphacode_tui::tui::mermaid::get_active_diagrams();
     assert_eq!(
@@ -290,6 +294,7 @@ fn test_new_registration_silently_shifts_parked_diagram_selection() {
     app.diagram_index = 2; // parked on B in [D, C, B, A]
     app.sync_diagram_fit_context();
     assert_eq!(app.last_visible_diagram_hash, Some(0xB));
+    let _diagram_lock = crate::alphacode_tui::tui::mermaid::active_diagram_test_lock();
     crate::alphacode_tui::tui::mermaid::register_active_diagram(0xA, 100, 80, None);
     let reordered = crate::alphacode_tui::tui::mermaid::get_active_diagrams();
     assert_eq!(
@@ -302,6 +307,7 @@ fn test_new_registration_silently_shifts_parked_diagram_selection() {
         "parked index 2 shifted from B to C without any user action"
     );
 
+    let _diagram_lock = crate::alphacode_tui::tui::mermaid::active_diagram_test_lock();
     crate::alphacode_tui::tui::mermaid::clear_active_diagrams();
 }
 
@@ -316,6 +322,7 @@ fn test_active_diagrams_cap_eviction_swaps_currently_shown_diagram() {
     app.diagram_mode = crate::config::DiagramDisplayMode::Pinned;
     app.diagram_pane_enabled = true;
 
+    let _diagram_lock = crate::alphacode_tui::tui::mermaid::active_diagram_test_lock();
     crate::alphacode_tui::tui::mermaid::clear_active_diagrams();
     for i in 1..=128u64 {
         crate::alphacode_tui::tui::mermaid::register_active_diagram(i, 100, 80, None);
@@ -347,6 +354,7 @@ fn test_active_diagrams_cap_eviction_swaps_currently_shown_diagram() {
         "claim 5 CONFIRMED: eviction silently swaps the shown diagram (1 -> 2)"
     );
 
+    let _diagram_lock = crate::alphacode_tui::tui::mermaid::active_diagram_test_lock();
     crate::alphacode_tui::tui::mermaid::clear_active_diagrams();
 }
 
@@ -369,6 +377,7 @@ fn test_offscreen_plan_graph_message_still_registers_active_diagram() {
     let mut remote = crate::alphacode_tui::tui::backend::RemoteConnection::dummy();
     remote.mark_history_loaded();
 
+    let _diagram_lock = crate::alphacode_tui::tui::mermaid::active_diagram_test_lock();
     crate::alphacode_tui::tui::mermaid::clear_active_diagrams();
 
     // Plan graph message lands first...
@@ -408,6 +417,7 @@ fn test_offscreen_plan_graph_message_still_registers_active_diagram() {
          (body prepare renders all messages; windowing only slices lines)"
     );
 
+    let _diagram_lock = crate::alphacode_tui::tui::mermaid::active_diagram_test_lock();
     crate::alphacode_tui::tui::mermaid::clear_active_diagrams();
 }
 
@@ -432,6 +442,7 @@ fn test_session_change_history_leaks_previous_session_active_diagram() {
     let mut remote = crate::alphacode_tui::tui::backend::RemoteConnection::dummy();
     remote.mark_history_loaded();
 
+    let _diagram_lock = crate::alphacode_tui::tui::mermaid::active_diagram_test_lock();
     crate::alphacode_tui::tui::mermaid::clear_active_diagrams();
 
     // Session A: a plan-graph message lands and renders, registering its
@@ -502,6 +513,7 @@ fn test_session_change_history_leaks_previous_session_active_diagram() {
         "Ctrl+arrow cycling counts the stale cross-session diagram"
     );
 
+    let _diagram_lock = crate::alphacode_tui::tui::mermaid::active_diagram_test_lock();
     crate::alphacode_tui::tui::mermaid::clear_active_diagrams();
 }
 
@@ -940,6 +952,7 @@ fn seed_rendered_plan_graph(
     app: &mut App,
     remote: &mut crate::alphacode_tui::tui::backend::RemoteConnection,
 ) -> u64 {
+    let _diagram_lock = crate::alphacode_tui::tui::mermaid::active_diagram_test_lock();
     crate::alphacode_tui::tui::mermaid::clear_active_diagrams();
     app.handle_server_event(
         swarm_plan_event(1, vec![swarm_plan_graph_item("haiku-1", "write a haiku")]),
@@ -1067,6 +1080,7 @@ fn test_local_clear_command_clears_active_diagrams_but_keeps_swarm_plan_state() 
         "local /clear (reset_current_session)",
     );
 
+    let _diagram_lock = crate::alphacode_tui::tui::mermaid::active_diagram_test_lock();
     crate::alphacode_tui::tui::mermaid::clear_active_diagrams();
 }
 
@@ -1103,6 +1117,7 @@ fn test_local_clear_command_empties_margin_info_widget_diagram_list() {
          from the discarded transcript"
     );
 
+    let _diagram_lock = crate::alphacode_tui::tui::mermaid::active_diagram_test_lock();
     crate::alphacode_tui::tui::mermaid::clear_active_diagrams();
 }
 
@@ -1161,6 +1176,7 @@ fn test_local_rewind_and_undo_leave_stale_active_diagram_and_swarm_plan_state() 
         "local /rewind undo",
     );
 
+    let _diagram_lock = crate::alphacode_tui::tui::mermaid::active_diagram_test_lock();
     crate::alphacode_tui::tui::mermaid::clear_active_diagrams();
 }
 
@@ -1191,6 +1207,7 @@ fn test_recover_session_without_tools_leaves_stale_active_diagram_and_swarm_plan
         "local Ctrl+R recovery (recover_session_without_tools)",
     );
 
+    let _diagram_lock = crate::alphacode_tui::tui::mermaid::active_diagram_test_lock();
     crate::alphacode_tui::tui::mermaid::clear_active_diagrams();
 }
 
@@ -1225,6 +1242,7 @@ fn test_remote_clear_command_clears_active_diagrams_but_keeps_swarm_plan_state()
 
     assert_full_discard_clears_diagrams_but_keeps_plan_state(&mut app, "remote /clear");
 
+    let _diagram_lock = crate::alphacode_tui::tui::mermaid::active_diagram_test_lock();
     crate::alphacode_tui::tui::mermaid::clear_active_diagrams();
 }
 
@@ -1259,6 +1277,7 @@ fn test_disconnected_ctrl_l_clears_view_but_keeps_queue_and_swarm_plan_state() {
 
     assert_full_discard_clears_diagrams_but_keeps_plan_state(&mut app, "disconnected Ctrl+L");
 
+    let _diagram_lock = crate::alphacode_tui::tui::mermaid::active_diagram_test_lock();
     crate::alphacode_tui::tui::mermaid::clear_active_diagrams();
 }
 
@@ -1284,6 +1303,7 @@ fn test_info_widget_diagram_list_populated_only_in_margin_mode() {
     let _render_lock = scroll_render_test_lock();
     let mut app = create_test_app();
 
+    let _diagram_lock = crate::alphacode_tui::tui::mermaid::active_diagram_test_lock();
     crate::alphacode_tui::tui::mermaid::clear_active_diagrams();
     crate::alphacode_tui::tui::mermaid::register_active_diagram(0xA1, 100, 80, None);
     crate::alphacode_tui::tui::mermaid::register_active_diagram(0xA2, 120, 90, None);
@@ -1307,6 +1327,7 @@ fn test_info_widget_diagram_list_populated_only_in_margin_mode() {
         "Pinned mode must NOT feed the margin info widget (dedicated pane instead)"
     );
 
+    let _diagram_lock = crate::alphacode_tui::tui::mermaid::active_diagram_test_lock();
     crate::alphacode_tui::tui::mermaid::clear_active_diagrams();
 }
 
@@ -1327,6 +1348,7 @@ fn test_margin_mode_plan_bump_accumulates_stale_diagram_in_info_widget_list() {
     let mut remote = crate::alphacode_tui::tui::backend::RemoteConnection::dummy();
     remote.mark_history_loaded();
 
+    let _diagram_lock = crate::alphacode_tui::tui::mermaid::active_diagram_test_lock();
     crate::alphacode_tui::tui::mermaid::clear_active_diagrams();
 
     // v1: task running. Render through the real swarm-message markdown path;
@@ -1417,6 +1439,7 @@ fn test_margin_mode_plan_bump_accumulates_stale_diagram_in_info_widget_list() {
         "accumulation is per distinct graph content, not per version number"
     );
 
+    let _diagram_lock = crate::alphacode_tui::tui::mermaid::active_diagram_test_lock();
     crate::alphacode_tui::tui::mermaid::clear_active_diagrams();
 }
 
@@ -1434,6 +1457,7 @@ fn test_margin_mode_has_no_diagram_selection_and_always_shows_newest() {
     app.diagram_mode = crate::config::DiagramDisplayMode::Margin;
     app.diagram_pane_enabled = true;
 
+    let _diagram_lock = crate::alphacode_tui::tui::mermaid::active_diagram_test_lock();
     crate::alphacode_tui::tui::mermaid::clear_active_diagrams();
     crate::alphacode_tui::tui::mermaid::register_active_diagram(0xB1, 100, 80, None);
     crate::alphacode_tui::tui::mermaid::register_active_diagram(0xB2, 100, 80, None);
@@ -1481,6 +1505,7 @@ fn test_margin_mode_has_no_diagram_selection_and_always_shows_newest() {
     // element 0, so a new registration immediately becomes the shown diagram.
     let before = crate::alphacode_tui::tui::TuiState::info_widget_data(&app).diagrams;
     assert_eq!(before[0].hash, 0xB3, "newest diagram is the rendered one");
+    let _diagram_lock = crate::alphacode_tui::tui::mermaid::active_diagram_test_lock();
     crate::alphacode_tui::tui::mermaid::register_active_diagram(0xB4, 100, 80, None);
     let after = crate::alphacode_tui::tui::TuiState::info_widget_data(&app).diagrams;
     assert_eq!(
@@ -1494,6 +1519,7 @@ fn test_margin_mode_has_no_diagram_selection_and_always_shows_newest() {
          selection to go stale"
     );
 
+    let _diagram_lock = crate::alphacode_tui::tui::mermaid::active_diagram_test_lock();
     crate::alphacode_tui::tui::mermaid::clear_active_diagrams();
 }
 
@@ -1533,6 +1559,7 @@ fn test_margin_mode_session_switch_keeps_orphaned_diagram_in_info_widget() {
         "the margin widget would render exactly the orphaned session-A plan graph"
     );
 
+    let _diagram_lock = crate::alphacode_tui::tui::mermaid::active_diagram_test_lock();
     crate::alphacode_tui::tui::mermaid::clear_active_diagrams();
 }
 
@@ -1622,6 +1649,7 @@ fn test_compacted_history_window_drops_plan_graph_but_leaks_diagram_and_plan_sta
         "CompactedHistory window (apply_compacted_history_window)",
     );
 
+    let _diagram_lock = crate::alphacode_tui::tui::mermaid::active_diagram_test_lock();
     crate::alphacode_tui::tui::mermaid::clear_active_diagrams();
 }
 
@@ -1715,6 +1743,7 @@ fn test_remote_rewind_history_response_is_not_session_changed_and_leaks_plan_sta
         "remote /rewind undo (same-session History response)",
     );
 
+    let _diagram_lock = crate::alphacode_tui::tui::mermaid::active_diagram_test_lock();
     crate::alphacode_tui::tui::mermaid::clear_active_diagrams();
 }
 
@@ -1817,6 +1846,7 @@ fn test_local_session_picker_switch_is_never_consumed_and_keeps_plan_graph_state
     assert_eq!(diagrams.len(), 1);
     assert_eq!(diagrams[0].hash, stale_hash);
 
+    let _diagram_lock = crate::alphacode_tui::tui::mermaid::active_diagram_test_lock();
     crate::alphacode_tui::tui::mermaid::clear_active_diagrams();
 }
 
@@ -1838,6 +1868,7 @@ fn test_local_session_picker_switch_is_never_consumed_and_keeps_plan_graph_state
 /// markdown renderer would create it (markdown_render_full.rs
 /// set_streaming_preview_diagram on a complete fenced block).
 fn seed_streaming_preview(app: &mut App, hash: u64) {
+    let _diagram_lock = crate::alphacode_tui::tui::mermaid::active_diagram_test_lock();
     crate::alphacode_tui::tui::mermaid::clear_active_diagrams();
     app.streaming.streaming_text = "```mermaid\ngraph TD; A-->B\n```".to_string();
     app.is_processing = true;
@@ -1876,6 +1907,7 @@ fn test_local_clear_command_clears_streaming_preview_diagram() {
         app.streaming.streaming_text.is_empty(),
         "local /clear: in-flight streaming text is dropped with the transcript"
     );
+    let _diagram_lock = crate::alphacode_tui::tui::mermaid::active_diagram_test_lock();
     crate::alphacode_tui::tui::mermaid::clear_active_diagrams();
 }
 
@@ -1913,6 +1945,7 @@ fn test_local_rewind_and_undo_clear_streaming_preview_diagram() {
         "/rewind undo"
     ));
     assert_streaming_preview_cleared(hash, "local /rewind undo");
+    let _diagram_lock = crate::alphacode_tui::tui::mermaid::active_diagram_test_lock();
     crate::alphacode_tui::tui::mermaid::clear_active_diagrams();
 }
 
@@ -1933,6 +1966,7 @@ fn test_recover_session_without_tools_clears_streaming_preview_diagram() {
         app.streaming.streaming_text.is_empty(),
         "recovery: in-flight streaming text is dropped with the transcript"
     );
+    let _diagram_lock = crate::alphacode_tui::tui::mermaid::active_diagram_test_lock();
     crate::alphacode_tui::tui::mermaid::clear_active_diagrams();
 }
 
@@ -1967,6 +2001,7 @@ fn test_commit_with_emptied_stream_buffer_clears_streaming_preview_diagram() {
 
     assert!(!committed, "empty buffer commits nothing");
     assert_streaming_preview_cleared(hash, "commit with emptied stream buffer");
+    let _diagram_lock = crate::alphacode_tui::tui::mermaid::active_diagram_test_lock();
     crate::alphacode_tui::tui::mermaid::clear_active_diagrams();
 }
 

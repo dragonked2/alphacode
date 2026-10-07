@@ -15,10 +15,6 @@ pub(crate) struct ResolvedTokenPricing {
     /// Whether the active model is Anthropic/Claude (drives split-accounting and
     /// the cache-write premium).
     pub is_anthropic: bool,
-    /// True when the price is a list-price estimate for a credential that is
-    /// not metered per token (OAuth subscription, free tier). Estimates feed
-    /// the usage widget only; they are never recorded as real API-key spend.
-    pub estimated: bool,
 }
 
 impl ResolvedTokenPricing {
@@ -218,6 +214,15 @@ impl App {
                     .is_some_and(|profile| profile.requires_api_key)
         };
 
+        // A subscription / free-tier / direct-no-auth credential is not metered
+        // per token: there is no per-token price to bill, so the session total
+        // must stay at $0 instead of accruing a list-price estimate the user is
+        // never charged. The info widget renders subscription limits for these
+        // transports, so nothing is lost by reporting "no cost".
+        if !billed_per_token {
+            return;
+        }
+
         let model = self.provider.model().to_string();
         self.refresh_cached_pricing(&model, is_anthropic, is_openai);
 
@@ -233,10 +238,6 @@ impl App {
             completion_price,
             cache_read_price,
             is_anthropic,
-            // Free/subscription credentials are not metered per token, but the
-            // usage widget should still show what the tokens cost at list
-            // price instead of a stuck $0.
-            estimated: !billed_per_token,
         };
 
         let call_cost = pricing.cost_for_usage(
@@ -246,11 +247,7 @@ impl App {
             self.streaming.streaming_cache_creation_tokens.unwrap_or(0),
         );
         self.cost.total_cost += call_cost;
-        // Estimates are display-only: never record them as real API-key spend
-        // in the cross-provider activity ledger.
-        if billed_per_token {
-            self.record_api_key_spend(call_cost);
-        }
+        self.record_api_key_spend(call_cost);
     }
 
     /// Accrue the dollar cost of a single completed remote API call.
@@ -288,11 +285,7 @@ impl App {
             cache_creation_delta,
         );
         self.cost.total_cost += call_cost;
-        // Estimates (free/subscription credentials) are display-only: never
-        // record them as real API-key spend in the activity ledger.
-        if !pricing.estimated {
-            self.record_api_key_spend(call_cost);
-        }
+        self.record_api_key_spend(call_cost);
     }
 
     /// Seed `cost.total_cost` from token totals restored when resuming a
@@ -382,16 +375,19 @@ impl App {
                 || provider_name.contains("cerebras")
                 || provider_name.contains("compatible")
         };
+        // Not metered per token (OAuth subscription, free tier, a provider we
+        // cannot price): there is no per-token price to bill, so report "no
+        // pricing" and leave the session total at $0.
+        if !billed {
+            return None;
+        }
+
         self.refresh_cached_pricing(&model, is_anthropic, is_openai);
         Some(ResolvedTokenPricing {
             prompt_price: *self.cost.cached_prompt_price.get_or_insert(15.0),
             completion_price: *self.cost.cached_completion_price.get_or_insert(60.0),
             cache_read_price: self.cost.cached_cache_read_price,
             is_anthropic,
-            // Free/subscription credentials are not metered per token, but the
-            // usage widget should still show what the tokens cost at list
-            // price instead of a stuck $0.
-            estimated: !billed,
         })
     }
 

@@ -31,7 +31,11 @@ const LOAD_ENDPOINTS: &[&str] = &[
     "https://daily-cloudcode-pa.sandbox.googleapis.com",
     "https://autopush-cloudcode-pa.sandbox.googleapis.com",
 ];
-const GOOGLE_OAUTH_USER_AGENT: &str = "google-api-nodejs-client/9.15.1";
+const GOOGLE_OAUTH_USER_AGENT: &str = concat!(
+    "google-api-nodejs-client/9.15.1 Alphacode/",
+    env!("CARGO_PKG_VERSION"),
+    " (+https://alphacli.github.io/)"
+);
 
 fn antigravity_client_id() -> String {
     std::env::var(CLIENT_ID_ENV)
@@ -66,11 +70,20 @@ fn metadata_platform() -> &'static str {
 
 fn user_agent() -> String {
     if cfg!(target_os = "windows") {
-        format!("antigravity/{} windows/amd64", antigravity_version())
+        crate::alphacode_provider_core::with_alphacode_brand(&format!(
+            "antigravity/{} windows/amd64",
+            antigravity_version()
+        ))
     } else if cfg!(target_arch = "aarch64") {
-        format!("antigravity/{} darwin/arm64", antigravity_version())
+        crate::alphacode_provider_core::with_alphacode_brand(&format!(
+            "antigravity/{} darwin/arm64",
+            antigravity_version()
+        ))
     } else {
-        format!("antigravity/{} darwin/amd64", antigravity_version())
+        crate::alphacode_provider_core::with_alphacode_brand(&format!(
+            "antigravity/{} darwin/amd64",
+            antigravity_version()
+        ))
     }
 }
 

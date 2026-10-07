@@ -583,7 +583,8 @@ fn test_mouse_click_in_input_moves_cursor_to_clicked_position() {
     let layout = crate::alphacode_tui::tui::ui::last_layout_snapshot().expect("layout snapshot");
     let input_area = layout.input_area.expect("input area");
     let next_prompt = crate::alphacode_tui::tui::ui::input_ui::next_input_prompt_number(&app);
-    let prompt_len = crate::alphacode_tui::tui::ui::input_ui::input_prompt_len(&app, next_prompt) as u16;
+    let prompt_len =
+        crate::alphacode_tui::tui::ui::input_ui::input_prompt_len(&app, next_prompt) as u16;
 
     let handled = app.handle_mouse_event(MouseEvent {
         kind: MouseEventKind::Down(MouseButton::Left),
@@ -671,7 +672,8 @@ fn test_mouse_click_in_input_switches_focus_from_side_panel() {
     let layout = crate::alphacode_tui::tui::ui::last_layout_snapshot().expect("layout snapshot");
     let input_area = layout.input_area.expect("input area");
     let next_prompt = crate::alphacode_tui::tui::ui::input_ui::next_input_prompt_number(&app);
-    let prompt_len = crate::alphacode_tui::tui::ui::input_ui::input_prompt_len(&app, next_prompt) as u16;
+    let prompt_len =
+        crate::alphacode_tui::tui::ui::input_ui::input_prompt_len(&app, next_prompt) as u16;
 
     let handled = app.handle_mouse_event(MouseEvent {
         kind: MouseEventKind::Down(MouseButton::Left),
@@ -716,10 +718,9 @@ fn test_mouse_click_in_wrapped_input_moves_cursor_to_second_visual_line() {
         modifiers: KeyModifiers::empty(),
     });
 
-    // The idle composer no longer reserves space for the old send-mode glyph,
-    // so this 11-column input wraps after eight characters. Column four on the
-    // second visual line is one character into that segment.
-    assert_eq!(app.cursor_pos, 9);
+    // The two-column idle prompt leaves nine columns for text. Column four on
+    // the second visual row maps after the first character of that segment.
+    assert_eq!(app.cursor_pos, 10);
 }
 
 /// End-to-end: a real left-click on an inline image's label line maps the
@@ -1270,4 +1271,3 @@ fn test_click_on_inline_image_body_cycles_level() {
         "clicking blank space beside the image must not cycle it"
     );
 }
-

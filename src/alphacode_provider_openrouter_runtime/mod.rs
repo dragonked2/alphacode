@@ -166,7 +166,10 @@ fn fetch_opencode_latest_version() -> Result<String, anyhow::Error> {
         .timeout(std::time::Duration::from_secs(5))
         .build()?
         .get("https://api.github.com/repos/anomalyco/opencode/releases/latest")
-        .header("User-Agent", "alphacode")
+        .header(
+            "User-Agent",
+            crate::alphacode_provider_core::ALPHACODE_USER_AGENT,
+        )
         .send()?
         .json()?;
     let tag = body["tag_name"]
@@ -539,12 +542,120 @@ pub(crate) fn response_body_reports_context_overflow(body: &str) -> bool {
         || (lower.contains("400") && lower.contains("context"))
 }
 
+/// Process-wide map of server-reported context windows, keyed by
+/// `(api_base, model)`.
+///
+/// A local OpenAI-compatible server's real window is a runtime setting
+/// (`llama-server -c`, Ollama's `OLLAMA_CONTEXT_LENGTH`) that no
+/// `/v1/models` response reports, so the family classifier is the only
+/// source — and it is wildly optimistic for a local server (a
+/// 128K-trained coder model served with `-c 4096` looks like a 128K
+/// endpoint). Once such a server rejects a request with `n_ctx`, that
+/// number *is* the answer, so remember it instead of re-deriving it.
+///
+/// Bounded so a long-lived process that cycles through many
+/// endpoint/model pairs cannot grow this without limit.
+static LEARNED_CONTEXT_LIMITS: OnceLock<Mutex<HashMap<(String, String), usize>>> = OnceLock::new();
+
+const LEARNED_CONTEXT_LIMITS_MAX: usize = 64;
+
+/// Bounds for a server-reported context window. Below the floor is a parse
+/// artifact; above the ceiling is a malformed/unbounded value. Either must
+/// be ignored rather than allowed to shrink or explode the token budget.
+const MIN_PLAUSIBLE_CONTEXT_LIMIT: usize = 512;
+const MAX_PLAUSIBLE_CONTEXT_LIMIT: usize = 32_000_000;
+
+/// Parse a server-reported context size out of a context-overflow error
+/// body. llama.cpp/Ollama include `"n_ctx":4096`, often inside a
+/// *double-encoded* JSON string in `error.message` where the quotes are
+/// backslash-escaped (`\"n_ctx\":4096`), so both spellings are accepted.
+/// The closing quote is required so `n_ctx_train` (the model's *trained*
+/// window, not the window the server serves) can never be matched.
+pub(crate) fn parse_reported_context_tokens(body: &str) -> Option<usize> {
+    let mut search_from = 0;
+    while let Some(rel) = body[search_from..].find("n_ctx") {
+        let start = search_from + rel + "n_ctx".len();
+        search_from = start;
+        // Require a closing quote (possibly backslash-escaped) so we never
+        // latch onto `n_ctx_train`. A non-matching candidate just advances
+        // the scan instead of aborting the whole parse.
+        let rest = &body[start..];
+        let Some(after_key) = rest.strip_prefix('\\').unwrap_or(rest).strip_prefix('"') else {
+            continue;
+        };
+        let Some(after_colon) = after_key.trim_start().strip_prefix(':') else {
+            continue;
+        };
+        let digits: String = after_colon
+            .trim_start()
+            .trim_start_matches('\\')
+            .trim_start_matches('"')
+            .chars()
+            .take_while(|c| c.is_ascii_digit())
+            .collect();
+        let Ok(value) = digits.parse::<usize>() else {
+            continue;
+        };
+        // Sanity-bound: a real context window. Anything else is a parse
+        // artifact and must not be allowed to shrink the budget.
+        if (MIN_PLAUSIBLE_CONTEXT_LIMIT..=MAX_PLAUSIBLE_CONTEXT_LIMIT).contains(&value) {
+            return Some(value);
+        }
+    }
+    None
+}
+
+/// Remember a server-reported context window for `(api_base, model)`.
+pub(crate) fn record_learned_context_limit(api_base: &str, model: &str, limit: usize) {
+    if !(MIN_PLAUSIBLE_CONTEXT_LIMIT..=MAX_PLAUSIBLE_CONTEXT_LIMIT).contains(&limit) {
+        return;
+    }
+    let store = LEARNED_CONTEXT_LIMITS.get_or_init(|| Mutex::new(HashMap::new()));
+    let Ok(mut map) = store.lock() else { return };
+    if map.len() >= LEARNED_CONTEXT_LIMITS_MAX
+        && !map.contains_key(&(api_base.to_string(), model.to_string()))
+    {
+        // Evict the oldest insertion (HashMap iteration order is
+        // arbitrary but stable per-process; the map is a cache, not a
+        // ledger, so any entry may be dropped).
+        if let Some(key) = map.keys().next().cloned() {
+            map.remove(&key);
+        }
+    }
+    map.insert((api_base.to_string(), model.to_string()), limit);
+}
+
+/// A previously server-reported context window for `(api_base, model)`.
+pub(crate) fn learned_context_limit(api_base: &str, model: &str) -> Option<usize> {
+    let store = LEARNED_CONTEXT_LIMITS.get()?;
+    let map = store.lock().ok()?;
+    map.get(&(api_base.to_string(), model.to_string())).copied()
+}
+
+/// How to raise the context window on a local server, phrased for the
+/// server actually in use. A local model started with Ollama's default
+/// (2048/4096) cannot fit alphacode's system prompt plus tool schemas, so
+/// the fix has to name the right knob.
+pub(crate) fn local_endpoint_context_hint(api_base: &str) -> String {
+    if !openai_compat_base_is_local(api_base) {
+        return "Hint: compact the session (/compact), or drop large tool outputs.".to_string();
+    }
+    // `host_str` excludes the port, so the port must be read separately.
+    let parsed = url::Url::parse(api_base.trim()).ok();
+    let port = parsed.as_ref().and_then(|url| url.port());
+    let is_ollama = port == Some(11434);
+    if is_ollama {
+        return "Hint: this Ollama server's window is set by num_ctx (default 2048), which is too small for alphacode's system prompt plus tool schemas. Raise it with `OLLAMA_CONTEXT_LENGTH=16384 ollama serve`, then reload the model; or run a bare model with `--provider ollama`. You can also compact with /compact.".to_string();
+    }
+    "Hint: compact the session (/compact), or restart the server with a larger context (llama-server `-c 16384`; LM Studio sets Context Length in the model loader).".to_string()
+}
+
 /// Conservative context fallback for direct local endpoints when no live
 /// catalog, static table, or family classifier yields a limit.
 ///
 /// Cloud unknown models fall back to the global 2B default elsewhere; local
 /// llama.cpp servers are typically 4K-32K, so returning 2B would let doomed
-/// 11K-token prompts through. Honors `ALPHACODE_OPENROUTER_CONTEXT_WINDOW`
+/// oversized prompts through. Honors `ALPHACODE_OPENROUTER_CONTEXT_WINDOW`
 /// when set, else 16_384 (matches the recommended `llama-server -c 16384`).
 pub(crate) fn local_direct_context_fallback() -> usize {
     if let Ok(raw) = std::env::var("ALPHACODE_OPENROUTER_CONTEXT_WINDOW")
@@ -696,8 +807,11 @@ fn apply_kimi_coding_agent_headers(
     model: Option<&str>,
 ) -> reqwest::RequestBuilder {
     if should_send_kimi_coding_agent_headers(api_base, model) {
-        req.header("User-Agent", KIMI_CODING_USER_AGENT)
-            .header("x-app", KIMI_CODING_X_APP)
+        req.header(
+            "User-Agent",
+            crate::alphacode_provider_core::with_alphacode_brand(KIMI_CODING_USER_AGENT),
+        )
+        .header("x-app", KIMI_CODING_X_APP)
     } else {
         req
     }
@@ -729,7 +843,7 @@ pub fn apply_opencode_provider_headers(
     if let Some(version) = opencode_version() {
         builder = builder.header(
             "User-Agent",
-            format!("{OPENCODE_USER_AGENT_PREFIX}/{version} ai-sdk/provider-utils/4.0.23 runtime/bun/1.3.14"),
+            crate::alphacode_provider_core::with_alphacode_brand(&format!("{OPENCODE_USER_AGENT_PREFIX}/{version} ai-sdk/provider-utils/4.0.23 runtime/bun/1.3.14")),
         );
     }
     builder
@@ -3019,6 +3133,14 @@ impl OpenRouterProvider {
 
     /// Force refresh the models cache from API
     pub async fn refresh_models(&self) -> Result<Vec<ModelInfo>> {
+        // Some compatible gateways expose an automatic model router instead
+        // of a useful /models catalog. These profiles intentionally rely on
+        // their static route alias; probing /models can fail or return models
+        // that are unrelated to the route the user selected.
+        if !self.supports_model_catalog {
+            return Ok(Vec::new());
+        }
+
         fetch_models_from_api(
             self.client.clone(),
             self.api_base.clone(),
@@ -3449,6 +3571,98 @@ mod llamacpp_compat_tests {
         assert!(
             window <= 1_000_000,
             "unknown local model must not fall back to 2B, got {window}"
+        );
+    }
+
+    #[test]
+    fn n_ctx_is_parsed_from_overflow_error_bodies() {
+        // The shape the user actually hit: Ollama double-encodes the
+        // llama.cpp error as a JSON string inside `error.message`.
+        let ollama = r#"{"error":{"message":"{\"error\":{\"code\":400,\"message\":\"request (34014 tokens) exceeds the available context size (4096 tokens), try increasing it\",\"type\":\"exceed_context_size_error\",\"n_prompt_tokens\":34014,\"n_ctx\":4096}}","type":"invalid_request_error","param":null,"code":null}}"#;
+        assert_eq!(parse_reported_context_tokens(ollama), Some(4096));
+
+        // Flat llama.cpp shape.
+        let flat = r#"{"error":{"code":400,"type":"exceed_context_size_error","n_ctx":8192}}"#;
+        assert_eq!(parse_reported_context_tokens(flat), Some(8192));
+
+        // Whitespace and string-quoted variants.
+        assert_eq!(
+            parse_reported_context_tokens(r#"{"n_ctx" : 16384}"#),
+            Some(16384)
+        );
+        assert_eq!(
+            parse_reported_context_tokens(r#"{"n_ctx":"2048"}"#),
+            Some(2048)
+        );
+
+        // Bodies without a reported window, and implausible values.
+        assert_eq!(
+            parse_reported_context_tokens(r#"{"error":"too long"}"#),
+            None
+        );
+        assert_eq!(parse_reported_context_tokens(r#"{"n_ctx":0}"#), None);
+        assert_eq!(parse_reported_context_tokens(r#"{"n_ctx":99999999}"#), None);
+
+        // `n_ctx_train` is the model's *trained* window, not the window this
+        // server serves. The `n_ctx"` anchor must never match it, and the
+        // serving value must win even when the trained one appears first.
+        assert_eq!(
+            parse_reported_context_tokens(r#"{"n_ctx_train":131072,"n_ctx":4096}"#),
+            Some(4096)
+        );
+        assert_eq!(
+            parse_reported_context_tokens(r#"{"n_ctx_train":131072}"#),
+            None
+        );
+    }
+
+    #[test]
+    fn learned_context_limit_round_trips_and_is_scoped_per_endpoint() {
+        let base = "http://127.0.0.1:8080/v1";
+        let model = "learned-round-trip-model";
+        // Clean slate for this test's keys.
+        assert_eq!(learned_context_limit(base, model), None);
+
+        record_learned_context_limit(base, model, 4096);
+        assert_eq!(learned_context_limit(base, model), Some(4096));
+
+        // A different endpoint serving the same model id must not inherit it.
+        assert_eq!(
+            learned_context_limit("http://127.0.0.1:9090/v1", model),
+            None
+        );
+
+        // Implausible values are ignored rather than shrinking the budget.
+        record_learned_context_limit(base, "learned-bad-model", 7);
+        assert_eq!(learned_context_limit(base, "learned-bad-model"), None);
+    }
+
+    #[test]
+    fn local_provider_uses_server_reported_window_over_family_classifier() {
+        // A qwen3-coder served with Ollama's default 4K window: the family
+        // classifier says 128K/2M, which would approve a doomed ~25K prompt.
+        let model = "learned-qwen-window-model";
+        let provider = local_no_auth_provider(model);
+        record_learned_context_limit(&provider.api_base, model, 4096);
+        assert_eq!(provider.context_window(), 4096);
+    }
+
+    #[test]
+    fn local_endpoint_context_hint_names_the_ollama_knob() {
+        let ollama = local_endpoint_context_hint("http://localhost:11434/v1");
+        assert!(
+            ollama.contains("OLLAMA_CONTEXT_LENGTH"),
+            "ollama hint must name the env var that sets the window: {ollama}"
+        );
+        let llamacpp = local_endpoint_context_hint("http://127.0.0.1:8080/v1");
+        assert!(
+            llamacpp.contains("-c 16384"),
+            "llama.cpp hint must name -c: {llamacpp}"
+        );
+        let cloud = local_endpoint_context_hint("https://api.openai.com/v1");
+        assert!(
+            !cloud.contains("OLLAMA_CONTEXT_LENGTH"),
+            "cloud endpoints must not suggest local knobs"
         );
     }
 

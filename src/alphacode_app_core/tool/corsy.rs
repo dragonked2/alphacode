@@ -204,7 +204,13 @@ fn build_args(params: &CorsyInput) -> Result<Vec<String>> {
         args.push("-timeout".to_string());
         args.push(timeout.to_string());
     }
+    super::recon_common::append_default_user_agent_header(&mut args, &params.headers);
     for header in &params.headers {
+        if !header.contains(':') {
+            return Err(anyhow::anyhow!(
+                "invalid header `{header}`: expected the form `Name: value`"
+            ));
+        }
         args.push("-H".to_string());
         args.push(header.clone());
     }
@@ -239,5 +245,33 @@ mod tests {
             let params = normalize_corsy_input(&payload).expect("normalize");
             assert!(!params.url.is_empty());
         }
+    }
+
+    #[test]
+    fn build_args_brands_requests_without_overriding_a_custom_user_agent() {
+        let mut params = normalize_corsy_input(&serde_json::json!({
+            "url": ["https://example.com"]
+        }))
+        .expect("normalize");
+        let args = build_args(&params).expect("args");
+        let default_user_agent = format!(
+            "User-Agent: {}",
+            crate::alphacode_provider_core::ALPHACODE_USER_AGENT
+        );
+        assert!(
+            args.windows(2)
+                .any(|pair| { pair[0] == "-H" && pair[1] == default_user_agent })
+        );
+
+        params.headers.push("User-Agent: scanner-test".to_string());
+        let args = build_args(&params).expect("custom args");
+        let user_agents: Vec<_> = args
+            .windows(2)
+            .filter(|pair| {
+                pair[0] == "-H" && pair[1].to_ascii_lowercase().starts_with("user-agent:")
+            })
+            .collect();
+        assert_eq!(user_agents.len(), 1);
+        assert_eq!(user_agents[0][1], "User-Agent: scanner-test");
     }
 }

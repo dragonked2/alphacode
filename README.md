@@ -22,6 +22,8 @@
 &nbsp;
 [![Firefox Browser Agent](https://img.shields.io/badge/FIREFOX%20BROWSER%20AGENT-FF7139?style=for-the-badge&logo=firefoxbrowser&logoColor=white)](https://addons.mozilla.org/en-US/firefox/addon/alphacode-browser-agent/)
 
+[Official website](https://alphacli.github.io/) · [GitHub repository](https://github.com/dragonked2/alphacode)
+
 [What is AlphaCode?](#what-is-alphacode) ·
 [Quick Start](#quick-start) ·
 [Features](#features) ·

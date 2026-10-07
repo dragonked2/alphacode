@@ -191,7 +191,7 @@ impl Tool for DalfoxTool {
     }
 
     fn description(&self) -> &str {
-        "XSS scanner and payload generator. Use to detect and exploit XSS vulnerabilities in web applications."
+        "XSS scanner and payload generator. Use to detect and exploit XSS vulnerabilities in authorized web applications. If Dalfox or Go is missing, Alphacode attempts to install them on first use; wait for the tool result before choosing another approach, and treat setup failures as a scan that did not run."
     }
 
     fn parameters_schema(&self) -> Value {
@@ -543,10 +543,14 @@ fn build_args(params: &DalfoxInput) -> Result<Vec<String>> {
         args.push("--payload".to_string());
         args.push(payload.clone());
     }
-    if let Some(ref ua) = params.user_agent {
-        args.push("--user-agent".to_string());
-        args.push(ua.clone());
-    }
+    args.push("--user-agent".to_string());
+    args.push(
+        params
+            .user_agent
+            .as_deref()
+            .unwrap_or(crate::alphacode_provider_core::ALPHACODE_USER_AGENT)
+            .to_string(),
+    );
     if let Some(ref cookie) = params.cookie {
         args.push("--cookie".to_string());
         args.push(cookie.clone());

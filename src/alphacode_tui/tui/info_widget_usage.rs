@@ -1,4 +1,6 @@
-use super::{InfoWidgetData, UsageInfo, UsageProvider};
+#[cfg(test)]
+use super::UsageInfo;
+use super::{InfoWidgetData, UsageProvider};
 use crate::alphacode_tui::tui::color_support::rgb;
 use crate::alphacode_tui_style::palette::{Role, role_color};
 use crate::alphacode_tui_style::role::themed_rgb;
@@ -137,6 +139,7 @@ pub(super) fn render_usage_widget(data: &InfoWidgetData, inner: Rect) -> Vec<Lin
     }
 }
 
+#[cfg(test)]
 pub(super) fn render_usage_compact(info: &UsageInfo, width: u16) -> Vec<Line<'static>> {
     if !info.available {
         return Vec::new();

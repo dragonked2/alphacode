@@ -40,7 +40,7 @@ impl Tool for FfufTool {
     }
 
     fn description(&self) -> &str {
-        "Fast web fuzzer for directory and parameter discovery. Brute-forces paths, parameters, and virtual hosts against web servers."
+        "Fast web fuzzer for directory and parameter discovery. Brute-forces paths, parameters, and virtual hosts against authorized web servers. If ffuf or Go is missing, Alphacode attempts to install them on first use; wait for the tool result before choosing another approach, and treat setup failures as a scan that did not run."
     }
 
     fn parameters_schema(&self) -> Value {
@@ -223,6 +223,8 @@ fn build_args(params: &FfufInput) -> Result<Vec<String>> {
         args.push(data.clone());
     }
 
+    let headers = params.headers.as_deref().unwrap_or_default();
+    super::recon_common::append_default_user_agent_header(&mut args, headers);
     if let Some(ref headers) = params.headers {
         for header in headers {
             args.push("-H".to_string());

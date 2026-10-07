@@ -6,6 +6,36 @@ adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [1.0.70] - 2026-10-07
+
+### Changed
+
+- Reduced the built-in system instructions to preserve more of a model's
+  context window for the user's actual request, and improved how context is
+  budgeted during long sessions.
+- Refined the terminal composer, command suggestions, status, header, and
+  progress rendering for clearer interaction and more reliable layout.
+- Combined model, context, usage, and memory into a compact Session panel, with
+  short error summaries and expandable full diagnostics.
+- Added Alphacode's public homepage to default outbound User-Agent headers, the
+  OpenRouter attribution fields, CLI help, package metadata, and the wide TUI
+  header.
+
+### Fixed
+
+- Alphax Free login now activates through the active session, including remote
+  sessions, without unsupported client-side model switching or unnecessary
+  catalog discovery. User-facing status and errors omit internal route details.
+- Improved provider route and catalog activation so login and model selection
+  do not reuse stale catalog state or start competing refreshes.
+- Hardened tool input and output handling with bounded file, HTTP, and process
+  reads, and corrected path and streaming edge cases.
+- Missing Go-based bug-bounty scanners now trigger Go setup and a targeted
+  install on first use, then retry the scan; the default installer includes
+  Dalfox, and failed setup clearly reports that the scan did not run.
+- Fixed composer wrapping, cursor placement, copy selection, and other TUI
+  regressions found during release verification.
+
 ## [1.0.68] - 2026-10-01
 
 ### Added

@@ -334,7 +334,20 @@ pub async fn wait_for_callback_async(port: u16, expected_state: &str) -> Result<
     wait_for_callback_async_on_listener(listener, expected_state).await
 }
 
+/// Bind a loopback listener for the OAuth redirect callback and register it with
+/// the current Tokio reactor.
+///
+/// Synchronous on purpose: the TUI must decide *before* opening a browser
+/// whether it can offer the one-click loopback flow or must fall back to manual
+/// paste. That also makes it reachable straight from a synchronous key handler
+/// with no Tokio runtime entered, and `TcpListener::from_std` panics in that
+/// case. Report "no listener available" instead, so every existing
+/// `.ok()`-style caller degrades to the manual-paste flow rather than aborting
+/// the login.
 pub fn bind_callback_listener(port: u16) -> Result<tokio::net::TcpListener> {
+    if tokio::runtime::Handle::try_current().is_err() {
+        anyhow::bail!("no async runtime is available to host the OAuth callback listener");
+    }
     let std_listener = std::net::TcpListener::bind(format!("127.0.0.1:{port}"))?;
     std_listener.set_nonblocking(true)?;
     Ok(tokio::net::TcpListener::from_std(std_listener)?)
@@ -978,7 +991,10 @@ async fn fetch_claude_profile_email_at_url(
     let resp = client
         .get(profile_url)
         .header("Accept", "application/json")
-        .header("User-Agent", "claude-cli/1.0.0")
+        .header(
+            "User-Agent",
+            crate::alphacode_provider_core::with_alphacode_brand("claude-cli/1.0.0"),
+        )
         .header("anthropic-beta", "oauth-2025-04-20,claude-code-20250219")
         .bearer_auth(access_token)
         .send()

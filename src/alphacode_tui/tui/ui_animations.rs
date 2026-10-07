@@ -19,7 +19,6 @@ use std::sync::OnceLock;
 /// stable line: no flicker, no per-frame cost, no fuzzy glyphs.
 const IDLE_VARIANTS: &[&str] = &["static_logo"];
 /// Where (if anywhere) the decorative idle animation rendered on the last full
-/// Where (if anywhere) the decorative idle animation rendered on the last full
 /// frame, so the run loop can repaint only those rows on animation ticks.
 ///
 /// Packed into one atomic (`None` is the all-ones sentinel, which no real Rect
@@ -519,18 +518,41 @@ fn render_idle_wordmark(buf: &mut Buffer, area: Rect) {
 
     // Render wordmark with per-character gradient
     let wordmark_row = start_row_offset;
-    if wordmark_row < area_h as u16 && wordmark.chars().count() <= area_w {
-        let char_w = area_w.min(wordmark.chars().count());
-        let center_offset = (area.width as usize).saturating_sub(char_w) / 2;
-        for (i, ch) in wordmark.chars().enumerate() {
-            let x = area.x + (center_offset + i) as u16;
+    if wordmark_row < area_h as u16 {
+        // Measure in display columns, not `char`s. The leading sparkle is
+        // double-width: counting characters both mis-centres the wordmark and
+        // drops the following space into the sparkle's trailing cell - a cell the
+        // terminal renders as part of the glyph, not as a blank. A full frame
+        // reaches the terminal through ratatui's diff, which never emits that
+        // trailing column, so styling it here made the animation-only partial
+        // repaint disagree with the full frame.
+        let wordmark_w = unicode_width::UnicodeWidthStr::width(wordmark);
+        if wordmark_w <= area_w {
+            let center_offset = (area.width as usize).saturating_sub(wordmark_w) / 2;
             let y = area_top + wordmark_row;
-            if x < area.x + area.width {
+            let mut x = area.x + center_offset as u16;
+            for (i, ch) in wordmark.chars().enumerate() {
+                let cell_w = u16::try_from(unicode_width::UnicodeWidthChar::width(ch).unwrap_or(0))
+                    .unwrap_or(1)
+                    .max(1);
+                if x >= area.x + area.width {
+                    break;
+                }
                 let color = gradient[i % gradient.len()];
                 let cell = &mut buf[(x, y)];
                 cell.set_char(ch)
                     .set_fg(color)
                     .set_style(Style::default().fg(color).add_modifier(Modifier::BOLD));
+                // A double-width glyph owns every cell it covers; reset the
+                // continuation cells so a previous frame's glyph cannot bleed
+                // through next to it.
+                for offset in 1..cell_w {
+                    let (px, py) = (x + offset, y);
+                    if px < area.x + area.width && py < area.bottom() {
+                        buf[(px, py)].reset();
+                    }
+                }
+                x += cell_w;
             }
         }
     }
@@ -538,7 +560,11 @@ fn render_idle_wordmark(buf: &mut Buffer, area: Rect) {
     // Render breathing separator
     let sep_row = start_row_offset.saturating_add(1);
     if sep_row < area_h as u16 && !separator.is_empty() && area_h > 2 {
-        let center_offset = (area.width as usize).saturating_sub(separator.len()) / 2;
+        // `separator.len()` is a byte count, and box-drawing glyphs are three
+        // bytes each, so using it here pinned the rule to the left edge instead
+        // of centring it.
+        let separator_w = unicode_width::UnicodeWidthStr::width(separator.as_str());
+        let center_offset = (area.width as usize).saturating_sub(separator_w) / 2;
         for (i, ch) in separator.chars().enumerate() {
             let x = area.x + (center_offset + i) as u16;
             let y = area_top + sep_row;
@@ -787,7 +813,6 @@ mod tests {
         assert!(!IDLE_VARIANTS.contains(&"orbit_rings"));
     }
     /// The published animation rectangle is packed into a single atomic word so
-    /// The published animation rectangle is packed into a single atomic word so
     /// the render path can publish it without a lock. `None` uses an all-ones
     /// sentinel, which no real `Rect` can produce because a full-`u16` Rect is
     /// not a valid terminal area. Verify the encoding is lossless.
@@ -852,7 +877,6 @@ mod tests {
     }
 
     /// Narrow reservations must not produce truncated glyphs or panic: the
-    /// Narrow reservations must not produce truncated glyphs or panic: the
     /// wordmark is short and the rendering helper skips lines that would
     /// overflow the available width.
     #[test]
@@ -883,8 +907,6 @@ mod tests {
         }
     }
 
-    /// The run-loop uses `last_idle_animation_area` to decide whether to
-    /// The run-loop uses `last_idle_animation_area` to decide whether to
     /// The run-loop uses `last_idle_animation_area` to decide whether to
     /// repaint the animation rows in place. The static decoration should
     /// still publish the area (so the run loop can stop trying to

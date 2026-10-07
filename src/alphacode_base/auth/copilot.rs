@@ -646,7 +646,10 @@ pub async fn exchange_github_token(
         let resp = client
             .get(COPILOT_TOKEN_URL)
             .header("Authorization", format!("Token {}", github_token))
-            .header("User-Agent", EDITOR_VERSION)
+            .header(
+                "User-Agent",
+                crate::alphacode_provider_core::with_alphacode_brand(EDITOR_VERSION),
+            )
             .send()
             .await
             .context("Failed to exchange GitHub token for Copilot token")?;
@@ -726,7 +729,7 @@ pub async fn verify_copilot_credentials_live(client: &reqwest::Client) -> Result
 /// short-lived HTTP client. Useful for callers (e.g. the TUI crate) that do not
 /// depend on `reqwest` directly.
 pub async fn verify_copilot_credentials_live_default() -> Result<()> {
-    let client = reqwest::Client::new();
+    let client = crate::provider::shared_http_client();
     verify_copilot_credentials_live(&client).await
 }
 
@@ -959,7 +962,10 @@ pub async fn fetch_github_username(client: &reqwest::Client, token: &str) -> Res
     let resp = client
         .get("https://api.github.com/user")
         .header("Authorization", format!("Bearer {}", token))
-        .header("User-Agent", EDITOR_VERSION)
+        .header(
+            "User-Agent",
+            crate::alphacode_provider_core::with_alphacode_brand(EDITOR_VERSION),
+        )
         .send()
         .await
         .context("Failed to fetch GitHub user")?;

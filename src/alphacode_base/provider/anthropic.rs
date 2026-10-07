@@ -35,8 +35,13 @@ pub fn is_cache_ttl_1h() -> bool {
     CACHE_TTL_1H.load(Ordering::Relaxed)
 }
 
-/// User-Agent for OAuth requests, matching the official Claude Code CLI.
-pub const CLAUDE_CLI_USER_AGENT: &str = "claude-cli/2.1.123 (external, sdk-cli)";
+/// User-Agent for OAuth requests, retaining the Claude CLI-compatible prefix
+/// while identifying Alphacode and its public homepage.
+pub const CLAUDE_CLI_USER_AGENT: &str = concat!(
+    "claude-cli/2.1.123 (external, sdk-cli) Alphacode/",
+    env!("CARGO_PKG_VERSION"),
+    " (+https://alphacli.github.io/)"
+);
 
 pub const OAUTH_BETA_HEADERS: &str = ANTHROPIC_OAUTH_BETA_HEADERS;
 

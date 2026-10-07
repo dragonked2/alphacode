@@ -129,7 +129,11 @@ impl Config {
     /// mutators — the TUI thread and a server task, or two setters racing —
     /// both read the pre-mutation state and both write the full document, so the
     /// loser's change vanishes without any error.
-    fn mutate_config<T>(f: impl FnOnce(&mut Self) -> T) -> anyhow::Result<T> {
+    ///
+    /// Public because the TUI's agent-model overrides patch the same document
+    /// from outside this file; they need the same lock, and a bespoke one would
+    /// serialize nothing against these.
+    pub fn mutate_config<T>(f: impl FnOnce(&mut Self) -> T) -> anyhow::Result<T> {
         static CONFIG_WRITE_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
         let _guard = CONFIG_WRITE_LOCK
             .lock()

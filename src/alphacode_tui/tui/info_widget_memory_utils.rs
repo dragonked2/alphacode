@@ -1,30 +1,6 @@
 use super::format_event_for_expanded;
 use super::{MemoryActivity, MemoryEvent, MemoryEventKind, MemoryState};
 
-pub(super) fn memory_active_summary(state: &MemoryState) -> Option<String> {
-    match state {
-        MemoryState::Idle => None,
-        MemoryState::Embedding => Some("searching".to_string()),
-        MemoryState::SidecarChecking { count } => Some(format!("verify {count}")),
-        MemoryState::FoundRelevant { count } => Some(format!("ready {count}")),
-        MemoryState::Extracting { reason } => Some(if reason.trim().is_empty() {
-            "extracting".to_string()
-        } else {
-            format!("extract {}", reason)
-        }),
-        MemoryState::Maintaining { phase } => Some(if phase.trim().is_empty() {
-            "maintaining".to_string()
-        } else {
-            format!("maintain {}", phase)
-        }),
-        MemoryState::ToolAction { action, detail } => Some(if detail.trim().is_empty() {
-            action.clone()
-        } else {
-            format!("{} {}", action, detail)
-        }),
-    }
-}
-
 pub(crate) fn is_traceworthy_memory_event(event: &MemoryEvent) -> bool {
     !matches!(
         event.kind,

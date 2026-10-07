@@ -394,12 +394,13 @@ impl App {
         let detail = detail.trim().to_string();
 
         // A single, friendly line: no "Status: failed" header and no "Continuing
-        // with the current version." footer. Put the recovery hotkey first so it
-        // remains visible when the renderer truncates the notice to one row.
+        // with the current version." footer, and no hard wrap inside the content
+        // itself - the renderer owns wrapping and truncating to one row. Put the
+        // recovery hotkey early so it remains visible when truncated.
         // Bypass `client_maintenance_card_message` (which would prepend a
         // "Status:" line) and set the card content directly.
         let content = format!(
-            "Update needs merge. Your local code and the upstream release have diverged.\n\nPress {} to let an agent merge them, or run `git pull` / `git rebase` manually in the alphacode repo.",
+            "Update needs merge. Your local code and the upstream release have diverged. Press {} to let an agent merge them, or run `git pull` / `git rebase` manually in the alphacode repo.",
             key_label
         );
         self.set_client_maintenance_message(action, content);

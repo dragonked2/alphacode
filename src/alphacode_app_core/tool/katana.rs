@@ -269,6 +269,7 @@ fn build_args(params: &KatanaInput) -> Result<Vec<String>> {
         args.push("-kf".to_string());
         args.push("all".to_string());
     }
+    super::recon_common::append_default_user_agent_header(&mut args, &params.headers);
     for header in &params.headers {
         let h = header.trim();
         if h.is_empty() {

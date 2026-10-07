@@ -3,6 +3,7 @@ use anyhow::Result;
 use async_trait::async_trait;
 use serde::Deserialize;
 use serde_json::{Value, json};
+use std::collections::BTreeMap;
 use std::path::Path;
 
 const MAX_ENTRIES: usize = 100;
@@ -98,12 +99,15 @@ impl Tool for LsTool {
             }
 
             let mut entries: Vec<DirEntry> = Vec::new();
-            collect_entries(&base, 0, &ignore_patterns, &mut entries, MAX_ENTRIES)?;
+            // Keep one lookahead row so the truncation notice distinguishes an
+            // exact 100-entry directory from a longer listing.
+            collect_entries(&base, 0, &ignore_patterns, &mut entries, MAX_ENTRIES + 1)?;
             Ok::<_, anyhow::Error>(entries)
         })
         .await??;
 
-        let truncated = entries.len() >= MAX_ENTRIES;
+        let truncated = entries.len() > MAX_ENTRIES;
+        let entries: Vec<_> = entries.into_iter().take(MAX_ENTRIES).collect();
 
         let mut output = String::new();
         output.push_str(&format!("{}/\n", base_path));
@@ -165,41 +169,43 @@ fn collect_entries(
         return Ok(());
     }
 
-    let mut items: Vec<_> = std::fs::read_dir(dir)?.filter_map(|e| e.ok()).collect();
+    // Retain only the lexically first entries that can fit in the result.
+    // A Vec of the whole directory made `ls` use unbounded memory before its
+    // 100-entry output cap could take effect.
+    let capacity = max.saturating_sub(entries.len()).saturating_add(1);
+    let mut items: BTreeMap<(bool, std::ffi::OsString), (std::fs::DirEntry, bool)> =
+        BTreeMap::new();
+    for item in std::fs::read_dir(dir)? {
+        let Ok(item) = item else { continue };
+        let name = item.file_name();
+        let name_lossy = name.to_string_lossy();
 
-    // Cache file_type from DirEntry (uses cached readdir data, no extra stat on most platforms)
-    // Then sort using cached values instead of calling is_dir() in the comparator
-    let mut typed_items: Vec<(std::fs::DirEntry, bool)> = items
-        .drain(..)
-        .map(|e| {
-            let is_dir = e.file_type().map(|ft| ft.is_dir()).unwrap_or(false);
-            (e, is_dir)
-        })
-        .collect();
-
-    typed_items.sort_by(|(a, a_dir), (b, b_dir)| match (*a_dir, *b_dir) {
-        (true, false) => std::cmp::Ordering::Less,
-        (false, true) => std::cmp::Ordering::Greater,
-        _ => a.file_name().cmp(&b.file_name()),
-    });
-
-    for (item, is_dir) in typed_items {
-        if entries.len() >= max {
-            break;
-        }
-
-        let name = item.file_name().to_string_lossy().to_string();
-
-        if ignore
-            .iter()
-            .any(|p| name == *p || name_matches_ignore(&name, p))
+        if ignore.iter().any(|pattern| {
+            name_lossy == pattern.as_str() || name_matches_ignore(&name_lossy, pattern)
+        }) || (name_lossy.starts_with('.') && name_lossy != "." && name_lossy != "..")
         {
             continue;
         }
 
-        if name.starts_with('.') && name != "." && name != ".." {
-            continue;
+        let is_dir = item.file_type().map(|ft| ft.is_dir()).unwrap_or(false);
+        let key = (!is_dir, name);
+        if items.len() < capacity {
+            items.insert(key, (item, is_dir));
+        } else if items
+            .last_key_value()
+            .is_some_and(|(largest, _)| key.cmp(largest).is_lt())
+        {
+            items.pop_last();
+            items.insert(key, (item, is_dir));
         }
+    }
+
+    for ((_, name), (item, is_dir)) in items {
+        if entries.len() >= max {
+            break;
+        }
+
+        let name = name.to_string_lossy().to_string();
 
         entries.push(DirEntry {
             name: name.clone(),
@@ -214,4 +220,41 @@ fn collect_entries(
     }
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn listing_lookahead_distinguishes_exact_limit_from_truncation() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        for i in 0..=MAX_ENTRIES {
+            std::fs::write(temp.path().join(format!("file-{i:03}.txt")), "x")
+                .expect("create fixture");
+        }
+
+        let mut entries = Vec::new();
+        collect_entries(temp.path(), 0, &[], &mut entries, MAX_ENTRIES + 1)
+            .expect("collect entries");
+        assert!(entries.len() > MAX_ENTRIES);
+        assert_eq!(
+            entries
+                .into_iter()
+                .take(MAX_ENTRIES)
+                .collect::<Vec<_>>()
+                .len(),
+            MAX_ENTRIES
+        );
+
+        let exact = tempfile::tempdir().expect("exact-limit tempdir");
+        for i in 0..MAX_ENTRIES {
+            std::fs::write(exact.path().join(format!("file-{i:03}.txt")), "x")
+                .expect("create fixture");
+        }
+        let mut entries = Vec::new();
+        collect_entries(exact.path(), 0, &[], &mut entries, MAX_ENTRIES + 1)
+            .expect("collect entries");
+        assert_eq!(entries.len(), MAX_ENTRIES);
+    }
 }

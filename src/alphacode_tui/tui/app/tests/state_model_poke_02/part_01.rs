@@ -6,6 +6,7 @@ fn test_side_diagram_uses_left_splitter_instead_of_rounded_box() {
     app.diagram_pane_enabled = true;
     app.diagram_pane_position = crate::config::DiagramPanePosition::Side;
 
+    let _diagram_lock = crate::alphacode_tui::tui::mermaid::active_diagram_test_lock();
     crate::alphacode_tui::tui::mermaid::clear_active_diagrams();
     crate::alphacode_tui::tui::mermaid::register_active_diagram(0x444, 900, 450, Some("side".to_string()));
 
@@ -22,6 +23,7 @@ fn test_side_diagram_uses_left_splitter_instead_of_rounded_box() {
     assert_eq!(buf[(diagram_area.x, diagram_area.y + 1)].symbol(), "│");
     assert!(text.contains("pinned 1/1"), "rendered text: {text}");
 
+    let _diagram_lock = crate::alphacode_tui::tui::mermaid::active_diagram_test_lock();
     crate::alphacode_tui::tui::mermaid::clear_active_diagrams();
 }
 
@@ -377,6 +379,7 @@ fn test_mouse_scroll_over_unfocused_diagram_scrolls_chat_without_resizing_pane()
     app.diagram_pane_anim_start = None;
     app.diagram_focus = false;
 
+    let _diagram_lock = crate::alphacode_tui::tui::mermaid::active_diagram_test_lock();
     crate::alphacode_tui::tui::mermaid::clear_active_diagrams();
     crate::alphacode_tui::tui::mermaid::register_active_diagram(0x444, 900, 450, None);
     let _ = render_and_snap(&app, &mut terminal);
@@ -421,6 +424,7 @@ fn test_mouse_scroll_over_unfocused_diagram_scrolls_chat_without_resizing_pane()
         assert!(app.diagram_pane_anim_start.is_none());
     }
 
+    let _diagram_lock = crate::alphacode_tui::tui::mermaid::active_diagram_test_lock();
     crate::alphacode_tui::tui::mermaid::clear_active_diagrams();
 }
 
@@ -434,6 +438,7 @@ fn test_mouse_scroll_over_focused_diagram_can_noop_at_top() {
     app.diagram_focus = true;
     app.diagram_scroll_y = 0;
 
+    let _diagram_lock = crate::alphacode_tui::tui::mermaid::active_diagram_test_lock();
     crate::alphacode_tui::tui::mermaid::clear_active_diagrams();
     crate::alphacode_tui::tui::mermaid::register_active_diagram(0x446, 900, 450, None);
     crate::alphacode_tui::tui::ui::record_layout_snapshot(
@@ -460,6 +465,7 @@ fn test_mouse_scroll_over_focused_diagram_can_noop_at_top() {
         "this test documents the remaining user-visible no-op case for trace diagnostics"
     );
 
+    let _diagram_lock = crate::alphacode_tui::tui::mermaid::active_diagram_test_lock();
     crate::alphacode_tui::tui::mermaid::clear_active_diagrams();
 }
 
@@ -475,6 +481,7 @@ fn test_dragging_diagram_border_resizes_immediately_without_animation() {
     app.diagram_pane_anim_start = Some(Instant::now());
     app.diagram_pane_dragging = false;
 
+    let _diagram_lock = crate::alphacode_tui::tui::mermaid::active_diagram_test_lock();
     crate::alphacode_tui::tui::mermaid::clear_active_diagrams();
     crate::alphacode_tui::tui::mermaid::register_active_diagram(0x445, 900, 450, None);
     crate::alphacode_tui::tui::ui::record_layout_snapshot(
@@ -504,6 +511,7 @@ fn test_dragging_diagram_border_resizes_immediately_without_animation() {
     assert_eq!(app.diagram_pane_ratio_target, 40);
     assert!(app.diagram_pane_anim_start.is_none());
 
+    let _diagram_lock = crate::alphacode_tui::tui::mermaid::active_diagram_test_lock();
     crate::alphacode_tui::tui::mermaid::clear_active_diagrams();
 }
 
@@ -647,13 +655,18 @@ fn command_cell_at(
         for x in 0..buf.area.width {
             line.push_str(buf[(x, y)].symbol());
         }
-        if let Some(x) = line.find(command) {
-            let after = &line[x + command.len()..];
+        if let Some(byte_index) = line.find(command) {
+            let after = &line[byte_index + command.len()..];
             let is_suggestion_row = after
                 .strip_prefix("  ")
                 .is_some_and(|desc| desc.starts_with(|c: char| !c.is_whitespace()));
             if is_suggestion_row {
-                return Some(buf[(x as u16 + offset, y)].clone());
+                // `String::find` returns a UTF-8 byte offset, while Ratatui's
+                // buffer is indexed by terminal columns. The `▸` selection
+                // marker is three bytes but one column, so convert before
+                // reading the corresponding rendered cell.
+                let column = unicode_width::UnicodeWidthStr::width(&line[..byte_index]);
+                return Some(buf[(column as u16 + offset, y)].clone());
             }
         }
     }

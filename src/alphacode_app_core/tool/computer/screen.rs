@@ -9,6 +9,8 @@ use serde_json::json;
 use std::process::Command;
 use std::time::Duration;
 
+const MAX_SCREENSHOT_BYTES: u64 = 64 * 1024 * 1024;
+
 /// Read width/height from a PNG IHDR chunk. Returns None if not a PNG.
 pub fn png_dimensions(bytes: &[u8]) -> Option<(u32, u32)> {
     const PNG_SIG: [u8; 8] = [0x89, b'P', b'N', b'G', 0x0D, 0x0A, 0x1A, 0x0A];
@@ -39,8 +41,19 @@ fn capture_to_temp(extra_args: &[&str]) -> Result<Vec<u8>> {
         let _ = std::fs::remove_file(&tmp);
         bail!("screencapture failed: {}", err.trim());
     }
-    let bytes = std::fs::read(&tmp).context("failed to read screenshot file")?;
+    let read_result = (|| {
+        let metadata = std::fs::metadata(&tmp).context("failed to inspect screenshot file")?;
+        if metadata.len() > MAX_SCREENSHOT_BYTES {
+            bail!(
+                "screenshot is too large ({} MiB; limit {} MiB)",
+                metadata.len() / (1024 * 1024),
+                MAX_SCREENSHOT_BYTES / (1024 * 1024)
+            );
+        }
+        std::fs::read(&tmp).context("failed to read screenshot file")
+    })();
     let _ = std::fs::remove_file(&tmp);
+    let bytes = read_result?;
     if bytes.is_empty() {
         bail!(
             "screenshot was empty. Grant Screen Recording permission (run the `setup` action), or \

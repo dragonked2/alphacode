@@ -538,6 +538,43 @@ pub const TOKENROUTER_PROFILE: OpenAiCompatibleProfile = OpenAiCompatibleProfile
     requires_api_key: true,
 };
 
+pub const CODECRAFT_PROFILE: OpenAiCompatibleProfile = OpenAiCompatibleProfile {
+    id: "codecraft",
+    display_name: "CodeCraft API",
+    // OpenAI-compatible gateway (https://codecraftapi.com/docs):
+    // chat completions, SSE streaming, tool calling, vision, and
+    // reasoning models behind one endpoint. Keys are `cc_...` and are
+    // sent as `Authorization: Bearer` (also accepted as `x-api-key`).
+    // `default_model` is None: the 33-model catalog changes over time
+    // and `GET /v1/models` is the source of truth, so post-login
+    // activation selects from the live catalog instead of pinning a
+    // possibly-stale id.
+    api_base: "https://codecraftapi.com/v1",
+    api_key_env: "CODECRAFT_API_KEY",
+    env_file: "codecraft.env",
+    setup_url: "https://codecraftapi.com/docs",
+    default_model: None,
+    requires_api_key: true,
+};
+
+pub const UNIKEY_PROFILE: OpenAiCompatibleProfile = OpenAiCompatibleProfile {
+    id: "unikey",
+    display_name: "UniKey",
+    // Wallet-driven unified AI gateway (https://docs.getunikey.ai):
+    // OpenAI-compatible /v1 endpoints (chat, streaming, tools,
+    // embeddings) plus an Anthropic-compatible /v1/messages surface.
+    // Keys are `sk-...` and are sent as `Authorization: Bearer`.
+    // `gpt-5.2` is the model used in the official quick-start and
+    // SDK examples; the wider catalog is refreshed from live
+    // `GET /v1/models` once a key is configured.
+    api_base: "https://www.getunikey.ai/v1",
+    api_key_env: "UNIKEY_API_KEY",
+    env_file: "unikey.env",
+    setup_url: "https://www.getunikey.ai/keys",
+    default_model: Some("gpt-5.2"),
+    requires_api_key: true,
+};
+
 pub const OPENAI_COMPAT_PROFILE: OpenAiCompatibleProfile = OpenAiCompatibleProfile {
     id: "openai-compatible",
     display_name: "OpenAI-compatible",
@@ -560,7 +597,7 @@ pub const UNOROUTER_PROFILE: OpenAiCompatibleProfile = OpenAiCompatibleProfile {
     requires_api_key: true,
 };
 
-pub(crate) const OPENAI_COMPAT_PROFILES: [OpenAiCompatibleProfile; 45] = [
+pub(crate) const OPENAI_COMPAT_PROFILES: [OpenAiCompatibleProfile; 47] = [
     GMICLOUD_PROFILE,
     OPENCODE_PROFILE,
     OPENCODE_GO_PROFILE,
@@ -605,6 +642,8 @@ pub(crate) const OPENAI_COMPAT_PROFILES: [OpenAiCompatibleProfile; 45] = [
     DRAGONMETA_PROFILE,
     TOKENROUTER_PROFILE,
     UNOROUTER_PROFILE,
+    CODECRAFT_PROFILE,
+    UNIKEY_PROFILE,
     OPENAI_COMPAT_PROFILE,
 ];
 
@@ -1356,6 +1395,32 @@ pub const AGENTROUTER_ANTHROPIC_LOGIN_PROVIDER: LoginProviderDescriptor = LoginP
     order: LoginProviderSurfaceOrder::new(Some(40), Some(40), Some(40), Some(40), Some(40)),
 };
 
+pub const CODECRAFT_LOGIN_PROVIDER: LoginProviderDescriptor = LoginProviderDescriptor {
+    id: "codecraft",
+    display_name: "CodeCraft API",
+    auth_kind: LoginProviderAuthKind::ApiKey,
+    auth_state_key: LoginProviderAuthStateKey::OpenRouterLike,
+    auth_status_method: "API key",
+    aliases: &["codecraft-api", "codecraft-api-key"],
+    menu_detail: "API key (cc_...), 33 models via OpenAI-compatible gateway",
+    recommended: false,
+    target: LoginProviderTarget::OpenAiCompatible(CODECRAFT_PROFILE),
+    order: LoginProviderSurfaceOrder::new(Some(43), Some(43), Some(43), Some(43), Some(43)),
+};
+
+pub const UNIKEY_LOGIN_PROVIDER: LoginProviderDescriptor = LoginProviderDescriptor {
+    id: "unikey",
+    display_name: "UniKey",
+    auth_kind: LoginProviderAuthKind::ApiKey,
+    auth_state_key: LoginProviderAuthStateKey::OpenRouterLike,
+    auth_status_method: "API key",
+    aliases: &["getunikey", "unikey-ai"],
+    menu_detail: "API key (sk-...), OpenAI-compatible AI gateway",
+    recommended: false,
+    target: LoginProviderTarget::OpenAiCompatible(UNIKEY_PROFILE),
+    order: LoginProviderSurfaceOrder::new(Some(44), Some(44), Some(44), Some(44), Some(44)),
+};
+
 pub const GOOGLE_LOGIN_PROVIDER: LoginProviderDescriptor = LoginProviderDescriptor {
     id: "google",
     display_name: "Google/Gmail",
@@ -1369,7 +1434,7 @@ pub const GOOGLE_LOGIN_PROVIDER: LoginProviderDescriptor = LoginProviderDescript
     order: LoginProviderSurfaceOrder::new(Some(13), None, None, None, None),
 };
 
-pub(crate) const LOGIN_PROVIDERS: [LoginProviderDescriptor; 57] = [
+pub(crate) const LOGIN_PROVIDERS: [LoginProviderDescriptor; 59] = [
     AUTO_IMPORT_LOGIN_PROVIDER,
     CLAUDE_LOGIN_PROVIDER,
     ALPHAX_FREE_LOGIN_PROVIDER,
@@ -1416,6 +1481,8 @@ pub(crate) const LOGIN_PROVIDERS: [LoginProviderDescriptor; 57] = [
     AGENTROUTER_LOGIN_PROVIDER,
     AGENTROUTER_ANTHROPIC_LOGIN_PROVIDER,
     UNOROUTER_LOGIN_PROVIDER,
+    CODECRAFT_LOGIN_PROVIDER,
+    UNIKEY_LOGIN_PROVIDER,
     LMSTUDIO_LOGIN_PROVIDER,
     OLLAMA_LOGIN_PROVIDER,
     DRAGONMETA_LOGIN_PROVIDER,

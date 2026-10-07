@@ -146,7 +146,11 @@ fn test_model_command_provider_suggestions_include_auto_for_normalized_bare_open
 fn test_remote_fallback_provider_suggestions_normalize_bare_openai_openrouter_routes() {
     with_temp_alphacode_home(|| {
         let prev_api_key = std::env::var_os("OPENROUTER_API_KEY");
+        let prev_openai_key = std::env::var_os("OPENAI_API_KEY");
         crate::alphacode_core::env::set_var("OPENROUTER_API_KEY", "test-openrouter-key");
+        // The bare-OpenAI leg of the suggestion only appears when OpenAI is
+        // actually configured; the scoped home has no credentials of its own.
+        crate::alphacode_core::env::set_var("OPENAI_API_KEY", "sk-test-openai-key");
         crate::alphacode_base::auth::AuthStatus::invalidate_cache();
 
         let mut app = create_test_app();
@@ -165,6 +169,11 @@ fn test_remote_fallback_provider_suggestions_normalize_bare_openai_openrouter_ro
             crate::alphacode_core::env::set_var("OPENROUTER_API_KEY", prev_api_key);
         } else {
             crate::alphacode_core::env::remove_var("OPENROUTER_API_KEY");
+        }
+        if let Some(prev) = prev_openai_key {
+            crate::alphacode_core::env::set_var("OPENAI_API_KEY", prev);
+        } else {
+            crate::alphacode_core::env::remove_var("OPENAI_API_KEY");
         }
         crate::alphacode_base::auth::AuthStatus::invalidate_cache();
     });
@@ -237,19 +246,37 @@ fn test_model_picker_preview_stays_open_and_updates_filter() {
 
 #[test]
 fn test_model_picker_preview_enter_selects_model() {
-    let mut app = create_test_app();
-    configure_test_remote_models(&mut app);
+    // Scoped home, plus the credential the selection depends on: the remote
+    // fallback only offers a route as selectable when its provider is actually
+    // configured, so an empty home makes Enter a no-op ("Model switch failed")
+    // and leaves the picker open. This used to pass only because a sibling test
+    // happened to leave credentials behind in the shared scratch home.
+    with_temp_alphacode_home(|| {
+        let prev_openai_key = std::env::var_os("OPENAI_API_KEY");
+        crate::alphacode_core::env::set_var("OPENAI_API_KEY", "sk-test-openai-key");
+        crate::alphacode_base::auth::AuthStatus::invalidate_cache();
 
-    for c in "/model g52c".chars() {
-        app.handle_key(KeyCode::Char(c), KeyModifiers::empty())
+        let mut app = create_test_app();
+        configure_test_remote_models(&mut app);
+
+        for c in "/model g52c".chars() {
+            app.handle_key(KeyCode::Char(c), KeyModifiers::empty())
+                .unwrap();
+        }
+        app.handle_key(KeyCode::Enter, KeyModifiers::empty())
             .unwrap();
-    }
-    app.handle_key(KeyCode::Enter, KeyModifiers::empty())
-        .unwrap();
 
-    // Enter from preview mode selects the model and closes the picker
-    assert!(app.inline_interactive_state.is_none());
-    assert!(app.input().is_empty());
-    assert_eq!(app.cursor_pos(), 0);
+        // Enter from preview mode selects the model and closes the picker
+        assert!(app.inline_interactive_state.is_none());
+        assert!(app.input().is_empty());
+        assert_eq!(app.cursor_pos(), 0);
+
+        if let Some(prev) = prev_openai_key {
+            crate::alphacode_core::env::set_var("OPENAI_API_KEY", prev);
+        } else {
+            crate::alphacode_core::env::remove_var("OPENAI_API_KEY");
+        }
+        crate::alphacode_base::auth::AuthStatus::invalidate_cache();
+    });
 }
 

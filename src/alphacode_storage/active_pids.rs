@@ -263,7 +263,7 @@ mod tests {
     use super::*;
 
     /// Serialize tests that mutate `ALPHACODE_HOME`.
-    fn lock_env() -> std::sync::MutexGuard<'static, ()> {
+    fn lock_env() -> crate::alphacode_base::storage::TestEnvGuard {
         // Crate-wide test-env lock: these tests mutate ALPHACODE_HOME which
         // every other env-mutating test module touches during parallel runs.
         crate::alphacode_base::storage::lock_test_env()

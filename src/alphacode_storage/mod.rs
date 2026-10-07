@@ -174,8 +174,38 @@ pub fn alphacode_dir() -> Result<PathBuf> {
         return Ok(PathBuf::from(path));
     }
 
-    let home = dirs::home_dir().ok_or_else(|| anyhow::anyhow!("No home directory"))?;
-    Ok(home.join(".alphacode"))
+    // In tests, an unset `ALPHACODE_HOME` must never resolve to the developer's
+    // real `~/.alphacode`. `ALPHACODE_HOME` is process-global and many tests
+    // scope their own temp home and restore the previous value, so any reader
+    // running in that window would otherwise read the user's real credentials,
+    // catalog and session state - and every assertion about them becomes
+    // machine-dependent. The scratch home below is where those tests already
+    // keep their shared state.
+    #[cfg(test)]
+    {
+        Ok(shared_test_alphacode_home())
+    }
+    #[cfg(not(test))]
+    {
+        let home = dirs::home_dir().ok_or_else(|| anyhow::anyhow!("No home directory"))?;
+        Ok(home.join(".alphacode"))
+    }
+}
+
+/// The process-wide scratch `ALPHACODE_HOME` shared by tests that do not scope
+/// their own, and the fallback whenever `ALPHACODE_HOME` is unset in a test
+/// build.
+#[cfg(any(test, feature = "test-support"))]
+pub fn shared_test_alphacode_home() -> PathBuf {
+    static TEST_HOME: std::sync::OnceLock<PathBuf> = std::sync::OnceLock::new();
+    TEST_HOME
+        .get_or_init(|| {
+            let path =
+                std::env::temp_dir().join(format!("alphacode-test-home-{}", std::process::id()));
+            let _ = std::fs::create_dir_all(&path);
+            path
+        })
+        .clone()
 }
 
 pub fn logs_dir() -> Result<PathBuf> {
@@ -529,6 +559,46 @@ pub fn write_bytes(path: &Path, bytes: &[u8]) -> Result<()> {
     write_bytes_inner(path, bytes, true, false)
 }
 
+/// Rename `from` over `to`, retrying the transient failures Windows reports
+/// for a destination that another handle happens to have open.
+///
+/// `std::fs::rename` maps to `MoveFileExW(MOVEFILE_REPLACE_EXISTING)` on
+/// Windows, which fails with `ERROR_ACCESS_DENIED`/`ERROR_SHARING_VIOLATION`
+/// while *any* handle to `to` is open - including the microseconds-long one our
+/// own process holds during a concurrent read or save of the same file. That
+/// is not a data error and it clears on its own, so a short bounded retry turns
+/// a spurious "save failed" into a success instead of surfacing a failure the
+/// caller cannot act on. On Unix `rename` is atomic and ignores open handles,
+/// so it is called directly.
+fn rename_replacing(from: &Path, to: &Path) -> std::io::Result<()> {
+    #[cfg(not(windows))]
+    {
+        std::fs::rename(from, to)
+    }
+    #[cfg(windows)]
+    {
+        // ERROR_ACCESS_DENIED, ERROR_SHARING_VIOLATION, ERROR_LOCK_VIOLATION.
+        const TRANSIENT: [i32; 3] = [5, 32, 33];
+        const ATTEMPTS: u32 = 10;
+        let mut attempt = 0;
+        loop {
+            match std::fs::rename(from, to) {
+                Ok(()) => return Ok(()),
+                Err(error)
+                    if attempt + 1 < ATTEMPTS
+                        && error
+                            .raw_os_error()
+                            .is_some_and(|code| TRANSIENT.contains(&code)) =>
+                {
+                    attempt += 1;
+                    std::thread::sleep(Duration::from_millis(1 << attempt.min(4)));
+                }
+                Err(error) => return Err(error),
+            }
+        }
+    }
+}
+
 fn write_json_inner<T: Serialize + ?Sized>(
     path: &Path,
     value: &T,
@@ -594,14 +664,14 @@ fn write_bytes_inner(path: &Path, bytes: &[u8], durable: bool, secret: bool) -> 
             #[cfg(not(unix))]
             {
                 let _ = std::fs::remove_file(&bak_path);
-                let _ = std::fs::rename(path, &bak_path);
+                let _ = rename_replacing(path, &bak_path);
             }
             if secret && bak_path.exists() {
                 crate::alphacode_core::fs::set_permissions_owner_only(&bak_path)?;
             }
         }
 
-        std::fs::rename(&tmp_path, path)?;
+        rename_replacing(&tmp_path, path)?;
         if secret {
             crate::alphacode_core::fs::set_permissions_owner_only(path)?;
         }

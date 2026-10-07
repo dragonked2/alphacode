@@ -204,9 +204,72 @@ impl fmt::Display for RetryReason {
     }
 }
 
+/// Extract an explicit HTTP status code embedded in an error string
+/// as `status: NNN` (the formatted provider-error diagnostic line)
+/// or `"status":NNN` (JSON error bodies). Matching is
+/// case-insensitive and bounded by non-digit boundaries so model
+/// versions like "gpt-5" do not register as status codes.
+pub fn embedded_http_status(error_str: &str) -> Option<u16> {
+    let lower = error_str.to_ascii_lowercase();
+    let bytes = lower.as_bytes();
+    for needle in ["status:", "\"status\":"] {
+        let mut search_from = 0;
+        while let Some(rel) = lower[search_from..].find(needle) {
+            let start = search_from + rel + needle.len();
+            let after = &lower[start..];
+            let skipped = after.len() - after.trim_start().len();
+            let digits_start = start + skipped;
+            let digits: String = after
+                .trim_start()
+                .chars()
+                .take_while(|c| c.is_ascii_digit())
+                .collect();
+            if digits.len() == 3
+                && let Ok(code) = digits.parse::<u16>()
+            {
+                // Bounded by non-digit boundaries so model
+                // versions like "gpt-5" never register.
+                let digit_end = digits_start + digits.len();
+                let before_ok = digits_start == 0 || !bytes[digits_start - 1].is_ascii_digit();
+                let after_ok = digit_end >= bytes.len() || !bytes[digit_end].is_ascii_digit();
+                if before_ok && after_ok {
+                    return Some(code);
+                }
+            }
+            search_from = start;
+        }
+    }
+    None
+}
+
 /// Inspect a textual error and decide whether it represents a retryable
 /// transient fault.
 pub fn is_retryable_message(error_str: &str) -> bool {
+    // An explicit non-retryable 4xx status means the server rejected
+    // this exact request (bad request, auth, not found, ...). Check it
+    // before the generic needles: every OpenAI-compatible error format
+    // embeds both "chat request failed" and a "timeout: Ns" diagnostic
+    // line, which the needles below would otherwise misread as a
+    // transient fault — turning a permanent 400 into a retry loop that
+    // also shows "Network appears offline".
+    if let Some(code) = embedded_http_status(error_str)
+        && (400..500).contains(&code)
+        && !matches!(code, 408 | 409 | 429)
+    {
+        return false;
+    }
+
+    // The pre-flight context guard fails fast before the request is
+    // sent; the identical request can never succeed until the prompt
+    // shrinks or the server context grows, so it is never transient
+    // even though its diagnostic line embeds "timeout: Ns".
+    if error_str
+        .to_ascii_lowercase()
+        .contains("request exceeds context")
+    {
+        return false;
+    }
+
     let lower = error_str.to_ascii_lowercase();
     if is_transient_transport_error(&lower) {
         return true;
@@ -668,6 +731,74 @@ mod tests {
         ] {
             assert!(!is_retryable_message(s), "{s} should NOT retry");
         }
+    }
+
+    #[test]
+    fn retryable_message_ignores_4xx_embedded_in_formatted_provider_errors() {
+        // The OpenAI-compatible error format embeds both
+        // "chat request failed" and a "timeout: Ns" diagnostic
+        // line, which the generic needles would otherwise match.
+        let err = "openai-compatible chat request failed\n  endpoint: \
+            http://localhost:11434/v1/chat/completions\n  model: \
+            qwen3-coder:latest\n  auth: openai_compat_api_key\n  mode: \
+            streaming\n  context_estimate: ~24936 tokens\n  timeout: \
+            600s\n  status: 400 bad request\n  response: \
+            {\"error\":{\"message\":\"request (34014 tokens) exceeds \
+            the available context size (4096 tokens)\"}}";
+        assert!(!is_retryable_message(err), "400 must not retry");
+        assert!(
+            !is_retryable_message("status: 401 unauthorized, retry later"),
+            "401 must not retry even with retry language"
+        );
+    }
+
+    #[test]
+    fn retryable_message_still_retries_408_429_and_5xx() {
+        for s in [
+            "status: 408 request timeout",
+            "status: 429 too many requests",
+            "status: 429 rate limit exceeded",
+            "status: 500 internal server error",
+            "status: 503 service unavailable",
+        ] {
+            assert!(is_retryable_message(s), "{s} should retry");
+        }
+    }
+
+    #[test]
+    fn ambiguous_4xx_codes_are_left_to_the_existing_needle_list() {
+        // The 4xx guard deliberately excludes 408/409/429 so their fate is
+        // still decided by the pre-existing needles below it, exactly as
+        // before the guard existed. That keeps this change scoped to the
+        // hard-fail codes it targets and does not silently redefine 409.
+        // A bare 409 has never matched a needle (the status-based
+        // `send_with_retry` loop is what retries it), and it must stay that
+        // way; a 409 that *does* carry retry language still retries.
+        assert!(!is_retryable_message("status: 409 conflict"));
+        assert!(is_retryable_message(
+            "status: 409 conflict, please try again shortly"
+        ));
+    }
+
+    #[test]
+    fn pre_flight_context_guard_failure_is_not_retryable() {
+        let err = "OpenAI-compatible request exceeds context\n  \
+            endpoint: http://127.0.0.1:8080/v1/chat/completions\n  \
+            model: alpha\n  mode: streaming\n  context_estimate: \
+            ~11934 prompt tokens + ~2048 reserved output = ~13982 \
+            tokens\n  context_window: 8192 tokens\n  timeout: 600s\n  \
+            Hint: compact the session (/compact)";
+        assert!(!is_retryable_message(err));
+    }
+
+    #[test]
+    fn embedded_http_status_parses_bounded_codes() {
+        assert_eq!(embedded_http_status("status: 400 bad request"), Some(400));
+        assert_eq!(embedded_http_status("\"status\":404"), Some(404));
+        assert_eq!(embedded_http_status("STATUS: 503"), Some(503));
+        // Model versions must not register as statuses.
+        assert_eq!(embedded_http_status("model gpt-5.2 failed"), None);
+        assert_eq!(embedded_http_status("you have 1200 tokens"), None);
     }
 
     #[test]

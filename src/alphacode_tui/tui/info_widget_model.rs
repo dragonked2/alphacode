@@ -184,6 +184,7 @@ pub(super) fn render_model_widget(data: &InfoWidgetData, inner: Rect) -> Vec<Lin
     lines
 }
 
+#[cfg(test)]
 pub(super) fn render_model_info(data: &InfoWidgetData, inner: Rect) -> Vec<Line<'static>> {
     let Some(model) = &data.model else {
         return Vec::new();

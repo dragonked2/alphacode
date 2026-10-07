@@ -1,6 +1,6 @@
 use super::*;
 
-fn test_env_lock() -> std::sync::MutexGuard<'static, ()> {
+fn test_env_lock() -> crate::alphacode_base::storage::TestEnvGuard {
     // Route through the crate-wide test-env lock so these ALPHACODE_HOME
     // mutations serialize against every other module's env-mutating tests
     // (auth, storage, server, providers, ...) during parallel test runs.

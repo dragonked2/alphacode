@@ -34,6 +34,9 @@ pub use crate::alphacode_tui_mermaid::{
 };
 pub use crate::alphacode_tui_mermaid::{ImageScrollBenchmark, cache_stat_syscalls};
 
+#[cfg(test)]
+pub use crate::alphacode_tui_mermaid::active_diagram_test_lock;
+
 #[cfg(feature = "mmdr-size-api")]
 pub use crate::alphacode_tui_mermaid::terminal_theme;
 

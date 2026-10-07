@@ -219,6 +219,7 @@ pub fn free_model_context_limit(model: &str) -> Option<usize> {
 /// is why no `Result` is surfaced to the caller.
 pub async fn refresh_free_pool_from_gateway(api_base: &str) {
     let Ok(client) = reqwest::Client::builder()
+        .user_agent(crate::alphacode_provider_core::ALPHACODE_USER_AGENT)
         .timeout(std::time::Duration::from_secs(10))
         .build()
     else {

@@ -564,6 +564,35 @@ pub fn openai_compatible_profile_static_models(profile: OpenAiCompatibleProfile)
             push("meta-llama/llama-4-maverick");
             push("google/gemini-2.5-flash-preview");
         }
+        // CodeCraft's docs feature claude-opus-4.8 as the flagship
+        // example; keep the documented id selectable before the live
+        // /v1/models refresh populates the full 33-model catalog.
+        "codecraft" => {
+            push("claude-opus-4.8");
+        }
+        // UniKey's documented model families. The catalog changes as
+        // upstream providers release/retire models, so this static
+        // set mirrors the docs' "Common model IDs" table and the
+        // live catalog takes over once a key is configured.
+        "unikey" => {
+            push("gpt-5.2");
+            push("gpt-5.4");
+            push("gpt-5.4-mini");
+            push("gpt-5.4-nano");
+            push("gpt-5.5");
+            push("gpt-5.5-instant");
+            push("claude-sonnet-4-6");
+            push("claude-opus-4-6");
+            push("claude-haiku-4-5");
+            push("gemini-3.5-flash");
+            push("gemini-3-flash");
+            push("deepseek-v3.2");
+            push("kimi-k2.5");
+            push("glm-5.1");
+            push("minimax-m3");
+            push("minimax-m2.7");
+            push("unikey-router");
+        }
         "gemini-api" => {
             push("gemini-2.5-flash");
             push("gemini-2.5-pro");

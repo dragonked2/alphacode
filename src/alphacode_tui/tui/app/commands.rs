@@ -3319,11 +3319,11 @@ pub(super) fn handle_config_command(app: &mut App, trimmed: &str) -> bool {
         return true;
     }
 
-    // /context — show current context usage and session stats
-    if trimmed == "/context" {
-        handle_context_command(app);
-        return true;
-    }
+    // /context is intentionally NOT handled here. `state_ui::handle_info_command`
+    // owns the full session-context snapshot (prompt composition, compaction,
+    // session state, todos, side panel, ...) and titles the card "Context". This
+    // dispatch slot runs earlier in the chain, so a local handler here would
+    // shadow it and replace the real report with a token counter.
 
     // /verify — verify the last change against tests/build
     if trimmed == "/verify" {
@@ -3596,52 +3596,6 @@ fn handle_doctor_command(app: &mut App) {
     }
     lines.push(String::new());
     lines.push("  All checks passed \u{2705}".to_string());
-    app.push_display_message(DisplayMessage::system(lines.join("\n")));
-}
-
-// ---------------------------------------------------------------------------
-// /context — context usage display
-// ---------------------------------------------------------------------------
-
-fn handle_context_command(app: &mut App) {
-    use crate::alphacode_tui::tui::TuiState;
-    let mut lines: Vec<String> = Vec::new();
-    lines.push("\u{1f4ca} Context Usage".to_string());
-    lines.push(String::new());
-    let message_count = TuiState::display_user_message_count(app);
-    lines.push(format!("  User messages: {}", message_count));
-    if let Some((input, output)) = TuiState::total_session_tokens(app) {
-        let total = input + output;
-        let context_limit: u64 = 200_000;
-        let usage_pct = (total as f64 / context_limit as f64 * 100.0).min(100.0);
-        let bar_width: usize = 30;
-        let filled = (usage_pct / 100.0 * bar_width as f64) as usize;
-        let empty = bar_width.saturating_sub(filled);
-        let bar_color = if usage_pct > 80.0 {
-            "\u{1f534}"
-        } else if usage_pct > 50.0 {
-            "\u{1f7e0}"
-        } else {
-            "\u{1f7e2}"
-        };
-        lines.push(format!(
-            "  {}{}{} {:.1}%",
-            bar_color,
-            "\u{2588}".repeat(filled),
-            "\u{2591}".repeat(empty),
-            usage_pct
-        ));
-        lines.push(String::new());
-        lines.push(format!("  Input tokens:  {}k", input / 1000));
-        lines.push(format!("  Output tokens: {}k", output / 1000));
-        lines.push(format!(
-            "  Total:         {}k / {}k",
-            total / 1000,
-            context_limit / 1000
-        ));
-    } else {
-        lines.push("  Token usage: not available".to_string());
-    }
     app.push_display_message(DisplayMessage::system(lines.join("\n")));
 }
 

@@ -191,6 +191,8 @@ pub(crate) fn process_memory_snapshot() -> ProcessMemorySnapshot {
         .unwrap_or_default()
 }
 
+#[cfg(test)]
+pub use active::active_diagram_test_lock;
 pub use active::{
     active_diagram_count, clear_active_diagrams, clear_streaming_preview_diagram,
     get_active_diagrams, register_active_diagram, restore_active_diagrams,

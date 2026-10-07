@@ -27,12 +27,12 @@ impl HttpFlowTool {
         // session. Instead, each named session gets its own jar below and we
         // attach the `cookie` header manually so sessions stay isolated.
         let client = reqwest::Client::builder()
-            .user_agent("alphacode-httpflow/1.0")
+            .user_agent(crate::alphacode_provider_core::ALPHACODE_USER_AGENT)
             .connect_timeout(std::time::Duration::from_secs(20))
             .build()
             .unwrap_or_else(|err| {
                 eprintln!("alphacode: failed to build httpflow client: {err}");
-                reqwest::Client::new()
+                crate::provider::shared_http_client()
             });
 
         Self {

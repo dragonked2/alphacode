@@ -34,7 +34,8 @@ pub use crate::alphacode_compaction_core::{
     SEMANTIC_EMBED_CACHE_CAPACITY, SUMMARY_PROMPT, SYSTEM_OVERHEAD_TOKENS, Summary,
     TOKEN_HISTORY_WINDOW, build_compaction_prompt, build_emergency_summary_text,
     compacted_summary_text_block, content_char_count, effective_context_tokens_from_usage,
-    emergency_strip_large_images, emergency_truncate_large_payloads, estimate_compaction_tokens,
+    emergency_strip_large_images, emergency_truncate_large_payloads,
+    estimate_compaction_tokens_from_chars, estimate_compaction_tokens_from_chars_with_overhead,
     is_request_payload_too_large_error, mean_embedding, message_char_count, safe_compaction_cutoff,
     semantic_cache_key, semantic_goal_text, semantic_message_text, strip_large_images_in_contents,
     summary_payload_char_count,
@@ -166,6 +167,11 @@ pub struct CompactionManager {
     /// Token budget
     token_budget: usize,
 
+    /// Measured system prompt + tool-schema tokens for the active request.
+    /// `None` uses the conservative shared estimate until the first request is
+    /// assembled; the agent refreshes this before each provider call.
+    prompt_overhead_tokens: Option<usize>,
+
     /// Provider-reported input token usage from the latest request.
     /// Used to trigger compaction with real token counts instead of only heuristics.
     observed_input_tokens: Option<u64>,
@@ -218,6 +224,7 @@ impl CompactionManager {
             total_turns: 0,
             suppress_compaction_until_new_message: false,
             token_budget: DEFAULT_TOKEN_BUDGET,
+            prompt_overhead_tokens: None,
             observed_input_tokens: None,
             last_compaction: None,
             mode,
@@ -242,7 +249,15 @@ impl CompactionManager {
 
     /// Update the token budget (e.g., when model changes)
     pub fn set_budget(&mut self, budget: usize) {
+        if self.token_budget != budget {
+            self.prompt_overhead_tokens = None;
+        }
         self.token_budget = budget;
+    }
+
+    /// Update the measured prompt + tool overhead used by context estimates.
+    pub fn set_prompt_overhead_tokens(&mut self, tokens: usize) {
+        self.prompt_overhead_tokens = Some(tokens);
     }
 
     /// Get current token budget
@@ -789,16 +804,31 @@ impl CompactionManager {
 
     /// Get current token estimate using the caller's message list
     pub fn token_estimate_with(&self, all_messages: &[Message]) -> usize {
-        estimate_compaction_tokens(
-            self.active_summary.as_ref(),
-            self.active_message_chars_with(all_messages),
-            self.token_budget,
-        )
+        let message_chars = self.active_message_chars_with(all_messages);
+        let summary_chars = self
+            .active_summary
+            .as_ref()
+            .map(summary_payload_char_count)
+            .unwrap_or(0);
+        let total_chars = summary_chars.saturating_add(message_chars);
+        self.estimate_tokens_from_chars(total_chars)
     }
 
     /// Get current token estimate (backward compat — uses 0 messages, only summary + observed)
     pub fn token_estimate(&self) -> usize {
-        estimate_compaction_tokens(self.active_summary.as_ref(), 0, self.token_budget)
+        let summary_chars = self
+            .active_summary
+            .as_ref()
+            .map(summary_payload_char_count)
+            .unwrap_or(0);
+        self.estimate_tokens_from_chars(summary_chars)
+    }
+
+    fn estimate_tokens_from_chars(&self, total_chars: usize) -> usize {
+        self.prompt_overhead_tokens.map_or_else(
+            || estimate_compaction_tokens_from_chars(total_chars, self.token_budget),
+            |overhead| estimate_compaction_tokens_from_chars_with_overhead(total_chars, overhead),
+        )
     }
 
     /// Store provider-reported input token usage for compaction decisions.

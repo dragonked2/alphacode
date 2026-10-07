@@ -250,6 +250,34 @@ pub fn generate_from_seed(seed: (u8, u8, u8), background: (u8, u8, u8)) -> Palet
 /// separation that survives every CVD type. That makes the generator correct by
 /// construction as roles and pairs are added, rather than correct by
 /// coincidence.
+/// The three semantic roles whose hues collapse toward yellow under red-green
+/// deficiency, leaving lightness as their only separating channel. They are
+/// pairwise must-distinguish, so their repair constraints are mutually coupled.
+const SEMANTIC_TRIO: [Role; 3] = [Role::Success, Role::Warning, Role::Error];
+
+/// Lightness-only moves, the cheap subset of [`candidates`]' search space.
+///
+/// Used for the coupled multi-role moves, where the full candidate
+/// cross-product would cost ~200k evaluations per iteration instead of ~1k.
+/// Like `candidates`, a move is dropped when the color that will actually be
+/// rendered washes out - lightness alone must not be able to turn a role gray.
+fn lightness_candidates(lab: Oklab, low: f32, high: f32) -> Vec<Oklab> {
+    const MIN_CHROMA: f32 = 0.05;
+    let mut out = Vec::with_capacity(10);
+    for delta in [0.04_f32, 0.08, 0.14, 0.22, 0.32] {
+        out.push(Oklab {
+            l: (lab.l + delta).min(high),
+            ..lab
+        });
+        out.push(Oklab {
+            l: (lab.l - delta).max(low),
+            ..lab
+        });
+    }
+    out.retain(|candidate| Oklab::from_rgb(candidate.to_rgb()).chroma() >= MIN_CHROMA * 0.9);
+    out
+}
+
 fn separate_confusable_pairs(
     palette: &mut Palette,
     background: (u8, u8, u8),
@@ -365,16 +393,8 @@ fn separate_confusable_pairs(
         out
     }
 
-    /// The palette's weakest must-distinguish pair. This is the objective the
-    /// repair pass maximizes.
-    ///
-    /// Optimizing the *global* minimum rather than repairing pairs one at a
-    /// time is essential: the constraints are coupled (success, warning, and
-    /// error form a triangle), so greedy pairwise repair provably cycles,
-    /// fixing one edge by breaking another forever. This was not a theory: a
-    /// trace showed warning/error and success/warning trading places until the
-    /// iteration budget ran out. Scoring candidates against the whole
-    /// constraint set makes every accepted move a real improvement.
+    /// The palette's weakest must-distinguish pair - the one a repair step
+    /// should improve next. Ties go to whichever pair is declared first.
     fn weakest_pair(palette: &Palette) -> (f32, Option<(Role, Role)>) {
         let mut weakest = f32::MAX;
         let mut which = None;
@@ -388,6 +408,181 @@ fn separate_confusable_pairs(
         (weakest, which)
     }
 
+    /// How far another pair may sag below the current floor and still be
+    /// accepted. Only enough slack to absorb the u8 round trip.
+    const FLOOR_SLACK: f32 = 0.002;
+
+    /// Objective for a repair step on `left`/`right`: their own worst-case
+    /// distance, or `None` when the move would push some *other* pair below the
+    /// floor.
+    ///
+    /// Scoring the pair itself rather than the palette-wide minimum is what lets
+    /// the coupled constraints actually resolve. Maximizing the global minimum
+    /// directly stalls on ties: on a light terminal `success`/`warning` and
+    /// `user`/`ai` land on the same distance, so repairing one leaves the other
+    /// holding the floor and *no* candidate ever raises it - the search reports
+    /// "no improvement" and stops with the pair still confusable. Holding every
+    /// other pair at the floor instead turns the same search into coordinate
+    /// ascent: each step lifts the weakest pair without letting anything else
+    /// sag, so the weakest pair eventually stops being that pair.
+    fn step_score(palette: &Palette, left: Role, right: Role, floor: f32) -> Option<f32> {
+        for (other_left, other_right) in MUST_DISTINGUISH.iter().copied() {
+            if other_left == left && other_right == right {
+                continue;
+            }
+            if worst_distance(palette.rgb(other_left), palette.rgb(other_right))
+                < floor - FLOOR_SLACK
+            {
+                return None;
+            }
+        }
+        Some(worst_distance(palette.rgb(left), palette.rgb(right)))
+    }
+
+    /// One role's replacement color.
+    type RoleMove = (Role, (u8, u8, u8));
+
+    /// Best accepted move for `left`/`right`, as the replacement color of every
+    /// role the move touches.
+    fn best_move_for_pair(
+        palette: &Palette,
+        left: Role,
+        right: Role,
+        floor: f32,
+        low: f32,
+        high: f32,
+    ) -> Option<Vec<RoleMove>> {
+        let original = (palette.rgb(left), palette.rgb(right));
+        // `success`, `warning` and `error` are pairwise must-distinguish *and*
+        // their hues collapse onto one axis under red-green deficiency, so the
+        // only way to satisfy all three edges is three distinct lightness levels
+        // at once. A search that may only move the two roles of the weakest pair
+        // cannot express that: raising `warning` fixes `success`/`warning` but
+        // pushes `warning`/`error` below its current value, so the move is
+        // rejected - and `error` is never a candidate at all while
+        // `success`/`warning` is the weakest pair. Add the third member of the
+        // trio to the movable set, restricted to lightness moves because
+        // lightness is the only channel the trio has left.
+        let third_role = SEMANTIC_TRIO.into_iter().find(|role| {
+            matches!(
+                (left, right),
+                (
+                    Role::Success | Role::Warning | Role::Error,
+                    Role::Success | Role::Warning | Role::Error
+                )
+            ) && *role != left
+                && *role != right
+        });
+        let third_original = third_role.map(|role| palette.rgb(role));
+        let mut trial = *palette;
+        let mut score_of = |a: Option<Oklab>, b: Option<Oklab>, c: Option<Oklab>| -> f32 {
+            if let Some(a) = a {
+                trial.set(left, a.to_rgb());
+            }
+            if let Some(b) = b {
+                trial.set(right, b.to_rgb());
+            }
+            if let (Some(role), Some(c)) = (third_role, c) {
+                trial.set(role, c.to_rgb());
+            }
+            let score = step_score(&trial, left, right, floor).unwrap_or(f32::MIN);
+            trial.set(left, original.0);
+            trial.set(right, original.1);
+            if let (Some(role), Some(rgb)) = (third_role, third_original) {
+                trial.set(role, rgb);
+            }
+            score
+        };
+
+        // Best accepted move: its score, how far it disturbs the palette, then
+        // the replacement color for each of the roles this step may move (`None`
+        // leaves a role untouched).
+        type BestMove = (f32, f32, Option<Oklab>, Option<Oklab>, Option<Oklab>);
+
+        let lab_left = Oklab::from_rgb(original.0);
+        let lab_right = Oklab::from_rgb(original.1);
+        let lab_third = third_original.map(Oklab::from_rgb);
+        let left_options = candidates(left, lab_left, low, high);
+        let right_options = candidates(right, lab_right, low, high);
+        let mut best: Option<BestMove> = None;
+        // Prefer the *smallest* move that clears the floor. Taking the
+        // highest-scoring candidate instead turned the repair into a bulldozer:
+        // it would drag roles across the wheel to reach a distance the palette
+        // never needed, wrecking the hue structure and chroma spread the other
+        // criteria grade. A repair should be the lightest touch that fixes the
+        // collision.
+        let record = |score: f32,
+                      a: Option<Oklab>,
+                      b: Option<Oklab>,
+                      c: Option<Oklab>,
+                      best: &mut Option<BestMove>| {
+            // Require a real gain so float noise cannot pass as progress.
+            if score <= floor + FLOOR_SLACK {
+                return;
+            }
+            let disturbance = a.map_or(0.0, |x| (x.l - lab_left.l).abs())
+                + b.map_or(0.0, |x| (x.l - lab_right.l).abs())
+                + c.zip(lab_third)
+                    .map_or(0.0, |(x, base)| (x.l - base.l).abs());
+            let is_better = match best.as_ref() {
+                // Least disturbance wins; a higher score only breaks ties, so a
+                // cheap move is never passed over for a marginally better one.
+                Some((previous_score, previous_disturbance, _, _, _)) => {
+                    (disturbance, -score) < (*previous_disturbance, -*previous_score)
+                }
+                None => true,
+            };
+            if is_better {
+                *best = Some((score, disturbance, a, b, c));
+            }
+        };
+
+        for candidate in &left_options {
+            let score = score_of(Some(*candidate), None, None);
+            record(score, Some(*candidate), None, None, &mut best);
+        }
+        for candidate in &right_options {
+            let score = score_of(None, Some(*candidate), None);
+            record(score, None, Some(*candidate), None, &mut best);
+        }
+        // Some pairs (an amber warning against a red error) sit close enough
+        // that moving only one role can reach a local plateau. Always evaluate
+        // paired moves, even when a one-role move already improved the score.
+        // Lightness-only here: coupled hue rotations are what made the search
+        // wander, and lightness is the channel that survives every CVD type.
+        for a in lightness_candidates(lab_left, low, high) {
+            for b in lightness_candidates(lab_right, low, high) {
+                let score = score_of(Some(a), Some(b), None);
+                record(score, Some(a), Some(b), None, &mut best);
+            }
+        }
+        // Coupled three-role moves for the semantic trio.
+        if let Some(base) = lab_third {
+            for a in lightness_candidates(lab_left, low, high) {
+                for b in lightness_candidates(lab_right, low, high) {
+                    for c in lightness_candidates(base, low, high) {
+                        let score = score_of(Some(a), Some(b), Some(c));
+                        record(score, Some(a), Some(b), Some(c), &mut best);
+                    }
+                }
+            }
+        }
+
+        best.map(|(_, _, a, b, c)| {
+            let mut moves = Vec::new();
+            if let Some(a) = a {
+                moves.push((left, a.to_rgb()));
+            }
+            if let Some(b) = b {
+                moves.push((right, b.to_rgb()));
+            }
+            if let (Some(role), Some(c)) = (third_role, c) {
+                moves.push((role, c.to_rgb()));
+            }
+            moves
+        })
+    }
+
     for _ in 0..96 {
         let (current, weakest) = weakest_pair(palette);
         if current >= DISTINCT_TARGET {
@@ -397,65 +592,10 @@ fn separate_confusable_pairs(
             return;
         };
 
-        let original = (palette.rgb(left), palette.rgb(right));
-        let mut trial = *palette;
-        // Score a candidate move by the palette's global weakest pair, so a
-        // move that helps this pair but hurts a neighbouring one is rejected.
-        let mut score_of = |a: Option<Oklab>, b: Option<Oklab>| -> f32 {
-            if let Some(a) = a {
-                trial.set(left, a.to_rgb());
-            }
-            if let Some(b) = b {
-                trial.set(right, b.to_rgb());
-            }
-            let score = weakest_pair(&trial).0;
-            trial.set(left, original.0);
-            trial.set(right, original.1);
-            score
-        };
-
-        let left_options = candidates(left, Oklab::from_rgb(original.0), low, high);
-        let right_options = candidates(right, Oklab::from_rgb(original.1), low, high);
-        let mut best: Option<(f32, Option<Oklab>, Option<Oklab>)> = None;
-        let record = |score: f32,
-                      a: Option<Oklab>,
-                      b: Option<Oklab>,
-                      best: &mut Option<(f32, Option<Oklab>, Option<Oklab>)>| {
-            let improves = match best.as_ref() {
-                Some((previous, _, _)) => score > *previous,
-                None => true,
-            };
-            // Require a real gain so float noise cannot pass as progress.
-            if score > current + 0.002 && improves {
-                *best = Some((score, a, b));
-            }
-        };
-
-        for candidate in &left_options {
-            let score = score_of(Some(*candidate), None);
-            record(score, Some(*candidate), None, &mut best);
-        }
-        for candidate in &right_options {
-            let score = score_of(None, Some(*candidate));
-            record(score, None, Some(*candidate), &mut best);
-        }
-        // Some pairs (an amber warning against a red error) sit close enough
-        // that moving only one role can reach a local plateau. Always evaluate
-        // paired moves, even when a one-role move already improved the score.
-        for a in &left_options {
-            for b in &right_options {
-                let score = score_of(Some(*a), Some(*b));
-                record(score, Some(*a), Some(*b), &mut best);
-            }
-        }
-
-        match best {
-            Some((_, a, b)) => {
-                if let Some(a) = a {
-                    palette.set(left, a.to_rgb());
-                }
-                if let Some(b) = b {
-                    palette.set(right, b.to_rgb());
+        match best_move_for_pair(palette, left, right, current, low, high) {
+            Some(moves) => {
+                for (role, rgb) in moves {
+                    palette.set(role, rgb);
                 }
             }
             // No move improves the palette without leaving the readable band.

@@ -440,43 +440,45 @@ impl Provider for CountingModelRoutesProvider {
 
 #[test]
 fn test_model_picker_reuses_cached_entries_until_invalidated() {
-    ensure_test_alphacode_home_if_unset();
-    clear_persisted_test_ui_state();
-    crate::alphacode_tui::tui::ui::clear_test_render_state_for_tests();
+    with_temp_alphacode_home(|| {
+        ensure_test_alphacode_home_if_unset();
+        clear_persisted_test_ui_state();
+        crate::alphacode_tui::tui::ui::clear_test_render_state_for_tests();
 
-    let calls = StdArc::new(AtomicUsize::new(0));
-    let provider: Arc<dyn Provider> = Arc::new(CountingModelRoutesProvider {
-        calls: StdArc::clone(&calls),
-        route_count: 2,
-        delay: Duration::ZERO,
+        let calls = StdArc::new(AtomicUsize::new(0));
+        let provider: Arc<dyn Provider> = Arc::new(CountingModelRoutesProvider {
+            calls: StdArc::clone(&calls),
+            route_count: 2,
+            delay: Duration::ZERO,
+        });
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        let registry = rt.block_on(crate::tool::Registry::new(provider.clone()));
+        let mut app = App::new_for_test_harness(provider, registry);
+        app.queue_mode = false;
+        app.diff_mode = crate::config::DiffDisplayMode::Inline;
+
+        app.open_model_picker();
+        wait_for_model_picker_load(&mut app);
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
+        assert!(app.model_picker_cache.is_some());
+
+        app.open_model_picker();
+        wait_for_model_picker_load(&mut app);
+        assert_eq!(
+            calls.load(Ordering::SeqCst),
+            1,
+            "second open should reuse cached picker entries"
+        );
+
+        app.invalidate_model_picker_cache();
+        app.open_model_picker();
+        wait_for_model_picker_load(&mut app);
+        assert_eq!(
+            calls.load(Ordering::SeqCst),
+            2,
+            "invalidating should force rebuilding provider routes"
+        );
     });
-    let rt = tokio::runtime::Runtime::new().unwrap();
-    let registry = rt.block_on(crate::tool::Registry::new(provider.clone()));
-    let mut app = App::new_for_test_harness(provider, registry);
-    app.queue_mode = false;
-    app.diff_mode = crate::config::DiffDisplayMode::Inline;
-
-    app.open_model_picker();
-    wait_for_model_picker_load(&mut app);
-    assert_eq!(calls.load(Ordering::SeqCst), 1);
-    assert!(app.model_picker_cache.is_some());
-
-    app.open_model_picker();
-    wait_for_model_picker_load(&mut app);
-    assert_eq!(
-        calls.load(Ordering::SeqCst),
-        1,
-        "second open should reuse cached picker entries"
-    );
-
-    app.invalidate_model_picker_cache();
-    app.open_model_picker();
-    wait_for_model_picker_load(&mut app);
-    assert_eq!(
-        calls.load(Ordering::SeqCst),
-        2,
-        "invalidating should force rebuilding provider routes"
-    );
 }
 
 #[test]
@@ -1200,31 +1202,34 @@ fn test_model_picker_does_not_cache_single_model_fallback() {
 
 #[test]
 fn test_local_model_picker_selection_failure_keeps_picker_open_and_shows_next_steps() {
-    let mut app = create_failing_model_switch_test_app();
+    with_temp_alphacode_home(|| {
+        let mut app = create_failing_model_switch_test_app();
 
-    app.open_model_picker();
-    wait_for_model_picker_load(&mut app);
-    assert!(app.inline_interactive_state.is_some());
+        app.open_model_picker();
+        wait_for_model_picker_load(&mut app);
+        assert!(app.inline_interactive_state.is_some());
 
-    app.handle_key(KeyCode::Enter, KeyModifiers::empty())
-        .expect("enter should be handled");
+        app.handle_key(KeyCode::Enter, KeyModifiers::empty())
+            .expect("enter should be handled");
 
-    assert!(
-        app.inline_interactive_state.is_some(),
-        "picker should remain open so the user can choose another model"
-    );
-    assert_eq!(app.status_notice(), Some("Model switch failed".to_string()));
+        assert!(
+            app.inline_interactive_state.is_some(),
+            "picker should remain open so the user can choose another model"
+        );
+        assert_eq!(app.status_notice(), Some("Model switch failed".to_string()));
 
-    let last = app.display_messages.last().expect("display message");
-    assert_eq!(last.role, "error");
-    assert!(last.content.contains("credentials expired"));
-    assert!(last.content.contains("/model"));
-    assert!(last.content.contains("/login"));
-    assert!(last.content.contains("/account"));
+        let last = app.display_messages.last().expect("display message");
+        assert_eq!(last.role, "error");
+        assert!(last.content.contains("credentials expired"));
+        assert!(last.content.contains("/model"));
+        assert!(last.content.contains("/login"));
+        assert!(last.content.contains("/account"));
+    });
 }
 
 #[test]
 fn test_login_completed_spawns_auth_refresh_when_runtime_is_available() {
+    let _env_lock = crate::storage::lock_test_env();
     ensure_test_alphacode_home_if_unset();
     clear_persisted_test_ui_state();
     crate::alphacode_tui::tui::ui::clear_test_render_state_for_tests();
@@ -1269,6 +1274,7 @@ fn test_login_completed_spawns_auth_refresh_when_runtime_is_available() {
 
 #[test]
 fn test_model_picker_waits_for_async_post_login_catalog_activation() {
+    let _env_lock = crate::storage::lock_test_env();
     ensure_test_alphacode_home_if_unset();
     clear_persisted_test_ui_state();
     crate::alphacode_tui::tui::ui::clear_test_render_state_for_tests();
@@ -1352,6 +1358,11 @@ fn test_model_picker_waits_for_async_post_login_catalog_activation() {
 
 #[test]
 fn test_login_completed_surfaces_new_provider_models_in_local_model_picker() {
+    // `/model` after a login reflects process-global auth + catalog state, so
+    // this has to be serialized against the tests that scope their own
+    // `ALPHACODE_HOME` and auth store; otherwise a sibling test's credentials
+    // decide which routes the picker keeps and the Copilot entries vanish.
+    let _env_lock = crate::storage::lock_test_env();
     let mut app = create_auth_refresh_test_app();
 
     app.handle_login_completed(crate::bus::LoginCompleted {
@@ -1511,7 +1522,10 @@ fn test_azure_login_completion_switches_local_model_without_completion() {
         "ALPHACODE_ACTIVE_PROVIDER",
         "ALPHACODE_INITIAL_PROVIDER_EXPLICIT",
     ]);
-    crate::alphacode_core::env::set_var("AZURE_OPENAI_ENDPOINT", "https://example.openai.azure.com");
+    crate::alphacode_core::env::set_var(
+        "AZURE_OPENAI_ENDPOINT",
+        "https://example.openai.azure.com",
+    );
     crate::alphacode_core::env::set_var("AZURE_OPENAI_MODEL", "azure-deployment");
     crate::alphacode_core::env::set_var("AZURE_OPENAI_API_KEY", "test-key");
     crate::alphacode_core::env::set_var("AZURE_OPENAI_USE_ENTRA", "0");
@@ -1536,9 +1550,11 @@ fn test_azure_login_completion_switches_local_model_without_completion() {
     // StartChoice prompt. Pre-commit the onboarding guard so the flow never
     // starts.
     app.onboarding_startup_checked = true;
-    app.onboarding_flow = Some(crate::alphacode_tui::tui::app::onboarding_flow::OnboardingFlow {
-        phase: crate::alphacode_tui::tui::app::onboarding_flow::OnboardingPhase::Done,
-    });
+    app.onboarding_flow = Some(
+        crate::alphacode_tui::tui::app::onboarding_flow::OnboardingFlow {
+            phase: crate::alphacode_tui::tui::app::onboarding_flow::OnboardingPhase::Done,
+        },
+    );
     app.queue_mode = false;
     app.diff_mode = crate::config::DiffDisplayMode::Inline;
     app.provider_session_id = Some("stale-upstream".to_string());
@@ -1569,59 +1585,64 @@ fn test_azure_login_completion_switches_local_model_without_completion() {
 
 #[test]
 fn test_local_model_picker_surfaces_antigravity_models_from_multiprovider() {
-    let mut app = create_antigravity_picker_test_app();
-    app.open_model_picker();
-    wait_for_model_picker_load(&mut app);
+    with_temp_alphacode_home(|| {
+        let mut app = create_antigravity_picker_test_app();
+        app.open_model_picker();
+        wait_for_model_picker_load(&mut app);
 
-    let picker = app
-        .inline_interactive_state
-        .as_ref()
-        .expect("model picker should be open");
+        let picker = app
+            .inline_interactive_state
+            .as_ref()
+            .expect("model picker should be open");
 
-    let antigravity_entry = picker
-        .entries
-        .iter()
-        .find(|entry| entry.name == "claude-sonnet-4-6")
-        .expect("antigravity model should be shown after login");
+        let antigravity_entry = picker
+            .entries
+            .iter()
+            .find(|entry| entry.name == "claude-sonnet-4-6")
+            .expect("antigravity model should be shown after login");
 
-    assert!(antigravity_entry.options.iter().any(|route| {
-        route.provider == "Antigravity" && route.api_method == "cli" && route.available
-    }));
+        assert!(antigravity_entry.options.iter().any(|route| {
+            route.provider == "Antigravity" && route.api_method == "cli" && route.available
+        }));
+    });
 }
 
 #[test]
 fn test_local_antigravity_model_picker_selection_preserves_antigravity_provider() {
-    let mut app = create_antigravity_picker_test_app();
-    app.open_model_picker();
-    wait_for_model_picker_load(&mut app);
+    with_temp_alphacode_home(|| {
+        let mut app = create_antigravity_picker_test_app();
+        app.open_model_picker();
+        wait_for_model_picker_load(&mut app);
 
-    let picker = app
-        .inline_interactive_state
-        .as_ref()
-        .expect("model picker should be open");
+        let picker = app
+            .inline_interactive_state
+            .as_ref()
+            .expect("model picker should be open");
 
-    let model_idx = picker
-        .entries
-        .iter()
-        .position(|entry| entry.name == "claude-sonnet-4-6")
-        .expect("antigravity model should be in picker");
-    let filtered_pos = picker
-        .filtered
-        .iter()
-        .position(|&i| i == model_idx)
-        .expect("antigravity model should be in filtered list");
+        let model_idx = picker
+            .entries
+            .iter()
+            .position(|entry| entry.name == "claude-sonnet-4-6")
+            .expect("antigravity model should be in picker");
+        let filtered_pos = picker
+            .filtered
+            .iter()
+            .position(|&i| i == model_idx)
+            .expect("antigravity model should be in filtered list");
 
-    app.inline_interactive_state.as_mut().unwrap().selected = filtered_pos;
-    app.handle_key(KeyCode::Enter, KeyModifiers::empty())
-        .unwrap();
+        app.inline_interactive_state.as_mut().unwrap().selected = filtered_pos;
+        app.handle_key(KeyCode::Enter, KeyModifiers::empty())
+            .unwrap();
 
-    assert_eq!(app.provider.name(), "Antigravity");
-    assert_eq!(app.provider.model(), "claude-sonnet-4-6");
-    assert!(app.inline_interactive_state.is_none());
+        assert_eq!(app.provider.name(), "Antigravity");
+        assert_eq!(app.provider.model(), "claude-sonnet-4-6");
+        assert!(app.inline_interactive_state.is_none());
+    });
 }
 
 #[test]
 fn test_local_model_picker_openrouter_bare_openai_route_uses_openai_catalog_prefix() {
+    let _env_lock = crate::storage::lock_test_env();
     let (mut app, set_model_calls) = create_openrouter_spec_capture_test_app();
     app.open_model_picker();
     wait_for_model_picker_load(&mut app);
@@ -1653,109 +1674,131 @@ fn test_local_model_picker_openrouter_bare_openai_route_uses_openai_catalog_pref
 
 #[test]
 fn test_agent_model_picker_openrouter_bare_openai_route_saves_openai_catalog_prefix() {
-    let (mut app, _set_model_calls) = create_openrouter_spec_capture_test_app();
+    // Selecting an agent-model override *persists* it, so this test writes
+    // `config.toml` under `ALPHACODE_HOME`. Without a private home it raced
+    // every test that scopes its own: `ALPHACODE_HOME` could be pointing at a
+    // temp dir another test was about to delete (or be unset entirely), the
+    // save failed, and the confirmation notice turned into an error card.
+    with_temp_alphacode_home(|| {
+        let (mut app, _set_model_calls) = create_openrouter_spec_capture_test_app();
 
-    app.open_agent_model_picker(crate::alphacode_tui::tui::AgentModelTarget::Swarm);
+        app.open_agent_model_picker(crate::alphacode_tui::tui::AgentModelTarget::Swarm);
 
-    let picker = app
-        .inline_interactive_state
-        .as_ref()
-        .expect("agent model picker should be open");
-    let model_idx = picker
-        .entries
-        .iter()
-        .position(|entry| entry.name == "gpt-5.4 (high)")
-        .expect("openrouter-backed OpenAI effort entry should be in picker");
-    let filtered_pos = picker
-        .filtered
-        .iter()
-        .position(|&i| i == model_idx)
-        .expect("entry should be in filtered list");
+        let picker = app
+            .inline_interactive_state
+            .as_ref()
+            .expect("agent model picker should be open");
+        let model_idx = picker
+            .entries
+            .iter()
+            .position(|entry| entry.name == "gpt-5.4 (high)")
+            .expect("openrouter-backed OpenAI effort entry should be in picker");
+        let filtered_pos = picker
+            .filtered
+            .iter()
+            .position(|&i| i == model_idx)
+            .expect("entry should be in filtered list");
 
-    app.inline_interactive_state.as_mut().unwrap().selected = filtered_pos;
-    app.handle_key(KeyCode::Enter, KeyModifiers::empty())
-        .expect("agent model picker selection should succeed");
+        app.inline_interactive_state.as_mut().unwrap().selected = filtered_pos;
+        app.handle_key(KeyCode::Enter, KeyModifiers::empty())
+            .expect("agent model picker selection should succeed");
 
-    let last = app.display_messages.last().expect("display message");
-    assert_eq!(last.role, "system");
-    assert!(
-        last.content.contains("openai/gpt-5.4@OpenAI"),
-        "message should show normalized saved spec, got: {}",
-        last.content
-    );
+        let last = app.display_messages.last().expect("display message");
+        assert_eq!(last.role, "system");
+        assert!(
+            last.content.contains("openai/gpt-5.4@OpenAI"),
+            "message should show normalized saved spec, got: {}",
+            last.content
+        );
+    });
 }
 
 #[test]
 fn test_local_model_picker_render_shows_antigravity_models_exactly_as_user_sees_them() {
-    let mut app = create_antigravity_picker_test_app();
-    app.display_messages = vec![DisplayMessage::system("seed render state")];
-    app.bump_display_messages_version();
-    app.open_model_picker();
-    wait_for_model_picker_load(&mut app);
+    with_temp_alphacode_home(|| {
+        let mut app = create_antigravity_picker_test_app();
+        app.display_messages = vec![DisplayMessage::system("seed render state")];
+        app.bump_display_messages_version();
+        app.open_model_picker();
+        wait_for_model_picker_load(&mut app);
 
-    let render_filtered = |app: &mut App, filter: &str| {
-        let picker = app
-            .inline_interactive_state
-            .as_mut()
-            .expect("model picker should be open");
-        picker.filter = filter.to_string();
-        App::apply_inline_interactive_filter(picker);
-        let _render_lock = scroll_render_test_lock();
-        let backend = ratatui::backend::TestBackend::new(90, 14);
-        let mut terminal =
-            ratatui::Terminal::new(backend).expect("failed to create test terminal");
-        render_and_snap(app, &mut terminal)
-    };
-    let claude_text = render_filtered(&mut app, "claude-sonnet-4-6");
-    let gpt_text = render_filtered(&mut app, "gpt-oss-120b-medium");
+        let render_filtered = |app: &mut App, filter: &str| {
+            let picker = app
+                .inline_interactive_state
+                .as_mut()
+                .expect("model picker should be open");
+            picker.filter = filter.to_string();
+            App::apply_inline_interactive_filter(picker);
+            let _render_lock = scroll_render_test_lock();
+            let backend = ratatui::backend::TestBackend::new(90, 14);
+            let mut terminal =
+                ratatui::Terminal::new(backend).expect("failed to create test terminal");
+            render_and_snap(app, &mut terminal)
+        };
+        let claude_text = render_filtered(&mut app, "claude-sonnet-4-6");
+        let gpt_text = render_filtered(&mut app, "gpt-oss-120b-medium");
 
-    assert!(
-        claude_text.contains("MODEL")
-            && claude_text.contains("PROVIDER")
-            && claude_text.contains("METHOD"),
-        "rendered /model view should include picker columns, got:
-{}",
-        claude_text
-    );
-    assert!(
-        claude_text.contains("Claude Sonnet 4.6"),
-        "rendered /model view should show the Antigravity Claude row, got:
-{}",
-        claude_text
-    );
-    assert!(
-        gpt_text.contains("gpt-oss-120b-medium"),
-        "rendered /model view should show the Antigravity GPT row, got:
-{}",
-        gpt_text
-    );
-    assert!(
-        claude_text.contains("Antigravity") && gpt_text.contains("Antigravity"),
-        "rendered /model view should show the Antigravity provider column, got:
-Claude:
-{}
-GPT:
-{}",
-        claude_text,
-        gpt_text
-    );
-    assert!(
-        claude_text.contains("cli") && gpt_text.contains("cli"),
-        "rendered /model view should show the route transport column, got:
-Claude:
-{}
-GPT:
-{}",
-        claude_text,
-        gpt_text
-    );
+        assert!(
+            claude_text.contains("MODEL")
+                && claude_text.contains("PROVIDER")
+                && claude_text.contains("METHOD"),
+            "rendered /model view should include picker columns, got:
+        {}",
+            claude_text
+        );
+        assert!(
+            claude_text.contains("Claude Sonnet 4.6"),
+            "rendered /model view should show the Antigravity Claude row, got:
+        {}",
+            claude_text
+        );
+        assert!(
+            gpt_text.contains("gpt-oss-120b-medium"),
+            "rendered /model view should show the Antigravity GPT row, got:
+        {}",
+            gpt_text
+        );
+        assert!(
+            claude_text.contains("Antigravity") && gpt_text.contains("Antigravity"),
+            "rendered /model view should show the Antigravity provider column, got:
+        Claude:
+        {}
+        GPT:
+        {}",
+            claude_text,
+            gpt_text
+        );
+        assert!(
+            claude_text.contains("cli") && gpt_text.contains("cli"),
+            "rendered /model view should show the route transport column, got:
+        Claude:
+        {}
+        GPT:
+        {}",
+            claude_text,
+            gpt_text
+        );
+    });
 }
 
 #[test]
 fn test_login_smoke_model_picker_renders_unstacked_provider_rows() {
+    // The render asserts the "new" badge that `handle_login_completed` produces,
+    // which is derived from process-global auth/catalog state. Serialize with the
+    // tests that scope their own home and auth store, or a sibling's credentials
+    // decide which rows survive the filter and the whole view renders empty.
+    let _env_lock = crate::storage::lock_test_env();
     let mut app = create_login_smoke_model_app();
     app.display_messages = vec![DisplayMessage::system("seed render state")];
     app.bump_display_messages_version();
+    // The "new" badge has exactly one producer - `handle_login_completed` marks
+    // the freshly authenticated provider as recently added - so a smoke test that
+    // never logs in cannot observe it.
+    app.handle_login_completed(crate::bus::LoginCompleted {
+        provider: "comtegra".to_string(),
+        success: true,
+        message: "Authenticated with **Comtegra GPU Cloud**.".to_string(),
+    });
     app.open_model_picker();
     wait_for_model_picker_load(&mut app);
 
@@ -1768,8 +1811,7 @@ fn test_login_smoke_model_picker_renders_unstacked_provider_rows() {
         App::apply_inline_interactive_filter(picker);
         let _render_lock = scroll_render_test_lock();
         let backend = ratatui::backend::TestBackend::new(180, 48);
-        let mut terminal =
-            ratatui::Terminal::new(backend).expect("failed to create test terminal");
+        let mut terminal = ratatui::Terminal::new(backend).expect("failed to create test terminal");
         render_and_snap(app, &mut terminal)
     };
 
@@ -1823,8 +1865,7 @@ fn test_login_smoke_model_picker_renders_unstacked_provider_rows() {
         copilot_text
     );
     assert!(
-        deepseek_text.contains("deepseek/deepseek-v4-pro")
-            && deepseek_text.contains("openrouter"),
+        deepseek_text.contains("deepseek/deepseek-v4-pro") && deepseek_text.contains("openrouter"),
         "OpenRouter route should be visible, got:\n{}",
         deepseek_text
     );
@@ -1896,7 +1937,8 @@ fn test_model_picker_filter_text_includes_provider_and_method() {
             available: true,
             detail: "https://llm.comtegra.cloud/v1".to_string(),
             estimated_reference_cost_micros: None,
-         ..crate::alphacode_tui::tui::PickerOption::default()}],
+            ..crate::alphacode_tui::tui::PickerOption::default()
+        }],
         action: crate::alphacode_tui::tui::PickerAction::Model,
         selected_option: 0,
         is_current: false,
@@ -2074,10 +2116,7 @@ fn test_subagent_model_command_sets_and_resets_session_preference() {
 fn test_autoreview_command_toggles_session_preference() {
     let mut app = create_test_app();
 
-    assert!(commands::handle_session_command(
-        &mut app,
-        "/autoreview on"
-    ));
+    assert!(commands::handle_session_command(&mut app, "/autoreview on"));
     assert_eq!(app.session.autoreview_enabled, Some(true));
     assert!(app.autoreview_enabled);
 
@@ -2093,17 +2132,11 @@ fn test_autoreview_command_toggles_session_preference() {
 fn test_autojudge_command_toggles_session_preference() {
     let mut app = create_test_app();
 
-    assert!(commands::handle_session_command(
-        &mut app,
-        "/autojudge on"
-    ));
+    assert!(commands::handle_session_command(&mut app, "/autojudge on"));
     assert_eq!(app.session.autojudge_enabled, Some(true));
     assert!(app.autojudge_enabled);
 
-    assert!(commands::handle_session_command(
-        &mut app,
-        "/autojudge off"
-    ));
+    assert!(commands::handle_session_command(&mut app, "/autojudge off"));
     assert_eq!(app.session.autojudge_enabled, Some(false));
     assert!(!app.autojudge_enabled);
 }
@@ -2152,7 +2185,8 @@ fn test_poke_arms_auto_poke_until_todos_are_done() {
         assert!(app.auto_poke_incomplete_todos);
         assert!(app.pending_turn);
         assert!(app.display_messages().iter().any(|msg| {
-            msg.content.contains("1 incomplete todo. We poked the agent")
+            msg.content
+                .contains("1 incomplete todo. We poked the agent")
                 && msg.content.contains("/poke off")
         }));
     });
@@ -2179,10 +2213,7 @@ fn test_poke_status_reports_current_state() {
         )
         .expect("save todos");
 
-        assert!(commands::handle_session_command(
-            &mut app,
-            "/poke status"
-        ));
+        assert!(commands::handle_session_command(&mut app, "/poke status"));
         assert!(
             app.display_messages()
                 .iter()
@@ -2191,19 +2222,15 @@ fn test_poke_status_reports_current_state() {
 
         app.auto_poke_incomplete_todos = true;
         app.is_processing = true;
-        app.queued_messages
-            .push(commands::build_poke_message(
-                &commands::incomplete_poke_todos(&app),
-            ));
+        app.queued_messages.push(commands::build_poke_message(
+            &commands::incomplete_poke_todos(&app),
+        ));
         app.hidden_queued_system_messages.push(
             "All todos are done. Todo confidence summary:\n- Weighted completion confidence: 80%."
                 .to_string(),
         );
 
-        assert!(commands::handle_session_command(
-            &mut app,
-            "/poke status"
-        ));
+        assert!(commands::handle_session_command(&mut app, "/poke status"));
         assert!(app.display_messages().iter().any(|msg| {
             msg.content.contains("Auto-poke: ON. 1 incomplete todo.")
                 && msg.content.contains("A follow-up poke is queued.")
@@ -2235,19 +2262,15 @@ fn test_poke_off_disarms_and_clears_queued_followup() {
 
         app.auto_poke_incomplete_todos = true;
         app.pending_queued_dispatch = true;
-        app.queued_messages
-            .push(commands::build_poke_message(
-                &commands::incomplete_poke_todos(&app),
-            ));
+        app.queued_messages.push(commands::build_poke_message(
+            &commands::incomplete_poke_todos(&app),
+        ));
         app.hidden_queued_system_messages.push(
             "All todos are done. Todo confidence summary:\n- Weighted completion confidence: 80%."
                 .to_string(),
         );
 
-        assert!(commands::handle_session_command(
-            &mut app,
-            "/poke off"
-        ));
+        assert!(commands::handle_session_command(&mut app, "/poke off"));
 
         assert!(!app.auto_poke_incomplete_todos);
         assert!(!app.pending_queued_dispatch);
@@ -2764,3 +2787,46 @@ fn test_overnight_start_queues_remote_turn_without_stuck_sending() {
     });
 }
 
+#[test]
+fn alphax_free_remote_login_delegates_activation_to_server() {
+    with_temp_alphacode_home(|| {
+        let mut app = App::new_for_remote(None);
+        let session_id = app.session.id.clone();
+        let mut bus_rx = crate::bus::Bus::global().subscribe();
+        while bus_rx.try_recv().is_ok() {}
+
+        app.start_openai_compatible_post_login_activation(
+            "alphax-free".to_string(),
+            "Alphax Free".to_string(),
+        );
+
+        assert!(app.post_login_profile_activation_pending);
+        assert_eq!(
+            app.status_notice(),
+            Some("Alphax Free: activating automatic route...".to_string())
+        );
+
+        let mut login_completed = None;
+        while let Ok(event) = bus_rx.try_recv() {
+            match event {
+                crate::bus::BusEvent::LoginCompleted(login)
+                    if login.provider == "Alphax Free"
+                        && login.message.contains("activating for this session") =>
+                {
+                    login_completed = Some(login);
+                }
+                crate::bus::BusEvent::ProviderModelActivated {
+                    session_id: activated_session,
+                    ..
+                } if activated_session == session_id => {
+                    panic!("remote client must not activate models locally")
+                }
+                _ => {}
+            }
+        }
+
+        let login = login_completed.expect("successful login event for server activation");
+        assert!(login.success);
+        assert!(!login.message.contains("does not support model switching"));
+    });
+}

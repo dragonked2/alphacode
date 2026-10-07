@@ -212,6 +212,22 @@ fn normalize_read_range_rejects_invalid_end_before_start() {
 }
 
 #[test]
+fn normalize_read_range_saturates_extreme_line_numbers() {
+    let params = ReadInput::from_value(&json!({
+        "file_path": "src/lib.rs",
+        "start_line": u64::MAX,
+        "end_line": u64::MAX
+    }))
+    .expect("extreme JSON integers should be parsed without narrowing overflow");
+
+    let range = normalize_read_range(&params).expect("equal extreme endpoints form one line");
+    assert_eq!(range.offset, usize::MAX - 1);
+    assert_eq!(range.limit, 1);
+    assert_eq!(range.next_offset(), usize::MAX);
+    assert_eq!(range.next_start_line(), usize::MAX);
+}
+
+#[test]
 fn read_tool_schema_avoids_openai_incompatible_combinators() {
     let schema = ReadTool::new().parameters_schema();
 
@@ -401,5 +417,35 @@ async fn read_tool_prefers_end_line_over_limit() {
         output.output.contains("Use `start_line=4` to continue."),
         "output={:?}",
         output.output
+    );
+}
+
+#[tokio::test]
+async fn read_tool_reports_an_out_of_range_request_without_calling_the_file_empty() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    std::fs::write(temp.path().join("sample.txt"), "one\ntwo\n").expect("write sample file");
+
+    let output = ReadTool::new()
+        .execute(
+            json!({"file_path": "sample.txt", "offset": 20, "limit": 5}),
+            make_ctx(temp.path().to_path_buf()),
+        )
+        .await
+        .expect("an out-of-range request is not an I/O error");
+
+    assert!(output.output.contains("no lines in the requested range"));
+    assert!(output.output.contains("file contains 2 lines"));
+    assert_eq!(output.metadata.as_ref().unwrap()["total_lines"], 2);
+}
+
+#[test]
+fn binary_detection_accepts_utf8_text_in_non_latin_scripts() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let path = temp.path().join("unicode.txt");
+    std::fs::write(&path, "日本語 العربية русский язык\n".repeat(300)).expect("write text");
+
+    assert!(
+        !is_binary_file(&path),
+        "valid UTF-8 text should not be classified as binary"
     );
 }

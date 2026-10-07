@@ -21,11 +21,11 @@
 //!    hang (network stalls, a `go install` of a huge module set), and a hung
 //!    installer pins the agent turn forever.
 //!
-//! Safety: installing third-party binaries is an external-state change, so it
-//! is *never* implicit. Callers must pass an explicit allow-list and get
-//! `InstallOutcome::Skipped` for anything not requested. The recon tools
-//! themselves do not auto-install; they surface a targeted error pointing at
-//! [`plan_for`].
+//! Installation is limited to known tools with a concrete install plan. A
+//! requested Go tool may be installed on first use; unknown binaries and tools
+//! without a Go install plan are never installed implicitly. [`install_one`]
+//! serializes installs so parallel tool calls cannot race while bootstrapping
+//! Go or writing into the same Go bin directory.
 
 use std::path::PathBuf;
 use std::time::Duration;
@@ -42,6 +42,9 @@ const INSTALL_TIMEOUT: Duration = Duration::from_secs(900);
 
 /// Upper bound on a prerequisite probe (`go version`, `winget --version`).
 const PROBE_TIMEOUT: Duration = Duration::from_secs(20);
+
+/// Prevent concurrent tool calls from racing through package installation.
+static TOOL_INSTALL_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 
 /// The package-manager family used to install a binary.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -323,26 +326,52 @@ pub fn go_bin_dir() -> Option<PathBuf> {
     {
         return Some(PathBuf::from(bin));
     }
-    let gopath = std::env::var("GOPATH")
-        .ok()
-        .filter(|p| !p.trim().is_empty())
-        .map(PathBuf::from)
-        .or_else(|| dirs::home_dir().map(|h| h.join("go")));
-    let dir = gopath?.join("bin");
-    dir.is_dir().then_some(dir)
+    let gopath = std::env::var_os("GOPATH")
+        .and_then(|value| std::env::split_paths(&value).next())
+        .filter(|path| !path.as_os_str().is_empty())
+        .or_else(|| dirs::home_dir().map(|home| home.join("go")));
+    gopath.map(|path| path.join("bin"))
 }
 
 /// True when `go` is on `PATH` and runnable.
 pub fn go_available() -> bool {
-    which("go") != ToolStatus::Missing
+    go_executable().is_some()
 }
 
-/// Instruction for bootstrapping Go when it is missing.
-///
-/// We do **not** auto-install Go: it is a large, system-wide, PATH-mutating
-/// change, and silently installing a toolchain is exactly the kind of thing
-/// that should require a human to say yes. The doctor and the install command
-/// both surface this text instead.
+/// Find Go even when a package manager installed it after Alphacode started.
+/// A running process does not inherit persistent PATH changes made by an
+/// installer, so check the standard Windows install locations explicitly.
+fn go_executable() -> Option<PathBuf> {
+    if let ToolStatus::Present { path } = which("go") {
+        return Some(PathBuf::from(path));
+    }
+
+    let candidates = if cfg!(windows) {
+        let mut candidates = Vec::new();
+        if let Some(program_files) = std::env::var_os("ProgramFiles") {
+            candidates.push(PathBuf::from(program_files).join("Go/bin/go.exe"));
+        }
+        if let Some(local_app_data) = std::env::var_os("LOCALAPPDATA") {
+            candidates.push(PathBuf::from(local_app_data).join("Programs/Go/bin/go.exe"));
+        }
+        candidates
+    } else if cfg!(target_os = "macos") {
+        vec![
+            PathBuf::from("/opt/homebrew/bin/go"),
+            PathBuf::from("/usr/local/bin/go"),
+            PathBuf::from("/usr/local/go/bin/go"),
+        ]
+    } else {
+        vec![
+            PathBuf::from("/usr/bin/go"),
+            PathBuf::from("/usr/local/go/bin/go"),
+        ]
+    };
+    candidates.into_iter().find(|path| path.is_file())
+}
+
+/// Instruction for bootstrapping Go when the package manager cannot complete
+/// installation automatically.
 pub fn go_bootstrap_hint() -> String {
     if cfg!(windows) {
         "Go is not installed. Install it with `winget install GoLang.Go`, then reopen the terminal so PATH updates.".to_string()
@@ -361,7 +390,9 @@ pub fn go_bootstrap_hint() -> String {
 /// - macOS: `brew install go`
 /// - Linux: `apt-get install -y golang-go`
 ///
-/// After installation, it updates PATH to include the Go bin directory.
+/// After installation, it verifies Go can run in the current process. On
+/// Windows it checks the standard install path because a running process does
+/// not inherit PATH updates made by the installer.
 pub async fn ensure_go_installed() -> bool {
     if go_available() {
         return true;
@@ -404,21 +435,17 @@ pub async fn ensure_go_installed() -> bool {
 
     match result {
         Ok(Ok(output)) if output.status.success() => {
-            tracing::info!("Go installed successfully");
-            // Update PATH to include Go bin dir
-            if let Some(dir) = go_bin_dir() {
-                let existing = std::env::var("PATH").unwrap_or_default();
-                let sep = if cfg!(windows) { ';' } else { ':' };
-                if !existing
-                    .split(sep)
-                    .any(|p| p.eq_ignore_ascii_case(&dir.to_string_lossy()))
-                {
-                    unsafe {
-                        std::env::set_var("PATH", format!("{}{}{}", dir.display(), sep, existing));
-                    }
-                }
+            let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
+            while go_executable().is_none() && tokio::time::Instant::now() < deadline {
+                tokio::time::sleep(Duration::from_millis(250)).await;
             }
-            true
+            if go_executable().is_some() {
+                tracing::info!("Go installed successfully");
+                true
+            } else {
+                tracing::warn!("Go installer completed, but Go is still not resolvable");
+                false
+            }
         }
         Ok(Ok(output)) => {
             let stderr = String::from_utf8_lossy(&output.stderr);
@@ -457,62 +484,58 @@ async fn command_available(program: &str) -> bool {
 /// `step.binary` is the name to re-probe afterwards — callers should pass the
 /// name the recon tools actually invoke.
 pub async fn install_one(step: &InstallStep) -> InstallOutcome {
+    let _install_guard = TOOL_INSTALL_LOCK.lock().await;
+
     if let ToolStatus::Present { path } = which(step.binary) {
         return InstallOutcome::AlreadyPresent { path };
     }
 
-    if let Some(needed) = step.family.prerequisite_binary()
-        && !command_available(needed).await
-    {
-        // Auto-install Go if missing
-        if step.family == InstallFamily::Go && needed == "go" {
-            tracing::info!("Auto-installing Go...");
-            if ensure_go_installed().await {
-                // Go is now available, continue with installation
+    if let Some(needed) = step.family.prerequisite_binary() {
+        let available = if step.family == InstallFamily::Go {
+            go_available()
+        } else {
+            command_available(needed).await
+        };
+        if !available {
+            // Bootstrap the Go toolchain when a known Go tool is first needed.
+            if step.family == InstallFamily::Go && needed == "go" {
+                tracing::info!("Auto-installing Go...");
+                if !ensure_go_installed().await {
+                    return InstallOutcome::MissingPrerequisite {
+                        needed,
+                        hint: go_bootstrap_hint(),
+                    };
+                }
             } else {
                 return InstallOutcome::MissingPrerequisite {
                     needed,
+                    hint: if step.family == InstallFamily::Go {
+                        go_bootstrap_hint()
+                    } else {
+                        format!(
+                            "`{}` is required to install {} but was not found on PATH.",
+                            needed, step.binary
+                        )
+                    },
+                };
+            }
+        }
+    }
+
+    let program = if step.family == InstallFamily::Go {
+        match go_executable() {
+            Some(path) => path,
+            None => {
+                return InstallOutcome::MissingPrerequisite {
+                    needed: "go",
                     hint: go_bootstrap_hint(),
                 };
             }
-        } else {
-            return InstallOutcome::MissingPrerequisite {
-                needed,
-                hint: if step.family == InstallFamily::Go {
-                    go_bootstrap_hint()
-                } else {
-                    format!(
-                        "`{}` is required to install {} but was not found on PATH.",
-                        needed, step.binary
-                    )
-                },
-            };
         }
-    }
-
-    // Go needs GOPATH/bin on PATH for `which` to ever find the result. Export
-    // it for this child rather than mutating our own (and the user's) env:
-    // the process we spawn inherits it, the doctor we re-probe does not, so
-    // the post-install check below falls back to `go_bin_dir` explicitly.
-    if step.family == InstallFamily::Go
-        && let Some(dir) = go_bin_dir()
-    {
-        let existing = std::env::var("PATH").unwrap_or_default();
-        if !existing
-            .split(if cfg!(windows) { ';' } else { ':' })
-            .any(|p| p.eq_ignore_ascii_case(&dir.to_string_lossy()))
-        {
-            let sep = if cfg!(windows) { ';' } else { ':' };
-            // SAFETY: single-threaded during CLI startup; `std::env::set_var`
-            // is `unsafe` only because of later multi-threaded mutation, and we
-            // only widen PATH with a directory we just resolved.
-            unsafe {
-                std::env::set_var("PATH", format!("{}{}{}", dir.display(), sep, existing));
-            }
-        }
-    }
-
-    let mut cmd = tokio::process::Command::new(&step.program);
+    } else {
+        PathBuf::from(&step.program)
+    };
+    let mut cmd = tokio::process::Command::new(program);
     cmd.args(&step.args)
         .kill_on_drop(true)
         // `go install` writes progress and the occasional "downloading" noise to
@@ -544,8 +567,8 @@ pub async fn install_one(step: &InstallStep) -> InstallOutcome {
         return InstallOutcome::Failed { output: tail };
     }
 
-    // Re-probe. The PATH we just widened for the child does not help a bare
-    // `which` unless the process env was updated, so check the Go bin dir too.
+    // Re-probe. `which` checks both PATH and the Go bin directory, including
+    // its expected location when that directory did not exist before install.
     match which(step.binary) {
         ToolStatus::Present { path } => InstallOutcome::Installed { path },
         ToolStatus::Missing => {
@@ -565,6 +588,24 @@ pub async fn install_one(step: &InstallStep) -> InstallOutcome {
                 last_output: tail,
             }
         }
+    }
+}
+
+/// Formats an installation outcome for a tool execution error.
+pub fn install_failure_description(outcome: &InstallOutcome) -> String {
+    match outcome {
+        InstallOutcome::AlreadyPresent { path } => format!("already installed at {path}"),
+        InstallOutcome::Installed { path } => format!("installed at {path}"),
+        InstallOutcome::InstalledButNotOnPath { hint, .. } => hint.clone(),
+        InstallOutcome::Failed { output } if output.is_empty() => {
+            "installer exited unsuccessfully".to_string()
+        }
+        InstallOutcome::Failed { output } => format!("installer failed: {output}"),
+        InstallOutcome::MissingPrerequisite { needed, hint } => {
+            format!("required prerequisite `{needed}` is unavailable: {hint}")
+        }
+        InstallOutcome::Skipped { reason } => reason.clone(),
+        InstallOutcome::TimedOut => "installation timed out".to_string(),
     }
 }
 

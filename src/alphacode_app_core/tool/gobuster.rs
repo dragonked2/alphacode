@@ -264,10 +264,14 @@ fn build_args(params: &GobusterInput) -> Result<Vec<String>> {
         args.push("-c".to_string());
         args.push(cookies.clone());
     }
-    if let Some(ref ua) = params.user_agent {
-        args.push("-a".to_string());
-        args.push(ua.clone());
-    }
+    args.push("-a".to_string());
+    args.push(
+        params
+            .user_agent
+            .as_deref()
+            .unwrap_or(crate::alphacode_provider_core::ALPHACODE_USER_AGENT)
+            .to_string(),
+    );
 
     Ok(args)
 }

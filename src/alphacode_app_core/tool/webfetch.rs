@@ -23,7 +23,7 @@ const MAX_REDIRECTS: usize = 5;
 /// The first is a generic bot UA (fast, low footprint); subsequent ones mimic
 /// real browsers to bypass Cloudflare/bot-detection heuristics.
 const USER_AGENTS: &[&str] = &[
-    "Mozilla/5.0 (compatible; Alphacode/1.0)",
+    "Mozilla/5.0 (compatible; AlphacodeBot)",
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36",
     "Mozilla/5.0 (Macintosh; Intel Mac OS X 14_5) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.5 Safari/605.1.15",
 ];
@@ -515,6 +515,7 @@ fn fetch_client() -> reqwest::Client {
     CLIENT
         .get_or_init(|| {
             reqwest::Client::builder()
+                .user_agent(crate::alphacode_provider_core::ALPHACODE_USER_AGENT)
                 .redirect(reqwest::redirect::Policy::none())
                 .connect_timeout(Duration::from_secs(20))
                 .tcp_keepalive(Some(Duration::from_secs(30)))
@@ -799,8 +800,16 @@ impl WebFetchTool {
         let mut last_err: Option<anyhow::Error> = None;
 
         for (attempt, &ua) in USER_AGENTS.iter().enumerate() {
+            let custom_user_agent = params.headers.as_ref().and_then(|headers| {
+                headers
+                    .iter()
+                    .find(|(name, _)| name.eq_ignore_ascii_case("user-agent"))
+                    .map(|(_, value)| value.clone())
+            });
+            let user_agent = custom_user_agent
+                .unwrap_or_else(|| crate::alphacode_provider_core::with_alphacode_brand(ua));
             let request = self
-                .build_request(url, params, method, drop_body, ua, timeout)
+                .build_request(url, params, method, drop_body, &user_agent, timeout)
                 .context("failed to build webfetch request")?;
 
             let response = if attempt == 0 {
@@ -969,6 +978,9 @@ impl WebFetchTool {
 
         if let Some(headers) = &params.headers {
             for (key, value) in headers {
+                if key.eq_ignore_ascii_case("user-agent") {
+                    continue;
+                }
                 // A malformed header must not abort the fetch; the transport
                 // rejects it and the request proceeds without it.
                 if let (Ok(name), Ok(header_value)) = (

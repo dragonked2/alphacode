@@ -835,7 +835,11 @@ fn prepare_messages_inner(app: &dyn TuiState, width: u16, height: u16) -> Prepar
 
     if is_initial_empty {
         let compose_start = Instant::now();
-        let suggestions = app.suggestion_prompts();
+        let suggestions = if app.onboarding_preview_mode() {
+            app.suggestion_prompts()
+        } else {
+            app.starter_prompts()
+        };
         let is_centered = app.centered_mode();
         let suggestion_align = if is_centered {
             ratatui::layout::Alignment::Center
@@ -844,12 +848,9 @@ fn prepare_messages_inner(app: &dyn TuiState, width: u16, height: u16) -> Prepar
         };
         let mut wrapped_lines = header_prepared.wrapped_lines.clone();
 
-        // Empty-session polish: when there are no suggestions (e.g. after the
-        // "go straight to the session" UX change removed the welcome card) and
-        // the user hasn't typed anything yet, show a single tasteful hint line
-        // centered just below the header. The brand-gradient glyph + dim text
-        // is intentionally minimal so the input prompt stays the visual
-        // anchor and the screen reads as "ready", not "empty".
+        // Empty-session fallback: keep a single, low-noise hint available for
+        // lightweight TuiState implementations that don't provide starter
+        // prompts. The production app supplies concrete, numbered examples.
         if suggestions.is_empty()
             && !app.is_processing()
             && app.streaming_text().is_empty()
@@ -864,19 +865,32 @@ fn prepare_messages_inner(app: &dyn TuiState, width: u16, height: u16) -> Prepar
                     Style::default().fg(accent).add_modifier(Modifier::BOLD),
                 ),
                 Span::styled(
-                    "Type to begin",
+                    "Ask in your own words",
                     Style::default().fg(dim).add_modifier(Modifier::ITALIC),
                 ),
                 Span::styled("  ·  ", Style::default().fg(dim)),
                 Span::styled("Enter to send", Style::default().fg(dim)),
                 Span::styled("  ·  ", Style::default().fg(dim)),
-                Span::styled("/ for commands", Style::default().fg(dim)),
+                Span::styled("/ for actions", Style::default().fg(dim)),
             ];
             wrapped_lines.push(Line::from(hint_spans).alignment(suggestion_align));
         }
 
         if !suggestions.is_empty() {
             wrapped_lines.push(Line::from(""));
+            wrapped_lines.push(
+                Line::from(Span::styled(
+                    if is_centered {
+                        "A few ways to get started"
+                    } else {
+                        "  A few ways to get started"
+                    },
+                    Style::default()
+                        .fg(super::accent_color())
+                        .add_modifier(Modifier::BOLD),
+                ))
+                .alignment(suggestion_align),
+            );
             for (i, (label, prompt)) in suggestions.iter().enumerate() {
                 let is_login = prompt.starts_with('/');
                 let pad = if is_centered { "" } else { "  " };
@@ -909,7 +923,7 @@ fn prepare_messages_inner(app: &dyn TuiState, width: u16, height: u16) -> Prepar
                 wrapped_lines.push(
                     Line::from(Span::styled(
                         format!(
-                            "{}Press 1-{} or type anything to start",
+                            "{}Press 1-{} to try one · / for commands · or type your own",
                             if is_centered { "" } else { "  " },
                             suggestions.len()
                         ),
@@ -918,6 +932,16 @@ fn prepare_messages_inner(app: &dyn TuiState, width: u16, height: u16) -> Prepar
                     .alignment(suggestion_align),
                 );
             }
+        }
+
+        // Starter copy is intentionally one row per action, so clip each row
+        // to the terminal width with a visible ellipsis instead of letting a
+        // narrow terminal silently cut the end of the instruction.
+        for line in wrapped_lines
+            .iter_mut()
+            .skip(header_prepared.wrapped_lines.len())
+        {
+            *line = super::truncate_line_with_ellipsis_to_width(line, width as usize);
         }
 
         // Vertically center the initial empty screen, but compute the padding

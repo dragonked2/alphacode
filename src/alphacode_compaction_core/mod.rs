@@ -62,7 +62,7 @@ pub const IMAGE_TOKEN_COST: usize = 1_600;
 
 /// Fixed token overhead for system prompt + tool definitions.
 /// These are not counted in message content but do count toward the context limit.
-/// Estimated conservatively: ~8k tokens for system prompt + ~10k for 50+ tools.
+/// Estimated conservatively for the system/project guidance and 50+ tool schemas.
 pub const SYSTEM_OVERHEAD_TOKENS: usize = 18_000;
 
 /// Rolling window size for token history (proactive/semantic modes)
@@ -1001,16 +1001,24 @@ pub fn effective_context_tokens_from_usage(
 }
 
 pub fn estimate_compaction_tokens_from_chars(total_chars: usize, token_budget: usize) -> usize {
-    let msg_tokens = total_chars / CHARS_PER_TOKEN;
     // Add overhead for system prompt + tool definitions, which are not in the
-    // message list but do count toward the context limit. Scale the overhead to
-    // the budget so tests with tiny budgets aren't affected.
-    let overhead = if token_budget >= DEFAULT_TOKEN_BUDGET / 2 {
-        SYSTEM_OVERHEAD_TOKENS
-    } else {
-        0
-    };
-    msg_tokens + overhead
+    // message list but do count toward the context limit. The old estimate
+    // silently dropped this reserve for windows below 100k, causing compact
+    // models to fill with history before their system prompt and tools were
+    // counted. Keep a proportional reserve for small windows and cap it at
+    // the conservative full-size estimate for larger models.
+    let overhead = SYSTEM_OVERHEAD_TOKENS.min(token_budget / 4);
+    estimate_compaction_tokens_from_chars_with_overhead(total_chars, overhead)
+}
+
+/// Estimate message tokens with the measured system-prompt and tool-schema
+/// overhead for the active request. This lets the compactor account for the
+/// actual prefix instead of a fixed guess when the agent has built it.
+pub fn estimate_compaction_tokens_from_chars_with_overhead(
+    total_chars: usize,
+    prompt_overhead_tokens: usize,
+) -> usize {
+    (total_chars / CHARS_PER_TOKEN).saturating_add(prompt_overhead_tokens)
 }
 
 pub fn semantic_goal_text(messages: &[Message]) -> String {
@@ -1649,7 +1657,7 @@ mod tests {
     }
 
     #[test]
-    fn estimates_tokens_with_large_budget_overhead() {
+    fn estimates_prompt_and_tool_overhead_for_all_context_sizes() {
         let summary = Summary {
             text: "abcd".repeat(100),
             openai_encrypted_content: None,
@@ -1657,10 +1665,16 @@ mod tests {
             original_turn_count: 1,
         };
 
-        assert_eq!(estimate_compaction_tokens(Some(&summary), 0, 1000), 100);
+        assert_eq!(estimate_compaction_tokens(Some(&summary), 0, 1_000), 350);
+        assert_eq!(estimate_compaction_tokens(Some(&summary), 0, 16_000), 4_100);
         assert_eq!(
             estimate_compaction_tokens(Some(&summary), 0, DEFAULT_TOKEN_BUDGET),
             100 + SYSTEM_OVERHEAD_TOKENS
+        );
+        assert_eq!(
+            estimate_compaction_tokens_from_chars_with_overhead(400, 1_200),
+            1_300,
+            "the active request's measured prompt prefix must replace the fallback reserve"
         );
     }
 

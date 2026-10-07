@@ -13,10 +13,12 @@
 use anyhow::{Result, bail};
 use std::io::Read;
 use std::process::{Command, Stdio};
+use std::thread;
 use std::time::{Duration, Instant};
 
 /// Default wall-clock limit for a scripting call.
 pub const DEFAULT_TIMEOUT: Duration = Duration::from_secs(20);
+const MAX_COMMAND_OUTPUT_BYTES: usize = 2 * 1024 * 1024;
 
 /// Run an AppleScript and return stdout (trimmed). Maps the common macOS
 /// permission / automation errors to actionable messages.
@@ -102,34 +104,81 @@ pub fn run_command_timed(
         .spawn()
         .map_err(|e| anyhow::anyhow!("failed to spawn {program}: {e}"))?;
 
+    // Drain both pipes concurrently. Waiting first can deadlock once a child
+    // fills either pipe, while `wait_with_output` can allocate without bound.
+    // Readers retain a fixed prefix and discard excess bytes while continuing
+    // to drain so the process cannot block on a full pipe.
+    let mut stdout = child
+        .stdout
+        .take()
+        .ok_or_else(|| anyhow::anyhow!("failed to capture {program} stdout"))?;
+    let mut stderr = child
+        .stderr
+        .take()
+        .ok_or_else(|| anyhow::anyhow!("failed to capture {program} stderr"))?;
+    let stdout_reader = thread::spawn(move || drain_bounded_output(&mut stdout));
+    let stderr_reader = thread::spawn(move || drain_bounded_output(&mut stderr));
+
     let deadline = Instant::now() + timeout;
-    loop {
+    let status = loop {
         match child.try_wait() {
-            Ok(Some(status)) => {
-                let mut out = String::new();
-                let mut err = String::new();
-                if let Some(mut s) = child.stdout.take() {
-                    let _ = s.read_to_string(&mut out);
-                }
-                if let Some(mut s) = child.stderr.take() {
-                    let _ = s.read_to_string(&mut err);
-                }
-                return Ok((status.success(), out, err));
-            }
+            Ok(Some(status)) => break status,
+            Ok(None) if Instant::now() < deadline => thread::sleep(Duration::from_millis(25)),
             Ok(None) => {
-                if Instant::now() >= deadline {
-                    let _ = child.kill();
-                    let _ = child.wait();
-                    bail!(
-                        "command timed out after {}s (a target app may be unresponsive): {program}",
-                        timeout.as_secs()
-                    );
-                }
-                std::thread::sleep(Duration::from_millis(25));
+                let _ = child.kill();
+                let _ = child.wait();
+                let _ = stdout_reader.join();
+                let _ = stderr_reader.join();
+                bail!(
+                    "command timed out after {}s (a target app may be unresponsive): {program}",
+                    timeout.as_secs()
+                );
             }
-            Err(e) => bail!("error waiting on {program}: {e}"),
+            Err(error) => {
+                let _ = child.kill();
+                let _ = child.wait();
+                let _ = stdout_reader.join();
+                let _ = stderr_reader.join();
+                bail!("error waiting on {program}: {error}");
+            }
         }
+    };
+
+    let (stdout, stdout_truncated) = stdout_reader
+        .join()
+        .map_err(|_| anyhow::anyhow!("failed collecting {program} stdout"))??;
+    let (stderr, stderr_truncated) = stderr_reader
+        .join()
+        .map_err(|_| anyhow::anyhow!("failed collecting {program} stderr"))??;
+    if stdout_truncated || stderr_truncated {
+        bail!(
+            "{program} produced more than {} MiB on a single output stream; excess output was discarded",
+            MAX_COMMAND_OUTPUT_BYTES / (1024 * 1024)
+        );
     }
+
+    Ok((
+        status.success(),
+        String::from_utf8_lossy(&stdout).into_owned(),
+        String::from_utf8_lossy(&stderr).into_owned(),
+    ))
+}
+
+fn drain_bounded_output(reader: &mut impl Read) -> std::io::Result<(Vec<u8>, bool)> {
+    let mut output = Vec::with_capacity(MAX_COMMAND_OUTPUT_BYTES.min(64 * 1024));
+    let mut truncated = false;
+    let mut chunk = [0u8; 16 * 1024];
+    loop {
+        let read = reader.read(&mut chunk)?;
+        if read == 0 {
+            break;
+        }
+        let remaining = MAX_COMMAND_OUTPUT_BYTES.saturating_sub(output.len());
+        let keep = read.min(remaining);
+        output.extend_from_slice(&chunk[..keep]);
+        truncated |= keep < read;
+    }
+    Ok((output, truncated))
 }
 
 /// Quote a string as an AppleScript string literal (wraps in quotes, escapes

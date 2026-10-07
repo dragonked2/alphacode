@@ -278,6 +278,11 @@ fn normalize_httpx_input(input: &Value) -> Result<HttpxInput> {
 
 fn build_args(params: &HttpxInput) -> Result<Vec<String>> {
     let mut args = Vec::new();
+    args.push("-H".to_string());
+    args.push(format!(
+        "User-Agent: {}",
+        crate::alphacode_provider_core::ALPHACODE_USER_AGENT
+    ));
 
     if let Some(ref list) = params.list {
         args.push("-l".to_string());

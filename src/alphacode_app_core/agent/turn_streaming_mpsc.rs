@@ -173,8 +173,8 @@ impl Agent {
                     }
                 })),
             );
-            // Tier-aware: trivial greetings get the ~1.5 KB identity prompt
-            // instead of the 11 KB base prompt, and a short-circuited reply
+            // Tier-aware: trivial greetings get the sub-1 KB identity prompt
+            // instead of the full task prompt, and a short-circuited reply
             // avoids the API round-trip entirely.
             // Reuse cached static prompt within a turn (it doesn't change between iterations)
             let (split_prompt, prompt_tier) = if let Some(ref cached) = cached_static_prompt {

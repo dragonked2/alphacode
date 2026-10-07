@@ -70,7 +70,15 @@ fn is_mouse_scroll_kind(kind: MouseEventKind) -> bool {
 }
 
 impl App {
-    const MOUSE_SCROLL_INTENT_LINES: i16 = 3;
+    /// Lines a deliberate (non-flicked) wheel notch advances the chat transcript
+    /// and the /resume preview. One line, so fine positioning stays precise;
+    /// `scroll_intent_lines` raises it on a fast flick.
+    const MOUSE_SCROLL_INTENT_LINES: i16 = 1;
+    /// Wheel notch for the fixed panes and overlays (side panel, help,
+    /// changelog, model status). Their content is scanned rather than
+    /// positioned, so the roomier three-line step is comfortable there, and
+    /// velocity scaling would only make them overshoot.
+    const MOUSE_SCROLL_OVERLAY_INTENT_LINES: i16 = 3;
     /// Upper bound on lines enqueued per wheel notch after velocity
     /// acceleration. Kept close to the base intent so the boost is only a subtle
     /// nudge on fast flicks rather than a large jump.
@@ -651,7 +659,19 @@ impl App {
             .map(|last| Self::scroll_acceleration_multiplier(now.saturating_duration_since(last)))
             .unwrap_or(1);
         self.last_mouse_scroll = Some(now);
-        let intent = Self::scroll_intent_lines(multiplier);
+        // Scroll "power" (velocity scaling) is a transcript-preview concept: a
+        // deliberate notch must stay precise there. The fixed panes and overlays
+        // are scanned rather than positioned, so they keep the roomier
+        // three-line step.
+        let intent = match target {
+            MouseScrollTarget::Chat | MouseScrollTarget::SessionPickerPreview => {
+                Self::scroll_intent_lines(multiplier)
+            }
+            MouseScrollTarget::SidePane
+            | MouseScrollTarget::HelpOverlay
+            | MouseScrollTarget::ChangelogOverlay
+            | MouseScrollTarget::ModelStatusOverlay => Self::MOUSE_SCROLL_OVERLAY_INTENT_LINES,
+        };
         let delta = direction * intent;
         self.mouse_scroll_queue = self
             .mouse_scroll_queue
@@ -672,15 +692,15 @@ impl App {
                 ],
             );
         }
-        self.drain_mouse_scroll_animation(Self::MOUSE_SCROLL_INTENT_LINES as usize);
+        self.drain_mouse_scroll_animation(intent.unsigned_abs() as usize);
     }
 
     /// Queue an exact row delta supplied by a native terminal integration.
     ///
     /// Unlike a terminal mouse notch, the native host has already converted its
-    /// pixel gesture into rows, so applying the regular three-line intent would
-    /// amplify the gesture. Commit one row immediately for responsive feedback
-    /// and let subsequent redraw ticks reveal the remaining intermediate rows.
+    /// pixel gesture into rows, so applying a wheel notch's intent would amplify
+    /// the gesture. Commit one row immediately for responsive feedback and let
+    /// subsequent redraw ticks reveal the remaining intermediate rows.
     pub(super) fn enqueue_native_scroll(&mut self, target: MouseScrollTarget, delta: i32) {
         if delta == 0 {
             return;

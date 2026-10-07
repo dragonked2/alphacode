@@ -139,7 +139,7 @@ impl Agent {
                 self.build_memory_prompt_nonblocking_shared(std::sync::Arc::clone(&messages), None);
             // Use split prompt for better caching - static content cached, dynamic not.
             // The tier is inferred from the latest user message; trivial greetings
-            // get a ~1.5 KB identity prompt instead of the 11 KB base prompt.
+            // get a compact identity prompt instead of the full task prompt.
             // Reuse cached static prompt within a turn (it doesn't change between iterations)
             let (split_prompt, prompt_tier) = if let Some(ref cached) = cached_static_prompt {
                 (

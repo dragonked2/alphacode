@@ -144,3 +144,59 @@ pub fn clear_active_diagrams() {
     }
     clear_streaming_preview_diagram();
 }
+
+#[cfg(test)]
+use std::sync::MutexGuard;
+
+#[cfg(test)]
+static ACTIVE_DIAGRAM_TEST_LOCK: std::sync::OnceLock<Mutex<()>> = std::sync::OnceLock::new();
+
+#[cfg(test)]
+thread_local! {
+    /// How many [`active_diagram_test_lock`] guards this thread currently
+    /// holds. See the function for why the lock has to be reentrant.
+    static ACTIVE_DIAGRAM_TEST_DEPTH: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
+/// Reentrant test lock guarding the process-global active-diagram registry.
+///
+/// The registry is a `static`, so a test that registers diagrams while a
+/// sibling test clears or restores them observes an empty or reordered list.
+/// `test_diagram_focus_toggle_and_pan` failed exactly that way: a sibling
+/// test's `clear_active_diagrams()` landed between its `register_active_diagram`
+/// calls and the keypress that reads the count back. Every test that touches
+/// the registry directly must hold this.
+///
+/// Reentrant on purpose: tests bracket their body with a cleanup clear, and
+/// holding the guard at both ends must not self-deadlock on the non-reentrant
+/// mutex. Only the outermost acquisition takes the lock; nested ones just bump
+/// the depth.
+#[cfg(test)]
+pub fn active_diagram_test_lock() -> ActiveDiagramTestGuard {
+    let outer = if ACTIVE_DIAGRAM_TEST_DEPTH.with(|depth| depth.get()) == 0 {
+        Some(
+            ACTIVE_DIAGRAM_TEST_LOCK
+                .get_or_init(|| Mutex::new(()))
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner()),
+        )
+    } else {
+        None
+    };
+    ACTIVE_DIAGRAM_TEST_DEPTH.with(|depth| depth.set(depth.get() + 1));
+    ActiveDiagramTestGuard { _outer: outer }
+}
+
+/// Guard for [`active_diagram_test_lock`]; the outermost one releases the lock.
+#[cfg(test)]
+pub struct ActiveDiagramTestGuard {
+    _outer: Option<MutexGuard<'static, ()>>,
+}
+
+#[cfg(test)]
+impl Drop for ActiveDiagramTestGuard {
+    fn drop(&mut self) {
+        ACTIVE_DIAGRAM_TEST_DEPTH.with(|depth| depth.set(depth.get().saturating_sub(1)));
+        // `_outer` is dropped right after, which unlocks for outermost drops.
+    }
+}

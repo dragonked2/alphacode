@@ -1463,6 +1463,10 @@ pub struct App {
     /// provider snapshot has not reached this client yet. While set, `/model`
     /// shows a loading state instead of reusing the pre-login catalog.
     auth_catalog_refresh_pending: bool,
+    /// A direct OpenAI-compatible API-key paste flow already launched the
+    /// profile's own post-login catalog refresh. Consumed by the next
+    /// `handle_login_completed` so it does not start a second, racing refresh.
+    post_login_profile_activation_pending: bool,
     pending_model_picker_load: Option<PendingModelPickerLoad>,
     model_picker_load_request_id: u64,
     // Pending model switch from picker (for remote mode async processing)

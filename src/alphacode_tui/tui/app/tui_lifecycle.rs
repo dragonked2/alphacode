@@ -7,15 +7,19 @@ impl App {
         self.input = restored.input;
         self.cursor_pos = restored.cursor;
         self.pending_images = restored.pending_images;
-        // A reload must NEVER auto-submit a user prompt. The previous version
-        // may have saved an in-flight rate-limit or queued retry with
-        // `submit_on_restore=true`; replaying that here would race the user's
-        // first keystrokes and (on Windows) make the input box appear to
-        // swallow every keypress until the auto-dispatch finishes. The
-        // "Reload complete - continuing" chat message is already pushed by
-        // `restore_session`; the user is free to type a new prompt.
-        let _ = restored.submit_on_restore;
-        self.submit_input_on_startup = false;
+        // A staged startup submission (`submit_on_restore`) is honoured only for remote
+        // sessions, where it is safe: `process_remote_followups` waits for the
+        // server-history gate first, and `history_matches_pending_startup_prompt`
+        // drops the resubmit when the prompt is already in server history.
+        // A *local* restore must never auto-submit a user prompt: the previous
+        // version may have saved an in-flight rate-limit prompt with
+        // `submit_on_restore=true`, and the local idle tick fires the submit on
+        // its very first iteration - racing the user's first keystrokes and (on
+        // Windows) making the input box appear to swallow every keypress until
+        // the auto-dispatch finishes. The "Reload complete - continuing" chat
+        // message is already pushed by `restore_session` there; the user is free
+        // to type a new prompt.
+        self.submit_input_on_startup = self.is_remote && restored.submit_on_restore;
         crate::logging::info(&format!(
             "Startup input restored: input_chars={} pending_images={} queued_messages={} hidden_system={}",
             self.input.chars().count(),
@@ -54,13 +58,21 @@ impl App {
         self.pending_soft_interrupts.clear();
         self.pending_soft_interrupt_requests.clear();
         self.queued_messages = recovered_queue;
-        self.recovered_queue_held_for_user_submit = !self.queued_messages.is_empty();
-        let recovered_followup_count = self.queued_messages.len();
-        if recovered_followup_count > 0 {
-            self.set_status_notice(format!(
-                "Restored {} queued prompt(s) after reload - press Enter to send",
-                recovered_followup_count
-            ));
+        // The remote send path owns these entries: `process_remote_followups`
+        // dispatches every one of them as soon as the server-history gate opens.
+        // Holding them for an explicit Enter stranded the queue forever, because
+        // nothing else consumes it.
+        self.recovered_queue_held_for_user_submit = false;
+        // A restored follow-up is anything the send path will dispatch, which
+        // includes the hidden startup/system queue (that is where a staged
+        // judge/autojudge prompt lives). Only the remote client gets this notice:
+        // there the dispatch waits for the server history gate, whereas a local
+        // restore dispatches on the next loop iteration and keeps its specific
+        // spawn hint (e.g. "Judge starting").
+        if self.is_remote
+            && (!self.queued_messages.is_empty() || !self.hidden_queued_system_messages.is_empty())
+        {
+            self.set_status_notice("Restored queued follow-up after reload".to_string());
         }
 
         self.rate_limit_pending_message = restored.rate_limit_pending_message;
@@ -167,14 +179,14 @@ impl App {
         self.status_detail = Some("offline; waiting for network before retry".to_string());
 
         let content = format!(
-            "📡 Network appears offline - waiting to retry automatically. {} - {}",
+            "ðŸ“¡ Network appears offline - waiting to retry automatically. {} - {}",
             plan.listener_summary,
             reason.trim().trim_end_matches('.')
         );
         if let Some(idx) = self.display_messages.iter().rposition(|message| {
             message.role == "system"
                 && (message.title.as_deref() == Some("Connection")
-                    || message.content.starts_with("📡 Network appears offline"))
+                    || message.content.starts_with("ðŸ“¡ Network appears offline"))
         }) {
             self.replace_display_message_title_and_content(
                 idx,
@@ -234,13 +246,13 @@ impl App {
             Ok((retry_attempts, backoff_secs, retry_at)) => {
                 self.rate_limit_reset = Some(retry_at);
                 let content = format!(
-                    "⚡ Connection lost - retrying (attempt {}/{}, in {}s) - {}",
+                    "âš¡ Connection lost - retrying (attempt {}/{}, in {}s) - {}",
                     retry_attempts,
                     max_attempts,
                     backoff_secs,
                     reason
                         .trim()
-                        .trim_start_matches("⚡ ")
+                        .trim_start_matches("âš¡ ")
                         .trim_start_matches("Connection lost")
                         .trim_start_matches('(')
                         .trim_end_matches('.')
@@ -251,8 +263,8 @@ impl App {
                         && (message.title.as_deref() == Some("Connection")
                             || message
                                 .content
-                                .starts_with("⚡ Server reload in progress - waiting for handoff")
-                            || message.content.starts_with("⚡ Connection lost"))
+                                .starts_with("âš¡ Server reload in progress - waiting for handoff")
+                            || message.content.starts_with("âš¡ Connection lost"))
                 }) {
                     self.replace_display_message_title_and_content(
                         idx,
@@ -327,7 +339,7 @@ impl App {
         crate::telemetry::record_auth_failed_reason(&provider, "session", reason.label());
 
         self.push_display_message(DisplayMessage::error(format!(
-            "🛑 Stopped automatic retries: {failures} consecutive credential/auth failures. \
+            "ðŸ›‘ Stopped automatic retries: {failures} consecutive credential/auth failures. \
              The current login or API key for {provider} is not working, so resending the same \
              request cannot succeed.{} Run /login to re-authenticate (or /model to switch to a \
              working route), then send again.",
@@ -386,12 +398,17 @@ impl App {
         });
 
         crate::logging::info("App::new_minimal_with_session: skipping skill/prompt bootstrap");
-        crate::telemetry::begin_session_with_parent(
-            provider.name(),
-            &provider.model(),
-            session.parent_id.clone(),
-            false,
-        );
+        // See the note on the `App::new` path: registering a telemetry session
+        // here would clobber the telemetry module's process-global state on
+        // every unit-test `App` construction.
+        if !cfg!(test) {
+            crate::telemetry::begin_session_with_parent(
+                provider.name(),
+                &provider.model(),
+                session.parent_id.clone(),
+                false,
+            );
+        }
 
         let mut app = Self {
             provider,
@@ -638,6 +655,7 @@ impl App {
             model_picker_catalog_revision: 0,
             recent_authenticated_provider: None,
             auth_catalog_refresh_pending: false,
+            post_login_profile_activation_pending: false,
             pending_model_picker_load: None,
             model_picker_load_request_id: 0,
             pending_model_switch: None,
@@ -832,12 +850,19 @@ impl App {
             t_prompt.as_secs_f64() * 1000.0,
         ));
 
-        crate::telemetry::begin_session_with_parent(
-            provider.name(),
-            &provider.model(),
-            session.parent_id.clone(),
-            false,
-        );
+        // Unit tests construct thousands of `App`s, and every construction
+        // replaced the telemetry module's process-global `SESSION_STATE`. That
+        // races this crate's own telemetry tests, which assert on exactly that
+        // state, and a session is meaningless in a unit test. Integration tests
+        // link a non-`cfg(test)` build, so production behaviour is unchanged.
+        if !cfg!(test) {
+            crate::telemetry::begin_session_with_parent(
+                provider.name(),
+                &provider.model(),
+                session.parent_id.clone(),
+                false,
+            );
+        }
 
         let mut app = Self {
             provider,
@@ -1084,6 +1109,7 @@ impl App {
             model_picker_catalog_revision: 0,
             recent_authenticated_provider: None,
             auth_catalog_refresh_pending: false,
+            post_login_profile_activation_pending: false,
             pending_model_picker_load: None,
             model_picker_load_request_id: 0,
             pending_model_switch: None,

@@ -66,25 +66,13 @@ async fn run_python_script(
     let script_path = dir.path().join(format!("{label}.py"));
     std::fs::write(&script_path, script)?;
 
-    let mut cmd = tokio::process::Command::new(python);
-    cmd.arg(&script_path)
-        .kill_on_drop(true)
-        // `piped` with no writer attached would make an interactive exploit
-        // block forever on read; the tool has no stdin to give it.
-        .stdin(std::process::Stdio::null())
-        .stdout(std::process::Stdio::piped())
-        .stderr(std::process::Stdio::piped());
-
-    if let Some(wd) = workdir {
-        cmd.current_dir(wd);
-    }
-
     // `TempDir`'s Drop removes the directory, so the file is cleaned up on the
     // timeout path too, not just on the success path.
-    let output = tokio::time::timeout(timeout, cmd.output())
+    let args = vec![script_path.to_string_lossy().into_owned()];
+    let working_dir = workdir.map(std::path::Path::new);
+    let output = super::recon_common::run_bounded_in(&python, &args, working_dir, timeout)
         .await
-        .map_err(|_| anyhow::anyhow!("{label} script timed out after {}s", timeout.as_secs()))?
-        .map_err(|e| anyhow::anyhow!("Failed to run {label} script: {e}"))?;
+        .map_err(|error| anyhow::anyhow!("Failed to run {label} script: {error}"))?;
 
     Ok(output)
 }
@@ -589,37 +577,22 @@ impl Tool for Z3Tool {
         let params: Z3Input = serde_json::from_value(input.clone())
             .map_err(|e| anyhow::anyhow!("Invalid z3 input: {}", e))?;
 
-        // `-in` takes the script on stdin, which avoids the temp file entirely
-        // (and the per-process-id filename collision that came with it).
-        let mut cmd = tokio::process::Command::new("z3");
-        cmd.arg("-in")
-            .kill_on_drop(true)
-            .stdin(std::process::Stdio::piped())
-            .stdout(std::process::Stdio::piped())
-            .stderr(std::process::Stdio::piped());
-
-        let mut child = cmd
-            .spawn()
-            .map_err(|e| anyhow::anyhow!("Failed to run z3: {e}. Install with: apt install z3"))?;
-
-        let script = params.script.clone();
-        let stdin = child.stdin.take().expect("stdin was piped");
-        tokio::spawn(async move {
-            use tokio::io::AsyncWriteExt;
-            let mut stdin = stdin;
-            let _ = stdin.write_all(script.as_bytes()).await;
-            let _ = stdin.shutdown().await;
-        });
+        // Pass a unique file instead of piping stdin so execution can share
+        // the bounded process runner used by the other CTF tools. Solver output
+        // can be enormous for a broad model, so `Command::output()` is unsafe.
+        let dir = tempfile::Builder::new().prefix("alphacode_z3_").tempdir()?;
+        let script_path = dir.path().join("query.smt2");
+        std::fs::write(&script_path, &params.script)?;
 
         let timeout = params
             .timeout_secs
             .map(Duration::from_secs)
             .unwrap_or(CTF_TOOL_TIMEOUT);
 
-        let output = tokio::time::timeout(timeout, child.wait_with_output())
+        let args = vec![script_path.to_string_lossy().into_owned()];
+        let output = super::recon_common::run_bounded("z3", &args, timeout)
             .await
-            .map_err(|_| anyhow::anyhow!("z3 timed out after {}s", timeout.as_secs()))?
-            .map_err(|e| anyhow::anyhow!("Failed to collect z3 output: {e}"))?;
+            .map_err(|error| anyhow::anyhow!("Failed to run z3: {error}"))?;
 
         let stdout = String::from_utf8_lossy(&output.stdout);
         let stderr = String::from_utf8_lossy(&output.stderr);
@@ -1003,19 +976,14 @@ impl Tool for GhidraTool {
             .map(Duration::from_secs)
             .unwrap_or(Duration::from_secs(300));
 
-        let output = tokio::time::timeout(
+        let output = super::recon_common::run_bounded_in(
+            &headless,
+            &args,
+            Some(project_dir.path()),
             timeout,
-            tokio::process::Command::new(&headless)
-                .args(&args)
-                .kill_on_drop(true)
-                .stdin(std::process::Stdio::null())
-                .stdout(std::process::Stdio::piped())
-                .stderr(std::process::Stdio::piped())
-                .output(),
         )
         .await
-        .map_err(|_| anyhow::anyhow!("ghidra timed out after {}s", timeout.as_secs()))?
-        .map_err(|e| anyhow::anyhow!("Failed to run ghidra: {}", e))?;
+        .map_err(|error| anyhow::anyhow!("Failed to run ghidra: {error}"))?;
 
         let (text, ok) = render_output(&output);
         if !ok {
@@ -1350,6 +1318,12 @@ impl JohnTool {
 
 pub struct FlagScannerTool;
 
+const FLAG_SCANNER_MAX_FILES: usize = 20_000;
+const FLAG_SCANNER_MAX_RESULTS: usize = 1_000;
+const FLAG_SCANNER_DEFAULT_FILE_SIZE: usize = 64 * 1024 * 1024;
+const FLAG_SCANNER_HARD_FILE_SIZE: usize = 256 * 1024 * 1024;
+const FLAG_SCANNER_MAX_RESULT_CHARS: usize = 1_000;
+
 #[derive(Deserialize)]
 struct FlagScannerInput {
     /// Directory or file to scan
@@ -1360,7 +1334,7 @@ struct FlagScannerInput {
     /// Search in binary files too
     #[serde(default)]
     binary: bool,
-    /// Maximum file size to scan (MB)
+    /// Maximum file size to scan (MB), defaulting to a bounded size
     #[serde(default)]
     max_size_mb: Option<u64>,
 }
@@ -1395,7 +1369,7 @@ impl Tool for FlagScannerTool {
                 },
                 "max_size_mb": {
                     "type": "integer",
-                    "description": "Maximum file size in MB (optional)."
+                    "description": "Maximum file size in MB (default 64, hard maximum 256)."
                 }
             }
         })
@@ -1408,50 +1382,84 @@ impl Tool for FlagScannerTool {
         let pattern = params
             .pattern
             .clone()
-            .unwrap_or_else(|| r"(flag|ctf|htb|pico|eno)\{[^}]+\}".to_string());
+            .unwrap_or_else(|| r"(?i)(flag|ctf|htb|pico|eno)\{[^}]+\}".to_string());
+        if pattern.len() > 4_096 {
+            anyhow::bail!("flag_scanner pattern is too long (maximum 4096 bytes)");
+        }
 
         // Compile once, not once per file: this is a hot loop over a directory
         // tree and `Regex::new` re-parses the pattern every iteration.
         let regex = regex::Regex::new(&pattern)
             .map_err(|e| anyhow::anyhow!("Invalid regex `{pattern}`: {e}"))?;
 
-        // `content.len()` is a `usize`, so the byte budget has to be one too;
-        // `try_from` keeps a absurd `max_size_mb` from silently wrapping.
+        // Bound work even when callers omit the optional limit or ask for an
+        // impossibly large one. File metadata is checked before allocating its
+        // contents, and the subsequent read is limited to max_size + 1 bytes
+        // to handle files that grow after the metadata check.
         let max_size = params
             .max_size_mb
-            .map(|mb| mb.saturating_mul(1024 * 1024))
-            .and_then(|bytes| usize::try_from(bytes).ok());
+            .map(|mb| {
+                mb.saturating_mul(1024 * 1024)
+                    .min(FLAG_SCANNER_HARD_FILE_SIZE as u64)
+            })
+            .and_then(|bytes| usize::try_from(bytes).ok())
+            .unwrap_or(FLAG_SCANNER_DEFAULT_FILE_SIZE)
+            .max(1);
 
         let mut results = Vec::new();
         let mut files_scanned = 0u64;
         let mut files_skipped = 0u64;
+        let mut total_flags_found = 0u64;
+        let mut scan_truncated = false;
 
         let path = std::path::Path::new(&params.path);
         if !path.exists() {
             return Err(anyhow::anyhow!("Path does not exist: {}", params.path));
         }
 
-        // Collect the files to scan so both branches share one code path.
-        let candidates: Vec<std::path::PathBuf> = if path.is_file() {
-            vec![path.to_path_buf()]
+        // Keep only a bounded set of paths. A huge generated directory should
+        // produce an explicit partial result instead of retaining every path
+        // before scanning starts.
+        let mut candidates = Vec::new();
+        if path.is_file() {
+            candidates.push(path.to_path_buf());
         } else {
-            walkdir::WalkDir::new(path)
-                .follow_links(false)
-                .into_iter()
-                .filter_map(|e| e.ok())
-                .filter(|e| e.file_type().is_file())
-                .map(|e| e.into_path())
-                .collect()
-        };
+            for entry in walkdir::WalkDir::new(path).follow_links(false) {
+                let Ok(entry) = entry else {
+                    files_skipped += 1;
+                    continue;
+                };
+                if !entry.file_type().is_file() {
+                    continue;
+                }
+                if candidates.len() == FLAG_SCANNER_MAX_FILES {
+                    scan_truncated = true;
+                    break;
+                }
+                candidates.push(entry.into_path());
+            }
+        }
 
         for file_path in &candidates {
-            let Ok(bytes) = std::fs::read(file_path) else {
+            let Ok(metadata) = std::fs::metadata(file_path) else {
                 files_skipped += 1;
                 continue;
             };
-
-            if let Some(max) = max_size
-                && bytes.len() > max
+            if !metadata.is_file() || metadata.len() > max_size as u64 {
+                files_skipped += 1;
+                continue;
+            }
+            use std::io::Read as _;
+            let Ok(file) = std::fs::File::open(file_path) else {
+                files_skipped += 1;
+                continue;
+            };
+            let mut bytes = Vec::with_capacity((metadata.len() as usize).min(max_size));
+            if file
+                .take(max_size.saturating_add(1) as u64)
+                .read_to_end(&mut bytes)
+                .is_err()
+                || bytes.len() > max_size
             {
                 files_skipped += 1;
                 continue;
@@ -1475,29 +1483,54 @@ impl Tool for FlagScannerTool {
 
             files_scanned += 1;
             for mat in regex.find_iter(haystack.as_ref()) {
-                results.push(format!("{}: {}", file_path.display(), mat.as_str()));
+                total_flags_found = total_flags_found.saturating_add(1);
+                if results.len() < FLAG_SCANNER_MAX_RESULTS {
+                    let matched = crate::alphacode_core::util::truncate_str(
+                        mat.as_str(),
+                        FLAG_SCANNER_MAX_RESULT_CHARS,
+                    );
+                    let full_path = file_path.display().to_string();
+                    let path_label = crate::alphacode_core::util::truncate_str(&full_path, 500);
+                    results.push(format!("{path_label}: {matched}"));
+                } else {
+                    scan_truncated = true;
+                    break;
+                }
+            }
+            if results.len() >= FLAG_SCANNER_MAX_RESULTS {
+                scan_truncated = true;
+                break;
             }
         }
 
         let mut result = format!(
-            "Flag Scanner Results\n====================\nFiles scanned: {}\nFiles skipped (unreadable or over size limit): {}\nFlags found: {}\n\n",
+            "Flag Scanner Results\n====================\nFiles scanned: {} (limit: {})\nFiles skipped (unreadable or over {} MiB file limit): {}\nFlags found: {}\n\n",
             files_scanned,
+            FLAG_SCANNER_MAX_FILES,
+            max_size / (1024 * 1024),
             files_skipped,
-            results.len()
+            total_flags_found
         );
         for r in &results {
             result.push_str(r);
             result.push('\n');
         }
+        if scan_truncated {
+            result.push_str(&format!(
+                "\n[Scan stopped at a safety limit: up to {FLAG_SCANNER_MAX_FILES} files and {FLAG_SCANNER_MAX_RESULTS} results are retained. Narrow the path or pattern for complete results.]\n"
+            ));
+        }
 
         let mut metadata = HashMap::new();
         metadata.insert("files_scanned".to_string(), json!(files_scanned));
         metadata.insert("files_skipped".to_string(), json!(files_skipped));
-        metadata.insert("flags_found".to_string(), json!(results.len()));
+        metadata.insert("flags_found".to_string(), json!(total_flags_found));
+        metadata.insert("results_shown".to_string(), json!(results.len()));
+        metadata.insert("scan_truncated".to_string(), json!(scan_truncated));
         metadata.insert("pattern".to_string(), json!(pattern));
 
         Ok(ToolOutput::new(result)
-            .with_title(format!("flag_scanner: {} flags found", results.len()))
+            .with_title(format!("flag_scanner: {total_flags_found} flags found"))
             .with_metadata(json!(metadata)))
     }
 }

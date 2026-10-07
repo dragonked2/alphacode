@@ -287,6 +287,11 @@ fn normalize_feroxbuster_input(input: &Value) -> Result<FeroxbusterInput> {
 
 fn build_args(params: &FeroxbusterInput) -> Result<Vec<String>> {
     let mut args = Vec::new();
+    args.push("-H".to_string());
+    args.push(format!(
+        "User-Agent: {}",
+        crate::alphacode_provider_core::ALPHACODE_USER_AGENT
+    ));
 
     let url = super::recon_common::validate_target(&params.url)?;
     args.push("-u".to_string());

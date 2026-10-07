@@ -224,7 +224,7 @@ pub(crate) fn drain_pending_for_tests() -> Vec<UsageReport> {
 mod tests {
     use super::*;
 
-    fn enable_sponsors() -> (std::sync::MutexGuard<'static, ()>, tempfile::TempDir) {
+    fn enable_sponsors() -> (crate::storage::TestEnvGuard, tempfile::TempDir) {
         let guard = crate::storage::lock_test_env();
         let temp = tempfile::tempdir().unwrap();
         crate::alphacode_core::env::set_var("ALPHACODE_HOME", temp.path());
@@ -289,7 +289,7 @@ mod tests {
 
     #[test]
     fn disabled_sponsors_config_disables_everything() {
-        let guard = crate::storage::lock_test_env();
+        let _guard = crate::storage::lock_test_env();
         let temp = tempfile::tempdir().unwrap();
         crate::alphacode_core::env::set_var("ALPHACODE_HOME", temp.path());
         std::fs::write(
@@ -298,8 +298,6 @@ mod tests {
         )
         .unwrap();
         crate::config::Config::invalidate_cache();
-        drop(guard);
-        let _guard = crate::storage::lock_test_env();
         reset_for_tests();
         record_discovered_setups(vec![DiscoveredSetup {
             sponsor: "agentcard".into(),

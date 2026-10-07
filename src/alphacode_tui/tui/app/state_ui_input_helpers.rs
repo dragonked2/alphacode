@@ -1488,6 +1488,25 @@ impl App {
         Vec::new()
     }
 
+    /// Plain-language ways to begin an ordinary chat. Selecting one submits
+    /// the prompt immediately, just like typing it and pressing Enter.
+    pub fn starter_prompts(&self) -> Vec<(String, String)> {
+        vec![
+            (
+                "Show me around this project".to_string(),
+                "Give me a beginner-friendly tour of this project: what it does, how to run it, and what I should try first.".to_string(),
+            ),
+            (
+                "Help me solve a problem".to_string(),
+                "Help me solve a problem. Ask one clear question at a time and explain each step in plain language.".to_string(),
+            ),
+            (
+                "Check my changes for mistakes".to_string(),
+                "Review the changes in this project for important bugs. Explain any problems simply and suggest a safe fix.".to_string(),
+            ),
+        ]
+    }
+
     /// Autocomplete current input - cycles through suggestions on repeated Tab
     pub fn autocomplete(&mut self) -> bool {
         // Get suggestions for current input

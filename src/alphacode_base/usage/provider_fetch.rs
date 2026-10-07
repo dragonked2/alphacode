@@ -581,7 +581,10 @@ pub(super) async fn fetch_copilot_usage_report() -> Option<ProviderUsage> {
     let api_result = client
         .get(auth::copilot::COPILOT_TOKEN_URL)
         .header("Authorization", format!("token {}", github_token))
-        .header("User-Agent", auth::copilot::EDITOR_VERSION)
+        .header(
+            "User-Agent",
+            crate::alphacode_provider_core::with_alphacode_brand(auth::copilot::EDITOR_VERSION),
+        )
         .header("Editor-Version", auth::copilot::EDITOR_VERSION)
         .header(
             "Editor-Plugin-Version",

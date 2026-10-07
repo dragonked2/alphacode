@@ -37,7 +37,7 @@ fn pin_full_tier() {
 /// guard *before* any render-state lock, matching the env-then-render order
 /// the app tests use.
 struct IdleAnimationEnvGuard {
-    _env: std::sync::MutexGuard<'static, ()>,
+    _env: crate::storage::TestEnvGuard,
 }
 
 impl IdleAnimationEnvGuard {
@@ -156,11 +156,15 @@ fn partial_repaint_matches_a_full_frame_at_the_same_animation_time() {
 }
 
 #[test]
-fn advancing_the_animation_actually_changes_the_animated_rows() {
+fn the_calm_decoration_is_static_so_a_partial_repaint_is_a_faithful_no_op() {
     let _idle_animation = IdleAnimationEnvGuard::enable();
-    // Guards against the partial-repaint test passing vacuously: if the
-    // animation were static, "matches a full frame" would be trivially true and
-    // the fast path could silently freeze the animation.
+    // The shipped idle decoration is the calm wordmark, which is deliberately
+    // static (see `static_logo_decoration_is_static_across_frames`), so the
+    // vacuity guard for the partial-repaint equality test is not "the animation
+    // moved" - it is "the fast path reproduces a full frame exactly, including
+    // the cells a full frame never writes". Asserting a delta here would only
+    // pin an artefact: ratatui's diff never emits the continuation cell of a
+    // double-width glyph, so a full frame cannot style it.
     let _lock = viewport_snapshot_test_lock();
     clear_flicker_frame_history_for_tests();
 
@@ -170,9 +174,10 @@ fn advancing_the_animation_actually_changes_the_animated_rows() {
     let mut after = before.clone();
     crate::alphacode_tui::tui::ui::render_idle_animation_into(&mut after, area, 1.5);
 
-    assert_ne!(
+    assert_eq!(
         before.content, after.content,
-        "the animation must visibly advance between ticks"
+        "the calm decoration must not vary with elapsed time, so repainting its rows \
+         must be a faithful no-op"
     );
 
     // And it must stay inside its own rows: everything outside is reused, so a

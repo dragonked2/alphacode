@@ -1,9 +1,64 @@
 use super::*;
+use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
 /// Reroute target offered after a provider guardrail/refusal stop. Guardrail
 /// refusals are model-side policy stops, so retrying the same model rarely
 /// helps; hopping to the strongest Anthropic route often does.
 const GUARDRAIL_REROUTE_MODEL: &str = "claude-opus-4-8";
+
+/// Keep diagnostics intact for recovery and logs while showing only a concise
+/// first-line summary in the conversation transcript.
+fn concise_error_summary(error: &str) -> String {
+    const MAX_WIDTH: usize = 132;
+
+    let first_line = error
+        .lines()
+        .map(str::trim)
+        .find(|line| !line.is_empty())
+        .unwrap_or("The request could not be completed.");
+    let summary = first_line
+        .strip_prefix("Error: ")
+        .or_else(|| first_line.strip_prefix("error: "))
+        .unwrap_or(first_line)
+        .trim()
+        .trim_end_matches(['.', '!', '?'])
+        .trim_end();
+    let summary = if summary.is_empty() {
+        "The request could not be completed."
+    } else {
+        summary
+    };
+
+    if UnicodeWidthStr::width(summary) <= MAX_WIDTH {
+        return summary.to_string();
+    }
+
+    let mut width = 0usize;
+    let mut end = 0usize;
+    for (index, character) in summary.char_indices() {
+        let character_width = UnicodeWidthChar::width(character).unwrap_or(0);
+        if width.saturating_add(character_width) > MAX_WIDTH.saturating_sub(1) {
+            break;
+        }
+        width += character_width;
+        end = index + character.len_utf8();
+    }
+    format!("{}…", summary[..end].trim_end())
+}
+
+fn error_has_extra_details(error: &str) -> bool {
+    error.lines().filter(|line| !line.trim().is_empty()).count() > 1
+        || UnicodeWidthStr::width(error) > 180
+}
+
+fn show_expandable_error_details(summary: &str, error: &str) {
+    if error_has_extra_details(error) {
+        crate::alphacode_tui::tui::ui_error_toast::push_error_with_hint(
+            summary.to_string(),
+            error.to_string(),
+        );
+    }
+}
 
 impl App {
     fn format_failover_count(value: usize) -> String {
@@ -22,8 +77,18 @@ impl App {
         )
     }
 
-    fn failover_config_hint() -> &'static str {
-        "To turn this off, set [provider].cross_provider_failover = \"manual\" in ~/.alphacode/config.toml or export ALPHACODE_CROSS_PROVIDER_FAILOVER=manual."
+    /// Name the failover mode actually in force.
+    ///
+    /// This used to hard-code `manual`, which told a user running the shipped
+    /// `countdown` default to set the very mode they were already in.
+    fn failover_config_hint() -> String {
+        let mode = crate::config::Config::load()
+            .provider
+            .cross_provider_failover
+            .as_str();
+        format!(
+            "Cross-provider failover is \"{mode}\". Set [provider].cross_provider_failover = \"{mode}\" in ~/.alphacode/config.toml, or export ALPHACODE_CROSS_PROVIDER_FAILOVER={mode}. Pick \"manual\" to be asked before your prompt is resent elsewhere."
+        )
     }
 
     /// Shared post-switch bookkeeping for every local model/provider switch
@@ -823,6 +888,9 @@ impl App {
             return;
         }
 
+        let summary = concise_error_summary(&error);
+        show_expandable_error_details(&summary, &error);
+
         if is_request_payload_too_large_error(&error) {
             // 413 is a request body-size rejection driven by inline images.
             // Strip oversized images now so a manual resubmit (or auto-poke
@@ -833,15 +901,15 @@ impl App {
             if stripped > 0 {
                 self.messages.clear();
                 self.reseed_compaction_from_provider_messages();
+                let image_label = if stripped == 1 { "image" } else { "images" };
                 self.push_display_message(DisplayMessage::error(format!(
-                    "Error: {} Dropped {} oversized image(s); you can retry.",
-                    error, stripped
+                    "Request was too large. Removed {stripped} inline {image_label}; you can retry."
                 )));
             } else {
-                self.push_display_message(DisplayMessage::error(format!(
-                    "Error: {} Request body was too large but no inline images could be dropped. Run /fix to try manual recovery.",
-                    error
-                )));
+                self.push_display_message(DisplayMessage::error(
+                    "Request body was too large. No oversized inline images could be removed. Run /fix to try recovery."
+                        .to_string(),
+                ));
                 super::commands::stop_auto_poke_for_non_retryable_error(self, &error);
                 self.stop_overnight_auto_poke_for_non_retryable_error(&error);
             }
@@ -853,9 +921,12 @@ impl App {
             let should_stop_auto_poke = recovery.is_none();
             let hint = match recovery {
                 Some(msg) => format!(" {}", msg),
-                None => " Context limit exceeded but auto-recovery failed. Run /fix to try manual recovery.".to_string(),
+                None => " Run /fix to try recovery.".to_string(),
             };
-            self.push_display_message(DisplayMessage::error(format!("Error: {}{}", error, hint)));
+            self.push_display_message(DisplayMessage::error(format!(
+                "Context limit reached.{}",
+                hint
+            )));
             if should_stop_auto_poke {
                 super::commands::stop_auto_poke_for_non_retryable_error(self, &error);
                 self.stop_overnight_auto_poke_for_non_retryable_error(&error);
@@ -869,8 +940,8 @@ impl App {
             // intervention, show a brief notice and let the automatic retry
             // mechanism resend the request with exponential backoff.
             self.push_display_message(DisplayMessage::system(format!(
-                "Transient upstream error: {} -- retrying automatically",
-                error.trim().chars().take(120).collect::<String>()
+                "Temporary provider issue: {} — retrying automatically…",
+                summary
             )));
             // Do NOT stop auto-poke or overnight-poke: the provider may
             // recover in seconds and the retry budget will handle exhaustion.
@@ -881,11 +952,14 @@ impl App {
             // does not silently keep retrying a path that needs a human decision.
             let offered = self.offer_fallback_after_error(&error);
             if offered {
-                self.push_display_message(DisplayMessage::error(format!("Error: {}", error)));
+                self.push_display_message(DisplayMessage::error(format!(
+                    "Request failed: {}",
+                    summary
+                )));
             } else {
                 self.push_display_message(DisplayMessage::error(format!(
-                    "Error: {} Run /fix to attempt recovery.",
-                    error
+                    "Request failed: {} — run /fix to try recovery.",
+                    summary,
                 )));
             }
             super::commands::stop_auto_poke_for_non_retryable_error(self, &error);

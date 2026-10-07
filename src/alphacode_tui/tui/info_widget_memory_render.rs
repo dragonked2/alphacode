@@ -87,33 +87,6 @@ fn memory_should_render_pipeline(activity: &MemoryActivity) -> bool {
     activity.is_processing()
 }
 
-fn memory_compact_summary(info: &MemoryInfo) -> String {
-    if info.disabled {
-        return "disabled".to_string();
-    }
-    if let Some(activity) = info.activity.as_ref() {
-        if activity.is_processing() {
-            return memory_active_summary(&activity.state)
-                .or_else(|| {
-                    activity
-                        .pipeline
-                        .as_ref()
-                        .map(memory_pipeline_progress_summary)
-                })
-                .or_else(|| memory_last_trace_summary(activity))
-                .unwrap_or_else(|| "working".to_string());
-        }
-
-        if memory_recent_done(activity) {
-            return "done".to_string();
-        }
-
-        return "idle".to_string();
-    }
-
-    "idle".to_string()
-}
-
 fn memory_status_badge(activity: Option<&MemoryActivity>) -> (String, Color) {
     let Some(activity) = activity else {
         return ("IDLE".to_string(), rgb(120, 120, 130));
@@ -527,41 +500,6 @@ fn memory_pipeline_progress_summary(pipeline: &PipelineState) -> String {
     } else {
         format!("{}/4 done", completed)
     }
-}
-
-pub(super) fn render_memory_compact(info: &MemoryInfo, inner_width: u16) -> Vec<Line<'static>> {
-    if !info.should_render() {
-        return Vec::new();
-    }
-
-    let max_width = inner_width.saturating_sub(2) as usize;
-    let title = memory_count_label(info.total_count);
-    let show_activity = info.should_show_activity();
-    let summary = memory_compact_summary(info);
-
-    let title_width = UnicodeWidthStr::width(title.as_str());
-    let summary_width = max_width.saturating_sub(title_width + 5);
-    let accent = if let Some(activity) = info.activity.as_ref() {
-        memory_status_badge(Some(activity)).1
-    } else if info.total_count > 0 {
-        rgb(160, 160, 170)
-    } else {
-        rgb(140, 200, 255)
-    };
-
-    let mut spans = vec![
-        Span::styled("💾 ", Style::default().fg(rgb(200, 150, 255))),
-        Span::styled(title, Style::default().fg(rgb(180, 180, 190)).bold()),
-    ];
-    if show_activity {
-        spans.push(Span::styled(" · ", Style::default().fg(rgb(100, 100, 110))));
-        spans.push(Span::styled(
-            truncate_with_ellipsis(&summary, summary_width.max(8)),
-            Style::default().fg(accent),
-        ));
-    }
-
-    vec![Line::from(spans)]
 }
 
 pub(super) fn render_memory_expanded(info: &MemoryInfo, inner: Rect) -> Vec<Line<'static>> {

@@ -109,9 +109,10 @@ impl SessionPicker {
     }
 
     fn mouse_scroll_amount(&mut self) -> u16 {
-        // One wheel notch advances the preview by the same number of lines as the
-        // main chat viewport's intent (`MOUSE_SCROLL_INTENT_LINES`), so the
-        // standalone picker feels consistent with the in-app overlay.
+        // One wheel notch advances the preview three rows, matching the overlay panes'
+        // scroll step. This picker manages its own scroll state (no shared
+        // momentum queue), so it does not use the transcript's velocity-scaled
+        // intent.
         self.last_mouse_scroll = Some(std::time::Instant::now());
         3
     }

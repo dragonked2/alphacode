@@ -82,6 +82,65 @@ fn format_elapsed(d: Duration) -> String {
     }
 }
 
+/// Clip a styled status row by terminal cells and mark the clipped tail.
+fn fit_status_line(mut line: Line<'static>, max_width: usize) -> Line<'static> {
+    if line.width() <= max_width {
+        return line;
+    }
+    if max_width == 0 {
+        return Line::default();
+    }
+
+    let ellipsis_style = line
+        .spans
+        .iter()
+        .rev()
+        .find(|span| !span.content.is_empty())
+        .map(|span| span.style)
+        .unwrap_or_default();
+    let mut kept = Vec::with_capacity(line.spans.len());
+    let mut remaining = max_width - 1;
+    for span in line.spans.drain(..) {
+        if remaining == 0 {
+            break;
+        }
+        let mut text = String::new();
+        let mut span_width = 0;
+        for grapheme in
+            unicode_segmentation::UnicodeSegmentation::graphemes(span.content.as_ref(), true)
+        {
+            let grapheme_width = UnicodeWidthStr::width(grapheme);
+            if span_width + grapheme_width > remaining {
+                break;
+            }
+            text.push_str(grapheme);
+            span_width += grapheme_width;
+        }
+        if !text.is_empty() {
+            kept.push(Span::styled(text, span.style));
+        }
+        remaining -= span_width;
+        if span_width < UnicodeWidthStr::width(span.content.as_ref()) {
+            break;
+        }
+    }
+    kept.push(Span::styled("…", ellipsis_style));
+    line.spans = kept;
+    line
+}
+
+fn truncate_status_text(text: &str, max_width: usize) -> String {
+    let line = Line::from(text.to_string());
+    let fitted = fit_status_line(line, max_width);
+    fitted
+        .spans
+        .into_iter()
+        .fold(String::new(), |mut text, span| {
+            text.push_str(span.content.as_ref());
+            text
+        })
+}
+
 /// Enhanced status bar with rich information display
 pub struct StatusBar;
 
@@ -112,22 +171,7 @@ impl StatusBar {
         ));
 
         // Model name (truncated if needed, Unicode display-width safe)
-        let model_display = {
-            let display_width = model.width();
-            if display_width > 24 {
-                let mut width = 0;
-                let truncated: String = model
-                    .chars()
-                    .take_while(|c| {
-                        width += unicode_width::UnicodeWidthChar::width(*c).unwrap_or(0);
-                        width <= 22
-                    })
-                    .collect();
-                format!("{}…", truncated)
-            } else {
-                model.to_string()
-            }
-        };
+        let model_display = truncate_status_text(model, 24);
         spans.push(Span::styled(
             format!(" {}", model_display),
             Style::default()
@@ -191,18 +235,22 @@ impl StatusBar {
         }
 
         // Fill remaining space with a subtle gradient dotted line
-        let used_width: usize = spans
-            .iter()
-            .map(|s| unicode_width::UnicodeWidthStr::width(s.content.as_ref()))
-            .sum();
-        if used_width < width {
-            let remaining = width - used_width;
-            let fill: String = std::iter::repeat_n("· ", remaining / 2 + 1)
-                .take(remaining)
-                .collect();
-            spans.push(Span::styled(fill, Style::default().fg(BrandTheme::dim())));
+        let line = fit_status_line(Line::from(spans), width);
+        if line.width() >= width {
+            return line;
         }
 
+        let remaining = width - line.width();
+        // Build exactly one glyph per remaining cell. The old repeat_n("· ",
+        // remaining) construction emitted up to twice the requested width and
+        // pushed status rows past the right edge of the terminal.
+        let fill: String = (0..remaining)
+            .map(|index| if index % 2 == 0 { '·' } else { ' ' })
+            .collect();
+        let mut spans = line.spans;
+        if !fill.is_empty() {
+            spans.push(Span::styled(fill, Style::default().fg(BrandTheme::dim())));
+        }
         Line::from(spans)
     }
 
@@ -274,7 +322,7 @@ impl StatusBar {
             Style::default().fg(BrandTheme::accent()),
         ));
 
-        Line::from(spans)
+        fit_status_line(Line::from(spans), width)
     }
 
     /// Render a streaming progress indicator.

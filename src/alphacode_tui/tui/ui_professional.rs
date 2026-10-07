@@ -18,11 +18,10 @@ use ratatui::text::{Line, Span};
 /// Build a full-width gradient divider line.
 pub fn gradient_divider(width: usize) -> Line<'static> {
     let gradient = BrandTheme::gradient();
-    let chars: Vec<char> = "─".repeat(width.min(80)).chars().collect();
-    let mut spans = Vec::with_capacity(chars.len());
-    for (i, ch) in chars.iter().enumerate() {
+    let mut spans = Vec::with_capacity(width);
+    for i in 0..width {
         spans.push(Span::styled(
-            ch.to_string(),
+            "─",
             Style::default().fg(gradient[i % gradient.len()]),
         ));
     }

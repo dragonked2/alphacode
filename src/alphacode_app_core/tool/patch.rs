@@ -106,7 +106,7 @@ impl Tool for PatchTool {
         let risk_ctx =
             crate::alphacode_command_risk::RiskContext::from_env(ctx.working_dir.clone());
         for patch in &patches {
-            let resolved = ctx.resolve_path(Path::new(&patch.path));
+            let resolved = ctx.resolve_path_guarded(Path::new(&patch.path))?;
             if crate::alphacode_command_risk::is_catastrophic_target(&resolved, &risk_ctx) {
                 return Err(anyhow::anyhow!(
                     "Refused: '{}' resolves to a protected path ({}). No changes applied.",
@@ -122,7 +122,7 @@ impl Tool for PatchTool {
         let mut touched: Vec<String> = Vec::new();
 
         for patch in patches {
-            let resolved_path = ctx.resolve_path(Path::new(&patch.path));
+            let resolved_path = ctx.resolve_path_guarded(Path::new(&patch.path))?;
             let result = apply_patch_with_diff(&patch, &resolved_path).await;
             match result {
                 Ok((msg, diff)) => {

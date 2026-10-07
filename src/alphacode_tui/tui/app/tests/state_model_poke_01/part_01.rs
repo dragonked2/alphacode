@@ -657,6 +657,7 @@ fn test_diagram_focus_toggle_and_pan() {
     let _render_lock = scroll_render_test_lock();
     let mut app = create_test_app();
     app.diagram_mode = crate::config::DiagramDisplayMode::Pinned;
+    let _diagram_lock = crate::alphacode_tui::tui::mermaid::active_diagram_test_lock();
     crate::alphacode_tui::tui::mermaid::clear_active_diagrams();
     crate::alphacode_tui::tui::mermaid::register_active_diagram(0x1, 100, 80, None);
     crate::alphacode_tui::tui::mermaid::register_active_diagram(0x2, 120, 90, None);
@@ -677,6 +678,7 @@ fn test_diagram_focus_toggle_and_pan() {
         .unwrap();
     assert!(!app.diagram_focus);
 
+    let _diagram_lock = crate::alphacode_tui::tui::mermaid::active_diagram_test_lock();
     crate::alphacode_tui::tui::mermaid::clear_active_diagrams();
 }
 
@@ -768,6 +770,7 @@ fn test_diagram_cycle_ctrl_arrows() {
     let mut app = create_test_app();
     app.diagram_mode = crate::config::DiagramDisplayMode::Pinned;
     app.diagram_focus = true;
+    let _diagram_lock = crate::alphacode_tui::tui::mermaid::active_diagram_test_lock();
     crate::alphacode_tui::tui::mermaid::clear_active_diagrams();
     crate::alphacode_tui::tui::mermaid::register_active_diagram(0x1, 100, 80, None);
     crate::alphacode_tui::tui::mermaid::register_active_diagram(0x2, 120, 90, None);
@@ -787,6 +790,7 @@ fn test_diagram_cycle_ctrl_arrows() {
         .unwrap();
     assert_eq!(app.diagram_index, 2);
 
+    let _diagram_lock = crate::alphacode_tui::tui::mermaid::active_diagram_test_lock();
     crate::alphacode_tui::tui::mermaid::clear_active_diagrams();
 }
 
@@ -801,6 +805,7 @@ fn test_cycle_diagram_resets_view_to_fit() {
     app.diagram_scroll_x = 12;
     app.diagram_scroll_y = 7;
 
+    let _diagram_lock = crate::alphacode_tui::tui::mermaid::active_diagram_test_lock();
     crate::alphacode_tui::tui::mermaid::clear_active_diagrams();
     crate::alphacode_tui::tui::mermaid::register_active_diagram(0x1, 100, 80, None);
     crate::alphacode_tui::tui::mermaid::register_active_diagram(0x2, 120, 90, None);
@@ -812,6 +817,7 @@ fn test_cycle_diagram_resets_view_to_fit() {
     assert_eq!(app.diagram_scroll_x, 0);
     assert_eq!(app.diagram_scroll_y, 0);
 
+    let _diagram_lock = crate::alphacode_tui::tui::mermaid::active_diagram_test_lock();
     crate::alphacode_tui::tui::mermaid::clear_active_diagrams();
 }
 
@@ -852,6 +858,7 @@ fn test_side_panel_visibility_change_resets_diagram_fit_context() {
     app.diagram_pane_enabled = true;
     app.diagram_pane_position = crate::config::DiagramPanePosition::Side;
 
+    let _diagram_lock = crate::alphacode_tui::tui::mermaid::active_diagram_test_lock();
     crate::alphacode_tui::tui::mermaid::clear_active_diagrams();
     crate::alphacode_tui::tui::mermaid::register_active_diagram(0xabc, 900, 450, None);
 
@@ -882,6 +889,7 @@ fn test_side_panel_visibility_change_resets_diagram_fit_context() {
     app.set_side_panel_snapshot(crate::side_panel::SidePanelSnapshot::default());
     assert_eq!(app.last_visible_diagram_hash, Some(0xabc));
 
+    let _diagram_lock = crate::alphacode_tui::tui::mermaid::active_diagram_test_lock();
     crate::alphacode_tui::tui::mermaid::clear_active_diagrams();
 }
 
@@ -970,6 +978,7 @@ fn test_pinned_side_diagram_layout_allocates_right_pane() {
     app.diagram_pane_position = crate::config::DiagramPanePosition::Side;
     app.diagram_pane_ratio = 40;
 
+    let _diagram_lock = crate::alphacode_tui::tui::mermaid::active_diagram_test_lock();
     crate::alphacode_tui::tui::mermaid::clear_active_diagrams();
     crate::alphacode_tui::tui::mermaid::register_active_diagram(0x111, 900, 450, Some("side".to_string()));
 
@@ -1004,6 +1013,7 @@ fn test_pinned_side_diagram_layout_allocates_right_pane() {
     );
 
     crate::alphacode_tui::tui::visual_debug::disable();
+    let _diagram_lock = crate::alphacode_tui::tui::mermaid::active_diagram_test_lock();
     crate::alphacode_tui::tui::mermaid::clear_active_diagrams();
 }
 
@@ -1016,6 +1026,7 @@ fn test_pinned_top_diagram_layout_allocates_top_pane() {
     app.diagram_pane_position = crate::config::DiagramPanePosition::Top;
     app.diagram_pane_ratio = 35;
 
+    let _diagram_lock = crate::alphacode_tui::tui::mermaid::active_diagram_test_lock();
     crate::alphacode_tui::tui::mermaid::clear_active_diagrams();
     crate::alphacode_tui::tui::mermaid::register_active_diagram(0x222, 500, 900, Some("top".to_string()));
 
@@ -1046,6 +1057,7 @@ fn test_pinned_top_diagram_layout_allocates_top_pane() {
     );
 
     crate::alphacode_tui::tui::visual_debug::disable();
+    let _diagram_lock = crate::alphacode_tui::tui::mermaid::active_diagram_test_lock();
     crate::alphacode_tui::tui::mermaid::clear_active_diagrams();
 }
 
@@ -1057,6 +1069,7 @@ fn test_pinned_diagram_not_shown_when_terminal_too_narrow() {
     app.diagram_pane_enabled = true;
     app.diagram_pane_position = crate::config::DiagramPanePosition::Side;
 
+    let _diagram_lock = crate::alphacode_tui::tui::mermaid::active_diagram_test_lock();
     crate::alphacode_tui::tui::mermaid::clear_active_diagrams();
     crate::alphacode_tui::tui::mermaid::register_active_diagram(0x333, 900, 450, None);
 
@@ -1080,6 +1093,7 @@ fn test_pinned_diagram_not_shown_when_terminal_too_narrow() {
     );
 
     crate::alphacode_tui::tui::visual_debug::disable();
+    let _diagram_lock = crate::alphacode_tui::tui::mermaid::active_diagram_test_lock();
     crate::alphacode_tui::tui::mermaid::clear_active_diagrams();
 }
 
@@ -1097,6 +1111,7 @@ fn test_pinned_tall_diagram_does_not_crush_transcript() {
     app.diagram_pane_position = crate::config::DiagramPanePosition::Side;
     app.diagram_pane_ratio = 40;
 
+    let _diagram_lock = crate::alphacode_tui::tui::mermaid::active_diagram_test_lock();
     crate::alphacode_tui::tui::mermaid::clear_active_diagrams();
     // Tall portrait diagram like the flowchart that triggered the bug.
     crate::alphacode_tui::tui::mermaid::register_active_diagram(0x444, 1320, 1800, Some("tall".to_string()));
@@ -1132,6 +1147,7 @@ fn test_pinned_tall_diagram_does_not_crush_transcript() {
     );
 
     crate::alphacode_tui::tui::visual_debug::disable();
+    let _diagram_lock = crate::alphacode_tui::tui::mermaid::active_diagram_test_lock();
     crate::alphacode_tui::tui::mermaid::clear_active_diagrams();
 }
 

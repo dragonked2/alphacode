@@ -531,6 +531,7 @@ mod tests {
 
     fn client() -> reqwest::Client {
         reqwest::Client::builder()
+            .user_agent(crate::alphacode_provider_core::ALPHACODE_USER_AGENT)
             .no_proxy()
             .build()
             .expect("client")

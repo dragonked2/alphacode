@@ -751,6 +751,7 @@ fn streaming_preview_then_final_registration_does_not_double_count() {
     // Pin the dedupe behavior between STREAMING_PREVIEW_DIAGRAM and
     // ACTIVE_DIAGRAMS when the same content hash finishes streaming and is
     // registered as a final diagram (mermaid_active.rs).
+    let _diagram_lock = super::active_diagram_test_lock();
     let saved = super::snapshot_active_diagrams();
     super::clear_active_diagrams(); // also clears the streaming preview
 

@@ -1393,22 +1393,44 @@ fn test_info_widget_remote_openai_uses_explicit_route_when_credential_is_missing
 #[test]
 fn test_info_widget_local_direct_api_runtime_shows_cost_based_usage() {
     let _guard = crate::storage::lock_test_env();
-    let tracked_env = [
+    let mut tracked_env: Vec<String> = [
         "ALPHACODE_RUNTIME_PROVIDER",
         "ALPHACODE_OPENROUTER_ALLOW_NO_AUTH",
         "ALPHACODE_OPENROUTER_API_BASE",
+        "ALPHACODE_OPENROUTER_API_KEY_NAME",
+        "ALPHACODE_OPENROUTER_ENV_FILE",
         "ALPHACODE_OPENROUTER_PROVIDER_FEATURES",
         "ALPHACODE_OPENROUTER_TRANSPORT_STATE",
         "ALPHACODE_OPENROUTER_CACHE_NAMESPACE",
+        "ALPHACODE_OPENROUTER_DYNAMIC_BEARER_PROVIDER",
+        "ALPHACODE_OPENROUTER_AUTH_HEADER",
+        "ALPHACODE_OPENROUTER_AUTH_HEADER_NAME",
+        "OPENROUTER_API_KEY",
+        "OPENAI_COMPAT_API_KEY",
+        "ALPHACODE_OPENAI_COMPAT_API_KEY_NAME",
+        "ALPHACODE_OPENAI_COMPAT_ENV_FILE",
         "ALPHACODE_NAMED_PROVIDER_PROFILE",
         "ALPHACODE_PROVIDER_PROFILE_ACTIVE",
         "ALPHACODE_PROVIDER_PROFILE_NAME",
-    ];
+    ]
+    .iter()
+    .map(|key| (*key).to_string())
+    .collect();
+    // The transport state falls back to autodetection, and autodetection reads
+    // every OpenAI-compatible profile's own API-key variable. Clearing only the
+    // `ALPHACODE_*` names left a key published by an unrelated test (or by the
+    // developer's own shell) deciding whether this transport is billed per
+    // token, which is what made the cost assertions flip between runs.
+    for profile in crate::provider_catalog::openai_compatible_profiles() {
+        if !tracked_env.iter().any(|key| key == profile.api_key_env) {
+            tracked_env.push(profile.api_key_env.to_string());
+        }
+    }
     let saved_env = tracked_env
         .iter()
-        .map(|&key| (key, std::env::var_os(key)))
+        .map(|key| (key, std::env::var_os(key)))
         .collect::<Vec<_>>();
-    for &key in &tracked_env {
+    for key in &tracked_env {
         crate::alphacode_core::env::remove_var(key);
     }
 
@@ -1453,7 +1475,13 @@ fn test_info_widget_local_direct_api_runtime_shows_cost_based_usage() {
 
     for (runtime_provider, provider_name, model, expected_auth) in cases {
         crate::alphacode_core::env::set_var("ALPHACODE_RUNTIME_PROVIDER", runtime_provider);
-        crate::alphacode_core::env::remove_var("ALPHACODE_OPENROUTER_ALLOW_NO_AUTH");
+        // Pin the no-auth gate *off* rather than clearing it. Leaving it unset
+        // re-enables the autodetection fallback, and autodetection resolves the
+        // generic keyless OpenAI-compatible profile (it declares
+        // `requires_api_key: false`), so a direct API-key transport was reported
+        // as `DirectNoAuth` - unbilled - whenever no key happened to be in the
+        // environment. Same pin the onboarding test uses for the same reason.
+        crate::alphacode_core::env::set_var("ALPHACODE_OPENROUTER_ALLOW_NO_AUTH", "0");
         crate::alphacode_base::auth::AuthStatus::invalidate_cache();
 
         let mut app = create_named_provider_test_app(provider_name, model);
@@ -1519,9 +1547,9 @@ fn test_info_widget_local_direct_api_runtime_shows_cost_based_usage() {
 
     for (key, value) in saved_env {
         if let Some(value) = value {
-            crate::alphacode_core::env::set_var(key, value);
+            crate::alphacode_core::env::set_var(key.as_str(), value);
         } else {
-            crate::alphacode_core::env::remove_var(key);
+            crate::alphacode_core::env::remove_var(key.as_str());
         }
     }
     crate::alphacode_base::auth::AuthStatus::invalidate_cache();

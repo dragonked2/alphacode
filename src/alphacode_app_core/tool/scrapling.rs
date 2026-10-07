@@ -293,14 +293,21 @@ impl ScraplingTool {
         params: &ScraplingInput,
         timeout: u64,
     ) -> Result<reqwest::Response> {
+        let custom_user_agent = params.headers.as_ref().and_then(|headers| {
+            headers
+                .iter()
+                .find(|(name, _)| name.eq_ignore_ascii_case("user-agent"))
+                .map(|(_, value)| value.clone())
+        });
+        let user_agent = custom_user_agent.unwrap_or_else(|| {
+            crate::alphacode_provider_core::with_alphacode_brand(
+                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
+            )
+        });
         let mut request_builder = self
             .client
             .get(&params.url)
-            .header(
-                reqwest::header::USER_AGENT,
-                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 \
-                 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
-            )
+            .header(reqwest::header::USER_AGENT, user_agent)
             .header(
                 reqwest::header::ACCEPT,
                 "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
@@ -310,6 +317,9 @@ impl ScraplingTool {
 
         if let Some(headers) = &params.headers {
             for (key, value) in headers {
+                if key.eq_ignore_ascii_case("user-agent") {
+                    continue;
+                }
                 request_builder = request_builder.header(key.as_str(), value.as_str());
             }
         }
@@ -651,14 +661,17 @@ impl ScraplingTool {
             .ok_or_else(|| anyhow::anyhow!("Python not found"))?;
 
         // Check if scrapling is installed
-        let check = tokio::process::Command::new(&python)
-            .args(["-c", "import scrapling; print(scrapling.__version__)"])
-            .output()
-            .await;
-
-        match check {
-            Ok(output) if output.status.success() => {}
-            _ => return Err(anyhow::anyhow!("Scrapling Python library not installed")),
+        let mut check = tokio::process::Command::new(&python);
+        check.args(["-c", "import scrapling; print(scrapling.__version__)"]);
+        let check = super::recon_common::run_command_bounded(
+            check,
+            "Scrapling Python probe",
+            Duration::from_secs(5),
+        )
+        .await
+        .map_err(anyhow::Error::msg)?;
+        if !check.status.success() {
+            return Err(anyhow::anyhow!("Scrapling Python library not installed"));
         }
 
         // Create a temporary Python script
@@ -688,33 +701,22 @@ except Exception as e:
         let script_path = temp_dir.path().join("scrapling_fetch.py");
         tokio::fs::write(&script_path, &script).await?;
 
-        let output = tokio::time::timeout(
+        let mut command = tokio::process::Command::new(&python);
+        command
+            .arg(script_path.to_str().unwrap_or(""))
+            .arg(&params.url)
+            .arg(timeout.to_string());
+        // Bound both captured streams as well as the wall-clock time: a page
+        // with an enormous DOM must not turn the browser fallback into an
+        // unbounded memory allocation.
+        let output = super::recon_common::run_command_bounded(
+            command,
+            "Scrapling Python execution",
             Duration::from_secs(timeout),
-            tokio::process::Command::new(&python)
-                .arg(script_path.to_str().unwrap_or(""))
-                .arg(&params.url)
-                .arg(timeout.to_string())
-                // Without this, timing out drops the `Child` rather than
-                // killing it: the Python process (and any headless browser it
-                // spawned) kept running as an orphan, indefinitely, against a
-                // temp script that had already been reclaimed.
-                .kill_on_drop(true)
-                .stdin(std::process::Stdio::null())
-                .stdout(std::process::Stdio::piped())
-                .stderr(std::process::Stdio::piped())
-                .output(),
         )
         .await
-        .map_err(|_| {
-            anyhow::anyhow!(
-                "Scrapling Python execution timed out after {timeout}s and was terminated"
-            )
-        })?
+        .map_err(anyhow::Error::msg)
         .context("Failed to execute Scrapling Python script")?;
-
-        // Cleanup
-        let _ = tokio::fs::remove_file(&script_path).await;
-        let _ = temp_dir.close();
 
         if !output.status.success() {
             let stderr = String::from_utf8_lossy(&output.stderr);
@@ -791,15 +793,22 @@ except Exception as e:
         }
 
         let params_json = serde_json::to_string(&input)?;
-        let output = tokio::process::Command::new(&bin)
-            .arg("navigate")
-            .arg(&params_json)
-            .stdin(std::process::Stdio::null())
-            .stdout(std::process::Stdio::piped())
-            .stderr(std::process::Stdio::piped())
-            .output()
-            .await
-            .context("Failed to run browser bridge for scrapling fallback")?;
+        let mut command = tokio::process::Command::new(&bin);
+        command.arg("navigate").arg(&params_json);
+        #[cfg(not(windows))]
+        if std::env::var("BROWSER_SESSION").is_err() {
+            if let Some(session_name) = crate::browser::ensure_browser_session(&_ctx.session_id) {
+                command.env("BROWSER_SESSION", session_name);
+            }
+        }
+        let output = super::recon_common::run_command_bounded(
+            command,
+            "Scrapling browser fallback",
+            Duration::from_secs(MAX_TIMEOUT),
+        )
+        .await
+        .map_err(anyhow::Error::msg)
+        .context("Failed to run browser bridge for scrapling fallback")?;
 
         if !output.status.success() {
             let stderr = String::from_utf8_lossy(&output.stderr);

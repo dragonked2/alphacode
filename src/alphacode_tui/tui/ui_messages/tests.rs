@@ -15,13 +15,18 @@ fn leading_spaces(text: &str) -> usize {
     text.chars().take_while(|c| *c == ' ').count()
 }
 
-fn system_glyph_env_lock() -> std::sync::MutexGuard<'static, ()> {
-    use std::sync::{Mutex, OnceLock};
-
-    static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
-    LOCK.get_or_init(|| Mutex::new(()))
-        .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner())
+/// Serializes the tests that depend on the ambient terminal glyph capability.
+///
+/// `prefer_width_stable_system_glyphs` reads `TERM_PROGRAM`/`TERM` at render
+/// time, so a test that *writes* those variables and the tests that *read* the
+/// result have to exclude each other. This deliberately uses the crate-wide
+/// test-env lock rather than a lock local to this module: a module-local mutex
+/// only excludes the kitty test from itself, and left every other test in the
+/// binary free to observe the mutated `TERM` mid-run - which is exactly how
+/// `render_system_message_uses_scheduled_task_card` came to assert the kitty
+/// title in a full parallel suite while passing in isolation.
+fn system_glyph_env_lock() -> crate::alphacode_base::storage::TestEnvGuard {
+    crate::alphacode_base::storage::lock_test_env()
 }
 
 #[test]
@@ -1230,6 +1235,9 @@ fn render_background_task_messages_prefer_display_name() {
 
 #[test]
 fn render_system_message_uses_scheduled_task_card() {
+    // Reads the ambient `TERM_PROGRAM`/`TERM` glyph capability through
+    // `width_stable_system_title`, so it has to exclude the kitty test.
+    let _glyph_env = system_glyph_env_lock();
     let msg = DisplayMessage::system(
         "[Scheduled task]\nA scheduled task for this session is now due.\n\nTask: Follow up on the scheduler test\nWorking directory: /home/jeremy/alphacode\nRelevant files: src/tui/ui_messages.rs\nBranch: master\n\nBackground: Verify the scheduled task card styling\nSuccess criteria: The due task renders clearly\nScheduled by session: session_test",
     );
@@ -1254,6 +1262,9 @@ fn render_system_message_uses_scheduled_task_card() {
 
 #[test]
 fn render_tool_message_uses_scheduled_card() {
+    // Reads the ambient `TERM_PROGRAM`/`TERM` glyph capability, so it has to
+    // exclude the kitty test.
+    let _glyph_env = system_glyph_env_lock();
     let msg = DisplayMessage {
         role: "tool".to_string(),
         content: "Scheduled task 'Follow up on the scheduler test' for in 1m (id: sched_abc123)\nWorking directory: /home/jeremy/alphacode\nRelevant files: src/tui/ui_messages.rs\nTarget: resume session session_test".to_string(),

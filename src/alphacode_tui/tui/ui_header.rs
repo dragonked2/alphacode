@@ -644,6 +644,35 @@ fn abbreviate_home(path: &str) -> String {
     path.to_string()
 }
 
+/// Keep one-line header details inside their allotted terminal columns.
+fn truncate_header_text(text: &str, max_width: usize) -> String {
+    use unicode_width::UnicodeWidthStr;
+
+    if UnicodeWidthStr::width(text) <= max_width {
+        return text.to_string();
+    }
+    if max_width == 0 {
+        return String::new();
+    }
+    if max_width == 1 {
+        return "…".to_string();
+    }
+
+    let target_width = max_width - 1;
+    let mut used_width = 0;
+    let mut truncated = String::new();
+    for grapheme in unicode_segmentation::UnicodeSegmentation::graphemes(text, true) {
+        let grapheme_width = UnicodeWidthStr::width(grapheme);
+        if used_width + grapheme_width > target_width {
+            break;
+        }
+        truncated.push_str(grapheme);
+        used_width += grapheme_width;
+    }
+    truncated.push('…');
+    truncated
+}
+
 #[cfg(test)]
 fn truncate_to_width(text: &str, width: usize) -> String {
     let char_count = text.chars().count();
@@ -705,7 +734,7 @@ fn version_display_candidates() -> Vec<String> {
 }
 
 /// Push `text` onto `spans` (styled with `style`) only if doing so keeps the
-/// running character total at or under `fit_width`. Returns whether it fit.
+/// running display width at or under `fit_width`. Returns whether it fit.
 fn push_if_fits<'a>(
     spans: &mut Vec<Span<'a>>,
     running_len: &mut usize,
@@ -877,7 +906,12 @@ fn collect_status_items(app: &dyn TuiState) -> Vec<&'static str> {
 /// "self-dev" suffix for canary builds, and any status badges collected by
 /// `collect_status_items`. Only rendered when the ASCII banner above it didn't
 /// fit (`show_wordmark`), so the brand name isn't shown twice back to back.
-fn build_brand_line(app: &dyn TuiState, align: Alignment, show_wordmark: bool) -> Line<'static> {
+fn build_brand_line(
+    app: &dyn TuiState,
+    align: Alignment,
+    show_wordmark: bool,
+    width: usize,
+) -> Line<'static> {
     let mut spans = if show_wordmark {
         gradient_text_spans("alphacode")
     } else {
@@ -897,6 +931,15 @@ fn build_brand_line(app: &dyn TuiState, align: Alignment, show_wordmark: bool) -
         spans.push(Span::styled(
             format!("{}self-dev", prefix),
             Style::default().fg(dim_color()),
+        ));
+    }
+    if width >= 96 {
+        let prefix = if spans.is_empty() { "" } else { " · " };
+        spans.push(Span::styled(
+            format!("{prefix}https://alphacli.github.io/"),
+            Style::default()
+                .fg(dim_color())
+                .add_modifier(Modifier::UNDERLINED),
         ));
     }
     let status_items = collect_status_items(app);
@@ -995,8 +1038,12 @@ fn build_model_line(
         app.upstream_provider()
     };
 
+    if fit_width == 0 {
+        return None;
+    }
+    let model_display = truncate_header_text(nice_model, fit_width);
     let mut spans: Vec<Span> = Vec::new();
-    let mut len = nice_model.chars().count();
+    let mut len = unicode_width::UnicodeWidthStr::width(model_display.as_str());
 
     if !provider_label.is_empty() {
         push_if_fits(
@@ -1008,9 +1055,8 @@ fn build_model_line(
         );
     }
 
-    // Subtle connection status dot before the model name — color-coded by state:
-    // pulsing green for ready, warm amber for active processing, dim for disconnected.
-    // Uses a smooth breathing animation for the ready state to create a living feel.
+    // Compact activity marker before the model name: warm amber while a turn is
+    // active and green while idle.
     let status_dot_color = if app.is_processing() {
         BrandTheme::warning() // warm amber for active
     } else {
@@ -1021,7 +1067,6 @@ fn build_model_line(
     } else {
         "\u{25cf}" // ● — ready/idle
     };
-    // Add a subtle glow effect to the status dot
     let status_style = Style::default().fg(status_dot_color);
     push_if_fits(
         &mut spans,
@@ -1038,7 +1083,7 @@ fn build_model_line(
         BrandTheme::model() // theme-aware model color
     };
     spans.push(Span::styled(
-        nice_model.to_string(),
+        model_display,
         Style::default()
             .fg(model_color)
             .add_modifier(Modifier::BOLD),
@@ -1111,7 +1156,12 @@ fn build_persistent_header_with_auth(
     let banner = build_alpha_banner(w);
     let banner_rendered = !banner.is_empty();
     let mut lines: Vec<Line> = banner;
-    lines.push(build_brand_line(app, align, !banner_rendered));
+    lines.push(build_brand_line(
+        app,
+        align,
+        !banner_rendered,
+        width as usize,
+    ));
     // Visual separator between header brand and content area.
     // NOTE: intentionally static rather than breathing. A time-dependent
     // separator breaks the idle-animation partial repaint, which reproduces
@@ -1159,9 +1209,10 @@ fn build_mcp_line(app: &dyn TuiState, w: usize, align: Alignment) -> Option<Line
     if mcps.len() > MAX_MCPS {
         text.push_str(&format!(" +{} more", mcps.len() - MAX_MCPS));
     }
-    if text.chars().count() > w {
+    if unicode_width::UnicodeWidthStr::width(text.as_str()) > w {
         text = format!("mcp: {} servers", mcps.len());
     }
+    text = truncate_header_text(&text, w);
 
     // Use brand theme accent for MCP indicator
     Some(
@@ -1178,7 +1229,7 @@ fn build_working_dir_line(app: &dyn TuiState, w: usize, align: Alignment) -> Opt
     let text = abbreviate_home(&dir);
     if let Some(branch) = app.git_branch() {
         let with_branch = format!("\u{250c} {}  \u{2442} {}", text, branch);
-        if with_branch.chars().count() <= w {
+        if unicode_width::UnicodeWidthStr::width(with_branch.as_str()) <= w {
             // Render with colored branch and subtle styling
             let dir_part = format!("\u{250c} {}", text);
             let branch_part = format!("  \u{2442} {}", branch);
@@ -1201,9 +1252,10 @@ fn build_working_dir_line(app: &dyn TuiState, w: usize, align: Alignment) -> Opt
             }
         }
     }
+    let path_line = truncate_header_text(&format!("\u{250c} {}", text), w);
     Some(
         Line::from(Span::styled(
-            format!("\u{250c} {}", text),
+            path_line,
             Style::default().fg(BrandTheme::accent()),
         ))
         .alignment(align),
@@ -1318,7 +1370,6 @@ mod tests {
     use anyhow::Result;
     use async_trait::async_trait;
     use std::sync::Arc;
-    use std::sync::OnceLock;
 
     struct MockProvider;
 
@@ -1345,19 +1396,38 @@ mod tests {
         }
     }
 
+    /// Point `ALPHACODE_HOME` at a shared scratch directory when it is unset.
+    ///
+    /// Serialized against tests that scope their own `ALPHACODE_HOME` under
+    /// `lock_test_env`: without it this helper observes the gap between their
+    /// cleanup and their next `set_var` and repoints `ALPHACODE_HOME` at the
+    /// scratch home while that test is still running.
+    ///
+    /// The lock is never waited on. Header render tests hold the render-state
+    /// lock for their whole body and only then build an app, so a blocking
+    /// acquisition here inverts the order against a test that holds the env lock
+    /// and is itself waiting for the render lock, and the pair deadlocks. The
+    /// lock is skipped when this thread already owns it (owning it already makes
+    /// the transition exclusive) and otherwise polled briefly.
     fn ensure_test_alphacode_home_if_unset() {
-        static TEST_HOME: OnceLock<std::path::PathBuf> = OnceLock::new();
-
         if std::env::var_os("ALPHACODE_HOME").is_some() {
             return;
         }
 
-        let path = TEST_HOME.get_or_init(|| {
-            let path =
-                std::env::temp_dir().join(format!("alphacode-test-home-{}", std::process::id()));
-            let _ = std::fs::create_dir_all(&path);
-            path
-        });
+        let held_by_this_thread = crate::storage::test_env_lock_held_by_current_thread();
+        let _env_lock = if held_by_this_thread {
+            None
+        } else {
+            crate::storage::try_test_env_lock_for(std::time::Duration::from_secs(2))
+        };
+        if !held_by_this_thread && _env_lock.is_none() {
+            // Owned by another test right now: writing the scratch home would
+            // land inside its scope, so leave the variable alone. Readers still
+            // resolve to the scratch home while it is unset.
+            return;
+        }
+
+        let path = crate::storage::shared_test_alphacode_home();
         crate::alphacode_core::env::set_var("ALPHACODE_HOME", path);
     }
 

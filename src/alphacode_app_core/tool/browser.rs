@@ -2394,20 +2394,19 @@ async fn firefox_run_bridge_command(
         );
         anyhow::anyhow!(message)
     })?;
-    let output = match tokio::time::timeout(BRIDGE_COMMAND_TIMEOUT, child.wait_with_output()).await
-    {
-        Ok(Ok(output)) => output,
-        Ok(Err(error)) => {
-            return Err(error)
-                .with_context(|| format!("Failed to run browser bridge action '{action}'."));
-        }
-        Err(_elapsed) => {
-            anyhow::bail!(
-                "Browser bridge action '{action}' did not respond within {}s. Firefox may be showing a modal dialog, or the native bridge host is stuck. Run action='status' to check the bridge, then action='setup' to repair it.",
-                BRIDGE_COMMAND_TIMEOUT.as_secs()
-            );
-        }
-    };
+    let label = format!("Browser bridge action '{action}'");
+    let output = super::recon_common::wait_bounded(child, &label, BRIDGE_COMMAND_TIMEOUT)
+        .await
+        .map_err(|error| {
+            if error.contains("timed out") {
+                anyhow::anyhow!(
+                    "Browser bridge action '{action}' did not respond within {}s. Firefox may be showing a modal dialog, or the native bridge host is stuck. Run action='status' to check the bridge, then action='setup' to repair it.",
+                    BRIDGE_COMMAND_TIMEOUT.as_secs()
+                )
+            } else {
+                anyhow::anyhow!(error)
+            }
+        })?;
 
     let stdout = String::from_utf8_lossy(&output.stdout).trim().to_string();
     let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();

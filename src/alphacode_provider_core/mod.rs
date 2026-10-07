@@ -627,8 +627,26 @@ impl NativeToolResult {
     }
 }
 
+/// Public project website advertised in request metadata and user-facing help.
+pub const ALPHACODE_HOMEPAGE: &str = "https://alphacli.github.io/";
+
 /// Canonical User-Agent for generic outbound Alphacode HTTP requests.
-pub const ALPHACODE_USER_AGENT: &str = concat!("alphacode/", env!("CARGO_PKG_VERSION"));
+pub const ALPHACODE_USER_AGENT: &str = concat!(
+    "Alphacode/",
+    env!("CARGO_PKG_VERSION"),
+    " (+https://alphacli.github.io/)"
+);
+
+/// Add Alphacode attribution to a protocol-compatible or browser-like User-Agent.
+///
+/// Some APIs and test tools need a particular base identity. Keep that identity
+/// first, then make Alphacode's version and homepage visible to the server.
+pub fn with_alphacode_brand(base_user_agent: &str) -> String {
+    if base_user_agent.contains("Alphacode/") && base_user_agent.contains(ALPHACODE_HOMEPAGE) {
+        return base_user_agent.to_string();
+    }
+    format!("{base_user_agent} {}", ALPHACODE_USER_AGENT)
+}
 
 /// Read an HTTP error body without hiding failures behind an empty string.
 ///
@@ -1011,9 +1029,16 @@ impl ModelRouteApiMethod {
         match self {
             Self::AlphacodeSubscription => "subscription".to_string(),
             Self::ClaudeOAuth | Self::OpenAIOAuth | Self::CodeAssistOAuth => "oauth".to_string(),
-            Self::AnthropicApiKey | Self::OpenAIApiKey | Self::OpenAiCompatible { .. } => {
-                "api key".to_string()
-            }
+            Self::AnthropicApiKey | Self::OpenAIApiKey => "api key".to_string(),
+            // A named direct endpoint keeps its own label when it also has a
+            // first-class runtime: rendering the OpenRouter endpoint as "api key"
+            // makes that row indistinguishable from a native OpenAI API-key
+            // route in `/model`, so the user cannot tell which endpoint a model
+            // would actually be sent to.
+            Self::OpenAiCompatible {
+                profile_id: Some(profile),
+            } if profile == "openrouter" => "openrouter".to_string(),
+            Self::OpenAiCompatible { .. } => "api key".to_string(),
             Self::OpenRouter => "openrouter".to_string(),
             Self::Copilot => "copilot".to_string(),
             Self::Cursor => "cursor".to_string(),

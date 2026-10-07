@@ -2,8 +2,45 @@ use super::{Tool, ToolContext, ToolOutput};
 use crate::alphacode_app_core::config::WebSearchEngine;
 use anyhow::{Context as _, Result};
 use async_trait::async_trait;
+use futures::StreamExt;
 use serde::Deserialize;
 use serde_json::{Value, json};
+
+const MAX_SEARCH_RESPONSE_BYTES: usize = 2 * 1024 * 1024;
+
+/// Read a search response with a hard decoded-body cap. `Response::text/json`
+/// buffers the whole body before parsing, so checking size afterward would not
+/// protect memory from a broken or hostile search endpoint.
+async fn read_search_response(response: reqwest::Response, engine: &str) -> Result<Vec<u8>> {
+    if let Some(length) = response.content_length()
+        && length > MAX_SEARCH_RESPONSE_BYTES as u64
+    {
+        anyhow::bail!("{engine} response exceeded the 2 MiB limit ({length} bytes)");
+    }
+
+    let mut body = Vec::with_capacity(
+        response
+            .content_length()
+            .and_then(|length| usize::try_from(length).ok())
+            .unwrap_or(0)
+            .min(MAX_SEARCH_RESPONSE_BYTES),
+    );
+    let mut stream = response.bytes_stream();
+    while let Some(chunk) = stream.next().await {
+        let chunk = chunk.with_context(|| format!("Failed to read {engine} response"))?;
+        let received = body.len().saturating_add(chunk.len());
+        if received > MAX_SEARCH_RESPONSE_BYTES {
+            anyhow::bail!("{engine} response exceeded the 2 MiB limit (at least {received} bytes)");
+        }
+        body.extend_from_slice(&chunk);
+    }
+    Ok(body)
+}
+
+async fn read_search_text(response: reqwest::Response, engine: &str) -> Result<String> {
+    let body = read_search_response(response, engine).await?;
+    Ok(String::from_utf8_lossy(&body).into_owned())
+}
 
 /// Web search using DuckDuckGo or Bing (HTML scraping, with optional Bing API)
 pub struct WebSearchTool {
@@ -278,14 +315,13 @@ impl WebSearchTool {
                 ))
                 .await;
             }
+            let user_agent = crate::alphacode_provider_core::with_alphacode_brand(
+                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/125.0.0.0 Safari/537.36",
+            );
             let response = self
                 .client
                 .post("https://html.duckduckgo.com/html/")
-                .header(
-                    reqwest::header::USER_AGENT,
-                    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 \
-                     (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36",
-                )
+                .header(reqwest::header::USER_AGENT, user_agent)
                 .header(reqwest::header::ACCEPT, "text/html,application/xhtml+xml")
                 .header(
                     reqwest::header::CONTENT_TYPE,
@@ -311,7 +347,7 @@ impl WebSearchTool {
                 continue;
             }
 
-            let body = response.text().await?;
+            let body = read_search_text(response, "DuckDuckGo").await?;
             let results = parse_ddg_results(&body, num_results);
             if results.is_empty() {
                 if let Some(reason) = detect_anti_bot_page(&body) {
@@ -380,7 +416,9 @@ impl WebSearchTool {
             ));
         }
 
-        Ok(parse_bing_api_results(response.json().await?, num_results))
+        let body = read_search_response(response, "Bing API").await?;
+        let parsed = serde_json::from_slice(&body).context("Failed to parse Bing API response")?;
+        Ok(parse_bing_api_results(parsed, num_results))
     }
 
     async fn search_bing_html(
@@ -395,13 +433,13 @@ impl WebSearchTool {
             urlencoding::encode(market)
         );
 
+        let user_agent = crate::alphacode_provider_core::with_alphacode_brand(
+            "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36",
+        );
         let response = self
             .client
             .get(&url)
-            .header(
-                reqwest::header::USER_AGENT,
-                "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36",
-            )
+            .header(reqwest::header::USER_AGENT, user_agent)
             .send_with_retry(&self.client, "websearch")
             .await?;
 
@@ -412,7 +450,7 @@ impl WebSearchTool {
             ));
         }
 
-        let body = response.text().await?;
+        let body = read_search_text(response, "Bing").await?;
         let results = parse_bing_html_results(&body, num_results);
         if results.is_empty()
             && let Some(reason) = detect_anti_bot_page(&body)
@@ -453,14 +491,14 @@ impl WebSearchTool {
             })?;
 
         let endpoint = format!("{}/search", base.trim_end_matches('/'));
+        let user_agent = crate::alphacode_provider_core::with_alphacode_brand(
+            "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36",
+        );
         let response = self
             .client
             .get(&endpoint)
             .query(&[("q", query), ("format", "json")])
-            .header(
-                reqwest::header::USER_AGENT,
-                "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36",
-            )
+            .header(reqwest::header::USER_AGENT, user_agent)
             .header(reqwest::header::ACCEPT, "application/json")
             .send_with_retry(&self.client, "websearch")
             .await?;
@@ -473,7 +511,8 @@ impl WebSearchTool {
             ));
         }
 
-        let parsed: SearxngResponse = response.json().await.map_err(|err| {
+        let body = read_search_response(response, "SearXNG").await?;
+        let parsed: SearxngResponse = serde_json::from_slice(&body).map_err(|err| {
             anyhow::anyhow!(
                 "SearXNG returned a non-JSON response ({err}). The instance may have \
                  the JSON format disabled; enable `formats: [html, json]` in its settings."

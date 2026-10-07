@@ -278,7 +278,11 @@ fn test_remote_final_catalog_activity_is_two_lines_and_completes_model_setup() {
         .expect("compact catalog message");
     assert_eq!(last.role, "system");
     assert_eq!(last.content.lines().count(), 2);
-    assert_eq!(last.content, message);
+    assert_eq!(
+        last.content,
+        "**Model access refreshed**\nOpenAI catalog changed: models +14/-10, routes +24/-19/~3. Use `/model`."
+    );
+    assert!(!last.content.contains("gpt-5.6-sol"));
 }
 
 #[test]

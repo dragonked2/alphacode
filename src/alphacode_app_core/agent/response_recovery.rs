@@ -257,6 +257,32 @@ impl Agent {
     pub(crate) fn is_transient_provider_error(error: &str) -> bool {
         let lower = error.to_ascii_lowercase();
 
+        // An explicit non-retryable 4xx status means the server
+        // rejected this exact request (bad request, auth, not
+        // found, ...). Check it before the transport/overload
+        // heuristics: the OpenAI-compatible error format embeds
+        // both "chat request failed" and a "timeout: Ns"
+        // diagnostic line, which those classifiers would
+        // otherwise misread as a transient fault — turning a
+        // permanent 400 into a six-attempt retry loop that also
+        // injects a duplicate "[System reminder ...]" message
+        // into the conversation on every retry.
+        if let Some(code) = crate::alphacode_provider_core::retry::embedded_http_status(&lower)
+            && (400..500).contains(&code)
+            && !matches!(code, 408 | 409 | 429)
+        {
+            return false;
+        }
+
+        // The pre-flight context guard fails fast before the
+        // request is sent; the identical request can never
+        // succeed until the prompt shrinks or the server context
+        // grows, so it is never transient even though its
+        // diagnostic line embeds "timeout: Ns".
+        if lower.contains("request exceeds context") {
+            return false;
+        }
+
         // Reuse the transport-layer classifier so the two paths agree on
         // what counts as retryable. That covers EOF, "stream error",
         // "connection reset", TLS BadRecordMac, etc.
@@ -817,6 +843,57 @@ mod provider_error_tests {
         assert!(!Agent::is_transient_provider_error(
             "model gpt-5 does not exist"
         ));
+    }
+
+    #[test]
+    fn real_local_context_overflow_400_is_not_retried() {
+        // Regression: the verbatim error the user hit. Its own diagnostic
+        // lines ("chat request failed", "timeout: 600s") used to match the
+        // transport/needle heuristics, so a permanent 400 was treated as
+        // transient and retried six times — injecting a duplicate
+        // "[System reminder ...]" message on every attempt, growing the
+        // prompt each time, and reporting "Network appears offline".
+        let err = "OpenAI-compatible chat request failed\n  \
+            endpoint: http://localhost:11434/v1/chat/completions\n  \
+            model: huihui_ai/qwen3-coder-abliterated:latest\n  \
+            auth: OPENAI_COMPAT_API_KEY\n  mode: streaming\n  \
+            context_estimate: ~24936 tokens\n  timeout: 600s\n  \
+            status: 400 Bad Request\n  response: \
+            {\"error\":{\"message\":\"{\\\"error\\\":{\\\"code\\\":400,\\\"message\\\":\\\"request (34014 tokens) exceeds the available context size (4096 tokens), try increasing it\\\",\\\"type\\\":\\\"exceed_context_size_error\\\",\\\"n_prompt_tokens\\\":34014,\\\"n_ctx\\\":4096}}\",\"type\":\"invalid_request_error\",\"param\":null,\"code\":null}}";
+        assert!(
+            !Agent::is_transient_provider_error(err),
+            "a 400 context overflow must not be retried"
+        );
+    }
+
+    #[test]
+    fn pre_flight_context_guard_failure_is_not_retried() {
+        // The pre-flight guard fails before the request is sent, so an
+        // identical retry can never succeed. Its message embeds
+        // "timeout: 600s" too, which must not make it transient.
+        let err = "OpenAI-compatible request exceeds context\n  \
+            endpoint: http://127.0.0.1:8080/v1/chat/completions\n  \
+            model: alpha\n  mode: streaming\n  context_estimate: \
+            ~24936 prompt tokens + ~2048 reserved output = ~27000 \
+            tokens\n  context_window: 16384 tokens\n  timeout: 600s\n  \
+            Hint: compact the session (/compact)";
+        assert!(!Agent::is_transient_provider_error(err));
+    }
+
+    #[test]
+    fn genuine_local_transport_failures_are_still_retried() {
+        // The 4xx guard must not swallow real local connectivity faults,
+        // which have no status code and are worth another attempt.
+        for s in [
+            "OpenAI-compatible stream timeout\n  endpoint: http://localhost:11434/v1/chat/completions\n  timeout: no data received for 600 seconds",
+            "OpenAI-compatible stream error\n  endpoint: http://localhost:11434/v1/chat/completions\n  error: connection reset by peer",
+            "connection refused talking to http://localhost:11434/v1/chat/completions",
+        ] {
+            assert!(
+                Agent::is_transient_provider_error(s),
+                "{s} should be retried"
+            );
+        }
     }
 
     #[test]

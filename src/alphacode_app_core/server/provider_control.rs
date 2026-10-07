@@ -85,14 +85,11 @@ pub(super) fn try_available_models_updated_event(agent: &Arc<Mutex<Agent>>) -> O
 
 fn format_auth_catalog_refresh_complete(
     provider_name: Option<&str>,
-    provider_model: Option<&str>,
     summary: &ModelCatalogRefreshSummary,
     has_warning: bool,
 ) -> String {
     let provider_label = provider_name.unwrap_or("provider");
-    let title = provider_model
-        .map(|model| format!("**Model ready:** `{model}`"))
-        .unwrap_or_else(|| "**Model access refreshed**".to_string());
+    let title = "**Model access refreshed**";
     let changed = summary.models_added > 0
         || summary.models_removed > 0
         || summary.routes_added > 0
@@ -1228,7 +1225,6 @@ pub(super) async fn handle_notify_auth_changed(
                 .provider_label
                 .as_deref()
                 .or(latest_snapshot.provider_name.as_deref()),
-            latest_snapshot.provider_model.as_deref(),
             &summary,
             catalog_warning.is_some(),
         );

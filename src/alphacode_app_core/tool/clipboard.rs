@@ -3,6 +3,11 @@ use crate::alphacode_tool_types::ToolOutput;
 use anyhow::Result;
 use async_trait::async_trait;
 use serde_json::{Value, json};
+use std::io::Read as _;
+use std::process::{Command, Stdio};
+use std::time::{Duration, Instant};
+
+const MAX_CLIPBOARD_BYTES: usize = 1024 * 1024;
 
 pub struct ClipboardTool;
 
@@ -59,7 +64,7 @@ impl Tool for ClipboardTool {
                 }
             }
             "paste" => match paste_from_clipboard() {
-                Ok(text) => {
+                Ok((text, truncated)) => {
                     // Truncate at a valid UTF-8 boundary: slicing `&text[..500]`
                     // panicked on multi-byte characters (e.g. CJK or emoji
                     // pasted from a browser).
@@ -71,6 +76,15 @@ impl Tool for ClipboardTool {
                         )
                     } else {
                         text.clone()
+                    };
+                    let preview = if truncated {
+                        format!(
+                            "{}\n\n[Clipboard content truncated after {} MiB to protect context and memory.]",
+                            crate::alphacode_core::util::truncate_str(&preview, 2_000),
+                            MAX_CLIPBOARD_BYTES / (1024 * 1024)
+                        )
+                    } else {
+                        preview
                     };
                     Ok(ToolOutput::new(preview))
                 }
@@ -144,45 +158,114 @@ fn copy_to_clipboard(text: &str) -> Result<()> {
     }
 }
 
-fn paste_from_clipboard() -> Result<String> {
+fn paste_from_clipboard() -> Result<(String, bool)> {
     #[cfg(target_os = "macos")]
     {
-        use std::process::Command;
-        let output = Command::new("pbpaste").output()?;
-        Ok(String::from_utf8_lossy(&output.stdout).to_string())
+        run_clipboard_reader("pbpaste", &[])
     }
     #[cfg(target_os = "linux")]
     {
-        use std::process::Command;
         // Try xclip, then xsel
-        if let Ok(output) = Command::new("xclip")
-            .arg("-selection")
-            .arg("clipboard")
-            .arg("-o")
-            .output()
+        if let Ok(output) = run_clipboard_reader("xclip", &["-selection", "clipboard", "-o"])
+            && (!output.0.is_empty() || !output.1)
         {
-            return Ok(String::from_utf8_lossy(&output.stdout).to_string());
+            return Ok(output);
         }
-        if let Ok(output) = Command::new("xsel")
-            .arg("--output")
-            .arg("--clipboard")
-            .output()
+        if let Ok(output) = run_clipboard_reader("xsel", &["--output", "--clipboard"])
+            && (!output.0.is_empty() || !output.1)
         {
-            return Ok(String::from_utf8_lossy(&output.stdout).to_string());
+            return Ok(output);
         }
         // Fallback: read from the per-user runtime file (see copy).
         let path = clipboard_fallback_path();
-        Ok(std::fs::read_to_string(&path).unwrap_or_default())
+        let file = match std::fs::File::open(&path) {
+            Ok(file) => file,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                return Ok((String::new(), false));
+            }
+            Err(error) => return Err(error.into()),
+        };
+        let mut bytes = Vec::with_capacity(MAX_CLIPBOARD_BYTES + 1);
+        file.take((MAX_CLIPBOARD_BYTES + 1) as u64)
+            .read_to_end(&mut bytes)?;
+        let truncated = bytes.len() > MAX_CLIPBOARD_BYTES;
+        bytes.truncate(MAX_CLIPBOARD_BYTES);
+        Ok((String::from_utf8_lossy(&bytes).into_owned(), truncated))
     }
     #[cfg(target_os = "windows")]
     {
-        use std::process::Command;
         // -NoProfile skips user profile scripts: measurably faster on every
         // call and keeps the paste isolated from profile-side side effects.
-        let output = Command::new("powershell")
-            .args(["-NoProfile", "-NonInteractive", "-Command", "Get-Clipboard"])
-            .output()?;
-        Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
+        run_clipboard_reader(
+            "powershell",
+            &[
+                "-NoProfile",
+                "-NonInteractive",
+                "-Command",
+                "Get-Clipboard -Raw",
+            ],
+        )
+    }
+}
+
+/// Capture clipboard output with a hard byte cap and timeout. Readers continue
+/// draining after the cap so a large paste cannot deadlock its producer.
+fn run_clipboard_reader(program: &str, args: &[&str]) -> Result<(String, bool)> {
+    let mut child = Command::new(program)
+        .args(args)
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()?;
+    let mut stdout = child
+        .stdout
+        .take()
+        .ok_or_else(|| anyhow::anyhow!("failed to capture {program} output"))?;
+    let reader = std::thread::spawn(move || {
+        let mut bytes = Vec::with_capacity(MAX_CLIPBOARD_BYTES + 1);
+        let mut buffer = [0u8; 16 * 1024];
+        let mut truncated = false;
+        loop {
+            let read = stdout.read(&mut buffer)?;
+            if read == 0 {
+                break;
+            }
+            let remaining = MAX_CLIPBOARD_BYTES.saturating_sub(bytes.len());
+            let keep = read.min(remaining);
+            bytes.extend_from_slice(&buffer[..keep]);
+            truncated |= keep < read;
+        }
+        Ok::<_, std::io::Error>((bytes, truncated))
+    });
+
+    let deadline = Instant::now() + Duration::from_secs(10);
+    loop {
+        match child.try_wait() {
+            Ok(Some(status)) => {
+                let (bytes, truncated) = reader
+                    .join()
+                    .map_err(|_| anyhow::anyhow!("clipboard reader thread failed"))??;
+                if !status.success() {
+                    anyhow::bail!("{program} exited with {status}");
+                }
+                return Ok((String::from_utf8_lossy(&bytes).into_owned(), truncated));
+            }
+            Ok(None) if Instant::now() < deadline => {
+                std::thread::sleep(Duration::from_millis(20));
+            }
+            Ok(None) => {
+                let _ = child.kill();
+                let _ = child.wait();
+                let _ = reader.join();
+                anyhow::bail!("{program} timed out while reading the clipboard");
+            }
+            Err(error) => {
+                let _ = child.kill();
+                let _ = child.wait();
+                let _ = reader.join();
+                return Err(error.into());
+            }
+        }
     }
 }
 

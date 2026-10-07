@@ -494,7 +494,14 @@ pub async fn run_agent_turn(
         .header("connect-accept-encoding", "gzip,br")
         .header("connect-protocol-version", "1")
         .header("content-type", "application/connect+proto")
-        .header("user-agent", "connect-es/1.6.1")
+        .header(
+            "user-agent",
+            concat!(
+                "connect-es/1.6.1 Alphacode/",
+                env!("CARGO_PKG_VERSION"),
+                " (+https://alphacli.github.io/)"
+            ),
+        )
         .header("x-cursor-client-type", "cli")
         .header("x-cursor-client-version", cli_client_version())
         .header("x-ghost-mode", "true")

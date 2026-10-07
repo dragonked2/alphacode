@@ -211,10 +211,14 @@ fn build_args(params: &NiktoInput) -> Result<Vec<String>> {
         args.push("-timeout".to_string());
         args.push(timeout.to_string());
     }
-    if let Some(ref ua) = params.user_agent {
-        args.push("-useragent".to_string());
-        args.push(ua.clone());
-    }
+    args.push("-useragent".to_string());
+    args.push(
+        params
+            .user_agent
+            .as_deref()
+            .unwrap_or(crate::alphacode_provider_core::ALPHACODE_USER_AGENT)
+            .to_string(),
+    );
     if let Some(ref cookie) = params.cookie {
         args.push("-cookie".to_string());
         args.push(cookie.clone());

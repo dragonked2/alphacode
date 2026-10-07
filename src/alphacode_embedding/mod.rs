@@ -441,7 +441,9 @@ fn download_model(model_dir: &Path) -> Result<()> {
 
 fn download_model_blocking(model_dir: &Path) -> Result<()> {
     let client = reqwest::blocking::Client::builder()
-        .user_agent(concat!("alphacode-embedding/", env!("CARGO_PKG_VERSION")))
+        .user_agent(crate::alphacode_provider_core::with_alphacode_brand(
+            "Alphacode embedding downloader",
+        ))
         .timeout(std::time::Duration::from_secs(300))
         .build()?;
 

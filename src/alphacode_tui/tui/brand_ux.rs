@@ -422,7 +422,7 @@ impl ProgressBar {
             // Soft lead-in at the fill boundary for a polished edge
             if empty > 0 {
                 let lead_color = gradient
-                    [(filled - 1 + shimmer_offset).min(gradient.len() - 1) % gradient.len()];
+                    [filled.saturating_sub(1).wrapping_add(shimmer_offset) % gradient.len()];
                 spans.push(Span::styled(
                     "▌",
                     Style::default().fg(lead_color).add_modifier(Modifier::BOLD),
@@ -432,7 +432,14 @@ impl ProgressBar {
 
         // Empty portion — subtle dim blocks with gradient hint
         if empty > 0 {
-            let dots = empty.saturating_sub(1);
+            // A non-empty fill already contributes a one-cell lead glyph. At
+            // 0%, there is no lead glyph, so the empty track must use all of
+            // its cells instead of silently rendering one fewer.
+            let dots = if filled > 0 {
+                empty.saturating_sub(1)
+            } else {
+                empty
+            };
             if dots > 0 {
                 // Use alternating dim gradient colors for visual interest
                 let mut empty_spans: Vec<Span<'static>> = Vec::new();

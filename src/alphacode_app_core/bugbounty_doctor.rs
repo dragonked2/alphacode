@@ -10,11 +10,10 @@
 //! operator installs themselves. A user running `/bugbounty hunt-sqli`
 //! on a fresh install will hit a wall on the first pipeline step.
 //!
-//! `/bugbounty doctor` is the safe first step: it does not run any tool
-//! (read-only probe of `$PATH` via `which`), groups results by
-//! present / missing, and prints the right install command per missing
-//! tool on the user's platform. No `go install` or `apt install` is run
-//! without the user invoking a separate, explicit installer.
+//! `/bugbounty doctor` is the read-only first step: it reports present and
+//! missing tools with install guidance. When a known Go tool is invoked and is
+//! missing, the tool runner attempts to set up Go and install that tool before
+//! retrying it.
 //!
 //! # Public API
 //!

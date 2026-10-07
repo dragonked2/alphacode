@@ -469,10 +469,14 @@ fn build_args(params: &CariddiInput) -> Result<Vec<String>> {
         args.push("-c".to_string());
         args.push(cookies.clone());
     }
-    if let Some(ref ua) = params.user_agent {
-        args.push("-ua".to_string());
-        args.push(ua.clone());
-    }
+    args.push("-ua".to_string());
+    args.push(
+        params
+            .user_agent
+            .as_deref()
+            .unwrap_or(crate::alphacode_provider_core::ALPHACODE_USER_AGENT)
+            .to_string(),
+    );
     if let Some(ref proxy) = params.proxy {
         args.push("-p".to_string());
         args.push(proxy.clone());

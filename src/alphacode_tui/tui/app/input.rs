@@ -1185,7 +1185,11 @@ pub(super) fn handle_text_input(app: &mut App, text: &str) -> bool {
         if let (Some(c), None) = (chars.next(), chars.next())
             && let Some(digit) = c.to_digit(10)
         {
-            let suggestions = app.suggestion_prompts();
+            let suggestions = if onboarding_suggestions {
+                app.suggestion_prompts()
+            } else {
+                app.starter_prompts()
+            };
             let idx = digit as usize;
             if idx >= 1 && idx <= suggestions.len() {
                 let (_label, prompt) = &suggestions[idx - 1];

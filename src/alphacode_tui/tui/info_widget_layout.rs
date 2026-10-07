@@ -368,10 +368,20 @@ pub(crate) fn calculate_placements_anchored(
         let min_h = kind.min_height() + 2;
         let preferred = kind.preferred_side();
         let mut best_idx: Option<usize> = None;
+        let mut best_height = 0;
         let mut best_score = i32::MIN;
 
         for (idx, &(side, _top, height, width, _x, _margin_idx)) in all_rects.iter().enumerate() {
             if height < min_h || width < MIN_WIDGET_WIDTH {
+                continue;
+            }
+
+            // A rectangle's nominal minimum can still be too small for the
+            // widget's actual content (especially the combined Session panel).
+            // Skip unusable pockets here instead of selecting one and silently
+            // abandoning the widget while a larger usable pocket exists.
+            let widget_height = calculate_widget_height(kind, data, width, height);
+            if widget_height <= 2 {
                 continue;
             }
 
@@ -382,6 +392,7 @@ pub(crate) fn calculate_placements_anchored(
             if score > best_score {
                 best_score = score;
                 best_idx = Some(idx);
+                best_height = widget_height;
             }
         }
 
@@ -390,11 +401,7 @@ pub(crate) fn calculate_placements_anchored(
         };
 
         let (side, top, height, width, x, margin_idx) = all_rects[idx];
-        let widget_height = calculate_widget_height(kind, data, width, height);
-        if widget_height <= 2 {
-            continue;
-        }
-
+        let widget_height = best_height;
         // Seat the widget at the *bottom* of the pocket so it has the maximum
         // runway to ride upward with the transcript before scrolling off the top -
         // a widget born at the pocket's top row would fall off and re-home every

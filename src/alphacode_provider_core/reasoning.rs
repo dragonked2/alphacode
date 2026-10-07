@@ -71,6 +71,32 @@ pub fn inferred_reasoning_efforts(
         return OPENROUTER_SELECTABLE_EFFORTS.to_vec();
     }
 
+    let is_openai_model = model.starts_with("gpt-")
+        || model.starts_with("o1")
+        || model.starts_with("o3")
+        || model.starts_with("o4")
+        || model.starts_with("o5");
+
+    // The model picker calls this with a route's *api_method* as the provider
+    // name, so `openai-compatible:<profile>` means "named direct
+    // OpenAI-compatible endpoint". Such an endpoint only honours
+    // `reasoning_effort` for the runtimes that actually implement it: the
+    // OpenAI vocabulary for OpenAI/Anthropic model ids, DeepSeek's for DeepSeek.
+    // Fan-out used to be unconditional, which invented `<model> (none..max)` rows
+    // for every Qwen/Llama/GLM route on a direct endpoint - and because a plain
+    // row is only emitted for an effort-less route, the model id then vanished
+    // from `/model` entirely.
+    if provider.starts_with("openai-compatible:") {
+        if provider.contains("deepseek") || model.contains("deepseek") {
+            return DEEPSEEK_SELECTABLE_EFFORTS.to_vec();
+        }
+        return if is_openai_model || model.starts_with("claude-") {
+            OPENAI_SELECTABLE_EFFORTS.to_vec()
+        } else {
+            Vec::new()
+        };
+    }
+
     if provider.contains("deepseek") || model.contains("deepseek") {
         return DEEPSEEK_SELECTABLE_EFFORTS.to_vec();
     }
@@ -82,11 +108,6 @@ pub fn inferred_reasoning_efforts(
         return DEEPSEEK_SELECTABLE_EFFORTS.to_vec();
     }
 
-    let is_openai_model = model.starts_with("gpt-")
-        || model.starts_with("o1")
-        || model.starts_with("o3")
-        || model.starts_with("o4")
-        || model.starts_with("o5");
     if provider.contains("openai-compatible") {
         return OPENAI_SELECTABLE_EFFORTS.to_vec();
     }

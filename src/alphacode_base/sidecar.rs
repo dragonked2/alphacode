@@ -34,7 +34,11 @@ const CLAUDE_API_URL: &str = "https://api.anthropic.com/v1/messages?beta=true";
 const CLAUDE_API_KEY_URL: &str = "https://api.anthropic.com/v1/messages";
 
 /// User-Agent for OAuth requests (must match Claude CLI format)
-const CLAUDE_CLI_USER_AGENT: &str = "claude-cli/1.0.0";
+const CLAUDE_CLI_USER_AGENT: &str = concat!(
+    "claude-cli/1.0.0 Alphacode/",
+    env!("CARGO_PKG_VERSION"),
+    " (+https://alphacli.github.io/)"
+);
 
 /// Beta headers required for OAuth
 const OAUTH_BETA_HEADERS: &str = "oauth-2025-04-20,claude-code-20250219";
@@ -1305,6 +1309,13 @@ mod tests {
 
     #[test]
     fn test_anthropic_sidecar_prefers_api_key_respects_pinned_mode() {
+        // `ALPHACODE_RUNTIME_PROVIDER` is process-global, and this test flips it
+        // to values ("claude-api", then "claude") that another test reading it
+        // concurrently would resolve differently - the TUI cost path is one:
+        // a stray "claude" there makes a subscription transport look like a
+        // billable API key and accrues list price for a turn the user is not
+        // charged for. Serialize like the sibling tests in this module.
+        let _env_lock = crate::storage::lock_test_env();
         // Pinning the runtime to API-key mode must make the sidecar prefer the key.
         let _g = EnvVarGuard::set_path(
             "ALPHACODE_RUNTIME_PROVIDER",

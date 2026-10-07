@@ -126,6 +126,40 @@ fn command_suggestions_active(app: &dyn TuiState, suggestions: &[(String, &'stat
         && (matches!(mode, ComposerMode::SlashCommand) || !app.is_processing())
 }
 
+/// Keep the selected command visible when a small terminal cannot fit the
+/// whole palette. The keyboard hint gets the last row whenever there is room.
+fn fit_command_suggestion_lines_to_height(
+    mut lines: Vec<Line<'static>>,
+    max_height: usize,
+) -> Vec<Line<'static>> {
+    if lines.len() <= max_height || max_height == 0 {
+        lines.truncate(max_height);
+        return lines;
+    }
+
+    let footer = lines.pop();
+    let footer_rows = usize::from(max_height > 1);
+    let content_height = max_height.saturating_sub(footer_rows);
+    let selected = lines.iter().position(|line| {
+        line.spans
+            .first()
+            .is_some_and(|span| span.content.as_ref().starts_with('▸'))
+    });
+    let max_start = lines.len().saturating_sub(content_height);
+    let start = selected
+        .unwrap_or(0)
+        .saturating_sub(content_height.saturating_sub(1))
+        .min(max_start);
+    let visible: Vec<Line<'static>> = lines.into_iter().skip(start).take(content_height).collect();
+    let mut fitted = visible;
+    if footer_rows > 0
+        && let Some(footer) = footer
+    {
+        fitted.push(footer);
+    }
+    fitted
+}
+
 /// Draw the Ctrl+R reverse prompt-history search overlay. Reuses the
 /// command-palette positioning: floats below (or above) the input without
 /// reserving layout height. Shows the query line plus the match list with the
@@ -204,6 +238,10 @@ pub(super) fn draw_prompt_history_search_overlay(
     else {
         return;
     };
+    lines = lines
+        .into_iter()
+        .map(|line| truncate_line_with_ellipsis(line, area.width as usize))
+        .collect();
     lines.truncate(rect.height as usize);
     frame.render_widget(ratatui::widgets::Clear, rect);
     frame.render_widget(Paragraph::new(lines), rect);
@@ -223,7 +261,11 @@ pub(super) fn draw_command_suggestions_overlay(frame: &mut Frame, app: &dyn TuiS
     else {
         return;
     };
-    lines.truncate(rect.height as usize);
+    lines = lines
+        .into_iter()
+        .map(|line| truncate_line_with_ellipsis(line, area.width as usize))
+        .collect();
+    lines = fit_command_suggestion_lines_to_height(lines, rect.height as usize);
     if app.centered_mode() {
         lines = lines
             .into_iter()
@@ -257,7 +299,8 @@ fn command_suggestion_lines(
 
     if suggestions.len() == 1 {
         let (cmd, desc) = &suggestions[0];
-        let mut spans = highlight(cmd, accent_style);
+        let mut spans = vec![Span::styled("▸ ", selected_style)];
+        spans.extend(highlight(cmd, accent_style));
         spans.push(Span::styled(format!("  {}", desc), accent_style));
         lines.push(Line::from(spans));
     } else if !suggestions.is_empty() {
@@ -286,22 +329,48 @@ fn command_suggestion_lines(
             } else {
                 desc_unselected_style
             };
-            let mut spans = highlight(cmd, command_style);
-            spans.push(Span::styled(format!("  {}", desc), description_style));
+            let mut row = vec![Span::styled(
+                if is_selected { "▸ " } else { "  " },
+                command_style,
+            )];
+            row.extend(highlight(cmd, command_style));
+            row.push(Span::styled(format!("  {}", desc), description_style));
             if i == 0 && window_start > 0 {
-                spans.push(Span::styled(
+                row.push(Span::styled(
                     format!("  ↑{}", window_start),
                     Style::default().fg(BrandTheme::dim()),
                 ));
             }
             if i + 1 == limited.len() && more_count > 0 {
-                spans.push(Span::styled(
+                row.push(Span::styled(
                     format!("  +{} more", more_count),
                     Style::default().fg(BrandTheme::dim()),
                 ));
             }
-            lines.push(Line::from(spans));
+            lines.push(Line::from(row));
         }
+    }
+    if !suggestions.is_empty() {
+        let selected = app
+            .command_suggestion_selected()
+            .min(suggestions.len().saturating_sub(1));
+        let is_complete_command = suggestions
+            .get(selected)
+            .is_some_and(|(cmd, _)| cmd == app.input().trim());
+        let enter_action = if is_complete_command {
+            "Enter run"
+        } else {
+            "Enter fill"
+        };
+        let navigation_hint = if suggestions.len() > 1 {
+            "↑↓ move · Tab complete"
+        } else {
+            "Tab complete"
+        };
+        lines.push(Line::from(Span::styled(
+            format!("  {} · {}", navigation_hint, enter_action),
+            Style::default().fg(BrandTheme::dim()),
+        )));
     }
     lines
 }
@@ -404,7 +473,11 @@ pub(super) fn input_hint_line_height(app: &dyn TuiState) -> u16 {
 
 pub(super) fn send_mode_reserved_width(app: &dyn TuiState) -> usize {
     let (icon, _) = send_mode_indicator(app);
-    if icon.is_empty() { 0 } else { icon.len() + 1 }
+    if icon.is_empty() {
+        0
+    } else {
+        unicode_width::UnicodeWidthStr::width(icon) + 1
+    }
 }
 
 pub(super) fn input_prompt(app: &dyn TuiState) -> (String, Color) {
@@ -423,9 +496,9 @@ pub(super) fn input_prompt(app: &dyn TuiState) -> (String, Color) {
     }
 }
 
-pub(crate) fn input_prompt_len(app: &dyn TuiState, next_prompt: usize) -> usize {
+pub(crate) fn input_prompt_len(app: &dyn TuiState, _next_prompt: usize) -> usize {
     let (prompt_char, _) = input_prompt(app);
-    next_prompt.to_string().chars().count() + prompt_char.chars().count()
+    unicode_width::UnicodeWidthStr::width(prompt_char.as_str())
 }
 
 pub(crate) fn next_input_prompt_number(app: &dyn TuiState) -> usize {
@@ -444,7 +517,10 @@ pub(super) fn wrapped_input_line_count(
         return 1;
     }
 
-    let num_str = next_prompt.to_string();
+    // Keep prompt numbering out of the composer: the numbered queued rows are
+    // only meaningful once a prompt has been sent. This also leaves a stable,
+    // easy-to-scan mode prefix at the edit point.
+    let num_str = String::new();
     let (prompt_char, caret_color) = input_prompt(app);
     let (lines, _, _) = wrap_input_text(
         app.input(),
@@ -495,27 +571,34 @@ pub(super) fn pending_queue_preview(app: &dyn TuiState) -> Vec<String> {
     previews
 }
 
-/// Truncate a preview string to `max_chars` (display-width characters),
+/// Truncate a preview string to `max_width` terminal columns,
 /// collapsing internal newlines to spaces for a single-line preview.
 /// When truncated, appends an ellipsis.
-fn truncate_preview(text: &str, max_chars: usize) -> String {
-    let single_line: String = text.replace('\n', " ");
+fn truncate_preview(text: &str, max_width: usize) -> String {
+    let single_line = text.split_whitespace().collect::<Vec<_>>().join(" ");
     let trimmed = single_line.trim();
-    if unicode_width::UnicodeWidthStr::width(trimmed) <= max_chars {
+    if unicode_width::UnicodeWidthStr::width(trimmed) <= max_width {
         trimmed.to_string()
     } else {
-        let limit = max_chars.saturating_sub(3);
+        if max_width == 0 {
+            return String::new();
+        }
+        if max_width < 3 {
+            return ".".repeat(max_width);
+        }
+
+        let prefix_width = max_width - 3;
         let mut width = 0;
-        let safe_end = trimmed
-            .char_indices()
-            .take_while(|(_, c)| {
-                width += unicode_width::UnicodeWidthChar::width(*c).unwrap_or(0);
-                width <= limit
-            })
-            .last()
-            .map(|(i, c)| i + c.len_utf8())
-            .unwrap_or(0);
-        format!("{}...", &trimmed[..safe_end])
+        let mut prefix = String::new();
+        for grapheme in unicode_segmentation::UnicodeSegmentation::graphemes(trimmed, true) {
+            let grapheme_width = unicode_width::UnicodeWidthStr::width(grapheme);
+            if width + grapheme_width > prefix_width {
+                break;
+            }
+            prefix.push_str(grapheme);
+            width += grapheme_width;
+        }
+        format!("{prefix}...")
     }
 }
 
@@ -538,14 +621,12 @@ pub(super) fn draw_queued(frame: &mut Frame, app: &dyn TuiState, area: Rect, sta
     }
 
     let pending_count = items.len();
-    let max_preview = 80;
     let lines: Vec<Line> = items
         .iter()
         .take(3)
         .enumerate()
         .map(|(i, (msg_type, msg))| {
             let normalized_msg = normalize_repaint_sensitive_notice_text(msg);
-            let truncated = truncate_preview(&normalized_msg, max_preview);
             let distance = pending_count.saturating_sub(i);
             let num_color = rainbow_prompt_color(distance);
             let (indicator, indicator_color, msg_color, dim) = match msg_type {
@@ -557,25 +638,39 @@ pub(super) fn draw_queued(frame: &mut Frame, app: &dyn TuiState, area: Rect, sta
                 }
                 QueuedMsgType::Queued => ("⏳", BrandTheme::info(), BrandTheme::info(), true),
             };
+            let number = (start_num + i).to_string();
+            let more_suffix = if i == 2 && pending_count > 3 {
+                format!("  +{} more", pending_count - 3)
+            } else {
+                String::new()
+            };
+            let prefix_width = unicode_width::UnicodeWidthStr::width(number.as_str())
+                + 2
+                + unicode_width::UnicodeWidthStr::width(indicator);
+            let suffix_width = unicode_width::UnicodeWidthStr::width(more_suffix.as_str());
+            let preview_width = (area.width as usize)
+                .saturating_sub(prefix_width)
+                .saturating_sub(suffix_width);
+            let truncated = truncate_preview(&normalized_msg, preview_width);
             let mut msg_style = Style::default().fg(msg_color);
             if dim {
                 msg_style = msg_style.dim();
             }
             let mut spans = vec![
-                Span::styled(format!("{}", start_num + i), Style::default().fg(num_color)),
+                Span::styled(number, Style::default().fg(num_color)),
                 Span::raw(" "),
                 Span::styled(indicator, Style::default().fg(indicator_color)),
                 Span::raw(" "),
                 Span::styled(truncated, msg_style),
             ];
-            // When there are more than 3 queued items, show a count indicator.
-            if i == 2 && pending_count > 3 {
-                spans.push(Span::styled(
-                    format!("  +{} more", pending_count - 3),
-                    Style::default().fg(dim_color()),
-                ));
+            if !more_suffix.is_empty() {
+                spans.push(Span::styled(more_suffix, Style::default().fg(dim_color())));
             }
-            Line::from(spans)
+            let mut line = Line::from(spans);
+            // Protect rows on very narrow terminals when the prompt number and
+            // mode marker use more columns than a normal short prefix.
+            super::viewport::truncate_line_in_place_to_width(&mut line, area.width as usize);
+            line
         })
         .collect();
 
@@ -1356,11 +1451,14 @@ pub(super) fn draw_status(frame: &mut Frame, app: &dyn TuiState, area: Rect, pen
     };
 
     crate::memory::check_staleness();
+    let line = truncate_line_with_ellipsis(line, area.width as usize);
 
     // Subtle background highlight for the status line to visually separate it
     // from the transcript above. Uses a very dim brand-tinted background.
+    // `right_fact_cell_is_blank` knows this exact colour, so the session-fact
+    // stack can still overlay the row's empty right-hand suffix.
     if area.height > 0 && area.width > 0 {
-        let status_bg = ratatui::style::Color::Rgb(18, 20, 28);
+        let status_bg = STATUS_ROW_BG;
         for x in area.left()..area.right() {
             for y in area.top()..area.bottom() {
                 let cell = &mut frame.buffer_mut()[(x, y)];
@@ -1376,6 +1474,26 @@ pub(super) fn draw_status(frame: &mut Frame, app: &dyn TuiState, area: Rect, pen
         return;
     }
     frame.render_widget(Paragraph::new(line), area);
+}
+
+fn truncate_line_with_ellipsis(mut line: Line<'static>, max_width: usize) -> Line<'static> {
+    if line.width() <= max_width {
+        return line;
+    }
+    if max_width == 0 {
+        return Line::default();
+    }
+
+    let ellipsis_style = line
+        .spans
+        .iter()
+        .rev()
+        .find(|span| !span.content.is_empty())
+        .map(|span| span.style)
+        .unwrap_or_else(|| Style::default().fg(dim_color()));
+    super::viewport::truncate_line_in_place_to_width(&mut line, max_width - 1);
+    line.spans.push(Span::styled("…", ellipsis_style));
+    line
 }
 
 /// Append the "+N queued" suffix span (in the queued accent color) when there
@@ -2215,7 +2333,7 @@ pub(super) fn draw_notification(frame: &mut Frame, app: &dyn TuiState, area: Rec
     if spans.is_empty() {
         return;
     }
-    let line = Line::from(spans);
+    let line = truncate_line_with_ellipsis(Line::from(spans), area.width as usize);
     let aligned_line = if app.centered_mode() {
         line.alignment(Alignment::Center)
     } else {
@@ -2345,7 +2463,7 @@ pub(super) fn draw_overscroll_status(frame: &mut Frame, app: &dyn TuiState, area
         return;
     };
 
-    let countdown_width = countdown.content.chars().count();
+    let countdown_width = unicode_width::UnicodeWidthStr::width(countdown.content.as_ref());
 
     // Tight width: if there is not even room for the countdown plus a single
     // space of breathing room, drop the info entirely and just show the
@@ -2932,9 +3050,17 @@ fn right_fact_area_on_row(
     Some(Rect::new(fact_left, row, line.width, 1))
 }
 
+// Background `draw_status` paints across its whole row as a visual separator
+/// between the status line and the transcript above. It is decoration this app
+/// owns, not content, so the session-fact stack may composite over it - hence the
+/// single named exemption instead of relaxing the "styled blank is occupied"
+/// rule generally. Hoisted here so the fill and the exemption cannot drift
+/// apart.
+const STATUS_ROW_BG: Color = Color::Rgb(18, 20, 28);
+
 fn right_fact_cell_is_blank(cell: &ratatui::buffer::Cell) -> bool {
     cell.symbol().trim().is_empty()
-        && cell.bg == Color::Reset
+        && (cell.bg == Color::Reset || cell.bg == STATUS_ROW_BG)
         && cell.modifier.is_empty()
         && cell.diff_option != ratatui::buffer::CellDiffOption::Skip
 }
@@ -2943,7 +3069,7 @@ pub(super) fn draw_input(
     frame: &mut Frame,
     app: &dyn TuiState,
     area: Rect,
-    _next_prompt: usize,
+    next_prompt: usize,
     debug_capture: &mut Option<FrameCaptureBuilder>,
 ) -> Option<Position> {
     let input_text = app.input();
@@ -2956,16 +3082,11 @@ pub(super) fn draw_input(
     let has_suggestions = command_suggestions_active(app, &app.command_suggestions());
 
     let (prompt_char, caret_color) = input_prompt(app);
-    // The prompt number (1, 2, 3, ...) was previously rendered as a leading
-    // counter on every input line, but in practice it read as an opaque
-    // decoration users mistook for a status indicator (especially when the
-    // busy-state `...` ellipsis followed the digit, producing a visual like
-    // "3..." that looked like "3 more" rather than "prompt #3 while the
-    // agent is thinking"). The count is still tracked internally for
-    // `next_input_prompt_number` and the per-session metric, but the input
-    // prefix now shows only the mode indicator.
+    // Match `wrapped_input_line_count` and mouse hit-testing: all three use the
+    // same display-column width for the mode prefix, with no prompt counter in
+    // the edit line.
     let num_str = String::new();
-    let prompt_len = prompt_char.chars().count();
+    let prompt_len = input_prompt_len(app, next_prompt);
     let reserved_width = send_mode_reserved_width(app);
     let line_width = (area.width as usize).saturating_sub(prompt_len + reserved_width);
 
@@ -3148,7 +3269,11 @@ pub(super) fn draw_input(
 
     // Subtle top border on the input area for visual separation from the
     // transcript above. Uses a dim gradient that matches the brand theme.
-    if area.height > 0 && area.width > 2 {
+    // A one-row composer has no interior to separate: its only row *is* the text
+    // row, so a full-width rule paints over the prompt itself and permanently
+    // denies that row to the session-fact stack (which is specified to
+    // composite its context meter onto `input_area.bottom() - 1`).
+    if area.height > 1 && area.width > 2 {
         // NOTE: static phase (0.0) rather than `animation_elapsed()` — a
         // breathing border would be frozen mid-breath between full frames by
         // the idle-animation partial repaint, which only patches the animated

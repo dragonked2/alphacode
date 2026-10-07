@@ -129,6 +129,10 @@ pub enum ProviderChoice {
     AlibabaCodingPlan,
     #[value(alias = "token-router", alias = "tokenrouter-com")]
     Tokenrouter,
+    #[value(alias = "codecraft-api", alias = "codecraft-api-key")]
+    Codecraft,
+    #[value(alias = "getunikey", alias = "unikey-ai")]
+    Unikey,
     #[value(alias = "compat", alias = "custom")]
     OpenaiCompatible,
     Cursor,
@@ -197,6 +201,8 @@ impl ProviderChoice {
             Self::Cerebras => "cerebras",
             Self::AlibabaCodingPlan => "alibaba-coding-plan",
             Self::Tokenrouter => "tokenrouter",
+            Self::Codecraft => "codecraft",
+            Self::Unikey => "unikey",
             Self::OpenaiCompatible => "openai-compatible",
             Self::Cursor => "cursor",
             Self::Copilot => "copilot",
@@ -398,6 +404,14 @@ const PROVIDER_CHOICE_LOGIN_PROVIDERS: &[(ProviderChoice, LoginProviderDescripto
     (
         ProviderChoice::Tokenrouter,
         crate::provider_catalog::TOKENROUTER_LOGIN_PROVIDER,
+    ),
+    (
+        ProviderChoice::Codecraft,
+        crate::provider_catalog::CODECRAFT_LOGIN_PROVIDER,
+    ),
+    (
+        ProviderChoice::Unikey,
+        crate::provider_catalog::UNIKEY_LOGIN_PROVIDER,
     ),
     (
         ProviderChoice::OpenaiCompatible,
@@ -1612,6 +1626,8 @@ async fn init_provider_with_options(
         | ProviderChoice::AlibabaCodingPlan
         | ProviderChoice::GeminiApi
         | ProviderChoice::Tokenrouter
+        | ProviderChoice::Codecraft
+        | ProviderChoice::Unikey
         | ProviderChoice::OpenaiCompatible => {
             disable_subscription_runtime_mode();
             let profile = profile_for_choice(choice)

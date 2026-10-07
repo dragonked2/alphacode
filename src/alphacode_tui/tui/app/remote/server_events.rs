@@ -2641,13 +2641,23 @@ pub(in crate::alphacode_tui::tui::app) fn handle_server_event(
             }
 
             if let Some(scope) = runtime_activity_scope {
+                let message =
+                    if scope == "catalog_activity" && message.starts_with("**Model ready:**") {
+                        match message.split_once('\n') {
+                            Some((_, catalog_status)) => {
+                                format!("**Model access refreshed**\n{catalog_status}")
+                            }
+                            None => "**Model access refreshed**".to_string(),
+                        }
+                    } else {
+                        message
+                    };
+
                 if message.trim().is_empty() {
                     app.set_status_notice(runtime_activity_status_notice(&message));
                     return false;
                 }
-                if scope == "catalog_activity"
-                    && (message.starts_with("**Model ready:**")
-                        || message.starts_with("**Model access refreshed**"))
+                if scope == "catalog_activity" && message.starts_with("**Model access refreshed**")
                 {
                     app.finish_auth_catalog_refresh();
                 }

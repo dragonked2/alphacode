@@ -278,10 +278,14 @@ fn build_args(params: &SqlmapInput) -> Result<Vec<String>> {
         args.push("--cookie".to_string());
         args.push(cookie.clone());
     }
-    if let Some(ref ua) = params.user_agent {
-        args.push("--user-agent".to_string());
-        args.push(ua.clone());
-    }
+    args.push("--user-agent".to_string());
+    args.push(
+        params
+            .user_agent
+            .as_deref()
+            .unwrap_or(crate::alphacode_provider_core::ALPHACODE_USER_AGENT)
+            .to_string(),
+    );
     if let Some(ref referer) = params.referer {
         args.push("--referer".to_string());
         args.push(referer.clone());

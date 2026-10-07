@@ -39,7 +39,7 @@ use crate::alphacode_tui::prompt::ContextInfo;
 use crate::alphacode_tui::protocol::SwarmMemberStatus;
 use crate::alphacode_tui::provider::DEFAULT_CONTEXT_LIMIT;
 use crate::alphacode_tui::todo::TodoItem;
-use memory_render::{render_memory_compact, render_memory_expanded, render_memory_widget};
+use memory_render::{render_memory_expanded, render_memory_widget};
 use ratatui::{
     prelude::*,
     widgets::{Block, BorderType, Borders, Paragraph},
@@ -52,15 +52,15 @@ use unicode_width::UnicodeWidthStr;
 use git::{render_git_compact, render_git_widget};
 pub use graph::{GraphEdge, GraphNode, build_graph_topology, graph_node_score};
 pub(crate) use memory_utils::is_traceworthy_memory_event;
-use memory_utils::{memory_active_summary, memory_last_trace_summary, memory_state_detail};
-use model::{render_model_info, render_model_widget};
+use memory_utils::{memory_last_trace_summary, memory_state_detail};
+use model::render_model_widget;
 use swarm_background::{render_background_compact, render_background_widget, render_swarm_widget};
 use text::{truncate_smart, truncate_with_ellipsis};
 pub(crate) use tips::occasional_status_tip;
 use tips::{render_tips_widget, tips_widget_height};
 pub(crate) use todos_render::swarm_plan_todos;
 use todos_render::{render_todos_compact, render_todos_expanded, render_todos_widget};
-use usage_render::{render_context_usage_line, render_usage_compact, render_usage_widget};
+use usage_render::{render_context_usage_line, render_usage_widget};
 
 /// Types of info widgets that can be displayed
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -145,7 +145,9 @@ impl WidgetKind {
         match self {
             WidgetKind::Diagrams => 10, // Diagrams need more space
             WidgetKind::WorkspaceMap => 1,
-            WidgetKind::Overview => 8,
+            // A compact session panel fits small margin pockets; its actual
+            // content height is checked by `calculate_widget_height`.
+            WidgetKind::Overview => 3,
             WidgetKind::Todos => 3,
             WidgetKind::ContextUsage => 2,
             WidgetKind::MemoryActivity => 3,
@@ -223,11 +225,13 @@ pub(crate) fn is_overview_mergeable(kind: WidgetKind) -> bool {
         kind,
         WidgetKind::Todos
             | WidgetKind::ContextUsage
+            | WidgetKind::MemoryActivity
             | WidgetKind::SwarmStatus
             | WidgetKind::BackgroundTasks
             | WidgetKind::Compaction
             | WidgetKind::ModelInfo
             | WidgetKind::UsageLimits
+            | WidgetKind::KvCache
             | WidgetKind::GitStatus
     )
 }
@@ -693,6 +697,7 @@ impl InfoWidgetData {
                     .as_ref()
                     .map(|c| c.total_chars > 0)
                     .unwrap_or(false)
+                    || self.observed_context_tokens.is_some()
                 {
                     sections += 1;
                 }
@@ -714,6 +719,14 @@ impl InfoWidgetData {
                     .usage_info
                     .as_ref()
                     .map(|u| u.available)
+                    .unwrap_or(false)
+                {
+                    sections += 1;
+                }
+                if self
+                    .memory_info
+                    .as_ref()
+                    .map(MemoryInfo::should_render)
                     .unwrap_or(false)
                 {
                     sections += 1;
@@ -744,6 +757,7 @@ impl InfoWidgetData {
             }
             WidgetKind::ContextUsage => {
                 self.context_info_stale
+                    || self.observed_context_tokens.is_some()
                     || self
                         .context_info
                         .as_ref()
@@ -1090,9 +1104,7 @@ pub(crate) fn calculate_widget_height(
             preferred_h.min(max_height.saturating_sub(border_height))
         }
         WidgetKind::Overview => {
-            let mut overview = data.clone();
-            // Keep memory in its own widget so graph rendering stays focused.
-            overview.memory_info = None;
+            let overview = data.clone();
             let inner_h = max_height.saturating_sub(border_height);
             let layout = compute_page_layout(&overview, inner_width, inner_h);
             if layout.max_page_height == 0 {
@@ -1119,11 +1131,12 @@ pub(crate) fn calculate_widget_height(
             1 + items + extra_lines + progress_bar_lines
         }
         WidgetKind::ContextUsage => {
-            if data
-                .context_info
-                .as_ref()
-                .map(|c| c.total_chars == 0)
-                .unwrap_or(true)
+            if !data.context_info_stale
+                && data.observed_context_tokens.is_none()
+                && data
+                    .context_info
+                    .as_ref()
+                    .is_none_or(|context| context.total_chars == 0)
             {
                 return 0;
             }
@@ -1333,6 +1346,12 @@ fn render_single_widget(frame: &mut Frame, placement: &WidgetPlacement, data: &I
 
     // Add descriptive titles to widgets for visual hierarchy
     match placement.kind {
+        WidgetKind::Overview => {
+            block = block.title(Span::styled(
+                " ◈ Session ",
+                Style::default().fg(rgb(125, 195, 255)),
+            ));
+        }
         WidgetKind::WorkspaceMap => {
             block = block.title(Span::styled(
                 " \u{2630} Workspace ",
@@ -1419,7 +1438,6 @@ fn render_single_widget(frame: &mut Frame, placement: &WidgetPlacement, data: &I
     if placement.kind == WidgetKind::Overview {
         // Check if overview would actually render content before drawing the border
         let mut overview = data.clone();
-        overview.memory_info = None;
         overview.diagrams.clear();
         let layout = compute_page_layout(&overview, inner.width as usize, inner.height);
         if layout.pages.is_empty() || layout.max_page_height == 0 {
@@ -1472,8 +1490,7 @@ fn render_overview_widget(frame: &mut Frame, inner: Rect, data: &InfoWidgetData)
     }
 
     let mut overview = data.clone();
-    // Keep memory graph and diagram visuals in dedicated widgets.
-    overview.memory_info = None;
+    // Diagram visuals stay in their dedicated image widget.
     overview.diagrams.clear();
 
     let layout = compute_page_layout(&overview, inner.width as usize, inner.height);
@@ -1748,17 +1765,27 @@ fn render_context_widget(data: &InfoWidgetData, inner: Rect) -> Vec<Line<'static
             Span::styled("updating...", Style::default().fg(rgb(220, 180, 80))),
         ])];
     }
-    let Some(info) = &data.context_info else {
+    if data.context_info.is_none() && data.observed_context_tokens.is_none() {
         return Vec::new();
-    };
-    if info.total_chars == 0 && data.observed_context_tokens.is_none() {
+    }
+    if data
+        .context_info
+        .as_ref()
+        .is_some_and(|info| info.total_chars == 0)
+        && data.observed_context_tokens.is_none()
+    {
         return Vec::new();
     }
 
     let used_tokens = data
         .observed_context_tokens
         .map(|t| t as usize)
-        .unwrap_or_else(|| info.estimated_tokens());
+        .or_else(|| {
+            data.context_info
+                .as_ref()
+                .map(ContextInfo::estimated_tokens)
+        })
+        .unwrap_or_default();
     let limit_tokens = data.context_limit.unwrap_or(DEFAULT_CONTEXT_LIMIT).max(1);
     vec![render_context_usage_line(
         "Context",
@@ -1958,15 +1985,50 @@ fn render_sections(
 ) -> Vec<Line<'static>> {
     let mut lines: Vec<Line<'static>> = Vec::new();
 
-    // Model info at the top
-    if data.model.is_some() {
-        lines.extend(render_model_info(data, inner));
+    // Keep the compact dashboard predictable: one model row, one combined
+    // context/usage/memory row, then optional details below it.
+    if let Some(model) = &data.model {
+        let mut label = format!(
+            "✎ {}",
+            crate::alphacode_tui::tui::session_facts::pretty_model(model)
+        );
+        if let Some(provider) = data
+            .provider_name
+            .as_deref()
+            .map(str::trim)
+            .filter(|provider| !provider.is_empty())
+        {
+            label.push_str(" · ");
+            label.push_str(provider);
+        }
+        lines.push(Line::from(Span::styled(
+            truncate_smart(&label, inner.width as usize),
+            Style::default().fg(rgb(150, 195, 255)).bold(),
+        )));
     }
 
-    if let Some(info) = &data.context_info
-        && info.total_chars > 0
-    {
-        lines.extend(render_context_compact(data, inner));
+    if let Some(telemetry) = render_overview_telemetry(
+        data,
+        !matches!(focus, Some(InfoPageKind::MemoryExpanded)),
+        inner.width,
+    ) {
+        lines.push(telemetry);
+    }
+
+    if let Some(queue_mode) = data.queue_mode {
+        lines.push(Line::from(vec![
+            Span::styled("Queue ", Style::default().fg(rgb(140, 140, 150))),
+            Span::styled(
+                if queue_mode { "on" } else { "off" },
+                Style::default()
+                    .fg(if queue_mode {
+                        rgb(110, 210, 140)
+                    } else {
+                        rgb(140, 140, 150)
+                    })
+                    .bold(),
+            ),
+        ]));
     }
 
     if !data.todos.is_empty() {
@@ -1977,15 +2039,10 @@ fn render_sections(
         }
     }
 
-    // Memory info
-    if let Some(info) = &data.memory_info
-        && (info.total_count > 0 || info.activity.is_some())
+    if matches!(focus, Some(InfoPageKind::MemoryExpanded))
+        && let Some(info) = &data.memory_info
     {
-        if matches!(focus, Some(InfoPageKind::MemoryExpanded)) {
-            lines.extend(render_memory_expanded(info, inner));
-        } else {
-            lines.extend(render_memory_compact(info, inner.width));
-        }
+        lines.extend(render_memory_expanded(info, inner));
     }
 
     // Background tasks info
@@ -1995,11 +2052,12 @@ fn render_sections(
         lines.extend(render_background_compact(info));
     }
 
-    // Usage info (subscription limits)
-    if let Some(info) = &data.usage_info
-        && info.available
-    {
-        lines.extend(render_usage_compact(info, inner.width));
+    if let Some(cache) = &data.cache_hit_info {
+        lines.push(render_kv_cache_summary_line(cache));
+    }
+
+    if data.compaction_info.is_some() {
+        lines.extend(render_compaction_widget(data, inner));
     }
 
     // Git info
@@ -2010,6 +2068,151 @@ fn render_sections(
     }
 
     lines
+}
+
+fn render_overview_telemetry(
+    data: &InfoWidgetData,
+    include_memory: bool,
+    width: u16,
+) -> Option<Line<'static>> {
+    let mut parts = Vec::with_capacity(3);
+    let mut compact_parts = Vec::with_capacity(3);
+
+    if data.context_info_stale {
+        parts.push("Context updating".to_string());
+        compact_parts.push("C:updating".to_string());
+    } else if data
+        .context_info
+        .as_ref()
+        .is_some_and(|info| info.total_chars > 0)
+        || data.observed_context_tokens.is_some()
+    {
+        let used = data
+            .observed_context_tokens
+            .map(|tokens| tokens as usize)
+            .or_else(|| {
+                data.context_info
+                    .as_ref()
+                    .map(ContextInfo::estimated_tokens)
+            })
+            .unwrap_or_default();
+        let limit = data.context_limit.unwrap_or(DEFAULT_CONTEXT_LIMIT).max(1);
+        let used = overview_token_count(used as u64);
+        let limit = overview_token_count(limit as u64);
+        parts.push(format!("Context {used}/{limit}"));
+        compact_parts.push(format!("C:{used}/{limit}"));
+    }
+
+    if let Some(usage) = data.usage_info.as_ref().filter(|usage| usage.available) {
+        let (summary, compact_summary) = match usage.provider {
+            UsageProvider::CostBased => (
+                format!("Cost ${:.2}", usage.total_cost),
+                format!("${:.2}", usage.total_cost),
+            ),
+            UsageProvider::Copilot => {
+                let input = overview_token_count(usage.input_tokens);
+                let output = overview_token_count(usage.output_tokens);
+                (
+                    format!("Usage {input} in / {output} out"),
+                    format!("U:{input}/{output}"),
+                )
+            }
+            _ => {
+                let percent = usage.max_usage_pct();
+                (format!("Quota {percent}%"), format!("Q:{percent}%"))
+            }
+        };
+        parts.push(summary);
+        compact_parts.push(compact_summary);
+    }
+
+    if include_memory
+        && let Some(memory) = data
+            .memory_info
+            .as_ref()
+            .filter(|memory| memory.should_render())
+    {
+        let summary = if memory
+            .activity
+            .as_ref()
+            .is_some_and(|activity| activity.is_processing())
+        {
+            if memory.total_count == 0 {
+                "Memory working".to_string()
+            } else {
+                format!("Memory {} · working", memory.total_count)
+            }
+        } else {
+            format!("Memory {}", memory.total_count)
+        };
+        parts.push(summary);
+        compact_parts.push(
+            if memory
+                .activity
+                .as_ref()
+                .is_some_and(|activity| activity.is_processing())
+            {
+                if memory.total_count == 0 {
+                    "M:work".to_string()
+                } else {
+                    format!("M:{}*", memory.total_count)
+                }
+            } else {
+                format!("M:{}", memory.total_count)
+            },
+        );
+    }
+
+    if parts.is_empty() {
+        return None;
+    }
+
+    let full_label = parts.join(" · ");
+    let compact_label = if width <= 24 {
+        compact_parts.join("·")
+    } else {
+        compact_parts.join(" · ")
+    };
+    let label = if UnicodeWidthStr::width(full_label.as_str()) <= usize::from(width) {
+        full_label
+    } else {
+        compact_label
+    };
+    let label = truncate_smart(&label, width as usize);
+    let alert = data
+        .usage_info
+        .as_ref()
+        .filter(|usage| usage.available)
+        .is_some_and(|usage| usage.max_usage_pct() >= 85)
+        || data
+            .context_info
+            .as_ref()
+            .filter(|context| context.total_chars > 0)
+            .is_some_and(|context| {
+                let used = data
+                    .observed_context_tokens
+                    .map(|tokens| tokens as f64)
+                    .unwrap_or_else(|| context.estimated_tokens() as f64);
+                let limit = data.context_limit.unwrap_or(DEFAULT_CONTEXT_LIMIT).max(1) as f64;
+                used / limit >= 0.85
+            });
+    Some(Line::from(Span::styled(
+        label,
+        Style::default().fg(if alert {
+            rgb(255, 190, 100)
+        } else {
+            rgb(175, 180, 195)
+        }),
+    )))
+}
+
+fn overview_token_count(tokens: u64) -> String {
+    match tokens {
+        0..=999 => tokens.to_string(),
+        1_000..=9_999 => format!("{:.1}k", tokens as f64 / 1_000.0),
+        10_000..=999_999 => format!("{}k", tokens / 1_000),
+        _ => format!("{:.1}m", tokens as f64 / 1_000_000.0),
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -2108,37 +2311,4 @@ fn format_event_for_expanded(
         }
         _ => ("·", String::new(), rgb(100, 100, 110)),
     }
-}
-
-fn render_context_compact(data: &InfoWidgetData, inner: Rect) -> Vec<Line<'static>> {
-    if data.context_info_stale {
-        return vec![Line::from(vec![
-            Span::styled("Context ", Style::default().fg(rgb(140, 140, 150))),
-            Span::styled("updating...", Style::default().fg(rgb(220, 180, 80))),
-        ])];
-    }
-    let Some(info) = &data.context_info else {
-        return Vec::new();
-    };
-    if info.total_chars == 0 && data.observed_context_tokens.is_none() {
-        return Vec::new();
-    }
-
-    let used_tokens = data
-        .observed_context_tokens
-        .map(|t| t as usize)
-        .unwrap_or_else(|| info.estimated_tokens());
-    let limit_tokens = data.context_limit.unwrap_or(DEFAULT_CONTEXT_LIMIT).max(1);
-    let label = if data.is_compacting {
-        "Context📦"
-    } else {
-        "Context"
-    };
-
-    vec![render_context_usage_line(
-        label,
-        used_tokens,
-        limit_tokens,
-        inner.width,
-    )]
 }

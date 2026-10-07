@@ -303,7 +303,14 @@ impl App {
 
     /// Restore a previous session (for hot-reload)
     pub fn restore_session(&mut self, session_id: &str) {
+        // A spawned child session (judge / autojudge / review) stages its startup
+        // prompt in the reload snapshot as a hidden system queue entry plus a
+        // spawn hint. Remembered here so the turn can be re-armed below, after
+        // `apply_restored_reload_input` has reset the turn state.
+        let mut restored_startup_prompt = false;
         if let Some(restored) = Self::restore_input_for_reload(session_id) {
+            restored_startup_prompt = !restored.hidden_queued_system_messages.is_empty()
+                && restored.startup_status_notice.is_some();
             self.apply_restored_reload_input(restored);
         }
         if let Ok(session) = Session::load(session_id) {
@@ -481,6 +488,21 @@ impl App {
                     tool_data: None,
                 });
             }
+        }
+
+        // The local run loop has no server-history gate, so a spawned child's
+        // staged startup prompt has to be turned back into a live turn here:
+        // `run_shell` consumes `pending_turn` and `process_queued_messages`
+        // sends the queued hidden prompt. Scoped to the staged startup prompt so
+        // the reload-continuation path above keeps its deliberate "press Enter"
+        // behaviour (its comment explains the Windows composer-freeze bug that
+        // auto-starting there caused), and never applied to a remote client,
+        // whose dispatch is gated on the server history instead.
+        if restored_startup_prompt && !self.is_remote {
+            self.is_processing = true;
+            self.pending_turn = true;
+            self.processing_started = Some(Instant::now());
+            self.status = ProcessingStatus::Sending;
         }
     }
 

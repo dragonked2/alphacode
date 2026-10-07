@@ -160,3 +160,81 @@ fn agentrouter_anthropic_cli_aliases_parse() {
         );
     }
 }
+
+#[test]
+fn codecraft_choice_round_trips_through_the_catalog() {
+    let provider = login_provider_for_choice(&ProviderChoice::Codecraft)
+        .expect("codecraft choice must map to a login provider");
+    assert_eq!(provider.id, "codecraft");
+    assert_eq!(
+        choice_for_login_provider(provider),
+        Some(ProviderChoice::Codecraft)
+    );
+    assert_eq!(ProviderChoice::Codecraft.as_arg_value(), "codecraft");
+}
+
+/// CodeCraft is an OpenAI-compatible gateway, so `--provider codecraft`
+/// must resolve to a profile carrying the documented base URL and key slot.
+#[test]
+fn codecraft_choice_resolves_to_its_openai_compatible_profile() {
+    let profile = profile_for_choice(&ProviderChoice::Codecraft)
+        .expect("codecraft must resolve to an OpenAI-compatible profile");
+    assert_eq!(profile.id, "codecraft");
+    assert_eq!(profile.api_base, "https://codecraftapi.com/v1");
+    assert_eq!(profile.api_key_env, "CODECRAFT_API_KEY");
+    assert_eq!(profile.env_file, "codecraft.env");
+    assert!(
+        profile.requires_api_key,
+        "codecraft gates /v1 on a bearer key"
+    );
+}
+
+#[test]
+fn codecraft_cli_aliases_parse() {
+    for alias in ["codecraft", "codecraft-api", "codecraft-api-key"] {
+        assert_eq!(
+            ProviderChoice::from_str(alias, true).ok(),
+            Some(ProviderChoice::Codecraft),
+            "alias {} should parse to ProviderChoice::Codecraft",
+            alias
+        );
+    }
+}
+
+#[test]
+fn unikey_choice_round_trips_through_the_catalog() {
+    let provider = login_provider_for_choice(&ProviderChoice::Unikey)
+        .expect("unikey choice must map to a login provider");
+    assert_eq!(provider.id, "unikey");
+    assert_eq!(
+        choice_for_login_provider(provider),
+        Some(ProviderChoice::Unikey)
+    );
+    assert_eq!(ProviderChoice::Unikey.as_arg_value(), "unikey");
+}
+
+/// UniKey is an OpenAI-compatible gateway, so `--provider unikey`
+/// must resolve to a profile carrying the documented base URL and key slot.
+#[test]
+fn unikey_choice_resolves_to_its_openai_compatible_profile() {
+    let profile = profile_for_choice(&ProviderChoice::Unikey)
+        .expect("unikey must resolve to an OpenAI-compatible profile");
+    assert_eq!(profile.id, "unikey");
+    assert_eq!(profile.api_base, "https://www.getunikey.ai/v1");
+    assert_eq!(profile.api_key_env, "UNIKEY_API_KEY");
+    assert_eq!(profile.env_file, "unikey.env");
+    assert_eq!(profile.default_model, Some("gpt-5.2"));
+    assert!(profile.requires_api_key, "unikey gates /v1 on a bearer key");
+}
+
+#[test]
+fn unikey_cli_aliases_parse() {
+    for alias in ["unikey", "getunikey", "unikey-ai"] {
+        assert_eq!(
+            ProviderChoice::from_str(alias, true).ok(),
+            Some(ProviderChoice::Unikey),
+            "alias {} should parse to ProviderChoice::Unikey",
+            alias
+        );
+    }
+}

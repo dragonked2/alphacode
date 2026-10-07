@@ -351,42 +351,37 @@ fn test_side_panel_snapshot(page_id: &str, title: &str) -> crate::side_panel::Si
 /// respect to them. The lock is released on return, which is correct: it only
 /// needs to cover this read-modify-write, not the caller's whole test.
 ///
-/// The lock is acquired with `try_lock`, never blocking: tests like
-/// `with_temp_alphacode_home` hold this same non-reentrant mutex for their whole
-/// body and may call `create_*_test_app` inside it, so a blocking lock here
-/// self-deadlocks (this hung CI's TUI test step at the job timeout). When
-/// `try_lock` fails because this thread holds the lock, the caller's own
-/// exclusion already covers the transition; a cross-thread `try_lock` miss
-/// falls back to the pre-serialization benign race for that one call.
+/// It must never *block* on that lock. Callers arrive from both sides of the
+/// order: `create_test_app` takes env-then-render, but several hundred render
+/// tests hold the render-state lock for their whole body and only then build an
+/// app, so they reach this helper already holding it. Waiting here inverts the
+/// order against a `with_temp_alphacode_home` test that holds the env lock and
+/// is itself waiting for the render lock, and the pair deadlocks (this hung
+/// CI's TUI test step at the job timeout). Instead the lock is polled for a
+/// bounded window: the owner is a few instructions from its release - and while
+/// it holds the lock at all, `ALPHACODE_HOME` is normally still its own scoped
+/// temp dir, which the first check above already handles.
 fn ensure_test_alphacode_home_if_unset() {
-    use std::sync::OnceLock;
-
-    static TEST_HOME: OnceLock<std::path::PathBuf> = OnceLock::new();
-
     if std::env::var_os("ALPHACODE_HOME").is_some() {
         return;
     }
 
-    // Serialize the unset -> set transition against tests that scope their
-    // own ALPHACODE_HOME under `lock_test_env`. The mutex is not reentrant and
-    // several tests hold it while calling `create_test_app` (e.g. the
-    // pinned-todo-band test), so a blocking `lock_test_env()` here would
-    // self-deadlock whenever a preceding test removed ALPHACODE_HOME on drop.
-    // `try_lock` keeps the serialization when the lock is free and degrades
-    // to the caller's own exclusion when this thread already holds it: if
-    // try_lock fails because *we* hold the lock, no other thread can race
-    // this read-modify-write anyway.
-    let _env_lock = crate::storage::test_env_lock().try_lock();
-
-    if std::env::var_os("ALPHACODE_HOME").is_some() {
+    // Holding the lock already means no other thread is inside a scoped home,
+    // so the transition below is exclusive without taking it again.
+    let held_by_this_thread = crate::storage::test_env_lock_held_by_current_thread();
+    let _env_lock = if held_by_this_thread {
+        None
+    } else {
+        crate::storage::try_test_env_lock_for(std::time::Duration::from_secs(2))
+    };
+    if !held_by_this_thread && _env_lock.is_none() {
+        // Still owned by another test. Writing the scratch home now would land
+        // inside that test's scope (or just past its cleanup), which is the race
+        // this helper exists to prevent, so leave the variable alone.
         return;
     }
 
-    let path = TEST_HOME.get_or_init(|| {
-        let path = std::env::temp_dir().join(format!("alphacode-test-home-{}", std::process::id()));
-        let _ = std::fs::create_dir_all(&path);
-        path
-    });
+    let path = crate::storage::shared_test_alphacode_home();
     crate::alphacode_core::env::set_var("ALPHACODE_HOME", path);
 }
 
@@ -424,7 +419,15 @@ fn with_temp_alphacode_home<T>(f: impl FnOnce() -> T) -> T {
     if let Some(prev_home) = prev_home {
         crate::alphacode_core::env::set_var("ALPHACODE_HOME", prev_home);
     } else {
-        crate::alphacode_core::env::remove_var("ALPHACODE_HOME");
+        // Fall back to the shared scratch home rather than unsetting the
+        // variable. `ALPHACODE_HOME` unset resolves to the real `~/.alphacode`,
+        // so any window where it is missing sends the next test that builds an
+        // app to the developer's own directory - where the models, auth and
+        // session state it just configured do not exist.
+        crate::alphacode_core::env::set_var(
+            "ALPHACODE_HOME",
+            crate::storage::shared_test_alphacode_home(),
+        );
     }
     // Drop any config loaded from the temp home so it cannot leak into the next
     // test, which is process-global state shared across this suite.

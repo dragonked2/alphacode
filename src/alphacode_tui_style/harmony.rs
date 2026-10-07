@@ -612,11 +612,18 @@ fn chroma_coherence(palette: &Palette) -> Criterion {
     };
     // Score intensity per role, not on the mean: a handful of screaming neon
     // roles must not be averaged away by the well-behaved ones they sit next to.
-    let intensities: Vec<f32> = chromas
+    //
+    // The *worst* role is therefore the score rather than a mean/worst blend:
+    // `aggregate` puts 0.4 of its weight back on the mean, and two dozen
+    // well-behaved default roles were enough to pull a palette containing six
+    // pure sRGB primaries back up to "fair" on the one criterion that exists to
+    // call that out. Palettes people actually adopt are spread-limited here
+    // (their spread is already below their intensity), so this only moves
+    // palettes that really do contain out-of-band saturation.
+    let intensity_score = chromas
         .iter()
         .map(|(_, chroma)| intensity_of(*chroma))
-        .collect();
-    let intensity_score = aggregate(&intensities);
+        .fold(f32::MAX, f32::min);
     let score = spread_score.min(intensity_score);
 
     let mut findings = Vec::new();

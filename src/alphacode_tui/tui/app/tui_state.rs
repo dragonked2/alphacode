@@ -2001,6 +2001,10 @@ impl crate::alphacode_tui::tui::TuiState for App {
         App::suggestion_prompts(self)
     }
 
+    fn starter_prompts(&self) -> Vec<(String, String)> {
+        App::starter_prompts(self)
+    }
+
     fn cache_ttl_status(&self) -> Option<crate::alphacode_tui::tui::CacheTtlInfo> {
         let last_completed = self.last_api_completed?;
         let provider = self.provider_name();

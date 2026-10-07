@@ -258,10 +258,7 @@ impl BugBountyOrchestrator {
     /// `install_all` constrains resolution to `TOOL_SPECS` and reports anything
     /// unrecognised as [`InstallOutcome::Skipped`] rather than dropping it.
     pub async fn ensure_tools_installed(&self) {
-        use crate::alphacode_app_core::bugbounty_install::{ensure_go_installed, install_all};
-
-        // First ensure Go is installed
-        ensure_go_installed().await;
+        use crate::alphacode_app_core::bugbounty_install::install_all;
 
         // Get list of tools used by tasks
         let tools: HashSet<String> = {

@@ -1,7 +1,7 @@
 use super::diff_utils::{build_file_touch_preview, generate_diff_summary};
 use super::{Tool, ToolContext, ToolOutput};
 use crate::alphacode_app_core::bus::{Bus, BusEvent, FileOp, FileTouch};
-use anyhow::Result;
+use anyhow::{Context as _, Result};
 use async_trait::async_trait;
 use serde::Deserialize;
 use serde_json::{Value, json};
@@ -142,7 +142,7 @@ impl Tool for ApplyPatchTool {
                 }
             };
             for target in targets {
-                let resolved = ctx.resolve_path(Path::new(target));
+                let resolved = ctx.resolve_path_guarded(Path::new(target))?;
                 if crate::alphacode_command_risk::is_catastrophic_target(&resolved, &risk_ctx) {
                     return Err(anyhow::anyhow!(
                         "Refused: '{}' resolves to a protected path and must never be touched by an agent ({}). No changes applied.",
@@ -150,6 +150,40 @@ impl Tool for ApplyPatchTool {
                         resolved.display()
                     ));
                 }
+            }
+
+            match hunk {
+                PatchHunk::AddFile { path, .. } => {
+                    let resolved = ctx.resolve_path_guarded(Path::new(path))?;
+                    if tokio::fs::try_exists(&resolved).await? {
+                        anyhow::bail!(
+                            "Refusing to add '{}': the destination already exists. No changes applied.",
+                            path
+                        );
+                    }
+                }
+                PatchHunk::UpdateFile {
+                    path,
+                    move_to: Some(dest),
+                    ..
+                } => {
+                    let source = ctx.resolve_path_guarded(Path::new(path))?;
+                    let destination = ctx.resolve_path_guarded(Path::new(dest))?;
+                    if source == destination {
+                        anyhow::bail!(
+                            "Refusing to move '{}' onto itself. No changes applied.",
+                            path
+                        );
+                    }
+                    if tokio::fs::try_exists(&destination).await? {
+                        anyhow::bail!(
+                            "Refusing to move '{}' to '{}': the destination already exists. No changes applied.",
+                            path,
+                            dest
+                        );
+                    }
+                }
+                _ => {}
             }
         }
 
@@ -160,11 +194,11 @@ impl Tool for ApplyPatchTool {
         for hunk in &hunks {
             match hunk {
                 PatchHunk::AddFile { path, contents } => {
-                    let resolved = ctx.resolve_path(Path::new(path));
+                    let resolved = ctx.resolve_path_guarded(Path::new(path))?;
                     if let Some(parent) = resolved.parent() {
                         tokio::fs::create_dir_all(parent).await?;
                     }
-                    tokio::fs::write(&resolved, contents).await?;
+                    write_new_file(&resolved, contents).await?;
                     let diff = generate_diff_summary("", contents);
                     publish_file_touch(
                         &ctx,
@@ -182,7 +216,7 @@ impl Tool for ApplyPatchTool {
                     }
                 }
                 PatchHunk::DeleteFile { path } => {
-                    let resolved = ctx.resolve_path(Path::new(path));
+                    let resolved = ctx.resolve_path_guarded(Path::new(path))?;
                     // Defense-in-depth: pre-flight above already denied catastrophic
                     // targets for the whole patch, but re-check here in case of
                     // TOCTOU / future code paths that skip pre-flight.
@@ -227,17 +261,36 @@ impl Tool for ApplyPatchTool {
                     move_to,
                     chunks,
                 } => {
-                    let resolved = ctx.resolve_path(Path::new(path));
+                    let resolved = ctx.resolve_path_guarded(Path::new(path))?;
                     match apply_update_chunks(&resolved, chunks).await {
                         Ok((old_contents, new_contents)) => {
                             let diff = generate_diff_summary(&old_contents, &new_contents);
                             if let Some(dest) = move_to {
-                                let dest_resolved = ctx.resolve_path(Path::new(dest));
+                                let dest_resolved = ctx.resolve_path_guarded(Path::new(dest))?;
+                                if resolved == dest_resolved {
+                                    anyhow::bail!("Refusing to move '{}' onto itself.", path);
+                                }
                                 if let Some(parent) = dest_resolved.parent() {
                                     tokio::fs::create_dir_all(parent).await?;
                                 }
-                                tokio::fs::write(&dest_resolved, &new_contents).await?;
-                                let _ = tokio::fs::remove_file(&resolved).await;
+                                write_new_file(&dest_resolved, &new_contents).await?;
+                                if let Err(error) = tokio::fs::remove_file(&resolved).await {
+                                    if let Err(cleanup_error) =
+                                        tokio::fs::remove_file(&dest_resolved).await
+                                    {
+                                        crate::logging::warn(&format!(
+                                            "[tool:apply_patch] failed to roll back move destination {} after source removal failed: {}",
+                                            dest_resolved.display(),
+                                            cleanup_error
+                                        ));
+                                    }
+                                    return Err(error).with_context(|| {
+                                        format!(
+                                            "failed to remove move source {}; destination rollback was attempted",
+                                            resolved.display()
+                                        )
+                                    });
+                                }
                                 publish_file_touch(
                                     &ctx,
                                     &resolved,
@@ -337,6 +390,31 @@ impl Tool for ApplyPatchTool {
             }
         }
     }
+}
+
+/// Create a new patch target without truncating an existing path if a race or
+/// an overlapping hunk invalidates the pre-flight existence check.
+async fn write_new_file(path: &Path, contents: &str) -> Result<()> {
+    use tokio::io::AsyncWriteExt as _;
+
+    let mut file = tokio::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(path)
+        .await
+        .with_context(|| {
+            format!(
+                "failed to create patch target {} (the path may already exist)",
+                path.display()
+            )
+        })?;
+    if let Err(error) = file.write_all(contents.as_bytes()).await {
+        drop(file);
+        let _ = tokio::fs::remove_file(path).await;
+        return Err(error)
+            .with_context(|| format!("failed to write patch target {}", path.display()));
+    }
+    Ok(())
 }
 
 fn publish_file_touch(

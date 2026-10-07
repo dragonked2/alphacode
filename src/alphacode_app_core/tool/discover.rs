@@ -3,6 +3,7 @@
 use super::{Tool, ToolContext, ToolExecutionMode, ToolOutput};
 use anyhow::Result;
 use async_trait::async_trait;
+use futures::StreamExt;
 use serde::Deserialize;
 use serde_json::{Value, json};
 use std::fmt;
@@ -56,6 +57,54 @@ struct DiscoveryFetchError {
     failure_reason: &'static str,
     http_status: Option<u16>,
     response_bytes: Option<u64>,
+}
+
+/// Read a discovery response without ever buffering more than the documented
+/// response limit. Checking `bytes()` after it returns rejects an oversized
+/// body too late: the allocation has already happened.
+async fn read_discovery_body(
+    response: reqwest::Response,
+    operation: &'static str,
+    status: reqwest::StatusCode,
+) -> std::result::Result<Vec<u8>, DiscoveryFetchError> {
+    if let Some(length) = response.content_length()
+        && length > MAX_RESPONSE_BYTES as u64
+    {
+        return Err(DiscoveryFetchError {
+            message: format!("{operation} response too large ({length} bytes)"),
+            failure_reason: "response_too_large",
+            http_status: Some(status.as_u16()),
+            response_bytes: Some(length),
+        });
+    }
+
+    let mut body = Vec::with_capacity(
+        response
+            .content_length()
+            .and_then(|length| usize::try_from(length).ok())
+            .unwrap_or(0)
+            .min(MAX_RESPONSE_BYTES),
+    );
+    let mut stream = response.bytes_stream();
+    while let Some(chunk) = stream.next().await {
+        let chunk = chunk.map_err(|err| DiscoveryFetchError {
+            message: format!("{operation} unavailable: {err}"),
+            failure_reason: "body_error",
+            http_status: Some(status.as_u16()),
+            response_bytes: Some(body.len() as u64),
+        })?;
+        let received = body.len().saturating_add(chunk.len());
+        if received > MAX_RESPONSE_BYTES {
+            return Err(DiscoveryFetchError {
+                message: format!("{operation} response too large (at least {received} bytes)"),
+                failure_reason: "response_too_large",
+                http_status: Some(status.as_u16()),
+                response_bytes: Some(received as u64),
+            });
+        }
+        body.extend_from_slice(&chunk);
+    }
+    Ok(body)
 }
 
 struct DiscoveryRequestContext<'a> {
@@ -1000,7 +1049,7 @@ async fn fetch_listing(
             ])
             .header(
                 reqwest::header::USER_AGENT,
-                format!("alphacode/{}", env!("CARGO_PKG_VERSION")),
+                crate::alphacode_provider_core::ALPHACODE_USER_AGENT,
             )
             .header(DISCOVERY_REQUEST_ID_HEADER, context.request_id)
             .timeout(DISCOVERY_TIMEOUT),
@@ -1034,20 +1083,7 @@ async fn fetch_listing(
             response_bytes: response.content_length(),
         });
     }
-    let body = response.bytes().await.map_err(|err| DiscoveryFetchError {
-        message: format!("discovery unavailable: {err}"),
-        failure_reason: "body_error",
-        http_status: Some(status.as_u16()),
-        response_bytes: None,
-    })?;
-    if body.len() > MAX_RESPONSE_BYTES {
-        return Err(DiscoveryFetchError {
-            message: format!("discovery response too large ({} bytes)", body.len()),
-            failure_reason: "response_too_large",
-            http_status: Some(status.as_u16()),
-            response_bytes: Some(body.len() as u64),
-        });
-    }
+    let body = read_discovery_body(response, "discovery", status).await?;
     let listing = serde_json::from_slice(&body).map_err(|err| DiscoveryFetchError {
         message: format!("discovery returned invalid JSON: {err}"),
         failure_reason: "invalid_json",
@@ -1072,7 +1108,7 @@ async fn submit_suggestion(
             .post(endpoint)
             .header(
                 reqwest::header::USER_AGENT,
-                format!("alphacode/{}", env!("CARGO_PKG_VERSION")),
+                crate::alphacode_provider_core::ALPHACODE_USER_AGENT,
             )
             .header(DISCOVERY_REQUEST_ID_HEADER, context.request_id)
             .json(&json!({
@@ -1115,23 +1151,7 @@ async fn submit_suggestion(
             response_bytes: response.content_length(),
         });
     }
-    let body = response.bytes().await.map_err(|err| DiscoveryFetchError {
-        message: format!("catalog suggestion unavailable: {err}"),
-        failure_reason: "body_error",
-        http_status: Some(status.as_u16()),
-        response_bytes: None,
-    })?;
-    if body.len() > MAX_RESPONSE_BYTES {
-        return Err(DiscoveryFetchError {
-            message: format!(
-                "catalog suggestion response too large ({} bytes)",
-                body.len()
-            ),
-            failure_reason: "response_too_large",
-            http_status: Some(status.as_u16()),
-            response_bytes: Some(body.len() as u64),
-        });
-    }
+    let body = read_discovery_body(response, "catalog suggestion", status).await?;
     let listing = serde_json::from_slice(&body).map_err(|err| DiscoveryFetchError {
         message: format!("catalog suggestion returned invalid JSON: {err}"),
         failure_reason: "invalid_json",
