@@ -1438,11 +1438,8 @@ impl BashTool {
                 // for the whole timeout, and `format_command_output` truncates
                 // the head anyway.
                 let mut captured = String::new();
-                match tokio::fs::File::open(&info.output_file).await {
-                    Ok(mut file) => {
-                        captured = read_stream_capped(&mut file, MAX_CAPTURED_STREAM_BYTES).await;
-                    }
-                    Err(_) => {}
+                if let Ok(mut file) = tokio::fs::File::open(&info.output_file).await {
+                    captured = read_stream_capped(&mut file, MAX_CAPTURED_STREAM_BYTES).await;
                 }
                 let output = captured;
                 let _ = tokio::fs::remove_file(&info.output_file).await;

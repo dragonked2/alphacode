@@ -262,17 +262,22 @@ impl Provider for OpenRouterProvider {
             let estimated_prompt = super::estimate_chat_request_tokens(&request);
             let reserved_output = self.max_tokens.unwrap_or(2048) as usize;
             if estimated_prompt.saturating_add(reserved_output) > context_window {
+                let (system_tokens, conversation_tokens, tools_tokens) =
+                    super::estimate_chat_request_breakdown(&request);
                 let endpoint =
                     super::resolve_chat_completions_url(&self.api_base).unwrap_or_else(|| {
                         format!("{}/chat/completions", self.api_base.trim_end_matches('/'))
                     });
                 anyhow::bail!(
-                    "OpenAI-compatible request exceeds context\n  endpoint: {}\n  model: {}\n  mode: streaming\n  context_estimate: ~{} prompt tokens + ~{} reserved output = ~{} tokens\n  context_window: {} tokens\n  timeout: {}s\n{}",
+                    "OpenAI-compatible request exceeds context\n  endpoint: {}\n  model: {}\n  mode: streaming\n  context_estimate: ~{} prompt tokens + ~{} reserved output = ~{} tokens\n  input_breakdown: system ~{} + conversation ~{} + tools ~{} tokens (rough estimate)\n  context_window: {} tokens\n  timeout: {}s\n{}",
                     endpoint,
                     model,
                     estimated_prompt,
                     reserved_output,
                     estimated_prompt.saturating_add(reserved_output),
+                    system_tokens,
+                    conversation_tokens,
+                    tools_tokens,
                     context_window,
                     super::effective_stream_idle_timeout(&self.api_base).as_secs(),
                     super::local_endpoint_context_hint(&self.api_base),

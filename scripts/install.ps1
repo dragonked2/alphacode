@@ -373,7 +373,12 @@ function Add-AlphacodeToSessionPath {
     param([Parameter(Mandatory)][string]$BinDir)
 
     $target = ConvertTo-AlphacodeComparablePathEntry $BinDir
-    $sep = [System.IO.Path]::PathSeparator
+    # The test suite exercises Windows-style BinDir values on non-Windows
+    # hosts. Select the separator from the target's path syntax as well as the
+    # current OS so that a simulated `C:\...` install still uses `;` and can be
+    # compared idempotently; real POSIX install paths keep the host `:`.
+    $usesWindowsPathSyntax = (Test-AlphacodeWindows) -or ($BinDir -match '^[A-Za-z]:[\\/]')
+    $sep = if ($usesWindowsPathSyntax) { ';' } else { [System.IO.Path]::PathSeparator }
     $entries = @($env:PATH -split [regex]::Escape($sep) | Where-Object { $_ -ne '' })
     $already = $false
     foreach ($e in $entries) {

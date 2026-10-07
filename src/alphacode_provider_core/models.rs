@@ -492,6 +492,13 @@ pub fn open_weight_family_context_limit(model: &str) -> Option<usize> {
     if m.contains("gte-qwen") {
         return Some(2_000_000);
     }
+    // Qwen3.8's model card lists a 262,144-token trained context. The generic
+    // Qwen3 fallback below is intentionally broad for older catalog ids, but
+    // this newer family has a verified limit and should not inherit its
+    // optimistic 2M fallback.
+    if m.contains("qwen3.8") || m.contains("qwen-3.8") {
+        return Some(262_144);
+    }
     // --- Alibaba Qwen3 / Qwen3.5 family: 256K context ---
     if m.contains("qwen3") || m.contains("qwen-3") {
         return Some(2_000_000);
@@ -888,6 +895,15 @@ mod tests {
         assert_eq!(open_weight_family_context_limit("alpha"), Some(2_000_000));
         assert_eq!(open_weight_family_context_limit("ALPHA"), Some(2_000_000));
         assert_eq!(open_weight_family_context_limit("glm-5.2"), Some(2_000_000));
+    }
+
+    #[test]
+    fn qwen_38_uses_its_published_256k_window() {
+        assert_eq!(
+            open_weight_family_context_limit("qwen3.8-27b-uncensored-iq4_xs.gguf"),
+            Some(262_144)
+        );
+        assert_eq!(context_limit_for_model("qwen3.8-27b"), Some(262_144));
     }
 
     /// Kimi Code serves its flagship under the bare id `k3` (issue #577).

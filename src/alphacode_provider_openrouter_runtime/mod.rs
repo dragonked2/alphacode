@@ -528,6 +528,36 @@ pub(crate) fn estimate_chat_request_tokens(request: &serde_json::Value) -> usize
     serialized.len() / 4
 }
 
+/// Roughly attribute the request estimate to its prompt components for
+/// actionable context-limit diagnostics. The same chars/4 heuristic as the
+/// total estimate is used so the numbers are comparable, though JSON framing
+/// and provider tokenizers mean the component estimates are approximate.
+pub(crate) fn estimate_chat_request_breakdown(
+    request: &serde_json::Value,
+) -> (usize, usize, usize) {
+    fn estimate(value: &serde_json::Value) -> usize {
+        serde_json::to_string(value)
+            .map(|serialized| serialized.len() / 4)
+            .unwrap_or(0)
+    }
+
+    let mut system_tokens = 0usize;
+    let mut conversation_tokens = 0usize;
+    if let Some(messages) = request.get("messages").and_then(|value| value.as_array()) {
+        for message in messages {
+            let target = if message.get("role").and_then(|role| role.as_str()) == Some("system") {
+                &mut system_tokens
+            } else {
+                &mut conversation_tokens
+            };
+            *target = target.saturating_add(estimate(message));
+        }
+    }
+
+    let tools_tokens = request.get("tools").map(estimate).unwrap_or(0);
+    (system_tokens, conversation_tokens, tools_tokens)
+}
+
 /// True when an error body looks like a context-window overflow
 /// (llama.cpp `exceed_context_size_error`, OpenAI `context_length_exceeded`,
 /// or explicit `n_ctx` mentions). Capability-based string match, no secrets.
@@ -645,9 +675,9 @@ pub(crate) fn local_endpoint_context_hint(api_base: &str) -> String {
     let port = parsed.as_ref().and_then(|url| url.port());
     let is_ollama = port == Some(11434);
     if is_ollama {
-        return "Hint: this Ollama server's window is set by num_ctx (default 2048), which is too small for alphacode's system prompt plus tool schemas. Raise it with `OLLAMA_CONTEXT_LENGTH=16384 ollama serve`, then reload the model; or run a bare model with `--provider ollama`. You can also compact with /compact.".to_string();
+        return "Hint: Ollama's served window is set by `num_ctx` / `OLLAMA_CONTEXT_LENGTH`. Increase it enough to fit the estimated prompt plus reserved output, then reload the model. If the API does not report that configured value, set `ALPHACODE_OPENROUTER_CONTEXT_WINDOW` to the same value; this only adjusts Alphacode's guard and does not enlarge the server. Keep both values within your available memory. You can also compact with /compact.".to_string();
     }
-    "Hint: compact the session (/compact), or restart the server with a larger context (llama-server `-c 16384`; LM Studio sets Context Length in the model loader).".to_string()
+    "Hint: compact the session (/compact), or increase the endpoint context (llama.cpp `-c <context>`; LM Studio sets Context Length in the model loader). If the API does not report that configured value, set `ALPHACODE_OPENROUTER_CONTEXT_WINDOW` to match it; this only adjusts Alphacode's guard and does not enlarge the server. Keep it within available memory and leave room for output.".to_string()
 }
 
 /// Conservative context fallback for direct local endpoints when no live
@@ -3656,8 +3686,9 @@ mod llamacpp_compat_tests {
         );
         let llamacpp = local_endpoint_context_hint("http://127.0.0.1:8080/v1");
         assert!(
-            llamacpp.contains("-c 16384"),
-            "llama.cpp hint must name -c: {llamacpp}"
+            llamacpp.contains("-c <context>")
+                && llamacpp.contains("ALPHACODE_OPENROUTER_CONTEXT_WINDOW"),
+            "llama.cpp hint must explain context configuration and Alphacode's override: {llamacpp}"
         );
         let cloud = local_endpoint_context_hint("https://api.openai.com/v1");
         assert!(
@@ -3675,6 +3706,22 @@ mod llamacpp_compat_tests {
             estimate_chat_request_tokens(&small),
             small.to_string().len() / 4
         );
+    }
+
+    #[test]
+    fn request_token_breakdown_attributes_system_history_and_tools() {
+        let request = serde_json::json!({
+            "messages": [
+                {"role": "system", "content": "system prompt"},
+                {"role": "user", "content": "user request"}
+            ],
+            "tools": [{"type": "function", "function": {"name": "read", "description": "read files"}}]
+        });
+
+        let (system, conversation, tools) = estimate_chat_request_breakdown(&request);
+        assert_eq!(system, request["messages"][0].to_string().len() / 4);
+        assert_eq!(conversation, request["messages"][1].to_string().len() / 4);
+        assert_eq!(tools, request["tools"].to_string().len() / 4);
     }
 
     #[test]

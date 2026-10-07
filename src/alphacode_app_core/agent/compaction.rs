@@ -90,9 +90,13 @@ impl Agent {
     fn is_context_limit_error(error: &str) -> bool {
         let lower = error.to_lowercase();
         lower.contains("context length")
+            || lower.contains("context_length")
+            || lower.contains("context_window")
             || lower.contains("context window")
             || lower.contains("maximum context")
             || lower.contains("max context")
+            || lower.contains("request exceeds context")
+            || lower.contains("context_estimate")
             || lower.contains("token limit")
             || lower.contains("too many tokens")
             || lower.contains("prompt is too long")
@@ -378,5 +382,21 @@ impl Agent {
         if let Ok(mut manager) = compaction.try_write() {
             manager.push_embedding_snapshot(text);
         };
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::Agent;
+
+    #[test]
+    fn recognizes_openai_compatible_preflight_context_errors() {
+        assert!(Agent::is_context_limit_error(
+            "OpenAI-compatible request exceeds context\n  context_window: 8192 tokens"
+        ));
+        assert!(Agent::is_context_limit_error(
+            "provider response: context_length_exceeded"
+        ));
+        assert!(!Agent::is_context_limit_error("connection refused"));
     }
 }

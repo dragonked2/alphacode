@@ -281,6 +281,13 @@ fn normalize_for_compare(path: &Path) -> String {
     while s.contains("//") {
         s = s.replace("//", "/");
     }
+    // `normalize()` on Unix drops the trailing slash from `/c/`, leaving the
+    // two-character spelling `/c`. Recover the Git Bash drive-root alias
+    // before the general `/c/...` conversion below so `rm -rf /c/` receives
+    // the same protection as `rm -rf /c/Users/...`.
+    if s.len() == 2 && s.as_bytes()[0] == b'/' && s.as_bytes()[1].is_ascii_alphabetic() {
+        s = format!("{}:/", &s[1..2]);
+    }
     // `/c/Users/...` -> `c:/Users/...`
     if s.len() >= 3 {
         let bytes = s.as_bytes();

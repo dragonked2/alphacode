@@ -796,10 +796,10 @@ except Exception as e:
         let mut command = tokio::process::Command::new(&bin);
         command.arg("navigate").arg(&params_json);
         #[cfg(not(windows))]
-        if std::env::var("BROWSER_SESSION").is_err() {
-            if let Some(session_name) = crate::browser::ensure_browser_session(&_ctx.session_id) {
-                command.env("BROWSER_SESSION", session_name);
-            }
+        if std::env::var("BROWSER_SESSION").is_err()
+            && let Some(session_name) = crate::browser::ensure_browser_session(&_ctx.session_id)
+        {
+            command.env("BROWSER_SESSION", session_name);
         }
         let output = super::recon_common::run_command_bounded(
             command,

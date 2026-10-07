@@ -383,30 +383,6 @@ pub fn signal_detached_process_group(pid: u32, signal: i32) -> std::io::Result<(
     }
 }
 
-#[cfg(test)]
-mod process_id_tests {
-    use super::is_process_running;
-    #[cfg(unix)]
-    use super::try_reap_child_process;
-
-    #[test]
-    fn invalid_process_ids_are_not_treated_as_live_processes() {
-        assert!(!is_process_running(0));
-        #[cfg(unix)]
-        {
-            assert!(!is_process_running(u32::MAX));
-            for pid in [0, u32::MAX] {
-                assert_eq!(
-                    try_reap_child_process(pid)
-                        .expect_err("invalid PID must not reach waitpid")
-                        .kind(),
-                    std::io::ErrorKind::InvalidInput
-                );
-            }
-        }
-    }
-}
-
 /// Best-effort non-blocking reap for a child process owned by the current process.
 ///
 /// Returns:
@@ -565,4 +541,28 @@ pub fn spawn_detached_process(
         });
     }
     cmd.spawn()
+}
+
+#[cfg(test)]
+mod process_id_tests {
+    use super::is_process_running;
+    #[cfg(unix)]
+    use super::try_reap_child_process;
+
+    #[test]
+    fn invalid_process_ids_are_not_treated_as_live_processes() {
+        assert!(!is_process_running(0));
+        #[cfg(unix)]
+        {
+            assert!(!is_process_running(u32::MAX));
+            for pid in [0, u32::MAX] {
+                assert_eq!(
+                    try_reap_child_process(pid)
+                        .expect_err("invalid PID must not reach waitpid")
+                        .kind(),
+                    std::io::ErrorKind::InvalidInput
+                );
+            }
+        }
+    }
 }
