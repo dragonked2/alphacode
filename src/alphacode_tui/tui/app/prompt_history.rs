@@ -1,16 +1,19 @@
 //! Persistent cross-session prompt history plus the Ctrl+R reverse search
 //! overlay.
 //!
-//! Every submitted prompt is recorded to `~/.alphacode/prompt-history.jsonl`
-//! (JSONL, one JSON-encoded string per line, append-only with periodic
-//! compaction). Recording dedupes: resubmitting an existing prompt moves it to
-//! the most-recent slot instead of storing a second copy. Up/Down prompt
+//! Eligible submitted prompts are recorded to
+//! `~/.alphacode/prompt-history.jsonl` (JSONL, one JSON-encoded string per
+//! line, append-only with periodic compaction). Pasted payloads are excluded so
+//! history never restores an incomplete display token or stores clipboard data.
+//! Recording dedupes: resubmitting an existing prompt moves it to the most-recent
+//! slot instead of storing a second copy. Up/Down prompt
 //! recall (`input::handle_prompt_history_navigation`) walks the merged
 //! history, so prompts from previous sessions are reachable after the current
 //! session's own prompts. Ctrl+R (or Cmd+R) opens a fuzzy reverse search over
 //! the same merged history.
 
 use super::App;
+use super::input::PASTE_PLACEHOLDER;
 use crossterm::event::{KeyCode, KeyModifiers};
 use std::path::{Path, PathBuf};
 
@@ -41,6 +44,12 @@ pub(crate) struct PromptHistorySearchState {
     pub(crate) original_input: String,
     /// Cursor position matching `original_input`.
     pub(crate) original_cursor: usize,
+}
+
+fn contains_paste_placeholder(text: &str) -> bool {
+    text.contains(PASTE_PLACEHOLDER)
+        || text.contains("[Pasted Content +")
+        || text.contains("[pasted content +")
 }
 
 pub(crate) fn history_file_path() -> Option<PathBuf> {
@@ -195,12 +204,13 @@ impl App {
             .as_deref()
             .unwrap_or_default()
             .to_vec();
+        combined.retain(|prompt| !contains_paste_placeholder(prompt));
         combined.extend(
             self.display_messages
                 .iter()
                 .filter(|message| message.role == "user")
                 .map(|message| message.content.trim().to_string())
-                .filter(|content| !content.is_empty()),
+                .filter(|content| !content.is_empty() && !contains_paste_placeholder(content)),
         );
         dedupe_keep_last(combined)
     }
@@ -208,17 +218,21 @@ impl App {
     /// Record a submitted prompt into the persistent history. Only new
     /// content is stored: resubmitting an existing prompt moves it to the
     /// most-recent slot instead of adding a duplicate. No-op for empty/huge
-    /// prompts and while a login/account/ssh input interception is pending
-    /// (those inputs can contain secrets).
+    /// prompts, pasted content, and while a login/account/ssh input interception
+    /// is pending (those inputs can contain secrets).
     pub(super) fn record_prompt_history(&mut self, text: &str) {
-        if self.pending_login.is_some()
+        if !self.pasted_contents.is_empty()
+            || self.pending_login.is_some()
             || self.pending_account_input.is_some()
             || self.pending_ssh_remote_name.is_some()
         {
             return;
         }
         let trimmed = text.trim();
-        if trimmed.is_empty() || trimmed.len() > MAX_RECORDED_PROMPT_LEN {
+        if trimmed.is_empty()
+            || trimmed.len() > MAX_RECORDED_PROMPT_LEN
+            || contains_paste_placeholder(trimmed)
+        {
             return;
         }
         // Slash commands and input-line shell commands are not conversational

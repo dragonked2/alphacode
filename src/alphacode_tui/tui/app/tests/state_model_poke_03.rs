@@ -512,6 +512,7 @@ fn test_shift_tab_model_favorite_hotkey_preserves_input_line() {
 
 #[test]
 fn test_tui_api_key_auth_refreshes_catalog_shows_diff_without_opening_picker() {
+    let _env_lock = crate::storage::lock_test_env();
     ensure_test_alphacode_home_if_unset();
     clear_persisted_test_ui_state();
     crate::alphacode_tui::tui::ui::clear_test_render_state_for_tests();
@@ -555,7 +556,15 @@ fn test_tui_api_key_auth_refreshes_catalog_shows_diff_without_opening_picker() {
     let activation = rt.block_on(async {
         loop {
             match tokio::time::timeout(Duration::from_secs(2), bus_rx.recv()).await {
-                Ok(Ok(event @ crate::bus::BusEvent::ProviderModelActivated { .. })) => break event,
+                Ok(Ok(
+                    event @ crate::bus::BusEvent::ProviderModelActivated { .. },
+                )) if matches!(
+                    &event,
+                    crate::bus::BusEvent::ProviderModelActivated {
+                        model,
+                        ..
+                    } if model == "state-space-alpha"
+                ) => break event,
                 Ok(Ok(_)) => continue,
                 other => panic!("expected ProviderModelActivated event, got {other:?}"),
             }
@@ -720,7 +729,15 @@ fn test_tui_cerebras_paste_key_lifecycle_has_no_degraded_success_messages() {
                         Ok(crate::bus::BusEvent::UiActivity(activity)),
                     );
                 }
-                Ok(Ok(event @ crate::bus::BusEvent::ProviderModelActivated { .. })) => {
+                Ok(Ok(
+                    event @ crate::bus::BusEvent::ProviderModelActivated { .. },
+                )) if matches!(
+                    &event,
+                    crate::bus::BusEvent::ProviderModelActivated {
+                        provider_key: Some(key),
+                        ..
+                    } if key == "cerebras"
+                ) => {
                     activation_events += 1;
                     if let crate::bus::BusEvent::ProviderModelActivated {
                         model,

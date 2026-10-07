@@ -1,6 +1,22 @@
 use super::*;
 use crate::{terminal_eprintln as eprintln, terminal_print as print, terminal_println as println};
 
+const STREAM_OUTPUT_FLUSH_INTERVAL: std::time::Duration = std::time::Duration::from_millis(24);
+const STREAM_OUTPUT_FLUSH_BYTES: usize = 96;
+
+/// Batch tiny model deltas before writing to stdout. Flushing for every token
+/// can turn a fast stream into hundreds of terminal system calls per second.
+fn flush_stream_output(pending: &mut String, last_flush: &mut Instant) -> Result<()> {
+    if pending.is_empty() {
+        return Ok(());
+    }
+    crate::terminal_print!("{}", pending);
+    io::stdout().flush()?;
+    pending.clear();
+    *last_flush = Instant::now();
+    Ok(())
+}
+
 impl Agent {
     /// Run turns until no more tool calls
     /// Maximum number of context-limit compaction retries before giving up.
@@ -222,7 +238,7 @@ impl Agent {
             {
                 Ok(stream) => stream,
                 Err(e) => {
-                    let err_text = e.to_string();
+                    let err_text = super::response_recovery::provider_error_text_for_recovery(&e);
                     // Transient provider / transport errors get an automatic
                     // "continue" injection: the user asked the agent to keep
                     // working instead of stalling on a single 429 / 5xx, and
@@ -269,12 +285,6 @@ impl Agent {
             drop(messages);
             drop(split_prompt);
 
-            // Successful API call - reset retry counter
-            context_limit_retries = 0;
-            // The model that just served the turn is working, so return it to
-            // service if a previous failure had quarantined it.
-            self.note_free_pool_model_healthy();
-
             logging::info(&format!(
                 "API stream opened in {:.2}s",
                 api_start.elapsed().as_secs_f64()
@@ -317,6 +327,7 @@ impl Agent {
             let mut openai_native_compaction: Option<(String, usize)> = None;
 
             let mut retry_after_compaction = false;
+            let mut retry_after_provider_error = false;
             // Dead-stream timeout: if no event arrives within this duration,
             // the stream is considered hung (e.g. TCP half-open after server
             // crash). 120s is generous enough for slow providers but short
@@ -334,10 +345,21 @@ impl Agent {
             // MPSC path in `turn_streaming_mpsc` already does this correctly
             // with a `select!` against a keepalive ticker; mirror that here.
             let mut keepalive = stream_keepalive_ticker();
+            let mut pending_terminal_text = String::new();
+            let mut last_terminal_flush = Instant::now();
             loop {
                 let next_event = std::pin::pin!(stream.next());
                 let event = tokio::select! {
                     _ = keepalive.tick() => {
+                        if print_output
+                            && !pending_terminal_text.is_empty()
+                            && last_terminal_flush.elapsed() >= STREAM_OUTPUT_FLUSH_INTERVAL
+                        {
+                            flush_stream_output(
+                                &mut pending_terminal_text,
+                                &mut last_terminal_flush,
+                            )?;
+                        }
                         if last_stream_event.elapsed() > DEAD_STREAM_TIMEOUT {
                             log_agent_provider_stream_lifecycle(
                                 logging::LogLevel::Error,
@@ -366,7 +388,14 @@ impl Agent {
                 let event = match event {
                     Ok(event) => event,
                     Err(e) => {
-                        let err_str = e.to_string();
+                        if print_output {
+                            flush_stream_output(
+                                &mut pending_terminal_text,
+                                &mut last_terminal_flush,
+                            )?;
+                        }
+                        let err_str =
+                            super::response_recovery::provider_error_text_for_recovery(&e);
                         if self.try_auto_compact_after_context_limit(&err_str) {
                             log_agent_provider_stream_lifecycle(
                                 logging::LogLevel::Warn,
@@ -393,6 +422,26 @@ impl Agent {
                                 ));
                             }
                             retry_after_compaction = true;
+                            break;
+                        }
+                        if text_content.is_empty()
+                            && reasoning_content.is_empty()
+                            && tool_calls.is_empty()
+                            && let Some(delay) = self.maybe_continue_after_provider_error(
+                                &err_str,
+                                &mut provider_error_continuations,
+                            )?
+                        {
+                            if delay > 0 {
+                                crate::terminal_println!(
+                                    "\nWaiting {}s before retry (attempt {}/{}).",
+                                    delay,
+                                    provider_error_continuations,
+                                    Self::MAX_PROVIDER_ERROR_CONTINUATION_ATTEMPTS
+                                );
+                                tokio::time::sleep(tokio::time::Duration::from_secs(delay)).await;
+                            }
+                            retry_after_provider_error = true;
                             break;
                         }
                         log_agent_provider_stream_lifecycle(
@@ -432,13 +481,25 @@ impl Agent {
                     StreamEvent::ThinkingDone { duration_secs } => {
                         // Bridge provides accurate wall-clock timing
                         if print_output {
+                            flush_stream_output(
+                                &mut pending_terminal_text,
+                                &mut last_terminal_flush,
+                            )?;
                             println!("Thought for {:.1}s\n", duration_secs);
                         }
                     }
                     StreamEvent::TextDelta(text) => {
                         if print_output {
-                            crate::terminal_print!("{}", text);
-                            io::stdout().flush()?;
+                            pending_terminal_text.push_str(&text);
+                            if pending_terminal_text.len() >= STREAM_OUTPUT_FLUSH_BYTES
+                                || text.contains('\n')
+                                || last_terminal_flush.elapsed() >= STREAM_OUTPUT_FLUSH_INTERVAL
+                            {
+                                flush_stream_output(
+                                    &mut pending_terminal_text,
+                                    &mut last_terminal_flush,
+                                )?;
+                            }
                         }
                         text_content.push_str(&text);
                     }
@@ -447,6 +508,10 @@ impl Agent {
                             eprintln!("\n[trace] tool_use_start name={} id={}", name, id);
                         }
                         if print_output {
+                            flush_stream_output(
+                                &mut pending_terminal_text,
+                                &mut last_terminal_flush,
+                            )?;
                             print!("\n[{}] ", name);
                             io::stdout().flush()?;
                         }
@@ -630,6 +695,12 @@ impl Agent {
                             text_content.len(),
                             tool_calls.len(),
                         ));
+                        if print_output {
+                            flush_stream_output(
+                                &mut pending_terminal_text,
+                                &mut last_terminal_flush,
+                            )?;
+                        }
                         if print_output && !text_content.is_empty() {
                             // Already-printed text can't be unprinted on a plain
                             // stdout stream; mark the discontinuity instead.
@@ -652,6 +723,12 @@ impl Agent {
                     StreamEvent::MessageEnd {
                         stop_reason: reason,
                     } => {
+                        if print_output {
+                            flush_stream_output(
+                                &mut pending_terminal_text,
+                                &mut last_terminal_flush,
+                            )?;
+                        }
                         saw_message_end = true;
                         if reason.is_some() {
                             stop_reason = reason;
@@ -754,6 +831,12 @@ impl Agent {
                         message,
                         retry_after_secs,
                     } => {
+                        if print_output {
+                            flush_stream_output(
+                                &mut pending_terminal_text,
+                                &mut last_terminal_flush,
+                            )?;
+                        }
                         if trace {
                             eprintln!("[trace] stream_error {}", message);
                         }
@@ -783,6 +866,30 @@ impl Agent {
                                 ));
                             }
                             retry_after_compaction = true;
+                            break;
+                        }
+                        let recovery_error = super::response_recovery::error_text_with_retry_after(
+                            &message,
+                            retry_after_secs,
+                        );
+                        if text_content.is_empty()
+                            && reasoning_content.is_empty()
+                            && tool_calls.is_empty()
+                            && let Some(delay) = self.maybe_continue_after_provider_error(
+                                &recovery_error,
+                                &mut provider_error_continuations,
+                            )?
+                        {
+                            if delay > 0 {
+                                crate::terminal_println!(
+                                    "\nWaiting {}s before retry (attempt {}/{}).",
+                                    delay,
+                                    provider_error_continuations,
+                                    Self::MAX_PROVIDER_ERROR_CONTINUATION_ATTEMPTS
+                                );
+                                tokio::time::sleep(tokio::time::Duration::from_secs(delay)).await;
+                            }
+                            retry_after_provider_error = true;
                             break;
                         }
                         log_agent_provider_stream_lifecycle(
@@ -815,6 +922,29 @@ impl Agent {
                     vec![("mode", "blocking".to_string())],
                 );
                 continue;
+            }
+            if retry_after_provider_error {
+                log_agent_provider_stream_lifecycle(
+                    logging::LogLevel::Info,
+                    self,
+                    "stream_error_auto_recovered",
+                    api_start,
+                    vec![("mode", "blocking".to_string())],
+                );
+                continue;
+            }
+
+            if print_output {
+                flush_stream_output(&mut pending_terminal_text, &mut last_terminal_flush)?;
+            }
+
+            // The stream has completed successfully only after MessageEnd.
+            // `complete_split` returns a receiver before the HTTP request has
+            // finished, so resetting retry state or clearing quarantine when
+            // that receiver is merely opened hides later stream failures.
+            if saw_message_end {
+                context_limit_retries = 0;
+                self.note_free_pool_model_healthy();
             }
 
             let api_elapsed = api_start.elapsed();

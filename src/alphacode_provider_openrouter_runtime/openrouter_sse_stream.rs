@@ -59,6 +59,61 @@ fn redact_alphax_gateway_brand(api_base: &str, detail: &str) -> String {
         .into_owned()
 }
 
+/// Build a short, product-level error for the Alphax Free gateway.
+///
+/// Its upstream body can contain internal router names, account identifiers,
+/// and advice that applies to the gateway's own credentials rather than the
+/// user's Alphacode setup. Keep the status (needed by recovery/failover) while
+/// dropping the opaque upstream payload from anything that can reach the UI.
+fn alphax_free_http_error(status: reqwest::StatusCode, context_overflow: bool) -> String {
+    let status_line = format!(
+        "status: {} {}",
+        status.as_u16(),
+        status.canonical_reason().unwrap_or("error")
+    );
+    let guidance = match status.as_u16() {
+        429 => {
+            "Alphax Free is temporarily busy. It will try one alternate free route; if that is also busy, wait briefly or switch model with /model."
+        }
+        401 | 403 => {
+            "Alphax Free could not authorize this request. Check the provider setup or switch model with /model."
+        }
+        400 if context_overflow => {
+            "The prompt is too long for this model's context window. Compact the session with /compact, then retry."
+        }
+        400 => {
+            "Alphax Free could not accept this request. Try /compact or switch model with /model."
+        }
+        404 => {
+            "Alphax Free could not find an available route. Try again shortly or switch model with /model."
+        }
+        402 => {
+            "Alphax Free is temporarily unavailable for this request. Try again later or switch model with /model."
+        }
+        500..=599 => {
+            "Alphax Free is having a temporary service issue. Try again shortly or switch model with /model."
+        }
+        _ => "Alphax Free could not complete this request. Try again or switch model with /model.",
+    };
+    format!("Alphax Free request failed ({status_line}).\n{guidance}")
+}
+
+/// Sanitize an error carried inside an SSE event without losing the 429 signal
+/// used by the free-pool recovery path.
+fn alphax_free_stream_error(detail: &str) -> String {
+    let lower = detail.to_ascii_lowercase();
+    if lower.contains("429")
+        || lower.contains("rate limit")
+        || lower.contains("rate-limited")
+        || lower.contains("too many requests")
+        || lower.contains("throttl")
+    {
+        "Alphax Free request failed (status: 429 Too Many Requests). The free route is temporarily busy.".to_string()
+    } else {
+        "Alphax Free could not complete the streamed response. Try again shortly or switch model with /model.".to_string()
+    }
+}
+
 /// Status-aware hint for a completed-but-failed HTTP response. The generic
 /// network/DNS hint above only applies to *send* failures (connection never
 /// established); once the server answered with an error status, blaming DNS
@@ -250,7 +305,7 @@ async fn stream_response(
             phase: ConnectionPhase::SendingRequest,
         }))
         .await;
-    let connect_start = std::time::Instant::now();
+    let request_start = std::time::Instant::now();
     let stream_idle_timeout = super::effective_stream_idle_timeout(&api_base);
     // User-facing diagnostics show the product name; the raw routing id stays
     // in logs and in the outbound request body only.
@@ -320,10 +375,10 @@ async fn stream_response(
         }
     })?;
 
-    let connect_ms = connect_start.elapsed().as_millis();
+    let response_ms = request_start.elapsed().as_millis();
     crate::alphacode_base::logging::info(&format!(
-        "HTTP connection established in {}ms (status={})",
-        connect_ms,
+        "Initial HTTP response received in {}ms (status={})",
+        response_ms,
         response.status()
     ));
 
@@ -331,17 +386,31 @@ async fn stream_response(
         let status = response.status();
         let retry_after =
             crate::alphacode_provider_core::retry_after::retry_after(response.headers());
-        let body = crate::alphacode_base::util::http_error_body(response, "HTTP error").await;
-        let body = redact_alphax_gateway_brand(&api_base, &body);
+        let upstream_body =
+            crate::alphacode_base::util::http_error_body(response, "HTTP error").await;
+        let context_overflow = super::response_body_reports_context_overflow(&upstream_body);
+        // The Alphax gateway can return nested router/provider payloads. Never
+        // put those implementation details in an anyhow error: errors are
+        // rendered directly in the CLI and TUI. Keep only safe guidance and
+        // the HTTP status needed for retry classification.
+        let body = if suppress_upstream_error_details {
+            crate::alphacode_base::logging::warn(&format!(
+                "Alphax Free request failed with HTTP {}; upstream error details suppressed",
+                status.as_u16()
+            ));
+            String::new()
+        } else {
+            redact_alphax_gateway_brand(&api_base, &upstream_body)
+        };
         let mut hint =
             http_status_troubleshooting_hint(status, &api_base, &model, request_estimate);
-        if super::response_body_reports_context_overflow(&body) {
+        if context_overflow {
             // The server just told us its real context window. Persist it
             // so the pre-flight guard and the compaction budget stop
             // trusting the model-family default (which is the model's
             // trained window, not the window this server was started
             // with) for every later request on this endpoint.
-            let learned = super::parse_reported_context_tokens(&body);
+            let learned = super::parse_reported_context_tokens(&upstream_body);
             if let Some(limit) = learned {
                 super::record_learned_context_limit(&api_base, &model, limit);
             }
@@ -356,19 +425,32 @@ async fn stream_response(
                 ),
             };
         }
+        let message = if suppress_upstream_error_details {
+            let mut safe = alphax_free_http_error(status, context_overflow);
+            // Keep learned server-window guidance for local/private compatible
+            // endpoints only. Alphax has its own context budget and should not
+            // expose arbitrary router response text.
+            if context_overflow && status.as_u16() != 400 {
+                safe.push('\n');
+                safe.push_str(&hint);
+            }
+            safe
+        } else {
+            format!(
+                "OpenAI-compatible chat request failed\n  endpoint: {}\n  model: {}\n  auth: {}\n  mode: streaming\n  context_estimate: ~{} tokens\n  timeout: {}s\n  status: {}\n  response: {}\n{}",
+                endpoint_label,
+                model_label,
+                auth.label(),
+                request_estimate,
+                stream_idle_timeout.as_secs(),
+                status,
+                body,
+                hint
+            )
+        };
         return Err(
             crate::alphacode_provider_core::retry_after::error_with_retry_after(
-                format!(
-                    "OpenAI-compatible chat request failed\n  endpoint: {}\n  model: {}\n  auth: {}\n  mode: streaming\n  context_estimate: ~{} tokens\n  timeout: {}s\n  status: {}\n  response: {}\n{}",
-                    endpoint_label,
-                    model_label,
-                    auth.label(),
-                    request_estimate,
-                    stream_idle_timeout.as_secs(),
-                    status,
-                    body,
-                    hint
-                ),
+                message,
                 retry_after,
             ),
         );
@@ -409,7 +491,7 @@ async fn stream_response(
             Ok(None) => break, // stream ended normally
             Err(_) => {
                 crate::alphacode_base::logging::warn(&format!(
-                    "OpenRouter SSE stream timed out (no data for {}s)",
+                    "OpenAI-compatible SSE stream timed out (no data for {}s)",
                     idle_timeout_secs
                 ));
                 anyhow::bail!(
@@ -428,14 +510,14 @@ async fn stream_response(
                     message,
                     retry_after_secs,
                 } => StreamEvent::Error {
-                    message: redact_alphax_gateway_brand(&api_base, &message),
+                    message: alphax_free_stream_error(&message),
                     retry_after_secs,
                 },
                 StreamEvent::UpstreamProvider { .. } => StreamEvent::UpstreamProvider {
                     provider: "Alphax Free".to_string(),
                 },
-                StreamEvent::StatusDetail { detail } => StreamEvent::StatusDetail {
-                    detail: redact_alphax_gateway_brand(&api_base, &detail),
+                StreamEvent::StatusDetail { detail: _ } => StreamEvent::StatusDetail {
+                    detail: "Alphax Free is processing your request…".to_string(),
                 },
                 event => event,
             }

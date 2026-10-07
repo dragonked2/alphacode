@@ -47,7 +47,7 @@ fn assert_not_safe(command: &str) {
 #[test]
 fn leading_env_assignment_does_not_hide_rm() {
     assert_not_safe("LANG=C rm -rf ~");
-    assert_not_safe("LC_ALL=en_US.UTF-8 shred -u -rf /tmp/x");
+    assert_not_safe("LC_ALL=en_US.UTF-8 shred -u -rf /var/x");
     assert_not_safe("FOO=bar mkfs.ext4 /dev/sda1");
     // Multiple assignments in a row.
     assert_not_safe("A=1 B=2 rm -rf ~");
@@ -57,7 +57,7 @@ fn leading_env_assignment_does_not_hide_rm() {
 fn assignment_like_path_arguments_are_still_classified() {
     // `contains('=')` would have eaten these; a real path with `=` in it must
     // not be mistaken for an environment assignment.
-    assert_not_safe("rm -rf /tmp/a=b.txt");
+    assert_not_safe("rm -rf /opt/a=b.txt");
 }
 
 // --- C2: Windows shells and destructive commands were unknown -----------------
@@ -73,11 +73,16 @@ fn windows_shell_inline_script_is_assessed() {
 
 #[test]
 fn windows_destructive_commands_are_flagged() {
-    assert_not_safe("del /f /s /q /tmp/x");
+    assert_not_safe("del /f /s /q /var/x");
     assert_not_safe("erase C:\\temp");
     assert_not_safe("rd /s /q C:\\temp");
     assert_not_safe("format c:");
     assert_not_safe("diskpart /s script.txt");
+    assert_eq!(
+        level_of("diskpart /s script.txt"),
+        RiskLevel::Confirm,
+        "the script is not the target of diskpart's operations"
+    );
 }
 
 // --- H7: eval/source short-circuited the opaque-shell path --------------------
@@ -165,6 +170,7 @@ fn git_bash_drive_mount_is_protected() {
     // platform where that is most likely to be typed.
     assert_eq!(level_of("rm -rf /c/Users/tester"), RiskLevel::Catastrophic);
     assert_eq!(level_of("rm -rf /c/Windows"), RiskLevel::Catastrophic);
+    assert_eq!(level_of("rm -rf /c/"), RiskLevel::Catastrophic);
 }
 
 // --- no-regression: routine work must stay allowed ---------------------------

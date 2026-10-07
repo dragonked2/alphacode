@@ -483,7 +483,7 @@ fn assess_segment(tokens: &[Token], ctx: &RiskContext, findings: &mut Vec<RiskFi
         if !WRAPPER_COMMANDS.contains(&name.as_str()) {
             break;
         }
-        wrapped_by = Some(name);
+        wrapped_by = Some(name.clone());
         // Skip the wrapper plus its own options and `VAR=value` assignments,
         // landing on the wrapped program. Options that take a separate value
         // (`nice -n 10`, `timeout 5`) must consume that value too.
@@ -495,7 +495,7 @@ fn assess_segment(tokens: &[Token], ctx: &RiskContext, findings: &mut Vec<RiskFi
                 idx += 1;
                 continue;
             }
-            if token.is_flag() {
+            if token.is_flag_for(&name) {
                 idx += 1;
                 // A short flag known to take an argument consumes the next word.
                 if WRAPPER_FLAGS_WITH_VALUES.contains(&token.text.as_str()) && idx < rest.len() {
@@ -528,6 +528,28 @@ fn assess_segment(tokens: &[Token], ctx: &RiskContext, findings: &mut Vec<RiskFi
         return;
     };
     let program_name = program.basename();
+
+    // `diskpart /s <file>` executes a language of partition and volume
+    // operations from the file; the script path is not the affected target.
+    // Its contents are opaque here, so require confirmation before any
+    // diskpart invocation rather than grading the script file as a write path.
+    if program_name
+        .split_once('.')
+        .map(|(stem, _)| stem)
+        .unwrap_or(&program_name)
+        == "diskpart"
+    {
+        findings.push(RiskFinding {
+            level: RiskLevel::Confirm,
+            reason: "`diskpart` can repartition or format disks, and its effects cannot be determined statically".to_string(),
+            target: tokens
+                .iter()
+                .skip(1)
+                .find(|token| !token.is_flag_for(&program_name) && !token.is_operator)
+                .map(|token| token.text.clone()),
+        });
+        return;
+    }
 
     // `mkfs.ext4`, `mkfs.xfs`, `mke2fs`, `wipefs.sha256` etc. are the real
     // program names on disk — the bare stem in the list never matches, so
@@ -607,7 +629,11 @@ fn assess_segment(tokens: &[Token], ctx: &RiskContext, findings: &mut Vec<RiskFi
     // A shell invoked with an inline script is opaque to this parser. Assess
     // the script text too, so `sh -c "rm -rf ~"` is not a free pass.
     if is_shell_program(&program_name) {
-        for token in tokens.iter().skip(1).filter(|t| !t.is_flag()) {
+        for token in tokens
+            .iter()
+            .skip(1)
+            .filter(|t| !t.is_flag_for(&program_name))
+        {
             for segment in tokenize::split_segments(&token.text) {
                 assess_segment(&segment, ctx, findings);
             }
@@ -661,7 +687,7 @@ fn assess_segment(tokens: &[Token], ctx: &RiskContext, findings: &mut Vec<RiskFi
         tokens
             .iter()
             .skip(1)
-            .filter(|t| !t.is_flag() && !t.is_operator)
+            .filter(|t| !t.is_flag_for(&program_name) && !t.is_operator)
             .collect()
     };
     targets.extend(redirect_targets.iter().copied());
@@ -695,7 +721,9 @@ fn assess_segment(tokens: &[Token], ctx: &RiskContext, findings: &mut Vec<RiskFi
         return;
     }
 
-    let recursive = tokens.iter().any(|t| t.is_recursive_flag());
+    let recursive = tokens
+        .iter()
+        .any(|t| t.is_recursive_flag_for(&program_name));
 
     for target in targets {
         // `dd`-style `key=value` operands hide the path from a naive scan.

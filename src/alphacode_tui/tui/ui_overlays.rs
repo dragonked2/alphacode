@@ -634,6 +634,7 @@ pub(super) fn draw_help_overlay(frame: &mut Frame, area: Rect, scroll: usize, ap
 
     lines.push(Line::from(Span::styled("  Input & Editing", section_style)));
     lines.push(Line::from(""));
+    lines.push(key_entry("F1", "Open or close this help overlay"));
     lines.push(key_entry(
         "Ctrl+C / Ctrl+D",
         "Quit (press twice to confirm)",
@@ -749,7 +750,7 @@ pub(super) fn draw_help_overlay(frame: &mut Frame, area: Rect, scroll: usize, ap
                 .add_modifier(Modifier::BOLD),
         ))
         .title_bottom(Line::from(Span::styled(
-            " Esc to close · mouse wheel/j/k scroll · Space/PageUp page · /help <cmd> for details ",
+            " F1/Esc/q close · mouse/j/k scroll · PgUp/PgDn/Space page · /help <cmd> details ",
             Style::default().fg(dim_color()),
         )))
         .borders(Borders::ALL)

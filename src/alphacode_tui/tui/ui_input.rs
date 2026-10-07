@@ -2094,6 +2094,22 @@ mod tests {
         assert_eq!(shell_mode_hint(ComposerMode::Chat), None);
     }
 
+    #[test]
+    fn empty_composer_placeholder_teaches_shortcuts_and_fits_narrow_widths() {
+        let wide = empty_composer_placeholder(80);
+        assert!(wide.contains("/ commands"));
+        assert!(wide.contains("F1 help"));
+
+        for width in 0..=80 {
+            let placeholder = empty_composer_placeholder(width);
+            assert!(
+                unicode_width::UnicodeWidthStr::width(placeholder.as_str()) <= width,
+                "placeholder {placeholder:?} exceeds {width} columns"
+            );
+        }
+        assert!(empty_composer_placeholder(0).is_empty());
+    }
+
     /// The shell color must read as a deliberate accent, distinct from the
     /// default composer text. Asserting the semantic property (not one exact
     /// RGB triple) keeps the test meaningful when the palette is retuned.
@@ -3567,16 +3583,15 @@ pub(crate) fn wrap_input_text(
     let mut cursor_col = 0;
     let mut found_cursor = false;
 
-    // Empty-input polish: when the user has not typed anything, render a
-    // single dim placeholder ("Ask alphacode anything…") on the first row
-    // only, so the screen reads as a real, ready-to-use composer instead of
-    // a bare prompt caret. The placeholder sits beside the prompt char and
-    // occupies the same row as the cursor, so the caret is still on line 0
-    // column `prompt_len` (no extra rows are added — the line count stays 1).
-    let mut empty_placeholder: Option<&'static str> = None;
-    if input.is_empty() {
-        empty_placeholder = Some("Ask alphacode anything…");
-    }
+    // Keep the composer actionable without adding vertical chrome. On wide
+    // terminals the placeholder teaches the slash palette and F1 help; on
+    // narrow terminals it falls back to a short prompt that still fits.
+    let empty_placeholder = if input.is_empty() {
+        let placeholder = empty_composer_placeholder(line_width);
+        (!placeholder.is_empty()).then_some(placeholder)
+    } else {
+        None
+    };
 
     for (idx, segment) in wrapped_segments.iter().enumerate() {
         if !found_cursor
@@ -3594,14 +3609,11 @@ pub(crate) fn wrap_input_text(
                 Span::styled(num_str.to_string(), Style::default().fg(num_color)),
                 Span::styled(prompt_char.to_string(), Style::default().fg(caret_color)),
             ];
-            if let Some(placeholder) = empty_placeholder {
-                // Build a styled placeholder span. Truncate to the
-                // available line width so we never overflow into the next
-                // row (which would shift the cursor and the layout).
-                let avail = line_width.saturating_sub(1);
-                let truncated: String = placeholder.chars().take(avail).collect();
+            if let Some(placeholder) = &empty_placeholder {
+                // Select by terminal display width so wide glyphs can never
+                // push the hint into the send-mode indicator column.
                 first_row_spans.push(Span::styled(
-                    truncated,
+                    placeholder.clone(),
                     Style::default()
                         .fg(dim_color())
                         .add_modifier(Modifier::ITALIC),
@@ -3627,6 +3639,23 @@ pub(crate) fn wrap_input_text(
     }
 
     (lines, cursor_line, cursor_col)
+}
+
+/// Return the most useful empty-composer prompt that fits the available text
+/// columns. The full hint teaches the command palette and direct help shortcut;
+/// narrower terminals progressively keep the prompt readable.
+fn empty_composer_placeholder(max_width: usize) -> String {
+    [
+        "Ask alphacode anything… · / commands · F1 help",
+        "Ask anything… · / commands · F1 help",
+        "Ask anything… · / commands",
+        "Ask anything…",
+        "Type…",
+    ]
+    .into_iter()
+    .find(|candidate| unicode_width::UnicodeWidthStr::width(*candidate) <= max_width)
+    .unwrap_or("")
+    .to_string()
 }
 
 fn send_mode_indicator(app: &dyn TuiState) -> (&'static str, Color) {

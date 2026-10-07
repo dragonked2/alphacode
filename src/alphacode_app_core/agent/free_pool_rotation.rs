@@ -235,6 +235,16 @@ pub fn should_rotate_for_model(model: &str) -> bool {
     is_free_tier_model_id(model)
 }
 
+/// Keep automatic free-pool failover exclusive to the Alphax Free profile.
+/// Other providers can also expose `:free` model ids, but switching those
+/// models would silently change a user's chosen provider or route.
+pub fn should_rotate_for_provider(provider_name: &str, model: &str) -> bool {
+    provider_name
+        .trim()
+        .eq_ignore_ascii_case(ALPHAX_FREE_DISPLAY_NAME)
+        && should_rotate_for_model(model)
+}
+
 /// Pick the next usable model in the pool, given the one that just failed.
 ///
 /// Returns `None` when every alternative is quarantined, which tells the

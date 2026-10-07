@@ -814,20 +814,9 @@ pub(super) fn parse_dropped_paths(text: &str) -> Option<Vec<PathBuf>> {
         .collect()
 }
 
-/// Minimum line count (counting newlines) at which a text paste is always
-/// replaced with a `[Pasted Content +N lines]` placeholder instead of
-/// being inserted into the draft verbatim.
-///
-/// A multi-line paste inserted into the composer is dangerous: terminals
-/// that strip bracketed-paste framing (older conhost profiles, certain
-/// SSH mux bridges, web terminals, tmux pre-paste-mode) deliver each
-/// newline as a separate `KeyCode::Enter` key event. The paste guard can
-/// swallow *some* trailing Enters, but on slow links a multi-line paste
-/// easily exceeds the suppression window and each line gets submitted as
-/// its own queued message. Collapsing to a placeholder before the paste
-/// ever touches the composer guarantees a paste is always a single
-/// user-confirmed submission.
-const PASTE_PLACEHOLDER_MIN_LINES: usize = 2;
+/// Compact composer token for pasted text. The original content stays in
+/// `App::pasted_contents` and is restored only when the user submits the draft.
+pub(super) const PASTE_PLACEHOLDER: &str = "[pasted content]";
 
 pub(super) fn handle_text_paste(app: &mut App, text: String) {
     crate::logging::info(&format!(
@@ -836,32 +825,16 @@ pub(super) fn handle_text_paste(app: &mut App, text: String) {
         text.lines().count()
     ));
 
-    // Replace pasted text with a `[Pasted Content +N lines]` placeholder
-    // and stash the real content in `pasted_contents`. The placeholder is
-    // expanded back to the original text by `expand_paste_placeholders`
-    // only when the user explicitly submits, so a paste can never
-    // auto-send and can never be split across multiple queued messages
-    // regardless of the terminal's bracketed paste support.
-    //
-    // Single-line pastes are inlined directly so trivial pastes (a
-    // sentence, a path, a single command) keep the lightweight UX. The
-    // paste guard still suppresses any stray trailing Enter from
-    // conhost on those.
-    //
-    // The placeholder also lets the user edit the draft above the paste
-    // without accidentally re-typing the full block.
-    let line_count = text.lines().count().max(1);
-    if line_count >= PASTE_PLACEHOLDER_MIN_LINES {
-        app.pasted_contents.push(text);
-        let placeholder = format!(
-            "[Pasted Content +{} line{}]",
-            line_count,
-            if line_count == 1 { "" } else { "s" }
-        );
-        insert_input_text(app, &placeholder);
-    } else {
-        insert_input_text(app, &text);
+    if text.is_empty() {
+        return;
     }
+
+    // Keep text pastes compact and visually consistent in the composer. The
+    // original text is restored on explicit submit; file and image drops are
+    // handled separately.
+    app.pasted_contents.push(text);
+    insert_input_text(app, PASTE_PLACEHOLDER);
+    app.set_status_notice("Pasted text as [pasted content] · expanded on submit");
 }
 
 impl App {
@@ -1442,21 +1415,24 @@ pub(super) fn clear_input_for_escape(app: &mut App) {
 }
 
 pub(super) fn expand_paste_placeholders(app: &mut App, input: &str) -> String {
-    // Expand paste placeholders from the inside out, replacing each
-    // `[pasted N lines]` token with its stashed content. We walk the
-    // buffer once and replace every match, rather than using rfind in a
-    // loop, so multiple pastes in the same prompt are all expanded (the
-    // old `rfind` loop only replaced one occurrence per paste and
-    // silently dropped the rest).
+    if app.pasted_contents.is_empty() {
+        return input.to_string();
+    }
+    if !input.contains(PASTE_PLACEHOLDER) {
+        // The user removed or cleared the pasted token. Drop its backing text
+        // so the next ordinary prompt cannot inherit an abandoned paste.
+        app.pasted_contents.clear();
+        return input.to_string();
+    }
+
+    // Expand from the inside out so multiple pasted blocks remain distinct.
     let mut result = input.to_string();
     for content in app.pasted_contents.iter().rev() {
-        let placeholder = paste_placeholder(content);
-        // Replace exactly one rightmost occurrence per recorded paste. Two
-        // different pastes can have the same line count and therefore the
-        // same display placeholder; replacing every occurrence would map both
-        // tokens to whichever content happened to be visited first.
-        if let Some(abs) = result.rfind(&placeholder) {
-            result.replace_range(abs..abs + placeholder.len(), content);
+        // Replace exactly one rightmost occurrence per recorded paste. All
+        // text pastes share the same concise display token, so replacing every
+        // occurrence would map them to whichever content was visited first.
+        if let Some(abs) = result.rfind(PASTE_PLACEHOLDER) {
+            result.replace_range(abs..abs + PASTE_PLACEHOLDER.len(), content);
         }
     }
     result
@@ -2663,7 +2639,7 @@ pub(super) fn handle_enter(app: &mut App) -> bool {
     // with content between them), buffer this Enter as a newline
     // in the input rather than submitting. When the burst ends, the
     // buffered content collapses into a single
-    // [Pasted Content +N lines] placeholder.
+    // [pasted content] placeholder.
     let input_len = app.input.len();
     // Rapid-insertion override: if a lot of text arrived in the last
     // ~500ms, the user is almost certainly in the middle of a paste,
@@ -2715,7 +2691,7 @@ pub(super) fn handle_enter(app: &mut App) -> bool {
 }
 
 /// Find the most recent `lines` newlines in the input and replace
-/// that range with a single `[Pasted Content +N lines]`
+/// that range with a single `[pasted content]`
 /// placeholder. The real content is stashed in
 /// `app.pasted_contents` for later expansion on submit.
 fn collapse_recent_burst_into_placeholder(app: &mut App, lines: usize) {
@@ -2741,7 +2717,7 @@ fn collapse_recent_burst_into_placeholder(app: &mut App, lines: usize) {
     }
     let content = app.input[start..].to_string();
     let line_count = content.lines().count().max(1);
-    let placeholder = placeholder_for(line_count);
+    let placeholder = placeholder_for();
     app.remember_input_undo_state();
     app.input.truncate(start);
     app.input.push_str(&placeholder);
@@ -2751,9 +2727,8 @@ fn collapse_recent_burst_into_placeholder(app: &mut App, lines: usize) {
     app.sync_model_picker_preview_from_input();
     app.follow_chat_bottom_for_typing();
     // Surface the paste to the user so they know what just happened.
-    // We use the line count and the byte size (so a 1MB paste does not
-    // surprise the user with a sudden `[Pasted Content +12000 lines]`
-    // appearing in their draft).
+    // Keep useful size details in the transient notice while the draft itself
+    // stays focused on the compact `[pasted content]` token.
     use crate::alphacode_core::output_enhance;
     use crate::alphacode_core::output_enhance::PaletteToken;
     let (r, g, b) = output_enhance::pick_for_terminal_bg(PaletteToken::Success);
@@ -2901,8 +2876,8 @@ pub(super) fn handle_basic_key(app: &mut App, code: KeyCode) -> bool {
 
 pub(super) fn take_prepared_input(app: &mut App) -> PreparedInput {
     let raw_input = std::mem::take(&mut app.input);
-    app.record_prompt_history(&raw_input);
     let expanded = expand_paste_placeholders(app, &raw_input);
+    app.record_prompt_history(&raw_input);
     app.pasted_contents.clear();
     let images = std::mem::take(&mut app.pending_images);
     app.cursor_pos = 0;
@@ -2933,15 +2908,6 @@ fn attach_image(app: &mut App, media_type: String, base64_data: String) {
     app.cursor_pos += placeholder.len();
     app.sync_model_picker_preview_from_input();
     app.set_status_notice(format!("Pasted {} ({} KB)", media_type, size_kb));
-}
-
-fn paste_placeholder(content: &str) -> String {
-    let line_count = content.lines().count().max(1);
-    format!(
-        "[Pasted Content +{} line{}]",
-        line_count,
-        if line_count == 1 { "" } else { "s" }
-    )
 }
 
 impl App {
@@ -3013,6 +2979,14 @@ impl App {
         }
 
         if handle_modal_key(self, code, modifiers)? {
+            return Ok(());
+        }
+
+        // F1 is the standard, terminal-friendly way to reach help. The modal
+        // check above gives an open overlay first refusal, so the same key
+        // closes help instead of stacking another overlay over it.
+        if code == KeyCode::F(1) && modifiers.is_empty() {
+            self.help_scroll = Some(0);
             return Ok(());
         }
 
@@ -3774,10 +3748,11 @@ impl App {
         self.recovered_queue_held_for_user_submit = false;
 
         let raw_input = std::mem::take(&mut self.input);
-        // Persist to cross-session prompt history (no-op for slash/shell
-        // commands, secret-intercept inputs, and oversized pastes).
-        self.record_prompt_history(&raw_input);
         let mut input = self.expand_paste_placeholders(&raw_input);
+        // Persist to cross-session prompt history (no-op for slash/shell
+        // commands, secret-intercept inputs, oversized pastes, or clipboard
+        // content which should not be stored in prompt history).
+        self.record_prompt_history(&raw_input);
         if let Some(notice) = input_exceeds_submit_limit(&input) {
             self.input = raw_input;
             self.cursor_pos = self.input.len();

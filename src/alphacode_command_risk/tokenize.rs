@@ -62,27 +62,45 @@ impl Token {
             .to_ascii_lowercase()
     }
 
-    /// Whether this token is a flag/switch rather than an operand.
-    ///
-    /// Recognises both the POSIX `-x` form and the Windows `/x` form. The
-    /// Windows form matters because otherwise `rd /s /q C:\target` counted
-    /// `/s`, `/f` and `/q` as *targets*: they were expanded against the current
-    /// drive into `\s`, `\f`, `\q` and each produced a spurious
-    /// "outside the working directory" finding, while `is_recursive_flag` — whose
-    /// whole purpose is to catch `rd /s` — never saw them.
+    /// Whether this token is a portable `-x` flag rather than an operand.
+    /// Windows slash switches are interpreted by [`Self::is_flag_for`], which
+    /// needs the command name to avoid treating POSIX paths like `/etc` or `/c`
+    /// as flags.
     pub fn is_flag(&self) -> bool {
-        if self.text.starts_with('-') && self.text.len() > 1 {
-            return true;
-        }
-        // `/x` or `/X`, but not the bare `/` (a POSIX path separator) and not
-        // `/some/path`.
-        self.text.len() > 1
-            && self.text.starts_with('/')
-            && self.text[1..].chars().all(|c| c.is_ascii_alphabetic())
+        self.text.starts_with('-') && self.text.len() > 1
     }
 
-    /// Whether this flag requests recursion, including bundles like `-rf` and
-    /// the Windows `/s`.
+    /// Whether this token is a flag for `program_name`.
+    ///
+    /// Only commands whose Windows syntax actually uses `/x` switches accept
+    /// them. Context matters: `/c` is a `cmd.exe` option, but a path to the C:
+    /// drive in Git Bash and must remain a target to `rm`.
+    pub fn is_flag_for(&self, program_name: &str) -> bool {
+        if self.is_flag() {
+            return true;
+        }
+        let Some(switch) = self.text.strip_prefix('/') else {
+            return false;
+        };
+        if switch.len() != 1 || !switch.as_bytes()[0].is_ascii_alphabetic() {
+            return false;
+        }
+        let switch = char::from(switch.as_bytes()[0].to_ascii_lowercase());
+        match program_name.to_ascii_lowercase().as_str() {
+            "cmd" | "cmd.exe" => matches!(
+                switch,
+                'a' | 'c' | 'd' | 'e' | 'f' | 'k' | 'q' | 's' | 'u' | 'v'
+            ),
+            "del" | "erase" => matches!(switch, 'a' | 'f' | 'p' | 'q' | 's'),
+            "rd" | "rmdir" => matches!(switch, 'q' | 's'),
+            "diskpart" => switch == 's',
+            "format" => matches!(switch, 'q' | 'u' | 'x'),
+            _ => false,
+        }
+    }
+
+    /// Whether this portable flag requests recursion, including bundles like
+    /// `-rf` and `--recursive`.
     pub fn is_recursive_flag(&self) -> bool {
         if !self.is_flag() {
             return false;
@@ -90,8 +108,17 @@ impl Token {
         if self.text.starts_with("--") {
             return self.text == "--recursive";
         }
-        // `rd /s` and `rm -rf` are the two spellings of the same request.
-        self.text.contains('r') || self.text.contains('R') || self.text.eq_ignore_ascii_case("/s")
+        self.text.contains('r') || self.text.contains('R')
+    }
+
+    /// Whether this token requests recursion for a command, including `rd /s`.
+    pub fn is_recursive_flag_for(&self, program_name: &str) -> bool {
+        self.is_recursive_flag()
+            || (self.text.eq_ignore_ascii_case("/s")
+                && matches!(
+                    program_name.to_ascii_lowercase().as_str(),
+                    "del" | "erase" | "rd" | "rmdir"
+                ))
     }
 }
 

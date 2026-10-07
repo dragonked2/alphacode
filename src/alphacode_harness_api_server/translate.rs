@@ -733,10 +733,17 @@ mod tests {
     #[test]
     fn state_event_completes_attach_with_reply() {
         let mut state = BridgeState::default();
-        state.api_request_to_legacy(&api_request(42, "create_session", json!({})));
+        let outbound = state.api_request_to_legacy(&api_request(42, "create_session", json!({})));
+        let state_id = outbound
+            .iter()
+            .find_map(|frame| match frame {
+                Outbound::Legacy(value) if value["type"] == "state" => value["id"].as_u64(),
+                _ => None,
+            })
+            .expect("create_session should request the initial state");
         let frames = state.legacy_event_to_api(&legacy_event(
             "state",
-            json!({ "session_id": "s-1", "id": 1 }),
+            json!({ "session_id": "s-1", "id": state_id }),
         ));
         assert_eq!(frames.len(), 1);
         let frame = &frames[0];
@@ -780,9 +787,9 @@ mod tests {
     #[test]
     fn ack_for_pending_simple_emits_ok_reply() {
         let mut state = BridgeState::default();
-        state.api_request_to_legacy(&api_request(5, "ping", json!({})));
+        state.api_request_to_legacy(&api_request(5, "clear", json!({})));
         let (legacy_id, _, kind) = state.pending_simple[0];
-        assert_eq!(kind, SimpleKind::Ping);
+        assert_eq!(kind, SimpleKind::Ok);
         let frames = state.legacy_event_to_api(&legacy_event("ack", json!({ "id": legacy_id })));
         assert_eq!(frames.len(), 1);
         assert_eq!(frames[0].reply_to, Some(5));

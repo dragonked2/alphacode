@@ -7,10 +7,7 @@ fn bare_enter_immediately_after_paste_does_not_submit() {
 
     let mut app = create_test_app();
     crate::alphacode_tui::tui::app::input::handle_paste(&mut app, "hello world\n".to_string());
-    assert_eq!(
-        app.input,
-        "hello world\n".trim_end_matches('\n').to_owned() + "\n"
-    );
+    assert_eq!(app.input, "[pasted content]");
 
     app.handle_key_press_event(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE))
         .unwrap();

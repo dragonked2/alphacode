@@ -504,7 +504,7 @@ impl App {
     pub(super) fn handle_help_key(&mut self, code: KeyCode) -> Result<()> {
         let scroll = self.help_scroll.unwrap_or(0);
         match code {
-            KeyCode::Esc | KeyCode::Char('q') => {
+            KeyCode::Esc | KeyCode::F(1) | KeyCode::Char('q') => {
                 self.help_scroll = None;
             }
             KeyCode::Down | KeyCode::Char('j') => {

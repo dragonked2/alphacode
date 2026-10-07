@@ -178,7 +178,7 @@ pub const OVERVIEW: &[KeymapSection] = &[
                 "Ctrl+Q",
                 "Quit (session is preserved; resume with alphacode --resume)",
             ),
-            KeymapRow::new("F1", "Open this keymap overlay (planned; not yet bound)"),
+            KeymapRow::new("F1", "Open or close the help overlay"),
         ],
     ),
 ];

@@ -221,6 +221,25 @@ fn test_submit_input_records_prompt_history() {
 }
 
 #[test]
+fn test_pasted_content_is_not_recalled_as_an_incomplete_placeholder() {
+    let mut app = create_test_app();
+    app.persisted_prompt_history = Some(vec!["[Pasted Content +3 lines]".to_string()]);
+
+    app.handle_paste("private clipboard text".to_string());
+    assert_eq!(app.input, "[pasted content]");
+    app.submit_input();
+
+    assert_eq!(
+        app.persisted_prompt_history.as_deref().unwrap_or_default(),
+        &["[Pasted Content +3 lines]".to_string()]
+    );
+    assert!(
+        app.merged_prompt_history().is_empty(),
+        "pasted content should not be recalled as a placeholder"
+    );
+}
+
+#[test]
 fn test_history_search_overlay_renders_matches_in_frame() {
     // Create the app before taking the render lock: create_test_app acquires
     // the same non-reentrant lock internally to clear render state.

@@ -186,7 +186,13 @@ fn process_identity_matches(_pid: u32, _expected_start: &str) -> bool {
 
 #[cfg(target_os = "linux")]
 fn open_pidfd(pid: u32) -> std::io::Result<OwnedFd> {
-    let fd = unsafe { libc::syscall(libc::SYS_pidfd_open, pid as libc::pid_t, 0) };
+    let pid = libc::pid_t::try_from(pid)
+        .ok()
+        .filter(|pid| *pid > 0)
+        .ok_or_else(|| {
+            std::io::Error::new(std::io::ErrorKind::InvalidInput, "invalid process id")
+        })?;
+    let fd = unsafe { libc::syscall(libc::SYS_pidfd_open, pid, 0) };
     if fd < 0 {
         return Err(std::io::Error::last_os_error());
     }

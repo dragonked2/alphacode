@@ -1607,8 +1607,7 @@ fn run_reload_helper(args: &Args) -> Result<()> {
         {
             // On Unix, use kill(pid, 0) to check if the process is alive.
             for _ in 0..300 {
-                let alive = unsafe { libc::kill(pid as i32, 0) } == 0;
-                if !alive {
+                if !crate::platform::is_process_running(pid) {
                     break;
                 }
                 std::thread::sleep(std::time::Duration::from_millis(100));

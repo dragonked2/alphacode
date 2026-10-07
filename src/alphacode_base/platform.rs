@@ -256,8 +256,17 @@ pub fn raise_nofile_limit_best_effort(minimum_soft_limit: u64) {
 /// On Unix, uses `kill(pid, 0)` to check without sending a signal.
 /// On Windows, uses OpenProcess to query the process.
 pub fn is_process_running(pid: u32) -> bool {
+    // `kill(0, 0)` probes the caller's process group, and truncating an
+    // out-of-range u32 to i32 can turn a bogus PID into a negative process
+    // group selector. Neither is a valid process id for this API.
+    if pid == 0 {
+        return false;
+    }
     #[cfg(unix)]
     {
+        if pid > i32::MAX as u32 {
+            return false;
+        }
         let result = unsafe { libc::kill(pid as i32, 0) };
         if result == 0 {
             return true;
@@ -291,6 +300,12 @@ pub fn is_process_running(pid: u32) -> bool {
 pub fn signal_detached_process_group(pid: u32, signal: i32) -> std::io::Result<()> {
     #[cfg(unix)]
     {
+        if pid == 0 || pid > i32::MAX as u32 {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                "invalid process group id",
+            ));
+        }
         let rc = unsafe { libc::kill(-(pid as i32), signal) };
         if rc == 0 {
             Ok(())
@@ -368,6 +383,30 @@ pub fn signal_detached_process_group(pid: u32, signal: i32) -> std::io::Result<(
     }
 }
 
+#[cfg(test)]
+mod process_id_tests {
+    use super::is_process_running;
+    #[cfg(unix)]
+    use super::try_reap_child_process;
+
+    #[test]
+    fn invalid_process_ids_are_not_treated_as_live_processes() {
+        assert!(!is_process_running(0));
+        #[cfg(unix)]
+        {
+            assert!(!is_process_running(u32::MAX));
+            for pid in [0, u32::MAX] {
+                assert_eq!(
+                    try_reap_child_process(pid)
+                        .expect_err("invalid PID must not reach waitpid")
+                        .kind(),
+                    std::io::ErrorKind::InvalidInput
+                );
+            }
+        }
+    }
+}
+
 /// Best-effort non-blocking reap for a child process owned by the current process.
 ///
 /// Returns:
@@ -376,6 +415,12 @@ pub fn signal_detached_process_group(pid: u32, signal: i32) -> std::io::Result<(
 pub fn try_reap_child_process(pid: u32) -> std::io::Result<Option<i32>> {
     #[cfg(unix)]
     {
+        if pid == 0 || pid > i32::MAX as u32 {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                "invalid child process id",
+            ));
+        }
         let mut status = 0;
         let rc = unsafe { libc::waitpid(pid as i32, &mut status, libc::WNOHANG) };
         if rc == 0 {

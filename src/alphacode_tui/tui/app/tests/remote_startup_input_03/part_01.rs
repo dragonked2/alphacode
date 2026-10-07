@@ -150,10 +150,22 @@ fn test_handle_paste_single_line() {
 
     app.handle_paste("hello world".to_string());
 
-    // Small paste (< 5 lines) is inlined directly
-    assert_eq!(app.input(), "hello world");
-    assert_eq!(app.cursor_pos(), 11);
-    assert!(app.pasted_contents.is_empty()); // No placeholder storage needed
+    assert_eq!(app.input(), "[pasted content]");
+    assert_eq!(app.cursor_pos(), "[pasted content]".len());
+    assert_eq!(app.pasted_contents, vec!["hello world"]);
+
+    app.submit_input();
+    assert_eq!(app.display_messages().last().unwrap().content, "[pasted content]");
+    let provider_messages = app.materialized_provider_messages();
+    let user_message = provider_messages
+        .iter()
+        .rev()
+        .find(|message| message.role == Role::User)
+        .expect("expected submitted user message");
+    assert!(matches!(
+        &user_message.content[0],
+        crate::message::ContentBlock::Text { text, .. } if text == "hello world"
+    ));
 }
 
 #[test]
@@ -307,11 +319,7 @@ fn test_handle_paste_multi_line() {
 
     app.handle_paste("line 1\nline 2\nline 3".to_string());
 
-    // Multi-line pastes are always collapsed into a placeholder so they
-    // cannot auto-submit line-by-line on terminals that strip bracketed
-    // paste framing (older conhost, SSH mux, web terminals). Single-line
-    // pastes are still inlined directly.
-    assert_eq!(app.input(), "[Pasted Content +3 lines]");
+    assert_eq!(app.input(), "[pasted content]");
     assert_eq!(app.pasted_contents.len(), 1);
 }
 
@@ -321,8 +329,7 @@ fn test_handle_paste_large() {
 
     app.handle_paste("a\nb\nc\nd\ne".to_string());
 
-    // Large paste (5+ lines) uses placeholder
-    assert_eq!(app.input(), "[Pasted Content +5 lines]");
+    assert_eq!(app.input(), "[pasted content]");
     assert_eq!(app.pasted_contents.len(), 1);
 }
 
@@ -330,14 +337,14 @@ fn test_handle_paste_large() {
 fn test_paste_expansion_on_submit() {
     let mut app = create_test_app();
 
-    // Type prefix, paste large content, type suffix
+    // Type prefix, paste content, type suffix
     app.handle_key(KeyCode::Char('A'), KeyModifiers::empty())
         .unwrap();
     app.handle_key(KeyCode::Char(':'), KeyModifiers::empty())
         .unwrap();
     app.handle_key(KeyCode::Char(' '), KeyModifiers::empty())
         .unwrap();
-    // Paste 5 lines to trigger placeholder
+    // Paste content into the compact token
     app.handle_paste("1\n2\n3\n4\n5".to_string());
     app.handle_key(KeyCode::Char(' '), KeyModifiers::empty())
         .unwrap();
@@ -345,7 +352,7 @@ fn test_paste_expansion_on_submit() {
         .unwrap();
 
     // Input shows placeholder
-    assert_eq!(app.input(), "A: [Pasted Content +5 lines] B");
+    assert_eq!(app.input(), "A: [pasted content] B");
 
     // Submit expands placeholder
     app.submit_input();
@@ -354,7 +361,7 @@ fn test_paste_expansion_on_submit() {
     assert_eq!(app.display_messages().len(), 1);
     assert_eq!(
         app.display_messages()[0].content,
-        "A: [Pasted Content +5 lines] B"
+        "A: [pasted content] B"
     );
 
     // Model receives expanded content (actual pasted text). Local sessions keep the
@@ -380,21 +387,20 @@ fn test_paste_expansion_on_submit() {
 fn test_multiple_pastes() {
     let mut app = create_test_app();
 
-    // First paste is single line, inlined; second is multi-line so
-    // it is collapsed into a placeholder.
+    // Single-line and multi-line pastes use the same compact token.
     app.handle_paste("first".to_string());
     app.handle_key(KeyCode::Char(' '), KeyModifiers::empty())
         .unwrap();
     app.handle_paste("second\nline".to_string());
 
-    assert_eq!(app.input(), "first [Pasted Content +2 lines]");
-    assert_eq!(app.pasted_contents.len(), 1);
+    assert_eq!(app.input(), "[pasted content] [pasted content]");
+    assert_eq!(app.pasted_contents.len(), 2);
 
     app.submit_input();
-    // Display sees the placeholder; the model sees the expanded text.
+    // Display keeps both compact tokens; the model receives both full pastes.
     assert_eq!(
         app.display_messages()[0].content,
-        "first [Pasted Content +2 lines]"
+        "[pasted content] [pasted content]"
     );
     let provider_messages = app.materialized_provider_messages();
     let user_message = provider_messages
@@ -415,6 +421,11 @@ fn test_restore_session_adds_reload_message() {
     use crate::alphacode_tui::session::Session;
 
     let mut app = create_test_app();
+    // Session persistence resolves through the process-wide ALPHACODE_HOME.
+    // Keep the save/restore pair isolated from tests that temporarily redirect it.
+    // Acquire this after app construction because the app constructor takes the
+    // render-state lock; holding the environment lock first inverts test lock order.
+    let _env_lock = crate::storage::lock_test_env();
 
     // Create and save a session with a fake provider_session_id
     let mut session = Session::create(None, None);

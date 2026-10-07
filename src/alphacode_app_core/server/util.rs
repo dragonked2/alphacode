@@ -1024,7 +1024,9 @@ mod newest_reload_candidate_integration_tests {
             .join(version);
         std::fs::create_dir_all(&dir).expect("create version dir");
         let payload = dir.join("alphacode-linux-x86_64.bin");
-        std::fs::write(&payload, format!("payload for {version}")).expect("write payload");
+        // `existing_binary` validates native executable magic before using a
+        // release candidate. Model the ELF header present in the real archive.
+        std::fs::write(&payload, b"\x7fELF\x02\x01\x01\x00").expect("write ELF payload");
         std::fs::OpenOptions::new()
             .write(true)
             .open(&payload)

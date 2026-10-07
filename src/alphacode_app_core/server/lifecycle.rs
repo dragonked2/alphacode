@@ -216,19 +216,7 @@ fn parent_pid() -> Option<u32> {
 
 #[cfg(unix)]
 pub(crate) fn process_alive(pid: u32) -> bool {
-    if pid == 0 {
-        return false;
-    }
-
-    let rc = unsafe { libc::kill(pid as libc::pid_t, 0) };
-    if rc == 0 {
-        return true;
-    }
-
-    matches!(
-        std::io::Error::last_os_error().raw_os_error(),
-        Some(libc::EPERM)
-    )
+    crate::platform::is_process_running(pid)
 }
 
 #[cfg(not(unix))]

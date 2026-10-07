@@ -164,12 +164,14 @@ fn existing_binary(path: Result<PathBuf>, label: &'static str) -> Option<(PathBu
         .map(|path| (path, label))
 }
 
-/// Check that a file looks like a valid native executable by inspecting its
-/// magic bytes. This catches a class of bugs where a previous update wrote a
-/// raw `.zip` archive (Windows) or `.tar.gz` archive (Linux/macOS) directly as
-/// the binary — the file exists and is non-empty but is not actually runnable.
+/// Check that a file resolves to a valid native executable by inspecting its
+/// magic bytes. Unix release installs may expose a small shell wrapper beside
+/// the native `.bin` payload, so validate the payload rather than rejecting a
+/// working channel candidate because its entry point is a script. This also
+/// catches updates that wrote a raw archive directly as the binary.
 fn is_valid_executable(path: &Path) -> bool {
-    let Ok(mut file) = std::fs::File::open(path) else {
+    let payload = resolve_binary_payload(path);
+    let Ok(mut file) = std::fs::File::open(payload) else {
         return false;
     };
     use std::io::Read;

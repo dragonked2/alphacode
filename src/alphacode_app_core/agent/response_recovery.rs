@@ -1,5 +1,25 @@
 use super::*;
 
+/// Preserve a parsed server retry hint when converting a provider error into
+/// the string consumed by the turn recovery classifier.
+pub(crate) fn provider_error_text_for_recovery(error: &anyhow::Error) -> String {
+    let message = error.to_string();
+    let retry_after_secs =
+        crate::alphacode_provider_core::retry_after::retry_after_from_error(error)
+            .map(|delay| delay.as_secs())
+            .filter(|seconds| *seconds > 0);
+    error_text_with_retry_after(&message, retry_after_secs)
+}
+
+/// Attach an SSE retry hint in the same shape used by the provider response
+/// body parser, so recovery honors the server's requested delay.
+pub(crate) fn error_text_with_retry_after(message: &str, retry_after_secs: Option<u64>) -> String {
+    match retry_after_secs.filter(|seconds| *seconds > 0) {
+        Some(seconds) => format!("{message}\n\"retry_after_seconds\":{seconds}"),
+        None => message.to_string(),
+    }
+}
+
 impl Agent {
     fn parse_text_wrapped_tool_call(
         text: &str,
@@ -195,6 +215,12 @@ impl Agent {
     /// Increased from 4 to 6 with wider backoff to handle longer rate-limit
     /// windows without excessive retries.
     pub(crate) const MAX_PROVIDER_ERROR_CONTINUATION_ATTEMPTS: u32 = 6;
+    /// Keep free-pool failover bounded: every retry resends the full prompt,
+    /// and rate-limit retries are especially unlikely to help the same shared
+    /// gateway account. A rate-limited Alphax Free turn gets one alternate
+    /// route; other transient free-route failures get at most two recoveries.
+    pub(crate) const MAX_FREE_POOL_RATE_LIMIT_RECOVERIES_PER_TURN: u32 = 1;
+    pub(crate) const MAX_FREE_POOL_TRANSIENT_RECOVERIES_PER_TURN: u32 = 2;
     pub(crate) fn maybe_continue_empty_post_tool_response(
         &mut self,
         visible_text_empty: bool,
@@ -353,6 +379,35 @@ impl Agent {
         }
         *attempts += 1;
         let attempt = *attempts;
+        let lower = error.to_ascii_lowercase();
+        let is_rate_limit = lower.contains("429")
+            || lower.contains("rate limit")
+            || lower.contains("rate-limited")
+            || lower.contains("too many requests")
+            || lower.contains("throttl");
+        let is_free_pool_model = super::free_pool_rotation::should_rotate_for_provider(
+            &self.provider.display_name(),
+            &self.provider.model(),
+        );
+
+        // A free-pool fallback is a complete new model request with the full
+        // conversation attached. Bound that work separately from paid/provider
+        // transient retries so an upstream 429 cannot fan out into six large
+        // requests in one user turn.
+        if is_free_pool_model {
+            let recovery_limit = if is_rate_limit {
+                Self::MAX_FREE_POOL_RATE_LIMIT_RECOVERIES_PER_TURN
+            } else {
+                Self::MAX_FREE_POOL_TRANSIENT_RECOVERIES_PER_TURN
+            };
+            if attempt > recovery_limit {
+                logging::warn(&format!(
+                    "Alphax Free automatic recovery budget exhausted after {} failed requests",
+                    attempt
+                ));
+                return Ok(None);
+            }
+        }
 
         // Free-pool rotation, before the sleep. For a rate-limited free model
         // the backoff below is the wrong remedy: it re-sends the same request
@@ -361,6 +416,15 @@ impl Agent {
         // wait is skipped entirely.
         if let Some(delay) = self.maybe_rotate_free_pool_model(error) {
             return Ok(Some(delay));
+        }
+
+        // Never resend an identical rate-limited free-pool request when there
+        // is no alternate route available.
+        if is_rate_limit && is_free_pool_model {
+            logging::warn(
+                "Alphax Free has no alternate route available; stopping automatic rate-limit retries",
+            );
+            return Ok(None);
         }
 
         let delay = retry_delay_for_error(error, attempt);
@@ -380,10 +444,6 @@ impl Agent {
         // sleeps for `delay` seconds and retries the exact same request.
         // Continuation messages are only injected for non-rate-limit transient
         // errors where the model needs to pick up where it left off.
-        let is_rate_limit = error.to_ascii_lowercase().contains("429")
-            || error.to_ascii_lowercase().contains("rate limit")
-            || error.to_ascii_lowercase().contains("too many requests")
-            || error.to_ascii_lowercase().contains("throttl");
         if !is_rate_limit {
             self.add_message(
                 Role::User,
@@ -434,7 +494,10 @@ impl Agent {
         trigger: super::free_pool_rotation::RotationTrigger,
     ) -> Option<u64> {
         let current = self.provider.model();
-        if !super::free_pool_rotation::should_rotate_for_model(&current) {
+        if !super::free_pool_rotation::should_rotate_for_provider(
+            &self.provider.display_name(),
+            &current,
+        ) {
             return None;
         }
 
@@ -481,7 +544,10 @@ impl Agent {
     /// pool the user has available to fall back on.
     pub(crate) fn note_free_pool_model_healthy(&self) {
         let model = self.provider.model();
-        if super::free_pool_rotation::should_rotate_for_model(&model) {
+        if super::free_pool_rotation::should_rotate_for_provider(
+            &self.provider.display_name(),
+            &model,
+        ) {
             super::free_pool_rotation::clear_quarantine(&model);
         }
     }

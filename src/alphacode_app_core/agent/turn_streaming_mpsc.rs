@@ -314,7 +314,7 @@ impl Agent {
                             match result {
                                 Ok(stream) => break stream,
                                 Err(e) => {
-                                    let err_text = e.to_string();
+                                    let err_text = super::response_recovery::provider_error_text_for_recovery(&e);
                                     // Transient provider / transport errors
                                     // (5xx, 429 with rate-limit words, network
                                     // EOF, ...) get an automatic "continue"
@@ -395,9 +395,6 @@ impl Agent {
             drop(messages);
             drop(split_prompt);
 
-            // Successful API call - reset retry counter
-            context_limit_retries = 0;
-
             logging::info(&format!(
                 "API stream opened in {:.2}s",
                 api_start.elapsed().as_secs_f64()
@@ -456,6 +453,7 @@ impl Agent {
                 std::collections::HashMap::new();
 
             let mut retry_after_compaction = false;
+            let mut retry_after_provider_error = false;
             let mut keepalive = stream_keepalive_ticker();
             // Dead-stream detection: track when the last real stream event
             // arrived. If the keepalive fires and the stream has been silent
@@ -541,7 +539,8 @@ impl Agent {
                 let event = match event {
                     Ok(event) => event,
                     Err(e) => {
-                        let err_str = e.to_string();
+                        let err_str =
+                            super::response_recovery::provider_error_text_for_recovery(&e);
                         if self.try_auto_compact_after_context_limit(&err_str) {
                             log_agent_provider_stream_lifecycle(
                                 logging::LogLevel::Warn,
@@ -579,6 +578,36 @@ impl Agent {
                                 summary_chars: None,
                                 active_messages: None,
                             });
+                            break;
+                        }
+                        if text_content.is_empty()
+                            && reasoning_content.is_empty()
+                            && tool_calls.is_empty()
+                            && let Some(delay) = self.maybe_continue_after_provider_error(
+                                &err_str,
+                                &mut provider_error_continuations,
+                            )?
+                        {
+                            if delay > 0 {
+                                let _ = event_tx.send(ServerEvent::StatusDetail {
+                                    detail: format!(
+                                        "Waiting {}s before retry (attempt {}/{}).",
+                                        delay,
+                                        provider_error_continuations,
+                                        Self::MAX_PROVIDER_ERROR_CONTINUATION_ATTEMPTS
+                                    ),
+                                });
+                                tokio::time::sleep(tokio::time::Duration::from_secs(delay)).await;
+                            } else if let Some(detail) = self.last_status_detail.clone() {
+                                let _ = event_tx.send(ServerEvent::StatusDetail { detail });
+                                let _ = event_tx.send(ServerEvent::ModelChanged {
+                                    id: 0,
+                                    model: self.provider.model(),
+                                    provider_name: Some(self.provider.display_name()),
+                                    error: None,
+                                });
+                            }
+                            retry_after_provider_error = true;
                             break;
                         }
                         log_agent_provider_stream_lifecycle(
@@ -1025,6 +1054,40 @@ impl Agent {
                             });
                             break;
                         }
+                        let recovery_error = super::response_recovery::error_text_with_retry_after(
+                            &message,
+                            retry_after_secs,
+                        );
+                        if text_content.is_empty()
+                            && reasoning_content.is_empty()
+                            && tool_calls.is_empty()
+                            && let Some(delay) = self.maybe_continue_after_provider_error(
+                                &recovery_error,
+                                &mut provider_error_continuations,
+                            )?
+                        {
+                            if delay > 0 {
+                                let _ = event_tx.send(ServerEvent::StatusDetail {
+                                    detail: format!(
+                                        "Waiting {}s before retry (attempt {}/{}).",
+                                        delay,
+                                        provider_error_continuations,
+                                        Self::MAX_PROVIDER_ERROR_CONTINUATION_ATTEMPTS
+                                    ),
+                                });
+                                tokio::time::sleep(tokio::time::Duration::from_secs(delay)).await;
+                            } else if let Some(detail) = self.last_status_detail.clone() {
+                                let _ = event_tx.send(ServerEvent::StatusDetail { detail });
+                                let _ = event_tx.send(ServerEvent::ModelChanged {
+                                    id: 0,
+                                    model: self.provider.model(),
+                                    provider_name: Some(self.provider.display_name()),
+                                    error: None,
+                                });
+                            }
+                            retry_after_provider_error = true;
+                            break;
+                        }
                         log_agent_provider_stream_lifecycle(
                             logging::LogLevel::Error,
                             self,
@@ -1051,6 +1114,16 @@ impl Agent {
                     logging::LogLevel::Info,
                     self,
                     "retry_after_compaction",
+                    api_start,
+                    vec![("mode", "mpsc".to_string())],
+                );
+                continue;
+            }
+            if retry_after_provider_error {
+                log_agent_provider_stream_lifecycle(
+                    logging::LogLevel::Info,
+                    self,
+                    "stream_error_auto_recovered",
                     api_start,
                     vec![("mode", "mpsc".to_string())],
                 );
@@ -1156,9 +1229,13 @@ impl Agent {
                 });
             }
 
-            // The model that just served the turn is working, so return it to
-            // service if a previous failure had quarantined it.
-            self.note_free_pool_model_healthy();
+            // `complete_split` only opens the response stream; the model has
+            // not served the turn until a successful MessageEnd arrives.
+            // Clear retry state and quarantine only after that point.
+            if saw_message_end {
+                context_limit_retries = 0;
+                self.note_free_pool_model_healthy();
+            }
 
             let had_tool_calls_before = !tool_calls.is_empty();
             self.recover_text_wrapped_tool_call(&mut text_content, &mut tool_calls);

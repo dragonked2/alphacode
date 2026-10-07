@@ -802,7 +802,7 @@ pub enum ServerEvent {
         revised_prompt: Option<String>,
     },
 
-    /// Batch tool progress update, including currently-running subcalls
+    /// Batch tool progress update, including pending, running, and completed subcalls
     #[serde(rename = "batch_progress")]
     BatchProgress { progress: BatchProgress },
 

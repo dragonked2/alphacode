@@ -493,9 +493,10 @@ pub(super) fn active_batch_progress_hash(app: &dyn TuiState) -> u64 {
         subcall.tool_call.id.hash(&mut hasher);
         subcall.tool_call.name.hash(&mut hasher);
         match subcall.state {
-            crate::bus::BatchSubcallState::Running => 0u8,
-            crate::bus::BatchSubcallState::Succeeded => 1u8,
-            crate::bus::BatchSubcallState::Failed => 2u8,
+            crate::bus::BatchSubcallState::Pending => 0u8,
+            crate::bus::BatchSubcallState::Running => 1u8,
+            crate::bus::BatchSubcallState::Succeeded => 2u8,
+            crate::bus::BatchSubcallState::Failed => 3u8,
         }
         .hash(&mut hasher);
         if let Ok(input) = serde_json::to_string(&subcall.tool_call.input) {
@@ -614,6 +615,7 @@ fn prepare_active_batch_progress(
     for subcall in &progress.subcalls {
         let (icon, icon_color) = match subcall.state {
             crate::bus::BatchSubcallState::Running => (spinner, accent),
+            crate::bus::BatchSubcallState::Pending => ("·", dim_color()),
             crate::bus::BatchSubcallState::Succeeded => {
                 hidden_completed += 1;
                 continue;

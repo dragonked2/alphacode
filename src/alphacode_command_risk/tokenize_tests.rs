@@ -64,4 +64,11 @@ fn recursive_flag_detection() {
 fn is_flag_requires_dash() {
     assert!(Token::word("-l").is_flag());
     assert!(!Token::word("file").is_flag());
+    assert!(!Token::word("/etc").is_flag());
+    assert!(!Token::word("/c").is_flag());
+    assert!(Token::word("/s").is_flag_for("rd"));
+    assert!(Token::word("/C").is_flag_for("cmd.exe"));
+    assert!(!Token::word("/c").is_flag_for("rm"));
+    assert!(Token::word("/s").is_recursive_flag_for("rd"));
+    assert!(!Token::word("/s").is_recursive_flag_for("rm"));
 }

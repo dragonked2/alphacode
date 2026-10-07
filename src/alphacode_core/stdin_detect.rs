@@ -275,14 +275,21 @@ mod macos {
     use libc::TH_STATE_WAITING;
 
     pub fn check(pid: u32) -> StdinState {
+        let Ok(pid) = i32::try_from(pid) else {
+            return StdinState::NotReading;
+        };
+        if pid <= 0 {
+            return StdinState::NotReading;
+        }
+
         // Check if fd 0 (stdin) is a pipe or pty
-        if !stdin_is_interactive(pid as i32) {
+        if !stdin_is_interactive(pid) {
             return StdinState::NotReading;
         }
 
         // Check thread states - if any thread is in WAITING state,
         // the process might be blocked on I/O
-        if is_thread_waiting(pid as i32) {
+        if is_thread_waiting(pid) {
             return StdinState::Reading;
         }
 

@@ -39,7 +39,7 @@
 //! the newline is buffered into the input instead of submitting.
 //! When the burst ends (no new Enter within `BURST_GAP`), the
 //! accumulated content is committed to the input as a single
-//! `[Pasted Content +N lines]` placeholder, exactly like the
+//! `[pasted content]` placeholder, exactly like the
 //! bracketed-paste path. The user can then edit freely above it
 //! and press Enter once to send the whole thing.
 //!
@@ -228,13 +228,9 @@ pub(super) fn insert_paste_newline(input: &mut String, cursor_pos: &mut usize) {
     *cursor_pos += 1;
 }
 
-/// Build the placeholder string for a multi-line paste.
-pub(super) fn placeholder_for(line_count: usize) -> String {
-    format!(
-        "[Pasted Content +{} line{}]",
-        line_count,
-        if line_count == 1 { "" } else { "s" }
-    )
+/// Return the compact display token used for collapsed text pastes.
+pub(super) fn placeholder_for() -> String {
+    super::PASTE_PLACEHOLDER.to_string()
 }
 
 /// Reset all burst state. Call this on submit, on Esc, on input
@@ -317,9 +313,8 @@ mod tests {
     }
 
     #[test]
-    fn placeholder_counts_lines() {
-        assert_eq!(placeholder_for(1), "[Pasted Content +1 line]");
-        assert_eq!(placeholder_for(5), "[Pasted Content +5 lines]");
+    fn placeholder_uses_a_consistent_compact_label() {
+        assert_eq!(placeholder_for(), "[pasted content]");
     }
 
     #[test]

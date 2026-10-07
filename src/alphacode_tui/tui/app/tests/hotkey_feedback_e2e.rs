@@ -72,6 +72,21 @@ fn plain_typing_never_sets_hotkey_feedback() {
 }
 
 #[test]
+fn f1_opens_and_closes_help_without_losing_the_draft() {
+    let mut app = create_test_app();
+    app.input = "keep this draft".to_string();
+    app.cursor_pos = app.input.len();
+
+    app.handle_key(KeyCode::F(1), KeyModifiers::empty()).unwrap();
+    assert_eq!(app.help_scroll, Some(0));
+    assert_eq!(app.input, "keep this draft");
+
+    app.handle_key(KeyCode::F(1), KeyModifiers::empty()).unwrap();
+    assert!(app.help_scroll.is_none());
+    assert_eq!(app.input, "keep this draft");
+}
+
+#[test]
 fn unknown_chord_notice_is_rate_limited_per_chord() {
     let mut app = create_test_app();
 

@@ -187,6 +187,15 @@ pub fn expand(raw: &str, ctx: &RiskContext) -> PathBuf {
         }
     }
 
+    // Parse explicit Windows drive paths independently of the host OS. The
+    // assessor runs on Linux/macOS too, where `Path::is_absolute()` treats
+    // `C:\Windows` as a relative filename. Joining it to the workspace then
+    // hid protected Windows targets from policy checks and made cross-platform
+    // command review unreliable.
+    if has_windows_drive_prefix(&text) {
+        return normalize(Path::new(&text.replace('\\', "/")));
+    }
+
     let path = PathBuf::from(&text);
     if path.is_absolute() {
         return normalize(&path);
@@ -202,14 +211,12 @@ pub fn expand(raw: &str, ctx: &RiskContext) -> PathBuf {
         // `/c/Users/...` is the Git-Bash mount of the system drive; map it to
         // `C:/Users/...` so it compares against the protected Windows set.
         let rest = text.trim_start_matches('/');
-        if cfg!(windows) {
-            let mut chars = rest.chars();
-            if let (Some(drive), Some('/')) = (chars.next(), chars.next())
-                && drive.is_ascii_alphabetic()
-            {
-                let mapped = format!("{drive}:/{}", &rest[drive.len_utf8() + 1..]);
-                return normalize(&PathBuf::from(mapped));
-            }
+        let mut chars = rest.chars();
+        if let (Some(drive), Some('/')) = (chars.next(), chars.next())
+            && drive.is_ascii_alphabetic()
+        {
+            let mapped = format!("{drive}:/{}", &rest[drive.len_utf8() + 1..]);
+            return normalize(&PathBuf::from(mapped));
         }
         // Any other rooted path is treated as absolute at the filesystem root.
         return normalize(&PathBuf::from(if cfg!(windows) {
@@ -230,6 +237,14 @@ pub fn expand(raw: &str, ctx: &RiskContext) -> PathBuf {
 /// check. Note this is intentionally *not* symlink-aware; see the crate docs on
 /// defense in depth.
 fn normalize(path: &Path) -> PathBuf {
+    let path_text = path.to_string_lossy();
+    let windows_path;
+    let path = if has_windows_drive_prefix(&path_text) {
+        windows_path = PathBuf::from(path_text.replace('\\', "/"));
+        windows_path.as_path()
+    } else {
+        path
+    };
     let mut out = PathBuf::new();
     for component in path.components() {
         match component {
@@ -244,6 +259,11 @@ fn normalize(path: &Path) -> PathBuf {
         return PathBuf::from("/");
     }
     out
+}
+
+fn has_windows_drive_prefix(path: &str) -> bool {
+    let bytes = path.as_bytes();
+    bytes.len() >= 2 && bytes[0].is_ascii_alphabetic() && bytes[1] == b':'
 }
 
 /// Reduce a path to a canonical, comparable, lowercase form.
