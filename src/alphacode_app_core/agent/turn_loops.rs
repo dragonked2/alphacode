@@ -87,8 +87,10 @@ impl Agent {
         // and decides the next action — the system prompt and tool list never
         // change. Rebuilding them on every iteration wastes ~50ms of CPU and
         // produces identical bytes that the provider's KV cache already ignores.
-        let mut cached_static_prompt: Option<std::sync::Arc<crate::prompt::SplitSystemPrompt>> =
-            None;
+        let mut cached_static_prompt: Option<(
+            std::sync::Arc<crate::prompt::SplitSystemPrompt>,
+            crate::prompt::PromptTier,
+        )> = None;
         let mut cached_tools: Option<Vec<ToolDefinition>> = None;
         let mut iteration_count: u32 = 0;
         let mut last_save_time = Instant::now();
@@ -145,7 +147,17 @@ impl Agent {
 
             // Reuse cached tools when available (tool list doesn't change mid-turn)
             if cached_tools.is_none() {
-                cached_tools = Some(self.tool_definitions().await);
+                let definitions = self.tool_definitions().await;
+                cached_tools = Some(if self.uses_compact_local_context() {
+                    let query = self.latest_user_text().unwrap_or_default();
+                    super::turn_execution::context_adaptive_tools(
+                        &definitions,
+                        &query,
+                        self.provider.context_window(),
+                    )
+                } else {
+                    definitions
+                });
             }
             let tools: &[ToolDefinition] = cached_tools.as_deref().unwrap();
             let messages: std::sync::Arc<[Message]> = messages.into();
@@ -158,17 +170,12 @@ impl Agent {
             // get a compact identity prompt instead of the full task prompt.
             // Reuse cached static prompt within a turn (it doesn't change between iterations)
             let (split_prompt, prompt_tier) = if let Some(ref cached) = cached_static_prompt {
-                (
-                    std::sync::Arc::clone(cached),
-                    crate::prompt::PromptTier::Standard,
-                )
+                (std::sync::Arc::clone(&cached.0), cached.1)
             } else {
                 let (sp, tier) = self.build_system_prompt_split(None, None);
-                cached_static_prompt = Some(std::sync::Arc::new(sp));
-                (
-                    std::sync::Arc::clone(cached_static_prompt.as_ref().unwrap()),
-                    tier,
-                )
+                let sp = std::sync::Arc::new(sp);
+                cached_static_prompt = Some((std::sync::Arc::clone(&sp), tier));
+                (sp, tier)
             };
             self.log_prompt_prefix_accounting(&split_prompt, tools, prompt_tier);
 

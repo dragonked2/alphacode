@@ -1,6 +1,6 @@
 [package]
 name = "alphacode"
-version = "1.0.70"
+version = "1.0.73"
 authors = ["Ali Essam <tlbbeg313@gmail.com>"]
 description = "Terminal-native coding agent with multi-model orchestration, swarm coordination, and 40+ tools — built to make the smallest change that solves the problem."
 homepage = "https://alphacli.github.io/"

@@ -26,6 +26,7 @@ impl Agent {
         }
         let tier_label = match tier {
             crate::prompt::PromptTier::Minimal => "minimal",
+            crate::prompt::PromptTier::Compact => "compact",
             crate::prompt::PromptTier::Standard => "standard",
         };
         logging::info(&format!(
@@ -243,6 +244,7 @@ impl Agent {
             Some(text) if crate::prompt::looks_like_trivial_chat(&text) => {
                 crate::prompt::PromptTier::Minimal
             }
+            Some(_) if self.uses_compact_local_context() => crate::prompt::PromptTier::Compact,
             _ => crate::prompt::PromptTier::Standard,
         }
     }
@@ -250,7 +252,7 @@ impl Agent {
     /// Returns the textual content of the most recent user message, if any.
     /// Walks backwards through the stored messages to find the last `User`
     /// role and concatenates any text blocks.
-    fn latest_user_text(&self) -> Option<String> {
+    pub(super) fn latest_user_text(&self) -> Option<String> {
         for stored in self.session.messages.iter().rev() {
             if stored.role == Role::User {
                 let mut out = String::new();

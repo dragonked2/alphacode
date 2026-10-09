@@ -3677,6 +3677,23 @@ mod llamacpp_compat_tests {
         assert_eq!(provider.context_window(), 4096);
     }
 
+    #[tokio::test]
+    async fn local_provider_prefers_learned_runtime_window_over_catalog_training_limit() {
+        let model = "learned-catalog-window-model";
+        let provider = local_no_auth_provider(model);
+        provider.models_cache.write().await.models.push(ModelInfo {
+            id: model.to_string(),
+            name: model.to_string(),
+            context_length: Some(131_072),
+            pricing: ModelPricing::default(),
+            created: None,
+        });
+
+        record_learned_context_limit(&provider.api_base, model, 4096);
+
+        assert_eq!(provider.context_window(), 4096);
+    }
+
     #[test]
     fn local_endpoint_context_hint_names_the_ollama_knob() {
         let ollama = local_endpoint_context_hint("http://localhost:11434/v1");

@@ -243,7 +243,7 @@ impl App {
         let mut pos = self.cursor_pos;
 
         // Move back one char
-        pos = core::prev_char_boundary(&self.input, pos);
+        pos = core::prev_grapheme_boundary(&self.input, pos);
 
         // Skip trailing whitespace
         while pos > 0 {
@@ -251,12 +251,12 @@ impl App {
             if !ch.is_whitespace() {
                 break;
             }
-            pos = core::prev_char_boundary(&self.input, pos);
+            pos = core::prev_grapheme_boundary(&self.input, pos);
         }
 
         // Skip word characters
         while pos > 0 {
-            let prev = core::prev_char_boundary(&self.input, pos);
+            let prev = core::prev_grapheme_boundary(&self.input, pos);
             let ch = self.input[prev..].chars().next().unwrap_or(' ');
             if ch.is_whitespace() {
                 break;
@@ -281,7 +281,7 @@ impl App {
             if ch.is_whitespace() {
                 break;
             }
-            pos = core::next_char_boundary(&self.input, pos);
+            pos = core::next_grapheme_boundary(&self.input, pos);
         }
 
         // Skip whitespace
@@ -290,7 +290,7 @@ impl App {
             if !ch.is_whitespace() {
                 break;
             }
-            pos = core::next_char_boundary(&self.input, pos);
+            pos = core::next_grapheme_boundary(&self.input, pos);
         }
 
         pos

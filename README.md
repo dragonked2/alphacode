@@ -288,6 +288,14 @@ alphacode model use <model>        # switch model
 
 In the TUI, press `Ctrl+T` to open the model/provider selector.
 
+For direct local OpenAI-compatible servers such as LM Studio or Ollama,
+AlphaCode uses the server's reported context window when available. On local
+models up to 32K context, it also uses a shorter task prompt and sends only a
+bounded set of relevant tool schemas; greetings need no tool schemas. This
+reduces avoidable prompt overhead but does not increase the context configured
+in the model server. Set the context length in the server when loading the
+model and leave room for the response.
+
 ### Signing in with a provider
 
 Most providers work from an environment variable such as `ANTHROPIC_API_KEY` or `OPENAI_API_KEY`. Run `alphacode login` from your shell, or `/login` inside AlphaCode, for interactive flows.

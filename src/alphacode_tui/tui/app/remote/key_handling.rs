@@ -845,7 +845,7 @@ async fn handle_remote_key_internal(
         }
         KeyCode::Backspace => {
             if app.cursor_pos > 0 {
-                let prev = core::prev_char_boundary(&app.input, app.cursor_pos);
+                let prev = core::prev_grapheme_boundary(&app.input, app.cursor_pos);
                 app.remember_input_undo_state();
                 app.input.drain(prev..app.cursor_pos);
                 app.cursor_pos = prev;
@@ -855,7 +855,7 @@ async fn handle_remote_key_internal(
         }
         KeyCode::Delete => {
             if app.cursor_pos < app.input.len() {
-                let next = core::next_char_boundary(&app.input, app.cursor_pos);
+                let next = core::next_grapheme_boundary(&app.input, app.cursor_pos);
                 app.remember_input_undo_state();
                 app.input.drain(app.cursor_pos..next);
                 app.reset_tab_completion();
@@ -864,7 +864,7 @@ async fn handle_remote_key_internal(
         }
         KeyCode::Left => {
             if app.cursor_pos > 0 {
-                app.cursor_pos = core::prev_char_boundary(&app.input, app.cursor_pos);
+                app.cursor_pos = core::prev_grapheme_boundary(&app.input, app.cursor_pos);
             } else {
                 // Opt-in: Left on an empty input opens the active sessions
                 // manager (no-op unless display.active_sessions_manager).
@@ -873,7 +873,7 @@ async fn handle_remote_key_internal(
         }
         KeyCode::Right => {
             if app.cursor_pos < app.input.len() {
-                app.cursor_pos = core::next_char_boundary(&app.input, app.cursor_pos);
+                app.cursor_pos = core::next_grapheme_boundary(&app.input, app.cursor_pos);
             }
         }
         KeyCode::Home => {

@@ -6,6 +6,38 @@ adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [1.0.73] - 2026-10-09
+
+### Changed
+
+- Direct local models with context windows up to 32K now receive a compact
+  task prompt and a bounded, query-relevant tool catalog. Trivial chat turns
+  omit tool schemas entirely.
+
+### Performance
+
+- In the captured LM Studio `hello` reproduction, estimated prompt-prefix
+  overhead fell from 30,465 tokens (including 30,318 tool-schema tokens) to
+  147 tokens. This is a single-request context measurement, not a latency
+  benchmark.
+
+### Fixed
+
+- Keep the compaction budget aligned with the active provider after model or
+  route switches, and use a server-learned local runtime context even when the
+  model catalog advertises a larger trained context.
+- Restart the outer turn after provider retry or context compaction so an
+  already-completed request future is not polled again.
+- Treat visible grapheme clusters as the unit for composer cursor movement,
+  deletion, mouse placement, wrapping, and display-width calculations. Combining
+  marks and joined emoji now stay intact while editing and resizing the input.
+
+### Security
+
+- Replaced the oversized default system prompt, which contained unsafe blanket
+  authorization and refusal-bypass guidance, with concise engineering and
+  security rules that preserve scope and treat external content as untrusted.
+
 ## [1.0.70] - 2026-10-07
 
 ### Changed

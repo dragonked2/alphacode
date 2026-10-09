@@ -461,6 +461,10 @@ pub enum PromptTier {
     /// turn. Skips AGENTS.md, prompt overlays, preferred-tools, skill listing,
     /// self-dev block, and (by default) the mermaid block. Under 1 KB.
     Minimal,
+    /// Short task prompt for small local context windows. Keeps core operating
+    /// rules and explicit project/user instructions while dropping the bundled
+    /// playbook and skill catalog.
+    Compact,
     /// Full system prompt with overlays, skills, selfdev if applicable, etc.
     /// Used as soon as the model might need to act on the workspace.
     Standard,
@@ -641,6 +645,38 @@ pub fn build_system_prompt_split_with_tier(
             static_parts.push(MERMAID_PROMPT.to_string());
         }
         info.system_prompt_chars = static_parts.join("\n\n").len();
+    } else if tier == PromptTier::Compact {
+        // Small local models cannot carry the full operating manual alongside
+        // tool schemas and conversation history. Keep explicit project and
+        // user instructions while omitting the bundled playbook and skill list.
+        static_parts.clear();
+        static_parts.push(COMPACT_AGENT_PROMPT.to_string());
+        if capabilities.mermaid {
+            static_parts.push(MERMAID_PROMPT.to_string());
+        }
+
+        let (md_content, md_info) = load_agents_md_files_from_dir(working_dir);
+        if let Some(content) = md_content {
+            static_parts.push(content);
+        }
+        info.has_project_agents_md = md_info.has_project_agents_md;
+        info.project_agents_md_chars = md_info.project_agents_md_chars;
+        info.has_global_agents_md = md_info.has_global_agents_md;
+        info.global_agents_md_chars = md_info.global_agents_md_chars;
+
+        let (overlay_content, overlay_chars) = load_prompt_overlay_files_from_dir(working_dir);
+        if let Some(content) = overlay_content {
+            info.prompt_overlay_chars = overlay_chars;
+            static_parts.push(content);
+        }
+
+        let (preferred_tools_content, preferred_tools_chars) =
+            load_preferred_tools_files_from_dir(working_dir);
+        if let Some(content) = preferred_tools_content {
+            static_parts.push(content);
+            info.preferred_tools_chars = preferred_tools_chars;
+        }
+        info.system_prompt_chars = static_parts.join("\n\n").len();
     } else {
         // Add self-dev guidance only in active self-dev sessions. Normal sessions
         // learn about the on-ramp from the mode-aware `selfdev` tool schema.
@@ -726,6 +762,13 @@ pub const MINIMAL_IDENTITY_PROMPT: &str = "\
 You are **Alphacode**, an autonomous software engineering and security research agent created by **Ali Essam** (https://github.com/dragonked2/alphacode).
 
 You answer in plain text. Do not assume tool use is required. If the user is greeting you, asking what you can do, or otherwise making small talk, just respond conversationally and ask what they want to work on. Do not fabricate tool output. If the user asks you to do something you cannot do without tools, tell them and ask them to enable the relevant tool or rephrase.";
+
+/// Short task-capable system prompt for direct local models with limited
+/// context. Explicit project/user instructions are appended by the builder.
+pub const COMPACT_AGENT_PROMPT: &str = "\
+# Alphacode
+
+You are Alphacode, an autonomous software engineering and security research agent. Follow the user's request and the project instructions included below. Inspect relevant files before editing and preserve unrelated changes. Use tools when needed, and report what you actually changed or verified. For security work, stay within authorized scope and distinguish confirmed findings from hypotheses. Keep answers concise.";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum SelfDevProductContext {

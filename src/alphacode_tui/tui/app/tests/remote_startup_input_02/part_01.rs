@@ -838,6 +838,41 @@ fn test_handle_key_cursor_movement() {
 }
 
 #[test]
+fn test_handle_key_edits_extended_grapheme_clusters_atomically() {
+    let mut app = create_test_app();
+    let family = "👨‍👩‍👧‍👦";
+    let combining = "e\u{301}";
+    let input = format!("A{family}{combining}");
+    app.set_input_for_test(input.clone());
+
+    app.handle_key(KeyCode::Left, KeyModifiers::empty())
+        .unwrap();
+    assert_eq!(app.cursor_pos(), input.len() - combining.len());
+    app.handle_key(KeyCode::Left, KeyModifiers::empty())
+        .unwrap();
+    assert_eq!(app.cursor_pos(), "A".len());
+
+    app.handle_key(KeyCode::Right, KeyModifiers::empty())
+        .unwrap();
+    app.handle_key(KeyCode::Backspace, KeyModifiers::empty())
+        .unwrap();
+    assert_eq!(app.input(), format!("A{combining}"));
+    assert_eq!(app.cursor_pos(), "A".len());
+
+    app.set_input_for_test(input);
+    app.cursor_pos = "A".len();
+    app.handle_key(KeyCode::Delete, KeyModifiers::empty())
+        .unwrap();
+    assert_eq!(app.input(), format!("A{combining}"));
+    assert_eq!(app.cursor_pos(), "A".len());
+
+    app.handle_key(KeyCode::End, KeyModifiers::empty()).unwrap();
+    app.handle_key(KeyCode::Backspace, KeyModifiers::empty())
+        .unwrap();
+    assert_eq!(app.input(), "A");
+}
+
+#[test]
 fn test_handle_key_ctrl_word_movement_and_delete() {
     let mut app = create_test_app();
     app.set_input_for_test("hello world again");

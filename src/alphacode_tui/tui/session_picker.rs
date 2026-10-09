@@ -1082,7 +1082,7 @@ impl SessionPicker {
         let mut end = query.len();
         // Skip trailing whitespace.
         while end > 0 {
-            let prev = super::core::prev_char_boundary(query, end);
+            let prev = super::core::prev_grapheme_boundary(query, end);
             let ch = query[prev..].chars().next().unwrap_or(' ');
             if !ch.is_whitespace() {
                 break;
@@ -1091,7 +1091,7 @@ impl SessionPicker {
         }
         // Skip the word characters.
         while end > 0 {
-            let prev = super::core::prev_char_boundary(query, end);
+            let prev = super::core::prev_grapheme_boundary(query, end);
             let ch = query[prev..].chars().next().unwrap_or(' ');
             if ch.is_whitespace() {
                 break;

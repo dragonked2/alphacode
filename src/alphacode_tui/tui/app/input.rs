@@ -2760,8 +2760,10 @@ pub(super) fn handle_basic_key(app: &mut App, code: KeyCode) -> bool {
         KeyCode::Char(c) => handle_text_input(app, &c.to_string()),
         KeyCode::Backspace => {
             if app.cursor_pos > 0 {
-                let prev =
-                    crate::alphacode_tui::tui::core::prev_char_boundary(&app.input, app.cursor_pos);
+                let prev = crate::alphacode_tui::tui::core::prev_grapheme_boundary(
+                    &app.input,
+                    app.cursor_pos,
+                );
                 app.remember_input_undo_state();
                 app.input.drain(prev..app.cursor_pos);
                 app.cursor_pos = prev;
@@ -2772,8 +2774,10 @@ pub(super) fn handle_basic_key(app: &mut App, code: KeyCode) -> bool {
         }
         KeyCode::Delete => {
             if app.cursor_pos < app.input.len() {
-                let next =
-                    crate::alphacode_tui::tui::core::next_char_boundary(&app.input, app.cursor_pos);
+                let next = crate::alphacode_tui::tui::core::next_grapheme_boundary(
+                    &app.input,
+                    app.cursor_pos,
+                );
                 app.remember_input_undo_state();
                 app.input.drain(app.cursor_pos..next);
                 app.reset_tab_completion();
@@ -2783,8 +2787,10 @@ pub(super) fn handle_basic_key(app: &mut App, code: KeyCode) -> bool {
         }
         KeyCode::Left => {
             if app.cursor_pos > 0 {
-                app.cursor_pos =
-                    crate::alphacode_tui::tui::core::prev_char_boundary(&app.input, app.cursor_pos);
+                app.cursor_pos = crate::alphacode_tui::tui::core::prev_grapheme_boundary(
+                    &app.input,
+                    app.cursor_pos,
+                );
             } else {
                 // Opt-in: Left on an empty input opens the active sessions
                 // manager (no-op unless display.active_sessions_manager).
@@ -2794,8 +2800,10 @@ pub(super) fn handle_basic_key(app: &mut App, code: KeyCode) -> bool {
         }
         KeyCode::Right => {
             if app.cursor_pos < app.input.len() {
-                app.cursor_pos =
-                    crate::alphacode_tui::tui::core::next_char_boundary(&app.input, app.cursor_pos);
+                app.cursor_pos = crate::alphacode_tui::tui::core::next_grapheme_boundary(
+                    &app.input,
+                    app.cursor_pos,
+                );
             }
             true
         }

@@ -132,14 +132,19 @@ impl Agent {
             return false;
         }
 
-        let context_limit = self.provider.context_window() as u64;
+        let context_limit = self.provider.context_window();
         let compaction = self.registry.compaction();
 
         let (dropped, usage_pct) = match compaction.try_write() {
             Ok(mut manager) => {
+                // The model may have changed since the compaction manager was
+                // seeded (for example, when the user switches from a cloud
+                // model to a 16K local server). Keep both its budget and its
+                // observed-token estimate aligned with the active provider.
+                manager.set_budget(context_limit);
                 let (dropped, usage_pct) = {
                     let all_messages = self.session.provider_messages();
-                    manager.update_observed_input_tokens(context_limit);
+                    manager.update_observed_input_tokens(context_limit as u64);
                     let usage_pct = manager.context_usage_with(all_messages) * 100.0;
                     let dropped = match manager.hard_compact_with(all_messages) {
                         Ok(dropped) => dropped,

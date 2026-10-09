@@ -255,6 +255,10 @@ impl Provider for AlphacodeProvider {
         self.inner.context_window()
     }
 
+    fn is_local_endpoint(&self) -> bool {
+        self.inner.is_local_endpoint()
+    }
+
     fn fork(&self) -> Arc<dyn Provider> {
         self.ensure_runtime_mode();
         let forked = Self::new();

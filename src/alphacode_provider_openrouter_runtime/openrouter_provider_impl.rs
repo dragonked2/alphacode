@@ -777,6 +777,16 @@ impl Provider for OpenRouterProvider {
         // the (large) provider default and over-budgeting the request. See #403.
         let raw_model = self.model();
         let model_id = self.strip_session_profile_prefix(&raw_model).to_string();
+        // A local server's observed runtime window (learned from an explicit
+        // context-overflow response) is more authoritative than a catalog's
+        // trained-model context length. Catalogs often report the model's
+        // maximum even when the server loaded it with a smaller `n_ctx`.
+        if !self.supports_provider_features
+            && crate::alphacode_base::provider_catalog::openai_compat_base_is_local(&self.api_base)
+            && let Some(learned) = super::learned_context_limit(&self.api_base, &model_id)
+        {
+            return learned;
+        }
         // Try cached model data from OpenRouter API
         let cache = self.models_cache.try_read();
         if let Ok(cache) = cache
@@ -794,14 +804,6 @@ impl Provider for OpenRouterProvider {
             && let Some(ctx) = model.context_length
         {
             return ctx as usize;
-        }
-        // A local/direct server that already rejected a request with an
-        // explicit `n_ctx` is the most authoritative source available: the
-        // runtime window it was actually started with. It beats the live
-        // catalog here because Ollama-style servers advertise the model's
-        // *trained* window in `/v1/models` while serving far less.
-        if let Some(learned) = super::learned_context_limit(&self.api_base, &model_id) {
-            return learned;
         }
         let normalized_model_id = model_id.trim().to_ascii_lowercase();
         if let Some(limit) = self.static_context_limits.get(&normalized_model_id) {
@@ -848,6 +850,11 @@ impl Provider for OpenRouterProvider {
             return super::local_direct_context_fallback();
         }
         crate::alphacode_provider_core::DEFAULT_CONTEXT_LIMIT
+    }
+
+    fn is_local_endpoint(&self) -> bool {
+        !self.supports_provider_features
+            && crate::alphacode_base::provider_catalog::openai_compat_base_is_local(&self.api_base)
     }
 
     fn fork(&self) -> Arc<dyn Provider> {

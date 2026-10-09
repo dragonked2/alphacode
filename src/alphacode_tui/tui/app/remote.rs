@@ -1879,7 +1879,7 @@ fn handle_disconnected_key_internal(
         KeyCode::Char(c) => handle_remote_char_input(app, c),
         KeyCode::Backspace => {
             if app.cursor_pos > 0 {
-                let prev = super::super::core::prev_char_boundary(&app.input, app.cursor_pos);
+                let prev = super::super::core::prev_grapheme_boundary(&app.input, app.cursor_pos);
                 app.remember_input_undo_state();
                 app.input.drain(prev..app.cursor_pos);
                 app.cursor_pos = prev;
@@ -1889,7 +1889,7 @@ fn handle_disconnected_key_internal(
         }
         KeyCode::Delete => {
             if app.cursor_pos < app.input.len() {
-                let next = super::super::core::next_char_boundary(&app.input, app.cursor_pos);
+                let next = super::super::core::next_grapheme_boundary(&app.input, app.cursor_pos);
                 app.remember_input_undo_state();
                 app.input.drain(app.cursor_pos..next);
                 app.reset_tab_completion();
@@ -1898,12 +1898,14 @@ fn handle_disconnected_key_internal(
         }
         KeyCode::Left => {
             if app.cursor_pos > 0 {
-                app.cursor_pos = super::super::core::prev_char_boundary(&app.input, app.cursor_pos);
+                app.cursor_pos =
+                    super::super::core::prev_grapheme_boundary(&app.input, app.cursor_pos);
             }
         }
         KeyCode::Right => {
             if app.cursor_pos < app.input.len() {
-                app.cursor_pos = super::super::core::next_char_boundary(&app.input, app.cursor_pos);
+                app.cursor_pos =
+                    super::super::core::next_grapheme_boundary(&app.input, app.cursor_pos);
             }
         }
         KeyCode::Home => app.cursor_pos = 0,

@@ -1,6 +1,13 @@
 use super::*;
 
 impl Agent {
+    fn sync_compaction_budget_to_provider(&self) {
+        let compaction = self.registry.compaction();
+        if let Ok(mut manager) = compaction.try_write() {
+            manager.set_budget(self.provider.context_window());
+        }
+    }
+
     pub fn set_premium_mode(&self, mode: crate::provider::copilot::PremiumMode) {
         self.provider.set_premium_mode(mode);
     }
@@ -98,6 +105,7 @@ impl Agent {
         self.session.provider_key = Some(selection.runtime_key.stable_id());
         self.session.route_api_method = Some(selection.api_method.clone());
         self.session.model = Some(resolved_model.clone());
+        self.sync_compaction_budget_to_provider();
         let event = crate::provider::ProviderStateEvent::selected_model(source, resolved_model);
         self.provider_runtime_state.apply(event);
         self.persist_session_best_effort("route selection");
@@ -126,6 +134,7 @@ impl Agent {
                 self.session.provider_key.as_deref(),
             );
         self.session.model = Some(resolved_model.clone());
+        self.sync_compaction_budget_to_provider();
         let event = crate::provider::ProviderStateEvent::selected_model(source, resolved_model);
         self.provider_runtime_state.apply(event);
         self.persist_session_best_effort("model selection");

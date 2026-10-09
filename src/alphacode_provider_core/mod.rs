@@ -447,6 +447,14 @@ pub trait Provider: Send + Sync {
             .unwrap_or(DEFAULT_CONTEXT_LIMIT)
     }
 
+    /// Whether the active endpoint is a local model server. Providers that
+    /// multiplex endpoints should override this so prompt construction can
+    /// avoid sending cloud-sized prompts and tool catalogs to small local
+    /// context windows.
+    fn is_local_endpoint(&self) -> bool {
+        false
+    }
+
     // ========================================================================
     // Decision Plane capability
     // ========================================================================

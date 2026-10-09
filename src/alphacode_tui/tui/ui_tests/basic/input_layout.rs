@@ -90,6 +90,52 @@ fn test_wrap_input_text_simple() {
 }
 
 #[test]
+fn test_wrap_input_text_keeps_joined_emoji_together() {
+    use unicode_width::UnicodeWidthStr;
+
+    let family = "👨‍👩‍👧‍👦";
+    assert_eq!(family.width(), 2);
+    let input = format!("ab{family}x");
+    let (lines, cursor_line, cursor_col) =
+        input_ui::wrap_input_text(&input, input.len(), 4, "1", "> ", user_color(), 3);
+
+    assert_eq!(lines.len(), 2);
+    let first_line: String = lines[0]
+        .spans
+        .iter()
+        .map(|span| span.content.as_ref())
+        .collect();
+    let second_line: String = lines[1]
+        .spans
+        .iter()
+        .map(|span| span.content.as_ref())
+        .collect();
+    assert!(first_line.ends_with(family), "{first_line:?}");
+    assert!(second_line.ends_with('x'), "{second_line:?}");
+    assert_eq!((cursor_line, cursor_col), (1, 1));
+}
+
+#[test]
+fn test_wrap_input_text_positions_cursor_after_combining_and_joined_emoji() {
+    use unicode_width::UnicodeWidthStr;
+
+    let input = "a👩🏽‍💻e\u{301}";
+    let expected_width = "a".width() + "👩🏽‍💻".width() + "e\u{301}".width();
+    let (_, cursor_line, cursor_col) = input_ui::wrap_input_text(
+        input,
+        input.len(),
+        80,
+        "1",
+        "> ",
+        user_color(),
+        3,
+    );
+
+    assert_eq!(cursor_line, 0);
+    assert_eq!(cursor_col, expected_width);
+}
+
+#[test]
 fn test_wrap_input_text_cursor_middle() {
     let (lines, cursor_line, cursor_col) =
         input_ui::wrap_input_text("hello world", 6, 80, "1", "> ", user_color(), 3);

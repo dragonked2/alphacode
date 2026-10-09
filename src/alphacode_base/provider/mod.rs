@@ -2664,6 +2664,13 @@ impl Provider for MultiProvider {
         }
     }
 
+    fn is_local_endpoint(&self) -> bool {
+        matches!(self.active_provider(), ActiveProvider::OpenRouter)
+            && self
+                .active_openrouter_execution_provider()
+                .is_some_and(|provider| provider.is_local_endpoint())
+    }
+
     fn fork(&self) -> Arc<dyn Provider> {
         let current_model = self.model();
         let active = self.active_provider();

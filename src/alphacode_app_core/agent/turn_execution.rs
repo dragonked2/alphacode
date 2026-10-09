@@ -1,7 +1,222 @@
 use super::*;
 use crate::{terminal_eprintln as eprintln, terminal_println as println};
 
+const LOCAL_ADAPTIVE_CONTEXT_LIMIT: usize = 32_768;
+
+fn strip_schema_annotations(schema: &mut serde_json::Value) {
+    match schema {
+        serde_json::Value::Object(object) => {
+            object.remove("description");
+            object.remove("title");
+            object.remove("examples");
+            for value in object.values_mut() {
+                strip_schema_annotations(value);
+            }
+        }
+        serde_json::Value::Array(items) => {
+            for value in items {
+                strip_schema_annotations(value);
+            }
+        }
+        _ => {}
+    }
+}
+
+fn compact_tool_definition(tool: &ToolDefinition) -> ToolDefinition {
+    let mut compact = tool.clone();
+    let description = compact.description.trim().to_string();
+    let first_paragraph = description.split("\n\n").next().unwrap_or(&description);
+    let mut end = first_paragraph.len().min(480);
+    while !first_paragraph.is_char_boundary(end) {
+        end -= 1;
+    }
+    let truncated = end < first_paragraph.len();
+    compact.description = first_paragraph[..end].trim().to_string();
+    if truncated {
+        compact.description.push('…');
+    }
+    strip_schema_annotations(&mut compact.input_schema);
+    compact
+}
+
+fn tool_terms(text: &str) -> std::collections::HashSet<String> {
+    const STOP_WORDS: &[&str] = &[
+        "a",
+        "about",
+        "after",
+        "all",
+        "also",
+        "an",
+        "and",
+        "any",
+        "are",
+        "as",
+        "at",
+        "be",
+        "before",
+        "but",
+        "by",
+        "can",
+        "could",
+        "do",
+        "for",
+        "from",
+        "get",
+        "give",
+        "help",
+        "how",
+        "i",
+        "in",
+        "into",
+        "is",
+        "it",
+        "me",
+        "my",
+        "of",
+        "on",
+        "or",
+        "please",
+        "should",
+        "some",
+        "that",
+        "the",
+        "their",
+        "them",
+        "there",
+        "this",
+        "to",
+        "use",
+        "using",
+        "want",
+        "we",
+        "what",
+        "when",
+        "where",
+        "which",
+        "with",
+        "would",
+        "you",
+        "your",
+        "alphacode",
+        "tool",
+        "tools",
+    ];
+    text.split(|character: char| !character.is_ascii_alphanumeric())
+        .filter_map(|word| {
+            let word = word.to_ascii_lowercase();
+            (word.len() > 2 && !STOP_WORDS.contains(&word.as_str())).then_some(word)
+        })
+        .collect()
+}
+
+fn local_tool_relevance(
+    tool: &ToolDefinition,
+    query: &str,
+    terms: &std::collections::HashSet<String>,
+) -> i32 {
+    let name = tool.name.to_ascii_lowercase();
+    let description = tool.description.to_ascii_lowercase();
+    let mut score = 0;
+    if query.to_ascii_lowercase().contains(&name) {
+        score += 100;
+    }
+    for term in terms {
+        if name
+            .split(|character: char| !character.is_ascii_alphanumeric())
+            .any(|part| part == term)
+        {
+            score += 12;
+        } else if description.contains(term) {
+            score += 3;
+        }
+    }
+    if matches!(
+        tool.name.as_str(),
+        "bash"
+            | "read"
+            | "write"
+            | "edit"
+            | "multiedit"
+            | "apply_patch"
+            | "patch"
+            | "agentgrep"
+            | "grep"
+            | "glob"
+            | "ls"
+    ) {
+        score += 1;
+    }
+    score
+}
+
+pub(super) fn context_adaptive_tools(
+    tools: &[ToolDefinition],
+    query: &str,
+    context_window: usize,
+) -> Vec<ToolDefinition> {
+    if crate::prompt::looks_like_trivial_chat(query) {
+        return Vec::new();
+    }
+
+    // At 4K this reserves roughly 1K tokens for schemas, leaving room for a
+    // compact system prompt, recent conversation and a bounded completion.
+    let budget = (context_window / 4).clamp(512, 8_192);
+    let terms = tool_terms(query);
+    let mut candidates: Vec<(i32, usize, &ToolDefinition, ToolDefinition)> = tools
+        .iter()
+        .map(|tool| {
+            let compact = compact_tool_definition(tool);
+            let cost = compact.prompt_token_estimate();
+            (
+                local_tool_relevance(tool, query, &terms),
+                cost,
+                tool,
+                compact,
+            )
+        })
+        .filter(|(score, _, _, _)| *score > 0)
+        .collect();
+    candidates.sort_by(|left, right| {
+        right
+            .0
+            .cmp(&left.0)
+            .then_with(|| left.1.cmp(&right.1))
+            .then_with(|| left.2.name.cmp(&right.2.name))
+    });
+
+    let mut selected = Vec::new();
+    let mut used_tokens = 0usize;
+    for (_, cost, _, compact) in candidates {
+        if selected.len() >= 16 || used_tokens.saturating_add(cost) > budget {
+            continue;
+        }
+        used_tokens += cost;
+        selected.push(compact);
+    }
+
+    // Keep at least one useful tool available for non-trivial work, even when
+    // every schema is larger than the initial quarter-window budget.
+    if selected.is_empty()
+        && let Some((_, _, cheapest)) = tools
+            .iter()
+            .map(|tool| {
+                let compact = compact_tool_definition(tool);
+                (compact.prompt_token_estimate(), tool.name.as_str(), compact)
+            })
+            .min_by(|left, right| left.0.cmp(&right.0).then_with(|| left.1.cmp(right.1)))
+    {
+        selected.push(cheapest);
+    }
+    selected.sort_by(|left, right| left.name.cmp(&right.name));
+    selected
+}
+
 impl Agent {
+    pub(super) fn uses_compact_local_context(&self) -> bool {
+        self.provider.is_local_endpoint()
+            && self.provider.context_window() <= LOCAL_ADAPTIVE_CONTEXT_LIMIT
+    }
+
     /// Run a single turn with the given user message
     pub async fn run_once(&mut self, user_message: &str) -> Result<()> {
         self.add_message(
@@ -977,5 +1192,97 @@ impl Agent {
                 0
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod local_context_tests {
+    use super::*;
+    use serde_json::json;
+
+    fn definition(
+        name: &str,
+        description: String,
+        input_schema: serde_json::Value,
+    ) -> ToolDefinition {
+        ToolDefinition {
+            name: name.to_string(),
+            description,
+            input_schema,
+        }
+    }
+
+    #[test]
+    fn trivial_local_chat_does_not_advertise_tools() {
+        let tools = vec![definition(
+            "bash",
+            "Run a shell command".to_string(),
+            json!({}),
+        )];
+        assert!(context_adaptive_tools(&tools, "hello", 16_384).is_empty());
+    }
+
+    #[test]
+    fn local_task_gets_compact_relevant_tools_within_its_schema_budget() {
+        let annotated_schema = json!({
+            "type": "object",
+            "title": "Search arguments",
+            "description": "Search source files by a query.",
+            "properties": {
+                "query": {
+                    "type": "string",
+                    "title": "Query",
+                    "description": "Text to search for.",
+                    "examples": ["context_window"]
+                }
+            },
+            "required": ["query"]
+        });
+        let mut tools = vec![
+            definition(
+                "agentgrep",
+                "Search source code for matching definitions.".to_string(),
+                annotated_schema,
+            ),
+            definition("read", "Read a file".to_string(), json!({"type":"object"})),
+            definition(
+                "write",
+                "Write a file".to_string(),
+                json!({"type":"object"}),
+            ),
+        ];
+        for index in 0..83 {
+            tools.push(definition(
+                &format!("unrelated_{index}"),
+                format!(
+                    "{}\n\nAdditional details that are unnecessary for this request.",
+                    "An unrelated specialized workflow. ".repeat(24)
+                ),
+                json!({"type":"object", "properties":{"payload":{"type":"string"}}}),
+            ));
+        }
+
+        let selected = context_adaptive_tools(
+            &tools,
+            "Search the repository source for the function definition",
+            16_384,
+        );
+
+        assert!(selected.len() < tools.len());
+        assert!(selected.iter().any(|tool| tool.name == "agentgrep"));
+        assert!(selected.iter().any(|tool| tool.name == "read"));
+        assert!(ToolDefinition::aggregate_prompt_token_estimate(&selected) <= 4_096);
+        let search = selected
+            .iter()
+            .find(|tool| tool.name == "agentgrep")
+            .expect("relevant search tool should remain available");
+        assert_eq!(
+            search.input_schema,
+            json!({
+                "type": "object",
+                "properties": {"query": {"type": "string"}},
+                "required": ["query"]
+            })
+        );
     }
 }

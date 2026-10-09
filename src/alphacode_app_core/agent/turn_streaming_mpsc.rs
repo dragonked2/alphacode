@@ -117,10 +117,12 @@ impl Agent {
         // and decides the next action — the system prompt and tool list never
         // change. Rebuilding them on every iteration wastes CPU and produces
         // identical bytes that the provider's KV cache already ignores.
-        let mut cached_static_prompt: Option<std::sync::Arc<crate::prompt::SplitSystemPrompt>> =
-            None;
+        let mut cached_static_prompt: Option<(
+            std::sync::Arc<crate::prompt::SplitSystemPrompt>,
+            crate::prompt::PromptTier,
+        )> = None;
         let mut cached_tools: Option<Vec<ToolDefinition>> = None;
-        loop {
+        'turn: loop {
             let repaired = self.repair_missing_tool_outputs();
             if repaired > 0 {
                 logging::warn(&format!(
@@ -159,7 +161,17 @@ impl Agent {
 
             // Reuse cached tools when available (tool list doesn't change mid-turn)
             if cached_tools.is_none() {
-                cached_tools = Some(self.tool_definitions().await);
+                let definitions = self.tool_definitions().await;
+                cached_tools = Some(if self.uses_compact_local_context() {
+                    let query = self.latest_user_text().unwrap_or_default();
+                    super::turn_execution::context_adaptive_tools(
+                        &definitions,
+                        &query,
+                        self.provider.context_window(),
+                    )
+                } else {
+                    definitions
+                });
             }
             let tools: &[ToolDefinition] = cached_tools.as_deref().unwrap();
             let messages: std::sync::Arc<[Message]> = messages.into();
@@ -178,17 +190,12 @@ impl Agent {
             // avoids the API round-trip entirely.
             // Reuse cached static prompt within a turn (it doesn't change between iterations)
             let (split_prompt, prompt_tier) = if let Some(ref cached) = cached_static_prompt {
-                (
-                    std::sync::Arc::clone(cached),
-                    crate::prompt::PromptTier::Standard,
-                )
+                (std::sync::Arc::clone(&cached.0), cached.1)
             } else {
                 let (sp, tier) = self.build_system_prompt_split(None, None);
-                cached_static_prompt = Some(std::sync::Arc::new(sp));
-                (
-                    std::sync::Arc::clone(cached_static_prompt.as_ref().unwrap()),
-                    tier,
-                )
+                let sp = std::sync::Arc::new(sp);
+                cached_static_prompt = Some((std::sync::Arc::clone(&sp), tier));
+                (sp, tier)
             };
             self.log_prompt_prefix_accounting(&split_prompt, tools, prompt_tier);
 
@@ -352,7 +359,7 @@ impl Agent {
                                                 error: None,
                                             });
                                         }
-                                        continue;
+                                        continue 'turn;
                                     }
                                     if self.try_auto_compact_after_context_limit(&err_text) {
                                         context_limit_retries += 1;
@@ -376,7 +383,7 @@ impl Agent {
                                             summary_chars: None,
                                             active_messages: None,
                                         });
-                                        continue;
+                                        continue 'turn;
                                     }
                                     return Err(e);
                                 }
@@ -1876,6 +1883,86 @@ impl Agent {
 mod tests {
     use super::*;
     use serde_json::json;
+    use std::sync::{
+        Arc,
+        atomic::{AtomicUsize, Ordering},
+    };
+
+    #[derive(Clone)]
+    struct FailOnceProvider {
+        calls: Arc<AtomicUsize>,
+    }
+
+    #[async_trait::async_trait]
+    impl crate::alphacode_app_core::provider::Provider for FailOnceProvider {
+        async fn complete(
+            &self,
+            _messages: &[Message],
+            _tools: &[ToolDefinition],
+            _system: &str,
+            _resume_session_id: Option<&str>,
+        ) -> anyhow::Result<crate::alphacode_app_core::provider::EventStream> {
+            if self.calls.fetch_add(1, Ordering::SeqCst) == 0 {
+                anyhow::bail!("status: 503 service unavailable\nRetry-After: 0");
+            }
+
+            Ok(Box::pin(tokio_stream::iter([
+                Ok(StreamEvent::TextDelta("Recovered".to_string())),
+                Ok(StreamEvent::MessageEnd {
+                    stop_reason: Some("stop".to_string()),
+                }),
+            ])))
+        }
+
+        fn name(&self) -> &str {
+            "retry-test"
+        }
+
+        fn model(&self) -> String {
+            "retry-test-model".to_string()
+        }
+
+        fn fork(&self) -> Arc<dyn crate::alphacode_app_core::provider::Provider> {
+            Arc::new(self.clone())
+        }
+    }
+
+    struct RestoreAlphacodeHome(Option<std::ffi::OsString>);
+
+    impl Drop for RestoreAlphacodeHome {
+        fn drop(&mut self) {
+            if let Some(previous) = &self.0 {
+                crate::alphacode_core::env::set_var("ALPHACODE_HOME", previous);
+            } else {
+                crate::alphacode_core::env::remove_var("ALPHACODE_HOME");
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn transient_request_error_restarts_the_outer_turn() {
+        let _env_lock = crate::storage::lock_test_env();
+        let temp_home = tempfile::tempdir().expect("temporary AlphaCode home");
+        let previous_home = std::env::var_os("ALPHACODE_HOME");
+        crate::alphacode_core::env::set_var("ALPHACODE_HOME", temp_home.path());
+        let _restore_home = RestoreAlphacodeHome(previous_home);
+
+        let provider = Arc::new(FailOnceProvider {
+            calls: Arc::new(AtomicUsize::new(0)),
+        });
+        let mut agent = Agent::new(
+            provider.clone(),
+            crate::alphacode_app_core::tool::Registry::empty(),
+        );
+        let (event_tx, _event_rx) = tokio::sync::mpsc::unbounded_channel();
+
+        agent
+            .run_once_streaming_mpsc("hello", Vec::new(), None, event_tx)
+            .await
+            .expect("provider retry should recover the turn");
+
+        assert_eq!(provider.calls.load(Ordering::SeqCst), 2);
+    }
 
     fn tool_call(name: &str, input: serde_json::Value) -> ToolCall {
         ToolCall {
