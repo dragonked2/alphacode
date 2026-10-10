@@ -8,7 +8,7 @@
 
 <br>
 
-<video src="https://github.com/dragonked2/alphacode/raw/main/alphacode-demo.mp4" controls muted playsinline width="860">
+<video src="https://github.com/dragonked2/alphacode/alphacode-demo.mp4" controls muted playsinline width="860">
   Your viewer can't play embedded video.
   <a href="alphacode-demo.mp4">Watch or download the AlphaCode demo (MP4)</a>.
 </video>
