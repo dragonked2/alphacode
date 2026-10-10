@@ -138,15 +138,6 @@ impl App {
                                         self.interleave_message = None;
                                         self.pending_soft_interrupts.clear();
                                         self.pending_soft_interrupt_requests.clear();
-                                        if self.repetition_auto_retry {
-                                            // Auto-retry: silently discard the stuck
-                                            // stream and re-run the turn.
-                                            self.repetition_auto_retry = false;
-                                            self.clear_streaming_render_state();
-                                            self.stream_buffer.clear();
-                                            self.streaming_tool_calls.clear();
-                                            continue 'turn_loop;
-                                        }
                                         self.clear_streaming_render_state();
                                         self.stream_buffer.clear();
                                         self.streaming_tool_calls.clear();
@@ -262,6 +253,19 @@ impl App {
 
             // Stream with input handling
             loop {
+                if self.repetition_stop_requested {
+                    self.cancel_requested = false;
+                    self.interleave_message = None;
+                    self.pending_soft_interrupts.clear();
+                    self.pending_soft_interrupt_requests.clear();
+                    self.rollback_streaming_attempt();
+                    self.batch_progress = None;
+                    self.push_display_message(DisplayMessage::system(
+                        "Stopped generation because the response repeated itself. The partial response was discarded and was not added to conversation context. Review the request, then retry with a changed prompt or model. Automatic follow-ups are paused for this turn.",
+                    ));
+                    self.set_status_notice("Generation stopped: repeated output detected");
+                    break 'turn_loop;
+                }
                 let desired_redraw = crate::alphacode_tui::tui::redraw_interval(self);
                 if desired_redraw != redraw_period {
                     redraw_period = desired_redraw;
@@ -313,15 +317,6 @@ impl App {
                                         self.interleave_message = None;
                                         self.pending_soft_interrupts.clear();
                                         self.pending_soft_interrupt_requests.clear();
-                                        if self.repetition_auto_retry {
-                                            // Auto-retry: silently discard the stuck
-                                            // stream and re-run the turn.
-                                            self.repetition_auto_retry = false;
-                                            self.clear_streaming_render_state();
-                                            self.stream_buffer.clear();
-                                            self.streaming_tool_calls.clear();
-                                            continue 'turn_loop;
-                                        }
                                         // Save partial assistant response before clearing
                                         if let Some(tool) = current_tool.take() {
                                             tool_calls.push(tool);
@@ -1533,8 +1528,10 @@ impl App {
             }
         }
 
-        super::commands::maybe_trigger_autoreview_local(self);
-        super::commands::maybe_trigger_autojudge_local(self);
+        if !self.repetition_stop_requested {
+            super::commands::maybe_trigger_autoreview_local(self);
+            super::commands::maybe_trigger_autojudge_local(self);
+        }
         Ok(())
     }
 }

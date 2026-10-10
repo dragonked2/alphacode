@@ -53,44 +53,20 @@ impl ShellUrlSafety {
 /// Detect Windows-URL-safety issues in a command string. Cheap,
 /// deterministic, no network.
 pub fn scan_for_shell_url_issues(command: &str) -> ShellUrlSafety {
-    // Only relevant on Windows-style commands. We don't try to be
-    // platform-perfect; we just look for the highest-signal patterns.
-    let mut warnings: Vec<String> = Vec::new();
-
-    // 1. URL with shell metacharacters in the query string
-    if let Some(w) = detect_url_with_shell_chars(command) {
-        warnings.push(w);
-    }
-
-    // 2. findstr + piped URL
-    if let Some(w) = detect_findstr_with_url(command) {
-        warnings.push(w);
-    }
-
-    // 3. powershell receiving piped URL
-    if let Some(w) = detect_powershell_pipe_with_url(command) {
-        warnings.push(w);
-    }
-
-    if warnings.is_empty() {
+    let Some(warning) = detect_url_with_shell_chars(command) else {
         return ShellUrlSafety::Clean;
+    };
+    let mut details = vec![warning];
+    if let Some(detail) = detect_findstr_with_url(command) {
+        details.push(detail);
     }
-
-    let mut s = String::from(
-        "Detected a Windows shell command pattern that frequently breaks \
-         when the argument contains a URL with query parameters. On Windows, \
-         `&` and `|` in URLs are interpreted by cmd.exe, breaking the command. \
-         Remediation:\n",
-    );
-    for w in warnings {
-        s.push_str(&format!("- {w}\n"));
+    if let Some(detail) = detect_powershell_pipe_with_url(command) {
+        details.push(detail);
     }
-    s.push_str(
-        "\nPrefer Python scripts with `requests` for HTTP work on Windows, \
-         or write the URL to a file and use `--data-urlencode` / `Invoke-WebRequest` \
-         from PowerShell for a portable quote helper.",
-    );
-    ShellUrlSafety::Warning(s)
+    ShellUrlSafety::Warning(format!(
+        "Command not run: {}. Quote the entire URL, for example `curl \"https://example.test/path?a=1&b=2\"`, or use `webfetch` for HTTP work.",
+        details.join(". ")
+    ))
 }
 
 fn detect_url_with_shell_chars(command: &str) -> Option<String> {
@@ -104,7 +80,13 @@ fn detect_url_with_shell_chars(command: &str) -> Option<String> {
             && (&bytes[i..i + 7] == b"http://" || &bytes[i..i + 8] == b"https://")
         {
             let url_start = i;
-            // Find end of URL: whitespace, ", ', end-of-string
+            // Find end of URL: whitespace, a quote, a closing parenthesis,
+            // or end-of-string. Matching surrounding quotes make operators
+            // literal data, so do not block those commands.
+            let quote = i
+                .checked_sub(1)
+                .and_then(|previous| bytes.get(previous).copied())
+                .filter(|byte| matches!(byte, b'"' | b'\''));
             let mut j = i;
             while j < bytes.len()
                 && !bytes[j].is_ascii_whitespace()
@@ -114,9 +96,10 @@ fn detect_url_with_shell_chars(command: &str) -> Option<String> {
             {
                 j += 1;
             }
+            let quoted = quote.is_some_and(|quote| bytes.get(j) == Some(&quote));
             let url = std::str::from_utf8(&bytes[url_start..j]).ok()?;
             // Check if there's a query string
-            if let Some(q) = url.find('?') {
+            if !quoted && let Some(q) = url.find('?') {
                 let query = &url[q..];
                 let bad_chars: &[char] = &['&', '|', '<', '>', '^', '!'];
                 let mut found = Vec::new();
@@ -127,11 +110,8 @@ fn detect_url_with_shell_chars(command: &str) -> Option<String> {
                 }
                 if !found.is_empty() {
                     return Some(format!(
-                        "URL contains shell metacharacter(s) {:?} in query \
-                         string. cmd.exe will interpret these. Either escape \
-                         with `^` (caret), or pass via env var: \
-                         `set URL={} && curl \"%URL%\"`",
-                        found, url
+                        "URL contains shell metacharacter(s) {:?} in an unquoted query string; the shell will split or redirect the command instead of passing the full URL",
+                        found
                     ));
                 }
             }
@@ -192,16 +172,18 @@ mod tests {
 
     #[test]
     fn clean_linux_command_passes() {
-        let v = scan_for_shell_url_issues("curl -s https://api.example.com/users | jq .");
+        let v =
+            scan_for_shell_url_issues("curl -s \"https://api.example.com/users?a=1&b=2\" | jq .");
         assert!(v.runs_immediately());
     }
 
     #[test]
     fn url_with_ampersand_in_query_triggers_warning() {
-        let v = scan_for_shell_url_issues("curl \"https://api.example.com/?a=1&b=2\"");
+        let v = scan_for_shell_url_issues("curl https://api.example.com/?a=1&b=2");
         match v {
             ShellUrlSafety::Warning(s) => {
                 assert!(s.contains("metacharacter"));
+                assert!(s.contains("Command not run"));
             }
             _ => panic!("expected Warning"),
         }
@@ -209,13 +191,14 @@ mod tests {
 
     #[test]
     fn url_with_pipe_in_query_triggers_warning() {
-        let v = scan_for_shell_url_issues("curl \"https://api.example.com/?q=a|b\"");
+        let v = scan_for_shell_url_issues("curl https://api.example.com/?q=a|b");
         assert!(!v.runs_immediately());
     }
 
     #[test]
     fn findstr_with_url_triggers_warning() {
-        let v = scan_for_shell_url_issues("curl https://api.example.com | findstr \"200\"");
+        let v =
+            scan_for_shell_url_issues("curl https://api.example.com/?a=1&b=2 | findstr \"200\"");
         match v {
             ShellUrlSafety::Warning(s) => {
                 assert!(s.contains("findstr"));
@@ -227,7 +210,7 @@ mod tests {
     #[test]
     fn powershell_pipe_with_url_triggers_warning() {
         let v = scan_for_shell_url_issues(
-            "curl https://api.example.com | powershell Select-String pattern",
+            "curl https://api.example.com/?a=1&b=2 | powershell Select-String pattern",
         );
         match v {
             ShellUrlSafety::Warning(s) => {

@@ -1063,11 +1063,13 @@ pub struct App {
     rewind_undo_snapshot: Option<LocalRewindUndoSnapshot>,
     // Cancel flag for interrupting generation
     cancel_requested: bool,
-    // Auto-retry when repetition is detected mid-stream (model stuck in loop).
-    // When the streaming check fires, we silently cancel and re-run the turn
-    // up to `REPETITION_AUTO_RETRIES_MAX` times before giving up.
-    repetition_auto_retry: bool,
-    repetition_auto_retries_remaining: u32,
+    // Set when repeated output is detected during generation. The stream loop
+    // consumes this immediately, discards the incomplete attempt, and pauses
+    // automatic follow-ups for the turn.
+    repetition_stop_requested: bool,
+    // Remote sessions need an explicit server cancel request after the local
+    // stream detector trips. Keep it one-shot while awaiting Done/Interrupted.
+    repetition_remote_cancel_sent: bool,
     // Quit confirmation: tracks when first Ctrl+C was pressed
     quit_pending: Option<Instant>,
     // Debounce redraw storms while the terminal is being resized.

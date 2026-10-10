@@ -681,6 +681,8 @@ fn swarm_dock_widget_full_render_writes_agent_rows_in_margin() {
 
 #[test]
 fn draw_notification_clips_overwide_notice_at_area_width() {
+    let _lock = viewport_snapshot_test_lock();
+    crate::alphacode_tui::tui::ui::clear_test_render_state_for_tests();
     let notice: String = "Swarm plan v3 · 12/24 tasks · gate blocked · ".repeat(8);
     let state = TestState {
         status_notice: Some(notice),

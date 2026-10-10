@@ -901,20 +901,9 @@ except Exception as e:
 /// with no timeout. A `python` on PATH that blocks (a shim that prompts, a
 /// hung launcher) blocked the runtime thread indefinitely.
 async fn find_python() -> Option<String> {
-    for name in ["python3", "python", "py"] {
-        let mut cmd = tokio::process::Command::new(name);
-        cmd.arg("--version")
-            .kill_on_drop(true)
-            .stdin(std::process::Stdio::null())
-            .stdout(std::process::Stdio::piped())
-            .stderr(std::process::Stdio::piped());
-        if let Ok(Ok(status)) = tokio::time::timeout(Duration::from_secs(5), cmd.status()).await
-            && status.success()
-        {
-            return Some(name.to_string());
-        }
-    }
-    None
+    super::python::find_python()
+        .await
+        .map(|path| path.to_string_lossy().into_owned())
 }
 
 #[cfg(test)]

@@ -590,7 +590,17 @@ fn test_command_suggestion_arrow_and_ctrl_navigation_accepts_highlighted_row() {
         .unwrap();
     assert_eq!(app.command_suggestion_selected, 1);
 
-    let expected = suggestions[1].0.clone();
+    let expected_index = suggestions
+        .iter()
+        .enumerate()
+        .find(|(index, (_, description))| *index > 1 && *description != "Activate skill")
+        .map(|(index, _)| index)
+        .expect("built-in suggestion after the navigation rows");
+    for _ in 1..expected_index {
+        app.handle_key(KeyCode::Down, KeyModifiers::empty())
+            .unwrap();
+    }
+    let expected = suggestions[expected_index].0.clone();
     app.handle_key(KeyCode::Enter, KeyModifiers::empty())
         .unwrap();
     assert_eq!(app.input, expected);
@@ -825,7 +835,17 @@ fn test_remote_command_suggestion_arrow_and_ctrl_navigation_accepts_highlighted_
         .unwrap();
     assert_eq!(app.command_suggestion_selected, 1);
 
-    let expected = suggestions[1].0.clone();
+    let expected_index = suggestions
+        .iter()
+        .enumerate()
+        .find(|(index, (_, description))| *index > 1 && *description != "Activate skill")
+        .map(|(index, _)| index)
+        .expect("built-in suggestion after the navigation rows");
+    for _ in 1..expected_index {
+        rt.block_on(app.handle_remote_key(KeyCode::Down, KeyModifiers::empty(), &mut remote))
+            .unwrap();
+    }
+    let expected = suggestions[expected_index].0.clone();
     rt.block_on(app.handle_remote_key(KeyCode::Enter, KeyModifiers::empty(), &mut remote))
         .unwrap();
     assert_eq!(app.input, expected);

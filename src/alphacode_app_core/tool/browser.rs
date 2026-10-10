@@ -1,14 +1,13 @@
-//! Browser automation tool (Firefox + the bundled AlphaCode Browser Agent
-//! extension).
+//! Browser automation tool (Firefox + AlphaCode Browser Agent from AMO).
 //!
 //! # Bridge contract
 //!
 //! Every wire action name and parameter key below was verified against the
-//! bundled `AlphaCode-Browser-Agent-1.6.1.xpi` (`background.js` = the
+//! published AlphaCode Browser Agent release (`background.js` = the
 //! tab/native side, `content.js` = the page side). Several are *not* the
 //! obvious guess, and a wrong guess fails at runtime as a bridge-side
 //! validation error rather than a compile error, so re-verify this table
-//! whenever the embedded XPI is bumped.
+//! whenever the Firefox Add-ons release changes.
 //!
 //! | tool action | bridge action | notes |
 //! |---|---|---|
@@ -329,17 +328,14 @@ fn browser_tool_description_text() -> &'static str {
     // every request, and `tool_descriptions_stay_under_token_cap` guards it.
     // Per-action detail lives in the `action` parameter description and in
     // runtime errors, which only cost tokens when they actually happen.
-    "Browser control for JS-heavy INTERACTIVE pages only (login, dynamic DOM, click-through). \
-     For read-only research, listings, docs, or APIs use webfetch/websearch FIRST. \
-     Check action='status' ONCE; if not ready fall back immediately and do not loop on setup. \
-     'open' (alias 'navigate') needs url and creates a NEW background tab - it never navigates \
-     the user's tab, and your later click/type/eval stay scoped to your own tab. Navigation \
-     returns no page body; follow with 'snapshot'. \
-     Cookies: 'get_cookies' sees HttpOnly, 'set_cookies'/'delete_cookie' write, 'list_cookies' \
-     is legacy eval only. \
-     Locating elements: 'interactables' (alias 'find') prints index=N per element; pass that \
-     index back with click/hover/type rather than guessing a selector, and add include_hidden \
-     for collapsed or display:none targets. \
+    "Browser control for JS-heavy interactive pages (login, dynamic DOM, click-through). \
+     For read-only research, listings, docs, or APIs use webfetch/websearch. \
+     Check status once if needed; do not loop on setup. 'open' creates an agent-owned \
+     background tab; follow with 'snapshot'. For forms, use one 'fill_form' call with all \
+     known selector/value pairs and submit=true; inspect only when selectors are unknown. \
+     'interactables' (alias 'find') prints index=N; pass that index to click/hover/type \
+     rather than guessing selectors. Add include_hidden for collapsed or hidden targets. \
+     Cookies: 'get_cookies' sees HttpOnly, 'set_cookies'/'delete_cookie' write. \
      Eval: end scripts with `return <expr>`; top-level await works; read responses with \
      `await (await fetch(u)).text()`. \
      Also: 'close_tab', 'go_back', 'go_forward', 'reload', 'hover', 'drag_and_drop'."
@@ -538,6 +534,12 @@ const RETRYABLE_ACTIONS: &[&str] = &[
 /// Retries after the first attempt, so the loop below runs up to 3 times.
 const MAX_RETRIES: u32 = 2;
 const RETRY_BACKOFF: Duration = Duration::from_millis(250);
+/// Browser page bodies can be much larger than useful model context. The
+/// bridge receives this cap so large DOMs are cut before they cross IPC; the
+/// result is capped again locally in case an older bridge ignores it.
+const MAX_BROWSER_CONTENT_CHARS: usize = 30_000;
+const DEFAULT_PAGE_WAIT_TIMEOUT_MS: u64 = 30_000;
+const MAX_PAGE_WAIT_TIMEOUT_MS: u64 = 90_000;
 
 /// Actions that change page/tab state and are scoped to whichever tab the
 /// bridge resolves. When neither the caller nor the session pin names a tab,
@@ -655,7 +657,7 @@ impl Tool for BrowserTool {
                     "scroll", "upload", "press", "get_cookies", "set_cookies", "delete_cookie",
                     "list_cookies", "provider_command"
                 ],
-                "description": "Action. Check 'status' first. 'open' takes url, opens a background tab and returns no page body - follow with 'snapshot'. 'wait' with only timeout_ms is a plain delay. 'press' sends a real key; 'type' with submit=true submits. 'upload' takes a local file path. Aliases: navigate/goto=open, evaluate=eval, set_files=upload."
+                "description": "Action. 'open' creates an agent-owned background tab; follow with 'snapshot'. 'fill_form' sets multiple fields in one call; include submit=true to submit in that same call. 'wait' with only timeout_ms is a plain delay. 'press' sends a real key; 'type' with submit=true submits. 'upload' takes a local file path. Aliases: navigate/goto=open, evaluate=eval, set_files=upload."
             }),
         );
         properties.insert(
@@ -737,14 +739,17 @@ impl Tool for BrowserTool {
             ),
             ("position", json!({"type": "string"})),
             ("behavior", json!({"type": "string"})),
-            ("timeout_ms", json!({"type": "integer"})),
+            (
+                "timeout_ms",
+                json!({"type": "integer", "description": "For navigation, defaults to 30000 ms and is capped at 90000 ms."}),
+            ),
             (
                 "path",
                 json!({"type": "string", "description": "Local file path for 'upload'."}),
             ),
             (
                 "max_length",
-                json!({"type": "integer", "description": "Max characters for get_content in any format (default 60000 for format='html', unlimited for text formats unless set)."}),
+                json!({"type": "integer", "description": "Maximum characters for snapshot/get_content, capped at 30000. Default 30000."}),
             ),
             (
                 "value",
@@ -795,7 +800,7 @@ impl Tool for BrowserTool {
             "fields".into(),
             json!({
                 "type": "array",
-                "description": "Form fields for fill_form / select.",
+                "description": "For fill_form, include every known field in one call. Use checked=true/false for checkbox or radio state. With top-level submit=true, the bridge requests native form submission after filling; GET forms are serialized by the browser and page submit handlers can run. For select, use one field.",
                 "items": {
                     "type": "object",
                     "required": ["selector"],
@@ -1063,35 +1068,32 @@ async fn firefox_setup(provider: &FirefoxBridgeProvider) -> Result<ToolOutput> {
 }
 
 async fn ensure_firefox_ready() -> Result<Option<String>> {
-    // A setup marker only proves that installation once completed. Always
-    // verify the live bridge before launching an action because Firefox or
-    // the extension may have stopped or become incompatible since then.
-    let status = crate::browser::ensure_browser_ready_noninteractive().await?;
-    if status.ready {
+    // Full status inspection runs a ping plus a sequential probe for every
+    // bridge capability. That is useful for explicit diagnostics, but was
+    // multiplying normal interactions by ~20 CLI launches. A live ping is
+    // enough before an action; the requested action itself reports precisely
+    // if that one capability is unsupported.
+    if !crate::browser::browser_binary_path().exists() {
+        let addon_page = crate::browser::open_browser_addon_page()
+            .await
+            .unwrap_or_else(|error| format!("Firefox Add-ons could not be opened: {error}"));
+        anyhow::bail!(
+            "Browser bridge is not installed. {addon_page} Run browser action='setup' to install the native bridge components."
+        );
+    }
+    // Preserve the old self-healing native-host manifest behavior without
+    // running the full compatibility probe suite on every browser action.
+    let _ = crate::browser::ensure_browser_assets_installed_silent();
+    if crate::browser::browser_bridge_responding().await? {
         return Ok(None);
     }
 
-    let mut message = String::from(
-        "Browser automation is not ready yet. Check action='status' ONCE to confirm, then STOP retrying browser open/setup (max 1 setup per session). For read-only research/listings/docs fall back immediately to webfetch/websearch — do not loop on browser actions until ready.\n",
+    let addon_page = crate::browser::open_browser_addon_page()
+        .await
+        .unwrap_or_else(|error| format!("Firefox Add-ons could not be opened: {error}"));
+    anyhow::bail!(
+        "Browser bridge is installed but not responding. {addon_page} After adding or updating the extension, run browser action='status'. For read-only research, listings, docs, or APIs use webfetch/websearch."
     );
-    if !status.binary_installed {
-        message.push_str("Browser bridge binary is not installed yet.\n");
-    } else if status.responding && !status.compatible {
-        message.push_str("Browser bridge is connected, but the live Firefox extension is missing required actions.");
-        if !status.missing_actions.is_empty() {
-            message.push_str(&format!(
-                " Missing actions: {}.",
-                status.missing_actions.join(", ")
-            ));
-        }
-        message.push('\n');
-    } else {
-        message.push_str("Browser bridge binaries are installed, but the live Firefox bridge is not responding.\n");
-    }
-    message.push_str(
-        "Normal browser tool calls will not reopen the installer automatically anymore. Do not retry browser actions until status reports ready. Use webfetch for direct HTTP reads and websearch to discover correct URLs; only return to browser for JS-heavy interactive pages webfetch cannot render.",
-    );
-    anyhow::bail!(message)
 }
 
 async fn execute_firefox_action(
@@ -1233,6 +1235,14 @@ async fn execute_firefox_action(
                 json!({"submitted": true, "result": pressed}),
             );
         }
+    }
+
+    if matches!(action, "snapshot" | "get_content") {
+        let limit = input
+            .max_length
+            .unwrap_or(MAX_BROWSER_CONTENT_CHARS)
+            .min(MAX_BROWSER_CONTENT_CHARS);
+        cap_browser_page_content(&mut result, limit);
     }
 
     // Learn/maintain the session tab pin from the actions that create or
@@ -1579,9 +1589,15 @@ fn bridge_request(action: &str, input: &BrowserInput) -> Result<(String, Value, 
             if let Some(url) = &input.url {
                 params.insert("url".into(), json!(url));
             }
-            if let Some(timeout_ms) = input.timeout_ms {
-                params.insert("timeoutMs".into(), json!(timeout_ms));
-            }
+            params.insert(
+                "timeoutMs".into(),
+                json!(
+                    input
+                        .timeout_ms
+                        .unwrap_or(DEFAULT_PAGE_WAIT_TIMEOUT_MS)
+                        .min(MAX_PAGE_WAIT_TIMEOUT_MS)
+                ),
+            );
         }
         "select_tab" => {
             let tab_id = input
@@ -1632,29 +1648,35 @@ fn bridge_request(action: &str, input: &BrowserInput) -> Result<(String, Value, 
             params.insert("returnContent".into(), json!(false));
         }
         "reload" | "go_back" | "go_forward" => {
-            if let Some(timeout_ms) = input.timeout_ms {
-                params.insert("timeoutMs".into(), json!(timeout_ms));
-            }
+            params.insert(
+                "timeoutMs".into(),
+                json!(
+                    input
+                        .timeout_ms
+                        .unwrap_or(DEFAULT_PAGE_WAIT_TIMEOUT_MS)
+                        .min(MAX_PAGE_WAIT_TIMEOUT_MS)
+                ),
+            );
             params.insert("wait".into(), json!(input.wait.unwrap_or(true)));
         }
         "snapshot" => {
             params.insert("format".into(), json!("annotated"));
+            params.insert("maxChars".into(), json!(MAX_BROWSER_CONTENT_CHARS));
+            params.insert("textMaxChars".into(), json!(MAX_BROWSER_CONTENT_CHARS));
         }
         "get_content" => {
             let format = input.format.as_deref().unwrap_or("text");
             params.insert("format".into(), json!(format));
             // The content script clamps with `maxChars` (and `textMaxChars`
-            // for the annotated text section). `maxLength` appears nowhere in
-            // the extension, so the documented cap was silently a no-op for
-            // every format. Only default a cap for html (as before) so text
-            // formats are not truncated for callers who did not ask for it.
-            if let Some(max_length) = input.max_length {
-                params.insert("maxChars".into(), json!(max_length));
-                if format == "annotated" {
-                    params.insert("textMaxChars".into(), json!(max_length));
-                }
-            } else if format == "html" {
-                params.insert("maxChars".into(), json!(60_000));
+            // for annotated output). Always send a bounded default; plain text
+            // and annotated DOM dumps used to be unbounded.
+            let max_length = input
+                .max_length
+                .unwrap_or(MAX_BROWSER_CONTENT_CHARS)
+                .min(MAX_BROWSER_CONTENT_CHARS);
+            params.insert("maxChars".into(), json!(max_length));
+            if format == "annotated" {
+                params.insert("textMaxChars".into(), json!(max_length));
             }
         }
         "interactables" => {
@@ -2599,6 +2621,53 @@ fn render_browser_output(action: &str, title: String, result: Value) -> ToolOutp
         .with_metadata(result)
 }
 
+/// Cap page-body fields locally as a fallback for bridge versions that do not
+/// honor `maxChars`. This keeps the rendered text and the attached metadata
+/// bounded by the same limit.
+fn cap_browser_page_content(value: &mut Value, limit: usize) {
+    const CONTENT_KEYS: &[&str] = &["content", "text", "html", "body"];
+    match value {
+        Value::Object(object) => {
+            for (key, nested) in object.iter_mut() {
+                if CONTENT_KEYS.contains(&key.as_str()) {
+                    if let Value::String(text) = nested {
+                        *text = truncate_browser_text(text, limit);
+                    }
+                } else {
+                    cap_browser_page_content(nested, limit);
+                }
+            }
+        }
+        Value::Array(values) => {
+            for nested in values {
+                cap_browser_page_content(nested, limit);
+            }
+        }
+        Value::String(text) => *text = truncate_browser_text(text, limit),
+        _ => {}
+    }
+}
+
+fn truncate_browser_text(text: &str, limit: usize) -> String {
+    let total = text.chars().count();
+    if total <= limit {
+        return text.to_string();
+    }
+    if limit == 0 {
+        return String::new();
+    }
+    let notice = format!(
+        "\n...[truncated at {limit} characters; request a smaller page section for more]..."
+    );
+    if notice.chars().count() >= limit {
+        return notice.chars().take(limit).collect();
+    }
+    let kept = limit - notice.chars().count();
+    let mut result: String = text.chars().take(kept).collect();
+    result.push_str(&notice);
+    result
+}
+
 /// Render a navigation result compactly.
 ///
 /// `navigate` returns `{tab: {...}}`; a pretty-printed copy of that (plus the
@@ -3072,13 +3141,21 @@ mod tests {
             "the annotated text section has its own cap"
         );
 
-        // html keeps the historical 60k default; text keeps none.
+        // Every format gets the same bounded default.
         let html = browser_input(json!({"action": "get_content", "format": "html"}));
         let (_, params, _) = bridge_request("get_content", &html).expect("bridge request");
-        assert_eq!(params["maxChars"], 60_000);
+        assert_eq!(params["maxChars"], MAX_BROWSER_CONTENT_CHARS);
         let plain = browser_input(json!({"action": "get_content", "format": "text"}));
         let (_, params, _) = bridge_request("get_content", &plain).expect("bridge request");
-        assert!(params.get("maxChars").is_none());
+        assert_eq!(params["maxChars"], MAX_BROWSER_CONTENT_CHARS);
+
+        let oversized = browser_input(json!({
+            "action": "get_content",
+            "format": "text",
+            "max_length": 999999
+        }));
+        let (_, params, _) = bridge_request("get_content", &oversized).expect("bridge request");
+        assert_eq!(params["maxChars"], MAX_BROWSER_CONTENT_CHARS);
     }
 
     /// `waitFor` has no quiet-period mode, and `domStable`/`networkIdle` match

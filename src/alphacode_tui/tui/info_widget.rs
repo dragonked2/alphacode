@@ -379,6 +379,36 @@ pub struct UsageInfo {
     pub available: bool,
 }
 
+/// Notional value of session tokens at the UI's fixed rate of $1 per million
+/// tokens. This is separate from provider billing and applies to free plans too.
+pub fn format_token_value_usd(tokens: u64) -> String {
+    if tokens == 0 {
+        return "$0.00".to_string();
+    }
+    let value = tokens as f64 / 1_000_000.0;
+    if value < 0.01 {
+        let precise = format!("{value:.6}");
+        let trimmed = precise.trim_end_matches('0').trim_end_matches('.');
+        format!("${trimmed}")
+    } else {
+        format!("${value:.2}")
+    }
+}
+
+#[cfg(test)]
+mod token_value_tests {
+    use super::format_token_value_usd;
+
+    #[test]
+    fn token_value_uses_one_dollar_per_million_tokens() {
+        assert_eq!(format_token_value_usd(0), "$0.00");
+        assert_eq!(format_token_value_usd(1), "$0.000001");
+        assert_eq!(format_token_value_usd(1_000), "$0.001");
+        assert_eq!(format_token_value_usd(1_000_000), "$1.00");
+        assert_eq!(format_token_value_usd(2_500_000), "$2.50");
+    }
+}
+
 /// Session-level KV cache telemetry for providers that report cache usage.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub struct CacheHitInfo {
@@ -2124,6 +2154,12 @@ fn render_overview_telemetry(
         };
         parts.push(summary);
         compact_parts.push(compact_summary);
+        let tokens = usage.input_tokens.saturating_add(usage.output_tokens);
+        if tokens > 0 {
+            let token_value = format_token_value_usd(tokens);
+            parts.push(format!("Reference @ $1/M tokens {token_value}"));
+            compact_parts.push(format!("Ref@1/M {token_value}"));
+        }
     }
 
     if include_memory

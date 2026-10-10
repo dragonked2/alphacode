@@ -56,6 +56,14 @@ pub(super) async fn process_turn_with_input(
         return;
     }
 
+    // Repeated output is an explicit circuit-breaker stop. Finish this turn
+    // without immediately dispatching an automatic follow-up against the same
+    // stuck model response.
+    if app.repetition_stop_requested {
+        finish_turn(app);
+        return;
+    }
+
     app.process_queued_messages(terminal, event_stream).await;
     finish_turn(app);
 }
@@ -514,10 +522,8 @@ pub(super) fn finish_turn(app: &mut App) {
     app.thought_line_inserted = false;
     app.thinking_prefix_emitted = false;
     app.thinking_buffer.clear();
-    app.repetition_auto_retry = false;
-    app.repetition_auto_retries_remaining = 0;
     app.note_runtime_memory_event_force("turn_completed", "local_turn_finished");
-    let followup_scheduled = app.schedule_turn_end_followups();
+    let followup_scheduled = schedule_turn_end_followups_guarded(app);
     if !followup_scheduled {
         app.clear_visible_turn_started();
         if !app.pending_queued_dispatch && app.queued_messages.is_empty() {
@@ -525,4 +531,16 @@ pub(super) fn finish_turn(app: &mut App) {
         }
     }
     let _ = super::commands::maybe_begin_pending_local_transfer(app);
+}
+
+pub(super) fn schedule_turn_end_followups_guarded(app: &mut App) -> bool {
+    let repetition_stopped = std::mem::take(&mut app.repetition_stop_requested);
+    app.repetition_remote_cancel_sent = false;
+    if repetition_stopped {
+        super::commands::disable_auto_poke(app);
+        app.stop_overnight_auto_poke_after_repetition();
+        false
+    } else {
+        app.schedule_turn_end_followups()
+    }
 }

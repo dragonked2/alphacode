@@ -232,6 +232,11 @@ pub trait TuiState {
     // ---- Input ----
     fn input(&self) -> &str;
     fn cursor_pos(&self) -> usize;
+    /// A low-contrast suffix for a unique recent prompt that extends the
+    /// current input. The renderer never commits this text to the composer.
+    fn input_history_completion_suffix(&self, _max_width: usize) -> Option<String> {
+        None
+    }
     fn is_processing(&self) -> bool;
     fn queued_messages(&self) -> &[String];
     fn interleave_message(&self) -> Option<&str>;

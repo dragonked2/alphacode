@@ -1317,17 +1317,17 @@ mod tests {
         buffer
             .cell_mut((2, 1))
             .expect("status cell")
-            .set_symbol("⠋");
+            .set_symbol("◌");
         let before = buffer.clone();
 
         let status_area = Rect::new(2, 1, 6, 1);
-        assert!(render_status_spinner_into_buffer(&buffer, status_area, "⠙"));
-        render_status_spinner_into_buffer_mut(&mut buffer, status_area, "⠙");
+        assert!(render_status_spinner_into_buffer(&buffer, status_area, "◔"));
+        render_status_spinner_into_buffer_mut(&mut buffer, status_area, "◔");
 
         for y in 0..2 {
             for x in 0..8 {
                 if (x, y) == (2, 1) {
-                    assert_eq!(buffer.cell((x, y)).unwrap().symbol(), "⠙");
+                    assert_eq!(buffer.cell((x, y)).unwrap().symbol(), "◔");
                     assert_eq!(
                         buffer.cell((x, y)).unwrap().fg,
                         crate::alphacode_tui_style::theme::ai_color()
@@ -1346,7 +1346,7 @@ mod tests {
         buffer.set_string(0, 0, "/help  show help", Style::default().fg(Color::Yellow));
 
         assert!(
-            !render_status_spinner_into_buffer(&buffer, area, "⠙"),
+            !render_status_spinner_into_buffer(&buffer, area, "◔"),
             "late overlays own the status cell until the next full frame"
         );
     }

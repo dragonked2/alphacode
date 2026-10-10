@@ -388,6 +388,16 @@ impl App {
         commands
     }
 
+    pub(super) fn is_registered_slash_command(input: &str) -> bool {
+        let input = input.trim();
+        REGISTERED_COMMANDS.iter().any(|command| {
+            input == command.name
+                || input
+                    .strip_prefix(command.name)
+                    .is_some_and(|tail| tail.starts_with(char::is_whitespace))
+        })
+    }
+
     pub(super) fn invalidate_command_candidates_cache(&self) {
         *self.command_candidates_cache.borrow_mut() = None;
     }
@@ -1333,19 +1343,34 @@ impl App {
 
     pub(super) fn accept_selected_command_suggestion(&mut self) -> bool {
         let suggestions = self.clamp_command_suggestion_selection();
-        let Some((cmd, _)) = suggestions.get(self.command_suggestion_selected).cloned() else {
+        let Some((cmd, description)) = suggestions.get(self.command_suggestion_selected).cloned()
+        else {
             return false;
         };
         if cmd == self.input.trim() {
             return false;
         }
 
+        // A skill suggestion is an action, not a command draft. Activate it
+        // when selected so the slash token does not linger in the composer and
+        // the next prompt is immediately written with the skill instructions.
+        let is_skill = description == "Activate skill"
+            && crate::alphacode_tui::tui::app::input::parse_dropped_paths(&cmd).is_none()
+            && self
+                .current_skills_snapshot()
+                .resolve_invocation(&cmd)
+                .is_some();
+
         self.remember_input_undo_state();
         self.input = cmd;
         self.cursor_pos = self.input.len();
         self.tab_completion_state = None;
         self.command_suggestion_selected = 0;
-        self.sync_model_picker_preview_from_input();
+        if is_skill {
+            self.submit_input();
+        } else {
+            self.sync_model_picker_preview_from_input();
+        }
         true
     }
 
@@ -1622,6 +1647,16 @@ impl App {
         } else {
             self.set_status_notice("Nothing to undo");
         }
+    }
+
+    /// Test-only wrapper around [`Self::undo_input_change`] that reports
+    /// whether an input snapshot was actually restored (the production path
+    /// signals “nothing to undo” through a status notice instead).
+    #[cfg(test)]
+    pub fn undo_input_change_for_test(&mut self) -> bool {
+        let had_snapshot = !self.input_undo_stack.is_empty();
+        self.undo_input_change();
+        had_snapshot
     }
 
     pub(super) fn command_accepts_args(cmd: &str) -> bool {

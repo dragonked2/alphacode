@@ -612,6 +612,10 @@ impl crate::alphacode_tui::tui::TuiState for App {
         self.cursor_pos
     }
 
+    fn input_history_completion_suffix(&self, max_width: usize) -> Option<String> {
+        App::input_history_completion_suffix(self, max_width)
+    }
+
     fn is_processing(&self) -> bool {
         self.is_processing || self.pending_queued_dispatch || self.split_launch_in_flight()
     }

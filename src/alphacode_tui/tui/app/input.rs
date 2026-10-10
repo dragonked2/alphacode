@@ -2799,6 +2799,9 @@ pub(super) fn handle_basic_key(app: &mut App, code: KeyCode) -> bool {
             true
         }
         KeyCode::Right => {
+            if app.cursor_pos == app.input.len() && app.accept_input_history_completion() {
+                return true;
+            }
             if app.cursor_pos < app.input.len() {
                 app.cursor_pos = crate::alphacode_tui::tui::core::next_grapheme_boundary(
                     &app.input,
@@ -2816,7 +2819,9 @@ pub(super) fn handle_basic_key(app: &mut App, code: KeyCode) -> bool {
             true
         }
         KeyCode::Tab => {
-            app.autocomplete();
+            if !app.accept_input_history_completion() {
+                app.autocomplete();
+            }
             true
         }
         KeyCode::Up | KeyCode::PageUp => {
@@ -3510,25 +3515,15 @@ impl App {
             self.reasoning_partial_len = 0;
         }
         self.streaming.streaming_text.push_str(text);
-        // Repetition detection: when the model is stuck in a loop, silently
-        // cancel the stream and auto-retry the turn (up to
-        // `REPETITION_AUTO_RETRIES_MAX` times).
-        if self.streaming.check_repetition() && !self.repetition_auto_retry {
-            const REPETITION_AUTO_RETRIES_MAX: u32 = 3;
-            if self.repetition_auto_retries_remaining < REPETITION_AUTO_RETRIES_MAX {
-                crate::logging::info(&format!(
-                    "streaming repetition detected (streak={}); auto-retrying turn ({}/{REPETITION_AUTO_RETRIES_MAX})",
-                    self.streaming.repetition_streak,
-                    self.repetition_auto_retries_remaining + 1,
-                ));
-                self.repetition_auto_retry = true;
-                self.repetition_auto_retries_remaining += 1;
-                self.cancel_requested = true;
-            } else {
-                crate::logging::warn(&format!(
-                    "streaming repetition detected but max auto-retries ({REPETITION_AUTO_RETRIES_MAX}) exhausted; giving up"
-                ));
-            }
+        // Repetition detection is a hard stop. Replaying the same prompt can
+        // reproduce the same loop, while allowing the stream to continue after
+        // an exhausted retry budget can burn tokens indefinitely.
+        if self.streaming.check_repetition() && !self.repetition_stop_requested {
+            crate::logging::warn(&format!(
+                "streaming repetition detected (streak={}); stopping this turn",
+                self.streaming.repetition_streak,
+            ));
+            self.repetition_stop_requested = true;
         }
         self.refresh_split_view_if_needed();
     }

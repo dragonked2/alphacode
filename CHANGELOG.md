@@ -10,6 +10,13 @@ adheres to [Semantic Versioning](https://semver.org/).
 
 ### Changed
 
+- Selecting a skill from the slash palette activates it immediately and leaves
+  the composer ready for the skill prompt; remote sessions refresh skill data
+  before routing slash input.
+- Session token usage now includes a clear notional dollar value at $1 per
+  million tokens, including on free and subscription models. Provider-billed
+  cost remains labeled separately.
+- Replaced the working/waiting Braille spinner with a compact rotating ring.
 - Direct local models with context windows up to 32K now receive a compact
   task prompt and a bounded, query-relevant tool catalog. Trivial chat turns
   omit tool schemas entirely.

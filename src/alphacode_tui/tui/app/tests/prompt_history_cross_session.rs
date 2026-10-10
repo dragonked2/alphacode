@@ -87,6 +87,46 @@ fn test_merged_prompt_history_dedupes_across_sessions() {
 }
 
 #[test]
+fn test_prompt_history_completion_requires_one_unique_prefix_match() {
+    let mut app = create_test_app();
+    app.persisted_prompt_history = Some(vec![
+        "summarize the latest changes".to_string(),
+        "summarize the latest changes".to_string(),
+    ]);
+    app.input = "sum".to_string();
+    app.cursor_pos = app.input.len();
+
+    assert_eq!(
+        app.input_history_completion_suffix(8).as_deref(),
+        Some("marize t")
+    );
+    assert!(app.accept_input_history_completion());
+    assert_eq!(app.input, "summarize the latest changes");
+    assert!(app.undo_input_change_for_test());
+    assert_eq!(app.input, "sum");
+}
+
+#[test]
+fn test_prompt_history_completion_skips_ambiguous_commands_and_midline_cursor() {
+    let mut app = create_test_app();
+    app.persisted_prompt_history = Some(vec![
+        "summarize the latest changes".to_string(),
+        "summarize this file".to_string(),
+    ]);
+    app.input = "sum".to_string();
+    app.cursor_pos = app.input.len();
+    assert!(app.input_history_completion_suffix(20).is_none());
+
+    app.persisted_prompt_history = Some(vec!["summarize the latest changes".to_string()]);
+    app.cursor_pos = 1;
+    assert!(app.input_history_completion_suffix(20).is_none());
+
+    app.input = "/sum".to_string();
+    app.cursor_pos = app.input.len();
+    assert!(app.input_history_completion_suffix(20).is_none());
+}
+
+#[test]
 fn test_ctrl_r_opens_history_search_and_enter_inserts_selection() {
     let mut app = create_test_app();
     app.persisted_prompt_history = Some(vec![

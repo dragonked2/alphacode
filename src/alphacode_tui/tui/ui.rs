@@ -1502,6 +1502,10 @@ fn clear_test_render_state_locked() {
     TEST_PROMPT_VIEWPORT_STATE.with(|state| {
         *state.borrow_mut() = PromptViewportState::default();
     });
+    // Widget placement carries a short swarm-dock stand-down linger across
+    // frames. Reset it with the other layout state so an earlier render test
+    // cannot shift the bottom chrome in a later, otherwise identical frame.
+    super::info_widget::clear_widget_placements_for_tests();
 }
 
 /// Test-only: render just the onboarding welcome screen into `area`, using the

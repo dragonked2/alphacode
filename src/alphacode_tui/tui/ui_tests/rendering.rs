@@ -638,6 +638,7 @@ fn test_light_theme_adapted_frame_has_readable_contrast() {
 #[test]
 fn test_configured_palette_recolors_a_real_rendered_frame() {
     fn render() -> ratatui::buffer::Buffer {
+        crate::alphacode_tui::tui::ui::clear_test_render_state_for_tests();
         let messages = vec![
             DisplayMessage {
                 role: "user".into(),
@@ -668,6 +669,8 @@ fn test_configured_palette_recolors_a_real_rendered_frame() {
             .expect("draw");
         terminal.backend().buffer().clone()
     }
+
+    let _lock = crate::alphacode_tui::tui::ui::render_state_test_lock();
 
     // The palette is process-global, so always restore it, even on failure.
     struct Restore;

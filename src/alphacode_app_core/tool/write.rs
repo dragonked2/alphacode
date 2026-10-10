@@ -8,6 +8,7 @@ use anyhow::Result;
 use async_trait::async_trait;
 use serde_json::{Value, json};
 use std::path::Path;
+use tokio::io::AsyncWriteExt;
 
 pub struct WriteTool;
 
@@ -17,13 +18,14 @@ impl WriteTool {
     }
 }
 
-/// `intent` is only ever carried through to the file-touch event, so the two
-/// fields that matter are recovered by the shared coercion ladder in
+/// `intent`/`append` are only ever carried through to the file-touch event and
+/// write mode, so the text fields that matter are recovered by the shared coercion ladder in
 /// `execute` rather than by a single-shot `from_value`.
 struct WriteInput {
     intent: Option<String>,
     file_path: String,
     content: String,
+    append: bool,
 }
 
 /// Whether the argument stream was cut short and the payload rebuilt from
@@ -72,10 +74,9 @@ fn input_has_content_field(input: &Value) -> bool {
 fn truncated_body_error(file_path: &str) -> anyhow::Error {
     anyhow::anyhow!(
         "Nothing was written to `{file_path}`: this call's arguments were cut off by the output \
-         token limit before `content` finished arriving, so only a prefix (possibly empty) was \
-         recoverable and a prefix was not written. Re-send the file in smaller pieces — `write` \
-         an initial chunk, then extend it with `edit` — rather than resending the identical \
-         oversized call."
+         token limit before `content` finished arriving, so no usable body was recovered. Re-send \
+         a smaller first chunk, then pass `append: true` on later chunks rather than resending the \
+         identical oversized call."
     )
 }
 
@@ -95,7 +96,7 @@ impl Tool for WriteTool {
     }
 
     fn description(&self) -> &str {
-        "Create or overwrite a file. Destructive: replaces entire content. For partial changes, use `edit` instead. Write only what solves the problem — no boilerplate or unused scaffolding. Verify after writing with `read` or a build/test."
+        "Create or overwrite a file. Destructive: replaces entire content. For large files, write the first chunk normally, then send each later chunk with append=true; do not resend the whole file. Use `edit` for targeted replacements. Write only what solves the problem — no boilerplate or unused scaffolding."
     }
 
     fn parameters_schema(&self) -> Value {
@@ -111,6 +112,10 @@ impl Tool for WriteTool {
                 "content": {
                     "type": "string",
                     "description": "File content."
+                },
+                "append": {
+                    "type": "boolean",
+                    "description": "Append this content exactly to the end of the file instead of replacing it. Use true for every chunk after the first; include a newline when chunks should be separated."
                 }
             }
         })
@@ -183,6 +188,10 @@ impl Tool for WriteTool {
                 .map(str::to_string),
             file_path,
             content,
+            append: input
+                .get("append")
+                .and_then(Value::as_bool)
+                .unwrap_or(false),
         };
 
         let path = ctx.resolve_path_guarded(Path::new(&params.file_path))?;
@@ -200,7 +209,7 @@ impl Tool for WriteTool {
         // has to fail loudly rather than guess. Writing the prefix to a *new*
         // file is safe and worth doing — the model reads its own output, sees
         // the warning, and continues the file on the next call.
-        if salvaged && existed {
+        if salvaged && existed && !params.append {
             let existing = tokio::fs::metadata(&path)
                 .await
                 .map(|m| m.len())
@@ -226,7 +235,7 @@ impl Tool for WriteTool {
         // the file is past the point where the diff would be truncated anyway.
         // The size is checked from metadata first, so the content is never
         // loaded in the first place.
-        let old_content = if existed && file_within_diff_size_limit(&path).await {
+        let old_content = if !params.append && existed && file_within_diff_size_limit(&path).await {
             tokio::fs::read_to_string(&path).await.ok()
         } else {
             None
@@ -234,10 +243,20 @@ impl Tool for WriteTool {
         // A missing old snapshot is ambiguous: either the file is new, or it is
         // too large to diff. Distinguish them so the output does not claim a
         // large file was "created" when it was only overwritten.
-        let diff_skipped = existed && old_content.is_none();
+        let diff_skipped = !params.append && existed && old_content.is_none();
 
-        // Write the file
-        tokio::fs::write(&path, &params.content).await?;
+        // Append mode makes oversized files recoverable across several tool
+        // calls without asking the model to resend or replace earlier chunks.
+        if params.append {
+            let mut file = tokio::fs::OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open(&path)
+                .await?;
+            file.write_all(params.content.as_bytes()).await?;
+        } else {
+            tokio::fs::write(&path, &params.content).await?;
+        }
 
         let _new_len = params.content.len();
         let line_count = params.content.lines().count();
@@ -264,12 +283,22 @@ impl Tool for WriteTool {
                 .intent
                 .clone()
                 .filter(|value| !value.trim().is_empty()),
-            summary: Some(if existed {
+            summary: Some(if params.append {
+                format!(
+                    "appended {} bytes ({} lines)",
+                    params.content.len(),
+                    line_count
+                )
+            } else if existed {
                 format!("overwrote file ({} lines)", line_count)
             } else {
                 format!("created new file ({} lines)", line_count)
             }),
-            detail,
+            detail: if params.append {
+                Some(format!("appended {} bytes", params.content.len()))
+            } else {
+                detail
+            },
         }));
 
         // Only reachable with `salvaged == true` when the target did not exist,
@@ -280,14 +309,27 @@ impl Tool for WriteTool {
             format!(
                 "WARNING: this call's arguments were truncated by the output token limit, so only \
                  the first {} bytes of `content` were recovered. This file is INCOMPLETE — read it, \
-                 then continue writing the remainder with `edit` or a follow-up `write`.\n",
+                 then continue writing the remainder with `append=true`.\n",
                 params.content.len()
             )
         } else {
             String::new()
         };
 
-        if existed {
+        if params.append {
+            Ok(ToolOutput::new(format!(
+                "Appended {} bytes ({} lines) to {}{}",
+                params.content.len(),
+                line_count,
+                params.file_path,
+                if salvaged {
+                    "\nWARNING: the received chunk was truncated; append the remaining content in another chunk."
+                } else {
+                    ""
+                }
+            ))
+            .with_title(params.file_path.clone()))
+        } else if existed {
             Ok(ToolOutput::new(format!(
                 "{warning}Updated {} ({} lines){}\n{}",
                 params.file_path,

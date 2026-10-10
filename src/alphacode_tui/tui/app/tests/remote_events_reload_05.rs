@@ -75,39 +75,42 @@ fn test_disconnect_still_clears_pending_for_non_queued_shapes() {
 
 #[test]
 fn test_save_input_for_reload_persists_inflight_queued_continuation() {
-    let mut app = create_test_app();
-    let session_id = format!("test-391-inflight-{}", std::process::id());
+    with_temp_alphacode_home(|| {
+        let mut app = create_test_app();
+        let session_id = format!("test-391-inflight-{}", std::process::id());
 
-    // Simulate the reload racing the dispatch: one message still queued, one
-    // already dequeued into the in-flight pending slot.
-    app.queued_messages.push("still queued".to_string());
-    app.rate_limit_pending_message = Some(PendingRemoteMessage {
-        content: "dispatched but unfinished".to_string(),
-        images: vec![],
-        is_system: true,
-        system_reminder: Some("hidden reminder".to_string()),
-        auto_retry: false,
-        retry_attempts: 0,
-        retry_at: None,
+        // Simulate the reload racing the dispatch: one message still queued, one
+        // already dequeued into the in-flight pending slot.
+        app.queued_messages.push("still queued".to_string());
+        app.rate_limit_pending_message = Some(PendingRemoteMessage {
+            content: "dispatched but unfinished".to_string(),
+            images: vec![],
+            is_system: true,
+            system_reminder: Some("hidden reminder".to_string()),
+            auto_retry: false,
+            retry_attempts: 0,
+            retry_at: None,
+        });
+        app.rate_limit_reset = None;
+
+        app.save_input_for_reload(&session_id);
+
+        let restored =
+            App::restore_input_for_reload(&session_id).expect("reload state should exist");
+        assert_eq!(
+            restored.queued_messages,
+            vec!["dispatched but unfinished", "still queued"],
+            "the in-flight continuation must be persisted at the front of the queue"
+        );
+        assert_eq!(
+            restored.hidden_queued_system_messages,
+            vec!["hidden reminder"]
+        );
+        assert!(
+            restored.rate_limit_pending_message.is_none(),
+            "the continuation must not also restore as an unreachable pending message"
+        );
     });
-    app.rate_limit_reset = None;
-
-    app.save_input_for_reload(&session_id);
-
-    let restored = App::restore_input_for_reload(&session_id).expect("reload state should exist");
-    assert_eq!(
-        restored.queued_messages,
-        vec!["dispatched but unfinished", "still queued"],
-        "the in-flight continuation must be persisted at the front of the queue"
-    );
-    assert_eq!(
-        restored.hidden_queued_system_messages,
-        vec!["hidden reminder"]
-    );
-    assert!(
-        restored.rate_limit_pending_message.is_none(),
-        "the continuation must not also restore as an unreachable pending message"
-    );
 }
 
 #[test]

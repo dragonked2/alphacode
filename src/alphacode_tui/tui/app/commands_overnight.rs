@@ -245,6 +245,25 @@ fn cancel_overnight(app: &mut App) {
 }
 
 impl App {
+    /// Stop queued overnight continuations after repeated model output. The
+    /// current coordinator turn has already been discarded, so resending its
+    /// follow-up would immediately re-enter the same failure mode.
+    pub(super) fn stop_overnight_auto_poke_after_repetition(&mut self) {
+        let had_active_poke = self.overnight_auto_poke.take().is_some();
+        let before = self.queued_messages.len();
+        self.queued_messages
+            .retain(|message| !is_overnight_auto_poke_message(message));
+        let removed_queued_pokes = before != self.queued_messages.len();
+        if removed_queued_pokes && !self.has_queued_followups() {
+            self.pending_queued_dispatch = false;
+        }
+        if had_active_poke || removed_queued_pokes {
+            self.push_display_message(DisplayMessage::system(
+                "Overnight auto-follow-up was paused after repeated output. Review the run before resuming it.",
+            ));
+        }
+    }
+
     pub(super) fn cancel_overnight_for_interrupt(&mut self) -> bool {
         if self.overnight_auto_poke.is_none()
             && !self

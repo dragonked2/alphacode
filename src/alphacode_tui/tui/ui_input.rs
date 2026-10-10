@@ -996,6 +996,13 @@ fn idle_session_stats_line(app: &dyn TuiState) -> Option<Line<'static>> {
         ),
         Style::default().fg(rgb(128, 140, 165)),
     ));
+    spans.push(Span::styled(
+        format!(
+            " \u{00b7} ref@$1/M {}",
+            super::info_widget::format_token_value_usd(total)
+        ),
+        Style::default().fg(rgb(120, 220, 160)),
+    ));
 
     // Steady context-usage segment
     if total_in > 0 {
@@ -1011,7 +1018,7 @@ fn idle_session_stats_line(app: &dyn TuiState) -> Option<Line<'static>> {
             && info.total_cost > 0.0
         {
             spans.push(Span::styled(
-                format!(" \u{00b7} ${:.2}", info.total_cost),
+                format!(" \u{00b7} billed ${:.2}", info.total_cost),
                 Style::default().fg(rgb(120, 220, 160)),
             ));
         } else {
@@ -1402,7 +1409,7 @@ pub(super) fn draw_status(frame: &mut Frame, app: &dyn TuiState, area: Rect, pen
             }
         }
     } else if let Some((total_in, total_out)) = app.total_session_tokens() {
-        let total = total_in + total_out;
+        let total = total_in.saturating_add(total_out);
         if let Some(warning) = occasional_session_history_warning(
             total,
             app.session_compaction_count(),
@@ -3282,6 +3289,27 @@ pub(super) fn draw_input(
                 *line = highlight_line_selection(line, start_col, end_col);
             }
         }
+    }
+
+    // Show a dim inline preview for a unique recent-prompt match. It is added
+    // after selection painting so preview text is never copied or highlighted
+    // as if it were part of the user's actual draft.
+    if !has_suggestions
+        && !mode.is_shell()
+        && !app.is_processing()
+        && cursor_pos == input_text.len()
+        && app.copy_selection_range().is_none()
+        && let Some(last_line) =
+            lines.get_mut(suggestions_offset + cursor_line.saturating_sub(scroll_offset))
+        && let Some(suffix) =
+            app.input_history_completion_suffix(line_width.saturating_sub(cursor_col))
+    {
+        last_line.spans.push(Span::styled(
+            suffix,
+            Style::default()
+                .fg(dim_color())
+                .add_modifier(Modifier::ITALIC),
+        ));
     }
 
     // Subtle top border on the input area for visual separation from the

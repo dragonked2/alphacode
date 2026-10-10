@@ -54,6 +54,7 @@ mod nuclei;
 mod open;
 mod patch;
 mod plan;
+mod python;
 mod qsreplace;
 mod read;
 pub mod recon_common;
@@ -92,6 +93,42 @@ pub use crate::alphacode_tool_core::{
 };
 pub use crate::alphacode_tool_types::{ToolImage, ToolOutput};
 pub(crate) use session_search::spawn_recent_index_warmup;
+
+/// Hard ceiling on text returned by any tool. Context-aware truncation below
+/// can permit very large outputs when a provider advertises a large window;
+/// this independent cap keeps accidental DOM dumps, search results, and logs
+/// from consuming an entire turn.
+const MAX_TOOL_OUTPUT_CHARS: usize = 30_000;
+
+fn cap_tool_output(mut output: ToolOutput) -> ToolOutput {
+    let char_count = output.output.chars().count();
+    if char_count <= MAX_TOOL_OUTPUT_CHARS {
+        return output;
+    }
+
+    // Keep the useful opening context and final summary, while leaving room
+    // for a short, actionable notice.
+    const NOTICE: &str = "\n\n[Tool output capped at 30000 characters. Use a narrower query or read the result in smaller ranges.]\n\n";
+    let keep = MAX_TOOL_OUTPUT_CHARS.saturating_sub(NOTICE.chars().count());
+    let head_chars = keep.saturating_mul(4) / 5;
+    let tail_chars = keep.saturating_sub(head_chars);
+    let head: String = output.output.chars().take(head_chars).collect();
+    let tail: String = output
+        .output
+        .chars()
+        .rev()
+        .take(tail_chars)
+        .collect::<String>()
+        .chars()
+        .rev()
+        .collect();
+    output.output = format!("{head}{NOTICE}{tail}");
+    output.title = Some(match output.title.take() {
+        Some(title) => format!("{title} · output capped"),
+        None => "output capped".to_string(),
+    });
+    output
+}
 
 #[derive(Clone, Debug, Default)]
 struct SessionToolPolicy {
@@ -1728,7 +1765,9 @@ impl Registry {
             }
         };
 
-        // Context overflow guard: check if this output would push us over the limit
+        // Keep a hard ceiling even when a provider advertises a very large
+        // context window, then apply the tighter session-specific budget.
+        output = cap_tool_output(output);
         output = self.guard_context_overflow(name, output).await;
 
         let mut fields = Self::tool_lifecycle_fields("done", name, resolved_name, &input, &ctx);

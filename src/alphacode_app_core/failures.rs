@@ -1014,8 +1014,19 @@ pub fn get_failure_sequence() -> Vec<FailureKind> {
 mod tests {
     use super::*;
 
+    // Failure counters and the escalation latch are process-wide, so each
+    // test must own them for its full duration.
+    static TEST_LOCK: Mutex<()> = Mutex::new(());
+
+    fn test_lock() -> std::sync::MutexGuard<'static, ()> {
+        TEST_LOCK
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+    }
+
     #[test]
     fn classify_missing_path() {
+        let _guard = test_lock();
         let a = analyze("cat: src/main.rs: No such file or directory").unwrap();
         assert_eq!(a.kind, FailureKind::MissingPath);
         assert_eq!(a.confidence, Confidence::High);
@@ -1024,84 +1035,98 @@ mod tests {
 
     #[test]
     fn classify_permission_denied() {
+        let _guard = test_lock();
         let a = analyze("EACCES: permission denied, open '/etc/passwd'").unwrap();
         assert_eq!(a.kind, FailureKind::PermissionDenied);
     }
 
     #[test]
     fn classify_timeout() {
+        let _guard = test_lock();
         let a = analyze("connection timed out after 30000ms").unwrap();
         assert_eq!(a.kind, FailureKind::Timeout);
     }
 
     #[test]
     fn classify_syntax_error() {
+        let _guard = test_lock();
         let a = analyze("SyntaxError: Unexpected token } at position 42").unwrap();
         assert_eq!(a.kind, FailureKind::SyntaxError);
     }
 
     #[test]
     fn classify_network_error() {
+        let _guard = test_lock();
         let a = analyze("connection reset by peer").unwrap();
         assert_eq!(a.kind, FailureKind::NetworkError);
     }
 
     #[test]
     fn classify_out_of_disk() {
+        let _guard = test_lock();
         let a = analyze("ENOSPC: no space left on device").unwrap();
         assert_eq!(a.kind, FailureKind::OutOfDisk);
     }
 
     #[test]
     fn classify_rate_limited() {
+        let _guard = test_lock();
         let a = analyze("429: rate limit exceeded, retry after 60s").unwrap();
         assert_eq!(a.kind, FailureKind::RateLimited);
     }
 
     #[test]
     fn classify_auth_expired() {
+        let _guard = test_lock();
         let a = analyze("401: token expired, please re-authenticate").unwrap();
         assert_eq!(a.kind, FailureKind::AuthExpired);
     }
 
     #[test]
     fn classify_circuit_breaker() {
+        let _guard = test_lock();
         let a = analyze("circuit breaker open, service unavailable").unwrap();
         assert_eq!(a.kind, FailureKind::CircuitBreaker);
     }
 
     #[test]
     fn classify_dependency_missing() {
+        let _guard = test_lock();
         let a = analyze("ModuleNotFoundError: No module named 'requests'").unwrap();
         assert_eq!(a.kind, FailureKind::DependencyMissing);
     }
 
     #[test]
     fn classify_config_error() {
+        let _guard = test_lock();
         let a = analyze("ConfigError: missing required field 'database.url'").unwrap();
         assert_eq!(a.kind, FailureKind::ConfigError);
     }
 
     #[test]
     fn classify_data_corruption() {
+        let _guard = test_lock();
         let a = analyze("Checksum mismatch: expected abc, got def").unwrap();
         assert_eq!(a.kind, FailureKind::DataCorruption);
     }
 
     #[test]
     fn classify_race_condition() {
+        let _guard = test_lock();
         let a = analyze("File changed since last read, race condition detected").unwrap();
         assert_eq!(a.kind, FailureKind::RaceCondition);
     }
 
     #[test]
     fn classify_resource_exhausted() {
+        let _guard = test_lock();
         let a = analyze("EMFILE: too many open files").unwrap();
         assert_eq!(a.kind, FailureKind::ResourceExhausted);
     }
 
     #[test]
     fn unknown_returns_none_or_low_confidence() {
+        let _guard = test_lock();
         let a = analyze("z").unwrap();
         assert_eq!(a.kind, FailureKind::Unknown);
         assert_eq!(a.confidence, Confidence::Low);
@@ -1109,11 +1134,13 @@ mod tests {
 
     #[test]
     fn empty_error_returns_none() {
+        let _guard = test_lock();
         assert!(analyze("").is_none());
     }
 
     #[test]
     fn counter_accumulates_per_kind() {
+        let _guard = test_lock();
         reset_turn_counters();
         analyze("No such file: a");
         analyze("No such file: b");
@@ -1124,6 +1151,7 @@ mod tests {
 
     #[test]
     fn hint_includes_retry_nag_after_two_failures() {
+        let _guard = test_lock();
         reset_turn_counters();
         analyze("No such file: a");
         let a = analyze("No such file: b").unwrap();
@@ -1132,6 +1160,7 @@ mod tests {
 
     #[test]
     fn escalation_triggers_after_three() {
+        let _guard = test_lock();
         clear_escalation();
         reset_turn_counters();
         analyze("permission denied");
@@ -1142,6 +1171,7 @@ mod tests {
 
     #[test]
     fn truncate_handles_multibyte() {
+        let _guard = test_lock();
         let s = "résumé résumé résumé";
         let t = truncate(s, 8);
         assert!(t.ends_with('…'));
@@ -1151,6 +1181,7 @@ mod tests {
 
     #[test]
     fn failure_pattern_detected_after_three() {
+        let _guard = test_lock();
         reset_turn_counters();
         analyze("No such file: a");
         analyze("No such file: b");
@@ -1162,6 +1193,7 @@ mod tests {
 
     #[test]
     fn no_pattern_below_threshold() {
+        let _guard = test_lock();
         reset_turn_counters();
         analyze("No such file: a");
         analyze("No such file: b");
@@ -1170,6 +1202,7 @@ mod tests {
 
     #[test]
     fn recovery_strategy_is_nonempty() {
+        let _guard = test_lock();
         reset_turn_counters();
         let a = analyze("No such file: a").unwrap();
         assert!(!a.recovery_strategy.is_empty());
@@ -1177,6 +1210,7 @@ mod tests {
 
     #[test]
     fn failure_chains_detected() {
+        let _guard = test_lock();
         reset_turn_counters();
         analyze("permission denied");
         analyze("no such file");
@@ -1191,6 +1225,7 @@ mod tests {
 
     #[test]
     fn no_chains_for_same_kind() {
+        let _guard = test_lock();
         reset_turn_counters();
         analyze("No such file: a");
         analyze("No such file: b");
@@ -1200,6 +1235,7 @@ mod tests {
 
     #[test]
     fn failure_sequence_tracked() {
+        let _guard = test_lock();
         reset_turn_counters();
         analyze("No such file: a");
         analyze("permission denied");
@@ -1217,6 +1253,7 @@ mod tests {
 
     #[test]
     fn multiple_chains_detected() {
+        let _guard = test_lock();
         reset_turn_counters();
         analyze("timeout after 30s");
         analyze("connection reset by peer");
@@ -1228,18 +1265,21 @@ mod tests {
 
     #[test]
     fn rate_limited_takes_priority_over_network() {
+        let _guard = test_lock();
         let a = analyze("429 too many requests, rate limit exceeded").unwrap();
         assert_eq!(a.kind, FailureKind::RateLimited);
     }
 
     #[test]
     fn auth_expired_takes_priority_over_permission() {
+        let _guard = test_lock();
         let a = analyze("401 unauthorized: token expired, authentication failed").unwrap();
         assert_eq!(a.kind, FailureKind::AuthExpired);
     }
 
     #[test]
     fn circuit_breaker_takes_priority_over_network() {
+        let _guard = test_lock();
         let a = analyze("circuit breaker open, connection refused").unwrap();
         assert_eq!(a.kind, FailureKind::CircuitBreaker);
     }

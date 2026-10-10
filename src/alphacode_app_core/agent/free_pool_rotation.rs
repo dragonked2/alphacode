@@ -342,8 +342,18 @@ impl RotationNotice {
 mod tests {
     use super::*;
 
+    static TEST_LOCK: Mutex<()> = Mutex::new(());
+
+    fn test_lock() -> std::sync::MutexGuard<'static, ()> {
+        TEST_LOCK
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+    }
+
     /// Tests share a process-wide quarantine map, so each one must start from a
-    /// clean slate or they will see each other's quarantines.
+    /// clean slate or they will see each other's quarantines. The test lock
+    /// keeps that reset and each test's subsequent operations atomic with
+    /// respect to the other tests in this module.
     fn reset() {
         if let Ok(mut map) = quarantine_map().lock() {
             map.clear();
@@ -355,6 +365,7 @@ mod tests {
 
     #[test]
     fn curated_pool_is_the_rotation_floor() {
+        let _guard = test_lock();
         reset();
         let pool = effective_free_pool();
         assert!(pool.len() >= CURATED_FREE_MODELS.len());
@@ -368,6 +379,7 @@ mod tests {
 
     #[test]
     fn a_quarantined_model_is_not_selected_again() {
+        let _guard = test_lock();
         reset();
         quarantine_model("poolside/laguna-s-2.1:free", RotationTrigger::RateLimited);
         assert!(is_quarantined("poolside/laguna-s-2.1:free"));
@@ -377,6 +389,7 @@ mod tests {
 
     #[test]
     fn rotation_moves_forward_rather_than_retrying_the_same_model() {
+        let _guard = test_lock();
         reset();
         let next = next_free_model("kilo-auto/free").expect("pool has alternatives");
         assert_ne!(next, "kilo-auto/free");
@@ -384,6 +397,7 @@ mod tests {
 
     #[test]
     fn clear_quarantine_returns_a_model_to_service() {
+        let _guard = test_lock();
         reset();
         quarantine_model("cohere/north-mini-code:free", RotationTrigger::Transient);
         assert!(is_quarantined("cohere/north-mini-code:free"));
@@ -393,6 +407,7 @@ mod tests {
 
     #[test]
     fn clearing_an_unknown_model_is_harmless() {
+        let _guard = test_lock();
         reset();
         clear_quarantine("some/model:free");
         clear_quarantine("");
@@ -401,6 +416,7 @@ mod tests {
 
     #[test]
     fn discovered_models_join_the_pool() {
+        let _guard = test_lock();
         reset();
         absorb_discovered_free_models(vec![
             "brand-new/model:free".to_string(),
@@ -416,6 +432,7 @@ mod tests {
 
     #[test]
     fn absorbing_an_empty_refresh_leaves_the_pool_intact() {
+        let _guard = test_lock();
         reset();
         let before = effective_free_pool();
         absorb_discovered_free_models(Vec::new());
@@ -424,6 +441,7 @@ mod tests {
 
     #[test]
     fn only_free_models_are_rotated() {
+        let _guard = test_lock();
         assert!(should_rotate_for_model("kilo-auto/free"));
         assert!(should_rotate_for_model("poolside/laguna-s-2.1:free"));
         assert!(
@@ -435,6 +453,7 @@ mod tests {
 
     #[test]
     fn rate_limits_quarantine_longer_than_blips() {
+        let _guard = test_lock();
         assert!(RATE_LIMIT_QUARANTINE > TRANSIENT_QUARANTINE);
         assert!(TRANSIENT_QUARANTINE > EMPTY_RESPONSE_QUARANTINE);
         // A model the gateway does not serve at all must be skipped for far
@@ -447,6 +466,7 @@ mod tests {
     /// thrashed between a 404 model and a rate-limited one indefinitely.
     #[test]
     fn an_unroutable_model_is_not_re_entered_while_the_pool_has_options() {
+        let _guard = test_lock();
         reset();
         // The only other pool member is busy, so the pool looks exhausted.
         quarantine_model("kilo-auto/free", RotationTrigger::RateLimited);
@@ -463,6 +483,7 @@ mod tests {
     /// only the *unroutable* signal suppresses a model.
     #[test]
     fn a_busy_model_remains_a_valid_last_resort() {
+        let _guard = test_lock();
         reset();
         quarantine_model("kilo-auto/free", RotationTrigger::RateLimited);
         let next = next_free_model("kilo-auto/free").expect("pool is not exhausted yet");
@@ -471,6 +492,7 @@ mod tests {
 
     #[test]
     fn unroutable_is_recognised_only_with_routing_vocabulary() {
+        let _guard = test_lock();
         use crate::alphacode_app_core::agent::response_recovery::classify_rotation_trigger;
 
         // The actual gateway response that prompted this change.
@@ -489,6 +511,7 @@ openrouter/free. Every candidate endpoint was removed during routing","code":404
 
     #[test]
     fn status_line_never_leaks_an_upstream_model_id() {
+        let _guard = test_lock();
         reset();
         let notice = RotationNotice {
             from_model: "kilo-auto/free".to_string(),
@@ -505,6 +528,7 @@ openrouter/free. Every candidate endpoint was removed during routing","code":404
 
     #[test]
     fn every_trigger_produces_a_status_line() {
+        let _guard = test_lock();
         for trigger in [
             RotationTrigger::RateLimited,
             RotationTrigger::Transient,

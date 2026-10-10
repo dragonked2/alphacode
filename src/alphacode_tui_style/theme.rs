@@ -148,8 +148,8 @@ pub fn selection_bg_color() -> Color {
 
 // Spinner frames for animated status. Keep these single-cell because the fast
 // spinner-only renderer patches one status cell between full TUI redraws. This
-// sequence should read as a circular spin, not a grow/recede pulse.
-const SPINNER_FRAMES: &[&str] = &["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
+// sequence should read as a compact progress ring, not the legacy Braille sweep.
+const SPINNER_FRAMES: &[&str] = &["◌", "◔", "◑", "◕", "●", "◕", "◑", "◔"];
 
 /// Frame rate for slow, full-line "liveness" indicators that can only be
 /// repainted by a full TUI redraw (e.g. the running-tool progress bar) when
@@ -387,22 +387,19 @@ mod tests {
     use super::*;
 
     #[test]
-    fn spinner_frames_are_circular_braille_sequence() {
-        assert_eq!(
-            SPINNER_FRAMES,
-            &["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"]
-        );
-        assert!(is_activity_indicator_frame("⠋"));
-        assert!(is_activity_indicator_frame("⠏"));
+    fn spinner_frames_are_a_compact_progress_ring() {
+        assert_eq!(SPINNER_FRAMES, &["◌", "◔", "◑", "◕", "●", "◕", "◑", "◔"]);
+        assert!(is_activity_indicator_frame("◌"));
+        assert!(is_activity_indicator_frame("◔"));
         assert!(!is_activity_indicator_frame("/"));
     }
 
     #[test]
     fn spinner_frame_wraps_at_sequence_length() {
         let fps = 10.0;
-        assert_eq!(spinner_frame(0.0, fps), "⠋");
-        assert_eq!(spinner_frame(0.9, fps), "⠏");
-        assert_eq!(spinner_frame(1.0, fps), "⠋");
+        assert_eq!(spinner_frame(0.0, fps), "◌");
+        assert_eq!(spinner_frame(0.7, fps), "◔");
+        assert_eq!(spinner_frame(0.8, fps), "◌");
     }
 
     #[test]

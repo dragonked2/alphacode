@@ -5,6 +5,7 @@ pub mod swarm_gallery;
 pub mod swarm_tiles;
 
 use ratatui::prelude::{Color, Line, Span, Style};
+use unicode_segmentation::UnicodeSegmentation;
 
 /// Border character sets for rendered boxes.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -181,94 +182,79 @@ pub fn render_thick_box(
 }
 
 pub fn truncate_line_to_width(line: &Line<'static>, width: usize) -> Line<'static> {
-    if width == 0 {
-        return Line::from("");
-    }
-
-    let mut spans: Vec<Span<'static>> = Vec::new();
-    let mut remaining = width;
-    for span in &line.spans {
-        if remaining == 0 {
-            break;
-        }
-        let text = span.content.as_ref();
-        let span_width = unicode_width::UnicodeWidthStr::width(text);
-        if span_width <= remaining {
-            spans.push(span.clone());
-            remaining -= span_width;
-        } else {
-            let mut clipped = String::new();
-            let mut used = 0;
-            for ch in text.chars() {
-                let cw = unicode_width::UnicodeWidthChar::width(ch).unwrap_or(0);
-                if used + cw > remaining {
-                    break;
-                }
-                clipped.push(ch);
-                used += cw;
-            }
-            if !clipped.is_empty() {
-                spans.push(Span::styled(clipped, span.style));
-            }
-            remaining = 0;
-        }
-    }
-
-    if spans.is_empty() {
-        Line::from("")
-    } else {
-        Line::from(spans)
-    }
+    let (spans, _) = truncate_spans_to_width(&line.spans, width);
+    let mut truncated = Line::from(spans);
+    truncated.alignment = line.alignment;
+    truncated
 }
 
 pub fn truncate_line_with_ellipsis_to_width(line: &Line<'static>, width: usize) -> Line<'static> {
     if width == 0 {
-        return Line::from("");
+        let mut empty = Line::from("");
+        empty.alignment = line.alignment;
+        return empty;
     }
     if line.width() <= width {
         return line.clone();
     }
     if width == 1 {
-        return Line::from(Span::raw("…"));
+        let mut ellipsis = Line::from(Span::raw("…"));
+        ellipsis.alignment = line.alignment;
+        return ellipsis;
     }
 
-    let mut spans: Vec<Span<'static>> = Vec::new();
-    let mut remaining = width.saturating_sub(1);
-    let mut ellipsis_style = Style::default();
-
-    for span in &line.spans {
-        if remaining == 0 {
-            break;
-        }
-        let text = span.content.as_ref();
-        let span_width = unicode_width::UnicodeWidthStr::width(text);
-        if span_width <= remaining {
-            spans.push(span.clone());
-            remaining -= span_width;
-            ellipsis_style = span.style;
-        } else {
-            let mut clipped = String::new();
-            let mut used = 0;
-            for ch in text.chars() {
-                let cw = unicode_width::UnicodeWidthChar::width(ch).unwrap_or(0);
-                if used + cw > remaining {
-                    break;
-                }
-                clipped.push(ch);
-                used += cw;
-            }
-            if !clipped.is_empty() {
-                spans.push(Span::styled(clipped, span.style));
-                ellipsis_style = span.style;
-            }
-            break;
-        }
-    }
-
-    spans.push(Span::styled("…", ellipsis_style));
+    let (mut spans, ellipsis_style) = truncate_spans_to_width(&line.spans, width.saturating_sub(1));
+    spans.push(Span::styled("…", ellipsis_style.unwrap_or_default()));
     let mut truncated = Line::from(spans);
     truncated.alignment = line.alignment;
     truncated
+}
+
+/// Clip styled spans without splitting a user-perceived Unicode character.
+/// All line truncation in the TUI goes through this helper so output, badges,
+/// and chrome agree on terminal-cell widths and style boundaries.
+fn truncate_spans_to_width(
+    spans: &[Span<'static>],
+    max_width: usize,
+) -> (Vec<Span<'static>>, Option<Style>) {
+    let mut remaining = max_width;
+    let mut kept = Vec::new();
+    let mut last_style = None;
+
+    for span in spans {
+        if remaining == 0 {
+            break;
+        }
+
+        let text = span.content.as_ref();
+        let span_width = unicode_width::UnicodeWidthStr::width(text);
+        if span_width <= remaining {
+            if !text.is_empty() {
+                last_style = Some(span.style);
+            }
+            kept.push(span.clone());
+            remaining = remaining.saturating_sub(span_width);
+            continue;
+        }
+
+        let mut clipped = String::new();
+        let mut used = 0usize;
+        for grapheme in text.graphemes(true) {
+            let grapheme_width = unicode_width::UnicodeWidthStr::width(grapheme);
+            if used.saturating_add(grapheme_width) > remaining {
+                break;
+            }
+            clipped.push_str(grapheme);
+            used = used.saturating_add(grapheme_width);
+        }
+        if !clipped.is_empty() {
+            kept.push(Span::styled(clipped, span.style));
+            last_style = Some(span.style);
+        }
+        break;
+    }
+
+    (kept, last_style)
 }
 
 pub fn truncate_line_preserving_suffix_to_width(
@@ -277,7 +263,9 @@ pub fn truncate_line_preserving_suffix_to_width(
     width: usize,
 ) -> Line<'static> {
     if width == 0 {
-        return Line::from("");
+        let mut empty = Line::from("");
+        empty.alignment = prefix.alignment;
+        return empty;
     }
 
     if suffix.width() == 0 {
@@ -311,4 +299,49 @@ pub fn line_plain_text(line: &Line<'_>) -> String {
         .iter()
         .map(|span| span.content.as_ref())
         .collect::<String>()
+}
+
+#[cfg(test)]
+mod truncation_tests {
+    use super::*;
+    use ratatui::prelude::Alignment;
+
+    #[test]
+    fn truncation_keeps_zwj_emoji_graphemes_intact() {
+        let line = Line::from("A👩‍💻XY");
+
+        let clipped = truncate_line_to_width(&line, 3);
+        assert_eq!(line_plain_text(&clipped), "A👩‍💻");
+        assert_eq!(clipped.width(), 3);
+
+        let ellipsized = truncate_line_with_ellipsis_to_width(&line, 4);
+        assert_eq!(line_plain_text(&ellipsized), "A👩‍💻…");
+        assert_eq!(ellipsized.width(), 4);
+    }
+
+    #[test]
+    fn truncation_keeps_combining_marks_with_their_base_character() {
+        let line = Line::from("e\u{301}xy");
+
+        let clipped = truncate_line_to_width(&line, 1);
+        assert_eq!(line_plain_text(&clipped), "e\u{301}");
+        assert_eq!(clipped.width(), 1);
+    }
+
+    #[test]
+    fn truncation_preserves_alignment_and_ellipsis_style() {
+        let style = Style::default().fg(Color::LightBlue);
+        let mut line = Line::from(vec![Span::styled("abcdef", style)]);
+        line.alignment = Some(Alignment::Right);
+
+        let clipped = truncate_line_to_width(&line, 3);
+        assert_eq!(line_plain_text(&clipped), "abc");
+        assert_eq!(clipped.alignment, Some(Alignment::Right));
+        assert_eq!(clipped.spans[0].style, style);
+
+        let ellipsized = truncate_line_with_ellipsis_to_width(&line, 4);
+        assert_eq!(line_plain_text(&ellipsized), "abc…");
+        assert_eq!(ellipsized.alignment, Some(Alignment::Right));
+        assert_eq!(ellipsized.spans.last().unwrap().style, style);
+    }
 }

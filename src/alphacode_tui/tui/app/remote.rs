@@ -106,6 +106,9 @@ pub(super) async fn handle_tick(app: &mut App, remote: &mut RemoteConnection) ->
     if app.apply_stream_ops(ops) {
         needs_redraw = true;
     }
+    if stop_remote_repetition_if_needed(app, remote).await {
+        needs_redraw = true;
+    }
     if stream_backlog_was_empty
         && app.stream_buffer.is_empty()
         && let Some(id) = app.deferred_stream_done_id.take()
@@ -1120,6 +1123,27 @@ async fn dispatch_pending_server_reload(app: &mut App, remote: &mut RemoteConnec
     }
 }
 
+async fn stop_remote_repetition_if_needed(app: &mut App, remote: &mut RemoteConnection) -> bool {
+    if !app.repetition_stop_requested || !app.is_processing || app.repetition_remote_cancel_sent {
+        return false;
+    }
+
+    app.repetition_remote_cancel_sent = true;
+    app.rollback_streaming_attempt();
+    app.batch_progress = None;
+    app.push_display_message(DisplayMessage::system(
+        "Repeated output detected. A stop request was sent to the server and this partial response was cleared from the view. Check the server transcript before retrying.",
+    ));
+    app.set_status_notice("Stopping remote generation: repeated output detected");
+    if let Err(error) = remote.cancel_with_reason("repetition_guard").await {
+        crate::logging::warn(&format!(
+            "Failed to send remote cancellation after repeated output: {error}"
+        ));
+        app.set_status_notice("Repeated output detected; remote cancellation failed");
+    }
+    true
+}
+
 pub(super) async fn process_remote_followups(app: &mut App, remote: &mut RemoteConnection) {
     // A pending *server* reload must be dispatched even when the bootstrap
     // History payload was intentionally deferred. The runtime-identity /
@@ -1132,6 +1156,10 @@ pub(super) async fn process_remote_followups(app: &mut App, remote: &mut RemoteC
     // mismatch reload-handoff stall).
     if app.pending_server_reload && !app.is_processing {
         dispatch_pending_server_reload(app, remote).await;
+        return;
+    }
+
+    if stop_remote_repetition_if_needed(app, remote).await {
         return;
     }
 

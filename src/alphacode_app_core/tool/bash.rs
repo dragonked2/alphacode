@@ -89,8 +89,10 @@ const STDIN_INITIAL_DELAY_MS: u64 = 200;
 const PROGRESS_MARKER_PREFIX: &str = "ALPHACODE_PROGRESS ";
 const CHECKPOINT_MARKER_PREFIX: &str = "ALPHACODE_CHECKPOINT ";
 const BACKGROUND_PROGRESS_GUIDANCE: &str = "For long-running background commands, prefer scripts or commands that periodically print progress updates. Best format: print lines starting with `ALPHACODE_PROGRESS ` followed by JSON like {\"percent\":42,\"message\":\"Running\"} or {\"current\":120,\"total\":1000,\"unit\":\"batches\",\"message\":\"Epoch 2/5\",\"eta_seconds\":30}. Supported JSON fields are `percent`, `message`, `current`, `total`, `unit`, `eta_seconds`, and optional `kind`=`indeterminate` or `kind`=`checkpoint`. For milestone-style wakeups, print `ALPHACODE_CHECKPOINT {\"message\":\"Unit tests passed\"}`. Generic fallback output that can be parsed includes `42%`, `3/10 tests`, `3 of 10 steps`, `1.5/3.0 GiB`, or phase lines like `Compiling ...`, `Downloading ...`, `Running ...`, and `Building ...`. If you are writing the script yourself, add these progress/checkpoint lines explicitly. Put large temporary files, worktrees, and virtual environments under `$ALPHACODE_SCRATCH_DIR`, not `/tmp`, because `/tmp` may be RAM-backed.";
+#[cfg(not(windows))]
 const BASH_TOOL_DESCRIPTION: &str = "Run a shell command. Commands execute in bash on all operating systems (including Windows via Git Bash). Use POSIX syntax: ls, mv, rm, cp, grep. Use forward slashes for paths. This is your primary tool for building, testing, inspecting systems, running git, and executing any shell operation. Always include error handling and use appropriate timeouts. Choose the smallest command that answers the question: prefer `grep -n`, `rg`, `git diff --stat`, or a targeted read over a full build when you only need to inspect state. After a code change, run the project's tests (or at minimum the previously-passing subset) to confirm no regressions. Never claim a command succeeded unless you actually saw it succeed in the output.";
 const WINDOWS_SHELL_TOOL_DESCRIPTION: &str = "Run a shell command. Commands execute in Git Bash on Windows (POSIX-compatible). Use POSIX syntax: ls, mv, rm, cp, grep, cat, head, tail, wc, find, xargs. Use forward slashes for paths (C:/Users not C:\\Users). Never use cmd.exe syntax (dir, copy, del, move, type) or PowerShell ($env, Get-ChildItem). For PowerShell-specific APIs, prefix with: powershell -Command '...'. This is your primary tool for building, testing, inspecting systems, running git, and executing any shell operation. Always include error handling and use appropriate timeouts. Choose the smallest command that answers the question: prefer `grep -n`, `git diff --stat`, or a targeted read over a full build when you only need to inspect state. After a code change, run the project's tests (or at minimum the previously-passing subset) to confirm no regressions. Never claim a command succeeded unless you actually saw it succeed in the output.";
+const WINDOWS_CMD_SHELL_TOOL_DESCRIPTION: &str = "Run a shell command. Git Bash is not installed, so commands execute in cmd.exe. Use Windows syntax (dir, copy, del, type); POSIX utilities and pipelines may not be available. Quote URLs containing query parameters, especially `&` or `|`, with double quotes; unquoted URL operators are rejected before execution. Use `webfetch` for HTTP reads. For PowerShell-specific APIs, prefix with: powershell -NoProfile -Command '...'. This is your primary tool for local Windows commands. Always include error handling and use appropriate timeouts. Prefer targeted commands over full output.";
 
 /// Build a clear timeout message. The `timeout` param is in milliseconds, which
 /// agents frequently mistake for seconds (e.g. passing 1000 thinking it means
@@ -1057,6 +1059,35 @@ fn default_true() -> bool {
     true
 }
 
+/// Repair the common Windows invocation `python3 ...` when Python is
+/// installed outside PATH. Only the leading interpreter token is rewritten;
+/// the user's script and arguments remain untouched.
+#[cfg(windows)]
+async fn resolve_python_command(command: &str) -> String {
+    let leading = command.len() - command.trim_start().len();
+    let trimmed = &command[leading..];
+    let token_end = trimmed
+        .char_indices()
+        .find_map(|(index, character)| character.is_whitespace().then_some(index))
+        .unwrap_or(trimmed.len());
+    let token = &trimmed[..token_end];
+    if !matches!(token, "python" | "python3") {
+        return command.to_string();
+    }
+    let Some(interpreter) = super::python::replacement_for_missing_command(token).await else {
+        return command.to_string();
+    };
+
+    let interpreter = interpreter.to_string_lossy();
+    let quoted = if GIT_BASH_PATH.is_some() {
+        let path = interpreter.replace('\\', "/").replace('\'', "'\\''");
+        format!("'{path}'")
+    } else {
+        format!("\"{}\"", interpreter.replace('"', ""))
+    };
+    format!("{}{}{}", &command[..leading], quoted, &trimmed[token_end..])
+}
+
 #[path = "bash_destructive_gate.rs"]
 mod destructive_gate;
 use destructive_gate::destructive_command_refusal;
@@ -1067,9 +1098,16 @@ impl Tool for BashTool {
     }
 
     fn description(&self) -> &str {
-        if cfg!(windows) {
-            WINDOWS_SHELL_TOOL_DESCRIPTION
-        } else {
+        #[cfg(windows)]
+        {
+            if GIT_BASH_PATH.is_some() {
+                WINDOWS_SHELL_TOOL_DESCRIPTION
+            } else {
+                WINDOWS_CMD_SHELL_TOOL_DESCRIPTION
+            }
+        }
+        #[cfg(not(windows))]
+        {
             BASH_TOOL_DESCRIPTION
         }
     }
@@ -1116,6 +1154,11 @@ impl Tool for BashTool {
             ));
         }
 
+        #[cfg(windows)]
+        {
+            params.command = resolve_python_command(&params.command).await;
+        }
+
         // Destructive-command gate: refuse only commands that would destroy a
         // protected path (home directory, credential store, or system root).
         // Routine authorized security tooling (nmap, subfinder, nuclei, httpx,
@@ -1126,6 +1169,15 @@ impl Tool for BashTool {
             ctx.working_dir.clone(),
         ) {
             return Err(anyhow::anyhow!(refusal));
+        }
+
+        // Refuse an unquoted URL query before invoking any shell. A post-run
+        // warning was too late: cmd.exe or bash had already split the URL at
+        // `&`/`|` and possibly executed the tail as a second command.
+        if let crate::alphacode_command_risk::ShellUrlSafety::Warning(warning) =
+            crate::alphacode_command_risk::scan_for_shell_url_issues(&params.command)
+        {
+            return Err(anyhow::anyhow!(warning));
         }
 
         if run_in_background {
@@ -1150,28 +1202,8 @@ impl Tool for BashTool {
             }
         }
 
-        // Shell-URL safety scan. Not a block: a command may legitimately need
-        // `&` or `|`. But a URL with shell metacharacters in its query string
-        // inside a `findstr`/`powershell` chain is almost always silently
-        // mangled by cmd.exe, and the model then interprets the resulting
-        // garbage. This module was written for exactly that case and never
-        // called, so the warning was never produced.
-        let shell_url_warning =
-            match crate::alphacode_command_risk::scan_for_shell_url_issues(&params.command) {
-                crate::alphacode_command_risk::ShellUrlSafety::Clean => None,
-                crate::alphacode_command_risk::ShellUrlSafety::Warning(w) => Some(w),
-            };
-
         // Foreground execution with stdin detection
-        let result = self.execute_foreground(&params, &ctx).await;
-
-        if let Some(warning) = shell_url_warning
-            && let Ok(mut out) = result
-        {
-            out.output = format!("[shell URL safety] {warning}\n\n{}", out.output);
-            return Ok(out);
-        }
-        result
+        self.execute_foreground(&params, &ctx).await
     }
 }
 

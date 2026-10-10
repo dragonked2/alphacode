@@ -16,6 +16,7 @@ use super::App;
 use super::input::PASTE_PLACEHOLDER;
 use crossterm::event::{KeyCode, KeyModifiers};
 use std::path::{Path, PathBuf};
+use unicode_segmentation::UnicodeSegmentation;
 
 /// Hard cap on persisted history entries (after dedupe, newest kept).
 pub(crate) const MAX_PERSISTED_PROMPTS: usize = 1000;
@@ -177,6 +178,90 @@ fn single_line_preview(text: &str) -> String {
 }
 
 impl App {
+    /// Return the unique recent prompt extending the current single-line draft.
+    /// This stays read-only and only scans history already in memory, so asking
+    /// the renderer for a completion never causes disk I/O.
+    fn current_input_history_completion(&self) -> Option<&str> {
+        if self.cursor_pos != self.input.len()
+            || self.input.starts_with('/')
+            || self.input.starts_with('!')
+            || self.input.contains(['\n', '\r'])
+            || self.input.graphemes(true).count() < 3
+            || self.pending_login.is_some()
+            || self.pending_account_input.is_some()
+            || self.pending_ssh_remote_name.is_some()
+        {
+            return None;
+        }
+
+        let input = self.input.as_str();
+        let persisted = self
+            .persisted_prompt_history
+            .as_deref()
+            .unwrap_or_default()
+            .iter()
+            .map(String::as_str);
+        let current_session = self
+            .display_messages
+            .iter()
+            .filter(|message| message.role == "user")
+            .map(|message| message.content.trim());
+
+        let mut unique: Option<&str> = None;
+        for prompt in persisted.chain(current_session) {
+            if prompt == input
+                || !prompt.starts_with(input)
+                || prompt.contains(['\n', '\r'])
+                || contains_paste_placeholder(prompt)
+                || prompt.starts_with('/')
+                || prompt.starts_with('!')
+            {
+                continue;
+            }
+            match unique {
+                Some(previous) if previous != prompt => return None,
+                Some(_) => {}
+                None => unique = Some(prompt),
+            }
+        }
+        unique
+    }
+
+    /// Render the unseen tail of a unique prompt completion, bounded to the
+    /// space left on the current wrapped composer row.
+    pub(super) fn input_history_completion_suffix(&self, max_width: usize) -> Option<String> {
+        if max_width == 0 {
+            return None;
+        }
+        let prompt = self.current_input_history_completion()?;
+        let suffix = prompt.strip_prefix(&self.input)?;
+        let mut rendered = String::new();
+        let mut width = 0;
+        for grapheme in suffix.graphemes(true) {
+            let grapheme_width = unicode_width::UnicodeWidthStr::width(grapheme);
+            if width + grapheme_width > max_width {
+                break;
+            }
+            rendered.push_str(grapheme);
+            width += grapheme_width;
+        }
+        (!rendered.is_empty()).then_some(rendered)
+    }
+
+    /// Commit the unique completion to the real draft. The undo stack keeps
+    /// acceptance reversible, just like other composer edits.
+    pub(super) fn accept_input_history_completion(&mut self) -> bool {
+        let Some(completion) = self.current_input_history_completion().map(str::to_owned) else {
+            return false;
+        };
+        self.remember_input_undo_state();
+        self.input = completion;
+        self.cursor_pos = self.input.len();
+        self.reset_tab_completion();
+        self.sync_model_picker_preview_from_input();
+        true
+    }
+
     /// Lazily load the persisted prompt history. Under `cfg(test)` the load is
     /// skipped (tests inject `persisted_prompt_history` directly) so unit tests
     /// sharing one `ALPHACODE_HOME` stay deterministic.

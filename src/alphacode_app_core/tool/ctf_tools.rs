@@ -26,22 +26,10 @@ const MAX_CARRY: usize = 4096;
 /// report "failed to run" even when Python is installed. Mirrors the lookup
 /// already used by `scrapling`.
 async fn find_python() -> Result<String> {
-    for name in ["python3", "python", "py"] {
-        let mut cmd = tokio::process::Command::new(name);
-        cmd.arg("--version")
-            .kill_on_drop(true)
-            .stdin(std::process::Stdio::null())
-            .stdout(std::process::Stdio::piped())
-            .stderr(std::process::Stdio::piped());
-        if let Ok(Ok(status)) = tokio::time::timeout(Duration::from_secs(5), cmd.status()).await
-            && status.success()
-        {
-            return Ok(name.to_string());
-        }
-    }
-    Err(anyhow::anyhow!(
-        "no Python interpreter found on PATH (tried python3, python, py)"
-    ))
+    super::python::find_python()
+        .await
+        .map(|path| path.to_string_lossy().into_owned())
+        .ok_or_else(|| anyhow::anyhow!("no usable Python interpreter found (checked PYTHON, PATH, and standard Windows install locations)"))
 }
 
 /// Write `script` to a unique temp file and run it with the resolved Python

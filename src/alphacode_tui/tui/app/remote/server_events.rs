@@ -1125,7 +1125,7 @@ pub(in crate::alphacode_tui::tui::app) fn handle_server_event(
             app.current_message_id = None;
             remote.clear_pending();
             remote.reset_call_output_tokens_seen();
-            let auto_poked = app.schedule_turn_end_followups();
+            let auto_poked = super::super::local::schedule_turn_end_followups_guarded(app);
             if !auto_poked {
                 app.clear_visible_turn_started();
             }
@@ -1251,7 +1251,7 @@ pub(in crate::alphacode_tui::tui::app) fn handle_server_event(
                     "client_turn_completed",
                     std::time::Duration::from_secs(30),
                 );
-                auto_poked = app.schedule_turn_end_followups();
+                auto_poked = super::super::local::schedule_turn_end_followups_guarded(app);
                 if !auto_poked {
                     app.clear_visible_turn_started();
                     if app.queued_messages.is_empty() {
@@ -1482,7 +1482,7 @@ pub(in crate::alphacode_tui::tui::app) fn handle_server_event(
                 // that is known to work), instead of leaving the user to run
                 // /login or /model manually.
                 app.offer_fallback_after_error_with_payload(&message, failed_fallback_payload);
-                return app.schedule_turn_end_followups();
+                return super::super::local::schedule_turn_end_followups_guarded(app);
             }
             false
         }

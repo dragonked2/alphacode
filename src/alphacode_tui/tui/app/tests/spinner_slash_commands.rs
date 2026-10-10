@@ -14,9 +14,17 @@ fn slash_palette_remains_navigable_while_streaming_spinner_is_active() {
         "the one-cell spinner fast path must yield to the slash palette overlay"
     );
 
-    app.handle_key(KeyCode::Down, KeyModifiers::empty())
-        .expect("navigate slash suggestions");
-    assert_eq!(app.command_suggestion_selected, 1);
+    let command_index = suggestions
+        .iter()
+        .enumerate()
+        .find(|(index, (_, description))| *index > 0 && *description != "Activate skill")
+        .map(|(index, _)| index)
+        .expect("built-in command suggestion after the first row");
+    for _ in 0..command_index {
+        app.handle_key(KeyCode::Down, KeyModifiers::empty())
+            .expect("navigate slash suggestions");
+    }
+    assert_eq!(app.command_suggestion_selected, command_index);
 
     app.handle_key(KeyCode::Enter, KeyModifiers::empty())
         .expect("accept slash suggestion");

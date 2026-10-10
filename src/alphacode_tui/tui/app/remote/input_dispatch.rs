@@ -165,8 +165,19 @@ pub(in crate::alphacode_tui::tui::app) async fn submit_remote_slash_input(
     // allowed through explicitly.
     // Resolve registered multi-word skill names before falling back to the
     // existing single-token command handling.
-    let snapshot = app.current_skills_snapshot();
+    let mut snapshot = app.current_skills_snapshot();
     let trimmed = raw_input.trim();
+    // The remote TUI and server keep separate registry snapshots. Refresh on
+    // a slash-shaped miss before deciding this is ordinary prompt text, or a
+    // newly installed/global skill can be sent to the model as `/skill`.
+    if input::parse_dropped_paths(&raw_input).is_none()
+        && trimmed.starts_with('/')
+        && !App::is_registered_slash_command(trimmed)
+        && snapshot.resolve_invocation(&raw_input).is_none()
+    {
+        app.refresh_skills_snapshot();
+        snapshot = app.current_skills_snapshot();
+    }
     let is_command_shaped = trimmed == "/?"
         || (input::parse_dropped_paths(&raw_input).is_none()
             && snapshot.resolve_invocation(&raw_input).is_some());

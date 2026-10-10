@@ -41,7 +41,32 @@ pub enum TerminalClass {
 impl TerminalClass {
     /// Detect the terminal class from the process environment.
     pub fn detect() -> TerminalClass {
-        if let Ok(raw) = std::env::var("ALPHACODE_ICONS") {
+        let icons = std::env::var("ALPHACODE_ICONS").ok();
+        let glyph_safe_mode = std::env::var("ALPHACODE_GLYPH_SAFE_MODE").ok();
+        let term_program = std::env::var("TERM_PROGRAM").ok();
+        let has_modern_terminal_marker = std::env::var("GHOSTTY_RESOURCES_DIR").is_ok()
+            || std::env::var("GHOSTTY_BIN_DIR").is_ok()
+            || std::env::var("WEZTERM_EXECUTABLE").is_ok()
+            || std::env::var("WEZTERM_PANE").is_ok();
+        let term = std::env::var("TERM").ok();
+
+        Self::detect_from(
+            icons.as_deref(),
+            glyph_safe_mode.as_deref(),
+            term_program.as_deref(),
+            has_modern_terminal_marker,
+            term.as_deref(),
+        )
+    }
+
+    fn detect_from(
+        icons: Option<&str>,
+        glyph_safe_mode: Option<&str>,
+        term_program: Option<&str>,
+        has_modern_terminal_marker: bool,
+        term: Option<&str>,
+    ) -> TerminalClass {
+        if let Some(raw) = icons {
             match raw.trim().to_ascii_lowercase().as_str() {
                 "1" | "true" | "yes" | "on" | "modern" => return TerminalClass::Modern,
                 "0" | "false" | "no" | "off" | "minimal" | "ascii" => {
@@ -52,14 +77,14 @@ impl TerminalClass {
             }
         }
 
-        if let Ok(raw) = std::env::var("ALPHACODE_GLYPH_SAFE_MODE") {
+        if let Some(raw) = glyph_safe_mode {
             let raw = raw.trim().to_ascii_lowercase();
             if matches!(raw.as_str(), "1" | "true" | "yes" | "on") {
                 return TerminalClass::Mainstream;
             }
         }
 
-        if let Ok(tp) = std::env::var("TERM_PROGRAM") {
+        if let Some(tp) = term_program {
             let tp = tp.to_ascii_lowercase();
             if matches!(
                 tp.as_str(),
@@ -72,15 +97,11 @@ impl TerminalClass {
             }
         }
 
-        if std::env::var("GHOSTTY_RESOURCES_DIR").is_ok()
-            || std::env::var("GHOSTTY_BIN_DIR").is_ok()
-            || std::env::var("WEZTERM_EXECUTABLE").is_ok()
-            || std::env::var("WEZTERM_PANE").is_ok()
-        {
+        if has_modern_terminal_marker {
             return TerminalClass::Modern;
         }
 
-        if let Ok(term) = std::env::var("TERM") {
+        if let Some(term) = term {
             let t = term.to_ascii_lowercase();
             if t.contains("kitty") || t.contains("ghostty") || t.contains("alacritty") {
                 return TerminalClass::Modern;
@@ -374,13 +395,21 @@ mod tests {
 
     #[test]
     fn terminal_class_default_is_mainstream_or_modern() {
-        // With no env overrides, the default should not be Minimal: a
-        // user who never set ALPHACODE_ICONS should still get the rich
-        // glyph set, only downgrading if their terminal opts in.
+        // An unknown terminal uses mainstream glyphs. Test the pure classifier
+        // so the host's TERM=dumb and the process-global OnceLock cannot make
+        // this assertion depend on the developer machine or test ordering.
         assert!(matches!(
-            terminal_class(),
+            TerminalClass::detect_from(None, None, None, false, None),
             TerminalClass::Modern | TerminalClass::Mainstream
         ));
+    }
+
+    #[test]
+    fn dumb_terminal_selects_minimal_glyphs() {
+        assert_eq!(
+            TerminalClass::detect_from(None, None, None, false, Some("dumb")),
+            TerminalClass::Minimal
+        );
     }
 
     #[test]

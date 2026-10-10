@@ -116,38 +116,7 @@ fn resolve_tail_follow_scroll(max_scroll: usize, viewport_height: usize) -> usiz
 use super::selection_highlight::highlight_line_selection;
 
 pub(crate) fn truncate_line_in_place_to_width(line: &mut Line<'static>, max_width: usize) {
-    let mut remaining = max_width;
-    let mut kept: Vec<Span<'static>> = Vec::new();
-
-    for span in line.spans.drain(..) {
-        if remaining == 0 {
-            break;
-        }
-
-        let span_width = span.content.as_ref().width();
-        if span_width <= remaining {
-            remaining = remaining.saturating_sub(span_width);
-            kept.push(span);
-            continue;
-        }
-
-        let mut text = String::new();
-        let mut used = 0usize;
-        for ch in span.content.chars() {
-            let ch_width = unicode_width::UnicodeWidthChar::width(ch).unwrap_or(0);
-            if ch_width > 0 && used.saturating_add(ch_width) > remaining {
-                break;
-            }
-            text.push(ch);
-            used = used.saturating_add(ch_width);
-        }
-        if !text.is_empty() {
-            kept.push(Span::styled(text, span.style));
-        }
-        break;
-    }
-
-    line.spans = kept;
+    *line = crate::alphacode_tui_render::truncate_line_to_width(line, max_width);
 }
 
 /// Remove trailing plain spaces from a line so an appended badge sits exactly
