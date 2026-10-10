@@ -8,12 +8,12 @@
 
 <br>
 
-<video src="https://github.com/dragonked2/alphacode/alphacode-demo.mp4" controls muted playsinline width="860">
+<video src="alphacode-demo.svg" controls muted playsinline width="860">
   Your viewer can't play embedded video.
-  <a href="alphacode-demo.mp4">Watch or download the AlphaCode demo (MP4)</a>.
+  <a href="alphacode-demo.svg">Watch or download the AlphaCode demo (MP4)</a>.
 </video>
 
-<sub>Install and first task, start to finish. Video not playing? <a href="alphacode-demo.mp4">Open the MP4 directly</a>.</sub>
+<sub>Install and first task <a href="alphacode-demo.svg"></a>.</sub>
 
 <br>
 
