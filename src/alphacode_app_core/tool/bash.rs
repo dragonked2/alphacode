@@ -608,6 +608,17 @@ fn is_wsl_bash_shim(path: &str) -> bool {
         || lower.ends_with("\\sysnative\\bash.exe")
 }
 
+#[cfg(windows)]
+fn configure_shell_process(command: &mut TokioCommand) {
+    use std::os::windows::process::CommandExt;
+
+    // The shell's stdout/stderr are captured by the tool runner. Avoid letting
+    // Windows create a separate console when AlphaCode itself was launched from
+    // a GUI host or a terminal that does not provide a console handle.
+    const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+    command.as_std_mut().creation_flags(CREATE_NO_WINDOW);
+}
+
 fn build_shell_command(cmd_str: &str) -> TokioCommand {
     #[cfg(windows)]
     {
@@ -619,6 +630,7 @@ fn build_shell_command(cmd_str: &str) -> TokioCommand {
             let mut cmd = TokioCommand::new(bash_path);
             cmd.arg("-c").arg(cmd_str);
             configure_tool_scratch(&mut cmd);
+            configure_shell_process(&mut cmd);
             cmd
         } else {
             let mut cmd = TokioCommand::new("cmd.exe");
@@ -629,6 +641,7 @@ fn build_shell_command(cmd_str: &str) -> TokioCommand {
             // `/S` selects the documented quote handling used with this form.
             cmd.args(["/D", "/S", "/C"])
                 .raw_arg(format!("\"{cmd_str}\""));
+            configure_shell_process(&mut cmd);
             cmd
         }
     }

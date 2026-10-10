@@ -245,13 +245,24 @@ async fn refresh_tokens_uncoordinated(tokens: &AntigravityTokens) -> Result<Anti
 pub async fn login(no_browser: bool) -> Result<AntigravityTokens> {
     let (verifier, challenge) = crate::alphacode_base::auth::oauth::generate_pkce_public();
     let state = crate::alphacode_base::auth::oauth::generate_state_public();
-    let redirect_uri = redirect_uri(DEFAULT_PORT);
+    let callback_setup = if crate::alphacode_base::auth::browser_suppressed(no_browser) {
+        None
+    } else {
+        match bind_callback_listener() {
+            Ok(setup) => Some(setup),
+            Err(error) => {
+                eprintln!("Could not start the local Antigravity callback listener: {error}");
+                None
+            }
+        }
+    };
+    let redirect_uri = callback_setup
+        .as_ref()
+        .map(|(_, uri)| uri.clone())
+        .unwrap_or_else(|| redirect_uri(DEFAULT_PORT));
     let auth_url = build_auth_url(&redirect_uri, &challenge, &state)?;
 
-    if !crate::alphacode_base::auth::browser_suppressed(no_browser)
-        && let Ok(listener) =
-            crate::alphacode_base::auth::oauth::bind_callback_listener(DEFAULT_PORT)
-    {
+    if let Some((listener, _)) = callback_setup {
         eprintln!("\nOpening browser for Antigravity login...\n");
         eprintln!("If the browser didn't open, visit:\n{}\n", auth_url);
         if let Some(qr) = crate::login_qr::indented_section(
@@ -525,6 +536,20 @@ pub fn redirect_uri(port: u16) -> String {
     format!("http://{LOOPBACK_HOST}:{port}{REDIRECT_PATH}")
 }
 
+/// Reserve an available loopback port before opening the browser and return
+/// the exact redirect URI that must be used for both authorization and token
+/// exchange. A fixed port can already belong to another application, which
+/// prevents the automatic callback from reaching Alphacode.
+pub fn bind_callback_listener() -> Result<(tokio::net::TcpListener, String)> {
+    let listener = crate::alphacode_base::auth::oauth::bind_callback_listener(0)
+        .context("could not bind an Antigravity OAuth callback listener")?;
+    let port = listener
+        .local_addr()
+        .context("could not read the Antigravity OAuth callback listener address")?
+        .port();
+    Ok((listener, redirect_uri(port)))
+}
+
 fn antigravity_headers(access_token: &str) -> Result<reqwest::header::HeaderMap> {
     use reqwest::header::{AUTHORIZATION, CONTENT_TYPE, HeaderMap, HeaderValue, USER_AGENT};
 
@@ -633,6 +658,16 @@ mod tests {
             redirect_uri(DEFAULT_PORT),
             "http://127.0.0.1:51121/oauth-callback"
         );
+    }
+
+    #[tokio::test]
+    async fn callback_listener_uses_an_available_loopback_port() {
+        let (listener, uri) = bind_callback_listener().expect("bind callback listener");
+        let address = listener.local_addr().expect("listener address");
+
+        assert_eq!(address.ip(), std::net::Ipv4Addr::LOCALHOST);
+        assert_ne!(address.port(), 0);
+        assert_eq!(uri, redirect_uri(address.port()));
     }
 
     #[test]

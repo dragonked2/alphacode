@@ -1904,8 +1904,23 @@ impl App {
     fn start_antigravity_login(&mut self) {
         let (verifier, challenge) = crate::alphacode_base::auth::oauth::generate_pkce_public();
         let expected_state = crate::alphacode_base::auth::oauth::generate_state_public();
-        let port = crate::alphacode_base::auth::antigravity::DEFAULT_PORT;
-        let redirect_uri = crate::alphacode_base::auth::antigravity::redirect_uri(port);
+        let callback_setup = crate::alphacode_base::auth::antigravity::bind_callback_listener();
+        let (callback_listener, redirect_uri, callback_bind_error) = match callback_setup {
+            Ok((listener, redirect_uri)) => (Some(listener), redirect_uri, None),
+            Err(error) => {
+                let detail = error.to_string();
+                crate::logging::info(&format!(
+                    "Could not bind Antigravity OAuth callback listener: {detail}"
+                ));
+                (
+                    None,
+                    crate::alphacode_base::auth::antigravity::redirect_uri(
+                        crate::alphacode_base::auth::antigravity::DEFAULT_PORT,
+                    ),
+                    Some(detail),
+                )
+            }
+        };
 
         let auth_url = match crate::alphacode_base::auth::antigravity::build_auth_url(
             &redirect_uri,
@@ -1930,8 +1945,6 @@ impl App {
         .map(|section| format!("\n\n{section}"))
         .unwrap_or_default();
 
-        let callback_listener =
-            crate::alphacode_base::auth::oauth::bind_callback_listener(port).ok();
         let callback_available = callback_listener.is_some();
         let browser_opened = Self::open_auth_browser(&auth_url);
 
@@ -1994,8 +2007,11 @@ impl App {
             )
         } else {
             format!(
-                "Local callback port {} is unavailable, so finish in any browser and paste the full callback URL or query string here.\n",
-                redirect_uri
+                "The local callback listener could not start{}; finish in any browser and paste the full callback URL or query string here.\n",
+                callback_bind_error
+                    .as_deref()
+                    .map(|detail| format!(" ({detail})"))
+                    .unwrap_or_default()
             )
         };
         let preflight = Self::record_oauth_preflight(

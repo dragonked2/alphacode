@@ -593,6 +593,9 @@ pub fn openai_compatible_profile_static_models(profile: OpenAiCompatibleProfile)
             push("minimax-m2.7");
             push("unikey-router");
         }
+        "atria" => {
+            push("Atria-Dawn-Preview");
+        }
         "gemini-api" => {
             push("gemini-2.5-flash");
             push("gemini-2.5-pro");
@@ -650,6 +653,8 @@ pub fn openai_compatible_profile_context_limit(profile_id: &str, model: &str) ->
         // direct profile runs through the OpenRouter/OpenAI-compatible provider
         // implementation, whose live catalog can be unavailable during startup.
         "deepseek" if model.starts_with("deepseek-v4-") => Some(1_000_000),
+        // Atria Dawn Preview advertises a 256K context window.
+        "atria" => Some(256_000),
         // Fall back to the shared open-weight family classifier. Many bundled
         // OpenAI-compatible gateways (Z.AI/GLM, Moonshot/Kimi, MiniMax, Qwen,
         // etc.) serve `/v1/models` entries without a `context_length`, so this

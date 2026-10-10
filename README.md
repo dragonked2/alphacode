@@ -428,6 +428,11 @@ SHA-256 checksum, installs `alphacode.exe` to `%LOCALAPPDATA%\Programs\alphacode
 adds that folder to your **user** `Path`, and activates it in the current window. No
 administrator rights are required.
 
+AlphaCode is a terminal interface. Open Windows Terminal or PowerShell and run
+`alphacode` there; do not double-click `alphacode.exe`, because its temporary console
+closes when the process exits. Commands run by AlphaCode are captured and displayed in
+the interface.
+
 PATH is configured automatically, so `alphacode` runs as soon as the installer finishes.
 The persisted change stays deliberately conservative: it writes only
 `HKCU\Environment\Path` (never the machine-wide PATH), appends rather than prepends, is a

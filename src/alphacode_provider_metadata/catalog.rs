@@ -597,7 +597,20 @@ pub const UNOROUTER_PROFILE: OpenAiCompatibleProfile = OpenAiCompatibleProfile {
     requires_api_key: true,
 };
 
-pub(crate) const OPENAI_COMPAT_PROFILES: [OpenAiCompatibleProfile; 47] = [
+/// Atria Dawn Preview — OpenAI-compatible model API with 256K context.
+/// Supports Chat Completions, Messages, and Responses interfaces.
+pub const ATRIA_PROFILE: OpenAiCompatibleProfile = OpenAiCompatibleProfile {
+    id: "atria",
+    display_name: "Atria Dawn",
+    api_base: "https://api.atria-asi.ai/v1",
+    api_key_env: "ATRIA_API_KEY",
+    env_file: "atria.env",
+    setup_url: "https://api.atria-asi.ai/docs",
+    default_model: Some("Atria-Dawn-Preview"),
+    requires_api_key: true,
+};
+
+pub(crate) const OPENAI_COMPAT_PROFILES: [OpenAiCompatibleProfile; 48] = [
     GMICLOUD_PROFILE,
     OPENCODE_PROFILE,
     OPENCODE_GO_PROFILE,
@@ -645,6 +658,7 @@ pub(crate) const OPENAI_COMPAT_PROFILES: [OpenAiCompatibleProfile; 47] = [
     CODECRAFT_PROFILE,
     UNIKEY_PROFILE,
     OPENAI_COMPAT_PROFILE,
+    ATRIA_PROFILE,
 ];
 
 pub const CLAUDE_LOGIN_PROVIDER: LoginProviderDescriptor = LoginProviderDescriptor {
@@ -1269,6 +1283,19 @@ pub const UNOROUTER_LOGIN_PROVIDER: LoginProviderDescriptor = LoginProviderDescr
     order: LoginProviderSurfaceOrder::new(Some(41), Some(41), Some(41), Some(41), Some(41)),
 };
 
+pub const ATRIA_LOGIN_PROVIDER: LoginProviderDescriptor = LoginProviderDescriptor {
+    id: "atria",
+    display_name: "Atria Dawn",
+    auth_kind: LoginProviderAuthKind::ApiKey,
+    auth_state_key: LoginProviderAuthStateKey::OpenRouterLike,
+    auth_status_method: "API key",
+    aliases: &["atria-dawn", "atria-api"],
+    menu_detail: "API key (atr_...), Atria-Dawn-Preview, 256K context",
+    recommended: false,
+    target: LoginProviderTarget::OpenAiCompatible(ATRIA_PROFILE),
+    order: LoginProviderSurfaceOrder::new(Some(42), Some(42), Some(42), Some(42), Some(42)),
+};
+
 pub const CURSOR_LOGIN_PROVIDER: LoginProviderDescriptor = LoginProviderDescriptor {
     id: "cursor",
     display_name: "Cursor",
@@ -1434,7 +1461,7 @@ pub const GOOGLE_LOGIN_PROVIDER: LoginProviderDescriptor = LoginProviderDescript
     order: LoginProviderSurfaceOrder::new(Some(13), None, None, None, None),
 };
 
-pub(crate) const LOGIN_PROVIDERS: [LoginProviderDescriptor; 59] = [
+pub(crate) const LOGIN_PROVIDERS: [LoginProviderDescriptor; 60] = [
     AUTO_IMPORT_LOGIN_PROVIDER,
     CLAUDE_LOGIN_PROVIDER,
     ALPHAX_FREE_LOGIN_PROVIDER,
@@ -1481,6 +1508,7 @@ pub(crate) const LOGIN_PROVIDERS: [LoginProviderDescriptor; 59] = [
     AGENTROUTER_LOGIN_PROVIDER,
     AGENTROUTER_ANTHROPIC_LOGIN_PROVIDER,
     UNOROUTER_LOGIN_PROVIDER,
+    ATRIA_LOGIN_PROVIDER,
     CODECRAFT_LOGIN_PROVIDER,
     UNIKEY_LOGIN_PROVIDER,
     LMSTUDIO_LOGIN_PROVIDER,
