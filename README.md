@@ -6,6 +6,11 @@
 
 **A free, Rust-native AI coding agent for your terminal. It reads your codebase, edits files, runs commands and tests, drives a real Firefox browser, controls desktop apps, and verifies its own work.**
 
+
+https://github.com/user-attachments/assets/cfed220d-f8bd-4e4b-8ba6-4310b8fc6bed
+
+
+
 [![GitHub Stars](https://img.shields.io/github/stars/dragonked2/alphacode?style=for-the-badge&label=Stars&labelColor=1a1a2e&color=FFD34D)](https://github.com/dragonked2/alphacode/stargazers)
 [![Latest Release](https://img.shields.io/github/v/release/dragonked2/alphacode?style=for-the-badge&label=Release&labelColor=1a1a2e&color=6E56CF)](https://github.com/dragonked2/alphacode/releases)
 [![MIT License](https://img.shields.io/github/license/dragonked2/alphacode?style=for-the-badge&label=License&labelColor=1a1a2e&color=F5A623)](LICENSE)
