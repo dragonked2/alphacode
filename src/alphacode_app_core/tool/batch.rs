@@ -566,6 +566,11 @@ mod tests {
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
     async fn batch_overlaps_read_only_groups_but_caps_and_serializes_writes() {
+        // Batch subcalls are dispatched through `Registry::execute`, which runs
+        // the process-global `pre_tool` gate. Serialize against tests that
+        // install one, or a leaked policy script blocks the probes and the
+        // concurrency assertions below fail nondeterministically.
+        let _env_guard = crate::storage::lock_test_env();
         let state = Arc::new(ProbeState::default());
         let registry = Registry::empty();
         {

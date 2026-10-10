@@ -2760,12 +2760,18 @@ pub(super) fn handle_basic_key(app: &mut App, code: KeyCode) -> bool {
         KeyCode::Char(c) => handle_text_input(app, &c.to_string()),
         KeyCode::Backspace => {
             if app.cursor_pos > 0 {
-                let prev = crate::alphacode_tui::tui::core::prev_grapheme_boundary(
-                    &app.input,
-                    app.cursor_pos,
-                );
+                // Clamp to a char boundary first: a cursor left mid-grapheme by
+                // any desync would otherwise make `drain` panic and take the
+                // whole process down (release builds use panic=abort).
+                let pos = app.cursor_pos.min(app.input.len());
+                let pos = if app.input.is_char_boundary(pos) {
+                    pos
+                } else {
+                    crate::alphacode_tui::tui::core::prev_grapheme_boundary(&app.input, pos)
+                };
+                let prev = crate::alphacode_tui::tui::core::prev_grapheme_boundary(&app.input, pos);
                 app.remember_input_undo_state();
-                app.input.drain(prev..app.cursor_pos);
+                app.input.drain(prev..pos);
                 app.cursor_pos = prev;
                 app.reset_tab_completion();
                 app.sync_model_picker_preview_from_input();
@@ -2774,14 +2780,23 @@ pub(super) fn handle_basic_key(app: &mut App, code: KeyCode) -> bool {
         }
         KeyCode::Delete => {
             if app.cursor_pos < app.input.len() {
-                let next = crate::alphacode_tui::tui::core::next_grapheme_boundary(
-                    &app.input,
-                    app.cursor_pos,
-                );
-                app.remember_input_undo_state();
-                app.input.drain(app.cursor_pos..next);
-                app.reset_tab_completion();
-                app.sync_model_picker_preview_from_input();
+                // Clamp to a char boundary so a desynced cursor can never panic
+                // `drain` (release builds use panic=abort).
+                let pos = if app.input.is_char_boundary(app.cursor_pos) {
+                    app.cursor_pos
+                } else {
+                    crate::alphacode_tui::tui::core::next_grapheme_boundary(
+                        &app.input,
+                        app.cursor_pos,
+                    )
+                };
+                let next = crate::alphacode_tui::tui::core::next_grapheme_boundary(&app.input, pos);
+                if next > pos {
+                    app.remember_input_undo_state();
+                    app.input.drain(pos..next);
+                    app.reset_tab_completion();
+                    app.sync_model_picker_preview_from_input();
+                }
             }
             true
         }

@@ -596,7 +596,7 @@ mod tests {
         assert_eq!(results.len(), 5);
         for (expected, result) in results.iter().enumerate() {
             assert_eq!(result.index, expected);
-            assert_eq!(result.result.as_ref().unwrap(), &(expected as i32));
+            assert_eq!(result.result.as_ref(), Ok(&(expected as i32)));
         }
     }
 

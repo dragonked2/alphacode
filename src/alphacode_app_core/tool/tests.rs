@@ -6,6 +6,26 @@ use crate::alphacode_app_core::provider::{EventStream, Provider};
 use async_trait::async_trait;
 use serde_json::{Value, json};
 
+/// Serialize a test that drives `Registry::execute` against tests that install
+/// a process-global hook.
+///
+/// `Registry::execute` runs the user-configured `pre_tool` gate, and hook
+/// commands are read from the *process* environment
+/// (`ALPHACODE_HOOK_PRE_TOOL`). A test that installs one therefore leaks it
+/// into every concurrently-running test in the crate: those tests have their
+/// calls blocked by a policy script that only the installing test understands
+/// (`registry_execute_pre_tool_hook_blocks_and_allows`), and once that test
+/// drops its `TempDir` the script is gone, so `/bin/sh` exits 2 and *every*
+/// remaining call is refused.
+///
+/// Taking the shared test-env lock is what makes the install private: it is the
+/// same lock the installing test already holds, so the two can never overlap.
+/// Any test in this file that calls `Registry::execute` must take it, otherwise
+/// it can observe another test's hook and fail nondeterministically.
+fn isolate_process_env() -> crate::storage::TestEnvGuard {
+    crate::storage::lock_test_env()
+}
+
 /// The bug that prompted this ladder: a bare `from_value` rejected every
 /// argument shape a model actually produces, and the resulting
 /// "missing field `url`" cost a whole turn.
@@ -191,6 +211,7 @@ fn empty_arguments_are_described_actionably() {
 /// just never told about the failure.
 #[tokio::test]
 async fn an_identical_malformed_call_eventually_stops_repeating() {
+    let _env_guard = isolate_process_env();
     let provider: Arc<dyn Provider> = Arc::new(MockProvider);
     let registry = Registry::new(provider).await;
     let session = format!("test-malformed-loop-{}", std::process::id());
@@ -245,6 +266,7 @@ async fn an_identical_malformed_call_eventually_stops_repeating() {
 /// different streak.
 #[tokio::test]
 async fn a_corrected_malformed_call_is_still_dispatched() {
+    let _env_guard = isolate_process_env();
     let provider: Arc<dyn Provider> = Arc::new(MockProvider);
     let registry = Registry::new(provider).await;
     let session = format!("test-malformed-fix-{}", std::process::id());
@@ -319,6 +341,7 @@ fn schema_call_hint_names_every_required_field_with_a_usable_example() {
 /// required contract, not one field at a time.
 #[tokio::test]
 async fn a_malformed_call_reports_the_tools_full_required_contract() {
+    let _env_guard = isolate_process_env();
     let provider: Arc<dyn Provider> = Arc::new(MockProvider);
     let registry = Registry::new(provider).await;
     let session = format!("schema-hint-{}", std::process::id());
@@ -347,6 +370,7 @@ async fn a_malformed_call_reports_the_tools_full_required_contract() {
 
 #[tokio::test]
 async fn repeated_missing_bash_command_stays_correctable_until_arguments_change() {
+    let _env_guard = isolate_process_env();
     let provider: Arc<dyn Provider> = Arc::new(MockProvider);
     let registry = Registry::new(provider).await;
     // The repeat guard is process-global; do not let parallel tests share its
@@ -667,6 +691,7 @@ fn test_resolve_tool_name_oauth_aliases() {
 
 #[tokio::test]
 async fn test_batch_resolves_function_namespaced_tools() {
+    let _env_guard = isolate_process_env();
     let provider: Arc<dyn Provider> = Arc::new(MockProvider);
     let registry = Registry::new(provider).await;
     let ctx = ToolContext {
@@ -702,6 +727,7 @@ async fn test_batch_resolves_function_namespaced_tools() {
 
 #[tokio::test]
 async fn test_batch_rejects_function_namespaced_batch_recursion() {
+    let _env_guard = isolate_process_env();
     let provider: Arc<dyn Provider> = Arc::new(MockProvider);
     let registry = Registry::new(provider).await;
     let ctx = ToolContext {
@@ -730,6 +756,7 @@ async fn test_batch_rejects_function_namespaced_batch_recursion() {
 
 #[tokio::test]
 async fn test_batch_resolves_oauth_names() {
+    let _env_guard = isolate_process_env();
     let provider: Arc<dyn Provider> = Arc::new(MockProvider);
     let registry = Registry::new(provider).await;
     let temp_dir = std::env::temp_dir();
@@ -752,6 +779,7 @@ async fn test_batch_resolves_oauth_names() {
 
 #[tokio::test]
 async fn registry_execute_enforces_session_tool_policy_after_alias_resolution() {
+    let _env_guard = isolate_process_env();
     let provider: Arc<dyn Provider> = Arc::new(MockProvider);
     let registry = Registry::new(provider).await;
     let temp_dir = std::env::temp_dir();
@@ -787,7 +815,10 @@ async fn registry_execute_enforces_session_tool_policy_after_alias_resolution() 
 async fn registry_execute_pre_tool_hook_blocks_and_allows() {
     use std::os::unix::fs::PermissionsExt;
 
-    let _guard = crate::storage::lock_test_env();
+    // Holds the shared test-env lock for as long as `ALPHACODE_HOOK_PRE_TOOL`
+    // is installed, which is what keeps it from reaching the other
+    // `Registry::execute` tests in this file.
+    let _guard = isolate_process_env();
     let provider: Arc<dyn Provider> = Arc::new(MockProvider);
     let registry = Registry::new(provider).await;
     let temp = tempfile::TempDir::new().expect("temp dir");

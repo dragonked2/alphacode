@@ -6,6 +6,45 @@ adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [1.0.77] - 2026-10-10
+
+### Fixed
+
+- The 1.0.76 release shipped a binary that still self-reported 1.0.75, because
+  `Cargo.toml` was never bumped alongside the release tag. The manifest now
+  tracks the release it belongs to.
+- Composer text arriving from the remote transcript and from session-restore
+  snapshots is now stripped of terminal control sequences, so escape-sequence
+  remnants can no longer re-fill the input box with garbage (#540).
+- Restoring a session now clamps `cursor_pos` against the input's byte length
+  rather than its character count. The previous comparison could leave the
+  cursor mid-grapheme on any non-ASCII input, making Backspace edit the wrong
+  cluster.
+- Backspace and Delete normalize a desynced cursor to a character boundary
+  before slicing. A cursor left mid-grapheme would otherwise panic inside
+  `String::drain` and, since release builds use `panic = "abort"`, take down
+  the whole process.
+- The `pre_tool` hook tests no longer leak their process-global
+  `ALPHACODE_HOOK_PRE_TOOL` into concurrently-running tests. Every test that
+  drives `Registry::execute` now takes the shared test-env lock, so a policy
+  script installed by one test can no longer block unrelated tool calls in
+  another and fail the suite nondeterministically on Linux CI.
+
+## [1.0.76] - 2026-10-10
+
+### Added
+
+- Atria Dawn joined the OpenAI-compatible provider catalog with a 256K context
+  window, exposed through Chat Completions, Messages, and Responses.
+
+### Changed
+
+- Antigravity login now reserves an available loopback port instead of a fixed
+  one. A hard-coded port that another application already owned prevented the
+  browser callback from ever reaching Alphacode.
+- Windows shell commands are spawned with `CREATE_NO_WINDOW`, so a tool run
+  from a GUI host no longer flashes a separate console window.
+
 ## [1.0.75] - 2026-10-10
 
 ### Improved

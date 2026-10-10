@@ -4,7 +4,12 @@ use crate::alphacode_tui::tui::{backend, keybind};
 
 impl App {
     pub(super) fn apply_restored_reload_input(&mut self, restored: RestoredReloadInput) {
-        self.input = restored.input;
+        // Snapshots written before the transcript sanitizer existed (or by a
+        // corrupted handoff) can carry escape-sequence remnants. Strip them
+        // on the way in so a restore never re-fills the composer with garbage
+        // the user then has to clean out by hand (#540).
+        let sanitized = super::input::strip_terminal_control_sequences(&restored.input);
+        self.input = sanitized.into_owned();
         self.cursor_pos = restored.cursor;
         self.pending_images = restored.pending_images;
         // A staged startup submission (`submit_on_restore`) is honoured only for remote
@@ -87,10 +92,12 @@ impl App {
         // Make sure the input is in a known-good editable state. If the
         // restored cursor ended up past the end of the input (truncated
         // payload, for example) clamp it; otherwise the next keystroke can
-        // be silently dropped.
-        let chars = self.input.chars().count();
-        if self.cursor_pos > chars {
-            self.cursor_pos = chars;
+        // be silently dropped. `cursor_pos` is a byte offset, so it must be
+        // clamped to the byte length — comparing against the char count would
+        // mis-clamp any non-ASCII input to a mid-grapheme offset, which then
+        // makes Backspace delete the wrong cluster (or panic on `drain`).
+        if self.cursor_pos > self.input.len() {
+            self.cursor_pos = self.input.len();
         }
         // Always reset these on a fresh restore so the user is not stuck in
         // a phantom "still processing" frame from the previous process.

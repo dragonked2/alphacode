@@ -337,7 +337,14 @@ pub(in crate::alphacode_tui::tui::app) fn finish_remote_split_launch(app: &mut A
 }
 
 fn set_transcript_input(app: &mut App, text: String) {
-    app.input = text;
+    // Transcript text arrives from the server / dictation pipeline and can
+    // carry terminal escape remnants (mouse reports, focus events, cursor
+    // reports) that were never framed by a bracketed-paste or key event.
+    // The Insert/Send modes already sanitize via `insert_input_text`; route
+    // Append/Replace through the same sanitizer so the composer never fills
+    // with control-sequence noise (#540).
+    let sanitized = input::strip_terminal_control_sequences(&text);
+    app.input = sanitized.into_owned();
     app.cursor_pos = app.input.len();
     app.reset_tab_completion();
     app.sync_model_picker_preview_from_input();
