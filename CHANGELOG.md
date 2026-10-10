@@ -6,6 +6,23 @@ adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [1.0.75] - 2026-10-10
+
+### Improved
+
+- The idle session summary now adapts to terminal width, keeping token totals
+  and context usage visible on compact layouts while reserving billing details
+  for wider terminals.
+- Idle status tips now leave room for the session context reading instead of
+  truncating it off the end of the row.
+- Clarified the reference token value as an estimate in the wide session
+  summary.
+
+### Fixed
+
+- Gate Windows-only shell descriptions and Python command recovery to Windows
+  builds so Linux CI no longer fails on dead-code warnings.
+
 ## [1.0.73] - 2026-10-09
 
 ### Changed

@@ -38,6 +38,7 @@ pub async fn find_python() -> Option<PathBuf> {
 /// Return a discovered replacement only when a command-line alias is missing
 /// or unusable; this preserves a working `python`/`python3` selected by the
 /// user's PATH.
+#[cfg(windows)]
 pub async fn replacement_for_missing_command(name: &str) -> Option<PathBuf> {
     if interpreter_works(name).await {
         None

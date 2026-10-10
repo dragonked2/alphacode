@@ -931,17 +931,45 @@ fn idle_context_fragment(app: &dyn TuiState, input_tokens: u64) -> String {
     }
 }
 
-/// Append a dim `· ctx=…` suffix to a tip line so context usage stays visible
-/// even while rotating tips occupy the status line.
-fn append_idle_context_suffix(spans: &mut Vec<Span<'static>>, app: &dyn TuiState) {
-    if let Some((total_in, _)) = app.total_session_tokens()
-        && total_in > 0
-    {
+/// Return the compact context label shared by the idle tip and stats rows.
+fn idle_context_suffix(app: &dyn TuiState) -> Option<String> {
+    let (total_in, _) = app.total_session_tokens()?;
+    (total_in > 0).then(|| format!(" · ctx={}", idle_context_fragment(app, total_in)))
+}
+
+/// Reserve space for context before selecting an idle tip, so truncation of a
+/// long tip can never remove the context value that follows it.
+fn idle_status_tip_line(
+    app: &dyn TuiState,
+    max_width: usize,
+    elapsed_seconds: u64,
+) -> Option<Line<'static>> {
+    use unicode_width::UnicodeWidthStr;
+
+    let suffix = idle_context_suffix(app);
+    let suffix_width = suffix
+        .as_deref()
+        .map(UnicodeWidthStr::width)
+        .unwrap_or_default();
+    let tip_width = max_width.saturating_sub(suffix_width);
+    let tip = occasional_status_tip(tip_width, elapsed_seconds)?;
+    Some(compose_idle_status_tip(&tip, suffix.as_deref(), max_width))
+}
+
+fn compose_idle_status_tip(tip: &str, suffix: Option<&str>, max_width: usize) -> Line<'static> {
+    use unicode_width::UnicodeWidthStr;
+
+    let suffix_width = suffix.map(UnicodeWidthStr::width).unwrap_or_default();
+    let tip_width = max_width.saturating_sub(suffix_width);
+    let tip = truncate_preview(tip, tip_width);
+    let mut spans = vec![Span::styled(tip, Style::default().fg(dim_color()))];
+    if let Some(suffix) = suffix {
         spans.push(Span::styled(
-            format!(" · ctx={}", idle_context_fragment(app, total_in)),
+            suffix.to_string(),
             Style::default().fg(rgb(128, 140, 165)),
         ));
     }
+    truncate_line_with_ellipsis(Line::from(spans), max_width)
 }
 
 /// Build the always-on idle session-stats line shown under the input: total
@@ -950,11 +978,25 @@ fn append_idle_context_suffix(spans: &mut Vec<Span<'static>>, app: &dyn TuiState
 ///
 /// Returns `None` for a fresh session (nothing to show yet) so the rotating
 /// tips keep the line friendly instead of a zeroed counter.
-fn idle_session_stats_line(app: &dyn TuiState) -> Option<Line<'static>> {
+fn idle_session_stats_line(app: &dyn TuiState, max_width: usize) -> Option<Line<'static>> {
     let (total_in, total_out) = app.total_session_tokens()?;
     let total = total_in.saturating_add(total_out);
     if total == 0 {
         return None;
+    }
+
+    // The wide form carries provider billing and account-window details. On a
+    // narrower terminal those optional labels used to push context usage off
+    // the edge, so switch to a compact line that reserves space for the total
+    // and context before showing a shortened model name.
+    if max_width < 96 {
+        let context = (total_in > 0).then(|| idle_context_fragment(app, total_in));
+        return Some(compact_idle_session_stats_line(
+            &super::shorten_model_name(&app.provider_model()),
+            total,
+            context.as_deref(),
+            max_width,
+        ));
     }
 
     let mut spans: Vec<Span<'static>> = Vec::new();
@@ -996,21 +1038,21 @@ fn idle_session_stats_line(app: &dyn TuiState) -> Option<Line<'static>> {
         ),
         Style::default().fg(rgb(128, 140, 165)),
     ));
-    spans.push(Span::styled(
-        format!(
-            " \u{00b7} ref@$1/M {}",
-            super::info_widget::format_token_value_usd(total)
-        ),
-        Style::default().fg(rgb(120, 220, 160)),
-    ));
-
-    // Steady context-usage segment
+    // Keep context immediately after token totals so it is visible before
+    // lower-priority cost and account-window details.
     if total_in > 0 {
         spans.push(Span::styled(
             format!(" \u{00b7} ctx={}", idle_context_fragment(app, total_in)),
             Style::default().fg(rgb(160, 170, 195)),
         ));
     }
+    spans.push(Span::styled(
+        format!(
+            " \u{00b7} est. ${} @ $1/M",
+            super::info_widget::format_token_value_usd(total)
+        ),
+        Style::default().fg(rgb(120, 220, 160)),
+    ));
 
     let data = app.info_widget_data();
     if let Some(info) = data.usage_info.as_ref().filter(|info| info.available) {
@@ -1066,6 +1108,59 @@ fn idle_session_stats_line(app: &dyn TuiState) -> Option<Line<'static>> {
     }
 
     Some(Line::from(spans))
+}
+
+/// Build the narrow-terminal session summary, reserving width for token and
+/// context metrics before spending the remainder on a shortened model name.
+fn compact_idle_session_stats_line(
+    model: &str,
+    total_tokens: u64,
+    context: Option<&str>,
+    max_width: usize,
+) -> Line<'static> {
+    use unicode_width::UnicodeWidthStr;
+
+    if max_width == 0 {
+        return Line::default();
+    }
+
+    let token_count = format_stream_tokens(total_tokens);
+    let metrics = match context {
+        Some(context) if max_width < 24 => format!("{token_count} · ctx{context}"),
+        Some(context) => format!("{token_count} tok · ctx={context}"),
+        None if max_width < 24 => token_count,
+        None => format!("{token_count} tok"),
+    };
+    let marker = "● ";
+    let separator = " · ";
+    let metrics_width = UnicodeWidthStr::width(metrics.as_str());
+    let marker_width = UnicodeWidthStr::width(marker);
+    let separator_width = UnicodeWidthStr::width(separator);
+    let model_budget = max_width.saturating_sub(marker_width + separator_width + metrics_width);
+
+    let mut spans = vec![Span::styled(
+        marker,
+        Style::default()
+            .fg(rgb(100, 225, 155))
+            .add_modifier(Modifier::BOLD),
+    )];
+    if model_budget >= 6 && !model.is_empty() {
+        let model = truncate_preview(model, model_budget);
+        if !model.is_empty() {
+            spans.push(Span::styled(
+                model,
+                Style::default()
+                    .fg(rgb(130, 180, 255))
+                    .add_modifier(Modifier::BOLD),
+            ));
+            spans.push(Span::raw(separator));
+        }
+    }
+    spans.push(Span::styled(
+        metrics,
+        Style::default().fg(rgb(160, 170, 195)),
+    ));
+    truncate_line_with_ellipsis(Line::from(spans), max_width)
 }
 
 pub(super) fn draw_status(frame: &mut Frame, app: &dyn TuiState, area: Rect, pending_count: usize) {
@@ -1433,27 +1528,21 @@ pub(super) fn draw_status(frame: &mut Frame, app: &dyn TuiState, area: Rect, pen
                 Span::styled(warning, Style::default().fg(warning_color)),
             ])
         } else if let Some(tip) =
-            occasional_status_tip(area.width as usize, app.animation_elapsed() as u64)
+            idle_status_tip_line(app, area.width as usize, app.animation_elapsed() as u64)
         {
             // Keep the context-usage segment visible even while a tip shows:
             // tips used to displace the `ctx=` reading entirely, hiding the
             // most important number for up to 12s at a time.
-            let mut spans: Vec<Span<'static>> =
-                vec![Span::styled(tip, Style::default().fg(dim_color()))];
-            append_idle_context_suffix(&mut spans, app);
-            Line::from(spans)
-        } else if let Some(stats) = idle_session_stats_line(app) {
+            tip
+        } else if let Some(stats) = idle_session_stats_line(app, area.width as usize) {
             stats
         } else {
             Line::from("")
         }
     } else if let Some(tip) =
-        occasional_status_tip(area.width as usize, app.animation_elapsed() as u64)
+        idle_status_tip_line(app, area.width as usize, app.animation_elapsed() as u64)
     {
-        let mut spans: Vec<Span<'static>> =
-            vec![Span::styled(tip, Style::default().fg(dim_color()))];
-        append_idle_context_suffix(&mut spans, app);
-        Line::from(spans)
+        tip
     } else {
         Line::from("")
     };
@@ -1744,6 +1833,58 @@ mod tests {
         assert!(warning.contains("Session history: 2.5M tokens processed and 4 compacts"));
         assert!(warning.contains("/clear starts fresh context"));
         assert!(!warning.contains("Context usage"));
+    }
+
+    #[test]
+    fn compact_session_stats_preserve_context_and_fit_narrow_widths() {
+        for width in [20, 32, 48, 80] {
+            let line = compact_idle_session_stats_line(
+                "claude-sonnet-long-model-name",
+                10_000,
+                Some("42%"),
+                width,
+            );
+            let text = joined(&line.spans);
+
+            assert!(
+                line.width() <= width,
+                "line exceeded {width} columns: {text:?}"
+            );
+            assert!(
+                text.contains("42%"),
+                "context was clipped at {width}: {text:?}"
+            );
+            assert!(
+                text.contains("10k"),
+                "token total was clipped at {width}: {text:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn compact_session_stats_respect_zero_width() {
+        let line = compact_idle_session_stats_line("model", 42, Some("10%"), 0);
+        assert!(line.spans.is_empty());
+    }
+
+    #[test]
+    fn idle_status_tip_truncates_before_the_context_suffix() {
+        let line = compose_idle_status_tip(
+            "A long tip that should leave room for session context",
+            Some(" · ctx=42%"),
+            36,
+        );
+        let text = joined(&line.spans);
+
+        assert!(line.width() <= 36, "line exceeded its width: {text:?}");
+        assert!(
+            text.ends_with(" · ctx=42%"),
+            "context was clipped: {text:?}"
+        );
+        assert!(
+            text.contains("..."),
+            "long tip should be shortened: {text:?}"
+        );
     }
 
     #[test]
