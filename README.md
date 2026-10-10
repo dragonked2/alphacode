@@ -6,10 +6,16 @@
 
 **A free, Rust-native AI coding agent for your terminal. It reads your codebase, edits files, runs commands and tests, drives a real Firefox browser, controls desktop apps, and verifies its own work.**
 
+<br>
 
-https://github.com/user-attachments/assets/cfed220d-f8bd-4e4b-8ba6-4310b8fc6bed
+<video src="https://github.com/dragonked2/alphacode/raw/main/alphacode-demo.mp4" controls muted playsinline width="860">
+  Your viewer can't play embedded video.
+  <a href="alphacode-demo.mp4">Watch or download the AlphaCode demo (MP4)</a>.
+</video>
 
+<sub>Install and first task, start to finish. Video not playing? <a href="alphacode-demo.mp4">Open the MP4 directly</a>.</sub>
 
+<br>
 
 [![GitHub Stars](https://img.shields.io/github/stars/dragonked2/alphacode?style=for-the-badge&label=Stars&labelColor=1a1a2e&color=FFD34D)](https://github.com/dragonked2/alphacode/stargazers)
 [![Latest Release](https://img.shields.io/github/v/release/dragonked2/alphacode?style=for-the-badge&label=Release&labelColor=1a1a2e&color=6E56CF)](https://github.com/dragonked2/alphacode/releases)
@@ -27,7 +33,7 @@ https://github.com/user-attachments/assets/cfed220d-f8bd-4e4b-8ba6-4310b8fc6bed
 &nbsp;
 [![Firefox Browser Agent](https://img.shields.io/badge/FIREFOX%20BROWSER%20AGENT-FF7139?style=for-the-badge&logo=firefoxbrowser&logoColor=white)](https://addons.mozilla.org/en-US/firefox/addon/alphacode-browser-agent/)
 
-[Official website](https://alphacli.github.io/) · [GitHub repository](https://github.com/dragonked2/alphacode)
+[Official website](https://alphacli.github.io/) · [Documentation](docs/) · [Releases](https://github.com/dragonked2/alphacode/releases)
 
 [What is AlphaCode?](#what-is-alphacode) ·
 [Quick Start](#quick-start) ·
@@ -82,6 +88,8 @@ validate the realistic findings, and tell me which ones are actually reproducibl
 ---
 
 ## Quick Start
+
+> Prefer to watch first? The [demo video](#alphacode-the-open-source-ai-coding-agent-that-builds-browses-automates-and-verifies) at the top of this page covers install and a first task.
 
 ### 1. Install
 
@@ -293,13 +301,7 @@ alphacode model use <model>        # switch model
 
 In the TUI, press `Ctrl+T` to open the model/provider selector.
 
-For direct local OpenAI-compatible servers such as LM Studio or Ollama,
-AlphaCode uses the server's reported context window when available. On local
-models up to 32K context, it also uses a shorter task prompt and sends only a
-bounded set of relevant tool schemas; greetings need no tool schemas. This
-reduces avoidable prompt overhead but does not increase the context configured
-in the model server. Set the context length in the server when loading the
-model and leave room for the response.
+For direct local OpenAI-compatible servers such as LM Studio or Ollama, AlphaCode uses the server's reported context window when available. On local models up to 32K context, it also uses a shorter task prompt and sends only a bounded set of relevant tool schemas; greetings need no tool schemas. This reduces avoidable prompt overhead but does not increase the context configured in the model server. Set the context length in the server when loading the model and leave room for the response.
 
 ### Signing in with a provider
 
@@ -428,26 +430,13 @@ AlphaCode is written in Rust and designed to keep its runtime footprint small.
 irm https://raw.githubusercontent.com/dragonked2/alphacode/main/scripts/install.ps1 | iex
 ```
 
-The installer detects your CPU architecture, downloads the latest release, verifies the
-SHA-256 checksum, installs `alphacode.exe` to `%LOCALAPPDATA%\Programs\alphacode\bin\`,
-adds that folder to your **user** `Path`, and activates it in the current window. No
-administrator rights are required.
+The installer detects your CPU architecture, downloads the latest release, verifies the SHA-256 checksum, installs `alphacode.exe` to `%LOCALAPPDATA%\Programs\alphacode\bin\`, adds that folder to your **user** `Path`, and activates it in the current window. No administrator rights are required.
 
-AlphaCode is a terminal interface. Open Windows Terminal or PowerShell and run
-`alphacode` there; do not double-click `alphacode.exe`, because its temporary console
-closes when the process exits. Commands run by AlphaCode are captured and displayed in
-the interface.
+AlphaCode is a terminal interface. Open Windows Terminal or PowerShell and run `alphacode` there; do not double-click `alphacode.exe`, because its temporary console closes when the process exits. Commands run by AlphaCode are captured and displayed in the interface.
 
-PATH is configured automatically, so `alphacode` runs as soon as the installer finishes.
-The persisted change stays deliberately conservative: it writes only
-`HKCU\Environment\Path` (never the machine-wide PATH), appends rather than prepends, is a
-no-op on re-run, and broadcasts `WM_SETTINGCHANGE` so new terminals pick it up too. The
-running shell is only *prepended to* in-process, never rebuilt from the registry, so no
-session-only PATH entry is lost. `%USERPROFILE%`-style entries keep working because the
-value is read and written unexpanded.
+PATH is configured automatically, so `alphacode` runs as soon as the installer finishes. The persisted change stays deliberately conservative: it writes only `HKCU\Environment\Path` (never the machine-wide PATH), appends rather than prepends, is a no-op on re-run, and broadcasts `WM_SETTINGCHANGE` so new terminals pick it up too. The running shell is only *prepended to* in-process, never rebuilt from the registry, so no session-only PATH entry is lost. `%USERPROFILE%`-style entries keep working because the value is read and written unexpanded.
 
-Options are script parameters. A piped `iex` cannot accept them, so invoke the script as
-a script block:
+Options are script parameters. A piped `iex` cannot accept them, so invoke the script as a script block:
 
 ```powershell
 # Pin a version
@@ -472,9 +461,7 @@ a script block:
 curl -fsSL https://raw.githubusercontent.com/dragonked2/alphacode/main/scripts/install.sh | bash
 ```
 
-The script downloads the latest release, verifies its checksum, puts the `alphacode`
-binary in `~/.local/bin`, adds that directory to your shell profile, and activates it in
-the current shell so `alphacode` runs immediately.
+The script downloads the latest release, verifies its checksum, puts the `alphacode` binary in `~/.local/bin`, adds that directory to your shell profile, and activates it in the current shell so `alphacode` runs immediately.
 
 ```bash
 # Pin a release
@@ -490,8 +477,7 @@ curl -fsSL https://raw.githubusercontent.com/dragonked2/alphacode/main/scripts/i
 curl -fsSL https://raw.githubusercontent.com/dragonked2/alphacode/main/scripts/install.sh | bash -s -- --prefix ~/.local
 ```
 
-The profile edit detects bash, zsh, fish, nushell, csh and ksh, and is idempotent across
-re-runs, so running the installer twice will not append a second copy.
+The profile edit detects bash, zsh, fish, nushell, csh and ksh, and is idempotent across re-runs, so running the installer twice will not append a second copy.
 
 Verify the install:
 
@@ -510,10 +496,7 @@ cargo build --release
 ./target/release/alphacode --version
 ```
 
-The Rust version (edition 2024) is pinned in [`rust-toolchain.toml`](rust-toolchain.toml),
-and you need a C toolchain for your platform. The default build skips the heavy optional
-stacks (Bedrock, embeddings, PDF, Mermaid rendering) to keep cold builds fast. Opt in when
-you need them:
+The Rust version (edition 2024) is pinned in [`rust-toolchain.toml`](rust-toolchain.toml), and you need a C toolchain for your platform. The default build skips the heavy optional stacks (Bedrock, embeddings, PDF, Mermaid rendering) to keep cold builds fast. Opt in when you need them:
 
 ```bash
 cargo build --release --features bedrock,embeddings,pdf,renderer
@@ -595,7 +578,7 @@ Built from source? Delete the cloned repository. If you installed with `cargo in
 
 ### Clean up what the uninstaller doesn't touch
 
-* **PATH entry.** macOS / Linux: delete the `export PATH=...` line that `--add-path` (or you) added to your shell profile (`~/.bashrc`, `~/.zshrc`, fish config, and so on). Windows: open *Settings → System → About → Advanced system settings → Environment Variables*, edit your **user** `Path`, and remove the AlphaCode entry. Use the GUI rather than a script, because scripts can expand `%USERPROFILE%`-style entries into hard-coded paths.
+* **PATH entry.** macOS / Linux: delete the `export PATH=...` line that the installer (or you) added to your shell profile (`~/.bashrc`, `~/.zshrc`, fish config, and so on). Windows: open *Settings → System → About → Advanced system settings → Environment Variables*, edit your **user** `Path`, and remove the AlphaCode entry. Use the GUI rather than a script, because scripts can expand `%USERPROFILE%`-style entries into hard-coded paths.
 * **Firefox Browser Agent.** In Firefox, open `about:addons`, find *AlphaCode Browser Agent*, and choose **Remove**.
 * **Native messaging registration.** If you ran `alphacode browser setup`, delete the AlphaCode entry from Firefox's native messaging locations (check the exact name): Linux `~/.mozilla/native-messaging-hosts/`, macOS `~/Library/Application Support/Mozilla/NativeMessagingHosts/`, Windows registry `HKCU\Software\Mozilla\NativeMessagingHosts`.
 * **Credentials.** Remove any `*_API_KEY` variables you exported for AlphaCode, and revoke API keys or OAuth grants in your provider accounts (Anthropic, OpenAI, Google, GitHub) if you no longer want AlphaCode to have access.
@@ -708,6 +691,8 @@ Full reference: [docs/configuration.md](docs/configuration.md).
 <details>
 <summary><strong><code>alphacode</code>: command not found</strong></summary>
 
+Open a new terminal first; the installer updates your PATH for new sessions. If it still isn't found:
+
 **macOS / Linux (bash):**
 
 ```bash
@@ -722,7 +707,7 @@ echo 'export PATH="$HOME/.local/bin:$PATH"' >> ~/.zshrc
 source ~/.zshrc
 ```
 
-**Windows:** re-run the installer with `-AddPath` (see [Installation](#installation)), or add the install directory to your user PATH, then open a new PowerShell window.
+**Windows:** re-run the [installer](#installation) (PATH setup is automatic unless you passed `-NoPath`), or add `%LOCALAPPDATA%\Programs\alphacode\bin` to your user PATH, then open a new PowerShell window.
 
 </details>
 
@@ -751,6 +736,13 @@ Then confirm the [AlphaCode Browser Agent](https://addons.mozilla.org/en-US/fire
 <summary><strong>OpenAI login times out</strong></summary>
 
 Port `1455` on localhost is probably in use. Stop whatever is listening on it and run `/login` again. See the [docs](docs/) for more.
+
+</details>
+
+<details>
+<summary><strong>The demo video doesn't play</strong></summary>
+
+Some viewers (mobile apps, package registries, mirrors) don't render embedded video. [Open `alphacode-demo.mp4`](alphacode-demo.mp4) directly, or download it from the repository.
 
 </details>
 
