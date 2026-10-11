@@ -1025,6 +1025,11 @@ mod utf8_truncation_tests {
     #[cfg(unix)]
     #[tokio::test]
     async fn build_shell_command_uses_disk_backed_scratch_directory() {
+        // The scratch dir is resolved from the alphacode home directory, which
+        // concurrent tests repoint and tear down. Without this lock another
+        // test can delete the scratch tree between creation and the assertion
+        // below, which fails on a path that the shell itself just used.
+        let _env_guard = crate::storage::lock_test_env();
         let expected = super::tool_scratch_dir().expect("alphacode scratch directory");
         let output =
             build_shell_command("printf '%s\\n%s\\n' \"$TMPDIR\" \"$ALPHACODE_SCRATCH_DIR\"")

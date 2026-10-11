@@ -275,6 +275,11 @@ fn test_copy_badge_reserves_right_margin_for_info_widgets() {
         ..Default::default()
     };
     let copy_badge_ui = crate::alphacode_tui::tui::app::CopyBadgeUiState::default();
+    let now = Instant::now();
+    // The badge carries the platform Alt label ("[Alt]" elsewhere, the shorter
+    // Option keycap on macOS), so the reserved width differs per platform.
+    // Derive it instead of hardcoding.
+    let reserved = copy_badge_reserved_width('a', &copy_badge_ui, now);
 
     reserve_copy_badge_margins(
         &mut margins,
@@ -282,11 +287,12 @@ fn test_copy_badge_reserves_right_margin_for_info_widgets() {
         13,
         &[(11, 'a')],
         &copy_badge_ui,
-        Instant::now(),
+        now,
     );
 
     assert_eq!(margins.right_widths[0], 30);
-    assert_eq!(margins.right_widths[1], 16);
+    let expected = u16::try_from(reserved).expect("badge width fits a u16");
+    assert_eq!(margins.right_widths[1], 30 - expected);
     assert_eq!(margins.right_widths[2], 30);
 }
 
@@ -322,8 +328,13 @@ fn test_copy_badge_truncates_full_width_line_before_appending_shortcut() {
 
     truncate_copy_badge_line_to_width(&mut line, viewport_width.saturating_sub(reserved));
     // Matches the render path: one separator space, then the shortcut badges.
+    // The Alt badge is platform-dependent (Option keycap on macOS), so build it
+    // from the same helper the renderer uses rather than hardcoding "[Alt]".
     line.spans.push(Span::raw(" "));
-    line.spans.push(Span::raw("[Alt] [⇧] [A]"));
+    line.spans.push(Span::raw(format!(
+        "{} [⇧] [A]",
+        copy_badge_alt_badge()
+    )));
 
     assert_eq!(line.width(), viewport_width);
     assert!(line.width() <= viewport_width);

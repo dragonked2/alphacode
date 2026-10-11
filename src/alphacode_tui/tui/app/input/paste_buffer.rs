@@ -382,9 +382,12 @@ mod tests {
     #[test]
     fn rapid_insertion_engages_after_large_quick_text() {
         reset();
+        // No sleep between insertions: the detector's gap threshold is 20ms, and
+        // a loaded CI runner can deschedule this thread for longer than that,
+        // which legitimately restarts the window and makes the assertion flaky.
+        // Inserting back-to-back still exercises "many bytes in one window".
         for _ in 0..10 {
             note_text_inserted(10);
-            sleep(Duration::from_millis(5));
         }
         assert!(rapid_insertion_active(), "rapid-insertion should engage");
     }
@@ -404,7 +407,8 @@ mod tests {
     fn rapid_insertion_resets_after_long_pause() {
         reset();
         note_text_inserted(80);
-        sleep(Duration::from_millis(5));
+        // Assert immediately: sleeping here would race the 20ms gap threshold,
+        // which a loaded CI runner can overshoot just from scheduling jitter.
         assert!(rapid_insertion_active());
         sleep(RAPID_INSERT_GAP * 2);
         assert!(!rapid_insertion_active());

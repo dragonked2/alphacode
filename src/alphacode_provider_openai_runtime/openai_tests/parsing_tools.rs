@@ -263,7 +263,20 @@ fn test_parse_openai_response_output_item_done_emits_reasoning_item() {
 #[test]
 fn test_parse_openai_response_image_generation_saves_metadata_and_emits_event() {
     let _lock = crate::alphacode_base::storage::lock_test_env();
-    let original_dir = std::env::current_dir().expect("current dir");
+    // Restore the process cwd on every exit path, including an assertion
+    // failure: leaving it inside a TempDir that is then deleted makes every
+    // later `std::env::current_dir()` fail with ENOENT.
+    struct CwdRestore(Option<std::path::PathBuf>);
+    impl Drop for CwdRestore {
+        fn drop(&mut self) {
+            if let Some(previous) = self.0.take() {
+                let _ = std::env::set_current_dir(previous);
+            }
+        }
+    }
+    let _cwd_restore = CwdRestore(Some(
+        std::env::current_dir().unwrap_or_else(|_| std::env::temp_dir()),
+    ));
     let temp = tempfile::Builder::new()
         .prefix("alphacode-openai-image-test-")
         .tempdir()
@@ -330,8 +343,6 @@ fn test_parse_openai_response_image_generation_saves_metadata_and_emits_event() 
     assert_eq!(metadata["native_tool"], serde_json::json!("image_generation"));
     assert_eq!(metadata["revised_prompt"], serde_json::json!("A polished robot painter prompt"));
     assert!(metadata["response_item"].get("result").is_none());
-
-    std::env::set_current_dir(original_dir).expect("restore cwd");
 }
 
 #[test]

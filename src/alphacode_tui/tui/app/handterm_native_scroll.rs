@@ -343,10 +343,21 @@ mod bridge_tests {
             .duration_since(UNIX_EPOCH)
             .expect("clock should be after epoch")
             .as_nanos();
-        std::env::temp_dir().join(format!(
-            "alphacode-handterm-{label}-{}-{nonce:x}.sock",
-            std::process::id()
-        ))
+        // A Unix socket path is copied into a fixed-size `sun_path` (104 bytes on
+        // macOS, 108 on Linux) and `bind` fails with EINVAL when it does not
+        // fit. `TMPDIR` on a CI runner is already long
+        // (`/var/folders/xx/<26 chars>/T`), so spelling out the label plus a
+        // full 16-digit nanosecond timestamp overflowed that budget and the
+        // tests failed to bind. Keep the file name short: pid plus a truncated
+        // timestamp is still unique per process, and the label is only for
+        // debuggability.
+        let tag: String = label.chars().take(4).collect();
+        let name = format!(
+            "ac-{tag}-{}-{nonce:x}.sock",
+            std::process::id() % 100_000,
+            nonce = nonce & 0xffff_ffff
+        );
+        std::env::temp_dir().join(name)
     }
 
     fn accept_with_timeout(listener: &UnixListener) -> UnixStream {

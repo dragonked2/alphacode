@@ -161,8 +161,8 @@ use viewport::draw_messages;
 #[cfg(test)]
 #[allow(unused_imports)]
 pub(crate) use viewport::{
-    copy_badge_reserved_width, expand_badge_reserved_width, pick_copy_badge_line,
-    reserve_copy_badge_margins, truncate_line_for_copy_badge,
+    copy_badge_alt_badge, copy_badge_reserved_width, expand_badge_reserved_width,
+    pick_copy_badge_line, reserve_copy_badge_margins, truncate_line_for_copy_badge,
     truncate_line_in_place_to_width as truncate_copy_badge_line_to_width,
 };
 /// Last known max scroll value from the renderer. Updated each frame.

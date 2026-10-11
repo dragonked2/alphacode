@@ -2226,6 +2226,13 @@ impl SessionPicker {
                 // Standalone picker loop bypasses `ui::draw`; adapt for light
                 // terminal themes here (no-op on dark).
                 crate::alphacode_tui_style::adapt_buffer_for_theme(frame.buffer_mut());
+                // ...then apply the user's `[display.colors]` overrides. This
+                // pass used to be missing here, so every configured color was
+                // silently ignored in the picker while the rest of the app
+                // honored it. Must run after the theme flip so a configured
+                // color is not luminance-flipped into something unreadable.
+                // No-op when nothing is configured.
+                crate::alphacode_tui_style::palette::adapt_buffer_for_palette(frame.buffer_mut());
                 crate::alphacode_tui::tui::ui::adapt_buffer_for_emoji_preference(
                     frame.buffer_mut(),
                 );

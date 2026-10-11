@@ -621,7 +621,12 @@ mod tests {
         assert!(binding.matches(KeyCode::Enter, KeyModifiers::ALT));
         assert!(!binding.matches(KeyCode::Enter, KeyModifiers::empty()));
         assert!(!binding.matches(KeyCode::Enter, KeyModifiers::SHIFT));
-        assert_eq!(format_binding(&binding), "Alt+Enter");
+        // macOS labels the modifier with the Option keycap rather than "Alt",
+        // so assert against the platform label instead of a hardcoded one.
+        assert_eq!(
+            format_binding(&binding),
+            format!("{}+Enter", crate::alphacode_tui_core::keybind::alt_label())
+        );
     }
 
     #[test]

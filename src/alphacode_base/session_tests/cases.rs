@@ -1,6 +1,46 @@
 use super::*;
 use anyhow::{Result, anyhow};
 
+/// Restore the process working directory when the test ends, however it ends.
+///
+/// The cwd is process-global. These tests `chdir` into a `TempDir`, and the old
+/// restore-the-cwd line sat *after* the assertions, so a single failed
+/// assertion unwound straight past it and left the process inside a directory
+/// that was then deleted. Every later test calling `std::env::current_dir()`
+/// then failed with ENOENT, turning one real failure into a cascade of
+/// unrelated-looking ones. A guard makes the restore unconditional.
+struct CwdGuard {
+    original: std::path::PathBuf,
+}
+
+impl CwdGuard {
+    fn enter() -> Self {
+        let original =
+            std::env::current_dir().unwrap_or_else(|_| std::env::temp_dir().to_path_buf());
+        Self { original }
+    }
+}
+
+impl Drop for CwdGuard {
+    fn drop(&mut self) {
+        let _ = std::env::set_current_dir(&self.original);
+    }
+}
+
+/// The path `std::env::current_dir()` reports for the process right now.
+///
+/// Read it back after `chdir` instead of canonicalizing the temp path. The
+/// two spellings differ per platform: macOS resolves `/var` to `/private/var`,
+/// and on Windows `std::fs::canonicalize` returns a `\\?\` verbatim prefix that
+/// `current_dir()` never produces. The production code stores whatever
+/// `current_dir()` returns, so the expectation has to come from the same source.
+fn current_dir_display() -> Result<String> {
+    Ok(std::env::current_dir()
+        .map_err(|e| anyhow!(e))?
+        .display()
+        .to_string())
+}
+
 #[test]
 fn test_session_exists_roundtrip() -> Result<()> {
     let tmp_dir = std::env::temp_dir().join(format!(
@@ -285,7 +325,7 @@ fn initial_session_context_is_persisted_once_and_not_overwritten() {
 #[allow(clippy::redundant_closure_call)]
 fn initial_session_context_preserves_explicitly_bound_cwd_when_inserted() -> Result<()> {
     let _env_lock = lock_env();
-    let original_cwd = std::env::current_dir().map_err(|e| anyhow!(e))?;
+    let _cwd_guard = CwdGuard::enter();
     let first_dir = tempfile::Builder::new()
         .prefix("alphacode-session-context-first-")
         .tempdir()
@@ -294,37 +334,23 @@ fn initial_session_context_preserves_explicitly_bound_cwd_when_inserted() -> Res
         .prefix("alphacode-session-context-second-")
         .tempdir()
         .map_err(|e| anyhow!(e))?;
-
     std::env::set_current_dir(first_dir.path()).map_err(|e| anyhow!(e))?;
+    let first_display = current_dir_display()?;
     let mut session = Session::create_with_id(
         "session_context_cwd_refresh_test".to_string(),
         None,
         Some("Session context cwd refresh".to_string()),
     );
-    assert_eq!(
-        session.working_dir.as_deref(),
-        Some(first_dir.path().to_str().unwrap())
-    );
+    assert_eq!(session.working_dir.as_deref(), Some(first_display.as_str()));
 
     std::env::set_current_dir(second_dir.path()).map_err(|e| anyhow!(e))?;
-    let result: std::result::Result<(), anyhow::Error> = (|| {
-        assert!(session.ensure_initial_session_context_message());
-        let first = session.messages[0].content_preview();
-        assert!(
-            first.contains(&format!(
-                "Working directory: {}",
-                first_dir.path().display()
-            )),
-            "session context should preserve the bound cwd, got: {first}"
-        );
-        assert_eq!(
-            session.working_dir.as_deref(),
-            Some(first_dir.path().to_str().unwrap())
-        );
-        Ok(())
-    })();
-    std::env::set_current_dir(original_cwd).map_err(|e| anyhow!(e))?;
-    result?;
+    assert!(session.ensure_initial_session_context_message());
+    let first = session.messages[0].content_preview();
+    assert!(
+        first.contains(&format!("Working directory: {first_display}")),
+        "session context should preserve the bound cwd, got: {first}"
+    );
+    assert_eq!(session.working_dir.as_deref(), Some(first_display.as_str()));
 
     Ok(())
 }
@@ -333,7 +359,7 @@ fn initial_session_context_preserves_explicitly_bound_cwd_when_inserted() -> Res
 #[allow(clippy::redundant_closure_call)]
 fn initial_session_context_can_refresh_before_real_conversation() -> Result<()> {
     let _env_lock = lock_env();
-    let original_cwd = std::env::current_dir().map_err(|e| anyhow!(e))?;
+    let _cwd_guard = CwdGuard::enter();
     let first_dir = tempfile::Builder::new()
         .prefix("alphacode-session-context-stale-")
         .tempdir()
@@ -342,38 +368,31 @@ fn initial_session_context_can_refresh_before_real_conversation() -> Result<()> 
         .prefix("alphacode-session-context-real-")
         .tempdir()
         .map_err(|e| anyhow!(e))?;
-
     std::env::set_current_dir(first_dir.path()).map_err(|e| anyhow!(e))?;
-    let result: std::result::Result<(), anyhow::Error> = (|| {
-        let mut session = Session::create_with_id(
-            "session_context_remote_cwd_refresh_test".to_string(),
-            None,
-            Some("Remote cwd refresh".to_string()),
-        );
-        assert!(session.ensure_initial_session_context_message());
-        assert!(session.messages[0].content_preview().contains(&format!(
-            "Working directory: {}",
-            first_dir.path().display()
-        )));
+    let first_display = current_dir_display()?;
+    // Assigned directly rather than read back from the process, so the raw temp
+    // path is the right spelling for both the assignment and the assertion.
+    let second_display = second_dir.path().display().to_string();
+    let mut session = Session::create_with_id(
+        "session_context_remote_cwd_refresh_test".to_string(),
+        None,
+        Some("Remote cwd refresh".to_string()),
+    );
+    assert!(session.ensure_initial_session_context_message());
+    assert!(
+        session.messages[0]
+            .content_preview()
+            .contains(&format!("Working directory: {first_display}"))
+    );
 
-        session.working_dir = Some(second_dir.path().display().to_string());
-        assert!(session.refresh_initial_session_context_message());
-        let refreshed = session.messages[0].content_preview();
-        assert!(
-            refreshed.contains(&format!(
-                "Working directory: {}",
-                second_dir.path().display()
-            )),
-            "session context should refresh to subscribed cwd, got: {refreshed}"
-        );
-        assert!(!refreshed.contains(&format!(
-            "Working directory: {}",
-            first_dir.path().display()
-        )));
-        Ok(())
-    })();
-    std::env::set_current_dir(original_cwd).map_err(|e| anyhow!(e))?;
-    result?;
+    session.working_dir = Some(second_display.clone());
+    assert!(session.refresh_initial_session_context_message());
+    let refreshed = session.messages[0].content_preview();
+    assert!(
+        refreshed.contains(&format!("Working directory: {second_display}")),
+        "session context should refresh to subscribed cwd, got: {refreshed}"
+    );
+    assert!(!refreshed.contains(&format!("Working directory: {first_display}")));
 
     Ok(())
 }
@@ -382,7 +401,7 @@ fn initial_session_context_can_refresh_before_real_conversation() -> Result<()> 
 #[allow(clippy::redundant_closure_call)]
 fn initial_session_context_does_not_refresh_after_real_conversation() -> Result<()> {
     let _env_lock = lock_env();
-    let original_cwd = std::env::current_dir().map_err(|e| anyhow!(e))?;
+    let _cwd_guard = CwdGuard::enter();
     let first_dir = tempfile::Builder::new()
         .prefix("alphacode-session-context-original-")
         .tempdir()
@@ -391,38 +410,29 @@ fn initial_session_context_does_not_refresh_after_real_conversation() -> Result<
         .prefix("alphacode-session-context-late-")
         .tempdir()
         .map_err(|e| anyhow!(e))?;
-
     std::env::set_current_dir(first_dir.path()).map_err(|e| anyhow!(e))?;
-    let result: std::result::Result<(), anyhow::Error> = (|| {
-        let mut session = Session::create_with_id(
-            "session_context_late_cwd_refresh_test".to_string(),
-            None,
-            Some("Late cwd refresh".to_string()),
-        );
-        assert!(session.ensure_initial_session_context_message());
-        session.add_message(
-            Role::User,
-            vec![ContentBlock::Text {
-                text: "hello".to_string(),
-                cache_control: None,
-            }],
-        );
+    let first_display = current_dir_display()?;
+    // Assigned directly rather than read back from the process.
+    let second_display = second_dir.path().display().to_string();
+    let mut session = Session::create_with_id(
+        "session_context_late_cwd_refresh_test".to_string(),
+        None,
+        Some("Late cwd refresh".to_string()),
+    );
+    assert!(session.ensure_initial_session_context_message());
+    session.add_message(
+        Role::User,
+        vec![ContentBlock::Text {
+            text: "hello".to_string(),
+            cache_control: None,
+        }],
+    );
 
-        session.working_dir = Some(second_dir.path().display().to_string());
-        assert!(!session.refresh_initial_session_context_message());
-        let original = session.messages[0].content_preview();
-        assert!(original.contains(&format!(
-            "Working directory: {}",
-            first_dir.path().display()
-        )));
-        assert!(!original.contains(&format!(
-            "Working directory: {}",
-            second_dir.path().display()
-        )));
-        Ok(())
-    })();
-    std::env::set_current_dir(original_cwd).map_err(|e| anyhow!(e))?;
-    result?;
+    session.working_dir = Some(second_display.clone());
+    assert!(!session.refresh_initial_session_context_message());
+    let original = session.messages[0].content_preview();
+    assert!(original.contains(&format!("Working directory: {first_display}")));
+    assert!(!original.contains(&format!("Working directory: {second_display}")));
 
     Ok(())
 }

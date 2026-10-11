@@ -125,6 +125,11 @@ pub(super) async fn run_swarm_replay(
         terminal.draw(|frame| {
             draw_swarm_replay_frame(frame, &mut panes, sim_time_ms);
             crate::alphacode_tui_style::adapt_buffer_for_theme(frame.buffer_mut());
+            // Mirror `ui::draw`: the palette pass was missing, so a user's
+            // `[display.colors]` overrides never reached the replay even
+            // though they applied everywhere else. Must follow the theme flip
+            // and is a no-op when no override is configured.
+            crate::alphacode_tui_style::palette::adapt_buffer_for_palette(frame.buffer_mut());
             crate::alphacode_tui::tui::ui::adapt_buffer_for_emoji_preference(frame.buffer_mut());
         })?;
 

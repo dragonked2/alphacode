@@ -522,6 +522,8 @@ mod diagrams;
 mod inline_picker;
 #[path = "onboarding.rs"]
 mod onboarding;
+#[path = "palette_adaptation_guard.rs"]
+mod palette_adaptation_guard;
 #[path = "palette_topology.rs"]
 mod palette_topology;
 #[path = "prepare.rs"]

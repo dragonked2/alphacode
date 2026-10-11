@@ -1641,13 +1641,26 @@ mod tests {
         let temp = tempfile::tempdir().expect("tempdir");
         write_test_skill(temp.path(), ".alphacode", "session-skill");
 
-        let prev_cwd = std::env::current_dir().expect("cwd");
+        // chdir is process-global. Restore it on every exit path, including an
+        // assertion failure: leaving the process inside a TempDir that is about
+        // to be deleted makes every later `std::env::current_dir()` fail.
+        struct CwdRestore(Option<std::path::PathBuf>);
+        impl Drop for CwdRestore {
+            fn drop(&mut self) {
+                if let Some(previous) = self.0.take() {
+                    let _ = std::env::set_current_dir(previous);
+                }
+            }
+        }
+        let _cwd_restore = CwdRestore(Some(
+            std::env::current_dir().unwrap_or_else(|_| std::env::temp_dir()),
+        ));
+
         // reload_global must not pick up project-local skills even when the
         // process cwd contains them (daemon startup cwd independence).
         std::env::set_current_dir(temp.path()).expect("chdir");
         let mut registry = SkillRegistry::default();
         let result = registry.reload_global();
-        std::env::set_current_dir(prev_cwd).expect("restore cwd");
 
         result.expect("reload skills");
         assert!(

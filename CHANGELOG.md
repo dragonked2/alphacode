@@ -6,6 +6,42 @@ adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [1.0.78] - 2026-10-11
+
+### Fixed
+
+- Configured colors are now applied in the session picker. That screen runs its
+  own render loop instead of going through the main draw path, and it adapted
+  frames for light themes but skipped the palette pass, so every
+  `[display.colors]` override was silently ignored there while applying
+  everywhere else.
+- The same omission is fixed for the swarm replay screen, which had the same
+  two-of-three adaptation sequence.
+- macOS: the session-picker, hotkey-feedback, alignment and copy-badge tests no
+  longer assume the literal `Alt` label. macOS renders the Option keycap, which
+  is both a different string and a narrower one, so these assertions failed
+  only there.
+- macOS: session tests no longer compare `current_dir()` against the unresolved
+  `tempdir()` path. macOS resolves `/var` to `/private/var`, so the two
+  legitimately differ for the same directory.
+- Tests that `chdir` into a temporary directory now restore the working
+  directory on every exit path. The restore used to sit after the assertions, so
+  one failed assertion left the process inside a directory that was then
+  deleted, and every later test calling `current_dir()` failed with ENOENT —
+  turning a single real failure into a cascade of unrelated-looking ones.
+- macOS: the native-scroll bridge tests build a short socket path again. The
+  previous name overflowed `sun_path` (104 bytes) inside CI's long `TMPDIR`, and
+  `bind` failed with `EINVAL`.
+- The paste rapid-insertion tests no longer sleep against the 20ms gap
+  threshold, where ordinary CI scheduling jitter could make them fail.
+
+### Added
+
+- A source-level guard asserts that every render loop applying the light-theme
+  pass also applies the palette pass, and that the palette pass runs second. The
+  omission it prevents compiles cleanly and renders correctly under the default
+  palette, so it could not be caught by an ordinary test.
+
 ## [1.0.77] - 2026-10-10
 
 ### Fixed
