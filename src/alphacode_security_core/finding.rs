@@ -1,6 +1,8 @@
 use serde::{Deserialize, Serialize};
 use std::borrow::Cow;
 
+use super::proof::{ProofObject, ProofVerdict};
+
 /// Finding lifecycle stages.
 #[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -379,6 +381,15 @@ pub struct Finding {
     pub stage_history: Vec<StageTransition>,
     pub duplicate_status: Option<DuplicateStatus>,
     pub scope_status: Option<ScopeStatus>,
+    /// The structured proof backing this finding.
+    ///
+    /// Added after the fact with [`Finding::attach_proof`]. It is `None` for a
+    /// fresh observation, and [`Finding::advance`] refuses to walk a finding
+    /// from `ProgramCheck` into `ConfirmedFinding` without one that
+    /// verifies — that transition is the point at which a finding starts being
+    /// reported as real, so it is the point where the evidence gate belongs.
+    #[serde(default)]
+    pub proof: Option<ProofObject>,
 }
 
 impl Finding {
@@ -411,6 +422,41 @@ impl Finding {
             }],
             duplicate_status: None,
             scope_status: None,
+            proof: None,
+        }
+    }
+
+    /// Attach the structured proof backing this finding.
+    pub fn attach_proof(&mut self, proof: ProofObject) {
+        self.proof = Some(proof);
+    }
+
+    /// Verify this finding's proof *on its own terms* — that the required
+    /// evidence is present and internally consistent.
+    ///
+    /// This is the weaker check, suitable for gating a lifecycle transition
+    /// where no session transcript is in scope. It does **not** confirm the
+    /// request was ever sent; use [`Finding::is_reportable`] for that.
+    pub fn verify_proof(&self) -> ProofVerdict {
+        match self.proof.as_ref() {
+            Some(proof) => proof.verify(),
+            None => ProofVerdict {
+                verified: false,
+                defects: vec![super::proof::ProofDefect::MissingTestExchange],
+                observations: vec!["no proof object was attached to this finding".to_string()],
+            },
+        }
+    }
+
+    /// Whether this finding may be treated as reportable, checked against the
+    /// exchanges actually observed in the session.
+    ///
+    /// Fail-closed: unverified findings are never reportable, and a finding
+    /// with no proof at all is not reportable.
+    pub fn is_reportable(&self, observed: &[super::proof::HttpExchange]) -> bool {
+        match self.proof.as_ref() {
+            Some(proof) => proof.verify_against(observed).verified,
+            None => false,
         }
     }
 
@@ -434,6 +480,28 @@ impl Finding {
                 self.stage.as_str(),
                 next_stage.as_str()
             ));
+        }
+
+        // The evidence gate. `ConfirmedFinding` is the stage at which a finding
+        // stops being a hypothesis and starts being reported as real, so it is
+        // the last point at which a missing proof can be caught. Requiring a
+        // verified proof here is what stops "found SQLi in /search" from being
+        // promoted on the strength of pattern-matching a single response.
+        //
+        // This checks the proof on its own terms; `advance` is synchronous and
+        // has no access to the session. Callers confirm the request was really
+        // sent via `is_reportable` at report time, which is the stricter,
+        // history-backed check.
+        if next_stage == FindingStage::ConfirmedFinding {
+            let verdict = self.verify_proof();
+            if !verdict.verified {
+                let reasons: Vec<&str> = verdict.defects.iter().map(|d| d.as_str()).collect();
+                return Err(format!(
+                    "Refusing to confirm finding '{}': proof did not verify ({})",
+                    self.id,
+                    reasons.join("; ")
+                ));
+            }
         }
 
         let now = chrono::Utc::now().to_rfc3339();
@@ -499,6 +567,7 @@ impl Finding {
 
 #[cfg(test)]
 mod tests {
+    use super::super::proof::{BaselineComparison, ProofStep};
     use super::*;
 
     #[test]
@@ -598,5 +667,158 @@ mod tests {
         assert!((Confidence::Medium.numeric_value() - 0.50).abs() < f64::EPSILON);
         assert!((Confidence::High.numeric_value() - 0.75).abs() < f64::EPSILON);
         assert!((Confidence::Certain.numeric_value() - 1.0).abs() < f64::EPSILON);
+    }
+
+    // --- evidence gate -----------------------------------------------------
+
+    fn exchange(
+        method: &str,
+        url: &str,
+        status: u16,
+        body: &str,
+    ) -> super::super::proof::HttpExchange {
+        super::super::proof::HttpExchange {
+            method: method.to_string(),
+            url: url.to_string(),
+            request_body: None,
+            status,
+            response_headers: Vec::new(),
+            response_body: Some(body.to_string()),
+            source_tool: "httpflow".to_string(),
+        }
+    }
+
+    /// A finding with no proof attached must not be reportable, and must not
+    /// be promotable to `ConfirmedFinding`.
+    ///
+    /// This is the transition that decides whether something gets reported as
+    /// a real vulnerability, so it is where "no evidence" has to stop.
+    #[test]
+    fn a_finding_without_a_proof_cannot_be_confirmed() {
+        let mut finding = Finding::new(
+            "f1".to_string(),
+            "SQL injection in /search".to_string(),
+            VulnerabilityClass::SqlInjection,
+            "https://example.com".to_string(),
+        );
+
+        let verdict = finding.verify_proof();
+        assert!(!verdict.verified, "a finding with no proof must not verify");
+
+        // Walk it up to the last stage that is still permitted.
+        for _ in 0..7 {
+            finding
+                .advance("walked forward".to_string())
+                .expect("allowed");
+        }
+        assert_eq!(finding.stage, FindingStage::ProgramCheck);
+
+        let err = finding
+            .advance("promote to a reportable finding".to_string())
+            .expect_err("a finding with no proof must not be confirmed");
+        assert!(err.contains("proof did not verify"), "{err}");
+        assert_eq!(
+            finding.stage,
+            FindingStage::ProgramCheck,
+            "the stage must not move when the gate refuses"
+        );
+        assert!(!finding.is_reportable(&[]));
+    }
+
+    /// A complete, verified proof must let the finding through — the gate has
+    /// to be able to pass a real finding, not just block everything.
+    #[test]
+    fn a_finding_with_a_verified_proof_can_be_confirmed() {
+        let baseline = exchange("GET", "https://example.com/api/search", 403, "forbidden");
+        let treatment = exchange(
+            "GET",
+            "https://example.com/api/search?q=%27%20OR%201=1--",
+            500,
+            "SQL syntax error near 'OR'",
+        );
+        let mut finding = Finding::new(
+            "f1".to_string(),
+            "SQL injection in /search".to_string(),
+            VulnerabilityClass::SqlInjection,
+            "https://example.com".to_string(),
+        );
+        finding.attach_proof(ProofObject {
+            finding_id: "f1".to_string(),
+            test_exchange: Some(treatment.clone()),
+            reproduction: vec![ProofStep {
+                action: "GET /api/search?q=%27%20OR%201=1--".to_string(),
+                expected_observation: "a SQL error or a result set".to_string(),
+                tool: Some("httpflow".to_string()),
+            }],
+            expected_behavior: "the search rejects the malformed query with 400".to_string(),
+            observed_behavior: "the server returned 500 with a SQL syntax error".to_string(),
+            baseline: Some(BaselineComparison::new(
+                "unauthenticated",
+                baseline,
+                treatment.clone(),
+            )),
+        });
+
+        for _ in 0..7 {
+            finding
+                .advance("walked forward".to_string())
+                .expect("allowed");
+        }
+        finding
+            .advance("proof verified".to_string())
+            .expect("a verified proof must be allowed through the gate");
+        assert_eq!(finding.stage, FindingStage::ConfirmedFinding);
+
+        // Reportable only against a history that actually contains the request.
+        assert!(finding.is_reportable(std::slice::from_ref(&treatment)));
+        assert!(
+            !finding.is_reportable(&[exchange("GET", "https://example.com/other", 500, "x")]),
+            "a proof citing an unobserved request is not reportable"
+        );
+    }
+
+    /// A proof that is internally complete but cites a request that was never
+    /// sent must not be reportable.
+    #[test]
+    fn reportability_cross_checks_against_observed_activity() {
+        let baseline = exchange("GET", "https://example.com/api/search", 403, "forbidden");
+        let treatment = exchange(
+            "GET",
+            "https://example.com/api/search?q=1",
+            500,
+            "SQL error",
+        );
+        let mut finding = Finding::new(
+            "f2".to_string(),
+            "SQLi".to_string(),
+            VulnerabilityClass::SqlInjection,
+            "https://example.com".to_string(),
+        );
+        finding.attach_proof(ProofObject {
+            finding_id: "f2".to_string(),
+            test_exchange: Some(treatment),
+            reproduction: vec![ProofStep {
+                action: "GET /api/search?q=1".to_string(),
+                expected_observation: "a SQL error".to_string(),
+                tool: None,
+            }],
+            expected_behavior: "400".to_string(),
+            observed_behavior: "500 with a SQL error".to_string(),
+            baseline: Some(BaselineComparison::new(
+                "unauthenticated",
+                baseline,
+                exchange(
+                    "GET",
+                    "https://example.com/api/search?q=1",
+                    500,
+                    "SQL error",
+                ),
+            )),
+        });
+
+        assert!(
+            !finding.is_reportable(&[]),
+            "an empty history means the request cannot be confirmed as sent"
+        );
     }
 }

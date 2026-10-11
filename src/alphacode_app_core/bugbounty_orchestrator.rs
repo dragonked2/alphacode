@@ -10,6 +10,8 @@ use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use tokio::sync::RwLock;
 
+use crate::alphacode_security_core::proof::{HttpExchange, ProofObject, ProofVerdict};
+
 /// The current phase of the bug bounty workflow.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum BountyPhase {
@@ -173,6 +175,58 @@ fn is_vulnerability_line(line: &str) -> bool {
     MARKERS.iter().any(|marker| lower.contains(marker))
 }
 
+/// Consecutive completed turns that produce no new signal before the hunt is
+/// considered to have stopped yielding results.
+///
+/// Two is deliberate: one dry turn is normal variance, two in a row with the
+/// runnable surface empty means continuing only repeats known work.
+const NO_SIGNAL_TURN_LIMIT: u32 = 2;
+
+/// Why the orchestrator stopped working.
+///
+/// The whole point of this enum is that "it stopped" is never an acceptable
+/// answer on its own. Every exit path names a cause, so a short run can be
+/// distinguished from a *finished* one.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum StopReason {
+    /// Every task has run and there is nothing left to execute.
+    SurfaceExhausted,
+    /// Tasks remain, but all of them are waiting on prerequisites that can
+    /// never complete (a failed dependency).
+    Blocked,
+    /// The last stretch of work produced no new signal, so continuing would
+    /// just burn budget re-confirming what is already known.
+    NoNewSignal,
+    /// Still working.
+    Continue,
+}
+
+impl StopReason {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::SurfaceExhausted => "surface_exhausted",
+            Self::Blocked => "blocked",
+            Self::NoNewSignal => "no_new_signal",
+            Self::Continue => "continue",
+        }
+    }
+
+    /// Whether this reason means the hunt is over.
+    pub fn is_terminal(&self) -> bool {
+        !matches!(self, Self::Continue)
+    }
+}
+
+/// An evidence-verified finding: a claim that survived the proof gate.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct VerifiedFinding {
+    pub id: String,
+    pub proof: ProofObject,
+    /// What the proof established, for the report.
+    pub observations: Vec<String>,
+}
+
 /// The bug bounty orchestrator — manages the complete workflow.
 #[derive(Debug, Clone)]
 pub struct BugBountyOrchestrator {
@@ -186,8 +240,17 @@ pub struct BugBountyOrchestrator {
     pub subdomains: Arc<RwLock<HashSet<String>>>,
     /// Discovered URLs
     pub urls: Arc<RwLock<HashSet<String>>>,
-    /// Discovered vulnerabilities
+    /// Unverified candidates harvested from scanner output.
+    ///
+    /// These are keyword matches on tool stdout. They are *not* findings: no
+    /// request was necessarily sent and no response was necessarily seen. A
+    /// candidate becomes a finding only by passing through
+    /// [`BugBountyOrchestrator::record_verified_finding`].
     pub vulnerabilities: Arc<RwLock<HashMap<String, String>>>,
+    /// Findings whose structured proof verified against observed exchanges.
+    pub verified_findings: Arc<RwLock<HashMap<String, VerifiedFinding>>>,
+    /// HTTP exchanges actually observed, used to cross-check proofs.
+    pub observed_exchanges: Arc<RwLock<Vec<HttpExchange>>>,
     /// Discovered ports
     pub ports: Arc<RwLock<HashSet<u16>>>,
     /// Discovered services
@@ -204,9 +267,56 @@ impl BugBountyOrchestrator {
             subdomains: Arc::new(RwLock::new(HashSet::new())),
             urls: Arc::new(RwLock::new(HashSet::new())),
             vulnerabilities: Arc::new(RwLock::new(HashMap::new())),
+            verified_findings: Arc::new(RwLock::new(HashMap::new())),
+            observed_exchanges: Arc::new(RwLock::new(Vec::new())),
             ports: Arc::new(RwLock::new(HashSet::new())),
             services: Arc::new(RwLock::new(HashMap::new())),
         }
+    }
+
+    /// Record an HTTP exchange that was actually observed.
+    ///
+    /// This is the ground truth proofs are checked against, so a finding whose
+    /// exchange was never recorded here cannot be verified.
+    pub async fn record_exchange(&self, exchange: HttpExchange) -> bool {
+        let mut exchanges = self.observed_exchanges.write().await;
+        if exchanges.iter().any(|e| e.matches_observed(&exchange)) {
+            return false;
+        }
+        exchanges.push(exchange);
+        true
+    }
+
+    /// Verify and record a finding's proof.
+    ///
+    /// Fail-closed: a proof that does not verify against the observed
+    /// exchanges is **not** recorded, and the verdict is returned so the
+    /// caller can report why. Nothing here can promote a candidate that
+    /// pattern-matching produced.
+    pub async fn record_verified_finding(
+        &self,
+        id: impl Into<String>,
+        proof: ProofObject,
+    ) -> ProofVerdict {
+        let id = id.into();
+        let exchanges = self.observed_exchanges.read().await.clone();
+        let verdict = proof.verify_against(&exchanges);
+        if verdict.verified {
+            self.verified_findings.write().await.insert(
+                id.clone(),
+                VerifiedFinding {
+                    id,
+                    observations: verdict.observations.clone(),
+                    proof,
+                },
+            );
+        }
+        verdict
+    }
+
+    /// Number of findings that survived the evidence gate.
+    pub async fn verified_finding_count(&self) -> usize {
+        self.verified_findings.read().await.len()
     }
 
     /// Check if a tool is available and provide alternatives if not.
@@ -609,6 +719,95 @@ impl BugBountyOrchestrator {
             },
         );
 
+        // --- coverage expansion -------------------------------------------
+        //
+        // Breadth is only safe once findings have to survive the evidence
+        // gate: a wider sweep now produces verifiable results or nothing,
+        // rather than multiplying unverifiable speculation. These tasks widen
+        // *evidence* coverage — more endpoints, more parameters, and the
+        // auth-state matrix that the baseline differential depends on.
+
+        tasks.insert(
+            "surface_ffuf_params".to_string(),
+            BountyTask {
+                id: "surface_ffuf_params".to_string(),
+                name: "Parameter Discovery (ffuf)".to_string(),
+                description: "Enumerate query parameters on discovered endpoints"
+                    .to_string(),
+                tool: "ffuf".to_string(),
+                params: serde_json::json!({"url": [], "matcher": {"status": [200, 301, 302, 403, 500]}}),
+                phase: BountyPhase::AttackSurfaceMapping,
+                completed: false,
+                result: None,
+                dependencies: vec!["surface_katana".to_string()],
+                priority: 6,
+                estimated_duration: 600,
+                retry_count: 0,
+                max_retries: 2,
+            },
+        );
+
+        tasks.insert(
+            "exploit_ffuf_fuzz".to_string(),
+            BountyTask {
+                id: "exploit_ffuf_fuzz".to_string(),
+                name: "Parameter Fuzzing (ffuf)".to_string(),
+                description: "Fuzz discovered parameters for injection and traversal"
+                    .to_string(),
+                tool: "ffuf".to_string(),
+                params: serde_json::json!({"url": [], "matcher": {"status": [200, 500]}, "sizes": true}),
+                phase: BountyPhase::Exploitation,
+                completed: false,
+                result: None,
+                dependencies: vec!["surface_ffuf_params".to_string()],
+                priority: 3,
+                estimated_duration: 900,
+                retry_count: 0,
+                max_retries: 2,
+            },
+        );
+
+        tasks.insert(
+            "matrix_auth_states".to_string(),
+            BountyTask {
+                id: "matrix_auth_states".to_string(),
+                name: "Auth-state Baseline Matrix".to_string(),
+                description: "Capture each sensitive endpoint unauthenticated, \
+                              as a low-privilege user, and as an administrator, \
+                              to establish the baseline the differential check needs"
+                    .to_string(),
+                tool: "httpx".to_string(),
+                params: serde_json::json!({"url": [], "status_codes": true, "auth_matrix": true}),
+                phase: BountyPhase::VulnerabilityDiscovery,
+                completed: false,
+                result: None,
+                dependencies: vec!["surface_httpx".to_string()],
+                priority: 6,
+                estimated_duration: 180,
+                retry_count: 0,
+                max_retries: 2,
+            },
+        );
+
+        tasks.insert(
+            "surface_gospider".to_string(),
+            BountyTask {
+                id: "surface_gospider".to_string(),
+                name: "Crawling with JS endpoints (gospider)".to_string(),
+                description: "Crawl for endpoints missed by static crawling".to_string(),
+                tool: "gospider".to_string(),
+                params: serde_json::json!({"url": [], "js": true, "sitemap": true}),
+                phase: BountyPhase::AttackSurfaceMapping,
+                completed: false,
+                result: None,
+                dependencies: vec!["surface_httpx".to_string()],
+                priority: 7,
+                estimated_duration: 300,
+                retry_count: 0,
+                max_retries: 2,
+            },
+        );
+
         Ok(())
     }
 
@@ -815,14 +1014,26 @@ impl BugBountyOrchestrator {
     /// awaiting them one at a time; a sequential chain would hold each
     /// guard across the wait for the next.
     pub async fn get_summary(&self) -> OrchestratorSummary {
-        let (tasks, subdomains, urls, vulnerabilities, ports, services, current_phase) = tokio::join!(
+        let (
+            tasks,
+            subdomains,
+            urls,
+            vulnerabilities,
+            verified,
+            ports,
+            services,
+            current_phase,
+            exchanges,
+        ) = tokio::join!(
             self.tasks.read(),
             self.subdomains.read(),
             self.urls.read(),
             self.vulnerabilities.read(),
+            self.verified_findings.read(),
             self.ports.read(),
             self.services.read(),
             self.current_phase.read(),
+            self.observed_exchanges.read(),
         );
         let current_phase = *current_phase;
 
@@ -839,9 +1050,49 @@ impl BugBountyOrchestrator {
             subdomains_found: subdomains.len(),
             urls_found: urls.len(),
             vulnerabilities_found: vulnerabilities.len(),
+            verified_findings_found: verified.len(),
+            exchanges_observed: exchanges.len(),
             ports_found: ports.len(),
             services_found: services.len(),
         }
+    }
+
+    /// Decide whether the hunt should continue, and say why.
+    ///
+    /// This replaces stopping on a timer. The decision comes from state, not
+    /// elapsed time:
+    ///
+    /// * runnable surface remains -> `Continue`
+    /// * tasks remain but none can run -> `Blocked`
+    /// * nothing remains and the last stretch yielded nothing new ->
+    ///   `NoNewSignal`
+    /// * nothing remains -> `SurfaceExhausted`
+    ///
+    /// `dried_up_turns` counts consecutive completed turns that produced no
+    /// new subdomains, URLs, exchanges or candidates.
+    ///
+    /// Note the ordering: `NoNewSignal` is only reachable once the surface is
+    /// actually gone. An early dry patch while work is still runnable reports
+    /// `Continue`, so "no new signal" can never be used to give up early — which
+    /// is the failure mode this is meant to replace.
+    pub async fn stop_decision(&self, dried_up_turns: u32) -> StopReason {
+        let pending = {
+            let tasks = self.tasks.read().await;
+            tasks.values().filter(|t| !t.completed).count()
+        };
+        if pending == 0 {
+            return if dried_up_turns >= NO_SIGNAL_TURN_LIMIT {
+                StopReason::NoNewSignal
+            } else {
+                StopReason::SurfaceExhausted
+            };
+        }
+
+        if self.get_ready_tasks().await.is_empty() {
+            return StopReason::Blocked;
+        }
+        // There is runnable surface: keep going while it exists.
+        StopReason::Continue
     }
 
     /// Get all tasks that are ready to execute (all dependencies completed).
@@ -1062,8 +1313,13 @@ pub struct OrchestratorSummary {
     pub subdomains_found: usize,
     /// Number of URLs found
     pub urls_found: usize,
-    /// Number of vulnerabilities found
+    /// Number of unverified candidates harvested from scanner output
     pub vulnerabilities_found: usize,
+    /// Number of findings whose structured proof verified against observed
+    /// exchanges. This is the number that may be reported.
+    pub verified_findings_found: usize,
+    /// Number of HTTP exchanges actually observed.
+    pub exchanges_observed: usize,
     /// Number of ports found
     pub ports_found: usize,
     /// Number of services found
@@ -1083,7 +1339,9 @@ impl std::fmt::Display for OrchestratorSummary {
         )?;
         writeln!(f, "Subdomains: {}", self.subdomains_found)?;
         writeln!(f, "URLs: {}", self.urls_found)?;
-        writeln!(f, "Vulnerabilities: {}", self.vulnerabilities_found)?;
+        writeln!(f, "Candidates (unverified): {}", self.vulnerabilities_found)?;
+        writeln!(f, "Verified findings: {}", self.verified_findings_found)?;
+        writeln!(f, "Exchanges observed: {}", self.exchanges_observed)?;
         writeln!(f, "Ports: {}", self.ports_found)?;
         writeln!(f, "Services: {}", self.services_found)?;
         Ok(())
@@ -1367,5 +1625,215 @@ mod tests {
         assert!(!is_hostname("not a hostname"));
         assert!(!is_hostname("localhost"));
         assert!(!is_hostname("http://example.com/x"));
+    }
+
+    // --- evidence gate + stopping -----------------------------------------
+
+    use crate::alphacode_security_core::proof::{BaselineComparison, ProofStep};
+
+    fn exchange(method: &str, url: &str, status: u16, body: &str) -> HttpExchange {
+        HttpExchange {
+            method: method.to_string(),
+            url: url.to_string(),
+            request_body: None,
+            status,
+            response_headers: Vec::new(),
+            response_body: Some(body.to_string()),
+            source_tool: "httpflow".to_string(),
+        }
+    }
+
+    fn proof_for(exchange: HttpExchange, baseline: HttpExchange) -> ProofObject {
+        ProofObject {
+            finding_id: "f1".into(),
+            test_exchange: Some(exchange.clone()),
+            reproduction: vec![ProofStep {
+                action: "GET /api/search?q=1".into(),
+                expected_observation: "a SQL error".into(),
+                tool: Some("httpflow".into()),
+            }],
+            expected_behavior: "400 bad request".into(),
+            observed_behavior: "500 with a SQL syntax error".into(),
+            baseline: Some(BaselineComparison::new(
+                "unauthenticated",
+                baseline,
+                exchange,
+            )),
+        }
+    }
+
+    /// A scanner keyword match is a candidate, not a finding. Nothing is
+    /// promoted without a proof that verifies against observed exchanges.
+    #[tokio::test]
+    async fn scanner_output_produces_candidates_not_findings() {
+        let orchestrator = BugBountyOrchestrator::new("example.com");
+        orchestrator
+            .ingest_tool_output("nuclei", "[high] id: exposed-admin-panel\n")
+            .await;
+
+        let summary = orchestrator.get_summary().await;
+        assert_eq!(summary.vulnerabilities_found, 1, "{summary:?}");
+        assert_eq!(
+            summary.verified_findings_found, 0,
+            "a keyword match on scanner output must not become a verified finding"
+        );
+    }
+
+    /// A proof citing a request that was never observed is rejected.
+    #[tokio::test]
+    async fn an_unobserved_proof_is_not_recorded_as_a_finding() {
+        let orchestrator = BugBountyOrchestrator::new("example.com");
+        let treatment = exchange(
+            "GET",
+            "https://example.com/api/search?q=1",
+            500,
+            "SQL syntax error",
+        );
+        let baseline = exchange("GET", "https://example.com/api/search", 403, "forbidden");
+
+        let verdict = orchestrator
+            .record_verified_finding("f1", proof_for(treatment, baseline))
+            .await;
+        assert!(!verdict.verified, "{verdict:?}");
+        assert_eq!(orchestrator.verified_finding_count().await, 0);
+    }
+
+    /// A proof backed by a genuinely observed exchange is recorded.
+    #[tokio::test]
+    async fn an_observed_proof_is_recorded_as_a_finding() {
+        let orchestrator = BugBountyOrchestrator::new("example.com");
+        let treatment = exchange(
+            "GET",
+            "https://example.com/api/search?q=1",
+            500,
+            "SQL syntax error",
+        );
+        let baseline = exchange("GET", "https://example.com/api/search", 403, "forbidden");
+        assert!(orchestrator.record_exchange(treatment.clone()).await);
+
+        let verdict = orchestrator
+            .record_verified_finding("f1", proof_for(treatment, baseline))
+            .await;
+        assert!(verdict.verified, "{verdict:?}");
+        assert_eq!(orchestrator.verified_finding_count().await, 1);
+    }
+
+    /// Recording the same exchange twice must not double-count; the store is
+    /// the dedupe point for what was actually observed.
+    #[tokio::test]
+    async fn duplicate_exchanges_are_not_recorded_twice() {
+        let orchestrator = BugBountyOrchestrator::new("example.com");
+        let e = exchange("GET", "https://example.com/a", 403, "x");
+        assert!(orchestrator.record_exchange(e.clone()).await);
+        assert!(!orchestrator.record_exchange(e).await);
+        assert_eq!(orchestrator.get_summary().await.exchanges_observed, 1);
+    }
+
+    #[tokio::test]
+    async fn stopping_reports_why_it_stopped() {
+        let orchestrator = BugBountyOrchestrator::new("example.com");
+
+        // Nothing registered: the surface is exhausted.
+        assert_eq!(
+            orchestrator.stop_decision(0).await,
+            StopReason::SurfaceExhausted
+        );
+
+        // Pending work whose prerequisite can never run: blocked. The dependency is
+        // absent from the task map entirely, which is the end state after a
+        // prerequisite is removed or a resumed run references a task that no
+        // longer exists — `child` can never become ready.
+        {
+            let mut tasks = orchestrator.tasks.write().await;
+            tasks.insert(
+                "child".into(),
+                task("child", BountyPhase::Reconnaissance, &["prereq"]),
+            );
+        }
+        assert_eq!(orchestrator.stop_decision(0).await, StopReason::Blocked);
+
+        // And once that unreachable work is cleared, the surface is genuinely
+        // exhausted rather than merely blocked.
+        orchestrator
+            .complete_task("child", "done".to_string())
+            .await
+            .expect("registered");
+        assert_eq!(
+            orchestrator.stop_decision(0).await,
+            StopReason::SurfaceExhausted
+        );
+    }
+
+    /// Runnable surface means "keep going", regardless of how long the run has
+    /// already been going — stopping is not on a timer.
+    #[tokio::test]
+    async fn runnable_surface_means_continue() {
+        let orchestrator = BugBountyOrchestrator::new("example.com");
+        {
+            let mut tasks = orchestrator.tasks.write().await;
+            tasks.insert("a".into(), task("a", BountyPhase::Reconnaissance, &[]));
+        }
+        assert_eq!(
+            orchestrator.stop_decision(0).await,
+            StopReason::Continue,
+            "with a runnable task there is productive surface left"
+        );
+        assert_eq!(orchestrator.stop_decision(99).await, StopReason::Continue);
+    }
+
+    /// No-new-signal only takes effect once the surface is actually gone, so
+    /// an early dry patch cannot end a hunt that still has work to do.
+    #[tokio::test]
+    async fn no_new_signal_requires_the_surface_to_be_gone() {
+        let orchestrator = BugBountyOrchestrator::new("example.com");
+        {
+            let mut tasks = orchestrator.tasks.write().await;
+            tasks.insert("a".into(), task("a", BountyPhase::Reconnaissance, &[]));
+        }
+        assert_eq!(
+            orchestrator.stop_decision(5).await,
+            StopReason::Continue,
+            "dried up while work remains must not stop the hunt"
+        );
+
+        // Surface now exhausted and the run has dried up: report the cause.
+        orchestrator
+            .complete_task("a", "done".to_string())
+            .await
+            .expect("registered");
+        assert_eq!(orchestrator.stop_decision(5).await, StopReason::NoNewSignal);
+        assert_eq!(
+            orchestrator.stop_decision(0).await,
+            StopReason::SurfaceExhausted
+        );
+    }
+
+    /// Coverage expansion landed only after the evidence gate.
+    #[tokio::test]
+    async fn coverage_tasks_are_registered() {
+        let orchestrator = BugBountyOrchestrator::new("example.com");
+        orchestrator.initialize().await.unwrap();
+        let ids: Vec<String> = {
+            let tasks = orchestrator.tasks.read().await;
+            tasks.keys().cloned().collect()
+        };
+        for expected in [
+            "surface_ffuf_params",
+            "exploit_ffuf_fuzz",
+            "matrix_auth_states",
+            "surface_gospider",
+        ] {
+            assert!(
+                ids.iter().any(|id| id == expected),
+                "coverage task {expected} should be registered: {ids:?}"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn stop_reasons_render() {
+        assert_eq!(StopReason::SurfaceExhausted.as_str(), "surface_exhausted");
+        assert!(StopReason::Blocked.is_terminal());
+        assert!(!StopReason::Continue.is_terminal());
     }
 }

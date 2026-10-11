@@ -31,6 +31,19 @@ pub use crate::alphacode_overnight_core::{
 const RESOURCE_SAMPLE_INTERVAL: Duration = Duration::from_secs(5 * 60);
 const LONG_TURN_NOTICE_INTERVAL: Duration = Duration::from_secs(30 * 60);
 
+/// Hard ceiling on a single coordinator turn.
+///
+/// The monitored-turn loop only ever *observed* a long turn — it emitted a
+/// notice every 30 minutes but had no timeout branch, so a turn whose provider
+/// request never resolved held the supervisor forever. The run could not be
+/// cancelled either, because cancellation is only checked between turns
+/// (`run_supervisor` reloads the manifest at the top of each iteration).
+///
+/// This bound makes a stalled turn terminate the run with a reason instead of
+/// hanging it. It is deliberately generous: an overnight turn is allowed to run
+/// for hours, because a turn that is genuinely working is not the problem.
+const MAX_TURN_DURATION: Duration = Duration::from_secs(4 * 60 * 60);
+
 #[derive(Debug, Clone)]
 pub struct OvernightLaunch {
     pub manifest: OvernightManifest,
@@ -401,9 +414,37 @@ async fn run_turn_monitored(
     let run_future = agent.run_once_capture(prompt);
     tokio::pin!(run_future);
 
+    // The ceiling that turns a hang into a reported stop reason.
+    let deadline = tokio::time::sleep(MAX_TURN_DURATION);
+    tokio::pin!(deadline);
+
     loop {
         tokio::select! {
             result = &mut run_future => return result,
+            _ = &mut deadline => {
+                let elapsed = Utc::now().signed_duration_since(started).num_minutes().max(0);
+                let _ = record_event(
+                    manifest,
+                    "coordinator_turn_timed_out",
+                    format!(
+                        "Coordinator turn exceeded the {}h ceiling after {elapsed}m; \
+                         aborting it rather than hanging the run",
+                        MAX_TURN_DURATION.as_secs() / 3600
+                    ),
+                    json!({
+                        "elapsed_minutes": elapsed,
+                        "max_turn_secs": MAX_TURN_DURATION.as_secs(),
+                    }),
+                    true,
+                );
+                let _ = render_review_html(manifest);
+                // A stalled turn is reported, not silently dropped, so the run
+                // ends with a cause the user can act on rather than a hang.
+                return Err(anyhow::anyhow!(
+                    "coordinator turn exceeded the {}h ceiling after {elapsed}m without completing",
+                    MAX_TURN_DURATION.as_secs() / 3600
+                ));
+            }
             _ = sample_interval.tick() => {
                 let snapshot = gather_resource_snapshot(manifest.working_dir.as_deref().map(Path::new));
                 let _ = record_event(

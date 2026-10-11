@@ -392,6 +392,10 @@ impl Agent {
 
     /// Run the quality gate on the final report when the goal contract
     /// reaches the Report phase.
+    ///
+    /// The gate is evidence-backed: claims are checked against the session's
+    /// own tool history, so a vulnerability claim is only verified when the
+    /// requests and responses it relies on were actually observed.
     fn run_quality_gate_on_report(&self) {
         // Get the latest assistant text as the "report"
         let report = self.last_assistant_text().unwrap_or_default();
@@ -405,8 +409,15 @@ impl Agent {
             .map(std::path::PathBuf::from)
             .unwrap_or_else(|| std::env::current_dir().unwrap_or_default());
 
-        let results = crate::agent::claim_checker::check_all_claims(&report, &working_dir);
-        let summary = crate::agent::claim_checker::verification_summary(&results);
+        // Reconstruct what the session actually did. Without this the checker
+        // has nothing to verify against and every network-dependent claim
+        // fails closed — which is the correct default, but it would mean a
+        // genuinely well-evidenced finding could never pass.
+        let evidence =
+            crate::agent::claim_checker::SessionEvidence::from_messages(&self.session.messages);
+        let results =
+            crate::agent::claim_checker::check_all_claims(&report, &working_dir, &evidence);
+        let summary = crate::agent::claim_checker::verification_report(&results);
 
         if !results.iter().all(|r| r.verified) {
             logging::warn(&format!(
