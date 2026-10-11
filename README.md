@@ -4,7 +4,7 @@
 
 # AlphaCode — Open-Source Rust AI Coding Agent
 
-**A terminal-first AI coding agent that can understand a codebase, edit files, run commands and tests, automate Firefox, control desktop applications, and verify its work.**
+**A terminal-first AI coding agent that understands your codebase, edits files, runs commands and tests, automates Firefox, controls desktop applications, and verifies its own work.**
 
 [![GitHub stars](https://img.shields.io/github/stars/dragonked2/alphacode?style=for-the-badge&label=Stars&labelColor=1a1a2e&color=FFD34D)](https://github.com/dragonked2/alphacode/stargazers)
 [![Latest release](https://img.shields.io/github/v/release/dragonked2/alphacode?style=for-the-badge&label=Release&labelColor=1a1a2e&color=6E56CF)](https://github.com/dragonked2/alphacode/releases)
@@ -22,6 +22,21 @@
 
 </div>
 
+---
+
+## At a glance
+
+| I want to… | Go to |
+| --- | --- |
+| Try AlphaCode in under two minutes | [Quick start](#quick-start) |
+| See what it can do | [Demo](#demo) · [Features](#features) |
+| Use Claude, GPT, Gemini, or a local model | [Models and providers](#models-and-providers) |
+| Automate a website in Firefox | [Firefox browser automation](#firefox-browser-automation) |
+| Control a desktop application | [Desktop automation](#desktop-automation) |
+| Fix an install or setup problem | [Troubleshooting](#troubleshooting) |
+| Remove AlphaCode | [Uninstall](#uninstall) |
+| Help improve the project | [Contributing](#contributing) |
+
 ## Demo
 
 Preview AlphaCode in action, from installation to a first task. Click the image to open the original SVG at full size.
@@ -36,14 +51,23 @@ Preview AlphaCode in action, from installation to a first task. Click the image 
 
 ## Contents
 
+<details open>
+<summary><strong>Show or hide the table of contents</strong></summary>
+
+- [At a glance](#at-a-glance)
+- [Demo](#demo)
 - [What is AlphaCode?](#what-is-alphacode)
 - [Quick start](#quick-start)
 - [Features](#features)
+  - [Coding and repository work](#coding-and-repository-work)
+  - [Web workflows and quality assurance](#web-workflows-and-quality-assurance)
 - [Firefox browser automation](#firefox-browser-automation)
 - [Desktop automation](#desktop-automation)
 - [Swarm mode](#swarm-mode)
+- [Sessions and memory](#sessions-and-memory)
 - [Models and providers](#models-and-providers)
 - [Built-in tools, skills, and MCP](#built-in-tools-skills-and-mcp)
+- [Security testing and bug bounty workflows](#security-testing-and-bug-bounty-workflows)
 - [Safety and reliability](#safety-and-reliability)
 - [Benchmarks](#benchmarks)
 - [Installation options](#installation-options)
@@ -52,13 +76,19 @@ Preview AlphaCode in action, from installation to a first task. Click the image 
 - [Troubleshooting](#troubleshooting)
 - [Uninstall](#uninstall)
 - [FAQ](#faq)
+- [Use cases](#use-cases)
+- [Documentation and project links](#documentation-and-project-links)
+- [Security reporting](#security-reporting)
 - [Contributing](#contributing)
+- [Support AlphaCode](#support-alphacode)
+
+</details>
 
 ---
 
 ## What is AlphaCode?
 
-AlphaCode is an **open-source AI coding agent built in Rust**. Instead of only suggesting code in a chat, it can work in your development environment: inspect a repository, plan a task, edit files, run commands and tests, use web tools, operate a real Firefox session, interact with desktop applications, and report what it verified.
+AlphaCode is an **open-source AI coding agent built in Rust**. Instead of only suggesting code in a chat, it works directly in your development environment: it can inspect a repository, plan a task, edit files, run commands and tests, use web tools, operate a real Firefox session, interact with desktop applications, and report what it verified.
 
 ```mermaid
 flowchart LR
@@ -69,34 +99,49 @@ flowchart LR
     E --> F["Report what changed"]
 ```
 
-The workflow is designed around **understand → plan → execute → observe → verify**, with a final report of what changed, what was checked, and what remains.
+The workflow follows **understand → plan → execute → observe → verify**, and ends with a report of what changed, what was checked, and what remains.
 
 ### Example tasks
 
-**Debug and fix a regression**
+You can use plain-English instructions or precise technical tasks. Here are three typical requests.
+
+<details open>
+<summary><strong>Debug and fix a regression</strong></summary>
 
 ```text
 Find why the app crashes when users upload a PDF.
 Fix the root cause, add a regression test, run the relevant tests, and review the final diff.
 ```
 
-**Test a web application**
+</details>
+
+<details open>
+<summary><strong>Test a web application</strong></summary>
 
 ```text
 Open the application in Firefox, go to the account settings page,
 check that the new feature is visible, and capture a screenshot.
 ```
 
-**Investigate a security issue**
+</details>
+
+<details open>
+<summary><strong>Investigate a security issue</strong></summary>
 
 ```text
 Trace untrusted input to sensitive operations, validate likely findings,
 and report which issues are reproducible in this authorized test environment.
 ```
 
-AlphaCode can be used with plain-English instructions or precise technical tasks. Advanced workflows can combine multiple agents, reusable skills, and MCP-connected tools.
+</details>
+
+Advanced workflows can combine multiple agents, reusable skills, and MCP-connected tools.
+
+<div align="right"><a href="#alphacode--open-source-rust-ai-coding-agent">Back to top</a></div>
 
 ## Quick start
+
+Four steps from zero to your first task.
 
 ### 1. Install AlphaCode
 
@@ -112,7 +157,11 @@ curl -fsSL https://raw.githubusercontent.com/dragonked2/alphacode/main/scripts/i
 irm https://raw.githubusercontent.com/dragonked2/alphacode/main/scripts/install.ps1 | iex
 ```
 
-For security-conscious environments, download and inspect the installer before running it. See [Installation options](#installation-options) for version pinning, PATH options, and source builds.
+> [!TIP]
+> In security-conscious environments, download and inspect the installer before running it. See [Installation options](#installation-options) for version pinning, PATH options, and source builds.
+
+> [!IMPORTANT]
+> On Windows, run AlphaCode from **Windows Terminal or PowerShell**. Do not double-click `alphacode.exe`; the temporary console closes as soon as the process exits.
 
 ### 2. Check your setup and launch
 
@@ -121,13 +170,13 @@ alphacode doctor
 alphacode
 ```
 
-`alphacode doctor` checks the environment and reports common setup issues. The built-in free AI lane lets you get started without configuring an API key; connected providers may require their own credentials and may incur charges.
+`alphacode doctor` checks your environment and reports common setup issues. The built-in free AI lane lets you start without configuring an API key; connected providers may require their own credentials and may incur charges.
 
-The first launch includes a short onboarding flow for preferences such as telemetry, model defaults, and key bindings. Each step can be skipped with `Esc`.
+The first launch includes a short onboarding flow for preferences such as telemetry, model defaults, and key bindings. You can skip any step with `Esc`.
 
 ### 3. Give AlphaCode a task
 
-For example, enter a request such as:
+Type a request such as:
 
 ```text
 Explain this project and identify its main entry points.
@@ -139,7 +188,7 @@ Or ask it to investigate and repair a failing test:
 Find the highest-impact bug, fix it with the smallest reasonable change, and run the relevant tests.
 ```
 
-Run a task directly without opening the interactive terminal UI:
+To run a task directly, without opening the interactive terminal UI:
 
 ```bash
 alphacode run "fix the failing test"
@@ -154,7 +203,9 @@ alphacode browser setup
 alphacode browser status
 ```
 
-The status command should report whether the browser bridge is available and responding.
+The status command reports whether the browser bridge is available and responding.
+
+<div align="right"><a href="#alphacode--open-source-rust-ai-coding-agent">Back to top</a></div>
 
 ## Features
 
@@ -215,6 +266,7 @@ Open the application, test the login flow, navigate to the dashboard,
 check the form validation, and report reproducible problems.
 ```
 
+> [!WARNING]
 > **Privacy note:** Browser automation can act inside a real browser session. Review requested actions carefully, and treat page content as untrusted input.
 
 ## Desktop automation
@@ -227,7 +279,7 @@ AlphaCode interacts with native applications through platform accessibility APIs
 | macOS | Accessibility API |
 | Linux | AT-SPI2 |
 
-Supported actions include `list_windows`, `snapshot`, `find`, `click`, `type`, `press`, `scroll`, `focus`, `screenshot`, `toggle`, `expand`, and `collapse`.
+Supported actions: `list_windows`, `snapshot`, `find`, `click`, `type`, `press`, `scroll`, `focus`, `screenshot`, `toggle`, `expand`, and `collapse`.
 
 Example:
 
@@ -235,11 +287,11 @@ Example:
 Open Calculator, calculate 123 × 456, and read the result.
 ```
 
-The expected arithmetic result is `56088`; actual desktop interaction depends on a working accessibility backend and the target application being available.
+The expected arithmetic result is `56088`. Actual desktop interaction depends on a working accessibility backend and on the target application being available. If it does not work, see [Desktop automation is unavailable](#troubleshooting).
 
 ## Swarm mode
 
-Swarm mode can split a large goal into parallel or semi-independent tasks and coordinate the results.
+Swarm mode splits a large goal into parallel or semi-independent tasks and coordinates the results.
 
 ```mermaid
 flowchart TD
@@ -262,36 +314,39 @@ Example command inside AlphaCode:
 /swarm "Analyze this application from architecture, security, testing, and performance perspectives."
 ```
 
-Swarm mode is most useful when a task can be divided into work that does not require every agent to modify the same files at the same time.
+> [!NOTE]
+> Swarm mode works best when a task can be divided into work that does not require every agent to modify the same files at the same time.
 
 ## Sessions and memory
 
-Persistent sessions help preserve context across terminal restarts and support longer debugging, research, security-review, and refactoring workflows.
+Persistent sessions preserve context across terminal restarts and support longer debugging, research, security-review, and refactoring workflows.
 
 ```bash
-alphacode sessions list
-alphacode --resume
-alphacode --resume <id>
+alphacode sessions list      # List saved sessions
+alphacode --resume           # Resume the latest session
+alphacode --resume <id>      # Resume a specific session
 ```
 
-`alphacode --resume` resumes the latest session; pass a session ID to resume a specific one.
+Project memory supports continuity during longer workflows. Use `/memory` inside AlphaCode to manage or inspect it.
+
+<div align="right"><a href="#alphacode--open-source-rust-ai-coding-agent">Back to top</a></div>
 
 ## Models and providers
 
-AlphaCode is model-agnostic. Start with the built-in free AI lane, or connect a provider using the authentication method supported by that provider.
+AlphaCode is model-agnostic. Start with the built-in free AI lane, or connect a provider using the authentication method that provider supports.
 
 | Provider | Authentication or requirement | Notes |
 | --- | --- | --- |
-| Anthropic (Claude) | OAuth or API key | Provider support is integrated into AlphaCode |
+| Built-in free AI lane | Built in | Designed to work without an API key to get started |
+| Anthropic (Claude) | OAuth or API key | Provider support is built into AlphaCode |
 | OpenAI (GPT and o-series) | OAuth, API key, or supported sign-in flow | Reasoning, vision, and tools depend on the selected model and flow |
 | Google Gemini | OAuth or API key | |
-| GitHub Copilot | OAuth | Requires an eligible account/subscription |
+| GitHub Copilot | OAuth | Requires an eligible account or subscription |
 | Cursor | OAuth | Reuses a Cursor session where supported |
 | AWS Bedrock | AWS credentials | Build with `--features bedrock` when required |
 | Azure | Azure AD or API key | Build with `--features azure-auth` when required |
-| OpenRouter | API key | Provider offers access to a range of models |
+| OpenRouter | API key | Offers access to a range of models |
 | OpenAI-compatible endpoint | Endpoint-specific API key or configuration | Add with `alphacode provider add <name>` |
-| Built-in free AI lane | Built in | Designed to work without an API key to get started |
 
 ### Provider and model commands
 
@@ -309,13 +364,16 @@ In the terminal UI, press `Ctrl+T` to open the model/provider selector.
 
 ### Local OpenAI-compatible models
 
-For local servers such as LM Studio or Ollama, AlphaCode can use the context window reported by the server when available. For local models with up to 32K context, it uses a shorter task prompt and a bounded set of relevant tool schemas; simple greetings may not need tool schemas. This reduces prompt overhead but does not increase the model server's configured context window. Configure context length in the server and leave enough room for output.
+For local servers such as LM Studio or Ollama, AlphaCode uses the context window reported by the server when available. For local models with up to 32K context, it uses a shorter task prompt and a bounded set of relevant tool schemas; simple greetings may not need tool schemas at all.
+
+> [!NOTE]
+> This reduces prompt overhead but does **not** increase the model server's configured context window. Set the context length in the server itself, and leave enough room for output.
 
 ### Authentication notes
 
-Many providers use environment variables such as `ANTHROPIC_API_KEY` or `OPENAI_API_KEY`. You can also run `alphacode login` from your shell or `/login` inside AlphaCode.
+Many providers use environment variables such as `ANTHROPIC_API_KEY` or `OPENAI_API_KEY`. You can also run `alphacode login` from your shell, or `/login` inside AlphaCode.
 
-**OpenAI Codex OAuth:** AlphaCode uses a local callback at `http://localhost:1455/auth/callback` during sign-in. Ensure port `1455` is available; if the login flow times out, check whether another process is listening on that port and retry `/login`.
+**OpenAI Codex OAuth:** AlphaCode uses a local callback at `http://localhost:1455/auth/callback` during sign-in. Make sure port `1455` is free. If the login flow times out, check whether another process is listening on that port, then retry `/login`.
 
 See the [documentation](docs/) for provider-specific setup and troubleshooting.
 
@@ -339,7 +397,7 @@ Skills provide reusable, specialized workflows without changing the core agent. 
 
 ### Model Context Protocol (MCP)
 
-MCP support lets you connect external tools, services, and custom integrations. See the project documentation for the configuration required by each server.
+MCP support lets you connect external tools, services, and custom integrations. See the project documentation for the configuration each server requires.
 
 ## Security testing and bug bounty workflows
 
@@ -359,11 +417,12 @@ Trace this parameter through the application and determine whether it reaches a 
 Use the authorized test environment in Firefox to test input validation and document reproducible findings.
 ```
 
+> [!CAUTION]
 > **Authorization required:** Test only systems you own or are explicitly authorized to assess.
 
 ## Safety and reliability
 
-An agent that can change files, execute commands, and operate applications needs careful oversight. The project describes safeguards including:
+An agent that can change files, execute commands, and operate applications needs careful oversight. The project describes these safeguards:
 
 - Blocking certain destructive filesystem and device targets
 - Permission prompts for risky actions
@@ -374,7 +433,8 @@ An agent that can change files, execute commands, and operate applications needs
 - Input-state cleanup when operations fail
 - Treating browser and desktop content as potentially untrusted
 
-These safeguards reduce risk; they do not guarantee that every action is safe or correct. **Review important diffs before merging or deploying.** Use `/diff` to inspect changes.
+> [!WARNING]
+> These safeguards reduce risk; they do not guarantee that every action is safe or correct. **Review important diffs before merging or deploying.** Use `/diff` to inspect changes.
 
 ### Session resilience
 
@@ -391,9 +451,14 @@ For code-changing tasks, AlphaCode is instructed to follow these guardrails:
 
 The agent's instructions are not a substitute for independently reviewing the implementation and test results.
 
+<div align="right"><a href="#alphacode--open-source-rust-ai-coding-agent">Back to top</a></div>
+
 ## Benchmarks
 
-AlphaCode is written in Rust and is designed to keep runtime overhead modest. The values below are **historical measurements**, not a current independent benchmark or a guarantee of performance on every machine or workload.
+AlphaCode is written in Rust and designed to keep runtime overhead modest.
+
+> [!NOTE]
+> The values below are **historical measurements**, not a current independent benchmark or a guarantee of performance on every machine or workload.
 
 ### Memory usage: one active session
 
@@ -421,11 +486,20 @@ AlphaCode is written in Rust and is designed to keep runtime overhead modest. Th
 | Claude Code | 2,300.6 MB | 19.7× |
 | OpenCode | 3,237.2 MB | 27.7× |
 
-For reproducible comparisons, record the AlphaCode version or commit, OS, CPU, RAM, build profile, enabled features, concurrent session count, measurement method, warm/cold state, and exact workload. Compare tools under the same conditions.
+### Reproducing a comparison
+
+Record the following so results can be compared fairly, and compare tools under the same conditions:
+
+- AlphaCode version or commit
+- OS, CPU, and RAM
+- Build profile and enabled features
+- Number of concurrent sessions
+- Measurement method and warm/cold state
+- The exact workload
 
 ## Installation options
 
-The quick-start commands use the latest installer. This section documents optional installation flags and source builds. Inspect remote scripts before execution when your environment requires manual review.
+The quick-start commands use the latest installer. This section documents optional installation flags and source builds. Inspect remote scripts before running them if your environment requires manual review.
 
 ### Windows
 
@@ -433,30 +507,58 @@ The quick-start commands use the latest installer. This section documents option
 irm https://raw.githubusercontent.com/dragonked2/alphacode/main/scripts/install.ps1 | iex
 ```
 
-The installer detects CPU architecture, downloads a release, verifies its SHA-256 checksum, installs `alphacode.exe` under `%LOCALAPPDATA%\Programs\alphacode\bin\`, adds the folder to the current user's `Path`, and activates it in the current shell. Administrator rights are not required for the user-level install.
+The installer:
+
+- detects your CPU architecture and downloads a release;
+- verifies the release's SHA-256 checksum;
+- installs `alphacode.exe` under `%LOCALAPPDATA%\Programs\alphacode\bin\`;
+- adds that folder to the current user's `Path` and activates it in the current shell;
+- needs **no administrator rights** for the user-level install.
+
+<details>
+<summary><strong>How the Windows PATH change works</strong></summary>
+
+The installer writes the user-level `HKCU\Environment\Path` rather than the machine-wide path. It appends its entry, avoids adding duplicates on re-run, and broadcasts `WM_SETTINGCHANGE` so new terminals can pick up the change. Existing shell-only PATH entries are preserved.
+
+</details>
 
 Run AlphaCode from Windows Terminal or PowerShell. Do not double-click `alphacode.exe`; the temporary console may close when the process exits.
 
-The installer writes the user-level `HKCU\Environment\Path` rather than the machine-wide path, appends the entry, avoids adding duplicate entries on re-run, and broadcasts `WM_SETTINGCHANGE` so new terminals can pick up the change. Existing shell-only PATH entries are preserved.
+To pass installer parameters, load the script as a script block instead of piping directly to `iex`:
 
-To pass installer parameters, invoke the downloaded script as a script block rather than piping directly to `iex`:
+| Parameter | Purpose |
+| --- | --- |
+| `-Version vX.Y.Z` | Pin a release version |
+| `-FromSource` | Build from source instead of downloading a release |
+| `-PathDryRun` | Preview the PATH change without writing it |
+| `-NoPath` | Do not modify PATH |
+| `-Prefix <dir>` | Choose a custom installation prefix |
+
+<details open>
+<summary><strong>Windows examples with parameters</strong></summary>
 
 ```powershell
+$installer = [scriptblock]::Create((irm https://raw.githubusercontent.com/dragonked2/alphacode/main/scripts/install.ps1))
+
 # Pin a release version
-& ([scriptblock]::Create((irm https://raw.githubusercontent.com/dragonked2/alphacode/main/scripts/install.ps1))) -Version vX.Y.Z
+& $installer -Version vX.Y.Z
 
 # Build from source instead of downloading a release
-& ([scriptblock]::Create((irm https://raw.githubusercontent.com/dragonked2/alphacode/main/scripts/install.ps1))) -FromSource
+& $installer -FromSource
 
 # Preview the PATH change without writing it
-& ([scriptblock]::Create((irm https://raw.githubusercontent.com/dragonked2/alphacode/main/scripts/install.ps1))) -PathDryRun
+& $installer -PathDryRun
 
 # Do not modify PATH
-& ([scriptblock]::Create((irm https://raw.githubusercontent.com/dragonked2/alphacode/main/scripts/install.ps1))) -NoPath
+& $installer -NoPath
 
 # Choose a custom installation prefix
-& ([scriptblock]::Create((irm https://raw.githubusercontent.com/dragonked2/alphacode/main/scripts/install.ps1))) -Prefix "$env:LOCALAPPDATA\Programs\alphacode"
+& $installer -Prefix "$env:LOCALAPPDATA\Programs\alphacode"
 ```
+
+Use one parameter per run, or combine them in a single call, for example `& $installer -Version vX.Y.Z -NoPath`. Replace `vX.Y.Z` with a real release tag from the [releases page](https://github.com/dragonked2/alphacode/releases).
+
+</details>
 
 ### macOS and Linux
 
@@ -464,9 +566,17 @@ To pass installer parameters, invoke the downloaded script as a script block rat
 curl -fsSL https://raw.githubusercontent.com/dragonked2/alphacode/main/scripts/install.sh | bash
 ```
 
-The installer downloads a release, verifies its checksum, installs `alphacode` under `~/.local/bin`, and updates a supported shell profile so the command is available.
+The installer downloads a release, verifies its checksum, installs `alphacode` under `~/.local/bin`, and updates a supported shell profile so the command is available. It is documented as supporting bash, zsh, fish, nushell, csh, and ksh, and as safe to re-run without duplicating its profile entry.
 
-Optional arguments:
+| Option | Purpose |
+| --- | --- |
+| `--version vX.Y.Z` | Pin a release version |
+| `--no-path` | Do not modify PATH |
+| `--link` | Link into `/usr/local/bin` |
+| `--prefix <dir>` | Choose a custom installation prefix |
+
+<details open>
+<summary><strong>macOS / Linux examples with options</strong></summary>
 
 ```bash
 # Pin a release version
@@ -482,7 +592,7 @@ curl -fsSL https://raw.githubusercontent.com/dragonked2/alphacode/main/scripts/i
 curl -fsSL https://raw.githubusercontent.com/dragonked2/alphacode/main/scripts/install.sh | bash -s -- --prefix ~/.local
 ```
 
-The installer is documented as supporting bash, zsh, fish, nushell, csh, and ksh, and as safe to re-run without duplicating its profile entry.
+</details>
 
 ### Verify installation
 
@@ -491,7 +601,7 @@ alphacode --version
 alphacode doctor
 ```
 
-On Windows, you can check command resolution with:
+On Windows, you can also check command resolution with:
 
 ```powershell
 Get-Command alphacode
@@ -506,11 +616,15 @@ cargo build --release
 ./target/release/alphacode --version
 ```
 
-The project pins Rust edition 2024 in [`rust-toolchain.toml`](rust-toolchain.toml). A C toolchain is also required for the relevant platform. The default build omits some heavier optional stacks; enable them when needed:
+The project pins Rust edition 2024 in [`rust-toolchain.toml`](rust-toolchain.toml). A C toolchain for your platform is also required.
+
+The default build omits some heavier optional stacks. Enable them when you need them:
 
 ```bash
 cargo build --release --features bedrock,embeddings,pdf,renderer
 ```
+
+If you also need Azure AD authentication, add `azure-auth` to the feature list, for example `--features bedrock,azure-auth,embeddings,pdf,renderer`.
 
 ### Update
 
@@ -545,6 +659,8 @@ A health monitor records memory use, slow operations, error rates, and subsystem
 
 See [`docs/configuration.md`](docs/configuration.md) for the full reference.
 
+<div align="right"><a href="#alphacode--open-source-rust-ai-coding-agent">Back to top</a></div>
+
 ## Commands and shortcuts
 
 ### CLI commands
@@ -557,12 +673,16 @@ See [`docs/configuration.md`](docs/configuration.md) for the full reference.
 | `alphacode run "<task>"` | Run a task non-interactively |
 | `alphacode repl` | Start the simple REPL without the TUI |
 | `alphacode provider add <name>` | Add an OpenAI-compatible endpoint |
+| `alphacode provider list` | List configured providers |
+| `alphacode provider current` | Show the active provider and model |
+| `alphacode model list` | List available models |
+| `alphacode model use <model>` | Select a model |
 | `alphacode browser setup` | Configure the browser bridge |
 | `alphacode browser status` | Check browser connectivity |
 | `alphacode sessions list` | List saved sessions |
 | `alphacode --resume` | Resume the latest session |
-| `alphacode provider list` | List configured providers |
-| `alphacode model list` | List available models |
+| `alphacode --resume <id>` | Resume a specific session |
+| `alphacode --version` | Show the installed version |
 | `alphacode update` | Update AlphaCode |
 
 ### Slash commands
@@ -570,7 +690,9 @@ See [`docs/configuration.md`](docs/configuration.md) for the full reference.
 | Command | Purpose |
 | --- | --- |
 | `/help` | Show help |
+| `/login` | Sign in to a provider from inside AlphaCode |
 | `/agents` | Manage agents |
+| `/swarm "<goal>"` | Split a large goal across multiple agents |
 | `/compact` | Compact context |
 | `/memory` | Manage or inspect project memory |
 | `/skills` | Browse skills |
@@ -591,10 +713,12 @@ See [`docs/configuration.md`](docs/configuration.md) for the full reference.
 
 ## Troubleshooting
 
+Start with `alphacode doctor`. It catches most setup problems. Then find your symptom below.
+
 <details>
 <summary><strong><code>alphacode</code> is not found</strong></summary>
 
-Open a new terminal first so it can read the updated PATH. If AlphaCode is still not found, confirm the install location and PATH settings.
+Open a **new** terminal first so it can read the updated PATH. If AlphaCode is still not found, confirm the install location and PATH settings.
 
 **macOS / Linux (bash):**
 
@@ -608,6 +732,12 @@ source ~/.bashrc
 ```bash
 echo 'export PATH="$HOME/.local/bin:$PATH"' >> ~/.zshrc
 source ~/.zshrc
+```
+
+**fish:**
+
+```fish
+fish_add_path $HOME/.local/bin
 ```
 
 **Windows:** re-run the installer unless you used `-NoPath`, or add `%LOCALAPPDATA%\Programs\alphacode\bin` to your user PATH and open a new PowerShell window.
@@ -649,7 +779,10 @@ The demo asset is `alphacode-demo.svg`, not an MP4 video. Confirm that the SVG i
 
 </details>
 
-Still stuck? Run `alphacode doctor` and [open an issue](https://github.com/dragonked2/alphacode/issues) with reproducible steps and relevant logs. Remove secrets and tokens before sharing diagnostic output.
+Still stuck? Run `alphacode doctor` and [open an issue](https://github.com/dragonked2/alphacode/issues) with reproducible steps and relevant logs.
+
+> [!WARNING]
+> Remove secrets and tokens from diagnostic output before sharing it.
 
 ## Uninstall
 
@@ -669,11 +802,12 @@ curl -fsSL https://raw.githubusercontent.com/dragonked2/alphacode/main/scripts/u
 irm https://raw.githubusercontent.com/dragonked2/alphacode/main/scripts/uninstall.ps1 | iex
 ```
 
-By default, the uninstall scripts remove the installed executable while leaving configuration and saved sessions in place.
+By default, the uninstall scripts remove the installed executable and leave your configuration and saved sessions in place.
 
 ### Remove all local data
 
-> **Warning:** Purging is permanent. It may delete configuration, saved sessions, logs, and locally stored sign-in data. Back up anything you need before proceeding.
+> [!CAUTION]
+> Purging is **permanent**. It may delete configuration, saved sessions, logs, and locally stored sign-in data. Back up anything you need before proceeding.
 
 **macOS / Linux**
 
@@ -702,7 +836,7 @@ curl -fsSL https://raw.githubusercontent.com/dragonked2/alphacode/main/scripts/u
 | Sessions | `~/.local/share/alphacode/sessions/` | Application Support directory | `%LOCALAPPDATA%\alphacode\sessions\` |
 | Logs | `~/.local/share/alphacode/logs/` | Application Support directory | `%LOCALAPPDATA%\alphacode\logs\` |
 
-Remove only the binary to keep settings and sessions. Delete the data directories only if you intend to remove local state as well.
+Remove only the binary to keep your settings and sessions. Delete the data directories only if you intend to remove local state as well.
 
 **Linux**
 
@@ -732,11 +866,14 @@ If AlphaCode was installed with `cargo install --path .`, uninstall it with `car
 
 ### Additional cleanup
 
-- **PATH entry:** remove the AlphaCode entry from your shell profile or user PATH if you no longer need it. On Windows, use Environment Variables to avoid expanding `%USERPROFILE%`-style entries unintentionally.
+- **PATH entry:** remove the AlphaCode entry from your shell profile or user PATH if you no longer need it. On Windows, use the Environment Variables dialog to avoid expanding `%USERPROFILE%`-style entries unintentionally.
 - **Firefox extension:** open `about:addons` in Firefox, select *AlphaCode Browser Agent*, and choose **Remove**.
-- **Native messaging registration:** if you ran `alphacode browser setup`, remove the AlphaCode registration from the relevant Firefox native messaging location (Linux: `~/.mozilla/native-messaging-hosts/`; macOS: `~/Library/Application Support/Mozilla/NativeMessagingHosts/`; Windows: `HKCU\Software\Mozilla\NativeMessagingHosts`). Check the exact registration name first.
+- **Native messaging registration:** if you ran `alphacode browser setup`, remove the AlphaCode registration from the relevant Firefox native messaging location. Check the exact registration name first.
+  - Linux: `~/.mozilla/native-messaging-hosts/`
+  - macOS: `~/Library/Application Support/Mozilla/NativeMessagingHosts/`
+  - Windows: `HKCU\Software\Mozilla\NativeMessagingHosts`
 - **Credentials:** remove exported `*_API_KEY` variables and revoke provider API keys or OAuth grants you no longer need.
-- **Scheduled jobs:** remove any recurring tasks you created with `cron` or `schedule` before deleting local application data.
+- **Scheduled jobs:** remove any recurring tasks you created with `cron` or `schedule` **before** deleting local application data.
 
 ### Verify removal
 
@@ -751,6 +888,8 @@ Get-Command alphacode -ErrorAction SilentlyContinue
 ```
 
 If the shell still finds the command, open a new terminal or refresh the shell's command cache.
+
+<div align="right"><a href="#alphacode--open-source-rust-ai-coding-agent">Back to top</a></div>
 
 ## FAQ
 
@@ -792,7 +931,7 @@ It can use platform accessibility APIs on Windows, macOS, and Linux. Required pe
 <details>
 <summary><strong>Can I use Claude, GPT, Gemini, or local models?</strong></summary>
 
-AlphaCode supports multiple providers and OpenAI-compatible endpoints. The authentication method and model capabilities depend on your selected provider and model.
+AlphaCode supports multiple providers and OpenAI-compatible endpoints. The authentication method and model capabilities depend on your selected provider and model. See [Models and providers](#models-and-providers).
 
 </details>
 
@@ -848,7 +987,7 @@ Run `alphacode update`.
 
 ## Security reporting
 
-Report vulnerabilities privately using the instructions in [`SECURITY.md`](SECURITY.md). For issues specific to the Firefox extension, Mozilla's add-on reporting tools may also be appropriate.
+Report vulnerabilities **privately** using the instructions in [`SECURITY.md`](SECURITY.md). For issues specific to the Firefox extension, Mozilla's add-on reporting tools may also be appropriate.
 
 ## Contributing
 
