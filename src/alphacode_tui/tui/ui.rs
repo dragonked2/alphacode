@@ -3514,7 +3514,6 @@ fn draw_inner(frame: &mut Frame, app: &dyn TuiState) {
     let widget_bounds = messages_area;
     if app.info_widget_overlays_enabled()
         && !widget_data.is_empty()
-        && !show_donut
         && !swarm_page_active
     {
         if let Some(ref mut capture) = debug_capture {
