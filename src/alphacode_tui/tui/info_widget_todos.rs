@@ -444,7 +444,11 @@ fn gradient_color(t: f64) -> Color {
         (108.0, 230.0, 158.0),
         (98.0, 218.0, 208.0),
     ];
-    let t = if t.is_finite() { t.clamp(0.0, 1.0) } else { 0.0 };
+    let t = if t.is_finite() {
+        t.clamp(0.0, 1.0)
+    } else {
+        0.0
+    };
     let scaled = t * 3.0;
     let seg = (scaled.floor() as usize).min(2);
     let local = scaled - seg as f64;
@@ -646,11 +650,16 @@ fn push_todo_item_line(
     let fixed = opts.indent + icon_span.width();
     let reserved = |blocked_kept: bool, conf_kept: bool, marker_kept: bool| {
         fixed
-            + if blocked_kept { blocked_label.width() } else { 0 }
+            + if blocked_kept {
+                blocked_label.width()
+            } else {
+                0
+            }
             + if conf_kept { conf_cols } else { 0 }
             + if marker_kept { marker.width() } else { 0 }
     };
-    let fits = |b: bool, c: bool, m: bool| width.saturating_sub(reserved(b, c, m)) >= MIN_TITLE_COLS;
+    let fits =
+        |b: bool, c: bool, m: bool| width.saturating_sub(reserved(b, c, m)) >= MIN_TITLE_COLS;
 
     let (mut keep_blocked, mut keep_conf, mut keep_marker) = (true, show_conf, true);
     if !fits(keep_blocked, keep_conf, keep_marker) {
@@ -841,7 +850,9 @@ fn render_grouped_todo_lines(
     let opts = RowOpts {
         priority_marker: show_priority_marker,
         indent: 2,
-        flag_unscored: groups.iter().any(|(_, items)| any_scored(items.iter().copied())),
+        flag_unscored: groups
+            .iter()
+            .any(|(_, items)| any_scored(items.iter().copied())),
     };
     let mut lines: Vec<Line<'static>> = Vec::new();
     let mut shown = 0usize;
@@ -1054,7 +1065,10 @@ fn compact_summary_spans(
     let build = |show_total: bool, show_confidence: bool, show_loop: bool| {
         let mut spans: Vec<Span<'static>> = Vec::new();
         if show_total {
-            spans.push(Span::styled(format!("{} total", counts.total), style_muted()));
+            spans.push(Span::styled(
+                format!("{} total", counts.total),
+                style_muted(),
+            ));
             spans.push(separator());
         }
         spans.push(Span::styled(
@@ -1169,7 +1183,10 @@ mod tests {
     }
 
     fn line_text(line: &Line<'_>) -> String {
-        line.spans.iter().map(|span| span.content.as_ref()).collect()
+        line.spans
+            .iter()
+            .map(|span| span.content.as_ref())
+            .collect()
     }
 
     fn cols(line: &Line<'_>) -> usize {
@@ -1781,7 +1798,11 @@ mod tests {
         let refs: Vec<&crate::todo::TodoItem> = todos.iter().collect();
         let mut lines = Vec::new();
         push_group_header(&mut lines, "alpha", &refs, None, rect(60));
-        assert!(line_text(&lines[0]).contains("1/1"), "{}", line_text(&lines[0]));
+        assert!(
+            line_text(&lines[0]).contains("1/1"),
+            "{}",
+            line_text(&lines[0])
+        );
     }
 
     /// The header must fit the panel once there is room for its fixed part,
@@ -1831,8 +1852,14 @@ mod tests {
         assert_eq!(text(0.0, 4), "░░░░");
         assert_eq!(text(1.0, 4), "████");
         assert_eq!(text(0.5, 4), "██░░");
-        assert!(text(0.999, 10).contains('░') || text(0.999, 10).chars().any(|c| PARTIAL_BLOCKS.contains(&c)));
-        assert!(text(0.001, 10).starts_with('▏'), "a sliver of progress is visible");
+        assert!(
+            text(0.999, 10).contains('░')
+                || text(0.999, 10).chars().any(|c| PARTIAL_BLOCKS.contains(&c))
+        );
+        assert!(
+            text(0.001, 10).starts_with('▏'),
+            "a sliver of progress is visible"
+        );
         assert_eq!(text(f64::NAN, 4), "░░░░");
         assert_eq!(text(0.5, 0), "");
     }

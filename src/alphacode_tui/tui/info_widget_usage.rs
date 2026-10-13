@@ -152,7 +152,10 @@ pub(super) fn render_usage_lines(info: &UsageInfo, width: u16) -> Vec<Line<'stat
             Line::from(vec![
                 Span::raw("💰 "),
                 Span::styled(
-                    clip(&format_cost(f64::from(info.total_cost)), width.saturating_sub(3)),
+                    clip(
+                        &format_cost(f64::from(info.total_cost)),
+                        width.saturating_sub(3),
+                    ),
                     Style::default().fg(usage_label_color()).bold(),
                 ),
             ]),

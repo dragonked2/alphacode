@@ -394,9 +394,7 @@ impl<'a> Placer<'a> {
         if !available.contains(&kind) || prev.rect.height <= 2 {
             return;
         }
-        if self.anchored.contains(&kind)
-            || (self.overview_active && is_overview_mergeable(kind))
-        {
+        if self.anchored.contains(&kind) || (self.overview_active && is_overview_mergeable(kind)) {
             return;
         }
 
