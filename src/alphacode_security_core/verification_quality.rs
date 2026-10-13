@@ -1,6 +1,6 @@
 use serde::{Deserialize, Serialize};
 
-/// Multi-dimensional verification quality â€” replaces a single fake-precise
+/// Multi-dimensional verification quality — replaces a single fake-precise
 /// confidence number. The final verdict is derived, never fabricated.
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Default)]
 pub struct VerificationQuality {
@@ -862,7 +862,7 @@ impl FalsePositiveDefense {
     ///
     /// It also must have been actually tested. The previous version returned
     /// `self.refuted_by.is_empty()`, which meant a freshly-constructed
-    /// `FalsePositiveDefense` â€” the state before any negative test has run â€”
+    /// `FalsePositiveDefense` — the state before any negative test has run —
     /// read as maximally viable. The whole module is about a finding becoming
     /// stronger by *surviving* attempts to disprove it, so an untested finding
     /// has demonstrated nothing and must not pass as validated.
@@ -882,7 +882,7 @@ impl FalsePositiveDefense {
     /// Whether any negative hypothesis actively killed the finding.
     ///
     /// Separate from [`Self::is_still_viable`] so callers can distinguish
-    /// "disproven" from "never tested" â€” conflating the two reports a finding
+    /// "disproven" from "never tested" — conflating the two reports a finding
     /// as refuted when nobody has actually looked at it yet.
     pub fn is_refuted(&self) -> bool {
         !self.refuted_by.is_empty()

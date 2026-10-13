@@ -280,6 +280,32 @@ pub fn tokenize(command: &str) -> Vec<Token> {
                 }
             }
             '<' => flush!(),
+            // `#` at the start of a word opens a comment running to the end of
+            // the line; nothing inside it is a token. `foo#bar` keeps its `#`
+            // because `has_content` is already set, matching POSIX.
+            //
+            // Without this the apostrophe in an ordinary comment — `# Check if
+            // it's actually returning the page` — opened a quoted region that
+            // swallowed the rest of the command and threw every later quote out
+            // of sync. A quoted grep pattern was then split at its `>`, the
+            // fragments were flagged as truncating redirect targets (which are
+            // graded even for a read-only `grep`), and a harmless `grep -oP
+            // '<meta[^>]*og:title[^>]*>'` came out as a protected-path
+            // destruction. The desync also mis-stamps `was_quoted`, which the
+            // hidden-verb scan trusts to tell an executed `sh` from a quoted
+            // one.
+            //
+            // A dangling redirect flag is left alone rather than consumed:
+            // `cmd > #f` is malformed shell, and treating `#f` as the write
+            // target keeps it graded instead of dropping it.
+            '#' if !has_content && current.is_empty() && !pending_redirect => {
+                while let Some(&next) = chars.peek() {
+                    if next == '\n' {
+                        break;
+                    }
+                    chars.next();
+                }
+            }
             _ => {
                 has_content = true;
                 current.push(c);

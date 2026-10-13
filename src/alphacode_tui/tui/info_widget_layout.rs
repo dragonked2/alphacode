@@ -3,44 +3,72 @@ use super::info_widget::{
     is_overview_mergeable,
 };
 use ratatui::layout::Rect;
+use std::cmp::Reverse;
 use std::collections::HashSet;
 
-/// Minimum width needed to show the widget.
-const MIN_WIDGET_WIDTH: u16 = 24;
-/// Maximum width the widget can take.
-const MAX_WIDGET_WIDTH: u16 = 40;
-/// Minimum height needed to show the widget.
+/// Minimum width needed to show a widget.
+const MIN_WIDGET_WIDTH: u16 = 35;
+/// Maximum width a widget can take.
+const MAX_WIDGET_WIDTH: u16 = 65;
+/// Minimum height needed to show a widget.
 const MIN_WIDGET_HEIGHT: u16 = 5;
-/// How many consecutive frames a widget may stay hidden-in-place before its
-/// anchor is abandoned and Phase 2 is allowed to re-home it elsewhere.
-///
-/// Under the resident model a widget's rows are bound to transcript lines, so
-/// the content beneath it is normally invariant and hiding only happens when
-/// that content actively re-renders (streaming region, collapse/expand,
-/// markdown refresh). Residents wait that churn out rather than teleporting,
-/// so this is generous: it exists only as a backstop for content that
-/// permanently grew over the slot.
+/// Blank rows kept between two widgets stacked in the same pocket.
+const WIDGET_GAP: u16 = 1;
+/// Frames a widget may stay hidden-in-place before its anchor is abandoned and
+/// Phase 2 may re-home it. Residents are bound to transcript lines, so hiding
+/// only happens while the content beneath re-renders (streaming, collapse,
+/// markdown refresh). This is a backstop for content that permanently grew
+/// over the slot.
 const MAX_HIDDEN_FRAMES: u16 = 120;
+/// Frames a wider slot must be continuously available before a previously
+/// shrunken widget grows back toward its preferred width. Shrinking is
+/// immediate; growing is delayed so the left edge never jitters.
+const GROW_BACK_FRAMES: u16 = 45;
 
-/// Persistent memory of where a widget lives, so it can hold a fixed screen slot
-/// across frames (HUD-style) instead of being re-solved from scratch each frame.
+/// Persistent memory of where a widget lives. Widgets are *residents*: bound to
+/// a transcript line, they ride with their content while scrolling and while
+/// new lines append at the bottom.
 #[derive(Debug, Clone)]
 pub(crate) struct WidgetAnchor {
     pub placement: WidgetPlacement,
     /// Consecutive frames this anchor has been retained but not rendered.
     pub hidden_frames: u16,
-    /// Absolute transcript line the widget's top row is pinned to. Residents
-    /// always ride with this content line, so they stick to the same pocket of
-    /// negative space and scroll along with the text. When the view is pinned at
-    /// the bottom and new lines append, the resident drifts up with its content.
+    /// Absolute transcript line the widget's top row is pinned to.
     pub content_top: usize,
+    /// Widest width this widget has had since it was placed; the target for
+    /// grow-back after a transient squeeze.
+    pub preferred_width: u16,
+    /// Consecutive frames a wider-than-current slot has been available.
+    pub wider_frames: u16,
 }
 
-/// Result of a placement pass: what to render now, plus the anchor memory to feed
-/// back in next frame.
+impl WidgetAnchor {
+    fn fresh(placement: WidgetPlacement, content_top: usize) -> Self {
+        let preferred_width = placement.rect.width;
+        Self {
+            placement,
+            hidden_frames: 0,
+            content_top,
+            preferred_width,
+            wider_frames: 0,
+        }
+    }
+}
+
+/// Result of a placement pass: what to render now, plus the anchor memory to
+/// feed back in next frame.
 pub(crate) struct PlacementOutcome {
     pub visible: Vec<WidgetPlacement>,
     pub anchors: Vec<WidgetAnchor>,
+}
+
+impl PlacementOutcome {
+    fn empty() -> Self {
+        Self {
+            visible: Vec::new(),
+            anchors: Vec::new(),
+        }
+    }
 }
 
 /// Margin information for layout calculation.
@@ -52,22 +80,17 @@ pub struct Margins {
     pub left_widths: Vec<u16>,
     /// Whether we're in centered mode.
     pub centered: bool,
-    /// Look-ahead "reliable" free widths: per row, the width that stays free across
-    /// a small band of upcoming/recent scroll lines. When non-empty these gate where
-    /// *new* widgets may dock (Phase 2) so a freshly placed widget won't be covered
-    /// by a long line a frame later. Pinned widgets (Phase 1) still size themselves
-    /// to the instantaneous `right_widths`/`left_widths` for full coverage. Empty =
-    /// fall back to the instantaneous widths (no look-ahead).
+    /// Look-ahead "reliable" free widths: per row, the width that stays free
+    /// across a band of upcoming/recent scroll lines. Gates where *new* widgets
+    /// may dock (Phase 2). Pinned widgets (Phase 1) size to the instantaneous
+    /// widths. Empty = fall back to the instantaneous widths.
     pub right_reliable: Vec<u16>,
     pub left_reliable: Vec<u16>,
-    /// Absolute transcript line shown on the first visible row this frame. Lets the
-    /// placement engine translate a content-anchored widget by the scroll delta so
-    /// it rides the transcript instead of holding a fixed screen row.
+    /// Absolute transcript line shown on the first visible row this frame.
     pub scroll_top: usize,
 }
 
 impl Margins {
-    /// Reliable right-side widths for dock gating, falling back to instantaneous.
     fn right_dock_widths(&self) -> &[u16] {
         if self.right_reliable.is_empty() {
             &self.right_widths
@@ -75,7 +98,7 @@ impl Margins {
             &self.right_reliable
         }
     }
-    /// Reliable left-side widths for dock gating, falling back to instantaneous.
+
     fn left_dock_widths(&self) -> &[u16] {
         if self.left_reliable.is_empty() {
             &self.left_widths
@@ -83,40 +106,459 @@ impl Margins {
             &self.left_reliable
         }
     }
+
+    fn instant_widths(&self, side: Side) -> &[u16] {
+        match side {
+            Side::Right => &self.right_widths,
+            Side::Left => &self.left_widths,
+        }
+    }
 }
+
+// ---------------------------------------------------------------------------
+// Margin spaces and pockets
+// ---------------------------------------------------------------------------
 
 /// Available margin space on one side.
 #[derive(Debug, Clone)]
 struct MarginSpace {
     side: Side,
-    /// Free width for each row (index = row from top of messages area).
+    /// Free width per row (index = row from top of the messages area),
+    /// already truncated to the area height.
     widths: Vec<u16>,
-    /// X offset where this margin starts.
+    /// X offset where this margin starts (right edge for Right, left for Left).
     x_offset: u16,
 }
 
-/// Choose the per-row widths Phase 2 should dock against: prefer the look-ahead
-/// `reliable` profile, but if it admits no placeable region at all (e.g. dense long
-/// lines cover every candidate row) fall back to `instant` so we still show
-/// something. Returns an owned profile to store in the `MarginSpace`.
-fn dock_widths_with_fallback(reliable: &[u16], instant: &[u16]) -> Vec<u16> {
-    if reliable.is_empty() {
-        return instant.to_vec();
-    }
-    let reliable_has_dock =
-        !find_all_empty_rects(reliable, MIN_WIDGET_WIDTH, MIN_WIDGET_HEIGHT).is_empty();
-    if reliable_has_dock {
-        reliable.to_vec()
-    } else {
-        instant.to_vec()
+impl MarginSpace {
+    /// Phase 2 docks on the *reliable* widths so a new widget lands only where
+    /// space stays free for a few scroll lines. If that profile admits no
+    /// placeable region at all, fall back to the instantaneous widths so we
+    /// still show something. Both are truncated to the viewport first, so a
+    /// stale/oversized profile can never let a widget escape the messages area.
+    fn new(side: Side, reliable: &[u16], instant: &[u16], area: Rect) -> Self {
+        let h = area.height as usize;
+        let reliable = &reliable[..reliable.len().min(h)];
+        let instant = &instant[..instant.len().min(h)];
+        let widths = if !reliable.is_empty() && !find_candidate_rows(reliable).is_empty() {
+            reliable.to_vec()
+        } else {
+            instant.to_vec()
+        };
+        let x_offset = match side {
+            Side::Right => area.x.saturating_add(area.width),
+            Side::Left => area.x,
+        };
+        Self {
+            side,
+            widths,
+            x_offset,
+        }
     }
 }
 
-/// Anchor-aware placement. Widgets behave like a pinned HUD: each holds the exact
-/// screen slot recorded in its anchor for as long as that slot can show it, only
-/// shrinking (with hysteresis) or hiding-in-place when a wide line scrolls under
-/// it, and only re-homing via Phase 2 after the slot has been unusable for
-/// [`MAX_HIDDEN_FRAMES`]. This is what stops widgets from jumping while scrolling.
+/// A free rectangle in a margin, candidate for docking a new widget.
+#[derive(Debug, Clone, Copy)]
+struct Pocket {
+    side: Side,
+    top: u16,
+    height: u16,
+    width: u16,
+    x: u16,
+    margin_idx: usize,
+}
+
+impl Pocket {
+    /// Build a pocket over rows `[top, end)`, deriving width and x from the
+    /// actual margin profile. Returns `None` if the rows can't host a widget.
+    fn fit(
+        spaces: &[MarginSpace],
+        margin_idx: usize,
+        top: usize,
+        end: usize,
+        area_width: u16,
+    ) -> Option<Self> {
+        let space = spaces.get(margin_idx)?;
+        let end = end.min(space.widths.len());
+        if top >= end || end - top < MIN_WIDGET_HEIGHT as usize {
+            return None;
+        }
+        let width = space.widths[top..end]
+            .iter()
+            .copied()
+            .min()?
+            .min(MAX_WIDGET_WIDTH)
+            .min(area_width);
+        if width < MIN_WIDGET_WIDTH {
+            return None;
+        }
+        let x = match space.side {
+            Side::Right => space.x_offset.saturating_sub(width),
+            Side::Left => space.x_offset,
+        };
+        Some(Self {
+            side: space.side,
+            top: top as u16,
+            height: (end - top) as u16,
+            width,
+            x,
+            margin_idx,
+        })
+    }
+}
+
+fn push_unique(pockets: &mut Vec<Pocket>, p: Pocket) {
+    let dup = pockets.iter().any(|q| {
+        q.side == p.side && q.margin_idx == p.margin_idx && q.top == p.top && q.height == p.height
+    });
+    if !dup {
+        pockets.push(p);
+    }
+}
+
+fn build_pockets(spaces: &[MarginSpace], area_width: u16) -> Vec<Pocket> {
+    let mut pockets = Vec::new();
+    for (idx, space) in spaces.iter().enumerate() {
+        for (top, len) in find_candidate_rows(&space.widths) {
+            if let Some(p) = Pocket::fit(spaces, idx, top, top + len, area_width) {
+                push_unique(&mut pockets, p);
+            }
+        }
+    }
+    pockets
+}
+
+/// Carve rows `[start, end)` on `side` out of every pocket that overlaps them.
+/// Unlike a simple trim, a reservation in the middle of a pocket keeps *both*
+/// the part above and the part below, each re-fitted to its true free width.
+fn reserve_rows(
+    pockets: &mut Vec<Pocket>,
+    spaces: &[MarginSpace],
+    area_width: u16,
+    side: Side,
+    start: usize,
+    end: usize,
+) {
+    let mut next = Vec::with_capacity(pockets.len() + 1);
+    for p in pockets.drain(..) {
+        let p_start = p.top as usize;
+        let p_end = p_start + p.height as usize;
+        if p.side != side || start >= p_end || end <= p_start {
+            push_unique(&mut next, p);
+            continue;
+        }
+        if p_start < start {
+            if let Some(piece) = Pocket::fit(spaces, p.margin_idx, p_start, start, area_width) {
+                push_unique(&mut next, piece);
+            }
+        }
+        if end < p_end {
+            if let Some(piece) = Pocket::fit(spaces, p.margin_idx, end, p_end, area_width) {
+                push_unique(&mut next, piece);
+            }
+        }
+    }
+    *pockets = next;
+}
+
+/// Find candidate placement row ranges `(top, len)` in a free-width profile.
+///
+/// For every distinct width level, emits each maximal run of rows at least that
+/// wide (and at least `MIN_WIDGET_HEIGHT` tall). A ragged region therefore
+/// offers both its full-height narrow pocket and any wider, shorter sub-pocket,
+/// instead of collapsing everything to the single narrowest row.
+fn find_candidate_rows(free_widths: &[u16]) -> Vec<(usize, usize)> {
+    let capped: Vec<u16> = free_widths
+        .iter()
+        .map(|&w| w.min(MAX_WIDGET_WIDTH))
+        .collect();
+    let mut levels: Vec<u16> = capped
+        .iter()
+        .copied()
+        .filter(|&w| w >= MIN_WIDGET_WIDTH)
+        .collect();
+    levels.sort_unstable_by(|a, b| b.cmp(a));
+    levels.dedup();
+
+    let mut out: Vec<(usize, usize)> = Vec::new();
+    for level in levels {
+        let mut start: Option<usize> = None;
+        // `len` is the sentinel index that closes a trailing run.
+        for i in 0..=capped.len() {
+            let ok = capped.get(i).is_some_and(|&w| w >= level);
+            match (ok, start) {
+                (true, None) => start = Some(i),
+                (false, Some(s)) => {
+                    start = None;
+                    let len = i - s;
+                    if len >= MIN_WIDGET_HEIGHT as usize && !out.contains(&(s, len)) {
+                        out.push((s, len));
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+    out
+}
+
+/// Width policy for a held widget. Shrinks immediately to clear wide content;
+/// grows back toward `preferred` only after a wider slot has been available for
+/// `GROW_BACK_FRAMES` consecutive frames. Returns `(width, wider_frames)`.
+fn resolve_width(current: u16, preferred: u16, fit: u16, wider_frames: u16) -> (u16, u16) {
+    if fit < current {
+        (fit, 0)
+    } else if fit > current && current < preferred {
+        let frames = wider_frames.saturating_add(1);
+        if frames >= GROW_BACK_FRAMES {
+            (fit.min(preferred), 0)
+        } else {
+            (current, frames)
+        }
+    } else {
+        (current, 0)
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Placement engine
+// ---------------------------------------------------------------------------
+
+struct Placer<'a> {
+    area: Rect,
+    margins: &'a Margins,
+    spaces: Vec<MarginSpace>,
+    pockets: Vec<Pocket>,
+    placements: Vec<WidgetPlacement>,
+    anchors: Vec<WidgetAnchor>,
+    /// Widgets with a live anchor (visible or hidden-in-place); Phase 2 must
+    /// not re-home these.
+    anchored: HashSet<WidgetKind>,
+    /// Overview is shown *or* only transiently hidden: its mergeable widgets
+    /// (model, context, ...) stay suppressed so nothing pops in elsewhere.
+    overview_active: bool,
+}
+
+impl<'a> Placer<'a> {
+    fn new(area: Rect, margins: &'a Margins) -> Self {
+        let mut spaces = Vec::new();
+        if !margins.right_widths.is_empty() {
+            spaces.push(MarginSpace::new(
+                Side::Right,
+                margins.right_dock_widths(),
+                &margins.right_widths,
+                area,
+            ));
+        }
+        if margins.centered && !margins.left_widths.is_empty() {
+            spaces.push(MarginSpace::new(
+                Side::Left,
+                margins.left_dock_widths(),
+                &margins.left_widths,
+                area,
+            ));
+        }
+        let pockets = build_pockets(&spaces, area.width);
+        Self {
+            area,
+            margins,
+            spaces,
+            pockets,
+            placements: Vec::new(),
+            anchors: Vec::new(),
+            anchored: HashSet::new(),
+            overview_active: false,
+        }
+    }
+
+    fn reserve(&mut self, side: Side, start: usize, end: usize) {
+        reserve_rows(
+            &mut self.pockets,
+            &self.spaces,
+            self.area.width,
+            side,
+            start,
+            end,
+        );
+    }
+
+    /// Phase 1: hold an anchored widget on the transcript line it is bound to.
+    ///
+    /// Because the covered rows always map back to the same content lines, the
+    /// free-width profile under a resident is stable frame to frame. If its
+    /// line scrolled above the viewport (or below it after a resize/scroll-up)
+    /// the resident retires and Phase 2 may house a fresh instance.
+    fn hold(&mut self, available: &[WidgetKind], anchor: &WidgetAnchor) {
+        let prev = &anchor.placement;
+        let kind = prev.kind;
+        if !available.contains(&kind) || prev.rect.height <= 2 {
+            return;
+        }
+        if self.anchored.contains(&kind)
+            || (self.overview_active && is_overview_mergeable(kind))
+        {
+            return;
+        }
+
+        let Some(row_start) = anchor.content_top.checked_sub(self.margins.scroll_top) else {
+            return;
+        };
+        let row_end = row_start + prev.rect.height as usize;
+        let widths = self.margins.instant_widths(prev.side);
+        if row_end > widths.len() || row_end > self.area.height as usize {
+            return;
+        }
+        let target_y = self.area.y.saturating_add(row_start as u16);
+
+        let fit_width = widths[row_start..row_end]
+            .iter()
+            .copied()
+            .min()
+            .unwrap_or(0)
+            .min(MAX_WIDGET_WIDTH)
+            .min(self.area.width);
+
+        if fit_width < MIN_WIDGET_WIDTH {
+            // A wide line is under the slot: hide in place so the widget returns
+            // to the same spot, unless it has been hidden too long.
+            let hidden_frames = anchor.hidden_frames.saturating_add(1);
+            if hidden_frames <= MAX_HIDDEN_FRAMES {
+                self.anchored.insert(kind);
+                self.anchors.push(WidgetAnchor {
+                    placement: prev.clone(),
+                    hidden_frames,
+                    content_top: anchor.content_top,
+                    preferred_width: anchor.preferred_width,
+                    wider_frames: 0,
+                });
+                if kind == WidgetKind::Overview {
+                    self.overview_active = true;
+                }
+                // Keep Phase 2 out of the slot the widget will reclaim.
+                self.reserve(prev.side, row_start, row_end);
+            }
+            return;
+        }
+
+        let (width, wider_frames) = resolve_width(
+            prev.rect.width,
+            anchor.preferred_width,
+            fit_width,
+            anchor.wider_frames,
+        );
+        let x = match prev.side {
+            Side::Right => self
+                .area
+                .x
+                .saturating_add(self.area.width)
+                .saturating_sub(width),
+            Side::Left => self.area.x,
+        };
+        let placement = WidgetPlacement {
+            kind,
+            rect: Rect::new(x, target_y, width, prev.rect.height),
+            side: prev.side,
+        };
+        self.placements.push(placement.clone());
+        self.anchors.push(WidgetAnchor {
+            placement,
+            hidden_frames: 0,
+            content_top: anchor.content_top,
+            preferred_width: anchor.preferred_width.max(width),
+            wider_frames,
+        });
+        self.anchored.insert(kind);
+        if kind == WidgetKind::Overview {
+            self.overview_active = true;
+        }
+        self.reserve(prev.side, row_start, row_end);
+    }
+
+    /// Phase 2: place a widget that has no live anchor into the best pocket.
+    fn place_new(&mut self, data: &InfoWidgetData, kind: WidgetKind) {
+        if self.anchored.contains(&kind) || (self.overview_active && is_overview_mergeable(kind)) {
+            return;
+        }
+
+        let min_h = kind.min_height() + 2;
+        let preferred = kind.preferred_side();
+
+        // Score: preferred side first; then the most content shown; then the
+        // tightest fit (keeps big pockets free for later widgets); then width.
+        type Score = (bool, u16, Reverse<u16>, u16);
+        let mut best: Option<(usize, u16, Score)> = None;
+
+        for (idx, p) in self.pockets.iter().enumerate() {
+            if p.height < min_h || p.width < MIN_WIDGET_WIDTH {
+                continue;
+            }
+            // A pocket's nominal minimum can still be too small for the actual
+            // content; skip it rather than pick it and abandon the widget.
+            let h = calculate_widget_height(kind, data, p.width, p.height).min(p.height);
+            if h <= 2 {
+                continue;
+            }
+            let score: Score = (p.side == preferred, h, Reverse(p.height - h), p.width);
+            if best.as_ref().is_none_or(|(_, _, s)| score > *s) {
+                best = Some((idx, h, score));
+            }
+        }
+
+        let Some((idx, widget_height, _)) = best else {
+            return;
+        };
+        let pocket = self.pockets[idx];
+
+        // Seat at the *bottom* of the pocket for maximum runway to ride upward
+        // with the transcript before scrolling off the top.
+        let placed_top = pocket.top + (pocket.height - widget_height);
+        let placement = WidgetPlacement {
+            kind,
+            rect: Rect::new(
+                pocket.x,
+                self.area.y.saturating_add(placed_top),
+                pocket.width,
+                widget_height,
+            ),
+            side: pocket.side,
+        };
+        self.placements.push(placement.clone());
+        // Bind the widget to the transcript line under its top row.
+        self.anchors.push(WidgetAnchor::fresh(
+            placement,
+            self.margins.scroll_top + placed_top as usize,
+        ));
+        self.anchored.insert(kind);
+
+        // Claim the rows (plus a breathing gap above) in every overlapping pocket.
+        let start = placed_top.saturating_sub(WIDGET_GAP) as usize;
+        let end = placed_top as usize + widget_height as usize;
+        self.reserve(pocket.side, start, end);
+
+        if kind == WidgetKind::Overview {
+            self.overview_active = true;
+            // Overview supersedes any small widgets that survived Phase 1,
+            // otherwise the same info would be shown twice.
+            self.placements.retain(|p| !is_overview_mergeable(p.kind));
+            self.anchors
+                .retain(|a| !is_overview_mergeable(a.placement.kind));
+            self.anchored.retain(|k| !is_overview_mergeable(*k));
+        }
+    }
+
+    fn finish(self) -> PlacementOutcome {
+        PlacementOutcome {
+            visible: self.placements,
+            anchors: self.anchors,
+        }
+    }
+}
+
+/// Anchor-aware placement. Widgets behave like residents of the transcript:
+/// each holds the slot bound to its content line, shrinks immediately when a
+/// wide line scrolls under it, grows back with hysteresis, hides in place when
+/// the slot is unusable, and only re-homes via Phase 2 after being unusable for
+/// [`MAX_HIDDEN_FRAMES`] or after scrolling out of view.
 pub(crate) fn calculate_placements_anchored(
     messages_area: Rect,
     margins: &Margins,
@@ -125,438 +567,103 @@ pub(crate) fn calculate_placements_anchored(
     prev_anchors: &[WidgetAnchor],
 ) -> PlacementOutcome {
     if !enabled || messages_area.height == 0 || messages_area.width == 0 {
-        return PlacementOutcome {
-            visible: Vec::new(),
-            anchors: Vec::new(),
-        };
+        return PlacementOutcome::empty();
     }
-
     let available = data.available_widgets();
     if available.is_empty() {
-        return PlacementOutcome {
-            visible: Vec::new(),
-            anchors: Vec::new(),
-        };
+        return PlacementOutcome::empty();
     }
-    let mut margin_spaces: Vec<MarginSpace> = Vec::new();
-    if !margins.right_widths.is_empty() {
-        // Phase 2 docks on the *reliable* (look-ahead) widths so a newly placed
-        // widget lands only where space stays free for a few scroll lines. But if
-        // the reliable profile is so covered that it yields no dock at all (dense
-        // long lines), fall back to the instantaneous widths so we still show
-        // something rather than nothing. Phase 1 always sizes pinned widgets to the
-        // instantaneous widths for full coverage.
-        let mut dock =
-            dock_widths_with_fallback(margins.right_dock_widths(), &margins.right_widths);
-        // Never dock below the messages area: a margin profile longer than the
-        // area (caller bug or stale data) must not let a widget escape the
-        // viewport and draw over the input/status rows beneath it.
-        dock.truncate(messages_area.height as usize);
-        margin_spaces.push(MarginSpace {
+    let available: Vec<WidgetKind> = available.iter().copied().collect();
+
+    let mut placer = Placer::new(messages_area, margins);
+
+    // Phase 1: resolve Overview first so its mergeable widgets are known to be
+    // suppressed before they are considered.
+    let mut ordered: Vec<&WidgetAnchor> = prev_anchors.iter().collect();
+    ordered.sort_by_key(|a| a.placement.kind != WidgetKind::Overview);
+    for anchor in ordered {
+        placer.hold(&available, anchor);
+    }
+
+    // Phase 2: new widgets, Overview first so smaller widgets are not placed
+    // and then immediately retracted.
+    let mut order = available;
+    order.sort_by_key(|k| *k != WidgetKind::Overview);
+    for kind in order {
+        placer.place_new(data, kind);
+    }
+
+    placer.finish()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn right_space(widths: Vec<u16>) -> MarginSpace {
+        MarginSpace {
             side: Side::Right,
-            widths: dock,
-            x_offset: messages_area.x + messages_area.width,
-        });
-    }
-    if margins.centered && !margins.left_widths.is_empty() {
-        let mut dock = dock_widths_with_fallback(margins.left_dock_widths(), &margins.left_widths);
-        dock.truncate(messages_area.height as usize);
-        margin_spaces.push(MarginSpace {
-            side: Side::Left,
-            widths: dock,
-            x_offset: messages_area.x,
-        });
-    }
-
-    // Format: (side, top, height, width, x_offset, margin_index)
-    let mut all_rects: Vec<(Side, u16, u16, u16, u16, usize)> = Vec::new();
-    for (margin_idx, margin) in margin_spaces.iter().enumerate() {
-        let rects = find_all_empty_rects(&margin.widths, MIN_WIDGET_WIDTH, MIN_WIDGET_HEIGHT);
-        for (top, height, width) in rects {
-            // Clamp to the area width as well: a margin profile reporting more
-            // free width than the area is wide (caller bug) must not produce a
-            // rect that pokes out of the viewport and panics the renderer.
-            let clamped_width = width.min(MAX_WIDGET_WIDTH).min(messages_area.width);
-            let x = match margin.side {
-                Side::Right => margin.x_offset.saturating_sub(clamped_width),
-                Side::Left => margin.x_offset,
-            };
-            all_rects.push((margin.side, top, height, clamped_width, x, margin_idx));
+            widths,
+            x_offset: 100,
         }
     }
 
-    let mut placements: Vec<WidgetPlacement> = Vec::new();
-    // Anchors to carry into the next frame, keyed by widget kind.
-    let mut next_anchors: Vec<WidgetAnchor> = Vec::new();
-    let mut kept: HashSet<WidgetKind> = HashSet::new();
-    // Widgets whose anchor is still alive (visible or hidden-in-place) and which
-    // therefore must NOT be re-homed by Phase 2 this frame.
-    let mut anchored: HashSet<WidgetKind> = HashSet::new();
-    // Overview "merges" several smaller widgets (model, context, ...). Those
-    // mergeable widgets must be suppressed only when Overview is *actually shown*
-    // this frame, not merely requested. While Overview is hidden-in-place (its slot
-    // is temporarily covered by a wide line) the small widgets are NOT the right
-    // fallback either, because Overview will pop back; but if Overview never had a
-    // slot at all, the small widgets are the real content and must anchor normally.
-    // We process the Overview anchor first so this flag is known before the small
-    // widgets are considered.
-    let mut overview_active = false;
-
-    // Order anchors so Overview is resolved before any mergeable widget.
-    let mut ordered_anchors: Vec<&WidgetAnchor> = prev_anchors.iter().collect();
-    ordered_anchors.sort_by_key(|a| match a.placement.kind {
-        WidgetKind::Overview => 0,
-        _ => 1,
-    });
-
-    // Phase 1: hold each anchored widget in its exact recorded slot.
-    //
-    // The viewport's free-width profile churns line-by-line as ragged content
-    // scrolls under fixed screen rows. The old code bailed as soon as the content
-    // under a widget grew a few columns, which sent the widget to Phase 2 where it
-    // teleported into whatever the largest empty pocket happened to be that frame -
-    // the distracting jump. Instead, a placed widget now holds its exact screen
-    // slot as long as that slot can still show it at >= MIN_WIDGET_WIDTH, so it
-    // never moves for width reasons. Width only *shrinks* immediately when the slot
-    // narrows and *grows back* with hysteresis, so the left edge does not jitter.
-    for anchor in ordered_anchors {
-        let prev = &anchor.placement;
-        if !available.contains(&prev.kind) || prev.rect.height <= 2 {
-            continue;
-        }
-        if overview_active && is_overview_mergeable(prev.kind) {
-            continue;
-        }
-        if kept.contains(&prev.kind) || anchored.contains(&prev.kind) {
-            // Already handled (duplicate anchor for the same kind).
-            continue;
-        }
-
-        // Resolve which screen row the widget occupies this frame.
-        //
-        // Content-anchored (the user is scrolling): the widget is pinned to a
-        // transcript line (`anchor.content_top`) and rides with it, so it sticks to
-        // the same pocket of negative space and simply scrolls along with the text
-        // rather than churning against a fixed screen row. Because the rows it now
-        // covers map back to the *same* content lines, the free-width profile under
-        // it is invariant frame-to-frame, so its width is stable too. If its content
-        // line has scrolled above the viewport, drop the anchor and let Phase 2 home
-        // a fresh widget into the newly exposed space.
-        //
-        // Screen-anchored (pinned at the bottom / streaming): hold the exact screen
-        // row as before, and refresh `content_top` so a later switch into scrolling
-        // hands off seamlessly.
-        let height = prev.rect.height as usize;
-        // Resident model: every anchor is bound to a transcript line and rides
-        // with it, in both scrolling and pinned-at-bottom (streaming) modes. When
-        // new lines append while pinned, `scroll_top` advances and the widget
-        // drifts up with the content it belongs to instead of holding a screen
-        // row while text churns under it. If its content line has scrolled above
-        // the viewport the resident retires, and Phase 2 may house a fresh
-        // instance in newly settled space.
-        let (row_start, target_y, content_top) = {
-            if anchor.content_top < margins.scroll_top {
-                continue;
-            }
-            let row = anchor.content_top - margins.scroll_top;
-            (
-                row,
-                messages_area.y.saturating_add(row as u16),
-                anchor.content_top,
-            )
-        };
-        let row_end = row_start + height;
-        let widths = match prev.side {
-            Side::Right => &margins.right_widths,
-            Side::Left => &margins.left_widths,
-        };
-        if height == 0 || row_end > widths.len() || row_end > messages_area.height as usize {
-            continue;
-        }
-
-        // Widest the widget can be without overrunning the text on any of its rows.
-        let fit_width = widths[row_start..row_end]
-            .iter()
-            .copied()
-            .min()
-            .unwrap_or(0)
-            .min(MAX_WIDGET_WIDTH)
-            .min(messages_area.width);
-        let renderable = fit_width >= MIN_WIDGET_WIDTH;
-
-        // Width is monotonic non-increasing for the life of an anchor: it shrinks to
-        // clear newly-wide content but never grows back while pinned. Growing would
-        // move a right-anchored widget's left edge inward every time the margin
-        // breathed, which reads as horizontal jitter on ragged content. The widget
-        // settles to the narrowest width its slot ever required and then holds. It
-        // only widens again by re-homing (a fresh Phase 2 placement).
-        let kept_width = if !renderable {
-            prev.rect.width
-        } else {
-            fit_width.min(prev.rect.width)
-        };
-
-        if !renderable || kept_width < MIN_WIDGET_WIDTH {
-            // The slot can't show the widget this frame (a wide line scrolled under
-            // it). Keep the anchor and hide in place so it returns to the same spot
-            // when the wide line passes - unless it has been hidden too long, in
-            // which case we abandon the anchor and let Phase 2 re-home it.
-            let hidden_frames = anchor.hidden_frames.saturating_add(1);
-            if hidden_frames <= MAX_HIDDEN_FRAMES {
-                anchored.insert(prev.kind);
-                next_anchors.push(WidgetAnchor {
-                    placement: prev.clone(),
-                    hidden_frames,
-                    content_top,
-                });
-                // Overview will pop back into its slot, so keep suppressing its
-                // mergeable widgets while it is only transiently hidden.
-                if prev.kind == WidgetKind::Overview {
-                    overview_active = true;
-                }
-                // Reserve the hidden widget's rows so Phase 2 cannot drop another
-                // widget into the slot it will reclaim next frame; otherwise the
-                // returning widget would overlap whatever took its place.
-                reserve_rows(&mut all_rects, prev.side, row_start, row_end);
-            }
-            continue;
-        }
-
-        let kept_x = match prev.side {
-            Side::Right => messages_area
-                .x
-                .saturating_add(messages_area.width)
-                .saturating_sub(kept_width),
-            Side::Left => messages_area.x,
-        };
-        let placement = WidgetPlacement {
-            kind: prev.kind,
-            rect: Rect::new(kept_x, target_y, kept_width, prev.rect.height),
-            side: prev.side,
-        };
-        placements.push(placement.clone());
-        next_anchors.push(WidgetAnchor {
-            placement,
-            hidden_frames: 0,
-            content_top,
-        });
-        kept.insert(prev.kind);
-        anchored.insert(prev.kind);
-        if prev.kind == WidgetKind::Overview {
-            overview_active = true;
-        }
-
-        reserve_rows(&mut all_rects, prev.side, row_start, row_end);
+    #[test]
+    fn candidate_rows_single_run() {
+        let free = [0, 0, 40, 40, 40, 40, 40, 0];
+        assert_eq!(find_candidate_rows(&free), vec![(2, 5)]);
     }
 
-    // Phase 2: greedily place remaining widgets.
-    //
-    // `overview_active` already covers the case where Overview is shown OR only
-    // hidden-in-place; in both cases its mergeable widgets (model/context/...) are
-    // suppressed so they don't pop in at a *different* location while Overview is
-    // momentarily covered. `overview_placed` additionally covers a brand-new
-    // Overview placed within this very Phase 2 pass.
-    let mut overview_placed = overview_active;
-    for kind in available {
-        if kept.contains(&kind)
-            || anchored.contains(&kind)
-            || (overview_placed && is_overview_mergeable(kind))
-        {
-            continue;
-        }
-
-        let min_h = kind.min_height() + 2;
-        let preferred = kind.preferred_side();
-        let mut best_idx: Option<usize> = None;
-        let mut best_height = 0;
-        let mut best_score = i32::MIN;
-
-        for (idx, &(side, _top, height, width, _x, _margin_idx)) in all_rects.iter().enumerate() {
-            if height < min_h || width < MIN_WIDGET_WIDTH {
-                continue;
-            }
-
-            // A rectangle's nominal minimum can still be too small for the
-            // widget's actual content (especially the combined Session panel).
-            // Skip unusable pockets here instead of selecting one and silently
-            // abandoning the widget while a larger usable pocket exists.
-            let widget_height = calculate_widget_height(kind, data, width, height);
-            if widget_height <= 2 {
-                continue;
-            }
-
-            let mut score = -((height as i64 * width as i64) / 10) as i32;
-            if side == preferred {
-                score += 1000;
-            }
-            if score > best_score {
-                best_score = score;
-                best_idx = Some(idx);
-                best_height = widget_height;
-            }
-        }
-
-        let Some(idx) = best_idx else {
-            continue;
-        };
-
-        let (side, top, height, width, x, margin_idx) = all_rects[idx];
-        let widget_height = best_height;
-        // Seat the widget at the *bottom* of the pocket so it has the maximum
-        // runway to ride upward with the transcript before scrolling off the top -
-        // a widget born at the pocket's top row would fall off and re-home every
-        // frame (a constant recycle). The leftover free space is the region above.
-        let placed_top = top + height.saturating_sub(widget_height);
-
-        let placement = WidgetPlacement {
-            kind,
-            rect: Rect::new(x, messages_area.y + placed_top, width, widget_height),
-            side,
-        };
-        placements.push(placement.clone());
-        next_anchors.push(WidgetAnchor {
-            placement,
-            hidden_frames: 0,
-            // Bind this fresh widget to the transcript line currently under its top
-            // row, so the moment the user keeps scrolling it rides with the content.
-            content_top: margins.scroll_top + placed_top as usize,
-        });
-        if kind == WidgetKind::Overview {
-            overview_placed = true;
-        }
-
-        let remaining_height = height.saturating_sub(widget_height);
-        if remaining_height < MIN_WIDGET_HEIGHT {
-            all_rects[idx].2 = 0;
-            continue;
-        }
-
-        // The leftover pocket is the region above the bottom-seated widget.
-        let new_top = top;
-        all_rects[idx].1 = new_top;
-        all_rects[idx].2 = remaining_height;
-
-        let margin = &margin_spaces[margin_idx];
-        let new_end = (new_top as usize + remaining_height as usize).min(margin.widths.len());
-        if new_top as usize >= new_end {
-            all_rects[idx].2 = 0;
-            continue;
-        }
-
-        let actual_min_width = margin.widths[new_top as usize..new_end]
-            .iter()
-            .copied()
-            .min()
-            .unwrap_or(0);
-        let new_min_width = actual_min_width
-            .min(MAX_WIDGET_WIDTH)
-            .min(messages_area.width);
-        all_rects[idx].3 = new_min_width;
-        all_rects[idx].4 = match side {
-            Side::Right => margin.x_offset.saturating_sub(new_min_width),
-            Side::Left => margin.x_offset,
-        };
+    #[test]
+    fn candidate_rows_ragged_offers_wide_and_tall() {
+        let free = [60, 60, 60, 60, 60, 36, 36, 36, 36, 36];
+        let rows = find_candidate_rows(&free);
+        assert!(rows.contains(&(0, 5)), "wide sub-pocket missing: {rows:?}");
+        assert!(rows.contains(&(0, 10)), "full pocket missing: {rows:?}");
     }
 
-    PlacementOutcome {
-        visible: placements,
-        anchors: next_anchors,
+    #[test]
+    fn candidate_rows_too_short_or_narrow() {
+        assert!(find_candidate_rows(&[40, 40, 40]).is_empty());
+        assert!(find_candidate_rows(&[10; 20]).is_empty());
+        assert!(find_candidate_rows(&[]).is_empty());
     }
-}
 
-/// Carve the rows `[row_start, row_end)` on `side` out of the candidate empty
-/// rectangles so Phase 2 cannot place another widget into space already claimed by
-/// an anchored widget - whether that widget is visible this frame or only
-/// hidden-in-place. `all_rects` entries are `(side, top, height, width, x, margin)`.
-fn reserve_rows(
-    all_rects: &mut [(Side, u16, u16, u16, u16, usize)],
-    side: Side,
-    row_start: usize,
-    row_end: usize,
-) {
-    for rect in all_rects.iter_mut() {
-        if rect.2 == 0 || rect.0 != side {
-            continue;
+    #[test]
+    fn reserve_in_middle_keeps_both_halves() {
+        let spaces = vec![right_space(vec![50; 20])];
+        let mut pockets = vec![Pocket::fit(&spaces, 0, 0, 20, 100).unwrap()];
+        reserve_rows(&mut pockets, &spaces, 100, Side::Right, 8, 12);
+        let mut spans: Vec<(u16, u16)> = pockets.iter().map(|p| (p.top, p.height)).collect();
+        spans.sort();
+        assert_eq!(spans, vec![(0, 8), (12, 8)]);
+    }
+
+    #[test]
+    fn reserve_ignores_other_side_and_drops_small_remnants() {
+        let spaces = vec![right_space(vec![50; 8])];
+        let mut pockets = vec![Pocket::fit(&spaces, 0, 0, 8, 100).unwrap()];
+        reserve_rows(&mut pockets, &spaces, 100, Side::Left, 0, 8);
+        assert_eq!(pockets.len(), 1);
+        reserve_rows(&mut pockets, &spaces, 100, Side::Right, 2, 8);
+        assert!(pockets.is_empty(), "2-row remnant should be dropped");
+    }
+
+    #[test]
+    fn width_shrinks_immediately_and_grows_back_slowly() {
+        assert_eq!(resolve_width(60, 60, 40, 7), (40, 0));
+        let mut w = (40, 0);
+        for _ in 0..GROW_BACK_FRAMES - 1 {
+            w = resolve_width(w.0, 60, 55, w.1);
+            assert_eq!(w.0, 40);
         }
-        let rect_start = rect.1 as usize;
-        let rect_end = rect_start + rect.2 as usize;
-        if row_start >= rect_end || row_end <= rect_start {
-            continue;
-        }
-
-        if row_start <= rect_start && row_end >= rect_end {
-            // Fully covered: remove the rect.
-            rect.2 = 0;
-        } else if row_start <= rect_start {
-            // Covered from the top: push the top down past the reserved rows.
-            let trim = (row_end - rect_start) as u16;
-            rect.1 += trim;
-            rect.2 = rect.2.saturating_sub(trim);
-        } else {
-            // Covered from the bottom (or middle): keep only the top portion.
-            rect.2 = (row_start - rect_start) as u16;
-        }
-    }
-}
-
-/// Find all valid empty rectangles in the margin.
-/// Returns a list of `(top_row, height, width)`.
-fn find_all_empty_rects(
-    free_widths: &[u16],
-    min_width: u16,
-    min_height: u16,
-) -> Vec<(u16, u16, u16)> {
-    let mut rects: Vec<(u16, u16, u16)> = Vec::new();
-    if free_widths.is_empty() {
-        return rects;
+        w = resolve_width(w.0, 60, 55, w.1);
+        assert_eq!(w, (55, 0));
     }
 
-    let mut region_start: Option<usize> = None;
-    for (i, &width) in free_widths.iter().enumerate() {
-        if width >= min_width {
-            if region_start.is_none() {
-                region_start = Some(i);
-            }
-        } else if let Some(start) = region_start {
-            add_region_rects(&mut rects, free_widths, start, i, min_width, min_height);
-            region_start = None;
-        }
-    }
-
-    if let Some(start) = region_start {
-        add_region_rects(
-            &mut rects,
-            free_widths,
-            start,
-            free_widths.len(),
-            min_width,
-            min_height,
-        );
-    }
-
-    rects
-}
-
-fn add_region_rects(
-    rects: &mut Vec<(u16, u16, u16)>,
-    free_widths: &[u16],
-    start: usize,
-    end: usize,
-    min_width: u16,
-    min_height: u16,
-) {
-    let region_height = end - start;
-    if region_height < min_height as usize {
-        return;
-    }
-
-    let min_w = free_widths[start..end]
-        .iter()
-        .copied()
-        .min()
-        .unwrap_or(0)
-        .min(MAX_WIDGET_WIDTH);
-    if min_w >= min_width {
-        rects.push((start as u16, region_height as u16, min_w));
+    #[test]
+    fn width_never_exceeds_preferred_and_resets_streak() {
+        assert_eq!(resolve_width(60, 60, 65, 10), (60, 0));
+        assert_eq!(resolve_width(40, 50, 40, 20), (40, 0));
     }
 }

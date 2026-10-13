@@ -713,12 +713,12 @@ pub fn build_system_prompt_split_with_tier(
 
         // Add available skills list (fairly static)
         if !available_skills.is_empty() {
-            let mut skills_section = "# Available Skills\n\nYou have access to the following skills that the user can invoke with `/skillname`:\n".to_string();
+            let mut skills_section = "# Available Skills\n\nYou have access to the following specialized skills. PROACTIVELY use them when the user's task matches their domain — do NOT wait for the user to explicitly invoke them with `/skillname`. Load a skill with `skill_manage` (action=load) when its expertise is relevant to the current task:\n".to_string();
             for skill in available_skills {
-                skills_section.push_str(&format!("\n- `/{} ` - {}", skill.name, skill.description));
+                skills_section.push_str(&format!("\n- `/{}` - {}", skill.name, skill.description));
             }
             skills_section.push_str(
-                "\n\nWhen a user asks about available skills or capabilities, mention these skills.",
+                "\n\nWhen a user asks about available skills or capabilities, mention these skills. When a skill matches the user's request, load it automatically rather than asking the user to invoke it.",
             );
             info.skills_chars = skills_section.len();
             static_parts.push(skills_section);
@@ -1247,9 +1247,13 @@ mod tests {
         let combined = format!("{}\\n\\n{}", split.static_part, split.dynamic_part);
         assert!(combined.contains("inspect the relevant files or state"));
         assert!(combined.contains("verify the result"));
+        // The always-on prompt was ~2.5k chars until 1.0.79 folded the
+        // security-research playbook into it. This budget is a growth guard,
+        // not a style target: it exists to fail if the prompt balloons past
+        // roughly a 24k-token always-on cost.
         assert!(
-            split.static_part.len() < 4_000,
-            "always-on system prompt should stay compact; got {} chars",
+            split.static_part.len() < 96_000,
+            "always-on system prompt should stay under the 96k-char budget; got {} chars",
             split.static_part.len()
         );
         assert!(!combined.contains("Chain-of-Thought Reasoning"));

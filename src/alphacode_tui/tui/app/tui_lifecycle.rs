@@ -186,14 +186,14 @@ impl App {
         self.status_detail = Some("offline; waiting for network before retry".to_string());
 
         let content = format!(
-            "ðŸ“¡ Network appears offline - waiting to retry automatically. {} - {}",
+            "📡 Network appears offline - waiting to retry automatically. {} - {}",
             plan.listener_summary,
             reason.trim().trim_end_matches('.')
         );
         if let Some(idx) = self.display_messages.iter().rposition(|message| {
             message.role == "system"
                 && (message.title.as_deref() == Some("Connection")
-                    || message.content.starts_with("ðŸ“¡ Network appears offline"))
+                    || message.content.starts_with("📡 Network appears offline"))
         }) {
             self.replace_display_message_title_and_content(
                 idx,
@@ -253,13 +253,13 @@ impl App {
             Ok((retry_attempts, backoff_secs, retry_at)) => {
                 self.rate_limit_reset = Some(retry_at);
                 let content = format!(
-                    "âš¡ Connection lost - retrying (attempt {}/{}, in {}s) - {}",
+                    "⚡ Connection lost - retrying (attempt {}/{}, in {}s) - {}",
                     retry_attempts,
                     max_attempts,
                     backoff_secs,
                     reason
                         .trim()
-                        .trim_start_matches("âš¡ ")
+                        .trim_start_matches("⚡ ")
                         .trim_start_matches("Connection lost")
                         .trim_start_matches('(')
                         .trim_end_matches('.')
@@ -270,8 +270,8 @@ impl App {
                         && (message.title.as_deref() == Some("Connection")
                             || message
                                 .content
-                                .starts_with("âš¡ Server reload in progress - waiting for handoff")
-                            || message.content.starts_with("âš¡ Connection lost"))
+                                .starts_with("⚡ Server reload in progress - waiting for handoff")
+                            || message.content.starts_with("⚡ Connection lost"))
                 }) {
                     self.replace_display_message_title_and_content(
                         idx,
@@ -346,7 +346,7 @@ impl App {
         crate::telemetry::record_auth_failed_reason(&provider, "session", reason.label());
 
         self.push_display_message(DisplayMessage::error(format!(
-            "ðŸ›‘ Stopped automatic retries: {failures} consecutive credential/auth failures. \
+            "🛑 Stopped automatic retries: {failures} consecutive credential/auth failures. \
              The current login or API key for {provider} is not working, so resending the same \
              request cannot succeed.{} Run /login to re-authenticate (or /model to switch to a \
              working route), then send again.",

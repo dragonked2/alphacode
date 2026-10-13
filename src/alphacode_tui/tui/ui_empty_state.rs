@@ -7,7 +7,7 @@
 
 use crate::alphacode_tui::tui::brand_ux::BrandTheme;
 use crate::alphacode_tui::tui::color_support::rgb;
-use ratatui::layout::Alignment;
+use ratatui::layout::{Alignment, Rect};
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 
@@ -136,12 +136,38 @@ pub fn empty_conversation() -> Vec<Line<'static>> {
     }
     lines.push(Line::from(key_spans).alignment(Alignment::Center));
 
-    // Decorative bottom divider
+    // Decorative bottom divider — gradient separator with modern polish
     lines.push(Line::from(""));
     lines.push(gradient_line(48).alignment(Alignment::Center));
     lines.push(Line::from(""));
 
     lines
+}
+
+/// Modern empty-state card with glass-effect surface treatment.
+/// Renders inside `area` with a subtle tinted background and accent edge.
+pub fn render_modern_empty_state(
+    frame: &mut ratatui::Frame,
+    area: Rect,
+    lines: Vec<Line<'static>>,
+) {
+    use ratatui::widgets::{Block, Borders, Widget};
+    let accent = BrandTheme::accent();
+    let bg_tint = crate::alphacode_tui::tui::color_support::rgb(16, 18, 26);
+
+    // Glass surface: subtle tinted background + accent left edge
+    crate::alphacode_tui::tui::ui_polish::glass_surface(frame, area, accent, bg_tint);
+
+    // Render the content lines centered inside the area
+    let inner = Block::default()
+        .borders(Borders::NONE)
+        .padding(ratatui::widgets::Padding::new(2, 4, 2, 4));
+    let inner_area = inner.inner(area);
+    Widget::render(
+        ratatui::widgets::Paragraph::new(lines),
+        inner_area,
+        frame.buffer_mut(),
+    );
 }
 
 /// Empty state when a search returns no results.

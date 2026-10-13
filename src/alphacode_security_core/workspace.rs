@@ -564,19 +564,25 @@ mod tests {
         let dir = tempfile::Builder::new().tempdir().expect("temp dir");
         let ws = Workspace::open(dir.path()).expect("open");
         ws.write_verified("present.txt", "data").expect("write");
-        // Make the *directory* unreadable so `exists()` passes (we own the
-        // path) but the open fails.
-        std::fs::set_permissions(dir.path(), PermissionsExt::from_mode(0o700)).unwrap();
         if nix_shim_is_root() {
+            // Running as root bypasses permissions; skip rather than lie.
             return;
         }
+        // Make the *file* unreadable, not the directory: `exists()` needs only
+        // search permission on the parent, so the existence check still passes
+        // while the open below fails. (Chmodding the directory cannot produce
+        // that split — an unreadable directory still lets a caller open a file
+        // it can name, and an unsearchable one makes `exists()` fail too.)
+        let present = ws.root().join("present.txt");
+        std::fs::set_permissions(&present, PermissionsExt::from_mode(0o000)).unwrap();
         // exists() check by the harness happens before op(); here read fails
         // with permission denied, which is its own category. The
         // InconsistentRead path is exercised by NotFound-after-exists, which
         // needs a race; the permission category is the realistic one.
         let err = ws.read_verified("present.txt").expect_err("unreadable");
         assert_eq!(err.kind, FsErrorKind::PermissionDenied, "{err}");
-        std::fs::set_permissions(dir.path(), PermissionsExt::from_mode(0o700)).unwrap();
+        // Restore so the tempdir cleanup does not trip over the mode.
+        let _ = std::fs::set_permissions(&present, PermissionsExt::from_mode(0o644));
     }
 
     #[test]

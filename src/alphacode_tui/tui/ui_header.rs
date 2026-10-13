@@ -1,6 +1,8 @@
 use super::box_utils::render_double_rounded_box;
 use super::changelog::get_unseen_changelog_entries;
-use super::{TuiState, dim_color, header_name_color, shorten_model_name};
+use super::{
+    TuiState, border_color, dim_color, header_name_color, muted_text_color, shorten_model_name,
+};
 #[cfg(test)]
 use super::{semver, warning_color};
 #[cfg(test)]
@@ -958,7 +960,7 @@ fn build_brand_line(
 /// Includes a subtle breathing animation for a living, polished look.
 fn build_gradient_separator(width: usize) -> Line<'static> {
     let gradient = brand_gradient();
-    let total_chars = width.min(120);
+    let total_chars = width;
     let mut colors: Vec<Color> = Vec::with_capacity(total_chars);
     for i in 0..total_chars {
         let hue_t = i as f32 / total_chars as f32;
@@ -1051,7 +1053,7 @@ fn build_model_line(
             &mut len,
             fit_width,
             format!("{} \u{00b7} ", provider_label),
-            Style::default().fg(rgb(78, 88, 115)),
+            Style::default().fg(dim_color()),
         );
     }
 
@@ -1095,7 +1097,7 @@ fn build_model_line(
             &mut len,
             fit_width,
             format!(" \u{2192} {}", upstream),
-            Style::default().fg(rgb(78, 88, 115)),
+            Style::default().fg(dim_color()),
         );
     }
 
@@ -1113,11 +1115,19 @@ fn build_model_line(
                 fit_width,
                 format!(" {}", display_conn),
                 Style::default()
-                    .fg(rgb(60, 75, 110))
+                    .fg(dim_color())
                     .add_modifier(Modifier::ITALIC),
             );
         }
     }
+
+    // The session facts (context usage, token totals, queue depth and provider
+    // billing) deliberately do NOT live on this row. They used to render here
+    // as a consolidated strip, which duplicated the right-hand fact stack and
+    // stole the rows that stack probes for free space: with the header strip
+    // present the stack could not find a collision-free block and rendered
+    // nothing at all. The facts now live in a reserved right-hand column, so the
+    // header keeps model identity, connection and the `/model` hint only.
 
     if !model_is_placeholder {
         push_if_fits(
@@ -1125,7 +1135,7 @@ fn build_model_line(
             &mut len,
             fit_width,
             " \u{00b7} ".to_string(),
-            Style::default().fg(rgb(52, 58, 75)),
+            Style::default().fg(border_color()),
         );
         push_if_fits(
             &mut spans,
@@ -1133,7 +1143,7 @@ fn build_model_line(
             fit_width,
             "/model to switch".to_string(),
             Style::default()
-                .fg(rgb(65, 72, 95))
+                .fg(muted_text_color())
                 .add_modifier(Modifier::ITALIC),
         );
     }
@@ -1153,6 +1163,13 @@ fn build_persistent_header_with_auth(
     let w = width as usize;
     let fit_width = w.saturating_sub(4);
 
+    // The ALPHACODE wordmark costs six rows. Hiding it once the transcript has
+    // content was tried and reverted: it did not recover the missing transcript
+    // rows it was meant to free, and because the banner vanished the instant the
+    // first message landed it produced an 8-row mass reflow with a -3 column
+    // shift (see smoothness_benchmark_simulated_streaming_turn_stays_within_budget,
+    // which went from passing to `mass_reflow_events: 1`). Trading a stable
+    // layout for rows nobody could see was a bad deal.
     let banner = build_alpha_banner(w);
     let banner_rendered = !banner.is_empty();
     let mut lines: Vec<Line> = banner;
@@ -1329,7 +1346,7 @@ pub(super) fn build_updates_box_lines(width: u16, max_lines: usize) -> Vec<Line<
         "Updates",
         content,
         w.saturating_sub(2),
-        Style::default().fg(rgb(60, 75, 110)),
+        Style::default().fg(border_color()),
         Style::default().fg(BrandTheme::accent()).bold(),
     )
     .into_iter()
@@ -1487,6 +1504,20 @@ mod tests {
             !line.spans.is_empty(),
             "gradient separator should produce output"
         );
+    }
+
+    /// The separator used to stop at 120 columns, leaving a dead gap on wide
+    /// terminals that read as a rendering glitch rather than a divider.
+    #[test]
+    fn gradient_separator_spans_the_full_header_width() {
+        for width in [40usize, 80, 120, 200, 320] {
+            let line = build_gradient_separator(width);
+            assert_eq!(
+                line.width(),
+                width,
+                "separator must reach the right edge at width {width}"
+            );
+        }
     }
 
     #[test]

@@ -587,6 +587,23 @@ impl Agent {
                             });
                             break;
                         }
+                        // Same auto-continue rule as the in-stream error arm
+                        // below: a transport drop mid-response with partial
+                        // content on the wire commits the partial first so the
+                        // retry resumes instead of stalling the turn.
+                        if Self::is_transient_provider_error(&err_str)
+                            && (!text_content.is_empty()
+                                || !reasoning_content.is_empty()
+                                || !tool_calls.is_empty())
+                        {
+                            self.commit_partial_stream_for_continuation(
+                                &mut text_content,
+                                &mut reasoning_content,
+                                &mut tool_calls,
+                                &provider_name,
+                                store_reasoning_content,
+                            );
+                        }
                         if text_content.is_empty()
                             && reasoning_content.is_empty()
                             && tool_calls.is_empty()
@@ -1065,6 +1082,26 @@ impl Agent {
                             &message,
                             retry_after_secs,
                         );
+                        // A mid-stream failure with partial content already
+                        // on the wire (the free-gateway "could not complete the
+                        // streamed response" case) used to stall the turn and
+                        // wait for the user to type "continue" by hand. Commit
+                        // the partial output first so the automatic retry
+                        // resumes exactly where the stream died instead of
+                        // restarting - or stalling.
+                        if Self::is_transient_provider_error(&recovery_error)
+                            && (!text_content.is_empty()
+                                || !reasoning_content.is_empty()
+                                || !tool_calls.is_empty())
+                        {
+                            self.commit_partial_stream_for_continuation(
+                                &mut text_content,
+                                &mut reasoning_content,
+                                &mut tool_calls,
+                                &provider_name,
+                                store_reasoning_content,
+                            );
+                        }
                         if text_content.is_empty()
                             && reasoning_content.is_empty()
                             && tool_calls.is_empty()

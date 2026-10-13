@@ -927,14 +927,32 @@ mod tests {
         child.save().expect("save child session");
 
         let visible = user_root_session_presence();
-        assert_eq!(
-            visible
-                .iter()
-                .map(|presence| presence.session_id.as_str())
-                .collect::<Vec<_>>(),
-            vec!["session_fox_root"]
-        );
-        assert_eq!(counts_for_presence(&visible).total, 1);
+        // Scope the assertion to the three sessions this test registered.
+        //
+        // `user_root_session_presence()` scans the process-global active-pid
+        // registry, and that registry is keyed by `ALPHACODE_HOME`, which is
+        // process-global too. Any other test that registers a session while
+        // this test holds the env lock lands its marker in this test's scoped
+        // home, so an exact-match assertion is a race against the rest of the
+        // suite rather than a statement about the filter under test. The
+        // contract being checked is "of the fixture sessions, only the
+        // user-root one is reported", and that is what this asserts.
+        const FIXTURE: [&str; 3] = [
+            "session_fox_root",
+            "session_owl_debug",
+            "session_bear_child",
+        ];
+        let from_fixture: Vec<&str> = visible
+            .iter()
+            .map(|presence| presence.session_id.as_str())
+            .filter(|id| FIXTURE.contains(id))
+            .collect();
+        assert_eq!(from_fixture, vec!["session_fox_root"]);
+        let fixture_presence: Vec<SessionPresence> = visible
+            .into_iter()
+            .filter(|presence| FIXTURE.contains(&presence.session_id.as_str()))
+            .collect();
+        assert_eq!(counts_for_presence(&fixture_presence).total, 1);
 
         root.mark_closed();
         debug.mark_closed();

@@ -7,11 +7,71 @@ use ratatui::widgets::{Block, Borders, Paragraph};
 pub const MAX_CENTERED_CONTENT_WIDTH: usize = 96;
 
 pub fn clear_area(frame: &mut Frame, area: Rect) {
-    for x in area.left()..area.right() {
-        for y in area.top()..area.bottom() {
-            frame.buffer_mut()[(x, y)].reset();
+    let buffer = frame.buffer_mut();
+    for y in area.top()..area.bottom() {
+        for x in area.left()..area.right() {
+            buffer[(x, y)].reset();
         }
     }
+}
+
+/// Fill an area with a background color without touching existing symbols.
+/// Used to give panels a subtle tinted background that reads as a distinct
+/// surface without overwhelming the content.
+pub fn fill_background(frame: &mut Frame, area: Rect, color: Color) {
+    let buffer = frame.buffer_mut();
+    for y in area.top()..area.bottom() {
+        for x in area.left()..area.right() {
+            let cell = &mut buffer[(x, y)];
+            if cell.symbol() == " " || cell.symbol().is_empty() {
+                cell.set_bg(color);
+            }
+        }
+    }
+}
+
+/// Draw a thin gradient separator line across the full width of `area`.
+/// The gradient fades from `color` at the left to dim at the right, giving
+/// a subtle visual separation between sections without a hard border.
+pub fn draw_gradient_separator(frame: &mut Frame, area: Rect, color: Color) {
+    if area.width == 0 || area.height == 0 {
+        return;
+    }
+    let buffer = frame.buffer_mut();
+    let steps = area.width as usize;
+    for (i, x) in (area.left()..area.right()).enumerate() {
+        let t = i as f32 / steps.max(1) as f32;
+        let cell = &mut buffer[(x, area.y)];
+        let blended = blend_color(color, Color::Reset, t);
+        cell.set_symbol("─");
+        cell.set_fg(blended);
+    }
+}
+
+/// Blend two colors by `t` (0.0 = `from`, 1.0 = `to`). Used for gradient
+/// separators and subtle visual transitions.
+pub fn blend_color(from: Color, to: Color, t: f32) -> Color {
+    let t = t.clamp(0.0, 1.0);
+    match (from, to) {
+        (Color::Rgb(r1, g1, b1), Color::Rgb(r2, g2, b2)) => {
+            let r = (r1 as f32 + (r2 as f32 - r1 as f32) * t) as u8;
+            let g = (g1 as f32 + (g2 as f32 - g1 as f32) * t) as u8;
+            let b = (b1 as f32 + (b2 as f32 - b1 as f32) * t) as u8;
+            Color::Rgb(r, g, b)
+        }
+        _ => from,
+    }
+}
+
+/// Draw a content frame with a subtle background tint and optional border.
+/// This is the modern replacement for bare `Block::default()` panels — it
+/// gives every content area a consistent, polished surface treatment.
+pub fn draw_content_frame(frame: &mut Frame, area: Rect, border_color: Color, bg_color: Color) {
+    fill_background(frame, area, bg_color);
+    let block = Block::default()
+        .borders(Borders::NONE)
+        .border_style(Style::default().fg(border_color));
+    frame.render_widget(block, area);
 }
 
 pub fn left_aligned_content_inset(width: u16, centered: bool) -> u16 {

@@ -511,20 +511,187 @@ function Get-AlphacodeInstalledVersion {
 # Getting the binary: release download or source build
 # =============================================================================
 
+# A progress bar is only legible on a console. When output is redirected (CI,
+# `| Tee-Object`, a captured log) the carriage-return bar would smear hundreds
+# of half-written lines into the file, so it is skipped outright.
+function Test-AlphacodeConsole {
+  [CmdletBinding()]
+  param()
+  try { return -not [Console]::IsOutputRedirected } catch { return $false }
+}
+
+function Format-AlphacodeByteSize {
+  [CmdletBinding()]
+  param([long]$Bytes)
+  if ($Bytes -ge 1GB) { return ('{0:N1} GB' -f ($Bytes / 1GB)) }
+  if ($Bytes -ge 1MB) { return ('{0:N1} MB' -f ($Bytes / 1MB)) }
+  if ($Bytes -ge 1KB) { return ('{0:N0} KB' -f ($Bytes / 1KB)) }
+  return "$Bytes B"
+}
+
+# One updating row: [=====---------------]  31%  6.8 MB/21.8 MB  312 KB/s  eta 00:49
+function Write-AlphacodeProgressLine {
+  [CmdletBinding()]
+  param([long]$Received, [long]$Total, [double]$Rate, [switch]$Done)
+
+  if (-not (Test-AlphacodeConsole)) { return }
+
+  $barWidth = 24
+  if ($Total -gt 0) {
+    $pct = [int][Math]::Min(100, [Math]::Max(0, ($Received * 100) / $Total))
+    $bar = ('=' * [int](($pct * $barWidth) / 100)).PadRight($barWidth)
+  } else {
+    # No Content-Length: an indeterminate travelling marker, not a fake bar.
+    $pct = -1
+    $pos = [int](($Received / 8192) % $barWidth)
+    $bar = (' ' * $pos) + '*' + (' ' * ($barWidth - $pos - 1))
+  }
+
+  $have  = Format-AlphacodeByteSize $Received
+  $size  = if ($Total -gt 0) { Format-AlphacodeByteSize $Total } else { '?' }
+  $speed = if ($Rate -gt 0)   { Format-AlphacodeByteSize ([long]$Rate) } else { '?' }
+  $eta   = if ($Total -gt 0 -and $Rate -gt 0) {
+             $s = [long][Math]::Max(0, ($Total - $Received) / $Rate)
+             '{0:d2}:{1:d2}' -f ([int][Math]::Floor($s / 60)), ($s % 60)
+           } else { '--:--' }
+  $pctText = if ($pct -ge 0) { '{0,3}% ' -f $pct } else { '  ? ' }
+
+  $line = '[' + $bar + '] ' + $pctText + $have + '/' + $size + '  ' + $speed + '/s  eta ' + $eta
+  # Padded to a fixed width so a shorter frame erases the tail of the last one.
+  Write-Host ("`r" + $line.PadRight(80)) -NoNewline
+  if ($Done) { Write-Host '' }
+}
+
+# Stream a URL to disk 64 KB at a time, redrawing the bar as the bytes land.
+#
+# `Invoke-WebRequest -OutFile` cannot do this, and that is why the installer
+# used to show nothing at all while downloading. On Windows PowerShell 5.1 it
+# buffers the whole response in memory and writes the file only after the
+# transfer completes, so a 20 MB release asset sits invisible until it is
+# nearly done and then appears at once. Streaming costs far less memory, shows
+# real progress, and (because the body is copied in bulk instead of being
+# rendered chunk by chunk through the host) is also faster on 5.1.
+#
+# Returns the HTTP status code so the caller can tell a 404 (never worth
+# retrying) from a transient failure.
+function Invoke-AlphacodeStreamingDownload {
+  [CmdletBinding()]
+  param(
+    [Parameter(Mandatory)][string]$Uri,
+    [Parameter(Mandatory)][string]$OutFile,
+    [switch]$Resume
+  )
+
+  # TLS 1.2 is required by github.com and is not in the default protocol set
+  # on Windows PowerShell 5.1, where the request would otherwise fail outright.
+  try {
+    [System.Net.ServicePointManager]::SecurityProtocol = `
+      [System.Net.ServicePointManager]::SecurityProtocol -bor [System.Net.SecurityProtocolType]::Tls12
+  } catch { }
+
+  $offset = 0L
+  if ($Resume -and (Test-Path -LiteralPath $OutFile)) {
+    $offset = (Get-Item -LiteralPath $OutFile).Length
+  }
+
+  $request = [System.Net.WebRequest]::Create($Uri)
+  $request.Method            = 'GET'
+  $request.AllowAutoRedirect = $true
+  $request.UserAgent         = 'alphacode-installer'
+  $request.Timeout           = 60000   # connect + response headers
+  # A read that blocks this long means the link died rather than slowed down.
+  # Without it a half-open socket stalls the installer forever.
+  $request.ReadWriteTimeout  = 90000
+  if ($offset -gt 0) { $request.AddRange($offset) }
+
+  $response = $null
+  $stream   = $null
+  $file     = $null
+  try {
+    try {
+      $response = $request.GetResponse()
+    } catch [System.Net.WebException] {
+      # GetResponse throws for 4xx/5xx; the status still tells the caller
+      # whether retrying can help.
+      if ($_.Exception.Response) { return [int]$_.Exception.Response.StatusCode }
+      throw
+    }
+
+    $status = [int]$response.StatusCode
+    # A server that ignores the Range header answers 200 with the whole file.
+    # Appending that to the partial would corrupt it, so start over instead.
+    $append = ($offset -gt 0 -and $status -eq 206)
+    if (-not $append) { $offset = 0L }
+
+    $total = $offset
+    if ($response.ContentLength -ge 0) { $total += $response.ContentLength }
+
+    $stream = $response.GetResponseStream()
+    $mode   = if ($append) { [System.IO.FileMode]::Append } else { [System.IO.FileMode]::Create }
+    $file   = [System.IO.File]::Open($OutFile, $mode, [System.IO.FileAccess]::Write, [System.IO.FileShare]::None)
+    $buffer = New-Object byte[] 65536
+
+    $received = $offset
+    $start    = Get-Date
+    $render   = [datetime]::MinValue
+    while ($true) {
+      $read = $stream.Read($buffer, 0, $buffer.Length)
+      if ($read -le 0) { break }
+      $file.Write($buffer, 0, $read)
+      $received += $read
+      $now = Get-Date
+      # Capped at ~10 fps: redrawing on every 64 KB chunk makes the host call
+      # itself the bottleneck on a fast connection.
+      if (($now - $render).TotalMilliseconds -ge 100) {
+        $rate = ($received - $offset) / [Math]::Max(0.1, ($now - $start).TotalSeconds)
+        Write-AlphacodeProgressLine -Received $received -Total $total -Rate $rate
+        $render = $now
+      }
+    }
+    $rate = ($received - $offset) / [Math]::Max(0.1, ((Get-Date) - $start).TotalSeconds)
+    Write-AlphacodeProgressLine -Received $received -Total $total -Rate $rate -Done
+    return $status
+  } finally {
+    if ($file)     { $file.Dispose() }
+    if ($stream)   { $stream.Dispose() }
+    if ($response) { $response.Close() }
+  }
+}
+
+# Fetch a release asset, retrying and RESUMING rather than restarting.
+#
+# On a slow or flaky link this is the difference between a two-minute update
+# and twenty: an asset that dies at 90% continues from there instead of
+# beginning again. Resume is only ever attempted against the same URL inside
+# one call, so bytes pulled for one candidate asset can never be appended to
+# another.
 function Invoke-AlphacodeDownload {
   [CmdletBinding()]
   param([string]$Uri, [string]$OutFile, [int]$Attempts = 3)
 
+  # Leftovers from a previous candidate URL must never be resumed into this
+  # one; only retries *within* this call continue a partial file.
+  Remove-Item -LiteralPath $OutFile -Force -ErrorAction SilentlyContinue
+
   $lastError = $null
+  $status    = 0
   for ($i = 1; $i -le $Attempts; $i++) {
     try {
-      Invoke-WebRequest -Uri $Uri -OutFile $OutFile -UseBasicParsing -ErrorAction Stop
+      $status = Invoke-AlphacodeStreamingDownload -Uri $Uri -OutFile $OutFile -Resume:($i -gt 1)
+      if ($status -eq 404) {
+        throw [System.InvalidOperationException]::new('server returned HTTP 404 (no such asset in this release)')
+      }
+      if ($status -ge 400) {
+        throw [System.InvalidOperationException]::new("server returned HTTP $status")
+      }
+      if (-not (Test-Path -LiteralPath $OutFile) -or (Get-Item -LiteralPath $OutFile).Length -le 0) {
+        throw [System.InvalidOperationException]::new('the transfer produced no data')
+      }
       return
     } catch {
       $lastError = $_
-      # A 404 will not fix itself; do not waste time retrying it.
-      $status = $null
-      try { $status = [int]$_.Exception.Response.StatusCode } catch { }
+      # A 404 will not fix itself; do not spend the remaining attempts on it.
+      # $status survives into the catch, unlike the exception raised above.
       if ($status -eq 404) { break }
       if ($i -lt $Attempts) { Start-Sleep -Seconds (2 * $i) }
     }
@@ -759,7 +926,10 @@ function Install-AlphacodeFiles {
 function Invoke-AlphacodeInstall {
   $ErrorActionPreference = 'Stop'
   # Windows PowerShell 5.1 renders a progress bar for every download chunk,
-  # which makes Invoke-WebRequest many times slower.
+  # which makes Invoke-WebRequest many times slower. The release asset is no
+  # longer fetched with it -- Invoke-AlphacodeStreamingDownload streams it
+  # straight to disk with a bar of its own -- so this only silences the small
+  # checksum and API fetches, where the rendering cost is pure overhead.
   $ProgressPreference = 'SilentlyContinue'
 
   if (-not (Test-AlphacodeWindows)) {

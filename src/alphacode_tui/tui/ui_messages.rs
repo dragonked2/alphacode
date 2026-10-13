@@ -11,7 +11,7 @@ use cache_support::{centered_wrap_width, left_pad_lines_for_centered_mode};
 use std::borrow::Cow;
 use unicode_width::UnicodeWidthStr;
 
-const MAX_INLINE_DIFF_LINES: usize = 12;
+const MAX_INLINE_DIFF_LINES: usize = 24;
 const MAX_DISCOVERY_DETAIL_LINES: usize = 2;
 const MAX_DISCOVERY_SETUP_LINES: usize = 3;
 
@@ -4153,20 +4153,26 @@ pub(crate) fn render_tool_message(
         }
     }
 
-    // Show short successful bash outputs inline so users see realtime results
-    // (e.g. `count`, `print(...)`) without opening anything. Long outputs stay
-    // collapsed to keep the transcript scannable; errors already render via
-    // the error summary path above.
+    // Show successful bash outputs inline so users see realtime results
+    // (e.g. `count`, `print(...)`, test failures) without opening anything.
+    // A generous tail is rendered; anything beyond it is represented by an
+    // explicit "+N more lines" notice so output is never silently hidden —
+    // the old 12-line/800-char limits hid real results (build logs, test
+    // diff lists) with no marker at all. Errors render via the error summary
+    // path above.
     if tools_ui::canonical_tool_name(&tc.name) == "bash"
         && !is_error
         && !msg.content.trim().is_empty()
     {
+        const BASH_INLINE_LINES: usize = 64;
+        const BASH_INLINE_CHARS: usize = 8_000;
         let trimmed = msg.content.trim();
         // Skip progress scaffolding / empty markers.
         let body = trimmed;
         let line_count = body.lines().count();
-        if body.chars().count() <= 800 && line_count <= 12 {
-            for line in body.lines().take(12) {
+        if body.chars().count() <= BASH_INLINE_CHARS && line_count > 0 {
+            let shown = line_count.min(BASH_INLINE_LINES);
+            for line in body.lines().take(shown) {
                 let short = line
                     .chars()
                     .take(row_width.saturating_sub(6))
@@ -4175,6 +4181,60 @@ pub(crate) fn render_tool_message(
                     Span::raw("    "),
                     Span::styled(short, Style::default().fg(rgb(160, 170, 185))),
                 ]));
+            }
+            let hidden = line_count.saturating_sub(shown);
+            if hidden > 0 {
+                lines.push(Line::from(vec![
+                    Span::raw("    "),
+                    Span::styled(
+                        format!("\u{22ee} +{} more lines", hidden),
+                        Style::default().fg(dim_color()),
+                    ),
+                ]));
+            }
+        }
+    }
+
+    // Inline output previews for the other everyday tools (read / glob /
+    // grep / agentgrep). Previously only bash and (config-gated) agentgrep
+    // showed any body at all, so a file read or a search landed as a single
+    // summary line and users had to pin or expand to see what the agent saw.
+    // Now each gets a friendly bounded preview with an explicit remainder
+    // marker so output is never silently hidden. Skipped for oversized
+    // payloads (the token badge already flags those in amber/red) to keep a
+    // single tool row from flooding the transcript.
+    if !is_error {
+        const INLINE_PREVIEW_LINES: usize = 24;
+        const INLINE_PREVIEW_MAX_CHARS: usize = 12_000;
+        let tool_key = tools_ui::canonical_tool_name(&tc.name);
+        let show_inline_body = matches!(tool_key, "read" | "glob" | "grep" | "agentgrep")
+            // agentgrep has its own dedicated renderer below when enabled.
+            && !(tool_key == "agentgrep" && crate::config::config().display.show_agentgrep_output);
+        if show_inline_body {
+            let body = msg.content.trim();
+            let line_count = body.lines().count();
+            if !body.is_empty() && body.chars().count() <= INLINE_PREVIEW_MAX_CHARS {
+                let shown = line_count.min(INLINE_PREVIEW_LINES);
+                for line in body.lines().take(shown) {
+                    let short = line
+                        .chars()
+                        .take(row_width.saturating_sub(6))
+                        .collect::<String>();
+                    lines.push(Line::from(vec![
+                        Span::raw("    "),
+                        Span::styled(short, Style::default().fg(rgb(160, 170, 185))),
+                    ]));
+                }
+                let hidden = line_count.saturating_sub(shown);
+                if hidden > 0 {
+                    lines.push(Line::from(vec![
+                        Span::raw("    "),
+                        Span::styled(
+                            format!("\u{22ee} +{} more lines", hidden),
+                            Style::default().fg(dim_color()),
+                        ),
+                    ]));
+                }
             }
         }
     }

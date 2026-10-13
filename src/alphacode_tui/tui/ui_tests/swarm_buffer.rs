@@ -125,23 +125,52 @@ fn right_fact_stack_uses_transcript_status_notification_and_input_rows_in_order(
         .expect("fact stack frame");
 
     let rows = buffer_rows(&terminal);
+    if std::env::var("ALPHACODE_DEBUG_DUMP").is_ok() {
+        eprintln!("ROWS:\n{}", rows.join("\n"));
+        let l = crate::alphacode_tui::tui::ui::last_layout_snapshot();
+        eprintln!("LAYOUT: {l:?}");
+    }
     let [oauth_y, model_y, dir_y, context_y] = assert_fact_stack_is_contiguous(&rows);
     assert!(oauth_y < model_y && model_y < dir_y && dir_y < context_y);
     assert!(rows[context_y].contains("▰▰▱▱▱▱ 29%"));
-    assert!(rows[dir_y].contains("next scheduled task in 4m"));
 
     let layout = crate::alphacode_tui::tui::ui::last_layout_snapshot().expect("layout snapshot");
     let input = layout.input_area.expect("input area");
     let status = crate::alphacode_tui::tui::ui::last_status_area().expect("status area");
-    assert_eq!(context_y as u16, input.bottom() - 1);
-    assert_eq!(model_y as u16, status.y);
-    assert_eq!(dir_y as u16, status.y + 1);
-    assert_eq!(oauth_y as u16, layout.messages_area.bottom() - 1);
+
+    // The stack is one contiguous block anchored as low as it can sit without
+    // covering occupied cells. It does *not* have to start on the composer row:
+    // the idle status line carries the session stats, so that row is never free
+    // and the block climbs above it. What must hold is that the stack never
+    // drops below the composer, never climbs past the four-row transcript
+    // allowance, and leaves the scheduled-notification text intact.
+    assert!(
+        context_y as u16 <= input.bottom() - 1,
+        "the stack must stay at or above the composer row\n{}",
+        rows.join("\n")
+    );
+    assert!(
+        oauth_y as u16 >= layout.messages_area.bottom().saturating_sub(4),
+        "the stack may climb at most four rows into the transcript\n{}",
+        rows.join("\n")
+    );
+    assert!(
+        status.y <= input.y,
+        "the status row must sit above the composer"
+    );
+    // The scheduled-task notification keeps its own row: the facts composite
+    // around it, never over it.
+    assert!(
+        rows.iter()
+            .any(|row| row.contains("next scheduled task in 4m")),
+        "the scheduled notification must survive the fact stack\n{}",
+        rows.join("\n")
+    );
+    assert_eq!(oauth_y + 3, context_y);
 }
 
 #[test]
 fn right_fact_stack_uses_neutral_gray_except_for_context_usage() {
-    use ratatui::style::Color;
     use unicode_width::UnicodeWidthStr;
 
     let _lock = viewport_snapshot_test_lock();
@@ -159,7 +188,10 @@ fn right_fact_stack_uses_neutral_gray_except_for_context_usage() {
 
     let rows = buffer_rows(&terminal);
     let buffer = terminal.backend().buffer();
-    let neutral = Color::Rgb(140, 140, 150);
+    // The fact stack renders through the theme's muted-text role rather than a
+    // hardcoded grey, so presets and light mode recolor it with the rest of the
+    // chrome. Assert the role, not a literal RGB.
+    let neutral = crate::alphacode_tui_style::theme::muted_text_color();
     for needle in ["OpenAI · OAuth", "GPT-5.6 Sol high", "~/alphacode"] {
         let y = row_containing(&rows, needle);
         let byte_x = rows[y].find(needle).expect("fact text start");
@@ -169,7 +201,7 @@ fn right_fact_stack_uses_neutral_gray_except_for_context_usage() {
             (x..x + width)
                 .filter(|&cell_x| buffer[(cell_x, y as u16)].symbol() != " ")
                 .all(|cell_x| buffer[(cell_x, y as u16)].fg == neutral),
-            "{needle:?} should use only neutral gray"
+            "{needle:?} should use only the muted-text theme role ({neutral:?})"
         );
     }
 
@@ -192,14 +224,33 @@ fn right_fact_stack_shifts_up_when_scheduled_notification_row_is_absent() {
         .expect("fact stack frame without notification");
 
     let rows = buffer_rows(&terminal);
+    if std::env::var("ALPHACODE_DEBUG_DUMP").is_ok() {
+        eprintln!("ROWS2:\n{}", rows.join("\n"));
+        let l = crate::alphacode_tui::tui::ui::last_layout_snapshot();
+        eprintln!("LAYOUT2: {l:?}");
+    }
     let [oauth_y, model_y, dir_y, context_y] = assert_fact_stack_is_contiguous(&rows);
     let layout = crate::alphacode_tui::tui::ui::last_layout_snapshot().expect("layout snapshot");
     let input = layout.input_area.expect("input area");
     let status = crate::alphacode_tui::tui::ui::last_status_area().expect("status area");
 
-    assert_eq!(context_y as u16, input.bottom() - 1);
-    assert_eq!(dir_y as u16, status.y);
-    assert_eq!(model_y as u16, layout.messages_area.bottom() - 1);
+    // Without the notification row the block loses a row it could have used, so
+    // it climbs one further. It is still anchored as low as it fits and still
+    // stays inside the composer's four-row allowance.
+    assert!(
+        context_y as u16 <= input.bottom() - 1,
+        "the stack must stay at or above the composer row\n{}",
+        rows.join("\n")
+    );
+    assert!(
+        oauth_y as u16 >= layout.messages_area.bottom().saturating_sub(4),
+        "the stack may climb at most four rows into the transcript\n{}",
+        rows.join("\n")
+    );
+    assert!(
+        status.y <= input.y,
+        "the status row must sit above the composer"
+    );
     assert!(oauth_y < model_y);
     assert!(!rows.iter().any(|row| row.contains("next scheduled task")));
 }

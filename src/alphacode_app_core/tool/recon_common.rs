@@ -45,7 +45,7 @@ pub const MAX_OUTPUT_BYTES: usize = 2 * 1024 * 1024;
 
 /// Hard per-stream process capture limit. Parsing retains only a small fraction
 /// of this, but allowing some headroom avoids rejecting ordinary large scans.
-const MAX_CAPTURE_BYTES: usize = 16 * 1024 * 1024;
+const MAX_CAPTURE_BYTES: usize = 64 * 1024 * 1024;
 
 /// Add Alphacode identification to scanners that accept repeated `-H` request
 /// headers. Preserve an explicitly supplied User-Agent.

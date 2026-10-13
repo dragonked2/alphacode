@@ -17,6 +17,11 @@ pub fn file_link_color() -> Color {
 pub fn dim_color() -> Color {
     crate::palette::role_color(crate::palette::Role::Dim)
 }
+/// Secondary/muted body text: chrome labels, separators, and quiet metadata.
+/// Lighter than `dim_color()` so it stays readable as small status text.
+pub fn muted_text_color() -> Color {
+    crate::palette::role_color(crate::palette::Role::MutedText)
+}
 pub fn accent_color() -> Color {
     crate::palette::role_color(crate::palette::Role::Accent)
 }

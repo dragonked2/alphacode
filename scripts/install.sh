@@ -213,10 +213,21 @@ sha256_of() {
 
 lower() { printf '%s' "$1" | tr '[:upper:]' '[:lower:]'; }
 
+# Download a URL to a file, showing live progress on a terminal.
+#
+# Two hazards this has to survive, both common on the link to GitHub's release
+# CDN, which often delivers only tens of KB/s:
+#
+#   * A socket that goes half-open mid-transfer. Without --speed-limit/
+#     --speed-time that stalls the installer forever with neither movement
+#     nor an error; here it becomes a fast failure that --retry can restart.
+#   * An interruption. -C - resumes from the partial file rather than
+#     restarting, so an asset that dies at 90% continues from there.
 curl_download() {  # url out
   local progress="-sS"
   [ -t 2 ] && progress="--progress-bar"
   curl -fL "$progress" --retry 3 --retry-delay 2 --connect-timeout 15 \
+       --speed-limit 1024 --speed-time 60 -C - \
        --proto '=https' --tlsv1.2 -o "$2" "$1"
 }
 
@@ -337,12 +348,19 @@ resolve_release_bases() {
 }
 
 download_release() {
-  local base cand
+  local base cand started elapsed size
   for base in "${BASES[@]}"; do
     for cand in "${CANDIDATES[@]}"; do
       info "Downloading $base/$cand"
+      started=$(date +%s)
       if curl_download "$base/$cand" "$WORK/$cand"; then
         ASSET="$cand"; BASE_USED="$base"
+        # The bar shows motion but not throughput. When a link only manages
+        # tens of KB/s, the difference between "working" and "stalled" is
+        # otherwise invisible, so state it plainly once the bytes are in.
+        elapsed=$(( $(date +%s) - started ))
+        size=$(wc -c < "$WORK/$cand" | tr -d '[:space:]')
+        info "  $size bytes in ${elapsed}s"
         return 0
       fi
       rm -f "$WORK/$cand"

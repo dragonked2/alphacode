@@ -837,16 +837,25 @@ pub(super) fn draw_debug_overlay(
     placements: &[WidgetPlacement],
     chunks: &[Rect],
 ) {
-    if chunks.len() < 5 {
+    // Indices mirror the `CHUNK_*` constants in `ui.rs`. They used to be
+    // hardcoded against an older layout, so the boxes were already labelling
+    // the wrong regions (the status row as "picker", the notification row as
+    // "input").
+    if chunks.len() <= super::CHUNK_INPUT {
         return;
     }
-    render_overlay_box(frame, chunks[0], "messages", Color::Red);
-    render_overlay_box(frame, chunks[1], "queued", Color::Yellow);
-    render_overlay_box(frame, chunks[2], "status", Color::Cyan);
-    render_overlay_box(frame, chunks[3], "picker", Color::Magenta);
-    render_overlay_box(frame, chunks[4], "input", Color::Green);
-    if chunks.len() > 5 && chunks[5].height > 0 {
-        render_overlay_box(frame, chunks[5], "donut", Color::Blue);
+    render_overlay_box(frame, chunks[super::CHUNK_MESSAGES], "messages", Color::Red);
+    render_overlay_box(frame, chunks[super::CHUNK_QUEUED], "queued", Color::Yellow);
+    render_overlay_box(frame, chunks[super::CHUNK_STATUS], "status", Color::Cyan);
+    render_overlay_box(
+        frame,
+        chunks[super::CHUNK_NOTIFICATION],
+        "notification",
+        Color::Magenta,
+    );
+    render_overlay_box(frame, chunks[super::CHUNK_INPUT], "input", Color::Green);
+    if chunks.len() > super::CHUNK_DONUT && chunks[super::CHUNK_DONUT].height > 0 {
+        render_overlay_box(frame, chunks[super::CHUNK_DONUT], "donut", Color::Blue);
     }
 
     for placement in placements {

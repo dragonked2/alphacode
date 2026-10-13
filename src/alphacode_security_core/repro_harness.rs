@@ -174,14 +174,25 @@ pub fn run_bounded(
         .join(" ");
     let started = Instant::now();
 
-    let mut child = match Command::new(program)
+    // On Unix the child gets its own process group so a timeout can reach the
+    // grandchildren it spawned. Without this, killing `sh` leaves its `sleep`
+    // child alive holding the inherited pipes, and the output join below
+    // blocks until that grandchild exits on its own — the exact "timeout
+    // hangs the session" failure this harness exists to prevent. Windows gets
+    // the same coverage from `taskkill /T` in `kill_process_tree`.
+    let mut command = Command::new(program);
+    command
         .args(args)
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
-        .current_dir(cwd.unwrap_or_else(|| Path::new(".")))
-        .spawn()
+        .current_dir(cwd.unwrap_or_else(|| Path::new(".")));
+    #[cfg(unix)]
     {
+        use std::os::unix::process::CommandExt;
+        command.process_group(0);
+    }
+    let mut child = match command.spawn() {
         Ok(child) => child,
         Err(err) => {
             return ReproResult {
@@ -224,11 +235,19 @@ pub fn run_bounded(
 
 /// Kill a child process and (best-effort) its descendants.
 ///
-/// On Windows, `Child::kill` terminates only the direct process; the child's
-/// own children keep running and keep inherited pipe handles open. Routing
-/// through `taskkill /T` when available closes the whole tree; the direct
-/// kill remains as the fallback when `taskkill` itself is unavailable.
+/// `Child::kill` terminates only the direct process; the child's own children
+/// keep running and keep inherited pipe handles open, which stalls the output
+/// drain long after the budget elapsed. On Unix the child leads its own
+/// process group (set at spawn), so signaling the group reaches the whole
+/// tree. On Windows, routing through `taskkill /T` closes the whole tree; the
+/// direct kill remains as the fallback when `taskkill` itself is unavailable.
 fn kill_process_tree(child: &mut Child) {
+    #[cfg(unix)]
+    {
+        // The child leads its own process group (see `run_bounded`), so the
+        // group id is its pid and signaling `-pid` reaches the grandchildren.
+        let _ = crate::platform::signal_detached_process_group(child.id(), libc::SIGKILL);
+    }
     #[cfg(windows)]
     {
         use std::process::{Command, Stdio};
@@ -269,13 +288,14 @@ fn wait_with_deadline(child: &mut Child, timeout: Duration) -> ReproOutcome {
             None => ReproOutcome::Failed { exit_code: -1 },
         },
         Ok(None) => {
-            // Best-effort kill of the direct child and, on Windows, its
-            // whole process tree. Killing only `cmd.exe` would leave its
-            // children (e.g. the blocking command it spawned) alive, holding
-            // the inherited pipes open — which keeps this function blocked
-            // in the output join long after the budget elapsed, the exact
-            // "timeout hangs the session" failure this harness exists to
-            // prevent.
+            // Best-effort kill of the direct child and its whole tree: on
+            // Unix by signaling the child's process group, on Windows via
+            // `taskkill /T`. Killing only the direct child would leave its
+            // descendants (e.g. the blocking command it spawned) alive,
+            // holding the inherited pipes open — which keeps this function
+            // blocked in the output join long after the budget elapsed, the
+            // exact "timeout hangs the session" failure this harness exists
+            // to prevent.
             kill_process_tree(child);
             let _ = child.wait();
             ReproOutcome::TimedOut

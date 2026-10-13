@@ -142,45 +142,84 @@ impl SkillTool {
         let name = normalize_skill_name(name, "load")?;
 
         let registry = self.effective_registry(working_dir).await;
-        let skill = registry.get(&name).ok_or_else(|| {
-            // Endorsed skills are advertised in `list` but are not bundled;
-            // a bare "not found" here reads like a bug (issue #445). Point at
-            // the actual install command instead.
-            if let Some(endorsed) = crate::skill::endorsed_skills()
-                .iter()
-                .find(|endorsed| endorsed.name == name)
-            {
-                match endorsed.install {
-                    Some(install) => anyhow::anyhow!(
-                        "Skill '{}' is endorsed but not installed. Install it with `{}`, then run skill_manage reload_all.",
-                        name,
-                        install
-                    ),
-                    None => anyhow::anyhow!(
-                        "Skill '{}' is endorsed but not installed (source: {}). Install it into ~/.alphacode/skills/{}/SKILL.md, then run skill_manage reload_all.",
-                        name,
-                        endorsed.source,
-                        name
-                    ),
-                }
-            } else {
-                anyhow::anyhow!("Skill '{}' not found", name)
+
+        // First: try loading as a top-level skill.
+        if let Some(skill) = registry.get(&name) {
+            let base_dir = skill
+                .path
+                .parent()
+                .map(|p| p.display().to_string())
+                .unwrap_or_else(|| ".".to_string());
+
+            return Ok(ToolOutput::new(format!(
+                "## Skill: {}\n\n**Base directory**: {}\n\n{}",
+                skill.name,
+                base_dir,
+                skill.get_prompt()
+            ))
+            .with_title(format!("skill: {}", skill.name)));
+        }
+
+        // Second: try loading as a reference file within a parent skill.
+        // Subskills like `hunt-business-logic` are reference files inside
+        // `bugbounty`, not standalone skills — but the model may try to load
+        // them directly. Return the reference content with a note about the
+        // parent skill.
+        for skill in registry.list() {
+            if let Some(reference_content) = skill.reference_files.get(&name) {
+                return Ok(ToolOutput::new(format!(
+                    "## Reference: {}\n\n**Parent skill**: /{}\n\n{}",
+                    name, skill.name, reference_content
+                ))
+                .with_title(format!("skill: {} (reference of {})", name, skill.name)));
             }
-        })?;
+        }
 
-        let base_dir = skill
-            .path
-            .parent()
-            .map(|p| p.display().to_string())
-            .unwrap_or_else(|| ".".to_string());
+        // Not found anywhere — build an actionable error.
+        let suggestion = registry
+            .list()
+            .iter()
+            .find(|s| s.name.contains(&name) || name.contains(&s.name))
+            .map(|s| s.name.clone());
 
-        Ok(ToolOutput::new(format!(
-            "## Skill: {}\n\n**Base directory**: {}\n\n{}",
-            skill.name,
-            base_dir,
-            skill.get_prompt()
-        ))
-        .with_title(format!("skill: {}", skill.name)))
+        let mut error_msg = if let Some(endorsed) = crate::skill::endorsed_skills()
+            .iter()
+            .find(|endorsed| endorsed.name == name)
+        {
+            match endorsed.install {
+                Some(install) => format!(
+                    "Skill '{}' is endorsed but not installed. Install it with `{}`, then run skill_manage reload_all.",
+                    name, install
+                ),
+                None => format!(
+                    "Skill '{}' is endorsed but not installed (source: {}). Install it into ~/.alphacode/skills/{}/SKILL.md, then run skill_manage reload_all.",
+                    name, endorsed.source, name
+                ),
+            }
+        } else if let Some(parent) = suggestion {
+            format!(
+                "Skill '{}' not found. Did you mean '/{}'? Reference files within a skill can be loaded with skill_manage read, name=\"{}\", reference=\"<file>\".",
+                name, parent, parent
+            )
+        } else {
+            format!(
+                "Skill '{}' not found. Use skill_manage list to see available skills.",
+                name
+            )
+        };
+
+        // List close matches to help the model self-correct.
+        let all_names: Vec<String> = registry.list().iter().map(|s| s.name.clone()).collect();
+        let close: Vec<String> = all_names
+            .iter()
+            .filter(|n| n.contains(&name) || name.contains(*n))
+            .cloned()
+            .collect();
+        if !close.is_empty() {
+            error_msg.push_str(&format!(" Did you mean: {}?", close.join(", ")));
+        }
+
+        anyhow::bail!(error_msg)
     }
 
     async fn list_skills(&self, working_dir: Option<&std::path::Path>) -> Result<ToolOutput> {

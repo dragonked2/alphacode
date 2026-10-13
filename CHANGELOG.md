@@ -6,6 +6,174 @@ adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [1.0.80] - 2026-10-13
+
+### Fixed
+
+- A prompt you send is no longer swallowed by the screen. The status line's
+  gradient rule was painted at `chunks[3].y - 1`, which is the transcript's own
+  last row whenever the transcript fills its chunk. Since nothing is appended
+  after a freshly sent prompt until the first token arrives, the rule drew a row
+  of `─` straight across the message you had just submitted, and the prompt only
+  reappeared once the assistant had something to stream. The same row carries
+  the live streaming line and the legacy `↓N` overflow indicator, so both were
+  being erased too. The rule is now drawn only into the slack row between the
+  transcript and the status line, and only when that row exists.
+- The composer sits at the bottom of the screen again. Every chunk of the chat
+  column was a `Constraint::Length`, and ratatui's default `Flex::Start` parks
+  whatever the constraints do not claim in the *final* spacer — so on a short
+  conversation in a tall terminal the status line and composer floated in the
+  middle of the screen with a large blank band beneath them (11 rows on a 40-row
+  terminal), and the composer slid one row further down for every transcript
+  line that arrived. The unused rows are now reserved as an explicit gap chunk,
+  which keeps the transcript top-anchored and the bottom chrome flush with the
+  bottom of the frame at every terminal size.
+- The right-hand session facts render again, and the `↓N` scrolled-past
+  indicator is visible. Both were blocked by the gradient rule above: the fact
+  stack's documented anchor is `input_area.bottom() - 1` and it may only climb
+  through *contiguous* blank rows, so one full-width rule immediately above the
+  status line left it nowhere to go and it stood down entirely.
+- The visual-debug layout overlay labels the regions it actually draws. Its
+  indices predated a chunk insertion, so it was labelling the swarm strip
+  "status", the status row "picker" and the notification row "input". The chat
+  column's chunk indices are now named constants shared with the overlay.
+
+- The header no longer carries a duplicate copy of the session facts. The 1.0.80
+  work added a consolidated strip (context %, token totals, queue depth,
+  provider billing) to the model line, which both duplicated the right-hand
+  fact stack and consumed the rows that stack probes for free space: with the
+  strip present the stack could not find a collision-free block and rendered
+  nothing at all. The strip and its private `format_strip_tokens` helper are
+  gone; the header keeps model identity, connection and the `/model` hint, and
+  the facts belong to the right-hand column.
+- `ui_polish::centered_gradient_separator_long_enough` no longer asserts on the
+  wrong quantity. It compared `Line::spans.len()` against the requested width,
+  but the separator's two-cell gutters are each a *single* span holding two
+  characters, so a correct 40-cell line reports 38 spans and the test failed on
+  correct output. It now asserts `Line::width()`, matching
+  `gradient_separator_spans_the_full_header_width`.
+- Source files saved as CP1252 no longer break the build. Five files
+  (`ui_header.rs`, `verification_quality.rs`, `tui_lifecycle.rs`, `keybind.rs`
+  and `input.rs`) had been written through Windows-1252, which rewrote every
+  non-ASCII character into the three characters that encoding produces - a
+  banner box-drawing run became three mangled glyphs apiece, and the ellipsis
+  in `model.contains(...)` became `U+00E2 U+20AC U+00A6` instead of
+  `U+2026`. Nothing flagged it at the time: the files remained valid UTF-8
+  throughout, so the damage only surfaced later as four `unknown start of
+  token` errors from rustc at `ui_header.rs:245`. The affected runs were
+  decoded back through CP1252 to recover the original bytes. Genuine
+  non-ASCII characters in the same files - the Mac Option-key bindings in
+  `keybind.rs` and the AltGr symbols in `input.rs` - are byte-identical
+  before and after, because a character that is not CP1252-representable
+  cannot round-trip and is therefore left alone.
+- Added `.editorconfig` pinning the working tree to UTF-8, with the reasoning
+  recorded in the file. The repository already carried a `.gitattributes`
+  guarding a neighbouring Windows encoding problem, but nothing stopped an
+  editor from re-introducing this one.
+- Buffer-level regression tests for the chat column: the composer is flush with
+  the bottom of the frame at four terminal sizes, it holds still while the
+  transcript grows, a freshly sent prompt is visible before the first token
+  arrives, and a gradient rule never occupies the last transcript row.
+
+- The bottom session/status row no longer loses information when the terminal
+  is narrow. It used to be one long concatenation that a trailing ellipsis cut
+  from the right, so the casualty was always whatever text sat last — the
+  context reading, the token totals, and the `+N queued` count. The idle
+  stats row, the streaming row, and the running-tool row are now assembled
+  from priority-tagged segments that are dropped lowest-priority-first, with
+  short fallback forms (token totals without the per-direction breakdown, a
+  model name without its provider prefix) tried before anything is dropped.
+  Context usage and session tokens now survive down to very narrow widths.
+- The header's gradient separator spans the full terminal width instead of
+  stopping at 120 columns, where it left a dead gap that read as a rendering
+  glitch on wide terminals.
+- Bottom-chrome colors — the status row, the right-hand session facts, the
+  overscroll line, the notification line, and the send-mode indicator — now
+  come from the shared theme roles (`accent`, `success`, `warning`, `error`,
+  `info`, `dim`, and a new `muted_text` role) instead of roughly forty
+  hardcoded RGB values. These rows, and the header, now follow `/theme`
+  presets and `[display.colors]` overrides exactly rather than only through
+  the buffer-level heuristic remap.
+- Reproduction commands now really are killed at their budget on Unix. The
+  harness only killed the direct child, so `sh -c "sleep 60"` left its
+  `sleep` grandchild alive holding the inherited stdout/stderr pipes, and
+  `run_bounded` stayed blocked in the output drain for the rest of the sleep
+  — the "timeout hangs the session" failure the harness exists to prevent.
+  The child is now spawned in its own process group and that group is
+  signaled on timeout, mirroring what `taskkill /T` already did on Windows.
+- The system prompt keeps the guidance the 1.0.79 rewrite had dropped: treat
+  tool output, files, web pages, MCP results, and quoted text as data rather
+  than as instructions, and establish that a target is within the user's
+  stated authorization and scope before security testing. The always-on
+  prompt budget assertion now tracks a 96k-char ceiling (the prompt is ~67k
+  since the security playbook was folded in) instead of the old 4k one, which
+  no longer described any prompt this build ships.
+- The installers now show live download progress. `install.ps1` replaced
+  `Invoke-WebRequest -OutFile` with a streaming transfer that writes to disk
+  as bytes arrive and redraws a bar showing percentage, bytes, throughput and
+  ETA. The old cmdlet buffers the whole response in memory and writes the file
+  only when the transfer finishes, so a 20 MB release asset sat invisible
+  until it was nearly done and then appeared at once. Rendering is capped near
+  ten frames a second, since a host call per chunk makes the renderer itself
+  the bottleneck on a fast connection, and the bar is suppressed when output
+  is redirected so a captured log is not smeared with carriage returns.
+- Downloads resume instead of restarting. A release asset that dies at 90%
+  continues from there, via `Range` on the PowerShell side and `curl -C -` on
+  the shell side, rather than beginning again. Bytes are only ever resumed
+  within a single URL, and the partial is discarded first, so one candidate
+  asset can never be appended to another. A `206` response is required before
+  appending; a server that ignores `Range` answers `200` with the whole file,
+  which would otherwise corrupt the partial.
+- A stalled transfer now fails instead of hanging forever. GitHub's release
+  CDN often delivers only tens of KB/s, and a socket that goes half-open
+  mid-transfer left the installer waiting indefinitely with neither movement
+  nor an error. `install.sh` passes `--speed-limit 1024 --speed-time 60` so
+  curl turns the stall into a failure its own `--retry` can restart;
+  `install.ps1` sets `ReadWriteTimeout` to the same effect.
+- `install.sh` reports the byte count and elapsed time once a download
+  finishes. The bar shows motion but not throughput, and at tens of KB/s the
+  difference between a working transfer and a stalled one is otherwise
+  invisible.
+- `scripts/tests/install-path.tests.ps1` passes again. It was asserting on
+  `Fail` and `Warn`, which the installer had renamed to
+  `Stop-AlphacodeInstall` and `Write-AlphacodeWarn`, and on `$localAppData`,
+  now `$lad`, so the suite failed before reaching a single real assertion. The
+  prefix test now checks the shape of the default path rather than the name of
+  a local variable, `Assert-Contains` escapes `-like` wildcards so a literal
+  bracket in a needle is not read as a character class, and the suite covers
+  the new download path: streaming rather than buffering, resume, the stall
+  timeout, the progress frame, and silence when output is redirected.
+
+- The command-risk gate no longer denies ordinary commands that mention a
+  glob. A glob's parent directory was graded as a destruction target
+  unconditionally, so every relative glob was catastrophic in a session
+  started in the home directory - there the working directory *is* `$HOME`,
+  and the parent of every resolved target is `path == home`. A glob in the
+  working directory now grades the same as the concrete path beside it,
+  which this gate already accepts, and a glob with no directory part and
+  nowhere to resolve it against no longer reads its empty parent as `/`.
+  Globs that really do land in a protected directory (`~/.ssh/*`,
+  `~/.ssh/id_*`, `~/.aws/*`, `~/*`, `/etc/*`) are still catastrophic, now
+  by checking the glob's own resolved path as well as its parent.
+- The shell tokenizer handles `#` comments. An apostrophe in an ordinary
+  comment (`# Check if it's ...`) opened a quoted region that swallowed the
+  rest of the command and threw every later quote out of sync, so a quoted
+  grep pattern was split at its `>` and the fragments were graded as
+  truncating redirect targets - which are graded even for a read-only
+  `grep`, and whose `was_quoted` stamp the hidden-verb scan trusts to tell
+  an executed `sh` from a quoted one. A `#` at the start of a word now runs
+  to end of line; a `#` inside a word is left alone.
+- `2>/dev/null` inside a command substitution is recognised as a device sink
+  again. The closing `)` of `$(...)` was left on the token, so `/dev/null)`
+  matched no sink and a routine stderr discard was graded as a write to an
+  unknown path outside the working directory.
+- The malformed-call refusal costs roughly 40% fewer tokens and no longer
+  repeats one instruction three times. The recorded error already carries
+  the corrective sentence, the guard appended it again, and the
+  agent-facing hint layer added a third copy on top. Guidance already on
+  the record is now quoted once, and the generic hint is skipped when the
+  error hands over a literal example to copy.
+
 ## [1.0.78] - 2026-10-11
 
 ### Fixed

@@ -1,11 +1,10 @@
 pub(super) use crate::alphacode_tui_style::theme::{
-    accent_color, ai_color, ai_text, asap_color, blend_color, dim_color, file_link_color,
-    header_icon_color, header_name_color, header_session_color, pending_color,
-    prompt_entry_bg_color, prompt_entry_color, prompt_entry_shimmer_color, queued_color,
-    rainbow_prompt_color, system_message_color, tool_color, user_bg, user_color, user_text,
+    accent_color, ai_color, ai_text, asap_color, blend_color, border_color, dim_color, error_color,
+    file_link_color, header_icon_color, header_name_color, header_session_color, info_color,
+    muted_text_color, pending_color, prompt_entry_bg_color, prompt_entry_color,
+    prompt_entry_shimmer_color, queued_color, rainbow_prompt_color, success_color,
+    system_message_color, tool_color, user_bg, user_color, user_text, warning_color,
 };
-#[cfg(test)]
-pub(super) use crate::alphacode_tui_style::theme::{success_color, warning_color};
 use ratatui::prelude::*;
 
 pub(super) fn activity_indicator_frame_index(elapsed: f32, fps: f32) -> usize {

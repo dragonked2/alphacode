@@ -13,6 +13,7 @@ pub mod smart_model_picker;
 pub mod ui_console;
 pub mod ui_empty_state;
 pub mod ui_help;
+pub mod ui_polish;
 pub mod ui_professional;
 
 #[derive(Clone)]

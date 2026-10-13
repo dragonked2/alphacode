@@ -741,10 +741,12 @@ impl SkillRegistry {
             return None;
         }
 
+        // Check ALL skills (not just auto_invoke ones) so that skills without
+        // the auto-invoke frontmatter flag can still be matched by strong
+        // keyword overlap. The auto_invoke flag only controls whether a skill
+        // is *eligible* for the 2-keyword fast path; a single strong match
+        // (skill name or alias mentioned explicitly) fires for any skill.
         for skill in self.skills.values() {
-            if !skill.auto_invoke {
-                continue;
-            }
             // Match only the skill's own name(/aliases) and description, not the
             // full body text. The body is hundreds of words of prose — common
             // terms like "first", "line" and "step" appear in nearly every
@@ -764,12 +766,21 @@ impl SkillRegistry {
                 .iter()
                 .filter(|sw| msg_words.iter().any(|mw| *mw == **sw))
                 .count();
-            if matches >= 2 {
+
+            // auto_invoke skills: 2+ keyword matches trigger activation.
+            if skill.auto_invoke && matches >= 2 {
                 return Some(skill.name.clone());
             }
-            // A full name/alias mention ("ctf challenge", "/bug bounty this")
-            // is explicit enough on its own.
+
+            // Any skill: a full name/alias mention ("ctf challenge",
+            // "/bug bounty this") is explicit enough on its own.
             if skill_name_is_mentioned(message, skill) {
+                return Some(skill.name.clone());
+            }
+
+            // auto_invoke skills: single strong keyword match from the
+            // description also triggers (lower bar than the 2-keyword path).
+            if skill.auto_invoke && matches >= 1 {
                 return Some(skill.name.clone());
             }
         }

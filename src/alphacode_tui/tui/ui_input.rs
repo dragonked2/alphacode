@@ -3,8 +3,9 @@ use super::selection_highlight::highlight_line_selection;
 use super::tools_ui::{get_tool_activity_detail, summarize_batch_running_tools_compact};
 use super::visual_debug::{self, FrameCaptureBuilder};
 use super::{
-    ProcessingStatus, TuiState, accent_color, ai_color, animated_tool_color, asap_color, dim_color,
-    queued_color, rainbow_prompt_color,
+    ProcessingStatus, TuiState, accent_color, ai_color, animated_tool_color, asap_color,
+    border_color, dim_color, error_color, info_color, muted_text_color, queued_color,
+    rainbow_prompt_color, success_color, user_color, warning_color,
 };
 use crate::alphacode_tui::message::ConnectionPhase;
 use crate::alphacode_tui::tui::app;
@@ -18,7 +19,7 @@ use ratatui::{prelude::*, style::Modifier, widgets::Paragraph};
 use unicode_segmentation::UnicodeSegmentation;
 
 fn shell_mode_color() -> Color {
-    rgb(100, 225, 155)
+    success_color()
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -487,12 +488,12 @@ pub(super) fn input_prompt(app: &dyn TuiState) -> (String, Color) {
         ("$ ".to_string(), BrandTheme::success())
     } else if app.is_processing() {
         ("\u{2026} ".to_string(), BrandTheme::warning())
-    } else if let Some(skill) = app.active_skill() {
-        // Realtime skill indicator: the composer prefix names the loaded skill
-        // so the user can see which skill body is active for the next turn
-        // (slash command or auto-invoke).
-        (format!("\u{00bb} {skill}"), BrandTheme::accent())
     } else {
+        // An active skill deliberately does NOT get a mode prefix. Echoing the
+        // skill name inside the composer ("> bugbounty") pushed the typed text
+        // right and read like leftover slash-command text stuck in the input.
+        // The active skill is already reported by the system message, the
+        // header, and `clear_skill`, so the composer stays uncluttered.
         ("> ".to_string(), BrandTheme::model())
     }
 }
@@ -919,6 +920,117 @@ fn append_batch_progress_spans(
     }
 }
 
+/// One independently-droppable piece of a status row, tagged with the priority
+/// that decides what survives when the terminal is too narrow to show it all.
+///
+/// Status rows used to be a single long concatenation that a trailing ellipsis
+/// clipped from the right, so whatever sat at the end (context usage, cost, the
+/// queued suffix) vanished first regardless of importance. Building rows from
+/// segments lets the renderer drop the least useful piece first and guarantees
+/// the high-priority facts survive down to very narrow widths.
+struct StatusSegment {
+    /// Lower values survive longer when space runs out.
+    priority: u8,
+    text: String,
+    /// Shorter substitute tried when `text` does not fit, e.g. token totals
+    /// without the per-direction breakdown or a model name without its
+    /// provider prefix.
+    short: Option<String>,
+    color: Color,
+    bold: bool,
+}
+
+const STATUS_SEGMENT_GAP: &str = " · ";
+
+/// Below this width the header session strip may have dropped fragments to fit,
+/// so the idle bottom row falls back to the full stats line. Above it the
+/// session numbers (model, tokens, ctx, queue) live in the header strip and the
+/// bottom row stays a clean activity/tip line.
+const NARROW_STATUS_FALLBACK_WIDTH: u16 = 56;
+
+impl StatusSegment {
+    fn new(priority: u8, text: impl Into<String>, color: Color) -> Self {
+        Self {
+            priority,
+            text: text.into(),
+            short: None,
+            color,
+            bold: false,
+        }
+    }
+
+    fn short(mut self, short: impl Into<String>) -> Self {
+        self.short = Some(short.into());
+        self
+    }
+
+    fn bold(mut self) -> Self {
+        self.bold = true;
+        self
+    }
+
+    /// The widest variant of this segment that fits in `budget` columns, or
+    /// `None` when even the short form is too long.
+    fn fit(&self, budget: usize) -> Option<&str> {
+        use unicode_width::UnicodeWidthStr;
+        if UnicodeWidthStr::width(self.text.as_str()) <= budget {
+            return Some(self.text.as_str());
+        }
+        let short = self.short.as_deref()?;
+        (UnicodeWidthStr::width(short) <= budget).then_some(short)
+    }
+
+    fn style(&self) -> Style {
+        let style = Style::default().fg(self.color);
+        if self.bold { style.bold() } else { style }
+    }
+}
+
+/// Fit status segments into `max_width` columns, keeping as many as possible
+/// by priority while rendering the survivors in their original display order.
+///
+/// Lower `priority` wins space first; ties are resolved by display order. A
+/// dropped segment frees both its own width and the separator that would have
+/// preceded it, so the joined line always lands exactly within budget instead
+/// of being clipped mid-text by an ellipsis.
+fn fit_status_segments(segments: &[StatusSegment], max_width: usize) -> Line<'static> {
+    use unicode_width::UnicodeWidthStr;
+
+    if max_width == 0 {
+        return Line::default();
+    }
+    let gap_width = UnicodeWidthStr::width(STATUS_SEGMENT_GAP);
+
+    let mut by_priority: Vec<usize> = (0..segments.len()).collect();
+    by_priority.sort_by_key(|&index| (segments[index].priority, index));
+
+    let mut kept: Vec<(usize, String)> = Vec::with_capacity(segments.len());
+    let mut used = 0usize;
+    for index in by_priority {
+        let segment = &segments[index];
+        let separator = if kept.is_empty() { 0 } else { gap_width };
+        let budget = max_width.saturating_sub(used + separator);
+        let Some(text) = segment.fit(budget) else {
+            continue;
+        };
+        used += separator + UnicodeWidthStr::width(text);
+        kept.push((index, text.to_string()));
+    }
+
+    kept.sort_by_key(|(index, _)| *index);
+    let mut spans: Vec<Span<'static>> = Vec::with_capacity(kept.len() * 2);
+    for (position, (index, text)) in kept.iter().enumerate() {
+        if position > 0 {
+            spans.push(Span::styled(
+                STATUS_SEGMENT_GAP,
+                Style::default().fg(dim_color()),
+            ));
+        }
+        spans.push(Span::styled(text.clone(), segments[*index].style()));
+    }
+    Line::from(spans)
+}
+
 /// Compact `ctx=` fragment shared by the idle stats line and the tip line.
 /// `42%` when the context window is known, the raw token count otherwise.
 fn idle_context_fragment(app: &dyn TuiState, input_tokens: u64) -> String {
@@ -966,15 +1078,19 @@ fn compose_idle_status_tip(tip: &str, suffix: Option<&str>, max_width: usize) ->
     if let Some(suffix) = suffix {
         spans.push(Span::styled(
             suffix.to_string(),
-            Style::default().fg(rgb(128, 140, 165)),
+            Style::default().fg(muted_text_color()),
         ));
     }
     truncate_line_with_ellipsis(Line::from(spans), max_width)
 }
 
-/// Build the always-on idle session-stats line shown under the input: total
-/// session tokens, per-direction tokens, estimated cost or OAuth window usage
-/// (when the provider reports it), and compaction count.
+/// Build the always-on idle session-stats line shown under the input: session
+/// tokens, per-direction tokens, context usage, model identity, estimated cost
+/// or provider window usage (when reported), and compaction count.
+///
+/// The row is assembled from priority-tagged segments and fitted to the
+/// available width, so context usage and token totals are never pushed off the
+/// edge by lower-value detail — that detail is dropped first instead.
 ///
 /// Returns `None` for a fresh session (nothing to show yet) so the rotating
 /// tips keep the line friendly instead of a zeroed counter.
@@ -985,128 +1101,138 @@ fn idle_session_stats_line(app: &dyn TuiState, max_width: usize) -> Option<Line<
         return None;
     }
 
-    // The wide form carries provider billing and account-window details. On a
-    // narrower terminal those optional labels used to push context usage off
-    // the edge, so switch to a compact line that reserves space for the total
-    // and context before showing a shortened model name.
-    if max_width < 96 {
-        let context = (total_in > 0).then(|| idle_context_fragment(app, total_in));
+    let model_short = super::shorten_model_name(&app.provider_model());
+    let context = (total_in > 0).then(|| idle_context_fragment(app, total_in));
+
+    // Below this width even the shortest useful arrangement crowds itself; the
+    // compact builder's hard-reserved `tokens · ctx` layout reads better.
+    const COMPACT_FALLBACK_WIDTH: usize = 28;
+    if max_width < COMPACT_FALLBACK_WIDTH {
         return Some(compact_idle_session_stats_line(
-            &super::shorten_model_name(&app.provider_model()),
+            &model_short,
             total,
             context.as_deref(),
             max_width,
         ));
     }
 
-    let mut spans: Vec<Span<'static>> = Vec::new();
-
-    // Connection status dot — emerald for connected
-    spans.push(Span::styled(
-        "\u{25cf} ",
-        Style::default()
-            .fg(rgb(100, 225, 155))
-            .add_modifier(Modifier::BOLD),
-    ));
-
-    // Provider + model as the primary info
     let provider = app.provider_name();
-    let model = app.provider_model();
     let provider_display = if provider.is_empty() {
         "auto".to_string()
     } else {
         provider.to_string()
     };
-    let model_short = super::shorten_model_name(&model);
-    if !model_short.is_empty() {
-        spans.push(Span::styled(
-            format!("{} \u{00b7} {}", provider_display, model_short),
-            Style::default()
-                .fg(rgb(130, 180, 255))
-                .add_modifier(Modifier::BOLD),
-        ));
-        spans.push(Span::styled(" ", Style::default()));
-    }
 
-    // Token stats
-    spans.push(Span::styled(
-        format!(
-            "\u{2301} {} total \u{00b7} \u{2191}{} \u{00b7} \u{2193}{}",
-            format_stream_tokens(total),
-            format_stream_tokens(total_in),
-            format_stream_tokens(total_out),
-        ),
-        Style::default().fg(rgb(128, 140, 165)),
-    ));
-    // Keep context immediately after token totals so it is visible before
-    // lower-priority cost and account-window details.
-    if total_in > 0 {
-        spans.push(Span::styled(
-            format!(" \u{00b7} ctx={}", idle_context_fragment(app, total_in)),
-            Style::default().fg(rgb(160, 170, 195)),
+    // Priority 1 (context usage) > 2 (session tokens) > 3 (model identity) >
+    // 4 (provider billing/window) > 5 (estimated cost, housekeeping).
+    let mut segments: Vec<StatusSegment> = Vec::with_capacity(7);
+    if !model_short.is_empty() {
+        segments.push(
+            StatusSegment::new(
+                3,
+                format!("{} \u{00b7} {}", provider_display, model_short),
+                user_color(),
+            )
+            .short(model_short.clone())
+            .bold(),
+        );
+    }
+    segments.push(
+        StatusSegment::new(
+            2,
+            format!(
+                "\u{2301} {} total \u{00b7} \u{2191}{} \u{00b7} \u{2193}{}",
+                format_stream_tokens(total),
+                format_stream_tokens(total_in),
+                format_stream_tokens(total_out),
+            ),
+            muted_text_color(),
+        )
+        .short(format!("\u{2301} {}", format_stream_tokens(total))),
+    );
+    if let Some(context) = context.as_deref() {
+        segments.push(StatusSegment::new(
+            1,
+            format!("ctx={}", context),
+            muted_text_color(),
         ));
     }
-    spans.push(Span::styled(
-        format!(
-            " \u{00b7} est. ${} @ $1/M",
-            super::info_widget::format_token_value_usd(total)
-        ),
-        Style::default().fg(rgb(120, 220, 160)),
-    ));
 
     let data = app.info_widget_data();
     if let Some(info) = data.usage_info.as_ref().filter(|info| info.available) {
-        if matches!(info.provider, super::info_widget::UsageProvider::CostBased)
+        let usage = if matches!(info.provider, super::info_widget::UsageProvider::CostBased)
             && info.total_cost > 0.0
         {
-            spans.push(Span::styled(
-                format!(" \u{00b7} billed ${:.2}", info.total_cost),
-                Style::default().fg(rgb(120, 220, 160)),
-            ));
+            Some(format!("billed ${:.2}", info.total_cost))
         } else {
+            let mut parts = Vec::new();
             if let Some(label) = info
                 .primary_limit_label
                 .as_deref()
                 .filter(|_| info.five_hour > 0.0)
             {
-                spans.push(Span::styled(
-                    format!(" \u{00b7} {} {:.0}%", label, info.five_hour * 100.0),
-                    Style::default().fg(rgb(128, 140, 165)),
-                ));
+                parts.push(format!("{} {:.0}%", label, info.five_hour * 100.0));
             }
             if let Some(label) = info
                 .secondary_limit_label
                 .as_deref()
                 .filter(|_| info.seven_day > 0.0)
             {
-                spans.push(Span::styled(
-                    format!(" \u{00b7} {} {:.0}%", label, info.seven_day * 100.0),
-                    Style::default().fg(rgb(128, 140, 165)),
-                ));
+                parts.push(format!("{} {:.0}%", label, info.seven_day * 100.0));
             }
+            (!parts.is_empty()).then(|| parts.join(STATUS_SEGMENT_GAP))
+        };
+        if let Some(usage) = usage {
+            segments.push(StatusSegment::new(4, usage, muted_text_color()));
         }
     }
 
+    segments.push(StatusSegment::new(
+        5,
+        format!(
+            "est. ${} @ $1/M",
+            super::info_widget::format_token_value_usd(total)
+        ),
+        success_color(),
+    ));
+
     let compactions = app.session_compaction_count();
     if compactions > 0 {
-        spans.push(Span::styled(
+        segments.push(StatusSegment::new(
+            5,
             format!(
-                " \u{00b7} {} compact{}",
+                "{} compact{}",
                 compactions,
                 if compactions == 1 { "" } else { "s" }
             ),
-            Style::default().fg(rgb(128, 140, 165)),
+            muted_text_color(),
         ));
     }
 
     let recovered = crate::alphacode_app_core::agent::provider_errors_auto_recovered();
     if recovered > 0 {
-        spans.push(Span::styled(
-            format!(" \u{00b7} {} recovered", recovered),
-            Style::default().fg(rgb(128, 140, 165)),
+        segments.push(StatusSegment::new(
+            5,
+            format!("{} recovered", recovered),
+            muted_text_color(),
         ));
     }
 
+    // The status dot is always drawn, so the segments get only the width left
+    // over after it.
+    const DOT_WIDTH: usize = 2; // "● "
+    let stats = fit_status_segments(&segments, max_width.saturating_sub(DOT_WIDTH));
+    if stats.spans.is_empty() {
+        return None;
+    }
+
+    let mut spans = vec![Span::styled(
+        "\u{25cf} ",
+        Style::default()
+            .fg(success_color())
+            .add_modifier(Modifier::BOLD),
+    )];
+    spans.extend(stats.spans);
     Some(Line::from(spans))
 }
 
@@ -1141,7 +1267,7 @@ fn compact_idle_session_stats_line(
     let mut spans = vec![Span::styled(
         marker,
         Style::default()
-            .fg(rgb(100, 225, 155))
+            .fg(success_color())
             .add_modifier(Modifier::BOLD),
     )];
     if model_budget >= 6 && !model.is_empty() {
@@ -1150,7 +1276,7 @@ fn compact_idle_session_stats_line(
             spans.push(Span::styled(
                 model,
                 Style::default()
-                    .fg(rgb(130, 180, 255))
+                    .fg(user_color())
                     .add_modifier(Modifier::BOLD),
             ));
             spans.push(Span::raw(separator));
@@ -1158,7 +1284,7 @@ fn compact_idle_session_stats_line(
     }
     spans.push(Span::styled(
         metrics,
-        Style::default().fg(rgb(160, 170, 195)),
+        Style::default().fg(muted_text_color()),
     ));
     truncate_line_with_ellipsis(Line::from(spans), max_width)
 }
@@ -1191,10 +1317,10 @@ pub(super) fn draw_status(frame: &mut Frame, app: &dyn TuiState, area: Rect, pen
     let line = if let Some(build_progress) = crate::build::read_build_progress() {
         let spinner = super::activity_indicator(elapsed, 12.5);
         Line::from(vec![
-            Span::styled(spinner, Style::default().fg(rgb(248, 190, 7))),
+            Span::styled(spinner, Style::default().fg(warning_color())),
             Span::styled(
                 format!(" {}", build_progress),
-                Style::default().fg(rgb(248, 190, 7)),
+                Style::default().fg(warning_color()),
             ),
         ])
     } else if let Some(remaining) = app.rate_limit_remaining() {
@@ -1212,13 +1338,13 @@ pub(super) fn draw_status(frame: &mut Frame, app: &dyn TuiState, area: Rect, pen
             format!("{}s", secs)
         };
         Line::from(vec![
-            Span::styled(spinner, Style::default().fg(rgb(248, 190, 7))),
+            Span::styled(spinner, Style::default().fg(warning_color())),
             Span::styled(
                 format!(
                     " Rate limited. Auto-retry in {}...{}",
                     time_str, queued_suffix
                 ),
-                Style::default().fg(rgb(248, 190, 7)),
+                Style::default().fg(warning_color()),
             ),
         ])
     } else if app.is_processing() {
@@ -1251,15 +1377,15 @@ pub(super) fn draw_status(frame: &mut Frame, app: &dyn TuiState, area: Rect, pen
                     .connection_phase_elapsed()
                     .map_or(elapsed, |d| d.as_secs_f32());
                 let label_color = match phase {
-                    crate::message::ConnectionPhase::Retrying { .. } => rgb(248, 190, 7),
+                    crate::message::ConnectionPhase::Retrying { .. } => warning_color(),
                     crate::message::ConnectionPhase::Authenticating if phase_elapsed > 10.0 => {
-                        rgb(248, 190, 7)
+                        warning_color()
                     }
                     crate::message::ConnectionPhase::Connecting if phase_elapsed > 10.0 => {
-                        rgb(248, 190, 7)
+                        warning_color()
                     }
                     crate::message::ConnectionPhase::SendingRequest if phase_elapsed > 10.0 => {
-                        rgb(248, 190, 7)
+                        warning_color()
                     }
                     _ => dim_color(),
                 };
@@ -1284,68 +1410,82 @@ pub(super) fn draw_status(frame: &mut Frame, app: &dyn TuiState, area: Rect, pen
                 let time_str = format_elapsed(elapsed);
                 let (input_tokens, output_tokens) = app.streaming_tokens();
                 let stream_message_ended = app.stream_message_ended();
-                let mut status_text =
-                    streaming_liveness_label(time_str, stale_secs, stream_message_ended);
+
+                // Built as priority-tagged segments so a narrow row degrades
+                // gracefully: transport detail and per-direction tokens drop
+                // first, while the cache warning, liveness label, throughput,
+                // and context usage survive (the same `ctx=` reading as the
+                // idle line, so it reads identically in both states).
+                let mut segments: Vec<StatusSegment> = Vec::with_capacity(6);
+                segments.push(StatusSegment::new(
+                    2,
+                    streaming_liveness_label(time_str, stale_secs, stream_message_ended),
+                    muted_text_color(),
+                ));
                 if let Some(tps) = app.output_tps() {
-                    status_text = format!("{} · {:.1} tok/s", status_text, tps);
+                    segments.push(StatusSegment::new(
+                        3,
+                        format!("{:.1} tok/s", tps),
+                        muted_text_color(),
+                    ));
                 }
-                if input_tokens > 0 || output_tokens > 0 {
-                    status_text = format!(
-                        "{} · \u{2191}{} \u{00b7} \u{2193}{}",
-                        status_text,
-                        format_stream_tokens(input_tokens),
-                        format_stream_tokens(output_tokens)
-                    );
-                }
-                // Steady context-usage segment while streaming (same `ctx=`
-                // format as the idle line so it reads identically in both
-                // states).
                 if input_tokens > 0 {
-                    match app.context_limit() {
+                    let ctx = match app.context_limit() {
                         Some(limit) if limit > 0 => {
                             let pct = ((input_tokens as f64 / limit as f64) * 100.0).round() as u64;
-                            status_text = format!("{} · ctx={}%", status_text, pct.min(999));
+                            format!("ctx={}%", pct.min(999))
                         }
-                        _ => {
-                            status_text = format!(
-                                "{} · ctx={}",
-                                status_text,
-                                format_stream_tokens(input_tokens)
-                            );
-                        }
-                    }
-                }
-                append_transport_context(&mut status_text, app);
-                if let Some(problem) = kv_cache_problem {
-                    let miss_tokens = problem.affected_tokens.unwrap_or(0);
-                    let miss_str = if miss_tokens >= 1000 {
-                        format!("{}k", miss_tokens / 1000)
-                    } else if miss_tokens > 0 {
-                        format!("{}", miss_tokens)
-                    } else {
-                        "kv".to_string()
+                        _ => format!("ctx={}", format_stream_tokens(input_tokens)),
                     };
-                    status_text = format!("\u{26a0} {} cache miss · {}", miss_str, status_text);
+                    segments.push(StatusSegment::new(1, ctx, muted_text_color()));
                 }
+                if input_tokens > 0 || output_tokens > 0 {
+                    segments.push(
+                        StatusSegment::new(
+                            4,
+                            format!(
+                                "\u{2191}{} \u{00b7} \u{2193}{}",
+                                format_stream_tokens(input_tokens),
+                                format_stream_tokens(output_tokens)
+                            ),
+                            muted_text_color(),
+                        )
+                        .short(format!("\u{2193}{}", format_stream_tokens(output_tokens))),
+                    );
+                }
+                for label in transport_context_labels(app) {
+                    segments.push(StatusSegment::new(6, label, dim_color()));
+                }
+                if let Some(problem) = kv_cache_problem {
+                    segments.insert(
+                        0,
+                        StatusSegment::new(
+                            0,
+                            format!("\u{26a0} {}", cache_miss_label(problem)),
+                            warning_color(),
+                        )
+                        .bold(),
+                    );
+                }
+
                 let spans = streaming_status_spans(
                     spinner,
-                    status_text,
-                    stream_message_ended,
-                    kv_cache_problem.is_some(),
-                    &queued_suffix,
+                    segments,
+                    queued_suffix_for_segment(&queued_suffix),
+                    area.width as usize,
                 );
                 Line::from(spans)
             }
             ProcessingStatus::WaitingForNetwork { listener } => {
                 let mut spans = vec![
-                    Span::styled("↻ ", Style::default().fg(rgb(248, 190, 7))),
+                    Span::styled("↻ ", Style::default().fg(warning_color())),
                     Span::styled(
                         format!(
                             "network disconnected, waiting to retry · {} · {}",
                             listener,
                             format_elapsed(elapsed)
                         ),
-                        Style::default().fg(rgb(248, 190, 7)),
+                        Style::default().fg(warning_color()),
                     ),
                 ];
                 push_queued_suffix(&mut spans, &queued_suffix);
@@ -1438,6 +1578,8 @@ pub(super) fn draw_status(frame: &mut Frame, app: &dyn TuiState, area: Rect, pen
                 spans.extend(trailing_spans);
 
                 // For batch tool: show "completed/total · last_tool" progress
+                // right after the marquee; it is the point of the row, so it
+                // is never a candidate for dropping.
                 if is_batch {
                     append_batch_progress_spans(
                         &mut spans,
@@ -1445,61 +1587,60 @@ pub(super) fn draw_status(frame: &mut Frame, app: &dyn TuiState, area: Rect, pen
                         batch_prog,
                         batch_total_initial,
                     );
-                } else if let Some(detail) = tool_detail {
-                    spans.push(Span::styled(
-                        format!(" · {}", detail),
-                        Style::default().fg(dim_color()),
-                    ));
                 }
 
+                // Everything after the head competes for the remaining width
+                // by priority, so a long tool detail can no longer push the
+                // elapsed time, the queued count, or the cache warning off
+                // the row — the least useful piece is dropped first.
+                let mut segments: Vec<StatusSegment> = Vec::with_capacity(7);
+                if let Some(detail) = tool_detail {
+                    segments.push(StatusSegment::new(2, detail, dim_color()));
+                }
                 if let Some(notice) = experimental_notice {
-                    spans.push(Span::styled(
-                        format!(" · ⚠ {}", notice),
-                        Style::default().fg(rgb(248, 190, 7)).bold(),
+                    segments.push(
+                        StatusSegment::new(1, format!("\u{26a0} {}", notice), warning_color())
+                            .bold(),
+                    );
+                }
+                if let Some(status) = subagent {
+                    segments.push(StatusSegment::new(4, format!("({})", status), dim_color()));
+                }
+                if let Some(problem) = kv_cache_problem {
+                    segments.push(StatusSegment::new(
+                        3,
+                        format!("\u{26a0} {}", cache_miss_label(problem)),
+                        warning_color(),
                     ));
                 }
-
-                if let Some(status) = subagent {
-                    spans.push(Span::styled(
-                        format!(" ({})", status),
-                        Style::default().fg(dim_color()),
-                    ));
+                segments.push(StatusSegment::new(5, format_elapsed(elapsed), dim_color()));
+                if let Some(label) = queued_suffix_for_segment(&queued_suffix) {
+                    segments.push(StatusSegment::new(6, label, queued_color()));
                 }
                 for label in transport_context_labels(app) {
+                    segments.push(StatusSegment::new(7, label, dim_color()));
+                }
+                segments.push(StatusSegment::new(
+                    8,
+                    format!("{} bg", crate::alphacode_tui_core::keybind::alt_chord("B")),
+                    dim_color(),
+                ));
+
+                let head_width: usize = spans
+                    .iter()
+                    .map(|span| unicode_width::UnicodeWidthStr::width(span.content.as_ref()))
+                    .sum();
+                let fitted = fit_status_segments(
+                    &segments,
+                    (area.width as usize).saturating_sub(head_width),
+                );
+                if !fitted.spans.is_empty() {
                     spans.push(Span::styled(
-                        format!(" · {}", label),
+                        STATUS_SEGMENT_GAP,
                         Style::default().fg(dim_color()),
                     ));
+                    spans.extend(fitted.spans);
                 }
-                spans.push(Span::styled(
-                    format!(" · {}", format_elapsed(elapsed)),
-                    Style::default().fg(dim_color()),
-                ));
-
-                if let Some(problem) = kv_cache_problem {
-                    let miss_tokens = problem.affected_tokens.unwrap_or(0);
-                    let miss_str = if miss_tokens >= 1000 {
-                        format!("{}k", miss_tokens / 1000)
-                    } else if miss_tokens > 0 {
-                        format!("{}", miss_tokens)
-                    } else {
-                        "kv".to_string()
-                    };
-                    spans.push(Span::styled(
-                        format!(" · ⚠ {} cache miss", miss_str),
-                        Style::default().fg(rgb(248, 190, 7)),
-                    ));
-                }
-
-                spans.push(Span::styled(
-                    format!(
-                        " · {} bg",
-                        crate::alphacode_tui_core::keybind::alt_chord("B")
-                    ),
-                    Style::default().fg(rgb(100, 100, 100)),
-                ));
-
-                push_queued_suffix(&mut spans, &queued_suffix);
                 Line::from(spans)
             }
         }
@@ -1519,9 +1660,9 @@ pub(super) fn draw_status(frame: &mut Frame, app: &dyn TuiState, area: Rect, pen
                 .unwrap_or(1_000_000);
             let warning_color =
                 if total >= severe_token_threshold || app.session_compaction_count() >= 3 {
-                    rgb(255, 100, 110)
+                    error_color()
                 } else {
-                    rgb(248, 190, 7)
+                    warning_color()
                 };
             Line::from(vec![
                 Span::styled("⚠ ", Style::default().fg(warning_color)),
@@ -1534,8 +1675,12 @@ pub(super) fn draw_status(frame: &mut Frame, app: &dyn TuiState, area: Rect, pen
             // tips used to displace the `ctx=` reading entirely, hiding the
             // most important number for up to 12s at a time.
             tip
-        } else if let Some(stats) = idle_session_stats_line(app, area.width as usize) {
-            stats
+        } else if area.width < NARROW_STATUS_FALLBACK_WIDTH {
+            // The session numbers (model, tokens, ctx, queue) live in the
+            // header strip now, so the bottom row stays a clean activity/tip
+            // line. On narrow terminals the header strip may have dropped
+            // fragments, so fall back to the stats line there.
+            idle_session_stats_line(app, area.width as usize).unwrap_or_default()
         } else {
             Line::from("")
         }
@@ -1605,30 +1750,53 @@ fn push_queued_suffix(spans: &mut Vec<Span<'static>>, queued_suffix: &str) {
     }
 }
 
+/// Same queued info as `queued_suffix`, but as a standalone segment text (the
+/// leading `" · "` is the fitter's job to re-insert between kept segments).
+fn queued_suffix_for_segment(queued_suffix: &str) -> Option<String> {
+    let label = queued_suffix
+        .trim_start_matches(' ')
+        .trim_start_matches('·');
+    let label = label.trim();
+    (!label.is_empty()).then(|| label.to_string())
+}
+
+/// Compact, human-readable cache-miss label: "12k cache miss", "800 cache
+/// miss", or a bare "kv cache miss" when the provider didn't report a size.
+fn cache_miss_label(problem: crate::alphacode_tui::tui::KvCacheProblem) -> String {
+    let miss_tokens = problem.affected_tokens.unwrap_or(0);
+    let miss_str = if miss_tokens >= 1000 {
+        format!("{}k", miss_tokens / 1000)
+    } else if miss_tokens > 0 {
+        format!("{}", miss_tokens)
+    } else {
+        "kv".to_string()
+    };
+    format!("{} cache miss", miss_str)
+}
+
+/// Assemble the streaming status row: activity spinner, then as many
+/// priority-tagged segments as fit in `max_width`, then the queued suffix
+/// (which outranks transport detail but yields to the core readings).
 fn streaming_status_spans(
     spinner: &'static str,
-    status_text: String,
-    _stream_message_ended: bool,
-    has_warning: bool,
-    queued_suffix: &str,
+    mut segments: Vec<StatusSegment>,
+    queued_label: Option<String>,
+    max_width: usize,
 ) -> Vec<Span<'static>> {
+    use unicode_width::UnicodeWidthStr;
+
     let mut spans = Vec::with_capacity(6);
     spans.push(Span::styled(
         spinner,
         Style::default().fg(ai_color()).add_modifier(Modifier::BOLD),
     ));
-    // Use a slightly brighter dim color for streaming status to improve
-    // readability against the dark background.
-    let status_color = if has_warning {
-        rgb(255, 200, 88)
-    } else {
-        rgb(138, 142, 158)
-    };
-    spans.push(Span::styled(
-        format!(" {}", status_text),
-        Style::default().fg(status_color),
-    ));
-    push_queued_suffix(&mut spans, queued_suffix);
+    spans.push(Span::raw(" "));
+    if let Some(label) = queued_label {
+        segments.push(StatusSegment::new(5, label, queued_color()));
+    }
+    let prefix_width = UnicodeWidthStr::width(spinner) + 1; // spinner + gap
+    let fitted = fit_status_segments(&segments, max_width.saturating_sub(prefix_width));
+    spans.extend(fitted.spans);
     spans
 }
 
@@ -1864,6 +2032,81 @@ mod tests {
     #[test]
     fn compact_session_stats_respect_zero_width() {
         let line = compact_idle_session_stats_line("model", 42, Some("10%"), 0);
+        assert!(line.spans.is_empty());
+    }
+
+    #[test]
+    fn fit_status_segments_keeps_high_priority_fragments_at_narrow_widths() {
+        let segments = vec![
+            StatusSegment::new(3, "claude \u{00b7} sonnet", user_color()).short("sonnet"),
+            StatusSegment::new(
+                2,
+                "\u{2301} 24k total \u{00b7} \u{2191}18k \u{00b7} \u{2193}6k",
+                muted_text_color(),
+            )
+            .short("\u{2301} 24k"),
+            StatusSegment::new(1, "ctx=42%", muted_text_color()),
+        ];
+
+        for width in 1..=48 {
+            let line = fit_status_segments(&segments, width);
+            assert!(
+                line.width() <= width,
+                "width {width}: {:?}",
+                joined(&line.spans)
+            );
+        }
+
+        let narrow = joined(&fit_status_segments(&segments, 10).spans);
+        assert!(narrow.contains("ctx=42%"), "{narrow}");
+        assert!(!narrow.contains("24k total"), "{narrow}");
+
+        // 48 columns is not enough for the provider-prefixed model name *and*
+        // the full token breakdown, so the fitter shortens the model first.
+        let squeezed = joined(&fit_status_segments(&segments, 48).spans);
+        assert!(squeezed.contains("sonnet"), "{squeezed}");
+        assert!(squeezed.contains("\u{2191}18k"), "{squeezed}");
+        assert!(squeezed.contains("ctx=42%"), "{squeezed}");
+
+        // With room to spare, every segment renders in its full form.
+        let wide = joined(&fit_status_segments(&segments, 60).spans);
+        assert!(wide.contains("claude \u{00b7} sonnet"), "{wide}");
+        assert!(wide.contains("\u{2191}18k"), "{wide}");
+        assert!(wide.contains("ctx=42%"), "{wide}");
+    }
+
+    #[test]
+    fn fit_status_segments_prefers_short_forms_before_dropping() {
+        let segments = vec![
+            StatusSegment::new(
+                2,
+                "\u{2301} 24k total \u{00b7} \u{2191}18k \u{00b7} \u{2193}6k",
+                muted_text_color(),
+            )
+            .short("\u{2301} 24k"),
+            StatusSegment::new(1, "ctx=42%", muted_text_color()),
+        ];
+
+        // The long token form needs 24 columns, the short one 5; with 16 the
+        // fitter must fall back to the short form rather than drop the tokens.
+        let line = fit_status_segments(&segments, 16);
+        assert_eq!(joined(&line.spans), "\u{2301} 24k \u{00b7} ctx=42%");
+        assert!(line.width() <= 16);
+    }
+
+    #[test]
+    fn fit_status_segments_orders_survivors_by_display_not_priority() {
+        let segments = vec![
+            StatusSegment::new(2, "model", user_color()),
+            StatusSegment::new(1, "ctx=42%", muted_text_color()),
+        ];
+        let line = fit_status_segments(&segments, 40);
+        assert_eq!(joined(&line.spans), "model \u{00b7} ctx=42%");
+    }
+
+    #[test]
+    fn fit_status_segments_handles_zero_width() {
+        let line = fit_status_segments(&[StatusSegment::new(1, "x", dim_color())], 0);
         assert!(line.spans.is_empty());
     }
 
@@ -2128,21 +2371,70 @@ mod tests {
 
     #[test]
     fn streaming_status_spans_keep_spinner_while_finalizing() {
-        let spans = streaming_status_spans("⠋", "4.2s".to_string(), false, false, " · +1 queued");
+        let spans = streaming_status_spans(
+            "⠋",
+            vec![StatusSegment::new(2, "4.2s", muted_text_color())],
+            Some("+1 queued".to_string()),
+            80,
+        );
 
-        assert_eq!(spans.len(), 3);
         assert_eq!(spans[0].content.as_ref(), "⠋");
-        assert_eq!(spans[1].content.as_ref(), " 4.2s");
-        assert_eq!(spans[2].content.as_ref(), " · +1 queued");
+        assert_eq!(spans[1].content.as_ref(), " ");
+        let joined = joined(&spans);
+        assert_eq!(joined, "⠋ 4.2s · +1 queued");
     }
 
     #[test]
     fn streaming_status_spans_keep_spinner_after_message_end_while_finalizing() {
-        let spans = streaming_status_spans("⠋", "finalizing".to_string(), true, false, "");
+        let spans = streaming_status_spans(
+            "⠋",
+            vec![StatusSegment::new(2, "finalizing", muted_text_color())],
+            None,
+            80,
+        );
 
-        assert_eq!(spans.len(), 2);
         assert_eq!(spans[0].content.as_ref(), "⠋");
-        assert_eq!(spans[1].content.as_ref(), " finalizing");
+        let joined = joined(&spans);
+        assert_eq!(joined, "⠋ finalizing");
+    }
+
+    /// On a narrow row the streaming status must degrade by priority instead
+    /// of clipping its tail: the queued count (a lower-priority hint) yields
+    /// before the liveness label, and the whole row stays within budget.
+    #[test]
+    fn streaming_status_spans_drop_low_priority_segments_before_clipping() {
+        let build = |width: usize| {
+            streaming_status_spans(
+                "⠋",
+                vec![
+                    StatusSegment::new(1, "ctx=42%", muted_text_color()),
+                    StatusSegment::new(6, "localhost:8080", dim_color()),
+                ],
+                Some("+3 queued".to_string()),
+                width,
+            )
+        };
+
+        let wide = joined(&build(80));
+        assert!(wide.contains("ctx=42%"), "{wide}");
+        assert!(wide.contains("localhost:8080"), "{wide}");
+        assert!(wide.contains("+3 queued"), "{wide}");
+
+        // Just enough for the context reading and the queued count: the
+        // transport detail must be the one that yields, and nothing may
+        // overflow into an ellipsis clip.
+        let narrow = build(24);
+        let text = joined(&narrow);
+        assert!(text.contains("ctx=42%"), "{text}");
+        assert!(!text.contains("localhost:8080"), "{text}");
+        assert!(
+            narrow
+                .iter()
+                .map(|span| unicode_width::UnicodeWidthStr::width(span.content.as_ref()))
+                .sum::<usize>()
+                <= 24,
+            "{text}"
+        );
     }
 
     #[test]
@@ -2327,7 +2619,7 @@ pub(super) fn build_notification_spans(app: &dyn TuiState) -> Vec<Span<'static>>
         } else {
             format!("{} selection · drag to copy", pane_label)
         };
-        spans.push(Span::styled(label, Style::default().fg(rgb(140, 220, 200))));
+        spans.push(Span::styled(label, Style::default().fg(info_color())));
     }
 
     if let Some(flicker_notice) = super::recent_flicker_ui_notice() {
@@ -2353,19 +2645,19 @@ pub(super) fn build_notification_spans(app: &dyn TuiState) -> Vec<Span<'static>>
         push_sep(&mut spans);
         spans.push(Span::styled(
             flicker_notice.summary,
-            Style::default().fg(rgb(248, 190, 7)),
+            Style::default().fg(warning_color()),
         ));
         push_sep(&mut spans);
         spans.push(Span::styled(
             flicker_notice.hint,
-            Style::default().fg(rgb(115, 180, 252)),
+            Style::default().fg(info_color()),
         ));
         spans.push(Span::raw(" "));
         if let Some(success) = copy_badge_ui.feedback_for_key(key, copy_badge_now) {
             let feedback_style = if success {
                 Style::default().fg(ai_color()).bold()
             } else {
-                Style::default().fg(Color::Red).bold()
+                Style::default().fg(error_color()).bold()
             };
             let feedback_text = if success {
                 "✓ Copied! "
@@ -2401,7 +2693,7 @@ pub(super) fn build_notification_spans(app: &dyn TuiState) -> Vec<Span<'static>>
         push_sep(&mut spans);
         spans.push(Span::styled(
             normalize_repaint_sensitive_notice_text(&hint),
-            Style::default().fg(rgb(214, 122, 255)).bold(),
+            Style::default().fg(accent_color()).bold(),
         ));
     }
 
@@ -2411,7 +2703,7 @@ pub(super) fn build_notification_spans(app: &dyn TuiState) -> Vec<Span<'static>>
         push_sep(&mut spans);
         spans.push(Span::styled(
             normalize_repaint_sensitive_notice_text(&feedback),
-            Style::default().fg(rgb(102, 204, 221)),
+            Style::default().fg(info_color()),
         ));
     }
 
@@ -2423,7 +2715,7 @@ pub(super) fn build_notification_spans(app: &dyn TuiState) -> Vec<Span<'static>>
             push_sep(&mut spans);
             spans.push(Span::styled(
                 schedule_notice,
-                Style::default().fg(rgb(140, 180, 255)),
+                Style::default().fg(info_color()),
             ));
         }
 
@@ -2444,7 +2736,7 @@ pub(super) fn build_notification_spans(app: &dyn TuiState) -> Vec<Span<'static>>
                 push_sep(&mut spans);
                 spans.push(Span::styled(
                     format!("🧊 cache cold{}", tokens_str),
-                    Style::default().fg(rgb(140, 180, 255)),
+                    Style::default().fg(info_color()),
                 ));
                 // Small gray "how long ago it went cold" hint, e.g. `1h 1m`.
                 spans.push(Span::styled(
@@ -2476,7 +2768,7 @@ pub(super) fn build_notification_spans(app: &dyn TuiState) -> Vec<Span<'static>>
                 push_sep(&mut spans);
                 spans.push(Span::styled(
                     format!("⏳ cache {}{}", time_str, tokens_str),
-                    Style::default().fg(rgb(248, 190, 7)),
+                    Style::default().fg(warning_color()),
                 ));
             }
         }
@@ -2486,7 +2778,7 @@ pub(super) fn build_notification_spans(app: &dyn TuiState) -> Vec<Span<'static>>
         push_sep(&mut spans);
         spans.push(Span::styled(
             "📋 stash",
-            Style::default().fg(rgb(248, 190, 7)),
+            Style::default().fg(warning_color()),
         ));
     }
 
@@ -2518,14 +2810,14 @@ pub(super) fn draw_overscroll_status(frame: &mut Frame, app: &dyn TuiState, area
     }
     let data = app.info_widget_data();
 
-    let sep = || Span::styled(" · ", Style::default().fg(rgb(100, 100, 110)));
+    let sep = || Span::styled(" · ", Style::default().fg(dim_color()));
 
     // The countdown is the priority affordance: it explains the line exists and
     // is going away. Build it first so it always gets space on the right edge.
     let countdown: Option<Span> = app.chat_overscroll_remaining().map(|secs| {
         Span::styled(
             format!("(overscroll {:.1})", secs.max(0.0)),
-            Style::default().fg(rgb(150, 150, 165)).italic(),
+            Style::default().fg(muted_text_color()).italic(),
         )
     });
 
@@ -2540,7 +2832,7 @@ pub(super) fn draw_overscroll_status(frame: &mut Frame, app: &dyn TuiState, area
     if !model.is_empty() && !overscroll_is_placeholder(&model) {
         spans.push(Span::styled(
             session_facts::pretty_model(&model),
-            Style::default().fg(rgb(125, 195, 255)).bold(),
+            Style::default().fg(user_color()).bold(),
         ));
         // Reasoning level shown inline next to the model, e.g. " high".
         if let Some(effort) = data
@@ -2550,7 +2842,7 @@ pub(super) fn draw_overscroll_status(frame: &mut Frame, app: &dyn TuiState, area
         {
             spans.push(Span::styled(
                 format!(" {}", effort),
-                Style::default().fg(rgb(140, 140, 150)),
+                Style::default().fg(muted_text_color()),
             ));
         }
     }
@@ -2567,7 +2859,7 @@ pub(super) fn draw_overscroll_status(frame: &mut Frame, app: &dyn TuiState, area
         }
         spans.push(Span::styled(
             overscroll_provider_display(&provider),
-            Style::default().fg(rgb(140, 180, 255)),
+            Style::default().fg(info_color()),
         ));
     }
 
@@ -2590,7 +2882,7 @@ pub(super) fn draw_overscroll_status(frame: &mut Frame, app: &dyn TuiState, area
                 overscroll_format_tokens(used),
                 overscroll_format_tokens(limit)
             ),
-            Style::default().fg(rgb(140, 140, 150)),
+            Style::default().fg(muted_text_color()),
         ));
         spans.extend(overscroll_context_bar(used, limit, 10));
     }
@@ -2601,12 +2893,12 @@ pub(super) fn draw_overscroll_status(frame: &mut Frame, app: &dyn TuiState, area
         if !spans.is_empty() {
             spans.push(sep());
         }
-        spans.push(Span::styled(" ", Style::default().fg(rgb(140, 180, 255))));
-        spans.push(Span::styled(dir, Style::default().fg(rgb(140, 140, 150))));
+        spans.push(Span::styled(" ", Style::default().fg(info_color())));
+        spans.push(Span::styled(dir, Style::default().fg(muted_text_color())));
         if let Some(branch) = overscroll_git_branch(&data) {
             spans.push(Span::styled(
                 format!("  {branch}"),
-                Style::default().fg(rgb(150, 170, 140)),
+                Style::default().fg(success_color()),
             ));
         }
     }
@@ -2711,7 +3003,7 @@ fn overscroll_truncate_spans(spans: Vec<Span<'static>>, max_width: usize) -> Vec
         }
         break;
     }
-    out.push(Span::styled("…", Style::default().fg(rgb(100, 100, 110))));
+    out.push(Span::styled("…", Style::default().fg(dim_color())));
     out
 }
 
@@ -2782,15 +3074,18 @@ fn overscroll_auth_label(
     match method {
         AuthMethod::Unknown => None,
         AuthMethod::ApiKey | AuthMethod::AnthropicApiKey | AuthMethod::OpenAIApiKey => {
-            Some(("API key", rgb(180, 180, 190)))
+            Some(("API key", muted_text_color()))
         }
         AuthMethod::OpenRouterApiKey | AuthMethod::OpenCodeApiKey => {
-            Some(("API key", rgb(140, 180, 255)))
+            Some(("API key", info_color()))
         }
-        AuthMethod::AnthropicOAuth => Some(("OAuth", rgb(255, 160, 100))),
-        AuthMethod::OpenAIOAuth => Some(("OAuth", rgb(100, 200, 180))),
-        AuthMethod::CopilotOAuth => Some(("OAuth", rgb(110, 200, 140))),
-        AuthMethod::GeminiOAuth => Some(("OAuth", rgb(120, 190, 255))),
+        // All OAuth flows share one accent: the provider name right next to the
+        // chip already carries the brand identity, so per-provider hues here
+        // just read as noise against the rest of the chrome.
+        AuthMethod::AnthropicOAuth
+        | AuthMethod::OpenAIOAuth
+        | AuthMethod::CopilotOAuth
+        | AuthMethod::GeminiOAuth => Some(("OAuth", accent_color())),
     }
 }
 
@@ -2850,16 +3145,17 @@ fn overscroll_context_bar(used: usize, limit: usize, cells: usize) -> Vec<Span<'
     let filled = (ratio * cells as f64).round() as usize;
     let filled = filled.min(cells);
 
-    // Match the info widget usage bar palette (based on remaining context).
+    // Thresholds match the info widget usage bar: the meter reddens as the
+    // remaining context shrinks, and the track sits on the shared border role.
     let left_pct = 100u16.saturating_sub(pct);
     let fill_color = if left_pct <= 20 {
-        rgb(255, 100, 100)
+        error_color()
     } else if left_pct <= 50 {
-        rgb(255, 200, 100)
+        warning_color()
     } else {
-        rgb(100, 200, 100)
+        success_color()
     };
-    let track_color = rgb(50, 50, 60);
+    let track_color = border_color();
 
     let mut spans = Vec::with_capacity(cells + 2);
     // Slim segmented pill (▰ filled / ▱ empty) reads thinner than full blocks.
@@ -2881,10 +3177,33 @@ fn overscroll_context_bar(used: usize, limit: usize, cells: usize) -> Vec<Span<'
 const RIGHT_FACT_CONTEXT_CELLS: usize = 6;
 const RIGHT_FACT_GAP: u16 = 2;
 const RIGHT_FACT_PAD: u16 = 1;
+
+/// Columns the session-fact stack may occupy on the rows it can dock on,
+/// including its left gutter and right pad. Chrome decoration that paints
+/// across such a row (the transcript-gap gradient rule) must stop short of
+/// this band: the stack only docks on rows whose suffix cells are genuinely
+/// blank, so a full-width rule makes the row impassable and the stack either
+/// settles higher in the transcript or hides entirely.
+pub(super) fn right_fact_reserved_width(app: &dyn TuiState) -> u16 {
+    if app.chat_overscroll_active() {
+        // The legacy overscroll row owns the facts while it is revealed; the
+        // stack stands down and needs no band.
+        return 0;
+    }
+    right_fact_lines(app)
+        .iter()
+        .map(|line| {
+            line.width
+                .saturating_add(RIGHT_FACT_GAP)
+                .saturating_add(RIGHT_FACT_PAD)
+        })
+        .max()
+        .unwrap_or(0)
+}
 const RIGHT_FACT_TRANSCRIPT_ROWS: u16 = 4;
 
 fn right_fact_neutral_style() -> Style {
-    Style::default().fg(rgb(140, 140, 150))
+    Style::default().fg(muted_text_color())
 }
 
 #[derive(Clone)]
@@ -3836,17 +4155,17 @@ fn send_mode_indicator(app: &dyn TuiState) -> (&'static str, Color) {
     if mode.is_shell() {
         ("$", shell_mode_color())
     } else if app.next_prompt_new_session_armed() {
-        ("↗", rgb(120, 200, 255))
+        ("↗", info_color())
     } else if app.queue_mode() {
         ("⏳", queued_color())
     } else if let Some(ref conn) = app.connection_type() {
         let lower = conn.to_lowercase();
         if lower.contains("websocket") {
-            ("󰌘", rgb(100, 200, 180))
+            ("󰌘", success_color())
         } else if lower.contains("subprocess") || lower.contains("cli") {
-            ("󰆍", rgb(180, 160, 220))
+            ("󰆍", accent_color())
         } else {
-            ("󰖟", rgb(140, 180, 255))
+            ("󰖟", info_color())
         }
     } else {
         ("", asap_color())

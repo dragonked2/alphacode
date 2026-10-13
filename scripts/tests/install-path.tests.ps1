@@ -41,8 +41,13 @@ if (-not (Test-Path $Installer)) {
 # disappears when the helper returns, which would leave every test below
 # calling a command that does not exist.
 #
-# The class definition (AlphacodeInstallFailure) is extracted too, because the
-# tests below assert on the type thrown by Fail.
+# The class definitions are extracted too, so that any type the installer
+# throws is loadable in the scope the tests below assert in. The installer
+# itself deliberately throws a framework type rather than a custom class --
+# Windows PowerShell 5.1 cannot parse a constructor inside a PowerShell class,
+# and a class that only carries a field loses its text in
+# $_.Exception.Message, which is the text the user actually reads -- but the
+# scan is kept so a reintroduced class is still visible to the assertions.
 # ---------------------------------------------------------------------------
 function Get-InstallerDefinitions {
     param([Parameter(Mandatory)][string]$Path)
@@ -62,9 +67,9 @@ function Get-InstallerDefinitions {
         throw "no functions found in $Path -- the AST extraction is broken, so these tests would vacuously pass"
     }
 
-    # Classes too: `class AlphacodeInstallFailure` is a TypeDefinitionAst and is
-    # not covered by the function search above. Without it, `Fail` cannot throw
-    # its typed exception and the integrity tests below cannot assert on it.
+    # Classes too: a TypeDefinitionAst is not covered by the function search
+    # above, so a class the installer throws would otherwise not exist in the
+    # scope where the assertions below run.
     $classes = $ast.FindAll(
         { param($node) $node -is [System.Management.Automation.Language.TypeDefinitionAst] },
         $true
@@ -80,6 +85,18 @@ function Get-InstallerDefinitions {
 
 $installerFunctions = Get-InstallerDefinitions -Path $Installer
 . $installerFunctions.Definition
+
+# install.ps1 assigns $script:AlphacodeIsHosted at the top level. That is a
+# statement, not a function, so the AST extraction above does not carry it --
+# and Test-AlphacodeHost returns it, meaning the helper answers $null rather
+# than a boolean until the assignment is supplied here. Without this line the
+# assertion below fails with "cannot call a method on a null-valued
+# expression", which says nothing about the installer.
+#
+# The value mirrors the installer's own: a function created by
+# [scriptblock]::Create() has no file origin, so $PSCommandPath is empty
+# inside it and "hosted" is the correct answer for this harness.
+$script:AlphacodeIsHosted = $true
 
 # Verify the functions are actually callable, not merely present in the AST.
 # A name-only check passed while every test failed with "not recognized",
@@ -97,7 +114,7 @@ foreach ($required in @(
     'Get-AlphacodeWindowsArch',
     'Test-AlphacodeWindows',
     'Test-AlphacodeHost',
-    'Fail'
+    'Stop-AlphacodeInstall'
 )) {
     if ($installerFunctions.Names -notcontains $required) {
         throw "expected function '$required' was not found in install.ps1 (found: $($installerFunctions.Names -join ', '))"
@@ -139,7 +156,12 @@ function Assert-True {
 
 function Assert-Contains {
     param([string]$Haystack, [string]$Needle, [string]$Because = '')
-    if ($Haystack -notlike "*$Needle*") {
+    # -like treats *, ? and [ ] as wildcards, and at least one needle here is a
+    # literal bracket (the ends of a progress bar) -- which makes -like throw
+    # on an invalid pattern rather than simply not match. Escaping keeps the
+    # search literal. Single-quoted so the backticks survive into the pattern.
+    $pattern = $Needle.Replace('[', '`[').Replace(']', '`]').Replace('*', '`*').Replace('?', '`?')
+    if ($Haystack -notlike "*$pattern*") {
         throw "expected to find [$Needle] in [$Haystack]$(" ($Because)")"
     }
 }
@@ -369,36 +391,42 @@ It 'returns null when nothing is set at all' {
 # ---------------------------------------------------------------------------
 # Failure semantics.
 #
-# Regression tests for `Fail` calling `exit`. Under the documented invocation
-# `iwr ... | iex`, `exit` does not end the installer -- it ends the user's
-# terminal. Fail must therefore throw, and it must throw a distinguishable type
-# so that the catch blocks which tolerate *network* errors do not silently
-# downgrade an *integrity* failure.
+# Regression tests for the abort path calling `exit`. Under the documented
+# invocation `irm ... | iex`, `exit` does not end the installer -- it ends the
+# user's terminal. Stopping must therefore throw, and must throw a type the
+# catch blocks which tolerate *network* errors can tell apart from an
+# *integrity* failure, so a tampered download is never silently downgraded to
+# a warning.
 # ---------------------------------------------------------------------------
 
-It 'Fail throws instead of exiting' {
-    # If Fail called exit, this scriptblock would terminate the test host and
-    # the suite would die here. Reaching the assertion proves it returned.
+It 'Stop-AlphacodeInstall throws instead of exiting' {
+    # If it called exit, this scriptblock would terminate the test host and the
+    # suite would die here. Reaching the assertion proves it returned.
     $threw = $false
-    try { Fail 'expected test failure' } catch { $threw = $true }
-    Assert-True $threw -Because 'Fail must raise a terminating error'
+    try { Stop-AlphacodeInstall 'expected test failure' } catch { $threw = $true }
+    Assert-True $threw -Because 'Stop-AlphacodeInstall must raise a terminating error'
 }
 
-It 'Fail throws a typed exception' {
+It 'Stop-AlphacodeInstall throws a framework type, not a custom class' {
+    # A custom class was tried and then removed on purpose: Windows PowerShell
+    # 5.1 cannot parse a constructor inside a PowerShell class, so such a
+    # class either failed to load or -- when it only carried a field -- lost
+    # its text in $_.Exception.Message. A framework type has neither problem.
     $caught = $null
-    try { Fail 'typed' } catch { $caught = $_ }
-    Assert-True ($caught -is [System.Management.Automation.ErrorRecord]) -Because 'must surface as an ErrorRecord'
-    Assert-True ($caught.Exception -is [AlphacodeInstallFailure]) `
-        -Because 'the type is what lets a network-failure catch rethrow an integrity failure'
+    try { Stop-AlphacodeInstall 'typed' } catch { $caught = $_ }
+    Assert-True ($caught -is [System.Management.Automation.ErrorRecord]) `
+        -Because 'must surface as an ErrorRecord'
+    Assert-True ($caught.Exception -is [System.InvalidOperationException]) `
+        -Because 'this is the type the PS 5.1-safe abort path throws'
 }
 
-It 'Fail carries its message through' {
-    # Asserted on .Detail, not .Message: System.Exception.Message is read-only
-    # after construction, and the PS 5.1-safe ctor cannot set it. See the class
-    # definition for the full set of measured constraints.
+It 'Stop-AlphacodeInstall carries its message through' {
+    # Asserted on .Message, because that is what the installer's tail prints as
+    # `[fail] <message>` and therefore what the user reads. This is the whole
+    # reason the implementation avoids a custom class.
     $caught = $null
-    try { Fail 'the specific message' } catch { $caught = $_ }
-    Assert-Equal 'the specific message' $caught.Exception.Detail
+    try { Stop-AlphacodeInstall 'the specific message' } catch { $caught = $_ }
+    Assert-Equal 'the specific message' $caught.Exception.Message
 }
 
 # ---------------------------------------------------------------------------
@@ -423,10 +451,16 @@ It 'Test-AlphacodeHost keys off $PSCommandPath, not $MyInvocation' {
     # rather than a single line. A one-line filter finds nothing here -- which
     # is exactly how the previous version of this assertion passed vacuously.
     Assert-True ($installerCode -match 'function\s+Test-AlphacodeHost') `
-        -Because 'expected exactly one definition of Test-AlphacodeHost'
-    Assert-True ($installerCode -match 'Test-AlphacodeHost[\s\S]{0,400}?\$PSCommandPath') `
-        -Because 'the host check must read $PSCommandPath, which is populated for a -File run'
-    Assert-True ($installerCode -notmatch 'Test-AlphacodeHost[\s\S]{0,400}?\$MyInvocation') `
+        -Because 'expected at least one definition of Test-AlphacodeHost'
+    # The helper answers from a top-level flag rather than reading
+    # $PSCommandPath itself, so the read has moved to that flag's definition --
+    # assert it there, or this would pass while the flag was assigned from
+    # anything at all.
+    Assert-True ($installerCode -match 'AlphacodeIsHosted\s*=\s*\[string\]::IsNullOrEmpty\(\$PSCommandPath\)') `
+        -Because 'the hosted flag must be derived from $PSCommandPath, which is populated for a -File run'
+    Assert-True ($installerCode -match 'function\s+Test-AlphacodeHost[\s\S]{0,300}?AlphacodeIsHosted') `
+        -Because 'Test-AlphacodeHost must answer from that flag, not re-derive it'
+    Assert-True ($installerCode -notmatch 'AlphacodeIsHosted\s*=\s*\[string\]::IsNullOrEmpty\(\$MyInvocation') `
         -Because '$MyInvocation.ScriptName is empty at the top level of a -File script, so using it would suppress the exit code CI relies on'
 }
 
@@ -551,6 +585,92 @@ It 'dry run reports a plan and writes nothing' {
 }
 
 # ---------------------------------------------------------------------------
+# The download path.
+#
+# Deliberately network-free: the transfer itself was verified by hand against a
+# real release -- including a resumed transfer landing byte-identical to the
+# original, and a 404 short-circuiting in under a second instead of burning all
+# three attempts -- and a suite that reached out to github.com would be slow and
+# flaky on every CI run. What is asserted here is the contract a behavioural
+# test cannot see: that the installer streams rather than buffers, resumes
+# rather than restarts, and formats its progress line correctly.
+# ---------------------------------------------------------------------------
+
+It 'draws nothing at all when output is redirected' {
+    # Checked against the REAL console detection, before the override further
+    # down replaces it. The bar is carriage-return based, so in a captured log
+    # it would smear hundreds of half-written lines into the file.
+    if (-not [Console]::IsOutputRedirected) { return }
+    $drawn = Write-AlphacodeProgressLine -Received 6800000 -Total 21800000 -Rate 312000 6>&1 | Out-String
+    Assert-Equal '' $drawn.Trim() -Because 'a redirected run must not emit progress frames'
+}
+
+# Redefined at script scope on purpose: the installer's own version returns
+# false whenever output is redirected, which is always the case for a piped
+# suite, so the rendering tests below would otherwise assert on nothing. The
+# installer functions were dot-sourced into this scope, so this replaces them.
+function Test-AlphacodeConsole { [CmdletBinding()] param(); return $true }
+
+It 'renders a sized progress frame with percentage, rate and ETA' {
+    # Rate is the whole point of the bar: throughput is what distinguishes a
+    # link that is slow from one that has stopped, which no amount of bar fill
+    # conveys on its own.
+    $drawn = Write-AlphacodeProgressLine -Received 6800000 -Total 21800000 -Rate 312000 -Done 6>&1 |
+             Out-String
+    Assert-Contains $drawn '['   -Because 'the bar itself must be drawn'
+    Assert-Contains $drawn '31%' -Because 'the percentage must be shown'
+    Assert-Contains $drawn 'MB'  -Because 'byte counts must be human-readable, not raw'
+    Assert-Contains $drawn '/s'  -Because 'throughput tells a slow link from a stalled one'
+    Assert-Contains $drawn 'eta' -Because 'an ETA is the only way to decide whether to wait'
+}
+
+It 'shows an indeterminate marker rather than a fake percentage when the size is unknown' {
+    $drawn = Write-AlphacodeProgressLine -Received 65536 -Total 0 -Rate 32000 -Done 6>&1 | Out-String
+    Assert-True ($drawn -notmatch '\d+%') `
+        -Because 'with no Content-Length a percentage would be invented, not measured'
+}
+
+It 'renders an ETA of --:-- instead of a number when the rate is unknown' {
+    $drawn = Write-AlphacodeProgressLine -Received 1024 -Total 21800000 -Rate 0 -Done 6>&1 | Out-String
+    Assert-Contains $drawn 'eta --:--' `
+        -Because 'dividing by a zero rate would produce an ETA that means nothing'
+}
+
+It 'streams the release asset instead of buffering it through Invoke-WebRequest' {
+    # The regression behind "I see no progress while it downloads":
+    # Invoke-WebRequest -OutFile on Windows PowerShell 5.1 holds the whole body
+    # in memory and writes the file only once the transfer has finished, so a
+    # 20 MB asset is invisible until it is nearly done and then appears at once.
+    #
+    # Asserted on code with comments stripped: the comment block above the new
+    # function names Invoke-WebRequest while explaining why it is not used, so a
+    # raw-text search would match that explanation and stay green forever.
+    Assert-True ($installerCode -match 'function\s+Invoke-AlphacodeStreamingDownload') `
+        -Because 'the streaming transfer is what draws the bar as bytes arrive'
+    Assert-True ($installerCode -notmatch 'Invoke-WebRequest[^\r\n]*-OutFile') `
+        -Because 'a buffered -OutFile download cannot show progress and must not return'
+}
+
+It 'resumes an interrupted transfer instead of restarting it' {
+    Assert-True ($installerCode -match 'AddRange') `
+        -Because 'a retry must ask for the remaining bytes, not the whole file'
+    Assert-True ($installerCode -match '\[System\.IO\.FileMode\]::Append') `
+        -Because 'resumed bytes have to be appended to what is already on disk'
+    # Only ever across retries of the SAME url: appending one candidate asset
+    # onto another candidate's partial file would silently yield a corrupt
+    # archive that the checksum step may not catch.
+    Assert-True ($installerCode -match 'Remove-Item -LiteralPath \$OutFile') `
+        -Because 'a partial left by an earlier candidate URL must be discarded first'
+}
+
+It 'gives up on a stalled transfer instead of hanging forever' {
+    # A half-open socket is common on a slow link and would otherwise leave the
+    # installer waiting indefinitely with neither movement nor an error.
+    Assert-True ($installerCode -match 'ReadWriteTimeout') `
+        -Because 'a read that blocks too long must fail the transfer so it can retry'
+}
+
+# ---------------------------------------------------------------------------
 # Source-text guards.
 #
 # A few defects were "the script says the wrong thing" rather than "the script
@@ -584,14 +704,22 @@ It 'keeps the default install prefix under Programs\' {
     # "%LOCALAPPDATA%\Programs\alphacode", so a raw-text search was satisfied by
     # a comment and stayed green after the default was reverted.
     #
-    # Uses -like rather than -match. The value contains a backslash, and
-    # escaping it correctly through a PowerShell regex inside a single-quoted
-    # string plus a shell heredoc is exactly the kind of thing that silently
-    # stops matching; -like has no such failure mode.
-    Assert-True ($installerCode -like "*Join-Path `$localAppData 'Programs\alphacode'*") `
+    # The variable holding LOCALAPPDATA has been renamed more than once
+    # ($localAppData, now $lad), and pinning that name turned this into a test
+    # of a local variable rather than of the default path. It asserts the shape
+    # instead, allowing any number of qualifiers ($lad, $env:LOCALAPPDATA).
+    #
+    # Single-quoted on purpose: the patterns contain $ and \, and a
+    # double-quoted string would try to evaluate $(...) as a subexpression and
+    # eat the backslash that escapes the dollar. Single quotes keep both
+    # literal, so the regex sees exactly what is written.
+    Assert-True ($installerCode -match 'Join-Path\s+\$[\w:]+\s+''Programs\\alphacode''') `
         -Because 'the computed default prefix must be <LOCALAPPDATA>\Programs\alphacode'
 
-    Assert-True ($installerCode -notlike "*Join-Path `$localAppData 'alphacode'*") `
+    # Machine scope legitimately uses (Join-Path $pf 'alphacode') for Program
+    # Files, so this rules out only the *user* scope falling back to the data
+    # directory, which is what the prefix above exists to avoid.
+    Assert-True ($installerCode -notmatch 'Join-Path\s+\$(env:)?LOCALAPPDATA\s+''alphacode''') `
         -Because 'the binary must not live in the app data directory'
 }
 
@@ -646,7 +774,11 @@ It 'compares the checksum outside the catch that tolerates network errors' {
         $l = $codeLines[$i]
         if ($l -match '^\s*#') { continue }
         if ($fetchIdx   -lt 0 -and $l -like '*could not fetch SHA256SUMS*') { $fetchIdx = $i }
-        if ($mismatchIdx -lt 0 -and $l -match 'Fail\s*\(\s*\(?\s*"checksum mismatch') { $mismatchIdx = $i }
+        # The abort helper was `Fail` when this guard was written and is
+        # `Stop-AlphacodeInstall` now; only the surrounding shape matters.
+        if ($mismatchIdx -lt 0 -and $l -match 'Stop-AlphacodeInstall\s*\(\s*\(?\s*"Checksum mismatch') {
+            $mismatchIdx = $i
+        }
     }
     Assert-True ($fetchIdx -ge 0) `
         -Because 'expected the rewritten checksum fetch warning to be present in code'

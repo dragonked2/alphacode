@@ -114,6 +114,127 @@ fn find_in_a_destructive_form_still_grades_its_operands() {
     );
 }
 
+/// A `#` comment must not disturb quote tracking for the rest of the command.
+///
+/// This is the real session command that was denied as a protected-path
+/// destruction. The apostrophe in `# Check if it's ...` opened a quoted region
+/// in a tokenizer with no comment handling, so every later quote fell out of
+/// sync and `'​<meta[^>]*og:title[^>]*>​'` was split at its `>` into fragments
+/// that were graded as truncating redirect targets.
+#[test]
+fn a_comment_does_not_desync_quote_tracking() {
+    let command = r#"echo "=== Check for og:title meta ==="
+# Check if it's actually returning the internal page
+echo "$RESP" | grep -oP '<meta[^>]*og:title[^>]*>' | head -5
+echo "$RESP" | grep -oP 'internal[^<"]{0,100}' | sort -u"#;
+    assert_ne!(
+        level_of(command),
+        RiskLevel::Catastrophic,
+        "a comment must not turn a quoted grep pattern into a write target"
+    );
+    // The pattern has to stay one token: splitting it at `>` is what produced
+    // the junk targets in the first place.
+    let tokens = super::tokenize(command);
+    let words: Vec<&str> = tokens.iter().map(|token| token.text.as_str()).collect();
+    assert!(
+        words.contains(&"<meta[^>]*og:title[^>]*>"),
+        "the quoted pattern must survive tokenization whole: {words:?}"
+    );
+}
+
+/// A `#` only opens a comment at the start of a word, so fragments that merely
+/// contain one still tokenize.
+#[test]
+fn a_hash_inside_a_word_is_not_a_comment() {
+    assert_eq!(level_of("echo foo#bar"), RiskLevel::Safe);
+    assert_eq!(
+        level_of("curl -s 'https://x.test/a#/route'"),
+        RiskLevel::Safe
+    );
+}
+
+/// A glob in the working directory has the same blast radius as the concrete
+/// path beside it, which this gate already grades as routine. When a session is
+/// started in the home directory the working directory *is* `$HOME`, so every
+/// relative target resolved to a parent of `path == home` and graded
+/// catastrophic -- that is what denied ordinary commands in the reported
+/// session.
+#[test]
+fn a_glob_in_the_working_directory_is_not_catastrophic() {
+    let at_home = RiskContext {
+        working_dir: ctx().home_dir.clone(),
+        home_dir: ctx().home_dir.clone(),
+    };
+    for command in [
+        "rm -rf '*.tmp'",
+        "rm -rf *.log",
+        r#"rm -rf ']*og:title[^*'"#,
+    ] {
+        let assessment = assess(command, &at_home);
+        assert_ne!(
+            assessment.level,
+            RiskLevel::Catastrophic,
+            "a glob in the session's own working directory is routine: {command} ({:?})",
+            assessment.findings
+        );
+    }
+}
+
+/// A glob with no directory part and nowhere to resolve it against cannot be
+/// claimed to sit under `/`: `Path::parent()` yielding an empty path must not be
+/// read as the protected system root.
+#[test]
+fn a_bare_glob_with_no_working_directory_is_not_catastrophic() {
+    let unknown_cwd = RiskContext {
+        working_dir: None,
+        home_dir: ctx().home_dir.clone(),
+    };
+    let assessment = assess("rm -rf '*.tmp'", &unknown_cwd);
+    assert_ne!(
+        assessment.level,
+        RiskLevel::Catastrophic,
+        "{:?}",
+        assessment.findings
+    );
+}
+
+/// A trailing `)` from a command substitution is not part of the redirect
+/// target, so `2>/dev/null` inside `$(...)` must still be recognised as a sink
+/// rather than graded as a write to an unknown path outside the working
+/// directory.
+#[test]
+fn a_device_sink_closed_by_a_substitution_is_not_graded() {
+    let assessment = assess(
+        r#"RESP=$(curl -s -L --max-time 10 "https://x.test/y" 2>/dev/null)"#,
+        &ctx(),
+    );
+    assert_eq!(
+        assessment.level,
+        RiskLevel::Safe,
+        "{:?}",
+        assessment.findings
+    );
+}
+
+/// The three relaxations above must not open the holes they exist beside: a glob
+/// that really does resolve into a protected directory stays denied, wherever
+/// the session happens to be running from.
+#[test]
+fn globs_in_protected_directories_are_still_catastrophic() {
+    for command in [
+        "rm -rf ~/.ssh/*",
+        "rm -rf ~/.ssh/id_*",
+        "rm -rf ~/.aws/credentials*",
+        "rm -rf ~/*",
+    ] {
+        assert_eq!(
+            level_of(command),
+            RiskLevel::Catastrophic,
+            "still destroys a protected directory: {command}"
+        );
+    }
+}
+
 /// `was_quoted` exists only to answer "is this word executed?", so it must not
 /// disturb path comparison: a quoted target has to grade identically to an
 /// unquoted one, or quoting becomes a trivial bypass of the protected-path

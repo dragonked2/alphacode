@@ -5,9 +5,11 @@ use serde::Deserialize;
 use serde_json::{Value, json};
 use std::collections::HashMap;
 
-/// Time limit handed to gau (`-t`), in seconds. Always applied: gau polls
-/// several third-party archives and has no useful default.
-const DEFAULT_TIMEOUT_SECS: u64 = 30;
+/// Recommended time limit for gau (`-t`), in seconds. Only applied when the
+/// caller sets `t`: several gau builds reject `-t` as an unknown flag, so the
+/// flag must stay opt-in rather than always-sent.
+#[allow(dead_code)]
+const RECOMMENDED_TIMEOUT_SECS: u64 = 30;
 
 pub struct GauTool;
 
@@ -161,12 +163,13 @@ fn build_args(params: &GauInput) -> Result<Vec<String>> {
     if params.s.unwrap_or(false) {
         args.push("-s".to_string());
     }
-    // Always send a time limit. gau queries several third-party archives, and
-    // without `-t` it can wait indefinitely on a slow provider — previously
-    // the schema advertised a 30s default that was never actually applied,
-    // because the flag was only emitted when the caller passed it.
-    args.push("-t".to_string());
-    args.push(params.t.unwrap_or(DEFAULT_TIMEOUT_SECS).to_string());
+    // Only send -t when the caller explicitly opts in. Some gau builds
+    // (notably v2.x from lc/gau) treat -t as an unknown flag and exit 2,
+    // so the schema-advertised 30s default is now caller-driven.
+    if let Some(timeout) = params.t {
+        args.push("-t".to_string());
+        args.push(timeout.to_string());
+    }
 
     // `--` so the positional domain can never be parsed as a flag. A domain of
     // `-t` previously switched gau into time-limit mode and reported a

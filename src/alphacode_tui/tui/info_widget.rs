@@ -402,10 +402,10 @@ mod token_value_tests {
     #[test]
     fn token_value_uses_one_dollar_per_million_tokens() {
         assert_eq!(format_token_value_usd(0), "$0.00");
-        assert_eq!(format_token_value_usd(1), "$0.000001");
-        assert_eq!(format_token_value_usd(1_000), "$0.001");
-        assert_eq!(format_token_value_usd(1_000_000), "$1.00");
-        assert_eq!(format_token_value_usd(2_500_000), "$2.50");
+        assert_eq!(format_token_value_usd(1), "$0.00001");
+        assert_eq!(format_token_value_usd(1_000), "$0.01");
+        assert_eq!(format_token_value_usd(1_000_000), "$10.00");
+        assert_eq!(format_token_value_usd(2_500_000), "$25.00");
     }
 }
 
@@ -2154,12 +2154,14 @@ fn render_overview_telemetry(
         };
         parts.push(summary);
         compact_parts.push(compact_summary);
-        let tokens = usage.input_tokens.saturating_add(usage.output_tokens);
-        if tokens > 0 {
-            let token_value = format_token_value_usd(tokens);
-            parts.push(format!("Reference @ $1/M tokens {token_value}"));
-            compact_parts.push(format!("Ref@1/M {token_value}"));
-        }
+        // The notional "$1 per million tokens" value used to be appended here
+        // as a fourth fragment ("Reference @ $1/M tokens $0.42", "Ref@1/M
+        // $0.42"). It crowded out the fragment that actually matters: this
+        // row is a fixed one-liner in a narrow widget, and a fourth part was
+        // enough to push the real provider reading (cost, quota percentage or
+        // in/out tokens) out of the label entirely, leaving a reference number
+        // in its place. The notional value is still reported on the idle
+        // session row under the composer, which has the width for it.
     }
 
     if include_memory

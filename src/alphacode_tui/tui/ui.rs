@@ -530,13 +530,12 @@ use status_support::semver;
 use status_support::{format_status_for_debug, shorten_model_name};
 use theme_support::{
     accent_color, activity_indicator, activity_indicator_frame_index, ai_color, ai_text,
-    animated_tool_color, asap_color, blend_color, dim_color, file_link_color, header_icon_color,
-    header_name_color, header_session_color, pending_color, prompt_entry_bg_color,
-    prompt_entry_color, prompt_entry_shimmer_color, queued_color, rainbow_prompt_color,
-    system_message_color, tool_color, user_bg, user_color, user_text,
+    animated_tool_color, asap_color, blend_color, border_color, dim_color, error_color,
+    file_link_color, header_icon_color, header_name_color, header_session_color, info_color,
+    muted_text_color, pending_color, prompt_entry_bg_color, prompt_entry_color,
+    prompt_entry_shimmer_color, queued_color, rainbow_prompt_color, success_color,
+    system_message_color, tool_color, user_bg, user_color, user_text, warning_color,
 };
-#[cfg(test)]
-use theme_support::{success_color, warning_color};
 
 pub(crate) use crate::alphacode_tui_markdown::{CopyTargetKind, RawCopyTarget};
 pub(crate) use crate::alphacode_tui_messages::{
@@ -2580,6 +2579,28 @@ pub(crate) fn debug_chat_image_regions_json() -> String {
     .unwrap_or_else(|_| "{}".to_string())
 }
 
+/// Index of each vertical chunk produced by the chat-column layout in
+/// [`draw_inner`].
+///
+/// Named rather than written inline because the renderer, the layout snapshot
+/// and the visual-debug overlay all address the same slice: a bare `chunks[4]`
+/// that silently changed meaning when a chunk was inserted is exactly how the
+/// debug overlay ended up labelling the notification row "input".
+///
+/// Slot 7 is the inline-UI/composer spacing. It is never drawn into, so it has
+/// no constant of its own, but it still occupies a slot — which is why
+/// `CHUNK_INPUT` is 8 and not 7.
+const CHUNK_MESSAGES: usize = 0;
+const CHUNK_TRANSCRIPT_GAP: usize = 1;
+const CHUNK_QUEUED: usize = 2;
+const CHUNK_SWARM_STRIP: usize = 3;
+const CHUNK_STATUS: usize = 4;
+const CHUNK_NOTIFICATION: usize = 5;
+const CHUNK_INLINE_UI: usize = 6;
+const CHUNK_INPUT: usize = 8;
+const CHUNK_OVERSCROLL: usize = 9;
+const CHUNK_DONUT: usize = 10;
+
 pub fn draw(frame: &mut Frame, app: &dyn TuiState) {
     record_idle_animation_area(None);
     // Suggestions are read many times while composing one frame. Bump the
@@ -3135,56 +3156,83 @@ fn draw_inner(frame: &mut Frame, app: &dyn TuiState) {
     // Use packed layout when content fits, scrolling layout otherwise
     let use_packed = !swarm_page_active && content_height + fixed_height <= available_height;
 
-    // Layout: messages (includes header), queued, status, notification, inline UI, gap, input, donut
+    // Rows the transcript leaves unused between its last line and the bottom
+    // chrome, reserved as their own chunk instead of being handed back to
+    // ratatui. Every constraint below is a `Length`, and ratatui's default
+    // `Flex::Start` parks whatever the constraints do not claim in the final
+    // spacer — i.e. *below* the composer. The packed layout therefore floated
+    // the status line and composer in the middle of the screen with a blank
+    // band under them (11 rows on a 40-row terminal), and every transcript
+    // line that arrived pushed the composer one row further down. Claiming
+    // the slack here keeps the transcript top-anchored and pins the bottom
+    // chrome to the bottom of the chat column, which is where the composer
+    // belongs in every terminal chat UI.
+    //
+    // The scrolling branch leaves this at zero: there `Min(3)` already absorbs
+    // every spare row, so the chunk is a no-op and the packed/scrolling
+    // split stays a pure decision about how the transcript sizes itself.
+    let transcript_gap = if use_packed {
+        available_height.saturating_sub(content_height + fixed_height)
+    } else {
+        0
+    };
+
+    // Layout: messages (includes header), slack, queued, swarm, status,
+    // notification, inline UI, gap, input, overscroll, donut.
     // All vertical chunks are within the chat_area (left column).
     let chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints(if use_packed {
             vec![
-                Constraint::Length(content_height.max(1)), // 0 Messages (exact height)
-                Constraint::Length(queued_height),         // 1 Queued messages (above status)
-                Constraint::Length(swarm_strip_height),    // 2 Swarm strip (above status)
-                Constraint::Length(1),                     // 3 Status line
-                Constraint::Length(notification_height),   // 4 Notification line
-                Constraint::Length(inline_block_height),   // 5 Inline UI
-                Constraint::Length(inline_ui_gap_height),  // 6 Inline UI/input spacing
-                Constraint::Length(input_height),          // 7 Input
-                Constraint::Length(overscroll_height),     // 8 Overscroll status line
-                Constraint::Length(donut_height),          // 9 Donut animation
+                Constraint::Length(content_height.max(1)), // CHUNK_MESSAGES
+                Constraint::Length(transcript_gap),        // CHUNK_TRANSCRIPT_GAP
+                Constraint::Length(queued_height),         // CHUNK_QUEUED
+                Constraint::Length(swarm_strip_height),    // CHUNK_SWARM_STRIP
+                Constraint::Length(1),                     // CHUNK_STATUS
+                Constraint::Length(notification_height),   // CHUNK_NOTIFICATION
+                Constraint::Length(inline_block_height),   // CHUNK_INLINE_UI
+                Constraint::Length(inline_ui_gap_height),  // CHUNK_INLINE_GAP
+                Constraint::Length(input_height),          // CHUNK_INPUT
+                Constraint::Length(overscroll_height),     // CHUNK_OVERSCROLL
+                Constraint::Length(donut_height),          // CHUNK_DONUT
             ]
         } else {
             vec![
-                Constraint::Min(3),                       // 0 Messages (scrollable)
-                Constraint::Length(queued_height),        // 1 Queued messages (above status)
-                Constraint::Length(swarm_strip_height),   // 2 Swarm strip (above status)
-                Constraint::Length(1),                    // 3 Status line
-                Constraint::Length(notification_height),  // 4 Notification line
-                Constraint::Length(inline_block_height),  // 5 Inline UI
-                Constraint::Length(inline_ui_gap_height), // 6 Inline UI/input spacing
-                Constraint::Length(input_height),         // 7 Input
-                Constraint::Length(overscroll_height),    // 8 Overscroll status line
-                Constraint::Length(donut_height),         // 9 Donut animation
+                Constraint::Min(3),                       // CHUNK_MESSAGES (scrollable)
+                Constraint::Length(transcript_gap),       // CHUNK_TRANSCRIPT_GAP (always 0 here)
+                Constraint::Length(queued_height),        // CHUNK_QUEUED
+                Constraint::Length(swarm_strip_height),   // CHUNK_SWARM_STRIP
+                Constraint::Length(1),                    // CHUNK_STATUS
+                Constraint::Length(notification_height),  // CHUNK_NOTIFICATION
+                Constraint::Length(inline_block_height),  // CHUNK_INLINE_UI
+                Constraint::Length(inline_ui_gap_height), // CHUNK_INLINE_GAP
+                Constraint::Length(input_height),         // CHUNK_INPUT
+                Constraint::Length(overscroll_height),    // CHUNK_OVERSCROLL
+                Constraint::Length(donut_height),         // CHUNK_DONUT
             ]
         })
         .split(chat_area);
-    record_status_area(chunks[3]);
+    record_status_area(chunks[CHUNK_STATUS]);
 
     // Draw the inline swarm strip directly above the status line if present.
     if swarm_strip_height > 0 {
-        clear_area(frame, chunks[2]);
-        frame.render_widget(Paragraph::new(swarm_strip_lines.clone()), chunks[2]);
+        clear_area(frame, chunks[CHUNK_SWARM_STRIP]);
+        frame.render_widget(
+            Paragraph::new(swarm_strip_lines.clone()),
+            chunks[CHUNK_SWARM_STRIP],
+        );
     }
 
     // Capture layout info for visual debug
     if let Some(ref mut capture) = debug_capture {
         capture.layout.use_packed = use_packed;
         capture.layout.estimated_content_height = content_height as usize;
-        capture.layout.messages_area = Some(chunks[0].into());
+        capture.layout.messages_area = Some(chunks[CHUNK_MESSAGES].into());
         if queued_height > 0 {
-            capture.layout.queued_area = Some(chunks[1].into());
+            capture.layout.queued_area = Some(chunks[CHUNK_QUEUED].into());
         }
-        capture.layout.status_area = Some(chunks[3].into());
-        capture.layout.input_area = Some(chunks[7].into());
+        capture.layout.status_area = Some(chunks[CHUNK_STATUS].into());
+        capture.layout.input_area = Some(chunks[CHUNK_INPUT].into());
         capture.layout.input_lines_raw = app.input().lines().count().max(1);
         capture.layout.input_lines_wrapped = base_input_height as usize;
 
@@ -3242,8 +3290,8 @@ fn draw_inner(frame: &mut Frame, app: &dyn TuiState) {
     }
     let draw_start = Instant::now();
 
-    // Messages area is chunks[0] within the chat column (already excludes diagram).
-    let messages_area = chunks[0];
+    // Messages area is the first chunk within the chat column (already excludes diagram).
+    let messages_area = chunks[CHUNK_MESSAGES];
     let _ = swarm_strip_height;
     note_chat_layout(ChatLayoutMetrics {
         chat_area,
@@ -3261,7 +3309,12 @@ fn draw_inner(frame: &mut Frame, app: &dyn TuiState) {
         capture.layout.messages_area = Some(messages_area.into());
         capture.layout.diagram_area = diagram_area.map(|r| r.into());
     }
-    record_layout_snapshot(messages_area, diagram_area, diff_pane_area, Some(chunks[7]));
+    record_layout_snapshot(
+        messages_area,
+        diagram_area,
+        diff_pane_area,
+        Some(chunks[CHUNK_INPUT]),
+    );
 
     let margins = if onboarding_welcome {
         onboarding::draw_onboarding_welcome(frame, app, messages_area);
@@ -3380,37 +3433,75 @@ fn draw_inner(frame: &mut Frame, app: &dyn TuiState) {
         if let Some(ref mut capture) = debug_capture {
             capture.render_order.push("draw_queued".to_string());
         }
-        input_ui::draw_queued(frame, app, chunks[1], user_count + 1);
+        input_ui::draw_queued(frame, app, chunks[CHUNK_QUEUED], user_count + 1);
     }
     if let Some(ref mut capture) = debug_capture {
         capture.render_order.push("draw_status".to_string());
     }
-    input_ui::draw_status(frame, app, chunks[3], pending_count);
+    // A gradient rule above the status line, drawn *only* into rows the
+    // transcript does not own — i.e. the bottom row of `CHUNK_TRANSCRIPT_GAP`.
+    //
+    // It used to be painted at `chunks[3].y - 1`, which is the transcript's own
+    // last row whenever the transcript fills its chunk. That silently erased
+    // the newest transcript line: the prompt the user had just sent (nothing
+    // else is appended after it until the first token arrives), the live
+    // streaming line, and the legacy `↓N` overflow indicator, which lives on
+    // that same row. It also blocked the session-fact stack, whose contract is
+    // to composite onto `input_area.bottom() - 1` and climb through the rows
+    // above it, because a full-width rule is never blank.
+    //
+    // The rule still stops short of the right-rail fact band on this row for
+    // the same reason: the stack only docks on rows whose right suffix is
+    // genuinely blank, so a rule that spans the whole width makes the gap row
+    // impassable and the stack settles higher in the transcript (or hides).
+    //
+    // The separation itself is not lost: the status row keeps its own
+    // background fill and the composer still draws a breathing top rule.
+    let gap = chunks[CHUNK_TRANSCRIPT_GAP];
+    if gap.height > 0 && gap.y > 0 {
+        let rule_width = gap
+            .width
+            .saturating_sub(input_ui::right_fact_reserved_width(app));
+        if rule_width > 0 {
+            let sep_area = Rect {
+                x: gap.x,
+                y: gap.bottom().saturating_sub(1),
+                width: rule_width,
+                height: 1,
+            };
+            let sep_line = crate::alphacode_tui::tui::ui_polish::gradient_separator_line(
+                rule_width as usize,
+                dim_color(),
+            );
+            frame.render_widget(Paragraph::new(sep_line), sep_area);
+        }
+    }
+    input_ui::draw_status(frame, app, chunks[CHUNK_STATUS], pending_count);
     if notification_height > 0 {
-        input_ui::draw_notification(frame, app, chunks[4]);
+        input_ui::draw_notification(frame, app, chunks[CHUNK_NOTIFICATION]);
     }
     if let Some(ref mut capture) = debug_capture {
         capture.render_order.push("draw_input".to_string());
     }
     // Draw inline UI if active
     if inline_block_height > 0 {
-        draw_inline_ui(frame, app, chunks[5]);
+        draw_inline_ui(frame, app, chunks[CHUNK_INLINE_UI]);
     }
 
     let input_cursor = input_ui::draw_input(
         frame,
         app,
-        chunks[7],
+        chunks[CHUNK_INPUT],
         user_count + pending_count + 1,
         &mut debug_capture,
     );
 
     if overscroll_height > 0 {
-        input_ui::draw_overscroll_status(frame, app, chunks[8]);
+        input_ui::draw_overscroll_status(frame, app, chunks[CHUNK_OVERSCROLL]);
     }
 
     if donut_height > 0 {
-        animations::draw_idle_animation(frame, app, chunks[9]);
+        animations::draw_idle_animation(frame, app, chunks[CHUNK_DONUT]);
     }
     let chrome_elapsed = chrome_start.elapsed();
 
@@ -3508,7 +3599,7 @@ fn draw_inner(frame: &mut Frame, app: &dyn TuiState) {
         frame,
         app,
         messages_area,
-        chunks[7],
+        chunks[CHUNK_INPUT],
         chat_scrollbar_visible,
         input_cursor,
     );
@@ -3516,11 +3607,11 @@ fn draw_inner(frame: &mut Frame, app: &dyn TuiState) {
     // Command-suggestion popover: a late overlay pass so the palette floats
     // over existing rows (blank space, pinned footer, or the transcript tail)
     // instead of reserving layout height and shoving everything around.
-    input_ui::draw_command_suggestions_overlay(frame, app, chunks[7]);
+    input_ui::draw_command_suggestions_overlay(frame, app, chunks[CHUNK_INPUT]);
 
     // Ctrl+R reverse prompt-history search overlay (drawn after the command
     // palette so it wins when both could be visible).
-    input_ui::draw_prompt_history_search_overlay(frame, app, chunks[7]);
+    input_ui::draw_prompt_history_search_overlay(frame, app, chunks[CHUNK_INPUT]);
 
     // Error / warning / info toasts. Drawn last so they float above every
     // other overlay. Anchored to the bottom-right of the frame so they

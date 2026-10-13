@@ -90,6 +90,40 @@ const PROTECTED_WINDOWS_PATHS: &[&str] = &[
 /// from their recursive set.
 const WINDOWS_USERS_ROOT: &str = "c:/users";
 
+/// Whether `raw` names one of the three safe device sinks, tolerating the
+/// punctuation that can trail the token without belonging to it.
+///
+/// `RESP=$(curl ... 2>/dev/null)` closes the command substitution with `)`, so
+/// the token arrives as `/dev/null)`. Compared literally that is not one of the
+/// sinks, and a routine stderr discard was graded as a write to an unknown path
+/// outside the working directory.
+///
+/// The characters below are only ever stripped in order to *recognise* a safe
+/// sink, so this can never skip a target that is not already safe to write:
+/// `/dev/nullX` still falls through and is graded as a real device node.
+fn is_safe_device_sink_looking_at_raw(raw: &str) -> bool {
+    let trimmed = raw.trim_end_matches([')', ';', ',', '&', '|']);
+    is_safe_device_sink(Path::new(trimmed))
+}
+
+/// Whether `path` is the working directory or sits inside it.
+///
+/// This is the same comparison [`is_catastrophic_target`] uses to scope its
+/// `C:\Users` exemption to paths the session is *not* already writing in: a
+/// target under the working directory is graded on its own merits rather than
+/// by which of its ancestors happens to be on a protected list.
+///
+/// Kept as a helper so the glob rule can ask the same question without
+/// duplicating the comparison, and without editing the most safety-critical
+/// predicate in the crate.
+fn is_inside_working_dir(path: &Path, ctx: &RiskContext) -> bool {
+    ctx.working_dir.as_ref().is_some_and(|dir| {
+        let cwd = normalize_for_compare(&normalize(dir));
+        let comparable = normalize_for_compare(&normalize(path));
+        comparable == cwd || comparable.starts_with(&format!("{cwd}/"))
+    })
+}
+
 /// If `comparable` begins with a single-letter drive root (`d:/`), return the
 /// remainder with no leading slash; otherwise `None`.
 fn drive_relative_tail(comparable: &str) -> Option<&str> {
@@ -407,22 +441,40 @@ pub fn classify_target(
     // path (`C:\dev\null`), so the exemption below — which compares against
     // `/dev/null` — was unreachable on Windows. Every `cmd 2>/dev/null` was
     // therefore graded as a write to a path outside the working directory.
-    if is_safe_device_sink(Path::new(raw)) {
+    if is_safe_device_sink_looking_at_raw(raw) {
         return None;
     }
 
     // Glob and variable expansion we did not perform: we cannot know the
     // footprint, so escalate rather than guess.
     if raw.contains('*') || raw.contains('?') {
-        // A glob whose parent directory is protected is catastrophic by
-        // construction: a glob can only match entries *inside* its parent, so
-        // `~/.ssh/id_*` destroys private keys exactly as `~/.ssh/*` does. The
-        // old code additionally required the glob to be the whole final
-        // component (`file_name() == "*"`), which meant `rm -rf ~/.ssh/id_*`
-        // fell through to the much weaker Confirm tier — and Confirm is
-        // allowed to run.
-        if let Some(parent_of_glob) = expanded.parent()
-            && is_catastrophic_target(parent_of_glob, ctx)
+        // A glob can only match entries *inside* its parent, so a glob that
+        // lands on or inside a protected directory destroys it: `/etc/*`,
+        // `~/.ssh/*` and `~/.ssh/id_*` are all catastrophic, which is why the
+        // glob's own resolved path is checked as well as its parent. (Checking
+        // only the parent is what let `rm -rf ~/.ssh/id_*` fall through to the
+        // Confirm tier, and Confirm is allowed to run.)
+        //
+        // The parent only counts when it is a real directory *outside* the
+        // working directory. Both conditions are load-bearing:
+        //
+        // * Real. With no directory part and no working directory to resolve
+        //   it against, `Path::parent()` returns an empty path, and
+        //   `normalize()` turns that into `/` — the protected system root — so
+        //   every bare glob read as catastrophic.
+        // * Outside. A glob in the working directory has exactly the blast
+        //   radius of the concrete path beside it, which this same function
+        //   already grades as routine (`recursive delete inside the working
+        //   directory` → Low). Treating the parent as protected instead denied
+        //   ordinary work whenever a session was started in the home
+        //   directory: there the working directory *is* `$HOME`, so every
+        //   relative target resolved to a parent of `path == home`.
+        if is_catastrophic_target(expanded, ctx)
+            || expanded.parent().is_some_and(|parent_of_glob| {
+                !parent_of_glob.as_os_str().is_empty()
+                    && !is_inside_working_dir(parent_of_glob, ctx)
+                    && is_catastrophic_target(parent_of_glob, ctx)
+            })
         {
             return Some(RiskFinding {
                 level: RiskLevel::Catastrophic,

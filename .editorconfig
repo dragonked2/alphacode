@@ -1,0 +1,23 @@
+# Alphacode source is UTF-8 without exception: string literals carry box-drawing
+# characters for the banner and the header glyphs (U+2501, U+25CF, U+2026), and
+# tests assert on those exact codepoints.
+#
+# An editor that saves as CP1252 silently rewrites each of those to the three
+# mojibake chars that encoding produces (U+2026 -> U+00E2 U+20AC U+00A6). The
+# file stays valid UTF-8 the whole time, so nothing flags it: it only surfaces as
+# a wall of `unknown start of token` errors from rustc, or worse, as a glyph
+# change in the rendered TUI. That happened on 2026-10-12 across five files.
+#
+# `charset = utf-8` makes the editor encode correctly in the first place.
+#
+# Line endings are deliberately NOT normalised here. This checkout is mixed
+# (most files CRLF, several LF) and the repo already states its intent per-path
+# in .gitattributes; forcing `end_of_line` globally would rewrite every file and
+# bury real changes in whitespace noise.
+root = true
+
+[*]
+charset = utf-8
+
+[*.md]
+charset = utf-8

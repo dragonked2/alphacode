@@ -817,7 +817,12 @@ pub(crate) fn agent_facing_error(tool_name: &str, error: &anyhow::Error) -> Stri
             }
         }
     };
-    match hint {
+    // A hint is scaffolding for an error that does not already say what to do.
+    // The "missing field" family hands the model a literal, copy-pasteable
+    // example (`Send {"command": ...}`), and the malformed-call guard quotes
+    // that recorded error verbatim — appending the generic hint here rendered
+    // the same instruction again, on top of one already worth ~110 tokens.
+    match hint.filter(|_| !base.contains("Send {")) {
         Some(hint) => format!("Error: {base}\nHint: {hint}"),
         None => format!("Error: {base}"),
     }
@@ -1617,15 +1622,28 @@ impl Registry {
         // a fixed call hashes differently and starts from zero.
         let prior_malformed = repeat_guard::prior_malformed(&ctx.session_id, resolved_name, &input);
         if prior_malformed >= repeat_guard::MALFORMED_CALL_LIMIT {
-            let last_error = repeat_guard::last_error(&ctx.session_id, resolved_name, true, &input)
-                .map(|e| format!("\nLast error: {e}"))
+            let recorded = repeat_guard::last_error(&ctx.session_id, resolved_name, true, &input)
                 .unwrap_or_default();
+            // Quote what is on the record, once. `missing_field_error` already
+            // appends `describe_received_arguments` when it fails, so appending
+            // it again here repeated the same sentence — and
+            // `agent_facing_error` then added a third copy as a hint. Together
+            // that was ~190 tokens of the identical instruction on a call the
+            // model cannot fix by reading more of it.
             let received = describe_received_arguments(&input);
+            let mut detail = String::new();
+            if !recorded.is_empty() {
+                detail.push_str("\nLast error: ");
+                detail.push_str(&recorded);
+            }
+            if !received.is_empty() && !recorded.contains(&received) {
+                detail.push('\n');
+                detail.push_str(&received);
+            }
             let msg = format!(
-                "Refusing to run `{resolved_name}` again: this identical malformed call has \
-                 already been rejected {prior_malformed} times in this session. Re-sending it \
-                 byte-for-byte cannot succeed. Either send a call with different arguments, \
-                 switch to a different tool, or explain to the user what is blocking you.{last_error}\n{received}"
+                "Refusing to run `{resolved_name}` again: this identical malformed call was \
+                 already rejected {prior_malformed} times; re-sending it byte-for-byte cannot \
+                 succeed. Send different arguments.{detail}"
             );
             crate::logging::warn(&format!(
                 "Malformed-call guard blocked '{resolved_name}' (prior rejections: \

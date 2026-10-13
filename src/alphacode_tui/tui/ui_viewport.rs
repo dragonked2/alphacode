@@ -63,14 +63,17 @@ fn lower_bound(values: &[usize], target: usize) -> usize {
 }
 
 /// Appended-row jump size (in rows) above which the tail-follow viewport slides
-/// to the bottom over several frames instead of snapping. Small appends
-/// (paced streaming) snap as before; only block insertions animate.
-const TAIL_CATCHUP_MIN_JUMP: usize = 4;
+/// to the bottom over several frames instead of snapping. Sized as a fraction
+/// of the viewport (half a screen): common tool-result batches (5-10 rows) fall
+/// below it and snap, so the scrollbar reads as glued to the newest output;
+/// only a near-full-screen insertion animates.
+const TAIL_CATCHUP_MIN_JUMP_FACTOR: usize = 2;
 
 /// Maximum rows the tail-follow viewport advances per rendered frame while
-/// catching up. At animation cadence (~30-60fps) even a full-screen insertion
-/// settles within a few hundred milliseconds.
-const TAIL_CATCHUP_MAX_STEP: usize = 3;
+/// catching up. Raised from 3: at animation cadence (~30-60fps) a larger step
+/// still reads as a smooth slide, but settles a full-screen insertion in a
+/// handful of frames instead of dozens while the scrollbar pinned mid-track.
+const TAIL_CATCHUP_MAX_STEP: usize = 8;
 
 /// Resolve the scroll position while following the live tail. Normally this is
 /// just `max_scroll`, but when a large block lands at once (committed message,
@@ -95,10 +98,13 @@ fn resolve_tail_follow_scroll(max_scroll: usize, viewport_height: usize) -> usiz
         return max_scroll;
     }
     let jump = max_scroll - prev;
+    // Only near-full-screen insertions animate: anything smaller snaps to the
+    // bottom in the same frame so the scroll thumb tracks the newest output.
+    let min_jump = (viewport_height / TAIL_CATCHUP_MIN_JUMP_FACTOR).max(1);
     // Never let the live tail drift more than a viewport behind (e.g. a huge
     // paste); cap the lag so the catch-up is at most one screen.
-    let max_lag = viewport_height.max(TAIL_CATCHUP_MIN_JUMP);
-    if jump <= TAIL_CATCHUP_MIN_JUMP {
+    let max_lag = viewport_height.max(min_jump);
+    if jump <= min_jump {
         super::set_tail_catchup_active(false);
         return max_scroll;
     }
@@ -1328,20 +1334,29 @@ mod tests {
 
     #[test]
     fn tail_follow_small_appends_snap_to_bottom() {
-        // Streaming-sized appends (<= min jump) snap directly; no animation.
+        // Streaming- and common-tool-result-sized appends snap directly so the
+        // scrollbar always reads as glued to the newest output; no animation.
         crate::alphacode_tui::tui::ui::set_last_resolved_chat_scroll(100);
         let scroll = super::resolve_tail_follow_scroll(103, 30);
         assert_eq!(scroll, 103);
+        assert!(!crate::alphacode_tui::tui::ui::tail_catchup_active());
+
+        // A tool-result batch that lands ten rows at once is still below the
+        // half-viewport threshold (15 rows for a 30-row viewport) and snaps.
+        crate::alphacode_tui::tui::ui::set_last_resolved_chat_scroll(100);
+        let scroll = super::resolve_tail_follow_scroll(110, 30);
+        assert_eq!(scroll, 110);
         assert!(!crate::alphacode_tui::tui::ui::tail_catchup_active());
     }
 
     #[test]
     fn tail_follow_large_append_slides_in_bounded_steps() {
-        // A 12-row jump advances by at most TAIL_CATCHUP_MAX_STEP per frame
-        // and reports an active catch-up until it reaches the bottom.
+        // A near-full-screen insertion (jump above half the viewport) advances
+        // by at most TAIL_CATCHUP_MAX_STEP per frame and reports an active
+        // catch-up until it reaches the bottom.
         crate::alphacode_tui::tui::ui::set_last_resolved_chat_scroll(100);
-        let first = super::resolve_tail_follow_scroll(112, 30);
-        assert!(first < 112, "must not snap: {first}");
+        let first = super::resolve_tail_follow_scroll(120, 30);
+        assert!(first < 120, "must not snap: {first}");
         assert!(
             first - 100 <= super::TAIL_CATCHUP_MAX_STEP,
             "step bounded: {first}"
@@ -1351,13 +1366,13 @@ mod tests {
         // Subsequent frames converge to the bottom and clear the flag.
         let mut scroll = first;
         let mut guard = 0;
-        while scroll < 112 {
+        while scroll < 120 {
             crate::alphacode_tui::tui::ui::set_last_resolved_chat_scroll(scroll);
-            scroll = super::resolve_tail_follow_scroll(112, 30);
+            scroll = super::resolve_tail_follow_scroll(120, 30);
             guard += 1;
             assert!(guard < 50, "catch-up must converge");
         }
-        assert_eq!(scroll, 112);
+        assert_eq!(scroll, 120);
         assert!(!crate::alphacode_tui::tui::ui::tail_catchup_active());
     }
 
