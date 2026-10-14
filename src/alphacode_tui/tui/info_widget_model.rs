@@ -92,6 +92,10 @@ pub(super) fn render_model_widget(data: &InfoWidgetData, inner: Rect) -> Vec<Lin
         lines.push(Line::from(dir_spans));
     }
 
+    if let Some(cost_line) = alphax_cost_line(data) {
+        lines.push(cost_line);
+    }
+
     if let Some(provider) = data
         .provider_name
         .as_deref()
@@ -474,4 +478,24 @@ mod tests {
         assert!(overview.contains("(hi)"));
         assert!(overview.contains("[fast]"));
     }
+}
+
+/// Live Alphax Free spend line, shown only while the active model belongs to
+/// the Alphax Free pool. Rendered from the local ledger on every frame.
+fn alphax_cost_line(data: &InfoWidgetData) -> Option<Line<'static>> {
+    let model = data.model.as_deref()?;
+    crate::alphacode_app_core::agent::free_pool_rotation::free_pool_display_name(model)?;
+    let (tokens, cost) = crate::usage_ledger::alphax_pool_totals();
+    Some(Line::from(vec![
+        Span::styled("$ ", Style::default().fg(rgb(120, 220, 140))),
+        Span::styled(
+            format!(
+                "{:.2} · {} tokens · ${}/1M",
+                cost,
+                crate::usage_ledger::format_count(tokens),
+                crate::usage_ledger::ALPHAX_FREE_USD_PER_MTOK
+            ),
+            Style::default().fg(rgb(138, 148, 168)),
+        ),
+    ]))
 }

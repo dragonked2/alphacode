@@ -92,6 +92,15 @@ use std::time::Duration;
 /// Stream of events from a provider.
 pub type EventStream = Pin<Box<dyn Stream<Item = Result<StreamEvent>> + Send>>;
 
+/// Error text produced by [`Provider::set_model`]'s trait default.
+///
+/// Exposed as a constant so callers can tell "the provider rejected this model"
+/// apart from "this object has no model surface at all". Those are different
+/// problems with different fixes, and conflating them produced a failure message
+/// that blamed the provider and then recommended the alias of the very command
+/// that had just failed.
+pub const MODEL_SWITCH_UNSUPPORTED: &str = "This provider does not support model switching";
+
 /// Provider trait for LLM backends.
 #[async_trait]
 pub trait Provider: Send + Sync {
@@ -190,9 +199,20 @@ pub trait Provider: Send + Sync {
 
     /// Set the model to use (returns error if model not supported).
     fn set_model(&self, _model: &str) -> Result<()> {
-        Err(anyhow::anyhow!(
-            "This provider does not support model switching"
-        ))
+        Err(anyhow::anyhow!(MODEL_SWITCH_UNSUPPORTED))
+    }
+
+    /// Whether [`Provider::set_model`] is implemented by this provider rather
+    /// than inherited from the trait default.
+    ///
+    /// The default rejects every model, so a caller that cannot distinguish the
+    /// two cases reports "this provider does not support model switching" about
+    /// a provider that simply was never asked — the process may hold an inert
+    /// runtime (remote client, replay) that has no provider at all. Callers
+    /// should check this before switching and use
+    /// [`MODEL_SWITCH_UNSUPPORTED`] to classify the error when they check after.
+    fn supports_model_switching(&self) -> bool {
+        false
     }
 
     /// Select a structured model route.

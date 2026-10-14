@@ -270,11 +270,6 @@ pub(super) const BUNDLED_SKILLS: &[BundledSkill] = &[
         references: &[],
     },
     BundledSkill {
-        name: "security-audit",
-        body: include_str!("bundled_skills/security-audit/SKILL.md"),
-        references: &[],
-    },
-    BundledSkill {
         name: "refactor",
         body: include_str!("bundled_skills/refactor/SKILL.md"),
         references: &[],
@@ -322,16 +317,6 @@ pub(super) const BUNDLED_SKILLS: &[BundledSkill] = &[
     BundledSkill {
         name: "observability",
         body: include_str!("bundled_skills/observability/SKILL.md"),
-        references: &[],
-    },
-    BundledSkill {
-        name: "vuln-hunter",
-        body: include_str!("bundled_skills/vuln-hunter/SKILL.md"),
-        references: &[],
-    },
-    BundledSkill {
-        name: "bug-bounty-methodology",
-        body: include_str!("bundled_skills/bug-bounty-methodology/SKILL.md"),
         references: &[],
     },
     BundledSkill {

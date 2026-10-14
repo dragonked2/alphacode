@@ -250,6 +250,10 @@ const STANDARD_OPENROUTER_CATALOG_TTL_SECS: u64 = 24 * 60 * 60;
 /// endpoint-related request volume.
 const ENDPOINTS_CACHE_TTL_SECS: u64 = 2 * 60 * 60;
 const MAX_BACKGROUND_ENDPOINT_REFRESHES: usize = 8;
+/// Minimum gap between endpoint-refresh attempts for the same model. Endpoint
+/// lookups share the gateway's rate-limit bucket with chat requests, so a
+/// failed or never-cached model must not be re-fetched on every route build.
+const ENDPOINT_REFRESH_RETRY_SECS: u64 = 60 * 60;
 
 fn explicit_openrouter_runtime_configured() -> bool {
     [
@@ -2532,12 +2536,12 @@ impl OpenRouterProvider {
         }
 
         if let Some(last) = state.last_attempt_unix.get(model)
-            && now.saturating_sub(*last) < MODEL_CATALOG_REFRESH_RETRY_SECS
+            && now.saturating_sub(*last) < ENDPOINT_REFRESH_RETRY_SECS
         {
             return false;
         }
         if let Some(last) = global_state.last_attempt_unix.get(model)
-            && now.saturating_sub(*last) < MODEL_CATALOG_REFRESH_RETRY_SECS
+            && now.saturating_sub(*last) < ENDPOINT_REFRESH_RETRY_SECS
         {
             return false;
         }

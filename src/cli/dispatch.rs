@@ -1647,15 +1647,25 @@ fn run_reload_helper(args: &Args) -> Result<()> {
         cmd.arg("--resume").arg(session_id);
     }
     cmd.env_remove("ALPHACODE_READY_FD")
-        .stdin(Stdio::null())
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
         .current_dir(std::env::current_dir().unwrap_or_else(|_| {
             target_path
                 .parent()
                 .unwrap_or_else(|| std::path::Path::new("."))
                 .to_path_buf()
         }));
+
+    // Only the server replacement is a background process that must not hold
+    // the console. The client replacement is the interactive TUI and has to
+    // inherit the real stdio handles: launched with nulled stdin it comes up
+    // with no input source at all, so the restarted session renders but every
+    // keystroke goes nowhere. That is the "update finished, now I cannot type"
+    // report, and it only ever shows up on the Windows auto-update restart
+    // path because that is the only path routed through this helper.
+    if server_mode {
+        cmd.stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null());
+    }
     let err = crate::platform::replace_process(&mut cmd);
     let detail = format!("failed to launch reload target {:?}: {}", target_path, err);
     mark_failed(detail.clone());

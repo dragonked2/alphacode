@@ -1627,7 +1627,33 @@ pub(super) fn handle_model_command(app: &mut App, trimmed: &str) -> bool {
             crate::alphacode_tui::tui::app::shortcut_hints::LearnableAction::ModelSwitch,
         );
         let model_name = model_name.trim();
-        match app.provider.set_model(model_name) {
+
+        // `/set model <name>` and `/model <name>` are the same request, so they
+        // must fail (or succeed) for the same reason.
+        //
+        // While connected, a remote client forwards both to the server before
+        // this runs. What still reaches here in remote mode is the
+        // disconnected-submit path, where `app.provider` is an inert runtime
+        // that implements no provider surface at all. Calling `set_model` on it
+        // produced "This provider does not support model switching" and a
+        // next-steps list telling the user to run `/model` — the same command
+        // under its other name, which would have failed identically. The
+        // provider was never the problem, so it is checked before the call
+        // rather than explained after it.
+        if !app.provider.supports_model_switching() {
+            app.push_display_message(DisplayMessage::error(model_switch_unavailable_message(
+                model_name, app,
+            )));
+            app.set_status_notice("Model switch unavailable");
+            return true;
+        }
+
+        // `set_model_with_auth_refresh`, not the bare trait method: a provider
+        // whose credential was just written to disk fails the first `set_model`
+        // and succeeds on the retry, which is what `Agent::set_model` and the
+        // startup path already do. Calling the trait method directly here is why
+        // a switch right after `/login` could fail with stale credentials.
+        match crate::provider::set_model_with_auth_refresh(app.provider.as_ref(), model_name) {
             Ok(()) => {
                 let active_model = app.finalize_model_switch(model_name);
                 let auth_suffix = app
@@ -2089,6 +2115,65 @@ pub(super) fn model_switch_failure_message(error: &str, is_remote: bool) -> Stri
         );
     }
 
+    lines.join("\n")
+}
+
+/// Why a model switch cannot be performed in the current session.
+///
+/// `None` means the active provider can switch models and the switch should be
+/// attempted. `Some(reason)` means this process holds a provider with no model
+/// surface — a remote client or replay session, where the real provider lives
+/// in the server process — so attempting the switch can only ever produce the
+/// trait default's `MODEL_SWITCH_UNSUPPORTED`.
+///
+/// While the connection is up, `/model` and `/set model` are forwarded to the
+/// server before reaching this code. This branch is the case where they were
+/// not, and it needs its own message rather than a generic provider failure.
+pub(super) fn model_switch_unavailable_reason(app: &App) -> Option<String> {
+    if app.provider.supports_model_switching() {
+        return None;
+    }
+    if app.is_replay {
+        Some(
+            "this is a session replay, so there is no live provider to switch models on"
+                .to_string(),
+        )
+    } else if app.is_remote {
+        Some("this client is not connected to a server that owns a provider".to_string())
+    } else {
+        Some("this session is not running a provider that can switch models".to_string())
+    }
+}
+
+/// Message for a model switch that was never attempted because this process has
+/// no provider to switch.
+///
+/// The generic failure message would be actively wrong here: it tells the user
+/// to run `/model`, which in this state fails for exactly the same reason, and
+/// it blames a provider that is not the cause.
+pub(super) fn model_switch_unavailable_message(model_name: &str, app: &App) -> String {
+    let Some(reason) = model_switch_unavailable_reason(app) else {
+        // Unreachable from the command path: callers check first. Kept honest
+        // rather than emitting a message that contradicts the caller.
+        return model_switch_failure_message(
+            crate::alphacode_provider_core::MODEL_SWITCH_UNSUPPORTED,
+            app.is_remote,
+        );
+    };
+    let mut lines = vec![
+        format!("Cannot switch to '{model_name}': {reason}."),
+        String::new(),
+        "Next steps:".to_string(),
+    ];
+    if app.is_remote {
+        lines.push("  - Reconnect to the server, then run the switch again".to_string());
+    } else {
+        lines.push(
+            "  - Start a normal session (not a replay or remote client), then switch again"
+                .to_string(),
+        );
+    }
+    lines.push("  - Use /model to open the picker and see what this session can reach".to_string());
     lines.join("\n")
 }
 

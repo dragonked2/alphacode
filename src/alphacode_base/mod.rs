@@ -91,6 +91,7 @@ pub mod terminal_launch;
 pub mod todo;
 pub mod transport;
 pub mod usage;
+pub mod usage_ledger;
 pub mod util;
 
 // Embedding facade: the heavy ONNX/tokenizer backend (`embedding.rs` +

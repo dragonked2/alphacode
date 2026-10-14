@@ -36,11 +36,15 @@ pub(crate) fn pretty_model_display_name(model: &str) -> String {
     if let Some(name) = crate::alphacode_provider_metadata::internal_model_display_name(model) {
         return name.to_string();
     }
-    // Every model in the Alphax Free rotation pool is a gateway routing detail.
-    // The user chose "Alphax Free", so which free model actually served a turn
-    // is ours to manage, not something to show them. Checked after the virtual
-    // id above so the alias itself keeps resolving through that table.
-    if let Some(name) = crate::alphacode_provider_metadata::free_model_display_name(model) {
+    // Models that belong to the Alphax Free rotation pool are a gateway routing
+    // detail: the user chose "Alphax Free", so which free model served a turn is
+    // ours to manage, not theirs. This is gated on *pool membership*, not the
+    // `:free` suffix — other providers publish their own `:free` ids (Token
+    // Harbor, for one) and those must keep their real names. Checked after the
+    // virtual id above so the alias itself keeps resolving through that table.
+    if let Some(name) =
+        crate::alphacode_app_core::agent::free_pool_rotation::free_pool_display_name(model)
+    {
         return name.to_string();
     }
 
@@ -288,12 +292,16 @@ pub(crate) fn pretty_known_model_family(model: &str) -> Option<String> {
     if let Some(name) = crate::alphacode_provider_metadata::internal_model_display_name(model) {
         return Some(name.to_string());
     }
-    // Free-pool members resolve to the product name in list surfaces too, so
-    // the picker never shows an upstream slug like
+    // Alphax Free pool members resolve to the product name in list surfaces too,
+    // so the picker never shows an upstream slug like
     // `nvidia/nemotron-3-ultra-550b-a55b:free` to someone who picked "Alphax
-    // Free". This has to run before the `contains('/') || contains(':')` bail
-    // below, which would otherwise return `None` and leak the raw id.
-    if let Some(name) = crate::alphacode_provider_metadata::free_model_display_name(model) {
+    // Free". Gated on pool membership (not the `:free` suffix) so another
+    // provider's free ids keep their real names. This has to run before the
+    // `contains('/') || contains(':')` bail below, which would otherwise return
+    // `None` and leak the raw id.
+    if let Some(name) =
+        crate::alphacode_app_core::agent::free_pool_rotation::free_pool_display_name(model)
+    {
         return Some(name.to_string());
     }
     let (core, _) = split_bracket_suffix(model);
@@ -622,11 +630,19 @@ mod tests {
                 "list surface leaked free-pool model `{model}`"
             );
         }
-        // Including a model the curated list does not name, which is the shape
-        // of anything the background refresh discovers later.
+        // A `:free` id that is *not* part of the Alphax Free pool — the shape of
+        // another provider's free models (e.g. Token Harbor's catalog) — must
+        // keep its real name. The `:free` suffix alone used to trigger the
+        // product label, so those models wrongly displayed as "Alphax Free".
         assert_eq!(
             pretty_known_model_family("some-vendor/brand-new:free").as_deref(),
-            Some("Alphax Free")
+            None,
+            "a non-pool `:free` id must not borrow the Alphax Free name"
+        );
+        assert_ne!(
+            pretty_model_display_name("some-vendor/brand-new:free"),
+            "Alphax Free",
+            "a non-pool `:free` id must not borrow the Alphax Free name"
         );
     }
 

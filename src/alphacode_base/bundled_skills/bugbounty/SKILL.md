@@ -1,10 +1,15 @@
 ---
 name: bugbounty
-description: "Security assessment and review — differential testing, 7-gate validation, hypothesis-driven, evidence-first. Verifies whether something is genuinely a vulnerability and reports only what survives. Use when the user mentions bug bounty, security review, authorized pentesting, vulnerability research, recon, or defensive security testing."
+description: "Security assessment, vulnerability hunting, and code security audit — differential testing, 7-gate validation, hypothesis-driven, evidence-first. Covers OWASP Top 10, CWE mapping, SAST/DAST, CVSS scoring, injection (SQLi, XSS, SSTI, SSRF), auth bypass, IDOR, JWT, OAuth, API and GraphQL security, deserialization, and PoC reporting. Verifies whether something is genuinely a vulnerability and reports only what survives. Use when the user mentions bug bounty, security review, security audit, vulnerability hunting, pentest, authorized pentesting, vulnerability research, recon, or defensive security testing."
 auto-invoke: true
 aliases:
   - bug bounty
   - bug bounties
+  - vulnerability hunter
+  - security audit
+  - pentest
+  - penetration test
+  - vuln hunt
 ---
 
 # SECURITY REVIEW — EVIDENCE OVER IMPACT CHASING

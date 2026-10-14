@@ -402,10 +402,10 @@ mod token_value_tests {
     #[test]
     fn token_value_uses_one_dollar_per_million_tokens() {
         assert_eq!(format_token_value_usd(0), "$0.00");
-        assert_eq!(format_token_value_usd(1), "$0.00001");
-        assert_eq!(format_token_value_usd(1_000), "$0.01");
-        assert_eq!(format_token_value_usd(1_000_000), "$10.00");
-        assert_eq!(format_token_value_usd(2_500_000), "$25.00");
+        assert_eq!(format_token_value_usd(1), "$0.000001");
+        assert_eq!(format_token_value_usd(1_000), "$0.001");
+        assert_eq!(format_token_value_usd(1_000_000), "$1.00");
+        assert_eq!(format_token_value_usd(2_500_000), "$2.50");
     }
 }
 

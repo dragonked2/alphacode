@@ -1058,6 +1058,13 @@ impl Agent {
                 cache_read_input_tokens: usage_cache_read,
                 cache_creation_input_tokens: usage_cache_creation,
             };
+            crate::usage_ledger::record_response(
+                &self.provider.model(),
+                usage_input.unwrap_or(0),
+                usage_output.unwrap_or(0),
+                usage_cache_read.unwrap_or(0),
+                usage_cache_creation.unwrap_or(0),
+            );
 
             self.recover_text_wrapped_tool_call(&mut text_content, &mut tool_calls);
 

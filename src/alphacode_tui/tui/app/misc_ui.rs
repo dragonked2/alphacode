@@ -1,5 +1,41 @@
 use super::*;
 
+/// Usage already billed for one in-flight API call. Snapshots within a call are
+/// cumulative, so billing is by delta; a field moving backwards means a new
+/// call began and that field is billed in full.
+#[derive(Clone, Copy, Debug, Default)]
+pub(crate) struct BilledUsageSnapshot {
+    input: u64,
+    output: u64,
+    cache_read: u64,
+    cache_creation: u64,
+}
+
+impl BilledUsageSnapshot {
+    /// Return the newly-billable (input, output, cache_read, cache_creation)
+    /// since the last call to this method, then advance to `current`.
+    pub fn delta_and_advance(
+        &mut self,
+        input: u64,
+        output: u64,
+        cache_read: u64,
+        cache_creation: u64,
+    ) -> (u64, u64, u64, u64) {
+        fn step(prev: &mut u64, now: u64) -> u64 {
+            let d = if now >= *prev { now - *prev } else { now };
+            *prev = now;
+            d
+        }
+        (
+            step(&mut self.input, input),
+            step(&mut self.output, output),
+            step(&mut self.cache_read, cache_read),
+            step(&mut self.cache_creation, cache_creation),
+        )
+    }
+}
+
+/// Resolved per-million-token pricing for the active model, used to turn a
 /// Resolved per-million-token pricing for the active model, used to turn a
 /// single API call's token usage into a dollar cost. Shared by the local
 /// (`update_cost_impl`) and remote (`accrue_remote_call_cost`) billing paths so
@@ -252,6 +288,36 @@ impl App {
 
     /// Accrue the dollar cost of a single completed remote API call.
     ///
+    /// Local turns bill per usage event by delta against the previous snapshot
+    /// of the same API call (`billed`), so realtime cost stays current and a
+    /// multi-call turn is counted in full. `finish_turn` must not bill again.
+    pub(super) fn accrue_local_usage_delta(&mut self, billed: &mut BilledUsageSnapshot) {
+        let input = self.streaming.streaming_input_tokens;
+        let output = self.streaming.streaming_output_tokens;
+        let cache_read = self.streaming.streaming_cache_read_tokens.unwrap_or(0);
+        let cache_creation = self.streaming.streaming_cache_creation_tokens.unwrap_or(0);
+        let (d_in, d_out, d_read, d_create) =
+            billed.delta_and_advance(input, output, cache_read, cache_creation);
+        if d_in == 0 && d_out == 0 && d_read == 0 && d_create == 0 {
+            return;
+        }
+        let is_anthropic = self.provider.name().to_lowercase().contains("anthropic");
+        let model = self.provider.model().to_string();
+        let is_openai = self.provider.name().to_lowercase().contains("openai");
+        self.refresh_cached_pricing(&model, is_anthropic, is_openai);
+        let pricing = ResolvedTokenPricing {
+            prompt_price: *self.cost.cached_prompt_price.get_or_insert(15.0),
+            completion_price: *self.cost.cached_completion_price.get_or_insert(60.0),
+            cache_read_price: self.cost.cached_cache_read_price,
+            is_anthropic,
+        };
+        let call_cost = pricing.cost_for_usage(d_in, d_out, d_read, d_create);
+        self.cost.total_cost += call_cost;
+        self.record_api_key_spend(call_cost);
+    }
+
+    /// Accrue the dollar cost of a single completed remote API call.
+    ///
     /// Local turns bill once at `finish_turn` via [`App::update_cost_impl`], but
     /// the default interactive TUI is a *remote* client: it receives per-call
     /// `ServerEvent::TokenUsage` and never runs the local cost path, so without
@@ -374,6 +440,14 @@ impl App {
                 || provider_name.contains("bedrock")
                 || provider_name.contains("cerebras")
                 || provider_name.contains("compatible")
+                // Any configured OpenAI-compatible profile that gates on an API
+                // key is metered per token, which is exactly how the info widget
+                // classifies the same provider id. The name-prefix allow-list
+                // above missed named profiles (e.g. `tokenharbor`, `cerebras`
+                // variants), so the widget rendered a real "Cost" line while the
+                // client never billed a call and the total sat at `$0.00`.
+                || crate::provider_catalog::openai_compatible_profile_by_id(&provider_name)
+                    .is_some_and(|profile| profile.requires_api_key)
         };
         // Not metered per token (OAuth subscription, free tier, a provider we
         // cannot price): there is no per-token price to bill, so report "no

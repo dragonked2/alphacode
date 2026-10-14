@@ -283,10 +283,18 @@ impl Evidence {
                     *t = redact_transcript(t);
                 }
                 // Binary payloads (archives, PDFs, exported HARs) routinely
-                // embed credentials. We cannot parse them, so conservatively
-                // keep only a size marker rather than shipping the bytes.
-                EvidenceData::Binary { mime_type, .. } => {
-                    *mime_type = mime_type.clone();
+                // embed credentials. We cannot parse them, so the bytes are
+                // dropped outright and only a size marker survives.
+                //
+                // This arm used to be `*mime_type = mime_type.clone()`, which is
+                // a self-assignment: the comment promised the bytes were being
+                // removed and the code kept them, so every redacted report still
+                // carried the original attachment. Redaction that does not
+                // redact is worse than no redaction, because it is trusted.
+                EvidenceData::Binary { data, mime_type } => {
+                    *mime_type = format!("{mime_type} ({} bytes redacted)", data.len());
+                    data.clear();
+                    data.shrink_to_fit();
                 }
             }
         }
@@ -432,5 +440,51 @@ mod tests {
         assert!(!url.contains("SECRETVALUE"), "Token= leaked: {url}");
         assert!(!url.contains("ALSOSECRET"), "API_KEY= leaked: {url}");
         assert!(url.contains("ok=1"), "harmless param lost: {url}");
+    }
+
+    /// Regression: `redacted()` claimed to strip binary evidence payloads and
+    /// did not. The arm was `*mime_type = mime_type.clone()`, a self-assignment,
+    /// so every redacted report still carried the original attachment — with
+    /// whatever credentials it embedded. A redactor that keeps the secret is
+    /// worse than no redactor, because it is trusted.
+    #[test]
+    fn binary_evidence_bytes_are_actually_dropped() {
+        let mut evidence = Evidence::new("f1".to_string());
+        let secret = b"-----BEGIN PRIVATE KEY-----\nMIIEvQIBADAN\n".to_vec();
+        evidence.add_item(EvidenceItem {
+            id: "bin1".to_string(),
+            kind: EvidenceKind::Request,
+            description: "downloaded export".to_string(),
+            data: EvidenceData::Binary {
+                data: secret.clone(),
+                mime_type: "application/octet-stream".to_string(),
+            },
+            collected_by: None,
+            timestamp: chrono::Utc::now().to_rfc3339(),
+        });
+
+        let redacted = evidence.redacted();
+        let EvidenceData::Binary { data, mime_type } = &redacted.evidence_items[0].data else {
+            panic!("expected binary evidence");
+        };
+        assert!(
+            data.is_empty(),
+            "binary payload survived redaction: {} bytes",
+            data.len()
+        );
+        assert!(
+            !String::from_utf8_lossy(data).contains("PRIVATE KEY"),
+            "embedded key survived redaction"
+        );
+        // The size marker keeps the evidence honest about what was withheld.
+        assert!(
+            mime_type.contains(&secret.len().to_string()),
+            "size marker lost: {mime_type}"
+        );
+        // The original is untouched: redaction is a view, not a mutation.
+        let EvidenceData::Binary { data: original, .. } = &evidence.evidence_items[0].data else {
+            panic!("expected binary evidence");
+        };
+        assert_eq!(original, &secret, "redacted() must not mutate its receiver");
     }
 }

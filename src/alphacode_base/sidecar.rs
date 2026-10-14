@@ -199,11 +199,20 @@ impl Sidecar {
     /// Simple completion - send a prompt, get a response.
     /// Routes to the correct API based on the detected backend.
     pub async fn complete(&self, system: &str, user_message: &str) -> Result<String> {
-        match self.backend {
+        // Shared breaker: a rate-limited or failing gateway must not receive
+        // extraction, naming, or rerank calls until the cooldown clears.
+        if crate::memory_rerank::failure_backoff_active() {
+            anyhow::bail!("sidecar skipped: side-model circuit breaker is open");
+        }
+        let result = match self.backend {
             SidecarBackend::OpenAI => self.complete_openai(system, user_message).await,
             SidecarBackend::Claude => self.complete_claude(system, user_message).await,
             SidecarBackend::Provider => self.complete_via_provider(system, user_message).await,
+        };
+        if let Err(e) = &result {
+            crate::memory_rerank::record_failure_backoff(e);
         }
+        result
     }
 
     /// Complete via the live agent provider (`complete_simple`).

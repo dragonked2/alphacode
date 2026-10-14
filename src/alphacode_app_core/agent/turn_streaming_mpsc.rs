@@ -1243,6 +1243,13 @@ impl Agent {
                 cache_read_input_tokens: usage_cache_read,
                 cache_creation_input_tokens: usage_cache_creation,
             };
+            crate::usage_ledger::record_response(
+                &self.provider.model(),
+                usage_input.unwrap_or(0),
+                usage_output.unwrap_or(0),
+                usage_cache_read.unwrap_or(0),
+                usage_cache_creation.unwrap_or(0),
+            );
 
             // Detect a transparent mid-request model switch (e.g. Anthropic's
             // retired `claude-fable-5` falling back to `claude-opus-4-8`). The
@@ -1852,8 +1859,9 @@ impl Agent {
 
                     let bg_msg = format!(
                         "Tool '{}' was moved to background by the user (task_id: {}). \
-                         Use the `bg` tool with action 'wait' to wait for completion/checkpoints, \
-                         or action 'status'/'output' to inspect it.",
+                         Continue with other work now. The agent will be woken automatically when \
+                         the task completes; use the `bg` tool (action 'status'/'output') only if you \
+                         need its progress earlier.",
                         tc.name, bg_info.task_id
                     );
 

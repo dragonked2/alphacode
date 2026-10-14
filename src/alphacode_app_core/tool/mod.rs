@@ -59,6 +59,7 @@ mod qsreplace;
 mod read;
 pub mod recon_common;
 mod repeat_guard;
+pub mod scope;
 mod scrapling;
 mod self_improve;
 pub mod selfdev;
@@ -1688,6 +1689,38 @@ impl Registry {
                 .entry("action".to_string())
                 .or_insert(Value::String(action.to_string()));
         }
+
+        // Engagement scope: the centralized gate in front of every tool call.
+        //
+        // This sits here, before the tool is resolved into a concrete call and
+        // well before `execute`, because `Registry::execute` is the only path to
+        // the network that the agent loop, the batch scheduler, the SDK bridge
+        // and the harness server all share. Putting the check inside each tool
+        // would make the thirty-first tool the one that forgets.
+        //
+        // It is a no-op when the session has no engagement scope configured,
+        // which is every ordinary coding session.
+        if let Err(reason) = scope::enforce_call(&ctx, resolved_name, &input) {
+            repeat_guard::record_failure_with_error(
+                &ctx.session_id,
+                resolved_name,
+                true,
+                &input,
+                Some(&reason),
+            );
+            return Err(anyhow::anyhow!("{reason}"));
+        }
+
+        // Rate/concurrency budget for network work. Held across the call so the
+        // permit covers the tool's actual runtime and is returned on drop,
+        // including when the call errors out or is cancelled. Local tools are
+        // excluded: a coding session with an engagement scope must not have its
+        // file reads paced by the network budget.
+        let _network_permit = if scope::is_network_tool(resolved_name) {
+            scope::acquire_network_permit(&ctx.session_id, resolved_name).await
+        } else {
+            scope::NetworkPermit::none()
+        };
 
         // User-configured pre_tool gate: external policy hook that can block
         // this call (exit 2). Skipped entirely when not configured.

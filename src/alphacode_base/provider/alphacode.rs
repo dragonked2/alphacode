@@ -116,6 +116,10 @@ impl Provider for AlphacodeProvider {
             .unwrap_or_else(|_| crate::subscription_catalog::default_model().id.to_string())
     }
 
+    fn supports_model_switching(&self) -> bool {
+        true
+    }
+
     fn set_model(&self, model: &str) -> Result<()> {
         self.ensure_runtime_mode();
         ensure_model_allowed_for_subscription(model)?;

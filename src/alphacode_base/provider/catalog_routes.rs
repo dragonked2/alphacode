@@ -626,7 +626,6 @@ fn append_openrouter_routes(
     let has_openrouter = true;
     let current_openrouter_model = openrouter.model();
     let supports_openrouter_provider_features = openrouter.supports_provider_routing_features();
-    let mut scheduled_endpoint_refreshes = 0usize;
     for model in openrouter.available_models_display() {
         stats.models += 1;
         let cached = if supports_openrouter_provider_features {
@@ -635,15 +634,16 @@ fn append_openrouter_routes(
             None
         };
         let cache_age = cached.as_ref().map(|(_, age)| *age);
+        // Route building must not fan out network I/O. Only the active model is
+        // hydrated here; the scheduled sweep owns refresh cadence for the rest.
         if supports_openrouter_provider_features
-            && (model == current_openrouter_model || scheduled_endpoint_refreshes < 8)
+            && model == current_openrouter_model
             && openrouter.maybe_schedule_endpoint_refresh_for_display(
                 &model,
                 cache_age,
                 "model picker route hydration",
             )
         {
-            scheduled_endpoint_refreshes += 1;
             stats.scheduled_endpoint_refreshes += 1;
         }
         let age_str = cached.as_ref().map(|(_, age)| {

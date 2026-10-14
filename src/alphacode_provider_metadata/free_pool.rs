@@ -266,10 +266,17 @@ pub fn is_free_tier_model_id(model: &str) -> bool {
 /// which free model covered the request is our problem, not theirs.
 pub const ALPHAX_FREE_DISPLAY_NAME: &str = "Alphax Free";
 
-/// Map a free-pool model id to the name the user sees.
+/// Map a free-*tier-eligible* model id to the Alphax Free product name.
 ///
-/// Returns `None` for anything outside the pool so ordinary models keep their
-/// real, honest names.
+/// This is a pure suffix test: it treats **any** `:free` id as eligible, which
+/// is correct for gating rotation but too broad for display — other providers
+/// publish their own `:free` ids that are not Alphax Free. User-facing surfaces
+/// must therefore gate on actual pool membership via
+/// `crate::alphacode_app_core::agent::free_pool_rotation::free_pool_display_name`
+/// instead of calling this directly.
+///
+/// Returns `None` for anything outside the eligible set so ordinary models keep
+/// their real, honest names.
 pub fn free_model_display_name(model: &str) -> Option<&'static str> {
     is_free_tier_model_id(model).then_some(ALPHAX_FREE_DISPLAY_NAME)
 }

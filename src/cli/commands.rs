@@ -1888,10 +1888,13 @@ pub fn run_pair_command(list: bool, revoke: Option<String>) -> Result<()> {
         if registry.devices.is_empty() {
             eprintln!("No paired devices.");
         } else {
-            eprintln!("\x1b[1mPaired devices:\x1b[0m\n");
+            let bold = super::output::style("\x1b[1m");
+            let cyan = super::output::style("\x1b[36m");
+            let reset = super::output::style("\x1b[0m");
+            eprintln!("{bold}Paired devices:{reset}\n");
             for device in &registry.devices {
                 let last_seen = &device.last_seen;
-                eprintln!("  \x1b[36m{}\x1b[0m  ({})", device.name, device.id);
+                eprintln!("  {cyan}{}{reset}  ({})", device.name, device.id);
                 eprintln!("    Paired: {}  Last seen: {}", device.paired_at, last_seen);
                 if let Some(ref apns) = device.apns_token {
                     eprintln!("    APNs: {}...", &apns[..apns.len().min(16)]);
@@ -1909,9 +1912,19 @@ pub fn run_pair_command(list: bool, revoke: Option<String>) -> Result<()> {
             .retain(|d| d.id != *target && d.name != *target);
         if registry.devices.len() < before {
             registry.save()?;
-            eprintln!("\x1b[32m✓\x1b[0m Revoked device: {}", target);
+            eprintln!(
+                "{}✓{} Revoked device: {}",
+                super::output::style("\x1b[32m"),
+                super::output::style("\x1b[0m"),
+                target
+            );
         } else {
-            eprintln!("\x1b[31m✗\x1b[0m No device found matching: {}", target);
+            eprintln!(
+                "{}✗{} No device found matching: {}",
+                super::output::style("\x1b[31m"),
+                super::output::style("\x1b[0m"),
+                target
+            );
         }
         return Ok(());
     }
@@ -1920,11 +1933,15 @@ pub fn run_pair_command(list: bool, revoke: Option<String>) -> Result<()> {
 
     if !gw_config.enabled {
         eprintln!(
-            "\x1b[33m⚠\x1b[0m  Gateway is disabled. Enable it in ~/.alphacode/config.toml:\n"
+            "{}⚠{}  Gateway is disabled. Enable it in ~/.alphacode/config.toml:\n",
+            super::output::style("\x1b[33m"),
+            super::output::style("\x1b[0m"),
         );
-        eprintln!("    \x1b[2m[gateway]\x1b[0m");
-        eprintln!("    \x1b[2menabled = true\x1b[0m");
-        eprintln!("    \x1b[2mport = {}\x1b[0m\n", gw_config.port);
+        let dim = super::output::style("\x1b[2m");
+        let reset = super::output::style("\x1b[0m");
+        eprintln!("    {dim}[gateway]{reset}");
+        eprintln!("    {dim}enabled = true{reset}");
+        eprintln!("    {dim}port = {}{reset}\n", gw_config.port);
         eprintln!("  Then restart the alphacode server.\n");
     }
 
@@ -1936,31 +1953,55 @@ pub fn run_pair_command(list: bool, revoke: Option<String>) -> Result<()> {
     );
 
     eprintln!();
-    eprintln!("  \x1b[1mScan with the alphacode iOS app:\x1b[0m\n");
+    eprintln!(
+        "  {}Scan with the alphacode iOS app:{}\n",
+        super::output::style("\x1b[1m"),
+        super::output::style("\x1b[0m")
+    );
     match crate::login_qr::render_unicode_qr(&pair_uri) {
         Ok(qr) => {
             for line in qr.lines() {
                 eprintln!("  {line}");
             }
         }
-        Err(_) => eprintln!("  \x1b[33m(QR code generation failed)\x1b[0m"),
+        Err(_) => eprintln!(
+            "  {}(QR code generation failed){}",
+            super::output::style("\x1b[33m"),
+            super::output::style("\x1b[0m")
+        ),
     }
     eprintln!();
     eprintln!(
-        "  Pairing code:  \x1b[1;37m{} {}\x1b[0m   \x1b[2m(expires in 5 minutes)\x1b[0m",
+        "  Pairing code:  {}{} {}{}   {}(expires in 5 minutes){}",
+        super::output::style("\x1b[1;37m"),
         &code[..3],
-        &code[3..]
+        &code[3..],
+        super::output::style("\x1b[0m"),
+        super::output::style("\x1b[2m"),
+        super::output::style("\x1b[0m")
     );
     let resolved_hint = format!("{}:{}", connect_host, gw_config.port);
     let bind_hint = format!("{}:{}", gw_config.bind_addr, gw_config.port);
-    eprintln!("  Connect host:  \x1b[36m{}\x1b[0m", resolved_hint);
+    eprintln!(
+        "  Connect host:  {}{}{}",
+        super::output::style("\x1b[36m"),
+        resolved_hint,
+        super::output::style("\x1b[0m")
+    );
     if connect_host != gw_config.bind_addr {
-        eprintln!("  Bind address:  \x1b[2m{}\x1b[0m", bind_hint);
+        eprintln!(
+            "  Bind address:  {}{}{}",
+            super::output::style("\x1b[2m"),
+            bind_hint,
+            super::output::style("\x1b[0m")
+        );
     }
 
     if connect_host == gateway::UNKNOWN_CONNECT_HOST {
         eprintln!(
-            "\n  \x1b[33mTip:\x1b[0m set ALPHACODE_GATEWAY_HOST to your reachable Tailscale hostname."
+            "\n  {}Tip:{} set ALPHACODE_GATEWAY_HOST to your reachable Tailscale hostname.",
+            super::output::style("\x1b[33m"),
+            super::output::style("\x1b[0m")
         );
     }
 
@@ -1971,7 +2012,9 @@ pub fn run_pair_command(list: bool, revoke: Option<String>) -> Result<()> {
         .is_none()
     {
         eprintln!(
-            "  \x1b[33mWarning:\x1b[0m gateway bind address appears invalid: {}",
+            "  {}Warning:{} gateway bind address appears invalid: {}",
+            super::output::style("\x1b[33m"),
+            super::output::style("\x1b[0m"),
             bind_hint
         );
     }

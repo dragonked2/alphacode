@@ -310,7 +310,9 @@ pub(super) fn reset_current_session(app: &mut App) {
     app.improve_mode = None;
     let mut session = Session::create(None, None);
     session.mark_active();
-    session.model = Some(app.provider.model());
+    // A provider with no real model reports a placeholder ("unknown"); record
+    // no model rather than persisting that placeholder as the session model.
+    session.model = Some(app.provider.model()).filter(|m| !m.trim().is_empty() && m != "unknown");
     session.provider_key = crate::session::derive_session_provider_key(app.provider.name());
     session.autoreview_enabled = Some(app.autoreview_enabled);
     session.autojudge_enabled = Some(app.autojudge_enabled);

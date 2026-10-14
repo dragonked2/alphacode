@@ -485,7 +485,11 @@ impl ValidationEngine {
     }
 
     fn gate_reproducibility(finding: &Finding) -> GateResult {
-        let has_repro = finding.reproduction.is_some();
+        // Presence alone is not reproduction: require at least one concrete
+        // step and an observed result.
+        let has_repro = finding.reproduction.as_ref().is_some_and(|r| {
+            r.steps.iter().any(|s| !s.trim().is_empty()) && !r.actual_behavior.trim().is_empty()
+        });
         GateResult {
             gate: ValidationGate::Reproducibility,
             passed: has_repro,
@@ -555,7 +559,17 @@ impl ValidationEngine {
     }
 
     fn gate_impact_demonstration(finding: &Finding) -> GateResult {
-        let has_impact = finding.impact.is_some();
+        // Presence alone is not impact: require at least one concrete impact field.
+        let has_impact = finding.impact.as_ref().is_some_and(|i| {
+            [
+                &i.confidentiality,
+                &i.integrity,
+                &i.availability,
+                &i.business_impact,
+            ]
+            .iter()
+            .any(|f| f.as_deref().is_some_and(|v| !v.trim().is_empty()))
+        });
         GateResult {
             gate: ValidationGate::ImpactDemonstration,
             passed: has_impact,
@@ -573,10 +587,13 @@ impl ValidationEngine {
     }
 
     fn gate_control_comparison(finding: &Finding, _context: &SecurityContext) -> GateResult {
-        let has_baseline = finding
-            .notes
-            .iter()
-            .any(|n| n.contains("expected") || n.contains("baseline") || n.contains("control"));
+        // A baseline comparison names the expected/baseline behaviour alongside
+        // an observed one. The bare word "control" (e.g. "control flow") is not a
+        // comparison.
+        let has_baseline = finding.notes.iter().any(|n| {
+            let lower = n.to_ascii_lowercase();
+            (lower.contains("expected") || lower.contains("baseline")) && lower.contains("actual")
+        });
         GateResult {
             gate: ValidationGate::ControlComparison,
             passed: has_baseline,
@@ -834,5 +851,73 @@ mod tests {
         let validation = ValidationEngine::validate(&finding, &context);
         let review = QualityControl::adversarial_review(&finding, &validation, "reviewer-1");
         assert!(review.disproof_successful);
+    }
+
+    fn repro_with(
+        steps: Vec<&str>,
+        actual: &str,
+        indicator: &str,
+    ) -> super::super::finding::ReproductionSteps {
+        super::super::finding::ReproductionSteps {
+            preconditions: vec![],
+            steps: steps.into_iter().map(String::from).collect(),
+            expected_behavior: "Safe output".into(),
+            actual_behavior: actual.into(),
+            success_indicator: indicator.into(),
+        }
+    }
+
+    fn gate_passed(result: &ValidationResult, gate: ValidationGate) -> bool {
+        result.gates.iter().find(|g| g.gate == gate).unwrap().passed
+    }
+
+    // Hard negative: a reproduction object with no steps and no observed
+    // behaviour is presence-without-content and must not satisfy the gate.
+    #[test]
+    fn empty_reproduction_does_not_pass_reproducibility_gate() {
+        let mut finding = test_finding();
+        finding.reproduction = Some(repro_with(vec![], "", ""));
+        let result = ValidationEngine::validate(&finding, &test_context());
+        assert!(!gate_passed(&result, ValidationGate::Reproducibility));
+    }
+
+    // Hard negative: an impact object with every field empty is not a
+    // demonstrated impact.
+    #[test]
+    fn empty_impact_does_not_pass_impact_gate() {
+        let mut finding = test_finding();
+        finding.impact = Some(super::super::finding::ImpactDescription {
+            confidentiality: None,
+            integrity: None,
+            availability: None,
+            business_impact: None,
+            affected_users: None,
+            data_sensitivity: None,
+        });
+        let result = ValidationEngine::validate(&finding, &test_context());
+        assert!(!gate_passed(&result, ValidationGate::ImpactDemonstration));
+    }
+
+    // Hard negative: a note that merely mentions "control" (control flow,
+    // access control wording) is not a baseline comparison.
+    #[test]
+    fn unrelated_control_word_does_not_pass_control_comparison() {
+        let mut finding = test_finding();
+        finding.notes.push("control flow looks unusual here".into());
+        let result = ValidationEngine::validate(&finding, &test_context());
+        assert!(!gate_passed(&result, ValidationGate::ControlComparison));
+    }
+
+    // Positive: concrete reproduction content passes the gate.
+    #[test]
+    fn substantive_reproduction_passes_reproducibility_gate() {
+        let mut finding = test_finding();
+        finding.reproduction = Some(repro_with(
+            vec!["GET /x"],
+            "200 with other user's data",
+            "data present",
+        ));
+        let result = ValidationEngine::validate(&finding, &test_context());
+        assert!(gate_passed(&result, ValidationGate::Reproducibility));
     }
 }

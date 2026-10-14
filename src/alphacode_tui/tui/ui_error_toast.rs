@@ -615,11 +615,11 @@ pub fn draw(frame: &mut ratatui::Frame, area: Rect) {
         } else if toast.hint.is_some() || toast.recovery.is_some() {
             // Collapsed: show expand indicator.
             let collapse_hint = if toast.hint.is_some() && toast.recovery.is_some() {
-                "▸ expand for suggestions"
+                "▸ Enter: suggestions · Esc: dismiss"
             } else if toast.hint.is_some() {
-                "press Enter to expand"
+                "▸ Enter: details · Esc: dismiss"
             } else {
-                "▸ expand for suggestions"
+                "▸ Enter: suggestions · Esc: dismiss"
             };
             lines.push(Line::from(Span::styled(
                 collapse_hint,

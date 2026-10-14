@@ -236,6 +236,9 @@ where
         from_cache: false,
     });
 
+    if let Some(local) = crate::usage_ledger::usage_report() {
+        results.push(local);
+    }
     results
 }
 

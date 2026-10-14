@@ -1,10 +1,13 @@
 pub mod action;
 pub mod arbitration;
+pub mod authz;
+pub mod bench;
 pub mod build_readiness;
 pub mod chain;
 pub mod concurrency_audit;
 pub mod context;
 pub mod coverage;
+pub mod dedup;
 pub mod evidence;
 pub mod finding;
 pub mod hypothesis;
@@ -21,6 +24,7 @@ pub mod repro_harness;
 pub mod research_session;
 pub mod resources;
 pub mod scope;
+pub mod scope_gate;
 pub mod severity;
 pub mod skill_router;
 pub mod state;
@@ -35,6 +39,17 @@ pub use arbitration::{
     ArbitratedContribution, ArbitrationVerdict, ContributionScore, VerifierAssignment,
     VerifierVerdict,
 };
+pub use authz::{
+    AccessCase, AccessObservation, AccessOperation, AuthorizationAssessment, AuthorizationMatrix,
+    AuthorizationVerdict, AuthzRequirement, FalsePositiveCause, GraphQlAssessment,
+    GraphQlFieldAccess, ObjectGraph, ObservedOutcome, RequirementKind, ResourceRef,
+    ResourceVisibility, Role, TestIdentity, analyze_access, analyze_access_with_operation,
+    analyze_graphql, analyze_matrix, apply_to_finding,
+};
+pub use bench::{
+    BenchComparison, BenchFixture, BenchMetrics, BenchReport, FixtureInputs, FixtureOracle,
+    FixtureOutcome, FixtureSplit, compare, run as run_benchmark, run_shipped_corpus,
+};
 pub use build_readiness::{
     BuildBlocker, BuildReadiness, EvidenceTier as BuildReadinessTier, TargetLanguage,
     assess_build_readiness,
@@ -47,6 +62,10 @@ pub use concurrency_audit::{
 pub use context::{EngagementPhase, EngagementSummary, SecurityContext, TimelineEvent};
 pub use coverage::{
     CoverageStats, CoverageTracker, EndpointCoverage, TechCoverage, TestRecord, TestResult,
+};
+pub use dedup::{
+    DedupCandidate, DedupDisposition, Deduplicator, RootCauseGroup, RootCauseKey,
+    SecurityInvariant, VulnerableOperation,
 };
 pub use evidence::{
     Evidence, EvidenceData, EvidenceItem, EvidenceKind, EvidenceMetadata, ReproductionStep,
@@ -92,6 +111,9 @@ pub use scope::{
     AttackSurfaceSummary, DiscoveredEndpoint, DiscoveredHost, DiscoveredParameter, DiscoveredPort,
     DiscoveredSubdomain, EngagementMode, EngagementRules, LiveScope, ParameterLocation,
     ScopeObservation, ScopeVerdict, TechCategory, TechnologyFingerprint,
+};
+pub use scope_gate::{
+    ScopeDecision, ScopePattern, ScopePolicy, decide, normalize_host, parse_ipv4_cidr,
 };
 pub use severity::{
     CvssInputs, EvidenceTier as SeverityEvidenceTier, FindingReport, ReportSection,

@@ -696,7 +696,7 @@ impl Tool for WebFetchTool {
         }
     }
 
-    async fn execute(&self, input: Value, _ctx: ToolContext) -> Result<ToolOutput> {
+    async fn execute(&self, input: Value, ctx: ToolContext) -> Result<ToolOutput> {
         // Recover the target before anything else. The previous strict
         // `from_value::<WebFetchInput>` reported a bare serde "missing field
         // `url`" for every shape a model actually emits — an alias key
@@ -765,6 +765,16 @@ impl Tool for WebFetchTool {
                     // Re-run the full guard on every hop. This is the check the
                     // transport's own redirect handling used to skip.
                     current_url = guard_target(&next).await?;
+                    // SSRF-clean is not in-scope. A hop out to another origin is
+                    // the cheapest way for an allowed request to leave the
+                    // engagement, so it is re-checked against the session policy.
+                    super::scope::check_redirect(
+                        &ctx.session_id,
+                        "webfetch",
+                        &start_url,
+                        &current_url,
+                    )
+                    .map_err(anyhow::Error::msg)?;
                     hops_followed += 1;
                     if redirect_downgrades_to_get(status, &method) {
                         method = "GET".to_string();

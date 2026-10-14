@@ -1144,6 +1144,10 @@ impl Provider for AnthropicProvider {
         AnthropicProvider::set_credential_mode(self, mode)
     }
 
+    fn supports_model_switching(&self) -> bool {
+        true
+    }
+
     fn set_model(&self, model: &str) -> Result<()> {
         // Native-1M models (Opus 4.8/4.7) no longer carry a redundant `[1m]`
         // alias. Gracefully migrate a stale `<model>[1m]` id (from old config or

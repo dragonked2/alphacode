@@ -1039,7 +1039,11 @@ async fn handle_remote_key_internal(
                     return Ok(());
                 }
 
-                if trimmed == "/model" || trimmed == "/models" {
+                if trimmed == "/model"
+                    || trimmed == "/models"
+                    || trimmed == "/set model"
+                    || trimmed == "/set models"
+                {
                     let _ = remote.refresh_models().await;
                     // `refresh_models` re-queries providers and pushes the
                     // result over the bus, where oversized frames get
@@ -1137,10 +1141,28 @@ async fn handle_remote_key_internal(
                     return Ok(());
                 }
 
-                if let Some(model_name) = trimmed.strip_prefix("/model ") {
+                // `/model <name>` and its `/set model <name>` alias are the same
+                // request and must reach the server through the same path.
+                //
+                // The alias used to fall through this chain into
+                // `dispatch_local_command` -> `handle_model_command`, which calls
+                // `app.provider.set_model(...)`. In remote mode `app.provider` is
+                // `InertRuntimeProvider`, which deliberately implements no live
+                // provider surface, so that call hit the `Provider` trait default
+                // and every remote client saw "This provider does not support
+                // model switching" for a model it could switch to fine. The
+                // failure was reported for the alias only because the alias was
+                // the only one that was never forwarded.
+                if let Some(model_name) = trimmed
+                    .strip_prefix("/model ")
+                    .or_else(|| trimmed.strip_prefix("/set model "))
+                    .or_else(|| trimmed.strip_prefix("/set models "))
+                {
                     let model_name = model_name.trim();
                     if model_name.is_empty() {
-                        app.push_display_message(DisplayMessage::error("Usage: /model <name>"));
+                        app.push_display_message(DisplayMessage::error(
+                            "Usage: /model <name>  (alias: /set model <name>)",
+                        ));
                         return Ok(());
                     }
                     app.upstream_provider = None;
