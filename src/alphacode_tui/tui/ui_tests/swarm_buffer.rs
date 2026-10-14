@@ -229,7 +229,7 @@ fn right_fact_stack_shifts_up_when_scheduled_notification_row_is_absent() {
         let l = crate::alphacode_tui::tui::ui::last_layout_snapshot();
         eprintln!("LAYOUT2: {l:?}");
     }
-    let [oauth_y, model_y, dir_y, context_y] = assert_fact_stack_is_contiguous(&rows);
+    let [oauth_y, model_y, _dir_y, context_y] = assert_fact_stack_is_contiguous(&rows);
     let layout = crate::alphacode_tui::tui::ui::last_layout_snapshot().expect("layout snapshot");
     let input = layout.input_area.expect("input area");
     let status = crate::alphacode_tui::tui::ui::last_status_area().expect("status area");

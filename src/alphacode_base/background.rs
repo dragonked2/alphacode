@@ -619,7 +619,9 @@ impl BackgroundTaskManager {
         session_id: &str,
         handle: JoinHandle<Result<crate::alphacode_tool_types::ToolOutput>>,
     ) -> BackgroundTaskInfo {
-        self.adopt_with_options(tool_name, None, session_id, true, false, handle)
+        // Alt+B hand-offs wake the agent on completion so it resumes work
+        // automatically instead of having to poll with `bg wait`.
+        self.adopt_with_options(tool_name, None, session_id, true, true, handle)
             .await
     }
 

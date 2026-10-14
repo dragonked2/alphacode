@@ -691,6 +691,10 @@ impl Provider for OpenAIProvider {
         !is_chatgpt_web_model(&self.model())
     }
 
+    fn supports_model_switching(&self) -> bool {
+        true
+    }
+
     fn set_model(&self, model: &str) -> Result<()> {
         let model = model.trim();
         if self.is_browser_only() && !is_chatgpt_web_model(model) {

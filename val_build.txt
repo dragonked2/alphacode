@@ -1,0 +1,10 @@
+   Compiling alphacode v1.0.80 (C:\Users\or0to\OneDrive\Desktop\alphacode)
+warning: unused variable: `dir_y`
+   --> src\alphacode_tui\tui\ui_tests\swarm_buffer.rs:232:28
+    |
+232 |     let [oauth_y, model_y, dir_y, context_y] = assert_fact_stack_is_contiguous(&rows);
+    |                            ^^^^^ help: if this is intentional, prefix it with an underscore: `_dir_y`
+    |
+    = note: `#[warn(unused_variables)]` (part of `#[warn(unused)]`) on by default
+
+BUILD_EXIT=1

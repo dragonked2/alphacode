@@ -1,3 +1,4 @@
+use super::misc_ui::BilledUsageSnapshot;
 use super::*;
 use crate::alphacode_tui::message::ToolDefinition;
 
@@ -239,6 +240,9 @@ impl App {
             let mut first_event = true;
             let mut saw_message_end = false;
             let mut call_output_tokens_seen: u64 = 0;
+            // Usage already billed for the in-flight API call (see
+            // `accrue_local_usage_delta`). Reset per turn; a new call resets it again.
+            let mut billed_usage_snapshot = BilledUsageSnapshot::default();
             let mut interleaved = false; // Track if we interleaved a message mid-stream
             // Track tool results from provider (already executed by Claude Code CLI)
             let mut sdk_tool_results: std::collections::HashMap<String, (String, bool)> =
@@ -656,6 +660,12 @@ impl App {
                                             );
                                             usage_changed = true;
                                         }
+                                        // Bill this call's new usage now, by delta since the
+                                        // previous snapshot of the same call, so realtime cost
+                                        // updates and multi-call turns are fully counted.
+                                        self.accrue_local_usage_delta(
+                                            &mut billed_usage_snapshot,
+                                        );
                                         if usage_changed {
                                             self.update_compaction_usage_from_stream();
                                             if let Some(context_tokens) = self.current_stream_context_tokens() {

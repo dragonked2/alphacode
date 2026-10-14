@@ -30,6 +30,21 @@ pub fn stderr_blank_line() {
     }
 }
 
+/// Returns `code` only when styled output is appropriate: stderr is an
+/// interactive terminal, color is not disabled (`NO_COLOR` /
+/// `ALPHACODE_NO_COLOR`), and quiet mode is off. Otherwise returns an empty
+/// string, so logs, pipes, and redirected output never receive raw escapes.
+pub fn style(code: &'static str) -> &'static str {
+    if styling_enabled() { code } else { "" }
+}
+
+fn styling_enabled() -> bool {
+    use std::io::IsTerminal;
+    std::io::stderr().is_terminal()
+        && !crate::alphacode_tui_style::color::no_color_enabled()
+        && !quiet_enabled()
+}
+
 // ── Professional CLI Output Formatting ──────────────────────────────
 
 /// ANSI color codes for professional CLI output.

@@ -606,6 +606,7 @@ pub mod tests {
     include!("issue_497_copy_ctrl_c.rs");
     include!("issue_544_paste_enter.rs");
     include!("issue_605_clear_side_panel.rs");
+    include!("model_switch_command.rs");
     include!("onboarding_eval.rs");
     include!("onboarding_flow.rs");
     include!("onboarding_golden.rs");

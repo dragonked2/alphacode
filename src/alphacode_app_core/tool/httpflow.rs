@@ -279,7 +279,7 @@ impl HttpFlowTool {
         &self,
         params: &HttpFlowInput,
         session_name: &str,
-        _ctx: &ToolContext,
+        ctx: &ToolContext,
     ) -> Result<ToolOutput> {
         let url = params
             .url
@@ -442,6 +442,20 @@ impl HttpFlowTool {
                         .to_string();
 
                     redirect_chain.push(current_url.clone());
+
+                    // A redirect is the cheapest way for an allowed request to
+                    // leave the engagement, so every hop is re-checked against
+                    // the session scope before it is followed. This loop had no
+                    // validation at all before: not scope, and not even the
+                    // SSRF guard `webfetch` applies.
+                    if let Err(reason) = crate::alphacode_app_core::tool::scope::check_redirect(
+                        ctx.session_id.as_str(),
+                        "httpflow",
+                        url,
+                        &redirect_url,
+                    ) {
+                        return Err(anyhow::anyhow!("{reason}"));
+                    }
 
                     // POST → 303 always becomes GET
                     // POST → 301/302 becomes GET (browser convention)

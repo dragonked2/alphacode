@@ -630,14 +630,10 @@ pub(super) fn handle_debug_command(app: &mut App, trimmed: &str) -> bool {
                 });
             }
             Err(e) => {
-                app.push_display_message(DisplayMessage {
-                    role: "error".to_string(),
-                    content: format!("Failed to write visual debug dump: {}", e),
-                    tool_calls: vec![],
-                    duration_secs: None,
-                    title: None,
-                    tool_data: None,
-                });
+                crate::alphacode_tui::tui::ui_error_toast::push_error_with_hint(
+                    format!("Failed to write visual debug dump: {}", e),
+                    "Check that the ~/.alphacode directory is writable, then retry with /debug-visual dump.",
+                );
             }
         }
         return true;

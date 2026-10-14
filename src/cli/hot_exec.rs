@@ -14,6 +14,30 @@ pub fn has_requested_action(run_result: &RunResult) -> bool {
         || run_result.restart_session.is_some()
 }
 
+/// The Windows replacement paths hand the console to another process without
+/// unwinding the stack (`replace_process` is `spawn` + `exit`, and the detached
+/// branch is a bare `exit(0)`), so the TUI guard's `finish()` never runs. That
+/// leaves raw mode on, the alternate screen active and the cursor hidden, and
+/// the next process to inherit the console starts from a corrupted terminal
+/// with no working input. Put the terminal back before every handoff.
+///
+/// Guarded on raw mode so the normal path, where the TUI already cleaned up,
+/// does not re-emit a second round of escape sequences over a clean screen.
+fn restore_terminal_for_handoff() {
+    if !crossterm::terminal::is_raw_mode_enabled().unwrap_or(false) {
+        return;
+    }
+    let _ = crossterm::terminal::disable_raw_mode();
+    let _ = crossterm::execute!(
+        std::io::stdout(),
+        crossterm::event::DisableBracketedPaste,
+        crossterm::event::DisableMouseCapture,
+        crossterm::cursor::Show,
+        crossterm::terminal::LeaveAlternateScreen
+    );
+    crate::alphacode_tui_style::restore_terminal_quietly();
+}
+
 pub fn execute_requested_action(run_result: &RunResult) -> Result<()> {
     if let Some(ref reload_session_id) = run_result.reload_session {
         hot_reload(reload_session_id)?;
@@ -48,6 +72,7 @@ pub fn hot_restart(session_id: &str) -> Result<()> {
         cmd.arg("self-dev");
     }
     cmd.arg("--resume").arg(session_id).current_dir(&cwd);
+    restore_terminal_for_handoff();
     let err = crate::platform::replace_process(&mut cmd);
 
     Err(anyhow::anyhow!("Failed to exec {:?}: {}", exe, err))
@@ -68,6 +93,7 @@ pub fn hot_reload(session_id: &str) -> Result<()> {
                 .arg("--no-update")
                 .env_remove("ALPHACODE_MIGRATE_BINARY")
                 .current_dir(cwd);
+            restore_terminal_for_handoff();
             let err = crate::platform::replace_process(&mut cmd);
             return Err(anyhow::anyhow!("Failed to exec {:?}: {}", binary_path, err));
         } else {
@@ -148,6 +174,7 @@ pub fn hot_reload(session_id: &str) -> Result<()> {
             match crate::platform::spawn_detached_process(&mut helper_cmd) {
                 Ok(_child) => {
                     crate::logging::info("Detached helper spawned. Current process will exit now.");
+                    restore_terminal_for_handoff();
                     std::process::exit(0);
                 }
                 Err(e) => {
@@ -160,6 +187,7 @@ pub fn hot_reload(session_id: &str) -> Result<()> {
         }
     }
 
+    restore_terminal_for_handoff();
     for attempt in 0..3 {
         if attempt > 0 {
             std::thread::sleep(std::time::Duration::from_millis(200));
@@ -235,6 +263,7 @@ pub fn hot_update(session_id: &str) -> Result<()> {
                         .arg(session_id)
                         .arg("--no-update")
                         .current_dir(&cwd);
+                    restore_terminal_for_handoff();
                     let err = crate::platform::replace_process(&mut cmd);
                     return Err(anyhow::anyhow!("Failed to exec {:?}: {}", exe, err));
                 }
@@ -274,6 +303,7 @@ pub fn hot_update(session_id: &str) -> Result<()> {
         .arg(session_id)
         .arg("--no-update")
         .current_dir(&cwd);
+    restore_terminal_for_handoff();
     let err = crate::platform::replace_process(&mut cmd);
     Err(anyhow::anyhow!("Failed to exec {:?}: {}", exe, err))
 }

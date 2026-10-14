@@ -31,9 +31,12 @@ Reply with ONLY a JSON array of candidate numbers, best first, e.g. [3,1,7]. Inc
 
 const TRANSIENT_FAILURE_BACKOFF: Duration = Duration::from_secs(30);
 const AUTH_FAILURE_BACKOFF: Duration = Duration::from_secs(5 * 60);
+/// A 429 from the active provider means the shared free-tier bucket is spent. Hammering it
+/// with sidecar judge votes only deepens the limit, so back off for a full window.
+const RATE_LIMIT_FAILURE_BACKOFF: Duration = Duration::from_secs(10 * 60);
 static FAILURE_BACKOFF_UNTIL: Mutex<Option<Instant>> = Mutex::new(None);
 
-fn failure_backoff_active() -> bool {
+pub(crate) fn failure_backoff_active() -> bool {
     let Ok(mut guard) = FAILURE_BACKOFF_UNTIL.lock() else {
         return false;
     };
@@ -47,15 +50,21 @@ fn failure_backoff_active() -> bool {
     }
 }
 
-fn record_failure_backoff(error: &anyhow::Error) {
+pub(crate) fn record_failure_backoff(error: &anyhow::Error) {
     let error = error.to_string().to_ascii_lowercase();
     let permanent_auth_failure = error.contains("401")
         || error.contains("unauthorized")
         || error.contains("authentication_error")
         || error.contains("invalid authentication credentials")
         || error.contains("invalid_grant");
+    let rate_limited = error.contains("429")
+        || error.contains("rate limit")
+        || error.contains("rate-limited")
+        || error.contains("too many requests");
     let duration = if permanent_auth_failure {
         AUTH_FAILURE_BACKOFF
+    } else if rate_limited {
+        RATE_LIMIT_FAILURE_BACKOFF
     } else {
         TRANSIENT_FAILURE_BACKOFF
     };

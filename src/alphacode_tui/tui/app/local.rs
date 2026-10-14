@@ -511,7 +511,8 @@ pub(super) fn finish_turn(app: &mut App) {
     let turn_duration_secs = app.display_turn_duration_secs();
     app.token_accounting.total_input_tokens += app.streaming.streaming_input_tokens;
     app.token_accounting.total_output_tokens += app.streaming.streaming_output_tokens;
-    app.update_cost_impl();
+    // Cost accrues per usage event during the turn (accrue_local_usage_delta).
+    // Billing again here would double count the last call and drop earlier ones.
     app.is_processing = false;
     app.status = ProcessingStatus::Idle;
     app.stream_message_ended = false;

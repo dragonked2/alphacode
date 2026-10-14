@@ -247,15 +247,15 @@ fn reserve_rows(
             push_unique(&mut next, p);
             continue;
         }
-        if p_start < start {
-            if let Some(piece) = Pocket::fit(spaces, p.margin_idx, p_start, start, area_width) {
-                push_unique(&mut next, piece);
-            }
+        if p_start < start
+            && let Some(piece) = Pocket::fit(spaces, p.margin_idx, p_start, start, area_width)
+        {
+            push_unique(&mut next, piece);
         }
-        if end < p_end {
-            if let Some(piece) = Pocket::fit(spaces, p.margin_idx, end, p_end, area_width) {
-                push_unique(&mut next, piece);
-            }
+        if end < p_end
+            && let Some(piece) = Pocket::fit(spaces, p.margin_idx, end, p_end, area_width)
+        {
+            push_unique(&mut next, piece);
         }
     }
     *pockets = next;
@@ -571,7 +571,7 @@ pub(crate) fn calculate_placements_anchored(
     if available.is_empty() {
         return PlacementOutcome::empty();
     }
-    let available: Vec<WidgetKind> = available.iter().copied().collect();
+    let available: Vec<WidgetKind> = available.to_vec();
 
     let mut placer = Placer::new(messages_area, margins);
 

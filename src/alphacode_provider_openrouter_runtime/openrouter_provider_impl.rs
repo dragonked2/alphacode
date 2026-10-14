@@ -399,6 +399,10 @@ impl Provider for OpenRouterProvider {
         !self.supports_provider_features
     }
 
+    fn supports_model_switching(&self) -> bool {
+        true
+    }
+
     fn set_model(&self, model: &str) -> Result<()> {
         // OpenRouter accepts any model ID - validation happens at API call time
         // This allows using any model without needing to pre-fetch the list

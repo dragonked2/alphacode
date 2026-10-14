@@ -773,10 +773,8 @@ fn todos_header_spans(
     if show_confidence {
         push_aggregate_confidence_suffix(&mut spans, confidence);
     }
-    if show_loop {
-        if let Some(goal) = goal {
-            push_goal_loop_suffix(&mut spans, goal);
-        }
+    if show_loop && let Some(goal) = goal {
+        push_goal_loop_suffix(&mut spans, goal);
     }
     spans
 }
@@ -824,10 +822,8 @@ fn push_group_header(
     if show_confidence {
         push_aggregate_confidence_suffix(&mut spans, confidence);
     }
-    if show_loop {
-        if let Some(goal) = goal {
-            push_goal_loop_suffix(&mut spans, goal);
-        }
+    if show_loop && let Some(goal) = goal {
+        push_goal_loop_suffix(&mut spans, goal);
     }
     lines.push(Line::from(spans));
 }
@@ -1094,10 +1090,8 @@ fn compact_summary_spans(
         if show_confidence {
             push_aggregate_confidence_suffix(&mut spans, confidence);
         }
-        if show_loop {
-            if let Some(goal) = goal {
-                push_goal_loop_suffix(&mut spans, goal);
-            }
+        if show_loop && let Some(goal) = goal {
+            push_goal_loop_suffix(&mut spans, goal);
         }
         spans
     };

@@ -166,6 +166,28 @@ pub fn effective_free_pool() -> Vec<String> {
     merge_pool(&discovered)
 }
 
+/// The user-visible product name for a model that belongs to the Alphax Free
+/// pool, or `None` when the model is not part of it.
+///
+/// Membership is decided by the pool itself — the curated floor plus whatever
+/// the gateway refresh discovered — and deliberately *not* by the `:free`
+/// suffix. Other providers publish their own `:free` ids (Token Harbor's
+/// catalog, for one) that are not Alphax Free; labelling those with the product
+/// name hid the real model the user selected, so the picker and header read
+/// "Alphax Free" for a provider the user never logged into. Only a model the
+/// Alphax Free gateway actually serves may present as
+/// [`ALPHAX_FREE_DISPLAY_NAME`].
+pub fn free_pool_display_name(model: &str) -> Option<&'static str> {
+    let model = model.trim();
+    if model.is_empty() {
+        return None;
+    }
+    effective_free_pool()
+        .iter()
+        .any(|candidate| candidate == model)
+        .then_some(ALPHAX_FREE_DISPLAY_NAME)
+}
+
 /// Quarantine `model` for the window implied by `trigger`.
 pub fn quarantine_model(model: &str, trigger: RotationTrigger) {
     let model = model.trim();
@@ -412,6 +434,26 @@ mod tests {
         clear_quarantine("some/model:free");
         clear_quarantine("");
         assert!(!is_quarantined("some/model:free"));
+    }
+
+    #[test]
+    fn only_pool_members_present_as_alphax_free() {
+        let _guard = test_lock();
+        reset();
+        // Curated pool members carry the product name.
+        assert_eq!(
+            free_pool_display_name("kilo-auto/free"),
+            Some(ALPHAX_FREE_DISPLAY_NAME)
+        );
+        assert_eq!(
+            free_pool_display_name("poolside/laguna-s-2.1:free"),
+            Some(ALPHAX_FREE_DISPLAY_NAME)
+        );
+        // A `:free` id from a different provider is not in the pool and must
+        // keep its real name rather than borrowing the Alphax Free product name.
+        assert_eq!(free_pool_display_name("tokenharbor/qwen3-max:free"), None);
+        assert_eq!(free_pool_display_name("openai/gpt-5.4"), None);
+        assert_eq!(free_pool_display_name(""), None);
     }
 
     #[test]
