@@ -198,7 +198,11 @@ mod tests {
             for branch in [
                 "main",
                 "feature/a-rather-long-branch-name-that-needs-truncating",
-                "日本語のブランチ名",
+                // A three-byte, two-column-per-glyph branch name. Written as an
+                // escape so this file stays plain ASCII; ASCII branch names
+                // cannot catch a stats-reservation bug that measures chars
+                // instead of columns.
+                "\u{65e5}\u{672c}\u{8a9e}\u{30d6}\u{30e9}\u{30f3}\u{30c1}\u{540d}",
             ] {
                 let text = line_text(&render_git_compact(&info(branch), width));
                 assert!(

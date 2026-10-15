@@ -327,8 +327,10 @@ mod tests {
     }
 
     #[test]
-    fn insert_paste_newline_preserves_cjk() {
-        let mut s = String::from("中文");
+    fn insert_paste_newline_preserves_multibyte_boundaries() {
+        // Two three-byte CJK glyphs (escaped so this file stays plain ASCII),
+        // with the cursor parked mid-string at byte 3.
+        let mut s = String::from("\u{4e2d}\u{6587}");
         let mut pos = 3;
         insert_paste_newline(&mut s, &mut pos);
         assert!(s.is_char_boundary(pos));

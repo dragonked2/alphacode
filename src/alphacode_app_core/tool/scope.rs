@@ -149,56 +149,150 @@ pub fn session_scope_policy(session_id: &str) -> Option<ScopePolicy> {
 /// Returns `None` for tools with no obvious single URL (batch tools, list-file
 /// tools, local file tools). The registry-level gate only needs *a* target;
 /// per-tool enforcement re-checks each real hostname at execution time.
-pub(crate) fn single_target_from_input(tool: &str, input: &Value) -> Option<String> {
+/// Input keys whose value names a network target.
+const TARGET_KEYS: &[&str] = &[
+    "url",
+    "urls",
+    "uri",
+    "link",
+    "href",
+    "target_url",
+    "request_url",
+    "target",
+    "targets",
+    "host",
+    "hosts",
+    "hostname",
+    "domain",
+    "resource",
+    "location",
+    "site",
+    "website",
+    "page",
+    "u",
+    "t",
+    "d",
+];
+
+/// Input keys whose value is a local file containing targets.
+///
+/// Recon is usually driven from a list file (`httpx -l targets.txt`), so a gate
+/// that only reads inline arguments sees no target at all and waves the call
+/// through. The file is opened at gate time, bounded, so its contents are held
+/// to the same policy as inline targets.
+const TARGET_FILE_KEYS: &[&str] = &["list", "input", "f", "input_file", "target_file"];
+
+/// Lines read from a target-list file. A larger file is bulk work the gate
+/// should not second-guess line by line; the head is checked and the remainder
+/// is the caller's responsibility.
+const MAX_TARGET_FILE_LINES: usize = 2048;
+
+/// Bytes read from a target-list file.
+const MAX_TARGET_FILE_BYTES: u64 = 1 << 20;
+
+/// Whether a raw argument value looks like a network target.
+///
+/// Guards the short key aliases (`u`, `t`, `d`), which several tools use for
+/// unrelated things: `katana`'s old `d` field was a depth integer, and treating
+/// `3` as a host would deny a call that never left the machine.
+fn looks_like_target(value: &str) -> bool {
+    let trimmed = value.trim();
+    if trimmed.is_empty() || trimmed.contains(char::is_whitespace) {
+        return false;
+    }
+    if trimmed.contains("://") {
+        return true;
+    }
+    // A bare hostname or IP has a dot or a colon. A filesystem path has a dot
+    // too, so separators are what actually distinguish the two.
+    (trimmed.contains('.') || trimmed.contains(':'))
+        && !trimmed.contains('/')
+        && !trimmed.contains('\\')
+}
+
+/// Every target a call names: inline arguments first, then target-list files.
+///
+/// The gate evaluates each entry. Checking only the first is what let
+/// `{"targets": ["in-scope.test", "out-of-scope.test"]}` through, which is the
+/// ordinary shape of a recon call rather than an exotic one.
+pub(crate) fn all_targets_from_input(tool: &str, input: &Value) -> Vec<String> {
     let _ = tool;
-    let obj = input.as_object()?;
-    // Most URL tools share a small set of keys (see coerce_url_arg aliases).
-    for key in [
-        "url",
-        "uri",
-        "link",
-        "href",
-        "target_url",
-        "request_url",
-        "target",
-        "host",
-        "hostname",
-        "domain",
-        "resource",
-        "location",
-        "site",
-        "website",
-        "page",
-        "u",
-        "t",
-        "d",
-        "input",
-    ] {
-        if let Some(Value::String(s)) = obj.get(key) {
-            if !s.trim().is_empty() {
-                return Some(s.clone());
+    let Some(obj) = input.as_object() else {
+        return Vec::new();
+    };
+    let mut targets: Vec<String> = Vec::new();
+
+    for (key, value) in obj {
+        let lower = key.to_ascii_lowercase();
+        if TARGET_FILE_KEYS.contains(&lower.as_str()) {
+            if let Some(path) = value.as_str() {
+                targets.extend(targets_from_file(path));
+            }
+            continue;
+        }
+        if !TARGET_KEYS.contains(&lower.as_str()) {
+            continue;
+        }
+        collect_target_values(value, &mut targets);
+    }
+
+    targets.sort();
+    targets.dedup();
+    targets
+}
+
+fn collect_target_values(value: &Value, out: &mut Vec<String>) {
+    match value {
+        Value::String(s) => {
+            if looks_like_target(s) {
+                out.push(s.trim().to_string());
             }
         }
-    }
-    // Arrays of targets: pick the first that looks like a URL/host.
-    if let Some(Value::Array(items)) = obj.get("targets") {
-        for item in items {
-            if let Some(s) = item.as_str() {
-                return Some(s.to_string());
+        Value::Array(items) => {
+            for item in items {
+                collect_target_values(item, out);
             }
         }
-    }
-    // ffuf uses `url`; websockets use `url` too. Fall back to any http(s)
-    // string anywhere in the object when the above missed it.
-    for value in obj.values() {
-        if let Some(s) = value.as_str() {
-            let lower = s.to_ascii_lowercase();
-            if lower.starts_with("http://") || lower.starts_with("https://") {
-                return Some(s.to_string());
+        Value::Object(map) => {
+            for (key, nested) in map {
+                let lower = key.to_ascii_lowercase();
+                if TARGET_KEYS.contains(&lower.as_str())
+                    || TARGET_FILE_KEYS.contains(&lower.as_str())
+                {
+                    collect_target_values(nested, out);
+                }
             }
         }
+        _ => {}
     }
-    None
+}
+
+/// Read a target-list file, bounded.
+///
+/// An unreadable path contributes no targets: the tool itself will fail on it,
+/// and failing the gate on a file the tool never opens would block valid calls.
+fn targets_from_file(path: &str) -> Vec<String> {
+    let trimmed = path.trim();
+    if trimmed.is_empty() || trimmed == "-" {
+        return Vec::new();
+    }
+    let Ok(file) = std::fs::File::open(trimmed) else {
+        return Vec::new();
+    };
+    let reader = std::io::BufReader::new(file);
+    let reader = std::io::Read::take(reader, MAX_TARGET_FILE_BYTES);
+    let mut out = Vec::new();
+    for line in std::io::BufRead::lines(reader).map_while(Result::ok) {
+        if out.len() >= MAX_TARGET_FILE_LINES {
+            break;
+        }
+        let line = line.trim();
+        if line.is_empty() || line.starts_with('#') {
+            continue;
+        }
+        out.push(line.to_string());
+    }
+    out
 }
 
 fn denied_message(tool: &str, target: &str, reason: &str) -> String {
@@ -206,6 +300,14 @@ fn denied_message(tool: &str, target: &str, reason: &str) -> String {
         "Engagement scope block: `{tool}` would contact `{target}` but it is outside the \
          authorized scope for this session ({reason}). Out-of-scope testing is not permitted. \
          If this target should be tested, add it to the engagement scope first."
+    )
+}
+
+fn unmatched_message(tool: &str, target: &str) -> String {
+    format!(
+        "Engagement scope block: `{tool}` would contact `{target}`, which matches no \
+         in-scope rule for this session. This engagement is fail-closed, so an unmatched \
+         target is refused. Add `{target}` to the engagement scope first."
     )
 }
 
@@ -251,28 +353,51 @@ fn evaluate_target(session_id: &str, target: &str) -> ScopeDecision {
 /// The function is synchronous on purpose: the existing registry wiring calls
 /// it without `.await`, and scope evaluation is pure and fast.
 pub(crate) fn enforce_call(ctx: &ToolContext, tool: &str, input: &Value) -> Result<(), String> {
-    // No scope installed: nothing to enforce.
+    // No scope installed: nothing to enforce. This is the ordinary coding
+    // session, and it must be completely unaffected.
     let Some(policy) = session_scope_policy(&ctx.session_id) else {
         return Ok(());
     };
-    // No allowlist: only explicit exclusions can deny, which the decision
-    // function already handles. An empty allowlist must not fail everything.
-    if policy.in_scope.is_empty() {
-        return Ok(());
-    }
     // Only network-capable tools are subject to the gate.
     if !is_network_tool(tool) {
         return Ok(());
     }
-    // No single target string (list files, batch payloads): let the tool run;
-    // its per-request execution re-checks real hostnames.
-    let Some(target) = single_target_from_input(tool, input) else {
-        return Ok(());
-    };
-    match evaluate_target(&ctx.session_id, &target) {
-        ScopeDecision::Allowed { .. } | ScopeDecision::Pending => Ok(()),
-        ScopeDecision::Denied { reason } => Err(denied_message(tool, &target, &reason)),
+    // Every target is evaluated, not just the first. Three behaviours this
+    // replaces, each of which let a request leave the engagement:
+    //
+    // * A denylist-only policy returned early, so an operator who listed only
+    //   exclusions got no enforcement at all — while `scope_gate::decide`
+    //   documents that explicit exclusions always win.
+    // * `Pending` was treated as allowed, so `fail_closed` never actually
+    //   failed closed: an unmatched target was permitted exactly when the
+    //   policy said it must not be.
+    // * Only the first target was checked, so an in-scope host listed first
+    //   laundered every host listed after it — including out-of-scope ones and
+    //   the entire contents of a recon list file.
+    for target in all_targets_from_input(tool, input) {
+        let decision = evaluate_target(&ctx.session_id, &target);
+        if decision.is_unmatched() {
+            // `decide` denies under `fail_closed`, so an unmatched target arrives
+            // here as a denial rather than as `Pending`. It still needs the
+            // fail-closed wording: "you tried a host the engagement never named"
+            // is a different problem from "this host is excluded", and only the
+            // former is fixed by widening the scope.
+            return Err(unmatched_message(tool, &target));
+        }
+        match decision {
+            ScopeDecision::Denied { reason } => {
+                return Err(denied_message(tool, &target, &reason));
+            }
+            ScopeDecision::Pending if policy.fail_closed => {
+                // Unreachable today, and kept as a belt-and-braces guard: the
+                // gate must not depend on `decide`'s coupling to fail-closed
+                // surviving a future change.
+                return Err(unmatched_message(tool, &target));
+            }
+            ScopeDecision::Pending | ScopeDecision::Allowed { .. } => {}
+        }
     }
+    Ok(())
 }
 
 /// Re-evaluate a redirect hop against the same session scope.
@@ -287,12 +412,22 @@ pub(crate) fn check_redirect(
     to: &str,
 ) -> Result<(), String> {
     // No scope installed: nothing to enforce. Per-tool SSRF guards still run.
-    if session_scope_policy(session_id).is_none() {
+    let Some(policy) = session_scope_policy(session_id) else {
         return Ok(());
+    };
+    // A redirect into a host that matches no in-scope rule is the cheapest way
+    // for an allowed request to leave the engagement, so a fail-closed policy
+    // refuses the hop here too. Treating `Pending` as allowed made
+    // `fail_closed` advisory for redirects, which is the one place it cannot
+    // afford to be.
+    let decision = evaluate_target(session_id, to);
+    if decision.is_unmatched() {
+        return Err(unmatched_message(tool, to));
     }
-    match evaluate_target(session_id, to) {
-        ScopeDecision::Allowed { .. } | ScopeDecision::Pending => Ok(()),
+    match decision {
         ScopeDecision::Denied { reason } => Err(denied_message(tool, to, &reason)),
+        ScopeDecision::Pending if policy.fail_closed => Err(unmatched_message(tool, to)),
+        ScopeDecision::Pending | ScopeDecision::Allowed { .. } => Ok(()),
     }
 }
 
@@ -322,10 +457,10 @@ impl Drop for NetworkPermit {
         }
         self._released = true;
         GLOBAL_IN_FLIGHT.fetch_sub(1, Ordering::SeqCst);
-        if let Some(mut scopes) = SESSION_SCOPES.write().ok() {
-            if let Some(state) = scopes.get_mut(&self._session_id) {
-                state.permits.in_flight = state.permits.in_flight.saturating_sub(1);
-            }
+        if let Ok(mut scopes) = SESSION_SCOPES.write()
+            && let Some(state) = scopes.get_mut(&self._session_id)
+        {
+            state.permits.in_flight = state.permits.in_flight.saturating_sub(1);
         }
     }
 }
@@ -469,16 +604,195 @@ mod tests {
     }
 
     #[test]
-    fn list_shaped_input_not_blocked_when_no_single_target() {
-        let id = "list-test";
-        set_session_scope(id, Some(policy(&["example.com"], &[], true)));
-        // httpx with a list file has no single target string; the registry gate
-        // must let the tool run and let the per-tool execution gate re-check.
+    fn a_list_file_whose_contents_are_out_of_scope_blocks_the_call() {
+        // This used to assert the opposite. A recon list file is the most
+        // common way a target set reaches a tool, and a gate that only reads
+        // inline arguments sees no target at all in it — so the call ran
+        // against whatever the file happened to contain.
+        let id = "list-file-content-test";
+        set_session_scope(id, Some(policy(&["example.com"], &["evil.com"], true)));
+        let dir = tempfile::tempdir().expect("tempdir");
+        let list = dir.path().join("targets.txt");
+        std::fs::write(&list, "# comment\nexample.com\nevil.com\n").expect("write list");
+
+        let err = enforce_call(
+            &ctx_for(id),
+            "httpx",
+            &serde_json::json!({ "list": list.to_string_lossy() }),
+        )
+        .expect_err("an out-of-scope host inside the list file must block the call");
+        assert!(err.contains("evil.com"), "{err}");
+    }
+
+    #[test]
+    fn a_list_file_with_only_in_scope_targets_is_allowed() {
+        let id = "list-file-ok-test";
+        set_session_scope(id, Some(policy(&["example.com"], &["evil.com"], true)));
+        let dir = tempfile::tempdir().expect("tempdir");
+        let list = dir.path().join("targets.txt");
+        std::fs::write(&list, "example.com\napi.example.com\n").expect("write list");
+
         assert!(
             enforce_call(
                 &ctx_for(id),
                 "httpx",
-                &serde_json::json!({"list": "hosts.txt"})
+                &serde_json::json!({ "list": list.to_string_lossy() })
+            )
+            .is_ok()
+        );
+    }
+
+    #[test]
+    fn an_unreadable_list_file_does_not_block_the_call() {
+        // The tool itself will fail on a missing file. Blocking the gate on a
+        // file the tool never opens would deny valid calls for the wrong reason.
+        let id = "list-file-missing-test";
+        set_session_scope(id, Some(policy(&["example.com"], &[], true)));
+        assert!(
+            enforce_call(
+                &ctx_for(id),
+                "httpx",
+                &serde_json::json!({"list": "definitely-not-here.txt"})
+            )
+            .is_ok()
+        );
+    }
+
+    /// Regression: only the first target used to be checked, so an in-scope
+    /// host listed first laundered every host after it.
+    #[test]
+    fn every_target_in_a_multi_target_call_is_checked() {
+        let id = "multi-target-test";
+        set_session_scope(id, Some(policy(&["example.com"], &["evil.com"], true)));
+        let err = enforce_call(
+            &ctx_for(id),
+            "httpx",
+            &serde_json::json!({"targets": ["example.com", "api.example.com", "evil.com"]}),
+        )
+        .expect_err("the out-of-scope entry must be caught even behind two allowed ones");
+        assert!(err.contains("evil.com"), "{err}");
+    }
+
+    /// Regression: `fail_closed` did not fail closed. `Pending` was allowed, so
+    /// an unmatched target was permitted precisely when the policy said it must
+    /// not be.
+    #[test]
+    fn fail_closed_denies_a_target_matching_no_rule() {
+        let id = "fail-closed-test";
+        let p = policy(&["example.com"], &[], true);
+        assert!(p.fail_closed, "this policy must actually be fail-closed");
+        set_session_scope(id, Some(p));
+
+        let err = enforce_call(
+            &ctx_for(id),
+            "webfetch",
+            &serde_json::json!({"url": "https://unrelated.test/x"}),
+        )
+        .expect_err("an unmatched target must be refused under a fail-closed policy");
+        assert!(err.contains("unrelated.test"), "{err}");
+        // The target matched no in-scope rule, which must be reported as the
+        // fail-closed refusal it is. It must NOT be phrased as an explicit
+        // out-of-scope exclusion: that implies the engagement named the host and
+        // rejected it, when in fact the engagement never mentioned it at all.
+        // The two need different fixes from the user, so they get different
+        // wording here.
+        assert!(
+            err.contains("matches no in-scope rule") && err.contains("fail-closed"),
+            "an unmatched target must be reported as a fail-closed refusal: {err}"
+        );
+        assert!(
+            !err.contains("out-of-scope rule"),
+            "an unmatched target must not be reported as an explicit exclusion: {err}"
+        );
+
+        // Still permits what the policy declares.
+        assert!(
+            enforce_call(
+                &ctx_for(id),
+                "webfetch",
+                &serde_json::json!({"url": "https://api.example.com/x"})
+            )
+            .is_ok()
+        );
+    }
+
+    #[test]
+    fn a_non_enforcing_policy_still_permits_unmatched_targets() {
+        let id = "not-fail-closed-test";
+        set_session_scope(id, Some(policy(&["example.com"], &[], false)));
+        assert!(
+            enforce_call(
+                &ctx_for(id),
+                "webfetch",
+                &serde_json::json!({"url": "https://unrelated.test/x"})
+            )
+            .is_ok()
+        );
+    }
+
+    /// Regression: a denylist-only policy returned early, so an operator who
+    /// listed only exclusions got no enforcement at all.
+    #[test]
+    fn a_denylist_only_policy_still_enforces_its_exclusions() {
+        let id = "denylist-only-test";
+        set_session_scope(id, Some(policy(&[], &["evil.com"], true)));
+        let err = enforce_call(
+            &ctx_for(id),
+            "webfetch",
+            &serde_json::json!({"url": "https://evil.com/x"}),
+        )
+        .expect_err("an explicit exclusion must be enforced with no allowlist present");
+        assert!(err.contains("evil.com"), "{err}");
+
+        // A denylist is not an allowlist: it must not deny everything else.
+        assert!(
+            enforce_call(
+                &ctx_for(id),
+                "webfetch",
+                &serde_json::json!({"url": "https://anything.test/x"})
+            )
+            .is_ok()
+        );
+    }
+
+    /// Regression: a redirect to an unmatched host was followed because
+    /// `Pending` was treated as allowed.
+    #[test]
+    fn fail_closed_refuses_an_unmatched_redirect_hop() {
+        let id = "redirect-fail-closed-test";
+        set_session_scope(id, Some(policy(&["example.com"], &[], true)));
+        assert!(
+            check_redirect(
+                id,
+                "webfetch",
+                "https://example.com/a",
+                "https://elsewhere.test/b"
+            )
+            .is_err(),
+            "a hop to an unmatched host must be refused under a fail-closed policy"
+        );
+        assert!(
+            check_redirect(
+                id,
+                "webfetch",
+                "https://example.com/a",
+                "https://api.example.com/b"
+            )
+            .is_ok()
+        );
+    }
+
+    #[test]
+    fn short_key_aliases_that_are_not_targets_are_ignored() {
+        // `katana`'s `d` was a depth integer. Reading `3` as a hostname would
+        // deny a call that never left the machine.
+        let id = "short-key-test";
+        set_session_scope(id, Some(policy(&["example.com"], &[], true)));
+        assert!(
+            enforce_call(
+                &ctx_for(id),
+                "katana",
+                &serde_json::json!({"url": "https://example.com", "d": "3"})
             )
             .is_ok()
         );

@@ -1762,7 +1762,9 @@ mod tests {
 
     #[test]
     fn emergency_truncation_is_utf8_safe() {
-        let original = format!("{}middle{}", "é".repeat(20), "尾".repeat(20));
+        // Two-byte (accented Latin) then three-byte (CJK) repeats on purpose: the
+        // point is that truncation lands on a real char boundary at either width.
+        let original = format!("{}middle{}", "\u{e9}".repeat(20), "\u{5c3e}".repeat(20));
         let truncated = emergency_truncated_tool_result(&original, 25);
         assert!(truncated.contains("chars truncated for context recovery"));
         assert!(truncated.is_char_boundary(truncated.len()));

@@ -644,8 +644,9 @@ mod tests {
     #[test]
     fn multibyte_chars_split_across_tcp_chunks_survive_poll_next() {
         // Drive real bytes through poll_next, splitting mid-character.
-        let payload =
-            "data: {\"choices\":[{\"delta\":{\"content\":\"读取文件\"}}]}\n\ndata: [DONE]\n\n";
+        // 3-byte CJK content (escaped so this file stays plain ASCII) so the split
+        // can land in the middle of a character.
+        let payload = "data: {\"choices\":[{\"delta\":{\"content\":\"\u{8bfb}\u{53d6}\u{6587}\u{4ef6}\"}}]}\n\ndata: [DONE]\n\n";
         let bytes = payload.as_bytes();
         // Split at every offset to sweep the chunk-boundary state space.
         for split in 0..bytes.len() {
@@ -667,7 +668,10 @@ mod tests {
                 }
                 text
             });
-            assert_eq!(text, "读取文件", "lost content at split offset {split}");
+            assert_eq!(
+                text, "\u{8bfb}\u{53d6}\u{6587}\u{4ef6}",
+                "lost content at split offset {split}"
+            );
         }
     }
 

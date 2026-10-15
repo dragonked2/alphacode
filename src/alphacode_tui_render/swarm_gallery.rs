@@ -2527,9 +2527,20 @@ mod tests {
 
     #[test]
     fn vertical_strip_is_display_width_bounded_at_all_widths() {
-        let mut wide = member("調整役エージェント", "running", Some("coordinator"), &[]);
+        // Double-width, multi-byte content (escaped so this file stays plain ASCII).
+        // ASCII cannot catch a strip that bounds by characters instead of
+        // display columns.
+        let mut wide = member(
+            "\u{8abf}\u{6574}\u{5f79}\u{30a8}\u{30fc}\u{30b8}\u{30a7}\u{30f3}\u{30c8}",
+            "running",
+            Some("coordinator"),
+            &[],
+        );
         wide.icon = Some("🐯".to_string());
-        wide.task = Some("寬字元邊界の検証テスト for the renderer".to_string());
+        wide.task = Some(
+            "\u{5be3}\u{5b57}\u{5143}\u{908a}\u{754c}\u{306e}\u{691c}\u{8a3c}\u{30c6}\u{30b9}\u{30c8} for the renderer"
+                .to_string(),
+        );
         wide.todo = Some((12, 34));
         let members = vec![
             wide,
@@ -2812,7 +2823,7 @@ mod tests {
         use unicode_width::UnicodeWidthStr;
         let members = vec![
             member(
-                "日本語のエージェント名前が長い場合の確認",
+                "\u{65e5}\u{672c}\u{8a9e}\u{306e}\u{30a8}\u{30fc}\u{30b8}\u{30a7}\u{30f3}\u{30c8}\u{540d}\u{524d}\u{304c}\u{9577}\u{3044}\u{5834}\u{5408}\u{306e}\u{78ba}\u{8a8d}",
                 "running",
                 None,
                 &["· 3s ago"],
@@ -2855,7 +2866,7 @@ mod tests {
                         &format!("agent-🐝-{i}"),
                         statuses[i % statuses.len()],
                         if i == 0 { Some("coordinator") } else { None },
-                        &["line 一二三四五", "· 2s ago"],
+                        &["line \u{4e00}\u{4e8c}\u{4e09}\u{56db}\u{4e94}", "· 2s ago"],
                     );
                     m.todo = Some((i as u32, (i as u32).max(1)));
                     m
@@ -3066,7 +3077,7 @@ mod tests {
                     &format!("agent-🐝-{i}"),
                     "running",
                     None,
-                    &["line 一二三四五"],
+                    &["line \u{4e00}\u{4e8c}\u{4e09}\u{56db}\u{4e94}"],
                 )
             })
             .collect();

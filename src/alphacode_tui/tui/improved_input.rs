@@ -969,7 +969,8 @@ mod tests {
 
     #[test]
     fn test_enhanced_input_unicode_safe() {
-        let input = "こんにちは世界";
+        // Double-width, multi-byte input, escaped so this file stays plain ASCII.
+        let input = "\u{3053}\u{3093}\u{306b}\u{3061}\u{306f}\u{4e16}\u{754c}";
         let lines = EnhancedInput::render(input, input.len(), 40, false, InputMode::Chat);
         assert!(!lines.is_empty());
     }

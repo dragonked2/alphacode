@@ -367,7 +367,14 @@ mod tests {
 
     #[test]
     fn an_ancient_sample_does_not_make_a_short_recent_run_look_full_window() {
-        let now = Instant::now();
+        // Anchor `now` two windows past the clock origin so the backdated
+        // samples below are always representable. `Instant` cannot describe
+        // instants before its origin (system uptime on Windows), so
+        // subtracting from a bare `Instant::now()` panics on freshly booted
+        // machines.
+        let now = Instant::now()
+            .checked_add(Duration::from_secs(MEMORY_WINDOW_SECS * 2))
+            .expect("test instant should be representable");
         let mut samples = Vec::new();
         samples.push((
             now.checked_sub(Duration::from_secs(MEMORY_WINDOW_SECS * 2))

@@ -327,7 +327,9 @@ fn test_table_width_wrap_keeps_apostrophe_words_intact_when_possible() {
 
 #[test]
 fn test_table_cjk_alignment() {
-    let md = "| Issue | You wrote |\n| - | - |\n| 政策 pronunciation | zhēn cí |";
+    // Double-width cell content (escaped so this file stays plain ASCII): the
+    // column must be padded in terminal cells, not characters.
+    let md = "| Issue | Pronunciation |\n| - | - |\n| \u{653f}\u{7b56} | zh\u{113}n c\u{ed} |";
     let lines = render_markdown(md);
     let rendered: Vec<String> = lines.iter().map(line_to_string).collect();
 

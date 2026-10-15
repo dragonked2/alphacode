@@ -19,7 +19,9 @@ pub use effects::*;
 pub use harmony::{Criterion, HarmonyReport, Oklab, analyze as analyze_harmony, analyze_active};
 pub use icons::{Icon, TerminalClass, force_terminal_class, terminal_class};
 pub use palette::{ALL_ROLES, Palette, Role, palette, role_color, set_palette};
-pub use presets::{PRESETS, ThemeSeed, preset_by_id, preset_palette};
+pub use presets::{
+    MOODS, PRESETS, ThemeSeed, mood_preset_id, preset_by_id, preset_palette, resolve_palette,
+};
 pub use role::{
     is_overridden as is_role_overridden, themed as role_themed, themed_rgb as role_themed_rgb,
 };

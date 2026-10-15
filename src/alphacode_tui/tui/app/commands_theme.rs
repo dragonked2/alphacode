@@ -10,7 +10,9 @@
 //! two commands are separate: `/theme` picks the base, `/colors` retunes it.
 
 use super::{App, DisplayMessage};
-use crate::alphacode_tui_style::presets::{PRESETS, ThemeSeed, preset_by_id};
+use crate::alphacode_tui_style::presets::{
+    MOODS, PRESETS, ThemeSeed, mood_preset_id, preset_by_id,
+};
 use serde::Serialize;
 
 /// Title attached to the `/theme` listing message so the message renderer can
@@ -44,9 +46,10 @@ fn swatch_for(preset: &ThemeSeed) -> [(u8, u8, u8); 8] {
     ]
 }
 const USAGE: &str = "Usage:\n  \
-    /theme                  List the built-in themes\n  \
-    /theme <name>           Apply a theme (saved to config, applied immediately)\n  \
-    /theme off              Drop back to alphacode's built-in palette";
+    /theme                  List looks, moods, and themes\n  \
+    /theme <name>           Apply a mood or theme (saved to config, applied immediately)\n  \
+    /theme off              Drop back to alphacode's built-in palette\n\n\
+    moods: calm · vibrant · cozy · focus · paper · night";
 
 /// What the user asked for. Split out from [`handle_theme_command`] so the
 /// parsing can be tested without building an [`App`].
@@ -101,17 +104,31 @@ fn list_themes(app: &mut App) {
     // message content is otherwise forced to the system color). The renderer
     // falls back to a readable plain-text table for anything it cannot parse.
     let active_id = active().map(|p| p.id);
+    // Moods first: they are the friendly entry points. Each mood row renders
+    // like a theme row, but its swatch previews the preset it points at and
+    // its description carries a "Mood —" prefix, so the two groups read as
+    // two sections without any renderer change.
+    let mut rows: Vec<ThemePreviewRow> = MOODS
+        .iter()
+        .filter_map(|(mood, target, description)| {
+            let seed = preset_by_id(target);
+            Some(ThemePreviewRow {
+                id: mood,
+                dark: seed.is_some_and(|s| s.is_dark),
+                description,
+                swatch: seed.map(swatch_for)?,
+            })
+        })
+        .collect();
+    rows.extend(PRESETS.iter().map(|preset| ThemePreviewRow {
+        id: preset.id,
+        dark: preset.is_dark,
+        description: preset.description,
+        swatch: swatch_for(preset),
+    }));
     let payload = ThemeListPayload {
         active: active_id,
-        rows: PRESETS
-            .iter()
-            .map(|preset| ThemePreviewRow {
-                id: preset.id,
-                dark: preset.is_dark,
-                description: preset.description,
-                swatch: swatch_for(preset),
-            })
-            .collect(),
+        rows,
     };
     let json = serde_json::to_string(&payload).expect("serialize theme listing");
     app.push_display_message(DisplayMessage {
@@ -132,7 +149,13 @@ struct ThemeListPayload<'a> {
 }
 
 fn apply_theme(app: &mut App, name: &str) {
-    let Some(preset) = preset_by_id(name) else {
+    // A mood (`calm`) resolves to the concrete preset behind it. Persist the
+    // concrete id, not the mood, so the config always names a real theme and
+    // the palette resolver never has a special case at render time.
+    let target_seed = mood_preset_id(name)
+        .and_then(preset_by_id)
+        .or_else(|| preset_by_id(name));
+    let Some(preset) = target_seed else {
         let known = PRESETS.iter().map(|p| p.id).collect::<Vec<_>>().join(", ");
         app.push_display_message(DisplayMessage::error(format!(
             "Unknown theme '{name}'.\n\nAvailable: {known}\n\n{USAGE}"
@@ -154,16 +177,35 @@ fn apply_theme(app: &mut App, name: &str) {
                      take precedence — `/colors reset` clears them."
                 )
             };
+            let applied_name = mood_preset_id(name)
+                .map(|_target| {
+                    format!(
+                        "{} ({})",
+                        mood_display_name(name),
+                        target_seed.map(|s| s.display_name).unwrap_or("")
+                    )
+                })
+                .unwrap_or_else(|| preset.display_name.to_string());
             app.push_display_message(DisplayMessage::system(format!(
-                "Theme set to {} ({}). Applied immediately.{note}",
-                preset.display_name,
-                if preset.is_dark { "dark" } else { "light" }
+                "Look set to {}. Applied immediately.{note}",
+                applied_name
             )));
         }
         Err(error) => app.push_display_message(DisplayMessage::error(format!(
             "Failed to save theme '{}': {error}",
             preset.id
         ))),
+    }
+}
+
+/// Human-facing mood name for messages: Capitalized mood word as typed in
+/// MOODS. Falls back to the raw input when the mood id is unknown (an apply
+/// with an unknown mood cannot reach this path, so the fallback is inert).
+fn mood_display_name(id: &str) -> String {
+    let mut chars = id.chars();
+    match chars.next() {
+        Some(first) => first.to_uppercase().collect::<String>() + chars.as_str(),
+        None => String::new(),
     }
 }
 

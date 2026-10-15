@@ -202,19 +202,6 @@ pub trait Provider: Send + Sync {
         Err(anyhow::anyhow!(MODEL_SWITCH_UNSUPPORTED))
     }
 
-    /// Whether [`Provider::set_model`] is implemented by this provider rather
-    /// than inherited from the trait default.
-    ///
-    /// The default rejects every model, so a caller that cannot distinguish the
-    /// two cases reports "this provider does not support model switching" about
-    /// a provider that simply was never asked — the process may hold an inert
-    /// runtime (remote client, replay) that has no provider at all. Callers
-    /// should check this before switching and use
-    /// [`MODEL_SWITCH_UNSUPPORTED`] to classify the error when they check after.
-    fn supports_model_switching(&self) -> bool {
-        false
-    }
-
     /// Select a structured model route.
     ///
     /// Most single-runtime providers can treat this as `set_model(model)`. Provider

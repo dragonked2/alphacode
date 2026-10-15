@@ -144,17 +144,24 @@ pub fn hot_reload(session_id: &str) -> Result<()> {
 
     // On Windows, the currently-running executable is locked and cannot be
     // replaced in-place. If the target binary is a *different* file (e.g. a
-    // freshly installed update in versions/<v>/), spawn a detached helper
-    // process that waits for us to exit, then execs into the new binary.
-    // This avoids the race where both old and new processes load the same
-    // file because Windows keeps the old handle open.
+    // freshly installed update in versions/<v>/), spawn a helper process that
+    // waits for us to exit, then launches the new binary. This avoids the race
+    // where both old and new processes load the same file because Windows keeps
+    // the old handle open.
+    //
+    // The helper must inherit our console. It is the process that launches the
+    // replacement TUI, so a console-less helper yields a replacement with no
+    // console input buffer: it renders and then ignores every keystroke. That
+    // is the "update installed, now I cannot type" symptom, and a detached
+    // helper is also why a second alphacode.exe lingers against ~/.alphacode
+    // for the whole wait. See `spawn_console_handoff_process`.
     #[cfg(windows)]
     {
         let current_exe = std::env::current_exe().ok();
         let different_binary = current_exe.as_ref() != Some(&exe);
         if different_binary {
             crate::logging::info(&format!(
-                "Spawning detached helper to reload with {:?} after current process exits...",
+                "Spawning console-handoff helper to reload with {:?} after current process exits...",
                 exe
             ));
             let mut helper_cmd = ProcessCommand::new(std::env::current_exe()?);
@@ -171,15 +178,17 @@ pub fn hot_reload(session_id: &str) -> Result<()> {
                 helper_cmd.arg("self-dev");
             }
             helper_cmd.current_dir(&cwd);
-            match crate::platform::spawn_detached_process(&mut helper_cmd) {
+            match crate::platform::spawn_console_handoff_process(&mut helper_cmd) {
                 Ok(_child) => {
-                    crate::logging::info("Detached helper spawned. Current process will exit now.");
+                    crate::logging::info(
+                        "Console-handoff helper spawned. Current process will exit now.",
+                    );
                     restore_terminal_for_handoff();
                     std::process::exit(0);
                 }
                 Err(e) => {
                     crate::logging::warn(&format!(
-                        "Failed to spawn detached helper: {}. Falling back to direct exec.",
+                        "Failed to spawn console-handoff helper: {}. Falling back to direct exec.",
                         e
                     ));
                 }

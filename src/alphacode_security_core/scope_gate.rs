@@ -151,6 +151,24 @@ pub enum ScopeDecision {
     Pending,
 }
 
+/// Reason [`decide`] records when a fail-closed policy matched no rule at all.
+///
+/// This is deliberately distinct from an explicit out-of-scope rule. The
+/// engagement never named the target either way, but the situations need
+/// different words and different fixes: an excluded host is told to stop, while
+/// an unmatched one is told the engagement simply does not cover it yet. Callers
+/// that need the distinction should use [`ScopeDecision::is_unmatched`] rather
+/// than matching on this text.
+pub const UNMATCHED_FAIL_CLOSED: &str = "no in-scope rule matched this target";
+
+impl ScopeDecision {
+    /// Whether this denial came from a fail-closed policy matching no rule,
+    /// rather than from an explicit out-of-scope rule.
+    pub fn is_unmatched(&self) -> bool {
+        matches!(self, ScopeDecision::Denied { reason } if reason == UNMATCHED_FAIL_CLOSED)
+    }
+}
+
 /// Extract a canonical hostname from a URL, bare host, `host:port`, or
 /// bracketed IPv6 literal. Returns `None` for empty/ambiguous input.
 pub fn normalize_host(input: &str) -> Option<String> {
@@ -188,10 +206,10 @@ pub fn normalize_host(input: &str) -> Option<String> {
 /// so `http://10.0.0.1/x` and `10.0.0.1:8443` both resolve to the address.
 fn target_ip(target: &str) -> Option<IpAddr> {
     let trimmed = target.trim();
-    if let Some(candidate) = trimmed.strip_prefix('[').and_then(|s| s.strip_suffix(']')) {
-        if let Ok(ip) = candidate.parse::<IpAddr>() {
-            return Some(ip);
-        }
+    if let Some(candidate) = trimmed.strip_prefix('[').and_then(|s| s.strip_suffix(']'))
+        && let Ok(ip) = candidate.parse::<IpAddr>()
+    {
+        return Some(ip);
     }
     if let Ok(ip) = trimmed.parse::<IpAddr>() {
         return Some(ip);
@@ -222,7 +240,7 @@ pub fn decide(policy: &ScopePolicy, target: &str) -> ScopeDecision {
     }
     if policy.fail_closed {
         ScopeDecision::Denied {
-            reason: "no in-scope rule matched this target".to_string(),
+            reason: UNMATCHED_FAIL_CLOSED.to_string(),
         }
     } else {
         ScopeDecision::Pending

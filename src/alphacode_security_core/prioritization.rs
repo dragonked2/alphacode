@@ -410,8 +410,10 @@ mod tests {
     /// User-defined priorities are respected and *labeled* as overrides.
     #[test]
     fn user_order_is_respected_and_explained() {
-        let mut config = PrioritizerConfig::default();
-        config.user_order = vec!["low-scored".into()];
+        let config = PrioritizerConfig {
+            user_order: vec!["low-scored".into()],
+            ..Default::default()
+        };
         let plan = prioritize(
             vec![
                 target("high-scored", "r", &[RiskFactor::KeyCustody], true),

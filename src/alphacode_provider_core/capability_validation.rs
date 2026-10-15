@@ -21,7 +21,18 @@ pub struct CachedModelCapability {
 impl CachedModelCapability {
     /// Whether this cached capability is stale (older than TTL).
     pub fn is_stale(&self, ttl: Duration) -> bool {
-        self.cached_at.elapsed() > ttl
+        self.is_stale_at(Instant::now(), ttl)
+    }
+
+    /// Whether the entry is older than `ttl` measured from the caller's
+    /// reference instant. `is_stale` is sugar for this with `Instant::now()`;
+    /// the split lets callers that already hold a coherent clock evaluate
+    /// staleness against exactly that clock instead of the second,
+    /// unsynchronized clock read inside `elapsed()` (which the tests rely on
+    /// when they backdate an entry by hours, an instant that may not be
+    /// representable on a freshly booted Windows host).
+    pub fn is_stale_at(&self, now: Instant, ttl: Duration) -> bool {
+        now.saturating_duration_since(self.cached_at) > ttl
     }
 
     /// Age of this cache entry in seconds.
@@ -194,12 +205,20 @@ mod tests {
 
     #[test]
     fn cached_capability_staleness() {
+        // Anchor `now` two hours past the clock origin so "1 hour ago" is
+        // representable: `Instant` cannot describe instants before its origin
+        // (system uptime on Windows). Staleness is evaluated against that same
+        // reference clock; a fresh `Instant::now()` would read the future
+        // instant as age 0 and call it fresh.
+        let now = Instant::now()
+            .checked_add(Duration::from_secs(7200))
+            .expect("test instant should be representable");
         let cache = CachedModelCapability {
             context_window: Some(1_000_000),
-            cached_at: Instant::now() - Duration::from_secs(3600), // 1 hour ago
+            cached_at: now - Duration::from_secs(3600), // 1 hour ago
             source: "test",
         };
-        assert!(cache.is_stale(DEFAULT_CAPABILITY_CACHE_TTL));
+        assert!(cache.is_stale_at(now, DEFAULT_CAPABILITY_CACHE_TTL));
     }
 
     #[test]

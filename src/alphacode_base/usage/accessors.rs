@@ -183,17 +183,16 @@ pub fn fetch_usage_for_account_sync(
         return Ok(cached);
     }
 
-    if tokio::runtime::Handle::try_current().is_err() {
-        anyhow::bail!("Anthropic usage refresh requires a Tokio runtime")
-    }
-
-    let result = tokio::task::block_in_place(|| {
-        tokio::runtime::Handle::current().block_on(fetch_usage_for_account(
+    let result = match block_on_in_current_runtime(|| {
+        fetch_usage_for_account(
             access_token.to_string(),
             refresh_token.to_string(),
             expires_at,
-        ))
-    });
+        )
+    })? {
+        Some(result) => result,
+        None => anyhow::bail!("Anthropic usage refresh requires a multi-threaded Tokio runtime"),
+    };
 
     if let Ok(ref data) = result {
         store_anthropic_usage(cache_key, data.clone());
@@ -216,17 +215,16 @@ pub fn fetch_openai_usage_for_account_sync(
         ));
     }
 
-    if tokio::runtime::Handle::try_current().is_err() {
-        anyhow::bail!("OpenAI usage refresh requires a Tokio runtime")
-    }
-
-    let report = tokio::task::block_in_place(|| {
-        tokio::runtime::Handle::current().block_on(fetch_openai_usage_for_account(
+    let report = match block_on_in_current_runtime(|| {
+        fetch_openai_usage_for_account(
             openai_provider_display_name(label, email.as_deref(), 2, false),
             creds,
             Some(label),
-        ))
-    });
+        )
+    })? {
+        Some(report) => report,
+        None => anyhow::bail!("OpenAI usage refresh requires a multi-threaded Tokio runtime"),
+    };
     let data = openai_usage_data_from_provider_report(&report);
     store_openai_usage(cache_key, data.clone());
     Ok(openai_snapshot_from_usage(label.to_string(), email, &data))
@@ -374,4 +372,67 @@ pub fn get_sync() -> UsageData {
     }
 
     UsageData::default()
+}
+
+/// Drive `future` to completion from synchronous code that is already running
+/// on a Tokio runtime.
+///
+/// Returns `Err` when no runtime is active, and `Ok(None)` when the active
+/// runtime cannot safely block (a current-thread runtime). Both sync usage
+/// fetchers are reached from the provider failover path, which can run inside
+/// any runtime that issues completions — including current-thread runtimes
+/// such as the sidecar and memory-agent runtimes. On those, both
+/// `block_in_place` and `Handle::block_on` panic, so the caller degrades to an
+/// error (usage-based account ordering is skipped) instead of crashing the
+/// request.
+fn block_on_in_current_runtime<F, Fut, T>(future: F) -> Result<Option<T>>
+where
+    F: FnOnce() -> Fut,
+    Fut: std::future::Future<Output = T>,
+{
+    let handle = tokio::runtime::Handle::try_current()
+        .map_err(|_| anyhow::anyhow!("usage refresh requires a Tokio runtime"))?;
+    if !matches!(
+        handle.runtime_flavor(),
+        tokio::runtime::RuntimeFlavor::MultiThread
+    ) {
+        return Ok(None);
+    }
+    Ok(Some(tokio::task::block_in_place(|| {
+        handle.block_on(future())
+    })))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The current-thread runtimes (sidecar, memory agent) must get an error
+    /// from the sync usage fetchers, not a `block_in_place` panic.
+    #[tokio::test(flavor = "current_thread")]
+    async fn anthropic_sync_fetch_degrades_on_current_thread_runtime() {
+        let err = fetch_usage_for_account_sync("current-thread-flavor-test-token", "refresh", 0)
+            .expect_err("must not panic; must degrade to an error");
+        assert!(
+            err.to_string().contains("multi-threaded"),
+            "unexpected error: {err:#}"
+        );
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn openai_sync_fetch_degrades_on_current_thread_runtime() {
+        let creds = auth::codex::CodexCredentials {
+            access_token: "current-thread-flavor-test-openai-token".to_string(),
+            refresh_token: "refresh".to_string(),
+            id_token: None,
+            account_id: None,
+            expires_at: Some(0),
+        };
+        let err = fetch_openai_usage_for_account_sync("label", None, creds)
+            .expect_err("must not panic; must degrade to an error");
+        assert!(
+            err.to_string().contains("multi-threaded"),
+            "unexpected error: {err:#}"
+        );
+    }
 }

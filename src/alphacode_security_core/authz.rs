@@ -247,7 +247,7 @@ impl ResourceRef {
     pub fn declares_access_for(&self, identity: &TestIdentity) -> bool {
         match self.visibility {
             ResourceVisibility::Public => true,
-            ResourceVisibility::Shared => self.shared_with.iter().any(|s| *s == identity.id),
+            ResourceVisibility::Shared => self.shared_with.contains(&identity.id),
             ResourceVisibility::Private => self.owner.as_deref() == Some(identity.id.as_str()),
             ResourceVisibility::Undetermined => false,
         }
@@ -902,6 +902,57 @@ pub fn analyze_graphql(accesses: &[GraphQlFieldAccess]) -> GraphQlAssessment {
     let leaks: Vec<&GraphQlFieldAccess> = accesses.iter().filter(|a| a.is_unprotected()).collect();
 
     if leaks.is_empty() {
+        // A field that resolved to protected data through a parent nobody has
+        // classified is a lead, not nothing. Reporting it as "nothing to see"
+        // with no requirement attached is how an unclassified object quietly
+        // stops being investigated.
+        let unclassified_leads: Vec<&GraphQlFieldAccess> = accesses
+            .iter()
+            .filter(|a| {
+                a.resolved
+                    && a.returned_protected_data
+                    && a.parent_visibility == ResourceVisibility::Undetermined
+            })
+            .collect();
+
+        if !unclassified_leads.is_empty() {
+            let mut fields: Vec<String> = unclassified_leads
+                .iter()
+                .map(|a| a.field_path.clone())
+                .collect();
+            fields.sort();
+            fields.dedup();
+            let exchanges = distinct_exchanges(unclassified_leads.iter().map(|a| &a.exchange_id));
+            let mut requirements = vec![AuthzRequirement {
+                kind: RequirementKind::DeclareOwner,
+                detail: "the parent object's visibility is unclassified, so field-level \
+                          authorization cannot be judged"
+                    .into(),
+            }];
+            if exchanges < 2 {
+                requirements.push(AuthzRequirement {
+                    kind: RequirementKind::RepeatIndependently,
+                    detail: format!(
+                        "{exchanges} exchange(s) observed; a second independent request is \
+                         required before this can be reported"
+                    ),
+                });
+            }
+            return GraphQlAssessment {
+                verdict: AuthorizationVerdict::Inconclusive,
+                leaking_fields: fields.clone(),
+                false_positive_causes: vec![FalsePositiveCause::UnsupportedAssumption],
+                unmet_requirements: requirements,
+                explanation: format!(
+                    "{} field(s) resolved to protected data through an object with no \
+                     declared owner ({}); this is a lead until the parent is classified",
+                    fields.len(),
+                    fields.join(", ")
+                ),
+                supporting_exchanges: exchanges,
+            };
+        }
+
         let explanation = if accesses.is_empty() {
             "no GraphQL field access was observed".to_string()
         } else {
@@ -1187,7 +1238,7 @@ pub fn analyze_access_with_operation(
             );
         }
         ResourceVisibility::Shared => {
-            if resource.shared_with.iter().any(|s| *s == identity.id) {
+            if resource.shared_with.contains(&identity.id) {
                 causes.push(FalsePositiveCause::AuthorizedSharing);
                 return finish(
                     AuthorizationVerdict::AuthorizedAccess,
@@ -1336,23 +1387,29 @@ pub fn analyze_access_with_operation(
         });
     }
 
-    // The control must be shown to work on comparable data owned by the caller.
-    let own_resource = case
-        .resources
-        .iter()
-        .find(|r| r.owner.as_deref() == Some(identity.id.as_str()));
-    let control_works = own_resource.is_some_and(|owned| {
-        case.observations.iter().any(|o| {
-            o.identity == identity.id
-                && o.resource == owned.report_label()
-                && o.outcome == ObservedOutcome::Denied
-        })
+    // The control must be shown to work: the same authorization check must have
+    // refused this identity on some other resource it does not own.
+    //
+    // The earlier version looked for a denial on a resource the identity *owns*,
+    // which can never happen — an owner is not refused its own object — so this
+    // requirement could never be satisfied and every real IDOR stayed
+    // inconclusive. The control is the deny on somebody else's object.
+    let control_works = case.observations.iter().any(|o| {
+        if o.identity != identity.id || o.outcome != ObservedOutcome::Denied {
+            return false;
+        }
+        // The denied resource must not be one the identity is entitled to,
+        // otherwise the denial proves nothing about object-level authorization.
+        case.resources
+            .iter()
+            .find(|r| r.report_label() == o.resource)
+            .is_none_or(|r| !r.declares_access_for(identity))
     });
     if !control_works {
         requirements.push(AuthzRequirement {
             kind: RequirementKind::EstablishBaseline,
             detail: format!(
-                "no denied response was captured for {} on a comparable owned resource, \
+                "no denied response was captured for {} on any resource it does not own, \
                  so the authorization check has not been shown to work at all",
                 identity.report_label()
             ),
@@ -1500,7 +1557,10 @@ mod tests {
 
     #[test]
     fn genuine_idor_is_confirmed_only_with_owner_baseline_and_two_exchanges() {
-        let invoice = ResourceRef::owned_by("invoice", "1", "owner-1").with_tenant("t1");
+        // Same tenant for both identities: this is the plain-IDOR case. The
+        // cross-tenant case has its own test, and mixing the two here made the
+        // expected verdict wrong.
+        let invoice = ResourceRef::owned_by("invoice", "1", "owner-1").with_tenant("t2");
         let own_invoice = ResourceRef::owned_by("invoice", "2", "low-1").with_tenant("t2");
         let case = AccessCase::new()
             .with_identity(owner())
@@ -1510,7 +1570,7 @@ mod tests {
             .with_observation(
                 AccessObservation::new(
                     "low-1",
-                    &invoice.report_label(),
+                    invoice.report_label(),
                     AccessOperation::Read,
                     ObservedOutcome::Returned,
                 )
@@ -1520,7 +1580,7 @@ mod tests {
             .with_observation(
                 AccessObservation::new(
                     "low-1",
-                    &invoice.report_label(),
+                    invoice.report_label(),
                     AccessOperation::Read,
                     ObservedOutcome::Returned,
                 )
@@ -1530,7 +1590,7 @@ mod tests {
             )
             .with_observation(AccessObservation::new(
                 "low-1",
-                &own_invoice.report_label(),
+                own_invoice.report_label(),
                 AccessOperation::Read,
                 ObservedOutcome::Returned,
             ))
@@ -1594,13 +1654,62 @@ mod tests {
             "{assessment:#?}"
         );
         assert!(
+            !assessment
+                .unmet_requirements
+                .iter()
+                .any(|r| r.kind == RequirementKind::EstablishBaseline),
+            "this case does capture a denial on a resource the identity does not own, \
+             so the baseline requirement is satisfied: {assessment:#?}"
+        );
+    }
+
+    #[test]
+    fn without_a_baseline_denial_the_claim_stays_inconclusive() {
+        // The mirror of the previous test: same evidence, minus the one control
+        // response. Two exchanges and a named protected field are not enough on
+        // their own — without a denial somewhere, the authorization check has
+        // not been shown to work at all, so the leak could be a route that was
+        // never subject to one.
+        let invoice = ResourceRef::owned_by("invoice", "1", "owner-1");
+        let case = AccessCase::new()
+            .with_identity(outsider())
+            .with_resource(invoice.clone())
+            .with_observation(
+                AccessObservation::new(
+                    "low-1",
+                    "invoice:1",
+                    AccessOperation::Read,
+                    ObservedOutcome::Returned,
+                )
+                .with_marker("owner ssn")
+                .with_exchange("x1"),
+            )
+            .with_observation(
+                AccessObservation::new(
+                    "low-1",
+                    "invoice:1",
+                    AccessOperation::Read,
+                    ObservedOutcome::Returned,
+                )
+                .with_marker("owner ssn")
+                .with_exchange("x2")
+                .as_independent_repeat(),
+            );
+
+        let assessment = analyze_access(&case, "low-1", "invoice:1");
+        assert_eq!(assessment.verdict, AuthorizationVerdict::Inconclusive);
+        assert!(!assessment.is_reportable());
+        assert!(
             assessment
                 .unmet_requirements
                 .iter()
                 .any(|r| r.kind == RequirementKind::EstablishBaseline),
-            "without a denied response on a comparable owned resource the check has not \
-             been shown to work"
+            "{assessment:#?}"
         );
+        // Reproduced twice and the field is named, so only the baseline is
+        // missing — which is exactly what the message must tell the
+        // investigator to go and capture.
+        assert_eq!(assessment.unmet_requirements.len(), 1);
     }
 
     // --- false positives ---------------------------------------------------
@@ -1614,7 +1723,7 @@ mod tests {
             .with_observation(
                 AccessObservation::new(
                     "anon",
-                    &resource.report_label(),
+                    resource.report_label(),
                     AccessOperation::Read,
                     ObservedOutcome::Returned,
                 )
@@ -1706,7 +1815,7 @@ mod tests {
             .with_observation(
                 AccessObservation::new(
                     "low-1",
-                    &resource.report_label(),
+                    resource.report_label(),
                     AccessOperation::Read,
                     ObservedOutcome::Returned,
                 )
@@ -1861,7 +1970,13 @@ mod tests {
                 ObservedOutcome::Denied,
             ));
 
-        let assessment = analyze_access(&case, "sup-1", "invoice:1");
+        // The operation matters: these are `Update` observations, so the
+        // operation-aware entry point is required. Calling `analyze_access`
+        // (which defaults to `Read`) silently matched nothing and returned
+        // "never observed", which is the failure mode typed operations exist to
+        // prevent.
+        let assessment =
+            analyze_access_with_operation(&case, "sup-1", "invoice:1", AccessOperation::Update);
         assert_eq!(
             assessment.verdict,
             AuthorizationVerdict::PrivilegeEscalation
@@ -1989,9 +2104,31 @@ mod tests {
             graph.leads_for("User:42"),
             vec!["address:7".to_string(), "invoice:1".to_string()]
         );
+        assert_eq!(
+            graph.leads_for("address:7"),
+            vec!["User:42".to_string()],
+            "a node with a neighbour is a lead in its own right"
+        );
         assert!(
-            graph.leads_for("address:7").is_empty(),
-            "a leaf is not a lead"
+            graph.leads_for("object:never-seen").is_empty(),
+            "an isolated node is not a lead"
+        );
+    }
+
+    #[test]
+    fn a_node_with_a_neighbour_is_a_lead_and_an_isolated_one_is_not() {
+        // `address:7` does have a neighbour, so it is a lead in its own right.
+        // The original assertion claimed otherwise and was wrong about what a
+        // lead is: the point of the graph is that every discovered identifier
+        // is somewhere to look next.
+        let mut graph = ObjectGraph::new();
+        graph.observe_relationship("invoice:1", "User:42");
+        graph.observe_relationship("User:42", "address:7");
+
+        assert_eq!(graph.leads_for("address:7"), vec!["User:42".to_string()]);
+        assert!(
+            graph.leads_for("object:never-seen").is_empty(),
+            "an isolated node is not a lead"
         );
     }
 
@@ -2113,7 +2250,9 @@ mod tests {
         let role = Role::Custom("tenant-admin".into());
         assert_eq!(role.as_str(), "tenant-admin");
         let json = serde_json::to_string(&role).unwrap();
-        assert_eq!(json, "\"custom\"");
+        // `Custom(String)` is an externally tagged newtype variant, so it
+        // serializes as a one-key object rather than a bare string.
+        assert_eq!(json, "{\"custom\":\"tenant-admin\"}");
         let back: Role = serde_json::from_str(&json).unwrap();
         assert_eq!(back, role);
     }

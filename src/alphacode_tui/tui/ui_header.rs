@@ -99,6 +99,29 @@ const PRETTY_FAMILY_PREFIXES: &[&str] = &["qwen", "deepseek", "llama", "gemini",
 /// lives in one place.
 const CLAUDE_FAMILIES: &[&str] = &["opus", "sonnet", "haiku"];
 
+/// Whether a model id is actually an Anthropic model.
+///
+/// `CLAUDE_FAMILIES` matching is a substring test, so ids like
+/// `deepseek-r1-sonnet-tweaked`, `qwen/sonnet-4-finetune`, or any local
+/// fine-tune that borrowed the family word were labelled "Claude Sonnet" in
+/// the header — telling the user they are on a model they never selected.
+/// Require the id to actually be an Anthropic model: either it carries the
+/// `claude` vendor prefix, or it is namespaced under `anthropic/`.
+fn is_anthropic_model_id(model: &str) -> bool {
+    let lower = model.to_ascii_lowercase();
+    if lower.starts_with("anthropic/") {
+        return true;
+    }
+    if lower.starts_with("claude") {
+        return true;
+    }
+    // A bare family word is only meaningful when the provider namespace says
+    // Anthropic, which the two checks above already cover. Anything else — a
+    // namespaced id from another vendor, a local fine-tune — is not ours to
+    // rename.
+    false
+}
+
 /// Well-known initialisms that contain vowels and would otherwise be
 /// title-cased as words by `is_acronym_segment`.
 const KNOWN_ACRONYMS: &[&str] = &["oss", "ai", "moe", "vl", "it", "fp8", "awq", "exp"];
@@ -168,17 +191,19 @@ fn format_model_name(short: &str, provider_name: &str) -> String {
         return label_slashed_model(short, provider_name);
     }
 
-    for family in CLAUDE_FAMILIES {
-        if !short.contains(family) {
-            continue;
+    if is_anthropic_model_id(short) {
+        for family in CLAUDE_FAMILIES {
+            if !short.contains(family) {
+                continue;
+            }
+            if *family == "sonnet" && short.contains("3.5") {
+                return "Claude 3.5 Sonnet".to_string();
+            }
+            if *family == "opus" && short.contains("4.5") {
+                return "Claude 4.5 Opus".to_string();
+            }
+            return format!("Claude {}", capitalize(family));
         }
-        if *family == "sonnet" && short.contains("3.5") {
-            return "Claude 3.5 Sonnet".to_string();
-        }
-        if *family == "opus" && short.contains("4.5") {
-            return "Claude 4.5 Opus".to_string();
-        }
-        return format!("Claude {}", capitalize(family));
     }
 
     if short.starts_with("gpt") {
@@ -1387,6 +1412,70 @@ mod tests {
     use anyhow::Result;
     use async_trait::async_trait;
     use std::sync::Arc;
+
+    /// Substring matching on "opus"/"sonnet"/"haiku" used to rename any model
+    /// that happened to contain a family word, including local fine-tunes and
+    /// other vendors' models that borrowed the name.
+    #[test]
+    fn only_genuine_anthropic_ids_are_labelled_claude() {
+        for model in [
+            "claude-opus-4-5-20251101",
+            "claude-sonnet-4-6",
+            "claude-haiku-4-5",
+            "anthropic/claude-sonnet-4",
+        ] {
+            assert!(
+                is_anthropic_model_id(model),
+                "{model} is an Anthropic model and should be labelled as one"
+            );
+        }
+        for model in [
+            "qwen3:8b",
+            "llama3.2:3b",
+            "mistral-sonnet-finetune",
+            "deepseek/sonnet-tweaked",
+            "my-sonnet-4-copy",
+            "alpha",
+            "",
+        ] {
+            assert!(
+                !is_anthropic_model_id(model),
+                "{model} is not an Anthropic model and must not be renamed to Claude"
+            );
+        }
+    }
+
+    #[test]
+    fn a_non_anthropic_id_keeps_its_own_name() {
+        // The reported symptom end to end: a local model arrived labelled
+        // "Claude Sonnet".
+        for (model, provider) in [
+            ("qwen3:8b", "ollama"),
+            ("llama3.2:3b", "Ollama"),
+            ("my-sonnet-4-copy", "Local"),
+        ] {
+            let label = header_model_display_name(model, provider);
+            assert!(
+                !label.contains("Claude") && !label.contains("Sonnet"),
+                "{model} rendered as {label:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn anthropic_ids_still_render_their_curated_names() {
+        for (model, provider, expected) in [
+            ("claude-opus-4-5-20251101", "anthropic", "Claude 4.5 Opus"),
+            ("claude-sonnet-4-5", "anthropic", "Claude 4.5 Sonnet"),
+            ("claude-haiku-4-5", "anthropic", "Claude 4.5 Haiku"),
+        ] {
+            assert_eq!(
+                header_model_display_name(model, provider),
+                expected,
+                "regression: {model} lost its curated display name"
+            );
+        }
+    }
 
     struct MockProvider;
 

@@ -2729,24 +2729,21 @@ fn collapse_recent_burst_into_placeholder(app: &mut App, lines: usize) {
     // Surface the paste to the user so they know what just happened.
     // Keep useful size details in the transient notice while the draft itself
     // stays focused on the compact `[pasted content]` token.
-    use crate::alphacode_core::output_enhance;
-    use crate::alphacode_core::output_enhance::PaletteToken;
-    let (r, g, b) = output_enhance::pick_for_terminal_bg(PaletteToken::Success);
-    let color = output_enhance::rgb_escape(r, g, b, true);
-    let reset = output_enhance::RESET;
+    //
+    // This text is *plain*. A status notice is rendered as a ratatui `Span`,
+    // and ratatui writes cell symbols verbatim — it does not parse SGR. The
+    // previous version embedded `\u{1b}[38;2;…m` here, so the status line
+    // displayed a literal `ESC[38;2;90;200;130mPasted 12 lines …` string
+    // instead of the message. Colour for notices comes from the renderer's
+    // own style (`accent_color()` in `ui_input`), not from the payload.
     let byte_count = content.len();
     let line_label = if line_count == 1 { "line" } else { "lines" };
-    let size_label = if byte_count < 1024 {
-        format!("{} B", byte_count)
-    } else if byte_count < 1024 * 1024 {
-        format!("{:.1} KB", byte_count as f64 / 1024.0)
-    } else {
-        format!("{:.2} MB", byte_count as f64 / (1024.0 * 1024.0))
-    };
-    let note = format!(
-        "{color}Pasted {line_count} {line_label} ({size_label}) collapsed into {placeholder}{reset}",
-    );
-    app.set_status_notice(note);
+    // Shared formatter so a 2 MB paste reads `2.0 MB` here and in every CLI
+    // status line, instead of this site's old two-decimal `2.00 MB`.
+    let size_label = crate::alphacode_core::output_enhance::format_bytes(byte_count as u64);
+    app.set_status_notice(format!(
+        "Pasted {line_count} {line_label} ({size_label}) collapsed into {placeholder}",
+    ));
     reset_burst();
     // Suppress the unused-mut warning on `app` if the borrow checker
     // would otherwise complain about the unused `app` reference above

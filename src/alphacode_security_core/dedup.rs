@@ -345,23 +345,18 @@ impl Deduplicator {
     pub fn submit(&mut self, candidate: DedupCandidate) -> DedupDisposition {
         // Compare against existing groups first: a partial key match is a
         // *related* finding, which is worth surfacing even when it is not a
-        // merge.
-        if let Some((idx, differs_on)) = self.partial_match(&candidate) {
-            let disposition = DedupDisposition::KeptSeparate {
-                differs_on: differs_on.clone(),
-            };
-            self.dispositions
-                .push((candidate.finding_id.clone(), disposition.clone()));
-            let primary = self.groups[idx].primary_finding_id.clone();
-            self.groups[idx].merge_reasons.push(format!(
-                "kept `{}` separate from `{}`: differs on {differs_on}",
-                candidate.finding_id, primary
-            ));
-            return disposition;
-        }
+        // merge. It is still its own root cause — two missing checks need two
+        // fixes and two reports — so it is recorded as a group either way.
+        let related_to = self.partial_match(&candidate);
 
         match self.index.get(&candidate.root_cause).copied() {
             None => {
+                let disposition = match &related_to {
+                    Some((_, differs_on)) => DedupDisposition::KeptSeparate {
+                        differs_on: differs_on.clone(),
+                    },
+                    None => DedupDisposition::Primary,
+                };
                 let group = RootCauseGroup {
                     root_cause: candidate.root_cause.clone(),
                     primary_finding_id: candidate.finding_id.clone(),
@@ -375,9 +370,16 @@ impl Deduplicator {
                 self.index
                     .insert(candidate.root_cause.clone(), self.groups.len());
                 self.groups.push(group);
+                if let Some((idx, differs_on)) = related_to {
+                    let primary = self.groups[idx].primary_finding_id.clone();
+                    self.groups[idx].merge_reasons.push(format!(
+                        "kept `{}` separate from `{}`: differs on {differs_on}",
+                        candidate.finding_id, primary
+                    ));
+                }
                 self.dispositions
-                    .push((candidate.finding_id.clone(), DedupDisposition::Primary));
-                DedupDisposition::Primary
+                    .push((candidate.finding_id.clone(), disposition.clone()));
+                disposition
             }
             Some(idx) => {
                 if !candidate.code_path_shared_confirmed {
@@ -439,6 +441,7 @@ impl Deduplicator {
             let shared = [
                 (other.invariant == key.invariant, "invariant"),
                 (other.boundary == key.boundary, "boundary"),
+                (other.operation == key.operation, "operation"),
                 (other.code_path == key.code_path, "code path"),
             ];
             let matches = shared.iter().filter(|(ok, _)| *ok).count();

@@ -187,11 +187,40 @@ impl ModelCatalogService {
     }
 
     pub(crate) fn is_fresh(&self, scope: &str) -> bool {
-        self.fetched_at
+        let fetched_is_fresh = self
+            .fetched_at
             .read()
             .ok()
             .and_then(|guard| guard.get(scope).copied())
             .map(|fetched_at| fetched_at.elapsed() <= self.cache_ttl)
+            .unwrap_or(false);
+        if !fetched_is_fresh {
+            return false;
+        }
+        // `hydrate_scope_models_from_snapshot` backdates `fetched_at` by the
+        // snapshot's age, but an `Instant` older than the clock origin
+        // (process/system uptime on Windows) is unrepresentable, so that
+        // path falls back to "now". The persisted `observed_at` SystemTime
+        // still carries the snapshot's true age, so require it to be inside
+        // the TTL too; otherwise a stale snapshot would mark the scope fresh
+        // and suppress the live refresh it exists to trigger (stale-catalog
+        // bug: newly released models stayed hidden until restart + TTL).
+        // Live fetches always store `SystemTime::now()` here, so this only
+        // diverges for hydrated snapshots.
+        self.observed_at
+            .read()
+            .ok()
+            .and_then(|guard| guard.get(scope).copied())
+            // `Err` means the persisted timestamp is ahead of the clock
+            // (backward clock skew); treat it as not fresh so we refresh
+            // rather than trust an unprovable timestamp. Refresh attempts
+            // stay rate-limited by `refresh_throttled`.
+            .map(|observed_at| {
+                observed_at
+                    .elapsed()
+                    .map(|age| age <= self.cache_ttl)
+                    .unwrap_or(false)
+            })
             .unwrap_or(false)
     }
 

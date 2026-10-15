@@ -517,12 +517,14 @@ mod tests {
         }
     }
 
-    /// Labels come from the provider, so a CJK or emoji one must reserve the
-    /// columns it actually draws rather than the characters it contains.
+    /// Labels come from the provider, so a wide-script or emoji one must reserve
+    /// the columns it actually draws rather than the characters it contains.
+    /// Written as an escape so this file stays plain ASCII.
     #[test]
     fn a_wide_label_is_measured_in_columns() {
+        const WIDE_LABEL: &str = "\u{9031}\u{6b21}\u{4e0a}\u{9650}";
         for width in 0..=40u16 {
-            let text = line_text(&render_labeled_bar("週次上限", 50, 50, None, width));
+            let text = line_text(&render_labeled_bar(WIDE_LABEL, 50, 50, None, width));
             assert!(
                 UnicodeWidthStr::width(text.as_str()) <= usize::from(width),
                 "width {width} rendered {} columns: {text:?}",

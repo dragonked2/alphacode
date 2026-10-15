@@ -1394,10 +1394,6 @@ impl Provider for BedrockProvider {
         Self::model_info(&self.model()).supports_vision
     }
 
-    fn supports_model_switching(&self) -> bool {
-        true
-    }
-
     fn set_model(&self, model: &str) -> Result<()> {
         let model = model.trim();
         let model = self

@@ -6,7 +6,9 @@
 //! review and only show up as an unreadable terminal, so they are pinned here
 //! as properties over the whole catalog rather than spot checks on one theme.
 
-use super::{PRESETS, ThemeSeed, preset_by_id, preset_palette};
+use super::{
+    MOODS, PRESETS, ThemeSeed, mood_preset_id, preset_by_id, preset_palette, resolve_palette,
+};
 use crate::alphacode_tui_style::palette::{ALL_ROLES, Palette, Role};
 
 /// Relative luminance per WCAG 2.x, used to sanity-check that text and its
@@ -120,6 +122,67 @@ fn an_unknown_id_resolves_to_nothing() {
         );
         assert!(preset_palette(unknown).is_none());
     }
+}
+
+// ---------------------------------------------------------------------------
+// Moods
+// ---------------------------------------------------------------------------
+
+#[test]
+fn moods_are_unique_and_resolve_to_real_presets() {
+    for (i, entry) in MOODS.iter().enumerate() {
+        let (mood, target, description) = *entry;
+        assert!(
+            !description.trim().is_empty(),
+            "mood `{mood}` has no description"
+        );
+        for other in &MOODS[i + 1..] {
+            assert_ne!(mood, other.0, "two moods share the id `{mood}`");
+        }
+        assert!(
+            preset_by_id(target).is_some(),
+            "mood `{mood}` points at unknown preset `{target}`"
+        );
+    }
+}
+
+#[test]
+fn every_mood_resolves_by_friendly_spellings() {
+    for (mood, target, _) in MOODS {
+        let mood = *mood;
+        let target = *target;
+        let spaced = mood.replace('-', " ");
+        let under = mood.replace('-', "_");
+        for spelling in [mood, spaced.as_str(), under.as_str()] {
+            assert_eq!(
+                mood_preset_id(spelling).map(str::to_owned).as_deref(),
+                Some(target),
+                "mood spelling `{spelling}` should resolve"
+            );
+        }
+    }
+}
+
+#[test]
+fn unknown_names_do_not_resolve_to_a_mood() {
+    for name in ["", "   ", "not-a-mood", "aurora"] {
+        assert!(mood_preset_id(name).is_none(), "`{name}` is not a mood");
+    }
+}
+
+#[test]
+fn resolve_palette_accepts_moods_and_presets() {
+    let calm = resolve_palette("calm").expect("calm mood resolves");
+    let aurora = preset_palette("aurora-pro").expect("aurora-pro resolves");
+    assert_eq!(calm, aurora, "mood `calm` must equal its target preset");
+    assert!(
+        resolve_palette("tokyo-night").is_some(),
+        "preset id still resolves"
+    );
+    assert!(
+        resolve_palette("neon").is_none(),
+        "unknown name resolves to nothing"
+    );
 }
 
 // ---------------------------------------------------------------------------

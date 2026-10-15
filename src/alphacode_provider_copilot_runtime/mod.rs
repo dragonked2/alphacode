@@ -972,10 +972,6 @@ impl Provider for CopilotApiProvider {
             .unwrap_or_else(|_| DEFAULT_MODEL.to_string())
     }
 
-    fn supports_model_switching(&self) -> bool {
-        true
-    }
-
     fn set_model(&self, model: &str) -> Result<()> {
         let trimmed = model.trim();
         if trimmed.is_empty() {

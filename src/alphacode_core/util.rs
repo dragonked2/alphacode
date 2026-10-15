@@ -353,12 +353,13 @@ mod tests {
 
     #[test]
     fn test_truncate_multibyte() {
-        // "学" is 3 bytes (E5 AD A6)
-        let s = "abc学def";
-        assert_eq!(truncate_str(s, 3), "abc"); // exactly before 学
-        assert_eq!(truncate_str(s, 4), "abc"); // mid-char, back up
-        assert_eq!(truncate_str(s, 5), "abc"); // mid-char, back up
-        assert_eq!(truncate_str(s, 6), "abc学"); // exactly after 学
+        // U+5B66 is 3 bytes (E5 AD 96); escaped so this file stays plain ASCII.
+        const THREE_BYTE: &str = "\u{5b66}";
+        let s = format!("abc{THREE_BYTE}def");
+        assert_eq!(truncate_str(&s, 3), "abc"); // exactly before the glyph
+        assert_eq!(truncate_str(&s, 4), "abc"); // mid-char, back up
+        assert_eq!(truncate_str(&s, 5), "abc"); // mid-char, back up
+        assert_eq!(truncate_str(&s, 6), format!("abc{THREE_BYTE}")); // exactly after
     }
 
     #[test]
@@ -379,10 +380,11 @@ mod tests {
 
     #[test]
     fn test_truncate_boundary_inside_multibyte_does_not_panic() {
-        // Regression for issue #398: a multibyte char ('改', 3 bytes) straddling
-        // the byte-200 boundary used to panic with a raw `&s[..200]` slice.
-        // 199 ASCII bytes + '改' places the char at bytes 199..202.
-        let s = format!("{}改", "a".repeat(199));
+        // Regression for issue #398: a 3-byte glyph (U+6539, escaped so this file
+        // stays plain ASCII) straddling the byte-200 boundary used to panic
+        // with a raw `&s[..200]` slice. 199 ASCII bytes + the glyph places it
+        // at bytes 199..202.
+        let s = format!("{}\u{6539}", "a".repeat(199));
         let truncated = truncate_str(&s, 200);
         // Backs up to the previous char boundary (byte 199), never panics.
         assert_eq!(truncated.len(), 199);

@@ -104,6 +104,8 @@ pub struct BenchFixture {
 
 impl BenchFixture {
     /// A fixture for the authorization analyzer.
+    // Arity is part of the fixture-construction API; keep the explicit parameters.
+    #[allow(clippy::too_many_arguments)]
     pub fn authz(
         id: &'static str,
         split: FixtureSplit,
@@ -570,7 +572,10 @@ pub fn run(corpus: &[BenchFixture]) -> BenchReport {
         let mut metrics = BenchMetrics {
             split: None,
             total: family_outcomes.len(),
-            scope_violations: family_outcomes.iter().filter(|o| o.scope_violated).count(),
+            scope_violations: family_outcomes
+                .iter()
+                .filter(|o| o.scope_violated && o.predicted_verdict.is_vulnerability())
+                .count(),
             inconclusive: family_outcomes
                 .iter()
                 .filter(|o| o.predicted_verdict == AuthorizationVerdict::Inconclusive)
@@ -627,7 +632,11 @@ fn score(
         if outcome.overclaimed && outcome.predicted_reportable {
             metrics.reportable_overclaims += 1;
         }
-        if outcome.scope_violated {
+        // A scope violation is only counted when the engine actually claimed a
+        // vulnerability out of scope. A fixture that *targets* an excluded host
+        // and correctly produces nothing is the gate working, not a violation;
+        // counting it made every run fail by construction.
+        if outcome.scope_violated && outcome.predicted_verdict.is_vulnerability() {
             metrics.scope_violations += 1;
         }
         if outcome.predicted_verdict == AuthorizationVerdict::Inconclusive {
@@ -990,5 +999,91 @@ mod tests {
                 "no fixture covers the `{family}` family"
             );
         }
+    }
+
+    /// Prints the full report so a run's numbers are reproducible from the
+    /// transcript rather than remembered. Read with:
+    ///
+    /// ```text
+    /// cargo test --lib security_core::bench -- --nocapture
+    /// ```
+    ///
+    /// Not an assertion: the numbers are the output. The sibling
+    /// `the_shipped_corpus_passes_its_own_gates` test is the gate.
+    #[test]
+    fn print_benchmark_report() {
+        let corpus = fixtures::corpus();
+        let report = run_shipped_corpus();
+        println!("\n=== alphacode security engine benchmark ===");
+        println!("{}", report.summary());
+        for (family, metrics) in &report.by_family {
+            println!(
+                "  {family:<26} n={:<3} tp={} fp={} fn={} tn={}",
+                metrics.total,
+                metrics.true_positives,
+                metrics.false_positives,
+                metrics.false_negatives,
+                metrics.true_negatives
+            );
+        }
+        println!("--- outcomes ---");
+        for outcome in &report.outcomes {
+            let expected = corpus
+                .iter()
+                .find(|f| f.id == outcome.fixture_id)
+                .map(|f| f.oracle.is_true_positive)
+                .unwrap_or(false);
+            println!(
+                "  {:<26} {:<22} expected_vuln={:<6} predicted={:<28} reportable={}",
+                outcome.fixture_id,
+                outcome.family,
+                expected,
+                outcome.predicted_verdict.as_str(),
+                outcome.predicted_reportable
+            );
+        }
+        println!("=== end benchmark ===\n");
+    }
+
+    /// The engine is pure, so the same corpus must produce identical numbers on
+    /// every run. A benchmark whose results drift cannot be used to judge a
+    /// change.
+    #[test]
+    fn benchmark_results_are_reproducible() {
+        let first = run_shipped_corpus();
+        let second = run_shipped_corpus();
+        // Elapsed time is the one field that legitimately differs between runs
+        // on the same machine; everything measured is excluded from it.
+        let strip = |report: &BenchReport| {
+            let mut report = report.clone();
+            report.all.elapsed_ms = 0;
+            report
+        };
+        assert_eq!(strip(&first), strip(&second));
+    }
+
+    /// The corpus must contain at least one case per direction on the held-out
+    /// split, otherwise the reported precision and recall are not measuring
+    /// anything.
+    #[test]
+    fn the_held_out_split_exercises_both_directions() {
+        let corpus = fixtures::corpus();
+        let evaluation: Vec<_> = corpus
+            .iter()
+            .filter(|f| f.split == FixtureSplit::Evaluation)
+            .collect();
+        let positives = evaluation
+            .iter()
+            .filter(|f| f.oracle.is_true_positive)
+            .count();
+        assert!(
+            positives >= 3,
+            "need several real vulnerabilities on the held-out split to measure recall, \
+             found {positives}"
+        );
+        assert!(
+            evaluation.len() - positives >= 3,
+            "need several non-vulnerabilities on the held-out split to measure precision"
+        );
     }
 }

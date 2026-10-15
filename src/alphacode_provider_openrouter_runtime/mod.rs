@@ -216,8 +216,78 @@ fn sanitize_semver(v: &str) -> String {
     }
 }
 
-/// Default model (Claude Sonnet via OpenRouter)
+/// Default model for the **hosted OpenRouter endpoint**.
+///
+/// This is only correct for `openrouter.ai`. It is *not* a universal fallback:
+/// this runtime also serves every openai-compatible profile, including local
+/// endpoints (Ollama, LM Studio, llama.cpp, vLLM) and private relays, where
+/// `anthropic/claude-sonnet-4` is wrong twice over — the request fails at the
+/// endpoint, and the UI labels the session with a model the user never chose.
+/// Use [`initial_model_for_runtime`] to pick a starting model instead of
+/// reaching for this constant directly.
 const DEFAULT_MODEL: &str = "anthropic/claude-sonnet-4";
+
+/// Pick the model a runtime instance should start with.
+///
+/// Precedence, most specific first:
+///
+/// 1. An explicit `ALPHACODE_OPENROUTER_MODEL` override.
+/// 2. The active openai-compatible profile's configured default.
+/// 3. The first model the endpoint actually advertises.
+/// 4. [`DEFAULT_MODEL`] — but only for the hosted OpenRouter endpoint.
+///
+/// Step 4 is deliberately gated. Profiles such as Ollama declare
+/// `default_model: None` because the set of installed models is whatever the
+/// user pulled locally, and the catalog cache is empty until `/v1/models` has
+/// been fetched. Before this gate, both of those cases fell through to
+/// `anthropic/claude-sonnet-4`, which is how a locally loaded model showed up
+/// in the header as "Claude Sonnet".
+fn initial_model_for_runtime(
+    env_model: Option<String>,
+    profile_default: Option<String>,
+    profile_static_models: &[String],
+    api_base: &str,
+    profile_id: Option<&str>,
+) -> Result<String> {
+    if let Some(model) = env_model
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
+    {
+        return Ok(model);
+    }
+    if let Some(model) = profile_default
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
+    {
+        return Ok(model);
+    }
+    if let Some(model) = profile_static_models
+        .iter()
+        .map(|id| id.trim())
+        .find(|id| !id.is_empty())
+    {
+        return Ok(model.to_string());
+    }
+
+    // Hosted OpenRouter has a stable default; nothing better to fall back on.
+    // `zip` keeps this strict: two endpoints that both fail to normalize are
+    // not the same endpoint, so an unparseable `api_base` must not match.
+    let on_hosted_openrouter = profile_id.is_none()
+        && normalize_api_base(api_base)
+            .zip(normalize_api_base(DEFAULT_API_BASE))
+            .is_some_and(|(candidate, hosted)| candidate == hosted);
+    if on_hosted_openrouter {
+        return Ok(DEFAULT_MODEL.to_string());
+    }
+
+    anyhow::bail!(
+        "No model is configured for the '{profile}' endpoint. \
+         Pick a model with /model, or set ALPHACODE_OPENROUTER_MODEL (and \
+         ALPHACODE_OPENROUTER_API_BASE if the endpoint is not the hosted \
+         OpenRouter one).",
+        profile = profile_id.unwrap_or(api_base),
+    )
+}
 
 /// Soft refresh TTL for the model catalog.
 ///
@@ -2211,16 +2281,15 @@ impl OpenRouterProvider {
             );
         }
 
-        let model = std::env::var("ALPHACODE_OPENROUTER_MODEL")
-            .ok()
-            .map(|value| value.trim().to_string())
-            .filter(|value| !value.is_empty())
-            .or_else(|| {
-                autodetected_profile
-                    .as_ref()
-                    .and_then(|profile| profile.default_model.clone())
-            })
-            .unwrap_or_else(|| DEFAULT_MODEL.to_string());
+        let model = initial_model_for_runtime(
+            std::env::var("ALPHACODE_OPENROUTER_MODEL").ok(),
+            autodetected_profile
+                .as_ref()
+                .and_then(|profile| profile.default_model.clone()),
+            &static_models,
+            &api_base,
+            profile_id.as_deref(),
+        )?;
 
         // Parse provider routing from environment
         let provider_routing = if supports_provider_features {
@@ -3406,6 +3475,116 @@ impl OpenRouterProvider {
 mod openrouter_provider_impl;
 #[path = "openrouter_sse_stream.rs"]
 mod openrouter_sse_stream;
+
+#[cfg(test)]
+mod initial_model_tests {
+    use super::{DEFAULT_API_BASE, DEFAULT_MODEL, initial_model_for_runtime};
+
+    const LOCAL: &str = "http://localhost:11434/v1";
+    const SOME_MODELS: &[String] = &[String::new()];
+
+    fn with_models(models: &[&str]) -> Vec<String> {
+        models.iter().map(|m| (*m).to_string()).collect()
+    }
+
+    /// The regression: a locally loaded model has no configured default and no
+    /// catalog cache yet, so it used to fall through to the OpenRouter default
+    /// (`anthropic/claude-sonnet-4`) and the header rendered the session as
+    /// "Claude Sonnet" — a model the user never selected and the local server
+    /// does not serve.
+    #[test]
+    fn local_endpoint_with_nothing_configured_does_not_borrow_a_remote_default() {
+        let result = initial_model_for_runtime(None, None, &SOME_MODELS, LOCAL, Some("ollama"));
+        let error = result.expect_err("a local endpoint with no model must not silently pick one");
+        let message = error.to_string();
+        assert!(
+            !message.contains("claude") && !message.contains("sonnet"),
+            "error message must not mention the borrowed default: {message}"
+        );
+        assert!(
+            message.contains("ollama") || message.contains(LOCAL),
+            "error must name what needed configuring: {message}"
+        );
+    }
+
+    #[test]
+    fn local_endpoint_uses_the_first_advertised_model() {
+        let models = with_models(&["qwen3:8b", "llama3.2:3b"]);
+        assert_eq!(
+            initial_model_for_runtime(None, None, &models, LOCAL, Some("ollama"))
+                .expect("advertised models should be usable"),
+            "qwen3:8b"
+        );
+    }
+
+    #[test]
+    fn profile_default_beats_advertised_models() {
+        let models = with_models(&["qwen3:8b"]);
+        assert_eq!(
+            initial_model_for_runtime(
+                None,
+                Some("alpha".to_string()),
+                &models,
+                LOCAL,
+                Some("dragonmeta")
+            )
+            .expect("configured default should win"),
+            "alpha"
+        );
+    }
+
+    #[test]
+    fn env_override_beats_everything() {
+        let models = with_models(&["qwen3:8b"]);
+        assert_eq!(
+            initial_model_for_runtime(
+                Some("  my-local-model  ".to_string()),
+                Some("alpha".to_string()),
+                &models,
+                LOCAL,
+                Some("ollama")
+            )
+            .expect("env override should win"),
+            "my-local-model"
+        );
+    }
+
+    #[test]
+    fn blank_values_are_treated_as_absent() {
+        let models = with_models(&["qwen3:8b"]);
+        assert_eq!(
+            initial_model_for_runtime(
+                Some("   ".to_string()),
+                Some(String::new()),
+                &models,
+                LOCAL,
+                Some("ollama")
+            )
+            .expect("blank values must fall through to the catalog"),
+            "qwen3:8b"
+        );
+    }
+
+    #[test]
+    fn hosted_openrouter_still_gets_its_default() {
+        assert_eq!(
+            initial_model_for_runtime(None, None, &SOME_MODELS, DEFAULT_API_BASE, None)
+                .expect("hosted OpenRouter has a well-known default"),
+            DEFAULT_MODEL
+        );
+    }
+
+    /// A private relay on the public internet is not hosted OpenRouter, so it
+    /// must not inherit OpenRouter's default either.
+    #[test]
+    fn non_openrouter_endpoint_does_not_get_the_openrouter_default() {
+        assert!(
+            initial_model_for_runtime(None, None, &SOME_MODELS, "https://relay.example/v1", None)
+                .is_err(),
+            "an arbitrary relay must not be told to use an Anthropic model"
+        );
+    }
+}
 
 #[cfg(test)]
 mod profile_catalog_backoff_tests {

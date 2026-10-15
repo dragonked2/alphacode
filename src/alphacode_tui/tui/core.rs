@@ -109,22 +109,26 @@ mod tests {
         assert_eq!(byte_offset_to_char_index("hello", 3), 3);
         assert_eq!(byte_offset_to_char_index("hello", 5), 5);
 
-        // Korean: each char is 3 bytes
-        assert_eq!(byte_offset_to_char_index("한글", 0), 0);
-        assert_eq!(byte_offset_to_char_index("한글", 3), 1);
-        assert_eq!(byte_offset_to_char_index("한글", 6), 2);
+        // A three-byte-per-char script (Hangul syllables, written as escapes
+        // so this file stays plain ASCII). ASCII alone cannot distinguish a
+        // byte offset from a char index — they are identical for ASCII.
+        const WIDE: &str = "\u{d55c}\u{ae00}";
+        assert_eq!(byte_offset_to_char_index(WIDE, 0), 0);
+        assert_eq!(byte_offset_to_char_index(WIDE, 3), 1);
+        assert_eq!(byte_offset_to_char_index(WIDE, 6), 2);
 
         // Mixed
-        assert_eq!(byte_offset_to_char_index("a한b", 0), 0);
-        assert_eq!(byte_offset_to_char_index("a한b", 1), 1);
-        assert_eq!(byte_offset_to_char_index("a한b", 4), 2);
-        assert_eq!(byte_offset_to_char_index("a한b", 5), 3);
+        let mixed = format!("a{WIDE}b");
+        assert_eq!(byte_offset_to_char_index(&mixed, 0), 0);
+        assert_eq!(byte_offset_to_char_index(&mixed, 1), 1);
+        assert_eq!(byte_offset_to_char_index(&mixed, 4), 2);
+        assert_eq!(byte_offset_to_char_index(&mixed, 5), 3);
     }
 
     #[test]
     fn grapheme_boundary_helpers_keep_clusters_atomic() {
-        let s = "한글test";
-        // "한" is bytes 0..3, "글" is bytes 3..6, "test" is bytes 6..10.
+        let s = "\u{d55c}\u{ae00}test";
+        // The first glyph is bytes 0..3, the second 3..6, "test" 6..10.
         assert_eq!(prev_grapheme_boundary(s, 3), 0);
         assert_eq!(prev_grapheme_boundary(s, 6), 3);
         assert_eq!(prev_grapheme_boundary(s, 7), 6);

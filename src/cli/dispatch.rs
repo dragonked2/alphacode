@@ -1522,11 +1522,25 @@ fn run_reload_helper(args: &Args) -> Result<()> {
     let session_id = args.resume.as_deref().unwrap_or("");
     let parent_pid = args.parent_pid;
 
-    eprintln!(
-        "[reload-helper] Waiting for parent pid={} to exit before launching {:?}...",
+    // In client mode this helper shares the console with the TUI that spawned
+    // it, and the spawn happens *before* that TUI tears its terminal down. Any
+    // output printed while we wait therefore lands on top of a live alternate
+    // screen and corrupts it. Stay silent until the predecessor is gone; after
+    // that the console is ours and diagnostics are worth showing. Server mode
+    // has no console to scribble on, so it logs freely throughout.
+    let speaking = std::sync::atomic::AtomicBool::new(server_mode);
+    let trace = |message: &str| {
+        if speaking.load(std::sync::atomic::Ordering::Relaxed) {
+            eprintln!("[reload-helper] {message}");
+        }
+    };
+    let mark_spoken = || speaking.store(true, std::sync::atomic::Ordering::Relaxed);
+
+    trace(&format!(
+        "Waiting for parent pid={} to exit before launching {:?}...",
         parent_pid.unwrap_or(0),
         target_path
-    );
+    ));
 
     let mark_failed = |detail: String| {
         if let Some(state) = crate::alphacode_app_core::server::recent_reload_state(
@@ -1567,20 +1581,23 @@ fn run_reload_helper(args: &Args) -> Result<()> {
                     let wait_result = WaitForSingleObject(handle, 30_000);
                     CloseHandle(handle);
                     if wait_result == WAIT_OBJECT_0 {
-                        eprintln!("[reload-helper] Parent process exited.");
+                        mark_spoken();
+                        trace("Parent process exited.");
                     } else if wait_result == WAIT_FAILED {
                         let detail = format!(
                             "reload helper failed waiting for predecessor pid {pid} (WaitForSingleObject error {})",
                             std::io::Error::last_os_error()
                         );
-                        eprintln!("[reload-helper] {detail}");
+                        mark_spoken();
+                        trace(&detail);
                         mark_failed(detail.clone());
                         return Err(anyhow::anyhow!(detail));
                     } else {
                         let detail = format!(
                             "reload helper timed out waiting for predecessor pid {pid} to exit"
                         );
-                        eprintln!("[reload-helper] {detail}");
+                        mark_spoken();
+                        trace(&detail);
                         mark_failed(detail.clone());
                         return Err(anyhow::anyhow!(detail));
                     }
@@ -1588,7 +1605,8 @@ fn run_reload_helper(args: &Args) -> Result<()> {
                     let error = std::io::Error::last_os_error();
                     if error.raw_os_error() == Some(ERROR_INVALID_PARAMETER) {
                         // Process not found — already exited.
-                        eprintln!("[reload-helper] Parent process not found (already exited).");
+                        mark_spoken();
+                        trace("Parent process not found (already exited).");
                     } else {
                         // Access denied and other failures do not prove that the
                         // predecessor exited. Starting now would reintroduce the
@@ -1596,7 +1614,8 @@ fn run_reload_helper(args: &Args) -> Result<()> {
                         let detail = format!(
                             "reload helper could not inspect predecessor pid {pid}: {error}"
                         );
-                        eprintln!("[reload-helper] {detail}");
+                        mark_spoken();
+                        trace(&detail);
                         mark_failed(detail.clone());
                         return Err(anyhow::anyhow!(detail));
                     }
@@ -1615,17 +1634,22 @@ fn run_reload_helper(args: &Args) -> Result<()> {
             if crate::platform::is_process_running(pid) {
                 let detail =
                     format!("reload helper timed out waiting for predecessor pid {pid} to exit");
-                eprintln!("[reload-helper] {detail}");
+                mark_spoken();
+                trace(&detail);
                 mark_failed(detail.clone());
                 return Err(anyhow::anyhow!(detail));
             }
         }
     } else {
         // No parent PID provided; wait a fixed duration as fallback.
-        eprintln!("[reload-helper] No parent PID, waiting 2 seconds...");
+        mark_spoken();
+        trace("No parent PID, waiting 2 seconds...");
         std::thread::sleep(std::time::Duration::from_secs(2));
     }
 
+    // The predecessor is gone and the console is ours again, so from here on it
+    // is safe to report what we are launching.
+    mark_spoken();
     let mut cmd = ProcessCommand::new(&target_path);
     cmd.arg("--no-update");
     if server_mode {
@@ -1634,16 +1658,16 @@ fn run_reload_helper(args: &Args) -> Result<()> {
             mark_failed(detail.clone());
             anyhow::anyhow!(detail)
         })?;
-        eprintln!(
-            "[reload-helper] Launching replacement server {:?} on socket {}",
+        trace(&format!(
+            "Launching replacement server {:?} on socket {}",
             target_path, socket
-        );
+        ));
         cmd.arg("--socket").arg(socket).arg("serve");
     } else {
-        eprintln!(
-            "[reload-helper] Launching {:?} with --resume {} --no-update",
+        trace(&format!(
+            "Launching {:?} with --resume {} --no-update",
             target_path, session_id
-        );
+        ));
         cmd.arg("--resume").arg(session_id);
     }
     cmd.env_remove("ALPHACODE_READY_FD")
@@ -1661,6 +1685,12 @@ fn run_reload_helper(args: &Args) -> Result<()> {
     // keystroke goes nowhere. That is the "update finished, now I cannot type"
     // report, and it only ever shows up on the Windows auto-update restart
     // path because that is the only path routed through this helper.
+    //
+    // Inheriting the handles is necessary but not sufficient: the process must
+    // also be *attached to a console*, or its input buffer is unreachable even
+    // though stdout still points at one. That attachment is inherited from this
+    // helper, which is why the client helper is spawned console-preserving
+    // rather than detached.
     if server_mode {
         cmd.stdin(Stdio::null())
             .stdout(Stdio::null())

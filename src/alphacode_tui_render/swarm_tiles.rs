@@ -559,8 +559,16 @@ mod tests {
 
     #[test]
     fn single_tile_tiny_sizes_stay_bounded() {
-        let t = SwarmTile::new("日本語のタイトル", "実行中", Color::Cyan).with_body(vec![
-            "こんにちは世界こんにちは世界".to_string(),
+        // Double-width, multi-byte CJK written as escapes so this file stays
+        // plain ASCII. ASCII cannot catch a tile that measures characters
+        // instead of columns: every ASCII glyph is 1 byte / 1 char / 1 column.
+        let t = SwarmTile::new(
+            "\u{65e5}\u{672c}\u{8a9e}\u{306e}\u{30bf}\u{30a4}\u{30c8}\u{30eb}",
+            "\u{5b9f}\u{884c}\u{4e2d}",
+            Color::Cyan,
+        )
+        .with_body(vec![
+            "\u{3053}\u{3093}\u{306b}\u{3061}\u{306f}\u{4e16}\u{754c}".repeat(2),
             "🐝🐝🐝🐝🐝🐝".to_string(),
             "e\u{301}e\u{301} combining".to_string(),
         ]);
@@ -596,8 +604,10 @@ mod tests {
         assert_eq!(truncate_w("", 5), "");
         assert_eq!(truncate_w("abc", 0), "");
         // 2-column chars never split mid-glyph and result stays within budget.
+        // Written as escapes so this file stays plain ASCII.
+        const WIDE: &str = "\u{65e5}\u{672c}\u{8a9e}\u{30c6}\u{30b9}\u{30c8}";
         for max in 1..8usize {
-            let out = truncate_w("日本語テスト", max);
+            let out = truncate_w(WIDE, max);
             assert!(
                 UnicodeWidthStr::width(out.as_str()) <= max,
                 "max={max} out={out}"

@@ -107,6 +107,15 @@ mod tests {
 
     /// The invariant the whole module exists for. A row that exceeds its
     /// budget is clipped by ratatui, which can cut a wide glyph in half.
+    /// Multi-byte, double-width sample written as escapes so this file stays
+    /// plain ASCII. `unicode-width` cannot be checked against ASCII alone:
+    /// every ASCII glyph is one byte, one `char`, and one column, so byte
+    /// counting, char counting, and column counting all agree and a wrong
+    /// implementation still passes.
+    const DOUBLE_WIDTH: &str = "\u{65e5}\u{672c}\u{8a9e}\u{306e}\u{30c6}\u{30ad}\u{30b9}\u{30c8}";
+    /// One three-byte, two-column glyph, for the byte-boundary cases.
+    const WIDE_ONE: &str = "\u{65e5}";
+
     #[test]
     fn nothing_ever_exceeds_its_budget() {
         let samples = [
@@ -114,8 +123,8 @@ mod tests {
             "a",
             "hello world",
             "a much longer sentence that will certainly need truncating",
-            "日本語のテキストはとても幅が広いです",
-            "mixed 日本語 and latin text",
+            DOUBLE_WIDTH,
+            "mixed \u{65e5}\u{672c}\u{8a9e} and latin text",
             "🎉🎉🎉 emoji run 🎉🎉🎉",
             "   leading and trailing   ",
             "no-spaces-at-all-in-this-one-single-long-token",
@@ -172,8 +181,13 @@ mod tests {
     /// three of them fit in the seven columns left after the ellipsis.
     #[test]
     fn wide_characters_are_measured_in_columns() {
-        let out = truncate_smart("日本語のテキスト", 10);
-        assert_eq!(out, "日本語...");
+        // Seven glyphs is fourteen columns, so a ten-column budget keeps four
+        // glyphs (eight columns) plus the three-column ellipsis.
+        let out = truncate_smart(DOUBLE_WIDTH, 10);
+        assert_eq!(
+            out,
+            format!("{}...", &DOUBLE_WIDTH[..DOUBLE_WIDTH.len() - 9])
+        );
         assert_eq!(
             out.width(),
             9,
@@ -185,8 +199,9 @@ mod tests {
     /// half-rendered, so the result can come in a column under budget.
     #[test]
     fn a_wide_glyph_is_never_split() {
-        assert_eq!(truncate_width("日本語", 3), "日");
-        assert_eq!(truncate_width("日本語", 1), "");
+        let pair = format!("{WIDE_ONE}{WIDE_ONE}");
+        assert_eq!(truncate_width(&pair, 3), WIDE_ONE);
+        assert_eq!(truncate_width(&pair, 1), "");
     }
 
     #[test]
@@ -220,7 +235,11 @@ mod tests {
 
     #[test]
     fn truncate_chars_still_counts_characters() {
-        assert_eq!(truncate_chars("日本語", 2), "日本");
+        // `truncate_chars` is the one helper that deliberately counts
+        // characters instead of columns, so two wide glyphs still fit in a
+        // budget of 2 even though they draw 4 columns.
+        let pair = format!("{WIDE_ONE}{WIDE_ONE}");
+        assert_eq!(truncate_chars(&pair, 2), pair);
         assert_eq!(truncate_chars("hello", 99), "hello");
     }
 }

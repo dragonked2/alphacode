@@ -34,7 +34,17 @@ pub struct ModelHealthCheck {
 impl ModelHealthCheck {
     /// Whether this health check is stale (older than TTL).
     pub fn is_stale(&self, ttl: Duration) -> bool {
-        self.checked_at.elapsed() > ttl
+        self.is_stale_at(Instant::now(), ttl)
+    }
+
+    /// Whether the check is older than `ttl` measured from the caller's
+    /// reference instant. Tests that backdate a check by hours need this:
+    /// `Instant` cannot describe instants before its origin (system uptime on
+    /// Windows), so a genuinely old entry may be unrepresentable on a freshly
+    /// booted host, and a future-anchored stand-in must be measured against
+    /// the same reference clock instead of a fresh `Instant::now()`.
+    pub fn is_stale_at(&self, now: Instant, ttl: Duration) -> bool {
+        now.saturating_duration_since(self.checked_at) > ttl
     }
 }
 
@@ -322,13 +332,21 @@ mod tests {
 
     #[test]
     fn health_check_stale() {
+        // Anchor `now` two hours past the clock origin so "1 hour ago" is
+        // representable: `Instant` cannot describe instants before its
+        // origin (system uptime on Windows). Staleness is evaluated against
+        // that same reference clock; a fresh `Instant::now()` would read the
+        // future instant as age 0 and call it fresh.
+        let now = Instant::now()
+            .checked_add(Duration::from_secs(7200))
+            .expect("test instant should be representable");
         let check = ModelHealthCheck {
             model: "gpt-5.4".to_string(),
             status: ModelHealthStatus::Healthy,
-            checked_at: Instant::now() - Duration::from_secs(3600), // 1 hour ago
+            checked_at: now - Duration::from_secs(3600), // 1 hour ago
             latency_ms: Some(100),
         };
-        assert!(check.is_stale(HEALTH_CHECK_TTL));
+        assert!(check.is_stale_at(now, HEALTH_CHECK_TTL));
     }
 
     #[test]

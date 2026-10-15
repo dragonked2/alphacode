@@ -154,6 +154,9 @@ fn recon_command(
         .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped());
+    // Recon tools run agent-directed work; keep them on the standard tool
+    // environment rather than inheriting alpha's routing configuration.
+    crate::alphacode_core::env::strip_internal_env(&mut cmd);
     if let Some(working_dir) = working_dir {
         cmd.current_dir(working_dir);
     }

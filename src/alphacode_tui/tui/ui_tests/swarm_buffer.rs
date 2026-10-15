@@ -145,7 +145,7 @@ fn right_fact_stack_uses_transcript_status_notification_and_input_rows_in_order(
     // drops below the composer, never climbs past the four-row transcript
     // allowance, and leaves the scheduled-notification text intact.
     assert!(
-        context_y as u16 <= input.bottom() - 1,
+        (context_y as u16) < input.bottom(),
         "the stack must stay at or above the composer row\n{}",
         rows.join("\n")
     );
@@ -238,7 +238,7 @@ fn right_fact_stack_shifts_up_when_scheduled_notification_row_is_absent() {
     // it climbs one further. It is still anchored as low as it fits and still
     // stays inside the composer's four-row allowance.
     assert!(
-        context_y as u16 <= input.bottom() - 1,
+        (context_y as u16) < input.bottom(),
         "the stack must stay at or above the composer row\n{}",
         rows.join("\n")
     );

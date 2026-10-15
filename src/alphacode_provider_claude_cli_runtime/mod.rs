@@ -787,10 +787,6 @@ impl Provider for ClaudeProvider {
             .clone()
     }
 
-    fn supports_model_switching(&self) -> bool {
-        true
-    }
-
     fn set_model(&self, model: &str) -> Result<()> {
         // Allow custom model names (e.g. from --model or manual entry).
         // Warn instead of error so users can try models not yet in the known list.

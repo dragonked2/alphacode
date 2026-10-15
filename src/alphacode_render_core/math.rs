@@ -1210,8 +1210,11 @@ mod tests {
 
     #[test]
     fn latexish_fuzz_corpus_never_panics_or_loses_all_visible_content() {
+        // Non-ASCII letters (Greek + CJK, escaped so this file stays plain ASCII)
+        // keep the fuzzer honest about multi-byte input.
         const ALPHABET: &[char] = &[
-            '\\', '{', '}', '[', ']', '^', '_', '&', '$', ' ', '\n', 'x', '7', 'α', '界',
+            '\\', '{', '}', '[', ']', '^', '_', '&', '$', ' ', '\n', 'x', '7', '\u{3b1}',
+            '\u{754c}',
         ];
         let mut state = 0x9e37_79b9_u32;
         for case in 0..256 {

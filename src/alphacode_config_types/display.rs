@@ -178,10 +178,13 @@ impl Default for DisplayConfig {
             native_scrollbars: NativeScrollbarConfig::default(),
             keybinding_hints: true,
             theme: String::new(),
-            // Cyber Space is the default theme: neon-lit futuristic terminal
-            // with electric cyan, hot magenta, and acid yellow on void-black.
-            // Users who want a different look can run `/theme <name>`.
-            preset: String::from("cyber-space"),
+            // First-run look: brand-new users land on the calm professional
+            // preset (soft dark, one accent) — the friendly look for people
+            // new to the tool. The vibrant classic is still one command away:
+            // `/theme vibrant` restores Cyber Space, `/theme` lists moods and
+            // presets, and any explicitly applied theme is written here and
+            // honored forever after (nothing overwrites a decided choice).
+            preset: String::from("aurora-pro"),
             colors: std::collections::BTreeMap::new(),
             active_sessions_manager: false,
             external_sessions: true,

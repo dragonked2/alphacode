@@ -543,6 +543,35 @@ pub fn spawn_detached_process(
     cmd.spawn()
 }
 
+/// Spawn a helper that must outlive this process yet still drive the *same*
+/// console the user is typing into.
+///
+/// `DETACHED_PROCESS` is deliberately absent. It severs the child's console
+/// attachment, and that child is what ultimately launches the interactive TUI:
+/// a console-less parent means the replacement never inherits a console either.
+/// It then renders through the inherited stdio handles but has no console input
+/// buffer, so it comes up looking fine and swallows every keystroke — the
+/// "auto-update finished, now I cannot type" report, which only ever appears on
+/// the Windows auto-restart path because that is the only one routed through a
+/// helper. `CREATE_NO_WINDOW` is not a substitute: it also leaves the console
+/// handle unset. Inheriting the console therefore means passing no creation
+/// flags at all.
+///
+/// `CREATE_NEW_PROCESS_GROUP` is kept so Ctrl+C still reaches the current
+/// process while the helper waits, rather than being delivered twice.
+///
+/// Use this only for helpers that hand the console back to a foreground
+/// program. A background daemon has no console to inherit and should keep using
+/// [`spawn_detached_process`].
+#[cfg(windows)]
+pub fn spawn_console_handoff_process(
+    cmd: &mut std::process::Command,
+) -> std::io::Result<std::process::Child> {
+    use std::os::windows::process::CommandExt;
+    const CREATE_NEW_PROCESS_GROUP: u32 = 0x00000200;
+    cmd.creation_flags(CREATE_NEW_PROCESS_GROUP).spawn()
+}
+
 #[cfg(test)]
 mod process_id_tests {
     use super::is_process_running;

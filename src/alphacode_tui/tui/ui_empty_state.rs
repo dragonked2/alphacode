@@ -7,9 +7,16 @@
 
 use crate::alphacode_tui::tui::brand_ux::BrandTheme;
 use crate::alphacode_tui::tui::color_support::rgb;
+use crate::alphacode_tui_style::theme::ai_text;
 use ratatui::layout::{Alignment, Rect};
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
+/// Palette-correct body-text color for the primary call to action. Uses the
+/// named text role instead of a hard-coded near-white so light themes (and
+/// any preset) re-tune it with the rest of the UI.
+fn primary_text() -> ratatui::style::Color {
+    ai_text()
+}
 
 /// Horizontal gradient divider that fades from accent to dim.
 fn gradient_line(width: usize) -> Line<'static> {
@@ -63,20 +70,21 @@ pub fn empty_conversation() -> Vec<Line<'static>> {
     // Primary action prompt
     lines.push(
         Line::from(Span::styled(
-            "  Type a prompt below to get started",
+            "  Describe what you want below — press Enter to send it",
             Style::default()
-                .fg(rgb(200, 200, 220))
+                .fg(primary_text())
                 .add_modifier(Modifier::BOLD),
         ))
         .alignment(Alignment::Center),
     );
     lines.push(Line::from(""));
 
-    // Command suggestion cards
+    // Command suggestion cards. Descriptions are written for people who do
+    // not already speak terminal: what the command does for them, plainly.
     let suggestions: &[(&str, &str, &str)] = &[
-        ("/help", "?", "Command reference"),
-        ("/model", "Ctrl+B", "Switch AI model"),
-        ("/theme", "", "Customize appearance"),
+        ("/help", "F1", "What I can do"),
+        ("/model", "Ctrl+B", "Switch the AI model"),
+        ("/theme", "", "Pick your color mood"),
     ];
     for (cmd, shortcut, desc) in suggestions {
         let shortcut_display = if shortcut.is_empty() {

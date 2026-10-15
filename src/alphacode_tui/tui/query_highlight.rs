@@ -356,11 +356,16 @@ mod tests {
 
     #[test]
     fn wide_characters_respect_the_column_budget() {
-        // CJK glyphs are two columns wide each; four fit in eight columns.
-        let spans = highlight_within("模型一二三四五六七八", "四", 7, base(), hit());
+        // Double-width glyphs, escaped so this file stays plain ASCII. Each is two
+        // columns wide, so a seven-column budget holds three of them plus the
+        // match; ASCII cannot distinguish a column budget from a char budget.
+        const WIDE: &str =
+            "\u{6a21}\u{578b}\u{4e00}\u{4e8c}\u{4e09}\u{56db}\u{4e94}\u{516d}\u{4e03}\u{516b}";
+        const NEEDLE: &str = "\u{56db}";
+        let spans = highlight_within(WIDE, NEEDLE, 7, base(), hit());
         let width: usize = spans.iter().map(|s| s.width()).sum();
         assert!(width <= 7, "wide chars overflowed the budget: {width}");
-        assert!(plain(&spans).contains('四'));
+        assert!(plain(&spans).contains(NEEDLE));
     }
 
     #[test]

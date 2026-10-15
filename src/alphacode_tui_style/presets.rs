@@ -217,6 +217,67 @@ pub fn preset_palette(id: &str) -> Option<Palette> {
     preset_by_id(id).map(ThemeSeed::palette)
 }
 
+/// A named "mood" — a friendly one-word shortcut into the preset list.
+///
+/// Casual users should not have to learn that "Aurora Pro" happens to be the
+/// calm dark one. A mood maps to a curated preset; [`resolve_palette`]
+/// accepts either form, so config and `/theme` both take moods and always
+/// land on the same palette. The mood is the stable pointer; re-pointing a
+/// mood to a better preset later upgrades every user who selected the mood
+/// without erasing their choice.
+///
+/// Tuple: (mood id, resolves to preset id, friendly one-line description).
+pub const MOODS: &[(&str, &str, &str)] = &[
+    (
+        "calm",
+        "aurora-pro",
+        "Mood — Calm: soft dark, one gentle teal accent. Recommended for a quiet look",
+    ),
+    (
+        "vibrant",
+        "cyber-space",
+        "Mood — Vibrant: neon on void-black; the bold, classic alphacode show",
+    ),
+    (
+        "cozy",
+        "ember-glow",
+        "Mood — Cozy: warm amber evenings on deep brown; easy late-night coding",
+    ),
+    (
+        "focus",
+        "obsidian",
+        "Mood — Focus: true black, one ice-blue highlight; maximum calm for OLED",
+    ),
+    (
+        "paper",
+        "solar-dawn",
+        "Mood — Paper: bright cream daytime look; comfortable in sunlight",
+    ),
+    (
+        "night",
+        "midnight-frost",
+        "Mood — Night: deep navy with frosted surfaces for OLED screens",
+    ),
+];
+
+/// Resolve a mood id (tolerating case/separator differences) to its preset id.
+pub fn mood_preset_id(id: &str) -> Option<&'static str> {
+    let normalized = normalize_id(id);
+    MOODS
+        .iter()
+        .find(|(mood, _, _)| normalize_id(mood) == normalized)
+        .map(|(_, preset, _)| *preset)
+}
+
+/// Palette for a mood or preset id. Moods win lookup order over presets so a
+/// name that collides (none today) stays the friendly pointer.
+pub fn resolve_palette(id: &str) -> Option<Palette> {
+    mood_preset_id(id)
+        .and_then(preset_by_id)
+        .or_else(|| preset_by_id(id))
+        .map(ThemeSeed::palette)
+}
+
 pub const ALPHACODE: ThemeSeed = ThemeSeed {
     id: "alphacode",
     display_name: "AlphaCode",

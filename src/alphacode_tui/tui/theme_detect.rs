@@ -110,7 +110,9 @@ pub fn configured_palette() -> (crate::alphacode_tui_style::Palette, Vec<String>
     let base = if preset.is_empty() {
         crate::alphacode_tui_style::Palette::default()
     } else {
-        match crate::alphacode_tui_style::preset_palette(preset) {
+        // Moods (e.g. "calm") resolve like presets; `resolve_palette` handles
+        // both, so a mood pointer in the config always renders.
+        match crate::alphacode_tui_style::resolve_palette(preset) {
             Some(palette) => palette,
             None => {
                 problems.push(format!(

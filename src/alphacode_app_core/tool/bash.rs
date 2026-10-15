@@ -631,6 +631,7 @@ fn build_shell_command(cmd_str: &str) -> TokioCommand {
             cmd.arg("-c").arg(cmd_str);
             configure_tool_scratch(&mut cmd);
             configure_shell_process(&mut cmd);
+            crate::alphacode_core::env::strip_internal_env(&mut cmd);
             cmd
         } else {
             let mut cmd = TokioCommand::new("cmd.exe");
@@ -642,6 +643,7 @@ fn build_shell_command(cmd_str: &str) -> TokioCommand {
             cmd.args(["/D", "/S", "/C"])
                 .raw_arg(format!("\"{cmd_str}\""));
             configure_shell_process(&mut cmd);
+            crate::alphacode_core::env::strip_internal_env(&mut cmd);
             cmd
         }
     }
@@ -650,6 +652,7 @@ fn build_shell_command(cmd_str: &str) -> TokioCommand {
         let mut cmd = TokioCommand::new("bash");
         cmd.arg("-c").arg(cmd_str);
         configure_tool_scratch(&mut cmd);
+        crate::alphacode_core::env::strip_internal_env(&mut cmd);
         cmd
     }
 }
@@ -665,6 +668,9 @@ fn build_detached_shell_wrapper(command: &str) -> StdCommand {
     if let Some(dir) = tool_scratch_dir() {
         cmd.env("TMPDIR", &dir).env("ALPHACODE_SCRATCH_DIR", dir);
     }
+    // This wrapper runs a model-supplied command string, so it gets the same
+    // environment treatment as the normal bash tool path.
+    crate::alphacode_core::env::strip_internal_env(&mut cmd);
     cmd
 }
 

@@ -2381,6 +2381,9 @@ async fn firefox_run_bridge_command(
     // Belt-and-braces with the explicit `kill()` below, so the child dies even
     // if this future is dropped mid-await.
     command.kill_on_drop(true);
+    // The browser driver runs agent-directed automation, so it gets the standard
+    // tool environment rather than alpha's routing configuration.
+    crate::alphacode_core::env::strip_internal_env(&mut command);
 
     #[cfg(not(windows))]
     if std::env::var("BROWSER_SESSION").is_err()

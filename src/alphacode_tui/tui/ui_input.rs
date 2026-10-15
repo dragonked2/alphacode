@@ -58,8 +58,30 @@ fn shell_mode_hint(mode: ComposerMode) -> Option<&'static str> {
     }
 }
 
+/// Prepare a transient status string for rendering inside the TUI.
+///
+/// Two jobs, both of them load-bearing:
+///
+/// 1. **Strip terminal escapes.** Ratatui writes cell symbols verbatim; it has
+///    no SGR parser. Any escape sequence that reaches a `Span` is displayed as
+///    the literal characters `ESC [ 3 8 ; 2 ; …`, which is how a raw-ANSI
+///    status notice once printed `ESC[38;2;90;200;130mPasted 12 lines…` into
+///    the status line. Stripping here makes the class of bug impossible rather
+///    than fixing one call site at a time.
+/// 2. **Collapse zero-width formatting characters.** A variation selector
+///    changes the glyph the terminal picks and can invalidate ratatui's cell
+///    width cache mid-frame, producing a one-frame flicker. `⚠️` (U+26A0
+///    U+FE0F) is normalized to bare `⚠`, which is what the TUI renders
+///    everywhere else.
+///
+/// The result also has newlines folded to spaces: notices live on a single
+/// status row, and an embedded `\n` would silently clip the rest of the text.
 fn normalize_repaint_sensitive_notice_text(text: &str) -> String {
-    text.replace("⚠️", "⚠")
+    let stripped = crate::alphacode_base::message::strip_ansi_escape_sequences(text);
+    stripped
+        .replace('\n', " ")
+        .replace('\r', " ")
+        .replace("⚠️", "⚠")
 }
 
 fn command_suggestion_window_start(selected: usize, suggestion_count: usize) -> usize {
@@ -2583,6 +2605,54 @@ mod tests {
             "all clear"
         );
     }
+
+    #[test]
+    fn normalize_repaint_sensitive_notice_text_strips_terminal_escapes() {
+        // The regression that motivated this: a paste notice used to embed a
+        // raw SGR sequence, and ratatui — which has no escape parser — drew the
+        // escape itself as text.
+        let raw = "\u{1b}[38;2;90;200;130mPasted 12 lines (3.0 KB)\u{1b}[0m";
+        let clean = normalize_repaint_sensitive_notice_text(raw);
+        assert_eq!(clean, "Pasted 12 lines (3.0 KB)");
+        assert!(!clean.contains('\u{1b}'));
+
+        // OSC hyperlinks, DCS, and 8-bit CSI forms all have to go too.
+        for raw in [
+            "\u{1b}]8;;https://example.com\u{7}link\u{1b}]8;;\u{7}",
+            "\u{9b}31mred",
+            "\u{1b}Pignored\u{1b}\\done",
+        ] {
+            let clean = normalize_repaint_sensitive_notice_text(raw);
+            assert!(
+                !clean.contains('\u{1b}') && !clean.contains('\u{9b}'),
+                "escape survived: {raw:?} -> {clean:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn normalize_repaint_sensitive_notice_text_folds_newlines() {
+        // Notices render on one status row; an embedded newline would clip
+        // everything after it with no visual indication that it was there.
+        let clean = normalize_repaint_sensitive_notice_text("first\r\nsecond");
+        assert_eq!(clean, "first  second");
+        assert!(!clean.contains('\n') && !clean.contains('\r'));
+    }
+
+    #[test]
+    fn normalize_repaint_sensitive_notice_text_preserves_ordinary_text() {
+        // Stripping must not eat content the user actually meant to see.
+        for text in [
+            "Login: waiting...",
+            "Copied selection",
+            "Fast mode: on",
+            "Account: switched to work",
+            "model=claude-opus-4-5 (1,204 tokens in / 88 out)",
+            "emoji stays: 🚀",
+        ] {
+            assert_eq!(normalize_repaint_sensitive_notice_text(text), text);
+        }
+    }
 }
 
 /// Build the spans for the notification line. Returns empty vec when there is nothing to show.
@@ -4140,6 +4210,7 @@ fn empty_composer_placeholder(max_width: usize) -> String {
     [
         "Ask alphacode anything… · / commands · F1 help",
         "Ask anything… · / commands · F1 help",
+        "Ask anything… · / commands · /theme look",
         "Ask anything… · / commands",
         "Ask anything…",
         "Type…",

@@ -397,7 +397,10 @@ mod tests {
             event(TimelineEventKind::Commit, "wip: todos", Some("a1b2c3d")),
             event(
                 TimelineEventKind::Intent,
-                "日本語のテキストはとても幅が広いです",
+                // Double-width, multi-byte intent text (escapes, so this file
+                // stays plain ASCII). ASCII cannot catch a truncation that
+                // counts chars instead of columns.
+                "\u{65e5}\u{672c}\u{8a9e}\u{306e}\u{30c6}\u{30ad}\u{30b9}\u{30c8}\u{306f}\u{3089}\u{30d7}\u{5029}\u{304c}\u{5e83}\u{3044}\u{3067}\u{3059}",
                 None,
             ),
         ];
@@ -419,7 +422,12 @@ mod tests {
     /// not `char`s, when deciding how much of the label to show.
     #[test]
     fn a_wide_edit_path_is_measured_in_columns() {
-        let ev = event(TimelineEventKind::Edit, "intent", Some("日本語.rs"));
+        let ev = event(
+            TimelineEventKind::Edit,
+            "intent",
+            // Double-width filename, escaped so this file stays plain ASCII.
+            Some("\u{65e5}\u{672c}\u{8a9e}.rs"),
+        );
         for width in 0..=40usize {
             let text = line_text(&render_event_line(&ev, width, false));
             assert!(

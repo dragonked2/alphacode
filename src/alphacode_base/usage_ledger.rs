@@ -96,31 +96,6 @@ pub fn totals() -> (u64, u64) {
     })
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn one_million_tokens_costs_ten_dollars() {
-        let usage = ModelUsage {
-            input_tokens: 1_000_000,
-            ..Default::default()
-        };
-        assert!((usage.cost_usd_at(ALPHAX_FREE_USD_PER_MTOK) - 10.0).abs() < 1e-9);
-    }
-
-    #[test]
-    fn cache_tokens_count_toward_total() {
-        let usage = ModelUsage {
-            input_tokens: 100,
-            output_tokens: 200,
-            cache_read_tokens: 300,
-            cache_write_tokens: 400,
-            ..Default::default()
-        };
-        assert_eq!(usage.total_tokens(), 1000);
-    }
-}
 /// Build a `/usage` report entry from the local ledger so per-model tokens and
 /// cost show even when no account API reports anything for the gateway.
 /// Returns `None` until at least one response has been recorded.
@@ -195,4 +170,30 @@ pub fn alphax_pool_totals() -> (u64, f64) {
                 cost + u.cost_usd_at(ALPHAX_FREE_USD_PER_MTOK),
             )
         })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn one_million_tokens_costs_ten_dollars() {
+        let usage = ModelUsage {
+            input_tokens: 1_000_000,
+            ..Default::default()
+        };
+        assert!((usage.cost_usd_at(ALPHAX_FREE_USD_PER_MTOK) - 10.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn cache_tokens_count_toward_total() {
+        let usage = ModelUsage {
+            input_tokens: 100,
+            output_tokens: 200,
+            cache_read_tokens: 300,
+            cache_write_tokens: 400,
+            ..Default::default()
+        };
+        assert_eq!(usage.total_tokens(), 1000);
+    }
 }

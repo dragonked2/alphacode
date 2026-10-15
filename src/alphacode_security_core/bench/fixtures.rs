@@ -45,6 +45,7 @@ use crate::alphacode_security_core::dedup::{
 /// quietly forgotten.
 pub const REQUIRED_FAMILIES: &[&str] = &[
     "idor",
+    "cross_tenant",
     "authorization_enforced",
     "public_by_design",
     "privilege_escalation",
@@ -122,7 +123,10 @@ fn anonymous() -> TestIdentity {
 /// field is demonstrably present, the check demonstrably works on comparable
 /// data, and it is reproduced independently.
 fn genuine_idor(split: FixtureSplit, id: &'static str) -> BenchFixture {
-    let invoice = ResourceRef::owned_by("invoice", "1", "owner-1").with_tenant("tenant-a");
+    // Same tenant for both identities: this fixture is a plain IDOR. The
+    // cross-tenant case has its own fixture, and collapsing the two would
+    // make the expected verdict wrong.
+    let invoice = ResourceRef::owned_by("invoice", "1", "owner-1").with_tenant("tenant-b");
     let own = ResourceRef::owned_by("invoice", "2", "low-1").with_tenant("tenant-b");
     let case = AccessCase::new()
         .with_identity(low_privilege())
@@ -186,7 +190,7 @@ fn unclassified_object(split: FixtureSplit, id: &'static str) -> BenchFixture {
         .with_observation(
             AccessObservation::new(
                 "low-1",
-                &object.report_label(),
+                object.report_label(),
                 AccessOperation::Read,
                 ObservedOutcome::Returned,
             )
@@ -372,8 +376,11 @@ fn privilege_escalation(split: FixtureSplit, id: &'static str) -> BenchFixture {
 }
 
 fn cross_tenant(split: FixtureSplit, id: &'static str) -> BenchFixture {
+    // The victim object lives in another tenant from the caller, which is what
+    // distinguishes this from a plain IDOR and makes it the more serious of the
+    // two. `low-2` is in `tenant-c`; the invoice is in `tenant-a`.
     let invoice = ResourceRef::owned_by("invoice", "1", "owner-1").with_tenant("tenant-a");
-    let own = ResourceRef::owned_by("invoice", "2", "low-1").with_tenant("tenant-b");
+    let own = ResourceRef::owned_by("invoice", "2", "low-2").with_tenant("tenant-c");
     let case = AccessCase::new()
         .with_identity(other_tenant())
         .with_resource(invoice.clone())
@@ -408,7 +415,7 @@ fn cross_tenant(split: FixtureSplit, id: &'static str) -> BenchFixture {
     BenchFixture::authz(
         id,
         split,
-        "idor",
+        "cross_tenant",
         case,
         "low-2",
         "invoice:1",

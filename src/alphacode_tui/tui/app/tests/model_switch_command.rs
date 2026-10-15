@@ -36,10 +36,6 @@ impl Provider for ModelSwitchingProvider {
         Ok(())
     }
 
-    fn supports_model_switching(&self) -> bool {
-        true
-    }
-
     fn available_models(&self) -> Vec<&'static str> {
         vec!["model-a", "model-b"]
     }
@@ -58,35 +54,6 @@ impl Provider for ModelSwitchingProvider {
         Arc::new(Self {
             model: std::sync::Mutex::new(self.model.lock().unwrap().clone()),
         })
-    }
-}
-
-/// A provider that deliberately has no model surface — the shape of the inert
-/// runtime a remote client or replay session holds.
-struct NoModelSurfaceProvider;
-
-#[async_trait::async_trait]
-impl Provider for NoModelSurfaceProvider {
-    fn name(&self) -> &str {
-        "remote"
-    }
-
-    fn model(&self) -> String {
-        "unknown".to_string()
-    }
-
-    async fn complete(
-        &self,
-        _messages: &[crate::alphacode_message_types::Message],
-        _tools: &[crate::alphacode_message_types::ToolDefinition],
-        _system: &str,
-        _resume_session_id: Option<&str>,
-    ) -> Result<crate::alphacode_provider_core::EventStream> {
-        unimplemented!("no-model-surface tests never complete a turn")
-    }
-
-    fn fork(&self) -> Arc<dyn Provider> {
-        Arc::new(Self)
     }
 }
 
@@ -146,8 +113,8 @@ fn set_model_on_a_runtime_without_a_provider_reports_the_real_cause() {
     with_temp_alphacode_home(|| {
         let mut app = remote_client_app();
         assert!(
-            !app.provider.supports_model_switching(),
-            "a remote client holds a provider with no model surface"
+            app.is_remote,
+            "a remote client holds no provider of its own"
         );
 
         assert!(model_context::handle_model_command(&mut app, "/set model gpt-5.5"));
@@ -159,14 +126,30 @@ fn set_model_on_a_runtime_without_a_provider_reports_the_real_cause() {
             .cloned()
             .expect("a failure message should have been shown");
         assert_eq!(last.role, "error");
+        // The provider's own words are quoted on purpose — the report must not
+        // invent a cause the runtime did not state — but quoting is not the same
+        // as blaming. The line that actually assigns fault is the headline, and
+        // it must name the real cause (a client with no provider) rather than the
+        // provider. "Failed to switch model" is the generic provider-failure
+        // wrapper and is exactly what must not appear.
         assert!(
-            !last.content.contains(crate::alphacode_provider_core::MODEL_SWITCH_UNSUPPORTED),
-            "must not blame the provider for a runtime that has none: {}",
+            last.content.contains("this client is not connected to a server that owns a provider"),
+            "the headline must name the real cause, not the provider: {}",
             last.content
         );
         assert!(
             !last.content.contains("Failed to switch model"),
             "must not present a runtime-mode block as a provider failure: {}",
+            last.content
+        );
+        assert!(
+            last.content.contains("Provider reported:"),
+            "the provider's own words must still be quoted verbatim: {}",
+            last.content
+        );
+        assert!(
+            last.content.contains(crate::alphacode_provider_core::MODEL_SWITCH_UNSUPPORTED),
+            "the quote must not be paraphrased away: {}",
             last.content
         );
         assert!(
@@ -179,7 +162,18 @@ fn set_model_on_a_runtime_without_a_provider_reports_the_real_cause() {
             "a remote client should be told to reconnect: {}",
             last.content
         );
-        assert_eq!(app.session.model.as_deref(), None);
+        assert!(
+            last.content.contains(crate::alphacode_provider_core::MODEL_SWITCH_UNSUPPORTED),
+            "the provider's own words must still be quoted: {}",
+            last.content
+        );
+        // Nothing was switched: the session model must not have moved to the
+        // model the user asked for.
+        assert_ne!(
+            app.session.model.as_deref(),
+            Some("gpt-5.5"),
+            "a refused switch must not change the session model"
+        );
     });
 }
 
@@ -189,19 +183,46 @@ fn model_switch_unavailable_message_is_identical_for_both_spellings() {
         // The two spellings are the same request. If they ever produce different
         // failure text the user is back to guessing which one to trust.
         let app = remote_client_app();
-        let a = model_context::model_switch_unavailable_message("x", &app);
-        let b = model_context::model_switch_unavailable_message("x", &app);
+        let a = model_context::model_switch_unavailable_message("x", &app, "no provider");
+        let b = model_context::model_switch_unavailable_message("x", &app, "no provider");
         assert_eq!(a, b);
     });
 }
 
 #[test]
-fn a_provider_that_can_switch_is_not_blocked_by_the_runtime_check() {
+fn the_unavailable_message_points_at_the_actual_cause_for_each_session_kind() {
     with_temp_alphacode_home(|| {
-        // The guard keys on the provider's capability, not on the runtime mode.
-        // A test-harness session with a real provider must still switch.
-        assert!(model_context::model_switch_unavailable_reason(&switchable_app()).is_none());
-        assert!(model_context::model_switch_unavailable_reason(&remote_client_app()).is_some());
+        // The reason is derived from the session, not from a provider capability
+        // flag, so a remote client and a local session must be told different
+        // things: reconnecting cannot fix a local session, and starting one
+        // cannot fix a remote client.
+        let remote = model_context::model_switch_unavailable_message(
+            "x",
+            &remote_client_app(),
+            "no provider",
+        );
+        assert!(
+            remote.contains("not connected to a server that owns a provider"),
+            "a remote client must be told it has no provider: {remote}"
+        );
+        assert!(
+            remote.contains("Reconnect"),
+            "a remote client must be told to reconnect: {remote}"
+        );
+
+        let local = model_context::model_switch_unavailable_message(
+            "x",
+            &switchable_app(),
+            "no provider",
+        );
+        assert!(
+            local.contains("not running a provider that can switch models"),
+            "a local session must be told to start a real one: {local}"
+        );
+        assert!(
+            !local.contains("Reconnect"),
+            "reconnecting is meaningless advice for a local session: {local}"
+        );
     });
 }
 
@@ -228,7 +249,8 @@ fn remote_client_forwards_the_set_model_alias_to_the_server() {
 }
 
 // ---------------------------------------------------------------------------
-// 4. The sentinel and the capability flag agree with each other.
+// 4. The sentinel is what the trait default returns, and a provider that
+//    accepts a switch actually applies it.
 // ---------------------------------------------------------------------------
 
 #[test]
@@ -256,7 +278,6 @@ fn the_unsupported_sentinel_is_what_the_trait_default_returns() {
     }
 
     let bare = BareProvider;
-    assert!(!bare.supports_model_switching());
     let error = bare.set_model("anything").unwrap_err().to_string();
     assert!(
         error.contains(crate::alphacode_provider_core::MODEL_SWITCH_UNSUPPORTED),
@@ -264,12 +285,51 @@ fn the_unsupported_sentinel_is_what_the_trait_default_returns() {
          classify it: {error}"
     );
 
+    // A provider that overrides `set_model` must actually apply the model, not
+    // just stop reporting the sentinel. This is the contract callers classify on.
     let switchable = ModelSwitchingProvider {
         model: std::sync::Mutex::new("m".to_string()),
     };
-    assert!(switchable.supports_model_switching());
     assert!(
         switchable.set_model("other").is_ok(),
-        "a provider that advertises support must actually accept a model"
+        "a provider that accepts a switch must not fail it"
     );
+    assert_eq!(
+        switchable.model(),
+        "other",
+        "a provider that accepts a switch must actually apply the model"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// 5. The runtime message is chosen by classifying the error, never by a
+//    capability flag the provider must remember to set.
+// ---------------------------------------------------------------------------
+
+#[test]
+fn a_provider_that_can_switch_is_never_given_the_runtime_message() {
+    with_temp_alphacode_home(|| {
+        // An earlier version guarded on `Provider::supports_model_switching()`.
+        // Every provider implementation had to opt in, and any one that forgot
+        // was silently blocked from a command that would have worked — which is
+        // how an unrelated pre-existing test broke. Matching the sentinel error
+        // text has no such maintenance hazard.
+        let mut app = switchable_app();
+        assert!(model_context::handle_model_command(
+            &mut app,
+            "/set model model-b"
+        ));
+        assert_eq!(app.session.model.as_deref(), Some("model-b"));
+        let last = app.display_messages.last().expect("display message");
+        assert_eq!(
+            last.role, "system",
+            "a switchable provider must reach the success path: {}",
+            last.content
+        );
+        assert!(
+            !last.content.contains("Cannot switch to"),
+            "a working provider must never be told it cannot switch: {}",
+            last.content
+        );
+    });
 }

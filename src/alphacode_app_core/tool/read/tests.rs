@@ -442,7 +442,13 @@ async fn read_tool_reports_an_out_of_range_request_without_calling_the_file_empt
 fn binary_detection_accepts_utf8_text_in_non_latin_scripts() {
     let temp = tempfile::tempdir().expect("tempdir");
     let path = temp.path().join("unicode.txt");
-    std::fs::write(&path, "日本語 العربية русский язык\n".repeat(300)).expect("write text");
+    // CJK, Arabic, and Cyrillic in one buffer (escaped so this file stays plain
+    // ASCII) so the binary sniffer sees 2-, 3-, and 4-byte sequences at once.
+    std::fs::write(
+        &path,
+        "\u{65e5}\u{672c}\u{8a9e} \u{0627}\u{0644}\u{0639}\u{0631}\u{0628}\u{064a}\u{0629} \u{0440}\u{0443}\u{0441}\u{0441}\u{043a}\u{0438}\u{0439} \u{044f}\u{0437}\u{044b}\u{043a}\n".repeat(300),
+    )
+    .expect("write text");
 
     assert!(
         !is_binary_file(&path),

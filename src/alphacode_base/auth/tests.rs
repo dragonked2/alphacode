@@ -449,11 +449,15 @@ fn auth_status_check_fast_ignores_expired_full_cache() {
         alphacode: AuthState::Expired,
         ..Default::default()
     };
-    let stale_when = std::time::Instant::now()
-        .checked_sub(std::time::Duration::from_secs(
-            AUTH_STATUS_CACHE_TTL_SECS + 1,
-        ))
-        .expect("stale cache timestamp");
+    // `Instant` cannot describe instants before its origin (system uptime on
+    // Windows), so on a host that booted moments ago there is no representable
+    // timestamp `check_fast` would consider expired. Skip rather than panic.
+    let Some(stale_when) = std::time::Instant::now().checked_sub(std::time::Duration::from_secs(
+        AUTH_STATUS_CACHE_TTL_SECS + 1,
+    )) else {
+        eprintln!("skipping: system uptime is shorter than the auth cache TTL");
+        return;
+    };
 
     *AUTH_STATUS_CACHE.write().expect("auth cache lock") =
         Some((stale_status, stale_when, auth_cache_home_key()));

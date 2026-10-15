@@ -720,6 +720,17 @@ fn welcome_body_lines(app: &dyn TuiState) -> Vec<Line<'static>> {
                 .alignment(align),
             );
         }
+        // Make the look-and-feel entry point visible from the very first
+        // screen: non-technical users rarely discover slash commands on their
+        // own. One dim line, easy to ignore, hard to miss.
+        lines.push(Line::from(""));
+        lines.push(
+            Line::from(Span::styled(
+                "Tip: type /theme to pick your color mood (calm, vibrant, cozy…)",
+                Style::default().fg(dim_color()),
+            ))
+            .alignment(align),
+        );
     }
 
     lines

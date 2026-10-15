@@ -1816,10 +1816,6 @@ impl Provider for MultiProvider {
         }
     }
 
-    fn supports_model_switching(&self) -> bool {
-        true
-    }
-
     fn set_model(&self, model: &str) -> Result<()> {
         self.spawn_anthropic_catalog_refresh_if_needed();
         self.spawn_openai_catalog_refresh_if_needed();
