@@ -44,6 +44,6 @@ go install github.com/ffuf/ffuf/v2@latest
 go install github.com/projectdiscovery/dnsx/cmd/dnsx@latest
 ```
 
-Use `read`, `write`, and `bash` for authorized file and code analysis; `webfetch`, `websearch`, `httpflow`, and `jwt` for permitted network or token analysis; and `memory`, `agentgrep`, and `session_search` for reusable findings. For complex analysis, automate repeatable steps and preserve concise evidence and notes.
+Use `read`, `write`, and `bash` for authorized file and code analysis; `webfetch`, `websearch`, `httpflow`, and `jwt` for permitted network or token analysis; and `memory`, `alphagrep`, and `session_search` for reusable findings. For complex analysis, automate repeatable steps and preserve concise evidence and notes.
 
 Built-in security workflows cover reconnaissance, web and API testing, authentication and authorization checks, injection, configuration review, business logic, binary analysis, verification, reporting, and recovery. Choose focused tools, validate findings, and avoid presenting unverified hypotheses as confirmed issues.

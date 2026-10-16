@@ -924,8 +924,18 @@ mod tests {
     fn right_aligned_columns_pad_on_the_left_by_display_width() {
         let widths = [8, 6];
         let line = strip_ansi(&table_row(&widths, &["tok", "1.2k"], &[false, true]));
-        assert_eq!(display_width(&line), 16);
-        assert!(line.ends_with("    1.2k"), "got {line:?}");
+        // Every cell is padded to its width and followed by a two-cell gutter,
+        // including the last one, so the total is sum(widths) + 2 * columns.
+        let expected = widths.iter().sum::<usize>() + widths.len() * 2;
+        assert_eq!(display_width(&line), expected, "got {line:?}");
+        // Right alignment puts the pad *before* the value, inside its own
+        // column; the row still ends with the two-cell gutter that closes the
+        // last column. Asserting the gutter here matters — without it a
+        // left-aligned cell would pass this check too.
+        assert!(
+            line.ends_with("  1.2k  "),
+            "numeric cell should be right-aligned and closed by the gutter; got {line:?}"
+        );
     }
 
     #[test]

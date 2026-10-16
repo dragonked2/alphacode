@@ -829,6 +829,31 @@ pub(super) fn handle_text_paste(app: &mut App, text: String) {
         return;
     }
 
+    // Ctrl+V is claimed by alphacode *and* bound by some terminals (Windows
+    // Terminal among them). When both fire, the terminal streams the clipboard
+    // in as raw keystrokes — character by character, re-rendering the composer
+    // for each one, which is the "fuzzes the console" report — and then our own
+    // clipboard read completes and inserts `[pasted content]` on top of it. The
+    // user sees their text twice, once unformatted and once collapsed.
+    //
+    // Reconcile instead of double-inserting: if the draft already ends with the
+    // pasted text, the terminal delivered it and there is nothing left to do.
+    //
+    // Both sides are trimmed: terminal paste delivery commonly appends a
+    // newline, and that newline has *already been inserted into the draft*, so
+    // it sits at the end of the left-hand operand. Trimming only the clipboard
+    // text left the guard comparing `"...text\n"` against `"text"`, which never
+    // matches and re-inserted `[pasted content]` on top of the text the terminal
+    // had just delivered.
+    let delivered = crate::alphacode_tui::tui::core::ceil_char_boundary(&app.input, app.cursor_pos);
+    if app.input[..delivered].trim_end().ends_with(text.trim_end()) {
+        crate::logging::info(
+            "Paste already present in draft (terminal delivered it); skipping duplicate insert",
+        );
+        app.set_status_notice("Pasted");
+        return;
+    }
+
     // Keep text pastes compact and visually consistent in the composer. The
     // original text is restored on explicit submit; file and image drops are
     // handled separately.
@@ -1216,7 +1241,13 @@ pub(super) fn handle_multiline_input_navigation(
     }
 
     let input = app.input.as_str();
-    let cursor = app.cursor_pos.min(input.len());
+    // `cursor_pos` is a byte offset. It should always sit on a character
+    // boundary, but `is_char_boundary` reports false for *every* position
+    // inside a multi-byte character, so a stale offset (a sanitized or
+    // restored draft that shrank under the cursor, a debug-script injection)
+    // would panic on the slices below. Snap up to the next boundary instead;
+    // a well-formed cursor is returned unchanged.
+    let cursor = crate::alphacode_tui::tui::core::ceil_char_boundary(input, app.cursor_pos);
     let line_start = input[..cursor].rfind('\n').map(|idx| idx + 1).unwrap_or(0);
     let line_end = input[cursor..]
         .find('\n')
@@ -1632,6 +1663,7 @@ impl App {
                     "AUTO_POKE_DECISION action=disarm reason=no_todos incomplete=0",
                 );
                 self.auto_poke_incomplete_todos = false;
+                self.auto_poke_last_incomplete_ids.clear();
                 return false;
             }
             // Deferred quality checks land here, once, instead of interrupting
@@ -1705,11 +1737,13 @@ impl App {
                 self.todo_confidence_spike_challenged = false;
                 self.todo_completion_gate_attempts = 0;
                 self.todo_gate_digest_delivered = false;
+                self.auto_poke_last_incomplete_ids.clear();
                 self.pending_queued_dispatch = false;
                 return false;
             }
             self.auto_poke_incomplete_todos = false;
             self.auto_poke_incomplete_attempts = 0;
+            self.auto_poke_last_incomplete_ids.clear();
             self.todo_confidence_spike_challenged = false;
             // A finished cycle re-arms the review for whatever work comes next;
             // without this a session could only ever deliver one digest.
@@ -1723,15 +1757,37 @@ impl App {
             return false;
         }
 
-        // Stop poking after max attempts to avoid infinite loops
+        // The budget counts consecutive pokes with no todo progress, not every
+        // poke the cycle used: an open todo from the last poke that is gone now
+        // (completed or dropped) means the agent is working through the plan,
+        // so the count restarts. Without this, a long plan that completes fewer
+        // than all its todos per turn was abandoned mid-flight after
+        // MAX_AUTO_POKE_INCOMPLETE_ATTEMPTS pokes even while the count kept
+        // dropping each turn.
+        let current_ids: Vec<String> = incomplete.iter().map(|todo| todo.id.clone()).collect();
+        let made_progress = self
+            .auto_poke_last_incomplete_ids
+            .iter()
+            .any(|id| !current_ids.contains(id));
+        if made_progress {
+            crate::logging::info(&format!(
+                "AUTO_POKE_DECISION action=budget_reset reason=progress open_before={} open_now={}",
+                self.auto_poke_last_incomplete_ids.len(),
+                current_ids.len(),
+            ));
+            self.auto_poke_incomplete_attempts = 0;
+        }
+
+        // Stop after consecutive no-progress pokes to avoid infinite loops
+        // when the agent says "done" without actually completing anything.
         if self.auto_poke_incomplete_attempts >= Self::MAX_AUTO_POKE_INCOMPLETE_ATTEMPTS {
             crate::logging::warn(&format!(
-                "Auto-poke stopped after {} attempts; {} incomplete todos remain. Agent said it was done but didn't complete them.",
+                "Auto-poke stopped after {} pokes with no todo progress; {} incomplete todos remain. Send /poke to resume.",
                 self.auto_poke_incomplete_attempts,
                 incomplete.len(),
             ));
             self.push_display_message(DisplayMessage::system(format!(
-                "⚠️ Stopped poking after {} attempts. {} incomplete todo{} remain{} but the agent isn't completing them. Use /poke off to disable.",
+                "⚠️ Stopped poking after {} attempts with no todo progress. {} incomplete todo{} remain{}. Send /poke to resume.",
                 self.auto_poke_incomplete_attempts,
                 incomplete.len(),
                 if incomplete.len() == 1 { "" } else { "s" },
@@ -1739,10 +1795,12 @@ impl App {
             )));
             self.auto_poke_incomplete_todos = false;
             self.auto_poke_incomplete_attempts = 0;
+            self.auto_poke_last_incomplete_ids.clear();
             return false;
         }
 
         self.auto_poke_incomplete_attempts += 1;
+        self.auto_poke_last_incomplete_ids = current_ids;
         self.push_display_message(DisplayMessage::system(format!(
             "👉 {} incomplete todo{}. We poked it for you. /poke off to stop.",
             incomplete.len(),
@@ -3802,6 +3860,9 @@ impl App {
         }
 
         let trimmed = input.trim();
+        // Learn from executed commands (and /skill invocations): the palette
+        // ranks them by recency/frequency so muscle memory survives re-typing.
+        self.record_command_usage(trimmed);
         let handled = super::commands_dispatch::dispatch_local_command(self, trimmed);
         if handled {
             if trimmed.starts_with('/') {

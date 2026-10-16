@@ -151,7 +151,7 @@ fn compact_tool_input_for_display(name: &str, input: &serde_json::Value) -> serd
                     .unwrap_or(serde_json::Value::Null),
             ),
         ]),
-        "agentgrep" => obj(vec![
+        "alphagrep" => obj(vec![
             (
                 "mode",
                 input

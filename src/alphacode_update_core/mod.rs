@@ -79,6 +79,87 @@ pub enum UpdateCheckResult {
     Error(String),
 }
 
+/// Why an automatic update check will not run in this process.
+///
+/// This exists because the four situations below used to collapse into a bare
+/// `UpdateCheckResult::NoUpdate`: the check was disabled on purpose, the build
+/// is not a release build, the binary is a checkout someone is developing, the
+/// 30-minute throttle window is still open, and — the one that actually
+/// matters — "you are genuinely on the latest release". All five look
+/// identical in the log and from the CLI, which is why a real auto-update
+/// failure and correct no-op behaviour are indistinguishable from the outside.
+/// Naming the gate lets callers log (and `alphacode doctor` report) which one
+/// stopped the check.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AutoUpdateSkipReason {
+    /// `ALPHACODE_NO_AUTO_UPDATE` is set in the environment.
+    DisabledByEnv,
+    /// This binary was not built as a release build, so there is no prebuilt
+    /// asset to install and updates come from the source checkout instead.
+    NotAReleaseBuild,
+    /// The running executable lives inside a git working tree. Someone is
+    /// developing this build and `git pull` is their call, not ours.
+    RunningFromCheckout,
+    /// The previous check was recent enough that the throttle window is still
+    /// open. This is the expected reason for most "auto-update didn't fire"
+    /// reports: the check *did* run, recently, and found nothing new.
+    Throttled,
+}
+
+impl AutoUpdateSkipReason {
+    /// Stable, human-readable description. Safe to log verbatim and to render
+    /// in `alphacode doctor --json`; the strings are part of the diagnostic
+    /// contract, not free-form prose.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::DisabledByEnv => "ALPHACODE_NO_AUTO_UPDATE is set",
+            Self::NotAReleaseBuild => "not a release build (dev/source checkout)",
+            Self::RunningFromCheckout => "running from inside a git checkout",
+            Self::Throttled => "checked recently; next automatic check is throttled",
+        }
+    }
+}
+
+impl std::fmt::Display for AutoUpdateSkipReason {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
+/// The process-level inputs to the automatic-update gate, gathered so the
+/// decision itself stays a pure function and can be unit tested without
+/// touching the environment, the filesystem, or the network.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct AutoUpdateGate {
+    pub disabled_by_env: bool,
+    pub release_build: bool,
+    pub running_inside_checkout: bool,
+    pub throttled: bool,
+}
+
+/// Evaluate the automatic-update gate, returning the first reason the check
+/// will not run, or `None` when it will.
+///
+/// Order matters and must match the checks in
+/// `alphacode_app_core::update::check_and_maybe_update`: report the most
+/// specific, most actionable reason first. A dev build that is *also*
+/// throttled is still a dev build.
+pub fn auto_update_skip_reason(gate: AutoUpdateGate) -> Option<AutoUpdateSkipReason> {
+    if gate.disabled_by_env {
+        return Some(AutoUpdateSkipReason::DisabledByEnv);
+    }
+    if !gate.release_build {
+        return Some(AutoUpdateSkipReason::NotAReleaseBuild);
+    }
+    if gate.running_inside_checkout {
+        return Some(AutoUpdateSkipReason::RunningFromCheckout);
+    }
+    if gate.throttled {
+        return Some(AutoUpdateSkipReason::Throttled);
+    }
+    None
+}
+
 pub fn format_duration_estimate(duration: Duration) -> String {
     match duration.as_secs() {
         0..=15 => "under 15s".to_string(),
@@ -523,6 +604,119 @@ mod tests {
     fn version_comparison_works() {
         assert!(version_is_newer("v0.2.0", "0.1.9"));
         assert!(!version_is_newer("v0.1.0", "0.1.0"));
+    }
+
+    /// A plain release install must clear every gate, otherwise auto-update
+    /// silently never runs for the exact configuration it was built for.
+    #[test]
+    fn auto_update_gate_passes_for_a_plain_release_build() {
+        let gate = AutoUpdateGate {
+            disabled_by_env: false,
+            release_build: true,
+            running_inside_checkout: false,
+            throttled: false,
+        };
+        assert_eq!(auto_update_skip_reason(gate), None);
+    }
+
+    /// Each gate must be reported by name. Collapsing them back into one
+    /// anonymous "no update" is the bug this enum exists to prevent.
+    #[test]
+    fn auto_update_gate_names_every_blocking_condition() {
+        let base = AutoUpdateGate {
+            disabled_by_env: false,
+            release_build: true,
+            running_inside_checkout: false,
+            throttled: false,
+        };
+
+        assert_eq!(
+            auto_update_skip_reason(AutoUpdateGate {
+                disabled_by_env: true,
+                ..base
+            }),
+            Some(AutoUpdateSkipReason::DisabledByEnv)
+        );
+        assert_eq!(
+            auto_update_skip_reason(AutoUpdateGate {
+                release_build: false,
+                ..base
+            }),
+            Some(AutoUpdateSkipReason::NotAReleaseBuild)
+        );
+        assert_eq!(
+            auto_update_skip_reason(AutoUpdateGate {
+                running_inside_checkout: true,
+                ..base
+            }),
+            Some(AutoUpdateSkipReason::RunningFromCheckout)
+        );
+        assert_eq!(
+            auto_update_skip_reason(AutoUpdateGate {
+                throttled: true,
+                ..base
+            }),
+            Some(AutoUpdateSkipReason::Throttled)
+        );
+    }
+
+    /// The most specific reason wins. A dev build is the headline fact and
+    /// should not be masked by the throttle window, which would send someone
+    /// hunting for a rate-limit problem they do not have.
+    #[test]
+    fn auto_update_gate_reports_the_first_blocking_condition() {
+        assert_eq!(
+            auto_update_skip_reason(AutoUpdateGate {
+                disabled_by_env: true,
+                release_build: false,
+                running_inside_checkout: true,
+                throttled: true,
+            }),
+            Some(AutoUpdateSkipReason::DisabledByEnv)
+        );
+        assert_eq!(
+            auto_update_skip_reason(AutoUpdateGate {
+                disabled_by_env: false,
+                release_build: false,
+                running_inside_checkout: true,
+                throttled: true,
+            }),
+            Some(AutoUpdateSkipReason::NotAReleaseBuild)
+        );
+        assert_eq!(
+            auto_update_skip_reason(AutoUpdateGate {
+                disabled_by_env: false,
+                release_build: true,
+                running_inside_checkout: true,
+                throttled: true,
+            }),
+            Some(AutoUpdateSkipReason::RunningFromCheckout)
+        );
+    }
+
+    /// These strings are logged and rendered in `alphacode doctor --json`.
+    /// A blank or duplicated one is a diagnostic that tells the reader nothing.
+    #[test]
+    fn auto_update_skip_reasons_have_distinct_descriptions() {
+        let reasons = [
+            AutoUpdateSkipReason::DisabledByEnv,
+            AutoUpdateSkipReason::NotAReleaseBuild,
+            AutoUpdateSkipReason::RunningFromCheckout,
+            AutoUpdateSkipReason::Throttled,
+        ];
+        let mut seen = std::collections::HashSet::new();
+        for reason in reasons {
+            let text = reason.as_str();
+            assert!(
+                !text.trim().is_empty(),
+                "{reason:?} has an empty description"
+            );
+            assert!(
+                seen.insert(text),
+                "{reason:?} reuses the description {text:?}"
+            );
+            assert_eq!(reason.to_string(), text, "{reason:?} Display disagrees");
+        }
     }
 
     /// Every UI surface renders these on one line, so the summary must stay

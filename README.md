@@ -384,7 +384,7 @@ AlphaCode includes **40+ tools** across the following categories. Names and avai
 | Category | Examples |
 | --- | --- |
 | **Files** | `read`, `write`, `edit`, `multiedit`, `patch`, `apply_patch`, `ls` |
-| **Search** | `agentgrep`, `session_search`, `conversation_search` |
+| **Search** | `alphagrep`, `session_search`, `conversation_search` |
 | **Execution** | `bash`, `batch`, `bg` |
 | **Web and browser** | `browser`, `webfetch`, `websearch`, `scrapling`, `httpflow`, `open` |
 | **Desktop** | `desktop`, `macos_computer_use` |

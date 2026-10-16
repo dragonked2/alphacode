@@ -1,0 +1,19 @@
+[package]
+name = "alphagrep"
+version = "0.1.6"
+edition = "2024"
+description = "CLI-first code search and retrieval for agents"
+license = "MIT"
+repository = "https://github.com/dragonked2/alphacode"
+homepage = "https://alphacli.github.io/"
+
+[dependencies]
+clap = { version = "4.5", features = ["derive"] }
+globset = "0.4"
+ignore = "0.4"
+regex = "1.11"
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+
+[dev-dependencies]
+tempfile = "3.14"

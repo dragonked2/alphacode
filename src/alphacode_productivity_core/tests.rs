@@ -32,14 +32,14 @@ fn aggregates_basic_totals() {
     let summaries = vec![
         summary("alpha", 3, 3, &[("read", 5), ("edit", 2), ("bash", 4)]),
         summary("alpha", 2, 2, &[("read", 1), ("apply_patch", 3)]),
-        summary("beta", 5, 5, &[("agentgrep", 7), ("browser", 1)]),
+        summary("beta", 5, 5, &[("alphagrep", 7), ("browser", 1)]),
     ];
     let r = report_from_summaries(summaries);
 
     assert_eq!(r.total_sessions, 3);
     assert_eq!(r.user_prompts, 10);
     assert_eq!(r.assistant_messages, 10);
-    // read 6 + edit 2 + bash 4 + apply_patch 3 + agentgrep 7 + browser 1 = 23
+    // read 6 + edit 2 + bash 4 + apply_patch 3 + alphagrep 7 + browser 1 = 23
     assert_eq!(r.total_tool_calls, 23);
     // edit 2 + apply_patch 3 = 5
     assert_eq!(r.code_edits, 5);

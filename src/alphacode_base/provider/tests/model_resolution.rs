@@ -213,6 +213,13 @@ fn test_direct_chutes_ignores_legacy_openrouter_catalog_cache() {
             .expect("write legacy chutes cache");
 
             with_env_var("CHUTES_API_KEY", "test-chutes-key", || {
+                // A direct profile endpoint has no static default (see
+                // CHUTES_PROFILE); activation normally names a model from the
+                // live catalog, so name one explicitly for this test.
+                crate::alphacode_core::env::set_var(
+                    "ALPHACODE_OPENROUTER_MODEL",
+                    "chutes-test-model",
+                );
                 let openrouter = test_openrouter_runtime()
                     .expect("autodetected Chutes provider should initialize");
                 let direct_route = openrouter
@@ -701,6 +708,13 @@ fn test_active_compatible_route_treats_claude_like_bare_model_as_provider_local(
                     "ALPHACODE_OPENROUTER_API_BASE",
                     "https://compat.example.test/v1",
                     || {
+                        // A custom (non-OpenRouter) endpoint must name its
+                        // model at construction; the opaque-ID swap that is
+                        // this test's point follows afterwards.
+                        crate::alphacode_core::env::set_var(
+                            "ALPHACODE_OPENROUTER_MODEL",
+                            "compat-test-model",
+                        );
                         let openrouter = test_openrouter_runtime()
                             .expect("custom compatible provider should initialize");
                         let provider = MultiProvider {
@@ -749,6 +763,13 @@ fn test_active_compatible_route_preserves_custom_at_sign_model_ids() {
                     "ALPHACODE_OPENROUTER_API_BASE",
                     "https://compat.example.test/v1",
                     || {
+                        // A custom (non-OpenRouter) endpoint must name its
+                        // model at construction; the model-ID assertions
+                        // below follow afterwards.
+                        crate::alphacode_core::env::set_var(
+                            "ALPHACODE_OPENROUTER_MODEL",
+                            "compat-test-model",
+                        );
                         let openrouter = test_openrouter_runtime()
                             .expect("custom compatible provider should initialize");
                         let provider = MultiProvider {
@@ -854,6 +875,13 @@ fn test_custom_compatible_model_routes_do_not_request_openrouter_rewrite() {
                     "ALPHACODE_OPENROUTER_API_BASE",
                     "https://compat.example.test/v1",
                     || {
+                        // A custom (non-OpenRouter) endpoint must name its
+                        // model at construction; the route assertions below
+                        // follow afterwards.
+                        crate::alphacode_core::env::set_var(
+                            "ALPHACODE_OPENROUTER_MODEL",
+                            "compat-test-model",
+                        );
                         let openrouter = test_openrouter_runtime()
                             .expect("custom compatible provider should initialize");
                         let provider = MultiProvider {

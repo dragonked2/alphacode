@@ -151,7 +151,7 @@ const CONFIG_ENV_KEYS: &[&str] = &[
     "ALPHACODE_SCROLL_UP_FALLBACK_KEY",
     "ALPHACODE_SCROLL_UP_KEY",
     "ALPHACODE_SEARXNG_URL",
-    "ALPHACODE_SHOW_AGENTGREP_OUTPUT",
+    "ALPHACODE_SHOW_ALPHAGREP_OUTPUT",
     "ALPHACODE_SHOW_DIFFS",
     "ALPHACODE_SHOW_THINKING",
     "ALPHACODE_SIDE_PANEL_TOGGLE_KEY",
@@ -645,7 +645,7 @@ impl ToolConfig {
                     "multiedit",
                     "apply_patch",
                     "patch",
-                    "agentgrep",
+                    "alphagrep",
                     "ls",
                     "batch",
                 ]
@@ -663,7 +663,7 @@ impl ToolConfig {
                     "multiedit",
                     "apply_patch",
                     "patch",
-                    "agentgrep",
+                    "alphagrep",
                     "ls",
                 ]
                 .into_iter()

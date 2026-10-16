@@ -132,7 +132,7 @@ fn tool_marker_summary(name: &str, input: &serde_json::Value) -> String {
                 "bash" => "command",
                 "read" | "write" => "file_path",
                 "edit" | "multiedit" => "file_path",
-                "agentgrep" | "websearch" => "query",
+                "alphagrep" | "websearch" => "query",
                 "webfetch" => "url",
                 "task" | "subagent" => "description",
                 _ => return None,

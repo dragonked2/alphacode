@@ -76,10 +76,19 @@ where
     }
     String::from_utf8_lossy(&kept).into_owned()
 }
-// Five minutes is long enough for ordinary repository audits and test suites
-// while still promoting genuinely stuck work to the background manager. Callers
-// that need longer can opt into `run_in_background` or pass an explicit timeout.
-const DEFAULT_TIMEOUT_MS: u64 = 300000;
+// Twenty-five minutes. The previous ceiling was five minutes, which killed
+// ordinary work on this repository: a cold `cargo build`/`cargo test` of the
+// root crate takes 10-12 minutes, so the command was terminated mid-run and the
+// partial output made it look like a failure. Worse, the explicit `timeout`
+// argument was clamped to the same ceiling, so asking for longer had no effect.
+// A plain command now gets the budget a real build needs; anything genuinely
+// longer still belongs in the background manager (`run_in_background`).
+const DEFAULT_TIMEOUT_MS: u64 = 1_500_000;
+// Upper bound on a single foreground command, kept separate from the default so
+// the two can diverge later. It is deliberately generous: a value below the
+// default would make `timeout` unable to extend anything, which is exactly the
+// bug this replaced.
+const MAX_TIMEOUT_MS: u64 = 1_500_000;
 // 100 ms feels instant to the user on a local terminal but still keeps
 // the `stdin_detect` syscall (inotify on Linux, lsof elsewhere) cheap.
 // Previously this was 500 ms, which made interactive commands such as
@@ -96,6 +105,66 @@ const WINDOWS_SHELL_TOOL_DESCRIPTION: &str = "Run a shell command. Commands exec
 #[cfg(windows)]
 const WINDOWS_CMD_SHELL_TOOL_DESCRIPTION: &str = "Run a shell command. Git Bash is not installed, so commands execute in cmd.exe. Use Windows syntax (dir, copy, del, type); POSIX utilities and pipelines may not be available. Quote URLs containing query parameters, especially `&` or `|`, with double quotes; unquoted URL operators are rejected before execution. Use `webfetch` for HTTP reads. For PowerShell-specific APIs, prefix with: powershell -NoProfile -Command '...'. This is your primary tool for local Windows commands. Always include error handling and use appropriate timeouts. Prefer targeted commands over full output.";
 
+/// Keep the leading `head` bytes and trailing `tail` bytes of `text`, with a
+/// marker naming exactly how much was removed in between.
+///
+/// Both cuts land on newline boundaries when one is available near the target,
+/// so the model sees whole lines rather than a half-written one. Every cut is
+/// taken with `is_char_boundary`, so multi-byte characters are never split —
+/// splitting one would put invalid UTF-8 in the string and mangle the output.
+///
+/// The retained budget (`head + tail`) is the caller's `MAX_OUTPUT_LEN`; only
+/// the marker is extra, because the byte count it reports is the whole point of
+/// truncating.
+fn truncate_middle(text: &str, head: usize, tail: usize) -> String {
+    /// Largest index `<= from` that is a char boundary, preferring a newline.
+    fn boundary_at_or_before(s: &str, from: usize) -> usize {
+        let mut cut = from.min(s.len());
+        while cut > 0 && !s.is_char_boundary(cut) {
+            cut -= 1;
+        }
+        match s[..cut].rfind('\n') {
+            Some(nl) if nl > cut / 2 => nl,
+            _ => cut,
+        }
+    }
+
+    /// Smallest index `>= from` that is a char boundary, preferring a newline.
+    fn boundary_at_or_after(s: &str, from: usize) -> usize {
+        let mut start = from.min(s.len());
+        while start < s.len() && !s.is_char_boundary(start) {
+            start += 1;
+        }
+        match s[start..].find('\n') {
+            Some(nl) => start + nl + 1,
+            None => start,
+        }
+    }
+
+    let total_chars = text.len();
+    let head_end = boundary_at_or_before(text, head);
+    let tail_start = boundary_at_or_after(text, total_chars - tail);
+    // If the two regions overlap there is nothing worth eliding, so hand back
+    // the input untouched rather than emitting a marker around no content.
+    if tail_start <= head_end {
+        return text.to_string();
+    }
+
+    let removed = tail_start - head_end;
+    format!(
+        "{}\n\n[Output truncated: kept first {} and last {} of {} chars \
+         (~{}k tokens); {} chars ({} lines) omitted from the middle]\n\n{}",
+        &text[..head_end],
+        head_end,
+        total_chars - tail_start,
+        total_chars,
+        removed / 4 / 1000,
+        removed,
+        text[head_end..tail_start].lines().count(),
+        &text[tail_start..],
+    )
+}
+
 /// Build a clear timeout message. The `timeout` param is in milliseconds, which
 /// agents frequently mistake for seconds (e.g. passing 1000 thinking it means
 /// 1000s when it is 1s). Spell out the seconds equivalent and, for suspiciously
@@ -107,7 +176,7 @@ fn timeout_message(timeout_ms: u64) -> String {
     if timeout_ms <= 5000 {
         msg.push_str(
             ". Note: the `timeout` parameter is in MILLISECONDS, not seconds. \
-             If you meant a longer limit, pass a larger value (e.g. 600000 = 10min) or omit `timeout`.",
+             If you meant a longer limit, pass a larger value (e.g. 1500000 = 25min) or omit `timeout`.",
         );
     }
     msg
@@ -675,8 +744,10 @@ fn build_detached_shell_wrapper(command: &str) -> StdCommand {
 }
 
 fn format_command_output(mut output: String, exit_code: Option<i32>) -> String {
-    // Apply smart stream filtering to reduce context bloat
-    let filter_result = smart_stream::filter_output("bash", &output);
+    // Reduce context bloat without size caps: the truncation below keeps both
+    // ends of an oversized output, and the filter's head-only caps would
+    // otherwise discard the tail before it could be preserved.
+    let filter_result = smart_stream::filter_output_reduction_only("bash", &output);
     if filter_result.was_filtered {
         let was_significant = filter_result.significant_reduction();
         let summary = filter_result.summary.clone();
@@ -688,23 +759,15 @@ fn format_command_output(mut output: String, exit_code: Option<i32>) -> String {
     }
 
     if output.len() > MAX_OUTPUT_LEN {
-        // Smart truncation: cut at newline boundary and show token savings
-        let mut cut = MAX_OUTPUT_LEN;
-        while cut > 0 && !output.is_char_boundary(cut) {
-            cut -= 1;
-        }
-        let cut = match output[..cut].rfind('\n') {
-            Some(nl) if nl > MAX_OUTPUT_LEN / 2 => nl,
-            _ => cut,
-        };
-        let total_chars = output.len();
-        output.truncate(cut);
-        output.push_str(&format!(
-            "\n\n[Output truncated: {} → {} chars, ~{}k tokens saved]",
-            total_chars,
-            cut,
-            (total_chars - cut) / 4 / 1000,
-        ));
+        // Keep BOTH ends. The lines that decide whether a command succeeded
+        // live at the end — `test result: ok. 24 passed; 0 failed`, a fuzzer's
+        // total, a grep's `note: showing 12 of 137 matches` — while the start
+        // holds the invocation and the first results. A head-only cut threw
+        // away exactly the evidence a caller needs to judge the outcome, which
+        // is why long runs looked like they had produced nothing conclusive.
+        let head = MAX_OUTPUT_LEN * 3 / 5;
+        let tail = MAX_OUTPUT_LEN - head;
+        output = truncate_middle(&output, head, tail);
     }
 
     if let Some(code) = exit_code.filter(|code| *code != 0) {
@@ -794,7 +857,10 @@ mod utf8_truncation_tests {
     #[cfg(any(windows, unix))]
     use super::build_shell_command;
     use super::{BashTool, Tool, ToolContext, format_command_output, read_stream_capped};
-    use super::{MAX_CAPTURED_STREAM_BYTES, MAX_OUTPUT_LEN};
+    use super::{
+        DEFAULT_TIMEOUT_MS, MAX_CAPTURED_STREAM_BYTES, MAX_OUTPUT_LEN, MAX_TIMEOUT_MS,
+        truncate_middle,
+    };
     use serde_json::json;
 
     #[cfg(windows)]
@@ -904,16 +970,87 @@ mod utf8_truncation_tests {
     #[test]
     fn format_command_output_truncates_on_utf8_boundary() {
         let input = format!("{}é", "a".repeat(29_999));
-        let output = format_command_output(input, None);
-        // The truncation marker was upgraded to surface token savings
-        // so an agent can budget its next read; the marker must still
-        // signal that the original bytes are no longer recoverable
-        // from this string.
+        // `Some(0)` leaves the string free of trailing status text. With `None`
+        // the signal-failure verdict is appended *after* the retained tail by
+        // design, so the check for the last character uses a clean exit.
+        let output = format_command_output(input.clone(), Some(0));
+        // The marker must still signal that the original bytes are no longer
+        // recoverable from this string. Truncation keeps both ends, so the
+        // multi-byte 'é' at the very end is part of the retained tail: a cut
+        // that split it would put invalid UTF-8 in the result.
         assert!(
             output.contains("[Output truncated:"),
             "expected truncation marker in: {output:?}"
         );
-        assert!(output.starts_with(&"a".repeat(29_999)));
+        assert!(output.starts_with('a'), "head lost: {output:?}");
+        assert!(
+            output.ends_with('é'),
+            "tail (multi-byte char) must survive: {output:?}"
+        );
+
+        // A `None` exit code appends the signal verdict after the tail; the
+        // multi-byte char must still be intact in front of it.
+        let signalled = format_command_output(input, None);
+        assert!(signalled.contains('é'), "tail mangled: {signalled:?}");
+        assert!(
+            signalled.ends_with("FAILED]"),
+            "signal verdict missing: {signalled:?}"
+        );
+    }
+
+    /// Truncation must keep the *end* of a long run. The verdict line lives
+    /// there (`test result: ok. 24 passed; 0 failed`) and a head-only cut hid
+    /// it, which is why a long command looked like it produced nothing
+    /// conclusive.
+    #[test]
+    fn truncation_preserves_the_tail_verdict() {
+        let verdict = "test result: ok. 24 passed; 0 failed; 0 ignored";
+        let body = "x".repeat(MAX_OUTPUT_LEN * 2);
+        let output = format_command_output(format!("{body}\n{verdict}\n"), None);
+        assert!(
+            output.contains(verdict),
+            "tail verdict was cut from truncated output"
+        );
+        assert!(output.contains("[Output truncated:"));
+        assert!(output.contains("omitted from the middle"));
+    }
+
+    /// The head must survive too, and the marker must name how much vanished so
+    /// the caller can judge what it is missing.
+    #[test]
+    fn truncation_keeps_the_head_and_reports_the_gap() {
+        let input: String = (0..4000).map(|i| format!("line {i}\n")).collect();
+        let output = format_command_output(input, None);
+        assert!(output.contains("[Output truncated:"), "{output}");
+        assert!(output.starts_with("line 0"), "head lost: {output}");
+        assert!(
+            output.contains("chars (") && output.contains("lines) omitted"),
+            "marker must name the removed byte and line count: {output}"
+        );
+    }
+
+    /// Neither cut may split a multi-byte character. These cuts land mid-sequence
+    /// by construction; a split would produce invalid UTF-8 and mangle output.
+    #[test]
+    fn truncate_middle_never_splits_a_multibyte_char() {
+        let text = "\u{2192}".repeat(4000); // 3-byte chars: cuts land mid-char
+        let out = truncate_middle(&text, 1000, 1000);
+        assert!(std::str::from_utf8(out.as_bytes()).is_ok());
+        assert!(out.starts_with('\u{2192}'), "head corrupted");
+        assert!(out.ends_with('\u{2192}'), "tail corrupted");
+        assert!(out.contains("omitted from the middle"));
+    }
+
+    /// A real build needs a long budget, and the cap must not sit *below* the
+    /// default: that made an explicit `timeout` unable to extend anything, which
+    /// is what killed 10-minute test runs at 600s.
+    #[test]
+    fn timeout_default_and_cap_allow_a_real_build() {
+        const { assert!(DEFAULT_TIMEOUT_MS >= 1_200_000) }; // at least 20 minutes
+        const { assert!(MAX_TIMEOUT_MS >= DEFAULT_TIMEOUT_MS) };
+        // A request above the old 600_000 ceiling must now survive intact.
+        let requested = 1_400_000u64;
+        assert_eq!(requested.min(MAX_TIMEOUT_MS), requested);
     }
 
     /// The capture cap is the whole point of `read_stream_capped`: output past
@@ -1246,7 +1383,10 @@ impl BashTool {
                 .await;
         }
 
-        let timeout_ms = params.timeout.unwrap_or(DEFAULT_TIMEOUT_MS).min(600000);
+        let timeout_ms = params
+            .timeout
+            .unwrap_or(DEFAULT_TIMEOUT_MS)
+            .min(MAX_TIMEOUT_MS);
         let timeout_duration = Duration::from_millis(timeout_ms);
 
         let has_stdin_channel = ctx.stdin_request_tx.is_some();
@@ -1466,7 +1606,10 @@ impl BashTool {
         params: &BashInput,
         ctx: &ToolContext,
     ) -> Result<ToolOutput> {
-        let timeout_ms = params.timeout.unwrap_or(DEFAULT_TIMEOUT_MS).min(600000);
+        let timeout_ms = params
+            .timeout
+            .unwrap_or(DEFAULT_TIMEOUT_MS)
+            .min(MAX_TIMEOUT_MS);
         let timeout_duration = Duration::from_millis(timeout_ms);
         let started_at = Utc::now().to_rfc3339();
         let started = Instant::now();
@@ -1617,7 +1760,7 @@ impl BashTool {
         let description = params.intent.clone();
         let display_name = summarize_background_command(description.as_deref(), &command);
         let working_dir = ctx.working_dir.clone();
-        let timeout_ms = params.timeout.map(|timeout| timeout.min(600000));
+        let timeout_ms = params.timeout.map(|timeout| timeout.min(MAX_TIMEOUT_MS));
         let timeout_duration = timeout_ms.map(Duration::from_millis);
 
         let wake = params.wake;

@@ -134,7 +134,14 @@ const TC_GRADIENT_C: &str = "\u{1b}[38;2;170;140;255m";
 const TC_GRADIENT_D: &str = "\u{1b}[38;2;190;120;255m";
 
 /// Format with a color. Returns a new String (not a Cow) so callers can chain formatting.
+///
+/// The escape sequence is dropped when styling is off (piped output, `NO_COLOR`,
+/// or a console that cannot render it), so callers always receive text they can
+/// print verbatim.
 pub fn colorized(text: impl AsRef<str>, c: impl AsRef<str>) -> String {
+    if !super::console::ansi_enabled() {
+        return text.as_ref().to_string();
+    }
     let mut s = String::new();
     s.push_str(c.as_ref());
     s.push_str(text.as_ref());
@@ -143,12 +150,22 @@ pub fn colorized(text: impl AsRef<str>, c: impl AsRef<str>) -> String {
 }
 
 /// Wrap text in a truecolor ANSI sequence for rich color output.
+///
+/// Gated like [`colorized`]: without styling support the text is returned as-is.
 pub fn truecolor(text: impl AsRef<str>, r: u8, g: u8, b: u8) -> String {
+    if !super::console::ansi_enabled() {
+        return text.as_ref().to_string();
+    }
     format!("\u{1b}[38;2;{r};{g};{b}m{}\u{1b}[0m", text.as_ref())
 }
 
 /// Bold + truecolor for emphasis.
+///
+/// Gated like [`colorized`]: without styling support the text is returned as-is.
 pub fn truecolor_bold(text: impl AsRef<str>, r: u8, g: u8, b: u8) -> String {
+    if !super::console::ansi_enabled() {
+        return text.as_ref().to_string();
+    }
     format!(
         "\u{1b}[1m\u{1b}[38;2;{r};{g};{b}m{}\u{1b}[0m",
         text.as_ref()

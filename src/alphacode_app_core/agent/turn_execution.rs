@@ -139,7 +139,7 @@ fn local_tool_relevance(
             | "multiedit"
             | "apply_patch"
             | "patch"
-            | "agentgrep"
+            | "alphagrep"
             | "grep"
             | "glob"
             | "ls"
@@ -1251,7 +1251,7 @@ mod local_context_tests {
         });
         let mut tools = vec![
             definition(
-                "agentgrep",
+                "alphagrep",
                 "Search source code for matching definitions.".to_string(),
                 annotated_schema,
             ),
@@ -1280,12 +1280,12 @@ mod local_context_tests {
         );
 
         assert!(selected.len() < tools.len());
-        assert!(selected.iter().any(|tool| tool.name == "agentgrep"));
+        assert!(selected.iter().any(|tool| tool.name == "alphagrep"));
         assert!(selected.iter().any(|tool| tool.name == "read"));
         assert!(ToolDefinition::aggregate_prompt_token_estimate(&selected) <= 4_096);
         let search = selected
             .iter()
-            .find(|tool| tool.name == "agentgrep")
+            .find(|tool| tool.name == "alphagrep")
             .expect("relevant search tool should remain available");
         assert_eq!(
             search.input_schema,

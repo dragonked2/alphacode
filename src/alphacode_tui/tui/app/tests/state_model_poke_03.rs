@@ -2847,3 +2847,126 @@ fn alphax_free_remote_login_delegates_activation_to_server() {
         assert!(!login.message.contains("does not support model switching"));
     });
 }
+
+#[test]
+fn test_auto_poke_budget_resets_when_the_agent_completes_todos() {
+    with_temp_alphacode_home(|| {
+        let mut app = create_test_app();
+        let todos = |statuses: &[(&str, &str)]| -> Vec<crate::todo::TodoItem> {
+            statuses
+                .iter()
+                .map(|(id, status)| crate::todo::TodoItem {
+                    id: (*id).to_string(),
+                    content: format!("Task {id}"),
+                    status: (*status).to_string(),
+                    priority: "medium".to_string(),
+                    ..Default::default()
+                })
+                .collect()
+        };
+        crate::todo::save_todos(
+            &app.session.id,
+            &todos(&[
+                ("todo-1", "pending"),
+                ("todo-2", "pending"),
+                ("todo-3", "pending"),
+            ]),
+        )
+        .expect("save todos");
+
+        app.auto_poke_incomplete_todos = true;
+
+        // Two pokes that end without any todo completing consume the budget.
+        assert!(app.schedule_auto_poke_followup_if_needed());
+        assert_eq!(app.auto_poke_incomplete_attempts, 1);
+        app.queued_messages.clear();
+        app.pending_queued_dispatch = false;
+        assert!(app.schedule_auto_poke_followup_if_needed());
+        assert_eq!(app.auto_poke_incomplete_attempts, 2);
+        app.queued_messages.clear();
+        app.pending_queued_dispatch = false;
+
+        // The agent completes one todo: that is progress, so the budget must
+        // restart instead of abandoning the remaining two at the next poke.
+        crate::todo::save_todos(
+            &app.session.id,
+            &todos(&[
+                ("todo-1", "completed"),
+                ("todo-2", "pending"),
+                ("todo-3", "pending"),
+            ]),
+        )
+        .expect("save progress");
+
+        assert!(
+            app.schedule_auto_poke_followup_if_needed(),
+            "a poke that follows real progress must not be refused"
+        );
+        assert_eq!(app.auto_poke_incomplete_attempts, 1);
+        assert!(app.auto_poke_incomplete_todos);
+        assert!(
+            app.queued_messages[0].contains("2 incomplete todos"),
+            "the follow-up should be about the remaining todos: {:?}",
+            app.queued_messages
+        );
+    });
+}
+
+#[test]
+fn test_auto_poke_stops_after_consecutive_no_progress_pokes() {
+    with_temp_alphacode_home(|| {
+        let mut app = create_test_app();
+        crate::todo::save_todos(
+            &app.session.id,
+            &[crate::todo::TodoItem {
+                id: "todo-1".to_string(),
+                content: "Stalled task".to_string(),
+                status: "pending".to_string(),
+                priority: "high".to_string(),
+                ..Default::default()
+            }],
+        )
+        .expect("save todos");
+
+        app.auto_poke_incomplete_todos = true;
+
+        for attempt in 1..=App::MAX_AUTO_POKE_INCOMPLETE_ATTEMPTS {
+            assert!(
+                app.schedule_auto_poke_followup_if_needed(),
+                "no-progress poke {attempt} should still be scheduled"
+            );
+            assert_eq!(app.auto_poke_incomplete_attempts, attempt);
+            // Simulate the poke turn running and ending with no todo progress.
+            app.queued_messages.clear();
+            app.pending_queued_dispatch = false;
+        }
+
+        assert!(
+            !app.schedule_auto_poke_followup_if_needed(),
+            "a stalled agent must stop being poked"
+        );
+        assert!(!app.auto_poke_incomplete_todos);
+        assert_eq!(app.auto_poke_incomplete_attempts, 0);
+        assert!(app.auto_poke_last_incomplete_ids.is_empty());
+        assert!(app.queued_messages.is_empty());
+        let stop_notice = app
+            .display_messages()
+            .iter()
+            .find(|msg| msg.content.contains("Stopped poking"))
+            .expect("stop notice should be shown")
+            .content
+            .clone();
+        assert!(
+            stop_notice.contains("no todo progress"),
+            "the stop notice should say why poking stopped: {stop_notice}"
+        );
+        assert!(
+            stop_notice.contains("Send /poke to resume"),
+            "the stop notice should explain how to resume: {stop_notice}"
+        );
+        assert!(
+            !stop_notice.contains("/poke off to disable"),
+            "a self-disarming stop must not tell the user to disable poking"
+        );
+    });
+}

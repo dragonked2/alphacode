@@ -379,13 +379,24 @@ pub struct UsageInfo {
     pub available: bool,
 }
 
-/// Notional value of session tokens at the UI's fixed rate of $1 per million
-/// tokens. This is separate from provider billing and applies to free plans too.
+/// Reference rate for the session's notional token value: USD per million
+/// tokens.
+///
+/// This is deliberately *not* provider billing. Metered API-key transports are
+/// priced from the real catalog, but free-tier and subscription transports have
+/// no per-token price of their own, which left their readout stuck at a
+/// meaningless `$0.00`. Pricing those tokens at this fixed rate gives every
+/// transport a comparable, non-zero yardstick.
+pub const NOTIONAL_USD_PER_MTOK: f64 = 10.0;
+
+/// Notional value of session tokens at the UI reference rate
+/// ([`NOTIONAL_USD_PER_MTOK`], $10 per million tokens). This is separate from
+/// provider billing and applies to free plans too.
 pub fn format_token_value_usd(tokens: u64) -> String {
     if tokens == 0 {
         return "$0.00".to_string();
     }
-    let value = tokens as f64 / 1_000_000.0;
+    let value = tokens as f64 / 1_000_000.0 * NOTIONAL_USD_PER_MTOK;
     if value < 0.01 {
         let precise = format!("{value:.6}");
         let trimmed = precise.trim_end_matches('0').trim_end_matches('.');
@@ -400,12 +411,12 @@ mod token_value_tests {
     use super::format_token_value_usd;
 
     #[test]
-    fn token_value_uses_one_dollar_per_million_tokens() {
+    fn token_value_uses_ten_dollars_per_million_tokens() {
         assert_eq!(format_token_value_usd(0), "$0.00");
-        assert_eq!(format_token_value_usd(1), "$0.000001");
-        assert_eq!(format_token_value_usd(1_000), "$0.001");
-        assert_eq!(format_token_value_usd(1_000_000), "$1.00");
-        assert_eq!(format_token_value_usd(2_500_000), "$2.50");
+        assert_eq!(format_token_value_usd(1), "$0.00001");
+        assert_eq!(format_token_value_usd(100), "$0.001");
+        assert_eq!(format_token_value_usd(1_000_000), "$10.00");
+        assert_eq!(format_token_value_usd(2_500_000), "$25.00");
     }
 }
 
@@ -2135,10 +2146,23 @@ fn render_overview_telemetry(
 
     if let Some(usage) = data.usage_info.as_ref().filter(|usage| usage.available) {
         let (summary, compact_summary) = match usage.provider {
-            UsageProvider::CostBased => (
-                format!("Cost ${:.2}", usage.total_cost),
-                format!("${:.2}", usage.total_cost),
-            ),
+            UsageProvider::CostBased => {
+                // Metered transports report real dollars. Free-tier and
+                // subscription transports have no per-token price, so fall back
+                // to the notional value of their tokens rather than a dead
+                // `$0.00`.
+                let cost = if usage.total_cost > 0.0 {
+                    format!("${:.2}", usage.total_cost)
+                } else {
+                    format!(
+                        "est. {}",
+                        format_token_value_usd(
+                            usage.input_tokens.saturating_add(usage.output_tokens)
+                        )
+                    )
+                };
+                (format!("Cost {cost}"), cost)
+            }
             UsageProvider::Copilot => {
                 let input = overview_token_count(usage.input_tokens);
                 let output = overview_token_count(usage.output_tokens);

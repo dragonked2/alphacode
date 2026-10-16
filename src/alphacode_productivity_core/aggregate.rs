@@ -106,7 +106,7 @@ pub fn build_report(scan: ScanResult) -> ProductivityReport {
     let tool = |name: &str| tools.get(name).copied().unwrap_or(0);
     r.code_edits = tool("edit") + tool("write") + tool("multiedit") + tool("apply_patch");
     r.commands_run = tool("bash");
-    r.searches = tool("grep") + tool("agentgrep") + tool("glob");
+    r.searches = tool("grep") + tool("alphagrep") + tool("glob");
     r.web_actions = tool("browser") + tool("websearch") + tool("webfetch");
 
     r.top_projects = top_n(projects, 8);

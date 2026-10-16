@@ -100,7 +100,7 @@ Use the available runtime tools for CTF analysis:
 
 **Memory & Search:**
 - `memory` tool: Store techniques, flag formats, platform patterns
-- `agentgrep` tool: Search code for vulnerability patterns
+- `alphagrep` tool: Search code for vulnerability patterns
 - `session_search` tool: Reference previous CTF solutions
 
 ### Common Tool Chains

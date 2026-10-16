@@ -311,11 +311,11 @@ impl Config {
         Ok(())
     }
 
-    /// Update the persisted show-agentgrep-output preference.
-    pub fn set_show_agentgrep_output(show: bool) -> anyhow::Result<()> {
-        Self::mutate_config(|cfg| cfg.display.show_agentgrep_output = show)?;
+    /// Update the persisted show-alphagrep-output preference.
+    pub fn set_show_alphagrep_output(show: bool) -> anyhow::Result<()> {
+        Self::mutate_config(|cfg| cfg.display.show_alphagrep_output = show)?;
         crate::logging::info(&format!(
-            "Saved display.show_agentgrep_output to config: {}",
+            "Saved display.show_alphagrep_output to config: {}",
             show
         ));
         Ok(())

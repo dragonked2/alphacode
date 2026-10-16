@@ -101,23 +101,23 @@ impl DiagnosticReport {
         }
     }
 
-    /// Format as a human-readable terminal report.
+    /// Format as a human-readable report.
+    ///
+    /// Deliberately plain text with no SGR escapes: this string is the `doctor`
+    /// tool's payload, so it is read by the model and sanitized+rendered by the
+    /// TUI. Neither consumer wants control bytes mixed into the text.
     pub fn display(&self) -> String {
         let mut out = String::new();
 
         // Header
         let icon = match self.overall {
-            Severity::Ok => "\x1b[92m✓\x1b[0m",
-            Severity::Warn => "\x1b[93m⚠\x1b[0m",
-            Severity::Fail => "\x1b[91m✗\x1b[0m",
+            Severity::Ok => "✓",
+            Severity::Warn => "⚠",
+            Severity::Fail => "✗",
         };
-        out.push_str(
-            "\n\x1b[1m\x1b[96m═══════════════════════════════════════════════════\x1b[0m\n",
-        );
-        out.push_str("\x1b[1m\x1b[96m System Diagnostics\x1b[0m\n");
-        out.push_str(
-            "\x1b[1m\x1b[96m═══════════════════════════════════════════════════\x1b[0m\n\n",
-        );
+        out.push_str("\n═══════════════════════════════════════════════════\n");
+        out.push_str(" System Diagnostics\n");
+        out.push_str("═══════════════════════════════════════════════════\n\n");
 
         // Group by category
         let mut categories: Vec<(&str, Vec<&CheckResult>)> = Vec::new();
@@ -132,12 +132,12 @@ impl DiagnosticReport {
         }
 
         for (cat, checks) in &categories {
-            out.push_str(&format!("  \x1b[1m{}\x1b[0m\n", cat));
+            out.push_str(&format!("  {cat}\n"));
             for check in checks {
                 let badge = match check.severity {
-                    Severity::Ok => "\x1b[92m[OK]\x1b[0m",
-                    Severity::Warn => "\x1b[93m[WARN]\x1b[0m",
-                    Severity::Fail => "\x1b[91m[FAIL]\x1b[0m",
+                    Severity::Ok => "[OK]",
+                    Severity::Warn => "[WARN]",
+                    Severity::Fail => "[FAIL]",
                 };
                 out.push_str(&format!(
                     "    {} {} — {} ({:.0}ms)\n",
@@ -148,16 +148,16 @@ impl DiagnosticReport {
         }
 
         // Summary
-        out.push_str("\x1b[1m───────────────────────────────────────────────────\x1b[0m\n");
+        out.push_str("───────────────────────────────────────────────────\n");
         out.push_str(&format!(
-            "  {} Passed: \x1b[92m{}\x1b[0m  Warnings: \x1b[93m{}\x1b[0m  Failures: \x1b[91m{}\x1b[0m  Total: {:.0}ms\n",
+            "  {} Passed: {}  Warnings: {}  Failures: {}  Total: {:.0}ms\n",
             icon, self.passed, self.warnings, self.failures, self.total_elapsed_ms as f64
         ));
 
         if self.overall == Severity::Ok {
-            out.push_str("  \x1b[92m\x1b[1m✓ System is healthy and ready!\x1b[0m\n\n");
+            out.push_str("  ✓ System is healthy and ready!\n\n");
         } else if self.overall == Severity::Fail {
-            out.push_str("  \x1b[91m\x1b[1m✗ Some checks failed. Run with --fix or check the docs.\x1b[0m\n\n");
+            out.push_str("  ✗ Some checks failed. Run with --fix or check the docs.\n\n");
         }
 
         out

@@ -5,6 +5,22 @@
 use super::DisplayMessage;
 use unicode_segmentation::UnicodeSegmentation;
 
+/// Find the smallest UTF-8 character boundary greater than or equal to `pos`
+/// (clamped to the string length).
+///
+/// The companion to the crate's `floor_char_boundary`: use this when *starting*
+/// a slice. A byte cursor that lands inside a multi-byte character would
+/// otherwise panic when used as a slice start, so an out-of-range or mid
+/// character offset rounds up to the next boundary instead. Offsets already on
+/// a boundary are returned unchanged, so valid cursors are never moved.
+pub fn ceil_char_boundary(s: &str, pos: usize) -> usize {
+    let mut pos = pos.min(s.len());
+    while pos < s.len() && !s.is_char_boundary(pos) {
+        pos += 1;
+    }
+    pos
+}
+
 /// Find the byte offset of the previous extended grapheme boundary before
 /// `pos`. This keeps editing operations atomic for combining marks, emoji
 /// modifiers, and joined emoji sequences.
@@ -30,9 +46,17 @@ pub fn next_grapheme_boundary(s: &str, pos: usize) -> usize {
 
 /// Convert a byte offset in a string to a character index.
 /// Needed when the renderer works in character space but `cursor_pos` is byte-based.
+///
+/// An offset inside a multi-byte character (which a byte-based cursor should
+/// never produce, but corrupted input can) rounds up to the next character
+/// boundary instead of panicking on a byte slice. The offset is clamped to
+/// the string length.
 #[cfg(test)]
 pub fn byte_offset_to_char_index(s: &str, byte_offset: usize) -> usize {
-    s[..byte_offset.min(s.len())].chars().count()
+    let byte_offset = byte_offset.min(s.len());
+    s.char_indices()
+        .take_while(|(start, _)| *start < byte_offset)
+        .count()
 }
 
 /// Convert a byte offset to an extended grapheme-cluster index. An offset

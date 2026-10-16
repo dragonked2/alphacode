@@ -107,7 +107,7 @@ impl Agent {
             "read",
             "grep",
             "glob",
-            "agentgrep",
+            "alphagrep",
             "session_search",
             "conversation_search",
             "skill_manage",

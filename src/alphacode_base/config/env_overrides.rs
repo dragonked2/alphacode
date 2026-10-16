@@ -277,9 +277,9 @@ impl Config {
                 self.display.compact_notifications = parsed;
             }
         }
-        if let Ok(v) = std::env::var("ALPHACODE_SHOW_AGENTGREP_OUTPUT") {
+        if let Ok(v) = std::env::var("ALPHACODE_SHOW_ALPHAGREP_OUTPUT") {
             if let Some(parsed) = parse_env_bool(&v) {
-                self.display.show_agentgrep_output = parsed;
+                self.display.show_alphagrep_output = parsed;
             }
         }
         if let Ok(v) = std::env::var("ALPHACODE_TOOL_CALL_DETAILS") {

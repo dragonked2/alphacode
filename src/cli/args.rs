@@ -270,6 +270,14 @@ pub(crate) enum Command {
     /// Update alphacode to the latest version
     Update,
 
+    /// Diagnose the local setup: version, terminal capability, configuration,
+    /// leftover processes, and the recon toolchain. Read-only.
+    Doctor {
+        /// Emit JSON instead of a human-readable report
+        #[arg(long)]
+        json: bool,
+    },
+
     /// Show build/version information in human or JSON form
     Version {
         /// Emit JSON instead of plain text

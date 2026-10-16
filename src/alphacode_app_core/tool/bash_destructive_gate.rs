@@ -94,7 +94,7 @@ Never mix shell syntaxes."
 
             "timeout": {
                 "type": "integer",
-                "description": "Timeout in MILLISECONDS (not seconds), e.g. 600000 = 10min; kills with exit 124. Omit for no timeout."
+                "description": "Timeout in MILLISECONDS (not seconds), e.g. 1500000 = 25min; kills with exit 124. Omit for the default timeout."
             },
 
             "run_in_background": {

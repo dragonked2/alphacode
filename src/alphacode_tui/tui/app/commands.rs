@@ -109,6 +109,8 @@ pub(super) fn clear_queued_poke_messages(app: &mut App) -> usize {
 pub(super) fn disable_auto_poke(app: &mut App) -> usize {
     let cleared = clear_queued_poke_messages(app);
     app.auto_poke_incomplete_todos = false;
+    app.auto_poke_incomplete_attempts = 0;
+    app.auto_poke_last_incomplete_ids.clear();
     app.todo_confidence_spike_challenged = false;
     app.todo_completion_gate_attempts = 0;
     app.todo_gate_digest_delivered = false;
@@ -239,6 +241,7 @@ pub(super) fn activate_auto_poke(app: &mut App) -> PokeActivation {
     let incomplete = incomplete_poke_todos(app);
     app.auto_poke_incomplete_todos = true;
     app.auto_poke_incomplete_attempts = 0;
+    app.auto_poke_last_incomplete_ids.clear();
     app.todo_confidence_spike_challenged = false;
     app.todo_completion_gate_attempts = 0;
     // Re-arming starts a fresh review cycle, so the deferred quality digest is
@@ -2865,20 +2868,20 @@ fn handle_tool_call_details_command(app: &mut App, trimmed: &str) -> bool {
     true
 }
 
-fn handle_show_agentgrep_output_command(app: &mut App, trimmed: &str) -> bool {
-    if trimmed != "/show-agentgrep-output" && !trimmed.starts_with("/show-agentgrep-output ") {
+fn handle_show_alphagrep_output_command(app: &mut App, trimmed: &str) -> bool {
+    if trimmed != "/show-alphagrep-output" && !trimmed.starts_with("/show-alphagrep-output ") {
         return false;
     }
 
     let rest = trimmed
-        .strip_prefix("/show-agentgrep-output")
+        .strip_prefix("/show-alphagrep-output")
         .unwrap_or_default()
         .trim();
 
     if rest.is_empty() || matches!(rest, "show" | "status") {
-        let current = crate::config::config().display.show_agentgrep_output;
+        let current = crate::config::config().display.show_alphagrep_output;
         app.push_display_message(DisplayMessage::system(format!(
-            "Show agentgrep output is currently {}.\n\nWhen on, the full agentgrep search results render inline in the transcript instead of just the one-line summary.\n\nUse /show-agentgrep-output on or /show-agentgrep-output off to change it.",
+            "Show alphagrep output is currently {}.\n\nWhen on, the full alphagrep search results render inline in the transcript instead of just the one-line summary.\n\nUse /show-alphagrep-output on or /show-alphagrep-output off to change it.",
             if current { "on" } else { "off" }
         )));
         return true;
@@ -2886,22 +2889,22 @@ fn handle_show_agentgrep_output_command(app: &mut App, trimmed: &str) -> bool {
 
     let Some(enabled) = parse_on_off_value(rest) else {
         app.push_display_message(DisplayMessage::error(
-            "Usage: /show-agentgrep-output (show), /show-agentgrep-output on, or /show-agentgrep-output off".to_string(),
+            "Usage: /show-alphagrep-output (show), /show-alphagrep-output on, or /show-alphagrep-output off".to_string(),
         ));
         return true;
     };
 
     app.set_status_notice(format!(
-        "Show agentgrep output: {}",
+        "Show alphagrep output: {}",
         if enabled { "on" } else { "off" }
     ));
-    match crate::config::Config::set_show_agentgrep_output(enabled) {
+    match crate::config::Config::set_show_alphagrep_output(enabled) {
         Ok(()) => app.push_display_message(DisplayMessage::system(format!(
-            "Saved show agentgrep output: {}. Applied to this session immediately.",
+            "Saved show alphagrep output: {}. Applied to this session immediately.",
             if enabled { "on" } else { "off" }
         ))),
         Err(error) => app.push_display_message(DisplayMessage::error(format!(
-            "Applied show agentgrep output {} for this session, but failed to save it as the default: {}",
+            "Applied show alphagrep output {} for this session, but failed to save it as the default: {}",
             if enabled { "on" } else { "off" },
             error
         ))),
@@ -3168,7 +3171,7 @@ pub(super) fn handle_config_command(app: &mut App, trimmed: &str) -> bool {
         return true;
     }
 
-    if handle_show_agentgrep_output_command(app, trimmed) {
+    if handle_show_alphagrep_output_command(app, trimmed) {
         return true;
     }
 

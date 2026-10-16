@@ -133,6 +133,11 @@ pub const TOOL_SPECS: &[ToolSpec] = &[
     },
     // Generic
     ToolSpec {
+        binary: "rg",
+        purpose: "ripgrep — fast search backend for alphagrep",
+        install: "winget: winget install BurntSushi.ripgrep.MSVC   | brew: brew install ripgrep   | apt: apt-get install -y ripgrep",
+    },
+    ToolSpec {
         binary: "curl",
         purpose: "HTTP client (almost always preinstalled)",
         install: "preinstalled: on macOS / most Linux; or apt: apt install -y curl",

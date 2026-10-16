@@ -605,7 +605,15 @@ impl EnhancedInput {
             let chars: Vec<char> = display_text.chars().collect();
             let char_count = chars.len();
 
-            let cursor_char = input[..cursor_pos.min(input.len())].chars().count();
+            // `cursor_pos` is a byte offset, but `is_char_boundary` reports false for
+            // every position inside a multi-byte character, so a stale offset
+            // (a sanitized or restored draft that shrank under the cursor) makes
+            // this slice panic. Snap up to the next character boundary; a
+            // well-formed cursor is unchanged. Same guard as
+            // `input::handle_multiline_input_navigation`.
+            let cursor_byte =
+                crate::alphacode_tui::tui::core::ceil_char_boundary(input, cursor_pos);
+            let cursor_char = input[..cursor_byte].chars().count();
 
             let mut visible_start;
             let mut visible_end;

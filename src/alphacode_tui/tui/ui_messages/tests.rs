@@ -2808,9 +2808,9 @@ fn render_tool_message_batch_subcall_shows_swarm_dm_details() {
 }
 
 #[test]
-fn render_agentgrep_output_body_borders_each_line() {
+fn render_alphagrep_output_body_borders_each_line() {
     let content = "crates/foo.rs\n  symbols: 1 matched\n    - fn bar @ 1-5";
-    let lines = super::render_agentgrep_output_body(content, 120);
+    let lines = super::render_alphagrep_output_body(content, 120);
     let rendered = lines
         .iter()
         .map(extract_line_text)
@@ -2830,12 +2830,12 @@ fn render_agentgrep_output_body_borders_each_line() {
 }
 
 #[test]
-fn render_agentgrep_output_body_caps_huge_output() {
+fn render_alphagrep_output_body_caps_huge_output() {
     let content = (0..1000)
         .map(|i| format!("line {i}"))
         .collect::<Vec<_>>()
         .join("\n");
-    let lines = super::render_agentgrep_output_body(&content, 120);
+    let lines = super::render_alphagrep_output_body(&content, 120);
     // 400-line cap plus a single truncation summary line.
     assert_eq!(lines.len(), 401, "should cap the body and add a summary");
     let last = extract_line_text(&lines[lines.len() - 1]);

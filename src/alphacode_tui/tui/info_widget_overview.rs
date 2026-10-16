@@ -2,6 +2,11 @@ use super::info_widget::{InfoWidgetData, is_traceworthy_memory_event};
 
 pub(crate) const MAX_TODO_LINES: usize = 12;
 
+/// Minimum usable bar cells before `render_todos_compact` draws its inline
+/// progress bar. Must stay equal to the `min_bar` argument the renderer passes
+/// to `progress_line`; the compact height estimate keys off it.
+const TODOS_COMPACT_MIN_BAR: usize = 8;
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum InfoPageKind {
     CompactOnly,
@@ -23,10 +28,10 @@ pub(crate) struct PageLayout {
 
 pub(crate) fn compute_page_layout(
     data: &InfoWidgetData,
-    _inner_width: usize,
+    inner_width: usize,
     inner_height: u16,
 ) -> PageLayout {
-    let compact_height = compact_overview_height(data);
+    let compact_height = compact_overview_height(data, compact_todos_width(inner_width));
     if compact_height == 0 {
         return PageLayout {
             pages: Vec::new(),
@@ -50,7 +55,7 @@ pub(crate) fn compute_page_layout(
     }
 
     let mut candidates: Vec<InfoPage> = Vec::new();
-    let todos_compact = compact_todos_height(data);
+    let todos_compact = compact_todos_height(data, compact_todos_width(inner_width));
 
     let todos_expanded = expanded_todos_height(data);
     if todos_expanded > 0 {
@@ -90,18 +95,34 @@ pub(crate) fn compute_page_layout(
         }
     }
 
+    // Multiple pages become an auto-rotating set with a dot indicator, and the
+    // dots cost a row. A page that exactly fills the pocket therefore cannot
+    // carry dots: the dots would push it one row past the bottom, so that page
+    // is shown alone (no rotation) rather than dropped. The previous strict
+    // `height < inner_height` filter discarded exactly-fitting pages and let the
+    // surviving single page keep its (now pointless) rotation, which both
+    // silently removed access to the expanded Todos/Memory page and could leave
+    // a stray `○` marker next to a lone page.
     let mut show_dots = false;
     if pages.len() > 1 {
-        let filtered: Vec<InfoPage> = pages
+        let room_for_dots: Vec<InfoPage> = pages
             .iter()
             .copied()
             .filter(|page| page.height < inner_height)
             .collect();
-        if filtered.len() > 1 {
-            pages = filtered;
-            show_dots = true;
-        } else if filtered.len() == 1 {
-            pages = filtered;
+        match room_for_dots.len() {
+            // At least two pages fit with room for the indicator: rotate.
+            n if n > 1 => {
+                pages = room_for_dots;
+                show_dots = true;
+            }
+            // Exactly one page has dot room. Showing it alone would hide the
+            // others, so keep the full set and let the tallest page define the
+            // height (the pocket simply clips during rotation).
+            1 => {}
+            // Nothing has dot room: all pages need the extra row, so keep the
+            // full set and drop the indicator.
+            _ => {}
         }
     }
 
@@ -122,8 +143,31 @@ fn compact_queue_height(data: &InfoWidgetData) -> u16 {
     u16::from(data.queue_mode.is_some())
 }
 
-fn compact_todos_height(data: &InfoWidgetData) -> u16 {
-    if data.todos.is_empty() { 0 } else { 2 }
+fn compact_todos_height(data: &InfoWidgetData, inner_width: u16) -> u16 {
+    if data.todos.is_empty() {
+        return 0;
+    }
+    // `render_todos_compact` draws a title and a summary row, plus a progress
+    // bar whenever the width can seat `min_bar` cells. Counting only the two
+    // fixed rows under-reported the block by a line, which both clipped the bar
+    // and let expanded pages be sized from a wrong compact baseline.
+    2 + u16::from(todos_progress_bar_renders(&data.todos, inner_width))
+}
+
+/// Whether `render_todos_compact` will emit its inline progress bar for this
+/// list at `inner_width`. Mirrors the renderer's own gate so the height
+/// estimate and the rendered lines cannot drift apart.
+///
+/// `render_todos_compact` calls `progress_line(counts, width - 2, 8)`, and
+/// `progress_line` then subtracts its own two-column indent, so the bar needs
+/// `inner_width - 4 >= 8`. It is additionally skipped when nothing is
+/// actionable (`Todos 0/0`), because there is no meaningful fraction to draw.
+fn todos_progress_bar_renders(todos: &[crate::todo::TodoItem], inner_width: u16) -> bool {
+    let bar_width = usize::from(inner_width.saturating_sub(4));
+    if bar_width < TODOS_COMPACT_MIN_BAR {
+        return false;
+    }
+    todos.iter().any(|todo| todo.status != "cancelled")
 }
 
 fn compact_model_height(data: &InfoWidgetData) -> u16 {
@@ -174,15 +218,23 @@ fn compact_git_height(data: &InfoWidgetData) -> u16 {
     0
 }
 
-fn compact_overview_height(data: &InfoWidgetData) -> u16 {
+fn compact_overview_height(data: &InfoWidgetData, todos_width: u16) -> u16 {
     compact_model_height(data)
         + compact_queue_height(data)
         + compact_telemetry_height(data, true)
-        + compact_todos_height(data)
+        + compact_todos_height(data, todos_width)
         + compact_background_height(data)
         + compact_kv_cache_height(data)
         + compact_compaction_height(data)
         + compact_git_height(data)
+}
+
+/// Width the compact Todos block is rendered at. The overview's page layout is
+/// computed against the widget's *inner* width, and the todos renderer receives
+/// that same rect, so the progress-bar gate must be evaluated at exactly this
+/// width or the height estimate and the drawn rows disagree.
+fn compact_todos_width(inner_width: usize) -> u16 {
+    u16::try_from(inner_width).unwrap_or(u16::MAX)
 }
 
 fn expanded_todos_height(data: &InfoWidgetData) -> u16 {

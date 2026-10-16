@@ -29,19 +29,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "agentgrep"
-version = "0.1.6"
-source = "git+https://github.com/1jehuang/agentgrep.git?tag=v0.1.6#b01b804008ab0662fa14e6b60b10bff61716e6f1"
-dependencies = [
- "clap",
- "globset",
- "ignore",
- "regex",
- "serde",
- "serde_json",
-]
-
-[[package]]
 name = "ahash"
 version = "0.8.12"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -80,7 +67,7 @@ checksum = "683d7910e743518b0e34f1186f92494becacb047c7b6bf616c96772180fef923"
 name = "alphacode"
 version = "1.0.82"
 dependencies = [
- "agentgrep",
+ "alphagrep",
  "anyhow",
  "arboard",
  "async-trait",
@@ -178,6 +165,19 @@ dependencies = [
  "windows-sys 0.59.0",
  "xa11y",
  "zip",
+]
+
+[[package]]
+name = "alphagrep"
+version = "0.1.6"
+dependencies = [
+ "clap",
+ "globset",
+ "ignore",
+ "regex",
+ "serde",
+ "serde_json",
+ "tempfile",
 ]
 
 [[package]]
@@ -3761,7 +3761,8 @@ dependencies = [
 [[package]]
 name = "mermaid-rs-renderer"
 version = "0.3.1"
-source = "git+https://github.com/1jehuang/mermaid-rs-renderer.git?tag=v0.3.1#2f993bd79a55235eb59a34d807852276ba25bea7"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "6cb5b469222ce6b9896edf0a969cf68464f5a028ef394fd6643f00bd943df117"
 dependencies = [
  "anyhow",
  "clap",

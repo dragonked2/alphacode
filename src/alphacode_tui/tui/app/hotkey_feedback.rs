@@ -108,6 +108,24 @@ pub(super) struct RegistryInputs<'a> {
 pub(super) fn build_registry(inputs: &RegistryInputs<'_>) -> Vec<KnownHotkey> {
     let mut out: Vec<KnownHotkey> = Vec::with_capacity(64);
 
+    // F1 opens/closes the help overlay unconditionally in the key dispatcher, and
+    // is advertised in the composer placeholder and the help overlay, but it is
+    // not a configurable binding — so it never appeared in this registry.
+    // Without it, `note_unrecognized_hotkey` treated a working F1 as an unbound
+    // chord and printed "F1 isn't bound · /help lists shortcuts" while the help
+    // overlay was opening behind the notice. Registering it here also makes it
+    // discoverable through the nearest-binding suggestion and the listing.
+    //
+    // Pushed before the `push` closure below, which captures `out` mutably.
+    out.push(KnownHotkey::new(
+        KeyBinding {
+            code: KeyCode::F(1),
+            modifiers: KeyModifiers::empty(),
+        },
+        "help_overlay",
+        "open or close the help overlay",
+    ));
+
     let mut push = |binding: Option<KeyBinding>, action: &'static str, desc: &'static str| {
         if let Some(binding) = binding {
             out.push(KnownHotkey::new(binding, action, desc));

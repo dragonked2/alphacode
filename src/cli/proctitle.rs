@@ -19,6 +19,7 @@ pub(crate) fn initial_title(args: &Args) -> String {
         Some(Command::Account { .. }) => "alphacode account".to_string(),
         Some(Command::Repl) => "alphacode repl".to_string(),
         Some(Command::Update) => "alphacode update".to_string(),
+        Some(Command::Doctor { .. }) => "alphacode doctor".to_string(),
         Some(Command::Telemetry(_)) => "alphacode telemetry".to_string(),
         Some(Command::Version { .. }) => "alphacode version".to_string(),
         Some(Command::Usage { .. }) => "alphacode usage".to_string(),
