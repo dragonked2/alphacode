@@ -16,8 +16,8 @@ use crate::{
 };
 
 use super::{
-    account, acp, commands, debug, hot_exec, login, output, provider_init, selfdev, terminal,
-    tui_launch,
+    account, acp, commands, debug, doctor, hot_exec, login, output, provider_init, selfdev,
+    terminal, tui_launch,
 };
 use provider_init::ProviderChoice;
 
@@ -274,6 +274,9 @@ pub(crate) async fn run_main(mut args: Args) -> Result<()> {
         }
         Some(Command::Update) => {
             hot_exec::run_update()?;
+        }
+        Some(Command::Doctor { json }) => {
+            doctor::run_doctor(json)?;
         }
         Some(Command::Telemetry(subcmd)) => {
             run_telemetry_command(&subcmd)?;

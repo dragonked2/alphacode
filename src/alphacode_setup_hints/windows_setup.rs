@@ -2,10 +2,29 @@ use super::{SetupHintsState, StartupHints, read_choice};
 use crate::alphacode_config_types::{LaunchHotkeyEntry, LaunchHotkeysConfig};
 use crate::alphacode_setup_hints::windows_hotkeys::{self, WindowsHotkey};
 use crate::alphacode_storage as storage;
-use crate::{terminal_eprint as eprint, terminal_eprintln as eprintln};
 use anyhow::{Context, Result};
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
+
+// Setup banners in this module are written with hard-coded SGR escapes. On a
+// legacy Windows console without virtual-terminal processing -- and in any
+// redirected run, e.g. `alphacode setup 2>log` -- those bytes surface as
+// literal `←[36m` garbage, so every banner goes through the console gate.
+macro_rules! setup_eprintln {
+    () => { crate::terminal_eprintln!() };
+    ($($arg:tt)*) => {{
+        let message = format!($($arg)*);
+        crate::terminal_eprintln!("{}", crate::alphacode_core::console::styled_line(&message));
+    }};
+}
+
+/// Same gate for prompts written without a trailing newline.
+macro_rules! setup_eprint {
+    ($($arg:tt)*) => {{
+        let message = format!($($arg)*);
+        crate::terminal_eprint!("{}", crate::alphacode_core::console::styled_line(&message));
+    }};
+}
 
 fn detect_terminal() -> &'static str {
     if std::env::var("WT_SESSION").is_ok() {
@@ -250,7 +269,7 @@ pub(super) fn uninstall_windows_hotkey_listener() -> Result<()> {
     state.hotkey_configured = false;
     state.hotkey_dismissed = true;
     state.save()?;
-    eprintln!("  \x1b[32m✓\x1b[0m Removed alphacode Windows launch-hotkey listener");
+    setup_eprintln!("  \x1b[32m✓\x1b[0m Removed alphacode Windows launch-hotkey listener");
     Ok(())
 }
 
@@ -291,11 +310,11 @@ fn create_hotkey_shortcut(_use_alacritty: bool) -> Result<()> {
         .creation_flags(CREATE_NO_WINDOW)
         .spawn();
     if let Err(e) = start_output {
-        eprintln!(
+        setup_eprintln!(
             "  \x1b[33m⚠\x1b[0m  Could not start hotkey listener now: {}",
             e
         );
-        eprintln!("    It will start automatically on next login.");
+        setup_eprintln!("    It will start automatically on next login.");
     }
 
     Ok(())
@@ -665,8 +684,8 @@ pub(super) fn refresh_windows_launch_hotkeys() -> Result<()> {
 }
 
 fn install_alacritty() -> Result<()> {
-    eprintln!("  Installing Alacritty via winget...");
-    eprintln!("  (Windows may ask for permission to install)\n");
+    setup_eprintln!("  Installing Alacritty via winget...");
+    setup_eprintln!("  (Windows may ask for permission to install)\n");
 
     let status = std::process::Command::new("winget")
         .args([
@@ -699,53 +718,57 @@ fn nudge_hotkey(state: &mut SetupHintsState) -> bool {
         "Windows Terminal"
     };
 
-    eprintln!("\x1b[36m┌─────────────────────────────────────────────────────────────┐\x1b[0m");
-    eprintln!(
+    setup_eprintln!(
+        "\x1b[36m┌─────────────────────────────────────────────────────────────┐\x1b[0m"
+    );
+    setup_eprintln!(
         "\x1b[36m│\x1b[0m \x1b[1m💡 Set up global keys to launch alphacode?\x1b[0m                  \x1b[36m│\x1b[0m"
     );
-    eprintln!(
+    setup_eprintln!(
         "\x1b[36m│\x1b[0m                                                             \x1b[36m│\x1b[0m"
     );
-    eprintln!(
+    setup_eprintln!(
         "\x1b[36m│\x1b[0m    Creates a global hotkey - no extra software needed.       \x1b[36m│\x1b[0m"
     );
-    eprintln!(
+    setup_eprintln!(
         "\x1b[36m│\x1b[0m    Opens alphacode in {:<39}    \x1b[36m│\x1b[0m",
         format!("{}.", terminal_name)
     );
-    eprintln!(
+    setup_eprintln!(
         "\x1b[36m│\x1b[0m                                                             \x1b[36m│\x1b[0m"
     );
-    eprintln!(
+    setup_eprintln!(
         "\x1b[36m│\x1b[0m    \x1b[32m[y]\x1b[0m Set up   \x1b[90m[n]\x1b[0m Not now   \x1b[90m[d]\x1b[0m Don't ask again        \x1b[36m│\x1b[0m"
     );
-    eprintln!("\x1b[36m└─────────────────────────────────────────────────────────────┘\x1b[0m");
-    eprint!("\x1b[36m  >\x1b[0m ");
+    setup_eprintln!(
+        "\x1b[36m└─────────────────────────────────────────────────────────────┘\x1b[0m"
+    );
+    setup_eprint!("\x1b[36m  >\x1b[0m ");
     let _ = io::stderr().flush();
 
     let choice = read_choice();
 
     match choice.as_str() {
         "y" | "yes" => {
-            eprint!("\n");
+            setup_eprint!("\n");
             match create_hotkey_shortcut(using_alacritty) {
                 Ok(()) => {
                     state.hotkey_configured = true;
                     state.launch_hotkey_tracking_version = super::LAUNCH_HOTKEY_TRACKING_VERSION;
                     let _ = state.save();
-                    eprintln!(
+                    setup_eprintln!(
                         "  \x1b[32m✓\x1b[0m Created hotkeys (\x1b[1mAlt+;\x1b[0m and \x1b[1mCopilot\x1b[0m) → {} + alphacode",
                         terminal_name
                     );
-                    eprintln!();
+                    setup_eprintln!();
                     true
                 }
                 Err(e) => {
-                    eprintln!("  \x1b[31m✗\x1b[0m Failed to create hotkey: {}", e);
-                    eprintln!(
+                    setup_eprintln!("  \x1b[31m✗\x1b[0m Failed to create hotkey: {}", e);
+                    setup_eprintln!(
                         "    You can set it up manually later with: \x1b[1malphacode setup-hotkey\x1b[0m"
                     );
-                    eprintln!();
+                    setup_eprintln!();
                     false
                 }
             }
@@ -772,41 +795,47 @@ fn nudge_alacritty(state: &mut SetupHintsState) -> bool {
         _ => "your current terminal",
     };
 
-    eprintln!("\x1b[36m┌─────────────────────────────────────────────────────────────┐\x1b[0m");
-    eprintln!(
+    setup_eprintln!(
+        "\x1b[36m┌─────────────────────────────────────────────────────────────┐\x1b[0m"
+    );
+    setup_eprintln!(
         "\x1b[36m│\x1b[0m \x1b[1m💡 Alacritty: the fastest terminal for alphacode\x1b[0m               \x1b[36m│\x1b[0m"
     );
-    eprintln!(
+    setup_eprintln!(
         "\x1b[36m│\x1b[0m                                                             \x1b[36m│\x1b[0m"
     );
-    eprintln!(
+    setup_eprintln!(
         "\x1b[36m│\x1b[0m    {:<55} \x1b[36m│\x1b[0m",
         format!("You're using {}.", current_terminal)
     );
-    eprintln!(
+    setup_eprintln!(
         "\x1b[36m│\x1b[0m    Alacritty is GPU-accelerated with the lowest latency.    \x1b[36m│\x1b[0m"
     );
-    eprintln!(
+    setup_eprintln!(
         "\x1b[36m│\x1b[0m                                                             \x1b[36m│\x1b[0m"
     );
-    eprintln!(
+    setup_eprintln!(
         "\x1b[36m│\x1b[0m    \x1b[32m[y]\x1b[0m Install   \x1b[90m[n]\x1b[0m Not now   \x1b[90m[d]\x1b[0m Don't ask again       \x1b[36m│\x1b[0m"
     );
-    eprintln!("\x1b[36m└─────────────────────────────────────────────────────────────┘\x1b[0m");
-    eprint!("\x1b[36m  >\x1b[0m ");
+    setup_eprintln!(
+        "\x1b[36m└─────────────────────────────────────────────────────────────┘\x1b[0m"
+    );
+    setup_eprint!("\x1b[36m  >\x1b[0m ");
     let _ = io::stderr().flush();
 
     let choice = read_choice();
 
     match choice.as_str() {
         "y" | "yes" => {
-            eprint!("\n");
+            setup_eprint!("\n");
             if !is_winget_available() {
-                eprintln!("  \x1b[33m⚠\x1b[0m  winget not found. Install Alacritty manually:");
-                eprintln!("     https://alacritty.org/");
-                eprintln!();
-                eprintln!("     Or install winget first: https://aka.ms/getwinget");
-                eprintln!();
+                setup_eprintln!(
+                    "  \x1b[33m⚠\x1b[0m  winget not found. Install Alacritty manually:"
+                );
+                setup_eprintln!("     https://alacritty.org/");
+                setup_eprintln!();
+                setup_eprintln!("     Or install winget first: https://aka.ms/getwinget");
+                setup_eprintln!();
                 return false;
             }
 
@@ -814,28 +843,31 @@ fn nudge_alacritty(state: &mut SetupHintsState) -> bool {
                 Ok(()) => {
                     state.alacritty_configured = true;
                     let _ = state.save();
-                    eprintln!("  \x1b[32m✓\x1b[0m Alacritty installed!");
+                    setup_eprintln!("  \x1b[32m✓\x1b[0m Alacritty installed!");
 
                     if state.hotkey_configured {
-                        eprintln!("  Updating hotkey to use Alacritty...");
+                        setup_eprintln!("  Updating hotkey to use Alacritty...");
                         match create_hotkey_shortcut(true) {
                             Ok(()) => {
-                                eprintln!(
+                                setup_eprintln!(
                                     "  \x1b[32m✓\x1b[0m Hotkeys updated: \x1b[1mAlt+;\x1b[0m and \x1b[1mCopilot\x1b[0m → Alacritty + alphacode"
                                 );
                             }
                             Err(e) => {
-                                eprintln!("  \x1b[33m⚠\x1b[0m  Could not update hotkey: {}", e);
+                                setup_eprintln!(
+                                    "  \x1b[33m⚠\x1b[0m  Could not update hotkey: {}",
+                                    e
+                                );
                             }
                         }
                     }
-                    eprintln!();
+                    setup_eprintln!();
                     true
                 }
                 Err(e) => {
-                    eprintln!("  \x1b[31m✗\x1b[0m Failed to install Alacritty: {}", e);
-                    eprintln!("    Install manually: https://alacritty.org/");
-                    eprintln!();
+                    setup_eprintln!("  \x1b[31m✗\x1b[0m Failed to install Alacritty: {}", e);
+                    setup_eprintln!("    Install manually: https://alacritty.org/");
+                    setup_eprintln!();
                     false
                 }
             }
@@ -850,32 +882,36 @@ fn nudge_alacritty(state: &mut SetupHintsState) -> bool {
 }
 
 fn prompt_try_it_out(installed_alacritty: bool) {
-    eprintln!("\x1b[32m┌─────────────────────────────────────────────────────────────┐\x1b[0m");
-    eprintln!(
+    setup_eprintln!(
+        "\x1b[32m┌─────────────────────────────────────────────────────────────┐\x1b[0m"
+    );
+    setup_eprintln!(
         "\x1b[32m│\x1b[0m \x1b[1m✨ All set! Try it out:\x1b[0m                                     \x1b[32m│\x1b[0m"
     );
-    eprintln!(
+    setup_eprintln!(
         "\x1b[32m│\x1b[0m                                                             \x1b[32m│\x1b[0m"
     );
-    eprintln!(
+    setup_eprintln!(
         "\x1b[32m│\x1b[0m    Press \x1b[1mAlt+;\x1b[0m or the \x1b[1mCopilot key\x1b[0m to launch alphacode.       \x1b[32m│\x1b[0m"
     );
-    eprintln!(
+    setup_eprintln!(
         "\x1b[32m│\x1b[0m    The listener is native Alphacode, no AutoHotkey required.          \x1b[32m│\x1b[0m"
     );
     if installed_alacritty {
-        eprintln!(
+        setup_eprintln!(
             "\x1b[32m│\x1b[0m    It will open in \x1b[1mAlacritty\x1b[0m for maximum performance.    \x1b[32m│\x1b[0m"
         );
     }
-    eprintln!(
+    setup_eprintln!(
         "\x1b[32m│\x1b[0m                                                             \x1b[32m│\x1b[0m"
     );
-    eprintln!(
+    setup_eprintln!(
         "\x1b[32m│\x1b[0m    \x1b[90m(Starting alphacode normally in 3 seconds...)\x1b[0m                 \x1b[32m│\x1b[0m"
     );
-    eprintln!("\x1b[32m└─────────────────────────────────────────────────────────────┘\x1b[0m");
-    eprintln!();
+    setup_eprintln!(
+        "\x1b[32m└─────────────────────────────────────────────────────────────┘\x1b[0m"
+    );
+    setup_eprintln!();
 
     std::thread::sleep(std::time::Duration::from_secs(3));
 }
@@ -896,10 +932,10 @@ pub(super) fn run_setup_hotkey_windows() -> Result<()> {
     let terminal = detect_terminal();
     let already_using_alacritty = terminal == "alacritty";
 
-    eprintln!("\x1b[1malphacode setup-hotkey\x1b[0m");
-    eprintln!();
+    setup_eprintln!("\x1b[1malphacode setup-hotkey\x1b[0m");
+    setup_eprintln!();
 
-    eprintln!(
+    setup_eprintln!(
         "  Detected terminal: {}",
         match terminal {
             "windows-terminal" => "Windows Terminal",
@@ -910,40 +946,42 @@ pub(super) fn run_setup_hotkey_windows() -> Result<()> {
     );
 
     if is_alacritty_installed() && !already_using_alacritty {
-        eprintln!("  Alacritty: \x1b[32minstalled\x1b[0m");
+        setup_eprintln!("  Alacritty: \x1b[32minstalled\x1b[0m");
     } else if already_using_alacritty {
-        eprintln!("  Alacritty: \x1b[32mactive\x1b[0m");
+        setup_eprintln!("  Alacritty: \x1b[32mactive\x1b[0m");
     } else {
-        eprintln!("  Alacritty: \x1b[90mnot installed\x1b[0m");
+        setup_eprintln!("  Alacritty: \x1b[90mnot installed\x1b[0m");
     }
-    eprintln!();
+    setup_eprintln!();
 
     let mut installed_alacritty = false;
     if !already_using_alacritty && !is_alacritty_installed() {
-        eprintln!(
+        setup_eprintln!(
             "  Alacritty is the fastest terminal emulator (GPU-accelerated, lowest latency)."
         );
-        eprint!("  Install Alacritty? \x1b[32m[y]\x1b[0m/\x1b[90m[n]\x1b[0m: ");
+        setup_eprint!("  Install Alacritty? \x1b[32m[y]\x1b[0m/\x1b[90m[n]\x1b[0m: ");
         let _ = io::stderr().flush();
         let choice = read_choice();
         if choice == "y" || choice == "yes" {
             if !is_winget_available() {
-                eprintln!("\n  \x1b[33m⚠\x1b[0m  winget not found. Install Alacritty manually:");
-                eprintln!("     https://alacritty.org/\n");
+                setup_eprintln!(
+                    "\n  \x1b[33m⚠\x1b[0m  winget not found. Install Alacritty manually:"
+                );
+                setup_eprintln!("     https://alacritty.org/\n");
             } else {
                 match install_alacritty() {
                     Ok(()) => {
                         state.alacritty_configured = true;
                         installed_alacritty = true;
-                        eprintln!("  \x1b[32m✓\x1b[0m Alacritty installed!\n");
+                        setup_eprintln!("  \x1b[32m✓\x1b[0m Alacritty installed!\n");
                     }
                     Err(e) => {
-                        eprintln!("  \x1b[31m✗\x1b[0m Install failed: {}\n", e);
+                        setup_eprintln!("  \x1b[31m✗\x1b[0m Install failed: {}\n", e);
                     }
                 }
             }
         }
-        eprintln!();
+        setup_eprintln!();
     }
 
     let use_alacritty = already_using_alacritty || is_alacritty_installed();
@@ -953,7 +991,7 @@ pub(super) fn run_setup_hotkey_windows() -> Result<()> {
         "Windows Terminal"
     };
 
-    eprintln!(
+    setup_eprintln!(
         "  Setting up global launch hotkeys → {} + alphacode...",
         terminal_name
     );
@@ -963,13 +1001,13 @@ pub(super) fn run_setup_hotkey_windows() -> Result<()> {
             state.hotkey_configured = true;
             state.launch_hotkey_tracking_version = super::LAUNCH_HOTKEY_TRACKING_VERSION;
             let _ = state.save();
-            eprintln!("  \x1b[32m✓\x1b[0m Created launch hotkeys");
-            eprintln!();
-            eprintln!("  Press these anywhere, system-wide:");
+            setup_eprintln!("  \x1b[32m✓\x1b[0m Created launch hotkeys");
+            setup_eprintln!();
+            setup_eprintln!("  Press these anywhere, system-wide:");
             for hk in resolve_windows_hotkeys() {
                 if windows_hotkeys::hotkey_to_win32(&hk).is_some() {
                     let suffix = if hk.self_dev { " [self-dev]" } else { "" };
-                    eprintln!(
+                    setup_eprintln!(
                         "    \x1b[1m{}\x1b[0m → {}{}",
                         windows_hotkeys::display_windows_hotkey(&hk),
                         hk.label,
@@ -977,12 +1015,12 @@ pub(super) fn run_setup_hotkey_windows() -> Result<()> {
                     );
                 }
             }
-            eprintln!();
+            setup_eprintln!();
             super::install_cli_launch_hints_notice();
             prompt_try_it_out(installed_alacritty);
         }
         Err(e) => {
-            eprintln!("  \x1b[31m✗\x1b[0m Failed: {}", e);
+            setup_eprintln!("  \x1b[31m✗\x1b[0m Failed: {}", e);
         }
     }
 

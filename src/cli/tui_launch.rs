@@ -33,19 +33,19 @@ pub async fn run_client() -> Result<()> {
 
     println!(
         "{}",
-        os::colorized("● Connected to Alphacode server", "[38;5;10m")
+        os::colorized("● Connected to Alphacode server", "\u{1b}[38;5;10m")
     );
     println!(
         "{}",
         os::colorized(
             "Type your message, or 'quit' to exit. '/help' is not available in this mode.",
-            "[38;5;247m"
+            "\u{1b}[38;5;247m"
         )
     );
     println!();
 
     loop {
-        print!("{}", os::colorized("› ", "[38;5;45m"));
+        print!("{}", os::colorized("› ", "\u{1b}[38;5;45m"));
         io::stdout().flush()?;
 
         let mut input = String::new();

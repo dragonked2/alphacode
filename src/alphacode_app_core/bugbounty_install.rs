@@ -251,30 +251,135 @@ const GO_TOOLS: &[GoTool] = &[
 const GO_NOTE: &str =
     "installed into the Go bin dir (~/go/bin on Unix, %USERPROFILE%\\go\\bin on Windows)";
 
-/// Non-Go installs, as (binary, family, program, args, note).
-const OTHER_TOOLS: &[(&str, InstallFamily, &str, &[&str], &str)] = &[
+/// Note shown for tools installed through `pipx`.
+const PIPX_NOTE: &str =
+    "pipx isolates the install; --suffix keeps the binary reachable as `sqlmap1_5`";
+
+/// Tools installed with `pipx`, which works the same on every OS.
+const PIPX_TOOLS: &[(&str, &[&str])] = &[("sqlmap", &["install", "sqlmap", "--suffix", "=1_5"])];
+
+/// One package manager's command for a single platform.
+///
+/// A `None` slot in [`NATIVE_TOOLS`] means "we have no installer for this OS".
+/// That is the whole point of the table: `jq` and `nmap` used to be winget-only,
+/// so their auto-install silently did nothing on Linux and macOS while still
+/// reporting success. Naming the command per platform is what makes
+/// "auto-install any missing tool" true on all three.
+#[derive(Clone, Copy)]
+struct PlatformInstall(InstallFamily, &'static str, &'static [&'static str]);
+
+/// Per-platform installer slot used by [`NATIVE_TOOLS`]. The alias exists
+/// because clippy's `type_complexity` rejects spelling the raw four-tuple out
+/// at every use site.
+type PlatformInstallSlot = Option<PlatformInstall>;
+
+/// Tools installed through a system package manager, as
+/// `(binary, windows, macos, linux)`.
+///
+/// We only ever drive a package manager the machine already has — never a
+/// curl-to-shell bootstrap — because an unattended installer we cannot inspect
+/// is one we should not run. `ripgrep` leads the list: `rg` is a standard tool
+/// for agent search workflows, and it is commonly absent on a fresh Windows
+/// install or a minimal Linux image.
+const NATIVE_TOOLS: &[(
+    &str,
+    PlatformInstallSlot,
+    PlatformInstallSlot,
+    PlatformInstallSlot,
+)] = &[
     (
-        "sqlmap",
-        InstallFamily::Python,
-        "pipx",
-        &["install", "sqlmap", "--suffix", "=1_5"],
-        "pipx isolates the install; --suffix keeps the binary reachable as `sqlmap1_5`",
+        "rg",
+        Some(PlatformInstall(
+            InstallFamily::Winget,
+            "winget",
+            &[
+                "install",
+                "--id",
+                "BurntSushi.ripgrep.MSVC",
+                "-e",
+                "--accept-source-agreements",
+                "--accept-package-agreements",
+            ],
+        )),
+        Some(PlatformInstall(
+            InstallFamily::Brew,
+            "brew",
+            &["install", "ripgrep"],
+        )),
+        Some(PlatformInstall(
+            InstallFamily::Apt,
+            "apt-get",
+            &["install", "-y", "ripgrep"],
+        )),
     ),
     (
         "jq",
-        InstallFamily::Winget,
-        "winget",
-        &["install", "--id", "jqlang.jq", "-e"],
-        "",
+        Some(PlatformInstall(
+            InstallFamily::Winget,
+            "winget",
+            &["install", "--id", "jqlang.jq", "-e"],
+        )),
+        Some(PlatformInstall(
+            InstallFamily::Brew,
+            "brew",
+            &["install", "jq"],
+        )),
+        Some(PlatformInstall(
+            InstallFamily::Apt,
+            "apt-get",
+            &["install", "-y", "jq"],
+        )),
     ),
     (
         "nmap",
-        InstallFamily::Winget,
-        "winget",
-        &["install", "--id", "Insecure.Nmap", "-e"],
-        "",
+        Some(PlatformInstall(
+            InstallFamily::Winget,
+            "winget",
+            &["install", "--id", "Insecure.Nmap", "-e"],
+        )),
+        Some(PlatformInstall(
+            InstallFamily::Brew,
+            "brew",
+            &["install", "nmap"],
+        )),
+        Some(PlatformInstall(
+            InstallFamily::Apt,
+            "apt-get",
+            &["install", "-y", "nmap"],
+        )),
     ),
 ];
+
+/// The install step for `binary` on the running OS, if we have one.
+fn resolve_install(binary: &str) -> Option<InstallStep> {
+    if let Some((name, args)) = PIPX_TOOLS.iter().find(|(b, _)| *b == binary) {
+        return Some(InstallStep {
+            binary: name,
+            family: InstallFamily::Python,
+            program: "pipx".to_string(),
+            args: args.iter().map(|a| (*a).to_string()).collect(),
+            note: PIPX_NOTE,
+        });
+    }
+
+    let entry = NATIVE_TOOLS.iter().find(|(b, ..)| *b == binary)?;
+    let (name, windows, macos, linux) = *entry;
+    let platform = if cfg!(windows) {
+        windows
+    } else if cfg!(target_os = "macos") {
+        macos
+    } else {
+        linux
+    };
+    let PlatformInstall(family, program, args) = platform?;
+    Some(InstallStep {
+        binary: name,
+        family,
+        program: program.to_string(),
+        args: args.iter().map(|a| (*a).to_string()).collect(),
+        note: "",
+    })
+}
 
 /// Resolve how to install `binary`, or `None` if it is not installable by us.
 ///
@@ -292,16 +397,7 @@ pub fn plan_for(binary: &str) -> Option<InstallStep> {
             note: GO_NOTE,
         });
     }
-    OTHER_TOOLS
-        .iter()
-        .find(|(b, ..)| *b == binary)
-        .map(|(b, family, program, args, note)| InstallStep {
-            binary: b,
-            family: *family,
-            program: (*program).to_string(),
-            args: args.iter().map(|a| (*a).to_string()).collect(),
-            note,
-        })
+    resolve_install(binary)
 }
 
 /// All binaries that [`plan_for`] can install, in `TOOL_SPECS` order.
@@ -737,6 +833,49 @@ mod tests {
         // curl ships with the OS; auto-installing it on Windows would fight
         // the built-in System32 copy.
         assert!(plan_for("curl").is_none());
+    }
+
+    #[test]
+    fn native_tools_have_an_installer_on_every_platform() {
+        // The bug this pins: `jq` and `nmap` used to be winget-only, so
+        // `plan_for` returned `Some` on Windows but silently resolved to a
+        // winget command on Linux/macOS too — and the install did nothing.
+        // Every native tool must now name a package manager for all three OSes.
+        for (binary, windows, macos, linux) in NATIVE_TOOLS {
+            for (label, slot) in [("windows", windows), ("macos", macos), ("linux", linux)] {
+                let PlatformInstall(family, program, args) =
+                    slot.unwrap_or_else(|| panic!("{binary} has no {label} installer"));
+                assert!(!program.is_empty(), "{binary}/{label} has an empty program");
+                assert!(!args.is_empty(), "{binary}/{label} has no arguments");
+                // The family and the program must agree, otherwise the
+                // prerequisite probe checks for the wrong binary.
+                assert_eq!(
+                    family.prerequisite_binary(),
+                    Some(program),
+                    "{binary}/{label}: family {family:?} does not match program {program}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn ripgrep_resolves_to_a_platform_installer() {
+        let step = plan_for("rg").expect("rg must be installable");
+        assert_eq!(step.binary, "rg", "rg plan reports the wrong binary");
+        // cmd.exe treats `rg` as a console app with no glob expansion; the
+        // family tells the installer which package manager to drive.
+        let expected = if cfg!(windows) {
+            InstallFamily::Winget
+        } else if cfg!(target_os = "macos") {
+            InstallFamily::Brew
+        } else {
+            InstallFamily::Apt
+        };
+        assert_eq!(step.family, expected, "rg install family for this OS");
+        assert!(
+            step.family.prerequisite_binary() == Some(step.program.as_str()),
+            "rg plan drives a package manager that does not match its family"
+        );
     }
 
     #[test]

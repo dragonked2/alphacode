@@ -1667,7 +1667,7 @@ mod tests {
         let messages = vec![
             user_text("tell me about the desktop application"),
             tool_result("functions.read:0", "desktop architecture docs"),
-            tool_result("functions.agentgrep:4", "desktop source summary"),
+            tool_result("functions.alphagrep:4", "desktop source summary"),
         ];
 
         assert!(Agent::messages_end_with_tool_result(&messages));

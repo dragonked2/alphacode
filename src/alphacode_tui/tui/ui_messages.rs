@@ -485,11 +485,11 @@ fn render_plaintext_lines(content: &str, wrap_width: usize) -> Vec<Line<'static>
     lines
 }
 
-/// Render the full agentgrep tool output inline beneath the tool summary line.
+/// Render the full alphagrep tool output inline beneath the tool summary line.
 /// Each output line is prefixed with a dim left border and indented so it reads
 /// as a nested block. Long lines are hard-split to the available width and the
 /// block is capped so a giant search result cannot flood the transcript.
-fn render_agentgrep_output_body(content: &str, row_width: usize) -> Vec<Line<'static>> {
+fn render_alphagrep_output_body(content: &str, row_width: usize) -> Vec<Line<'static>> {
     const MAX_BODY_LINES: usize = 400;
     let border = "    │ ";
     let border_width = UnicodeWidthStr::width(border);
@@ -4092,14 +4092,14 @@ pub(crate) fn render_tool_message(
         lines.extend(discovery_lines);
     }
 
-    // Optionally render the full agentgrep search output inline in the
-    // transcript. Gated behind `display.show_agentgrep_output` (default false)
+    // Optionally render the full alphagrep search output inline in the
+    // transcript. Gated behind `display.show_alphagrep_output` (default false)
     // so most users keep the compact one-line summary.
-    if tools_ui::canonical_tool_name(&tc.name) == "agentgrep"
-        && crate::config::config().display.show_agentgrep_output
+    if tools_ui::canonical_tool_name(&tc.name) == "alphagrep"
+        && crate::config::config().display.show_alphagrep_output
         && !msg.content.trim().is_empty()
     {
-        for line in render_agentgrep_output_body(&msg.content, row_width) {
+        for line in render_alphagrep_output_body(&msg.content, row_width) {
             lines.push(line);
         }
     }
@@ -4196,7 +4196,7 @@ pub(crate) fn render_tool_message(
     }
 
     // Inline output previews for the other everyday tools (read / glob /
-    // grep / agentgrep). Previously only bash and (config-gated) agentgrep
+    // grep / alphagrep). Previously only bash and (config-gated) alphagrep
     // showed any body at all, so a file read or a search landed as a single
     // summary line and users had to pin or expand to see what the agent saw.
     // Now each gets a friendly bounded preview with an explicit remainder
@@ -4207,9 +4207,9 @@ pub(crate) fn render_tool_message(
         const INLINE_PREVIEW_LINES: usize = 24;
         const INLINE_PREVIEW_MAX_CHARS: usize = 12_000;
         let tool_key = tools_ui::canonical_tool_name(&tc.name);
-        let show_inline_body = matches!(tool_key, "read" | "glob" | "grep" | "agentgrep")
-            // agentgrep has its own dedicated renderer below when enabled.
-            && !(tool_key == "agentgrep" && crate::config::config().display.show_agentgrep_output);
+        let show_inline_body = matches!(tool_key, "read" | "glob" | "grep" | "alphagrep")
+            // alphagrep has its own dedicated renderer below when enabled.
+            && !(tool_key == "alphagrep" && crate::config::config().display.show_alphagrep_output);
         if show_inline_body {
             let body = msg.content.trim();
             let line_count = body.lines().count();

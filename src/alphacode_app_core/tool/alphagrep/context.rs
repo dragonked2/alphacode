@@ -1,7 +1,7 @@
 use super::*;
 
 pub(super) fn maybe_write_context_json(
-    params: &AgentGrepInput,
+    params: &AlphaGrepInput,
     ctx: &ToolContext,
 ) -> Result<Option<PathBuf>> {
     if !matches!(params.mode.as_str(), "trace" | "smart" | "outline") {
@@ -15,7 +15,7 @@ pub(super) fn maybe_write_context_json(
 
     let mut path = storage::runtime_dir();
     path.push(format!(
-        "alphacode-agentgrep-context-{}-{}.json",
+        "alphacode-alphagrep-context-{}-{}.json",
         ctx.session_id, ctx.tool_call_id
     ));
     if let Some(parent) = path.parent() {
@@ -26,9 +26,9 @@ pub(super) fn maybe_write_context_json(
 }
 
 fn build_harness_context(
-    params: &AgentGrepInput,
+    params: &AlphaGrepInput,
     ctx: &ToolContext,
-) -> Option<AgentGrepHarnessContext> {
+) -> Option<AlphaGrepHarnessContext> {
     let session = Session::load(&ctx.session_id).ok()?;
     let observations = collect_tool_exposures(&session);
     let search_root = params
@@ -43,7 +43,7 @@ fn build_harness_context(
         .map(|state| state.covers_up_to_turn.min(total_messages));
     let mut file_mtime_cache = HashMap::new();
 
-    let mut context = AgentGrepHarnessContext {
+    let mut context = AlphaGrepHarnessContext {
         version: 1,
         ..Default::default()
     };
@@ -66,7 +66,7 @@ fn build_harness_context(
                 exposure,
                 &mut file_mtime_cache,
             ),
-            "agentgrep" => collect_agentgrep_exposure(
+            "alphagrep" => collect_alphagrep_exposure(
                 &observation.tool,
                 &observation.content,
                 &search_root,
@@ -159,7 +159,7 @@ fn collect_read_exposure(
     tool: &ToolCall,
     search_root: &Path,
     ctx: &ToolContext,
-    context: &mut AgentGrepHarnessContext,
+    context: &mut AlphaGrepHarnessContext,
     focus: &mut HashSet<String>,
     exposure: ExposureDescriptor,
     file_mtime_cache: &mut HashMap<String, Option<DateTime<Utc>>>,
@@ -173,7 +173,7 @@ fn collect_read_exposure(
     let (start_line, end_line) = normalize_read_range_from_tool_input(&tool.input);
     focus.insert(path.clone());
     let region = tune_known_region(
-        AgentGrepKnownRegion {
+        AlphaGrepKnownRegion {
             path: path.clone(),
             start_line,
             end_line,
@@ -190,7 +190,7 @@ fn collect_read_exposure(
     );
     push_known_region(context, region);
     let file = tune_known_file(
-        AgentGrepKnownFile {
+        AlphaGrepKnownFile {
             path,
             structure_confidence: 0.55,
             body_confidence: 0.45,
@@ -209,14 +209,14 @@ fn collect_read_exposure(
 
 #[expect(
     clippy::too_many_arguments,
-    reason = "agentgrep exposure collection needs tool payload, content, search root, context, focus set, exposure metadata, and mtime cache"
+    reason = "alphagrep exposure collection needs tool payload, content, search root, context, focus set, exposure metadata, and mtime cache"
 )]
-fn collect_agentgrep_exposure(
+fn collect_alphagrep_exposure(
     tool: &ToolCall,
     content: &str,
     search_root: &Path,
     ctx: &ToolContext,
-    context: &mut AgentGrepHarnessContext,
+    context: &mut AlphaGrepHarnessContext,
     focus: &mut HashSet<String>,
     exposure: ExposureDescriptor,
     file_mtime_cache: &mut HashMap<String, Option<DateTime<Utc>>>,
@@ -239,14 +239,14 @@ fn collect_agentgrep_exposure(
             };
             focus.insert(path.clone());
             let known = tune_known_file(
-                AgentGrepKnownFile {
+                AlphaGrepKnownFile {
                     path: path.clone(),
                     structure_confidence: 0.95,
                     body_confidence: 0.15,
                     current_version_confidence: 0.82,
                     prune_confidence: 0.86,
                     source_strength: "outline_only",
-                    reasons: vec!["agentgrep_outline_result"],
+                    reasons: vec!["alphagrep_outline_result"],
                 },
                 exposure,
                 search_root,
@@ -293,7 +293,7 @@ pub(super) fn collect_bash_exposure(
     content: &str,
     search_root: &Path,
     ctx: &ToolContext,
-    context: &mut AgentGrepHarnessContext,
+    context: &mut AlphaGrepHarnessContext,
     focus: &mut HashSet<String>,
     exposure: ExposureDescriptor,
     file_mtime_cache: &mut HashMap<String, Option<DateTime<Utc>>>,
@@ -309,7 +309,7 @@ pub(super) fn collect_bash_exposure(
         let (path, start_line, end_line) = path;
         focus.insert(path.clone());
         let region = tune_known_region(
-            AgentGrepKnownRegion {
+            AlphaGrepKnownRegion {
                 path,
                 start_line,
                 end_line,
@@ -337,7 +337,7 @@ pub(super) fn collect_bash_exposure(
         };
         focus.insert(path.clone());
         let known = tune_known_file(
-            AgentGrepKnownFile {
+            AlphaGrepKnownFile {
                 path,
                 structure_confidence: 0.5,
                 body_confidence: 0.72,
@@ -414,7 +414,7 @@ fn normalize_read_range_from_tool_input(input: &Value) -> (usize, usize) {
 fn collect_outline_symbols(
     content: &str,
     path: &str,
-    context: &mut AgentGrepHarnessContext,
+    context: &mut AlphaGrepHarnessContext,
     exposure: ExposureDescriptor,
     search_root: &Path,
     ctx: &ToolContext,
@@ -422,7 +422,7 @@ fn collect_outline_symbols(
 ) {
     for (kind, label, _start_line, _end_line) in parse_structure_items(content) {
         let symbol = tune_known_symbol(
-            AgentGrepKnownSymbol {
+            AlphaGrepKnownSymbol {
                 path: path.to_string(),
                 symbol: label,
                 kind: Some(kind),
@@ -431,7 +431,7 @@ fn collect_outline_symbols(
                 current_version_confidence: 0.82,
                 prune_confidence: 0.8,
                 source_strength: "outline_only",
-                reasons: vec!["agentgrep_outline_structure"],
+                reasons: vec!["alphagrep_outline_structure"],
             },
             exposure,
             search_root,
@@ -446,7 +446,7 @@ pub(super) fn collect_trace_exposure(
     content: &str,
     search_root: &Path,
     ctx: &ToolContext,
-    context: &mut AgentGrepHarnessContext,
+    context: &mut AlphaGrepHarnessContext,
     focus: &mut HashSet<String>,
     exposure: ExposureDescriptor,
     file_mtime_cache: &mut HashMap<String, Option<DateTime<Utc>>>,
@@ -465,14 +465,14 @@ pub(super) fn collect_trace_exposure(
             current_file = Some(path.clone());
             focus.insert(path.clone());
             let known = tune_known_file(
-                AgentGrepKnownFile {
+                AlphaGrepKnownFile {
                     path,
                     structure_confidence: 0.72,
                     body_confidence: 0.2,
                     current_version_confidence: 0.78,
                     prune_confidence: 0.62,
                     source_strength: "trace_summary",
-                    reasons: vec!["agentgrep_trace_file"],
+                    reasons: vec!["alphagrep_trace_file"],
                 },
                 exposure,
                 search_root,
@@ -512,7 +512,7 @@ pub(super) fn collect_trace_exposure(
             if let Some((kind, label, _start_line, _end_line)) = parse_structure_item_line(trimmed)
             {
                 let symbol = tune_known_symbol(
-                    AgentGrepKnownSymbol {
+                    AlphaGrepKnownSymbol {
                         path: file_path,
                         symbol: label,
                         kind: Some(kind),
@@ -521,7 +521,7 @@ pub(super) fn collect_trace_exposure(
                         current_version_confidence: 0.78,
                         prune_confidence: 0.66,
                         source_strength: "trace_structure",
-                        reasons: vec!["agentgrep_trace_structure"],
+                        reasons: vec!["alphagrep_trace_structure"],
                     },
                     exposure,
                     search_root,
@@ -542,7 +542,7 @@ pub(super) fn collect_trace_exposure(
                     end_line,
                 });
                 let symbol = tune_known_symbol(
-                    AgentGrepKnownSymbol {
+                    AlphaGrepKnownSymbol {
                         path: file_path,
                         symbol: label,
                         kind: None,
@@ -551,7 +551,7 @@ pub(super) fn collect_trace_exposure(
                         current_version_confidence: 0.8,
                         prune_confidence: 0.68,
                         source_strength: "trace_region",
-                        reasons: vec!["agentgrep_trace_region_header"],
+                        reasons: vec!["alphagrep_trace_region_header"],
                     },
                     exposure,
                     search_root,
@@ -586,7 +586,7 @@ pub(super) fn collect_trace_exposure(
                     }
                 };
                 let region = tune_known_region(
-                    AgentGrepKnownRegion {
+                    AlphaGrepKnownRegion {
                         path: region.path,
                         start_line: region.start_line,
                         end_line: region.end_line,
@@ -594,7 +594,7 @@ pub(super) fn collect_trace_exposure(
                         current_version_confidence: profile.current_version_confidence,
                         prune_confidence: profile.prune_confidence,
                         source_strength: profile.source_strength,
-                        reasons: vec!["agentgrep_trace_region_body"],
+                        reasons: vec!["alphagrep_trace_region_body"],
                     },
                     exposure,
                     search_root,
@@ -611,7 +611,7 @@ fn collect_shell_output_path_exposure(
     content: &str,
     search_root: &Path,
     ctx: &ToolContext,
-    context: &mut AgentGrepHarnessContext,
+    context: &mut AlphaGrepHarnessContext,
     focus: &mut HashSet<String>,
     exposure: ExposureDescriptor,
     file_mtime_cache: &mut HashMap<String, Option<DateTime<Utc>>>,
@@ -622,7 +622,7 @@ fn collect_shell_output_path_exposure(
         };
         focus.insert(path.clone());
         let file = tune_known_file(
-            AgentGrepKnownFile {
+            AlphaGrepKnownFile {
                 path: path.clone(),
                 structure_confidence: 0.28,
                 body_confidence: 0.22,
@@ -638,7 +638,7 @@ fn collect_shell_output_path_exposure(
         );
         push_known_file(context, file);
         let region = tune_known_region(
-            AgentGrepKnownRegion {
+            AlphaGrepKnownRegion {
                 path,
                 start_line: line_number,
                 end_line: line_number,
@@ -658,12 +658,12 @@ fn collect_shell_output_path_exposure(
 }
 
 pub(super) fn tune_known_file(
-    mut known: AgentGrepKnownFile,
+    mut known: AlphaGrepKnownFile,
     exposure: ExposureDescriptor,
     search_root: &Path,
     ctx: &ToolContext,
     file_mtime_cache: &mut HashMap<String, Option<DateTime<Utc>>>,
-) -> AgentGrepKnownFile {
+) -> AlphaGrepKnownFile {
     apply_exposure_tuning(
         Some(&mut known.structure_confidence),
         &mut known.body_confidence,
@@ -680,12 +680,12 @@ pub(super) fn tune_known_file(
 }
 
 pub(super) fn tune_known_region(
-    mut known: AgentGrepKnownRegion,
+    mut known: AlphaGrepKnownRegion,
     exposure: ExposureDescriptor,
     search_root: &Path,
     ctx: &ToolContext,
     file_mtime_cache: &mut HashMap<String, Option<DateTime<Utc>>>,
-) -> AgentGrepKnownRegion {
+) -> AlphaGrepKnownRegion {
     apply_exposure_tuning(
         None,
         &mut known.body_confidence,
@@ -702,12 +702,12 @@ pub(super) fn tune_known_region(
 }
 
 fn tune_known_symbol(
-    mut known: AgentGrepKnownSymbol,
+    mut known: AlphaGrepKnownSymbol,
     exposure: ExposureDescriptor,
     search_root: &Path,
     ctx: &ToolContext,
     file_mtime_cache: &mut HashMap<String, Option<DateTime<Utc>>>,
-) -> AgentGrepKnownSymbol {
+) -> AlphaGrepKnownSymbol {
     apply_exposure_tuning(
         Some(&mut known.structure_confidence),
         &mut known.body_confidence,
@@ -828,7 +828,7 @@ fn file_modified_at(path: &str, search_root: &Path, ctx: &ToolContext) -> Option
     Some(DateTime::<Utc>::from(modified))
 }
 
-fn push_known_file(context: &mut AgentGrepHarnessContext, known: AgentGrepKnownFile) {
+fn push_known_file(context: &mut AlphaGrepHarnessContext, known: AlphaGrepKnownFile) {
     if let Some(existing) = context
         .known_files
         .iter_mut()
@@ -848,7 +848,7 @@ fn push_known_file(context: &mut AgentGrepHarnessContext, known: AgentGrepKnownF
     context.known_files.push(known);
 }
 
-fn push_known_region(context: &mut AgentGrepHarnessContext, known: AgentGrepKnownRegion) {
+fn push_known_region(context: &mut AlphaGrepHarnessContext, known: AlphaGrepKnownRegion) {
     if let Some(existing) = context.known_regions.iter_mut().find(|entry| {
         entry.path == known.path
             && entry.start_line == known.start_line
@@ -865,7 +865,7 @@ fn push_known_region(context: &mut AgentGrepHarnessContext, known: AgentGrepKnow
     context.known_regions.push(known);
 }
 
-fn push_known_symbol(context: &mut AgentGrepHarnessContext, known: AgentGrepKnownSymbol) {
+fn push_known_symbol(context: &mut AlphaGrepHarnessContext, known: AlphaGrepKnownSymbol) {
     if let Some(existing) = context.known_symbols.iter_mut().find(|entry| {
         entry.path == known.path && entry.symbol == known.symbol && entry.kind == known.kind
     }) {

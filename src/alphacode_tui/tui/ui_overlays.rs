@@ -322,8 +322,8 @@ pub(super) fn draw_help_overlay(frame: &mut Frame, area: Rect, scroll: usize, ap
         "Collapse swarm/file-activity notifications to one line",
     ));
     lines.push(help_entry(
-        "/show-agentgrep-output [status|on|off]",
-        "Render full agentgrep search output inline in chat",
+        "/show-alphagrep-output [status|on|off]",
+        "Render full alphagrep search output inline in chat",
     ));
     lines.push(help_entry("/config", "Show active configuration"));
     lines.push(help_entry(
@@ -432,14 +432,6 @@ pub(super) fn draw_help_overlay(frame: &mut Frame, area: Rect, scroll: usize, ap
     lines.push(help_entry(
         "/active",
         "Manage live sessions: see which are working vs ready",
-    ));
-    lines.push(help_entry(
-        "/catchup [next]",
-        "Jump into finished sessions with a side-panel brief",
-    ));
-    lines.push(help_entry(
-        "/back",
-        "Return to the previous Catch Up session",
     ));
     lines.push(help_entry("/save [label]", "Bookmark session for /resume"));
     lines.push(help_entry(

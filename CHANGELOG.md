@@ -600,7 +600,7 @@ adheres to [Semantic Versioning](https://semver.org/).
   and then listed the `/account … ` commands you would have to type by hand,
   which is the complaint on issue #6. `/config ui` now opens an interactive
   overlay — arrow keys to move, Space/Enter to toggle, Esc to close — covering
-  compact notifications, pinned todos, centered output, agentgrep output, and
+  compact notifications, pinned todos, centered output, alphagrep output, and
   tool-call detail. Every row persists through the same `Config` setter the typed
   commands use, so the two paths cannot drift, and the change applies on the
   next frame without a restart. Failed writes are reported in the overlay rather

@@ -83,10 +83,10 @@ pub struct DisplayConfig {
     pub compact_notifications: bool,
     /// Override the Alt/Option label shown in copy badges. Empty = auto (⌥ on macOS, Alt elsewhere).
     pub copy_badge_alt_label: String,
-    /// Show the full agentgrep tool output inline in the transcript instead of
-    /// just the one-line summary (default: false)
+    /// Show the full alphagrep tool output inline in the transcript instead of
+    /// just the one-line summary (default: false).
     #[serde(default)]
-    pub show_agentgrep_output: bool,
+    pub show_alphagrep_output: bool,
     /// Show the dimmed technical detail (command, path, args) after the
     /// model-provided intent on tool rows (default: false). When off, rows
     /// that have an intent show only the intent; rows without an intent
@@ -173,7 +173,7 @@ impl Default for DisplayConfig {
             redraw_fps: 60,
             compact_notifications: false,
             copy_badge_alt_label: String::new(),
-            show_agentgrep_output: false,
+            show_alphagrep_output: false,
             tool_call_details: true,
             native_scrollbars: NativeScrollbarConfig::default(),
             keybinding_hints: true,

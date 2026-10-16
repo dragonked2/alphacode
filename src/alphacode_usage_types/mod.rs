@@ -83,7 +83,7 @@ pub fn classify_telemetry_tool_category(name: &str) -> TelemetryToolCategory {
         "read"
         | "glob"
         | "grep"
-        | "agentgrep"
+        | "alphagrep"
         | "ls"
         | "conversation_search"
         | "session_search" => TelemetryToolCategory::ReadSearch,
@@ -731,7 +731,7 @@ mod telemetry_helper_tests {
     #[test]
     fn classifies_known_tool_categories() {
         assert_eq!(
-            classify_telemetry_tool_category("agentgrep"),
+            classify_telemetry_tool_category("alphagrep"),
             TelemetryToolCategory::ReadSearch
         );
         assert_eq!(

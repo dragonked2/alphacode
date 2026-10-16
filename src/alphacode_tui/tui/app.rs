@@ -30,7 +30,7 @@ use futures::StreamExt;
 use helpers::*;
 use ratatui::DefaultTerminal;
 use std::cell::RefCell;
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::hash::{Hash, Hasher};
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -696,6 +696,69 @@ struct CommandSuggestionsSignature {
     inline_preview_kind: Option<crate::alphacode_tui::tui::PickerKind>,
 }
 
+/// In-memory recency/frequency memory for slash commands.
+///
+/// [`App::rank_suggestions`] uses it as a tiebreak so the command palette
+/// surfaces the commands a user actually runs instead of falling back to
+/// length/alphabetical order. Only the first token of an executed input line
+/// is recorded, so `/rewind 3` credits `/rewind`. State is per-session:
+/// nothing is persisted, so rankings start empty on every launch.
+#[derive(Clone, Debug, Default)]
+struct CommandUsageTracker {
+    next_seq: u64,
+    usage: HashMap<String, CommandUsage>,
+}
+
+#[derive(Clone, Copy, Debug)]
+struct CommandUsage {
+    uses: u32,
+    last_seq: u64,
+}
+
+impl CommandUsageTracker {
+    /// Upper bound on distinct remembered tokens. Tokens that never match a
+    /// palette candidate cannot affect ranking, so eviction is invisible in
+    /// practice; the cap only stops a pathological session from growing the
+    /// map without bound.
+    const MAX_TRACKED: usize = 128;
+
+    /// Record one executed input line so its first token is favoured later.
+    fn record_line(&mut self, trimmed: &str) {
+        let Some(name) = trimmed.split_whitespace().next() else {
+            return;
+        };
+        if !name.starts_with('/') {
+            return;
+        }
+        self.next_seq = self.next_seq.wrapping_add(1);
+        let entry = self.usage.entry(name.to_string()).or_insert(CommandUsage {
+            uses: 0,
+            last_seq: 0,
+        });
+        entry.uses = entry.uses.saturating_add(1);
+        entry.last_seq = self.next_seq;
+        if self.usage.len() > Self::MAX_TRACKED
+            && let Some(oldest) = self
+                .usage
+                .iter()
+                .min_by_key(|(_, usage)| usage.last_seq)
+                .map(|(name, _)| name.clone())
+        {
+            self.usage.remove(&oldest);
+        }
+    }
+
+    /// Ranking weight for a candidate. `None` means "never used" and sorts
+    /// last; otherwise the more recent use wins and the use count breaks ties
+    /// (the pair is compared together, newest wins first).
+    fn rank(&self, candidate: &str) -> Option<(u64, u32)> {
+        let name = candidate.split_whitespace().next()?;
+        self.usage
+            .get(name)
+            .map(|usage| (usage.last_seq, usage.uses))
+    }
+}
+
 /// Session-wide token and cache accounting accumulated across all turns.
 ///
 /// Grouped out of [`App`] to keep the cohesive token/cache totals together. The
@@ -927,6 +990,9 @@ pub struct App {
     /// Monotonic frame counter bounding the lifetime of
     /// `command_suggestions_cache` to a single frame.
     command_suggestions_epoch: std::cell::Cell<u64>,
+    /// Recency/frequency memory behind the palette ranking tiebreak; see
+    /// [`CommandUsageTracker`].
+    command_usage: CommandUsageTracker,
     cursor_pos: usize,
     scroll_offset: usize,
     /// Pauses auto-scroll when user scrolls up during streaming

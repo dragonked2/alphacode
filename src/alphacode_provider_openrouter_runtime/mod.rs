@@ -270,12 +270,17 @@ fn initial_model_for_runtime(
     }
 
     // Hosted OpenRouter has a stable default; nothing better to fall back on.
-    // `zip` keeps this strict: two endpoints that both fail to normalize are
-    // not the same endpoint, so an unparseable `api_base` must not match.
-    let on_hosted_openrouter = profile_id.is_none()
-        && normalize_api_base(api_base)
-            .zip(normalize_api_base(DEFAULT_API_BASE))
-            .is_some_and(|(candidate, hosted)| candidate == hosted);
+    // The hosted base also maps to the synthetic "openrouter" profile (cache
+    // namespace / provider-doctor identity), so requiring `profile_id` to be
+    // `None` here disabled the fallback for the normal startup path: with only
+    // `OPENROUTER_API_KEY` set nothing autodetects, the base maps to
+    // "openrouter", and construction failed with "no model is configured".
+    // `zip` keeps the endpoint comparison strict: two endpoints that both fail
+    // to normalize are not the same endpoint, so an unparseable `api_base`
+    // must not match the hosted default.
+    let on_hosted_openrouter = normalize_api_base(api_base)
+        .zip(normalize_api_base(DEFAULT_API_BASE))
+        .is_some_and(|(candidate, hosted)| candidate == hosted);
     if on_hosted_openrouter {
         return Ok(DEFAULT_MODEL.to_string());
     }
@@ -3494,7 +3499,7 @@ mod initial_model_tests {
     /// does not serve.
     #[test]
     fn local_endpoint_with_nothing_configured_does_not_borrow_a_remote_default() {
-        let result = initial_model_for_runtime(None, None, &SOME_MODELS, LOCAL, Some("ollama"));
+        let result = initial_model_for_runtime(None, None, SOME_MODELS, LOCAL, Some("ollama"));
         let error = result.expect_err("a local endpoint with no model must not silently pick one");
         let message = error.to_string();
         assert!(
@@ -3568,7 +3573,7 @@ mod initial_model_tests {
     #[test]
     fn hosted_openrouter_still_gets_its_default() {
         assert_eq!(
-            initial_model_for_runtime(None, None, &SOME_MODELS, DEFAULT_API_BASE, None)
+            initial_model_for_runtime(None, None, SOME_MODELS, DEFAULT_API_BASE, None)
                 .expect("hosted OpenRouter has a well-known default"),
             DEFAULT_MODEL
         );
@@ -3579,7 +3584,7 @@ mod initial_model_tests {
     #[test]
     fn non_openrouter_endpoint_does_not_get_the_openrouter_default() {
         assert!(
-            initial_model_for_runtime(None, None, &SOME_MODELS, "https://relay.example/v1", None)
+            initial_model_for_runtime(None, None, SOME_MODELS, "https://relay.example/v1", None)
                 .is_err(),
             "an arbitrary relay must not be told to use an Anthropic model"
         );

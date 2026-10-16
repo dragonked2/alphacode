@@ -96,11 +96,10 @@ pub const INTERNAL_ROUTING_ENV_VARS: &[&str] = &[
     "ALPHACODE_OPENROUTER_CACHE_NAMESPACE",
     "ALPHACODE_OPENROUTER_NO_FALLBACK",
     "ALPHACODE_OPENROUTER_ALLOW_NO_AUTH",
-    "ALPHACODE_OPENROUTER_AUTH_HEADER",
-    "ALPHACODE_OPENROUTER_AUTH_HEADER_NAME",
-    "ALPHACODE_OPENROUTER_DYNAMIC_BEARER_PROVIDER",
     "ALPHACODE_CROSS_PROVIDER_FAILOVER",
     "ALPHACODE_SAME_PROVIDER_ACCOUNT_FAILOVER",
+    // Auth-header configuration lives in ALPHACODE_CREDENTIAL_ENV_VARS, not
+    // here, because those values carry a bearer credential.
     // Catalog / bootstrap routing state
     "ALPHACODE_REMOTE_BOOTSTRAP_MODEL_CATALOG",
     "ALPHACODE_DISABLE_CATALOG_REFRESH",
@@ -191,7 +190,8 @@ mod tests {
 
     #[test]
     fn routing_list_has_no_duplicates_and_no_blank_keys() {
-        let mut seen = std::collections::HashSet::new();
+        use std::collections::HashSet;
+        let mut seen = HashSet::new();
         for key in INTERNAL_ROUTING_ENV_VARS {
             assert!(!key.trim().is_empty(), "blank routing env key");
             assert!(
@@ -231,7 +231,8 @@ mod tests {
 
     #[test]
     fn credential_list_is_alpha_owned_and_secret_bearing() {
-        let mut seen = std::collections::HashSet::new();
+        use std::collections::HashSet;
+        let mut seen = HashSet::new();
         for key in ALPHACODE_CREDENTIAL_ENV_VARS {
             assert!(
                 key.starts_with("ALPHACODE_"),
@@ -272,26 +273,45 @@ mod tests {
         }
     }
 
+    /// `Command::get_envs()` reports the command's *overrides*, not the inherited
+    /// environment. `env_remove` records the key with a `None` value, which is
+    /// the removal marker — so the correct assertion is that the key is
+    /// present-and-`None`, not absent.
     #[test]
-    fn filter_removes_the_vars_from_the_child_environment() {
-        let key = "ALPHACODE_OPENROUTER_MODEL";
+    fn filter_marks_the_vars_for_removal_from_the_child_environment() {
+        use std::collections::HashMap;
+        let routing = "ALPHACODE_OPENROUTER_MODEL";
+        let credential = "ALPHACODE_ANTHROPIC_API_KEY";
         // SAFETY: single-threaded test scope; production code centralizes
         // env mutation in this module's helpers for good reason.
         unsafe {
-            std::env::set_var(key, "routing-placeholder");
+            std::env::set_var(routing, "routing-placeholder");
+            std::env::set_var(credential, "credential-placeholder");
         }
+
         let mut command = std::process::Command::new("program-name-not-executed");
         strip_internal_env(&mut command);
-        let queued: Vec<String> = command
+        let overrides = command
             .get_envs()
-            .map(|(k, _)| k.to_string_lossy().into_owned())
-            .collect();
-        assert!(
-            !queued.iter().any(|k| k == key),
-            "{key} was still queued for the child process"
-        );
+            .map(|(k, v)| {
+                (
+                    k.to_string_lossy().into_owned(),
+                    v.map(|v| v.to_string_lossy().into_owned()),
+                )
+            })
+            .collect::<HashMap<_, _>>();
+
+        for key in [routing, credential] {
+            assert_eq!(
+                overrides.get(key),
+                Some(&None),
+                "{key} must be recorded as a removal, not as a value or left inherited"
+            );
+        }
+
         unsafe {
-            std::env::remove_var(key);
+            std::env::remove_var(routing);
+            std::env::remove_var(credential);
         }
     }
 }

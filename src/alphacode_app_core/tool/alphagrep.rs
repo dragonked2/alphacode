@@ -3,12 +3,12 @@ use crate::alphacode_app_core::message::{ContentBlock, ToolCall};
 use crate::alphacode_app_core::session::Session;
 use crate::alphacode_app_core::storage;
 use crate::alphacode_app_core::{logging, util};
-use ::agentgrep::cli::{FindArgs, FullRegionMode, GrepArgs, OutlineArgs, SmartArgs};
-use ::agentgrep::find::{FindResult, run_find};
-use ::agentgrep::outline::run_outline;
-use ::agentgrep::search::{GrepResult, run_grep};
-use ::agentgrep::smart_dsl::{SmartQuery, parse_smart_query};
-use ::agentgrep::smart_engine::{SmartResult, run_smart};
+use ::alphagrep::cli::{FindArgs, FullRegionMode, GrepArgs, OutlineArgs, SmartArgs};
+use ::alphagrep::find::{FindResult, run_find};
+use ::alphagrep::outline::run_outline;
+use ::alphagrep::search::{GrepResult, run_grep};
+use ::alphagrep::smart_dsl::{SmartQuery, parse_smart_query};
+use ::alphagrep::smart_engine::{SmartResult, run_smart};
 use anyhow::Result;
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
@@ -24,18 +24,18 @@ mod context;
 
 use self::args::{
     build_find_args, build_grep_args, build_outline_args, build_smart_args_and_query,
-    resolve_search_root, summarize_agentgrep_request,
+    resolve_search_root, summarize_alphagrep_request,
 };
 use self::context::maybe_write_context_json;
-use ::agentgrep::render::{
+use ::alphagrep::render::{
     render_find_output, render_grep_output, render_outline_output, render_smart_output,
 };
 
 #[derive(Debug, Deserialize)]
-struct AgentGrepInput {
-    #[serde(default = "default_agentgrep_mode")]
+struct AlphaGrepInput {
+    #[serde(default = "default_alphagrep_mode")]
     mode: String,
-    // `pattern` accepted for legacy grep-tool calls aliased to agentgrep.
+    // `pattern` accepted for legacy grep-tool calls aliased to alphagrep.
     #[serde(default, alias = "pattern")]
     query: Option<String>,
     // `file_path` accepted because agents frequently pass it instead of `file`.
@@ -47,7 +47,7 @@ struct AgentGrepInput {
     regex: Option<bool>,
     #[serde(default)]
     path: Option<String>,
-    // `include` accepted for legacy grep-tool calls aliased to agentgrep.
+    // `include` accepted for legacy grep-tool calls aliased to alphagrep.
     #[serde(default, alias = "include")]
     glob: Option<String>,
     #[serde(rename = "type", default)]
@@ -76,25 +76,25 @@ struct AgentGrepInput {
     paths_only: Option<bool>,
 }
 
-fn default_agentgrep_mode() -> String {
+fn default_alphagrep_mode() -> String {
     "grep".to_string()
 }
 
 #[derive(Debug, Serialize, Default)]
-struct AgentGrepHarnessContext {
+struct AlphaGrepHarnessContext {
     version: u32,
     #[serde(skip_serializing_if = "Vec::is_empty")]
-    known_regions: Vec<AgentGrepKnownRegion>,
+    known_regions: Vec<AlphaGrepKnownRegion>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
-    known_files: Vec<AgentGrepKnownFile>,
+    known_files: Vec<AlphaGrepKnownFile>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
-    known_symbols: Vec<AgentGrepKnownSymbol>,
+    known_symbols: Vec<AlphaGrepKnownSymbol>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     focus_files: Vec<String>,
 }
 
 #[derive(Debug, Serialize)]
-struct AgentGrepKnownRegion {
+struct AlphaGrepKnownRegion {
     path: String,
     start_line: usize,
     end_line: usize,
@@ -106,7 +106,7 @@ struct AgentGrepKnownRegion {
 }
 
 #[derive(Debug, Serialize)]
-struct AgentGrepKnownFile {
+struct AlphaGrepKnownFile {
     path: String,
     structure_confidence: f32,
     body_confidence: f32,
@@ -117,7 +117,7 @@ struct AgentGrepKnownFile {
 }
 
 #[derive(Debug, Serialize)]
-struct AgentGrepKnownSymbol {
+struct AlphaGrepKnownSymbol {
     path: String,
     symbol: String,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -162,22 +162,22 @@ struct ExposureDescriptor {
     compaction_cutoff: Option<usize>,
 }
 
-pub struct AgentGrepTool;
+pub struct AlphaGrepTool;
 
-impl AgentGrepTool {
+impl AlphaGrepTool {
     pub fn new() -> Self {
         Self
     }
 }
 
 #[async_trait]
-impl Tool for AgentGrepTool {
+impl Tool for AlphaGrepTool {
     fn name(&self) -> &str {
-        "agentgrep"
+        "alphagrep"
     }
 
     fn description(&self) -> &str {
-        "Search code with ripgrep: grep (patterns), find (files), outline (structure), trace (callers). Use before reading files to locate targets. Supports regex and file type filtering."
+        "Search code with alphagrep: grep (patterns), find (files), outline (structure), trace (callers). Use before reading files to locate targets. Supports regex and file type filtering."
     }
 
     fn parameters_schema(&self) -> Value {
@@ -217,7 +217,7 @@ impl Tool for AgentGrepTool {
                 },
                 "type": {
                     "type": "string",
-                    "description": "Optional ripgrep file type filter, such as rs, py, js, ts, or md."
+                    "description": "Optional file type filter, such as rs, py, js, ts, or md."
                 },
                 "max_files": {
                     "type": "integer",
@@ -240,23 +240,23 @@ impl Tool for AgentGrepTool {
     }
 
     async fn execute(&self, input: Value, ctx: ToolContext) -> Result<ToolOutput> {
-        let params: AgentGrepInput = serde_json::from_value(input)?;
-        // The search shells out to ripgrep and walks/reads files (and for
-        // trace/outline modes also loads the session and reads more files),
-        // all of which is blocking work with no async yield points. Offload it
+        let params: AlphaGrepInput = serde_json::from_value(input)?;
+        // The search walks and reads files (and for trace/outline modes also
+        // loads the session and reads more files), all of which is blocking
+        // work with no async yield points. Offload it
         // to the blocking pool so we never stall a tokio worker thread. When it
         // ran inline, a single poll of this future executed the whole search to
         // completion, freezing the TUI's select! render/input loop, which made
         // the first cold-cache search feel like it "takes forever" with no
         // spinner and an unresponsive interrupt. This mirrors how the sibling
         // grep/glob/ls tools offload their work.
-        tokio::task::spawn_blocking(move || run_agentgrep_blocking(&params, &ctx))
+        tokio::task::spawn_blocking(move || run_alphagrep_blocking(&params, &ctx))
             .await
-            .map_err(|err| anyhow::anyhow!("agentgrep task failed to join: {err}"))?
+            .map_err(|err| anyhow::anyhow!("alphagrep task failed to join: {err}"))?
     }
 }
 
-fn run_agentgrep_blocking(params: &AgentGrepInput, ctx: &ToolContext) -> Result<ToolOutput> {
+fn run_alphagrep_blocking(params: &AlphaGrepInput, ctx: &ToolContext) -> Result<ToolOutput> {
     if ctx.working_dir.is_none() {
         let explicit_path = params.path.as_deref().or(params.file.as_deref());
         // Normalize first: a Windows-style absolute path like `C:\foo\bar`
@@ -264,20 +264,20 @@ fn run_agentgrep_blocking(params: &AgentGrepInput, ctx: &ToolContext) -> Result<
         // backslashes are converted to forward slashes. Without this, a
         // session spawned without a working dir would reject any path
         // the agent supplied on Windows builds.
-        let normalized = explicit_path.map(normalize_agentgrep_path_arg);
+        let normalized = explicit_path.map(normalize_alphagrep_path_arg);
         if normalized
             .as_deref()
             .is_none_or(|path| !Path::new(path).is_absolute())
         {
             anyhow::bail!(
-                "agentgrep requires a session working directory unless an absolute path is provided"
+                "alphagrep requires a session working directory unless an absolute path is provided"
             );
         }
     }
     let context_path = maybe_write_context_json(params, ctx)?;
-    let request = summarize_agentgrep_request(params, ctx, context_path.as_deref());
+    let request = summarize_alphagrep_request(params, ctx, context_path.as_deref());
     let started_at = std::time::Instant::now();
-    let outcome = execute_linked_agentgrep(params, ctx, context_path.as_deref());
+    let outcome = execute_linked_alphagrep(params, ctx, context_path.as_deref());
     let elapsed_ms = started_at.elapsed().as_millis().min(u128::from(u64::MAX)) as u64;
 
     if let Some(path) = context_path {
@@ -288,7 +288,7 @@ fn run_agentgrep_blocking(params: &AgentGrepInput, ctx: &ToolContext) -> Result<
         Ok(output) => {
             if elapsed_ms >= 2_000 {
                 logging::warn(&format!(
-                    "agentgrep slow mode={} elapsed_ms={} request={}",
+                    "alphagrep slow mode={} elapsed_ms={} request={}",
                     params.mode, elapsed_ms, request
                 ));
             }
@@ -298,27 +298,11 @@ fn run_agentgrep_blocking(params: &AgentGrepInput, ctx: &ToolContext) -> Result<
             let detail = err.to_string();
             let detail = util::truncate_str(detail.trim(), 600);
             logging::warn(&format!(
-                "agentgrep failure mode={} elapsed_ms={} request={} error={}",
+                "alphagrep failure mode={} elapsed_ms={} request={} error={}",
                 params.mode, elapsed_ms, request, detail
             ));
-            let lower = err.to_string().to_ascii_lowercase();
-            // `rg` (ripgrep) missing or not executable: the linked agentgrep
-            // engine shells out to it. Surface an actionable install hint
-            // instead of a raw OS error ("The directory...", "not found").
-            if lower.contains("failed to execute rg")
-                || lower.contains("could not execute rg")
-                || (lower.contains("rg")
-                    && (lower.contains("not found") || lower.contains("no such file")))
-            {
-                return Err(anyhow::anyhow!(
-                    "agentgrep {} failed after {}ms: ripgrep (`rg`) is missing or not runnable: {}. Install it (Windows: `winget install BurntSushi.ripgrep.MSVC`; macOS: `brew install ripgrep`; Linux: your package manager), ensure `rg` is on PATH, then retry. Falling back to the `grep`/`glob` tools also works.",
-                    params.mode,
-                    elapsed_ms,
-                    err
-                ));
-            }
             Err(anyhow::anyhow!(
-                "agentgrep {} failed after {}ms: {}",
+                "alphagrep {} failed after {}ms: {}",
                 params.mode,
                 elapsed_ms,
                 err
@@ -327,8 +311,8 @@ fn run_agentgrep_blocking(params: &AgentGrepInput, ctx: &ToolContext) -> Result<
     }
 }
 
-fn execute_linked_agentgrep(
-    params: &AgentGrepInput,
+fn execute_linked_alphagrep(
+    params: &AlphaGrepInput,
     ctx: &ToolContext,
     context_json_path: Option<&Path>,
 ) -> Result<ToolOutput> {
@@ -343,7 +327,7 @@ fn execute_linked_agentgrep(
             );
             Ok(
                 ToolOutput::new(render_grep_output(&result, &args, params.max_regions))
-                    .with_title("agentgrep grep"),
+                    .with_title("alphagrep grep"),
             )
         }
         "find" => {
@@ -351,13 +335,13 @@ fn execute_linked_agentgrep(
             let root = resolve_search_root(ctx, args.path.as_deref())?;
             let result =
                 filter_find_result_to_exact_file(run_find(&root, &args), exact_file.as_deref());
-            Ok(ToolOutput::new(render_find_output(&result, &args)).with_title("agentgrep find"))
+            Ok(ToolOutput::new(render_find_output(&result, &args)).with_title("alphagrep find"))
         }
         "outline" => {
             let args = build_outline_args(params, ctx, context_json_path)?;
             let root = resolve_search_root(ctx, args.path.as_deref())?;
             let result = run_outline(&root, &args).map_err(anyhow::Error::msg)?;
-            Ok(ToolOutput::new(render_outline_output(&result)).with_title("agentgrep outline"))
+            Ok(ToolOutput::new(render_outline_output(&result)).with_title("alphagrep outline"))
         }
         "trace" | "smart" => {
             let (args, query) = build_smart_args_and_query(params, ctx, context_json_path)?;
@@ -367,10 +351,10 @@ fn execute_linked_agentgrep(
                 exact_file.as_deref(),
             );
             Ok(ToolOutput::new(render_smart_output(&result, &args))
-                .with_title(format!("agentgrep {}", params.mode)))
+                .with_title(format!("alphagrep {}", params.mode)))
         }
         _ => Err(anyhow::anyhow!(
-            "Unsupported agentgrep mode: {}. Use grep, find, outline, or trace.",
+            "Unsupported alphagrep mode: {}. Use grep, find, outline, or trace.",
             params.mode
         )),
     }
@@ -381,9 +365,9 @@ fn resolve_path_arg(ctx: &ToolContext, path: &str) -> PathBuf {
 }
 
 /// Normalize a user-supplied path string before handing it to
-/// `ctx.resolve_path` and the underlying ripgrep call.
+/// `ctx.resolve_path` and the underlying search engine call.
 ///
-/// This is the single most common source of agentgrep path bugs:
+/// This is the single most common source of alphagrep path bugs:
 /// - the agent passes Windows backslashes (`foo\bar.rs`) or mixed
 ///   slashes (`src\foo/bar.rs`) and the resolver treats them as
 ///   relative to a sibling that does not exist;
@@ -396,7 +380,7 @@ fn resolve_path_arg(ctx: &ToolContext, path: &str) -> PathBuf {
 /// rest. We never silently re-root the path, so an absolute path on
 /// the wrong platform still fails loudly (better than silently dropping
 /// the search).
-pub(crate) fn normalize_agentgrep_path_arg(path: &str) -> String {
+pub(crate) fn normalize_alphagrep_path_arg(path: &str) -> String {
     let trimmed = path
         .trim()
         .trim_matches(|c: char| c.is_whitespace() || c == '"' || c == '\'');
@@ -426,7 +410,7 @@ pub(crate) fn normalize_agentgrep_path_arg(path: &str) -> String {
 
 fn exact_search_file_path(ctx: &ToolContext, path: Option<&str>) -> Option<String> {
     let path = path?;
-    let normalized = normalize_agentgrep_path_arg(path);
+    let normalized = normalize_alphagrep_path_arg(path);
     if normalized.is_empty() {
         return None;
     }
@@ -495,7 +479,7 @@ fn filter_smart_result_to_exact_file(
     result
 }
 
-fn normalized_agentgrep_glob(glob: Option<&str>) -> Option<&str> {
+fn normalized_alphagrep_glob(glob: Option<&str>) -> Option<&str> {
     let glob = glob?.trim();
     if glob.is_empty() {
         return None;
@@ -508,8 +492,8 @@ fn normalized_agentgrep_glob(glob: Option<&str>) -> Option<&str> {
     Some(glob)
 }
 
-fn normalized_agentgrep_glob_owned(glob: Option<&str>) -> Option<String> {
-    normalized_agentgrep_glob(glob).map(ToOwned::to_owned)
+fn normalized_alphagrep_glob_owned(glob: Option<&str>) -> Option<String> {
+    normalized_alphagrep_glob(glob).map(ToOwned::to_owned)
 }
 
 fn is_match_all_glob(glob: &str) -> bool {

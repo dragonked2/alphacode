@@ -45,7 +45,12 @@ pub fn quiet_enabled() -> bool {
 
 pub fn stderr_info(message: impl AsRef<str>) {
     if !quiet_enabled() {
-        eprintln!("{}", crate::output_style::terminal_text(message.as_ref()));
+        // `styled_line` keeps callers honest: hints written with hard-coded
+        // escapes reach a pipe or a legacy console as clean text.
+        eprintln!(
+            "{}",
+            console::styled_line(&crate::output_style::terminal_text(message.as_ref()))
+        );
     }
 }
 

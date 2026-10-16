@@ -582,10 +582,6 @@ impl StatusBar {
                 .fg(channel.color())
                 .add_modifier(Modifier::DIM),
         ));
-        spans.push(Span::styled(
-            connection_type.to_lowercase(),
-            Style::default().fg(channel.color()),
-        ));
 
         Line::from(spans)
     }
@@ -861,6 +857,18 @@ mod tests {
             80,
         );
         assert!(!line.spans.is_empty());
+        // The HUD names the trust tier and deliberately hides the transport:
+        // "Secure channelwebsocket" (label glued to the raw transport) used to
+        // render when a second span was appended without a separator.
+        let text: String = line.spans.iter().map(|s| s.content.as_ref()).collect();
+        assert!(
+            text.contains("[3] Secure channel"),
+            "expected the channel tier label, got: {text}"
+        );
+        assert!(
+            !text.contains("websocket"),
+            "raw transport must not leak into the channel HUD, got: {text}"
+        );
     }
 
     #[test]

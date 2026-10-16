@@ -45,7 +45,7 @@ The same sequential loop exists in the streaming path (`turn_streaming_mpsc.rs`)
 
 **Design.** Not all tools are safe to run concurrently (bash mutates state; edits depend on ordering). Introduce a per-tool concurrency class in `ToolRegistry`:
 
-- `ReadOnly` (read, ls, glob/grep/agentgrep, session_search, conversation_search, webfetch, websearch) → run concurrently, capped at `min(4, calls.len())`.
+- `ReadOnly` (read, ls, glob/grep/alphagrep, session_search, conversation_search, webfetch, websearch) → run concurrently, capped at `min(4, calls.len())`.
 - `Mutating` (write, edit, multiedit, apply_patch, patch, bash, browser, computer) → keep sequential, preserve exact current ordering.
 - `Background` (bg, cron, schedule) → fire-and-forget, already non-blocking.
 

@@ -152,10 +152,7 @@ pub(super) fn render_usage_lines(info: &UsageInfo, width: u16) -> Vec<Line<'stat
             Line::from(vec![
                 Span::raw("💰 "),
                 Span::styled(
-                    clip(
-                        &format_cost(f64::from(info.total_cost)),
-                        width.saturating_sub(3),
-                    ),
+                    clip(&cost_readout(info), width.saturating_sub(3)),
                     Style::default().fg(usage_label_color()).bold(),
                 ),
             ]),
@@ -437,6 +434,23 @@ fn format_cost(cost: f64) -> String {
     } else {
         format!("${cost:.2}")
     }
+}
+
+/// Dollar readout for one session's usage.
+///
+/// A metered session reports what it actually billed. A free-tier or
+/// subscription transport has no per-token price to report, so it shows the
+/// notional value of its tokens at the UI reference rate instead of a dead
+/// `$0.00`.
+fn cost_readout(info: &UsageInfo) -> String {
+    if info.total_cost > 0.0 {
+        return format_cost(f64::from(info.total_cost));
+    }
+    let tokens = info.input_tokens.saturating_add(info.output_tokens);
+    format!(
+        "est. {}",
+        crate::tui::info_widget::format_token_value_usd(tokens)
+    )
 }
 
 #[cfg(test)]

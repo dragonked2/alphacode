@@ -27,9 +27,32 @@ const MIN_SIGNAL_LINE_LEN: usize = 3;
 const MAX_CONSECUTIVE_BLANKS: usize = 2;
 
 /// Similarity threshold for fuzzy deduplication (0.0 = no match, 1.0 = identical).
-/// Calibrated so repeated log lines that differ only in a counter or timestamp
-/// (a handful of changed characters) still match, while unrelated lines do not.
-const FUZZY_DEDUP_THRESHOLD: f64 = 0.80;
+///
+/// Tuned against both hard cases: log lines that differ only in a counter or
+/// timestamp score ~0.87–0.89 and should still collapse, while genuinely
+/// distinct output must not. A false positive silently deletes a line of real
+/// tool output, so the threshold is high and the tools whose output is a list
+/// of answers disable fuzzy dedup outright (see [`StreamFilter::for_tool`]).
+const FUZZY_DEDUP_THRESHOLD: f64 = 0.85;
+
+/// Minimum length (in chars) before fuzzy dedup may suppress a line.
+///
+/// Below this length a line is mostly structure, so the bigram ratio compares
+/// shape rather than content and two distinct short lines can sit near the
+/// threshold. Only exact matches dedup under this length.
+const MIN_FUZZY_LEN: usize = 16;
+
+/// Marker prefixed to a count-bearing header line whose evidence was trimmed.
+///
+/// A header such as `137 match(es) in 4 file(s)` promises the model a list of
+/// matches. When that list is trimmed, the count has to be corrected *on the
+/// same line*: an explanation appended at the end of the output is the first
+/// thing a later truncation removes, so the count would keep its false promise.
+/// Correcting the header makes the mismatch impossible to miss.
+const PARTIAL_MARKER: &str = "[partial] ";
+
+/// Wording appended to that header, kept compact for the same reason.
+const PARTIAL_NOTE: &str = " — not all lines shown";
 
 // ── High-signal patterns ──────────────────────────────────────────────────
 
@@ -157,6 +180,13 @@ pub struct StreamFilter {
     pub max_chars: usize,
     /// Whether to deduplicate repeated lines.
     pub dedup: bool,
+    /// Whether `dedup` may also collapse *similar* (not just identical) lines.
+    ///
+    /// Enabled only for log-shaped tools. For tools whose output is a list of
+    /// answers (grep hits, file contents, search results) a near-match is a
+    /// distinct piece of evidence, so this stays off and only exact duplicates
+    /// are removed.
+    pub fuzzy_dedup: bool,
     /// Whether to summarize large outputs.
     pub summarize: bool,
 }
@@ -173,7 +203,7 @@ impl StreamFilter {
             "websearch" => (50, 15_000),
             // Grep output can be very large; keep generous line count but
             // moderate char limit since matched lines tend to be long.
-            "agentgrep" => (200, 40_000),
+            "alphagrep" => (200, 40_000),
             // Read tool: code content is high-value, keep generous.
             "read" => (300, 50_000),
             // Session search: search snippets are compact but numerous.
@@ -184,11 +214,19 @@ impl StreamFilter {
             "batch" => (MAX_LINES_BEFORE_SUMMARY, MAX_CHARS),
             _ => (MAX_LINES_BEFORE_SUMMARY, MAX_CHARS),
         };
+        // Every line an analysis tool emits is a deliberate answer: a grep hit,
+        // a source line, a search result. Collapsing two of them because they
+        // merely *look* similar deletes evidence and desynchronises the tool's
+        // reported count from the body the model receives. Those tools keep
+        // exact-duplicate removal only; fuzzy dedup stays for the log-shaped
+        // tools where near-identical progress output is genuinely redundant.
+        let fuzzy_dedup = !matches!(tool_name, "alphagrep" | "read" | "session_search");
         Self {
             tool_name: tool_name.to_string(),
             max_lines,
             max_chars,
             dedup: true,
+            fuzzy_dedup,
             summarize: true,
         }
     }
@@ -232,9 +270,15 @@ impl StreamFilter {
                                 break;
                             }
                         }
-                        if !is_dup && seen.len() < 128 {
+                        if !is_dup && self.fuzzy_dedup && seen.len() < 128 {
+                            // Errors and warnings are the highest-value line in
+                            // any log, and two of them can be near-identical
+                            // while both matter (e.g. the same error for two
+                            // files). Exact-match dedup above still applies;
+                            // fuzzy dedup must never remove one.
+                            let protect = is_high_signal(line);
                             for (seen_norm, _) in seen.iter().rev().take(32) {
-                                if fuzzy_similar(&normalized, seen_norm) {
+                                if !protect && fuzzy_similar(&normalized, seen_norm) {
                                     is_dup = true;
                                     break;
                                 }
@@ -263,6 +307,11 @@ impl StreamFilter {
                 };
             }
 
+            // Exact-duplicate removal and blank collapsing can drop lines even
+            // for a small output, so a count-bearing header needs the same
+            // correction the large path applies.
+            mark_partial_headers(&mut kept);
+
             let mut filtered = kept.join("\n");
             if raw.ends_with('\n') {
                 filtered.push('\n');
@@ -285,6 +334,9 @@ impl StreamFilter {
         let mut skipped_duplicates = 0u32;
         let mut skipped_noise = 0u32;
         let mut consecutive_blanks = 0usize;
+        // Set when input lines are discarded for any reason (dedup, noise, or
+        // the line cap). Drives [`mark_partial_headers`] below.
+        let mut input_lines_dropped = false;
 
         for line in raw.lines() {
             // Collapse consecutive blank lines to save tokens.
@@ -314,7 +366,7 @@ impl StreamFilter {
                         }
                     }
                     // Fuzzy dedup: check if this line is similar to a recent line
-                    if !is_dup && seen.len() < 128 {
+                    if !is_dup && self.fuzzy_dedup && seen.len() < 128 {
                         for (seen_norm, _) in seen.iter().rev().take(32) {
                             if fuzzy_similar(&normalized, seen_norm) {
                                 is_dup = true;
@@ -324,6 +376,7 @@ impl StreamFilter {
                     }
                     if is_dup {
                         skipped_duplicates += 1;
+                        input_lines_dropped = true;
                         continue;
                     }
                     seen.push((normalized, 1));
@@ -339,15 +392,22 @@ impl StreamFilter {
             // Skip pure noise
             if line.len() < MIN_SIGNAL_LINE_LEN || is_noise(line) {
                 skipped_noise += 1;
+                input_lines_dropped = true;
                 continue;
             }
 
             kept.push(line.to_string());
 
-            // Check limits
+            // Check limits. Reaching the cap means the remaining lines are
+            // dropped without being seen, which also makes the output partial.
             if kept.len() >= self.max_lines {
+                input_lines_dropped = true;
                 break;
             }
+        }
+
+        if input_lines_dropped {
+            mark_partial_headers(&mut kept);
         }
 
         let filtered: String = kept.join("\n");
@@ -458,9 +518,130 @@ fn is_noise(line: &str) -> bool {
     if trimmed.is_empty() {
         return true;
     }
-    NOISE_PATTERNS
-        .iter()
-        .any(|pattern| trimmed.starts_with(pattern))
+    NOISE_PATTERNS.iter().any(|pattern| {
+        if !trimmed.starts_with(pattern) {
+            return false;
+        }
+        // A pattern made purely of decoration characters (dashes, dots, box
+        // drawing) only marks the line as noise when the *whole* line is
+        // decoration. Otherwise real output would be deleted: a diff header
+        // (`--- a/src/main.rs`), an elision note (`... 42 more`), or a table
+        // row (`│ key │ value │`) all begin with characters that also begin a
+        // separator line, but each carries content the model needs.
+        if pattern.chars().all(is_decoration_char) {
+            return trimmed.chars().all(is_decoration_char);
+        }
+        // Word-like markers ("Loading", "Compiling") are genuinely noise
+        // whenever they lead the line.
+        true
+    })
+}
+
+/// Characters that carry no meaning on their own — box drawing, rules, and
+/// bullet/arrow decoration used to format progress output.
+fn is_decoration_char(c: char) -> bool {
+    c.is_whitespace()
+        || matches!(
+            c,
+            '.' | '='
+                | '-'
+                | '_'
+                | '*'
+                | '~'
+                | '─'
+                | '═'
+                | '╔'
+                | '╗'
+                | '╚'
+                | '╝'
+                | '│'
+                | '└'
+                | '┘'
+                | '├'
+                | '┤'
+                | '┌'
+                | '┐'
+                | '>'
+                | '<'
+        )
+}
+
+/// Mark count-bearing header lines whose promised evidence was trimmed.
+///
+/// Tool output commonly opens with a summary such as `137 match(es) in 4
+/// file(s)`. That count is a promise about the lines beneath it, and everything
+/// downstream — including the model — reads it as ground truth. When this
+/// filter then removes lines, the promise silently becomes false: the model
+/// sees "137 matches" above a shorter list and concludes some are missing.
+///
+/// The marker is placed on the header line itself rather than appended to the
+/// end of the output, because a trailing note is the first thing any later
+/// truncation drops.
+fn mark_partial_headers(lines: &mut [String]) {
+    for line in lines.iter_mut() {
+        if line.starts_with(PARTIAL_MARKER) {
+            continue;
+        }
+        if is_count_header(line.trim_start()) {
+            *line = format!("{PARTIAL_MARKER}{line}{PARTIAL_NOTE}");
+        }
+    }
+}
+
+/// Whether `s` is a summary line that promises a set of lines.
+///
+/// Deliberately narrow. It accepts two shapes only:
+///
+/// * `<count> <unit>...` — `137 match(es) in 4 file(s)`
+/// * `<verb> ... <unit>` — `Found 12 results in 3 files`
+///
+/// The unit token requirement is what keeps real content out. A grep hit such
+/// as `  137: match text` also begins with a digit and contains "match", but
+/// its leading token is `137:` — not a pure count — so it is not a promise and
+/// is left untouched. Likewise a source line `let matches = 3;` is not, because
+/// "let" is not a counting verb.
+fn is_count_header(s: &str) -> bool {
+    /// Nouns that name the thing being counted.
+    const UNITS: &[&str] = &[
+        "match",
+        "matches",
+        "file",
+        "files",
+        "result",
+        "results",
+        "hit",
+        "hits",
+        "occurrence",
+        "occurrences",
+    ];
+
+    /// Leading alphabetic part of a token: `match(es)` → `match`.
+    fn unit_of(token: &str) -> String {
+        token
+            .chars()
+            .take_while(|c| c.is_ascii_alphabetic())
+            .collect::<String>()
+            .to_lowercase()
+    }
+
+    let mut tokens = s.split_whitespace();
+    let Some(first) = tokens.next() else {
+        return false;
+    };
+
+    // Shape 1: `<count> <unit>...`
+    if !first.is_empty() && first.bytes().all(|b| b.is_ascii_digit()) {
+        let Some(unit_token) = tokens.next() else {
+            return false;
+        };
+        return UNITS.contains(&unit_of(unit_token).as_str());
+    }
+
+    // Shape 2: `<verb> ... <unit>`
+    if !matches!(first.to_lowercase().as_str(), "found" | "showing" | "total") {
+        return false;
+    }
+    tokens.any(|token| UNITS.contains(&unit_of(token).as_str()))
 }
 
 /// Normalize a line for deduplication (collapse whitespace, lowercase).
@@ -497,53 +678,65 @@ fn fuzzy_similar(a: &str, b: &str) -> bool {
     if a == b {
         return true;
     }
-    let min_len = a.len().min(b.len());
-    if min_len < 10 {
+    // Short lines carry too few bigrams for the ratio to be meaningful: two
+    // unrelated identifiers of the same shape score far above any safe
+    // threshold. Only exact matches dedup below this length.
+    if a.len() < MIN_FUZZY_LEN || b.len() < MIN_FUZZY_LEN {
         return false;
     }
     if !length_compatible(a, b) {
         return false;
     }
-    // Character bigram overlap ratio. A single changed character perturbs at
-    // most two bigrams, so lines that differ only in a variable or count
-    // (e.g. "line 42 content" vs "line 43 content") stay well above the
-    // threshold, while unrelated lines do not.
-    let a_bigrams = char_bigram_count(a);
-    let b_bigrams = char_bigram_count(b);
-    // The counts are arrays, so `zip` yields references. Dereference each side so
-    // `min`/`max` (which take `u32` by value) is callable.
-    let intersection: u32 = a_bigrams
-        .iter()
-        .zip(b_bigrams.iter())
-        .map(|(x, y)| (*x).min(*y))
-        .sum();
-    let union: u32 = a_bigrams
-        .iter()
-        .zip(b_bigrams.iter())
-        .map(|(x, y)| (*x).max(*y))
-        .sum();
+    // Character-bigram Jaccard similarity over the *exact* sets of bigrams.
+    //
+    // The previous implementation hashed bigrams into 64 buckets, so unrelated
+    // bigrams collided and inflated the score — `pub mod x;` and `pub mod y;`
+    // measured ~0.85 and one of two genuinely different grep results was
+    // silently dropped. Comparing the real sets removes that class of
+    // false positive entirely.
+    let a_bigrams = char_bigrams(a);
+    let b_bigrams = char_bigrams(b);
+    let shared = bigram_intersection(&a_bigrams, &b_bigrams);
+    // Both sets are deduplicated, so |A ∪ B| = |A| + |B| − |A ∩ B|.
+    let union = a_bigrams.len() + b_bigrams.len() - shared;
     if union == 0 {
         return false;
     }
-    let similarity = intersection as f64 / union as f64;
-    similarity >= FUZZY_DEDUP_THRESHOLD
+    shared as f64 / union as f64 >= FUZZY_DEDUP_THRESHOLD
 }
 
-/// Count character bigrams in a string (space-optimized: 64 buckets).
+/// The set of character bigrams in a string.
 ///
-/// Iterates `s.as_bytes()` directly. The previous `s.bytes().collect::<Vec<u8>>()`
-/// copied the line into a fresh heap allocation on every call, and this runs up
-/// to 32 times per line inside the fuzzy-dedup window — so a 500-line build log
-/// churned through thousands of short-lived allocations to compare lines that
-/// are almost always obviously different.
-fn char_bigram_count(s: &str) -> [u32; 64] {
-    let mut counts = [0u32; 64];
+/// Stored as a sorted, deduplicated vector rather than a hash set: tool-output
+/// lines are short (tens of chars), and a sorted `Vec` makes the set
+/// intersection/union allocation-free on the dedup hot path.
+fn char_bigrams(s: &str) -> Vec<(u8, u8)> {
     let bytes = s.as_bytes();
+    let mut bigrams: Vec<(u8, u8)> = Vec::with_capacity(bytes.len().saturating_sub(1));
     for window in bytes.windows(2) {
-        let idx = ((window[0] as usize) ^ (window[1] as usize)) & 63;
-        counts[idx] += 1;
+        bigrams.push((window[0], window[1]));
     }
-    counts
+    bigrams.sort_unstable();
+    bigrams.dedup();
+    bigrams
+}
+
+/// Count of bigrams shared by two sorted, deduplicated bigram sets.
+/// Both inputs must come from [`char_bigrams`].
+fn bigram_intersection(a: &[(u8, u8)], b: &[(u8, u8)]) -> usize {
+    let (mut i, mut j, mut shared) = (0usize, 0usize, 0usize);
+    while i < a.len() && j < b.len() {
+        match a[i].cmp(&b[j]) {
+            std::cmp::Ordering::Equal => {
+                shared += 1;
+                i += 1;
+                j += 1;
+            }
+            std::cmp::Ordering::Less => i += 1,
+            std::cmp::Ordering::Greater => j += 1,
+        }
+    }
+    shared
 }
 
 /// Cheap length gate before the bigram work.
@@ -782,10 +975,144 @@ mod tests {
     }
 
     #[test]
-    fn char_bigram_count_basic() {
-        let counts = char_bigram_count("hello");
-        assert!(counts.iter().any(|&c| c > 0));
-        let empty = char_bigram_count("");
-        assert!(empty.iter().all(|&c| c == 0));
+    fn char_bigrams_basic() {
+        let bigrams = char_bigrams("hello");
+        // "he", "el", "ll", "lo" — deduplicated and sorted.
+        assert_eq!(
+            bigrams,
+            vec![(b'e', b'l'), (b'h', b'e'), (b'l', b'l'), (b'l', b'o'),]
+        );
+        // Repeated bigrams collapse to one entry.
+        assert_eq!(char_bigrams("aaaa").len(), 1);
+        assert!(char_bigrams("").is_empty());
+        assert!(char_bigrams("x").is_empty());
+    }
+
+    /// Fuzzy dedup must never fire on the tools whose output is a list of
+    /// answers. Two grep hits that differ only in a path or identifier are
+    /// two distinct pieces of evidence, and dropping one made the tool's
+    /// reported match count disagree with the body the model received.
+    #[test]
+    fn analysis_tools_do_not_fuzzy_dedup_distinct_lines() {
+        assert!(!StreamFilter::for_tool("alphagrep").fuzzy_dedup);
+        assert!(!StreamFilter::for_tool("read").fuzzy_dedup);
+        assert!(!StreamFilter::for_tool("session_search").fuzzy_dedup);
+        // Log-shaped tools keep it.
+        assert!(StreamFilter::for_tool("bash").fuzzy_dedup);
+
+        // The exact shape that used to lose a line: two paths differing by
+        // one character, both real grep hits.
+        let output = "src/a.rs:12:    foo();\nsrc/b.rs:12:    foo();\n";
+        let result = filter_output("alphagrep", output);
+        assert!(
+            result.filtered.contains("src/a.rs:12:    foo();"),
+            "first hit dropped: {}",
+            result.filtered
+        );
+        assert!(
+            result.filtered.contains("src/b.rs:12:    foo();"),
+            "second hit dropped: {}",
+            result.filtered
+        );
+    }
+
+    /// Even for log tools, near-identical *error* lines are all kept — two
+    /// incidents that read the same are still two incidents.
+    #[test]
+    fn fuzzy_dedup_never_drops_high_signal_lines() {
+        let output = "\
+error[E0428]: the name `Rule` is defined multiple times
+error[E0428]: the name `Rule2` is defined multiple times
+";
+        let result = filter_output("bash", output);
+        assert!(
+            result.filtered.contains("`Rule` "),
+            "first error dropped: {}",
+            result.filtered
+        );
+        assert!(
+            result.filtered.contains("`Rule2`"),
+            "second error dropped: {}",
+            result.filtered
+        );
+    }
+
+    /// Short distinct lines must never be treated as duplicates of each other.
+    #[test]
+    fn fuzzy_similar_rejects_distinct_short_lines() {
+        assert!(!fuzzy_similar("pub mod x;", "pub mod y;"));
+        assert!(!fuzzy_similar("let a = 1;", "let b = 2;"));
+        // Identical short lines are still duplicates (exact path).
+        assert!(fuzzy_similar("pub mod x;", "pub mod x;"));
+    }
+
+    /// Decoration-only noise patterns must not swallow real output that merely
+    /// starts with the same characters. Every "kept" case below was verified to
+    /// be deleted by the previous `starts_with`-only implementation.
+    #[test]
+    fn noise_matching_does_not_eat_real_lines() {
+        // Pure decoration is still noise.
+        assert!(is_noise("──────────────"));
+        assert!(is_noise("..."));
+        assert!(is_noise("===="));
+        assert!(is_noise("Loading config"));
+
+        // Real content that begins with decoration characters must survive:
+        // a unified-diff header, an elision note, a boxed table row, and a
+        // banner that carries a word.
+        assert!(!is_noise("---- a/src/main.rs"));
+        assert!(!is_noise("... 42 more"));
+        assert!(!is_noise("│ key │ value │"));
+        assert!(!is_noise("════ done ════"));
+    }
+
+    /// A count-bearing header must be corrected when lines are removed, so the
+    /// model never sees a promise ("137 matches") above a shorter list without
+    /// a visible explanation. This is the "reported N but saw fewer" failure.
+    #[test]
+    fn count_header_is_marked_when_evidence_is_trimmed() {
+        let output = "137 match(es) in 4 file(s) for \"foo\"\n\
+                      same\nsame\nsame\nsame\nsame\n";
+        let result = filter_output("bash", output);
+        assert!(
+            result.filtered.starts_with("[partial] 137 match(es)"),
+            "header was not corrected: {}",
+            result.filtered
+        );
+        assert!(result.filtered.contains("not all lines shown"));
+    }
+
+    /// When nothing is dropped the header keeps its original, accurate form.
+    #[test]
+    fn count_header_untouched_when_nothing_is_trimmed() {
+        let output = "137 match(es) in 4 file(s) for \"foo\"\n\
+                      src/a.rs:1: foo\nsrc/b.rs:2: foo\n";
+        let result = filter_output("bash", output);
+        assert!(
+            !result.filtered.contains("[partial]"),
+            "header wrongly marked: {}",
+            result.filtered
+        );
+        assert!(result.filtered.contains("137 match(es) in 4 file(s)"));
+    }
+
+    /// The header predicate must not mistake real content for a count. A grep
+    /// hit like `  137: match text` also starts with a digit and contains
+    /// "match", and marking it would corrupt the very evidence being protected.
+    #[test]
+    fn count_header_detection_ignores_real_content() {
+        // Genuine summaries.
+        assert!(is_count_header("137 match(es) in 4 file(s)"));
+        assert!(is_count_header("Found 12 results in 3 files"));
+        assert!(is_count_header("5 hits"));
+        assert!(is_count_header("showing 1 of 5 matches"));
+        assert!(is_count_header("12 files"));
+
+        // Real content that must not be treated as a promise.
+        assert!(!is_count_header("137: match text"));
+        assert!(!is_count_header("let matches = 3;"));
+        assert!(!is_count_header("Suite result: ok. 21 passed"));
+        assert!(!is_count_header("1234567890"));
+        assert!(!is_count_header(""));
     }
 }

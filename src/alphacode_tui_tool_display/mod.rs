@@ -6,9 +6,9 @@ use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 /// for nested `batch` subcalls that bypass the provider-side reverse map.
 ///
 /// One intentional divergence: the core registry maps `grep`/`file_grep`/`Grep`
-/// to `agentgrep` (the runtime replacement), but the display layer keeps them
+/// to `alphagrep` (the runtime replacement), but the display layer keeps them
 /// as `grep` so summary arms for both the legacy `grep` schema (`pattern`/`path`)
-/// and `agentgrep` (query/mode) stay distinguishable.
+/// and `alphagrep` (query/mode) stay distinguishable.
 pub fn canonical_tool_name(name: &str) -> &str {
     match name {
         "communicate" => "swarm",

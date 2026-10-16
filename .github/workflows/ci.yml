@@ -87,6 +87,9 @@ jobs:
           key: cargo-test-${{ matrix.os }}-${{ hashFiles('Cargo.lock') }}
       - run: cargo test --lib --locked
       - run: cargo test --test llamacpp_compat --locked
+      # `alphagrep` is its own workspace member, so root-package commands
+      # never run its tests; gate them here.
+      - run: cargo test -p alphagrep --locked
 
   perf-gates:
     name: perf gates
@@ -149,6 +152,8 @@ jobs:
             target
           key: cargo-lint-${{ hashFiles('Cargo.lock') }}
       - run: cargo clippy --locked --lib --all-targets -- -D warnings
+      # Same gap as in the test job: the workspace member needs its own run.
+      - run: cargo clippy -p alphagrep --locked --all-targets -- -D warnings
 
   installer-smoke:
     name: installer smoke

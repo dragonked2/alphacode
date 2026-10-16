@@ -21,21 +21,81 @@ pub fn has_requested_action(run_result: &RunResult) -> bool {
 /// the next process to inherit the console starts from a corrupted terminal
 /// with no working input. Put the terminal back before every handoff.
 ///
-/// Guarded on raw mode so the normal path, where the TUI already cleaned up,
-/// does not re-emit a second round of escape sequences over a clean screen.
+/// The restore is **unconditional**. It used to be gated on
+/// `is_raw_mode_enabled()`, which only reports *this* process's state — so a
+/// process that never initialised the TUI itself skipped the restore even
+/// while another alphacode instance still held the console in raw mode. The
+/// four sequences are idempotent: emitting them over an already-clean screen
+/// costs a few bytes and leaves no trace, whereas skipping them leaves the user
+/// with a dead terminal and no way to recover without closing the tab.
 fn restore_terminal_for_handoff() {
-    if !crossterm::terminal::is_raw_mode_enabled().unwrap_or(false) {
-        return;
-    }
     let _ = crossterm::terminal::disable_raw_mode();
     let _ = crossterm::execute!(
         std::io::stdout(),
         crossterm::event::DisableBracketedPaste,
         crossterm::event::DisableMouseCapture,
+        crossterm::event::PopKeyboardEnhancementFlags,
         crossterm::cursor::Show,
-        crossterm::terminal::LeaveAlternateScreen
+        crossterm::terminal::LeaveAlternateScreen,
+        crossterm::style::ResetColor
     );
     crate::alphacode_tui_style::restore_terminal_quietly();
+}
+
+/// Terminate every other live alphacode session process before handing the
+/// console to a replacement instance.
+///
+/// Why this is needed: `/update`, `/reload`, and `/restart` replace the current
+/// process with a fresh one. If any *other* alphacode instance is still alive —
+/// a previous handoff helper that outlived its parent, a server that grabbed a
+/// console, a swarm worker — it keeps its raw-mode and alternate-screen state.
+/// Two TUIs then share one console: the survivor consumes the keystrokes, the
+/// newcomer renders but looks frozen, and quitting either one leaves the
+/// terminal unusable. This is exactly the "update finished, now I cannot type"
+/// report, and it persists after AlphaCode appears to have exited.
+///
+/// Every process in the session registry except this one is a legitimate
+/// target. The kill is a tree kill, so descendants (helpers, loaders) go too.
+///
+/// Returns how many processes were terminated.
+fn terminate_other_alphacode_sessions() -> usize {
+    let self_pid = std::process::id();
+    let mut targets: Vec<u32> = crate::storage::session_presence()
+        .into_iter()
+        .map(|presence| presence.pid)
+        .filter(|pid| *pid != self_pid && *pid != 0)
+        .collect();
+    targets.sort_unstable();
+    targets.dedup();
+
+    if targets.is_empty() {
+        return 0;
+    }
+
+    let mut terminated = 0usize;
+    for pid in targets {
+        // 15 = SIGTERM on unix; on Windows `signal_detached_process_group`
+        // ignores the number and force-kills the tree.
+        match crate::platform::signal_detached_process_group(pid, 15) {
+            Ok(()) => {
+                terminated += 1;
+                crate::logging::info(&format!("update: terminated stale alphacode pid {pid}"));
+            }
+            Err(error) => {
+                crate::logging::warn(&format!(
+                    "update: failed to terminate stale alphacode pid {pid}: {error}"
+                ));
+            }
+        }
+    }
+
+    if terminated > 0 {
+        // Give the console a moment to be released before the replacement
+        // attaches to it, otherwise the new instance can race the old one's
+        // teardown and still end up with a half-restored terminal.
+        std::thread::sleep(std::time::Duration::from_millis(300));
+    }
+    terminated
 }
 
 pub fn execute_requested_action(run_result: &RunResult) -> Result<()> {
@@ -72,6 +132,7 @@ pub fn hot_restart(session_id: &str) -> Result<()> {
         cmd.arg("self-dev");
     }
     cmd.arg("--resume").arg(session_id).current_dir(&cwd);
+    terminate_other_alphacode_sessions();
     restore_terminal_for_handoff();
     let err = crate::platform::replace_process(&mut cmd);
 
@@ -178,6 +239,9 @@ pub fn hot_reload(session_id: &str) -> Result<()> {
                 helper_cmd.arg("self-dev");
             }
             helper_cmd.current_dir(&cwd);
+            // Any other live alphacode instance must let go of the console
+            // before this process exits and the helper attaches to it.
+            terminate_other_alphacode_sessions();
             match crate::platform::spawn_console_handoff_process(&mut helper_cmd) {
                 Ok(_child) => {
                     crate::logging::info(
@@ -196,6 +260,7 @@ pub fn hot_reload(session_id: &str) -> Result<()> {
         }
     }
 
+    terminate_other_alphacode_sessions();
     restore_terminal_for_handoff();
     for attempt in 0..3 {
         if attempt > 0 {
@@ -492,6 +557,18 @@ pub fn run_update() -> Result<()> {
                 update::print_centered(&format!("✅ Updated to {}", release.tag_name));
                 reload_server_after_update("installed update");
                 update::print_centered("Restart alphacode to use the new version.");
+                // `alphacode update` is usually run from a second terminal while
+                // the TUI is still alive. That live instance keeps the console
+                // in raw mode on the *other* terminal, but it also holds a
+                // session PID and can leave a console-handoff helper behind.
+                // Clear both so the next launch starts against a clean console.
+                let cleared = terminate_other_alphacode_sessions();
+                restore_terminal_for_handoff();
+                if cleared > 0 {
+                    update::print_centered(&format!(
+                        "Closed {cleared} leftover alphacode process(es) and reset the terminal."
+                    ));
+                }
             }
             Ok(None) => {
                 if repair_stale_shared_server_after_update_check() {

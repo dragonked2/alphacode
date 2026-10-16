@@ -1,6 +1,50 @@
 use super::*;
 use crate::provider::models::{ensure_model_allowed_for_subscription, filtered_display_models};
 
+/// Restores the process-global state that [`with_clean_provider_test_env`]
+/// captures before running a test body.
+///
+/// The cleanup runs from `Drop` so a panicking test body cannot leak its
+/// `ALPHACODE_HOME`, profile env overrides, or runtime resets into sibling
+/// tests sharing the process (a failed test used to cascade into unrelated
+/// "provider should initialize" failures).
+struct CleanProviderTestEnv {
+    prev_home: Option<std::ffi::OsString>,
+    prev_subscription: Option<std::ffi::OsString>,
+    saved_profile_env: Vec<(String, Option<std::ffi::OsString>)>,
+}
+
+impl Drop for CleanProviderTestEnv {
+    fn drop(&mut self) {
+        crate::provider::models::reset_model_catalog_services_for_tests();
+        crate::alphacode_base::auth::claude::set_active_account_override(None);
+        crate::alphacode_base::auth::codex::set_active_account_override(None);
+        if let Some(prev_home) = self.prev_home.take() {
+            crate::alphacode_core::env::set_var("ALPHACODE_HOME", prev_home);
+        } else {
+            crate::alphacode_core::env::remove_var("ALPHACODE_HOME");
+        }
+        if let Some(prev_subscription) = self.prev_subscription.take() {
+            crate::alphacode_core::env::set_var(
+                crate::subscription_catalog::ALPHACODE_SUBSCRIPTION_ACTIVE_ENV,
+                prev_subscription,
+            );
+        } else {
+            crate::alphacode_core::env::remove_var(
+                crate::subscription_catalog::ALPHACODE_SUBSCRIPTION_ACTIVE_ENV,
+            );
+        }
+        for (key, value) in self.saved_profile_env.drain(..) {
+            if let Some(value) = value {
+                crate::alphacode_core::env::set_var(&key, value);
+            } else {
+                crate::alphacode_core::env::remove_var(&key);
+            }
+        }
+        crate::subscription_catalog::clear_runtime_env();
+    }
+}
+
 fn with_clean_provider_test_env<T>(f: impl FnOnce() -> T) -> T {
     let _guard = crate::storage::lock_test_env();
     // Concrete provider runtimes live downstream (alphacode-provider-*-runtime),
@@ -26,6 +70,13 @@ fn with_clean_provider_test_env<T>(f: impl FnOnce() -> T) -> T {
         "ALPHACODE_OPENROUTER_MODEL_CATALOG",
         "ALPHACODE_OPENROUTER_MODEL",
         "ALPHACODE_OPENROUTER_STATIC_MODELS",
+        // Auth shape: a leaked provider/header mode would send
+        // `OpenRouterProvider::new()` down a different branch (and the Azure
+        // Entra branch hard-fails when its settings are absent), so clear it
+        // like the rest of the OpenRouter override surface.
+        "ALPHACODE_OPENROUTER_DYNAMIC_BEARER_PROVIDER",
+        "ALPHACODE_OPENROUTER_AUTH_HEADER",
+        "ALPHACODE_OPENROUTER_AUTH_HEADER_NAME",
         "ALPHACODE_OPENAI_COMPAT_API_BASE",
         "ALPHACODE_OPENAI_COMPAT_API_KEY_NAME",
         "ALPHACODE_OPENAI_COMPAT_ENV_FILE",
@@ -64,34 +115,16 @@ fn with_clean_provider_test_env<T>(f: impl FnOnce() -> T) -> T {
     // so neither direction leaks.
     crate::provider::models::reset_model_catalog_services_for_tests();
 
+    let cleanup = CleanProviderTestEnv {
+        prev_home,
+        prev_subscription,
+        saved_profile_env: saved_profile_env
+            .into_iter()
+            .map(|(key, value)| (key.to_string(), value))
+            .collect(),
+    };
     let result = f();
-
-    crate::provider::models::reset_model_catalog_services_for_tests();
-    crate::alphacode_base::auth::claude::set_active_account_override(None);
-    crate::alphacode_base::auth::codex::set_active_account_override(None);
-    if let Some(prev_home) = prev_home {
-        crate::alphacode_core::env::set_var("ALPHACODE_HOME", prev_home);
-    } else {
-        crate::alphacode_core::env::remove_var("ALPHACODE_HOME");
-    }
-    if let Some(prev_subscription) = prev_subscription {
-        crate::alphacode_core::env::set_var(
-            crate::subscription_catalog::ALPHACODE_SUBSCRIPTION_ACTIVE_ENV,
-            prev_subscription,
-        );
-    } else {
-        crate::alphacode_core::env::remove_var(
-            crate::subscription_catalog::ALPHACODE_SUBSCRIPTION_ACTIVE_ENV,
-        );
-    }
-    for (key, value) in saved_profile_env {
-        if let Some(value) = value {
-            crate::alphacode_core::env::set_var(key, value);
-        } else {
-            crate::alphacode_core::env::remove_var(key);
-        }
-    }
-    crate::subscription_catalog::clear_runtime_env();
+    drop(cleanup);
     result
 }
 
@@ -121,16 +154,89 @@ fn openai_compatible_profile_catalog_cache_is_stale_at_soft_refresh_boundary() {
     ));
 }
 
-fn with_env_var<T>(key: &str, value: &str, f: impl FnOnce() -> T) -> T {
-    let prev = std::env::var_os(key);
-    crate::alphacode_core::env::set_var(key, value);
-    let result = f();
-    if let Some(prev) = prev {
-        crate::alphacode_core::env::set_var(key, prev);
-    } else {
-        crate::alphacode_core::env::remove_var(key);
+/// Restores one env var to its previous value when dropped.
+///
+/// The guard form matters: the earlier restore-after-`f()` shape skipped the
+/// restore when `f` panicked, leaving the override set for the whole process
+/// so one failing test poisoned every sibling that assumed the variable was
+/// absent.
+struct EnvVarRestore<'a> {
+    key: &'a str,
+    previous: Option<std::ffi::OsString>,
+}
+
+impl Drop for EnvVarRestore<'_> {
+    fn drop(&mut self) {
+        match &self.previous {
+            Some(previous) => crate::alphacode_core::env::set_var(self.key, previous),
+            None => crate::alphacode_core::env::remove_var(self.key),
+        }
     }
-    result
+}
+
+fn with_env_var<T>(key: &str, value: &str, f: impl FnOnce() -> T) -> T {
+    let previous = std::env::var_os(key);
+    crate::alphacode_core::env::set_var(key, value);
+    let _restore = EnvVarRestore { key, previous };
+    f()
+}
+
+/// The `with_env_var` guard must restore on the panicking path too: a failed
+/// test used to leave its override set process-wide, and every later test that
+/// assumed the variable was absent then failed with a confusing error about
+/// some other test's endpoint.
+#[test]
+fn with_env_var_restores_overrides_after_a_panicking_body() {
+    let _lock = crate::storage::lock_test_env();
+    let key = "ALPHACODE_OPENROUTER_API_BASE";
+    let previous = std::env::var_os(key);
+    let unwound = std::panic::catch_unwind(|| {
+        with_env_var(key, "https://panic.example.test/v1", || {
+            panic!("simulated failing test body")
+        });
+    });
+    assert!(unwound.is_err(), "the panicking body must propagate");
+    assert_eq!(
+        std::env::var_os(key),
+        previous,
+        "a panicking test body must not leak env overrides"
+    );
+}
+
+/// The clean-env guard restores the sandbox home and every saved profile env
+/// override when dropped — the contract the panicking path relies on.
+#[test]
+fn clean_provider_test_env_guard_restores_sandbox_state() {
+    let _lock = crate::storage::lock_test_env();
+    let previous_home = std::env::var_os("ALPHACODE_HOME");
+    let previous_base = std::env::var_os("ALPHACODE_OPENROUTER_API_BASE");
+    let previous_subscription =
+        std::env::var_os(crate::subscription_catalog::ALPHACODE_SUBSCRIPTION_ACTIVE_ENV);
+
+    crate::alphacode_core::env::set_var("ALPHACODE_HOME", "provider-test-sandbox-home");
+    crate::alphacode_core::env::set_var(
+        "ALPHACODE_OPENROUTER_API_BASE",
+        "https://leaked.example.test/v1",
+    );
+    drop(CleanProviderTestEnv {
+        prev_home: previous_home.clone(),
+        prev_subscription: previous_subscription.clone(),
+        saved_profile_env: vec![(
+            "ALPHACODE_OPENROUTER_API_BASE".to_string(),
+            previous_base.clone(),
+        )],
+    });
+
+    assert_eq!(
+        std::env::var_os("ALPHACODE_HOME"),
+        previous_home,
+        "sandbox home must be restored"
+    );
+    assert_eq!(
+        std::env::var_os("ALPHACODE_OPENROUTER_API_BASE"),
+        previous_base,
+        "saved profile env overrides must be restored"
+    );
 }
 
 fn save_test_openai_compatible_login_config(default_model: &str) {

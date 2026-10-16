@@ -829,6 +829,25 @@ pub(super) fn handle_text_paste(app: &mut App, text: String) {
         return;
     }
 
+    // Ctrl+V is claimed by alphacode *and* bound by some terminals (Windows
+    // Terminal among them). When both fire, the terminal streams the clipboard
+    // in as raw keystrokes — character by character, re-rendering the composer
+    // for each one, which is the "fuzzes the console" report — and then our own
+    // clipboard read completes and inserts `[pasted content]` on top of it. The
+    // user sees their text twice, once unformatted and once collapsed.
+    //
+    // Reconcile instead of double-inserting: if the draft already ends with the
+    // pasted text, the terminal delivered it and there is nothing left to do.
+    // Trailing whitespace is trimmed from the comparison because terminal
+    // paste delivery commonly adds a newline.
+    if app.input[..app.cursor_pos].ends_with(text.trim_end()) {
+        crate::logging::info(
+            "Paste already present in draft (terminal delivered it); skipping duplicate insert",
+        );
+        app.set_status_notice("Pasted");
+        return;
+    }
+
     // Keep text pastes compact and visually consistent in the composer. The
     // original text is restored on explicit submit; file and image drops are
     // handled separately.
@@ -3802,6 +3821,9 @@ impl App {
         }
 
         let trimmed = input.trim();
+        // Learn from executed commands (and /skill invocations): the palette
+        // ranks them by recency/frequency so muscle memory survives re-typing.
+        self.record_command_usage(trimmed);
         let handled = super::commands_dispatch::dispatch_local_command(self, trimmed);
         if handled {
             if trimmed.starts_with('/') {

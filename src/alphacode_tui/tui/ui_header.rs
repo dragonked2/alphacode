@@ -122,6 +122,16 @@ fn is_anthropic_model_id(model: &str) -> bool {
     false
 }
 
+/// True when `model` mentions a Claude family word (opus/sonnet/haiku).
+///
+/// Used to keep non-Anthropic ids from being pretty-printed into something
+/// that reads like a Claude model name (`my-sonnet-4-copy` -> "My Sonnet 4
+/// Copy"); those ids are displayed verbatim instead.
+fn mentions_claude_family_word(model: &str) -> bool {
+    let lower = model.to_ascii_lowercase();
+    CLAUDE_FAMILIES.iter().any(|family| lower.contains(family))
+}
+
 /// Well-known initialisms that contain vowels and would otherwise be
 /// title-cased as words by `is_acronym_segment`.
 const KNOWN_ACRONYMS: &[&str] = &["oss", "ai", "moe", "vl", "it", "fp8", "awq", "exp"];
@@ -368,6 +378,14 @@ fn header_model_display_name(model: &str, provider_name: &str) -> String {
         && rest.starts_with(|c: char| c.is_ascii_digit())
     {
         return format_gpt_id_from_segments(rest);
+    }
+
+    // A non-Anthropic id that merely mentions a Claude family word is a local
+    // fine-tune or a foreign model wearing the name (`my-sonnet-4-copy`).
+    // Pretty-printing it mints a capital "Sonnet" that the header then reads
+    // as a Claude claim, so pass such ids through verbatim instead.
+    if mentions_claude_family_word(raw) {
+        return raw.to_string();
     }
 
     let short_model = shorten_model_name(raw);

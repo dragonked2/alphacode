@@ -520,6 +520,8 @@ mod basic;
 mod composer_anchor;
 #[path = "diagrams.rs"]
 mod diagrams;
+#[path = "help_overlay.rs"]
+mod help_overlay;
 #[path = "inline_picker.rs"]
 mod inline_picker;
 #[path = "onboarding.rs"]

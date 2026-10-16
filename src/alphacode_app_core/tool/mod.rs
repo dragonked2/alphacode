@@ -1,4 +1,4 @@
-mod agentgrep;
+mod alphagrep;
 mod amass;
 pub mod ambient;
 mod anew;
@@ -910,8 +910,8 @@ impl Registry {
             Self::insert_tool_timed(
                 &mut m,
                 &mut timings,
-                "agentgrep",
-                agentgrep::AgentGrepTool::new,
+                "alphagrep",
+                alphagrep::AlphaGrepTool::new,
             );
             Self::insert_tool_timed(
                 &mut m,

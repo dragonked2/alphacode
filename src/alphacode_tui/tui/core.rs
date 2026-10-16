@@ -30,9 +30,17 @@ pub fn next_grapheme_boundary(s: &str, pos: usize) -> usize {
 
 /// Convert a byte offset in a string to a character index.
 /// Needed when the renderer works in character space but `cursor_pos` is byte-based.
+///
+/// An offset inside a multi-byte character (which a byte-based cursor should
+/// never produce, but corrupted input can) rounds up to the next character
+/// boundary instead of panicking on a byte slice. The offset is clamped to
+/// the string length.
 #[cfg(test)]
 pub fn byte_offset_to_char_index(s: &str, byte_offset: usize) -> usize {
-    s[..byte_offset.min(s.len())].chars().count()
+    let byte_offset = byte_offset.min(s.len());
+    s.char_indices()
+        .take_while(|(start, _)| *start < byte_offset)
+        .count()
 }
 
 /// Convert a byte offset to an extended grapheme-cluster index. An offset

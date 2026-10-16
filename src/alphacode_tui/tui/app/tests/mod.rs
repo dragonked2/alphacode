@@ -598,6 +598,7 @@ pub mod tests {
     include!("state_model_poke_02/part_02.rs");
 
     include!("command_suggestions_cache.rs");
+    include!("command_usage_rank.rs");
     include!("hotkey_feedback_e2e.rs");
     include!("image_placeholder_commands.rs");
     include!("input_copy_selection.rs");

@@ -107,8 +107,8 @@ const REGISTERED_COMMANDS: &[RegisteredCommand] = &[
         "Show/toggle single-line swarm/file-activity notifications",
     ),
     RegisteredCommand::public(
-        "/show-agentgrep-output",
-        "Show/toggle full agentgrep search output inline in chat",
+        "/show-alphagrep-output",
+        "Show/toggle full alphagrep search output inline in chat",
     ),
     RegisteredCommand::public(
         "/tool-call-details",
@@ -333,6 +333,14 @@ impl App {
         scored.sort_by(|a, b| {
             b.0.cmp(&a.0)
                 .then_with(|| b.1.cmp(&a.1))
+                // Learned recency/frequency: within the same match quality,
+                // commands the user actually runs bubble above length/alpha
+                // order, so muscle memory is stable from session to session.
+                .then_with(|| {
+                    self.command_usage
+                        .rank(&b.2)
+                        .cmp(&self.command_usage.rank(&a.2))
+                })
                 .then_with(|| a.2.len().cmp(&b.2.len()))
                 .then_with(|| a.2.cmp(&b.2))
         });
@@ -340,6 +348,12 @@ impl App {
             .into_iter()
             .map(|(_, _, cmd, help)| (cmd, help))
             .collect()
+    }
+
+    /// Remember an executed input line so the palette ranks its command above
+    /// same-match peers next time (recency wins, frequency breaks ties).
+    pub(super) fn record_command_usage(&mut self, trimmed: &str) {
+        self.command_usage.record_line(trimmed);
     }
 
     fn command_candidates(&self) -> Vec<(String, &'static str)> {
@@ -1090,21 +1104,21 @@ impl App {
             );
         }
 
-        if prefix.starts_with("/show-agentgrep-output ") {
+        if prefix.starts_with("/show-alphagrep-output ") {
             return self.rank_suggestions(
                 input,
                 vec![
                     (
-                        "/show-agentgrep-output status".into(),
-                        "Show whether agentgrep output is shown inline",
+                        "/show-alphagrep-output status".into(),
+                        "Show whether alphagrep output is shown inline",
                     ),
                     (
-                        "/show-agentgrep-output on".into(),
-                        "Render full agentgrep search results inline in chat",
+                        "/show-alphagrep-output on".into(),
+                        "Render full alphagrep search results inline in chat",
                     ),
                     (
-                        "/show-agentgrep-output off".into(),
-                        "Show only the one-line agentgrep summary",
+                        "/show-alphagrep-output off".into(),
+                        "Show only the one-line alphagrep summary",
                     ),
                 ],
             );
@@ -1709,7 +1723,7 @@ impl App {
                 | "/compact mode"
                 | "/alignment"
                 | "/compact-notifications"
-                | "/show-agentgrep-output"
+                | "/show-alphagrep-output"
                 | "/reasoning"
                 | "/thinking"
                 | "/thinking-display"

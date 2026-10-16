@@ -1,14 +1,14 @@
 use crate::alphacode_app_core::build;
 use crate::alphacode_app_core::storage;
+pub use crate::alphacode_update_core::{
+    AutoUpdateGate, AutoUpdateSkipReason, DownloadProgress, GIT_PULL_DIVERGED_SUMMARY, GitHubAsset,
+    GitHubRelease, PreparedUpdate, UpdateCheckResult, UpdateEstimate, auto_update_skip_reason,
+    format_download_progress_bar, summarize_update_error, summary_is_divergence,
+};
 use crate::alphacode_update_core::{
     BACKGROUND_UPDATE_THRESHOLD, estimate_release_update_duration, estimate_source_update_duration,
     format_duration_estimate, get_asset_name, is_archive_name, summarize_git_pull_failure,
     update_estimate, verify_asset_checksum_text, version_is_newer,
-};
-pub use crate::alphacode_update_core::{
-    DownloadProgress, GIT_PULL_DIVERGED_SUMMARY, GitHubAsset, GitHubRelease, PreparedUpdate,
-    UpdateCheckResult, UpdateEstimate, format_download_progress_bar, summarize_update_error,
-    summary_is_divergence,
 };
 use anyhow::{Context, Result};
 
@@ -108,22 +108,39 @@ fn source_build_repo_dir() -> Result<PathBuf> {
     Ok(source_build_root()?.join("alphacode"))
 }
 
+/// The process-level half of the automatic-update gate, read from the live
+/// environment and executable path.
+///
+/// The throttle is deliberately left at `false` here: it comes from on-disk
+/// metadata that only the caller (`check_and_maybe_update`) needs to load, and
+/// keeping it out means [`should_auto_update`] keeps answering exactly the
+/// question it always has — "is this process allowed to auto-update at all?".
+pub fn auto_update_process_gate() -> AutoUpdateGate {
+    AutoUpdateGate {
+        disabled_by_env: std::env::var("ALPHACODE_NO_AUTO_UPDATE").is_ok(),
+        release_build: is_release_build(),
+        running_inside_checkout: std::env::current_exe()
+            .map(|exe| is_inside_git_repo(&exe))
+            .unwrap_or(false),
+        throttled: false,
+    }
+}
+
 pub fn should_auto_update() -> bool {
-    if std::env::var("ALPHACODE_NO_AUTO_UPDATE").is_ok() {
-        return false;
-    }
+    auto_update_skip_reason(auto_update_process_gate()).is_none()
+}
 
-    if !is_release_build() {
-        return false;
-    }
-
-    if let Ok(exe) = std::env::current_exe()
-        && is_inside_git_repo(&exe)
-    {
-        return false;
-    }
-
-    true
+/// Why this process will not auto-update right now, if it won't.
+///
+/// Every gate is reported by name so "auto-update didn't fire" has an answer.
+/// Without this, a disabled-by-env check, a throttle window, and a genuine
+/// "you are up to date" all arrive as the same silent `NoUpdate`.
+pub fn auto_update_skip_reason_now(throttled: bool) -> Option<AutoUpdateSkipReason> {
+    let gate = AutoUpdateGate {
+        throttled,
+        ..auto_update_process_gate()
+    };
+    auto_update_skip_reason(gate)
 }
 
 pub fn run_git_pull_ff_only(repo_dir: &Path, quiet: bool) -> Result<()> {
@@ -1358,12 +1375,14 @@ pub fn download_and_install_blocking_with_progress(
 pub fn check_and_maybe_update(auto_install: bool) -> UpdateCheckResult {
     use crate::alphacode_app_core::bus::{Bus, BusEvent, UpdateStatus};
 
-    if !should_auto_update() {
-        return UpdateCheckResult::NoUpdate;
-    }
-
     let metadata = UpdateMetadata::load().unwrap_or_default();
-    if !metadata.should_check() {
+    let throttled = !metadata.should_check();
+
+    // Report *which* gate stopped the check. Previously all of these returned a
+    // bare `NoUpdate`, so a deliberately disabled check, an open throttle
+    // window, and a broken build all looked the same in the log.
+    if let Some(reason) = auto_update_skip_reason_now(throttled) {
+        crate::logging::info(&format!("update: automatic check skipped — {reason}"));
         return UpdateCheckResult::NoUpdate;
     }
 
@@ -1416,6 +1435,14 @@ pub fn check_and_maybe_update(auto_install: bool) -> UpdateCheckResult {
             }
         }
         Ok(None) => {
+            // Log the positive result too. "Checked, and you are on the latest
+            // release" and "never checked at all" produce the same
+            // `UpdateCheckResult::NoUpdate`, and only this line distinguishes
+            // them when reading a session log after the fact.
+            crate::logging::info(&format!(
+                "update: check completed, already on the latest release ({})",
+                crate::alphacode_build_meta::version()
+            ));
             repair_stale_shared_server_after_no_update();
             Bus::global().publish(BusEvent::UpdateStatus(UpdateStatus::UpToDate));
             let mut metadata = UpdateMetadata::load().unwrap_or_default();
@@ -1425,6 +1452,12 @@ pub fn check_and_maybe_update(auto_install: bool) -> UpdateCheckResult {
         }
         Err(e) => {
             let msg = short_update_error("update check failed", &e);
+            // Deliberately does not stamp `last_check`: a failed check should
+            // be retried on the next launch rather than throttled for 30
+            // minutes, so a transient DNS failure is not sticky.
+            crate::logging::info(&format!(
+                "update: check failed ({msg}); will retry on next launch"
+            ));
             Bus::global().publish(BusEvent::UpdateStatus(UpdateStatus::Error(msg.clone())));
             UpdateCheckResult::Error(msg)
         }

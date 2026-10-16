@@ -181,12 +181,13 @@ mod tests {
     /// three of them fit in the seven columns left after the ellipsis.
     #[test]
     fn wide_characters_are_measured_in_columns() {
-        // Seven glyphs is fourteen columns, so a ten-column budget keeps four
-        // glyphs (eight columns) plus the three-column ellipsis.
+        // Eight glyphs is sixteen columns; a ten-column budget leaves seven
+        // columns after the three-column ellipsis, which fits exactly three
+        // two-column glyphs (six columns).
         let out = truncate_smart(DOUBLE_WIDTH, 10);
         assert_eq!(
             out,
-            format!("{}...", &DOUBLE_WIDTH[..DOUBLE_WIDTH.len() - 9])
+            format!("{}...", DOUBLE_WIDTH.chars().take(3).collect::<String>())
         );
         assert_eq!(
             out.width(),

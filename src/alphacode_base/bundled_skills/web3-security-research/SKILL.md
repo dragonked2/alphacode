@@ -26,7 +26,7 @@ Prefer **fewer high-confidence findings** over many weak ones.
    parameters, change oracles, execute arbitrary calls**.
 3. Build the protocol map. No map → no hunting.
 
-Suggested tools: `read`, `agentgrep` (Solidity selectors, role modifiers),
+Suggested tools: `read`, `alphagrep` (Solidity selectors, role modifiers),
 `bash` (forge/slither/cast when installed), `webfetch` (docs, deployed ABI).
 
 ### Phase 2 — Asset-flow graph (see `protocol-model`)

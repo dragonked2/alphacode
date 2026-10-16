@@ -8,6 +8,7 @@ repository = "https://github.com/dragonked2/alphacode"
 edition = "2024"
 
 [workspace]
+members = ["alphagrep"]
 
 [lib]
 name = "alphacode"
@@ -82,7 +83,7 @@ webpki-roots = "1"
 walkdir = "2"
 wait-timeout = "0.2"
 xa11y = "0.9"
-agentgrep = { git = "https://github.com/1jehuang/agentgrep.git", tag = "v0.1.6" }
+alphagrep = { path = "alphagrep" }
 
 # TUI
 ratatui = "0.30"
@@ -149,7 +150,7 @@ httpdate = "1"
 azure_identity = { version = "1", default-features = false, features = ["tokio"], optional = true }
 
 # Mermaid rendering (optional)
-mermaid-rs-renderer = { git = "https://github.com/1jehuang/mermaid-rs-renderer.git", tag = "v0.3.1", optional = true }
+mermaid-rs-renderer = { version = "0.3.1", optional = true }
 
 # Native TLS (optional, for linux-compat-vendored-openssl)
 native-tls = { version = "0.2.18", optional = true }

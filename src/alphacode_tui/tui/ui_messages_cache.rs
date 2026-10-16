@@ -23,7 +23,7 @@ where
             mermaid_epoch: crate::alphacode_tui::tui::mermaid::deferred_render_epoch(),
             mermaid_aspect_bucket:
                 crate::alphacode_tui::tui::mermaid::current_preferred_aspect_ratio_bucket(),
-            show_agentgrep_output: crate::config::config().display.show_agentgrep_output,
+            show_alphagrep_output: crate::config::config().display.show_alphagrep_output,
             tool_call_details: crate::config::config().display.tool_call_details,
         },
         render,

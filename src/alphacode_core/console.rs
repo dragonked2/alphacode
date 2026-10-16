@@ -253,6 +253,23 @@ fn quiet_requested() -> bool {
 
 static ANSI_CACHE: OnceLock<bool> = OnceLock::new();
 
+/// Return `line` for a terminal, or the same text with its escape sequences
+/// stripped when styling is off.
+///
+/// Whole-line call sites (setup banners, hint boxes) build the escapes they
+/// want and pass the finished line through here, so a pipe, a log file, or a
+/// legacy Windows console receives clean text instead of literal `←[36m`
+/// garbage. Prefer this over hand-rolling an [`ansi_enabled`] branch; code that
+/// emits escape sequences individually can keep using [`ansi_enabled`] (or
+/// `cli::output::style`) directly.
+pub fn styled_line(line: &str) -> String {
+    if ansi_enabled() {
+        line.to_string()
+    } else {
+        crate::alphacode_base::message::strip_ansi_escape_sequences(line)
+    }
+}
+
 /// Whether the terminal can render box-drawing and block characters.
 ///
 /// Historically this was inferred from `LANG`/`LC_ALL`/`LC_CTYPE`/`TERM`
@@ -520,6 +537,19 @@ mod tests {
         assert!(ansi_enabled());
         set_ansi_enabled_override(None);
         assert_eq!(ansi_enabled(), detected);
+    }
+
+    #[test]
+    fn styled_line_drops_escapes_only_when_styling_is_off() {
+        let _guard = test_override_lock();
+        set_ansi_enabled_override(Some(false));
+        assert_eq!(styled_line("\u{1b}[36m│ ok\u{1b}[0m"), "│ ok");
+        set_ansi_enabled_override(Some(true));
+        assert_eq!(
+            styled_line("\u{1b}[36m│ ok\u{1b}[0m"),
+            "\u{1b}[36m│ ok\u{1b}[0m"
+        );
+        set_ansi_enabled_override(None);
     }
 
     #[test]

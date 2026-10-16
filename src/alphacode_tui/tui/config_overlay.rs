@@ -105,11 +105,11 @@ pub(super) fn settings() -> Vec<ConfigSetting> {
             on_toggle: |v| apply(Config::set_display_centered, "centered output", v),
         },
         ConfigSetting {
-            key: "display.show_agentgrep_output",
-            label: "Show agentgrep output",
-            description: "Include agentgrep matches in tool output",
-            current: cfg.display.show_agentgrep_output,
-            on_toggle: |v| apply(Config::set_show_agentgrep_output, "agentgrep output", v),
+            key: "display.show_alphagrep_output",
+            label: "Show alphagrep output",
+            description: "Include alphagrep matches in tool output",
+            current: cfg.display.show_alphagrep_output,
+            on_toggle: |v| apply(Config::set_show_alphagrep_output, "alphagrep output", v),
         },
         ConfigSetting {
             key: "display.tool_call_details",

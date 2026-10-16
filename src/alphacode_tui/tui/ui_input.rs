@@ -78,10 +78,7 @@ fn shell_mode_hint(mode: ComposerMode) -> Option<&'static str> {
 /// status row, and an embedded `\n` would silently clip the rest of the text.
 fn normalize_repaint_sensitive_notice_text(text: &str) -> String {
     let stripped = crate::alphacode_base::message::strip_ansi_escape_sequences(text);
-    stripped
-        .replace('\n', " ")
-        .replace('\r', " ")
-        .replace("⚠️", "⚠")
+    stripped.replace(['\n', '\r'], " ").replace("⚠️", "⚠")
 }
 
 fn command_suggestion_window_start(selected: usize, suggestion_count: usize) -> usize {
@@ -1212,8 +1209,9 @@ fn idle_session_stats_line(app: &dyn TuiState, max_width: usize) -> Option<Line<
     segments.push(StatusSegment::new(
         5,
         format!(
-            "est. ${} @ $1/M",
-            super::info_widget::format_token_value_usd(total)
+            "est. ${} @ ${}/M",
+            super::info_widget::format_token_value_usd(total),
+            super::info_widget::NOTIONAL_USD_PER_MTOK
         ),
         success_color(),
     ));
@@ -2559,18 +2557,41 @@ mod tests {
 
     #[test]
     fn empty_composer_placeholder_teaches_shortcuts_and_fits_narrow_widths() {
-        let wide = empty_composer_placeholder(80);
+        let wide = empty_composer_placeholder(80, "> ");
         assert!(wide.contains("/ commands"));
         assert!(wide.contains("F1 help"));
 
         for width in 0..=80 {
-            let placeholder = empty_composer_placeholder(width);
+            let placeholder = empty_composer_placeholder(width, "> ");
             assert!(
                 unicode_width::UnicodeWidthStr::width(placeholder.as_str()) <= width,
                 "placeholder {placeholder:?} exceeds {width} columns"
             );
         }
-        assert!(empty_composer_placeholder(0).is_empty());
+        assert!(empty_composer_placeholder(0, "> ").is_empty());
+    }
+
+    /// While a turn is running the composer must not invite input. It used to
+    /// show the same "Ask alphacode anything…" text as the idle state, which
+    /// read as "type here" while keystrokes were only being queued.
+    #[test]
+    fn processing_placeholder_reports_status_instead_of_inviting_input() {
+        // `input_prompt` returns the ellipsis glyph while a turn is running.
+        let busy = empty_composer_placeholder(80, "\u{2026} ");
+        assert!(
+            !busy.contains("Ask"),
+            "a running turn must not show an input prompt: {busy:?}"
+        );
+        assert!(busy.contains("Working"), "got {busy:?}");
+
+        for width in 0..=80 {
+            let placeholder = empty_composer_placeholder(width, "\u{2026} ");
+            assert!(
+                unicode_width::UnicodeWidthStr::width(placeholder.as_str()) <= width,
+                "placeholder {placeholder:?} exceeds {width} columns"
+            );
+        }
+        assert!(empty_composer_placeholder(0, "\u{2026} ").is_empty());
     }
 
     /// The shell color must read as a deliberate accent, distinct from the
@@ -4149,7 +4170,7 @@ pub(crate) fn wrap_input_text(
     // terminals the placeholder teaches the slash palette and F1 help; on
     // narrow terminals it falls back to a short prompt that still fits.
     let empty_placeholder = if input.is_empty() {
-        let placeholder = empty_composer_placeholder(line_width);
+        let placeholder = empty_composer_placeholder(line_width, prompt_char);
         (!placeholder.is_empty()).then_some(placeholder)
     } else {
         None
@@ -4205,20 +4226,43 @@ pub(crate) fn wrap_input_text(
 
 /// Return the most useful empty-composer prompt that fits the available text
 /// columns. The full hint teaches the command palette and direct help shortcut;
-/// narrower terminals progressively keep the prompt readable.
-fn empty_composer_placeholder(max_width: usize) -> String {
-    [
-        "Ask alphacode anything… · / commands · F1 help",
-        "Ask anything… · / commands · F1 help",
-        "Ask anything… · / commands · /theme look",
-        "Ask anything… · / commands",
-        "Ask anything…",
-        "Type…",
-    ]
-    .into_iter()
-    .find(|candidate| unicode_width::UnicodeWidthStr::width(*candidate) <= max_width)
-    .unwrap_or("")
-    .to_string()
+// narrower terminals progressively keep the prompt readable.
+///
+/// While a turn is running the composer is read-only, so it gets status text
+/// instead. Showing "Ask alphacode anything…" next to the busy glyph was a
+/// real trap: it read as "type here", keystrokes were queued against a turn
+/// that could not accept them yet, and nothing on screen distinguished a
+/// prompt from a spinner.
+///
+/// Busy state is derived from the prompt glyph the caller already resolved
+/// (`input_prompt` returns the ellipsis while processing) rather than taking
+/// another parameter, which would have churned every caller and test for a
+/// value the caller already has.
+fn empty_composer_placeholder(max_width: usize, prompt_char: &str) -> String {
+    let busy = prompt_char.trim_start().starts_with('\u{2026}');
+    let candidates: &[&str] = if busy {
+        &[
+            "Working… · Esc interrupts",
+            "Working… · Esc interrupts",
+            "Working…",
+            "Thinking…",
+        ]
+    } else {
+        &[
+            "Ask alphacode anything… · / commands · F1 help",
+            "Ask anything… · / commands · F1 help",
+            "Ask anything… · / commands · /theme look",
+            "Ask anything… · / commands",
+            "Ask anything…",
+            "Type…",
+        ]
+    };
+    candidates
+        .iter()
+        .copied()
+        .find(|candidate| unicode_width::UnicodeWidthStr::width(*candidate) <= max_width)
+        .unwrap_or("")
+        .to_string()
 }
 
 fn send_mode_indicator(app: &dyn TuiState) -> (&'static str, Color) {

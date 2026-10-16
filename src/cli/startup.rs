@@ -365,6 +365,13 @@ fn spawn_background_update_check(args: &Args) {
     let auto_update = should_auto_install_update(args);
 
     if !check_updates {
+        // Name the reason. "No update check ran" is otherwise indistinguishable
+        // from "a check ran and found nothing", which is the whole reason an
+        // auto-update report is hard to act on.
+        logging::info(&format!(
+            "[TIMING] background_update_check: not started ({})",
+            background_update_skip_reason(args)
+        ));
         return;
     }
 
@@ -373,6 +380,7 @@ fn spawn_background_update_check(args: &Args) {
             use crate::alphacode_base::bus::{
                 Bus, BusEvent, ClientMaintenanceAction, SessionUpdateStatus,
             };
+            let started = std::time::Instant::now();
             match update::check_and_maybe_update(auto_update) {
                 update::UpdateCheckResult::UpdateAvailable {
                     current, latest, ..
@@ -414,8 +422,14 @@ fn spawn_background_update_check(args: &Args) {
                 update::UpdateCheckResult::Error(e) => {
                     logging::info(&format!("Update check failed: {}", e));
                 }
+                // `check_and_maybe_update` already logs *why* it is a no-op
+                // (disabled, dev build, checkout, throttled, or up to date).
                 update::UpdateCheckResult::NoUpdate => {}
             }
+            logging::info(&format!(
+                "[TIMING] background_update_check: channel=release auto_update={auto_update}, total={}ms",
+                started.elapsed().as_millis()
+            ));
         });
     } else {
         std::thread::spawn(move || {
@@ -466,12 +480,38 @@ fn spawn_background_update_check(args: &Args) {
                 Bus::global().publish(BusEvent::UpdateStatus(UpdateStatus::UpToDate));
             }
             logging::info(&format!(
-                "[TIMING] background_update_check: auto_update={}, total={}ms",
+                "[TIMING] background_update_check: channel=source auto_update={}, total={}ms",
                 auto_update,
                 start.elapsed().as_millis()
             ));
         });
     }
+}
+
+/// Why the background update check will not run for this invocation.
+///
+/// Mirrors the boolean chain in [`should_spawn_background_update_check`] one
+/// for one so the log never claims a different reason than the gate actually
+/// used.
+fn background_update_skip_reason(args: &Args) -> &'static str {
+    if args.quiet {
+        return "--quiet suppresses all non-error output";
+    }
+    if args.no_update {
+        return "--no-update was passed";
+    }
+    if let Some(command) = &args.command
+        && matches!(
+            command,
+            Command::Update | Command::Serve { .. } | Command::Acp
+        )
+    {
+        return "this subcommand manages updates itself";
+    }
+    if args.resume.is_some() {
+        return "resuming a session skips the background check";
+    }
+    "gate open"
 }
 
 fn should_spawn_background_update_check(args: &Args) -> bool {
@@ -674,6 +714,52 @@ mod tests {
         assert!(matches!(args.command, Some(Command::Update)));
         assert!(!should_spawn_background_update_check(&args));
         assert!(should_auto_install_update(&args));
+    }
+
+    /// The whole point of `background_update_skip_reason` is that it agrees
+    /// with the boolean gate. A disagreement means the log names a reason that
+    /// is not the reason the check was skipped, which is worse than silence.
+    #[test]
+    fn background_skip_reason_agrees_with_the_gate_for_every_gate() {
+        let cases: &[(&[&str], bool)] = &[
+            (&["alphacode"], true),
+            (&["alphacode", "--quiet"], false),
+            (&["alphacode", "--no-update"], false),
+            (&["alphacode", "update"], false),
+            (&["alphacode", "serve"], false),
+            (&["alphacode", "acp"], false),
+            (&["alphacode", "--resume"], false),
+            (&["alphacode", "--resume", "abc"], false),
+        ];
+
+        for (argv, expected_to_spawn) in cases {
+            let args = parse_args(argv);
+            let spawns = should_spawn_background_update_check(&args);
+            assert_eq!(spawns, *expected_to_spawn, "gate disagreed for {argv:?}");
+
+            let reason = background_update_skip_reason(&args);
+            assert!(!reason.is_empty(), "empty skip reason for {argv:?}");
+            if spawns {
+                assert_eq!(
+                    reason, "gate open",
+                    "{argv:?} spawns a check but reports {reason:?}"
+                );
+            } else {
+                assert_ne!(
+                    reason, "gate open",
+                    "{argv:?} skips the check but reports no reason"
+                );
+            }
+        }
+    }
+
+    /// `--quiet` wins over everything, so it must be reported first rather
+    /// than being masked by a subcommand or resume that also matched.
+    #[test]
+    fn quiet_takes_precedence_in_the_reported_skip_reason() {
+        let args = parse_args(&["alphacode", "--quiet", "update"]);
+        assert!(!should_spawn_background_update_check(&args));
+        assert!(background_update_skip_reason(&args).contains("--quiet"));
     }
 
     #[test]
