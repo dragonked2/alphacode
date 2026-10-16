@@ -5,6 +5,22 @@
 use super::DisplayMessage;
 use unicode_segmentation::UnicodeSegmentation;
 
+/// Find the smallest UTF-8 character boundary greater than or equal to `pos`
+/// (clamped to the string length).
+///
+/// The companion to the crate's `floor_char_boundary`: use this when *starting*
+/// a slice. A byte cursor that lands inside a multi-byte character would
+/// otherwise panic when used as a slice start, so an out-of-range or mid
+/// character offset rounds up to the next boundary instead. Offsets already on
+/// a boundary are returned unchanged, so valid cursors are never moved.
+pub fn ceil_char_boundary(s: &str, pos: usize) -> usize {
+    let mut pos = pos.min(s.len());
+    while pos < s.len() && !s.is_char_boundary(pos) {
+        pos += 1;
+    }
+    pos
+}
+
 /// Find the byte offset of the previous extended grapheme boundary before
 /// `pos`. This keeps editing operations atomic for combining marks, emoji
 /// modifiers, and joined emoji sequences.

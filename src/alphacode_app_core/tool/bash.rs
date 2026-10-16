@@ -744,8 +744,10 @@ fn build_detached_shell_wrapper(command: &str) -> StdCommand {
 }
 
 fn format_command_output(mut output: String, exit_code: Option<i32>) -> String {
-    // Apply smart stream filtering to reduce context bloat
-    let filter_result = smart_stream::filter_output("bash", &output);
+    // Reduce context bloat without size caps: the truncation below keeps both
+    // ends of an oversized output, and the filter's head-only caps would
+    // otherwise discard the tail before it could be preserved.
+    let filter_result = smart_stream::filter_output_reduction_only("bash", &output);
     if filter_result.was_filtered {
         let was_significant = filter_result.significant_reduction();
         let summary = filter_result.summary.clone();
@@ -968,7 +970,10 @@ mod utf8_truncation_tests {
     #[test]
     fn format_command_output_truncates_on_utf8_boundary() {
         let input = format!("{}é", "a".repeat(29_999));
-        let output = format_command_output(input, None);
+        // `Some(0)` leaves the string free of trailing status text. With `None`
+        // the signal-failure verdict is appended *after* the retained tail by
+        // design, so the check for the last character uses a clean exit.
+        let output = format_command_output(input.clone(), Some(0));
         // The marker must still signal that the original bytes are no longer
         // recoverable from this string. Truncation keeps both ends, so the
         // multi-byte 'é' at the very end is part of the retained tail: a cut
@@ -981,6 +986,15 @@ mod utf8_truncation_tests {
         assert!(
             output.ends_with('é'),
             "tail (multi-byte char) must survive: {output:?}"
+        );
+
+        // A `None` exit code appends the signal verdict after the tail; the
+        // multi-byte char must still be intact in front of it.
+        let signalled = format_command_output(input, None);
+        assert!(signalled.contains('é'), "tail mangled: {signalled:?}");
+        assert!(
+            signalled.ends_with("FAILED]"),
+            "signal verdict missing: {signalled:?}"
         );
     }
 
@@ -1369,7 +1383,10 @@ impl BashTool {
                 .await;
         }
 
-        let timeout_ms = params.timeout.unwrap_or(DEFAULT_TIMEOUT_MS).min(MAX_TIMEOUT_MS);
+        let timeout_ms = params
+            .timeout
+            .unwrap_or(DEFAULT_TIMEOUT_MS)
+            .min(MAX_TIMEOUT_MS);
         let timeout_duration = Duration::from_millis(timeout_ms);
 
         let has_stdin_channel = ctx.stdin_request_tx.is_some();
@@ -1589,7 +1606,10 @@ impl BashTool {
         params: &BashInput,
         ctx: &ToolContext,
     ) -> Result<ToolOutput> {
-        let timeout_ms = params.timeout.unwrap_or(DEFAULT_TIMEOUT_MS).min(MAX_TIMEOUT_MS);
+        let timeout_ms = params
+            .timeout
+            .unwrap_or(DEFAULT_TIMEOUT_MS)
+            .min(MAX_TIMEOUT_MS);
         let timeout_duration = Duration::from_millis(timeout_ms);
         let started_at = Utc::now().to_rfc3339();
         let started = Instant::now();

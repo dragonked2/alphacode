@@ -109,6 +109,8 @@ pub(super) fn clear_queued_poke_messages(app: &mut App) -> usize {
 pub(super) fn disable_auto_poke(app: &mut App) -> usize {
     let cleared = clear_queued_poke_messages(app);
     app.auto_poke_incomplete_todos = false;
+    app.auto_poke_incomplete_attempts = 0;
+    app.auto_poke_last_incomplete_ids.clear();
     app.todo_confidence_spike_challenged = false;
     app.todo_completion_gate_attempts = 0;
     app.todo_gate_digest_delivered = false;
@@ -239,6 +241,7 @@ pub(super) fn activate_auto_poke(app: &mut App) -> PokeActivation {
     let incomplete = incomplete_poke_todos(app);
     app.auto_poke_incomplete_todos = true;
     app.auto_poke_incomplete_attempts = 0;
+    app.auto_poke_last_incomplete_ids.clear();
     app.todo_confidence_spike_challenged = false;
     app.todo_completion_gate_attempts = 0;
     // Re-arming starts a fresh review cycle, so the deferred quality digest is

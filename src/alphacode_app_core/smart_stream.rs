@@ -189,6 +189,13 @@ pub struct StreamFilter {
     pub fuzzy_dedup: bool,
     /// Whether to summarize large outputs.
     pub summarize: bool,
+    /// Whether to reduce noise without enforcing the size caps.
+    ///
+    /// Callers that truncate oversized output themselves and need both ends
+    /// preserved (the bash tool's `truncate_middle`) must set this: the default
+    /// caps are head-only, so they discard the tail — including verdict lines
+    /// like `test result: ok` — before the caller can keep it.
+    pub reduction_only: bool,
 }
 
 impl StreamFilter {
@@ -228,7 +235,18 @@ impl StreamFilter {
             dedup: true,
             fuzzy_dedup,
             summarize: true,
+            reduction_only: false,
         }
+    }
+
+    /// Reduce noise without applying the size caps.
+    ///
+    /// Deduplication, noise removal and the summary still run; the line and
+    /// char caps do not, so oversized output is handed back whole. See
+    /// [`StreamFilter::reduction_only`].
+    pub fn with_reduction_only(mut self) -> Self {
+        self.reduction_only = true;
+        self
     }
 
     /// Filter output through this configuration.
@@ -333,6 +351,7 @@ impl StreamFilter {
         let mut seen: Vec<(String, u32)> = Vec::new();
         let mut skipped_duplicates = 0u32;
         let mut skipped_noise = 0u32;
+        let mut skipped_blanks = 0u32;
         let mut consecutive_blanks = 0usize;
         // Set when input lines are discarded for any reason (dedup, noise, or
         // the line cap). Drives [`mark_partial_headers`] below.
@@ -344,6 +363,7 @@ impl StreamFilter {
             if is_blank {
                 consecutive_blanks += 1;
                 if consecutive_blanks > MAX_CONSECUTIVE_BLANKS {
+                    skipped_blanks += 1;
                     continue;
                 }
             } else {
@@ -400,7 +420,9 @@ impl StreamFilter {
 
             // Check limits. Reaching the cap means the remaining lines are
             // dropped without being seen, which also makes the output partial.
-            if kept.len() >= self.max_lines {
+            // Reduction-only mode skips the cap: the caller owns truncation and
+            // a break here would drop the tail it is trying to preserve.
+            if !self.reduction_only && kept.len() >= self.max_lines {
                 input_lines_dropped = true;
                 break;
             }
@@ -412,13 +434,14 @@ impl StreamFilter {
 
         let filtered: String = kept.join("\n");
 
-        // Truncate to max chars if needed.
+        // Truncate to max chars if needed. Reduction-only mode skips this cut
+        // for the same reason it skips the line cap.
         //
         // The char budget is applied *before* the summary is measured, so
         // `filtered_chars` and the reduction percentage describe what the model
         // actually receives. Measuring after appending the summary made every
         // result read as over budget and understated the saving.
-        let filtered = if filtered.len() > self.max_chars {
+        let filtered = if !self.reduction_only && filtered.len() > self.max_chars {
             let mut cut = self.max_chars.saturating_sub(150);
             while cut > 0 && !filtered.is_char_boundary(cut) {
                 cut -= 1;
@@ -462,7 +485,11 @@ impl StreamFilter {
             filtered_lines,
             original_chars,
             filtered_chars,
-            was_filtered: true,
+            // With the size caps off nothing is guaranteed to have been
+            // dropped, so report whether this pass actually removed a line —
+            // otherwise the caller would replace its output with an identical
+            // string.
+            was_filtered: !self.reduction_only || input_lines_dropped || skipped_blanks > 0,
             summary,
         }
     }
@@ -761,6 +788,19 @@ pub fn filter_output(tool_name: &str, raw: &str) -> FilterResult {
     StreamFilter::for_tool(tool_name).filter(raw)
 }
 
+/// Filter tool output for reduction only: deduplicate, drop noise, summarize —
+/// but never enforce the size caps.
+///
+/// Use this when the caller truncates oversized output itself and needs both
+/// ends preserved (the bash tool's `truncate_middle`). The default caps cut the
+/// head only, so they would drop the tail — including verdict lines like
+/// `test result: ok` — before such a caller could keep it.
+pub fn filter_output_reduction_only(tool_name: &str, raw: &str) -> FilterResult {
+    StreamFilter::for_tool(tool_name)
+        .with_reduction_only()
+        .filter(raw)
+}
+
 /// Quick check if output needs filtering.
 pub fn needs_filtering(tool_name: &str, raw: &str) -> bool {
     let filter = StreamFilter::for_tool(tool_name);
@@ -790,6 +830,47 @@ mod tests {
         assert!(result.was_filtered);
         assert!(result.filtered_lines < 500);
         assert!(result.summary.is_some());
+    }
+
+    /// Reduction-only mode must hand oversized output back whole: the bash tool
+    /// truncates afterwards and keeps both ends, so a cut here would lose the
+    /// very tail verdict the caller is preserving.
+    #[test]
+    fn reduction_only_keeps_oversized_output_intact() {
+        let verdict = "test result: ok. 24 passed; 0 failed";
+        let output = format!("{}\n{verdict}\n", "x".repeat(60_000));
+
+        let result = filter_output_reduction_only("bash", &output);
+        assert!(
+            !result.was_filtered,
+            "nothing was dropped, so the output must pass through"
+        );
+        assert!(result.filtered.contains(verdict), "tail verdict was cut");
+        assert!(
+            result.filtered.len() >= 60_000,
+            "char cap was applied: {} chars",
+            result.filtered.len()
+        );
+    }
+
+    /// The line cap is skipped as well, so a long numbered list reaches the
+    /// caller's own both-ends truncation instead of stopping at 150 lines.
+    #[test]
+    fn reduction_only_does_not_apply_the_line_cap() {
+        let output: String = (0..4000).map(|i| format!("line {i}\n")).collect();
+
+        let result = filter_output_reduction_only("bash", &output);
+        assert!(!result.was_filtered, "nothing was dropped");
+        assert!(result.filtered.contains("line 0"), "head lost");
+        assert!(
+            result.filtered.contains("line 3999"),
+            "tail line was dropped"
+        );
+        assert!(
+            result.filtered.len() > 30_000,
+            "output must reach the caller's truncation: {} chars",
+            result.filtered.len()
+        );
     }
 
     #[test]

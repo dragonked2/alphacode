@@ -3293,6 +3293,16 @@ pub(super) fn right_fact_reserved_width(app: &dyn TuiState) -> u16 {
 }
 const RIGHT_FACT_TRANSCRIPT_ROWS: u16 = 4;
 
+/// Maximum number of rows the compact session-fact stack may occupy, and the
+/// budget [`right_fact_lines`] sizes itself against.
+///
+/// The stack ships up to five facts, but a three-row scan block is the most the
+/// transcript tail can spare, so exactly [`RIGHT_FACT_ROWS`] lines are
+/// rendered. One row is reserved for the session token/cost fact (see
+/// `right_fact_lines`); the remaining three are available to the descriptive
+/// facts and are claimed in priority order.
+const RIGHT_FACT_ROWS: usize = 4;
+
 fn right_fact_neutral_style() -> Style {
     Style::default().fg(muted_text_color())
 }
@@ -3452,7 +3462,15 @@ fn right_fact_lines(app: &dyn TuiState) -> Vec<RightFactLine> {
         }
     }
 
-    if let Some((used, limit)) = overscroll_context_usage(&data) {
+    // Context usage is the lowest-priority descriptive fact, and one row of the
+    // budget is reserved for the session token/cost fact below. When the higher
+    // priority facts already claim every descriptive row (provider+auth, model
+    // and directory all present), context steps aside rather than crowding cost
+    // out of the stack. It remains visible on the context-usage widget and in
+    // the header, so nothing is lost.
+    let context_has_budget =
+        lines.len() + 1 < RIGHT_FACT_ROWS || right_fact_session_stats(app, &data).is_none();
+    if context_has_budget && let Some((used, limit)) = overscroll_context_usage(&data) {
         let mut spans = vec![Span::styled(
             format!(
                 "{}/{} ",
@@ -3471,10 +3489,16 @@ fn right_fact_lines(app: &dyn TuiState) -> Vec<RightFactLine> {
         }
     }
 
-    // Session token/cost fact. It only fills a spare slot so the stack never
-    // exceeds its four-row budget: when provider/model/dir/context all fit,
-    // the session stats already live on the idle status line instead.
-    if lines.len() < 4
+    // Session token/cost fact. This row is *reserved*: it is the only surface
+    // that reports session cost and token totals once a transcript exists, because
+    // the idle status line below the composer is only drawn while the session is
+    // idle with no conversation. Gating it on a spare 5th slot (`lines.len() < 4`)
+    // made it dead whenever provider+auth occupied a row, which is the common
+    // case — the stack filled with provider · model · directory · context and the
+    // cost silently disappeared for the rest of the session. The stack therefore
+    // budgets [`RIGHT_FACT_ROWS`] rows: at most three descriptive facts plus this
+    // one. Context usage is the fact dropped when all four claimants are present.
+    if lines.len() < RIGHT_FACT_ROWS
         && let Some(line) = right_fact_session_stats(app, &data)
     {
         lines.push(line);
@@ -3501,16 +3525,31 @@ fn right_fact_session_stats(
         ),
         right_fact_neutral_style(),
     )];
-    if let Some(cost) = data
+    // Dollar figure. A metered transport reports what it actually billed; a
+    // free-tier or subscription transport has no per-token price, so it reports
+    // the notional value of its tokens at the UI reference rate rather than a dead
+    // `$0.00` or nothing at all. This is the same convention the idle status line
+    // and the usage widget already use (`info_widget::format_token_value_usd`), so
+    // the three surfaces cannot disagree.
+    let dollars = data
         .usage_info
         .as_ref()
         .filter(|info| info.available)
-        .filter(|info| matches!(info.provider, super::info_widget::UsageProvider::CostBased))
-        .map(|info| info.total_cost)
-        .filter(|cost| *cost > 0.0)
-    {
+        .map(|info| {
+            if matches!(info.provider, super::info_widget::UsageProvider::CostBased)
+                && info.total_cost > 0.0
+            {
+                format!("${:.2}", info.total_cost)
+            } else {
+                format!(
+                    "est. {}",
+                    super::info_widget::format_token_value_usd(total_in.saturating_add(total_out))
+                )
+            }
+        });
+    if let Some(dollars) = dollars {
         spans.push(Span::styled(
-            format!(" · ${:.2}", cost),
+            format!(" · {dollars}"),
             right_fact_neutral_style(),
         ));
     }

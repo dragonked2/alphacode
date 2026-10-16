@@ -1074,10 +1074,18 @@ pub struct App {
     pending_turn: bool,
     // When armed by /poke, automatically continue prompting until todos are complete.
     auto_poke_incomplete_todos: bool,
-    /// How many times we've poked for incomplete todos in this cycle.
-    /// Stops after MAX_AUTO_POKE_INCOMPLETE_ATTEMPTS to avoid infinite loops
-    /// when the agent says "done" without actually completing todos.
+    /// How many times we've poked for incomplete todos in this cycle without
+    /// any todo progress. Stops after MAX_AUTO_POKE_INCOMPLETE_ATTEMPTS
+    /// consecutive no-progress pokes to avoid infinite loops when the agent
+    /// says "done" without actually completing todos.
     auto_poke_incomplete_attempts: u8,
+    /// Open-todo ids observed at the most recent poke. A todo that was open
+    /// then and is gone now was completed or dropped, which is progress: the
+    /// poke budget restarts so an agent that is genuinely working through a
+    /// long plan is not abandoned mid-flight. Only an agent that stalls with
+    /// the same open set for MAX_AUTO_POKE_INCOMPLETE_ATTEMPTS consecutive
+    /// pokes is given up on.
+    auto_poke_last_incomplete_ids: Vec<String>,
     /// Whether the current auto-poke cycle has already challenged an abrupt
     /// final confidence increase. Low or missing completion confidence keeps
     /// retrying, but a spike gets one dedicated independent-validation turn.
@@ -1858,9 +1866,11 @@ impl App {
     /// full API call per nudge. The counter resets whenever a nudge actually
     /// changes the stored todos (progress) or auto-poke is re-armed.
     const TODO_COMPLETION_GATE_MAX_ATTEMPTS: u8 = 5;
-    /// Maximum times we poke for incomplete todos before giving up.
+    /// Maximum consecutive pokes without todo progress before giving up.
     /// Prevents infinite loops when the agent says "done" but doesn't
-    /// actually complete the todo.
+    /// actually complete any todo; progress (an open todo disappearing from
+    /// the plan between pokes) resets the count so steadily-shrinking work
+    /// is never abandoned mid-flight.
     const MAX_AUTO_POKE_INCOMPLETE_ATTEMPTS: u8 = 3;
     /// Consecutive guardrail/refusal-stopped turns tolerated before automatic
     /// continuation paths (auto-poke, overnight poke) are stopped. Guardrail
