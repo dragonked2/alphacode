@@ -1348,10 +1348,19 @@ impl Tool for BashTool {
         }
 
         // Auto-detect browser bridge commands and rewrite them to the installed
-        // binary when available, but do not run setup automatically. Browser
-        // setup should stay an explicit status/setup flow rather than a default
-        // side effect of trying to use the browser.
+        // binary. When the bridge is not installed yet, install it here rather
+        // than failing with "command not found" — the bridge sets itself up
+        // automatically on first use. `alphacode browser setup` remains for
+        // repair and diagnostics.
         if crate::browser::is_browser_command(&params.command) {
+            if !crate::browser::browser_binary_path().exists()
+                && let Err(error) = crate::browser::ensure_browser_setup().await
+            {
+                return Err(anyhow::anyhow!(
+                    "Browser bridge setup failed: {error}\n\
+                     Run `alphacode browser setup` manually if this persists."
+                ));
+            }
             params.command = crate::browser::rewrite_command_with_full_path(&params.command);
 
             // Start/attach a browser session for this alphacode session.

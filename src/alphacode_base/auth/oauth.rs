@@ -71,12 +71,14 @@ impl std::fmt::Debug for OAuthTokens {
 }
 
 /// Redact a token for safe Debug output: show only first 4 and last 4 chars.
+/// Char-boundary safe: a malformed (non-ASCII) token must never panic Debug.
 fn redact_token(token: &str) -> String {
     if token.len() <= 8 {
-        "*".repeat(token.len())
-    } else {
-        format!("{}...{}", &token[..4], &token[token.len() - 4..])
+        return "*".repeat(token.len());
     }
+    let head = token.get(..4).unwrap_or("*");
+    let tail = token.get(token.len() - 4..).unwrap_or("*");
+    format!("{head}...{tail}")
 }
 
 fn parse_oauth_scopes(scope: Option<&str>) -> Vec<String> {

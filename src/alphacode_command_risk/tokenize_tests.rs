@@ -72,3 +72,68 @@ fn is_flag_requires_dash() {
     assert!(Token::word("/s").is_recursive_flag_for("rd"));
     assert!(!Token::word("/s").is_recursive_flag_for("rm"));
 }
+
+/// `2>&1` duplicates an already-open descriptor: it writes to no file, and the
+/// `&` belongs to the redirect rather than separating commands. Before this
+/// was handled, `cmd 2>&1 | head` produced a bare `1` token flagged as a
+/// truncating redirect target — see
+/// `fd_redirects_are_not_denied_from_a_protected_working_directory` in
+/// `false_positive_tests.rs` for the denial it caused.
+#[test]
+fn fd_duplication_is_not_a_separator_or_a_target() {
+    let tokens = tokenize("curl -s http://x 2>&1 | head -5");
+    assert!(
+        tokens.iter().all(|t| t.text != "1" && t.text != "&"),
+        "`2>&1` must not leave an fd token or an `&` operator behind: {tokens:?}"
+    );
+    assert!(
+        !tokens.iter().any(|t| t.is_truncating_redirect_target),
+        "`2>&1` truncates no file: {tokens:?}"
+    );
+    let segments = split_segments("curl -s http://x 2>&1 | head -5");
+    assert_eq!(
+        segments.len(),
+        2,
+        "`2>&1` must not split the pipe into extra segments: {segments:?}"
+    );
+}
+
+/// `>&2` and `2>&-` name a destination descriptor, not a path.
+#[test]
+fn fd_duplication_consumes_the_destination() {
+    let tokens = tokenize("echo hi >&2");
+    let texts: Vec<&str> = tokens.iter().map(|t| t.text.as_str()).collect();
+    assert_eq!(texts, ["echo", "hi"], "{tokens:?}");
+
+    let tokens = tokenize("exec 2>&-");
+    let texts: Vec<&str> = tokens.iter().map(|t| t.text.as_str()).collect();
+    assert_eq!(texts, ["exec"], "{tokens:?}");
+}
+
+/// The digits directly before `>` name the descriptor being redirected, not
+/// an operand: `readlink -f x 2>/dev/null` must not leave a `2` word behind.
+#[test]
+fn redirect_fd_number_is_not_an_operand() {
+    let tokens = tokenize("readlink -f x 2>/dev/null");
+    assert!(
+        tokens.iter().all(|t| t.text != "2"),
+        "the fd number before `>` is not a word: {tokens:?}"
+    );
+    let target = tokens
+        .iter()
+        .find(|t| t.is_truncating_redirect_target)
+        .expect("redirect target token");
+    assert_eq!(target.text, "/dev/null");
+}
+
+/// A genuine `&` (background / command separator) must still split segments.
+#[test]
+fn plain_ampersand_still_separates_commands() {
+    let segments = split_segments("echo a & rm -rf x");
+    assert_eq!(segments.len(), 2, "{segments:?}");
+    let tokens = tokenize("echo a & echo b");
+    assert!(
+        tokens.iter().any(|t| t.is_operator && t.text == "&"),
+        "{tokens:?}"
+    );
+}

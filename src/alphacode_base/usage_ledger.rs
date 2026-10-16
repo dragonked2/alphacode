@@ -1,27 +1,51 @@
-//! Local per-model token and cost ledger.
+//! Local per-model token and cost ledger, persisted for the lifetime of the
+//! install.
 //!
 //! Account endpoints (see `usage.rs`) report limits, not what alphacode itself
 //! spent, and the Alphax Free gateway exposes no per-model usage API. So every
-//! completed API response is recorded here, keyed by the model that served it,
-//! and both `/usage` and the session widget read from this one source.
+//! completed API response is recorded here, keyed by the local calendar day
+//! and the model that served it, and both `/usage` and the session widget read
+//! from this one source.
 //!
-//! Costs use the rate the user configured for Alphax Free: $10 per 1M tokens,
-//! applied to input + output (+ cache reads and writes) alike. Other providers
-//! fall back to the models.dev catalog where available.
+//! The ledger persists to `~/.alphacode/usage_ledger.json` (debounced), so
+//! `/usage` can report everything since alphacode was installed — total tokens,
+//! requests, estimated cost, and a per-day breakdown sorted newest first —
+//! instead of only the current process's session.
+//!
+//! Costs: Alphax Free pool models use the flat $10/1M-token rate the user
+//! configured for the gateway; other models use the models.dev catalog when a
+//! price is known, and report `None` (unknown) rather than inventing a number.
 
+use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
-use std::sync::{Mutex, OnceLock};
+use std::path::PathBuf;
+use std::sync::Mutex;
+use std::time::{Duration, Instant};
 
 /// USD per one million tokens for the Alphax Free pool.
 pub const ALPHAX_FREE_USD_PER_MTOK: f64 = 10.0;
 
+/// Minimum gap between debounced disk writes. Recording happens on every API
+/// response (several per minute in tool-heavy turns); rewriting a few-KB JSON
+/// file each time is wasteful, so writes are coalesced. `/usage` and
+/// [`flush`] force a write so read paths always see exact totals.
+const FLUSH_MIN_INTERVAL: Duration = Duration::from_secs(5);
+
+const LEDGER_FILE: &str = "usage_ledger.json";
+const LEDGER_VERSION: u32 = 1;
+
 /// Token totals for a single model.
-#[derive(Debug, Clone, Default, PartialEq)]
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct ModelUsage {
+    #[serde(default)]
     pub requests: u64,
+    #[serde(default)]
     pub input_tokens: u64,
+    #[serde(default)]
     pub output_tokens: u64,
+    #[serde(default)]
     pub cache_read_tokens: u64,
+    #[serde(default)]
     pub cache_write_tokens: u64,
 }
 
@@ -37,11 +61,128 @@ impl ModelUsage {
     pub fn cost_usd_at(&self, usd_per_mtok: f64) -> f64 {
         self.total_tokens() as f64 / 1_000_000.0 * usd_per_mtok
     }
+
+    fn merge(&mut self, other: &ModelUsage) {
+        self.requests = self.requests.saturating_add(other.requests);
+        self.input_tokens = self.input_tokens.saturating_add(other.input_tokens);
+        self.output_tokens = self.output_tokens.saturating_add(other.output_tokens);
+        self.cache_read_tokens = self
+            .cache_read_tokens
+            .saturating_add(other.cache_read_tokens);
+        self.cache_write_tokens = self
+            .cache_write_tokens
+            .saturating_add(other.cache_write_tokens);
+    }
 }
 
-fn ledger() -> &'static Mutex<BTreeMap<String, ModelUsage>> {
-    static LEDGER: OnceLock<Mutex<BTreeMap<String, ModelUsage>>> = OnceLock::new();
-    LEDGER.get_or_init(|| Mutex::new(BTreeMap::new()))
+/// One local calendar day of usage across all models.
+#[derive(Debug, Clone, PartialEq)]
+pub struct DailyRow {
+    /// Local calendar day, `YYYY-MM-DD`.
+    pub day: String,
+    pub requests: u64,
+    pub input_tokens: u64,
+    pub output_tokens: u64,
+    pub cache_read_tokens: u64,
+    pub cache_write_tokens: u64,
+    /// Estimated USD cost for the day; `None` when no price is known for the
+    /// models used that day.
+    pub cost_usd: Option<f64>,
+}
+
+impl DailyRow {
+    pub fn total_tokens(&self) -> u64 {
+        self.input_tokens
+            .saturating_add(self.output_tokens)
+            .saturating_add(self.cache_read_tokens)
+            .saturating_add(self.cache_write_tokens)
+    }
+}
+
+/// On-disk shape: version-tagged map of day -> model -> totals.
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+struct PersistedLedger {
+    version: u32,
+    days: BTreeMap<String, BTreeMap<String, ModelUsage>>,
+}
+
+/// In-memory ledger state, re-resolved whenever the home directory changes
+/// (tests, multi-home setups), so state never leaks across paths.
+struct LedgerState {
+    path: PathBuf,
+    days: BTreeMap<String, BTreeMap<String, ModelUsage>>,
+    dirty: bool,
+    last_flush: Option<Instant>,
+}
+
+fn ledger() -> &'static Mutex<Option<LedgerState>> {
+    static LEDGER: Mutex<Option<LedgerState>> = Mutex::new(None);
+    &LEDGER
+}
+
+fn ledger_path() -> Option<PathBuf> {
+    Some(crate::storage::alphacode_dir().ok()?.join(LEDGER_FILE))
+}
+
+/// Run `f` against the loaded state for the current home directory, loading
+/// the persisted file on first use (or after the home directory changed).
+fn with_state<T>(f: impl FnOnce(&mut LedgerState) -> T) -> Option<T> {
+    let path = ledger_path()?;
+    let mut guard = ledger()
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let needs_reload = guard
+        .as_ref()
+        .map(|state| state.path != path)
+        .unwrap_or(true);
+    if needs_reload {
+        let persisted: PersistedLedger = crate::storage::read_json(&path).unwrap_or_default();
+        *guard = Some(LedgerState {
+            path,
+            days: persisted.days,
+            dirty: false,
+            last_flush: None,
+        });
+    }
+    let state = guard.as_mut()?;
+    Some(f(state))
+}
+
+fn flush_locked(state: &mut LedgerState) {
+    if !state.dirty {
+        return;
+    }
+    let persisted = PersistedLedger {
+        version: LEDGER_VERSION,
+        days: state.days.clone(),
+    };
+    match crate::storage::write_json(&state.path, &persisted) {
+        Ok(()) => {
+            state.dirty = false;
+            state.last_flush = Some(Instant::now());
+        }
+        Err(error) => {
+            crate::logging::warn(&format!(
+                "Failed to persist usage ledger to {}: {}",
+                state.path.display(),
+                error
+            ));
+            // Retry on the next record; leave `dirty` set.
+            state.last_flush = Some(Instant::now());
+        }
+    }
+}
+
+/// Force any pending ledger changes to disk. Read paths (`/usage`) call this
+/// so the report always shows exact lifetime totals, and shutdown hooks may
+/// call it to close the debounce window.
+pub fn flush() {
+    with_state(flush_locked);
+}
+
+/// Local calendar day key used for bucketing.
+fn today_key() -> String {
+    chrono::Local::now().format("%Y-%m-%d").to_string()
 }
 
 /// Record one completed API response served by `model`.
@@ -60,33 +201,53 @@ pub fn record_response(
     {
         return;
     }
-    let Ok(mut map) = ledger().lock() else {
-        return;
+    let entry = ModelUsage {
+        requests: 1,
+        input_tokens,
+        output_tokens,
+        cache_read_tokens,
+        cache_write_tokens,
     };
-    let entry = map.entry(model.to_string()).or_default();
-    entry.requests += 1;
-    entry.input_tokens = entry.input_tokens.saturating_add(input_tokens);
-    entry.output_tokens = entry.output_tokens.saturating_add(output_tokens);
-    entry.cache_read_tokens = entry.cache_read_tokens.saturating_add(cache_read_tokens);
-    entry.cache_write_tokens = entry.cache_write_tokens.saturating_add(cache_write_tokens);
-}
-
-/// Snapshot of every model seen this process, most-used first.
-pub fn snapshot() -> Vec<(String, ModelUsage)> {
-    let Ok(map) = ledger().lock() else {
-        return Vec::new();
-    };
-    let mut rows: Vec<(String, ModelUsage)> =
-        map.iter().map(|(k, v)| (k.clone(), v.clone())).collect();
-    rows.sort_by(|a, b| {
-        b.1.total_tokens()
-            .cmp(&a.1.total_tokens())
-            .then_with(|| a.0.cmp(&b.0))
+    with_state(|state| {
+        state
+            .days
+            .entry(today_key())
+            .or_default()
+            .entry(model.to_string())
+            .or_default()
+            .merge(&entry);
+        state.dirty = true;
+        let overdue = state
+            .last_flush
+            .map(|last| last.elapsed() >= FLUSH_MIN_INTERVAL)
+            .unwrap_or(true);
+        if overdue {
+            flush_locked(state);
+        }
     });
-    rows
 }
 
-/// Totals across all models: `(total_tokens, total_requests)`.
+/// Per-model lifetime totals across every recorded day, most-used first.
+pub fn snapshot() -> Vec<(String, ModelUsage)> {
+    with_state(|state| {
+        let mut merged: BTreeMap<String, ModelUsage> = BTreeMap::new();
+        for models in state.days.values() {
+            for (model, usage) in models {
+                merged.entry(model.clone()).or_default().merge(usage);
+            }
+        }
+        let mut rows: Vec<(String, ModelUsage)> = merged.into_iter().collect();
+        rows.sort_by(|a, b| {
+            b.1.total_tokens()
+                .cmp(&a.1.total_tokens())
+                .then_with(|| a.0.cmp(&b.0))
+        });
+        rows
+    })
+    .unwrap_or_default()
+}
+
+/// Lifetime totals across all models: `(total_tokens, total_requests)`.
 pub fn totals() -> (u64, u64) {
     snapshot().iter().fold((0u64, 0u64), |(t, r), (_, u)| {
         (
@@ -96,46 +257,173 @@ pub fn totals() -> (u64, u64) {
     })
 }
 
-/// Build a `/usage` report entry from the local ledger so per-model tokens and
-/// cost show even when no account API reports anything for the gateway.
-/// Returns `None` until at least one response has been recorded.
+/// Per-day rows, newest first. Cost is estimated per model (catalog price for
+/// priced providers, flat gateway rate for the Alphax Free pool) and summed;
+/// days whose models have no known price report `None`.
+pub fn daily_usage() -> Vec<DailyRow> {
+    with_state(|state| {
+        let mut rows: Vec<DailyRow> = state
+            .days
+            .iter()
+            .rev() // BTreeMap iterates keys ascending; newest day first here.
+            .map(|(day, models)| {
+                let mut row = DailyRow {
+                    day: day.clone(),
+                    requests: 0,
+                    input_tokens: 0,
+                    output_tokens: 0,
+                    cache_read_tokens: 0,
+                    cache_write_tokens: 0,
+                    cost_usd: None,
+                };
+                let mut cost_sum = 0.0f64;
+                let mut any_cost_known = false;
+                for (model, usage) in models {
+                    row.requests = row.requests.saturating_add(usage.requests);
+                    row.input_tokens = row.input_tokens.saturating_add(usage.input_tokens);
+                    row.output_tokens = row.output_tokens.saturating_add(usage.output_tokens);
+                    row.cache_read_tokens = row
+                        .cache_read_tokens
+                        .saturating_add(usage.cache_read_tokens);
+                    row.cache_write_tokens = row
+                        .cache_write_tokens
+                        .saturating_add(usage.cache_write_tokens);
+                    if let Some(cost) = estimate_cost_usd(model, usage) {
+                        cost_sum += cost;
+                        any_cost_known = true;
+                    }
+                }
+                row.cost_usd = any_cost_known.then_some(cost_sum);
+                row
+            })
+            .collect();
+        rows.sort_by(|a, b| b.day.cmp(&a.day));
+        rows
+    })
+    .unwrap_or_default()
+}
+
+/// Earliest recorded local calendar day, if anything was ever recorded.
+pub fn first_recorded_day() -> Option<String> {
+    with_state(|state| state.days.keys().next().cloned()).flatten()
+}
+
+/// Estimated USD cost for one model's usage, or `None` when the price is
+/// unknown (never invents a number).
+pub fn estimate_cost_usd(model: &str, usage: &ModelUsage) -> Option<f64> {
+    if crate::alphacode_app_core::agent::free_pool_rotation::free_pool_display_name(model).is_some()
+    {
+        return Some(usage.cost_usd_at(ALPHAX_FREE_USD_PER_MTOK));
+    }
+    let provider = crate::alphacode_provider_core::models::provider_for_model(model)?;
+    let cost = crate::model_pricing::lookup(provider, model)?;
+    Some(
+        (usage.input_tokens as f64 * cost.input_usd_per_mtok
+            + usage.output_tokens as f64 * cost.output_usd_per_mtok
+            + usage.cache_read_tokens as f64 * cost.cache_read_usd_per_mtok.unwrap_or(0.0)
+            + usage.cache_write_tokens as f64 * cost.cache_write_usd_per_mtok.unwrap_or(0.0))
+            / 1_000_000.0,
+    )
+}
+
+/// Build a `/usage` report entry from the local lifetime ledger: totals,
+/// per-model breakdown, and a per-day history sorted newest first. Returns
+/// `None` until at least one response has been recorded.
 pub fn usage_report() -> Option<crate::alphacode_usage_types::ProviderUsage> {
+    // Make sure the report reflects everything recorded so far, even inside
+    // the debounce window.
+    flush();
     let rows = snapshot();
     if rows.is_empty() {
         return None;
     }
     let (total_tokens, total_requests) = totals();
-    let total_cost: f64 = rows
-        .iter()
-        .map(|(_, u)| u.cost_usd_at(ALPHAX_FREE_USD_PER_MTOK))
-        .sum();
 
-    let mut extra_info = vec![(
-        "Total".to_string(),
+    let mut known_cost = 0.0f64;
+    let mut any_cost_known = false;
+    let mut priced_tokens = 0u64;
+    for (model, usage) in &rows {
+        if let Some(cost) = estimate_cost_usd(model, usage) {
+            known_cost += cost;
+            any_cost_known = true;
+            priced_tokens = priced_tokens.saturating_add(usage.total_tokens());
+        }
+    }
+
+    let mut extra_info: Vec<(String, String)> = Vec::new();
+    let since = first_recorded_day();
+    extra_info.push((
+        "Since".to_string(),
+        since.clone().unwrap_or_else(|| "this session".to_string()),
+    ));
+    let total_line = if any_cost_known {
         format!(
-            "{} tokens · {} requests · ${:.2} (at ${}/1M)",
+            "{} tokens · {} requests · est. ${:.2}",
             format_count(total_tokens),
             total_requests,
-            total_cost,
-            ALPHAX_FREE_USD_PER_MTOK
-        ),
-    )];
-    for (model, usage) in rows {
+            known_cost
+        )
+    } else {
+        format!(
+            "{} tokens · {} requests (no pricing known for the models used)",
+            format_count(total_tokens),
+            total_requests
+        )
+    };
+    extra_info.push(("Total (lifetime)".to_string(), total_line));
+
+    extra_info.push((String::new(), String::new()));
+    extra_info.push((
+        "Models (lifetime)".to_string(),
+        format!("{} model(s), newest usage first", rows.len()),
+    ));
+    for (model, usage) in &rows {
+        let cost = estimate_cost_usd(model, usage);
+        let cost_label = match cost {
+            Some(value) => format!("est. ${value:.4}"),
+            None => "cost n/a".to_string(),
+        };
         extra_info.push((
-            model,
+            model.clone(),
             format!(
-                "{} tokens · in {} · out {} · {} req · ${:.2}",
+                "{} tokens · in {} · out {} · cache r/w {}/{} · {} req · {cost_label}",
                 format_count(usage.total_tokens()),
                 format_count(usage.input_tokens),
                 format_count(usage.output_tokens),
+                format_count(usage.cache_read_tokens),
+                format_count(usage.cache_write_tokens),
                 usage.requests,
-                usage.cost_usd_at(ALPHAX_FREE_USD_PER_MTOK),
             ),
         ));
     }
 
+    let days = daily_usage();
+    if !days.is_empty() {
+        extra_info.push((String::new(), String::new()));
+        extra_info.push((
+            "Daily history (newest first)".to_string(),
+            format!("{} day(s) recorded", days.len()),
+        ));
+        // Bound the detail pane: the most recent 60 days keep the panel
+        // readable; older days still count toward the lifetime totals above.
+        for day in days.iter().take(60) {
+            let cost_label = match day.cost_usd {
+                Some(value) => format!("est. ${value:.2}"),
+                None => "cost n/a".to_string(),
+            };
+            extra_info.push((
+                day.day.clone(),
+                format!(
+                    "{} tokens · {} req · {cost_label}",
+                    format_count(day.total_tokens()),
+                    day.requests,
+                ),
+            ));
+        }
+    }
+
     Some(crate::alphacode_usage_types::ProviderUsage {
-        provider_name: "Alphax Free (this session)".to_string(),
+        provider_name: "Alphacode usage (since install)".to_string(),
         limits: Vec::new(),
         extra_info,
         hard_limit_reached: false,
@@ -195,5 +483,78 @@ mod tests {
             ..Default::default()
         };
         assert_eq!(usage.total_tokens(), 1000);
+    }
+
+    #[test]
+    fn merging_usage_sums_every_counter() {
+        let mut a = ModelUsage {
+            requests: 1,
+            input_tokens: 10,
+            output_tokens: 20,
+            cache_read_tokens: 30,
+            cache_write_tokens: 40,
+        };
+        a.merge(&ModelUsage {
+            requests: 2,
+            input_tokens: 100,
+            output_tokens: 200,
+            cache_read_tokens: 300,
+            cache_write_tokens: 400,
+        });
+        assert_eq!(a.requests, 3);
+        assert_eq!(a.input_tokens, 110);
+        assert_eq!(a.output_tokens, 220);
+        assert_eq!(a.cache_read_tokens, 330);
+        assert_eq!(a.cache_write_tokens, 440);
+        assert_eq!(a.total_tokens(), 1100);
+    }
+
+    #[test]
+    fn persisted_round_trip_preserves_days() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("ledger.json");
+        let mut days: BTreeMap<String, BTreeMap<String, ModelUsage>> = BTreeMap::new();
+        days.entry("2026-10-01".to_string()).or_default().insert(
+            "model-a".to_string(),
+            ModelUsage {
+                requests: 4,
+                input_tokens: 1_000,
+                output_tokens: 500,
+                cache_read_tokens: 0,
+                cache_write_tokens: 0,
+            },
+        );
+        let persisted = PersistedLedger {
+            version: LEDGER_VERSION,
+            days,
+        };
+        crate::storage::write_json(&path, &persisted).expect("write");
+        let loaded: PersistedLedger = crate::storage::read_json(&path).expect("read");
+        assert_eq!(loaded.version, LEDGER_VERSION);
+        let usage = loaded
+            .days
+            .get("2026-10-01")
+            .and_then(|models| models.get("model-a"))
+            .expect("day/model row");
+        assert_eq!(usage.requests, 4);
+        assert_eq!(usage.total_tokens(), 1_500);
+    }
+
+    #[test]
+    fn format_count_is_compact() {
+        assert_eq!(format_count(999), "999");
+        assert_eq!(format_count(1_234), "1.2K");
+        assert_eq!(format_count(5_600_000), "5.6M");
+    }
+
+    #[test]
+    fn unknown_prices_report_none_not_zero() {
+        let usage = ModelUsage {
+            input_tokens: 1_000_000,
+            ..Default::default()
+        };
+        // A model id that matches no catalog entry and no free-pool route must
+        // not fabricate a $0.00 cost.
+        assert_eq!(estimate_cost_usd("totally-unknown-model-xyz", &usage), None);
     }
 }

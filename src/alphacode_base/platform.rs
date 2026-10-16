@@ -490,6 +490,11 @@ fn spawn_replacement_process(
 ///
 /// Returns an error only if the operation fails. On success (Unix exec),
 /// this function never returns.
+///
+/// Prefer [`replace_process_wait`] for anything that owns a console (the TUI
+/// and its reload paths). This immediate-exit variant is for detached
+/// processes — the server replacing itself — where nothing should stay
+/// resident waiting on the successor.
 pub fn replace_process(cmd: &mut std::process::Command) -> std::io::Error {
     #[cfg(unix)]
     {
@@ -508,6 +513,84 @@ pub fn replace_process(cmd: &mut std::process::Command) -> std::io::Error {
             Ok(_child) => std::process::exit(0),
             Err(e) => e,
         }
+    }
+}
+
+/// Replace a console-owning process with a new command, keeping the launcher
+/// waiting for the full run.
+///
+/// On Unix this is [`replace_process`] (exec never returns).
+///
+/// On Windows it spawns the replacement and *waits* for it, then exits with
+/// its code. The shell that started us blocks on this process, so it must not
+/// return to its prompt while the replacement owns the console: when it exits
+/// early, the shell prints a prompt and starts reading console input while the
+/// replacement TUI is also reading it. Keystrokes then split between the two —
+/// the replacement renders but looks frozen and "cannot be typed into", and
+/// reopening a terminal reproduces it as long as the binary keeps handing off
+/// to a newer one. Waiting keeps the shell blocked until the whole chain ends,
+/// which is exec-like semantics without exec on Windows.
+pub fn replace_process_wait(cmd: &mut std::process::Command) -> std::io::Error {
+    #[cfg(unix)]
+    {
+        replace_process(cmd)
+    }
+    #[cfg(windows)]
+    {
+        match cmd.spawn() {
+            Ok(mut child) => {
+                let code = child.wait().ok().and_then(|status| status.code());
+                std::process::exit(code.unwrap_or(0));
+            }
+            Err(error) => error,
+        }
+    }
+}
+
+/// Whether the process `pid` is an AlphaCode image.
+///
+/// Liveness alone is not enough before force-killing a pid that came out of
+/// the session registry: Windows recycles process ids, and a recycled id
+/// belongs to whatever the system started next — an innocent program, or in
+/// the original report a *protected* one, which turned the kill into an
+/// "Access is denied" error and terminated unrelated work.
+pub fn process_looks_like_alphacode(pid: u32) -> bool {
+    if pid == 0 {
+        return false;
+    }
+    #[cfg(unix)]
+    {
+        if pid > i32::MAX as u32 {
+            return false;
+        }
+        // Linux exposes the image name here; where it cannot be read
+        // (macOS, exotic /proc) fall back to trusting the caller.
+        match std::fs::read_to_string(format!("/proc/{pid}/comm")) {
+            Ok(comm) => comm.trim().to_ascii_lowercase().starts_with("alphacode"),
+            Err(_) => true,
+        }
+    }
+    #[cfg(windows)]
+    {
+        use windows_sys::Win32::Foundation::CloseHandle;
+        use windows_sys::Win32::System::Threading::{
+            OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION, QueryFullProcessImageNameW,
+        };
+        let handle = unsafe { OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid) };
+        if handle.is_null() {
+            return false;
+        }
+        let mut buffer = [0u16; 1024];
+        let mut size = buffer.len() as u32;
+        let ok = unsafe { QueryFullProcessImageNameW(handle, 0, buffer.as_mut_ptr(), &mut size) };
+        unsafe { CloseHandle(handle) };
+        if ok == 0 || size == 0 {
+            return false;
+        }
+        let path = String::from_utf16_lossy(&buffer[..size as usize]);
+        let name = path.rsplit(['\\', '/']).next().unwrap_or_default();
+        let lower = name.to_ascii_lowercase();
+        lower == "alphacode" || lower == "alphacode.exe" || lower.starts_with("alphacode-")
     }
 }
 

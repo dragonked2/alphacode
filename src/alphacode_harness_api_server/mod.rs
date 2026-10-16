@@ -76,11 +76,12 @@ async fn connect_legacy_with_retry(legacy_socket: &PathBuf) -> Result<UnixStream
         }
     }
 
-    Err(last_err.unwrap()).context(format!(
-        "connect legacy socket {} after {} retries",
-        legacy_socket.display(),
-        MAX_CONNECT_RETRIES
-    ))
+    Err(last_err.unwrap_or_else(|| std::io::Error::other("connect failed without an error")))
+        .context(format!(
+            "connect legacy socket {} after {} retries",
+            legacy_socket.display(),
+            MAX_CONNECT_RETRIES
+        ))
 }
 
 async fn handle_api_client(stream: UnixStream, legacy_socket: PathBuf) -> Result<()> {

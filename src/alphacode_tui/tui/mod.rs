@@ -1715,9 +1715,19 @@ pub(crate) fn resolve_subscribe_metadata(
     remote_working_dir: Option<&str>,
     client_selfdev_requested: bool,
 ) -> (Option<String>, Option<bool>) {
-    let working_dir_str = remote_working_dir
-        .map(str::to_string)
-        .or_else(|| client_working_dir.map(|p| p.display().to_string()));
+    // A launch inherited from a Run dialog, a Start Menu shortcut, or another
+    // context without a sensible "start in" directory leaves the process in a
+    // Windows system directory. Every relative path in the session then
+    // resolves under a protected root — `2>&1`'s descriptor digit, a CV on the
+    // Desktop, a scratch file — and read-only commands get graded as if they
+    // were writing to System32. Sessions are created in the user's home when
+    // the inherited cwd is not a place anyone works in.
+    let client_working_dir = client_working_dir.filter(|dir| !unusable_session_cwd(dir));
+    let working_dir_str = remote_working_dir.map(str::to_string).or_else(|| {
+        client_working_dir
+            .map(|p| p.display().to_string())
+            .or_else(|| dirs::home_dir().map(|home| home.display().to_string()))
+    });
 
     let mut selfdev = client_selfdev_requested;
     if !selfdev && let Some(dir) = client_working_dir {
@@ -1732,6 +1742,40 @@ pub(crate) fn resolve_subscribe_metadata(
     }
 
     (working_dir_str, if selfdev { Some(true) } else { None })
+}
+
+/// Whether a working directory is a system location no session should be
+/// rooted in: a drive root, `%WINDIR%` and everything below it, `Program
+/// Files`, or `ProgramData`.
+fn unusable_session_cwd(dir: &std::path::Path) -> bool {
+    let text = dir
+        .to_string_lossy()
+        .replace('\\', "/")
+        .trim_end_matches('/')
+        .to_ascii_lowercase();
+    if text.is_empty() {
+        return false;
+    }
+    // `c:`, `d:` — a bare drive root.
+    if text.len() == 2 && text.ends_with(':') {
+        return true;
+    }
+    // Everything after the drive prefix, without its leading slash.
+    let tail = match text.split_once(':') {
+        Some((_, rest)) => rest.trim_start_matches('/'),
+        None => text.as_str(),
+    };
+    matches!(
+        tail,
+        "" | "windows"
+            | "windows/system32"
+            | "windows/system32/drivers"
+            | "program files"
+            | "program files (x86)"
+            | "programdata"
+    ) || tail.starts_with("windows/")
+        || tail.starts_with("program files/")
+        || tail.starts_with("program files (x86)/")
 }
 
 /// Public wrapper to render a single frame (used by benchmarks/tools).
@@ -1865,6 +1909,36 @@ mod tests {
         let (working_dir, _selfdev) = resolve_subscribe_metadata(Some(local_dir), None, false);
 
         assert_eq!(working_dir.as_deref(), Some("/client/project"));
+    }
+
+    #[test]
+    fn system_launch_directory_is_not_used_as_session_cwd() {
+        use super::unusable_session_cwd;
+        for dir in [
+            "C:\\WINDOWS\\system32",
+            "C:/Windows/System32/drivers",
+            "c:\\windows",
+            "C:\\",
+            "D:",
+            "C:\\Program Files\\Git",
+            "C:\\ProgramData",
+        ] {
+            assert!(
+                unusable_session_cwd(std::path::Path::new(dir)),
+                "{dir} must not become a session working directory"
+            );
+        }
+        for dir in [
+            "C:\\Users\\or0to",
+            "C:\\Users\\or0to\\Desktop\\proj",
+            "/home/u/proj",
+            "/client/project",
+        ] {
+            assert!(
+                !unusable_session_cwd(std::path::Path::new(dir)),
+                "{dir} is a normal working directory"
+            );
+        }
     }
 
     #[test]

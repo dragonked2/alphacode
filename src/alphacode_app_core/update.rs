@@ -1315,11 +1315,7 @@ pub fn download_and_install_blocking_with_progress(
                 name_string.to_string()
             };
             let dest = dest_dir.join(dest_name);
-            if dest.exists() {
-                fs::remove_file(&dest)?;
-            }
-            fs::copy(entry.path(), &dest)
-                .with_context(|| format!("Failed to install {}", dest.display()))?;
+            build::replace_file_with(&entry.path(), &dest)?;
             if dest
                 .file_name()
                 .is_some_and(|name| name == build::binary_name())

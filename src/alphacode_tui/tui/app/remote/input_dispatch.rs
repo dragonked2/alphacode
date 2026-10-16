@@ -121,6 +121,11 @@ pub(in crate::alphacode_tui::tui::app) async fn submit_prepared_remote_input(
         return Ok(());
     }
 
+    // Submitting resumes tail-follow: if the user had scrolled up, the new
+    // prompt and the model's streamed answer must not land below the fold.
+    // The local path does this in App::submit_input; the remote path bypasses
+    // it, so mirror it here.
+    app.follow_chat_bottom();
     app.commit_pending_streaming_assistant_message();
     // A manually submitted prompt supersedes any armed post-error fallback
     // offer (and its staged resend): the user chose to continue differently.
@@ -442,6 +447,8 @@ async fn submit_remote_input_shell(
     raw_input: String,
     command: String,
 ) -> Result<()> {
+    // Same resume-tail-follow guarantee as prompt submits.
+    app.follow_chat_bottom();
     app.commit_pending_streaming_assistant_message();
     app.push_display_message(DisplayMessage::user(raw_input));
 

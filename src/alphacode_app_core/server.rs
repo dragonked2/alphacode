@@ -2060,7 +2060,9 @@ impl Server {
                                     "⚠ File activity: {} — {} — {} previously {} this file{}{}",
                                     path.display(),
                                     scope,
-                                    prev_name.as_deref().unwrap_or(&prev.session_id[..8]),
+                                    prev_name.as_deref().unwrap_or(
+                                        &prev.session_id[..8.min(prev.session_id.len())],
+                                    ),
                                     prev.op.as_str(),
                                     prev.summary
                                         .as_ref()

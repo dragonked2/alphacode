@@ -1694,12 +1694,20 @@ fn run_reload_helper(args: &Args) -> Result<()> {
     // though stdout still points at one. That attachment is inherited from this
     // helper, which is why the client helper is spawned console-preserving
     // rather than detached.
-    if server_mode {
+    let err = if server_mode {
         cmd.stdin(Stdio::null())
             .stdout(Stdio::null())
             .stderr(Stdio::null());
-    }
-    let err = crate::platform::replace_process(&mut cmd);
+        // The server replacement is a detached daemon; nothing waits on this
+        // helper, so it must not linger as the new daemon's parent.
+        crate::platform::replace_process(&mut cmd)
+    } else {
+        // The client replacement is the interactive TUI. Wait for it so the
+        // shell keeps waiting for the whole session instead of printing its
+        // prompt next to a TUI that is also reading the console
+        // ("update finished, now I cannot type").
+        crate::platform::replace_process_wait(&mut cmd)
+    };
     let detail = format!("failed to launch reload target {:?}: {}", target_path, err);
     mark_failed(detail.clone());
     Err(anyhow::anyhow!(detail))

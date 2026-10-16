@@ -236,8 +236,11 @@ where
         from_cache: false,
     });
 
+    // The local lifetime ledger is the headline entry: it answers "what has
+    // alphacode cost me since I installed it", which provider limit reports
+    // cannot. Prepend it so the overlay opens on it.
     if let Some(local) = crate::usage_ledger::usage_report() {
-        results.push(local);
+        results.insert(0, local);
     }
     results
 }

@@ -244,3 +244,23 @@ pub fn find_server_by_socket_sync(socket: &std::path::Path) -> Option<ServerInfo
         .find(|info| info.socket == socket)
         .cloned()
 }
+
+/// Sync: every pid currently filed as a running server in the registry.
+///
+/// The reload handoff must never signal these: in the shared-server
+/// architecture the session registry lists the *server's* pid for live
+/// sessions, so a pid-based cleanup that does not exclude servers kills the
+/// daemon that is hosting the very session being reloaded and aborts every
+/// in-flight turn.
+pub fn registered_server_pids_sync() -> Vec<u32> {
+    let Ok(path) = registry_path() else {
+        return Vec::new();
+    };
+    let Ok(content) = std::fs::read_to_string(path) else {
+        return Vec::new();
+    };
+    let Ok(registry) = serde_json::from_str::<ServerRegistry>(&content) else {
+        return Vec::new();
+    };
+    registry.servers.values().map(|info| info.pid).collect()
+}

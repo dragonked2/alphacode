@@ -86,7 +86,7 @@ fn exec_rebuilt_session(exe: &Path, session_id: &str, cwd: &Path, is_selfdev: bo
         cmd.arg("self-dev");
     }
     cmd.arg("--resume").arg(session_id).current_dir(cwd);
-    let err = crate::platform::replace_process(&mut cmd);
+    let err = crate::platform::replace_process_wait(&mut cmd);
 
     Err(anyhow::anyhow!("Failed to exec {:?}: {}", exe, err))
 }

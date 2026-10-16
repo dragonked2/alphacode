@@ -1073,12 +1073,23 @@ async fn ensure_firefox_ready() -> Result<Option<String>> {
     // multiplying normal interactions by ~20 CLI launches. A live ping is
     // enough before an action; the requested action itself reports precisely
     // if that one capability is unsupported.
+    //
+    // First use on a fresh machine must not dead-end on "run browser
+    // action='setup'": the bridge binaries and native manifests are installed
+    // automatically here, and the one step that cannot be automated — adding
+    // the signed Firefox extension from AMO — has its page opened for the
+    // user. Explicit `action='setup'` remains for repair and diagnostics.
     if !crate::browser::browser_binary_path().exists() {
-        let addon_page = crate::browser::open_browser_addon_page()
+        let log = run_auto_browser_setup().await;
+        let _ = crate::browser::ensure_browser_assets_installed_silent();
+        if crate::browser::browser_bridge_responding()
             .await
-            .unwrap_or_else(|error| format!("Firefox Add-ons could not be opened: {error}"));
+            .unwrap_or(false)
+        {
+            return Ok(Some(log));
+        }
         anyhow::bail!(
-            "Browser bridge is not installed. {addon_page} Run browser action='setup' to install the native bridge components."
+            "Browser bridge was installed automatically, but the Firefox extension is not connected yet.\n{log}"
         );
     }
     // Preserve the old self-healing native-host manifest behavior without
@@ -1088,12 +1099,31 @@ async fn ensure_firefox_ready() -> Result<Option<String>> {
         return Ok(None);
     }
 
-    let addon_page = crate::browser::open_browser_addon_page()
+    // The binary exists but nothing answered: most often the extension is
+    // missing or Firefox is closed. Run the repair flow (installs or updates
+    // manifests, opens the Add-ons page) instead of only opening the page.
+    let log = run_auto_browser_setup().await;
+    if crate::browser::browser_bridge_responding()
         .await
-        .unwrap_or_else(|error| format!("Firefox Add-ons could not be opened: {error}"));
+        .unwrap_or(false)
+    {
+        return Ok(Some(log));
+    }
     anyhow::bail!(
-        "Browser bridge is installed but not responding. {addon_page} After adding or updating the extension, run browser action='status'. For read-only research, listings, docs, or APIs use webfetch/websearch."
+        "Browser bridge is installed but not responding.\n{log}\nStart Firefox with the AlphaCode Browser Agent enabled. For read-only research, listings, docs, or APIs use webfetch/websearch."
     );
+}
+
+/// Automatic setup, serialized so concurrent sessions in one server process
+/// cannot race the binary download or the native-manifest install.
+async fn run_auto_browser_setup() -> String {
+    static LOCK: std::sync::OnceLock<tokio::sync::Mutex<()>> = std::sync::OnceLock::new();
+    let lock = LOCK.get_or_init(|| tokio::sync::Mutex::new(()));
+    let _guard = lock.lock().await;
+    match crate::browser::ensure_browser_setup().await {
+        Ok(log) => log,
+        Err(error) => format!("Automatic browser setup failed to run: {error}\n"),
+    }
 }
 
 async fn execute_firefox_action(

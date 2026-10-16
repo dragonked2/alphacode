@@ -593,7 +593,12 @@ fn maybe_reexec_to_fresher_binary(args: &Args) -> Result<()> {
     // an unrecognized subcommand (e.g. "error: unrecognized subcommand
     // 'C:\...\alphacode.exe'").
     let args: Vec<String> = std::env::args().skip(1).collect();
-    let err = crate::platform::replace_process(
+    // Wait for the fresher binary: the shell that launched this process keeps
+    // waiting while we do, exactly as it would have if it had launched the
+    // candidate directly. Exiting here instead would hand the console back to
+    // the shell while the replacement TUI is reading it, splitting keystrokes
+    // between the two.
+    let err = crate::platform::replace_process_wait(
         ProcessCommand::new(&candidate)
             .args(&args)
             .arg("--no-update"),

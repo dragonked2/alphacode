@@ -257,3 +257,34 @@ fn quoting_a_path_does_not_change_how_it_is_graded() {
         );
     }
 }
+
+/// Regression: when the session working directory is itself a protected root
+/// (`C:\WINDOWS\system32` — the cwd the reporting session started in), the
+/// descriptor digits of `2>&1` / `2>/dev/null` used to resolve as paths under
+/// it (`C:\WINDOWS\system32\1`), so routine piped commands were hard-denied
+/// with "would destroy a protected path". The descriptor number is not a
+/// path; nothing in these commands writes outside the pipe.
+#[test]
+fn fd_redirects_are_not_denied_from_a_protected_working_directory() {
+    use std::path::PathBuf;
+    let ctx = RiskContext {
+        working_dir: Some(PathBuf::from("C:\\WINDOWS\\system32")),
+        home_dir: Some(PathBuf::from("C:\\Users\\or0to")),
+    };
+    for command in [
+        "cd /c/Users/or0to && mkdir -p bbcrypto 2>&1 | tail -1",
+        "subfinder -d crypto.com -silent 2>&1 | head -15",
+        "curl -L -s \"https://example.com/policy\" 2>&1 | head -80",
+        "readlink -f /c/Users/or0to/OneDrive/Desktop/cv.pdf 2>/dev/null",
+        "cygpath -w /c/Users/or0to/OneDrive/Desktop/cv.pdf 2>/dev/null | head -2",
+        "echo hi 2>&1 | wc -l 2>&1 | head -1",
+    ] {
+        let assessment = assess(command, &ctx);
+        assert_ne!(
+            assessment.level,
+            RiskLevel::Catastrophic,
+            "descriptor numbers must not become protected-path targets: {command}\n{:#?}",
+            assessment.findings
+        );
+    }
+}

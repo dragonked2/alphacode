@@ -368,6 +368,11 @@ const READ_ONLY_COMMANDS: &[&str] = &[
     "dirname",
     "realpath",
     "readlink",
+    // Git Bash / MSYS path translator: converts the format of a path
+    // argument and reads nothing else. Without it `cygpath -w <file>
+    // 2>/dev/null` graded `<file>` as a write target, which is how a
+    // one-line "where is my PDF" lookup got denied.
+    "cygpath",
     "md5sum",
     "sha1sum",
     "sha256sum",

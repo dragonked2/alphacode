@@ -297,6 +297,10 @@ persist_memory_injections = false
 # (avoidable) reason: system prompt, tool set, or message prefix changed. These
 # should essentially never happen and indicate a prefix-cache bug.
 kv_cache_miss_notices = true
+# Prompt Autopilot: auto-expand underspecified requests ("fix this", "make it
+# work") into a well-defined task briefing so vague prompts still produce
+# complete, verified results. The user's own text is never rewritten.
+prompt_autopilot = true
 # Update channel: "stable" (releases only) or "main" (latest commits on push)
 # Set to "main" for bleeding edge updates every time code is pushed
 update_channel = "stable"

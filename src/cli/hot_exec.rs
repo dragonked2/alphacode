@@ -60,6 +60,12 @@ fn restore_terminal_for_handoff() {
 /// Returns how many processes were terminated.
 fn terminate_other_alphacode_sessions() -> usize {
     let self_pid = std::process::id();
+    // Never signal a registered server. In the shared-server architecture
+    // sessions are registered against the *server's* pid, so a plain
+    // registry sweep kills the daemon hosting the live session and every
+    // other attached session with it — the "while alphacode was working it
+    // suddenly stopped" report. Servers exit on their own idle timer.
+    let server_pids = crate::registry::registered_server_pids_sync();
     let mut targets: Vec<u32> = crate::storage::session_presence()
         .into_iter()
         .map(|presence| presence.pid)
@@ -74,6 +80,21 @@ fn terminate_other_alphacode_sessions() -> usize {
 
     let mut terminated = 0usize;
     for pid in targets {
+        if server_pids.contains(&pid) {
+            crate::logging::info(&format!(
+                "update: leaving pid {pid} alone; it is a registered alphacode server"
+            ));
+            continue;
+        }
+        // The registry only proves the pid was alive. Ids are recycled, and
+        // killing whatever inherited one is how this turned into an
+        // "Access is denied" error against an unrelated process.
+        if !crate::platform::process_looks_like_alphacode(pid) {
+            crate::logging::warn(&format!(
+                "update: not terminating pid {pid}; it is not an alphacode process"
+            ));
+            continue;
+        }
         // 15 = SIGTERM on unix; on Windows `signal_detached_process_group`
         // ignores the number and force-kills the tree.
         match crate::platform::signal_detached_process_group(pid, 15) {
@@ -134,7 +155,7 @@ pub fn hot_restart(session_id: &str) -> Result<()> {
     cmd.arg("--resume").arg(session_id).current_dir(&cwd);
     terminate_other_alphacode_sessions();
     restore_terminal_for_handoff();
-    let err = crate::platform::replace_process(&mut cmd);
+    let err = crate::platform::replace_process_wait(&mut cmd);
 
     Err(anyhow::anyhow!("Failed to exec {:?}: {}", exe, err))
 }
@@ -155,7 +176,7 @@ pub fn hot_reload(session_id: &str) -> Result<()> {
                 .env_remove("ALPHACODE_MIGRATE_BINARY")
                 .current_dir(cwd);
             restore_terminal_for_handoff();
-            let err = crate::platform::replace_process(&mut cmd);
+            let err = crate::platform::replace_process_wait(&mut cmd);
             return Err(anyhow::anyhow!("Failed to exec {:?}: {}", binary_path, err));
         } else {
             crate::logging::warn(&format!(
@@ -203,63 +224,18 @@ pub fn hot_reload(session_id: &str) -> Result<()> {
         crate::logging::info(&format!("Reloading with binary built {}...", age));
     }
 
-    // On Windows, the currently-running executable is locked and cannot be
-    // replaced in-place. If the target binary is a *different* file (e.g. a
-    // freshly installed update in versions/<v>/), spawn a helper process that
-    // waits for us to exit, then launches the new binary. This avoids the race
-    // where both old and new processes load the same file because Windows keeps
-    // the old handle open.
-    //
-    // The helper must inherit our console. It is the process that launches the
-    // replacement TUI, so a console-less helper yields a replacement with no
-    // console input buffer: it renders and then ignores every keystroke. That
-    // is the "update installed, now I cannot type" symptom, and a detached
-    // helper is also why a second alphacode.exe lingers against ~/.alphacode
-    // for the whole wait. See `spawn_console_handoff_process`.
-    #[cfg(windows)]
-    {
-        let current_exe = std::env::current_exe().ok();
-        let different_binary = current_exe.as_ref() != Some(&exe);
-        if different_binary {
-            crate::logging::info(&format!(
-                "Spawning console-handoff helper to reload with {:?} after current process exits...",
-                exe
-            ));
-            let mut helper_cmd = ProcessCommand::new(std::env::current_exe()?);
-            helper_cmd
-                .arg("--internal-reload-helper")
-                .arg("--resume")
-                .arg(session_id)
-                .arg("--reload-target")
-                .arg(&exe)
-                .arg("--parent-pid")
-                .arg(std::process::id().to_string())
-                .arg("--no-update");
-            if is_selfdev {
-                helper_cmd.arg("self-dev");
-            }
-            helper_cmd.current_dir(&cwd);
-            // Any other live alphacode instance must let go of the console
-            // before this process exits and the helper attaches to it.
-            terminate_other_alphacode_sessions();
-            match crate::platform::spawn_console_handoff_process(&mut helper_cmd) {
-                Ok(_child) => {
-                    crate::logging::info(
-                        "Console-handoff helper spawned. Current process will exit now.",
-                    );
-                    restore_terminal_for_handoff();
-                    std::process::exit(0);
-                }
-                Err(e) => {
-                    crate::logging::warn(&format!(
-                        "Failed to spawn console-handoff helper: {}. Falling back to direct exec.",
-                        e
-                    ));
-                }
-            }
-        }
-    }
-
+    // Hand the console to the replacement by spawning it directly and waiting
+    // for it to exit. An earlier design routed this through a detached
+    // "console-handoff helper" that waited for this process to exit first;
+    // that broke the shell's wait chain. The shell that launched this TUI
+    // blocks on *this* process, so the moment it exits the shell prints its
+    // prompt and starts reading the console — while the helper's replacement
+    // TUI is also reading it. Keystrokes then split between the two and the
+    // replacement looks frozen ("update finished, now I cannot type"). Waiting
+    // here keeps the shell blocked for the entire replacement session, which
+    // is the closest Windows gets to exec semantics. The target is a complete
+    // file at a stable path (the installer swaps via rename), so there is no
+    // partial-image race to serialize.
     terminate_other_alphacode_sessions();
     restore_terminal_for_handoff();
     for attempt in 0..3 {
@@ -277,7 +253,7 @@ pub fn hot_reload(session_id: &str) -> Result<()> {
             .arg(session_id)
             .arg("--no-update")
             .current_dir(&cwd);
-        let err = crate::platform::replace_process(&mut cmd);
+        let err = crate::platform::replace_process_wait(&mut cmd);
 
         if err.kind() == std::io::ErrorKind::NotFound && attempt < 2 {
             crate::logging::warn(&format!(
@@ -338,7 +314,7 @@ pub fn hot_update(session_id: &str) -> Result<()> {
                         .arg("--no-update")
                         .current_dir(&cwd);
                     restore_terminal_for_handoff();
-                    let err = crate::platform::replace_process(&mut cmd);
+                    let err = crate::platform::replace_process_wait(&mut cmd);
                     return Err(anyhow::anyhow!("Failed to exec {:?}: {}", exe, err));
                 }
                 Err(e) => {
@@ -378,7 +354,7 @@ pub fn hot_update(session_id: &str) -> Result<()> {
         .arg("--no-update")
         .current_dir(&cwd);
     restore_terminal_for_handoff();
-    let err = crate::platform::replace_process(&mut cmd);
+    let err = crate::platform::replace_process_wait(&mut cmd);
     Err(anyhow::anyhow!("Failed to exec {:?}: {}", exe, err))
 }
 

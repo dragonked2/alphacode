@@ -339,6 +339,11 @@ impl Config {
                 self.features.kv_cache_miss_notices = parsed;
             }
         }
+        if let Ok(v) = std::env::var("ALPHACODE_PROMPT_AUTOPILOT") {
+            if let Some(parsed) = parse_env_bool(&v) {
+                self.features.prompt_autopilot = parsed;
+            }
+        }
         if let Ok(v) = std::env::var("ALPHACODE_UPDATE_CHANNEL")
             && let Some(channel) = UpdateChannel::parse(&v)
         {

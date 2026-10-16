@@ -256,19 +256,66 @@ pub fn install_binary_at_version(source: &std::path::Path, version: &str) -> Res
 
     let dest = dest_dir.join(binary_name());
 
-    // Remove existing file first to avoid ETXTBSY when replacing a running binary.
-    if dest.exists() {
-        std::fs::remove_file(&dest)?;
-    }
+    // Rename any existing file aside rather than removing it: the destination
+    // is frequently the binary of a running AlphaCode instance (or its
+    // just-spawned replacement), and on Windows deleting a loaded executable
+    // fails with "Access is denied. (os error 5)". Renaming the directory
+    // entry always works; the new file then takes the stable path.
+    let aside = platform_support::move_file_aside(&dest)?;
 
     // Prefer hard link (instant, zero I/O) over copy (71MB+ binary).
     // Falls back to copy if hard link fails (e.g. cross-filesystem).
-    if std::fs::hard_link(source, &dest).is_err() {
-        std::fs::copy(source, &dest)?;
-    }
-    crate::alphacode_build_support::platform_support::set_permissions_executable(&dest)?;
+    let install_result = (|| -> std::io::Result<()> {
+        if std::fs::hard_link(source, &dest).is_err() {
+            std::fs::copy(source, &dest)?;
+        }
+        platform_support::set_permissions_executable(&dest)
+    })();
 
-    Ok(dest)
+    match install_result {
+        Ok(()) => {
+            if let Some(aside) = &aside {
+                platform_support::discard_swapped_aside(aside);
+            }
+            platform_support::prune_swapped_asides(&dest_dir);
+            Ok(dest)
+        }
+        Err(error) => {
+            if let Some(aside) = &aside {
+                let _ = platform_support::restore_file_aside(aside, &dest);
+            }
+            Err(anyhow::Error::from(error).context(format!(
+                "Failed to install {} at version path",
+                source.display()
+            )))
+        }
+    }
+}
+
+/// Install `source` at `dest`, replacing any existing file even when it is
+/// locked by a running process.
+///
+/// Used by the archive-extraction install path, whose files land directly in
+/// `builds/versions/<version>/`. Plain `remove_file` + `copy` aborted updates
+/// with "Access is denied. (os error 5)" whenever the destination was the
+/// image of a running AlphaCode instance.
+pub fn replace_file_with(source: &Path, dest: &Path) -> Result<()> {
+    let aside = platform_support::move_file_aside(dest)?;
+    match std::fs::copy(source, dest) {
+        Ok(_) => {
+            if let Some(aside) = &aside {
+                platform_support::discard_swapped_aside(aside);
+            }
+            platform_support::prune_swapped_asides(dest.parent().unwrap_or_else(|| Path::new(".")));
+            Ok(())
+        }
+        Err(error) => {
+            if let Some(aside) = &aside {
+                let _ = platform_support::restore_file_aside(aside, dest);
+            }
+            Err(anyhow::Error::from(error).context(format!("Failed to install {}", dest.display())))
+        }
+    }
 }
 
 fn binary_source_metadata_path(binary: &Path) -> PathBuf {

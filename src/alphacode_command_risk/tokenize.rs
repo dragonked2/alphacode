@@ -267,10 +267,43 @@ pub fn tokenize(command: &str) -> Vec<Token> {
                 tokens.push(op);
             }
             '>' => {
-                flush!();
-                // `>>` appends and does not truncate, so it is far less
-                // destructive; only a single `>` clobbers.
-                if chars.peek() == Some(&'>') {
+                // An all-digits word immediately before `>` is the redirect's
+                // own descriptor number (`2>file`), not an operand. Pushing it
+                // as a word graded the literal `2` as a path target whenever
+                // the segment contained any redirect at all: `readlink -f
+                // /c/Users/me/x.pdf 2>/dev/null` was reported as a write to
+                // `<cwd>\2`, which is catastrophic when the session working
+                // directory sits under a protected root.
+                let fd_number_prefix = has_content
+                    && !current.is_empty()
+                    && current.chars().all(|c| c.is_ascii_digit());
+                if fd_number_prefix {
+                    current.clear();
+                    has_content = false;
+                    quoted = false;
+                } else {
+                    flush!();
+                }
+                // `2>&1` duplicates an open descriptor and writes to no file.
+                // The `&` belongs to the redirect rather than separating
+                // commands, and the destination descriptor is data. Without
+                // this, `cmd 2>&1 | head` split at the `&`, and the lone `1`
+                // was flagged as a truncating redirect target — resolved
+                // against the working directory it became `C:\WINDOWS\
+                // system32\1`, the exact "protected path" denial reported
+                // from a session whose cwd was System32.
+                if chars.peek() == Some(&'&') {
+                    chars.next();
+                    while let Some(&next) = chars.peek() {
+                        if next.is_ascii_digit() || next == '-' {
+                            chars.next();
+                        } else {
+                            break;
+                        }
+                    }
+                } else if chars.peek() == Some(&'>') {
+                    // `>>` appends and does not truncate, so it is far less
+                    // destructive; only a single `>` clobbers.
                     chars.next();
                 } else {
                     if chars.peek() == Some(&'|') {

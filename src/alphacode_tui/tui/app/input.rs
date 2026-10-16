@@ -1472,6 +1472,9 @@ pub(super) fn expand_paste_placeholders(app: &mut App, input: &str) -> String {
 pub(super) fn queue_message(app: &mut App) {
     let prepared = take_prepared_input(app);
     app.queued_messages.push(prepared.expanded);
+    // Sending or queueing resumes tail-follow (mirrors App::submit_input), so
+    // the scrollbar keeps tracking the newest output that follows the send.
+    app.follow_chat_bottom();
 }
 
 pub(super) fn retrieve_pending_message_for_edit(app: &mut App) -> bool {

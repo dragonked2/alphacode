@@ -1174,6 +1174,97 @@ impl Agent {
                 continue;
             }
 
+            // A stream that ends without a terminal MessageEnd is a dropped or
+            // truncated response, never a completed turn. Historically the loop
+            // fell through to end-of-turn handling with nothing to show, so a
+            // proxy reset, hung-stream timeout, or silent upstream cut left the
+            // agent waiting for the next user message with zero output and zero
+            // explanation (the "hidden error" hang). Retry it like any other
+            // transient provider error, and when the retry budget is exhausted
+            // surface a visible notice instead of stopping silently.
+            if !saw_message_end && !self.is_graceful_shutdown() {
+                const PREMATURE_STREAM_END_ERROR: &str = "provider stream ended unexpectedly before message_end (unexpected eof; dropped or truncated response)";
+                let has_visible_partial = !text_content.trim().is_empty();
+                let has_any_partial = has_visible_partial
+                    || !reasoning_content.trim().is_empty()
+                    || !tool_calls.is_empty();
+                let retry_delay = self.maybe_continue_after_provider_error(
+                    PREMATURE_STREAM_END_ERROR,
+                    &mut provider_error_continuations,
+                )?;
+                if let Some(delay) = retry_delay {
+                    // Resume from the exact point the stream died instead of
+                    // restarting from scratch (or ending with a half-visible
+                    // turn). Incomplete tool calls are dropped by the commit
+                    // helper; the injected reminder re-emits them.
+                    if has_any_partial {
+                        self.commit_partial_stream_for_continuation(
+                            &mut text_content,
+                            &mut reasoning_content,
+                            &mut tool_calls,
+                            &provider_name,
+                            store_reasoning_content,
+                        );
+                    }
+                    if delay > 0 {
+                        let _ = event_tx.send(ServerEvent::StatusDetail {
+                            detail: format!(
+                                "Provider connection dropped; retrying (attempt {}/{}).",
+                                provider_error_continuations,
+                                Self::MAX_PROVIDER_ERROR_CONTINUATION_ATTEMPTS
+                            ),
+                        });
+                        tokio::time::sleep(tokio::time::Duration::from_secs(delay)).await;
+                    }
+                    log_agent_provider_stream_lifecycle(
+                        logging::LogLevel::Warn,
+                        self,
+                        "stream_eof_retry",
+                        api_start,
+                        vec![
+                            ("mode", "mpsc".to_string()),
+                            ("attempt", provider_error_continuations.to_string()),
+                            ("had_partial", has_any_partial.to_string()),
+                        ],
+                    );
+                    // Re-issue the request on the next outer-loop iteration;
+                    // usage of the dead stream was never recorded.
+                    continue;
+                }
+                // Retries are not possible (non-transient classification or
+                // exhausted budget). Explain the empty turn so the user knows
+                // what happened instead of staring at a silent transcript.
+                if !has_visible_partial {
+                    let stop_label = stop_reason
+                        .clone()
+                        .filter(|reason| !reason.trim().is_empty())
+                        .unwrap_or_else(|| "no stop reason".to_string());
+                    let notice = if has_any_partial {
+                        format!(
+                            "The provider connection dropped before any visible output arrived ({stop_label}). Only internal reasoning was received; send your message again to retry."
+                        )
+                    } else {
+                        format!(
+                            "The provider connection dropped before any response arrived ({stop_label}). This is usually a transient network or provider issue; send your message again to retry, or run /doctor to check provider health."
+                        )
+                    };
+                    log_agent_provider_stream_lifecycle(
+                        logging::LogLevel::Error,
+                        self,
+                        "stream_eof_exhausted",
+                        api_start,
+                        vec![
+                            ("mode", "mpsc".to_string()),
+                            ("had_partial", has_any_partial.to_string()),
+                        ],
+                    );
+                    let _ = event_tx.send(ServerEvent::ProviderGuardrail {
+                        stop_reason: stop_reason.clone(),
+                        message: notice,
+                    });
+                }
+            }
+
             let api_elapsed = api_start.elapsed();
             logging::info(&format!(
                 "API call complete in {:.2}s (input={} output={} cache_read={} cache_write={})",

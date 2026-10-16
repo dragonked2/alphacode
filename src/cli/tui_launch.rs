@@ -593,7 +593,10 @@ pub fn list_sessions() -> Result<()> {
                 session_cwd = std::path::PathBuf::from(dir);
             }
             let (program, args) = build_resume_target_command(&exe, &resolved_target);
-            let err = crate::platform::replace_process(
+            // Wait for the resumed session: the shell that started the picker
+            // keeps waiting for the whole run, so the two processes never
+            // split console input (see `replace_process_wait`).
+            let err = crate::platform::replace_process_wait(
                 ProcessCommand::new(&program)
                     .args(&args)
                     .current_dir(session_cwd),
@@ -621,7 +624,7 @@ pub fn list_sessions() -> Result<()> {
                     session_cwd = std::path::PathBuf::from(dir);
                 }
                 let (program, args) = build_resume_target_command(&exe, &resolved_target);
-                let err = crate::platform::replace_process(
+                let err = crate::platform::replace_process_wait(
                     ProcessCommand::new(&program)
                         .args(&args)
                         .current_dir(session_cwd),

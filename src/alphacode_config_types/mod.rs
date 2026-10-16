@@ -1033,6 +1033,14 @@ pub struct FeatureConfig {
     /// that something in the harness silently invalidated the prefix cache
     /// (default: true).
     pub kv_cache_miss_notices: bool,
+    /// Prompt Autopilot: when the user's latest request is underspecified
+    /// (short/vague, no files, no error details, no acceptance criteria),
+    /// attach an auto-generated task briefing so the model restates the
+    /// concrete requirement, infers missing details from the codebase, defines
+    /// "done", and verifies its work instead of guessing. The user's own text
+    /// is never rewritten (default: true).
+    #[serde(default = "default_true")]
+    pub prompt_autopilot: bool,
     /// Update channel: "stable" (releases only) or "main" (latest commits)
     pub update_channel: UpdateChannel,
     /// Decision Plane configuration for bounded judgment inference.
@@ -1050,6 +1058,7 @@ impl Default for FeatureConfig {
             message_timestamps: true,
             persist_memory_injections: false,
             kv_cache_miss_notices: true,
+            prompt_autopilot: true,
             update_channel: UpdateChannel::default(),
             decisions: DecisionPlaneConfig::default(),
         }

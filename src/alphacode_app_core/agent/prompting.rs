@@ -226,12 +226,88 @@ impl Agent {
 
         self.append_current_turn_system_reminder(&mut split);
         self.detect_verification_loop(&mut split);
+        self.append_prompt_autopilot_briefing(&mut split, resolved_tier);
         crate::prompt::append_swarm_effort_directive(
             &mut split,
             self.provider.reasoning_effort().as_deref(),
         );
 
         (split, resolved_tier)
+    }
+
+    /// Prompt Autopilot: when the fresh user request is underspecified (short,
+    /// vague, no files/errors/acceptance criteria), append a compact task
+    /// briefing to the dynamic system context so the model expands the request
+    /// itself — restates the concrete requirement, infers missing details from
+    /// the codebase, defines "done", and verifies before reporting. The user's
+    /// stored text is never modified, so transcripts, prompt history, and
+    /// replay stay verbatim.
+    fn append_prompt_autopilot_briefing(
+        &self,
+        split: &mut crate::prompt::SplitSystemPrompt,
+        tier: crate::prompt::PromptTier,
+    ) {
+        // Trivial greeting turns never need a briefing, and the compact tier
+        // serves small-context models that cannot spare the tokens.
+        if tier != crate::prompt::PromptTier::Standard {
+            return;
+        }
+        if !crate::config::config().features.prompt_autopilot {
+            return;
+        }
+        let Some(latest) = self.latest_fresh_user_text() else {
+            return;
+        };
+        let assessment = crate::prompt_enhance::assess(&latest);
+        if !assessment.vague {
+            return;
+        }
+        logging::info(&format!(
+            "Prompt autopilot: underspecified request detected (kind={}, reasons={:?})",
+            assessment.task_kind.label(),
+            assessment.reasons
+        ));
+        if !split.dynamic_part.is_empty() {
+            split.dynamic_part.push_str("\n\n");
+        }
+        split
+            .dynamic_part
+            .push_str(&crate::prompt_enhance::briefing_for_assessment(&assessment));
+    }
+
+    /// Text of the newest user message when it is the *current* turn request
+    /// (the last stored message is a user text message). Returns `None` once
+    /// the turn moves past the user's own words — assistant replies, tool
+    /// results, injected reminders, and auto-pokes — so the briefing never
+    /// fires on continuations or automation messages.
+    fn latest_fresh_user_text(&self) -> Option<String> {
+        let last = self.session.messages.last()?;
+        if last.role != Role::User {
+            return None;
+        }
+        let mut out = String::new();
+        for block in &last.content {
+            if let crate::alphacode_app_core::message::ContentBlock::Text { text, .. } = block {
+                if !out.is_empty() {
+                    out.push('\n');
+                }
+                out.push_str(text);
+            }
+        }
+        let trimmed = out.trim();
+        if trimmed.is_empty() {
+            return None;
+        }
+        // Skip injected automation messages: dynamic system reminders, soft
+        // interrupts, auto-pokes, and previously attached briefings.
+        if trimmed.starts_with("<system-reminder>")
+            || trimmed.starts_with('[')
+            || trimmed.contains("<auto-enhanced by Alphacode>")
+            || crate::todo::is_auto_poke_message(trimmed)
+        {
+            return None;
+        }
+        Some(trimmed.to_string())
     }
 
     /// Inspect the most recent user message to decide whether the upcoming
