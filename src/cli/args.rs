@@ -1155,6 +1155,12 @@ pub(crate) enum BugBountyCommand {
         #[arg(value_name = "TOOL")]
         tools: Vec<String>,
 
+        /// Install every tool the orchestrator's task graph can drive,
+        /// including the heavyweight scanners (nmap, sqlmap, nikto) that the
+        /// default pipeline deliberately leaves out.
+        #[arg(long, conflicts_with = "dry_run")]
+        all: bool,
+
         /// Show what would run without installing anything
         #[arg(long)]
         dry_run: bool,

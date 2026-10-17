@@ -907,3 +907,20 @@ fn browser_suppressed_inside_test_harness_without_env_overrides() {
         "browser opens must be suppressed in test binaries even without --no-browser/env vars"
     );
 }
+
+/// The core rule: a browser opens only for a human explicitly starting a login
+/// at an attached terminal. Every autonomous/batch/agent invocation shares the
+/// same login code paths, so a non-interactive stdin must suppress the browser
+/// and rely on the printed URL (and QR) instead.
+#[test]
+fn browser_suppression_matrix_believes_only_attached_humans() {
+    // Interactive human, no flags → allowed to open the browser.
+    assert!(!super::suppress_browser(false, false, false, false, true));
+    // Same human but --no-browser → suppressed.
+    assert!(super::suppress_browser(true, false, false, false, true));
+    // Non-interactive process (agent/batch/CI) → suppressed, no matter what.
+    assert!(super::suppress_browser(false, false, false, false, false));
+    assert!(super::suppress_browser(false, true, false, false, true));
+    assert!(super::suppress_browser(false, false, true, false, true));
+    assert!(super::suppress_browser(false, false, false, true, true));
+}

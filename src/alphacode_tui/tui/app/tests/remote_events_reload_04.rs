@@ -1271,6 +1271,70 @@ fn test_info_widget_remote_opencode_shows_cost_based_usage() {
 }
 
 #[test]
+fn test_info_widget_dark_provider_falls_back_to_accrued_cost() {
+    // Providers outside the cost-accounting table (custom gateways, Gemini,
+    // unknown transports) used to leave the session widget with no cost row
+    // at all, even after the client had accrued real dollars for the session.
+    // The dark-kind fallback must surface accrued spend instead.
+    let mut app = create_test_app();
+    app.is_remote = true;
+    app.remote_provider_name = Some("my-custom-gateway".to_string());
+    app.remote_provider_model = Some("self-hosted-24b".to_string());
+    app.token_accounting.total_input_tokens = 5_000;
+    app.token_accounting.total_output_tokens = 1_000;
+
+    // No accrued spend and a non-pool model: there is genuinely nothing to
+    // show, so the widget stays dark (same contract as before the fallback).
+    let data = crate::alphacode_tui::tui::TuiState::info_widget_data(&app);
+    assert!(
+        data.usage_info.is_none(),
+        "unbilled unknown provider must stay dark"
+    );
+
+    // Once dollars were accrued for the session, the widget exposes them.
+    app.cost.total_cost = 0.37;
+    let data = crate::alphacode_tui::tui::TuiState::info_widget_data(&app);
+    let usage = data.usage_info.as_ref().expect("accrued cost must surface");
+    assert_eq!(
+        usage.provider,
+        crate::alphacode_tui::tui::info_widget::UsageProvider::CostBased
+    );
+    assert!(usage.available);
+    assert!((usage.total_cost - 0.37f32).abs() < f32::EPSILON);
+    assert_eq!(usage.input_tokens, 5_000);
+}
+
+#[test]
+fn test_info_widget_free_pool_session_surfaces_ledger_cost() {
+    // Free-pool sessions bill through the shared ledger rather than
+    // cost.total_cost; the session widget must match the model widget's
+    // "Alphax Free" spend line instead of showing no cost at all.
+    let mut app = create_test_app();
+    app.is_remote = true;
+    app.remote_provider_name = Some("gemini".to_string());
+    app.remote_provider_model = Some("poolside/laguna-s-2.1:free".to_string());
+    app.token_accounting.total_input_tokens = 7_000;
+    app.token_accounting.total_output_tokens = 2_500;
+
+    let (ledger_tokens, ledger_cost) = crate::usage_ledger::alphax_pool_totals();
+    let data = crate::alphacode_tui::tui::TuiState::info_widget_data(&app);
+    if ledger_tokens == 0 && ledger_cost <= 0.0 {
+        // A fresh test environment has an empty pool ledger: no spend yet.
+        assert!(data.usage_info.is_none());
+    } else {
+        let usage = data
+            .usage_info
+            .as_ref()
+            .expect("pool ledger spend must surface in the session widget");
+        assert_eq!(
+            usage.provider,
+            crate::alphacode_tui::tui::info_widget::UsageProvider::CostBased
+        );
+        assert!((usage.total_cost - ledger_cost as f32).abs() < 1e-4);
+    }
+}
+
+#[test]
 fn test_info_widget_remote_anthropic_api_key_shows_cost_based_usage() {
     // Remote Anthropic sessions billed via API key (server resolves
     // ResolvedCredential::ApiKey) should display cost-based usage instead of

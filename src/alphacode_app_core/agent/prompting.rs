@@ -98,7 +98,7 @@ impl Agent {
     /// state-changing result. When detected, inject a system reminder that
     /// breaks the loop by re-deriving the completion predicate.
     fn detect_verification_loop(&self, split: &mut crate::prompt::SplitSystemPrompt) {
-        const LOOP_THRESHOLD: usize = 4;
+        const LOOP_THRESHOLD: usize = 8;
 
         // Read-only tools that don't change external state
         const READ_ONLY_TOOLS: &[&str] = &[

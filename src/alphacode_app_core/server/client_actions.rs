@@ -12,6 +12,7 @@ use crate::alphacode_app_core::agent::Agent;
 use crate::alphacode_app_core::protocol::{FeatureToggle, NotificationType, ServerEvent};
 use crate::alphacode_app_core::session::Session;
 use crate::alphacode_app_core::util::truncate_str;
+use anyhow::Result;
 use std::collections::{HashMap, HashSet};
 use std::process::Stdio;
 use std::sync::Arc;
@@ -263,19 +264,38 @@ pub(super) fn handle_run_subagent(
     let tx = client_event_tx.clone();
 
     tokio::spawn(async move {
+        // `--continue <session_id>` preserves the historical "resume another
+        // session's transcript through a subagent" request, but the live spawn
+        // mechanism (swarm task) forks a child of the *active* session; it has
+        // no carrier for an arbitrary third transcript. Fail loudly rather
+        // than silently ignoring the requested session.
+        if let Some(requested) = session_id.as_deref() {
+            let _ = tx.send(ServerEvent::Error {
+                id,
+                message: format!(
+                    "/subagent --continue {requested} is not supported yet: subagents run as \
+                     forked children of the active session.\n\nRun /subagent in that session \
+                     directly, or resume the session with `alphacode --resume {requested}`."
+                ),
+                retry_after_secs: None,
+            });
+            let _ = tx.send(ServerEvent::Done { id });
+            return;
+        }
+
         let description = derive_subagent_description(&prompt);
         let tool_call_id = crate::id::new_id("call");
         let tool_name = "subagent".to_string();
         let tool_input = serde_json::json!({
-            "description": description,
-            "prompt": prompt,
-            "subagent_type": subagent_type,
+            "description": description.clone(),
+            "prompt": prompt.clone(),
+            "subagent_type": subagent_type.clone(),
             "model": model,
             "session_id": session_id,
             "command": "/subagent",
         });
 
-        let message_id = {
+        let _message_id = {
             let mut agent_guard = agent.lock().await;
             match agent_guard.add_manual_tool_use(
                 tool_call_id.clone(),
@@ -306,35 +326,31 @@ pub(super) fn handle_run_subagent(
             name: tool_name.clone(),
         });
 
-        let (registry, session_id, working_dir) = {
-            let agent_guard = agent.lock().await;
-            (
-                agent_guard.registry(),
-                agent_guard.session_id().to_string(),
-                agent_guard.working_dir().map(std::path::PathBuf::from),
-            )
-        };
-
-        let ctx = crate::tool::ToolContext {
-            session_id,
-            message_id,
-            tool_call_id: tool_call_id.clone(),
-            working_dir,
-            stdin_request_tx: None,
-            graceful_shutdown_signal: None,
-            execution_mode: crate::tool::ToolExecutionMode::Direct,
-        };
-
         let started = Instant::now();
-        let tool_name_for_exec = tool_name.clone();
-        let result = match tokio::spawn(async move {
-            registry.execute(&tool_name_for_exec, tool_input, ctx).await
-        })
-        .await
-        {
-            Ok(result) => result,
-            Err(error) => Err(anyhow::anyhow!("Tool task panicked: {}", error)),
-        };
+        // The deprecated direct "subagent" tool is intentionally absent from
+        // the registry (`subagent_tool_is_not_registered`); the real spawn
+        // machinery is the swarm task path below. Calling the registry with a
+        // fabricated name just answered "Unknown tool: subagent".
+        let task_description = description.clone();
+        let task_type = subagent_type.clone();
+        let task_prompt = prompt.clone();
+        let worker_agent = agent.clone();
+        let result: Result<crate::alphacode_tool_types::ToolOutput> =
+            match tokio::spawn(async move {
+                super::swarm::run_swarm_task(
+                    worker_agent,
+                    &task_description,
+                    &task_type,
+                    &task_prompt,
+                )
+                .await
+            })
+            .await
+            {
+                Ok(Ok(output)) => Ok(crate::alphacode_tool_types::ToolOutput::new(&output)),
+                Ok(Err(error)) => Err(error),
+                Err(join_error) => Err(anyhow::anyhow!("Subagent task panicked: {}", join_error)),
+            };
         let duration_ms = started.elapsed().as_millis().min(u64::MAX as u128) as u64;
 
         match result {

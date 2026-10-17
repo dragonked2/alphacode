@@ -42,9 +42,20 @@ pub async fn run(args: &crate::cli::args::BugBountyCommand) -> anyhow::Result<()
         }
         crate::cli::args::BugBountyCommand::Install {
             tools,
+            all,
             dry_run,
             json,
-        } => install(tools, *dry_run, *json).await,
+        } => {
+            if *all {
+                let every: Vec<String> = bugbounty_doctor::TOOL_SPECS
+                    .iter()
+                    .map(|s| s.binary.to_string())
+                    .collect();
+                install(&every, *dry_run, *json).await
+            } else {
+                install(tools, *dry_run, *json).await
+            }
+        }
     }
 }
 
@@ -159,25 +170,44 @@ async fn orchestrate(
     silent: bool,
     json: bool,
     dry_run: bool,
-    _resume: bool,
+    resume: bool,
 ) -> anyhow::Result<()> {
-    use crate::alphacode_app_core::bugbounty_orchestrator::{BountyPhase, BugBountyOrchestrator};
+    use crate::alphacode_app_core::bugbounty_executor;
+    use crate::alphacode_app_core::bugbounty_orchestrator::BugBountyOrchestrator;
 
+    let output_dir = std::path::PathBuf::from(output);
     let orchestrator = BugBountyOrchestrator::new(target);
 
-    if !silent {
+    if !silent && !json {
         println!("Bug Bounty Orchestrator");
         println!("=======================");
         println!("Target: {}", target);
-        println!("Output: {}", output);
+        println!("Output: {}", output_dir.display());
         println!();
     }
 
     if dry_run {
-        println!("Dry run — showing planned tasks:");
-        println!();
         orchestrator.initialize().await?;
         let tasks = orchestrator.get_pending_tasks().await;
+        if json {
+            let rows: Vec<_> = tasks
+                .iter()
+                .map(|t| {
+                    json!({
+                        "id": t.id,
+                        "name": t.name,
+                        "tool": t.tool,
+                        "phase": format!("{:?}", t.phase),
+                        "dependencies": t.dependencies,
+                        "estimated_seconds": t.estimated_duration,
+                    })
+                })
+                .collect();
+            println!("{}", serde_json::to_string_pretty(&rows)?);
+            return Ok(());
+        }
+        println!("Dry run — showing planned tasks:");
+        println!();
         for task in &tasks {
             println!(
                 "  [{}] {} — {}",
@@ -189,53 +219,42 @@ async fn orchestrate(
         return Ok(());
     }
 
-    orchestrator.initialize().await?;
-
-    if !silent {
-        println!(
-            "Initialized {} tasks",
-            orchestrator.get_pending_tasks().await.len()
-        );
-        println!();
-    }
-
-    // Execute phases in order
-    let phases = [
-        BountyPhase::Reconnaissance,
-        BountyPhase::AttackSurfaceMapping,
-        BountyPhase::VulnerabilityDiscovery,
-        BountyPhase::Exploitation,
-    ];
-
-    for phase in &phases {
-        if !silent {
-            println!("Phase: {}", phase.description());
-        }
-
-        let tasks = orchestrator.get_tasks_for_phase(*phase).await;
-        for task in &tasks {
-            if !silent {
-                println!("  Executing: {}", task.name);
-            }
-            // In a real implementation, this would execute the tool
-            // For now, we mark it as completed
-            orchestrator
-                .complete_task(&task.id, format!("Completed: {}", task.name))
-                .await?;
-        }
-
-        orchestrator.advance_phase().await?;
-    }
+    let outcomes = bugbounty_executor::run_workflow(&orchestrator, &output_dir, resume).await?;
 
     let summary = orchestrator.get_summary().await;
 
     if json {
-        println!("{}", serde_json::to_string_pretty(&summary)?);
-    } else {
-        println!();
-        println!("{}", summary);
+        let payload = json!({
+            "summary": summary,
+            "outcomes": outcomes
+                .iter()
+                .map(|o| json!({
+                    "task": o.task_id,
+                    "ok": o.ok,
+                    "note": o.note,
+                }))
+                .collect::<Vec<_>>(),
+            "report": output_dir.join("report.md").display().to_string(),
+        });
+        println!("{}", serde_json::to_string_pretty(&payload)?);
+        return Ok(());
     }
 
+    if !silent {
+        println!();
+        for outcome in &outcomes {
+            let mark = if outcome.ok { "✓" } else { "✗" };
+            println!("{mark} {}: {}", outcome.task_id, outcome.note);
+        }
+        println!();
+    }
+    println!("{}", summary);
+    let failed = outcomes.iter().filter(|o| !o.ok).count();
+    if failed > 0 {
+        println!(
+            "\n{failed} task(s) failed. Re-run with --resume to retry only what did not complete."
+        );
+    }
     Ok(())
 }
 

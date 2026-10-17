@@ -1,4 +1,5 @@
-//! Rotating through the Alphax Free pool after a 429, 5xx, or empty response.
+//! Rotating through the Alphax Free pool after a 429, 5xx, empty response, or
+//! model-side refusal.
 //!
 //! # The problem
 //!
@@ -66,6 +67,23 @@ const TRANSIENT_QUARANTINE: Duration = Duration::from_secs(60);
 /// again quickly, and rotation is only a nudge, not a verdict.
 const EMPTY_RESPONSE_QUARANTINE: Duration = Duration::from_secs(30);
 
+/// Quarantine window after a model-side guardrail/refusal stop
+/// (e.g. the upstream emitted `stop_reason: "refusal"`).
+///
+/// A refusal is a statement about *this model's* content policy interacting
+/// with *this request* — it is not evidence the backend is broken, so it must
+/// not quarantine for long. But it also means immediately re-picking the same
+/// upstream for the next request is likely to produce the same refusal, so a
+/// bounded window (two minutes) rotates fresh upstreams into service while the
+/// eligible-again model keeps one healthy recovery cycle after the
+/// conversation moves on. The refusal path is additionally capped at one
+/// rotation per turn at the call site, so the window never compounds into a
+/// quiz of every pool member in a single request.
+///
+/// Two minutes: enough to guarantee a *different* upstream serves the retried
+/// request, short enough that the model stays available on the next turn.
+const REFUSAL_QUARANTINE: Duration = Duration::from_secs(2 * 60);
+
 /// Quarantine window after the gateway reports it has no route for a model id.
 ///
 /// Long enough to stop the thrash that prompted it. The observed loop was:
@@ -86,6 +104,14 @@ pub(crate) enum RotationTrigger {
     Transient,
     /// The model responded but produced nothing usable.
     EmptyResponse,
+    /// The model served the request but stopped it with a guardrail/refusal
+    /// stop (e.g. Anthropic `stop_reason: "refusal"`).
+    ///
+    /// Not a defect in the backend: the same request may be perfectly servable
+    /// by a different pool member with a different policy profile. Rotation
+    /// here is the automatic version of the manual "switch model and resend"
+    /// the TUI offers after a refusal, scoped to one attempt per turn.
+    Refusal,
     /// The gateway has no route for this model id at all (HTTP 404 with
     /// "No endpoints found" / "no provider or endpoint was found").
     ///
@@ -102,6 +128,7 @@ impl RotationTrigger {
             Self::RateLimited => RATE_LIMIT_QUARANTINE,
             Self::Transient => TRANSIENT_QUARANTINE,
             Self::EmptyResponse => EMPTY_RESPONSE_QUARANTINE,
+            Self::Refusal => REFUSAL_QUARANTINE,
             Self::Unroutable => UNROUTABLE_QUARANTINE,
         }
     }
@@ -352,6 +379,9 @@ impl RotationNotice {
             RotationTrigger::RateLimited => "rate limited",
             RotationTrigger::Transient => "temporarily unavailable",
             RotationTrigger::EmptyResponse => "returned no output",
+            // A refusal is the model's content policy, not an outage. Phrase it
+            // as a hold so "switching to another free model" is the fix.
+            RotationTrigger::Refusal => "on hold after a refusal",
             // Say the model was not available rather than implying a capacity
             // problem, which is what the user would otherwise assume.
             RotationTrigger::Unroutable => "temporarily unavailable",
@@ -434,6 +464,25 @@ mod tests {
         clear_quarantine("some/model:free");
         clear_quarantine("");
         assert!(!is_quarantined("some/model:free"));
+    }
+
+    #[test]
+    fn refusal_quarantine_rotates_and_recovers_quickly() {
+        let _guard = test_lock();
+        reset();
+        quarantine_model("cohere/north-mini-code:free", RotationTrigger::Refusal);
+        // The refusing upstream is held for this turn's retry…
+        assert!(is_quarantined("cohere/north-mini-code:free"));
+        // …rotation still finds a different member for the retried request…
+        let next = next_free_model("cohere/north-mini-code:free").expect("pool has alternatives");
+        assert_ne!(next, "cohere/north-mini-code:free");
+        // …and the window is policy-short, not outage-long: well under a
+        // rate-limit quarantine, and above the empty-response nudge window so
+        // the retry demonstrably lands on a *different* upstream.
+        assert!(RotationTrigger::Refusal.quarantine() < RotationTrigger::RateLimited.quarantine());
+        assert!(
+            RotationTrigger::Refusal.quarantine() > RotationTrigger::EmptyResponse.quarantine()
+        );
     }
 
     #[test]

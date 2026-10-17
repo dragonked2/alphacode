@@ -464,6 +464,18 @@ impl Agent {
                     "Alphax Free automatic recovery budget exhausted after {} failed requests",
                     attempt
                 ));
+                // Last resort before ending the turn: an upstream the pool has
+                // not tried yet is a better bet than dead-ending a long
+                // security/testing request mid-work. This stays bounded by the
+                // pool itself — every member already tried is quarantined, so
+                // rotation returns `None` after at most one full sweep and the
+                // guardrail notice surfaces as before.
+                if let Some(delay) = self.maybe_rotate_free_pool_model(error) {
+                    logging::warn(
+                        "Recovery budget exhausted, but an untried free-pool route remains; switching to it",
+                    );
+                    return Ok(Some(delay));
+                }
                 return Ok(None);
             }
         }
@@ -546,6 +558,29 @@ impl Agent {
     /// re-asking a model that has already proven useless this turn.
     pub(crate) fn maybe_rotate_free_pool_after_empty_response(&mut self) -> Option<u64> {
         self.try_free_pool_rotation(super::free_pool_rotation::RotationTrigger::EmptyResponse)
+    }
+
+    /// Refusal staleness budget per turn: unlike rate limits (recover by
+    /// waiting) or empty responses (recover by re-asking), a refusal is
+    /// model-policy dependent — one automatic switch to a fresh upstream is
+    /// worth trying, several are not.
+    pub(crate) const MAX_REFUSAL_ROTATIONS_PER_TURN: u32 = 1;
+
+    /// Rotate to another pool member after a model-side guardrail/refusal stop.
+    ///
+    /// This is the automatic in-turn version of the reroute the guardrail
+    /// notice offers: instead of ending the turn so the user can press
+    /// Ctrl+Y and resend, an Alphax Free session immediately retries on the
+    /// next free upstream. The refusing model quarantines briefly
+    /// ([`super::free_pool_rotation::RotationTrigger::Refusal`]) so the retry
+    /// cannot bounce back to the same policy.
+    ///
+    /// Returns `Some(0)` when a model switch happened (caller re-issues the
+    /// request immediately), `None` when rotation does not apply — a paid
+    /// provider, an exhausted pool, or a refused switch degrades to the
+    /// existing end-of-turn guardrail notice rather than a new error.
+    pub(crate) fn maybe_rotate_free_pool_after_refusal(&mut self) -> Option<u64> {
+        self.try_free_pool_rotation(super::free_pool_rotation::RotationTrigger::Refusal)
     }
 
     fn try_free_pool_rotation(

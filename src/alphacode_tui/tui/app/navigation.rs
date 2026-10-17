@@ -1,4 +1,5 @@
 use super::*;
+use crate::alphacode_tui::tui::ui::ScrollbarPress;
 use crate::alphacode_tui::tui::ui::input_ui;
 use ratatui::layout::Rect;
 
@@ -1469,6 +1470,10 @@ impl App {
             self.reset_tab_completion();
         }
 
+        if let Some(reason) = self.handle_chat_scrollbar_mouse(mouse) {
+            finish_mouse_event!(true, reason);
+        }
+
         if let Some(scroll_only) = self.handle_copy_selection_mouse(mouse) {
             finish_mouse_event!(scroll_only, "copy_selection");
         }
@@ -1895,6 +1900,91 @@ impl App {
         self.scroll_offset = 0;
         self.auto_scroll_paused = false;
         super::super::ui::request_tail_follow_snap();
+    }
+
+    /// Scroll the chat transcript to an absolute top-line index. Used by the
+    /// native-scrollbar thumb drag: unlike `scroll_up`/`scroll_down` this sets
+    /// a target directly instead of stepping, clamped against the same
+    /// renderer extent the draw pass clamps against.
+    pub(super) fn set_chat_scroll_absolute(&mut self, target: usize) {
+        // While compacted history is settling, the renderer is anchored to a
+        // distance-from-bottom rather than `scroll_offset`; move the anchor
+        // exactly as `scroll_down`'s anchor branch does.
+        if let Some(mut anchor) = self.pending_history_anchor {
+            let total = super::super::ui::last_total_wrapped_lines();
+            anchor.lines_from_bottom = total.saturating_sub(target.min(total));
+            self.pending_history_anchor = Some(anchor);
+            self.request_full_repaint();
+            return;
+        }
+        let rendered_max = super::super::ui::last_max_scroll();
+        let max = if rendered_max > 0 {
+            rendered_max
+        } else {
+            self.scroll_max_estimate()
+        };
+        if max > 0 && target >= max {
+            // Dragging to (or past) the bottom resumes tail-follow, the same
+            // resting state a scroll_down journey ending at the bottom gets.
+            self.follow_chat_bottom();
+            return;
+        }
+        let target = target.min(max);
+        let changed = target != self.scroll_offset || !self.auto_scroll_paused;
+        self.scroll_offset = target;
+        self.auto_scroll_paused = true;
+        if changed {
+            // ratatui #2357: clean repaint on scroll to avoid ghost cells.
+            self.request_full_repaint();
+        }
+    }
+
+    /// Mouse interaction with the native chat scrollbar. Press grabs (or
+    /// jumps to) the thumb, drag scrubs the transcript with the thumb glued to
+    /// the pointer's original grab offset, release ends the scrub. Returns
+    /// `None` for every event off the scrollbar column so the rest of the
+    /// mouse pipeline — copy selection, carets, diagrams — is untouched.
+    pub(super) fn handle_chat_scrollbar_mouse(
+        &mut self,
+        mouse: MouseEvent,
+    ) -> Option<&'static str> {
+        let geometry = super::super::ui::last_chat_scrollbar_geometry()?;
+        match mouse.kind {
+            MouseEventKind::Down(MouseButton::Left) => {
+                match geometry.press(mouse.column, mouse.row)? {
+                    ScrollbarPress::Thumb(grab) => {
+                        self.scrollbar_drag_rows = Some(grab);
+                        Some("chat_scrollbar_grab")
+                    }
+                    // VS Code-style track behavior: a press off the thumb jumps
+                    // it centered on the press row and arms the drag, so the
+                    // common press-scrub-release gesture stays smooth.
+                    ScrollbarPress::Above | ScrollbarPress::Below => {
+                        let grab = geometry.thumb_height / 2;
+                        let target = geometry.drag_scroll(mouse.row, grab)?;
+                        self.scrollbar_drag_rows = Some(grab);
+                        self.set_chat_scroll_absolute(target);
+                        Some("chat_scrollbar_jump")
+                    }
+                }
+            }
+            MouseEventKind::Drag(MouseButton::Left) => {
+                let grab = self.scrollbar_drag_rows?;
+                let target = geometry.drag_scroll(mouse.row, grab)?;
+                self.set_chat_scroll_absolute(target);
+                Some("chat_scrollbar_drag")
+            }
+            MouseEventKind::Up(MouseButton::Left) => {
+                if self.scrollbar_drag_rows.take().is_some() {
+                    Some("chat_scrollbar_release")
+                } else {
+                    None
+                }
+            }
+            // Wheel gestures over the scrollbar column stay with the general
+            // transcript wheel path; only thumb scrubbing is owned here.
+            _ => None,
+        }
     }
 
     /// Record an overscroll tick (downward scroll while already pinned to the

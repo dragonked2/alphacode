@@ -52,10 +52,41 @@ fn composer_mode(input: &str, is_remote_mode: bool) -> ComposerMode {
 
 fn shell_mode_hint(mode: ComposerMode) -> Option<&'static str> {
     match mode {
-        ComposerMode::ShellLocal => Some("  \u{2699} shell \u{00b7} Enter runs locally"),
-        ComposerMode::ShellRemote => Some("  \u{2699} shell \u{00b7} Enter runs on server"),
+        ComposerMode::ShellLocal => Some("  \u{2699} shell \u{00b7} \u{23ce} Enter runs locally"),
+        ComposerMode::ShellRemote => {
+            Some("  \u{2699} shell \u{00b7} \u{23ce} Enter runs on server")
+        }
         _ => None,
     }
+}
+
+/// Rounded-frame chrome for the composer: one border row above and below the
+/// text rows (`COMPOSER_FRAME_ROWS`), one border column on each side
+/// (`COMPOSER_FRAME_COLS`). The frame's row budget is reserved at layout time
+/// and every screen-space reader — click hit-testing, copy-selection mapping,
+/// cursor painting — derives text geometry from [`composer_inner_area`] so
+/// none of them can drift apart from the drawing code.
+pub(crate) const COMPOSER_FRAME_ROWS: u16 = 2;
+pub(crate) const COMPOSER_FRAME_COLS: u16 = 2;
+
+/// Interior rect of the framed composer: the rounded border owns the outer
+/// rows and columns. Degenerate sizes collapse to a zero-area rect, which
+/// makes `draw_input` fall through to its usual no-op.
+pub(crate) fn composer_inner_area(area: Rect) -> Rect {
+    Rect {
+        x: area.x.saturating_add(1),
+        y: area.y.saturating_add(1),
+        width: area.width.saturating_sub(COMPOSER_FRAME_COLS),
+        height: area.height.saturating_sub(COMPOSER_FRAME_ROWS),
+    }
+}
+
+fn composer_frame_block() -> ratatui::widgets::Block<'static> {
+    use ratatui::widgets::{Block, BorderType};
+    Block::default()
+        .borders(ratatui::widgets::Borders::ALL)
+        .border_type(BorderType::Rounded)
+        .border_style(Style::default().fg(crate::alphacode_tui::tui::brand_ux::BrandTheme::dim()))
 }
 
 /// Prepare a transient status string for rendering inside the TUI.
@@ -506,7 +537,11 @@ pub(super) fn input_prompt(app: &dyn TuiState) -> (String, Color) {
     if mode.is_shell() {
         ("$ ".to_string(), BrandTheme::success())
     } else if app.is_processing() {
-        ("\u{2026} ".to_string(), BrandTheme::warning())
+        // The prompt glyph must keep its identity while a turn runs: swapping
+        // it for the ellipsis made the composer read as a status line instead
+        // of an editor. Busy stays visible from the warm prompt color, the
+        // queue hint line, and the task ribbon on the frame border.
+        ("> ".to_string(), BrandTheme::warning())
     } else {
         // An active skill deliberately does NOT get a mode prefix. Echoing the
         // skill name inside the composer ("> bugbounty") pushed the typed text
@@ -1580,14 +1615,17 @@ pub(super) fn draw_status(frame: &mut Frame, app: &dyn TuiState, area: Rect, pen
                 let experimental_notice = app.active_experimental_feature_notice();
                 let subagent = app.subagent_status();
 
-                // Leading marker: a single pulsing dot (● / ◉ alternating on
-                // a 1s cycle) so the tool name has a clear visual anchor
-                // without the noisy "──●" track on both sides.
+                // Leading marker: a single dot so the tool name has a clear
+                // visual anchor without a noisy "──●" track on both sides.
+                // It alternates ◉/○ on a 1s cycle when decorative animations
+                // are on, and holds still otherwise — motion that carries no
+                // information is exactly what that policy turns off (the
+                // marquee below keeps its slow liveness crawl either way).
                 let pulse_phase = (elapsed * 2.0) as i32;
-                let pulse_glyph = if pulse_phase % 2 == 0 {
-                    "\u{25C9}" // ◉ - filled circle with center dot
-                } else {
+                let pulse_glyph = if decorative && pulse_phase % 2 != 0 {
                     "\u{25CB}" // ○ - hollow ring
+                } else {
+                    "\u{25C9}" // ◉ - filled circle with center dot
                 };
                 let mut spans: Vec<Span<'static>> = vec![
                     Span::styled(pulse_glyph, Style::default().fg(anim_color)),
@@ -2546,11 +2584,11 @@ mod tests {
         // and it must name where the command actually runs.
         assert_eq!(
             shell_mode_hint(ComposerMode::ShellLocal),
-            Some("  ⚙ shell · Enter runs locally")
+            Some("  ⚙ shell · ⏎ Enter runs locally")
         );
         assert_eq!(
             shell_mode_hint(ComposerMode::ShellRemote),
-            Some("  ⚙ shell · Enter runs on server")
+            Some("  ⚙ shell · ⏎ Enter runs on server")
         );
         assert_eq!(shell_mode_hint(ComposerMode::Chat), None);
     }
@@ -2571,27 +2609,26 @@ mod tests {
         assert!(empty_composer_placeholder(0, "> ").is_empty());
     }
 
-    /// While a turn is running the composer must not invite input. It used to
-    /// show the same "Ask alphacode anything…" text as the idle state, which
-    /// read as "type here" while keystrokes were only being queued.
+    /// The placeholder is the composer's invitation text and must not depend
+    /// on the prompt glyph. The ellipsis prompt was retired (the composer
+    /// stays an editor while keystrokes queue), so both prompt glyphs must
+    /// resolve to the same width-budgeted copy.
     #[test]
-    fn processing_placeholder_reports_status_instead_of_inviting_input() {
-        // `input_prompt` returns the ellipsis glyph while a turn is running.
-        let busy = empty_composer_placeholder(80, "\u{2026} ");
-        assert!(
-            !busy.contains("Ask"),
-            "a running turn must not show an input prompt: {busy:?}"
-        );
-        assert!(busy.contains("Working"), "got {busy:?}");
+    fn placeholder_is_independent_of_prompt_glyph() {
+        let idle = empty_composer_placeholder(80, "> ");
+        let ellipsis = empty_composer_placeholder(80, "\u{2026} ");
+        assert_eq!(idle, ellipsis, "prompt glyph must not change the copy");
+        assert!(idle.contains("/ commands"), "got {idle:?}");
+        assert!(idle.contains("F1 help"), "got {idle:?}");
 
         for width in 0..=80 {
-            let placeholder = empty_composer_placeholder(width, "\u{2026} ");
+            let placeholder = empty_composer_placeholder(width, "> ");
             assert!(
                 unicode_width::UnicodeWidthStr::width(placeholder.as_str()) <= width,
                 "placeholder {placeholder:?} exceeds {width} columns"
             );
         }
-        assert!(empty_composer_placeholder(0, "\u{2026} ").is_empty());
+        assert!(empty_composer_placeholder(0, "> ").is_empty());
     }
 
     /// The shell color must read as a deliberate accent, distinct from the
@@ -3349,6 +3386,10 @@ pub(super) fn draw_right_fact_stack(
         return;
     }
 
+    // The framed composer's outer rows/columns are border chrome; facts
+    // composite onto the inner text area so they can never sit on a border.
+    let input_area = composer_inner_area(input_area);
+
     let lines = right_fact_lines(app);
     if lines.is_empty() {
         return;
@@ -3679,6 +3720,119 @@ fn right_fact_cell_is_blank(cell: &ratatui::buffer::Cell) -> bool {
         && cell.diff_option != ratatui::buffer::CellDiffOption::Skip
 }
 
+/// Paint the active-work ribbon into the composer's top border row while a
+/// turn is running: what the agent is doing right now (current tool, batch
+/// fan-out progress, todo/plan progress, queued prompts), how long it has
+/// been running. Zero layout cost — it reuses the border row the rounded
+/// frame already owns, drawn as an embedded title in the manner of a modern
+/// app window, so the transcript never shifts when work starts or ends.
+///
+/// Glyphs are CP437-safe (`►`, `•`, `·`) per the project's console-font
+/// policy.
+fn draw_active_work_border_title(frame: &mut Frame, app: &dyn TuiState, frame_area: Rect) {
+    if frame_area.width < 16 {
+        return;
+    }
+    let mut tasks = app.active_work_tasks();
+    if tasks.is_empty() {
+        return;
+    }
+    tasks.truncate(3);
+    // Live elapsed readout rides on the end of the ribbon; the processing
+    // tick already repaints every second while a turn runs.
+    if let Some(elapsed) = app.elapsed() {
+        let secs = elapsed.as_secs();
+        let stamp = if secs >= 3_600 {
+            format!("{}:{:02}:{:02}", secs / 3_600, (secs / 60) % 60, secs % 60)
+        } else {
+            format!("{}:{:02}", secs / 60, secs % 60)
+        };
+        tasks.push((stamp, "elapsed"));
+    }
+
+    fn state_style(state: &str) -> ratatui::style::Style {
+        use crate::alphacode_tui::tui::brand_ux::BrandTheme;
+        match state {
+            "running" => Style::default().fg(BrandTheme::tool()),
+            "queued" => Style::default().fg(BrandTheme::warning()),
+            "elapsed" => Style::default()
+                .fg(BrandTheme::dim_bright())
+                .add_modifier(Modifier::ITALIC),
+            "info" => Style::default()
+                .fg(BrandTheme::dim_bright())
+                .add_modifier(Modifier::ITALIC),
+            _ => Style::default().fg(BrandTheme::info()),
+        }
+    }
+
+    fn state_marker(state: &str) -> &'static str {
+        match state {
+            "running" => "\u{25BA} ", // ►
+            "elapsed" | "info" => "",
+            _ => "\u{2022} ", // •
+        }
+    }
+
+    // Budget: leave ≥3 border cells after the left corner and ≥3 before the
+    // right corner; everything beyond the budget is dropped or clipped.
+    let budget = frame_area.width.saturating_sub(8) as usize;
+    let mut spans: Vec<Span> = Vec::new();
+    let mut used = 0usize;
+    let mut skip_rest = false;
+    for (index, (label, state)) in tasks.iter().enumerate() {
+        let mut piece = String::new();
+        if index > 0 {
+            piece.push_str(" \u{00B7} "); // ·
+        }
+        piece.push_str(state_marker(state));
+        piece.push_str(label);
+        let width = piece.chars().count();
+        if used + width > budget && !spans.is_empty() {
+            skip_rest = true;
+            break;
+        }
+        if used + width > budget && spans.is_empty() {
+            // First piece alone overflows: clip to the ellipsized form so the
+            // ribbon still fits on small composers.
+            let keep = budget.saturating_sub(1);
+            let clipped: String = piece.chars().take(keep).collect();
+            spans.push(Span::styled(
+                format!("{clipped}\u{2026}"), // …
+                state_style(state),
+            ));
+            skip_rest = true;
+            break;
+        }
+        used += width;
+        spans.push(Span::styled(piece, state_style(state)));
+    }
+    if skip_rest {
+        spans.push(Span::styled(
+            " \u{00B7} \u{2026}".to_string(), // " · …"
+            Style::default().fg(BrandTheme::dim()),
+        ));
+    }
+    let columns = spans
+        .iter()
+        .map(|span| span.width())
+        .sum::<usize>()
+        .min(budget);
+    if columns == 0 {
+        return;
+    }
+
+    let ribbon_area = Rect::new(
+        frame_area.x.saturating_add(3),
+        frame_area.y,
+        columns.min(frame_area.width.saturating_sub(6) as usize) as u16,
+        1,
+    );
+    if ribbon_area.width == 0 {
+        return;
+    }
+    frame.render_widget(Paragraph::new(Line::from(spans)), ribbon_area);
+}
+
 pub(super) fn draw_input(
     frame: &mut Frame,
     app: &dyn TuiState,
@@ -3688,6 +3842,11 @@ pub(super) fn draw_input(
 ) -> Option<Position> {
     let input_text = app.input();
     let cursor_pos = app.cursor_pos();
+
+    // The rounded frame owns the outer rows/columns; all line geometry, the
+    // cursor and the copy-selection snapshot below live in the interior.
+    let frame_area = area;
+    let area = composer_inner_area(area);
 
     let mode = composer_mode(input_text, app.is_remote_mode());
     // Command suggestions render later as an overlay pass
@@ -3744,9 +3903,9 @@ pub(super) fn draw_input(
     } else if app.is_processing() && !input_text.is_empty() {
         hint_shown = true;
         let hint = if app.queue_mode() {
-            "  Ctrl/Cmd+Enter to send now  |  Enter to queue"
+            "  Ctrl/Cmd+Enter sends now \u{00b7} Enter queues"
         } else {
-            "  Ctrl/Cmd+Enter to queue  |  Enter to interleave"
+            "  Ctrl/Cmd+Enter queues \u{00b7} Enter interleaves"
         };
         hint_line = Some(hint.trim().to_string());
         lines.push(Line::from(Span::styled(
@@ -3902,29 +4061,15 @@ pub(super) fn draw_input(
         ));
     }
 
-    // Subtle top border on the input area for visual separation from the
-    // transcript above. Uses a dim gradient that matches the brand theme.
-    // A one-row composer has no interior to separate: its only row *is* the text
-    // row, so a full-width rule paints over the prompt itself and permanently
-    // denies that row to the session-fact stack (which is specified to
-    // composite its context meter onto `input_area.bottom() - 1`).
-    if area.height > 1 && area.width > 2 {
-        // NOTE: static phase (0.0) rather than `animation_elapsed()` — a
-        // breathing border would be frozen mid-breath between full frames by
-        // the idle-animation partial repaint, which only patches the animated
-        // rows and copies everything else from the previous frame.
-        let border_line = crate::alphacode_tui::tui::brand_ux::BrandTheme::breathing_separator(
-            area.width as usize,
-            0.0,
-        );
-        let border_area = Rect {
-            x: area.x,
-            y: area.y,
-            width: area.width,
-            height: 1,
-        };
-        frame.render_widget(Paragraph::new(border_line), border_area);
-    }
+    // Rounded frame: walls first, then the paragraph paints its rows into the
+    // interior so text and hints never ride on the border cells. Static (not
+    // animated): the idle-animation partial repaint only patches animated rows
+    // and would freeze a breathing border mid-breath between full frames.
+    frame.render_widget(composer_frame_block(), frame_area);
+
+    // Active-work ribbon paints the live task summary into the top border row
+    // while a turn runs; drawn after the block so it owns those border cells.
+    draw_active_work_border_title(frame, app, frame_area);
 
     let paragraph = if centered {
         Paragraph::new(
@@ -4132,6 +4277,13 @@ pub(crate) fn input_cursor_pos_from_screen(
         return None;
     }
 
+    let area = composer_inner_area(area);
+    // Clicks on the top border row or either wall are chrome, not text: do
+    // not move the caret for them.
+    if row < area.y || column < area.x || column >= area.x.saturating_add(area.width) {
+        return None;
+    }
+
     let input_text = app.input();
     let reserved_width = send_mode_reserved_width(app);
     let prompt_len = input_prompt_len(app, next_prompt);
@@ -4267,35 +4419,17 @@ pub(crate) fn wrap_input_text(
 /// columns. The full hint teaches the command palette and direct help shortcut;
 // narrower terminals progressively keep the prompt readable.
 ///
-/// While a turn is running the composer is read-only, so it gets status text
-/// instead. Showing "Ask alphacode anything…" next to the busy glyph was a
-/// real trap: it read as "type here", keystrokes were queued against a turn
-/// that could not accept them yet, and nothing on screen distinguished a
-/// prompt from a spinner.
-///
-/// Busy state is derived from the prompt glyph the caller already resolved
-/// (`input_prompt` returns the ellipsis while processing) rather than taking
-/// another parameter, which would have churned every caller and test for a
-/// value the caller already has.
-fn empty_composer_placeholder(max_width: usize, prompt_char: &str) -> String {
-    let busy = prompt_char.trim_start().starts_with('\u{2026}');
-    let candidates: &[&str] = if busy {
-        &[
-            "Working… · Esc interrupts",
-            "Working… · Esc interrupts",
-            "Working…",
-            "Thinking…",
-        ]
-    } else {
-        &[
-            "Ask alphacode anything… · / commands · F1 help",
-            "Ask anything… · / commands · F1 help",
-            "Ask anything… · / commands · /theme look",
-            "Ask anything… · / commands",
-            "Ask anything…",
-            "Type…",
-        ]
-    };
+/// Keystrokes legitimately queue while a turn is running, so the invitation
+/// list no longer repaints itself into status copy depending on the prompt
+/// glyph: the busy state is carried by the warm prompt color, the queue hint
+/// line, and the status bar instead.
+fn empty_composer_placeholder(max_width: usize, _prompt_char: &str) -> String {
+    let candidates: &[&str] = &[
+        "Ask Alphacode anything · / commands · F1 help",
+        "Ask Alphacode anything · / commands",
+        "Ask Alphacode anything",
+        "Type here",
+    ];
     candidates
         .iter()
         .copied()
@@ -4314,12 +4448,15 @@ fn send_mode_indicator(app: &dyn TuiState) -> (&'static str, Color) {
         ("⏳", queued_color())
     } else if let Some(ref conn) = app.connection_type() {
         let lower = conn.to_lowercase();
+        // ASCII tags, not Nerd-Font icons: 󰌘/󰆍/󰖟 render as a lone "?" on
+        // terminals without a Nerd Font, which read as a stray question mark
+        // sitting at the end of the input field.
         if lower.contains("websocket") {
-            ("󰌘", success_color())
+            ("ws", success_color())
         } else if lower.contains("subprocess") || lower.contains("cli") {
-            ("󰆍", accent_color())
+            ("cli", accent_color())
         } else {
-            ("󰖟", info_color())
+            ("net", info_color())
         }
     } else {
         ("", asap_color())

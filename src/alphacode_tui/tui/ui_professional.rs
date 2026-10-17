@@ -10,7 +10,7 @@
 //! - Status dots and chips
 
 use crate::alphacode_tui::tui::brand_ux::BrandTheme;
-use crate::alphacode_tui::tui::color_support::rgb;
+use crate::alphacode_tui_style::theme::muted_text_color;
 use ratatui::layout::Alignment;
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
@@ -117,19 +117,19 @@ pub fn tip_card(title: &str, body: &str) -> Vec<Line<'static>> {
             Span::styled(
                 " 💡 ",
                 Style::default()
-                    .fg(rgb(255, 215, 0))
+                    .fg(BrandTheme::warning())
                     .add_modifier(Modifier::BOLD),
             ),
             Span::styled(
                 title.to_string(),
                 Style::default()
-                    .fg(rgb(255, 215, 0))
+                    .fg(BrandTheme::warning())
                     .add_modifier(Modifier::BOLD),
             ),
         ]),
         Line::from(Span::styled(
             format!("     {}", body),
-            Style::default().fg(rgb(200, 200, 200)),
+            Style::default().fg(muted_text_color()),
         )),
     ]
 }
@@ -145,7 +145,7 @@ pub fn key_hint(key: &str, description: &str) -> Line<'static> {
         ),
         Span::styled(
             description.to_string(),
-            Style::default().fg(rgb(180, 180, 200)),
+            Style::default().fg(muted_text_color()),
         ),
     ])
 }
@@ -191,16 +191,6 @@ pub fn gradient_text(text: &str) -> Line<'static> {
     let spans = BrandTheme::gradient_spans(text);
     Line::from(spans)
 }
-
-/// Build a chip/badge with background color.
-pub fn chip(label: &str, color: Color) -> Span<'static> {
-    Span::styled(
-        format!(" {} ", label),
-        Style::default().fg(rgb(20, 20, 30)).bg(color),
-    )
-}
-
-use ratatui::style::Color;
 
 /// Professional card with border and title.
 pub fn card(title: &str, body: &[Line<'static>]) -> Vec<Line<'static>> {

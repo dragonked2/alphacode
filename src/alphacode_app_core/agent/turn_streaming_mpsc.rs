@@ -107,6 +107,10 @@ impl Agent {
         let mut context_limit_retries = 0u32;
         let mut incomplete_continuations = 0u32;
         let mut empty_post_tool_continuations = 0u32;
+        // Automatic alternate-route attempts after a model-side refusal stop
+        // (bounded by Agent::MAX_REFUSAL_ROTATIONS_PER_TURN so a policy that
+        // keeps declining cannot cycle the whole pool in one request).
+        let mut refusal_rotations = 0u32;
         // Counter for retries injected after a transient provider / transport
         // error (5xx, 429 with rate-limit words, network EOF, ...). Bounded
         // by Agent::MAX_PROVIDER_ERROR_CONTINUATION_ATTEMPTS so a permanently
@@ -122,7 +126,30 @@ impl Agent {
             crate::prompt::PromptTier,
         )> = None;
         let mut cached_tools: Option<Vec<ToolDefinition>> = None;
+        let mut iteration_count: u32 = 0;
+        let mut last_save_time = Instant::now();
         'turn: loop {
+            iteration_count += 1;
+            // Periodic session auto-save: persist every N tool iterations and
+            // at most every AUTO_SAVE_INTERVAL_SECS otherwise, mirroring the
+            // terminal loop — a crash during a long streaming turn loses at
+            // most N tool results instead of the entire turn (critical for
+            // sessions running for hours or days).
+            if iteration_count > 1 && iteration_count.is_multiple_of(Self::AUTO_SAVE_INTERVAL) {
+                self.persist_session_best_effort("periodic auto-save");
+                last_save_time = Instant::now();
+            } else if last_save_time.elapsed() >= Duration::from_secs(Self::AUTO_SAVE_INTERVAL_SECS)
+            {
+                self.persist_session_best_effort("time-based auto-save");
+                last_save_time = Instant::now();
+            }
+            // Proactive compaction: check context usage before each API
+            // call. Above the threshold, compact early so the turn cannot
+            // hit the hard context limit mid-work (long autonomous sessions
+            // run entirely through this streaming path).
+            if self.provider.uses_alphacode_compaction() && iteration_count > 1 {
+                self.maybe_proactive_compact();
+            }
             let repaired = self.repair_missing_tool_outputs();
             if repaired > 0 {
                 logging::warn(&format!(
@@ -1505,6 +1532,21 @@ impl Agent {
                         &mut empty_post_tool_continuations,
                     )?
                 {
+                    continue;
+                }
+                // A model-side refusal stop does not have to dead-end the turn.
+                // Give it one automatic alternate-route attempt (the in-turn
+                // version of the manual Ctrl+Y reroute; free pool only, so no
+                // paid route is ever switched to without the user asking) before
+                // the guardrail notice surfaces.
+                if saw_message_end
+                    && !self.is_graceful_shutdown()
+                    && Self::is_guardrail_stop_reason(stop_reason.as_deref())
+                    && refusal_rotations < Self::MAX_REFUSAL_ROTATIONS_PER_TURN
+                    && self.maybe_rotate_free_pool_after_refusal().is_some()
+                {
+                    refusal_rotations += 1;
+                    logging::warn("Refusal stop: rotated to an alternate free route for this turn");
                     continue;
                 }
                 match self.handle_streaming_no_tool_calls(

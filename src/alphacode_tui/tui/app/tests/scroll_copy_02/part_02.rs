@@ -591,8 +591,10 @@ fn test_mouse_click_in_input_moves_cursor_to_clicked_position() {
 
     let handled = app.handle_mouse_event(MouseEvent {
         kind: MouseEventKind::Down(MouseButton::Left),
-        column: input_area.x + prompt_len + 2,
-        row: input_area.y,
+        // The framed composer reserves a border row/column; the editable text
+        // starts one cell in.
+        column: input_area.x + 1 + prompt_len + 2,
+        row: input_area.y + 1,
         modifiers: KeyModifiers::empty(),
     });
 
@@ -680,8 +682,10 @@ fn test_mouse_click_in_input_switches_focus_from_side_panel() {
 
     let handled = app.handle_mouse_event(MouseEvent {
         kind: MouseEventKind::Down(MouseButton::Left),
-        column: input_area.x + prompt_len + 2,
-        row: input_area.y,
+        // The framed composer reserves a border row/column; the editable text
+        // starts one cell in.
+        column: input_area.x + 1 + prompt_len + 2,
+        row: input_area.y + 1,
         modifiers: KeyModifiers::empty(),
     });
 
@@ -716,13 +720,17 @@ fn test_mouse_click_in_wrapped_input_moves_cursor_to_second_visual_line() {
 
     app.handle_mouse_event(MouseEvent {
         kind: MouseEventKind::Down(MouseButton::Left),
-        column: input_area.x + 4,
-        row: input_area.y + 1,
+        // The framed composer reserves a border row/column: the editable text
+        // starts one cell in, so the second visual row is `y + 2`.
+        column: input_area.x + 6,
+        row: input_area.y + 2,
         modifiers: KeyModifiers::empty(),
     });
 
-    // The two-column idle prompt leaves nine columns for text. Column four on
-    // the second visual row maps after the first character of that segment.
+    // The two-column prompt plus the border column leaves seven columns for
+    // text on the 9-column interior. Column six on the second visual row maps
+    // after the third character of that segment ("abc|"), i.e. the absolute
+    // end of the wrapped draft.
     assert_eq!(app.cursor_pos, 10);
 }
 

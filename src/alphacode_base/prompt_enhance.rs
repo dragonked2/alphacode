@@ -108,9 +108,9 @@ pub fn assess(text: &str) -> Assessment {
         };
     }
 
-    if words <= 5 {
+    if words <= 2 {
         reasons.push("only a few words long");
-    } else if words <= 9 {
+    } else if words <= 4 {
         reasons.push("very short request");
     }
     if has_generic_intent(&lower) {
@@ -122,7 +122,7 @@ pub fn assess(text: &str) -> Assessment {
     if reasons.is_empty() {
         // Specificity heuristics did not fire but the prompt is still on the
         // short side with no supporting detail; treat as mildly vague.
-        if words < 12 {
+        if words < 6 {
             reasons.push("no concrete details (files, errors, or acceptance criteria)");
         } else {
             return Assessment {
@@ -169,7 +169,7 @@ pub fn briefing_for_assessment(assessment: &Assessment) -> String {
         "Treat the request as a goal, not a literal script:\n\
          1. Locate the relevant code/context and restate the concrete requirement in 1-2 sentences.\n\
          2. If details are missing, infer the most reasonable interpretation from the codebase, \
-         list your assumptions briefly, and proceed. Ask the user only when an ambiguity is truly blocking.\n\
+         make reasonable assumptions, and proceed aggressively. Only ask if the blocker is absolute and cannot be inferred.\n\
          3. Define what \"done\" means, make the smallest complete change, and do not stop halfway.\n\
          4. Verify before reporting. ",
     );

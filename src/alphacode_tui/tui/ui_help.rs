@@ -8,6 +8,7 @@
 
 use crate::alphacode_tui::tui::brand_ux::BrandTheme;
 use crate::alphacode_tui::tui::color_support::rgb;
+use crate::alphacode_tui_style::theme::muted_text_color;
 use ratatui::layout::Alignment;
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
@@ -175,7 +176,7 @@ pub fn help_reference() -> Vec<Line<'static>> {
                     ),
                     Span::styled(
                         format!("{:<24}", cmd.description),
-                        Style::default().fg(rgb(200, 200, 220)),
+                        Style::default().fg(muted_text_color()),
                     ),
                     Span::styled(aliases_str, Style::default().fg(BrandTheme::dim())),
                     Span::styled(
@@ -238,7 +239,7 @@ pub fn help_reference() -> Vec<Line<'static>> {
                         .fg(BrandTheme::info())
                         .add_modifier(Modifier::BOLD),
                 ),
-                Span::styled(desc.to_string(), Style::default().fg(rgb(180, 180, 200))),
+                Span::styled(desc.to_string(), Style::default().fg(muted_text_color())),
             ])
             .alignment(Alignment::Left),
         );

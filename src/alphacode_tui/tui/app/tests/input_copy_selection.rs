@@ -122,17 +122,19 @@ fn test_input_composer_selection_never_includes_prompt_prefix() {
     );
 
     let points = input_pane_screen_points(80, 24);
-    let row = points.first().map(|(_, r, _)| *r).expect("composer row");
+    let (start_col, start_row, _) = *points.first().expect("composer row");
 
-    // Start the drag on the far-left edge of the composer row: on the prompt
-    // decoration itself. The selection must clamp to the typed text.
+    // Start the drag at the far-left edge of the composer's text columns: on
+    // the prompt decoration side. The selection must clamp to the typed
+    // text. (The framed composer's border column is chrome, so col 0 would
+    // fall outside the pane.)
     let end = points
         .iter()
         .filter(|(_, _, p)| p.abs_line == 0)
         .max_by_key(|(_, _, p)| p.column)
         .map(|(c, r, _)| (*c, *r))
         .expect("screen cell for text end");
-    let copied = drag_copy(&mut app, (0, row), end);
+    let copied = drag_copy(&mut app, (start_col, start_row), end);
     assert_eq!(copied, "no prompt here");
     assert!(
         !copied.contains('>'),

@@ -990,6 +990,14 @@ pub struct App {
     /// Monotonic frame counter bounding the lifetime of
     /// `command_suggestions_cache` to a single frame.
     command_suggestions_epoch: std::cell::Cell<u64>,
+    /// Memo for the swarm-spawned-agent scan behind
+    /// `TuiState::swarm_members_for_transcript`, keyed by
+    /// `display_messages_version`. The scan walks every tool message's full
+    /// content, so recomputing it per frame (it participates in the body-cache
+    /// key) made long swarm sessions pay an O(transcript) scan at animation
+    /// FPS. A version match makes the memo exactly as fresh as a rescan.
+    swarm_spawned_ids_cache:
+        RefCell<Option<(u64, std::sync::Arc<std::collections::HashSet<String>>)>>,
     /// Recency/frequency memory behind the palette ranking tiebreak; see
     /// [`CommandUsageTracker`].
     command_usage: CommandUsageTracker,
@@ -1769,6 +1777,12 @@ pub struct App {
     /// overscroll line, so momentum from a scroll that merely carries the view
     /// into the bottom does not trigger it.
     chat_scroll_gesture_from_bottom: bool,
+    /// Grab offset (rows between the pointer and the top of the scrollbar
+    /// thumb) while the user drags the native chat scrollbar. `None` when no
+    /// drag is in progress; it keeps the thumb glued under the pointer instead
+    /// of snapping its center to the press point.
+    scrollbar_drag_rows: Option<u16>,
+
     /// When to show the overscroll status line: off, always on, or the elastic
     /// overscroll reveal (default). From `display.overscroll_status` config.
     overscroll_status_mode: crate::config::OverscrollStatusMode,

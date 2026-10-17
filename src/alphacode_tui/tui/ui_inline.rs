@@ -81,8 +81,12 @@ fn draw_inline_view(
     let block = Block::default()
         .borders(Borders::ALL)
         .border_type(BorderType::Rounded)
-        .border_style(Style::default().fg(rgb(85, 85, 110)))
-        .style(Style::default().bg(rgb(18, 18, 26)));
+        .border_style(
+            Style::default().fg(crate::alphacode_tui_style::palette::role_color(
+                crate::alphacode_tui_style::palette::Role::PanelBorder,
+            )),
+        )
+        .style(Style::default().bg(crate::alphacode_tui_style::theme::code_bg_color()));
     frame.render_widget(block.clone(), render_area);
 
     let inner = block.inner(render_area);
@@ -93,7 +97,9 @@ fn draw_inline_view(
     let mut lines: Vec<Line> = Vec::new();
     let mut header_spans = vec![Span::styled(
         view.title.clone(),
-        Style::default().fg(Color::White).bold(),
+        Style::default()
+            .fg(crate::alphacode_tui_style::theme::ai_text())
+            .bold(),
     )];
     if let Some(status) = view.status.as_ref() {
         header_spans.push(Span::styled(
@@ -106,7 +112,7 @@ fn draw_inline_view(
     for line in &view.lines {
         lines.push(Line::from(Span::styled(
             line.clone(),
-            Style::default().fg(rgb(200, 200, 220)),
+            Style::default().fg(crate::alphacode_tui_style::theme::muted_text_color()),
         )));
     }
 

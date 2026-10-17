@@ -248,6 +248,11 @@ pub trait TuiState {
     fn scroll_offset(&self) -> usize;
     /// Whether auto-scroll to bottom is paused (user scrolled up during streaming)
     fn auto_scroll_paused(&self) -> bool;
+    /// Whether a native-scrollbar thumb drag is in progress. The viewport
+    /// brightens the scrollbar thumb while the pointer holds it.
+    fn scrollbar_drag_active(&self) -> bool {
+        false
+    }
     /// When older compacted history is being loaded in, this is the reader's
     /// captured distance (in wrapped lines) from the bottom of the transcript.
     /// The renderer uses it to keep the viewport anchored to the same content as
@@ -342,6 +347,13 @@ pub trait TuiState {
     }
     fn active_skill(&self) -> Option<String>;
     fn subagent_status(&self) -> Option<String>;
+    /// Compact view of what the session is working on right now, rendered as
+    /// the composer's top-border title while a turn runs, so tasks in flight
+    /// are visible without opening an overlay. Each entry is
+    /// `(label, state)` with state ∈ "running" | "task" | "queued" | "info".
+    fn active_work_tasks(&self) -> Vec<(String, &'static str)> {
+        Vec::new()
+    }
     /// Progress of a currently-running batch tool call.
     fn batch_progress(&self) -> Option<crate::bus::BatchProgress>;
     fn time_since_activity(&self) -> Option<Duration>;

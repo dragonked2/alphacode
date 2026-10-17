@@ -10,6 +10,9 @@ const REPO_URL: &str = "https://github.com/dragonked2/alphacode";
 const FLAG_FILE: &str = ".github_starred";
 const CONSENT_FILE: &str = ".github_star_consent";
 const SKIP_ENV: &str = "ALPHACODE_SKIP_STAR_PROMPT";
+/// Support page opened once, right after an explicit [y] consent at an
+/// interactive terminal (never from the background star thread).
+const BUY_ME_A_COFFEE_URL: &str = "https://buymeacoffee.com/dragonked2";
 
 fn flag_path() -> Option<std::path::PathBuf> {
     crate::alphacode_storage::alphacode_dir()
@@ -95,6 +98,21 @@ fn open_repo_page_best_effort() {
             let _ = open::that(url);
         })
         .ok();
+}
+
+/// Open the Buy Me a Coffee support page once the user explicitly agrees at an
+/// interactive terminal. This runs in the consent handler itself (never from
+/// the background star thread), so the tab is always user-consented. Falls
+/// back to printing the URL when a browser cannot be opened.
+fn open_buy_me_a_coffee_page() {
+    let opened = if crate::alphacode_base::auth::browser_suppressed(false) {
+        false
+    } else {
+        open::that(BUY_ME_A_COFFEE_URL).is_ok()
+    };
+    if !opened {
+        println!("  Support page (browser could not be opened): {BUY_ME_A_COFFEE_URL}");
+    }
 }
 
 pub fn spawn_background_star() {
@@ -197,16 +215,22 @@ fn print_star_prompt() {
     // Plain println!/print! (no ANSI) so the prompt renders on every terminal,
     // including Windows conhost without VT processing.
     println!();
-    println!("================================================================");
-    println!("  Support Alphacode - star us on GitHub?");
-    println!("==================================================================");
+    println!("  Welcome to Alphacode!");
     println!();
-    println!("  If you find Alphacode useful, please star the project:");
-    println!("    {}", REPO_URL);
+    println!("  A one-time, two-click way to support the project:");
     println!();
-    println!("  Do you agree to star the project on GitHub?");
-    println!("    [y] Yes, I agree  -> continue to Alphacode");
-    println!("    [n] No, I disagree -> close Alphacode");
+    println!("    * Star us on GitHub");
+    println!("      {}", REPO_URL);
+    println!();
+    println!("    * Or buy the developer a coffee");
+    println!("      {}", BUY_ME_A_COFFEE_URL);
+    println!();
+    println!("  Saying yes stars the repo automatically when the `gh` CLI is");
+    println!("  logged in, opens the support page, and starts Alphacode as usual.");
+    println!();
+    println!("  Agree to support Alphacode?");
+    println!("    [y] Yes  -> continue to Alphacode");
+    println!("    [n] No   -> close Alphacode");
     println!();
 }
 
@@ -214,7 +238,8 @@ fn print_star_prompt() {
 ///
 /// - Already consented -> return immediately (normal startup).
 /// - Non-interactive / CI / piped / subcommand -> return immediately.
-/// - Agree -> persist consent, best-effort star, return (normal startup).
+/// - Agree -> persist consent, best-effort star, open the support page, then
+///   return (normal startup).
 /// - Disagree (or EOF / too many invalid attempts) -> exit the process.
 pub(crate) fn ensure_star_consent_or_exit(args: &crate::cli::args::Args) {
     // Fast path: user already agreed in a previous run.
@@ -271,6 +296,10 @@ pub(crate) fn ensure_star_consent_or_exit(args: &crate::cli::args::Args) {
                     // manually in one click.
                     open_repo_page_best_effort();
                 }
+                // Consent was just given at an attached interactive terminal:
+                // open the support page once, then continue straight into
+                // Alphacode startup.
+                open_buy_me_a_coffee_page();
                 println!();
                 println!("  Thank you for supporting Alphacode!");
                 println!();

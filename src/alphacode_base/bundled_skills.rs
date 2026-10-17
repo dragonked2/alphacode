@@ -27,6 +27,11 @@
 /// by the subskill directory name (e.g. `hunt-sqli`).
 pub(super) const BUNDLED_SKILLS: &[BundledSkill] = &[
     BundledSkill {
+        name: "playbook",
+        body: include_str!("bundled_skills/playbook/SKILL.md"),
+        references: &[],
+    },
+    BundledSkill {
         name: "bugbounty",
         body: include_str!("bundled_skills/bugbounty/SKILL.md"),
         references: &[
@@ -253,6 +258,22 @@ pub(super) const BUNDLED_SKILLS: &[BundledSkill] = &[
             (
                 "supply-chain",
                 include_str!("bundled_skills/bugbounty/supply-chain/SKILL.md"),
+            ),
+            (
+                "hunt-otp",
+                include_str!("bundled_skills/bugbounty/hunt-otp/SKILL.md"),
+            ),
+            (
+                "hunt-auth-bypass",
+                include_str!("bundled_skills/bugbounty/hunt-auth-bypass/SKILL.md"),
+            ),
+            (
+                "hunt-cspt",
+                include_str!("bundled_skills/bugbounty/hunt-cspt/SKILL.md"),
+            ),
+            (
+                "writeup-corpus",
+                include_str!("bundled_skills/bugbounty/writeup-corpus/SKILL.md"),
             ),
             (
                 "scripts/install_bugbounty_tools.sh",

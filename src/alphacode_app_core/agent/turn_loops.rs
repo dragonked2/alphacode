@@ -30,11 +30,11 @@ impl Agent {
     /// During long-running turns with many tool calls, this ensures progress
     /// is periodically persisted to disk so a crash loses at most this many
     /// tool results instead of the entire turn.
-    const AUTO_SAVE_INTERVAL: u32 = 5;
+    pub(crate) const AUTO_SAVE_INTERVAL: u32 = 5;
     /// Maximum time between auto-saves, regardless of tool iteration count.
     /// This ensures progress is saved even during long-running single-tool
     /// operations (e.g., large file reads, image rendering).
-    const AUTO_SAVE_INTERVAL_SECS: u64 = 60;
+    pub(crate) const AUTO_SAVE_INTERVAL_SECS: u64 = 60;
     /// Maximum context usage percentage before triggering proactive compaction.
     /// When the context window is 85%+ full, start compacting early to avoid
     /// hitting the hard context limit during a critical turn.
@@ -77,6 +77,10 @@ impl Agent {
         let mut context_limit_retries = 0u32;
         let mut incomplete_continuations = 0u32;
         let mut empty_post_tool_continuations = 0u32;
+        // Automatic alternate-route attempts after a model-side refusal stop
+        // (bounded by Agent::MAX_REFUSAL_ROTATIONS_PER_TURN so a policy that
+        // keeps declining cannot cycle the whole pool in one request).
+        let mut refusal_rotations = 0u32;
         // Counter for retries injected after a transient provider / transport
         // error (5xx, 429 with rate-limit words, network EOF, ...). Bounded
         // by Agent::MAX_PROVIDER_ERROR_CONTINUATION_ATTEMPTS so a permanently
@@ -1155,6 +1159,20 @@ impl Agent {
                     stop_reason.as_deref(),
                     &mut incomplete_continuations,
                 )? {
+                    continue;
+                }
+                // A model-side refusal stop does not have to dead-end the turn.
+                // Give it one automatic alternate-route attempt (the in-turn
+                // version of the manual Ctrl+Y reroute; free pool only, so no
+                // paid route is ever switched to without the user asking)
+                // before the guardrail notice surfaces.
+                if !self.is_graceful_shutdown()
+                    && Self::is_guardrail_stop_reason(stop_reason.as_deref())
+                    && refusal_rotations < Self::MAX_REFUSAL_ROTATIONS_PER_TURN
+                    && self.maybe_rotate_free_pool_after_refusal().is_some()
+                {
+                    refusal_rotations += 1;
+                    logging::warn("Refusal stop: rotated to an alternate free route for this turn");
                     continue;
                 }
                 // Surface silent guardrail/refusal stops instead of returning

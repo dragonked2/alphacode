@@ -7,6 +7,7 @@ mod assetfinder;
 mod bash;
 mod batch;
 mod bg;
+pub mod bounty_bridge;
 mod browser;
 mod cariddi;
 mod clipboard;

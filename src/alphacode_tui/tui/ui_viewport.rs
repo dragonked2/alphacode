@@ -1161,14 +1161,36 @@ pub(super) fn draw_messages(
         // broken. Pass the effective total so the thumb maps the real range.
         // `max` with `total_lines` keeps the thumb exact when no band is shown.
         let effective_total = max_scroll.saturating_add(visible_height).max(total_lines);
+        let focused = app.scrollbar_drag_active();
         super::render_native_scrollbar(
             frame,
             scrollbar_area,
             scroll,
             effective_total,
             visible_height,
-            false,
+            focused,
         );
+        // Publish the drawn geometry so the mouse handlers translate pointer
+        // rows back into scroll positions against exactly what was rendered.
+        if super::native_scrollbar_visible(show_native_scrollbar, effective_total, visible_height) {
+            let (thumb_offset, thumb_height) = super::scrollbar_thumb_metrics(
+                scroll,
+                effective_total,
+                visible_height,
+                scrollbar_area.height,
+            );
+            super::store_chat_scrollbar_geometry(Some(super::ChatScrollbarGeometry {
+                rect: scrollbar_area,
+                thumb_offset,
+                thumb_height,
+                max_scroll,
+            }));
+        } else {
+            // Short transcript: nothing interactive on the right edge.
+            super::store_chat_scrollbar_geometry(None);
+        }
+    } else {
+        super::store_chat_scrollbar_geometry(None);
     }
 
     // Derive the dock-gating "reliable" width profile for *new* info widgets:

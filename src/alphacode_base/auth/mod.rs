@@ -106,10 +106,46 @@ enum AuthProbeMode {
 }
 
 pub fn browser_suppressed(cli_no_browser: bool) -> bool {
+    suppress_browser(
+        cli_no_browser,
+        env_truthy("NO_BROWSER"),
+        env_truthy("ALPHACODE_NO_BROWSER"),
+        running_in_test_harness(),
+        interactive_stdin(),
+    )
+}
+
+/// Pure decision core for [`browser_suppressed`], so the rule is testable
+/// without reaching for stdin or the environment.
+///
+/// The rule: a browser window opens **only** when a human explicitly started a
+/// provider login at an attached terminal. Everything else — agent tool
+/// invocations, batch scripts, scheduled recovery, CI, test binaries — runs the
+/// same login commands but must never pop tabs; those processes get the printed
+/// auth URL (and a QR code) instead.
+fn suppress_browser(
+    cli_no_browser: bool,
+    no_browser_env: bool,
+    alphacode_no_browser_env: bool,
+    in_test_harness: bool,
+    interactive_stdin: bool,
+) -> bool {
     cli_no_browser
-        || env_truthy("NO_BROWSER")
-        || env_truthy("ALPHACODE_NO_BROWSER")
-        || running_in_test_harness()
+        || no_browser_env
+        || alphacode_no_browser_env
+        || in_test_harness
+        || !interactive_stdin
+}
+
+/// True when a human is attached to this process's stdin.
+///
+/// The TUI runs in the attached terminal, so `/login` keeps its browser-open
+/// behavior. An `alphacode login …` spawned by an agent tool or a script has
+/// redirected stdin and is refused here — that is the whole point: browser
+/// windows must never open without a logged-in human behind them.
+pub fn interactive_stdin() -> bool {
+    use std::io::IsTerminal;
+    std::io::stdin().is_terminal()
 }
 
 /// True when the current process is a Rust test binary (`cargo test` /

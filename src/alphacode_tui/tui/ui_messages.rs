@@ -3086,7 +3086,7 @@ fn render_compact_plan_graph(title: &str, content: &str, width: u16) -> Option<V
         Span::styled("Plan", Style::default().fg(rgb(148, 188, 255)).bold()),
         Span::styled(
             format!(" · {version}"),
-            Style::default().fg(rgb(150, 150, 160)),
+            Style::default().fg(crate::alphacode_tui_style::theme::muted_text_color()),
         ),
     ])];
     let mut fill_rows = 0usize;
@@ -3789,6 +3789,26 @@ fn render_discovery_card(
     Some(content)
 }
 
+/// Clip an inline output-preview row to `budget` columns, marking the cut
+/// with an ellipsis when (and only when) characters were actually dropped.
+/// Preview rows used to be hard-cut at the row edge, which made a truncated
+/// line read like the end of the output.
+fn clip_preview_line(line: &str, budget: usize) -> String {
+    let total = line.chars().count();
+    if total <= budget {
+        return line.to_string();
+    }
+    if budget == 0 {
+        return String::new();
+    }
+    if budget == 1 {
+        return "\u{2026}".to_string();
+    }
+    let mut clipped: String = line.chars().take(budget - 1).collect();
+    clipped.push('\u{2026}');
+    clipped
+}
+
 pub(crate) fn render_tool_message(
     msg: &DisplayMessage,
     width: u16,
@@ -4153,14 +4173,16 @@ pub(crate) fn render_tool_message(
         }
     }
 
-    // Show successful bash outputs inline so users see realtime results
-    // (e.g. `count`, `print(...)`, test failures) without opening anything.
-    // A generous tail is rendered; anything beyond it is represented by an
-    // explicit "+N more lines" notice so output is never silently hidden —
-    // the old 12-line/800-char limits hid real results (build logs, test
-    // diff lists) with no marker at all. Errors render via the error summary
-    // path above.
+    // Successful bash outputs render inline, but only when tool-call details
+    // are enabled (`/tool-call-details on`): in the default collapsed view a
+    // bash call is a single summary row, so build logs and JSON blobs no
+    // longer flood the transcript. A generous tail is rendered when enabled;
+    // anything beyond it is represented by an explicit "+N more lines" notice
+    // so output is never silently hidden — the old 12-line/800-char limits
+    // hid real results with no marker at all. Errors always render via the
+    // error-summary path above.
     if tools_ui::canonical_tool_name(&tc.name) == "bash"
+        && tools_ui::show_tool_call_details()
         && !is_error
         && !msg.content.trim().is_empty()
     {
@@ -4173,10 +4195,7 @@ pub(crate) fn render_tool_message(
         if body.chars().count() <= BASH_INLINE_CHARS && line_count > 0 {
             let shown = line_count.min(BASH_INLINE_LINES);
             for line in body.lines().take(shown) {
-                let short = line
-                    .chars()
-                    .take(row_width.saturating_sub(6))
-                    .collect::<String>();
+                let short = clip_preview_line(line, row_width.saturating_sub(6));
                 lines.push(Line::from(vec![
                     Span::raw("    "),
                     Span::styled(short, Style::default().fg(rgb(160, 170, 185))),
@@ -4196,18 +4215,18 @@ pub(crate) fn render_tool_message(
     }
 
     // Inline output previews for the other everyday tools (read / glob /
-    // grep / alphagrep). Previously only bash and (config-gated) alphagrep
-    // showed any body at all, so a file read or a search landed as a single
-    // summary line and users had to pin or expand to see what the agent saw.
-    // Now each gets a friendly bounded preview with an explicit remainder
-    // marker so output is never silently hidden. Skipped for oversized
-    // payloads (the token badge already flags those in amber/red) to keep a
-    // single tool row from flooding the transcript.
+    // grep / alphagrep) render only when tool-call details are enabled.
+    // The default collapsed transcript keeps each of these as a single
+    // summary row — file dumps and search hits were the main sources of a
+    // fuzzy, flooded console. With details on, each tool gets a friendly
+    // bounded preview with an explicit remainder marker. Skipped for
+    // oversized payloads (the token badge already flags those in amber/red).
     if !is_error {
         const INLINE_PREVIEW_LINES: usize = 24;
         const INLINE_PREVIEW_MAX_CHARS: usize = 12_000;
         let tool_key = tools_ui::canonical_tool_name(&tc.name);
-        let show_inline_body = matches!(tool_key, "read" | "glob" | "grep" | "alphagrep")
+        let show_inline_body = tools_ui::show_tool_call_details()
+            && matches!(tool_key, "read" | "glob" | "grep" | "alphagrep")
             // alphagrep has its own dedicated renderer below when enabled.
             && !(tool_key == "alphagrep" && crate::config::config().display.show_alphagrep_output);
         if show_inline_body {
@@ -4216,10 +4235,7 @@ pub(crate) fn render_tool_message(
             if !body.is_empty() && body.chars().count() <= INLINE_PREVIEW_MAX_CHARS {
                 let shown = line_count.min(INLINE_PREVIEW_LINES);
                 for line in body.lines().take(shown) {
-                    let short = line
-                        .chars()
-                        .take(row_width.saturating_sub(6))
-                        .collect::<String>();
+                    let short = clip_preview_line(line, row_width.saturating_sub(6));
                     lines.push(Line::from(vec![
                         Span::raw("    "),
                         Span::styled(short, Style::default().fg(rgb(160, 170, 185))),

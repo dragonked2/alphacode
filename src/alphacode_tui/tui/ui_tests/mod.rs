@@ -108,6 +108,119 @@ fn native_scrollbar_visibility_requires_overflow() {
     assert!(native_scrollbar_visible(true, 6, 5));
 }
 
+#[test]
+fn scrollbar_thumb_metrics_extremes_follow_the_track() {
+    // Degenerate inputs never produce a thumb.
+    assert_eq!(scrollbar_thumb_metrics(0, 0, 10, 20), (0, 0));
+    assert_eq!(scrollbar_thumb_metrics(0, 40, 0, 20), (0, 0));
+    assert_eq!(scrollbar_thumb_metrics(0, 40, 10, 0), (0, 0));
+    // Content fits: no scrollbar at all, so no thumb either.
+    assert_eq!(scrollbar_thumb_metrics(0, 40, 40, 20), (0, 0));
+    assert_eq!(scrollbar_thumb_metrics(0, 30, 40, 20), (0, 0));
+
+    // Top of a long transcript: thumb pinned to the track top; height is the
+    // ceiling fraction so a 10:1 transcript over a 20-row track yields 2 rows.
+    let (top_offset, thumb_height) = scrollbar_thumb_metrics(0, 400, 40, 20);
+    assert_eq!(top_offset, 0);
+    assert_eq!(thumb_height, 2);
+
+    // Bottom: thumb lands flush with the track bottom.
+    let (bottom_offset, bottom_height) = scrollbar_thumb_metrics(360, 400, 40, 20);
+    assert_eq!(bottom_height, 2);
+    assert_eq!(bottom_offset, 20 - bottom_height);
+
+    // Overscroll beyond the last page clamps, never leaves the track.
+    let (clamped_offset, _) = scrollbar_thumb_metrics(9_999, 400, 40, 20);
+    assert_eq!(clamped_offset, 20 - thumb_height);
+}
+
+#[test]
+fn scrollbar_thumb_metrics_offset_is_monotonic_in_scroll() {
+    let total = 500usize;
+    let visible = 50usize;
+    let track = 40u16;
+    let mut previous = 0u16;
+    for scroll in 0..=(total - visible) {
+        let (offset, _) = scrollbar_thumb_metrics(scroll, total, visible, track);
+        assert!(
+            offset >= previous,
+            "thumb must never move up as scroll grows (scroll {scroll})"
+        );
+        previous = offset;
+    }
+    // The final thumb exactly fills the remaining track.
+    let (last_offset, last_height) =
+        scrollbar_thumb_metrics(total - visible, total, visible, track);
+    assert_eq!(last_offset as usize + last_height as usize, track as usize);
+}
+
+#[test]
+fn chat_scrollbar_geometry_hit_tests_and_drags() {
+    let geometry = ChatScrollbarGeometry {
+        rect: Rect::new(79, 2, 1, 20),
+        thumb_offset: 5,
+        thumb_height: 3,
+        max_scroll: 300,
+    };
+
+    // Off-column presses are never consumed: copy selection, carets and
+    // wheel gestures over the transcript keep working.
+    assert_eq!(geometry.press(78, 8), None);
+    assert_eq!(geometry.press(80, 8), None);
+    // Rows above/below the track are ignored too.
+    assert_eq!(geometry.press(79, 1), None);
+    assert_eq!(geometry.press(79, 22), None);
+
+    // On-thumb presses keep the grab offset so later drags never snap the
+    // thumb center to the pointer. The thumb spans absolute rows 7..10
+    // (track origin y=2, thumb_offset 5, thumb_height 3).
+    assert_eq!(geometry.press(79, 7), Some(ScrollbarPress::Thumb(0)));
+    assert_eq!(geometry.press(79, 9), Some(ScrollbarPress::Thumb(2)));
+    assert_eq!(geometry.press(79, 6), Some(ScrollbarPress::Above));
+    assert_eq!(geometry.press(79, 10), Some(ScrollbarPress::Below));
+
+    // Drag math: row 7 with a 2-row grab puts the thumb top at rel 3 of the
+    // 17 scrollable positions, mapping linearly into max_scroll.
+    let max_thumb_offset = (20 - 3) as usize;
+    assert_eq!(geometry.drag_scroll(7, 2), Some(3 * 300 / max_thumb_offset));
+    // Pointer reabsorbed at the very top of the drag → clamped to 0… but
+    // a drag row AT the track origin is not a drag at all.
+    assert_eq!(geometry.drag_scroll(2, 2), None);
+    assert_eq!(geometry.drag_scroll(3, 5), Some(0));
+    // dragged flat along the tail clamps to exactly max_scroll.
+    assert_eq!(geometry.drag_scroll(21, 2), Some(300));
+
+    // A fully-covered track reports the pinned tail rather than pretending
+    // the pointer left the scrollbar.
+    let flat = ChatScrollbarGeometry {
+        rect: geometry.rect,
+        thumb_offset: 0,
+        thumb_height: 20,
+        max_scroll: 0,
+    };
+    assert_eq!(flat.drag_scroll(8, 0), None);
+}
+
+#[test]
+fn chat_scrollbar_geometry_publish_roundtrip() {
+    store_chat_scrollbar_geometry(None);
+    assert!(last_chat_scrollbar_geometry().is_none());
+
+    let geometry = ChatScrollbarGeometry {
+        rect: Rect::new(120, 3, 1, 31),
+        thumb_offset: 7,
+        thumb_height: 4,
+        max_scroll: 880,
+    };
+    store_chat_scrollbar_geometry(Some(geometry));
+    assert_eq!(last_chat_scrollbar_geometry(), Some(geometry));
+
+    // Frame without a scrollbar (short transcript) clears the published
+    // geometry so stale hits cannot grab a gone thumb.
+    store_chat_scrollbar_geometry(None);
+    assert!(last_chat_scrollbar_geometry().is_none());
+}
+
 #[derive(Clone, Default)]
 struct TestState {
     input: String,

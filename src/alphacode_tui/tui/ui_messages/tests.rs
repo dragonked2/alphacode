@@ -1877,6 +1877,118 @@ fn render_tool_message_keeps_error_summary_when_details_hidden() {
     );
 }
 
+/// Collapsed mode (tool_call_details off, the default): a successful bash row
+/// is just its summary card — the raw stdout body no longer floods the
+/// transcript. Errors keep their own rendering path.
+#[test]
+fn render_tool_message_collapses_bash_output_body_by_default() {
+    // 80 lines exceeds the 64-line inline cap so the "+N more lines"
+    // remainder marker has something to hide when details are enabled.
+    let body = (1..=80)
+        .map(|i| format!("build log line {i:02}"))
+        .collect::<Vec<_>>()
+        .join("\n");
+    let msg = DisplayMessage {
+        role: "tool".to_string(),
+        content: body,
+        tool_calls: Vec::new(),
+        duration_secs: None,
+        title: None,
+        tool_data: Some(crate::message::ToolCall {
+            id: "call_bash_collapse".to_string(),
+            name: "bash".to_string(),
+            input: serde_json::json!({
+                "command": "cargo build",
+                "intent": "Build the workspace"
+            }),
+            intent: Some("Build the workspace".to_string()),
+            thought_signature: None,
+        }),
+    };
+
+    let lines = render_tool_message(&msg, 120, crate::config::DiffDisplayMode::Off);
+    let collapsed: Vec<String> = lines.iter().map(extract_line_text).collect();
+    assert!(
+        collapsed
+            .iter()
+            .any(|line| line.contains("Build the workspace")),
+        "summary row should render: {collapsed:?}"
+    );
+    assert!(
+        collapsed
+            .iter()
+            .all(|line| !line.contains("build log line")),
+        "raw stdout must stay hidden while details are off: {collapsed:?}"
+    );
+
+    // With details on, the bounded inline body (and its remainder marker)
+    // comes back.
+    crate::alphacode_tui::tui::ui::tools_ui::tests_tool_call_details_override::set(true);
+    let lines = render_tool_message(&msg, 120, crate::config::DiffDisplayMode::Off);
+    crate::alphacode_tui::tui::ui::tools_ui::tests_tool_call_details_override::set(false);
+    let expanded: Vec<String> = lines.iter().map(extract_line_text).collect();
+    assert!(
+        expanded
+            .iter()
+            .any(|line| line.contains("build log line 01")),
+        "details-on must render the bounded body: {expanded:?}"
+    );
+    assert!(
+        expanded.iter().any(|line| line.contains("more lines")),
+        "details-on must keep the explicit remainder marker: {expanded:?}"
+    );
+}
+
+/// Collapsed mode: file reads (and glob/grep) stay one-line cards too; the
+/// 24-line inline preview only returns when details are enabled.
+#[test]
+fn render_tool_message_collapses_read_preview_by_default() {
+    let body = (1..=30)
+        .map(|i| format!("fn source_line_{i:02}() {{}}"))
+        .collect::<Vec<_>>()
+        .join("\n");
+    let msg = DisplayMessage {
+        role: "tool".to_string(),
+        content: body,
+        tool_calls: Vec::new(),
+        duration_secs: None,
+        title: None,
+        tool_data: Some(crate::message::ToolCall {
+            id: "call_read_collapse".to_string(),
+            name: "read".to_string(),
+            input: serde_json::json!({"file_path": "src/main.rs"}),
+            intent: Some("Read the entrypoint".to_string()),
+            thought_signature: None,
+        }),
+    };
+
+    let lines = render_tool_message(&msg, 120, crate::config::DiffDisplayMode::Off);
+    let collapsed: Vec<String> = lines.iter().map(extract_line_text).collect();
+    assert!(
+        collapsed
+            .iter()
+            .any(|line| line.contains("Read the entrypoint")),
+        "summary row should render: {collapsed:?}"
+    );
+    assert!(
+        collapsed
+            .iter()
+            .all(|line| !line.contains("fn source_line_")),
+        "file body must stay hidden while details are off: {collapsed:?}"
+    );
+
+    crate::alphacode_tui::tui::ui::tools_ui::tests_tool_call_details_override::set(true);
+    let lines = render_tool_message(&msg, 120, crate::config::DiffDisplayMode::Off);
+    crate::alphacode_tui::tui::ui::tools_ui::tests_tool_call_details_override::set(false);
+    let expanded: Vec<String> = lines.iter().map(extract_line_text).collect();
+    assert!(
+        expanded
+            .iter()
+            .any(|line| line.contains("fn source_line_01")),
+        "details-on must render the bounded preview: {expanded:?}"
+    );
+}
+
 #[test]
 fn render_tool_message_shows_token_badge() {
     let msg = DisplayMessage {
@@ -2840,6 +2952,22 @@ fn render_alphagrep_output_body_caps_huge_output() {
     assert_eq!(lines.len(), 401, "should cap the body and add a summary");
     let last = extract_line_text(&lines[lines.len() - 1]);
     assert!(last.contains("more lines"), "last={last}");
+}
+
+#[test]
+fn clip_preview_line_marks_the_cut_with_an_ellipsis() {
+    // A line that fits is returned untouched: no false truncation marker.
+    assert_eq!(super::clip_preview_line("short line", 20), "short line");
+    // An over-budget line keeps the budget and ends in an ellipsis, so a
+    // clipped row can never read like the true end of the output.
+    let clipped = super::clip_preview_line(&"x".repeat(50), 10);
+    assert_eq!(clipped.chars().count(), 10, "clipped={clipped:?}");
+    assert!(clipped.ends_with('\u{2026}'), "clipped={clipped:?}");
+    // Degenerate budgets stay within the budget and never panic.
+    assert_eq!(super::clip_preview_line("abc", 1), "\u{2026}");
+    assert_eq!(super::clip_preview_line("abc", 0), "");
+    // Exact-fit boundaries are not treated as truncation.
+    assert_eq!(super::clip_preview_line("abc", 3), "abc");
 }
 
 #[test]

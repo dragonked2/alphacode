@@ -24,10 +24,7 @@ pub(super) use super::commands_review::{
 };
 pub(super) use super::todos_view::handle_todos_view_command;
 use super::{App, DisplayMessage, LocalRewindUndoSnapshot, ProcessingStatus};
-use crate::alphacode_tui::bus::{
-    Bus, BusEvent, GitStatusCompleted, ManualToolCompleted, ToolEvent, ToolStatus,
-};
-use crate::alphacode_tui::id;
+use crate::alphacode_tui::bus::{Bus, BusEvent, GitStatusCompleted};
 use crate::alphacode_tui::message::{ContentBlock, Message, Role};
 use std::path::PathBuf;
 use std::process::Command;
@@ -637,113 +634,49 @@ pub(super) fn parse_manual_subagent_spec(rest: &str) -> Result<ManualSubagentSpe
 }
 
 fn launch_manual_subagent(app: &mut App, spec: ManualSubagentSpec) {
+    // The deprecated direct "subagent" tool is intentionally not in the
+    // registry (`subagent_tool_is_not_registered`), so executing a fabricated
+    // tool call only answered "Unknown tool: subagent". A manual subagent is
+    // a real piece of orchestration: fork the current session, stage the task
+    // as its first submission, and run it in its own terminal window.
     let description = derive_subagent_description(&spec.prompt);
-    let tool_call = crate::message::ToolCall {
-        id: id::new_id("call"),
-        name: "subagent".to_string(),
-        input: serde_json::json!({
-            "description": description,
-            "prompt": spec.prompt,
-            "subagent_type": spec.subagent_type,
-            "model": spec.model,
-            "session_id": spec.session_id,
-            "command": "/subagent",
-        }),
-        intent: None,
-        thought_signature: None,
-    };
+    let label = format!("{} subagent", spec.subagent_type);
+    let title = format!("Subagent: {description}");
+    // `--continue <session_id>` resumptions need the server-side spawn (the
+    // child continues another session's transcript), which the local fork
+    // path cannot provide; surface that honestly instead of failing silently.
+    if let Some(resume) = spec.session_id.as_deref() {
+        app.push_display_message(DisplayMessage::error(format!(
+            "Continuing session {resume} in a subagent requires a server session; \
+             start the server and call /subagent from a remote client."
+        )));
+        return;
+    }
 
-    app.push_display_message(DisplayMessage {
-        role: "tool".to_string(),
-        content: tool_call.name.clone(),
-        tool_calls: vec![],
-        duration_secs: None,
-        title: None,
-        tool_data: Some(tool_call.clone()),
-    });
-
-    let content_blocks = vec![ContentBlock::ToolUse {
-        id: tool_call.id.clone(),
-        name: tool_call.name.clone(),
-        input: tool_call.input.clone(),
-        thought_signature: None,
-    }];
-    app.add_provider_message(Message {
-        role: Role::Assistant,
-        content: content_blocks.clone(),
-        timestamp: Some(chrono::Utc::now()),
-        tool_duration_ms: None,
-    });
-    let message_id = app.session.add_message(Role::Assistant, content_blocks);
-    let _ = app.session.save();
     app.subagent_status = Some("starting subagent".to_string());
-    app.set_status_notice("Running subagent");
-
-    let registry = app.registry.clone();
-    let session_id = app.session.id.clone();
-    let working_dir = app.session.working_dir.clone();
-    let tool_call_for_task = tool_call.clone();
-    tokio::spawn(async move {
-        Bus::global().publish(BusEvent::ToolUpdated(ToolEvent {
-            session_id: session_id.clone(),
-            message_id: message_id.clone(),
-            tool_call_id: tool_call_for_task.id.clone(),
-            tool_name: tool_call_for_task.name.clone(),
-            status: ToolStatus::Running,
-            intent: tool_call_for_task.intent.clone(),
-            title: None,
-        }));
-
-        let ctx = crate::tool::ToolContext {
-            session_id: session_id.clone(),
-            message_id: message_id.clone(),
-            tool_call_id: tool_call_for_task.id.clone(),
-            working_dir: working_dir.as_deref().map(PathBuf::from),
-            stdin_request_tx: None,
-            graceful_shutdown_signal: None,
-            execution_mode: crate::tool::ToolExecutionMode::Direct,
-        };
-
-        let start = Instant::now();
-        let result = registry
-            .execute(
-                &tool_call_for_task.name,
-                tool_call_for_task.input.clone(),
-                ctx,
-            )
-            .await;
-        let duration_ms = start.elapsed().as_millis() as u64;
-
-        let (output, is_error, title, status) = match result {
-            Ok(output) => {
-                crate::telemetry::record_tool_call();
-                (output.output, false, output.title, ToolStatus::Completed)
-            }
-            Err(error) => {
-                crate::telemetry::record_tool_failure();
-                (format!("Error: {}", error), true, None, ToolStatus::Error)
-            }
-        };
-
-        Bus::global().publish(BusEvent::ToolUpdated(ToolEvent {
-            session_id: session_id.clone(),
-            message_id,
-            tool_call_id: tool_call_for_task.id.clone(),
-            tool_name: tool_call_for_task.name.clone(),
-            status,
-            intent: tool_call_for_task.intent.clone(),
-            title: title.clone(),
-        }));
-
-        Bus::global().publish(BusEvent::ManualToolCompleted(ManualToolCompleted {
-            session_id,
-            tool_call: tool_call_for_task,
-            output,
-            is_error,
-            title,
-            duration_ms,
-        }));
-    });
+    match super::commands_review::launch_manual_subagent_session_local(
+        app,
+        format!(
+            "Subagent task (manual /subagent, type `{}`):\n\n{}",
+            spec.subagent_type, spec.prompt
+        ),
+        Some(title),
+        spec.model.clone(),
+        label,
+    ) {
+        Ok(true) => {
+            app.subagent_status = Some("running subagent".to_string());
+        }
+        Ok(false) => {
+            app.subagent_status = Some("subagent staged for manual resume".to_string());
+        }
+        Err(error) => {
+            app.subagent_status = None;
+            app.push_display_message(DisplayMessage::error(format!(
+                "Subagent launch failed: {error:#}"
+            )));
+        }
+    }
 }
 
 fn handle_subagent_model_command(app: &mut App, trimmed: &str) -> bool {
@@ -2835,7 +2768,7 @@ fn handle_tool_call_details_command(app: &mut App, trimmed: &str) -> bool {
     if rest.is_empty() || matches!(rest, "show" | "status") {
         let current = crate::config::config().display.tool_call_details;
         app.push_display_message(DisplayMessage::system(format!(
-            "Tool call details are currently {}.\n\nWhen on, tool rows show the dimmed technical detail (command, path, args) next to the model-provided intent. When off, rows with an intent show only the intent; rows without an intent still show the technical detail.\n\nUse /tool-call-details on or /tool-call-details off to change it.",
+            "Tool call details are currently {}.\n\nWhen on, tool rows show the dimmed technical detail (command, path, args) next to the model-provided intent, and successful bash/read/grep results render inline (bounded, with a +N more lines marker). When off — the default — tool calls stay collapsed as polished one-line cards so raw output doesn't flood the transcript; errors still always render.\n\nUse /tool-call-details on or /tool-call-details off to change it.",
             if current { "on" } else { "off" }
         )));
         return true;

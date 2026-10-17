@@ -711,6 +711,56 @@ pub(super) fn launch_prompt_in_new_session_local(
     launch_forked_session_local(app, Some((content, images)))
 }
 
+/// Manual `/subagent`: fork the current session, stage the task prompt as the
+/// forked session's first submission, pin the requested model, and open the
+/// task running in its own terminal. The fork keeps the full parent context so
+/// the worker can act on it, while the review/autonudge modes are disabled so
+/// it runs as a plain scoped task rather than a review clone.
+pub(super) fn launch_manual_subagent_session_local(
+    app: &mut App,
+    task_prompt: String,
+    title: Option<String>,
+    model_override: Option<String>,
+    label: String,
+) -> anyhow::Result<bool> {
+    let (session_id, session_name) = clone_session_for_prompt(app)?;
+    App::save_startup_submission_for_session(&session_id, task_prompt, Vec::new());
+    if let Ok(mut session) = crate::session::Session::load(&session_id) {
+        if let Some(title) = title {
+            session.title = Some(title);
+        }
+        if let Some(model) = model_override {
+            session.model = Some(model);
+        }
+        // A manual subagent runs as a scoped task; it must not inherit the
+        // parent's review/auto-judge beaters.
+        session.autoreview_enabled = Some(false);
+        session.autojudge_enabled = Some(false);
+        let _ = session.save();
+    }
+    let exe = super::launch_client_executable();
+    let cwd = active_working_dir(app)
+        .filter(|path| path.is_dir())
+        .or_else(|| std::env::current_dir().ok())
+        .unwrap_or_else(|| std::path::PathBuf::from("."));
+    let socket = std::env::var("ALPHACODE_SOCKET").ok();
+    let opened = super::spawn_in_new_terminal(&exe, &session_id, &cwd, socket.as_deref())?;
+    if opened {
+        app.push_display_message(DisplayMessage::system(format!(
+            "\u{25BA} {} launched in {}.",
+            label, session_name
+        )));
+        app.set_status_notice(format!("Subagent \u{2192} {} ({})", session_name, label));
+    } else {
+        app.push_display_message(DisplayMessage::system(format!(
+            "\u{25BA} {} staged in {}.\nNo terminal was opened automatically. Resume manually:\n\n  alphacode --resume {}",
+            label, session_name, session_id
+        )));
+        app.set_status_notice(format!("Subagent \u{2192} {} (staged)", session_name));
+    }
+    Ok(opened)
+}
+
 /// Fork (split) the current session into a new window. When `prompt` is
 /// provided it is staged as the first submission of the forked session;
 /// otherwise the fork opens idle with the cloned conversation.

@@ -326,6 +326,76 @@ pub fn estimate_cost_usd(model: &str, usage: &ModelUsage) -> Option<f64> {
     )
 }
 
+/// One user-facing row of the `/usage` model breakdown.
+///
+/// `cost_usd` is the sum over the row's members for which a price *is* known;
+/// a row mixing priced and unpriced members keeps `Some` so its priced share
+/// still shows instead of dropping the whole row to "cost n/a".
+#[derive(Debug, Clone, PartialEq)]
+pub struct UsageRow {
+    /// User-facing model label (raw model id, or the shared product name for
+    /// pool members).
+    pub label: String,
+    pub usage: ModelUsage,
+    pub cost_usd: Option<f64>,
+}
+
+/// Collapse ledger model ids into user-facing rows.
+///
+/// Every model the Alphax Free pool serves presents under the single product
+/// name ("Alphax Free"), regardless of which upstream the gateway happened to
+/// route a given turn to. Raw alias rows would leak server-side routing —
+/// `kilo-auto/free` is a routing *alias*, not a model the user selected — and
+/// splitting one product across several pool ids would also split its spend
+/// across several rows. All pool members share the flat rate, so merging is
+/// exact, not an approximation.
+///
+/// Cost is accumulated per *group* here because the flat rate applies per
+/// member id; estimating against the merged label alone would lose pricing
+/// (the label itself is not a pool member) and show "cost n/a" for the exact
+/// rows the user cares about.
+fn aggregate_display_rows(rows: Vec<(String, ModelUsage)>) -> Vec<UsageRow> {
+    let mut merged: BTreeMap<String, (ModelUsage, f64, bool)> = BTreeMap::new();
+    for (model, usage) in rows {
+        // Cost is estimated against the *member* id — the flat pool rate is
+        // defined per pool model and catalog pricing is keyed by real model
+        // ids — then folded into the group's display row. Estimating against
+        // the merged label alone would lose pricing (the product label is not
+        // itself a pool member) and render "cost n/a" for the exact rows the
+        // user cares about.
+        let member_cost = estimate_cost_usd(&model, &usage);
+        let label =
+            crate::alphacode_app_core::agent::free_pool_rotation::free_pool_display_name(&model)
+                .map(str::to_string)
+                .unwrap_or(model);
+        let entry = merged
+            .entry(label)
+            .or_insert((ModelUsage::default(), 0.0, false));
+        entry.0.merge(&usage);
+        if let Some(cost) = member_cost {
+            entry.1 += cost;
+            entry.2 = true;
+        }
+    }
+    let mut out: Vec<UsageRow> = merged
+        .into_iter()
+        .map(|(label, (usage, cost_sum, any_known))| UsageRow {
+            cost_usd: any_known.then_some(cost_sum),
+            label,
+            usage,
+        })
+        .collect();
+    // Same ordering contract as `snapshot`'s rows: most-used first, label as
+    // the deterministic tie-break.
+    out.sort_by(|a, b| {
+        b.usage
+            .total_tokens()
+            .cmp(&a.usage.total_tokens())
+            .then_with(|| a.label.cmp(&b.label))
+    });
+    out
+}
+
 /// Build a `/usage` report entry from the local lifetime ledger: totals,
 /// per-model breakdown, and a per-day history sorted newest first. Returns
 /// `None` until at least one response has been recorded.
@@ -333,20 +403,20 @@ pub fn usage_report() -> Option<crate::alphacode_usage_types::ProviderUsage> {
     // Make sure the report reflects everything recorded so far, even inside
     // the debounce window.
     flush();
-    let rows = snapshot();
+    let rows = aggregate_display_rows(snapshot());
     if rows.is_empty() {
         return None;
     }
+    // Aggregation preserves every counter, so lifetime totals are identical
+    // whether they are summed over raw member ids or display rows.
     let (total_tokens, total_requests) = totals();
 
     let mut known_cost = 0.0f64;
     let mut any_cost_known = false;
-    let mut priced_tokens = 0u64;
-    for (model, usage) in &rows {
-        if let Some(cost) = estimate_cost_usd(model, usage) {
+    for row in &rows {
+        if let Some(cost) = row.cost_usd {
             known_cost += cost;
             any_cost_known = true;
-            priced_tokens = priced_tokens.saturating_add(usage.total_tokens());
         }
     }
 
@@ -377,22 +447,24 @@ pub fn usage_report() -> Option<crate::alphacode_usage_types::ProviderUsage> {
         "Models (lifetime)".to_string(),
         format!("{} model(s), newest usage first", rows.len()),
     ));
-    for (model, usage) in &rows {
-        let cost = estimate_cost_usd(model, usage);
-        let cost_label = match cost {
+    // Pool members are already collapsed under the shared product label, so a
+    // gateway alias like `kilo-auto/free` can never surface here: the user
+    // selected "Alphax Free", and that is the name every row reports.
+    for row in &rows {
+        let cost_label = match row.cost_usd {
             Some(value) => format!("est. ${value:.4}"),
             None => "cost n/a".to_string(),
         };
         extra_info.push((
-            model.clone(),
+            row.label.clone(),
             format!(
                 "{} tokens · in {} · out {} · cache r/w {}/{} · {} req · {cost_label}",
-                format_count(usage.total_tokens()),
-                format_count(usage.input_tokens),
-                format_count(usage.output_tokens),
-                format_count(usage.cache_read_tokens),
-                format_count(usage.cache_write_tokens),
-                usage.requests,
+                format_count(row.usage.total_tokens()),
+                format_count(row.usage.input_tokens),
+                format_count(row.usage.output_tokens),
+                format_count(row.usage.cache_read_tokens),
+                format_count(row.usage.cache_write_tokens),
+                row.usage.requests,
             ),
         ));
     }
@@ -556,5 +628,44 @@ mod tests {
         // A model id that matches no catalog entry and no free-pool route must
         // not fabricate a $0.00 cost.
         assert_eq!(estimate_cost_usd("totally-unknown-model-xyz", &usage), None);
+    }
+
+    #[test]
+    fn pool_models_present_under_the_product_label_not_the_router_alias() {
+        // `/usage` must never show the raw gateway alias (`kilo-auto/free` is
+        // server-side routing, not a model the user picked). The pool serves
+        // its turns behind the "Alphax Free" product name, and that is what
+        // the report row is keyed by.
+        let usage = ModelUsage {
+            requests: 5,
+            input_tokens: 3_000_000,
+            output_tokens: 5_500,
+            cache_read_tokens: 2_400_000,
+            cache_write_tokens: 0,
+        };
+        let out = aggregate_display_rows(vec![("kilo-auto/free".to_string(), usage.clone())]);
+        assert_eq!(out.len(), 1, "one member id -> one display row");
+        assert_eq!(out[0].label, "Alphax Free");
+        assert_eq!(out[0].usage, usage);
+        assert_eq!(
+            out[0].cost_usd,
+            estimate_cost_usd("kilo-auto/free", &usage),
+            "group row keeps the member's priced cost"
+        );
+    }
+
+    #[test]
+    fn unknown_models_keep_their_raw_label_in_display_rows() {
+        // Only the Alphax Free pool may borrow the product name; everything
+        // else must keep showing the model the user actually served with.
+        let out = aggregate_display_rows(vec![(
+            "claude-opus-4-8".to_string(),
+            ModelUsage {
+                requests: 1,
+                input_tokens: 10,
+                ..Default::default()
+            },
+        )]);
+        assert_eq!(out[0].label, "claude-opus-4-8");
     }
 }

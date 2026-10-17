@@ -31,6 +31,7 @@ pub mod autonomous;
 pub mod bounded;
 pub mod bugbounty_agent;
 pub mod bugbounty_doctor;
+pub mod bugbounty_executor;
 pub mod bugbounty_install;
 pub mod bugbounty_orchestrator;
 pub mod build;

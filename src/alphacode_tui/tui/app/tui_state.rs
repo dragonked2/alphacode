@@ -410,6 +410,34 @@ impl App {
             available: true,
         };
 
+        // Provider kinds left dark by the table below (custom OpenAI-compatible
+        // profiles, remote dual-auth routes whose resolved auth_method is
+        // Unknown, the free pool, Gemini) can still accrue real dollars for
+        // this session or bill through the free-pool ledger. The session row
+        // must show spend whenever spend exists instead of going dark, so
+        // fall back to the accrued total (and the pool ledger for pool models)
+        // before reporting "no usage".
+        let fallback_for_dark_kind = || {
+            if self.cost.total_cost > 0.0 {
+                return Some(cost_based_usage());
+            }
+            use crate::alphacode_tui::tui::TuiState;
+            let pool_model = <Self as TuiState>::provider_model(self);
+            if crate::alphacode_app_core::agent::free_pool_rotation::free_pool_display_name(
+                &pool_model,
+            )
+            .is_some()
+            {
+                let (pool_tokens, pool_cost) = crate::usage_ledger::alphax_pool_totals();
+                if pool_tokens > 0 && pool_cost > 0.0 {
+                    let mut pool_usage = cost_based_usage();
+                    pool_usage.total_cost = pool_cost as f32;
+                    return Some(pool_usage);
+                }
+            }
+            None
+        };
+
         match route.provider {
             WidgetProviderKind::Copilot => {
                 Some(crate::alphacode_tui::tui::info_widget::UsageInfo {
@@ -437,7 +465,7 @@ impl App {
                         return Some(cost_based_usage());
                     }
                     crate::alphacode_tui::tui::info_widget::AuthMethod::AnthropicOAuth => {}
-                    _ => return None,
+                    _ => return fallback_for_dark_kind(),
                 }
 
                 let usage = crate::usage::get_sync();
@@ -466,7 +494,7 @@ impl App {
                         return Some(cost_based_usage());
                     }
                     crate::alphacode_tui::tui::info_widget::AuthMethod::OpenAIOAuth => {}
-                    _ => return None,
+                    _ => return fallback_for_dark_kind(),
                 }
 
                 let openai_usage = crate::usage::get_openai_usage_sync();
@@ -512,7 +540,7 @@ impl App {
                     available: openai_usage.has_limits(),
                 })
             }
-            WidgetProviderKind::Gemini => None,
+            WidgetProviderKind::Gemini => fallback_for_dark_kind(),
             WidgetProviderKind::OpenRouter => {
                 if route.is_remote {
                     return Some(cost_based_usage());
@@ -526,15 +554,48 @@ impl App {
                 if transport_state.accrues_user_api_key_cost() {
                     Some(cost_based_usage())
                 } else {
-                    None
+                    fallback_for_dark_kind()
                 }
             }
             WidgetProviderKind::OpenCode | WidgetProviderKind::CostBasedApiKey => {
                 Some(cost_based_usage())
             }
-            WidgetProviderKind::Unknown => None,
+            WidgetProviderKind::Unknown => fallback_for_dark_kind(),
         }
     }
+}
+
+/// Session IDs recorded by `swarm` tool results (the "Spawned new agent:
+/// <id>" lines in a spawn tool's output).
+///
+/// Pure function of the transcript so `TuiState::swarm_members_for_transcript`
+/// can memoize the scan per `display_messages_version` instead of re-walking
+/// every tool message on every frame.
+fn swarm_spawned_ids_from_transcript(
+    display_messages: &[DisplayMessage],
+) -> std::sync::Arc<std::collections::HashSet<String>> {
+    std::sync::Arc::new(
+        display_messages
+            .iter()
+            .filter_map(|message| message.tool_data.as_ref().map(|tool| (message, tool)))
+            .filter(|(_, tool)| tool.name.eq_ignore_ascii_case("swarm"))
+            .flat_map(|(message, _)| message.content.lines())
+            .filter_map(|line| {
+                line.split_once("Spawned new agent: ")
+                    .map(|(_, id)| id.trim().to_string())
+            })
+            .collect(),
+    )
+}
+
+/// Clamp a task label to a ribbon-friendly character budget so long todo
+/// contents never push the border title across the whole composer width.
+fn trunc_for_ribbon(text: String, max_chars: usize) -> String {
+    if text.chars().count() <= max_chars {
+        return text;
+    }
+    let clipped: String = text.chars().take(max_chars).collect();
+    format!("{clipped}…")
 }
 
 impl crate::alphacode_tui::tui::TuiState for App {
@@ -638,6 +699,10 @@ impl crate::alphacode_tui::tui::TuiState for App {
 
     fn auto_scroll_paused(&self) -> bool {
         self.auto_scroll_paused
+    }
+
+    fn scrollbar_drag_active(&self) -> bool {
+        self.scrollbar_drag_rows.is_some()
     }
 
     fn pending_history_anchor_lines_from_bottom(&self) -> Option<usize> {
@@ -798,6 +863,75 @@ impl crate::alphacode_tui::tui::TuiState for App {
 
     fn subagent_status(&self) -> Option<String> {
         self.subagent_status.clone()
+    }
+
+    fn active_work_tasks(&self) -> Vec<(String, &'static str)> {
+        if !self.is_processing {
+            return Vec::new();
+        }
+        let mut tasks = Vec::new();
+
+        // Where a coordinator prompt is busy spawning/reporting, that state
+        // leads the ribbon.
+        if let Some(status) = self.subagent_status.clone() {
+            tasks.push((status, "info"));
+        }
+
+        // Batch fan-out progress is the "N agents working" case: show the
+        // aggregate, then the individual sub-calls that are still running.
+        if let Some(progress) = self.batch_progress.clone() {
+            tasks.push((
+                format!("batch {}/{}", progress.completed, progress.total),
+                "task",
+            ));
+            for call in progress.running.iter().take(2) {
+                tasks.push((format!("· {}", call.name), "running"));
+            }
+        }
+
+        // The in-flight ad hoc tool call the agent is waiting on.
+        if tasks.is_empty() {
+            if let Some(call) = self.streaming_tool_calls().last() {
+                tasks.push((format!("running {}", call.name), "running"));
+            }
+        }
+
+        // Todo/plan progress: completed count against the current item.
+        let session_id = if self.is_remote {
+            self.remote_session_id.as_deref()
+        } else {
+            Some(self.session.id.as_str())
+        };
+        let todos_are_swarm_plan = self.swarm_enabled && !self.swarm_plan_items.is_empty();
+        let todos = if todos_are_swarm_plan {
+            crate::alphacode_tui::tui::info_widget::swarm_plan_todos(&self.swarm_plan_items)
+        } else {
+            super::helpers::gather_todos_and_goals_for_session(session_id).0
+        };
+        if !todos.is_empty() {
+            let total = todos.len();
+            let done = todos
+                .iter()
+                .filter(|todo| todo.status == "completed")
+                .count();
+            if let Some(current) = todos
+                .iter()
+                .find(|todo| todo.status != "completed" && todo.status != "cancelled")
+                .map(|todo| todo.content.trim().to_string())
+            {
+                let current = trunc_for_ribbon(current, 40);
+                tasks.push((format!("tasks {done}/{total} · {current}"), "task"));
+            } else {
+                tasks.push((format!("tasks {done}/{total}"), "task"));
+            }
+        }
+
+        let queued = self.queued_messages().len();
+        if queued > 0 {
+            tasks.push((format!("{queued} queued"), "queued"));
+        }
+
+        tasks
     }
 
     fn batch_progress(&self) -> Option<crate::bus::BatchProgress> {
@@ -1741,6 +1875,35 @@ impl crate::alphacode_tui::tui::TuiState for App {
             return Vec::new();
         }
 
+        // Memoized by `display_messages_version`. The spawned-id recovery
+        // below scans every tool message's full content, which is
+        // O(transcript bytes); recomputing it on every frame (it feeds the
+        // body-cache key) made long swarm sessions pay a full transcript scan
+        // at animation FPS. The version counter already bumps on any
+        // transcript mutation, so a version match makes the memo exactly as
+        // fresh as a rescan.
+        //
+        // The clone happens in a bound local *before* the miss arm runs:
+        // a `Ref` guard produced by `borrow()` inside a `match` scrutinee
+        // lives until the end of the whole match, so a `borrow_mut()` in the
+        // miss arm would panic ("already borrowed") on the cold path.
+        let version = self.display_messages_version;
+        let cached_hit = self
+            .swarm_spawned_ids_cache
+            .borrow()
+            .as_ref()
+            .filter(|(cached_version, _)| *cached_version == version)
+            .map(|(_, ids)| std::sync::Arc::clone(ids));
+        let spawned_ids = match cached_hit {
+            Some(ids) => ids,
+            None => {
+                let ids = swarm_spawned_ids_from_transcript(&self.display_messages);
+                *self.swarm_spawned_ids_cache.borrow_mut() =
+                    Some((version, std::sync::Arc::clone(&ids)));
+                ids
+            }
+        };
+
         // Start with the ownership-scoped gallery members. Then recover any
         // exact session IDs recorded by spawn tool results. The latter remains
         // safe in shared-repository swarms and survives a missing/stale parent
@@ -1749,17 +1912,6 @@ impl crate::alphacode_tui::tui::TuiState for App {
         let mut included: std::collections::HashSet<String> = members
             .iter()
             .map(|member| member.session_id.clone())
-            .collect();
-        let spawned_ids: std::collections::HashSet<&str> = self
-            .display_messages
-            .iter()
-            .filter_map(|message| message.tool_data.as_ref().map(|tool| (message, tool)))
-            .filter(|(_, tool)| tool.name.eq_ignore_ascii_case("swarm"))
-            .flat_map(|(message, _)| message.content.lines())
-            .filter_map(|line| {
-                line.split_once("Spawned new agent: ")
-                    .map(|(_, id)| id.trim())
-            })
             .collect();
 
         for member in &self.remote_swarm_members {
@@ -2463,5 +2615,42 @@ mod inline_swarm_subtree_tests {
             ids(filter_inline_swarm_subtree(&members, "me")),
             vec!["child"]
         );
+    }
+}
+
+#[cfg(test)]
+mod swarm_spawned_ids_tests {
+    use super::*;
+
+    #[test]
+    fn spawned_ids_scan_reads_only_swarm_tool_output() {
+        let swarm_tool = crate::alphacode_message_types::ToolCall {
+            name: "swarm".to_string(),
+            ..Default::default()
+        };
+        let read_tool = crate::alphacode_message_types::ToolCall {
+            name: "read".to_string(),
+            ..Default::default()
+        };
+        let messages = vec![
+            DisplayMessage::tool_with_title(
+                "Spawned new agent: sess-abc\nSpawned new agent: sess-def  \nno marker",
+                swarm_tool,
+                "swarm",
+            ),
+            DisplayMessage::tool_with_title("Spawned new agent: ignored", read_tool, "read"),
+            DisplayMessage::user("plain user text"),
+        ];
+        let ids = swarm_spawned_ids_from_transcript(&messages);
+        assert!(ids.contains("sess-abc"), "got {ids:?}");
+        assert!(ids.contains("sess-def"), "got {ids:?}");
+        assert_eq!(ids.len(), 2, "non-swarm tool output leaked in: {ids:?}");
+    }
+
+    #[test]
+    fn spawned_ids_scan_is_empty_for_transcript_without_swarm_results() {
+        let messages = vec![DisplayMessage::user("hello"), DisplayMessage::error("boom")];
+        let ids = swarm_spawned_ids_from_transcript(&messages);
+        assert!(ids.is_empty(), "got {ids:?}");
     }
 }

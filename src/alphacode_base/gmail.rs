@@ -248,7 +248,9 @@ impl GmailClient {
         let user_id = cfg.effective_user_id();
 
         let link = self.create_link(cfg, &auth_config_id, &user_id).await?;
-        if open_browser {
+        // Composio handoff opens a browser only for an attached human;
+        // agent-driven connects print the link instead of popping a tab.
+        if open_browser && !crate::alphacode_base::auth::browser_suppressed(false) {
             let _ = open::that(&link.redirect_url);
         }
         eprintln!(

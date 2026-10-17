@@ -200,6 +200,25 @@ static LAST_TOTAL_WRAPPED_LINES: AtomicUsize = AtomicUsize::new(0);
 /// handlers adopt this so manual scrolling resumes from the on-screen position.
 #[cfg(not(test))]
 static LAST_RESOLVED_CHAT_SCROLL: AtomicUsize = AtomicUsize::new(0);
+/// Interactive geometry of the native chat scrollbar on the most recent frame:
+/// track column/rows plus the thumb's current span. The mouse handlers use it
+/// to translate pointer rows back into scroll offsets, so it must describe the
+/// exact rectangles that were drawn.
+#[cfg(not(test))]
+static LAST_CHAT_SCROLLBAR_X: AtomicUsize = AtomicUsize::new(0);
+#[cfg(not(test))]
+static LAST_CHAT_SCROLLBAR_Y: AtomicUsize = AtomicUsize::new(0);
+#[cfg(not(test))]
+static LAST_CHAT_SCROLLBAR_HEIGHT: AtomicUsize = AtomicUsize::new(0);
+#[cfg(not(test))]
+static LAST_CHAT_SCROLLBAR_THUMB_OFFSET: AtomicUsize = AtomicUsize::new(0);
+#[cfg(not(test))]
+static LAST_CHAT_SCROLLBAR_THUMB_HEIGHT: AtomicUsize = AtomicUsize::new(0);
+#[cfg(not(test))]
+static LAST_CHAT_SCROLLBAR_MAX_SCROLL: AtomicUsize = AtomicUsize::new(0);
+/// Zero only when the scrollbar was not drawn (short transcript or disabled).
+#[cfg(not(test))]
+static LAST_CHAT_SCROLLBAR_PRESENT: AtomicUsize = AtomicUsize::new(0);
 /// Whether the tail-follow viewport is mid catch-up slide (a large content
 /// append is being scrolled into view over several frames instead of jumping).
 /// Drives the redraw loop so the slide completes promptly.
@@ -227,6 +246,13 @@ thread_local! {
     static TEST_LAST_DIFF_PANE_MAX_SCROLL: Cell<usize> = const { Cell::new(0) };
     static TEST_LAST_TOTAL_WRAPPED_LINES: Cell<usize> = const { Cell::new(0) };
     static TEST_LAST_RESOLVED_CHAT_SCROLL: Cell<usize> = const { Cell::new(0) };
+    static TEST_LAST_CHAT_SCROLLBAR_X: Cell<usize> = const { Cell::new(0) };
+    static TEST_LAST_CHAT_SCROLLBAR_Y: Cell<usize> = const { Cell::new(0) };
+    static TEST_LAST_CHAT_SCROLLBAR_HEIGHT: Cell<usize> = const { Cell::new(0) };
+    static TEST_LAST_CHAT_SCROLLBAR_THUMB_OFFSET: Cell<usize> = const { Cell::new(0) };
+    static TEST_LAST_CHAT_SCROLLBAR_THUMB_HEIGHT: Cell<usize> = const { Cell::new(0) };
+    static TEST_LAST_CHAT_SCROLLBAR_MAX_SCROLL: Cell<usize> = const { Cell::new(0) };
+    static TEST_LAST_CHAT_SCROLLBAR_PRESENT: Cell<bool> = const { Cell::new(false) };
     static TEST_TAIL_CATCHUP_ACTIVE: Cell<bool> = const { Cell::new(false) };
     static TEST_TAIL_FOLLOW_SNAP_PENDING: Cell<bool> = const { Cell::new(false) };
     static TEST_LAST_USER_PROMPT_POSITIONS: RefCell<Vec<usize>> = const { RefCell::new(Vec::new()) };
@@ -249,6 +275,201 @@ pub fn last_max_scroll() -> usize {
     #[cfg(not(test))]
     {
         LAST_MAX_SCROLL.load(Ordering::Relaxed)
+    }
+}
+
+/// How the chat scrollbar appeared on the most recent render frame.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct ChatScrollbarGeometry {
+    /// Track rect: one column wide, spanning the chat viewport rows.
+    pub rect: Rect,
+    /// Thumb's first row, relative to `rect.y`.
+    pub thumb_offset: u16,
+    /// Thumb rows span `[y + thumb_offset, y + thumb_offset + thumb_height)`.
+    pub thumb_height: u16,
+    /// Highest scroll offset the thumb maps to (`total - visible`).
+    pub max_scroll: usize,
+}
+
+/// Pointer outcome against the scrollbar track.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum ScrollbarPress {
+    /// Press landed on the thumb; the payload keeps the grab distance from the
+    /// thumb's top so dragging never snaps the thumb under the cursor center.
+    Thumb(u16),
+    /// Press landed above the thumb: jump, then drag from the (new) center.
+    Above,
+    /// Press landed below the thumb: jump, then drag from the (new) center.
+    Below,
+}
+
+impl ChatScrollbarGeometry {
+    /// Where the pointer landed, or `None` when it is outside the track
+    /// (including pointing at a column that is not the scrollbar's).
+    pub(crate) fn press(&self, column: u16, row: u16) -> Option<ScrollbarPress> {
+        if self.rect.width == 0 || column != self.rect.x || self.rect.height == 0 {
+            return None;
+        }
+        let rel = row.checked_sub(self.rect.y)?;
+        if rel >= self.rect.height {
+            return None;
+        }
+        let thumb_top = self.thumb_offset;
+        let thumb_end = thumb_top
+            .saturating_add(self.thumb_height)
+            .min(self.rect.height);
+        if rel >= thumb_top && rel < thumb_end {
+            Some(ScrollbarPress::Thumb(rel - thumb_top))
+        } else if rel < thumb_top {
+            Some(ScrollbarPress::Above)
+        } else {
+            Some(ScrollbarPress::Below)
+        }
+    }
+
+    /// Scroll offset for a pointer row while dragging with `grab_rows` between
+    /// the pointer and the thumb's top. Clamps to `[0, max_scroll]`.
+    pub(crate) fn drag_scroll(&self, row: u16, grab_rows: u16) -> Option<usize> {
+        if self.max_scroll == 0 || self.rect.y >= row {
+            return None;
+        }
+        let track_height = self.rect.height;
+        if track_height == 0 {
+            return None;
+        }
+        let rel_row = (row - self.rect.y).min(track_height.saturating_sub(1)) as usize;
+        let max_thumb_offset = track_height.saturating_sub(self.thumb_height) as usize;
+        if max_thumb_offset == 0 {
+            // Track fully covered by the thumb: every drag position means the
+            // same on-screen state, but report the tail so the drag reads as
+            // pinned instead of silently losing bottom-publish.
+            return Some(self.max_scroll);
+        }
+        let desired = rel_row
+            .saturating_sub(grab_rows as usize)
+            .min(max_thumb_offset);
+        Some(desired * self.max_scroll / max_thumb_offset)
+    }
+}
+
+/// Pure thumb math shared by the renderer and the interactive geometry so the
+/// drawn thumb and the hit-tested one can never disagree.
+pub(crate) fn scrollbar_thumb_metrics(
+    scroll: usize,
+    total_lines: usize,
+    visible_height: usize,
+    track_height: u16,
+) -> (u16, u16) {
+    let track = track_height as usize;
+    if track == 0 || visible_height == 0 || total_lines == 0 {
+        return (0, 0);
+    }
+    if total_lines <= visible_height {
+        return (0, 0);
+    }
+    let thumb_height = ((visible_height * track).div_ceil(total_lines)).clamp(1, track);
+    let max_scroll = total_lines - visible_height;
+    let max_thumb_offset = track - thumb_height;
+    let thumb_offset = if max_scroll == 0 {
+        0
+    } else {
+        scroll.min(max_scroll) * max_thumb_offset / max_scroll
+    };
+    (thumb_offset as u16, thumb_height as u16)
+}
+
+/// Store (or clear) the scrollbar geometry the mouse handlers will hit-test
+/// against until the next frame replaces it.
+pub(crate) fn store_chat_scrollbar_geometry(geometry: Option<ChatScrollbarGeometry>) {
+    #[cfg(test)]
+    {
+        let (x, y, h, to, th, ms, present) = match geometry {
+            Some(g) => (
+                g.rect.x as usize,
+                g.rect.y as usize,
+                g.rect.height as usize,
+                g.thumb_offset as usize,
+                g.thumb_height as usize,
+                g.max_scroll,
+                true,
+            ),
+            None => (0, 0, 0, 0, 0, 0, false),
+        };
+        TEST_LAST_CHAT_SCROLLBAR_X.with(|cell| cell.set(x));
+        TEST_LAST_CHAT_SCROLLBAR_Y.with(|cell| cell.set(y));
+        TEST_LAST_CHAT_SCROLLBAR_HEIGHT.with(|cell| cell.set(h));
+        TEST_LAST_CHAT_SCROLLBAR_THUMB_OFFSET.with(|cell| cell.set(to));
+        TEST_LAST_CHAT_SCROLLBAR_THUMB_HEIGHT.with(|cell| cell.set(th));
+        TEST_LAST_CHAT_SCROLLBAR_MAX_SCROLL.with(|cell| cell.set(ms));
+        TEST_LAST_CHAT_SCROLLBAR_PRESENT.with(|cell| cell.set(present));
+        return;
+    }
+    #[cfg(not(test))]
+    {
+        let (x, y, h, to, th, ms, present) = match geometry {
+            Some(g) => (
+                g.rect.x as usize,
+                g.rect.y as usize,
+                g.rect.height as usize,
+                g.thumb_offset as usize,
+                g.thumb_height as usize,
+                g.max_scroll,
+                1usize,
+            ),
+            None => (0, 0, 0, 0, 0, 0, 0usize),
+        };
+        LAST_CHAT_SCROLLBAR_X.store(x, Ordering::Relaxed);
+        LAST_CHAT_SCROLLBAR_Y.store(y, Ordering::Relaxed);
+        LAST_CHAT_SCROLLBAR_HEIGHT.store(h, Ordering::Relaxed);
+        LAST_CHAT_SCROLLBAR_THUMB_OFFSET.store(to, Ordering::Relaxed);
+        LAST_CHAT_SCROLLBAR_THUMB_HEIGHT.store(th, Ordering::Relaxed);
+        LAST_CHAT_SCROLLBAR_MAX_SCROLL.store(ms, Ordering::Relaxed);
+        LAST_CHAT_SCROLLBAR_PRESENT.store(present, Ordering::Relaxed);
+    }
+}
+
+/// Restore the geometry recorded for the current frame; `None` when the
+/// scrollbar was not drawn (nothing to hit-test).
+pub(crate) fn last_chat_scrollbar_geometry() -> Option<ChatScrollbarGeometry> {
+    #[cfg(test)]
+    {
+        if !TEST_LAST_CHAT_SCROLLBAR_PRESENT.with(Cell::get) {
+            return None;
+        }
+        let x = TEST_LAST_CHAT_SCROLLBAR_X.with(Cell::get) as u16;
+        let y = TEST_LAST_CHAT_SCROLLBAR_Y.with(Cell::get) as u16;
+        let height = TEST_LAST_CHAT_SCROLLBAR_HEIGHT.with(Cell::get) as u16;
+        return Some(ChatScrollbarGeometry {
+            rect: Rect {
+                x,
+                y,
+                width: 1,
+                height,
+            },
+            thumb_offset: TEST_LAST_CHAT_SCROLLBAR_THUMB_OFFSET.with(Cell::get) as u16,
+            thumb_height: TEST_LAST_CHAT_SCROLLBAR_THUMB_HEIGHT.with(Cell::get) as u16,
+            max_scroll: TEST_LAST_CHAT_SCROLLBAR_MAX_SCROLL.with(Cell::get),
+        });
+    }
+    #[cfg(not(test))]
+    {
+        if LAST_CHAT_SCROLLBAR_PRESENT.load(Ordering::Relaxed) == 0 {
+            return None;
+        }
+        let x = LAST_CHAT_SCROLLBAR_X.load(Ordering::Relaxed) as u16;
+        let y = LAST_CHAT_SCROLLBAR_Y.load(Ordering::Relaxed) as u16;
+        let height = LAST_CHAT_SCROLLBAR_HEIGHT.load(Ordering::Relaxed) as u16;
+        return Some(ChatScrollbarGeometry {
+            rect: Rect {
+                x,
+                y,
+                width: 1,
+                height,
+            },
+            thumb_offset: LAST_CHAT_SCROLLBAR_THUMB_OFFSET.load(Ordering::Relaxed) as u16,
+            thumb_height: LAST_CHAT_SCROLLBAR_THUMB_HEIGHT.load(Ordering::Relaxed) as u16,
+            max_scroll: LAST_CHAT_SCROLLBAR_MAX_SCROLL.load(Ordering::Relaxed),
+        });
     }
 }
 
@@ -2987,14 +3208,21 @@ fn draw_inner(frame: &mut Frame, app: &dyn TuiState) {
     let next_prompt = user_count + 1;
 
     // Calculate input height based on the same wrapping logic used for rendering
-    // (max 10 lines visible, scrolls if more).
+    // (max 10 lines visible, scrolls if more). Wrapping runs against the framed
+    // composer's interior width: the rounded border owns one column per side.
+    let composer_wrapped_width = chat_area
+        .width
+        .saturating_sub(input_ui::COMPOSER_FRAME_COLS);
     let base_input_height =
-        input_ui::wrapped_input_line_count(app, chat_area.width, next_prompt).min(10) as u16;
+        input_ui::wrapped_input_line_count(app, composer_wrapped_width, next_prompt).min(10) as u16;
     // Add 1 line for command suggestions, shell mode hints, or the Ctrl+Enter hint.
     let hint_line_height = input_ui::input_hint_line_height(app);
     let inline_block_height: u16 = inline_ui_height(app);
     let inline_ui_gap_height: u16 = if inline_block_height > 0 { 1 } else { 0 };
-    let input_height = base_input_height + hint_line_height;
+    // The frame's top and bottom border rows are permanent chrome, not composer
+    // growth: reserve them outright and keep them out of the donut's budget.
+    let frame_rows = input_ui::COMPOSER_FRAME_ROWS;
+    let input_height = base_input_height + hint_line_height + frame_rows;
 
     if let Some(ref mut capture) = debug_capture {
         capture.render_order.push("prepare_messages".to_string());
@@ -3053,7 +3281,8 @@ fn draw_inner(frame: &mut Frame, app: &dyn TuiState) {
     }
 
     let show_donut = !onboarding_welcome && super::idle_donut_active(app);
-    let donut_height: u16 = idle_donut_reserved_height(show_donut, input_height);
+    let donut_height: u16 =
+        idle_donut_reserved_height(show_donut, input_height.saturating_sub(frame_rows));
     let notification_height: u16 = if app.has_notification() { 1 } else { 0 };
     // Elastic overscroll status line revealed when the user scrolls past the
     // bottom of the transcript. Rendered directly below the input line.
@@ -3511,7 +3740,12 @@ fn draw_inner(frame: &mut Frame, app: &dyn TuiState) {
     let widget_data_elapsed = widget_data_start.elapsed();
     let mut widget_render_ms: Option<f32> = None;
     let mut placements: Vec<info_widget::WidgetPlacement> = Vec::new();
-    let widget_bounds = messages_area;
+    // Info widgets live inside the console, not on the terminal's edge: dock
+    // them against the transcript's content edge so the native scrollbar
+    // track/thumb that owns the last column can never ride over a widget's
+    // border. Splitting through the same helper the transcript uses keeps the
+    // no-scrollbar layout byte-identical.
+    let (widget_bounds, _) = split_native_scrollbar_area(messages_area, chat_scrollbar_visible);
     if app.info_widget_overlays_enabled() && !widget_data.is_empty() && !swarm_page_active {
         if let Some(ref mut capture) = debug_capture {
             capture.render_order.push("render_info_widgets".to_string());
@@ -3715,38 +3949,30 @@ pub(crate) fn render_native_scrollbar(
         return;
     }
 
-    let track_height = area.height as usize;
-    let thumb_height = if visible_height == 0 || total_lines == 0 {
-        1
-    } else if total_lines <= visible_height {
-        track_height
+    let track_height = area.height;
+    let (thumb_offset, thumb_height) =
+        scrollbar_thumb_metrics(scroll, total_lines, visible_height, track_height);
+    if thumb_height == 0 {
+        return;
+    }
+
+    let (thumb_color, track_color) = if focused {
+        // Dragging: light up the whole control so the grab reads clearly.
+        (rgb(198, 214, 244), rgb(96, 106, 132))
     } else {
-        ((visible_height * track_height).div_ceil(total_lines)).clamp(1, track_height)
-    };
-    let max_thumb_offset = track_height.saturating_sub(thumb_height);
-    let max_scroll = total_lines.saturating_sub(visible_height);
-    let thumb_offset = if max_scroll == 0 {
-        0
-    } else {
-        scroll.min(max_scroll) * max_thumb_offset / max_scroll
+        (rgb(136, 148, 172), rgb(62, 70, 92))
     };
 
-    let thumb_color = if focused {
-        rgb(188, 208, 240)
-    } else {
-        rgb(136, 148, 172)
-    };
-
-    let mut lines = Vec::with_capacity(track_height);
-    // ASCII-safe thumb: a single "|" reads as one clean line on every
-    // terminal. The old mixed glyphs ("•"/"╷"/"╵"/"│") missed on Windows
-    // Console and legacy fonts, rendering as "?" or a broken extra line
-    // on the right edge of the console.
+    let mut lines = Vec::with_capacity(track_height as usize);
+    // ASCII/classic-safe glyphs only: the thumb is a solid block and the track
+    // a hairline bar. Both are CP437/CP1252-safe, so they render as crisp
+    // rectangles on Windows consoles and legacy fonts alike (the old mixed
+    // glyph set of this thumb drew "?" fragments there).
     for row in 0..track_height {
         let (glyph, color) = if row >= thumb_offset && row < thumb_offset + thumb_height {
-            ("|", thumb_color)
+            ("█", thumb_color)
         } else {
-            (" ", Color::Reset)
+            ("│", track_color)
         };
         lines.push(Line::from(Span::styled(glyph, Style::default().fg(color))));
     }

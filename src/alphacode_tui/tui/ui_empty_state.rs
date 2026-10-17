@@ -6,8 +6,7 @@
 //! - A visual indicator that this is intentional (not a bug)
 
 use crate::alphacode_tui::tui::brand_ux::BrandTheme;
-use crate::alphacode_tui::tui::color_support::rgb;
-use crate::alphacode_tui_style::theme::ai_text;
+use crate::alphacode_tui_style::theme::{ai_text, code_bg_color, dim_color, muted_text_color};
 use ratatui::layout::{Alignment, Rect};
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
@@ -102,7 +101,7 @@ pub fn empty_conversation() -> Vec<Line<'static>> {
                 ),
                 Span::styled(
                     format!("{:<20}", desc),
-                    Style::default().fg(rgb(180, 180, 200)),
+                    Style::default().fg(muted_text_color()),
                 ),
                 Span::styled(
                     shortcut_display,
@@ -161,7 +160,9 @@ pub fn render_modern_empty_state(
 ) {
     use ratatui::widgets::{Block, Borders, Widget};
     let accent = BrandTheme::accent();
-    let bg_tint = crate::alphacode_tui::tui::color_support::rgb(16, 18, 26);
+    // Theme-resolved panel tint instead of a hard-coded near-black, so
+    // light presets do not paint a dark glass block over a light UI.
+    let bg_tint = code_bg_color();
 
     // Glass surface: subtle tinted background + accent left edge
     crate::alphacode_tui::tui::ui_polish::glass_surface(frame, area, accent, bg_tint);
@@ -192,7 +193,7 @@ pub fn empty_search(query: &str) -> Vec<Line<'static>> {
         Line::from(""),
         Line::from(Span::styled(
             "  Try different keywords, check spelling, or browse all items.",
-            Style::default().fg(rgb(180, 180, 180)),
+            Style::default().fg(muted_text_color()),
         ))
         .alignment(Alignment::Center),
         Line::from(""),
@@ -213,7 +214,7 @@ pub fn empty_directory(path: &str) -> Vec<Line<'static>> {
         Line::from(""),
         Line::from(Span::styled(
             "  Create files with the write tool, or navigate to a different directory.",
-            Style::default().fg(rgb(180, 180, 180)),
+            Style::default().fg(muted_text_color()),
         ))
         .alignment(Alignment::Center),
         Line::from(""),
@@ -242,7 +243,7 @@ pub fn empty_providers() -> Vec<Line<'static>> {
         Line::from(""),
         Line::from(Span::styled(
             "  Add more providers with /login, or browse models with /model.",
-            Style::default().fg(rgb(180, 180, 180)),
+            Style::default().fg(muted_text_color()),
         ))
         .alignment(Alignment::Center),
         Line::from(""),
@@ -263,7 +264,7 @@ pub fn empty_sessions() -> Vec<Line<'static>> {
         Line::from(""),
         Line::from(Span::styled(
             "  Sessions are saved automatically when you /compact or /fork.",
-            Style::default().fg(rgb(180, 180, 180)),
+            Style::default().fg(muted_text_color()),
         ))
         .alignment(Alignment::Center),
         Line::from(""),
@@ -284,7 +285,7 @@ pub fn empty_settings_search(query: &str) -> Vec<Line<'static>> {
         Line::from(""),
         Line::from(Span::styled(
             "  Try /settings to see all available options.",
-            Style::default().fg(rgb(180, 180, 180)),
+            Style::default().fg(muted_text_color()),
         ))
         .alignment(Alignment::Center),
         Line::from(""),
@@ -304,7 +305,7 @@ pub fn empty_tool_output(tool_name: &str) -> Vec<Line<'static>> {
         Line::from(""),
         Line::from(Span::styled(
             "  This is normal — the operation completed successfully with no results.",
-            Style::default().fg(rgb(150, 150, 170)),
+            Style::default().fg(dim_color()),
         ))
         .alignment(Alignment::Center),
         Line::from(""),
@@ -325,7 +326,7 @@ pub fn empty_branches() -> Vec<Line<'static>> {
         Line::from(""),
         Line::from(Span::styled(
             "  Initialize a git repository in this directory to see branches.",
-            Style::default().fg(rgb(180, 180, 180)),
+            Style::default().fg(muted_text_color()),
         ))
         .alignment(Alignment::Center),
         Line::from(""),
@@ -354,7 +355,7 @@ pub fn welcome_confirmation() -> Vec<Line<'static>> {
         Line::from(""),
         Line::from(Span::styled(
             "  Type /help for commands, /model to switch models, or just start typing.",
-            Style::default().fg(rgb(200, 200, 200)),
+            Style::default().fg(muted_text_color()),
         ))
         .alignment(Alignment::Center),
         Line::from(""),

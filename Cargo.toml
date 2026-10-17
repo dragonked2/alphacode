@@ -1,11 +1,22 @@
 [package]
 name = "alphacode"
-version = "1.0.84"
+version = "1.0.85"
 authors = ["Ali Essam <tlbbeg313@gmail.com>"]
 description = "Terminal-native coding agent with multi-model orchestration, swarm coordination, and 40+ tools — built to make the smallest change that solves the problem."
 homepage = "https://alphacli.github.io/"
 repository = "https://github.com/dragonked2/alphacode"
 edition = "2024"
+license = "MIT"
+readme = "README.md"
+# Publishing: keep the .crate lean. These media artifacts are read by no
+# build step (the demo video and logo render from the GitHub README instead,
+# and the browser extension ships from its own channel) — packaging them
+# ballooned every upload and tripped crates.io's edge timeouts on publish.
+exclude = [
+    "alphacode-demo.mp4",
+    "AlphaCode-Browser-Agent-1.6.2.xpi",
+    "logo.png",
+]
 
 [workspace]
 members = ["alphagrep"]
@@ -83,7 +94,10 @@ webpki-roots = "1"
 walkdir = "2"
 wait-timeout = "0.2"
 xa11y = "0.9"
-alphagrep = { path = "alphagrep" }
+# Publishing note: a version requirement is mandatory next to `path`
+# (cargo rejects publishing path-only deps). `alphagrep` ships to crates.io
+# alongside this crate, so the two stay version-locked while vendored here.
+alphagrep = { version = "0.1.6", path = "alphagrep" }
 
 # TUI
 ratatui = "0.30"

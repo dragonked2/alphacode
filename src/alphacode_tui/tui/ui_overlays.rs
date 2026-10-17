@@ -5,6 +5,9 @@ use super::{
 };
 use crate::alphacode_tui::tui::TuiState;
 use crate::alphacode_tui::tui::info_widget::WidgetPlacement;
+use crate::alphacode_tui_style::theme::{
+    border_color, error_color, info_color, muted_text_color, success_color, warning_color,
+};
 use ratatui::{
     prelude::*,
     widgets::{Block, Borders, Clear, List, ListItem, Paragraph},
@@ -140,15 +143,15 @@ pub(super) fn draw_changelog_overlay(
                 // Detect entry type by prefix for visual categorization
                 let (bullet, entry_style) = if entry.starts_with("feat") || entry.starts_with("add")
                 {
-                    ("\u{25b8}", Style::default().fg(rgb(120, 220, 140)))
+                    ("\u{25b8}", Style::default().fg(success_color()))
                 } else if entry.starts_with("fix") {
-                    ("\u{25b8}", Style::default().fg(rgb(120, 180, 255)))
+                    ("\u{25b8}", Style::default().fg(info_color()))
                 } else if entry.starts_with("perf") {
-                    ("\u{25b8}", Style::default().fg(rgb(255, 200, 100)))
+                    ("\u{25b8}", Style::default().fg(warning_color()))
                 } else if entry.starts_with("break") || entry.starts_with("remov") {
-                    ("\u{25b8}", Style::default().fg(rgb(255, 120, 120)))
+                    ("\u{25b8}", Style::default().fg(error_color()))
                 } else {
-                    ("\u{25b8}", Style::default().fg(rgb(160, 165, 180)))
+                    ("\u{25b8}", Style::default().fg(muted_text_color()))
                 };
                 lines.push(Line::from(vec![
                     Span::styled(format!("    {} ", bullet), Style::default().fg(dim_color())),
@@ -249,10 +252,10 @@ pub(super) fn draw_help_overlay(frame: &mut Frame, area: Rect, scroll: usize, ap
     let section_style = Style::default()
         .fg(accent_color())
         .add_modifier(Modifier::BOLD);
-    let cmd_style = Style::default().fg(rgb(230, 230, 240));
-    let desc_style = Style::default().fg(rgb(150, 150, 165));
-    let key_style = Style::default().fg(rgb(200, 180, 120));
-    let sep_style = Style::default().fg(rgb(50, 50, 55));
+    let cmd_style = Style::default().fg(ai_text());
+    let desc_style = Style::default().fg(muted_text_color());
+    let key_style = Style::default().fg(warning_color());
+    let sep_style = Style::default().fg(border_color());
 
     let mut lines: Vec<Line<'static>> = Vec::new();
 
@@ -737,9 +740,7 @@ pub(super) fn draw_help_overlay(frame: &mut Frame, area: Rect, scroll: usize, ap
     let block = Block::default()
         .title(Span::styled(
             title,
-            Style::default()
-                .fg(rgb(200, 200, 220))
-                .add_modifier(Modifier::BOLD),
+            Style::default().fg(ai_text()).add_modifier(Modifier::BOLD),
         ))
         .title_bottom(Line::from(Span::styled(
             " F1/Esc/q close · mouse/j/k scroll · PgUp/PgDn/Space page · /help <cmd> details ",
@@ -766,7 +767,7 @@ pub(super) fn draw_model_status_overlay(
     let title_style = Style::default()
         .fg(accent_color())
         .add_modifier(Modifier::BOLD);
-    let text_style = Style::default().fg(rgb(210, 210, 220));
+    let text_style = Style::default().fg(muted_text_color());
     let dim_style = Style::default().fg(dim_color());
 
     let mut lines: Vec<Line<'static>> = Vec::new();

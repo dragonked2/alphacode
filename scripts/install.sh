@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# install.sh -- one-line installer for AlphaCode (Linux and macOS)
+# install.sh -- one-line installer for AlphaCode (Linux, macOS and Termux)
 #
 # Usage:
 #   curl -fsSL https://raw.githubusercontent.com/dragonked2/alphacode/main/scripts/install.sh | bash
@@ -7,7 +7,19 @@
 #   curl -fsSL ... | bash -s -- --prefix ~/.local
 #   curl -fsSL ... | sudo bash                  # system-wide, into /usr/local/bin
 #
-# Supported: Linux and macOS on x86_64 and arm64/aarch64 (glibc and musl).
+# Supported: Linux and macOS on x86_64 and arm64/aarch64 (glibc and musl), and
+# Termux on Android.
+#
+# TERMUX NOTE: Termux uses Android's Bionic libc, so the glibc prebuilt will not
+# start there (the classic failure is
+#   .local/bin/alphacode: cannot execute: required file not found
+# -- the ELF interpreter `/lib/ld-linux-*.so.1` does not exist in Termux).
+# The installer detects Termux, tries the static musl build first (which does
+# launch under Termux on most devices), and if that binary also cannot run it
+# automatically continues with an on-device source build instead of leaving you
+# with a binary that only declares an error. The source build needs:
+#   pkg install -y rust git clang pkg-config libxkbcommon
+# and typically takes 5-30 minutes on a modern phone.
 #
 # What it does:
 #   1. Downloads the prebuilt release for your OS/CPU and verifies its SHA-256
@@ -88,11 +100,16 @@ fail() { die 1 "$@"; }
 
 usage() {
   cat <<'USAGE'
-install.sh -- install AlphaCode (Linux and macOS).
+install.sh -- install AlphaCode (Linux, macOS and Termux).
 
 By default, downloads the prebuilt release for your platform, verifies its
 checksum, installs it, and puts it on PATH. If no release or asset exists, it
 falls back to building from source.
+
+On Termux (Android) the installer automatically tries the fully static musl
+build first; if the binary cannot execute there, it continues with an
+on-device source build so the install never finishes with a dead binary.
+Termux prerequisites for the source build: pkg install -y rust git clang.
 
 Flags:
   --version <v>     Release tag to install (default: latest)
@@ -263,6 +280,14 @@ detect_platform() {
       *) warn "ignoring ALPHACODE_ARCH='$ALPHACODE_ARCH' (expected x86_64 or arm64)" ;;
     esac
   fi
+
+  if is_termux; then
+    info "Termux environment detected (Android, Bionic libc)."
+    case "$ARCH" in
+      arm64) info "architecture: arm64/aarch64 on Android" ;;
+      x86_64) info "architecture: x86_64 (Android emulator/Chromebook)" ;;
+    esac
+  fi
 }
 
 # A glibc binary cannot start on a musl host (Alpine, postmarketOS): it dies with
@@ -282,13 +307,44 @@ is_musl() {
   return 1
 }
 
+# Termux (Android) reports uname -s Linux, but its libc is Bionic: no glibc
+# loader exists and `ldd` is usually absent, so is_musl() cannot see the real
+# situation. Detect the environment explicitly instead: Termux exports
+# TERMUX_VERSION / TERMUX_PREFIX, and its $PREFIX always contains com.termux.
+is_termux() {
+  [ "$PLATFORM" = linux ] || return 1
+  [ -n "${TERMUX_VERSION:-}" ] && return 0
+  [ -n "${TERMUX_PREFIX:-}" ] && return 0
+  [ -n "${TERMUX_APP_PACKAGE_MANAGER:-}" ] && return 0
+  case "${PREFIX:-}" in *com.termux*) return 0 ;; esac
+  return 1
+}
+
+termux_default_bin_dir() {
+  # $TERMUX_PREFIX/bin is on PATH out of the box in Termux; ~/.local/bin needs
+  # the PATH block this script writes (also fine, but the system bin dir is the
+  # smoother default).
+  if [ -n "${TERMUX_PREFIX:-}" ]; then
+    printf '%s\n' "$TERMUX_PREFIX/bin"
+  else
+    printf '%s\n' "$HOME/.local/bin"
+  fi
+}
+
 resolve_locations() {
   [ -n "${HOME:-}" ] || fail "HOME is not set"
 
   if [ -z "$PREFIX" ] && [ -z "$BIN_DIR" ]; then
     # Root installs system-wide: /usr/local/bin is already on everyone's PATH,
     # so `curl ... | sudo bash` needs no PATH configuration at all.
-    if [ "$(id -u)" = "0" ]; then PREFIX="/usr/local"; else PREFIX="$HOME/.local"; fi
+    if [ "$(id -u)" = "0" ]; then
+      PREFIX="/usr/local"
+    elif is_termux; then
+      # Termux: $TERMUX_PREFIX/bin is on PATH without editing any startup file.
+      PREFIX="$(dirname "$(termux_default_bin_dir)")"
+    else
+      PREFIX="$HOME/.local"
+    fi
   fi
   [ -n "$PREFIX" ] || PREFIX="$HOME/.local"
   PREFIX="$(expand_path "$PREFIX")"
@@ -308,7 +364,14 @@ build_candidates() {
     arm64)  musl_arch=aarch64 ;;
     x86_64) musl_arch=x86_64 ;;
   esac
-  if is_musl && [ -n "$musl_arch" ]; then
+  if is_termux && [ -n "$musl_arch" ]; then
+    # Termux cannot run the glibc build (Bionic libc), but the fully static
+    # musl build launches on most Termux setups -- try it first, and let the
+    # post-install runtime check fall back to a source build if this device
+    # refuses to exec it.
+    CANDIDATES=("alphacode-linux-musl-${musl_arch}.tar.gz" "alphacode-linux-${ARCH}.tar.gz")
+    info "Termux detected; trying the static musl build first (glibc cannot run under Android's Bionic libc)."
+  elif is_musl && [ -n "$musl_arch" ]; then
     CANDIDATES=("alphacode-linux-musl-${musl_arch}.tar.gz" "alphacode-linux-${ARCH}.tar.gz")
     info "musl libc detected; preferring the static musl build."
   else
@@ -453,12 +516,15 @@ build_from_source() {
     # shellcheck disable=SC1091
     . "$HOME/.cargo/env"
   fi
-  command -v git   >/dev/null 2>&1 || fail "git is required to build from source"
-  command -v cargo >/dev/null 2>&1 || fail "cargo is required to build from source (install Rust from https://rustup.rs)"
-  command -v rustc >/dev/null 2>&1 || fail "rustc was not found (install Rust from https://rustup.rs)"
+  command -v git   >/dev/null 2>&1 || fail "git is required to build from source$(is_termux && printf ' (Termux: pkg install git)')"
+  command -v cargo >/dev/null 2>&1 || { is_termux && fail "cargo is required to build from source (Termux: pkg install rust)"; fail "cargo is required to build from source (install Rust from https://rustup.rs)"; }
+  command -v rustc >/dev/null 2>&1 || { is_termux && fail "rustc was not found (Termux: pkg install rust)"; fail "rustc was not found (install Rust from https://rustup.rs)"; }
   if ! command -v cc >/dev/null 2>&1 && ! command -v gcc >/dev/null 2>&1 && ! command -v clang >/dev/null 2>&1; then
     if [ "$PLATFORM" = macos ]; then
       fail "a C toolchain is required to build from source: run 'xcode-select --install'"
+    fi
+    if is_termux; then
+      fail "a C toolchain is required to build from source (Termux: pkg install clang)"
     fi
     fail "a C toolchain is required to build from source (Debian/Ubuntu: sudo apt-get install -y build-essential pkg-config libxkbcommon-dev)"
   fi
@@ -470,8 +536,18 @@ build_from_source() {
     major="${rust_ver%%.*}"
     minor="$(printf '%s' "$rust_ver" | awk -F. '{ print $2 }')"
     if [ "${major:-0}" -lt 1 ] || { [ "${major:-0}" -eq 1 ] && [ "${minor:-0}" -lt 91 ]; }; then
+      if is_termux; then
+        fail "rustc $rust_ver is too old; need >= 1.91 (Termux: pkg upgrade rust)"
+      fi
       fail "rustc $rust_ver is too old; need >= 1.91 (update with 'rustup update')"
     fi
+  fi
+
+  if is_termux; then
+    info "Termux source-build mode detected."
+    info "termux package prerequisites -- if the build fails, run:"
+    info "  pkg install -y rust git clang pkg-config binutils libxkbcommon"
+    info "afterwards update rust in Termux with:  pkg upgrade rust"
   fi
 
   export GIT_TERMINAL_PROMPT=0
@@ -536,6 +612,16 @@ diagnose_start_failure() {
       warn "this often means a glibc/musl mismatch; try --from-source" ;;
   esac
   warn "or build from source: re-run with --from-source"
+}
+
+# True when the installed binary still cannot execute because the host has a
+# different libc than the asset that was staged. Used to decide whether a
+# non-destructive retry with a source build makes sense.
+binary_still_broken() {
+  [ -n "$START_FAILED" ] || return 1
+  [ -z "$BUILT_FROM_SOURCE" ] || return 1
+  [ -z "$SOURCE_ONLY" ] || return 1
+  return 0
 }
 
 check_installed() {
@@ -984,6 +1070,20 @@ main() {
   ok "Installed -> $(tilde "$BIN_DIR")/alphacode$([ -n "$BUILT_FROM_SOURCE" ] && printf ' (built from source)')"
   macos_fixups
   check_installed
+
+  # Termux recovery: the staged glibc (or even blocked musl) asset cannot run
+  # under Bionic, so an install that only prints "cannot execute: required
+  # file not found" is worthless. Continue with an on-device source build --
+  # the same --from-source path, run automatically instead of as homework for
+  # the user.
+  if binary_still_broken && is_termux; then
+    warn "Termux cannot run the prebuilt download; building from source on-device instead ..."
+    build_from_source
+    install_staged
+    ok "Installed -> $(tilde "$BIN_DIR")/alphacode (built from source)"
+    START_FAILED=""
+    check_installed
+  fi
 
   if [ -n "$LINK_BIN" ]; then
     link_into_system_bin || warn "symlink not created; $BIN_DIR still works"

@@ -174,7 +174,11 @@ impl Default for DisplayConfig {
             compact_notifications: false,
             copy_badge_alt_label: String::new(),
             show_alphagrep_output: false,
-            tool_call_details: true,
+            // Collapsed by default: tool rows render as one polished summary
+            // line, so build logs and file dumps don't flood the transcript.
+            // `/tool-call-details on` (or config/display overlay) restores
+            // inline bodies for users who want them.
+            tool_call_details: false,
             native_scrollbars: NativeScrollbarConfig::default(),
             keybinding_hints: true,
             theme: String::new(),

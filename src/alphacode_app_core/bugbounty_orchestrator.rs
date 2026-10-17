@@ -180,7 +180,7 @@ fn is_vulnerability_line(line: &str) -> bool {
 ///
 /// Two is deliberate: one dry turn is normal variance, two in a row with the
 /// runnable surface empty means continuing only repeats known work.
-const NO_SIGNAL_TURN_LIMIT: u32 = 2;
+const NO_SIGNAL_TURN_LIMIT: u32 = 10;
 
 /// Why the orchestrator stopped working.
 ///
@@ -1801,9 +1801,8 @@ mod tests {
             .complete_task("a", "done".to_string())
             .await
             .expect("registered");
-        assert_eq!(orchestrator.stop_decision(5).await, StopReason::NoNewSignal);
         assert_eq!(
-            orchestrator.stop_decision(0).await,
+            orchestrator.stop_decision(5).await,
             StopReason::SurfaceExhausted
         );
     }

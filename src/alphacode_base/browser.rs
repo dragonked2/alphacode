@@ -1041,6 +1041,14 @@ pub async fn open_browser_addon_page() -> Result<String> {
 }
 
 async fn open_firefox_addon_page_unthrottled() -> Result<String> {
+    // A browser window opens only for a human attached to this terminal;
+    // agent/batch invocations of `browser status` get the URL to visit
+    // themselves (returned below / logged), never a popping tab.
+    if crate::alphacode_base::auth::browser_suppressed(false) {
+        return Ok(format!(
+            "       Visit the Firefox Add-ons page to install manually: {FIREFOX_ADDON_PAGE_URL}\n"
+        ));
+    }
     #[cfg(target_os = "windows")]
     {
         for root in firefox_install_dirs() {
