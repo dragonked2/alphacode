@@ -412,7 +412,10 @@ impl Agent {
                                         });
                                         continue 'turn;
                                     }
-                                    return Err(e);
+                                    return Err(super::response_recovery::annotate_final_turn_error(
+                                        e,
+                                        &err_text,
+                                    ));
                                 }
                             }
                         }
@@ -666,9 +669,11 @@ impl Agent {
                             self,
                             "stream_error",
                             api_start,
-                            vec![("mode", "mpsc".to_string()), ("error", err_str)],
+                            vec![("mode", "mpsc".to_string()), ("error", err_str.clone())],
                         );
-                        return Err(e);
+                        return Err(super::response_recovery::annotate_final_turn_error(
+                            e, &err_str,
+                        ));
                     }
                 };
 

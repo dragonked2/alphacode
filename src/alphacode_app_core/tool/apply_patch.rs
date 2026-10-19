@@ -40,13 +40,37 @@ fn extract_patch_text(input: &Value) -> Result<(String, Option<String>), anyhow:
                 let intent = obj
                     .get("intent")
                     .and_then(|v| v.as_str())
+                    .filter(|the_intent| *the_intent != value)
                     .map(str::to_string);
                 return Ok((value.to_string(), intent));
             }
         }
+        // Rescue: a confused model often files the whole patch body under the
+        // wrong key — most often `intent`, which (until its description was
+        // fixed to say "optional") models read as the required field. When a
+        // string value anywhere in the object actually looks like a patch,
+        // accept it instead of bouncing the call for another round trip.
+        for (key, value) in obj {
+            let Some(text) = value.as_str() else {
+                continue;
+            };
+            if looks_like_patch_body(text) {
+                crate::logging::warn(&format!(
+                    "apply_patch: patch body recovered from non-standard key '{key}'"
+                ));
+                let intent = (key != "intent")
+                    .then_some("intent")
+                    .and_then(|intent_key| obj.get(intent_key))
+                    .and_then(|v| v.as_str())
+                    .map(str::to_string);
+                return Ok((text.to_string(), intent));
+            }
+        }
         anyhow::bail!(
             "missing field `patch_text`. {}. \
-             Send the patch as a string under `patch_text`, e.g. \
+             The patch body itself belongs under `patch_text`; `intent` and similar \
+             labels are optional metadata, not the patch. Send the patch as a string \
+             under `patch_text`, e.g. \
              {{\"patch_text\": \"*** Begin Patch\\n*** Update File: a.txt\\n@@\\n- old\\n+ new\\n*** End Patch\"}}",
             super::describe_received_arguments(input)
         );
@@ -55,6 +79,70 @@ fn extract_patch_text(input: &Value) -> Result<(String, Option<String>), anyhow:
         "missing field `patch_text`: expected a JSON object with a `patch_text` string, \
          e.g. {{\"patch_text\": \"*** Begin Patch\\n*** End Patch\"}}"
     );
+}
+
+/// Heuristic for "this string value is a patch body, whatever key it came in
+/// under". Strict enough that ordinary prose (`intent` labels) never matches:
+/// either a well-known patch banner, or a context/hunk marker plus added or
+/// removed lines.
+fn looks_like_patch_body(text: &str) -> bool {
+    let trimmed = text.trim_start();
+    if trimmed.starts_with("*** Begin Patch") {
+        return true;
+    }
+    if trimmed.starts_with("diff --git") {
+        return true;
+    }
+    (text.contains("@@") && (text.contains("\n+") || text.contains("\n-")))
+        || (text.contains("--- ") && text.contains("+++ "))
+}
+
+#[cfg(test)]
+mod extract_tests {
+    use super::extract_patch_text;
+    use serde_json::json;
+
+    #[test]
+    fn intent_only_patch_body_is_rescued() {
+        let patch = "*** Begin Patch\n*** Add File: a.txt\n+hello\n*** End Patch";
+        let (text, intent) = extract_patch_text(&json!({ "intent": patch }))
+            .expect("patch-shaped value under `intent` should be rescued");
+        assert!(text.contains("*** Begin Patch"));
+        assert!(intent.is_none());
+    }
+
+    #[test]
+    fn rescue_keeps_real_intent_when_patch_sits_elsewhere() {
+        let patch = "*** Begin Patch\n*** Add File: a.txt\n+hello\n*** End Patch";
+        let (text, intent) = extract_patch_text(&json!({
+            "intent": "add a demo file",
+            "note": patch,
+        }))
+        .expect("patch-shaped value should be rescued");
+        assert!(text.contains("*** Begin Patch"));
+        assert_eq!(intent.as_deref(), Some("add a demo file"));
+    }
+
+    #[test]
+    fn intent_bookkeeping_is_not_mistaken_for_a_patch() {
+        let error = extract_patch_text(&json!({
+            "intent": "fix the login bug by editing the auth module"
+        }))
+        .expect_err("prose under `intent` is not a patch");
+        let message = error.to_string();
+        assert!(message.contains("missing field `patch_text`"), "{message}");
+        assert!(
+            message.contains("`intent` and similar labels are optional metadata"),
+            "{message}"
+        );
+    }
+
+    #[test]
+    fn empty_arguments_error_names_the_required_field() {
+        let error = extract_patch_text(&serde_json::Value::Object(serde_json::Map::new()))
+            .expect_err("empty object cannot carry a patch");
+        assert!(error.to_string().contains("patch_text"), "{error}");
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -100,11 +188,11 @@ impl Tool for ApplyPatchTool {
             "type": "object",
             "required": ["patch_text"],
             "properties": {
-                "intent": super::intent_schema_property(),
                 "patch_text": {
                     "type": "string",
                     "description": "Patch text."
-                }
+                },
+                "intent": super::intent_schema_property()
             }
         })
     }

@@ -890,10 +890,10 @@ impl crate::alphacode_tui::tui::TuiState for App {
         }
 
         // The in-flight ad hoc tool call the agent is waiting on.
-        if tasks.is_empty() {
-            if let Some(call) = self.streaming_tool_calls().last() {
-                tasks.push((format!("running {}", call.name), "running"));
-            }
+        if tasks.is_empty()
+            && let Some(call) = self.streaming_tool_calls().last()
+        {
+            tasks.push((format!("running {}", call.name), "running"));
         }
 
         // Todo/plan progress: completed count against the current item.

@@ -80,6 +80,25 @@ fn truncated_body_error(file_path: &str) -> anyhow::Error {
     )
 }
 
+/// The error for a `write` cut off before the destination was recoverable.
+///
+/// When the argument stream truncates, `file_path` is the field most likely to
+/// be named second (a long `content` literal usually precedes it), so a
+/// salvaged payload frequently survives with a body fragment but no usable
+/// destination. The generic "missing field `file_path`" line is wrong there:
+/// nothing is missing from a *complete* call — arguments never finished
+/// arriving — and the model resends the identical oversized call believing its
+/// shape was the problem.
+fn truncated_path_error() -> anyhow::Error {
+    anyhow::anyhow!(
+        "Nothing was written: this call's arguments were cut off by the output token limit \
+         before `file_path` and `content` both finished arriving, so the destination is unknown. \
+         Re-send the call with `file_path` as the first argument and a smaller first chunk of \
+         `content`, then pass `append: true` on later chunks rather than resending the whole \
+         file in one call."
+    )
+}
+
 /// The error for a `write` that named its destination but not its body.
 fn missing_content_error(file_path: &str) -> anyhow::Error {
     anyhow::anyhow!(
@@ -124,27 +143,50 @@ impl Tool for WriteTool {
     async fn execute(&self, input: Value, ctx: ToolContext) -> Result<ToolOutput> {
         // Captured before `extract_write_input` normalizes the payload away.
         let salvaged = input_was_truncated(&input);
-        // `file_path` is recovered first so a payload that named the file under
-        // an alias — or arrived as a truncated stream — reaches the content
-        // lookup with the destination known. Without the path, the old
-        // single-shot `from_value` failed with "missing field `file_path`" and
-        // the model retried the identical call until the repeat guard fired.
-        let file_path = super::coerce_text_arg(
-            &input,
-            "write",
-            "file_path",
-            &[
-                "path",
-                "file",
-                "filename",
-                "file_name",
-                "filePath",
-                "filepath",
-                "file-path",
-                "dest",
-                "destination",
-            ],
-        )?;
+        let file_path = if salvaged {
+            // A salvaged (stream-truncated) payload must not use the
+            // single-string fallback: the only surviving string is usually a
+            // fragment of `content`, and adopting it as the destination writes
+            // to a nonsense path or, worse, fails far away from the real
+            // diagnosis. The document/alias key lookups still run, so a
+            // payload whose `file_path` finished arriving still resolves.
+            super::coerce_text_field(
+                &input,
+                "write",
+                "file_path",
+                &[
+                    "path",
+                    "file",
+                    "filename",
+                    "file_name",
+                    "filePath",
+                    "filepath",
+                    "file-path",
+                    "dest",
+                    "destination",
+                ],
+                false,
+                super::PATH_EXAMPLE,
+            )
+            .map_err(|_| truncated_path_error())?
+        } else {
+            super::coerce_text_arg(
+                &input,
+                "write",
+                "file_path",
+                &[
+                    "path",
+                    "file",
+                    "filename",
+                    "file_name",
+                    "filePath",
+                    "filepath",
+                    "file-path",
+                    "dest",
+                    "destination",
+                ],
+            )?
+        };
         // No single-string fallback here, unlike the path lookup above. `write` takes
         // two text arguments from one payload, so "the only string field is
         // `file_path`" means the body is *missing* — and adopting the path as

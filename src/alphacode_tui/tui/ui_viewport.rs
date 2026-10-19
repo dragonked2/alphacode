@@ -1275,6 +1275,10 @@ fn pinned_todo_band_lines(
     if card_lines.is_empty() {
         return Vec::new();
     }
+    // The band is a todo card visible in the viewport this frame, so the
+    // side-panel Todos widget must step aside instead of showing the same
+    // todos twice.
+    crate::alphacode_tui::tui::ui_todo_suppress::note_todo_card_visible();
     // Band budget: compact summary, max 6 lines so it never blocks the view.
     //
     // The minimum is 4, not 2, and the distinction is load-bearing. The budget

@@ -1,16 +1,37 @@
 #[test]
 fn test_prompt_jump_ctrl_digit_is_recency_rank_in_app() {
     let _render_lock = scroll_render_test_lock();
-    let (mut app, mut terminal) = create_scroll_test_app(100, 30, 1, 20);
+    let (mut app, mut terminal) = create_scroll_test_app(100, 30, 0, 20);
 
-    // Seed max scroll estimates before key handling.
+    // Seed six prompts so Ctrl+5 targets a real 5th-most-recent prompt deep
+    // in the transcript. A single-prompt app clamps to the oldest prompt,
+    // whose line position depends on whatever sits above the transcript —
+    // which differs between machines and made the rank assert meaningless.
+    app.display_messages = (0..6)
+        .flat_map(|i| {
+            vec![
+                DisplayMessage::user(format!("prompt {}", i)),
+                DisplayMessage::assistant(format!(
+                    "response {}\n{}",
+                    i,
+                    "filler line\n".repeat(6)
+                )),
+            ]
+        })
+        .collect();
+    app.bump_display_messages_version();
+    app.scroll_offset = 0;
+    app.auto_scroll_paused = false;
+
+    // Seed max scroll estimates and prompt positions before key handling.
     render_and_snap(&app, &mut terminal);
 
     let (prompt_up_code, prompt_up_mods) = prompt_up_key(&app);
     app.handle_key(prompt_up_code, prompt_up_mods).unwrap();
     assert!(app.scroll_offset > 0);
 
-    // Ctrl+5 now means "5th most-recent prompt" (clamped to oldest).
+    // Ctrl+5 means "5th most-recent prompt": with six prompts that is the
+    // second prompt in document order, always below the transcript top.
     app.handle_key(KeyCode::Char('5'), KeyModifiers::CONTROL)
         .unwrap();
     assert!(app.scroll_offset > 0);
@@ -301,12 +322,31 @@ fn test_remote_ctrl_digit_side_panel_preset() {
 #[test]
 fn test_remote_prompt_jump_ctrl_digit_is_recency_rank() {
     let _render_lock = scroll_render_test_lock();
-    let (mut app, mut terminal) = create_scroll_test_app(100, 30, 1, 20);
+    let (mut app, mut terminal) = create_scroll_test_app(100, 30, 0, 20);
     let rt = tokio::runtime::Runtime::new().unwrap();
     let _guard = rt.enter();
     let mut remote = crate::alphacode_tui::tui::backend::RemoteConnection::dummy();
 
-    // Seed max scroll estimates before key handling.
+    // Seed six prompts so Ctrl+5 targets a real 5th-most-recent prompt deep
+    // in the transcript instead of clamping to a single oldest prompt whose
+    // line position is machine-dependent (CI lands it at line 0).
+    app.display_messages = (0..6)
+        .flat_map(|i| {
+            vec![
+                DisplayMessage::user(format!("prompt {}", i)),
+                DisplayMessage::assistant(format!(
+                    "response {}\n{}",
+                    i,
+                    "filler line\n".repeat(6)
+                )),
+            ]
+        })
+        .collect();
+    app.bump_display_messages_version();
+    app.scroll_offset = 0;
+    app.auto_scroll_paused = false;
+
+    // Seed max scroll estimates and prompt positions before key handling.
     render_and_snap(&app, &mut terminal);
 
     let (prompt_up_code, prompt_up_mods) = prompt_up_key(&app);
@@ -314,7 +354,8 @@ fn test_remote_prompt_jump_ctrl_digit_is_recency_rank() {
         .unwrap();
     assert!(app.scroll_offset > 0);
 
-    // Ctrl+5 now means "5th most-recent prompt" (clamped to oldest).
+    // Ctrl+5 means "5th most-recent prompt": with six prompts that is the
+    // second prompt in document order, always below the transcript top.
     rt.block_on(app.handle_remote_key(KeyCode::Char('5'), KeyModifiers::CONTROL, &mut remote))
         .unwrap();
     assert!(app.scroll_offset > 0);

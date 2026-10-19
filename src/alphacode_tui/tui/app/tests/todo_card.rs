@@ -220,8 +220,8 @@ impl Drop for PinTodosEnvGuard {
 #[test]
 fn pinned_todos_payload_stays_empty_when_config_off() {
     let _env_lock = crate::storage::lock_test_env();
-    // `display.pin_todos` defaults to on, so "off" has to be established
-    // explicitly for this contract to be observable at all.
+    // `display.pin_todos` defaults to off; establish it explicitly anyway so
+    // the contract stays observable even if the default ever flips.
     let mut config = crate::config::Config::load();
     let previous = config.display.pin_todos;
     config.display.pin_todos = false;

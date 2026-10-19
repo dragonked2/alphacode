@@ -232,10 +232,23 @@ fn progress_span(diff: &TodoDiff) -> Span<'static> {
     } else {
         rgb(200, 170, 255) // purple - starting
     };
+    // Proportional mini-bar that actually encodes completion, replacing the
+    // old five static `▒` blocks that looked identical at 0% and 100%.
+    const BAR_WIDTH: usize = 5;
+    let filled = if diff.total > 0 {
+        ((diff.completed as f64 / diff.total as f64) * BAR_WIDTH as f64).round() as usize
+    } else {
+        0
+    };
+    let filled = filled.clamp(0, BAR_WIDTH).max(usize::from(pct >= 100));
     Span::styled(
         format!(
-            "  ({}/{}) \u{2591}\u{2591}\u{2591}\u{2591}\u{2591} {}%",
-            diff.completed, diff.total, pct
+            "  {}/{} {}{} {}%",
+            diff.completed,
+            diff.total,
+            "█".repeat(filled),
+            "░".repeat(BAR_WIDTH.saturating_sub(filled)),
+            pct
         ),
         Style::default().fg(color),
     )

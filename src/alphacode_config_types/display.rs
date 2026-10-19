@@ -153,7 +153,7 @@ impl Default for DisplayConfig {
             show_diffs: None,
             mouse_capture: true,
             pin_images: true,
-            pin_todos: true,
+            pin_todos: false,
             queue_mode: false,
             auto_server_reload: true,
             debug_socket: false,

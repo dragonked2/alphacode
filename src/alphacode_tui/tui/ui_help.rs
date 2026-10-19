@@ -219,15 +219,21 @@ pub fn help_reference() -> Vec<Line<'static>> {
         ("Shift+Enter", "New line in input"),
         ("/ [Tab]", "Show command suggestions"),
         ("Up / Down", "Message history"),
-        ("Ctrl+B", "Toggle model picker"),
+        ("Ctrl+B", "Move back one word"),
+        ("Ctrl+T", "Toggle queue mode"),
+        ("/model", "Open the model picker"),
         ("Ctrl+K", "Kill to end of line"),
         ("Ctrl+U", "Kill to beginning of line"),
         ("Ctrl+L", "Clear screen"),
         ("Ctrl+C", "Cancel / interrupt"),
         ("Esc", "Cancel / close overlay"),
-        ("Ctrl+N", "Favorite / unfavorite model"),
-        ("Ctrl+1-4", "Switch side panels"),
-        ("Ctrl+5-9", "Jump to prompt (by position)"),
+        ("Ctrl+1-4", "Resize side panel to 25/50/75/100%"),
+        (
+            "Ctrl+5-9",
+            "Jump to prompt by recency (5 = 5th most recent)",
+        ),
+        ("Ctrl+N", "Toggle favorite model (in /model picker)"),
+        ("Ctrl+O", "Set default model (in /model picker)"),
     ];
 
     for (key, desc) in shortcuts {
@@ -299,7 +305,7 @@ fn build_command_list() -> Vec<HelpCommand> {
             aliases: vec!["/m".to_string()],
             description: "Switch active model".to_string(),
             category: HelpCategory::Chat,
-            shortcut: Some("Ctrl+B".to_string()),
+            shortcut: Some("/model".to_string()),
         },
         HelpCommand {
             name: "clear".to_string(),
@@ -534,7 +540,9 @@ mod tests {
             .join("\n");
         assert!(text.contains("KEYBOARD SHORTCUTS"));
         assert!(text.contains("Enter"));
+        assert!(text.contains("/model"));
         assert!(text.contains("Ctrl+B"));
+        assert!(text.contains("Toggle queue mode"));
     }
 
     #[test]

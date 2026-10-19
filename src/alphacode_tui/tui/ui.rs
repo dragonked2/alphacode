@@ -459,7 +459,7 @@ pub(crate) fn last_chat_scrollbar_geometry() -> Option<ChatScrollbarGeometry> {
         let x = LAST_CHAT_SCROLLBAR_X.load(Ordering::Relaxed) as u16;
         let y = LAST_CHAT_SCROLLBAR_Y.load(Ordering::Relaxed) as u16;
         let height = LAST_CHAT_SCROLLBAR_HEIGHT.load(Ordering::Relaxed) as u16;
-        return Some(ChatScrollbarGeometry {
+        Some(ChatScrollbarGeometry {
             rect: Rect {
                 x,
                 y,
@@ -469,7 +469,7 @@ pub(crate) fn last_chat_scrollbar_geometry() -> Option<ChatScrollbarGeometry> {
             thumb_offset: LAST_CHAT_SCROLLBAR_THUMB_OFFSET.load(Ordering::Relaxed) as u16,
             thumb_height: LAST_CHAT_SCROLLBAR_THUMB_HEIGHT.load(Ordering::Relaxed) as u16,
             max_scroll: LAST_CHAT_SCROLLBAR_MAX_SCROLL.load(Ordering::Relaxed),
-        });
+        })
     }
 }
 

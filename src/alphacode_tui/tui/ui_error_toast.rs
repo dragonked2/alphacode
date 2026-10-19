@@ -258,6 +258,64 @@ pub fn push_server_error(provider: &str, status: u16, retry_after_secs: Option<u
     push_with_ttl(Severity::Warning, message, Some(hint.to_string()), ttl);
 }
 
+/// What kind of hard HTTP 400 the provider returned (classified by the
+/// agent recovery layer — the raw body alone rarely says it).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BadRequestKind {
+    /// The message was refused under the model's content policy.
+    ContentPolicy,
+    /// The payload exceeded the model's context window.
+    ContextOverflow,
+    /// Anything else: endpoint/model/parameter configuration issue.
+    Configuration,
+}
+
+impl BadRequestKind {
+    pub(crate) fn from_error_text(error_text: &str) -> Self {
+        let lower = error_text.to_ascii_lowercase();
+        let overflow = lower.contains("context length")
+            || lower.contains("context window")
+            || lower.contains("too many tokens")
+            || lower.contains("exceeds context")
+            || lower.contains("request too large");
+        if overflow {
+            Self::ContextOverflow
+        } else {
+            Self::Configuration
+        }
+    }
+}
+
+/// Push a toast for a hard HTTP 400 so the failure class is visible at a
+/// glance without wading through the transcript.
+///
+/// Each class has its own recovery path, and the provider body almost never
+/// says which one it was:
+/// - content policy → switch model (different upstreams apply different policies);
+/// - context overflow → /compact;
+/// - everything else → /doctor to check endpoint, model, and key configuration.
+pub fn push_bad_request(provider: &str, kind: BadRequestKind) {
+    match kind {
+        BadRequestKind::ContentPolicy => push_with_recovery(
+            Severity::Warning,
+            format!("{provider}: HTTP 400 — refused under this model's content policy"),
+            Some(
+                "/model — Switch model (different upstreams apply different policies)".to_string(),
+            ),
+        ),
+        BadRequestKind::ContextOverflow => push_with_recovery(
+            Severity::Warning,
+            format!("{provider}: HTTP 400 — payload exceeds the model's context window"),
+            Some("/compact — Shrink the session history, then retry".to_string()),
+        ),
+        BadRequestKind::Configuration => push_with_recovery(
+            Severity::Error,
+            format!("{provider}: HTTP 400 (bad request)"),
+            Some("/doctor — Check endpoint, model, and key configuration".to_string()),
+        ),
+    }
+}
+
 /// Push a toast with explicit severity and TTL.
 pub fn push_with_ttl(
     severity: Severity,

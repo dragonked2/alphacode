@@ -1,5 +1,31 @@
 use super::*;
+use crate::alphacode_tool_core::ToolExecutionClass;
+use crate::alphacode_tool_types::ToolOutput;
 use crate::{terminal_eprintln as eprintln, terminal_print as print, terminal_println as println};
+
+/// One spawned parallel tool execution: its original position in the batch,
+/// the call itself, and the handle whose result carries execution timing.
+type SpawnedToolCall = (
+    usize,
+    ToolCall,
+    tokio::task::JoinHandle<(Result<ToolOutput>, std::time::Duration)>,
+);
+
+/// One finished parallel tool execution, sorted back into original call order
+/// before recording.
+type CompletedToolCall = (usize, ToolCall, Result<ToolOutput>, std::time::Duration);
+
+/// Everything `record_tool_result` needs to write one executed call's outcome
+/// into history, telemetry, bus events, and goal-contract evaluation.
+struct ToolResultRecording<'a> {
+    tc: &'a ToolCall,
+    result: Result<ToolOutput>,
+    message_id: &'a str,
+    print_output: bool,
+    trace: bool,
+    tool_results_dirty: &'a mut bool,
+    tool_elapsed: std::time::Duration,
+}
 
 const STREAM_OUTPUT_FLUSH_INTERVAL: std::time::Duration = std::time::Duration::from_millis(24);
 const STREAM_OUTPUT_FLUSH_BYTES: usize = 96;
@@ -1226,373 +1252,181 @@ impl Agent {
                 logging::info("Provider handles tools internally - executing native tools locally");
             }
 
-            // Execute tools and add results
+            // Execute tools and add results. All pre-execution gates run
+            // sequentially here in original call order (input normalization,
+            // validation, policy, SDK-executed results, goal contract, and
+            // budgets are side-effectful checks), and only the surviving calls
+            // reach execution. Execution goes through parallel_tools:
+            // consecutive read-only runs run concurrently (capped at
+            // PARALLEL_READ_ONLY_CAP permits) while everything else stays
+            // serial. Results are recorded in original call order regardless
+            // of completion order, because some providers (Anthropic) are
+            // stricter about result ordering matching call ordering.
             let mut tool_results_dirty = false;
+            let message_id = assistant_message_id
+                .clone()
+                .unwrap_or_else(|| self.session.id.clone());
+
+            let mut cleared_tool_calls: Vec<ToolCall> = Vec::with_capacity(tool_calls.len());
             for mut tc in tool_calls {
-                // Normalize provider quirks (stringified JSON, single-wrapped
-                // array, bare URL, null/empty) *before* validation so a
-                // recoverable httpflow/webfetch/browser call executes instead
-                // of failing with "arguments must be a JSON object".
-                tc.input = ToolCall::normalize_input_to_object(tc.input);
-                tc.refresh_intent_from_input();
-                let message_id = assistant_message_id
-                    .clone()
-                    .unwrap_or_else(|| self.session.id.clone());
-
-                if let Some(error_msg) = tc.validation_error() {
-                    logging::warn(&error_msg);
-                    Bus::global().publish(BusEvent::ToolUpdated(ToolEvent {
-                        session_id: self.session.id.clone(),
-                        message_id: message_id.clone(),
-                        tool_call_id: tc.id.clone(),
-                        tool_name: tc.name.clone(),
-                        status: ToolStatus::Error,
-                        intent: tc.intent.clone(),
-                        title: None,
-                    }));
-                    if print_output {
-                        println!("\n  → {}", error_msg);
-                    }
-                    self.add_message(
-                        Role::User,
-                        vec![ContentBlock::ToolResult {
-                            tool_use_id: tc.id,
-                            content: error_msg,
-                            is_error: Some(true),
-                        }],
-                    );
-                    tool_results_dirty = true;
-                    continue;
-                }
-
-                self.validate_tool_allowed(&tc.name)?;
-
-                let is_native_tool = ALPHACODE_NATIVE_TOOLS.contains(&tc.name.as_str());
-
-                // Check if SDK already executed this tool
-                if let Some((sdk_content, sdk_is_error)) = sdk_tool_results.remove(&tc.id) {
-                    // For native tools, ignore SDK errors and execute locally
-                    if is_native_tool && sdk_is_error {
-                        if trace {
-                            eprintln!(
-                                "[trace] sdk_error_for_native_tool name={} id={}, executing locally",
-                                tc.name, tc.id
-                            );
-                        }
-                        // Fall through to local execution below
-                    } else {
-                        if trace {
-                            eprintln!(
-                                "[trace] using_sdk_result name={} id={} is_error={}",
-                                tc.name, tc.id, sdk_is_error
-                            );
-                        }
-                        if print_output {
-                            print!("\n  → ");
-                            let preview = if sdk_content.len() > 200 {
-                                format!("{}...", crate::util::truncate_str(&sdk_content, 200))
-                            } else {
-                                sdk_content.clone()
-                            };
-                            println!("{}", preview.lines().next().unwrap_or("(done via SDK)"));
-                        }
-
-                        Bus::global().publish(BusEvent::ToolUpdated(ToolEvent {
-                            session_id: self.session.id.clone(),
-                            message_id: message_id.clone(),
-                            tool_call_id: tc.id.clone(),
-                            tool_name: tc.name.clone(),
-                            status: if sdk_is_error {
-                                ToolStatus::Error
-                            } else {
-                                ToolStatus::Completed
-                            },
-                            intent: tc.intent.clone(),
-                            title: None,
-                        }));
-
-                        self.add_message(
-                            Role::User,
-                            vec![ContentBlock::ToolResult {
-                                tool_use_id: tc.id,
-                                content: sdk_content,
-                                is_error: if sdk_is_error { Some(true) } else { None },
-                            }],
-                        );
-                        tool_results_dirty = true;
-                        continue;
-                    }
-                }
-
-                // SDK didn't execute this tool, run it locally
-                if print_output {
-                    print!("\n  → ");
-                    io::stdout().flush()?;
-                }
-
-                // Goal contract enforcement: reject non-report tool calls
-                // when the contract has reached terminal state.
-                if let Some(ref contract) = self.goal_contract
-                    && super::goal_evaluator::GoalEvaluator::should_reject_tool_call(
-                        contract, &tc.name,
+                if self
+                    .prepare_tool_call(
+                        &mut tc,
+                        &message_id,
+                        print_output,
+                        trace,
+                        &mut tool_results_dirty,
+                        &mut sdk_tool_results,
                     )
+                    .await?
                 {
-                    logging::info(&format!(
-                        "Goal contract terminal - rejecting tool call: {}",
-                        tc.name
-                    ));
-                    let rejection_msg = "This tool call is rejected: the goal contract has been satisfied by authoritative evidence. Produce the final report now.".to_string();
-                    Bus::global().publish(BusEvent::ToolUpdated(ToolEvent {
-                        session_id: self.session.id.clone(),
-                        message_id: message_id.clone(),
-                        tool_call_id: tc.id.clone(),
-                        tool_name: tc.name.clone(),
-                        status: ToolStatus::Error,
-                        intent: tc.intent.clone(),
-                        title: None,
-                    }));
-                    self.add_message(
-                        Role::User,
-                        vec![ContentBlock::ToolResult {
-                            tool_use_id: tc.id,
-                            content: rejection_msg,
-                            is_error: Some(true),
-                        }],
+                    cleared_tool_calls.push(tc);
+                }
+            }
+
+            if !cleared_tool_calls.is_empty() {
+                let mut tool_classes: Vec<ToolExecutionClass> =
+                    Vec::with_capacity(cleared_tool_calls.len());
+                for tc in &cleared_tool_calls {
+                    tool_classes.push(
+                        self.registry
+                            .execution_class(&tc.name, tc.input.clone())
+                            .await,
                     );
-                    tool_results_dirty = true;
-                    continue;
                 }
 
-                // Budget enforcement: check phase budgets and degraded tools
-                if let Some(ref contract) = self.goal_contract {
-                    let verdict = self.budget_enforcer.record_call(&tc.name, contract);
-                    if let super::budget_enforcer::BudgetVerdict::OverBudget(msg) = verdict {
-                        logging::info(&format!("Budget overrun: {}", msg));
-                        // Force transition to report phase
-                        if let Some(ref mut c) = self.goal_contract {
-                            c.phase =
-                                crate::alphacode_task_types::goal_contract::ContractPhase::Report;
-                        }
-                        self.budget_enforcer.transition_phase(
-                            crate::alphacode_task_types::goal_contract::ContractPhase::Report,
-                        );
-                        let budget_msg = format!(
-                            "Budget overrun: {}. Transitioning to report phase. Produce the final report now.",
-                            msg
-                        );
-                        Bus::global().publish(BusEvent::ToolUpdated(ToolEvent {
-                            session_id: self.session.id.clone(),
-                            message_id: message_id.clone(),
-                            tool_call_id: tc.id.clone(),
-                            tool_name: tc.name.clone(),
-                            status: ToolStatus::Error,
-                            intent: tc.intent.clone(),
-                            title: None,
-                        }));
-                        self.add_message(
-                            Role::User,
-                            vec![ContentBlock::ToolResult {
-                                tool_use_id: tc.id,
-                                content: budget_msg,
-                                is_error: Some(true),
-                            }],
-                        );
-                        tool_results_dirty = true;
-                        continue;
-                    } else if let super::budget_enforcer::BudgetVerdict::Rejected(msg) = verdict {
-                        logging::info(&format!("Tool rejected: {}", msg));
-                        let rejection_msg =
-                            format!("Tool call rejected: {}. Use an alternative approach.", msg);
-                        Bus::global().publish(BusEvent::ToolUpdated(ToolEvent {
-                            session_id: self.session.id.clone(),
-                            message_id: message_id.clone(),
-                            tool_call_id: tc.id.clone(),
-                            tool_name: tc.name.clone(),
-                            status: ToolStatus::Error,
-                            intent: tc.intent.clone(),
-                            title: None,
-                        }));
-                        self.add_message(
-                            Role::User,
-                            vec![ContentBlock::ToolResult {
-                                tool_use_id: tc.id,
-                                content: rejection_msg,
-                                is_error: Some(true),
-                            }],
-                        );
-                        tool_results_dirty = true;
-                        continue;
+                let plan =
+                    super::parallel_tools::ExecutionPlan::build(&cleared_tool_calls, &tool_classes);
+                crate::logging::info(&format!(
+                    "Tool execution plan: {} call(s) across {} run(s){}",
+                    plan.total_calls(),
+                    plan.runs.len(),
+                    if plan.has_parallel_runs() {
+                        ", includes parallel read-only runs"
+                    } else {
+                        ""
                     }
-                }
-
-                let ctx = ToolContext {
-                    session_id: self.session.id.clone(),
-                    message_id: message_id.clone(),
-                    tool_call_id: tc.id.clone(),
-                    working_dir: self.working_dir().map(PathBuf::from),
-                    stdin_request_tx: self.stdin_request_tx.clone(),
-                    graceful_shutdown_signal: Some(self.graceful_shutdown.clone()),
-                    execution_mode: ToolExecutionMode::AgentTurn,
-                };
-
-                if trace {
-                    eprintln!("[trace] tool_exec_start name={} id={}", tc.name, tc.id);
-                }
-                Bus::global().publish(BusEvent::ToolUpdated(ToolEvent {
-                    session_id: self.session.id.clone(),
-                    message_id: message_id.clone(),
-                    tool_call_id: tc.id.clone(),
-                    tool_name: tc.name.clone(),
-                    status: ToolStatus::Running,
-                    intent: tc.intent.clone(),
-                    title: None,
-                }));
-
-                // Tool names come from a small fixed set, so a static key
-                // per known tool is not possible; throttle by a single
-                // shared key instead — the paired "finished" line below
-                // still carries exact timing for every call.
-                crate::logging::info_throttled_with("tool_starting", || {
-                    format!("Tool starting: {}", tc.name)
-                });
-                let tool_start = Instant::now();
-
-                // Publish status for TUI to show during Task execution
-                Bus::global().publish(BusEvent::SubagentStatus(SubagentStatus {
-                    session_id: self.session.id.clone(),
-                    status: format!("running {}", tc.name),
-                    model: Some(self.provider.model()),
-                }));
-
-                let result = self.registry.execute(&tc.name, tc.input.clone(), ctx).await;
-                crate::telemetry::record_tool_call();
-                self.unlock_tools_if_needed(&tc.name);
-                let tool_elapsed = tool_start.elapsed();
-                // The finish line carries the wall-clock timing, so it stays
-                // unthrottled; the throttled start line above avoids the
-                // paired duplicate when many tools fire in quick succession.
-                logging::info(&format!(
-                    "Tool finished: {} in {:.2}s",
-                    tc.name,
-                    tool_elapsed.as_secs_f64()
                 ));
 
-                match result {
-                    Ok(output) => {
-                        // Record success in budget enforcer
-                        self.budget_enforcer.record_result(&tc.name, true);
-                        crate::telemetry::waste_metrics::record_tool_call();
-
-                        let output = cap_tool_output_for_history(&tc.name, output);
-                        Bus::global().publish(BusEvent::ToolUpdated(ToolEvent {
-                            session_id: self.session.id.clone(),
-                            message_id: message_id.clone(),
-                            tool_call_id: tc.id.clone(),
-                            tool_name: tc.name.clone(),
-                            status: ToolStatus::Completed,
-                            intent: tc.intent.clone(),
-                            title: output.title.clone(),
-                        }));
-
-                        if trace {
-                            eprintln!(
-                                "[trace] tool_exec_done name={} id={}\n{}",
-                                tc.name, tc.id, output.output
-                            );
-                        }
-                        if print_output {
-                            let preview = if output.output.len() > 200 {
-                                format!("{}...", crate::util::truncate_str(&output.output, 200))
-                            } else {
-                                output.output.clone()
-                            };
-                            println!("{}", preview.lines().next().unwrap_or("(done)"));
-                        }
-
-                        let blocks = tool_output_to_content_blocks(tc.id, output.clone());
-                        self.add_message_with_duration(
-                            Role::User,
-                            blocks,
-                            Some(tool_elapsed.as_millis() as u64),
-                        );
-                        tool_results_dirty = true;
-
-                        // Goal contract evaluation: check if this tool output
-                        // satisfies any terminal success criterion.
-                        if let Some(ref contract) = self.goal_contract
-                            && let Some(evidence) = super::goal_evaluator::GoalEvaluator::evaluate(
-                                contract,
-                                &tc.name,
-                                &output.output,
-                            )
-                        {
-                            logging::info(&format!(
-                                "Goal contract terminal evidence: criterion #{} ({})",
-                                evidence.criterion_index + 1,
-                                evidence.description
+                for run in &plan.runs {
+                    match run {
+                        super::parallel_tools::Run::Parallel(pending) => {
+                            let semaphore = std::sync::Arc::new(tokio::sync::Semaphore::new(
+                                super::parallel_tools::PARALLEL_READ_ONLY_CAP,
                             ));
-                            // Mark the contract as terminal and inject the
-                            // termination reminder so the model knows to
-                            // produce a final report.
-                            if let Some(ref mut c) = self.goal_contract {
-                                c.mark_terminal(evidence.clone());
+                            let registry = self.registry.clone();
+                            let session_id = self.session.id.clone();
+                            let working_dir = self.working_dir().map(PathBuf::from);
+                            let graceful_shutdown = self.graceful_shutdown.clone();
+                            let stdin_tx = self.stdin_request_tx.clone();
+
+                            let handles: Vec<SpawnedToolCall> = pending
+                                .iter()
+                                .map(|pt| {
+                                    let sem = std::sync::Arc::clone(&semaphore);
+                                    let reg = registry.clone();
+                                    let sid = session_id.clone();
+                                    let wd = working_dir.clone();
+                                    let gs = graceful_shutdown.clone();
+                                    let stx = stdin_tx.clone();
+                                    let call = pt.call.clone();
+                                    (
+                                        pt.index,
+                                        call.clone(),
+                                        tokio::spawn(async move {
+                                            let _permit = sem.acquire().await;
+                                            let tool_start = std::time::Instant::now();
+                                            crate::logging::info_throttled_with(
+                                                "tool_starting",
+                                                || {
+                                                    format!(
+                                                        "Tool starting (parallel): {}",
+                                                        call.name
+                                                    )
+                                                },
+                                            );
+                                            if trace {
+                                                eprintln!(
+                                                    "[trace] tool_exec_start name={} id={}",
+                                                    call.name, call.id
+                                                );
+                                            }
+                                            let ctx = ToolContext {
+                                                session_id: sid.clone(),
+                                                message_id: sid,
+                                                tool_call_id: call.id.clone(),
+                                                working_dir: wd,
+                                                stdin_request_tx: stx,
+                                                graceful_shutdown_signal: Some(gs),
+                                                execution_mode: ToolExecutionMode::AgentTurn,
+                                            };
+                                            let result = reg
+                                                .execute(&call.name, call.input.clone(), ctx)
+                                                .await;
+                                            crate::telemetry::record_tool_call();
+                                            let elapsed = tool_start.elapsed();
+                                            crate::logging::info(&format!(
+                                                "Tool finished: {} in {:.2}s",
+                                                call.name,
+                                                elapsed.as_secs_f64()
+                                            ));
+                                            (result, elapsed)
+                                        }),
+                                    )
+                                })
+                                .collect();
+
+                            // Await every handle (tasks run concurrently even
+                            // though these awaits are sequential), then record
+                            // each result in the original call order. A
+                            // panicked task is converted into a normal tool
+                            // error so the model still receives a ToolResult,
+                            // identically to a serial execution failure.
+                            let mut completed: Vec<CompletedToolCall> =
+                                Vec::with_capacity(handles.len());
+                            for (idx, call, handle) in handles {
+                                let (result, elapsed) = match handle.await {
+                                    Ok((result, elapsed)) => (result, elapsed),
+                                    Err(join_error) => (
+                                        Err(anyhow::anyhow!("tool task failed: {join_error}")),
+                                        std::time::Duration::ZERO,
+                                    ),
+                                };
+                                completed.push((idx, call, result, elapsed));
                             }
-                            // Record goal achievement in budget enforcer
-                            self.budget_enforcer.mark_goal_achieved();
-                            crate::telemetry::waste_metrics::mark_goal_achieved(
-                                self.budget_enforcer.total_calls(),
-                            );
-                            let reminder =
-                                super::goal_evaluator::GoalEvaluator::terminal_reminder(&evidence);
-                            self.add_message(
-                                Role::User,
-                                vec![ContentBlock::Text {
-                                    text: reminder,
-                                    cache_control: None,
-                                }],
-                            );
-                            tool_results_dirty = true;
-                        }
-                    }
-                    Err(e) => {
-                        // Record failure in budget enforcer
-                        self.budget_enforcer.record_result(&tc.name, false);
+                            completed.sort_by_key(|(idx, _, _, _)| *idx);
 
-                        crate::telemetry::record_tool_failure();
-                        Bus::global().publish(BusEvent::ToolUpdated(ToolEvent {
-                            session_id: self.session.id.clone(),
-                            message_id: message_id.clone(),
-                            tool_call_id: tc.id.clone(),
-                            tool_name: tc.name.clone(),
-                            status: ToolStatus::Error,
-                            intent: tc.intent.clone(),
-                            title: None,
-                        }));
-
-                        // Wrap with a tool-specific recovery hint before the
-                        // error enters history (see agent_facing_error).
-                        let error_msg = crate::tool::agent_facing_error(&tc.name, &e);
-                        if trace {
-                            eprintln!(
-                                "[trace] tool_exec_error name={} id={} {}",
-                                tc.name, tc.id, error_msg
-                            );
+                            for (_idx, tc, result, elapsed) in completed {
+                                self.record_tool_result(ToolResultRecording {
+                                    tc: &tc,
+                                    result,
+                                    message_id: &message_id,
+                                    print_output,
+                                    trace,
+                                    tool_results_dirty: &mut tool_results_dirty,
+                                    tool_elapsed: elapsed,
+                                })
+                                .await?;
+                            }
                         }
-                        if print_output {
-                            println!("{}", error_msg);
+                        super::parallel_tools::Run::Serial(pending) => {
+                            for pt in pending {
+                                self.execute_local_tool(
+                                    &pt.call,
+                                    &message_id,
+                                    print_output,
+                                    trace,
+                                    &mut tool_results_dirty,
+                                )
+                                .await?;
+                            }
                         }
-                        self.add_message_with_duration(
-                            Role::User,
-                            vec![ContentBlock::ToolResult {
-                                tool_use_id: tc.id,
-                                content: error_msg,
-                                is_error: Some(true),
-                            }],
-                            Some(tool_elapsed.as_millis() as u64),
-                        );
-                        tool_results_dirty = true;
                     }
                 }
+            }
+
+            if tool_results_dirty {
+                self.session.save()?;
             }
 
             if tool_results_dirty {
@@ -1629,6 +1463,424 @@ impl Agent {
         }
 
         Ok(final_text)
+    }
+
+    /// Sequentially run all pre-execution gates for one tool call: input
+    /// normalization, static validation, allow-list, SDK-executed results,
+    /// goal-contract enforcement, and budget enforcement. Returns `true` when
+    /// the call may proceed to execution; `false` when a gate already recorded
+    /// a final ToolResult for it (rejection, short-circuit). This is the
+    /// extraction of the per-call gate block that used to live inline in
+    /// `run_turn`'s serial tool loop.
+    async fn prepare_tool_call(
+        &mut self,
+        tc: &mut ToolCall,
+        message_id: &str,
+        print_output: bool,
+        trace: bool,
+        tool_results_dirty: &mut bool,
+        sdk_tool_results: &mut std::collections::HashMap<String, (String, bool)>,
+    ) -> Result<bool> {
+        // Normalize provider quirks (stringified JSON, single-wrapped
+        // array, bare URL, null/empty) *before* validation so a
+        // recoverable httpflow/webfetch/browser call executes instead
+        // of failing with "arguments must be a JSON object".
+        tc.input = ToolCall::normalize_input_to_object(tc.input.clone());
+        tc.refresh_intent_from_input();
+
+        if let Some(error_msg) = tc.validation_error() {
+            logging::warn(&error_msg);
+            Bus::global().publish(BusEvent::ToolUpdated(ToolEvent {
+                session_id: self.session.id.clone(),
+                message_id: message_id.to_string(),
+                tool_call_id: tc.id.clone(),
+                tool_name: tc.name.clone(),
+                status: ToolStatus::Error,
+                intent: tc.intent.clone(),
+                title: None,
+            }));
+            if print_output {
+                println!("\n  → {}", error_msg);
+            }
+            self.add_message(
+                Role::User,
+                vec![ContentBlock::ToolResult {
+                    tool_use_id: tc.id.clone(),
+                    content: error_msg,
+                    is_error: Some(true),
+                }],
+            );
+            *tool_results_dirty = true;
+            return Ok(false);
+        }
+
+        self.validate_tool_allowed(&tc.name)?;
+
+        let is_native_tool = ALPHACODE_NATIVE_TOOLS.contains(&tc.name.as_str());
+
+        // Check if SDK already executed this tool
+        if let Some((sdk_content, sdk_is_error)) = sdk_tool_results.remove(&tc.id) {
+            // For native tools, ignore SDK errors and execute locally
+            if is_native_tool && sdk_is_error {
+                if trace {
+                    eprintln!(
+                        "[trace] sdk_error_for_native_tool name={} id={}, executing locally",
+                        tc.name, tc.id
+                    );
+                }
+                // Fall through to local execution below
+            } else {
+                if trace {
+                    eprintln!(
+                        "[trace] using_sdk_result name={} id={} is_error={}",
+                        tc.name, tc.id, sdk_is_error
+                    );
+                }
+                if print_output {
+                    print!("\n  → ");
+                    let preview = if sdk_content.len() > 200 {
+                        format!("{}...", crate::util::truncate_str(&sdk_content, 200))
+                    } else {
+                        sdk_content.clone()
+                    };
+                    println!("{}", preview.lines().next().unwrap_or("(done via SDK)"));
+                }
+
+                Bus::global().publish(BusEvent::ToolUpdated(ToolEvent {
+                    session_id: self.session.id.clone(),
+                    message_id: message_id.to_string(),
+                    tool_call_id: tc.id.clone(),
+                    tool_name: tc.name.clone(),
+                    status: if sdk_is_error {
+                        ToolStatus::Error
+                    } else {
+                        ToolStatus::Completed
+                    },
+                    intent: tc.intent.clone(),
+                    title: None,
+                }));
+
+                self.add_message(
+                    Role::User,
+                    vec![ContentBlock::ToolResult {
+                        tool_use_id: tc.id.clone(),
+                        content: sdk_content,
+                        is_error: if sdk_is_error { Some(true) } else { None },
+                    }],
+                );
+                *tool_results_dirty = true;
+                return Ok(false);
+            }
+        }
+
+        // SDK didn't execute this tool, run it locally
+        if print_output {
+            print!("\n  → ");
+            io::stdout().flush()?;
+        }
+
+        // Goal contract enforcement: reject non-report tool calls
+        // when the contract has reached terminal state.
+        if let Some(ref contract) = self.goal_contract
+            && super::goal_evaluator::GoalEvaluator::should_reject_tool_call(contract, &tc.name)
+        {
+            logging::info(&format!(
+                "Goal contract terminal - rejecting tool call: {}",
+                tc.name
+            ));
+            let rejection_msg = "This tool call is rejected: the goal contract has been satisfied by authoritative evidence. Produce the final report now.".to_string();
+            Bus::global().publish(BusEvent::ToolUpdated(ToolEvent {
+                session_id: self.session.id.clone(),
+                message_id: message_id.to_string(),
+                tool_call_id: tc.id.clone(),
+                tool_name: tc.name.clone(),
+                status: ToolStatus::Error,
+                intent: tc.intent.clone(),
+                title: None,
+            }));
+            self.add_message(
+                Role::User,
+                vec![ContentBlock::ToolResult {
+                    tool_use_id: tc.id.clone(),
+                    content: rejection_msg,
+                    is_error: Some(true),
+                }],
+            );
+            *tool_results_dirty = true;
+            return Ok(false);
+        }
+
+        // Budget enforcement: check phase budgets and degraded tools
+        if let Some(ref contract) = self.goal_contract {
+            let verdict = self.budget_enforcer.record_call(&tc.name, contract);
+            if let super::budget_enforcer::BudgetVerdict::OverBudget(msg) = verdict {
+                logging::info(&format!("Budget overrun: {}", msg));
+                // Force transition to report phase
+                if let Some(ref mut c) = self.goal_contract {
+                    c.phase = crate::alphacode_task_types::goal_contract::ContractPhase::Report;
+                }
+                self.budget_enforcer.transition_phase(
+                    crate::alphacode_task_types::goal_contract::ContractPhase::Report,
+                );
+                let budget_msg = format!(
+                    "Budget overrun: {}. Transitioning to report phase. Produce the final report now.",
+                    msg
+                );
+                Bus::global().publish(BusEvent::ToolUpdated(ToolEvent {
+                    session_id: self.session.id.clone(),
+                    message_id: message_id.to_string(),
+                    tool_call_id: tc.id.clone(),
+                    tool_name: tc.name.clone(),
+                    status: ToolStatus::Error,
+                    intent: tc.intent.clone(),
+                    title: None,
+                }));
+                self.add_message(
+                    Role::User,
+                    vec![ContentBlock::ToolResult {
+                        tool_use_id: tc.id.clone(),
+                        content: budget_msg,
+                        is_error: Some(true),
+                    }],
+                );
+                *tool_results_dirty = true;
+                return Ok(false);
+            } else if let super::budget_enforcer::BudgetVerdict::Rejected(msg) = verdict {
+                logging::info(&format!("Tool rejected: {}", msg));
+                let rejection_msg =
+                    format!("Tool call rejected: {}. Use an alternative approach.", msg);
+                Bus::global().publish(BusEvent::ToolUpdated(ToolEvent {
+                    session_id: self.session.id.clone(),
+                    message_id: message_id.to_string(),
+                    tool_call_id: tc.id.clone(),
+                    tool_name: tc.name.clone(),
+                    status: ToolStatus::Error,
+                    intent: tc.intent.clone(),
+                    title: None,
+                }));
+                self.add_message(
+                    Role::User,
+                    vec![ContentBlock::ToolResult {
+                        tool_use_id: tc.id.clone(),
+                        content: rejection_msg,
+                        is_error: Some(true),
+                    }],
+                );
+                *tool_results_dirty = true;
+                return Ok(false);
+            }
+        }
+
+        Ok(true)
+    }
+
+    /// Prepare is done: build the ToolContext, publish the Running status, and
+    /// execute one already-cleared tool call locally, then hand the result to
+    /// `record_tool_result`. This is the extraction of the per-call execution
+    /// block that used to live inline in `run_turn`'s serial tool loop.
+    async fn execute_local_tool(
+        &mut self,
+        tc: &ToolCall,
+        message_id: &str,
+        print_output: bool,
+        trace: bool,
+        tool_results_dirty: &mut bool,
+    ) -> Result<()> {
+        let tool_start = Instant::now();
+        let ctx = ToolContext {
+            session_id: self.session.id.clone(),
+            message_id: message_id.to_string(),
+            tool_call_id: tc.id.clone(),
+            working_dir: self.working_dir().map(PathBuf::from),
+            stdin_request_tx: self.stdin_request_tx.clone(),
+            graceful_shutdown_signal: Some(self.graceful_shutdown.clone()),
+            execution_mode: ToolExecutionMode::AgentTurn,
+        };
+
+        if trace {
+            eprintln!("[trace] tool_exec_start name={} id={}", tc.name, tc.id);
+        }
+        Bus::global().publish(BusEvent::ToolUpdated(ToolEvent {
+            session_id: self.session.id.clone(),
+            message_id: message_id.to_string(),
+            tool_call_id: tc.id.clone(),
+            tool_name: tc.name.clone(),
+            status: ToolStatus::Running,
+            intent: tc.intent.clone(),
+            title: None,
+        }));
+
+        // Tool names come from a small fixed set, so a static key
+        // per known tool is not possible; throttle by a single
+        // shared key instead — the paired "finished" line below
+        // still carries exact timing for every call.
+        crate::logging::info_throttled_with("tool_starting", || {
+            format!("Tool starting: {}", tc.name)
+        });
+
+        // Publish status for TUI to show during Task execution
+        Bus::global().publish(BusEvent::SubagentStatus(SubagentStatus {
+            session_id: self.session.id.clone(),
+            status: format!("running {}", tc.name),
+            model: Some(self.provider.model()),
+        }));
+
+        let result = self.registry.execute(&tc.name, tc.input.clone(), ctx).await;
+        crate::telemetry::record_tool_call();
+        self.unlock_tools_if_needed(&tc.name);
+        let tool_elapsed = tool_start.elapsed();
+        // The finish line carries the wall-clock timing, so it stays
+        // unthrottled; the throttled start line above avoids the
+        // paired duplicate when many tools fire in quick succession.
+        logging::info(&format!(
+            "Tool finished: {} in {:.2}s",
+            tc.name,
+            tool_elapsed.as_secs_f64()
+        ));
+
+        self.record_tool_result(ToolResultRecording {
+            tc,
+            result,
+            message_id,
+            print_output,
+            trace,
+            tool_results_dirty,
+            tool_elapsed,
+        })
+        .await
+    }
+
+    /// Record one executed tool call's outcome into history, telemetry, bus
+    /// events, and (on success) goal-contract evaluation. Shared by the serial
+    /// (`execute_local_tool`) and parallel paths so every result is processed
+    /// identically once, in the original call order.
+    async fn record_tool_result(&mut self, recording: ToolResultRecording<'_>) -> Result<()> {
+        let ToolResultRecording {
+            tc,
+            result,
+            message_id,
+            print_output,
+            trace,
+            tool_results_dirty,
+            tool_elapsed,
+        } = recording;
+        match result {
+            Ok(output) => {
+                // Record success in budget enforcer
+                self.budget_enforcer.record_result(&tc.name, true);
+                crate::telemetry::waste_metrics::record_tool_call();
+
+                let output = cap_tool_output_for_history(&tc.name, output);
+                Bus::global().publish(BusEvent::ToolUpdated(ToolEvent {
+                    session_id: self.session.id.clone(),
+                    message_id: message_id.to_string(),
+                    tool_call_id: tc.id.clone(),
+                    tool_name: tc.name.clone(),
+                    status: ToolStatus::Completed,
+                    intent: tc.intent.clone(),
+                    title: output.title.clone(),
+                }));
+
+                if trace {
+                    eprintln!(
+                        "[trace] tool_exec_done name={} id={}\n{}",
+                        tc.name, tc.id, output.output
+                    );
+                }
+                if print_output {
+                    let preview = if output.output.len() > 200 {
+                        format!("{}...", crate::util::truncate_str(&output.output, 200))
+                    } else {
+                        output.output.clone()
+                    };
+                    println!("{}", preview.lines().next().unwrap_or("(done)"));
+                }
+
+                let blocks = tool_output_to_content_blocks(tc.id.clone(), output.clone());
+                self.add_message_with_duration(
+                    Role::User,
+                    blocks,
+                    Some(tool_elapsed.as_millis() as u64),
+                );
+                *tool_results_dirty = true;
+
+                // Goal contract evaluation: check if this tool output
+                // satisfies any terminal success criterion.
+                if let Some(ref contract) = self.goal_contract
+                    && let Some(evidence) = super::goal_evaluator::GoalEvaluator::evaluate(
+                        contract,
+                        &tc.name,
+                        &output.output,
+                    )
+                {
+                    logging::info(&format!(
+                        "Goal contract terminal evidence: criterion #{} ({})",
+                        evidence.criterion_index + 1,
+                        evidence.description
+                    ));
+                    // Mark the contract as terminal and inject the
+                    // termination reminder so the model knows to
+                    // produce a final report.
+                    if let Some(ref mut c) = self.goal_contract {
+                        c.mark_terminal(evidence.clone());
+                    }
+                    // Record goal achievement in budget enforcer
+                    self.budget_enforcer.mark_goal_achieved();
+                    crate::telemetry::waste_metrics::mark_goal_achieved(
+                        self.budget_enforcer.total_calls(),
+                    );
+                    let reminder =
+                        super::goal_evaluator::GoalEvaluator::terminal_reminder(&evidence);
+                    self.add_message(
+                        Role::User,
+                        vec![ContentBlock::Text {
+                            text: reminder,
+                            cache_control: None,
+                        }],
+                    );
+                    *tool_results_dirty = true;
+                }
+            }
+            Err(e) => {
+                // Record failure in budget enforcer
+                self.budget_enforcer.record_result(&tc.name, false);
+
+                crate::telemetry::record_tool_failure();
+                Bus::global().publish(BusEvent::ToolUpdated(ToolEvent {
+                    session_id: self.session.id.clone(),
+                    message_id: message_id.to_string(),
+                    tool_call_id: tc.id.clone(),
+                    tool_name: tc.name.clone(),
+                    status: ToolStatus::Error,
+                    intent: tc.intent.clone(),
+                    title: None,
+                }));
+
+                // Wrap with a tool-specific recovery hint before the
+                // error enters history (see agent_facing_error).
+                let error_msg = crate::tool::agent_facing_error(&tc.name, &e);
+                if trace {
+                    eprintln!(
+                        "[trace] tool_exec_error name={} id={} {}",
+                        tc.name, tc.id, error_msg
+                    );
+                }
+                if print_output {
+                    println!("{}", error_msg);
+                }
+                self.add_message_with_duration(
+                    Role::User,
+                    vec![ContentBlock::ToolResult {
+                        tool_use_id: tc.id.clone(),
+                        content: error_msg,
+                        is_error: Some(true),
+                    }],
+                    Some(tool_elapsed.as_millis() as u64),
+                );
+                *tool_results_dirty = true;
+            }
+        }
+        Ok(())
     }
 
     pub(super) fn messages_end_with_tool_result(messages: &[Message]) -> bool {

@@ -1,9 +1,10 @@
 //! Tracks whether a todo card was rendered in the chat viewport on the current
 //! frame. The side-panel Todos widget checks this to avoid showing duplicate
-//! todo data when the chat already displays a full todo card inline.
+//! todo data when the chat already displays a todo card inline.
 //!
-//! The flag is reset every frame and set by the message renderer when it
-//! encounters a `role == "todos"` message that overlaps the visible viewport.
+//! The flag is reset every frame and set by the surfaces that actually paint a
+//! card in the viewport — currently the pinned todo band (`display.pin_todos`)
+//! and any `/todos` card the user opened in the transcript.
 
 use std::sync::atomic::{AtomicBool, Ordering};
 

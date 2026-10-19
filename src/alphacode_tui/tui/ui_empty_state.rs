@@ -82,7 +82,7 @@ pub fn empty_conversation() -> Vec<Line<'static>> {
     // not already speak terminal: what the command does for them, plainly.
     let suggestions: &[(&str, &str, &str)] = &[
         ("/help", "F1", "What I can do"),
-        ("/model", "Ctrl+B", "Switch the AI model"),
+        ("/model", "", "Switch the AI model"),
         ("/theme", "", "Pick your color mood"),
     ];
     for (cmd, shortcut, desc) in suggestions {

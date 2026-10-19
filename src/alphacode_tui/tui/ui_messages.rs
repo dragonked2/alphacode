@@ -1079,24 +1079,26 @@ impl TodoCardPayload {
     }
 }
 
+/// What the transcript stream needs from a todo tool result. The full todo,
+/// plan, and goal state renders in the side-panel session widget, so only the
+/// goal-refinement delta is consumed here. The leading todos array is still
+/// fully deserialized because it is what distinguishes a todo payload from
+/// other tool output — and it positions the parser past the JSON body.
 struct ParsedTodoToolOutput {
-    todos: Vec<crate::todo::TodoItem>,
-    plan: crate::todo::TodoPlan,
-    goals: Vec<crate::todo::TodoGoal>,
-    plan_update: Option<crate::todo::TodoPlanChange>,
     goal_updates: Vec<crate::todo::TodoGoalChange>,
 }
 
 fn parse_todo_tool_output(content: &str) -> Option<ParsedTodoToolOutput> {
     // Remote display and timestamp injection can decorate tool results before
     // they reach this renderer. Keep that transport metadata outside the
-    // structured payload parser so a valid todo result still renders as a card.
+    // structured payload parser so a valid todo result still parses instead of
+    // falling back to the generic tool row.
     let content = strip_todo_tool_output_headers(content);
     let mut todo_stream =
         serde_json::Deserializer::from_str(content).into_iter::<Vec<crate::todo::TodoItem>>();
-    let todos = todo_stream.next()?.ok()?;
+    let _todos = todo_stream.next()?.ok()?;
     let mut remainder = content.get(todo_stream.byte_offset()..)?.trim_start();
-    let plan = if let Some(plan_json) = remainder.strip_prefix("Plan:") {
+    let _plan = if let Some(plan_json) = remainder.strip_prefix("Plan:") {
         let mut plan_stream = serde_json::Deserializer::from_str(plan_json.trim_start())
             .into_iter::<crate::todo::TodoPlan>();
         let plan = plan_stream.next().and_then(Result::ok).unwrap_or_default();
@@ -1109,7 +1111,7 @@ fn parse_todo_tool_output(content: &str) -> Option<ParsedTodoToolOutput> {
     } else {
         crate::todo::TodoPlan::default()
     };
-    let goals = if let Some(goal_json) = remainder.strip_prefix("Goals:") {
+    let _goals = if let Some(goal_json) = remainder.strip_prefix("Goals:") {
         let mut goal_stream = serde_json::Deserializer::from_str(goal_json.trim_start())
             .into_iter::<Vec<crate::todo::TodoGoal>>();
         let goals = goal_stream.next().and_then(Result::ok).unwrap_or_default();
@@ -1122,7 +1124,7 @@ fn parse_todo_tool_output(content: &str) -> Option<ParsedTodoToolOutput> {
     } else {
         Vec::new()
     };
-    let plan_update = if let Some(update_json) = remainder.strip_prefix("Plan updates:") {
+    let _plan_update = if let Some(update_json) = remainder.strip_prefix("Plan updates:") {
         let mut update_stream = serde_json::Deserializer::from_str(update_json.trim_start())
             .into_iter::<crate::todo::TodoPlanChange>();
         let update = update_stream.next().and_then(Result::ok);
@@ -1145,13 +1147,7 @@ fn parse_todo_tool_output(content: &str) -> Option<ParsedTodoToolOutput> {
     } else {
         Vec::new()
     };
-    Some(ParsedTodoToolOutput {
-        todos,
-        plan,
-        goals,
-        plan_update,
-        goal_updates,
-    })
+    Some(ParsedTodoToolOutput { goal_updates })
 }
 
 fn strip_todo_tool_output_headers(content: &str) -> &str {
@@ -1210,7 +1206,7 @@ pub(crate) fn render_todos_message(
     let Ok(payload) = serde_json::from_str::<TodoCardPayload>(&msg.content) else {
         return render_system_message(msg, width, diff_mode);
     };
-    let (todos, plan, goals) = payload.into_parts();
+    let (todos, _plan, goals) = payload.into_parts();
 
     let centered = markdown::center_code_blocks();
     let meta_style = Style::default().fg(todo_meta_color());
@@ -1230,7 +1226,12 @@ pub(crate) fn render_todos_message(
         format!("{}┄", base_indent),
         Style::default().fg(rgb(60, 65, 75)),
     )]));
-    push_todo_plan_details(&mut lines, &plan, base_indent, inner_width);
+    // Plan-level intent metadata ("User intention", "Understands user intent")
+    // is deliberately not rendered here: those lines describe the model's
+    // self-assessment, not the user's work, and they pushed the actual task
+    // rows further down the card (and out of the pinned todo band). The
+    // items and their status icons below already carry the information a
+    // reader needs; the full plan stays available in the `/todos panel`.
     // Max items to show inline. For long lists, show the most important
     // (in-progress first, then pending) and collapse the rest.
     const MAX_INLINE_TODOS: usize = 8;
@@ -1504,32 +1505,6 @@ fn wrap_todo_detail(value: &str, width: usize) -> Vec<String> {
     chunks
 }
 
-/// Plan-level intent lines shown once above the todo groups.
-fn push_todo_plan_details(
-    lines: &mut Vec<Line<'static>>,
-    plan: &crate::todo::TodoPlan,
-    base_indent: &str,
-    inner_width: usize,
-) {
-    if let Some(intention) = plan
-        .user_intention
-        .as_deref()
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-    {
-        push_todo_wrapped_detail(lines, "User intention", intention, base_indent, inner_width);
-    }
-    if let Some(score) = plan.understands_user_intent {
-        push_todo_wrapped_detail(
-            lines,
-            "Understands user intent",
-            &format!("{score}%"),
-            base_indent,
-            inner_width,
-        );
-    }
-}
-
 /// Wrap one labeled detail line to the card width.
 fn push_todo_wrapped_detail(
     lines: &mut Vec<Line<'static>>,
@@ -1609,78 +1584,6 @@ fn push_todo_goal_details(
     {
         push_todo_wrapped_detail(lines, "Feedback", value, base_indent, inner_width);
     }
-}
-
-/// Concise refinement card for assessment-only todo writes: the plan-level
-/// intent change first, then any per-goal quality updates.
-fn render_todo_assessment_updates(
-    plan_update: Option<&crate::todo::TodoPlanChange>,
-    goal_updates: &[crate::todo::TodoGoalChange],
-    width: u16,
-) -> Vec<Line<'static>> {
-    let mut lines = render_todo_plan_update(plan_update, width);
-    lines.extend(render_todo_goal_updates(goal_updates, width));
-    lines
-}
-
-fn render_todo_plan_update(
-    plan_update: Option<&crate::todo::TodoPlanChange>,
-    width: u16,
-) -> Vec<Line<'static>> {
-    let Some(update) = plan_update else {
-        return Vec::new();
-    };
-    let centered = markdown::center_code_blocks();
-    let card_width = if centered {
-        (width.saturating_sub(4) as usize).min(120)
-    } else {
-        (width.saturating_sub(2) as usize).min(100)
-    }
-    .max(1);
-    let base_indent = if centered { "" } else { "  " };
-    let inner_width = card_width.saturating_sub(base_indent.width()).max(1);
-    let mut lines = vec![todo_card_line(
-        vec![
-            Span::styled("Plan", Style::default().fg(todo_group_color()).bold()),
-            Span::styled("  updated", Style::default().fg(todo_meta_color())),
-        ],
-        base_indent,
-        inner_width,
-    )];
-
-    for field in &update.fields {
-        match field {
-            crate::todo::TodoPlanField::UnderstandsUserIntent => push_todo_score_update(
-                &mut lines,
-                "Understands user intent",
-                update
-                    .before
-                    .as_ref()
-                    .and_then(|plan| plan.understands_user_intent),
-                update
-                    .after
-                    .as_ref()
-                    .and_then(|plan| plan.understands_user_intent),
-                base_indent,
-                inner_width,
-            ),
-            crate::todo::TodoPlanField::UserIntention => push_todo_text_update(
-                &mut lines,
-                "User intention",
-                update
-                    .after
-                    .as_ref()
-                    .and_then(|plan| plan.user_intention.as_deref()),
-                base_indent,
-                inner_width,
-            ),
-        }
-    }
-
-    if centered {
-        left_pad_lines_for_centered_mode(&mut lines, width);
-    }
-    lines
 }
 
 fn render_todo_goal_updates(
@@ -3833,35 +3736,17 @@ pub(crate) fn render_tool_message(
         && !tools_ui::tool_output_looks_failed(&msg.content)
         && let Some(parsed) = parse_todo_tool_output(&msg.content)
     {
-        if !parsed.goal_updates.is_empty() || parsed.plan_update.is_some() {
-            return render_todo_assessment_updates(
-                parsed.plan_update.as_ref(),
-                &parsed.goal_updates,
-                width,
-            );
+        // The live todo list belongs to the side-panel session widget; the
+        // chat transcript no longer duplicates it as an inline card (that
+        // repeated header over the same todos made the console noisy). A
+        // successful write surfaces here only as goal refinements, with the
+        // item-level "what changed" delta rendered below the tool row by
+        // ui_prepare::todo_change_lines. Reads and plan-only bookkeeping stay
+        // silent, and the complete card remains available via /todos.
+        if !parsed.goal_updates.is_empty() {
+            return render_todo_goal_updates(&parsed.goal_updates, width);
         }
-        // An empty todo read (the model probing the list before planning) has
-        // nothing to show. Rendering the "No tasks yet" placeholder card there
-        // just adds transcript noise, so collapse it to a compact line.
-        if parsed.todos.is_empty() && parsed.goals.is_empty() {
-            return vec![Line::from(vec![
-                Span::raw("  "),
-                Span::styled("todo", Style::default().fg(todo_meta_color())),
-                Span::styled("  no tasks", Style::default().fg(dim_color())),
-            ])];
-        }
-        let payload = serde_json::json!({
-            "todos": parsed.todos,
-            "plan": parsed.plan,
-            "goals": parsed.goals,
-        })
-        .to_string();
-        crate::alphacode_tui::tui::ui_todo_suppress::note_todo_card_visible();
-        return render_todos_message(
-            &DisplayMessage::todos(payload),
-            width,
-            crate::config::DiffDisplayMode::Off,
-        );
+        return Vec::new();
     }
 
     let mut lines: Vec<Line<'static>> = Vec::new();
@@ -4332,26 +4217,16 @@ pub(crate) fn render_tool_message(
                 && let Some(parsed) = parse_todo_tool_output(&result.content)
             {
                 let nested_width = row_width.saturating_sub(4).max(1).min(u16::MAX as usize) as u16;
-                let mut todo_lines =
-                    if parsed.goal_updates.is_empty() && parsed.plan_update.is_none() {
-                        let payload = serde_json::json!({
-                            "todos": parsed.todos,
-                            "plan": parsed.plan,
-                            "goals": parsed.goals,
-                        })
-                        .to_string();
-                        render_todos_message(
-                            &DisplayMessage::todos(payload),
-                            nested_width,
-                            crate::config::DiffDisplayMode::Off,
-                        )
-                    } else {
-                        render_todo_assessment_updates(
-                            parsed.plan_update.as_ref(),
-                            &parsed.goal_updates,
-                            nested_width,
-                        )
-                    };
+                // Plan-only bookkeeping (User intention / intent score) is
+                // deliberately silent here too; goal refinements still render.
+                // Nested sub-call writes follow the same contract as the top
+                // level: no inline card duplication — the session widget owns
+                // the full list.
+                let mut todo_lines = if !parsed.goal_updates.is_empty() {
+                    render_todo_goal_updates(&parsed.goal_updates, nested_width)
+                } else {
+                    Vec::new()
+                };
                 for line in &mut todo_lines {
                     line.spans.insert(0, Span::raw("    "));
                 }

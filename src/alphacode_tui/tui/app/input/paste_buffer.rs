@@ -397,10 +397,10 @@ mod tests {
     #[test]
     fn rapid_insertion_does_not_engage_for_short_typing() {
         reset();
-        // 30 bytes total at human typing cadence is well below the
-        // 64-byte threshold.
+        // 30 bytes total well below the 64-byte threshold. Insert back-to-back
+        // with no sleep: a sleep here races the 20ms gap threshold, which a
+        // loaded CI runner can overshoot and re-engage the burst detector.
         note_text_inserted(20);
-        sleep(Duration::from_millis(5));
         note_text_inserted(10);
         assert!(!rapid_insertion_active());
     }
@@ -420,7 +420,8 @@ mod tests {
     fn reset_burst_also_resets_rapid_insertion() {
         reset();
         note_text_inserted(80);
-        sleep(Duration::from_millis(5));
+        // Assert immediately: a sleep here races the 20ms gap threshold, which
+        // a loaded CI runner can overshoot before the assert even runs.
         assert!(rapid_insertion_active());
         reset_burst();
         assert!(!rapid_insertion_active());

@@ -739,10 +739,21 @@ impl App {
     pub(super) fn mouse_scroll_drain_amount(&self) -> usize {
         // Gentle ease-out: drain a few lines per frame for a fresh flick,
         // decelerating to one line as the queue empties. Kept close to the
-        // original feel so momentum does not glide far.
+        // original feel so momentum does not glide far. The large-queue rate
+        // matters for frame budget: every scroll step asserts the ratatui
+        // #2357 full-buffer invalidation, so each drain tick pays a full
+        // frame render. Clearing a hard flick in fewer, larger ticks roughly
+        // halves the post-flick render tail without changing the 1-line
+        // precision of deliberate notches.
         let queued = self.mouse_scroll_queue.unsigned_abs() as usize;
 
-        if queued >= 8 { 2 } else { 1 }
+        if queued >= 10 {
+            4
+        } else if queued >= 3 {
+            2
+        } else {
+            1
+        }
     }
 
     fn drain_mouse_scroll_animation(&mut self, max_steps: usize) {

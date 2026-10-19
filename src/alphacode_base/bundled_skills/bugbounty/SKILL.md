@@ -97,6 +97,57 @@ exactly one layer past any single boundary, and only when asked.
 - Generate hypotheses BEFORE payloads.
 - Time-box reads so a slow endpoint never eats the session.
 
+## HUNT DISCIPLINE (session-level rules — read before the first request)
+
+These rules exist because the most expensive hunt failure is not a missed
+vuln — it is hours of unattributed probes and half-finished programs.
+
+**Before the first active request, in this order:**
+1. Load the relevant class skill(s) (`skill_manage load`) — including this one.
+2. Open the `todo` list: one item per planned surface + the kill criteria
+   ("retire after 3 dead hypotheses", "no discriminating signal in a block →
+   pivot and log it"). No todo list → no active testing.
+3. Load prior knowledge (`memory`, `session_search`) for the target: previous
+   findings, killed hypotheses, recon data, policy notes.
+4. Cache the program's actual policy page: scope, exclusions, reward classes.
+   A program whose rules are not cached is not a program under test.
+
+**Hypothesis ledger (keep in the todo list or memory ledger):**
+
+```
+H<T>#<n>: If <class> exists on <surface>,
+          then <observable> should occur,
+          disproved when <counter-observation>.
+attempts: [recorded results]   status: LIVE | KILLED | CONFIRMED
+```
+
+Every active request carries its hypothesis id. A request that cannot name
+its hypothesis does not get sent — that request is the exact behavior that
+burned hours in past sessions. 3 identical results on the same invariant
+(404/401/sanitized) → KILL the hypothesis. Keep killed hypotheses in the
+ledger with the decisive observation: they are the map of what NOT to retest.
+
+**Multi-program protocol.** Hunt one program to a deliberate stop: a
+confirmed finding, or a written kill decision. Do not jump between programs
+mid-investigation. A killed program stays dead — returning to it requires NEW
+evidence (new scope, new recon, new intel, or new code), not just unspent
+frustration. Record each stop: `KILLED After testing <hypotheses>: <what
+ruled it out>. Revisit only with: <specific new evidence>`.
+
+**Evidence ledger per failed test.** Failed tests are deliverables too:
+
+```
+PROBE <n>: hypothesis=<id> request=<minimal curl/one-liner>
+observed=<actual response> expected=<what a positive would look like>
+verdict=<confirms | kills | not-discriminating> next=<what to do differently>
+```
+
+**Tool failures are not negative results.** Classify: transient → retry once
+with adjusted input; permanent → alternative tool; unknown → one diagnostic
+probe of the tool itself. If the tool chain errors repeatedly, run
+tool-doctor — do not conclude anything about the target from a session of
+errors, and never report "clean" while the probing tooling is failing.
+
 ## WORKFLOW: SCOPE → RECON → MAP → ASSESS → VALIDATE → REPORT
 
 ### PHASE -1: SCOPE (first, always — see scope skill)

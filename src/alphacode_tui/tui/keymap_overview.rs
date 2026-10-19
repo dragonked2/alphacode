@@ -138,11 +138,12 @@ pub const OVERVIEW: &[KeymapSection] = &[
     KeymapSection::new(
         Category::AgentControls,
         &[
-            KeymapRow::new("Ctrl+T", "Open the model picker"),
+            KeymapRow::new("/model", "Open the model picker"),
+            KeymapRow::new("Shift+Tab", "Cycle favorited models"),
             KeymapRow::new("Ctrl+Y", "Accept fallback model after an error"),
             KeymapRow::new("Ctrl+C", "Interrupt the current turn (session preserved)"),
             KeymapRow::new("Esc", "Back / cancel current dialog"),
-            KeymapRow::new("Ctrl+Tab / Ctrl+Shift+Tab", "Switch model next / prev"),
+            KeymapRow::new("Ctrl+Shift+Tab", "Switch to the previous model"),
             KeymapRow::new(
                 "Cmd+Right / Cmd+Left",
                 "Increase / decrease reasoning effort (macOS)",
@@ -166,6 +167,7 @@ pub const OVERVIEW: &[KeymapSection] = &[
             KeymapRow::new("Alt+U / Alt+D", "Page up / down in history"),
             KeymapRow::new("Ctrl+G", "Bookmark current prompt"),
             KeymapRow::new("/", "Open slash-command palette when input is empty"),
+            KeymapRow::new("Ctrl+Tab / Ctrl+T", "Toggle queue mode"),
         ],
     ),
     KeymapSection::new(

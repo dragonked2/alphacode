@@ -23,19 +23,27 @@ struct EditInput {
         alias = "path",
         alias = "file",
         alias = "filename",
-        alias = "file_name"
+        alias = "file_name",
+        alias = "filePath"
     )]
     file_path: String,
-    #[serde(alias = "old", alias = "old_str", alias = "search", alias = "find")]
+    #[serde(
+        alias = "old",
+        alias = "old_str",
+        alias = "search",
+        alias = "find",
+        alias = "oldString"
+    )]
     old_string: String,
     #[serde(
         alias = "new",
         alias = "new_str",
         alias = "replacement",
-        alias = "replace"
+        alias = "replace",
+        alias = "newString"
     )]
     new_string: String,
-    #[serde(default)]
+    #[serde(default, alias = "replaceAll")]
     replace_all: bool,
 }
 
@@ -76,7 +84,16 @@ impl Tool for EditTool {
     }
 
     async fn execute(&self, input: Value, ctx: ToolContext) -> Result<ToolOutput> {
-        let params: EditInput = serde_json::from_value(input)?;
+        // Tolerant failure first: a bare serde "missing field `old_string`"
+        // gave the model nothing to act on (it kept re-sending malformed
+        // calls until the repeat guard blocked them). Describe what actually
+        // arrived so one retry can fix the call shape.
+        let params: EditInput = EditInput::deserialize(&input).map_err(|error| {
+            anyhow::anyhow!(
+                "edit: {error}. {}",
+                super::describe_received_arguments(&input)
+            )
+        })?;
 
         if params.old_string == params.new_string {
             return Err(anyhow::anyhow!(

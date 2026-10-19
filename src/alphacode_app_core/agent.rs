@@ -9,6 +9,7 @@ mod goal_evaluator;
 mod inline_tail;
 mod interrupts;
 mod messages;
+mod parallel_tools;
 mod playbook_match;
 mod prompting;
 mod provider;

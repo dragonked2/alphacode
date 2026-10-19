@@ -1383,3 +1383,70 @@ fn collect_dangling_required(schema: &Value, path: &str, errors: &mut Vec<String
         _ => {}
     }
 }
+
+// --- Malformed-argument recovery: camelCase and patch-body rescue ---
+
+#[test]
+fn camel_case_conversion_only_touches_camel_keys() {
+    assert_eq!(
+        camel_case_to_snake_case("oldString").as_deref(),
+        Some("old_string")
+    );
+    assert_eq!(
+        camel_case_to_snake_case("filePath").as_deref(),
+        Some("file_path")
+    );
+    assert_eq!(
+        camel_case_to_snake_case("replaceAll").as_deref(),
+        Some("replace_all")
+    );
+    assert_eq!(camel_case_to_snake_case("file_path"), None);
+    assert_eq!(camel_case_to_snake_case("url"), None);
+    assert_eq!(camel_case_to_snake_case(""), None);
+}
+
+#[test]
+fn argument_key_recovery_is_additive_and_conflict_free() {
+    // camelCase keys gain snake_case twins.
+    let mut input = json!({
+        "intent": "swap the return type",
+        "filePath": "src/lib.rs",
+        "oldString": "fn run()",
+        "newString": "fn execute()"
+    });
+    let recovered = normalize_argument_key_camel_case(&mut input);
+    assert_eq!(recovered, 3, "three camelCase keys should gain twins");
+    assert_eq!(input["file_path"], "src/lib.rs");
+    assert_eq!(input["old_string"], "fn run()");
+    assert_eq!(input["new_string"], "fn execute()");
+    // The originals stay: a struct that expects the camelCase name is unaffected.
+    assert_eq!(input["oldString"], "fn run()");
+    // An already-present snake_case key is never clobbered by a twin.
+    let mut guarded = json!({"file_path": "a.rs", "filePath": "b.rs"});
+    normalize_argument_key_camel_case(&mut guarded);
+    assert_eq!(guarded["file_path"], "a.rs", "existing key wins");
+}
+
+#[test]
+fn already_snake_case_input_is_untouched() {
+    let mut input = json!({"file_path": "a.rs", "old_string": "x", "url": "https://e.com"});
+    let recovered = normalize_argument_key_camel_case(&mut input);
+    assert_eq!(recovered, 0);
+    assert_eq!(
+        input,
+        json!({"file_path": "a.rs", "old_string": "x", "url": "https://e.com"})
+    );
+}
+
+#[test]
+fn agent_facing_error_edit_missing_field_shows_example() {
+    let error = anyhow::anyhow!("missing field `old_string`");
+    let message = agent_facing_error("edit", &error);
+    let message_lower = message.to_ascii_lowercase();
+    assert!(
+        message_lower.contains("old_string")
+            && message_lower.contains("file_path")
+            && message_lower.contains("new_string"),
+        "{message}"
+    );
+}

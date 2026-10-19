@@ -256,6 +256,59 @@ pub(crate) fn describe_received_arguments(input: &Value) -> String {
     }
 }
 
+/// Convert a camelCase identifier to snake_case; `None` when the key has no
+/// interior uppercase letters (already snake/lower-case) or would be unchanged.
+fn camel_case_to_snake_case(key: &str) -> Option<String> {
+    if key.is_empty() || !key.chars().any(|c| c.is_ascii_uppercase()) {
+        return None;
+    }
+    let mut out = String::with_capacity(key.len() + 2);
+    for (index, ch) in key.char_indices() {
+        if ch.is_ascii_uppercase() {
+            if index > 0 && !out.ends_with('_') {
+                out.push('_');
+            }
+            out.push(ch.to_ascii_lowercase());
+        } else {
+            out.push(ch);
+        }
+    }
+    if out == key { None } else { Some(out) }
+}
+
+/// Provider-quirk recovery: some models are trained on harnesses whose tool
+/// schemas use camelCase (`oldString`, `filePath`, `replaceAll`). Alphacode's
+/// schemas are snake_case, so those keys deserialized as unknown fields and
+/// the call failed with "missing field `old_string`" even though the model
+/// supplied usable values. Convert top-level camelCase keys to their
+/// snake_case forms additively: the original key stays (structs or tolerant
+/// extractors that do expect it still see it) and nothing is ever removed, so
+/// a tool whose schema legitimately uses camelCase cannot lose arguments.
+/// Returns how many keys gained a snake_case twin.
+pub(crate) fn normalize_argument_key_camel_case(input: &mut Value) -> usize {
+    let Some(map) = input.as_object_mut() else {
+        return 0;
+    };
+    let mut replacements: Vec<(String, String)> = Vec::new();
+    for key in map.keys() {
+        let Some(snake) = camel_case_to_snake_case(key) else {
+            continue;
+        };
+        if map.contains_key(&snake) {
+            continue;
+        }
+        replacements.push((key.clone(), snake));
+    }
+    let rewritten = replacements.len();
+    for (from, to) in replacements {
+        if let Some(value) = map.get(&from) {
+            let value = value.clone();
+            map.insert(to, value);
+        }
+    }
+    rewritten
+}
+
 /// Object keys a model plausibly sends the target URL under when it does not
 /// use the schema's `url`. Matched ASCII-case-insensitively, so `URL`, `Url`
 /// and `url` all resolve to the same entry.
@@ -729,6 +782,10 @@ pub(crate) fn agent_facing_error(tool_name: &str, error: &anyhow::Error) -> Stri
             if base.contains("not found") || base.contains("No match") {
                 Some(
                     "Re-read the exact file section first and match the old_string character-for-character (whitespace, indentation, line endings).",
+                )
+            } else if base.contains("missing field") {
+                Some(
+                    "The tool call is missing required fields. For edit, provide {\"file_path\": \"path/to/file\", \"old_string\": \"exact text to replace\", \"new_string\": \"replacement text\"} as one JSON object.",
                 )
             } else {
                 None
@@ -1555,6 +1612,13 @@ impl Registry {
         // even if it forgot to normalize. Stringified JSON, single-wrapped
         // arrays, bare URLs, and null/empty all become objects.
         input = crate::alphacode_message_types::ToolCall::normalize_input_to_object(input);
+        let recovered_key_forms = normalize_argument_key_camel_case(&mut input);
+        if recovered_key_forms > 0 {
+            crate::logging::info(&format!(
+                "Recovered {} camelCase argument key(s) for tool '{name}' [session {}]",
+                recovered_key_forms, ctx.session_id
+            ));
+        }
         let tools = self.tools.read().await;
         let resolved = Self::resolve_tool_call(name, &tools);
         let resolved_name: &str = &resolved.name;

@@ -586,17 +586,20 @@ fn render_todos_message_shows_goal_scores_and_feedback() {
         plain.contains("Closed feedback loop 95% · Ownership 90%"),
         "{plain}"
     );
-    // Plan-level intent renders once, above the groups.
-    assert!(plain.contains("Understands user intent · 98%"), "{plain}");
+    // Plan-level intent metadata (user intention / intent score) never
+    // renders in the inline card: the model's private self-assessment stays
+    // out of the transcript. The tasks themselves still render.
+    assert!(plain.contains("▶ Render the card · 85%"), "{plain}");
+    assert!(!plain.contains("User intention"), "{plain}");
+    assert!(!plain.contains("Understands user intent"), "{plain}");
     assert!(
-        plain.contains("User intention · Keep the agent aligned with the user's request"),
+        !plain.contains("Keep the agent aligned with the user's request"),
         "{plain}"
     );
     assert!(
         plain.contains("Feedback · Inspect a debug frame"),
         "{plain}"
     );
-    assert!(plain.contains("▶ Render the card · 85%"), "{plain}");
     assert!(!plain.contains("(high)"), "{plain}");
 }
 
@@ -639,7 +642,6 @@ fn render_todos_message_uses_readable_semantic_colors() {
     };
 
     assert_eq!(color_for("todo rendering"), Some(todo_group_color()));
-    assert_eq!(color_for("Readable metadata"), Some(todo_meta_color()));
     assert_eq!(color_for("▶ "), Some(asap_color()));
     assert_eq!(color_for(" (high)"), None);
     assert_eq!(color_for(" · 85%"), Some(todo_confidence_color()));
@@ -705,7 +707,7 @@ fn render_todos_message_bad_payload_falls_back_to_system() {
 }
 
 #[test]
-fn render_todo_tool_result_uses_borderless_card_with_goal_scores() {
+fn render_todo_tool_result_leaves_full_card_to_session_widget() {
     let todos = vec![crate::todo::TodoItem {
         id: "render".to_string(),
         content: "Render the todo result".to_string(),
@@ -752,22 +754,10 @@ fn render_todo_tool_result_uses_borderless_card_with_goal_scores() {
         .collect::<Vec<_>>()
         .join("\n");
 
-    assert!(!plain.contains("Todos"), "{plain}");
-    assert!(plain.contains("todo rendering  ●"), "{plain}");
-    assert!(
-        plain.contains("Closed feedback loop 95% · Ownership 92%"),
-        "{plain}"
-    );
-    assert!(plain.contains("▶ Render the todo result · 92%"), "{plain}");
-    assert!(!plain.contains("(high)"), "{plain}");
-    assert!(
-        !plain.contains('╭'),
-        "todo tool result should be borderless:\n{plain}"
-    );
-    assert!(
-        !plain.contains("todo 1 items"),
-        "generic tool row leaked:\n{plain}"
-    );
+    // The transcript no longer duplicates the full todo card — the side-panel
+    // session widget owns it. A full-state write (Goals: without updates)
+    // renders nothing in the stream.
+    assert!(plain.is_empty(), "{plain}");
 }
 
 #[test]
@@ -849,7 +839,7 @@ fn render_todo_quality_gate_retry_shows_only_changed_goal_fields() {
 }
 
 #[test]
-fn render_todo_plan_update_card_shows_only_changed_intent_fields() {
+fn render_todo_plan_refinement_renders_nothing_without_goal_updates() {
     let todos = vec![crate::todo::TodoItem {
         id: "render".to_string(),
         content: "Render the entire unchanged todo plan".to_string(),
@@ -899,17 +889,9 @@ fn render_todo_plan_update_card_shows_only_changed_intent_fields() {
         .collect::<Vec<_>>()
         .join("\n");
 
-    assert!(plain.contains("Plan  updated"), "{plain}");
-    assert!(
-        plain.contains("Understands user intent 80% → 97%"),
-        "{plain}"
-    );
-    // Unchanged fields and the full plan stay out of the refinement card.
-    assert!(!plain.contains("User intention"), "{plain}");
-    assert!(
-        !plain.contains("Render the entire unchanged todo plan"),
-        "{plain}"
-    );
+    // Plan bookkeeping is silent, and the item rows that rode along in the
+    // same write now live only in the side-panel session widget.
+    assert!(plain.is_empty(), "{plain}");
 }
 
 #[test]
@@ -927,15 +909,11 @@ fn parse_todo_tool_output_accepts_timestamp_only_header() {
     );
 
     let parsed = parse_todo_tool_output(&content).expect("timestamped todo payload");
-    assert_eq!(parsed.todos.len(), 1);
-    assert_eq!(parsed.todos[0].id, todos[0].id);
-    assert_eq!(parsed.todos[0].content, todos[0].content);
-    assert!(parsed.goals.is_empty());
     assert!(parsed.goal_updates.is_empty());
 }
 
 #[test]
-fn unbiased_visual_prompt_retry_renders_complete_feedback_change() {
+fn unbiased_visual_prompt_retry_leaves_todo_card_to_session_widget() {
     const PROMPT: &str = "can you make a pelican riding a bike animation in html and vanillia js ";
     const INITIAL_FEEDBACK: &str = "Open the page in a browser, inspect runtime errors, and verify animation state changes over time.";
     const REVISED_FEEDBACK: &str = "Serve the files locally, load them in a real browser at desktop and mobile viewport sizes, assert zero console/page errors, sample wheel and scenery transforms at two timestamps to prove motion, and exercise pause plus speed controls to confirm state changes.";
@@ -1016,14 +994,13 @@ fn unbiased_visual_prompt_retry_renders_complete_feedback_change() {
             thought_signature: None,
         }),
     );
-    assert!(initial.contains("pelican-bike-animation"), "{initial}");
-    assert!(
-        without_whitespace(&initial).contains(&without_whitespace(INITIAL_FEEDBACK)),
-        "initial feedback loop was truncated:\n{initial}"
-    );
+    // Full-state todo writes render nothing in the stream: the side-panel
+    // session widget owns the todos and goal scores.
+    assert!(initial.is_empty(), "{initial}");
 
     // Simulate a restored/mirrored result whose ToolCall association was lost.
-    // The structured result must still render as the same complete todo card.
+    // A lost association cannot resurrect the card in the chat either — it
+    // would only duplicate the widget's todos.
     let revised = render(
         crate::todo::TodoGoal {
             group: Some("pelican-bike-animation".to_string()),
@@ -1036,28 +1013,11 @@ fn unbiased_visual_prompt_retry_renders_complete_feedback_change() {
         None,
         None,
     );
-    let compact_revised = without_whitespace(&revised);
-    assert!(revised.contains("pelican-bike-animation"), "{revised}");
-    assert!(
-        compact_revised.contains(&without_whitespace(REVISED_OBJECTIVE)),
-        "revised plan intention was truncated:\n{revised}"
-    );
-    assert!(
-        compact_revised.contains(&without_whitespace(REVISED_FEEDBACK)),
-        "revised feedback loop was truncated:\n{revised}"
-    );
-    let goal_details = revised
-        .split("▶ Implement")
-        .next()
-        .expect("todo item should follow the goal details");
-    assert!(
-        !goal_details.contains('…'),
-        "todo goal details must not truncate:\n{revised}"
-    );
+    assert!(revised.is_empty(), "{revised}");
 }
 
 #[test]
-fn visually_appealing_prompt_batched_retry_renders_complete_todo_card() {
+fn visually_appealing_prompt_batched_todo_write_renders_rows_without_card() {
     // This fixture is only the first todo retry emitted after the
     // closed feedback loop continuation. The eval stops here and deliberately does
     // not depend on the model implementing or completing the visual task.
@@ -1137,28 +1097,22 @@ fn visually_appealing_prompt_batched_retry_renders_complete_todo_card() {
     let compact = without_whitespace(&rendered);
 
     assert!(rendered.contains("✓ todo"), "{rendered}");
-    assert!(rendered.contains("pelican-bike"), "{rendered}");
+    // Nested sub-call writes render no todo card either: the full list lives
+    // in the side-panel session widget, so group labels, goal feedback, and
+    // the model's private objective must all stay out of the transcript.
     assert!(
-        compact.contains(&without_whitespace(OBJECTIVE)),
-        "batched todo plan intention was truncated:\n{rendered}"
+        !compact.contains(&without_whitespace(OBJECTIVE)),
+        "batched todo write must not restate the plan intention:\n{rendered}"
     );
+    assert!(!compact.contains("pelican-bike"), "{rendered}");
     assert!(
-        compact.contains(&without_whitespace(FEEDBACK)),
-        "batched todo feedback loop was truncated:\n{rendered}"
-    );
-    let goal_details = rendered
-        .split_once("pelican-bike")
-        .map(|(_, details)| details)
-        .and_then(|details| details.split("● Inspect").next())
-        .expect("todo item should follow the batched goal details");
-    assert!(
-        !goal_details.contains('…'),
-        "batched todo goal details must not truncate:\n{rendered}"
+        !compact.contains(&without_whitespace(FEEDBACK)),
+        "{rendered}"
     );
 }
 
 #[test]
-fn render_ownership_gated_todo_result_keeps_the_full_card() {
+fn render_ownership_gated_todo_result_leaves_card_to_session_widget() {
     let todos = vec![crate::todo::TodoItem {
         id: "ship".to_string(),
         content: "Deliver the complete workflow".to_string(),
@@ -1202,10 +1156,9 @@ fn render_ownership_gated_todo_result_keeps_the_full_card() {
         .collect::<Vec<_>>()
         .join("\n");
 
-    assert!(plain.contains("ship outcome  ●"), "{plain}");
-    assert!(plain.contains("Deliver the complete workflow"), "{plain}");
-    assert!(plain.contains("Ownership 80%"), "{plain}");
-    assert!(!plain.contains("todo 1 items"), "{plain}");
+    // Ownership gating rides along in the card payload, but the card itself no
+    // longer renders in the stream — the session widget owns it.
+    assert!(plain.is_empty(), "{plain}");
 }
 
 #[test]
@@ -3063,7 +3016,7 @@ fn render_swarm_message_preserves_inline_image_placeholder_lines() {
 }
 
 #[test]
-fn render_empty_todo_tool_result_collapses_to_compact_line() {
+fn render_empty_todo_tool_result_renders_nothing() {
     let msg = DisplayMessage {
         role: "tool".to_string(),
         content: "[todo] []".to_string(),
@@ -3085,8 +3038,9 @@ fn render_empty_todo_tool_result_collapses_to_compact_line() {
         .collect::<Vec<_>>()
         .join("\n");
 
-    assert!(!plain.contains("No tasks yet"), "{plain}");
-    assert!(plain.contains("no tasks"), "{plain}");
+    // Reads stay silent — the side-panel session widget already reflects the
+    // (empty) list, so the transcript needs no placeholder either.
+    assert!(plain.is_empty(), "{plain}");
 }
 
 #[test]

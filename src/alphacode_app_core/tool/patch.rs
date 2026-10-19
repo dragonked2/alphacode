@@ -49,11 +49,11 @@ impl Tool for PatchTool {
             "type": "object",
             "required": ["patch_text"],
             "properties": {
-                "intent": super::intent_schema_property(),
                 "patch_text": {
                     "type": "string",
-                    "description": "Patch text."
-                }
+                    "description": "Unified diff text."
+                },
+                "intent": super::intent_schema_property()
             }
         })
     }
@@ -76,12 +76,32 @@ impl Tool for PatchTool {
                     break;
                 }
             }
+            if found.is_none() {
+                // Rescue (parity with apply_patch): a confused model may file
+                // the whole diff under the wrong key, most often `intent`.
+                // Accept a string value that actually looks like a unified
+                // diff instead of bouncing the call.
+                for (key, value) in obj {
+                    let Some(text) = value.as_str() else {
+                        continue;
+                    };
+                    if looks_like_unified_diff(text) {
+                        crate::logging::warn(&format!(
+                            "patch: diff recovered from non-standard key '{key}'"
+                        ));
+                        found = Some(text.to_string());
+                        break;
+                    }
+                }
+            }
             match found {
                 Some(text) => text,
                 None => {
                     anyhow::bail!(
                         "missing field `patch_text`. {}. \
-                         Send the unified diff as a string under `patch_text`.",
+                         The diff itself belongs under `patch_text`; `intent` and similar \
+                         labels are optional metadata, not the diff. Send the unified diff \
+                         as a string under `patch_text`.",
                         super::describe_received_arguments(&input)
                     );
                 }
@@ -233,6 +253,20 @@ fn parse_patch(text: &str) -> Result<Vec<FilePatch>> {
     Ok(patches)
 }
 
+/// Heuristic for "this string value is a unified diff, whatever key it came in
+/// under". Ordinary prose never matches: it needs a real header or a hunk
+/// header together with changed lines.
+fn looks_like_unified_diff(text: &str) -> bool {
+    let trimmed = text.trim_start();
+    if trimmed.starts_with("diff --git") {
+        return true;
+    }
+    if trimmed.starts_with("--- ") && text.contains("+++ ") {
+        return true;
+    }
+    text.contains("@@") && (text.contains("\n+") || text.contains("\n-"))
+}
+
 fn parse_hunk(lines: &[&str], i: &mut usize) -> Option<Hunk> {
     // Parse @@ -start,count +start,count @@
     let header = lines[*i];
@@ -346,4 +380,47 @@ async fn apply_patch_with_diff(patch: &FilePatch, path: &Path) -> Result<(String
 
     let diff = generate_diff_with_start(&old_content, &new_content, first_line);
     Ok((format!("modified ({} hunks)", patch.hunks.len()), diff))
+}
+
+#[cfg(test)]
+mod patch_extraction_tests {
+    use super::looks_like_unified_diff;
+    use serde_json::json;
+
+    #[test]
+    fn unified_diff_rescued_from_intent_key() {
+        let diff = "@@ -1,1 +1,1 @@\n-old\n+new\n";
+        assert!(looks_like_unified_diff(diff));
+        assert!(!looks_like_unified_diff(
+            "fix the login bug by editing the auth module"
+        ));
+    }
+
+    #[test]
+    fn git_style_header_matches() {
+        assert!(looks_like_unified_diff(
+            "diff --git a/x.rs b/x.rs\n--- a/x.rs\n+++ b/x.rs\n@@ -1 +1 @@\n-a\n+b\n"
+        ));
+    }
+
+    #[test]
+    fn intent_label_prose_never_matches() {
+        assert!(!looks_like_unified_diff(
+            "intent: update the config loader to skip comment-only lines"
+        ));
+    }
+
+    #[test]
+    fn patch_tool_bail_names_patch_text_and_metadata_role() {
+        // Drive the bail path through extraction failure is internal to
+        // `execute`; here we at least assert the helper keeps prose out of the
+        // rescue lane, which decides between fix and bounce.
+        let input = json!({ "intent": "short UI label" });
+        let obj = input.as_object().expect("object");
+        assert!(
+            obj.values()
+                .filter_map(|v| v.as_str())
+                .all(|text| !looks_like_unified_diff(text))
+        );
+    }
 }

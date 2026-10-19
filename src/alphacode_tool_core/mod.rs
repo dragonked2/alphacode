@@ -6,8 +6,7 @@ use async_trait::async_trait;
 use serde_json::Value;
 use std::path::{Path, PathBuf};
 
-pub const TOOL_INTENT_DESCRIPTION: &str =
-    "Required short label shown in the UI: why this call is being made.";
+pub const TOOL_INTENT_DESCRIPTION: &str = "Optional short label shown in the UI: why this call is being made. It never substitutes for the tool's required arguments.";
 
 pub fn intent_schema_property() -> Value {
     serde_json::json!({

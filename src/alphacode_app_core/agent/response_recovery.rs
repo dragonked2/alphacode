@@ -427,6 +427,24 @@ impl Agent {
         attempts: &mut u32,
     ) -> Result<Option<u64>> {
         if !Self::is_transient_provider_error(error) {
+            // A hard 4xx is normally the end of the turn. One class deserves a
+            // bounded rescue: rejection text that reads as *model-side policy*
+            // ("data policy", "moderation", "content policy", "flagged")
+            // rather than a malformed request. Retrying the same request on
+            // the same upstream fails identically, but another upstream in the
+            // pool applies its own moderation and often serves the identical
+            // payload fine. The rotation is intrinsically bounded: the refusing
+            // model is quarantined and `next_free_model` returns `None` after
+            // at most one full sweep, so this cannot loop.
+            if is_content_policy_rejection(error) {
+                logging::warn(&format!(
+                    "Provider rejected the request under its content policy; attempting free-pool rotation: {}",
+                    error.lines().next().unwrap_or(error).trim()
+                ));
+                if let Some(delay) = self.maybe_rotate_free_pool_model(error) {
+                    return Ok(Some(delay));
+                }
+            }
             return Ok(None);
         }
         if *attempts >= Self::MAX_PROVIDER_ERROR_CONTINUATION_ATTEMPTS {
@@ -873,6 +891,13 @@ pub(crate) fn classify_rotation_trigger(error: &str) -> super::free_pool_rotatio
     if is_unroutable_model_error(&lower) {
         return super::free_pool_rotation::RotationTrigger::Unroutable;
     }
+    // A content-policy rejection is model-policy dependent, so it gets the
+    // refusal quarantine window rather than the short transient one —
+    // whichever upstream applies that policy will reject the same payload on
+    // the next attempt too.
+    if is_content_policy_rejection(&lower) {
+        return super::free_pool_rotation::RotationTrigger::Refusal;
+    }
     let rate_limited = contains_429_with_rate_limit(&lower)
         || lower.contains("too many requests")
         || lower.contains("rate limit")
@@ -884,6 +909,127 @@ pub(crate) fn classify_rotation_trigger(error: &str) -> super::free_pool_rotatio
     } else {
         super::free_pool_rotation::RotationTrigger::Transient
     }
+}
+
+/// Does this error read as a provider/moderator content-policy rejection of
+/// the *message*, rather than a malformed request?
+///
+/// These arrive under several shapes: OpenAI-style 400s carrying
+/// `content_policy_violation`, OpenRouter 429s whose only vocabulary is
+/// "Data policy" / moderation, older "enhance your calm" gateways, and
+/// Anthropic `output refusal` stops. The common property is that the failure
+/// is model-policy dependent, not request-shape dependent, so the useful
+/// recovery is a different upstream (different policy), not a fixed payload.
+pub(crate) fn is_content_policy_rejection(error: &str) -> bool {
+    let lower = error.to_ascii_lowercase();
+    // Strong vocabulary only: every needle here is the kind of phrase a
+    // moderation layer emits, and none is likely to appear in an ordinary
+    // validation error (a stray field name, a file path, a model id).
+    const NEEDLES: &[&str] = &[
+        "content policy",
+        "content_policy",
+        "contentpolicy",
+        "usage policy",
+        "usage_policy",
+        "data policy",
+        "moderation",
+        "moderated",
+        "moderator",
+        "safety system",
+        "safety filter",
+        "harmful content",
+        "malicious content",
+        "disallowed content",
+        "prohibited content",
+        "inappropriate content",
+        "violates our",
+        "violate our",
+        "policy violation",
+        "policy-violating",
+        "output refusal",
+        "guardrail",
+        "flagged as harmful",
+        "flagged by our",
+        "probable misuse",
+        "enhance your calm",
+    ];
+    NEEDLES.iter().any(|needle| lower.contains(needle))
+}
+
+/// A short, user-facing explanation for a hard (non-recoverable) provider
+/// failure. The raw provider error stays in the log; the explanation tells
+/// the user what class of failure it was and what actually helps.
+/// Wrap the turn-final provider error so the user sees a short, actionable
+/// explanation ahead of the raw provider payload.
+///
+/// Recovery has already given up by the time this runs, so the only thing
+/// left is making the failure legible: the provider's own body often reads
+/// as a bare "status: 400 bad request" with an opaque JSON fragment, and the
+/// fix the user needs (switch model, /compact, /doctor) is not in it.
+pub(crate) fn annotate_final_turn_error(error: anyhow::Error, error_text: &str) -> anyhow::Error {
+    if let Some(explanation) = explain_hard_provider_error(error_text) {
+        push_bad_request_toast_if_applicable(error_text, is_content_policy_rejection(error_text));
+        return anyhow::anyhow!("{explanation}\n\nDiagnostic detail:\n{error_text}");
+    }
+    // Content-policy language in a body without an embedded status (streamed
+    // refusals) still deserves the friendly line.
+    if is_content_policy_rejection(error_text) {
+        push_bad_request_toast_if_applicable(error_text, true);
+        return anyhow::anyhow!(
+            "The upstream model refused this request under its content policy.\nAlphacode has already tried the other upstreams available to this session.\nWhat helps: switch to a different model (Ctrl+O or `/model`), or rephrase the request.\n\nDiagnostic detail:\n{error_text}"
+        );
+    }
+    error
+}
+
+/// Surface a hard-400 toast (best-effort). The toast helper is a no-op in
+/// headless contexts, so this is safe from any turn path.
+fn push_bad_request_toast_if_applicable(error_text: &str, policy_rejection: bool) {
+    let kind = if policy_rejection {
+        crate::alphacode_tui::tui::ui_error_toast::BadRequestKind::ContentPolicy
+    } else {
+        crate::alphacode_tui::tui::ui_error_toast::BadRequestKind::from_error_text(error_text)
+    };
+    if kind != crate::alphacode_tui::tui::ui_error_toast::BadRequestKind::ContentPolicy {
+        // A plain 400 without policy or overflow vocabulary is a
+        // configuration problem; only toast it when the error carries the
+        // identifying status. Streamed refusals without a status skip it —
+        // the guardrail notice already covers that path.
+        if let Some(400) = crate::alphacode_provider_core::retry::embedded_http_status(
+            &error_text.to_ascii_lowercase(),
+        ) {
+            crate::alphacode_tui::tui::ui_error_toast::push_bad_request("Provider", kind);
+        }
+    } else {
+        crate::alphacode_tui::tui::ui_error_toast::push_bad_request("Provider", kind);
+    }
+}
+
+pub(crate) fn explain_hard_provider_error(error: &str) -> Option<String> {
+    let lower = error.to_ascii_lowercase();
+    let status = crate::alphacode_provider_core::retry::embedded_http_status(&lower)?;
+    let first_line = error.lines().next().unwrap_or(error).trim().to_string();
+    let explanation = match status {
+        400 => {
+            if is_content_policy_rejection(error) {
+                "The upstream model refused this request under its content policy (HTTP 400).\nAlphacode has already tried the other upstreams available to this session.\nWhat helps: switch to a different model (Ctrl+O or `/model`), or rephrase the request. Diagnostic detail logged above.".to_string()
+            } else if lower.contains("exceeds context")
+                || lower.contains("context length")
+                || lower.contains("too many tokens")
+            {
+                "HTTP 400: this payload is larger than the model's context window.\nRun `/compact` to shrink the session history, or /doctor to check the model's context size.".to_string()
+            } else {
+                "HTTP 400 (bad request): the provider rejected the request payload.\nCommon causes: unsupported model/parameter for this endpoint, or a malformed argument from a cut-off stream. Run `/doctor` to check endpoint configuration; retrying the same request will not help.".to_string()
+            }
+        }
+        401 => "HTTP 401 (unauthorized): the API key was rejected, expired, or is missing. Run `/login` or `/keys` to refresh credentials.".to_string(),
+        402 => "HTTP 402 (payment required): the account is out of credit-days or plan quota. Add your own provider key in `~/.alphacode/keys.toml` to bypass shared-key limits.".to_string(),
+        403 => "HTTP 403 (forbidden): the upstream refuses this account or key for this model — usually region/permission restrictions or a blocked key.".to_string(),
+        404 => "HTTP 404 (not found): no route for this model id on this endpoint. `/model` and pick an available model, or check the base URL in config.".to_string(),
+        422 => "HTTP 422 (unprocessable): the request is syntactically valid but semantically rejected — often an invalid tool-call argument shape. Retrying with the corrected argument usually works.".to_string(),
+        _ => return None,
+    };
+    Some(format!("{explanation}\n\nUpstream says: {first_line}"))
 }
 
 /// Does this error mean the gateway has no route for the model id itself?
