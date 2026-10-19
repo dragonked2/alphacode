@@ -745,6 +745,7 @@ See [`docs/configuration.md`](docs/configuration.md) for the full reference.
 | `Esc` | Close a dialog or go back |
 | `/model` | Open the model and provider picker |
 | `Shift+Tab` | Cycle favorited models |
+
 ## Troubleshooting
 
 Start with `alphacode doctor`, which catches most setup problems. Then find your symptom below.
@@ -1067,4 +1068,3 @@ If AlphaCode saves you time, star the repository, report reproducible bugs, sugg
 <sub>Built with Rust by <a href="https://github.com/dragonked2">Ali Essam</a> · MIT licensed · Open source</sub>
 
 </div>
-</document_content>
