@@ -1233,6 +1233,12 @@ fn test_remote_done_waits_for_paced_backlog_and_one_live_frame() {
     app.is_processing = true;
     app.status = ProcessingStatus::Streaming;
     let response = "paced text";
+    // The reveal controller measures its step from the previous reveal, and the
+    // buffer was created when the app was built. Without this reset the
+    // idle time since then is credited to the first chunk and the whole
+    // backlog is revealed at once, which made the "backlog is still pending"
+    // assertion below depend on wall-clock timing.
+    app.stream_buffer.reset_reveal_clock();
     let ops = app.stream_buffer.push_text(response);
     app.apply_stream_ops(ops);
     assert!(!app.stream_buffer.is_empty());

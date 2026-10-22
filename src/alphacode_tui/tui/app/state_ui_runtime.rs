@@ -40,6 +40,9 @@ impl App {
             if let Ok(mut shared) = self.registry.skills().try_write() {
                 *shared = reloaded;
             }
+            // The composed effective-registry cache must not serve the
+            // pre-reload composition (audit M23 invalidation hook).
+            crate::skill::SkillRegistry::invalidate_effective_cache();
             self.invalidate_command_candidates_cache();
             // The header lists loaded skills; refresh it now rather than
             // waiting out the header cache TTL.
@@ -445,7 +448,6 @@ impl App {
     pub(super) fn scroll_to_recent_prompt_rank(&mut self, rank: usize) {
         let rank = rank.max(1);
         let positions = ui::last_user_prompt_positions();
-        let max_scroll = ui::last_max_scroll();
 
         if positions.is_empty() {
             return;
@@ -455,14 +457,18 @@ impl App {
         // positions are in document order (top to bottom), we want most-recent first
         let target_idx = positions.len().saturating_sub(rank);
         let target_line = positions[target_idx];
-        self.set_status_notice(format!(
-            "Ctrl+{}: idx={}/{} line={} max={}",
-            rank,
-            target_idx,
-            positions.len(),
-            target_line,
-            max_scroll
-        ));
+        // A rank past the number of prompts clamps to the oldest one; say so
+        // instead of pretending the jump landed on the requested prompt.
+        let notice = if rank <= positions.len() {
+            format!(
+                "Ctrl+{rank}: jumped to the {}{} most recent prompt",
+                rank,
+                ordinal_suffix(rank)
+            )
+        } else {
+            format!("Ctrl+{rank}: jumped to the oldest prompt")
+        };
+        self.set_status_notice(notice);
         self.scroll_offset = target_line;
         self.auto_scroll_paused = true;
     }
@@ -483,5 +489,19 @@ impl App {
             self.stashed_input = Some((input, cursor));
             self.set_status_notice("📋 Input stashed");
         }
+    }
+}
+
+/// English ordinal suffix for a small count (1 -> "st", 2 -> "nd", 3 -> "rd",
+/// 11 -> "th").
+fn ordinal_suffix(n: usize) -> &'static str {
+    match n % 100 {
+        11..=13 => "th",
+        _ => match n % 10 {
+            1 => "st",
+            2 => "nd",
+            3 => "rd",
+            _ => "th",
+        },
     }
 }

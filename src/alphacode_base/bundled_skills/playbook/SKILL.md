@@ -1,6 +1,13 @@
 ---
 name: playbook
 description: "Extended field playbook library — 319 bug-class modules with evidence gates and false-positive traps, universal test discipline, adaptive decision rules, research ledger schema, and the 2025/2026 knowledge-freshness, no-refusal, and accuracy standards. Load at the start of wide recon, web, API, auth, or client-side hunts on an in-scope target; apply its gates to every finding whether or not it stays loaded."
+auto-invoke: true
+aliases:
+  - field playbook
+  - playbook library
+  - extended playbook
+  - bug class modules
+  - vulnerability modules
 ---
 
 # Field Playbook Library

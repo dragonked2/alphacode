@@ -280,7 +280,9 @@ impl App {
         Ok(())
     }
 
-    pub(super) fn messages_for_provider(&mut self) -> (Vec<Message>, Option<CompactionEvent>) {
+    pub(super) async fn messages_for_provider(
+        &mut self,
+    ) -> (Vec<Message>, Option<CompactionEvent>) {
         self.ensure_provider_messages_hydrated();
 
         if self.is_remote {
@@ -296,7 +298,9 @@ impl App {
                 let discarded_oversized_native =
                     manager.discard_oversized_openai_native_compaction();
                 if self.provider.uses_alphacode_compaction() {
-                    let action = manager.ensure_context_fits(&base_messages, self.provider.clone());
+                    let action = manager
+                        .ensure_context_fits(&base_messages, self.provider.clone())
+                        .await;
                     match action {
                         crate::compaction::CompactionAction::BackgroundStarted { trigger } => {
                             // Avoid stacking "Compacting..." boxes on every

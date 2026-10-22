@@ -643,7 +643,22 @@ impl CompactionManager {
             return standard_cutoff;
         }
 
-        let goal_emb = match self.cached_semantic_embedding(&goal_text) {
+        // Batch the embedding work (audit H14 / Phase 4.2): the previous code
+        // called the embedder synchronously per cache miss — one model round
+        // trip per candidate message on the compaction critical path. All
+        // uncached texts (goal + candidates) are embedded in one `embed_batch`
+        // call instead, and the scoring loop below is a pure cache read.
+        let candidate_texts: Vec<String> = active[..standard_cutoff]
+            .iter()
+            .map(semantic_message_text)
+            .filter(|text| !text.is_empty())
+            .collect();
+        let weighted: Vec<String> = std::iter::once(goal_text.clone())
+            .chain(candidate_texts)
+            .collect();
+        self.batch_fill_semantic_embeddings(&weighted);
+
+        let goal_emb = match self.peek_semantic_embedding(&goal_text) {
             Some(embedding) => embedding,
             None => return standard_cutoff,
         };
@@ -659,7 +674,7 @@ impl CompactionManager {
                 continue;
             }
 
-            if let Some(embedding) = self.cached_semantic_embedding(&text) {
+            if let Some(embedding) = self.peek_semantic_embedding(&text) {
                 let sim = crate::embedding::cosine_similarity(&goal_emb, &embedding);
                 if sim >= relevance_keep_threshold {
                     high_relevance_count += 1;
@@ -963,7 +978,7 @@ impl CompactionManager {
     /// Starts background compaction if above 80%. If context is critically full
     /// (>=95%), also performs an immediate hard-compact (drops old messages) so
     /// the next API call doesn't fail with "prompt too long".
-    pub fn ensure_context_fits(
+    pub async fn ensure_context_fits(
         &mut self,
         all_messages: &[Message],
         provider: Arc<dyn Provider>,
@@ -981,7 +996,9 @@ impl CompactionManager {
                     usage * 100.0,
                     HARD_THRESHOLD_PENDING_WAIT_MS,
                 ));
-                let waited = self.wait_for_pending_compaction_at_hard_threshold(all_messages);
+                let waited = self
+                    .wait_for_pending_compaction_at_hard_threshold(all_messages)
+                    .await;
                 let post_wait_usage = self.context_usage_with(all_messages);
                 crate::logging::info(&format!(
                     "[compaction] Hard-threshold wait complete: waited_ms={}, applied={}, timed_out={}, usage_now={:.1}%",
@@ -1060,7 +1077,16 @@ impl CompactionManager {
         }
     }
 
-    fn wait_for_pending_compaction_at_hard_threshold(
+    /// Wait for an in-flight background compaction to finish before the hard
+    /// threshold forces a hard compact.
+    ///
+    /// This is an `async fn` and sleeps with `tokio::time::sleep` on purpose
+    /// (audit finding H13). The previous `std::thread::sleep` in this sync
+    /// function parked the calling **Tokio worker thread** — not just the
+    /// task — for up to 15 s, polling every 50 ms, starving unrelated tasks
+    /// (streaming, TUI events, other sessions) that needed the same worker.
+    /// It fired exactly when the system was already under pressure.
+    async fn wait_for_pending_compaction_at_hard_threshold(
         &mut self,
         all_messages: &[Message],
     ) -> HardThresholdWait {
@@ -1082,7 +1108,8 @@ impl CompactionManager {
                     timed_out: false,
                 };
             }
-            std::thread::sleep(poll);
+            // Yield the worker thread instead of parking it.
+            tokio::time::sleep(poll).await;
         }
 
         if self
@@ -1425,6 +1452,51 @@ impl CompactionManager {
             effective_tokens: self.effective_token_count_with(all_messages),
             observed_input_tokens: self.observed_input_tokens,
             context_usage: self.context_usage_with(all_messages),
+        }
+    }
+
+    /// Read-only cache lookup: no counter bump on recency, no insert, no
+    /// embed call. Used by the scoring loops after a batch fill.
+    fn peek_semantic_embedding(&self, text: &str) -> Option<Vec<f32>> {
+        let key = semantic_cache_key(text);
+        self.semantic_embed_cache
+            .get(&key)
+            .and_then(|(embedding, _recency)| embedding.clone())
+    }
+
+    /// Embed every uncached text in `texts` with a single `embed_batch` call.
+    ///
+    /// Failures are deliberately *not* per-text cached here (unlike
+    /// [`Self::cached_semantic_embedding`]): a failed batch leaves the cache
+    /// untouched, so callers see misses only, and the compaction path falls
+    /// back to the standard recency cutoff — the same overall fallback this
+    /// module already uses when embeddings are unavailable, without retrying
+    /// the embedder once per message.
+    fn batch_fill_semantic_embeddings(&mut self, texts: &[String]) {
+        let mut missing: Vec<(u64, String)> = Vec::new();
+        for text in texts {
+            let key = semantic_cache_key(text);
+            if self.semantic_embed_cache.contains_key(&key)
+                || missing.iter().any(|(seen_key, _)| *seen_key == key)
+            {
+                continue;
+            }
+            missing.push((key, text.clone()));
+        }
+        if missing.is_empty() {
+            return;
+        }
+
+        let embedding_results: Option<Vec<Vec<f32>>> =
+            crate::embedding::get_embedder().ok().and_then(|embedder| {
+                let refs: Vec<&str> = missing.iter().map(|(_, text)| text.as_str()).collect();
+                embedder.embed_batch(&refs).ok()
+            });
+
+        if let Some(embeddings) = embedding_results {
+            for ((key, _), embedding) in missing.into_iter().zip(embeddings.into_iter()) {
+                self.insert_semantic_embedding_cache(key, Some(embedding));
+            }
         }
     }
 

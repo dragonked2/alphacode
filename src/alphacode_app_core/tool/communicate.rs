@@ -1914,7 +1914,11 @@ fn format_swarm_model_list(
         );
         return out;
     }
-    out.push_str("\nAvailable model routes (pass as spawn model, e.g. 'gpt-5.5' or route-pinned 'openai-api:gpt-5.5'):\n");
+    out.push_str(
+        "\nAvailable model routes. Pass the `id` column verbatim as the spawn model \
+         (e.g. 'openai-api-key:gpt-5.5'); a bare model name also works when the \
+         provider is unambiguous:\n",
+    );
     for route in model_routes {
         let availability = if route.available {
             ""
@@ -1930,9 +1934,19 @@ fn format_swarm_model_list(
         } else {
             format!(" ({})", route.detail)
         };
+        // The `id` is the routable form: pass it verbatim to `spawn`. The
+        // `via`/`[method]` parts are display metadata and are NOT routable
+        // (audit finding C5) — `provider_for_model` guessed by prefix and
+        // routed the worker to the wrong provider.
         out.push_str(&format!(
-            "- {} via {} [{}]{}{}{}\n",
-            route.model, route.provider, route.api_method, availability, cost, detail
+            "- id={} | {} via {} [{}]{}{}{}\n",
+            route.routable_id(),
+            route.model,
+            route.provider,
+            route.api_method,
+            availability,
+            cost,
+            detail
         ));
     }
     out.push_str("\nAlso pass effort (none|minimal|low|medium|high|xhigh|max) to set the spawned agent's reasoning effort.");

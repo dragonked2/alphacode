@@ -6,6 +6,7 @@
 //! aliases, well-formed endpoints and key slots) so a malformed entry fails
 //! here rather than at runtime on a user's machine.
 
+use crate::alphacode_provider_metadata::OpenAiCompatibleProfile;
 use crate::provider_catalog::{
     AGENTROUTER_PROFILE, LoginProviderTarget, is_safe_env_file_name, is_safe_env_key_name,
     login_providers, normalize_api_base, openai_compatible_profile_by_id,
@@ -129,10 +130,39 @@ fn agentrouter_profile_is_registered_and_resolves() {
 /// The models AgentRouter serves via its OpenAI-compatible endpoint must be
 /// offered before any live `/v1/models` fetch, since the endpoint 401s
 /// without a key and the picker would otherwise be empty on a fresh login.
+///
+/// The list mirrors https://agentrouter.org/docs/opencode.html. AgentRouter
+/// rotates its catalog, so a retired id (e.g. the old `glm-5.2` / `gpt-5.5`)
+/// must not stay in the list: an unserved model is rejected with 503 "no
+/// available channel", which looks like a provider outage rather than a
+/// stale picker entry.
 #[test]
 fn agentrouter_static_models_cover_the_served_catalog() {
     let models = openai_compatible_profile_static_models(AGENTROUTER_PROFILE);
-    assert_eq!(models, vec!["gpt-5.6-sol", "gpt-5.5", "glm-5.2"]);
+    assert_eq!(
+        models,
+        vec!["gpt-5.6-sol", "gpt-6-astra", "glm-5.3", "deepseek-v4-flash"]
+    );
+}
+
+/// The Anthropic-compatible AgentRouter endpoint serves a different set.
+#[test]
+fn agentrouter_anthropic_static_models_cover_the_served_catalog() {
+    let profile = crate::provider_catalog::LoginProviderTarget::AgentRouterAnthropic;
+    let _ = profile;
+    let models = openai_compatible_profile_static_models(OpenAiCompatibleProfile {
+        id: "agentrouter-anthropic",
+        ..AGENTROUTER_PROFILE
+    });
+    assert_eq!(
+        models,
+        vec![
+            "claude-opus-5",
+            "claude-opus-4-8",
+            "glm-5.3",
+            "deepseek-v4-flash"
+        ]
+    );
 }
 
 /// The default model must be one the gateway actually serves.
@@ -141,7 +171,7 @@ fn agentrouter_default_model_is_a_served_model() {
     let default_model = AGENTROUTER_PROFILE
         .default_model
         .expect("agentrouter declares a default model");
-    assert_eq!(default_model, "gpt-5.5");
+    assert_eq!(default_model, "gpt-5.6-sol");
     assert!(
         openai_compatible_profile_static_models(AGENTROUTER_PROFILE)
             .iter()

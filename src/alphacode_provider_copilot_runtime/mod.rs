@@ -905,33 +905,41 @@ impl Provider for CopilotApiProvider {
         let built_messages = Self::build_messages(system, messages);
         let built_tools = Self::build_tools(tools);
         let model_for_fingerprint = self.model();
-        let mut canonical_payload = json!({
-            "model": &model_for_fingerprint,
-            "messages": &built_messages,
-            "tools": &built_tools,
-        });
-        Self::add_max_token_parameter(&mut canonical_payload, &model_for_fingerprint, 32_768u32);
-        self.add_reasoning_effort_parameter(&mut canonical_payload, &model_for_fingerprint);
-        let system_value = built_messages
-            .first()
-            .filter(|message| message.get("role").and_then(|role| role.as_str()) == Some("system"))
-            .cloned();
-        let tools_value = if built_tools.is_empty() {
-            None
-        } else {
-            Some(Value::Array(built_tools.clone()))
-        };
-        crate::alphacode_provider_core::fingerprint::log_provider_canonical_input(
-            "copilot",
-            &model_for_fingerprint,
-            "chat_completions",
-            &canonical_payload,
-            &built_messages,
-            system_value.as_ref(),
-            tools_value.as_ref(),
-            Some(built_tools.len()),
-            &[("user_initiated", is_user_initiated.to_string())],
-        );
+        if crate::alphacode_provider_core::fingerprint::fingerprint_enabled() {
+            let mut canonical_payload = json!({
+                "model": &model_for_fingerprint,
+                "messages": &built_messages,
+                "tools": &built_tools,
+            });
+            Self::add_max_token_parameter(
+                &mut canonical_payload,
+                &model_for_fingerprint,
+                32_768u32,
+            );
+            self.add_reasoning_effort_parameter(&mut canonical_payload, &model_for_fingerprint);
+            let system_value = built_messages
+                .first()
+                .filter(|message| {
+                    message.get("role").and_then(|role| role.as_str()) == Some("system")
+                })
+                .cloned();
+            let tools_value = if built_tools.is_empty() {
+                None
+            } else {
+                Some(Value::Array(built_tools.clone()))
+            };
+            crate::alphacode_provider_core::fingerprint::log_provider_canonical_input(
+                "copilot",
+                &model_for_fingerprint,
+                "chat_completions",
+                &canonical_payload,
+                &built_messages,
+                system_value.as_ref(),
+                tools_value.as_ref(),
+                Some(built_tools.len()),
+                &[("user_initiated", is_user_initiated.to_string())],
+            );
+        }
 
         let (tx, rx) = mpsc::channel::<Result<StreamEvent>>(100);
 

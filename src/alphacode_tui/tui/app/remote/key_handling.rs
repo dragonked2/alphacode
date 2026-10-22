@@ -289,6 +289,14 @@ async fn handle_remote_key_internal(
         return Ok(());
     }
 
+    // The transcript find-in-page overlay claims every key while it is open,
+    // so it is checked before the other modals: it is the most recently
+    // opened surface and the user is typing into it.
+    if app.transcript_search_is_open() {
+        app.handle_transcript_search_key(code, modifiers);
+        return Ok(());
+    }
+
     if app.prompt_history_search.is_some() {
         app.handle_prompt_history_search_key(code, modifiers);
         return Ok(());
@@ -669,9 +677,9 @@ async fn handle_remote_key_internal(
                 return Ok(());
             }
             KeyCode::Char('f') => {
-                if app.cursor_pos < app.input.len() {
-                    app.cursor_pos = app.find_word_boundary_forward();
-                }
+                // Ctrl+F opens find-in-page over the transcript. Word-forward
+                // stays available on Alt+F and Ctrl+Right.
+                app.open_transcript_search();
                 return Ok(());
             }
             KeyCode::Left => {

@@ -502,6 +502,26 @@ impl Bus {
         INSTANCE.get_or_init(Bus::new)
     }
 
+    /// Serialize tests that observe the process-global bus.
+    ///
+    /// The bus is global, so a test that subscribes to it and asserts on the
+    /// events it receives also receives whatever *other* tests publish: one
+    /// test's `LoginCompleted` shows up in an unrelated test's subscription
+    /// and breaks an assertion that nothing else could. A test that reads the
+    /// global bus must hold this lock for its whole body.
+    ///
+    /// The lock is per-process, so it also serializes such tests against each
+    /// other — which is the point: only one of them may be reading the bus at
+    /// a time.
+    #[cfg(any(test, feature = "test-support"))]
+    #[doc(hidden)]
+    pub fn test_bus_lock() -> std::sync::MutexGuard<'static, ()> {
+        static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+        LOCK.get_or_init(|| Mutex::new(()))
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+    }
+
     /// A standalone bus with its own subscribers and debounce state. Used by
     /// tests; production code shares [`Bus::global`].
     #[cfg(any(test, feature = "test-support"))]

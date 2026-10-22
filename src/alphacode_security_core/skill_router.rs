@@ -118,6 +118,18 @@ impl SkillRouter {
             }
         }
 
+        // Defense-bypass ranking: fingerprints observed during recon are the
+        // strongest shortlist signal, so route the top-ranked bypass techniques
+        // as directly reachable skills. Ranked from the curated catalog in
+        // [`super::bypass`] — deterministic, no model involvement.
+        for technique in super::bypass::rank_for_scope(scope).into_iter().take(3) {
+            let skill = format!("bypass-{}", technique.id);
+            if !selected.contains(&skill) {
+                selected.push(skill);
+                rationale_parts.push(format!("Bypass: {}", technique.name));
+            }
+        }
+
         // Hypothesis-based routing
         if let Some(h) = hypothesis {
             let skills = Self::skills_for_vuln_class(&h.vuln_class);
@@ -246,6 +258,28 @@ impl SkillRouter {
         }
         if lower.contains("service-worker") || lower.contains("pwa") {
             skills.push("pwa-security".to_string());
+        }
+
+        // Defense-stack tradecraft: any fingerprint whose component matches a
+        // curated bypass technique routes the direct per-technique skill, and
+        // edge/proxy stacks additionally get the WAF-bypass meta-skill.
+        for technique in super::bypass::for_technology(lower.as_str()) {
+            skills.push(format!("bypass-{}", technique.id));
+        }
+        if lower.contains("cloudflare")
+            || lower.contains("akamai")
+            || lower.contains("imperva")
+            || lower.contains("modsecurity")
+            || lower.contains("aws waf")
+            || lower.contains("f5")
+            || lower.contains("sucuri")
+            || lower.contains("waf")
+        {
+            skills.push("waf-bypass".to_string());
+            skills.push("header-spoofing".to_string());
+        }
+        if lower.contains("cdn") || lower.contains("cloudfront") || lower.contains("fastly") {
+            skills.push("cdn-cache-abuse".to_string());
         }
 
         // Backend skills

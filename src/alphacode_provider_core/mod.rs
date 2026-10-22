@@ -49,7 +49,9 @@ pub use fallback_pick::{
     FallbackPickOptions, error_looks_like_credential_failure, pick_next_fallback_route,
     pick_next_fallback_route_with_options,
 };
-pub use fingerprint::{log_provider_canonical_input, stable_hash_json, stable_hash_str};
+pub use fingerprint::{
+    fingerprint_enabled, log_provider_canonical_input, stable_hash_json, stable_hash_str,
+};
 pub use health_checks::{
     ContextLimitRefreshState, HealthCheckSummary, ModelCapabilityDiff, ModelHealthCheck,
     ModelHealthStatus, clear_capability_diffs, clear_context_limit_refresh_states,
@@ -762,6 +764,40 @@ pub struct ModelRoute {
     pub detail: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cheapness: Option<RouteCheapnessEstimate>,
+}
+
+impl ModelRoute {
+    /// The id that can be passed to `spawn` to reach *this* exact route.
+    ///
+    /// The `provider` / `api_method` fields are display metadata: `provider`
+    /// is a human-readable label ("Token Harbor") and `api_method` is the
+    /// transport ("openai-compatible:tokenharbor"). Neither is a complete
+    /// route selector on its own, and the display string
+    /// `"<model> via <provider>"` is not routable at all — feeding it to
+    /// `spawn` made `provider_for_model` guess by prefix and route the
+    /// worker to the wrong provider (audit finding C5).
+    ///
+    /// The routable form is `"<api_method>:<model>"`. `api_method` already
+    /// carries the provider prefix, so this is the identity a spawn needs.
+    ///
+    /// Routes whose `api_method` is not a usable prefix (empty, or one of
+    /// the pseudo-methods `current` / `unknown`) fall back to the bare model
+    /// name, which is the pre-C5 behaviour for an unambiguous provider.
+    pub fn routable_id(&self) -> String {
+        let api_method = self.api_method.trim();
+        if api_method.is_empty() || api_method == "current" || api_method == "unknown" {
+            return self.model.clone();
+        }
+        let prefix = api_method.rsplit(':').next().unwrap_or(api_method).trim();
+        if prefix.is_empty()
+            || prefix == "current"
+            || prefix == "unknown"
+            || prefix == "openai-compatible"
+        {
+            return self.model.clone();
+        }
+        format!("{prefix}:{}", self.model)
+    }
 }
 
 /// Exact runtime identity for a selected model route.

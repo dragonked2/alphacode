@@ -146,6 +146,8 @@ impl Session {
             let _ = std::fs::remove_file(journal_path);
         }
         self.reset_persist_state(true);
+        // The journal was just truncated away, so the tracked size is zero.
+        self.persist_state.journal_bytes = Some(0);
         Ok(())
     }
 
@@ -189,6 +191,9 @@ impl Session {
         let journal_ms = journal_start.elapsed().as_millis();
         let finalize_start = Instant::now();
         session.reset_persist_state(path.exists());
+        // Seed the in-memory journal size from the file we just replayed, so
+        // the first append after a load does not need to `stat` the journal.
+        session.persist_state.journal_bytes = Some(journal_bytes);
         session.reset_provider_messages_cache();
         session.mark_memory_profile_dirty();
         if replay_stats.is_corrupt() {
@@ -280,6 +285,9 @@ impl Session {
         let journal_ms = journal_start.elapsed().as_millis();
         let finalize_start = Instant::now();
         session.reset_persist_state(path.exists());
+        // Seed the in-memory journal size from the file we just replayed, so
+        // the first append after a load does not need to `stat` the journal.
+        session.persist_state.journal_bytes = Some(journal_bytes);
         session.reset_provider_messages_cache();
         session.mark_memory_profile_dirty();
         let finalize_ms = finalize_start.elapsed().as_millis();
@@ -325,6 +333,18 @@ impl Session {
         let mut snapshot_bytes_before: Option<u64> = None;
         let mut journal_bytes_before: Option<u64> = None;
         let current_meta = self.journal_meta();
+        // `metadata_needs_snapshot` is intentionally NOT a snapshot trigger.
+        //
+        // `SessionJournalEntry.meta` carries the complete session metadata and
+        // `apply_journal_meta()` restores every field on replay, so the append
+        // path already persists a metadata change (status, title, working dir,
+        // ...) correctly — the last journal entry's meta wins. Forcing a
+        // full-session snapshot here turned a routine status change into an
+        // O(session) write on a long session, for no correctness gain.
+        //
+        // The value is still computed because it is reported in the save
+        // telemetry, where it documents that the metadata *changed* even
+        // though the write was an append.
         let metadata_needs_snapshot = self
             .persist_state
             .last_meta
@@ -364,7 +384,7 @@ impl Session {
             journal_stat_ms,
             checkpoint_ms,
             journal_bytes_after,
-        ) = if metadata_needs_snapshot || vectors_need_snapshot {
+        ) = if vectors_need_snapshot {
             let checkpoint_start = Instant::now();
             let result = self.checkpoint_snapshot(&path, &journal_path);
             let checkpoint_ms = checkpoint_start.elapsed().as_millis();
@@ -393,13 +413,28 @@ impl Session {
             };
             let entry_build_ms = entry_build_start.elapsed().as_millis();
             let append_start = Instant::now();
-            let append_result = storage::append_json_line_fast(&journal_path, &entry);
+            // The journal's parent directory already exists (a snapshot or a
+            // prior append created it), so skip the `create_dir_all` sequence
+            // and take the byte count from the append itself.
+            let append_result =
+                storage::append_json_line_fast_no_dir(&journal_path, &entry).map(Some);
             let append_ms = append_start.elapsed().as_millis();
             match append_result {
-                Ok(()) => {
-                    self.reset_persist_state(true);
+                Ok(appended_bytes) => {
+                    // Reuse the meta built at the top of `save` instead of
+                    // rebuilding an identical one (a dozen owned `String`
+                    // clones) just to store it in `persist_state`.
+                    self.reset_persist_state_with_meta(true, current_meta);
+                    // Maintain the journal size in memory rather than
+                    // `stat`ing the file after every append. Fall back to a
+                    // `stat` only when the size is not yet known.
                     let journal_stat_start = Instant::now();
-                    let journal_bytes_after = file_len_or_zero(&journal_path);
+                    let journal_bytes_after =
+                        match (self.persist_state.journal_bytes, appended_bytes) {
+                            (Some(known), Some(written)) => known + written,
+                            _ => file_len_or_zero(&journal_path),
+                        };
+                    self.persist_state.journal_bytes = Some(journal_bytes_after);
                     let journal_stat_ms = journal_stat_start.elapsed().as_millis();
                     if journal_bytes_after > MAX_SESSION_JOURNAL_BYTES {
                         let checkpoint_start = Instant::now();

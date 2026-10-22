@@ -348,10 +348,16 @@ impl GeminiProvider {
     }
 
     /// Send a request with up to [`crate::alphacode_provider_core::retry::MAX_ATTEMPTS`]
-    /// attempts, transparently rebuilding the HTTP client on retry to dodge
-    /// poisoned connection pools. The `make` closure produces a fully-configured
-    /// (auth + body) request builder for each try. Backoff honors the server's
-    /// `Retry-After` header when present, otherwise uses the unified policy.
+    /// attempts. The `make` closure produces a fully-configured (auth + body)
+    /// request builder for each try. Backoff honors the server's `Retry-After`
+    /// header when present, otherwise uses the unified policy.
+    ///
+    /// The client is **reused across attempts**: `reqwest::Client` is an
+    /// `Arc` handle, so cloning it is a refcount bump. The previous code
+    /// built a brand-new client per retry, which meant a fresh TCP handshake,
+    /// TLS handshake, HTTP/1.1 negotiation, connection-pool allocation and
+    /// certificate-store load on every attempt — 50-150ms of setup against a
+    /// 30-100ms RTT to Google, before the request was even sent.
     async fn send_with_retry<F>(&self, make: F, url: &str) -> Result<reqwest::Response>
     where
         F: Fn(reqwest::Client) -> reqwest::RequestBuilder,
@@ -361,11 +367,7 @@ impl GeminiProvider {
         };
         let mut last_error: Option<anyhow::Error> = None;
         for attempt in 0..MAX_ATTEMPTS {
-            let client = if attempt == 0 {
-                self.client.clone()
-            } else {
-                gemini_http_client()
-            };
+            let client = self.client.clone();
             let response_result = make(client).send().await;
             match response_result {
                 Ok(response) => {
@@ -431,8 +433,11 @@ impl GeminiProvider {
     ) -> Result<T> {
         let tokens = gemini_auth::load_or_refresh_tokens().await?;
         let url = format!("{}:{method}", Self::base_url());
-        let body_value =
-            serde_json::to_value(body).context("Failed to serialize Gemini request body")?;
+        // `reqwest` accepts any `Serialize`, so the body is encoded once
+        // straight to bytes. The previous code built an intermediate
+        // `serde_json::Value` DOM first, which meant serializing the request
+        // body twice and materializing every field as a heap-allocated
+        // `Value` node in between.
         let resp = self
             .send_with_retry(
                 |client| {
@@ -440,7 +445,7 @@ impl GeminiProvider {
                         .post(&url)
                         .bearer_auth(&tokens.access_token)
                         .header(reqwest::header::CONTENT_TYPE, "application/json")
-                        .json(&body_value)
+                        .json(body)
                 },
                 &url,
             )
@@ -471,8 +476,8 @@ impl GeminiProvider {
         body: &impl Serialize,
         label: &str,
     ) -> Result<T> {
-        let body_value =
-            serde_json::to_value(body).context("Failed to serialize Gemini request body")?;
+        // See `post_json`: `reqwest` encodes the body once, directly from the
+        // `Serialize`, so no intermediate `Value` DOM is needed.
         let resp = self
             .send_with_retry(
                 |client| {
@@ -480,12 +485,11 @@ impl GeminiProvider {
                         .post(url)
                         .header("x-goog-api-key", api_key)
                         .header(reqwest::header::CONTENT_TYPE, "application/json")
-                        .json(&body_value)
+                        .json(body)
                 },
                 url,
             )
             .await?;
-
         if !resp.status().is_success() {
             let status = resp.status();
             let body = crate::alphacode_base::util::http_error_body(resp, "HTTP error").await;
@@ -599,42 +603,45 @@ impl GeminiProvider {
             },
         };
 
-        let contents_value = serde_json::to_value(&request.request.contents).unwrap_or(Value::Null);
-        let content_items = contents_value.as_array().cloned().unwrap_or_default();
-        let system_value = request
-            .request
-            .system_instruction
-            .as_ref()
-            .and_then(|system| serde_json::to_value(system).ok());
-        let tools_value = request
-            .request
-            .tools
-            .as_ref()
-            .and_then(|tools| serde_json::to_value(tools).ok());
-        let payload = json!({
-            "model": &request.model,
-            "contents": contents_value,
-            "system_instruction": system_value.as_ref(),
-            "tools": tools_value.as_ref(),
-            "tool_config": &request.request.tool_config,
-        });
-        crate::alphacode_provider_core::fingerprint::log_provider_canonical_input(
-            "gemini",
-            model,
-            "gemini_generate_content",
-            &payload,
-            &content_items,
-            system_value.as_ref(),
-            tools_value.as_ref(),
-            request.request.tools.as_ref().map(|tools| tools.len()),
-            &[
-                (
-                    "session_id_present",
-                    request.request.session_id.is_some().to_string(),
-                ),
-                ("project_present", (!request.project.is_empty()).to_string()),
-            ],
-        );
+        if crate::alphacode_provider_core::fingerprint::fingerprint_enabled() {
+            let contents_value =
+                serde_json::to_value(&request.request.contents).unwrap_or(Value::Null);
+            let content_items = contents_value.as_array().cloned().unwrap_or_default();
+            let system_value = request
+                .request
+                .system_instruction
+                .as_ref()
+                .and_then(|system| serde_json::to_value(system).ok());
+            let tools_value = request
+                .request
+                .tools
+                .as_ref()
+                .and_then(|tools| serde_json::to_value(tools).ok());
+            let payload = json!({
+                "model": &request.model,
+                "contents": contents_value,
+                "system_instruction": system_value.as_ref(),
+                "tools": tools_value.as_ref(),
+                "tool_config": &request.request.tool_config,
+            });
+            crate::alphacode_provider_core::fingerprint::log_provider_canonical_input(
+                "gemini",
+                model,
+                "gemini_generate_content",
+                &payload,
+                &content_items,
+                system_value.as_ref(),
+                tools_value.as_ref(),
+                request.request.tools.as_ref().map(|tools| tools.len()),
+                &[
+                    (
+                        "session_id_present",
+                        request.request.session_id.is_some().to_string(),
+                    ),
+                    ("project_present", (!request.project.is_empty()).to_string()),
+                ],
+            );
+        }
 
         match Self::auth_mode() {
             GeminiAuthMode::ApiKey(api_key) => {
@@ -1130,13 +1137,26 @@ fn is_vpc_sc_error(err: &anyhow::Error) -> bool {
     err.to_string().contains("SECURITY_POLICY_VIOLATED")
 }
 
+/// HTTP client for Gemini requests.
+///
+/// Connection pooling is **enabled** (`pool_max_idle_per_host(4)`). The
+/// previous configuration set it to `0`, which told reqwest to retain *no*
+/// idle connections — so every Gemini request, and every retry, paid a fresh
+/// TCP handshake, TLS handshake and HTTP/1.1 negotiation. That is 50-150ms of
+/// setup against a 30-100ms RTT to Google, spent before the request body was
+/// even sent.
+///
+/// `http1_only()` is kept: Google's generateContent endpoint is the path
+/// this client talks to, and the explicit HTTP/1.1 negotiation matches the
+/// upstream behaviour we depend on.
 fn gemini_http_client() -> reqwest::Client {
     reqwest::Client::builder()
         .user_agent(crate::alphacode_provider_core::ALPHACODE_USER_AGENT)
         .http1_only()
         .connect_timeout(Duration::from_secs(20))
         .timeout(Duration::from_secs(90))
-        .pool_max_idle_per_host(0)
+        .pool_idle_timeout(Duration::from_secs(120))
+        .pool_max_idle_per_host(4)
         .tcp_keepalive(Some(Duration::from_secs(30)))
         .build()
         .unwrap_or_else(|_| crate::alphacode_provider_core::shared_http_client())

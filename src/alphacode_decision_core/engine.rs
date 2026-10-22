@@ -179,9 +179,20 @@ impl DecisionEngine {
         Self::new(config, fallback)
     }
 
+    /// Lock the stats mutex, recovering from poisoning.
+    ///
+    /// A panic in another task while it holds the lock would otherwise poison
+    /// `stats` and turn every later engine call into a new panic. That is
+    /// unnecessary: `DecisionStats` is a plain counter bag whose partial state
+    /// is harmless, so retrieving the guarded value from the poison wrapper
+    /// keeps the engine (and everything consulting its stats) alive.
+    fn lock_stats(&self) -> std::sync::MutexGuard<'_, DecisionStats> {
+        self.stats.lock().unwrap_or_else(|p| p.into_inner())
+    }
+
     /// Get a snapshot of the current statistics.
     pub fn stats(&self) -> DecisionStats {
-        self.stats.lock().unwrap().clone()
+        self.lock_stats().clone()
     }
 
     /// Get the current config.
@@ -222,7 +233,7 @@ impl DecisionEngine {
                     || self.config.cache_ttl_secs == 0)
             {
                 {
-                    let mut stats = self.stats.lock().unwrap();
+                    let mut stats = self.lock_stats();
                     stats.cache_hits += 1;
                     stats.total_requests += 1;
                 }
@@ -231,7 +242,7 @@ impl DecisionEngine {
         }
 
         let start = Instant::now();
-        self.stats.lock().unwrap().total_requests += 1;
+        self.lock_stats().total_requests += 1;
 
         let result = self
             .provider
@@ -244,7 +255,7 @@ impl DecisionEngine {
             Err(e) => {
                 if self.config.fallback_enabled {
                     {
-                        let mut stats = self.stats.lock().unwrap();
+                        let mut stats = self.lock_stats();
                         stats.fallback_used += 1;
                         stats.errors += 1;
                     }
@@ -253,7 +264,7 @@ impl DecisionEngine {
                         self.fallback.decide_probability(question, &dummy).await?,
                     )
                 } else {
-                    self.stats.lock().unwrap().errors += 1;
+                    self.lock_stats().errors += 1;
                     return Err(e);
                 }
             }
@@ -284,7 +295,7 @@ impl DecisionEngine {
                     || self.config.cache_ttl_secs == 0)
             {
                 {
-                    let mut stats = self.stats.lock().unwrap();
+                    let mut stats = self.lock_stats();
                     stats.cache_hits += 1;
                     stats.total_requests += 1;
                 }
@@ -293,7 +304,7 @@ impl DecisionEngine {
         }
 
         let start = Instant::now();
-        self.stats.lock().unwrap().total_requests += 1;
+        self.lock_stats().total_requests += 1;
 
         let result = self
             .provider
@@ -305,12 +316,12 @@ impl DecisionEngine {
             Ok(r) => r,
             Err(e) => {
                 if self.config.fallback_enabled {
-                    self.stats.lock().unwrap().fallback_used += 1;
-                    self.stats.lock().unwrap().errors += 1;
+                    self.lock_stats().fallback_used += 1;
+                    self.lock_stats().errors += 1;
                     let dummy = serde_json::json!({});
                     DecisionResult::Choice(self.fallback.decide_choice(question, &dummy).await?)
                 } else {
-                    self.stats.lock().unwrap().errors += 1;
+                    self.lock_stats().errors += 1;
                     return Err(e);
                 }
             }
@@ -341,7 +352,7 @@ impl DecisionEngine {
                     || self.config.cache_ttl_secs == 0)
             {
                 {
-                    let mut stats = self.stats.lock().unwrap();
+                    let mut stats = self.lock_stats();
                     stats.cache_hits += 1;
                     stats.total_requests += 1;
                 }
@@ -350,7 +361,7 @@ impl DecisionEngine {
         }
 
         let start = Instant::now();
-        self.stats.lock().unwrap().total_requests += 1;
+        self.lock_stats().total_requests += 1;
 
         let result = self
             .provider
@@ -362,12 +373,12 @@ impl DecisionEngine {
             Ok(r) => r,
             Err(e) => {
                 if self.config.fallback_enabled {
-                    self.stats.lock().unwrap().fallback_used += 1;
-                    self.stats.lock().unwrap().errors += 1;
+                    self.lock_stats().fallback_used += 1;
+                    self.lock_stats().errors += 1;
                     let dummy = serde_json::json!({});
                     DecisionResult::Score(self.fallback.decide_score(question, &dummy).await?)
                 } else {
-                    self.stats.lock().unwrap().errors += 1;
+                    self.lock_stats().errors += 1;
                     return Err(e);
                 }
             }
@@ -385,12 +396,12 @@ impl DecisionEngine {
     /// Record stats for a completed decision.
     fn record_result(&self, _question: &DecisionQuestion, result: &DecisionResult, start: Instant) {
         let latency = start.elapsed().as_millis() as u64;
-        self.stats.lock().unwrap().total_latency_ms += latency;
+        self.lock_stats().total_latency_ms += latency;
         match result.outcome() {
-            DecisionOutcome::Decided => self.stats.lock().unwrap().decided += 1,
-            DecisionOutcome::Abstained => self.stats.lock().unwrap().abstained += 1,
-            DecisionOutcome::Deferred => self.stats.lock().unwrap().deferred += 1,
-            DecisionOutcome::NeedsMoreContext => self.stats.lock().unwrap().needs_more_context += 1,
+            DecisionOutcome::Decided => self.lock_stats().decided += 1,
+            DecisionOutcome::Abstained => self.lock_stats().abstained += 1,
+            DecisionOutcome::Deferred => self.lock_stats().deferred += 1,
+            DecisionOutcome::NeedsMoreContext => self.lock_stats().needs_more_context += 1,
         }
     }
 

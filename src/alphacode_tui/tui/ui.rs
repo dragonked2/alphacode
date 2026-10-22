@@ -84,6 +84,8 @@ mod smoothness;
 mod todo_changes;
 #[path = "ui_tools.rs"]
 pub(crate) mod tools_ui;
+#[path = "ui_transcript_search.rs"]
+mod transcript_search_ui;
 // `ui_transitions` is declared at the `tui` module level (see mod.rs) so the
 // toast layer can reuse its easing helpers too.
 #[path = "ui_viewport.rs"]
@@ -726,10 +728,21 @@ pub(crate) fn take_tail_follow_snap_request() -> bool {
     }
 }
 
+/// Cheap content fingerprint for cache keys.
+///
+/// The live streaming text is re-keyed on every frame (it is part of the
+/// prepared-frame cache key). Hashing the whole buffer is O(bytes) per frame,
+/// which for a long response is a measurable slice of the frame budget.
+///
+/// The fingerprint is exact for buffers up to
+/// [`FULL_FINGERPRINT_LIMIT`] bytes and samples three windows (head, middle,
+/// tail) above that, which keeps the cost O(1). A stream grows by appending,
+/// so the tail window and the length change on every append; the exact
+/// mutation counter on the app side (`streaming_text_version`) covers the
+/// in-process replacement case precisely, and this fingerprint covers
+/// mutations that bypass it.
 pub(super) fn hash_text_for_cache(text: &str) -> u64 {
-    let mut hasher = DefaultHasher::new();
-    text.hash(&mut hasher);
-    std::hash::Hasher::finish(&hasher)
+    crate::alphacode_tui_messages::content_fingerprint(text.as_bytes())
 }
 
 #[path = "ui_layout.rs"]
@@ -1380,6 +1393,10 @@ struct FullPrepCacheKey {
     is_processing: bool,
     streaming_text_len: usize,
     streaming_text_hash: u64,
+    /// Exact mutation counter for the live stream. Combined with the sampled
+    /// content fingerprint this makes "the stream changed?" precise without
+    /// hashing the whole buffer on every frame.
+    streaming_text_version: u64,
     batch_progress_hash: u64,
     inline_images_signature: (usize, u64),
     /// Whether inline images render expanded or as collapsed label stubs.
@@ -3842,6 +3859,10 @@ fn draw_inner(frame: &mut Frame, app: &dyn TuiState) {
     // Ctrl+R reverse prompt-history search overlay (drawn after the command
     // palette so it wins when both could be visible).
     input_ui::draw_prompt_history_search_overlay(frame, app, chunks[CHUNK_INPUT]);
+
+    // Ctrl+F find-in-page overlay. Drawn after the other input overlays so it
+    // is the topmost surface when several could be visible at once.
+    transcript_search_ui::draw_transcript_search_overlay(frame, app, chunks[CHUNK_INPUT]);
 
     // Error / warning / info toasts. Drawn last so they float above every
     // other overlay. Anchored to the bottom-right of the frame so they

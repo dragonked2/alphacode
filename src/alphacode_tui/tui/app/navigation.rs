@@ -1478,6 +1478,10 @@ impl App {
         };
         if let Some(cursor_pos) = clicked_input_cursor {
             self.cursor_pos = cursor_pos.min(self.input.len());
+            // Clicking re-anchors the keyboard selection at the caret, so a
+            // following `Shift+Arrow` extends from where the user clicked
+            // instead of from wherever the caret used to be.
+            self.set_input_selection_anchor(self.cursor_pos);
             self.reset_tab_completion();
         }
 

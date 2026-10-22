@@ -109,7 +109,14 @@ fn run_main() -> Result<()> {
         .enable_all()
         .build()?;
 
-    runtime.block_on(async { alphacode::run().await })
+    runtime
+        .block_on(async { alphacode::run().await })
+        .inspect(|_| {
+            // Flush the buffered log on the normal exit path. `LOGGER` is a
+            // `static`, so its `Drop` never runs; this is the reliable place
+            // to push the tail of the log to disk.
+            alphacode::alphacode_logging::flush();
+        })
 }
 
 fn is_macos_hotkey_listener_invocation() -> bool {

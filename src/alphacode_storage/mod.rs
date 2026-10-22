@@ -778,6 +778,26 @@ pub fn append_json_line_fast<T: Serialize + ?Sized>(path: &Path, value: &T) -> R
     Ok(())
 }
 
+/// Append one JSONL line to `path`, **without** re-creating the parent
+/// directory, and report how many bytes were written.
+///
+/// The session journal is appended to on every tool result. The directory
+/// obviously exists at that point (a snapshot or a prior append created it),
+/// so the `create_dir_all` syscall sequence in [`append_json_line_fast`] is
+/// pure overhead on the hot path. The caller already knows the byte count it
+/// wants to track, so returning it also removes the need to `stat` the file
+/// afterwards.
+pub fn append_json_line_fast_no_dir<T: Serialize + ?Sized>(path: &Path, value: &T) -> Result<u64> {
+    let mut line = serde_json::to_vec(value)?;
+    line.push(b'\n');
+    let mut file = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(path)?;
+    file.write_all(&line)?;
+    Ok(line.len() as u64)
+}
+
 #[cfg(all(test, windows))]
 mod windows_hardening_tests {
     use super::*;

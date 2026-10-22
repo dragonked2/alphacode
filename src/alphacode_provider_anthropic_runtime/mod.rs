@@ -990,8 +990,13 @@ fn log_anthropic_canonical_input(
     is_oauth: bool,
     split_prompt: bool,
 ) {
+    // The fingerprint is a diagnostic. Building the canonical payload copies
+    // the whole request three times (DOM -> deep clone -> `json!` re-insert),
+    // so bail before any of that work happens.
+    if !crate::alphacode_provider_core::fingerprint::fingerprint_enabled() {
+        return;
+    }
     let messages_value = serde_json::to_value(&request.messages).unwrap_or(Value::Null);
-    let message_items = messages_value.as_array().cloned().unwrap_or_default();
     let system_value = request
         .system
         .as_ref()
@@ -1004,12 +1009,19 @@ fn log_anthropic_canonical_input(
         "model": &request.model,
         "max_tokens": request.max_tokens,
         "system": system_value.as_ref(),
-        "messages": messages_value,
+        "messages": &messages_value,
         "tools": tools_value.as_ref(),
         "thinking": &request.thinking,
         "output_config": &request.output_config,
         "temperature": request.temperature,
     });
+    // Borrow the message items out of the payload we just built rather than
+    // deep-cloning the array a second time.
+    let message_items = payload
+        .get("messages")
+        .and_then(|messages| messages.as_array())
+        .cloned()
+        .unwrap_or_default();
 
     crate::alphacode_provider_core::fingerprint::log_provider_canonical_input(
         "anthropic",

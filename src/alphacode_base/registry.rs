@@ -69,6 +69,10 @@ impl ServerRegistry {
     /// Save the registry to disk
     pub async fn save(&self) -> Result<()> {
         let path = registry_path()?;
+        // The sync per-frame lookup caches the parsed registry (audit
+        // finding M16); drop it here so a client that is already running
+        // sees the new registry without waiting out the TTL.
+        invalidate_registry_cache();
 
         // Ensure parent directory exists
         if let Some(parent) = path.parent() {
@@ -230,14 +234,69 @@ pub async fn list_servers() -> Result<Vec<ServerInfo>> {
     Ok(registry.servers_by_time().into_iter().cloned().collect())
 }
 
+/// TTL cache for the parsed server registry.
+///
+/// `find_server_by_socket_sync` is reached from the TUI's *per-frame* header
+/// signature. Without a cache, every frame opened the registry file, read it,
+/// and JSON-parsed the whole document — 60 file reads per second in remote
+/// mode, on the frame thread (audit finding M16).
+///
+/// The registry is a small JSON document that changes only when a server
+/// starts or stops, so a short TTL bounds the staleness while removing the
+/// per-frame I/O.
+const REGISTRY_CACHE_TTL: std::time::Duration = std::time::Duration::from_millis(500);
+
+type RegistryCacheEntry = (std::time::Instant, PathBuf, Option<ServerRegistry>);
+
+static REGISTRY_CACHE: std::sync::LazyLock<std::sync::Mutex<Option<RegistryCacheEntry>>> =
+    std::sync::LazyLock::new(|| std::sync::Mutex::new(None));
+
+/// Read and parse the registry, using the TTL cache.
+///
+/// A cache hit avoids the file read and the JSON parse entirely. The cached
+/// value is only reused when it was parsed from the *same* path, so a changed
+/// `ALPHACODE_HOME` (which changes the registry path) never serves a stale
+/// registry from the old location.
+fn load_registry_cached(path: &std::path::Path) -> Option<ServerRegistry> {
+    let now = std::time::Instant::now();
+    if let Ok(guard) = REGISTRY_CACHE.lock()
+        && let Some((ts, cached_path, registry)) = guard.as_ref()
+        && cached_path == path
+        && now.duration_since(*ts) < REGISTRY_CACHE_TTL
+    {
+        return registry.clone();
+    }
+
+    let content = std::fs::read_to_string(path).ok()?;
+    // A parse failure is cached too (as `None`), so a corrupt registry file
+    // is not re-parsed on every frame.
+    let registry: Option<ServerRegistry> = serde_json::from_str(&content).ok();
+
+    if let Ok(mut guard) = REGISTRY_CACHE.lock() {
+        *guard = Some((now, path.to_path_buf(), registry.clone()));
+    }
+    registry
+}
+
+/// Drop the cached registry so the next lookup re-reads it from disk.
+///
+/// Called from [`ServerRegistry::save`], the single write path, so a running
+/// client picks a server up (or drops it) without waiting out the TTL.
+pub fn invalidate_registry_cache() {
+    if let Ok(mut guard) = REGISTRY_CACHE.lock() {
+        *guard = None;
+    }
+}
+
 /// Best-effort sync lookup for a server by socket path.
 ///
 /// This is used by client-side window title code before the async runtime is fully
-/// established or in synchronous spawn helpers.
+/// established or in synchronous spawn helpers, and by the TUI's per-frame
+/// header signature — so the parsed registry is cached for a short TTL
+/// (audit finding M16).
 pub fn find_server_by_socket_sync(socket: &std::path::Path) -> Option<ServerInfo> {
     let path = registry_path().ok()?;
-    let content = std::fs::read_to_string(path).ok()?;
-    let registry: ServerRegistry = serde_json::from_str(&content).ok()?;
+    let registry = load_registry_cached(&path)?;
     registry
         .servers
         .values()

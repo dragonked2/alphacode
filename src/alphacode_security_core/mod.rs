@@ -3,6 +3,7 @@ pub mod arbitration;
 pub mod authz;
 pub mod bench;
 pub mod build_readiness;
+pub mod bypass;
 pub mod chain;
 pub mod concurrency_audit;
 pub mod context;
@@ -53,6 +54,10 @@ pub use bench::{
 pub use build_readiness::{
     BuildBlocker, BuildReadiness, EvidenceTier as BuildReadinessTier, TargetLanguage,
     assess_build_readiness,
+};
+pub use bypass::{
+    BypassFamily, BypassTechnique, action_definitions as bypass_action_definitions,
+    find as find_bypass_technique, for_technology as bypass_for_technology, rank_for_scope,
 };
 pub use chain::{AttackChain, ChainLink, ChainStatus};
 pub use concurrency_audit::{

@@ -40,6 +40,8 @@ const REGISTERED_COMMANDS: &[RegisteredCommand] = &[
     RegisteredCommand::public("/help", "Show help and keyboard shortcuts"),
     RegisteredCommand::public("/?", "Show help and keyboard shortcuts"),
     RegisteredCommand::public("/commands", "Alias for /help"),
+    RegisteredCommand::public("/find", "Find text in the transcript"),
+    RegisteredCommand::public("/search", "Alias for /find"),
     RegisteredCommand::public("/model", "List or switch models"),
     RegisteredCommand::public("/models", "Alias for /model"),
     RegisteredCommand::public(
@@ -526,12 +528,59 @@ impl App {
         suggestions
     }
 
+    /// The `@`-mention token the caret currently sits in, if any.
+    pub(super) fn active_mention(&self) -> Option<super::path_suggest::MentionToken> {
+        super::path_suggest::mention_at(&self.input, self.cursor_pos)
+    }
+
+    /// Path suggestions for the `@`-mention at `cursor`, if the draft has one.
+    ///
+    /// Returns `None` when the caret is not inside an `@`-mention (the caller
+    /// then falls back to the command catalogue). An empty vector means the
+    /// caret *is* inside a mention but nothing matched it.
+    fn mention_suggestions(
+        &self,
+        input: &str,
+        cursor: usize,
+    ) -> Option<(
+        super::path_suggest::MentionToken,
+        Vec<(String, &'static str)>,
+    )> {
+        let mention = super::path_suggest::mention_at(input, cursor)?;
+        let candidates = super::path_suggest::candidates(mention.fragment());
+        let suggestions = candidates
+            .into_iter()
+            .map(|candidate| {
+                (
+                    super::path_suggest::label(&candidate),
+                    super::path_suggest::description(&candidate),
+                )
+            })
+            .collect();
+        Some((mention, suggestions))
+    }
+
     /// Get command suggestions based on current input (or base input for cycling)
     pub(super) fn get_suggestions_for(&self, input: &str) -> Vec<(String, &'static str)> {
         let input = input.trim_start();
 
+        // An `@`-mention inside the draft wins over the command catalogue:
+        // the user is naming a file, not invoking a command.
+        if let Some((_mention, suggestions)) = self.mention_suggestions(input, input.len()) {
+            return suggestions;
+        }
+
         // Only show suggestions when input starts with /
         if !input.starts_with('/') {
+            return vec![];
+        }
+
+        // A slash token with a second `/` inside it is a filesystem path, not a
+        // command. Completing it against the command catalogue produces
+        // nonsense suggestions and (before the palette learned to dismiss on
+        // `Esc`) trapped the user in an undismissable popup that ate their
+        // keystrokes.
+        if crate::alphacode_tui::tui::composer_token::is_typing_path(input) {
             return vec![];
         }
 
@@ -1259,6 +1308,28 @@ impl App {
         &self,
         signature: &CommandSuggestionsSignature,
     ) -> Vec<(String, &'static str)> {
+        // A palette the user explicitly dismissed stays dismissed for the
+        // slash token that was open. Typing a *different* command reopens it.
+        if let Some(prefix) = self.dismissed_slash_prefix.as_deref()
+            && let Some(token) = crate::alphacode_tui::tui::composer_token::slash_token(&self.input)
+            && token.starts_with(prefix)
+        {
+            return Vec::new();
+        }
+
+        // An `@`-mention is a file reference, not a command: the path palette
+        // takes over the whole popup.
+        if let Some((mention, suggestions)) = self.mention_suggestions(&self.input, self.cursor_pos)
+        {
+            // Remember which token the list was built from. Accepting a path
+            // replaces that token; re-deriving it from the caret at
+            // acceptance time would destroy the whole draft if the caret had
+            // moved out of the mention in the meantime.
+            *self.command_suggestions_mention.borrow_mut() = Some(mention);
+            return suggestions;
+        }
+        *self.command_suggestions_mention.borrow_mut() = None;
+
         // While an interactive prompt is waiting for typed input (API key,
         // OAuth callback, account label, SSH target), the composer is an
         // answer box, not a command line. Rendering the full command palette
@@ -1351,8 +1422,31 @@ impl App {
                 self.move_command_suggestion_selection(-1)
             }
             KeyCode::Enter if modifiers.is_empty() => self.accept_selected_command_suggestion(),
+            // `Esc` closes the popup without touching the draft. The palette is
+            // an overlay, so the layered-escape contract applies: the first
+            // `Esc` dismisses it, a second `Esc` clears the composer.
+            KeyCode::Esc if modifiers.is_empty() => self.dismiss_command_suggestions(),
             _ => false,
         }
+    }
+
+    /// Dismiss the command palette for the slash token currently being typed.
+    ///
+    /// The draft is deliberately left intact: the popup is an overlay, and an
+    /// overlay must never eat the text the user typed. The dismissal is
+    /// scoped to the token that was open, so typing a different command
+    /// reopens the palette right away.
+    pub(super) fn dismiss_command_suggestions(&mut self) -> bool {
+        let Some(token) = crate::alphacode_tui::tui::composer_token::slash_token(&self.input)
+        else {
+            return false;
+        };
+        self.dismissed_slash_prefix = Some(token.to_string());
+        self.reset_tab_completion();
+        // Drop the per-frame suggestion memo so the rest of this frame draws
+        // the dismissed state instead of the stale popup.
+        *self.command_suggestions_cache.borrow_mut() = None;
+        true
     }
 
     pub(super) fn accept_selected_command_suggestion(&mut self) -> bool {
@@ -1363,6 +1457,13 @@ impl App {
         };
         if cmd == self.input.trim() {
             return false;
+        }
+
+        // A path mention replaces only the `@token` it came from; the rest of
+        // the draft ("please review @src/ma and fix the bug") has to survive.
+        let mention = self.command_suggestions_mention.borrow().clone();
+        if let Some(mention) = mention {
+            return self.replace_mention_with(&mention, &cmd);
         }
 
         // A skill suggestion is an action, not a command draft. Activate it
@@ -1385,6 +1486,30 @@ impl App {
         } else {
             self.sync_model_picker_preview_from_input();
         }
+        true
+    }
+
+    /// Replace the `@`-mention token with `replacement`, keeping the rest of
+    /// the draft intact and leaving the caret after the inserted text.
+    fn replace_mention_with(
+        &mut self,
+        mention: &super::path_suggest::MentionToken,
+        replacement: &str,
+    ) -> bool {
+        let start = mention.start.min(self.input.len());
+        let end = (start + mention.text.len()).min(self.input.len());
+        if !self.input.is_char_boundary(start) || !self.input.is_char_boundary(end) {
+            return false;
+        }
+        self.remember_input_undo_state();
+        let mut next = String::with_capacity(self.input.len() + replacement.len());
+        next.push_str(&self.input[..start]);
+        next.push_str(replacement);
+        next.push_str(&self.input[end..]);
+        self.input = next;
+        self.cursor_pos = start + replacement.len();
+        self.reset_tab_completion();
+        self.sync_model_picker_preview_from_input();
         true
     }
 
@@ -1548,6 +1673,16 @@ impl App {
 
     /// Autocomplete current input - cycles through suggestions on repeated Tab
     pub fn autocomplete(&mut self) -> bool {
+        // `Tab` is an explicit "I want completions" gesture, so it reopens a
+        // palette the user dismissed with `Esc`.
+        self.dismissed_slash_prefix = None;
+
+        // A path mention is completed in place: the `@token` is replaced and
+        // the rest of the draft is left alone.
+        if let Some(mention) = self.active_mention() {
+            return self.autocomplete_mention(&mention);
+        }
+
         // Get suggestions for current input
         let current_suggestions = self.get_suggestions_for(&self.input);
 
@@ -1607,10 +1742,204 @@ impl App {
         true
     }
 
+    /// Complete an `@`-mention in place.
+    ///
+    /// `Tab` inserts the highlighted path and advances the highlight so a
+    /// second `Tab` cycles to the next match — the same gesture the slash
+    /// palette uses, but scoped to the mention token.
+    fn autocomplete_mention(&mut self, mention: &super::path_suggest::MentionToken) -> bool {
+        let candidates = super::path_suggest::candidates(mention.fragment());
+        if candidates.is_empty() {
+            return false;
+        }
+        let selected = self
+            .command_suggestion_selected
+            .min(candidates.len().saturating_sub(1));
+        let label = super::path_suggest::label(&candidates[selected]);
+        if !self.replace_mention_with(mention, &label) {
+            return false;
+        }
+        self.command_suggestion_selected = (selected + 1) % candidates.len();
+        true
+    }
+
     /// Reset tab completion state (call when user types/modifies input)
     pub fn reset_tab_completion(&mut self) {
         self.tab_completion_state = None;
         self.command_suggestion_selected = 0;
+    }
+
+    // ---------------------------------------------------------------------
+    // Composer text selection
+    //
+    // The composer is a real text field, so it needs the text-field verbs:
+    // select a range, replace it, cut it, copy it. Mouse drags already
+    // worked (they go through the shared copy-selection machinery); these
+    // helpers add the keyboard half so editing the middle of a long prompt
+    // never requires both hands.
+    // ---------------------------------------------------------------------
+
+    /// Byte range of the current composer selection, sorted ascending.
+    ///
+    /// Returns `None` when nothing is selected. The range is always within
+    /// the current draft's bounds, even if the draft was edited underneath an
+    /// existing anchor.
+    pub fn input_selection_range(&self) -> Option<(usize, usize)> {
+        let anchor = self.input_selection_anchor?;
+        let anchor = anchor.min(self.input.len());
+        let cursor = self.cursor_pos.min(self.input.len());
+        if anchor == cursor {
+            return None;
+        }
+        Some(if anchor < cursor {
+            (anchor, cursor)
+        } else {
+            (cursor, anchor)
+        })
+    }
+
+    /// Whether the composer currently has a non-empty text selection.
+    pub fn has_input_selection(&self) -> bool {
+        self.input_selection_range().is_some()
+    }
+
+    /// The selected text, if any.
+    pub fn selected_input_text(&self) -> Option<String> {
+        let (start, end) = self.input_selection_range()?;
+        Some(self.input[start..end].to_string())
+    }
+
+    /// Extend (or start) the selection so that it ends at `pos`.
+    ///
+    /// The first extension anchors the selection at the current caret, which
+    /// is what makes `Shift+Right` behave like every other text field.
+    pub fn extend_input_selection(&mut self, pos: usize) {
+        if self.input_selection_anchor.is_none() {
+            self.input_selection_anchor = Some(self.cursor_pos.min(self.input.len()));
+        }
+        self.cursor_pos = pos.min(self.input.len());
+    }
+
+    /// Re-anchor the selection at `pos` without selecting anything.
+    ///
+    /// Used when the caret is moved by mouse: the next `Shift+Arrow` then
+    /// extends from the clicked position.
+    pub fn set_input_selection_anchor(&mut self, pos: usize) {
+        self.input_selection_anchor = Some(pos.min(self.input.len()));
+    }
+
+    /// Drop the selection, keeping the caret where it is.
+    pub fn clear_input_selection(&mut self) {
+        self.input_selection_anchor = None;
+    }
+
+    /// Select the whole draft.
+    pub fn select_all_input(&mut self) {
+        self.input_selection_anchor = Some(0);
+        self.cursor_pos = self.input.len();
+    }
+
+    /// Remove the selected text without recording an undo snapshot.
+    ///
+    /// Used by the insert path, which records its own snapshot for the whole
+    /// replace-the-selection operation.
+    fn take_input_selection(&mut self) -> Option<(usize, usize)> {
+        let (start, end) = self.input_selection_range()?;
+        self.input.replace_range(start..end, "");
+        self.cursor_pos = start;
+        self.input_selection_anchor = None;
+        Some((start, end))
+    }
+
+    /// Remove the selected text before an insertion, without an undo snapshot.
+    pub(super) fn take_input_selection_for_insert(&mut self) -> Option<(usize, usize)> {
+        self.take_input_selection()
+    }
+
+    /// Delete the selected text. Returns `true` when a selection was removed.
+    pub fn delete_input_selection(&mut self) -> bool {
+        if self.input_selection_range().is_none() {
+            return false;
+        }
+        self.remember_input_undo_state();
+        self.take_input_selection();
+        self.reset_tab_completion();
+        self.sync_model_picker_preview_from_input();
+        true
+    }
+
+    /// Replace the selected text with `text`. Returns `true` when a selection
+    /// was replaced.
+    pub fn replace_input_selection(&mut self, text: &str) -> bool {
+        let Some((start, _end)) = self.input_selection_range() else {
+            return false;
+        };
+        self.remember_input_undo_state();
+        self.input.replace_range(start..start, "");
+        self.input.insert_str(start, text);
+        self.cursor_pos = start + text.len();
+        self.input_selection_anchor = None;
+        self.reset_tab_completion();
+        self.sync_model_picker_preview_from_input();
+        true
+    }
+
+    /// Copy the composer selection to the clipboard.
+    pub(super) fn copy_input_selection_to_clipboard(&mut self) -> bool {
+        self.copy_input_selection_to_clipboard_with(super::helpers::copy_to_clipboard)
+    }
+
+    pub(super) fn copy_input_selection_to_clipboard_with<F>(&mut self, copy_text: F) -> bool
+    where
+        F: FnOnce(&str) -> bool,
+    {
+        let Some(text) = self.selected_input_text() else {
+            self.set_status_notice("Nothing selected");
+            return false;
+        };
+        if text.is_empty() {
+            self.set_status_notice("Nothing selected");
+            return false;
+        }
+        if copy_text(&text) {
+            self.set_status_notice("Copied selection");
+            true
+        } else {
+            self.set_status_notice("Failed to copy selection");
+            false
+        }
+    }
+
+    /// Cut the composer selection to the clipboard.
+    pub(super) fn cut_input_selection_to_clipboard(&mut self) -> bool {
+        self.cut_input_selection_to_clipboard_with(super::helpers::copy_to_clipboard)
+    }
+
+    pub(super) fn cut_input_selection_to_clipboard_with<F>(&mut self, mut copy_text: F) -> bool
+    where
+        F: FnMut(&str) -> bool,
+    {
+        let Some(text) = self.selected_input_text() else {
+            return false;
+        };
+        if text.is_empty() {
+            return false;
+        }
+        if !copy_text(&text) {
+            self.set_status_notice("Failed to copy selection");
+            return false;
+        }
+        self.remember_input_undo_state();
+        let Some((start, end)) = self.input_selection_range() else {
+            return false;
+        };
+        self.input.replace_range(start..end, "");
+        self.cursor_pos = start;
+        self.input_selection_anchor = None;
+        self.reset_tab_completion();
+        self.sync_model_picker_preview_from_input();
+        self.set_status_notice("✂ Cut selection");
+        true
     }
 
     pub(super) fn remember_input_undo_state(&mut self) {

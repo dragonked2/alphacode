@@ -23,6 +23,21 @@ struct MessageCacheKey {
 struct MessageCacheState {
     entries: HashMap<MessageCacheKey, Arc<Vec<Line<'static>>>>,
     order: VecDeque<MessageCacheKey>,
+    /// Memoized message cache keys, keyed by the message's cheap shape token.
+    ///
+    /// `DisplayMessage::stable_cache_hash` is O(payload): it walks the whole
+    /// message body and the whole tool-input JSON tree. The message cache
+    /// consults that hash on **every** lookup, including hits, so the key
+    /// cost could exceed the render it was meant to avoid. This table maps a
+    /// cheap shape token (buffer addresses + lengths) to the previously
+    /// computed full hash, so a repeated lookup of an unchanged message costs
+    /// O(1) instead of O(payload).
+    ///
+    /// The table is bounded by the same limit as the render cache and shares
+    /// its eviction order, so it cannot grow without limit.
+    hash_memos: HashMap<u64, u64>,
+    /// Insertion order of the memo keys, for bounded eviction.
+    hash_memo_order: VecDeque<u64>,
 }
 
 impl MessageCacheState {
@@ -55,6 +70,28 @@ impl MessageCacheState {
         }
     }
 
+    /// Look up a memoized message cache key by its cheap shape token.
+    fn hash_memo_get(&self, shape_tag: u64) -> Option<u64> {
+        self.hash_memos.get(&shape_tag).copied()
+    }
+
+    /// Memoize a message cache key under its cheap shape token.
+    fn hash_memo_insert(&mut self, shape_tag: u64, value: u64) {
+        if let std::collections::hash_map::Entry::Occupied(mut entry) =
+            self.hash_memos.entry(shape_tag)
+        {
+            entry.insert(value);
+            return;
+        }
+        self.hash_memos.insert(shape_tag, value);
+        self.hash_memo_order.push_back(shape_tag);
+        while self.hash_memo_order.len() > MESSAGE_CACHE_LIMIT {
+            if let Some(oldest) = self.hash_memo_order.pop_front() {
+                self.hash_memos.remove(&oldest);
+            }
+        }
+    }
+
     fn insert_shared(&mut self, key: MessageCacheKey, lines: Arc<Vec<Line<'static>>>) {
         if let std::collections::hash_map::Entry::Occupied(mut entry) =
             self.entries.entry(key.clone())
@@ -81,6 +118,68 @@ fn message_cache() -> &'static Mutex<MessageCacheState> {
 }
 
 const MESSAGE_CACHE_LIMIT: usize = 2048;
+
+/// Pack a message shape token into a single `u64` lookup key.
+///
+/// The token mixes the buffer addresses and lengths that feed
+/// `stable_cache_hash`. A change to any of them invalidates the memo, so a
+/// mutated message is re-hashed. A 0 token is remapped to 1 so it is never
+/// confused with "no memo".
+fn shape_tag(shape: &crate::alphacode_tui_messages::MessageShape) -> u64 {
+    use std::hash::Hash;
+    use std::hash::Hasher;
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    shape.role_ptr.hash(&mut hasher);
+    shape.role_len.hash(&mut hasher);
+    shape.content_ptr.hash(&mut hasher);
+    shape.content_len.hash(&mut hasher);
+    shape.content_fingerprint.hash(&mut hasher);
+    shape.tool_calls_ptr.hash(&mut hasher);
+    shape.tool_calls_len.hash(&mut hasher);
+    shape.title_ptr.hash(&mut hasher);
+    shape.title_len.hash(&mut hasher);
+    shape.tool_input_ptr.hash(&mut hasher);
+    shape.tool_input_present.hash(&mut hasher);
+    let tag = hasher.finish();
+    if tag == 0 { 1 } else { tag }
+}
+
+/// Memoized [`DisplayMessage::stable_cache_hash`].
+///
+/// `stable_cache_hash` is O(payload): it walks the whole message body and the
+/// whole tool-input JSON tree. The body builder needs that hash for every
+/// rendered message (boundary table, aux cache) and again for the whole
+/// transcript prefix and suffix when deciding what can be reused — several
+/// passes over the entire transcript on every rebuild.
+///
+/// The memo table turns a repeated lookup of an unchanged message into an
+/// O(1) hit, which is what makes the per-rebuild cost proportional to what
+/// actually changed instead of to the size of the conversation.
+pub fn memoized_stable_cache_hash(msg: &DisplayMessage) -> u64 {
+    if cfg!(test) {
+        return msg.stable_cache_hash();
+    }
+
+    let shape = msg.cache_shape();
+    let shape_tag = shape_tag(&shape);
+    {
+        let cache = match message_cache().lock() {
+            Ok(c) => c,
+            Err(poisoned) => poisoned.into_inner(),
+        };
+        if let Some(value) = cache.hash_memo_get(shape_tag) {
+            return value;
+        }
+    }
+
+    let value = msg.stable_cache_hash();
+    let mut cache = match message_cache().lock() {
+        Ok(c) => c,
+        Err(poisoned) => poisoned.into_inner(),
+    };
+    cache.hash_memo_insert(shape_tag, value);
+    value
+}
 
 /// Runtime-sensitive inputs that affect message rendering but are not intrinsic to a message.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -151,10 +250,18 @@ where
         return Arc::new(render(msg, width, diff_mode));
     }
 
+    // Resolve the message's cache key through the memo table.
+    //
+    // `stable_cache_hash` is O(payload); the memo makes a repeated lookup of
+    // an unchanged message O(1). The shape token is derived from buffer
+    // addresses, lengths and a content fingerprint, so an in-place mutation of
+    // a public field is detected and the full hash recomputed.
+    let message_hash = memoized_stable_cache_hash(msg);
+
     let key = MessageCacheKey {
         width,
         diff_mode,
-        message_hash: msg.stable_cache_hash(),
+        message_hash,
         content_len: msg.content.len(),
         diagram_mode: context.diagram_mode,
         centered: context.centered,

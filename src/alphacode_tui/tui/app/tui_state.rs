@@ -661,6 +661,10 @@ impl crate::alphacode_tui::tui::TuiState for App {
         &self.streaming.streaming_text
     }
 
+    fn streaming_text_version(&self) -> u64 {
+        self.streaming.streaming_text_version
+    }
+
     fn pinned_todos_payload(&self) -> Option<&str> {
         self.pinned_todos_payload_ref()
     }
@@ -671,6 +675,14 @@ impl crate::alphacode_tui::tui::TuiState for App {
 
     fn cursor_pos(&self) -> usize {
         self.cursor_pos
+    }
+
+    fn input_selection_range(&self) -> Option<(usize, usize)> {
+        App::input_selection_range(self)
+    }
+
+    fn has_active_mention(&self) -> bool {
+        App::active_mention(self).is_some()
     }
 
     fn input_history_completion_suffix(&self, max_width: usize) -> Option<String> {
@@ -855,6 +867,16 @@ impl crate::alphacode_tui::tui::TuiState for App {
 
     fn prompt_history_search(&self) -> Option<crate::alphacode_tui::tui::PromptHistorySearchView> {
         self.prompt_history_search_view()
+    }
+
+    fn transcript_search(&self) -> Option<crate::alphacode_tui::tui::TranscriptSearchView> {
+        self.transcript_search_view()
+    }
+
+    fn transcript_search_index(
+        &self,
+    ) -> Option<&std::cell::RefCell<crate::alphacode_tui::tui::TranscriptSearchIndex>> {
+        self.transcript_search.as_ref().map(|state| &state.index)
     }
 
     fn active_skill(&self) -> Option<String> {
@@ -1425,21 +1447,20 @@ impl crate::alphacode_tui::tui::TuiState for App {
     }
 
     fn info_widget_data(&self) -> crate::alphacode_tui::tui::info_widget::InfoWidgetData {
-        let session_id = if self.is_remote {
-            self.remote_session_id.as_deref()
-        } else {
-            Some(self.session.id.as_str())
-        };
-
-        let todos_are_swarm_plan = self.swarm_enabled && !self.swarm_plan_items.is_empty();
-        let (todos, todo_goals) = if todos_are_swarm_plan {
-            (
-                crate::alphacode_tui::tui::info_widget::swarm_plan_todos(&self.swarm_plan_items),
-                Vec::new(),
-            )
-        } else {
-            gather_todos_and_goals_for_session(session_id)
-        };
+        // The floating session widget no longer renders the Todos/Plan block:
+        // it duplicated the /todos card and the composer's active-work ribbon,
+        // stole the transcript's right margin, and the per-frame todo/goal
+        // gather made the widget height flap as the list changed. The session
+        // card now holds only model/context/background/git state, while todo
+        // history stays on demand (inline `/todos` card, `/todos pin`, and the
+        // `/todos panel` side screen).
+        //
+        // This also removes per-frame disk reads of the session todo/plan
+        // files and the swarm plan projection, which were the largest
+        // avoidable cost in `info_widget_data` above.
+        let todos = Vec::new();
+        let todo_goals = Vec::new();
+        let todos_are_swarm_plan = false;
 
         let context_snapshot = self.context_snapshot();
         let context_info = if let Some(context_info) = context_snapshot.info.clone() {
@@ -1802,6 +1823,21 @@ impl crate::alphacode_tui::tui::TuiState for App {
         let mut renderer = self.streaming_md_renderer.borrow_mut();
         renderer.set_width(Some(width));
         renderer.update(&self.streaming.streaming_text)
+    }
+
+    /// Render the streaming markdown without deep-cloning the rendered lines.
+    ///
+    /// `update()` returns `Arc<Vec<Line>>` deep-cloned into a `Vec<Line>` —
+    /// one clone of every `Span`/`String` in the rendered output, on **every**
+    /// streaming tick. `update_shared()` hands back the shared `Arc` instead,
+    /// so the tick only pays for the re-render itself.
+    fn render_streaming_markdown_shared(
+        &self,
+        width: usize,
+    ) -> std::sync::Arc<Vec<ratatui::text::Line<'static>>> {
+        let mut renderer = self.streaming_md_renderer.borrow_mut();
+        renderer.set_width(Some(width));
+        renderer.update_shared(&self.streaming.streaming_text)
     }
 
     fn centered_mode(&self) -> bool {

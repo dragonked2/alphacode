@@ -2451,3 +2451,94 @@ fn openai_compatible_profile_supports_model_and_effort_switching() {
         .set_reasoning_effort("high")
         .expect("set_reasoning_effort must succeed for an active compat profile");
 }
+
+/// Audit finding C5: `list_models` used to print a *display* string
+/// ("<model> via <provider>") while telling the user to pass it to `spawn`.
+/// `provider_for_model` then guessed the provider by prefix, routed the
+/// worker to the wrong provider, and the spawn failed.
+///
+/// The regression: every routable id printed by `list_models` must resolve
+/// to its own provider prefix, and the display form must be refused
+/// outright rather than misrouted.
+#[test]
+fn test_list_models_routable_ids_resolve_to_their_own_provider() {
+    use crate::alphacode_provider_core::ModelRoute;
+
+    let routes = vec![
+        ModelRoute {
+            model: "claude-opus-5.5".to_string(),
+            provider: "Token Harbor".to_string(),
+            api_method: "openai-compatible:tokenharbor".to_string(),
+            available: true,
+            detail: String::new(),
+            cheapness: None,
+        },
+        ModelRoute {
+            model: "claude-sonnet-5".to_string(),
+            provider: "Anthropic".to_string(),
+            api_method: "claude-oauth".to_string(),
+            available: true,
+            detail: String::new(),
+            cheapness: None,
+        },
+        ModelRoute {
+            model: "gpt-5.5".to_string(),
+            provider: "OpenAI".to_string(),
+            api_method: "openai-oauth".to_string(),
+            available: true,
+            detail: String::new(),
+            cheapness: None,
+        },
+    ];
+
+    for route in &routes {
+        let id = route.routable_id();
+        // The id is a single token: it must contain no whitespace, because
+        // `provider_for_model` now refuses whitespace-bearing model strings.
+        assert!(
+            !id.chars().any(char::is_whitespace),
+            "routable id {id:?} must not contain whitespace"
+        );
+
+        // The id is `<api_method>:<model>`, so the provider prefix is the
+        // part before the first `:`. That prefix is what a spawn resolves.
+        let (prefix, rest) = id
+            .split_once(':')
+            .unwrap_or_else(|| panic!("routable id {id:?} must carry a provider prefix"));
+        assert_eq!(rest, route.model, "routable id {id:?} must end with the model");
+
+        // The prefix must be recognised by the same checks a spawn uses.
+        let recognised = crate::provider::provider_from_model_key(prefix).is_some()
+            || crate::provider_catalog::resolve_openai_compatible_profile_selection(prefix)
+                .is_some()
+            || crate::config::config().providers.contains_key(prefix);
+        assert!(
+            recognised,
+            "routable id {id:?} has an unrecognised provider prefix {prefix:?}"
+        );
+    }
+}
+
+/// The display form of a route ("<model> via <provider>") must be refused
+/// by `provider_for_model` rather than silently routed by prefix.
+#[test]
+fn test_provider_for_model_rejects_display_strings() {
+    // The exact shape `list_models` used to print.
+    let display = "claude-opus-5.5 via Token Harbor";
+    assert_eq!(
+        crate::provider::provider_for_model(display),
+        None,
+        "a display string must not be routed by prefix"
+    );
+    // The same for a display string whose model prefix maps to a real
+    // provider — this is the exact failure the audit reproduced.
+    assert_eq!(
+        crate::provider::provider_for_model("claude-opus-5.5 via Anthropic"),
+        None
+    );
+    // A plain model id still resolves.
+    assert_eq!(
+        crate::provider::provider_for_model("claude-opus-5.5"),
+        Some("claude")
+    );
+}

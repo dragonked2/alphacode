@@ -223,9 +223,15 @@ pub fn trust_cli_auth_for_future_use() -> Result<()> {
 pub fn load_tokens() -> Result<GeminiTokens> {
     let native_path = tokens_path()?;
     if native_path.exists() {
-        crate::storage::harden_secret_file_permissions(&native_path);
-        return crate::storage::read_json(&native_path)
-            .with_context(|| format!("Failed to read {}", native_path.display()));
+        // Cache the parsed token so a request does not pay a stat +
+        // permission-harden + read + parse on every call. The cache checks
+        // the file's modification time and length, so an externally edited
+        // token file is still picked up.
+        return super::token_cache::load_cached(&native_path, || {
+            crate::storage::harden_secret_file_permissions(&native_path);
+            crate::storage::read_json(&native_path)
+                .with_context(|| format!("Failed to read {}", native_path.display()))
+        });
     }
 
     let cli_path = gemini_cli_oauth_path()?;
@@ -280,14 +286,18 @@ pub fn load_tokens() -> Result<GeminiTokens> {
 pub fn save_tokens(tokens: &GeminiTokens) -> Result<()> {
     let path = tokens_path()?;
     crate::storage::write_json_secret(&path, tokens)?;
+    // The cached copy is now stale.
+    super::token_cache::cache().invalidate(&path);
     Ok(())
 }
 
 pub fn clear_tokens() -> Result<()> {
     let path = tokens_path()?;
     if path.exists() {
-        std::fs::remove_file(path)?;
+        std::fs::remove_file(&path)?;
     }
+    // The cached copy is now stale (and the file is gone).
+    super::token_cache::cache().invalidate(&path);
     Ok(())
 }
 

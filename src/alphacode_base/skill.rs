@@ -11,6 +11,38 @@ use tokio::sync::RwLock;
 mod invocation;
 pub use invocation::SkillInvocation;
 
+// === Composed-effective-registry cache (audit M23) ===
+
+/// How long a composed effective registry is reused before a rebuild. Short
+/// by design: skills can be installed or reloaded mid-session, and the cache
+/// is additionally invalidated explicitly at the replacement sites.
+const EFFECTIVE_CACHE_TTL: std::time::Duration = std::time::Duration::from_secs(2);
+
+struct EffectiveCacheEntry {
+    registry: Arc<SkillRegistry>,
+    built: std::time::Instant,
+}
+
+static EFFECTIVE_CACHE: std::sync::OnceLock<
+    std::sync::Mutex<HashMap<Option<PathBuf>, EffectiveCacheEntry>>,
+> = std::sync::OnceLock::new();
+
+fn effective_cache() -> std::sync::MutexGuard<'static, HashMap<Option<PathBuf>, EffectiveCacheEntry>>
+{
+    let mutex = EFFECTIVE_CACHE.get_or_init(|| std::sync::Mutex::new(HashMap::new()));
+    mutex
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+}
+
+struct EffectiveCache; // association for the map API below
+
+impl EffectiveCache {
+    fn prune(map: &mut HashMap<Option<PathBuf>, EffectiveCacheEntry>, now: std::time::Instant) {
+        map.retain(|_, entry| now.duration_since(entry.built) < EFFECTIVE_CACHE_TTL * 4);
+    }
+}
+
 /// A skill definition from SKILL.md
 #[derive(Debug, Clone)]
 pub struct Skill {
@@ -310,6 +342,70 @@ impl SkillRegistry {
             effective.merge_overlay(overlay);
         }
         effective
+    }
+
+    /// Cached [`Self::effective_for_working_dir`], held as an [`Arc`].
+    ///
+    /// Composing the effective registry costs two full registry clones (each
+    /// copying every `SKILL.md` body, ~1 MB on this workspace) plus a disk
+    /// rescan of the project-local skill directories, and the previous code
+    /// paid it on every consumer call — up to three clones per prompt build
+    /// (audit M23). The composed result is per-working-dir and, within the
+    /// TTL, invariant, so it is keyed by `working_dir` and shared.
+    ///
+    /// Invalidation is belt-and-braces: a short TTL bounds staleness, and
+    /// [`Self::invalidate_effective_cache`] is called wherever the global
+    /// registry is replaced (skill install/reload). The global *base* passed
+    /// via `base` is expected to be the shared process registry, so a cache
+    /// hit remains consistent with it between invalidation and TTL expiry.
+    pub fn effective_for_working_dir_cached(base: &Self, working_dir: Option<&Path>) -> Arc<Self> {
+        let now = std::time::Instant::now();
+        let key = working_dir.map(Path::to_path_buf);
+        if let Some(entry) = effective_cache().get(&key)
+            && now.duration_since(entry.built) < EFFECTIVE_CACHE_TTL
+        {
+            return Arc::clone(&entry.registry);
+        }
+
+        let composed = Self::effective_for_working_dir(base, working_dir);
+        let shared = Arc::new(composed);
+        {
+            let mut cache = effective_cache();
+            cache.insert(
+                key,
+                EffectiveCacheEntry {
+                    registry: Arc::clone(&shared),
+                    built: now,
+                },
+            );
+            EffectiveCache::prune(&mut cache, now);
+        }
+        shared
+    }
+
+    /// Shared cache lookup only: `Some` when a fresh composed registry for
+    /// `working_dir` is cached. Snapshots check this first so a hit pays
+    /// neither the base-registry clone nor the overlay disk scan.
+    pub fn effective_cached_peek(working_dir: Option<&Path>) -> Option<Arc<Self>> {
+        // The guard must outlive `entry`: the entry borrows from the map that
+        // the guard owns, so returning a borrow of a temporary guard would
+        // drop the map's owner while the borrow is still live.
+        let cache = effective_cache();
+        let key = working_dir.map(Path::to_path_buf);
+        let entry = cache.get(&key)?;
+        if std::time::Instant::now().duration_since(entry.built) < EFFECTIVE_CACHE_TTL {
+            Some(Arc::clone(&entry.registry))
+        } else {
+            None
+        }
+    }
+
+    /// Drop the composed-effective-registry cache. Call after replacing the
+    /// process-wide global registry (skill install, `reload_skill`), so a
+    /// fresh composition is built on the next snapshot instead of serving a
+    /// stale one until the TTL expires.
+    pub fn invalidate_effective_cache() {
+        effective_cache().clear();
     }
 
     /// Load skills from all standard locations, with project-local locations

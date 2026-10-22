@@ -6,6 +6,128 @@ adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Added
+
+- Find-in-page over the transcript. `Ctrl+F` opens a search bar above the
+  composer; typing filters the transcript live, `Enter` / `↑` / `↓` step
+  through the hits (scrolling the viewport to each one), `Alt+C` toggles
+  case-sensitivity, and `Esc` closes the bar and leaves the viewport where
+  the user navigated to. Every hit on screen is painted with a soft amber
+  background and the selected hit with a stronger one, so "what matched" is
+  answerable at a glance. `/find <text>` does the same thing and is
+  discoverable from the slash-command palette.
+  The search runs against the *rendered* transcript rather than the raw
+  message list, so it finds exactly what the user can see — markdown
+  headings, role labels, and text that survived truncation — and never
+  reports a hit inside trimmed tool output. The hit index is cached against
+  the query and the transcript size, so an idle TUI does not rescan on every
+  frame.
+- The composer is now a real text field. `Shift+←` / `Shift+→` select text,
+  `Ctrl`/`Alt`+`Shift+←`/`→` extend by word, `Shift+Home` / `Shift+End` select
+  to the boundaries of the draft, `Ctrl+C` copies the selection, `Ctrl+X` cuts
+  it, and typing or pasting over a selection replaces it. The selection is
+  painted with the same highlight the transcript uses for mouse selections, so
+  both ways of selecting look identical. Until now the composer could only be
+  edited with the mouse, which made "fix the typo in the middle of my prompt"
+  a two-handed operation.
+- `@`-mentions complete file paths. Typing `@` opens a path palette over the
+  project tree; `Tab` / `Enter` insert the highlighted path, and only the
+  `@token` is replaced, so the rest of the prompt survives. The scan is
+  bounded, cached, and runs off the keystroke path's critical section. The
+  system prompt now tells the model that a `@path` in the user's message is a
+  file to read.
+- The slash palette can be dismissed without losing your text. `Esc` closes
+  the popup and leaves the draft alone; a second `Esc` clears the draft, the
+  way it always did. Previously the palette could not be dismissed at all: an
+  absolute path opened it, and the only `Esc` handler cleared the whole input.
+  A path-like token (`/usr/bin/env`) no longer opens the command palette in
+  the first place, and `Tab` reopens a palette that was dismissed.
+- The command palette now reads like a table: descriptions are aligned in a
+  column, the selected row carries a background so the eye can find it
+  instantly, and the footer says where you are in the list (`12/143`).
+- `alphacode doctor` is now usable as a CI gate: it exits non-zero when a
+  check fails, prints a summary line, and reports `ok` / `failed_checks` in
+  its `--json` output. It previously always exited 0, so a pipeline could not
+  tell a healthy install from a broken one.
+
+### Performance
+
+- The prepared-frame cache no longer hashes the whole live stream on every
+  frame. The cache key now uses an exact mutation counter plus an O(1)
+  content fingerprint (exact for buffers up to 512 bytes, sampled above that),
+  which turns a per-frame O(bytes) hash into O(1) for long responses.
+- The body builder no longer re-hashes the whole transcript several times per
+  rebuild. The message cache key is memoized, so the boundary table, the
+  assistant aux cache and the prefix/suffix reuse checks are O(1) per
+  unchanged message instead of O(payload).
+- The message cache's memo key now mixes in a content fingerprint. It was
+  keyed on buffer addresses and lengths alone, and the allocator routinely
+  hands a freed message's address to the next message of the same length — a
+  collision there let an unrelated message inherit the previous message's
+  cached render.
+- The pinned todo band no longer re-renders and deep-clones the todo card on
+  every frame. The finished band is cached against the payload and the
+  geometry, so an idle viewport does a string comparison instead of a full
+  card render.
+- The headless console shows a bounded preview of a tool result *and states
+  how much was left out*. It used to print only the first line, so a
+  truncated result looked exactly like a complete one.
+
+### Fixed
+
+- The agent no longer dead-ends a turn after narrating an action it never
+  performed. A model that says "Let me just add dispatch via sed." and then
+  emits no tool call had its turn treated as finished, so the session sat
+  waiting for the user with the tool failures that caused it still
+  unexplained. The harness now recognises a closing message that narrates an
+  unperformed action *after a failed tool result* and asks the model to
+  actually perform it — bounded to one attempt per turn, and only when the
+  round being answered contained a failure, so an ordinary successful reply is
+  never continued.
+- A failed render no longer takes the whole session down. The release
+  profile used `panic = "abort"`, which makes every `catch_unwind` in the
+  codebase inert: the frame-level recovery in `ui::draw` ("rendering error
+  recovered") and the mermaid renderer's own recovery only existed in debug
+  builds, so the shipped binary died on the exact failures they were written
+  to survive. The release profile now unwinds, which costs a little binary
+  size and buys a session that survives a single bad frame.
+- A panic in the mermaid renderer no longer silences unrelated panics. The
+  renderer swapped the *process-global* panic hook for the duration of the
+  render, so a panic on any other thread in that window was swallowed
+  silently, and two concurrent renders could restore each other's hooks out
+  of order. The suppression is now thread-local and the hook is installed
+  exactly once.
+- `/help` no longer lists a command twice. The "more commands" sweep compared
+  the full registry name against the first word of the hand-curated rows, so
+  a command registered with its arguments (`/find [text]`) was listed again
+  even though the curated section already showed it. Both sides are compared
+  on the first word now.
+- A remote streaming test no longer fails on a loaded machine. It asserted
+  that the paced backlog was still pending, but the reveal controller credits
+  the idle time since the buffer was created to the first chunk, so a slow
+  host could drain the whole backlog before the assertion ran. The buffer
+  gained a `reset_reveal_clock` seam so the test starts from a deterministic
+  point.
+- Two test suites no longer fail depending on how the test runner schedules
+  them. The metrics registry and the event bus are process-global, so a test
+  that resets or publishes to them raced every other test that read them: one
+  test's `reset()` wiped another's counters mid-assertion, and one test's
+  `LoginCompleted` event arrived in an unrelated test's subscription and
+  failed it. Both now have a shared lock that the participating tests hold
+  for their whole body.
+
+### Changed
+
+- `Ctrl+F` opens the transcript search instead of moving the caret one word
+  forward. Word-forward stays available on `Alt+F` and `Ctrl+Right`, and the
+  help overlay now says so.
+- The composer lays out its wrapped rows from a single wrap computation
+  instead of two. The segment list (a grapheme split plus a display-width
+  measurement of every cell) was built once for the rendered rows and again
+  for the copy-selection snapshot, on every frame.
+- `alphacode doctor` measures its label column in display cells rather than
+  bytes, matching the rule the rest of the CLI output already follows.
+
 ## [1.0.80] - 2026-10-13
 
 ### Fixed

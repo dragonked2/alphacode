@@ -177,23 +177,34 @@ pub(super) fn partition_queued_messages(
     (user_messages, reminder, display_system_messages)
 }
 
+/// Recover the legacy (non-CSI-u) encoding of the Ctrl+[ prompt-navigation
+/// chord on macOS.
+///
+/// Legacy terminals have no way to say "Ctrl was held" for `ESC`: the byte for
+/// Ctrl+[ *is* `ESC`, so crossterm reports a plain `Esc` and the chord is
+/// indistinguishable from pressing Escape. Terminals that speak the kitty
+/// keyboard protocol report `Char('[')` + CONTROL instead, so this fallback is
+/// only needed for the legacy encoding.
+///
+/// `Char('5') + CONTROL` is deliberately left untouched. crossterm decodes the
+/// legacy Ctrl+] byte (`0x1d`) as `Char('5')` + CONTROL, but a CSI-u-capable
+/// terminal reports a genuine Ctrl+5 the very same way, so rewriting it to
+/// `Char(']')` would silently steal the documented Ctrl+5..9 "jump to the Nth
+/// most recent prompt" chord on every macOS terminal. Legacy macOS terminals
+/// keep prompt navigation through the built-in Ctrl+J / Ctrl+K fallbacks, which
+/// decode correctly everywhere.
 #[cfg(target_os = "macos")]
 pub(super) fn ctrl_bracket_fallback_to_esc(code: &mut KeyCode, modifiers: &mut KeyModifiers) {
     if !modifiers.contains(KeyModifiers::CONTROL) {
         return;
     }
-    match code {
-        KeyCode::Esc => {
-            *code = KeyCode::Char('[');
-        }
-        KeyCode::Char('5') => {
-            // Legacy tty mapping for Ctrl+]
-            *code = KeyCode::Char(']');
-        }
-        _ => {}
+    if *code == KeyCode::Esc {
+        *code = KeyCode::Char('[');
     }
 }
 
+/// No legacy key encodings to recover outside macOS: every other platform's
+/// terminals report the Ctrl+[ / Ctrl+] chords unambiguously.
 #[cfg(not(target_os = "macos"))]
 pub(super) fn ctrl_bracket_fallback_to_esc(_code: &mut KeyCode, _modifiers: &mut KeyModifiers) {}
 
@@ -1362,6 +1373,45 @@ fn gather_ambient_info_inner(ambient_enabled: bool) -> Option<AmbientWidgetData>
 pub(crate) fn clear_ambient_info_cache_for_tests() {
     if let Ok(mut guard) = AMBIENT_INFO_CACHE.lock() {
         *guard = None;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::ctrl_bracket_fallback_to_esc;
+    use crossterm::event::{KeyCode, KeyModifiers};
+
+    /// Ctrl+5 is the "jump to the 5th most recent prompt" chord, so the legacy
+    /// macOS key-encoding fallback must not rewrite it.
+    ///
+    /// crossterm decodes the legacy Ctrl+] byte (`0x1d`) as `Char('5')` +
+    /// CONTROL, exactly like a CSI-u terminal reports a genuine Ctrl+5.
+    /// Rewriting it to `Char(']')` sends Ctrl+5 to the prompt-*down* binding
+    /// instead, which made the documented Ctrl+5..9 chord unreachable on
+    /// macOS.
+    #[test]
+    fn ctrl_digit_five_is_never_rewritten_to_a_bracket() {
+        let mut code = KeyCode::Char('5');
+        let mut modifiers = KeyModifiers::CONTROL;
+
+        ctrl_bracket_fallback_to_esc(&mut code, &mut modifiers);
+
+        assert_eq!(code, KeyCode::Char('5'));
+        assert_eq!(modifiers, KeyModifiers::CONTROL);
+    }
+
+    /// The other rank-jump digits must survive the fallback untouched too.
+    #[test]
+    fn ctrl_rank_digits_are_never_rewritten() {
+        for digit in ['5', '6', '7', '8', '9'] {
+            let mut code = KeyCode::Char(digit);
+            let mut modifiers = KeyModifiers::CONTROL;
+
+            ctrl_bracket_fallback_to_esc(&mut code, &mut modifiers);
+
+            assert_eq!(code, KeyCode::Char(digit));
+            assert_eq!(modifiers, KeyModifiers::CONTROL);
+        }
     }
 }
 

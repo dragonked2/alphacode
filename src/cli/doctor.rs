@@ -58,12 +58,21 @@ impl Check {
 pub fn run_doctor(json: bool) -> Result<()> {
     let checks = collect_checks();
     let tools = crate::alphacode_app_core::bugbounty_doctor::probe();
+    let failed = checks.iter().filter(|c| c.ok == Some(false)).count();
 
     if json {
-        return render_json(&checks, &tools);
+        render_json(&checks, &tools, failed)?;
+    } else {
+        render_human(&checks, &tools, failed);
     }
 
-    render_human(&checks, &tools);
+    // A health check that always exits 0 cannot gate a pipeline, and gating a
+    // pipeline is the single most common reason to run `doctor` from a
+    // script. Exit non-zero when a check failed so `alphacode doctor` is
+    // usable as a CI precondition.
+    if failed > 0 {
+        std::process::exit(1);
+    }
     Ok(())
 }
 
@@ -271,6 +280,7 @@ fn public_model_label(model: &str) -> String {
 fn render_human(
     checks: &[Check],
     tools: &[crate::alphacode_app_core::bugbounty_doctor::ToolReport],
+    failed: usize,
 ) {
     println!(
         "{}",
@@ -278,13 +288,39 @@ fn render_human(
     );
     println!();
 
-    let label_width = checks.iter().map(|c| c.label.len()).max().unwrap_or(10);
+    // Column width is measured in display cells, not bytes: a label with a
+    // wide glyph would otherwise push its detail one column to the right and
+    // break the alignment of every row below it.
+    let label_width = checks
+        .iter()
+        .map(|c| enhance::display_width(c.label))
+        .max()
+        .unwrap_or(10);
     for check in checks {
         println!(
             "{}{}  {}",
             marker(check),
             enhance::pad_end_to(check.label, label_width),
             check.detail
+        );
+    }
+
+    // Summary first, then the deeper pointers: the summary is what a human
+    // (or a CI log) reads; the pointers are what they read next.
+    println!();
+    if failed == 0 {
+        println!(
+            "{}",
+            crate::cli::output::CliOutput::success("All checks passed")
+        );
+    } else {
+        println!(
+            "{}",
+            crate::cli::output::CliOutput::error(&format!(
+                "{failed} check{} need{} attention",
+                if failed == 1 { "" } else { "s" },
+                if failed == 1 { "s" } else { "" },
+            ))
         );
     }
 
@@ -303,6 +339,7 @@ fn render_human(
 fn render_json(
     checks: &[Check],
     tools: &[crate::alphacode_app_core::bugbounty_doctor::ToolReport],
+    failed: usize,
 ) -> Result<()> {
     use serde_json::json;
 
@@ -335,6 +372,8 @@ fn render_json(
 
     let payload = json!({
         "version": crate::alphacode_build_meta::version(),
+        "ok": failed == 0,
+        "failed_checks": failed,
         "checks": rows,
         "recon_tools": tool_rows,
     });

@@ -221,6 +221,181 @@ impl Agent {
     /// route; other transient free-route failures get at most two recoveries.
     pub(crate) const MAX_FREE_POOL_RATE_LIMIT_RECOVERIES_PER_TURN: u32 = 1;
     pub(crate) const MAX_FREE_POOL_TRANSIENT_RECOVERIES_PER_TURN: u32 = 2;
+
+    /// How many times a turn may ask the model to perform an action it only
+    /// narrated.
+    ///
+    /// One is enough: the model either acts or says it cannot, and a second
+    /// attempt only risks a loop.
+    pub(crate) const MAX_STRANDED_INTENT_CONTINUATION_ATTEMPTS: u32 = 1;
+
+    /// True when the assistant's closing message narrates an action it never
+    /// performed.
+    ///
+    /// The harness treats "the model replied with text and stopped" as a
+    /// finished turn. That is right for an answer and wrong for an intent: a
+    /// model that says "Let me just add dispatch via sed." and then emits no
+    /// tool call has promised work it never did, and the session sits waiting
+    /// for the user to type something to unblock it — with the tool failures
+    /// that caused it still unexplained.
+    ///
+    /// The markers are deliberately narrow (first-person commitments) and the
+    /// message has to be short, so an ordinary closing sentence ("The fix is
+    /// in `src/lib.rs`.") never matches.
+    pub(crate) fn is_unfulfilled_intent_message(text: &str) -> bool {
+        let trimmed = text.trim();
+        // A promise is short. A long message is a report or an explanation,
+        // not something the model is about to do.
+        if trimmed.is_empty() || trimmed.chars().count() > 300 {
+            return false;
+        }
+        let lower = trimmed.to_lowercase();
+        const MARKERS: &[&str] = &["let me ", "i'll ", "i will ", "now i ", "next i ", "let's "];
+        MARKERS.iter().any(|marker| lower.contains(marker))
+    }
+
+    /// True when the closing message hands the decision back to the user
+    /// instead of making a call.
+    ///
+    /// The harness treats "the model replied with text and stopped" as a
+    /// finished turn. That is right for an answer and wrong for a *menu*:
+    /// a model that ends a turn with
+    ///
+    /// ```text
+    /// If you want me to continue the hunt, I can focus on:
+    /// • PAT scope enforcement
+    /// • Session/refresh token handling
+    /// Or I can switch back to the self-dev work. Which direction?
+    /// ```
+    ///
+    /// has not done the work and has not been blocked — it has parked the
+    /// decision on the user, and the session sits there until the user
+    /// answers. That is the "alphacode stops working and asks me a question"
+    /// report.
+    ///
+    /// The shape is deliberately narrow: a real answer never looks like this.
+    /// It takes a *menu* (two or more option lines) that ends with a question
+    /// back to the user. A sentence that merely mentions an option ("I can add
+    /// tests if you want") is not a detour, and a plain question ("which port
+    /// does it bind?") is an answer, not a stall.
+    pub(crate) fn is_user_question_detour(text: &str) -> bool {
+        let trimmed = text.trim();
+        if trimmed.is_empty() {
+            return false;
+        }
+        let lines: Vec<&str> = trimmed
+            .lines()
+            .map(str::trim)
+            .filter(|line| !line.is_empty())
+            .collect();
+        if lines.len() < 3 {
+            return false;
+        }
+        let option_lines = lines
+            .iter()
+            .filter(|line| {
+                let line = line.trim_start();
+                line.starts_with('•')
+                    || line.starts_with('·')
+                    || line.starts_with('◦')
+                    || line.starts_with("- ")
+                    || line.starts_with("* ")
+            })
+            .count();
+        if option_lines < 2 {
+            return false;
+        }
+        // The message has to end by asking the user to choose.
+        let last = lines[lines.len() - 1].to_lowercase();
+        last.contains('?')
+            || last.contains("which ")
+            || last.contains("let me know")
+            || last.contains("your call")
+    }
+
+    /// Ask the model to act instead of parking the decision on the user.
+    ///
+    /// The recovery for the turn dead-end where the model answers with a menu
+    /// of options and a "which one?" question, leaving the session idle.
+    ///
+    /// The continuation tells the model to pick the option the evidence
+    /// supports and continue, and to escalate only with a concrete blocker —
+    /// so a genuinely ambiguous request still gets a question, but a request
+    /// the agent can resolve on its own does not.
+    pub(crate) fn maybe_continue_user_question_detour(
+        &mut self,
+        visible_text: &str,
+        attempts: &mut u32,
+    ) -> Result<bool> {
+        if !Self::is_user_question_detour(visible_text) {
+            return Ok(false);
+        }
+        if *attempts >= Self::MAX_STRANDED_INTENT_CONTINUATION_ATTEMPTS {
+            logging::warn(
+                "Assistant offered a menu of options instead of acting; ending turn after one continuation attempt",
+            );
+            return Ok(false);
+        }
+        *attempts += 1;
+        logging::warn(&format!(
+            "Assistant offered a menu of options instead of acting; requesting continuation (attempt {attempts}/{})",
+            Self::MAX_STRANDED_INTENT_CONTINUATION_ATTEMPTS
+        ));
+        self.add_message(
+            Role::User,
+            vec![ContentBlock::Text {
+                text: "<system-reminder> You ended your turn by asking the user to choose between options instead of doing the work. Do not hand the decision back: pick the option the evidence already supports and continue with it. Only ask the user a question if you are genuinely blocked, and then state the single concrete blocker and what you need to unblock it. Do not repeat this message.</system-reminder>".to_string(),
+                cache_control: None,
+            }],
+        );
+        self.session.save()?;
+        Ok(true)
+    }
+
+    /// Ask the model to perform the action it narrated but did not perform.
+    ///
+    /// This is the recovery for the turn dead-end that used to leave the user
+    /// staring at "Let me just add dispatch via sed." with the agent waiting
+    /// for input.
+    ///
+    /// It only fires when the round the model was answering contained a
+    /// failed tool result. A turn whose tools succeeded and whose model
+    /// replied with a summary is a *finished* turn and must never be
+    /// continued — that would double the cost of every ordinary reply.
+    pub(crate) fn maybe_continue_stranded_intent(
+        &mut self,
+        visible_text: &str,
+        had_failed_tool_result: bool,
+        attempts: &mut u32,
+    ) -> Result<bool> {
+        if !had_failed_tool_result {
+            return Ok(false);
+        }
+        if !Self::is_unfulfilled_intent_message(visible_text) {
+            return Ok(false);
+        }
+        if *attempts >= Self::MAX_STRANDED_INTENT_CONTINUATION_ATTEMPTS {
+            logging::warn(&format!(
+                "Assistant narrated an action without a tool call after {attempts} continuation attempt(s); ending turn"
+            ));
+            return Ok(false);
+        }
+        *attempts += 1;
+        logging::warn(&format!(
+            "Assistant narrated an action without a tool call after a failed tool; requesting continuation (attempt {attempts}/{})",
+            Self::MAX_STRANDED_INTENT_CONTINUATION_ATTEMPTS
+        ));
+        self.add_message(
+            Role::User,
+            vec![ContentBlock::Text {
+                text: "<system-reminder> You said you were about to act but did not call any tool, so nothing happened. Perform the action now with a tool call, or — if it genuinely cannot be done — say so explicitly and explain why. Do not repeat this message.</system-reminder>".to_string(),
+                cache_control: None,
+            }],
+        );
+        self.session.save()?;
+        Ok(true)
+    }
+
     pub(crate) fn maybe_continue_empty_post_tool_response(
         &mut self,
         visible_text_empty: bool,
@@ -1022,7 +1197,7 @@ pub(crate) fn explain_hard_provider_error(error: &str) -> Option<String> {
                 "HTTP 400 (bad request): the provider rejected the request payload.\nCommon causes: unsupported model/parameter for this endpoint, or a malformed argument from a cut-off stream. Run `/doctor` to check endpoint configuration; retrying the same request will not help.".to_string()
             }
         }
-        401 => "HTTP 401 (unauthorized): the API key was rejected, expired, or is missing. Run `/login` or `/keys` to refresh credentials.".to_string(),
+        401 => explain_unauthorized(error, &lower),
         402 => "HTTP 402 (payment required): the account is out of credit-days or plan quota. Add your own provider key in `~/.alphacode/keys.toml` to bypass shared-key limits.".to_string(),
         403 => "HTTP 403 (forbidden): the upstream refuses this account or key for this model — usually region/permission restrictions or a blocked key.".to_string(),
         404 => "HTTP 404 (not found): no route for this model id on this endpoint. `/model` and pick an available model, or check the base URL in config.".to_string(),
@@ -1030,6 +1205,33 @@ pub(crate) fn explain_hard_provider_error(error: &str) -> Option<String> {
         _ => return None,
     };
     Some(format!("{explanation}\n\nUpstream says: {first_line}"))
+}
+
+/// Explain a 401.
+///
+/// The generic case is "the key was rejected". Some gateways say something
+/// more specific, and the difference matters to the user: AgentRouter (and
+/// the other new-api-style gateways) answer a key they do not recognise with
+/// `unauthorized_client_error` / "unauthorized client detected", which reads
+/// like a network or model problem but is purely an authentication problem —
+/// switching models or retrying cannot help, only a working key can.
+fn explain_unauthorized(error: &str, lower: &str) -> String {
+    if lower.contains("unauthorized_client_error") || lower.contains("unauthorized client detected")
+    {
+        let source = if lower.contains("agentrouter") {
+            "AgentRouter"
+        } else {
+            "The gateway"
+        };
+        return format!(
+            "HTTP 401 (unauthorized): {source} rejected this request as coming from an unauthorized client.\n\
+             The API key was not accepted — it is wrong, revoked, expired, or was issued for a different service.\n\
+             This is not a model problem: every model on this endpoint fails the same way, so retrying or switching models will not help.\n\
+             Create a fresh key (AgentRouter: https://agentrouter.org/console/token), store it with `/login` or `/keys`, and retry."
+        );
+    }
+    let _ = error;
+    "HTTP 401 (unauthorized): the API key was rejected, expired, or is missing. Run `/login` or `/keys` to refresh credentials.".to_string()
 }
 
 /// Does this error mean the gateway has no route for the model id itself?
@@ -1271,5 +1473,110 @@ mod provider_error_tests {
         assert!(contains_429_with_rate_limit("status: 429 throttled"));
         assert!(contains_429_with_rate_limit("status: 429 quota exceeded"));
         assert!(!contains_429_with_rate_limit("status: 429 moderation hit"));
+    }
+
+    /// A gateway that rejects the *client* (not the request) must not be
+    /// reported as a generic "key missing" hint: the actionable difference is
+    /// that no model on that endpoint will work and only a new key will.
+    #[test]
+    fn unauthorized_client_errors_get_a_client_rejected_hint() {
+        // The exact shape the OpenAI-compatible runtime produces.
+        let error = "HTTP 401 (unauthorized): the API key was rejected\n\nUpstream says: OpenAI-compatible chat request failed\n  endpoint: https://agentrouter.org/v1/chat/completions\n  model: glm-5.2\n  status: 401 Unauthorized\n  response: {\"error\":{\"message\":\"unauthorized client detected, contact support\"},\"message\":\"UNAUTHENTICATED\",\"success\":false,\"type\":\"unauthorized_client_error\"}";
+        let explanation = explain_hard_provider_error(error)
+            .expect("a 401 with a status must produce an explanation");
+        assert!(
+            explanation.contains("unauthorized client"),
+            "the hint must name the actual failure: {explanation}"
+        );
+        assert!(
+            explanation.contains("not a model problem"),
+            "the hint must say that switching models cannot help: {explanation}"
+        );
+        assert!(
+            explanation.contains("agentrouter.org/console/token"),
+            "the hint must point at the key issuer: {explanation}"
+        );
+    }
+
+    /// A plain 401 keeps the generic wording.
+    #[test]
+    fn plain_unauthorized_errors_keep_the_generic_hint() {
+        let error = "OpenAI-compatible chat request failed\n  endpoint: https://api.example.com/v1/chat/completions\n  status: 401 Unauthorized\n  response: {\"error\":{\"message\":\"invalid api key\"}}";
+        let explanation = explain_hard_provider_error(error)
+            .expect("a 401 with a status must produce an explanation");
+        assert!(
+            explanation.contains("Run `/login` or `/keys`"),
+            "the generic hint must stay actionable: {explanation}"
+        );
+        assert!(
+            !explanation.contains("not a model problem"),
+            "the generic hint must not claim model-independence: {explanation}"
+        );
+    }
+
+    #[test]
+    fn a_narrated_action_is_recognized_as_an_unfulfilled_intent() {
+        // This is the shape that used to dead-end a turn: the model said what
+        // it was about to do, emitted no tool call, and the session waited for
+        // the user.
+        assert!(Agent::is_unfulfilled_intent_message(
+            "Let me just add dispatch via sed."
+        ));
+        assert!(Agent::is_unfulfilled_intent_message(
+            "I'll add the dispatch entry now."
+        ));
+        assert!(Agent::is_unfulfilled_intent_message(
+            "Now I will patch the handler."
+        ));
+    }
+
+    #[test]
+    fn a_real_answer_is_not_an_unfulfilled_intent() {
+        assert!(!Agent::is_unfulfilled_intent_message(
+            "The fix is in src/lib.rs and the tests pass."
+        ));
+        assert!(!Agent::is_unfulfilled_intent_message("Done."));
+        assert!(!Agent::is_unfulfilled_intent_message(""));
+        assert!(!Agent::is_unfulfilled_intent_message(
+            "I could not reproduce the failure; the build passes on main."
+        ));
+    }
+
+    #[test]
+    fn a_long_message_is_a_report_not_a_promise() {
+        // A long message is an explanation or a report. Treating it as an
+        // unfulfilled intent would continue every ordinary long answer.
+        let long = format!("Let me explain what happened. {}", "detail ".repeat(80));
+        assert!(!Agent::is_unfulfilled_intent_message(&long));
+    }
+
+    /// The reported "alphacode stops and asks me a question" shape: a menu of
+    /// options that ends by handing the decision back to the user.
+    #[test]
+    fn a_menu_of_options_ending_in_a_question_is_a_detour() {
+        let text = "If you want me to continue the hunt, I can focus on:\n\n• PAT scope enforcement (can a PAT reach undeclared routes?)\n• Session/refresh token handling (replay window)\n• Quota/billing logic\n\nOr I can switch back to the alphacode self-dev work (builds/tests via bash). Which direction";
+        assert!(
+            Agent::is_user_question_detour(text),
+            "an option menu that ends in a question must be detected"
+        );
+    }
+
+    /// An ordinary answer must never be mistaken for a detour.
+    #[test]
+    fn ordinary_answers_are_not_detours() {
+        // A report with a single incidental mention of an option.
+        assert!(!Agent::is_user_question_detour(
+            "The fix is in `src/lib.rs`. I can add tests if you want."
+        ));
+        // A plain question is an answer, not a stall.
+        assert!(!Agent::is_user_question_detour(
+            "Which port does the server bind to? It binds to 7643."
+        ));
+        // A report with bullets but no question back to the user.
+        assert!(!Agent::is_user_question_detour(
+            "Summary:\n• added the retry\n• fixed the header\n\nAll tests pass."
+        ));
+        // Empty output.
+        assert!(!Agent::is_user_question_detour("   "));
     }
 }

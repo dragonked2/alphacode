@@ -515,15 +515,27 @@ pub const AGENTROUTER_PROFILE: OpenAiCompatibleProfile = OpenAiCompatibleProfile
     display_name: "AgentRouter",
     // OpenAI-compatible endpoint per https://agentrouter.org/docs/opencode.html.
     // Base URL includes `/v1`; the runtime appends `/chat/completions` and
-    // `/models`. Requires a bearer API key (prefixed `ak-`).
-    // Available models: gpt-5.5, gpt-5.6-sol, glm-5.2.
+    // `/models`. Requires a bearer API key (prefixed `sk-ar-`).
+    //
+    // The served catalog is dynamic: AgentRouter adds and retires models as
+    // upstream capacity changes, and a model id that is no longer served is
+    // rejected with 503 "no available channel" — not with an auth error. The
+    // list below mirrors the ids in the current docs, and `GET /v1/models`
+    // refreshes it once a key is configured.
+    //
+    // Model ids must match the pricing page exactly, including the hyphens.
+    //
+    // OpenAI protocol:   gpt-5.6-sol, gpt-6-astra
+    // Anthropic protocol: claude-opus-5, claude-opus-4-8
+    // Both protocols:     glm-5.3 (Zhipu), deepseek-v4-flash (DeepSeek)
+    //
     // For Claude models, use the Anthropic-compatible endpoint instead
     // (see AGENTROUTER_ANTHROPIC_LOGIN_PROVIDER).
     api_base: "https://agentrouter.org/v1",
     api_key_env: "AGENTROUTER_API_KEY",
     env_file: "agentrouter.env",
     setup_url: "https://agentrouter.org/console/token",
-    default_model: Some("gpt-5.5"),
+    default_model: Some("gpt-5.6-sol"),
     requires_api_key: true,
 };
 
@@ -1399,7 +1411,7 @@ pub const AGENTROUTER_LOGIN_PROVIDER: LoginProviderDescriptor = LoginProviderDes
     auth_state_key: LoginProviderAuthStateKey::OpenRouterLike,
     auth_status_method: "API key",
     aliases: &["agent-router", "agentrouter-org", "agentrouter-api"],
-    menu_detail: "API key (ak-...), GPT-5.5/5.6, GLM-5.2 via OpenAI-compatible",
+    menu_detail: "API key (sk-ar-...), GPT-5.6/Astra, GLM-5.3 via OpenAI-compatible",
     recommended: false,
     target: LoginProviderTarget::OpenAiCompatible(AGENTROUTER_PROFILE),
     order: LoginProviderSurfaceOrder::new(Some(39), Some(39), Some(39), Some(39), Some(39)),
@@ -1416,7 +1428,7 @@ pub const AGENTROUTER_ANTHROPIC_LOGIN_PROVIDER: LoginProviderDescriptor = LoginP
         "agentrouter-anthropic-api",
         "agent-router-anthropic",
     ],
-    menu_detail: "API key (ak-...), Claude Opus 4-6/4-7/4-8 via Anthropic API",
+    menu_detail: "API key (sk-ar-...), Claude Opus 5/4-8 via Anthropic API",
     recommended: false,
     target: LoginProviderTarget::AgentRouterAnthropic,
     order: LoginProviderSurfaceOrder::new(Some(40), Some(40), Some(40), Some(40), Some(40)),

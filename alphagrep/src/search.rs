@@ -5,9 +5,15 @@
 //! shelling out to an external binary. That keeps results deterministic, works
 //! on machines without ripgrep installed, and lets the caller receive plain
 //! `String` errors that the agent tool can surface verbatim.
+//!
+//! The tree walk stays serial so the file order is deterministic, but reading
+//! and scanning each file is independent work and runs on rayon's thread pool.
+//! The results are re-assembled in walk order, so the output is identical to
+//! the serial implementation's.
 
 use crate::cli::GrepArgs;
 use crate::fsutil::{self, SearchScope};
+use rayon::prelude::*;
 use regex::Regex;
 use serde::Serialize;
 use std::path::Path;
@@ -64,6 +70,51 @@ pub struct GrepResult {
     pub files_scanned: usize,
 }
 
+/// One file's scan outcome, produced independently by the parallel pass.
+struct FileScan {
+    /// Search-root-relative path.
+    path: String,
+    /// Kept matches, capped at [`MAX_MATCH_LINES_PER_FILE`].
+    matches: Vec<GrepMatch>,
+    /// Matches dropped from `matches` because of the per-file cap.
+    omitted: usize,
+    /// Matching lines in the file, including the ones dropped by the cap.
+    total: usize,
+}
+
+/// Read one file and collect its matches, or `None` when the file is
+/// unreadable, oversized, binary, or holds no match.
+fn scan_file(matcher: &Regex, file: &fsutil::WalkedFile) -> Option<FileScan> {
+    let text = fsutil::read_text(&file.absolute)?;
+    let mut matches = Vec::new();
+    let mut omitted = 0usize;
+    let mut total = 0usize;
+    for (index, line) in text.lines().enumerate() {
+        let Some(found) = matcher.find(line) else {
+            continue;
+        };
+        total += 1;
+        if matches.len() < MAX_MATCH_LINES_PER_FILE {
+            matches.push(GrepMatch {
+                line: index + 1,
+                column: found.start() + 1,
+                text: clip_line(line),
+            });
+        } else {
+            omitted += 1;
+        }
+    }
+    if total == 0 {
+        return None;
+    }
+    Some(FileScan {
+        path: file.relative.clone(),
+        matches,
+        omitted,
+        total,
+    })
+}
+
 /// Search `root` for the pattern in `args`.
 pub fn run_grep(root: &Path, args: &GrepArgs) -> Result<GrepResult, String> {
     let query = args.query.clone();
@@ -101,43 +152,31 @@ pub fn run_grep(root: &Path, args: &GrepArgs) -> Result<GrepResult, String> {
         files_scanned: 0,
     };
 
-    for file in fsutil::collect_files(&scope) {
-        result.files_scanned += 1;
-        let Some(text) = fsutil::read_text(&file.absolute) else {
-            continue;
-        };
-        let mut matches = Vec::new();
-        let mut omitted = 0usize;
-        let mut total = 0usize;
-        for (index, line) in text.lines().enumerate() {
-            let Some(found) = matcher.find(line) else {
-                continue;
-            };
-            total += 1;
-            if matches.len() < MAX_MATCH_LINES_PER_FILE {
-                matches.push(GrepMatch {
-                    line: index + 1,
-                    column: found.start() + 1,
-                    text: clip_line(line),
-                });
-            } else {
-                omitted += 1;
-            }
-        }
-        if total == 0 {
-            continue;
-        }
+    // The walk stays serial so the file order is deterministic.
+    let files = fsutil::collect_files(&scope);
+    result.files_scanned = files.len();
+
+    // Reading and scanning each file is independent work, so it runs on rayon's
+    // thread pool. `collect` keeps the walk order, and the re-assembly below
+    // re-applies the caps in that same order, so the result is identical to the
+    // serial implementation's.
+    let scans: Vec<Option<FileScan>> = files
+        .par_iter()
+        .map(|file| scan_file(&matcher, file))
+        .collect();
+
+    for scan in scans.into_iter().flatten() {
         if result.files.len() >= MAX_FILES_WITH_MATCHES {
             result.truncated = true;
-            result.omitted_matches += total;
+            result.omitted_matches += scan.total;
             continue;
         }
-        result.total_matches += total;
-        result.omitted_matches += omitted;
+        result.total_matches += scan.total;
+        result.omitted_matches += scan.omitted;
         result.files.push(GrepFile {
-            path: file.relative,
-            matches,
-            omitted,
+            path: scan.path,
+            matches: scan.matches,
+            omitted: scan.omitted,
         });
     }
     result.total_files = result.files.len();

@@ -432,13 +432,110 @@ fn extract_answer_text(payload: &[u8]) -> Option<String> {
 // --------------------------------------------------------------------------
 
 fn tls_config() -> Arc<tokio_rustls::rustls::ClientConfig> {
-    let mut roots = tokio_rustls::rustls::RootCertStore::empty();
-    roots.extend(webpki_roots::TLS_SERVER_ROOTS.iter().cloned());
-    let mut config = tokio_rustls::rustls::ClientConfig::builder()
-        .with_root_certificates(roots)
-        .with_no_client_auth();
-    config.alpn_protocols = vec![b"h2".to_vec()];
-    Arc::new(config)
+    // The config is per-turn before caching: rebuilding it cloned the
+    // full root store (≈200 certs) and re-ran the builder on every turn
+    // (audit H12). It is derived from static inputs, so compute it once.
+    static TLS_CONFIG: std::sync::OnceLock<Arc<tokio_rustls::rustls::ClientConfig>> =
+        std::sync::OnceLock::new();
+    TLS_CONFIG
+        .get_or_init(|| {
+            let mut roots = tokio_rustls::rustls::RootCertStore::empty();
+            roots.extend(webpki_roots::TLS_SERVER_ROOTS.iter().cloned());
+            let mut config = tokio_rustls::rustls::ClientConfig::builder()
+                .with_root_certificates(roots)
+                .with_no_client_auth();
+            config.alpn_protocols = vec![b"h2".to_vec()];
+            Arc::new(config)
+        })
+        .clone()
+}
+
+// === Reusable agent HTTP/2 connection (audit H12) ===
+//
+// The transport used to pay a fresh TCP connect + TLS handshake + HTTP/2
+// SETTINGS exchange on every turn. `h2::client::SendRequest` is designed for
+// reuse: one connection multiplexes many request streams, and cloning it is
+// cheap. The pool holds exactly one live connection; a turn takes it out,
+// probes it with `ready()` (a dead server-closed connection is detected), and
+// `H2Guard` hands it back when the turn ends. If anything fails en route the
+// connection is not returned and the next turn reconnects fresh.
+
+type AgentSendRequest = h2::client::SendRequest<bytes::Bytes>;
+
+static AGENT_H2_POOL: std::sync::OnceLock<tokio::sync::Mutex<Vec<AgentSendRequest>>> =
+    std::sync::OnceLock::new();
+
+fn agent_h2_pool() -> &'static tokio::sync::Mutex<Vec<AgentSendRequest>> {
+    AGENT_H2_POOL.get_or_init(|| tokio::sync::Mutex::new(Vec::with_capacity(1)))
+}
+
+/// Take the pooled connection out, if any. The caller either adopts it (via
+/// a guard) or lets it drop — a dropped `SendRequest` closes its stream; the
+/// connection task keeps running until the peer closes.
+async fn take_pooled_agent_h2() -> Option<AgentSendRequest> {
+    let mut pooled = agent_h2_pool().lock().await;
+    pooled.pop()
+}
+
+/// Establish a brand-new transport: TCP + TLS + HTTP/2, returning the ready
+/// sender and spawning the connection driver.
+async fn connect_agent_h2(host: &str) -> Result<AgentSendRequest> {
+    use h2::client;
+    use tokio_rustls::TlsConnector;
+
+    let tcp = tokio::net::TcpStream::connect((host, 443))
+        .await
+        .with_context(|| format!("Failed to connect to {host}:443"))?;
+    tcp.set_nodelay(true).ok();
+    let connector = TlsConnector::from(tls_config());
+    let server_name = tokio_rustls::rustls::pki_types::ServerName::try_from(host.to_string())
+        .context("Invalid Cursor agent host name")?;
+    let tls = connector
+        .connect(server_name, tcp)
+        .await
+        .context("TLS handshake with Cursor agent host failed")?;
+
+    let (h2, connection) = client::handshake(tls)
+        .await
+        .context("HTTP/2 handshake with Cursor agent host failed")?;
+    // Drive the connection in the background.
+    tokio::spawn(async move {
+        let _ = connection.await;
+    });
+    h2.ready().await.context("HTTP/2 connection not ready")
+}
+
+/// Returns a connection to the pool when the guard is dropped for any
+/// reason. `ready()` is re-probed by the next borrower, so a server-closed
+/// connection costs one failed probe, not one full reconnect per dead turn.
+struct H2Guard(Option<AgentSendRequest>);
+
+impl Drop for H2Guard {
+    fn drop(&mut self) {
+        if let Some(send) = self.0.take() {
+            let pool = agent_h2_pool();
+            tokio::spawn(async move {
+                pool.lock().await.push(send);
+            });
+        }
+    }
+}
+
+impl std::ops::Deref for H2Guard {
+    type Target = AgentSendRequest;
+    fn deref(&self) -> &Self::Target {
+        self.0
+            .as_ref()
+            .expect("connection not returned before drop")
+    }
+}
+
+impl std::ops::DerefMut for H2Guard {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        self.0
+            .as_mut()
+            .expect("connection not returned before drop")
+    }
 }
 
 /// Run one Cursor agent turn and forward assistant text as [`StreamEvent`]s.
@@ -448,10 +545,7 @@ pub async fn run_agent_turn(
     model: &str,
     tx: mpsc::Sender<Result<StreamEvent>>,
 ) -> Result<()> {
-    use h2::client;
     use http::{Method, Request};
-    use tokio_rustls::TlsConnector;
-
     let host = agent_host();
     let cwd = std::env::current_dir()
         .ok()
@@ -464,27 +558,21 @@ pub async fn run_agent_turn(
         }))
         .await;
 
-    // Establish TLS + HTTP/2.
-    let tcp = tokio::net::TcpStream::connect((host.as_str(), 443))
-        .await
-        .with_context(|| format!("Failed to connect to {host}:443"))?;
-    tcp.set_nodelay(true).ok();
-    let connector = TlsConnector::from(tls_config());
-    let server_name = tokio_rustls::rustls::pki_types::ServerName::try_from(host.clone())
-        .context("Invalid Cursor agent host name")?;
-    let tls = connector
-        .connect(server_name, tcp)
-        .await
-        .context("TLS handshake with Cursor agent host failed")?;
-
-    let (h2, connection) = client::handshake(tls)
-        .await
-        .context("HTTP/2 handshake with Cursor agent host failed")?;
-    // Drive the connection in the background.
-    let conn_task = tokio::spawn(async move {
-        let _ = connection.await;
-    });
-    let mut h2 = h2.ready().await.context("HTTP/2 connection not ready")?;
+    // Establish TLS + HTTP/2: reuse the pooled agent connection when one is
+    // available, otherwise connect fresh. The pooled connection is probed
+    // with `ready()` because a server-closed pooled connection fails here
+    // instead of corrupting the turn.
+    let h2 = match take_pooled_agent_h2().await {
+        // `SendRequest::ready()` consumes the sender and resolves to the
+        // sender once the connection can accept a request, so the pooled
+        // handle is probed here and the ready handle is what we keep.
+        Some(send) => match send.ready().await {
+            Ok(send) => send,
+            Err(_) => connect_agent_h2(&host).await?,
+        },
+        None => connect_agent_h2(&host).await?,
+    };
+    let mut h2 = H2Guard(Some(h2));
 
     let request_id = Uuid::new_v4().to_string();
     let request = Request::builder()
@@ -607,7 +695,6 @@ pub async fn run_agent_turn(
 
     let _ = stop_tx.send(());
     let _ = sender.await;
-    conn_task.abort();
 
     if let Some(err) = error_message {
         anyhow::bail!("Cursor agent stream error: {err}");

@@ -168,6 +168,72 @@ pub(super) fn print_tool_summary(tool: &ToolCall) {
     }
 }
 
+/// Maximum number of lines a headless tool-result preview shows.
+const TOOL_PREVIEW_MAX_LINES: usize = 8;
+
+/// Maximum number of characters a headless tool-result preview shows.
+const TOOL_PREVIEW_MAX_CHARS: usize = 2000;
+
+/// Render a tool result for the headless console.
+///
+/// The console used to print only the *first line* of a tool's output, so a
+/// result that had been truncated looked exactly like a complete one: the
+/// reader had no way to tell that the tool had produced more. The preview now
+/// shows a bounded slice of the output and states exactly how much was left
+/// out, so a truncated result is never mistaken for a complete one.
+pub(super) fn format_tool_output_preview(output: &str) -> String {
+    let trimmed = output.trim_end();
+    if trimmed.is_empty() {
+        return "(no output)".to_string();
+    }
+
+    let all_lines: Vec<&str> = trimmed.lines().collect();
+    let total_lines = all_lines.len();
+    let total_chars = trimmed.chars().count();
+
+    let mut preview = String::new();
+    let mut used_chars = 0usize;
+    let mut shown_lines = 0usize;
+
+    for line in &all_lines {
+        if shown_lines >= TOOL_PREVIEW_MAX_LINES || used_chars >= TOOL_PREVIEW_MAX_CHARS {
+            break;
+        }
+        let remaining = TOOL_PREVIEW_MAX_CHARS - used_chars;
+        let line_chars = line.chars().count();
+        let clipped = if line_chars > remaining {
+            crate::util::truncate_str(line, remaining).to_string()
+        } else {
+            (*line).to_string()
+        };
+        let clipped_chars = clipped.chars().count();
+        let line_was_clipped = clipped_chars < line_chars;
+        preview.push_str(&clipped);
+        used_chars += clipped_chars;
+        shown_lines += 1;
+        if line_was_clipped {
+            break;
+        }
+        if shown_lines < total_lines {
+            preview.push('\n');
+        }
+    }
+
+    let hidden_lines = total_lines.saturating_sub(shown_lines);
+    let hidden_chars = total_chars.saturating_sub(used_chars);
+    if hidden_lines > 0 || hidden_chars > 0 {
+        if !preview.is_empty() && !preview.ends_with('\n') {
+            preview.push('\n');
+        }
+        preview.push_str(&format!(
+            "… truncated: {hidden_lines} more line{}, {hidden_chars} more char{}",
+            if hidden_lines == 1 { "" } else { "s" },
+            if hidden_chars == 1 { "" } else { "s" },
+        ));
+    }
+    preview
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -197,5 +263,52 @@ mod tests {
         );
         assert!(capped.contains("Tool output truncated by alphacode"));
         assert!(capped.contains("tool `custom` produced"));
+    }
+
+    #[test]
+    fn tool_output_preview_shows_short_output_verbatim() {
+        let preview = format_tool_output_preview("done");
+        assert_eq!(preview, "done");
+        assert!(!preview.contains("truncated"));
+    }
+
+    #[test]
+    fn tool_output_preview_reports_empty_output() {
+        assert_eq!(format_tool_output_preview("   \n  "), "(no output)");
+    }
+
+    #[test]
+    fn tool_output_preview_states_how_much_was_left_out() {
+        // A truncated result must never look like a complete one: the reader
+        // has to be told that the tool produced more.
+        let output = (1..=40)
+            .map(|n| format!("line {n}"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        let preview = format_tool_output_preview(&output);
+        assert!(
+            preview.contains("truncated"),
+            "expected a truncation notice, got {preview:?}"
+        );
+        assert!(
+            preview.contains("more line"),
+            "expected the hidden line count, got {preview:?}"
+        );
+        assert!(
+            preview.lines().count() <= TOOL_PREVIEW_MAX_LINES + 1,
+            "the preview must stay bounded, got {} lines",
+            preview.lines().count()
+        );
+    }
+
+    #[test]
+    fn tool_output_preview_clips_a_single_long_line() {
+        let output = "x".repeat(TOOL_PREVIEW_MAX_CHARS * 2);
+        let preview = format_tool_output_preview(&output);
+        assert!(preview.contains("truncated"));
+        assert!(
+            preview.chars().count() < TOOL_PREVIEW_MAX_CHARS + 100,
+            "the preview must stay bounded"
+        );
     }
 }

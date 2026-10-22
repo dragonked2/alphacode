@@ -26,6 +26,14 @@ fn test_prompt_jump_ctrl_digit_is_recency_rank_in_app() {
     // Seed max scroll estimates and prompt positions before key handling.
     render_and_snap(&app, &mut terminal);
 
+    // The render records one position per user prompt, in document order.
+    let positions = crate::alphacode_tui::tui::ui::last_user_prompt_positions();
+    assert_eq!(
+        positions.len(),
+        6,
+        "the render should record one position per seeded prompt"
+    );
+
     let (prompt_up_code, prompt_up_mods) = prompt_up_key(&app);
     app.handle_key(prompt_up_code, prompt_up_mods).unwrap();
     assert!(app.scroll_offset > 0);
@@ -34,6 +42,7 @@ fn test_prompt_jump_ctrl_digit_is_recency_rank_in_app() {
     // second prompt in document order, always below the transcript top.
     app.handle_key(KeyCode::Char('5'), KeyModifiers::CONTROL)
         .unwrap();
+    assert_eq!(app.scroll_offset, positions[6 - 5]);
     assert!(app.scroll_offset > 0);
 }
 
@@ -349,6 +358,14 @@ fn test_remote_prompt_jump_ctrl_digit_is_recency_rank() {
     // Seed max scroll estimates and prompt positions before key handling.
     render_and_snap(&app, &mut terminal);
 
+    // The render records one position per user prompt, in document order.
+    let positions = crate::alphacode_tui::tui::ui::last_user_prompt_positions();
+    assert_eq!(
+        positions.len(),
+        6,
+        "the render should record one position per seeded prompt"
+    );
+
     let (prompt_up_code, prompt_up_mods) = prompt_up_key(&app);
     rt.block_on(app.handle_remote_key(prompt_up_code, prompt_up_mods, &mut remote))
         .unwrap();
@@ -358,6 +375,7 @@ fn test_remote_prompt_jump_ctrl_digit_is_recency_rank() {
     // second prompt in document order, always below the transcript top.
     rt.block_on(app.handle_remote_key(KeyCode::Char('5'), KeyModifiers::CONTROL, &mut remote))
         .unwrap();
+    assert_eq!(app.scroll_offset, positions[6 - 5]);
     assert!(app.scroll_offset > 0);
 }
 

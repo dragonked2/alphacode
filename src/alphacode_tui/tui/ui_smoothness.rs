@@ -27,30 +27,23 @@ fn recorder() -> &'static Mutex<AnchorStabilityRecorder> {
 /// Hash one buffer row's cell symbols within `area`. Returns
 /// [`BLANK_ROW_HASH`] for visually blank rows.
 ///
-/// Optimized to minimize per-cell overhead: uses a fast inline hasher
-/// and early-exits on the first non-blank cell to avoid redundant
-/// blank checks.
+/// Optimized to minimize per-cell overhead: a buffer row is stored
+/// contiguously, so the row is sliced directly and fully-blank rows are
+/// detected in a first pass that skips hashing entirely — only one scan
+/// (plus one trim call per blank cell) is paid for those.
 fn hash_row(buffer: &Buffer, area: Rect, y: u16) -> u64 {
     use std::hash::{Hash, Hasher};
+    let row_start = buffer.index_of(area.left(), y);
+    let cells = &buffer.content[row_start..row_start + area.width as usize];
+    // Fast path: a fully blank row needs no hasher work at all.
+    if cells.iter().all(|cell| cell.symbol().trim().is_empty()) {
+        return BLANK_ROW_HASH;
+    }
     let mut hasher = std::collections::hash_map::DefaultHasher::new();
-    let mut has_content = false;
-    let left = area.left();
-    let right = area.right();
-    for x in left..right {
-        if let Some(cell) = buffer.cell((x, y)) {
-            let symbol = cell.symbol();
-            // Fast path: skip blank checks once we've found any content
-            if !has_content {
-                has_content = !symbol.trim().is_empty();
-            }
-            symbol.hash(&mut hasher);
-        }
+    for cell in cells {
+        cell.symbol().hash(&mut hasher);
     }
-    if has_content {
-        hasher.finish()
-    } else {
-        BLANK_ROW_HASH
-    }
+    hasher.finish()
 }
 
 /// Build an [`AnchorFrame`] from a rendered buffer region. Shared by the live

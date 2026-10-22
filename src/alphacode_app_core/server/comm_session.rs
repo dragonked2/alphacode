@@ -397,6 +397,24 @@ fn resolve_swarm_spawn_selection(
     }
 }
 
+/// Whether a resolved swarm selection would spawn on a *different* route
+/// than the coordinator's own authenticated one. Only then is it meaningful
+/// to re-spawn on the coordinator's route when the requested one fails
+/// (audit S2): retrying the same route would just fail again.
+fn swarm_spawn_differs_from_coordinator(
+    selection: &SwarmSpawnSelection,
+    coordinator: &CoordinatorSpawnIdentity,
+) -> bool {
+    let same_model = match (selection.model.as_deref(), coordinator.model.as_deref()) {
+        (Some(a), Some(b)) => a == b,
+        (None, None) => true,
+        _ => false,
+    };
+    !(same_model
+        && selection.provider_key == coordinator.provider_key
+        && selection.route_api_method == coordinator.route_api_method)
+}
+
 fn persist_headed_startup_message(session_id: &str, message: &str) {
     crate::logging::info(&format!(
         "Headed spawn: persisting startup submission for {session_id} (chars={}) to client-input handoff file",
@@ -660,7 +678,7 @@ pub(super) async fn spawn_swarm_agent(
             } else {
                 "create_session".to_string()
             };
-            create_headless_session(
+            let headless_result = create_headless_session(
                 sessions,
                 global_session_id,
                 provider_template,
@@ -690,7 +708,73 @@ pub(super) async fn spawn_swarm_agent(
                     })
                     .map(|session_id| (session_id, true))
                     .ok_or_else(|| anyhow::anyhow!("Failed to parse spawned session id"))
-            })
+            });
+
+            // Degraded-mode fallback (audit S2): a worker model that cannot
+            // spawn on its own route (unauthenticated provider, unresolvable
+            // model id, a route quirk) used to abort the entire fan-out, so a
+            // coordinator asking for four workers could end up with zero
+            // findings and no member. When the requested worker model is not
+            // the coordinator's own, retry the spawn once on the coordinator's
+            // authenticated route and report the degraded member.
+            if headless_result.is_err()
+                && swarm_spawn_differs_from_coordinator(&selection, &coordinator)
+            {
+                crate::logging::warn(&format!(
+                    "Swarm worker spawn failed on model {:?} ({:?}); retrying on the coordinator's authenticated route",
+                    spawn_model,
+                    headless_result.as_ref().err().map(|e| format!("{e:#}"))
+                ));
+                let fallback_result = create_headless_session(
+                    sessions,
+                    global_session_id,
+                    provider_template,
+                    &cmd,
+                    swarm_members,
+                    swarms_by_id,
+                    swarm_coordinators,
+                    swarm_plans,
+                    soft_interrupt_queues,
+                    coordinator_is_canary,
+                    coordinator.model.clone(),
+                    coordinator.provider_key.clone(),
+                    coordinator.route_api_method.clone(),
+                    spawn_effort.clone(),
+                    Some(Arc::clone(mcp_pool)),
+                    Some(req_session_id.to_string()),
+                )
+                .await
+                .and_then(|result_json| {
+                    serde_json::from_str::<serde_json::Value>(&result_json)
+                        .ok()
+                        .and_then(|value| {
+                            value
+                                .get("session_id")
+                                .and_then(|session_id| session_id.as_str())
+                                .map(|session_id| session_id.to_string())
+                        })
+                        .map(|session_id| (session_id, true))
+                        .ok_or_else(|| anyhow::anyhow!("Failed to parse spawned session id"))
+                });
+                match fallback_result {
+                    Ok((session_id, true)) => {
+                        crate::logging::info(&format!(
+                            "Swarm worker spawned in degraded mode on the coordinator's model {:?} (requested {:?} could not spawn)",
+                            coordinator.model, spawn_model
+                        ));
+                        Ok((session_id, true))
+                    }
+                    Ok((session_id, false)) => {
+                        // The fallback spawn succeeded on the coordinator's
+                        // model without falling back — report it as a normal
+                        // spawn rather than a degraded one.
+                        Ok((session_id, false))
+                    }
+                    Err(fallback_err) => Err(headless_result.err().unwrap_or(fallback_err)),
+                }
+            } else {
+                headless_result
+            }
         }
     }?;
 

@@ -25,6 +25,7 @@ pub struct ContextSnapshot {
 
 pub mod backend;
 pub(crate) mod color_support;
+pub(crate) mod composer_token;
 mod core;
 pub(crate) mod fuzzy;
 // Terminal image display + metadata helpers now live in the dependency-free
@@ -65,6 +66,7 @@ mod stream_buffer;
 pub mod terminal_setup;
 pub mod test_harness;
 pub mod theme_detect;
+pub(crate) mod transcript_search;
 mod ui;
 mod ui_diff;
 pub mod ui_error_toast;
@@ -223,6 +225,14 @@ pub trait TuiState {
     /// Version counter for display_messages (monotonic, increments on mutation)
     fn display_messages_version(&self) -> u64;
     fn streaming_text(&self) -> &str;
+    /// Monotonic counter bumped on every mutation of [`Self::streaming_text`].
+    ///
+    /// The prepared-frame cache keys on the live stream. The counter answers
+    /// "did the stream change?" in O(1); the content fingerprint that backs it
+    /// covers mutations that bypass the counter.
+    fn streaming_text_version(&self) -> u64 {
+        0
+    }
     /// JSON payload for the pinned todo band rendered at the top of the chat
     /// viewport when `display.pin_todos` is enabled. `None` when the feature
     /// is off or the session has no todos.
@@ -233,6 +243,22 @@ pub trait TuiState {
     // ---- Input ----
     fn input(&self) -> &str;
     fn cursor_pos(&self) -> usize;
+    /// Byte range of the keyboard text selection in the composer, as
+    /// `(start, end)` with `start <= end`. `None` when nothing is selected.
+    ///
+    /// The renderer paints the selected range with the shared selection
+    /// highlight so the composer's keyboard selection looks exactly like the
+    /// mouse-driven one.
+    fn input_selection_range(&self) -> Option<(usize, usize)> {
+        None
+    }
+    /// Whether the caret sits inside an `@`-mention (a file reference).
+    ///
+    /// A mention is an explicit composer mode, like a slash command: the path
+    /// palette stays usable while a turn runs.
+    fn has_active_mention(&self) -> bool {
+        false
+    }
     /// A low-contrast suffix for a unique recent prompt that extends the
     /// current input. The renderer never commits this text to the composer.
     fn input_history_completion_suffix(&self, _max_width: usize) -> Option<String> {
@@ -343,6 +369,21 @@ pub trait TuiState {
     /// Snapshot of the Ctrl+R reverse prompt-history search overlay, or None
     /// when the overlay is closed.
     fn prompt_history_search(&self) -> Option<PromptHistorySearchView> {
+        None
+    }
+    /// Snapshot of the Ctrl+F find-in-page overlay, or None when it is closed.
+    ///
+    /// The renderer uses this to learn the query it has to search for; the
+    /// hit list itself lives in [`Self::transcript_search_index`].
+    fn transcript_search(&self) -> Option<TranscriptSearchView> {
+        None
+    }
+    /// Mutable handle to the renderer-owned transcript search index.
+    ///
+    /// The renderer scans the prepared transcript (the text the user actually
+    /// sees) and publishes the hits here, so the app can navigate to them and
+    /// the overlay can show the hit counter. `None` when no search is open.
+    fn transcript_search_index(&self) -> Option<&std::cell::RefCell<TranscriptSearchIndex>> {
         None
     }
     fn active_skill(&self) -> Option<String>;
@@ -518,6 +559,17 @@ pub trait TuiState {
     /// Render streaming text using incremental markdown renderer
     /// This is more efficient than re-rendering on every frame
     fn render_streaming_markdown(&self, width: usize) -> Vec<Line<'static>>;
+    /// Render streaming text, sharing the rendered lines via `Arc`.
+    ///
+    /// The default implementation deep-clones the lines, which is what
+    /// `render_streaming_markdown` does. Implementations that own an
+    /// incremental renderer should override this with
+    /// `renderer.update_shared(..)` so the per-tick `Vec<Line>` deep clone —
+    /// one clone of every `Span`/`String` in the rendered output, on every
+    /// streaming tick — is avoided.
+    fn render_streaming_markdown_shared(&self, width: usize) -> std::sync::Arc<Vec<Line<'static>>> {
+        std::sync::Arc::new(self.render_streaming_markdown(width))
+    }
     /// Whether centered mode is enabled
     fn centered_mode(&self) -> bool;
     /// Authentication status for all supported providers
@@ -1021,6 +1073,11 @@ pub struct PromptHistorySearchView {
     pub matches: Vec<String>,
     pub selected: usize,
 }
+
+pub use transcript_search::{
+    TranscriptSearchIndex, TranscriptSearchMatch, TranscriptSearchSignature, TranscriptSearchState,
+    TranscriptSearchView,
+};
 
 /// What the first-run onboarding welcome screen should render in its body,
 /// driven by the active onboarding flow phase. `Suggestions` is the default

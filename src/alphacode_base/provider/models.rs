@@ -1135,6 +1135,14 @@ pub fn provider_for_model_with_hint(
     }
 
     let model = model.trim();
+    // A model id is a single token. A string containing whitespace is a
+    // *display* string — e.g. the `"<model> via <provider>"` form that
+    // `list_models` used to print — and guessing a provider from its prefix
+    // routes the request to the wrong provider (audit finding C5). Refuse
+    // instead of silently misrouting.
+    if model.is_empty() || model.chars().any(char::is_whitespace) {
+        return None;
+    }
     if model.contains('@') {
         Some("openrouter")
     } else if crate::alphacode_provider_core::model_id::matches_known_model(

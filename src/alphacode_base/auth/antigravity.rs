@@ -139,11 +139,17 @@ pub fn tokens_path() -> Result<std::path::PathBuf> {
 pub fn load_tokens() -> Result<AntigravityTokens> {
     let path = tokens_path()?;
     if path.exists() {
-        crate::storage::harden_secret_file_permissions(&path);
-        return crate::storage::read_json(&path).map_err(|_| {
-            anyhow::anyhow!(
-                "No Antigravity tokens found. Run `alphacode login --provider antigravity`."
-            )
+        // Cache the parsed token so a request does not pay a stat +
+        // permission-harden + read + parse on every call. The cache checks
+        // the file's modification time and length, so an externally edited
+        // token file is still picked up.
+        return super::token_cache::load_cached(&path, || {
+            crate::storage::harden_secret_file_permissions(&path);
+            crate::storage::read_json(&path).map_err(|_| {
+                anyhow::anyhow!(
+                    "No Antigravity tokens found. Run `alphacode login --provider antigravity`."
+                )
+            })
         });
     }
 
@@ -162,7 +168,10 @@ pub fn load_tokens() -> Result<AntigravityTokens> {
 
 pub fn save_tokens(tokens: &AntigravityTokens) -> Result<()> {
     let path = tokens_path()?;
-    crate::storage::write_json_secret(&path, tokens)
+    let result = crate::storage::write_json_secret(&path, tokens);
+    // The cached copy is now stale.
+    super::token_cache::cache().invalidate(&path);
+    result
 }
 
 pub fn has_cached_auth() -> bool {

@@ -22,9 +22,15 @@ impl SkillTool {
     /// session's project-local overlay resolved from the tool context working
     /// dir (issue #457). The overlay is read fresh from disk so edits are
     /// visible without daemon restarts and never enter the shared registry.
-    async fn effective_registry(&self, working_dir: Option<&std::path::Path>) -> SkillRegistry {
+    async fn effective_registry(
+        &self,
+        working_dir: Option<&std::path::Path>,
+    ) -> std::sync::Arc<SkillRegistry> {
         let global = self.registry.read().await;
-        SkillRegistry::effective_for_working_dir(&global, working_dir)
+        // Shared, cached composed registry: a hit is an `Arc::clone` (audit
+        // M23) instead of overriding a full registry copy plus a project
+        // skill-directory rescan.
+        SkillRegistry::effective_for_working_dir_cached(&global, working_dir)
     }
 }
 
@@ -267,6 +273,9 @@ impl SkillTool {
             Ok(true) => {
                 // Re-read to get updated info
                 if let Some(skill) = registry.get(&name) {
+                    // The composed effective-registry cache must not serve a
+                    // registry that still holds the pre-reload skill body.
+                    SkillRegistry::invalidate_effective_cache();
                     Ok(ToolOutput::new(format!(
                         "Reloaded skill '{}'\n\nDescription: {}\nPath: {}",
                         name,
@@ -306,6 +315,9 @@ impl SkillTool {
             let mut registry = self.registry.write().await;
             registry.reload_global()
         };
+        // The composed effective-registry cache must not serve the pre-reload
+        // composition once the global registry has been replaced.
+        SkillRegistry::invalidate_effective_cache();
 
         match reloaded {
             Ok(global_count) => {

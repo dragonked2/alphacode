@@ -667,9 +667,16 @@ fn command_cell_at(
         }
         if let Some(byte_index) = line.find(command) {
             let after = &line[byte_index + command.len()..];
-            let is_suggestion_row = after
-                .strip_prefix("  ")
-                .is_some_and(|desc| desc.starts_with(|c: char| !c.is_whitespace()));
+            // A suggestion row is the command followed by whitespace and then
+            // its description. The description column is padded so the
+            // descriptions line up, so the gap is "whitespace, then
+            // non-whitespace" rather than an exact two-space run.
+            //
+            // The whitespace check matters: without it a command that is a
+            // prefix of another command (looking for `/con` and finding
+            // `/config`) would match the wrong row.
+            let is_suggestion_row = after.chars().next().is_some_and(char::is_whitespace)
+                && after.trim_start().starts_with(|c: char| !c.is_whitespace());
             if is_suggestion_row {
                 // `String::find` returns a UTF-8 byte offset, while Ratatui's
                 // buffer is indexed by terminal columns. The `▸` selection

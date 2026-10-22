@@ -107,8 +107,8 @@ pub fn provider_key(provider: ActiveProvider) -> &'static str {
 
 pub fn provider_from_model_key(key: &str) -> Option<ActiveProvider> {
     match key {
-        "claude" => Some(ActiveProvider::Claude),
-        "openai" => Some(ActiveProvider::OpenAI),
+        "claude" | "claude-oauth" | "claude-api" => Some(ActiveProvider::Claude),
+        "openai" | "openai-oauth" | "openai-api" => Some(ActiveProvider::OpenAI),
         "copilot" => Some(ActiveProvider::Copilot),
         "antigravity" => Some(ActiveProvider::Antigravity),
         "gemini" => Some(ActiveProvider::Gemini),

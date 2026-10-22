@@ -2378,3 +2378,51 @@ fn test_rewind_targets_match_rendered_transcript_numbering() {
         "sanity: raw stored counting diverges, which is why rewind must not use it"
     );
 }
+
+/// C2 regression: releasing the provider-message cache must keep the
+/// per-message prefix hashes.
+///
+/// The prefix hashes are what the client-side cache tracker compares against.
+/// The previous implementation cleared them together with the message
+/// bodies, so the next request rebuilt the whole hash chain (one JSON
+/// serialization + hash per message) and the tracker could not distinguish a
+/// real prefix change from a released cache.
+#[test]
+fn releasing_provider_messages_cache_preserves_prefix_hashes() {
+    let mut session = Session::create_with_id(
+        "session_release_preserves_prefix_hashes".to_string(),
+        None,
+        Some("Prefix hash retention".to_string()),
+    );
+    session.add_message(
+        Role::User,
+        vec![ContentBlock::Text {
+            text: "first".to_string(),
+            cache_control: None,
+        }],
+    );
+    session.add_message(
+        Role::Assistant,
+        vec![ContentBlock::Text {
+            text: "second".to_string(),
+            cache_control: None,
+        }],
+    );
+
+    let hashes_before = session.provider_message_prefix_hashes().to_vec();
+    assert_eq!(hashes_before.len(), 2, "sanity: both messages are hashed");
+
+    session.release_provider_messages_cache();
+
+    let hashes_after = session.provider_message_prefix_hashes().to_vec();
+    assert_eq!(
+        hashes_after, hashes_before,
+        "releasing the message bodies must not invalidate the prefix hashes"
+    );
+
+    // The bodies must be rebuilt to exactly the same content.
+    let rebuilt = session.provider_messages().to_vec();
+    assert_eq!(rebuilt.len(), 2);
+    assert_eq!(rebuilt[0].content.len(), 1);
+    assert_eq!(rebuilt[1].content.len(), 1);
+}

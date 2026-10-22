@@ -545,15 +545,24 @@ pub fn openai_compatible_profile_static_models(profile: OpenAiCompatibleProfile)
             push("kimi-k2.5");
             push("MiniMax-M2.5");
         }
+        // AgentRouter's served catalog is dynamic (models come and go with
+        // upstream capacity), so these ids mirror the current docs and the
+        // live `GET /v1/models` refresh takes over once a key is configured.
+        // A model id that is no longer served is rejected with 503 "no
+        // available channel", not with an auth error.
+        // See https://agentrouter.org/docs/opencode.html.
         "agentrouter" => {
             push("gpt-5.6-sol");
-            push("gpt-5.5");
-            push("glm-5.2");
+            push("gpt-6-astra");
+            push("glm-5.3");
+            push("deepseek-v4-flash");
         }
         "agentrouter-anthropic" => {
-            push("claude-opus-4-6");
-            push("claude-opus-4-7");
+            push("claude-opus-5");
             push("claude-opus-4-8");
+            // GLM and DeepSeek are served over the Anthropic protocol too.
+            push("glm-5.3");
+            push("deepseek-v4-flash");
         }
         "tokenrouter" => {
             push("qwen/qwen3.8-max-free");

@@ -111,6 +111,16 @@ impl Embedder {
         logging::warn("embedding load requested but embeddings feature is disabled");
         anyhow::bail!("Embeddings feature not compiled in this build")
     }
+
+    /// Batched embedding stub.
+    ///
+    /// Mirrors the real backend's `embed_batch` signature so callers compile
+    /// unchanged with or without the `embeddings` feature. Like `load`, it
+    /// always fails in a build without the feature.
+    pub fn embed_batch(&self, _texts: &[&str]) -> Result<Vec<EmbeddingVec>> {
+        logging::warn("batched embedding request rejected because embeddings feature is disabled");
+        anyhow::bail!("Embeddings feature not compiled in this build")
+    }
 }
 
 pub fn get_embedder() -> Result<std::sync::Arc<Embedder>> {

@@ -1,7 +1,7 @@
 use anyhow::Result;
 use std::path::{Path, PathBuf};
 
-use super::PersistVectorMode;
+use super::ProviderMessagesCacheMode;
 use crate::storage;
 
 pub(crate) fn session_path_in_dir(base: &std::path::Path, session_id: &str) -> PathBuf {
@@ -14,11 +14,13 @@ pub(super) fn file_len_or_zero(path: &Path) -> u64 {
     std::fs::metadata(path).map(|meta| meta.len()).unwrap_or(0)
 }
 
-pub(super) fn persist_vector_mode_label(mode: PersistVectorMode) -> &'static str {
+/// Human-readable label for the provider-message cache mode.
+pub(super) fn provider_messages_cache_mode_label(mode: ProviderMessagesCacheMode) -> &'static str {
     match mode {
-        PersistVectorMode::Clean => "clean",
-        PersistVectorMode::Append => "append",
-        PersistVectorMode::Full => "full",
+        ProviderMessagesCacheMode::Clean => "clean",
+        ProviderMessagesCacheMode::Append => "append",
+        ProviderMessagesCacheMode::Full => "full",
+        ProviderMessagesCacheMode::Bodies => "bodies",
     }
 }
 

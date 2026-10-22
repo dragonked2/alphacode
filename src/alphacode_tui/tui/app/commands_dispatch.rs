@@ -17,6 +17,7 @@ use super::App;
 /// the local and remote entry points.
 pub(super) fn dispatch_local_command(app: &mut App, trimmed: &str) -> bool {
     super::commands::handle_cancel_command(app, trimmed)
+        || super::commands::handle_find_command(app, trimmed)
         || super::commands::handle_help_command(app, trimmed)
         || super::commands::handle_keys_command(app, trimmed)
         || super::commands::handle_ssh_command(app, trimmed)

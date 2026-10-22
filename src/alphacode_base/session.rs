@@ -50,7 +50,9 @@ pub use crash::{
     CrashedSessionsInfo, detect_crashed_sessions, find_recent_crashed_sessions,
     find_session_by_name_or_id, recover_crashed_sessions, recover_crashed_sessions_by_ids,
 };
-use journal::{PersistVectorMode, SessionJournalMeta, SessionPersistState};
+use journal::{
+    PersistVectorMode, ProviderMessagesCacheMode, SessionJournalMeta, SessionPersistState,
+};
 pub use maintenance::prune_old_session_backups;
 pub use memory_profile::SessionMemoryProfileSnapshot;
 use memory_profile::{
@@ -67,7 +69,7 @@ pub use render::{
 pub use storage_paths::session_journal_path_from_snapshot;
 #[cfg(test)]
 pub(crate) use storage_paths::session_path_in_dir;
-use storage_paths::{estimate_json_bytes, persist_vector_mode_label};
+use storage_paths::{estimate_json_bytes, provider_messages_cache_mode_label};
 pub use storage_paths::{session_exists, session_journal_path, session_path};
 
 fn stored_messages_to_messages(messages: &[StoredMessage]) -> Vec<Message> {
@@ -182,7 +184,7 @@ pub struct Session {
     #[serde(skip)]
     provider_messages_cache_len: usize,
     #[serde(skip)]
-    provider_messages_cache_mode: PersistVectorMode,
+    provider_messages_cache_mode: ProviderMessagesCacheMode,
     #[serde(skip)]
     memory_profile_cache: SessionMemoryProfileCache,
     #[serde(skip)]
@@ -463,7 +465,7 @@ impl Session {
             "provider_messages_cache": {
                 "count": self.provider_messages_cache.len(),
                 "source_len": self.provider_messages_cache_len,
-                "mode": persist_vector_mode_label(self.provider_messages_cache_mode),
+                "mode": provider_messages_cache_mode_label(self.provider_messages_cache_mode),
                 "json_bytes": provider_messages_cache_json_bytes,
                 "memory": provider_cache_stats.to_json(),
             },
@@ -514,6 +516,20 @@ impl Session {
     }
 
     fn reset_persist_state(&mut self, snapshot_exists: bool) {
+        self.reset_persist_state_with_meta(snapshot_exists, self.journal_meta());
+    }
+
+    /// Reset the persist state, reusing an already-built [`SessionJournalMeta`].
+    ///
+    /// `journal_meta()` clones a dozen owned `String`s. [`Session::save`] builds
+    /// the meta once and then used to call `reset_persist_state`, which built
+    /// an *identical* meta a second time — two full sets of string clones per
+    /// save, on a path that runs after every tool result. Passing the value in
+    /// removes the duplicate.
+    fn reset_persist_state_with_meta(&mut self, snapshot_exists: bool, meta: SessionJournalMeta) {
+        // Preserve the tracked journal size: a persist-state reset does not
+        // truncate the journal, so the byte count stays valid.
+        let journal_bytes = self.persist_state.journal_bytes;
         self.persist_state = SessionPersistState {
             snapshot_exists,
             messages_len: self.messages.len(),
@@ -524,7 +540,8 @@ impl Session {
             env_snapshots_mode: PersistVectorMode::Clean,
             memory_injections_mode: PersistVectorMode::Clean,
             replay_events_mode: PersistVectorMode::Clean,
-            last_meta: Some(self.journal_meta()),
+            last_meta: Some(meta),
+            journal_bytes,
         };
     }
 
@@ -532,7 +549,7 @@ impl Session {
         self.provider_messages_cache.clear();
         self.provider_message_prefix_hashes_cache.clear();
         self.provider_messages_cache_len = 0;
-        self.provider_messages_cache_mode = PersistVectorMode::Full;
+        self.provider_messages_cache_mode = ProviderMessagesCacheMode::Full;
         self.memory_profile_cache.provider_cache_count = 0;
         self.memory_profile_cache.provider_cache_json_bytes = 0;
         self.memory_profile_cache.provider_cache_stats = ContentBlockMemoryStats::default();
@@ -545,13 +562,25 @@ impl Session {
     /// Long-running server sessions otherwise keep two fully owned transcript
     /// copies while waiting on the network. Tool results and reasoning payloads
     /// can make that duplicate tens of MiB per active session.
+    ///
+    /// The **prefix hashes** are deliberately kept. They are one `u64` per
+    /// message (a few hundred bytes for a long history) and they are what the
+    /// client-side cache tracker compares against, so dropping them would
+    /// produce spurious `CLIENT_CACHE_VIOLATION` reports on the next request.
+    ///
+    /// The message **bodies** are dropped, but the cache is left in `Append`
+    /// mode rather than `Full`: the canonical history is append-only between
+    /// turns, so the next [`Session::provider_messages`] call re-derives only
+    /// the messages added since the last build instead of deep-cloning and
+    /// re-serializing the entire history. The previous code forced `Full`,
+    /// which made every API call pay O(history) deep clone + 2x JSON
+    /// serialization — the exact cost the cache exists to avoid.
     pub fn release_provider_messages_cache(&mut self) {
         self.provider_messages_cache.clear();
         self.provider_messages_cache.shrink_to(128);
-        self.provider_message_prefix_hashes_cache.clear();
-        self.provider_message_prefix_hashes_cache.shrink_to(128);
+        // Keep `provider_message_prefix_hashes_cache` intact.
         self.provider_messages_cache_len = 0;
-        self.provider_messages_cache_mode = PersistVectorMode::Full;
+        self.provider_messages_cache_mode = ProviderMessagesCacheMode::Bodies;
         self.memory_profile_cache.provider_cache_count = 0;
         self.memory_profile_cache.provider_cache_json_bytes = 0;
         self.memory_profile_cache.provider_cache_stats = ContentBlockMemoryStats::default();
@@ -572,6 +601,50 @@ impl Session {
             .merge_from(&summarize_blocks(&message.content));
         self.provider_messages_cache.push(message);
         self.provider_message_prefix_hashes_cache.push(prefix_hash);
+    }
+
+    /// Push a message body into the cache.
+    ///
+    /// The prefix hash is computed and appended only when one is not already
+    /// present for this position. The `Bodies` rebuild path reuses the
+    /// retained hash chain, so the hashes are already in the cache and must
+    /// not be pushed a second time. A message *beyond* the retained chain
+    /// (the history grew after the release) has no retained hash, so one is
+    /// computed and appended.
+    fn push_provider_message_cache_body(&mut self, message: Message, prefix_hash: Option<u64>) {
+        // Compute the hash before the body is moved into the cache.
+        let computed_hash = match prefix_hash {
+            Some(_) => None,
+            None => {
+                let message_hash = crate::message::stable_message_hash(&message);
+                Some(
+                    self.provider_message_prefix_hashes_cache
+                        .last()
+                        .copied()
+                        .map(|prev| crate::message::extend_stable_hash(prev, message_hash))
+                        .unwrap_or(message_hash),
+                )
+            }
+        };
+        self.memory_profile_cache.provider_cache_count += 1;
+        self.memory_profile_cache.provider_cache_json_bytes += estimate_json_bytes(&message);
+        self.memory_profile_cache
+            .provider_cache_stats
+            .merge_from(&summarize_blocks(&message.content));
+        self.provider_messages_cache.push(message);
+        match computed_hash {
+            Some(hash) => self.provider_message_prefix_hashes_cache.push(hash),
+            None => {
+                // The hash is already present in the retained chain; only the
+                // body is being restored. The retained chain must cover every
+                // body that has been pushed so far.
+                debug_assert!(
+                    self.provider_message_prefix_hashes_cache.len()
+                        >= self.provider_messages_cache.len(),
+                    "retained prefix hashes must cover every rebuilt body"
+                );
+            }
+        }
     }
 
     fn mark_memory_profile_dirty(&mut self) {
@@ -657,14 +730,24 @@ impl Session {
         if self.persist_state.messages_mode != PersistVectorMode::Full {
             self.persist_state.messages_mode = PersistVectorMode::Append;
         }
-        if self.provider_messages_cache_mode != PersistVectorMode::Full {
-            self.provider_messages_cache_mode = PersistVectorMode::Append;
+        // `Bodies` means "the bodies were released, the prefix hashes are
+        // still valid". Appending a message keeps that property: the retained
+        // hashes still cover the prefix, and the new message's hash is
+        // computed during the rebuild. Switching to `Append` here would
+        // instead assume the cached bodies are present, which they are not.
+        if self.provider_messages_cache_mode != ProviderMessagesCacheMode::Full
+            && self.provider_messages_cache_mode != ProviderMessagesCacheMode::Bodies
+        {
+            self.provider_messages_cache_mode = ProviderMessagesCacheMode::Append;
         }
     }
 
     fn mark_messages_full_dirty(&mut self) {
         self.persist_state.messages_mode = PersistVectorMode::Full;
-        self.provider_messages_cache_mode = PersistVectorMode::Full;
+        self.provider_messages_cache_mode = ProviderMessagesCacheMode::Full;
+        // A full rebuild recomputes the whole prefix-hash chain, so the
+        // retained hashes from a previous build are no longer valid.
+        self.provider_message_prefix_hashes_cache.clear();
     }
 
     fn mark_env_snapshots_append_dirty(&mut self) {
@@ -761,7 +844,7 @@ impl Session {
             provider_messages_cache: Vec::new(),
             provider_message_prefix_hashes_cache: Vec::new(),
             provider_messages_cache_len: 0,
-            provider_messages_cache_mode: PersistVectorMode::Full,
+            provider_messages_cache_mode: ProviderMessagesCacheMode::Full,
             memory_profile_cache: SessionMemoryProfileCache::default(),
             memory_profile_dirty: false,
             is_self_dev_cache: None,
@@ -816,7 +899,7 @@ impl Session {
             provider_messages_cache: Vec::new(),
             provider_message_prefix_hashes_cache: Vec::new(),
             provider_messages_cache_len: 0,
-            provider_messages_cache_mode: PersistVectorMode::Full,
+            provider_messages_cache_mode: ProviderMessagesCacheMode::Full,
             memory_profile_cache: SessionMemoryProfileCache::default(),
             memory_profile_dirty: false,
             is_self_dev_cache: None,
@@ -1480,7 +1563,42 @@ request in this new forked session, using the inherited conversation only as con
     }
 
     pub fn provider_messages(&mut self) -> &[Message] {
-        let needs_full_rebuild = self.provider_messages_cache_mode == PersistVectorMode::Full
+        // `Bodies`: the message bodies were released to free memory, but the
+        // per-message prefix hashes were retained. Rebuild the bodies and
+        // reuse the retained hashes instead of recomputing the whole hash
+        // chain (one JSON serialization + hash per message) from scratch.
+        if self.provider_messages_cache_mode == ProviderMessagesCacheMode::Bodies {
+            // The retained hash chain covers the canonical history as of the
+            // last build. If the history has since been rewritten, the
+            // retained hashes are stale — `mark_messages_full_dirty` clears
+            // them, and a rewrite that grew the history keeps them valid only
+            // for the prefix they cover.
+            let retained = self.provider_message_prefix_hashes_cache.len();
+            self.provider_messages_cache.clear();
+            self.provider_messages_cache.reserve(self.messages.len());
+            for index in 0..self.messages.len() {
+                let message = self.messages[index].to_message();
+                // Reuse the retained hash for this position when it exists.
+                // The hash chain is *not* re-pushed: the retained entries are
+                // already in place and are in the same order as the rebuilt
+                // bodies.
+                let prefix_hash = self
+                    .provider_message_prefix_hashes_cache
+                    .get(index)
+                    .copied();
+                self.push_provider_message_cache_body(message, prefix_hash);
+            }
+            // Drop any retained hashes that no longer correspond to a message.
+            self.provider_message_prefix_hashes_cache
+                .truncate(self.messages.len());
+            let _ = retained;
+            self.provider_messages_cache_len = self.messages.len();
+            self.provider_messages_cache_mode = ProviderMessagesCacheMode::Clean;
+            return &self.provider_messages_cache;
+        }
+
+        let needs_full_rebuild = self.provider_messages_cache_mode
+            == ProviderMessagesCacheMode::Full
             || self.provider_messages_cache_len > self.messages.len();
 
         if needs_full_rebuild {
@@ -1494,11 +1612,11 @@ request in this new forked session, using the inherited conversation only as con
                 self.push_provider_message_cache_entry(message);
             }
             self.provider_messages_cache_len = self.messages.len();
-            self.provider_messages_cache_mode = PersistVectorMode::Clean;
+            self.provider_messages_cache_mode = ProviderMessagesCacheMode::Clean;
             return &self.provider_messages_cache;
         }
 
-        if self.provider_messages_cache_mode == PersistVectorMode::Append
+        if self.provider_messages_cache_mode == ProviderMessagesCacheMode::Append
             && self.provider_messages_cache_len < self.messages.len()
         {
             let appended_len = self.messages.len() - self.provider_messages_cache_len;
@@ -1510,7 +1628,7 @@ request in this new forked session, using the inherited conversation only as con
                 self.push_provider_message_cache_entry(message);
             }
             self.provider_messages_cache_len = self.messages.len();
-            self.provider_messages_cache_mode = PersistVectorMode::Clean;
+            self.provider_messages_cache_mode = ProviderMessagesCacheMode::Clean;
         }
 
         &self.provider_messages_cache

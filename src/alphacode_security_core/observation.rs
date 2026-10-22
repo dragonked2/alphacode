@@ -254,6 +254,11 @@ pub struct EvidenceGraph {
     pub interpretations: HashMap<String, Interpretation>,
     pub links: Vec<EvidenceLink>,
     pub seen_hashes: HashSet<u64>,
+    /// Dedup key set for `links` — avoids an O(n) linear scan per new link
+    /// on the evidence-ingest hot path. Kept as `serde(default)` so sessions
+    /// persisted by older builds still load.
+    #[serde(default)]
+    pub link_keys: HashSet<(String, String, bool)>,
     pub reliability: HashMap<String, EvidenceReliability>,
 }
 
@@ -333,12 +338,10 @@ impl EvidenceGraph {
         supports: bool,
         note: String,
     ) {
-        // Deduplicate identical links.
-        if self.links.iter().any(|l| {
-            l.evidence_id == evidence_id
-                && l.hypothesis_id == hypothesis_id
-                && l.supports == supports
-        }) {
+        // Deduplicate identical links in O(1) via the key set (the pre-set
+        // linear scan cost grew with every link added in a long session).
+        let key = (evidence_id.clone(), hypothesis_id.to_string(), supports);
+        if !self.link_keys.insert(key) {
             return;
         }
         self.links.push(EvidenceLink {

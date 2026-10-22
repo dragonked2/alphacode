@@ -10,16 +10,117 @@ use chrono::Local;
 use std::cell::RefCell;
 use std::collections::{BTreeMap, HashMap};
 use std::fs::{self, File, OpenOptions};
-use std::io::Write;
+use std::io::{BufWriter, Write};
 use std::path::PathBuf;
+use std::sync::Mutex;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
-static LOGGER: Mutex<Option<Logger>> = Mutex::new(None);
+/// Maximum number of live per-task logging contexts retained.
+///
+/// Every `async` task that logs creates a task id, and a task id is never
+/// reused. Without a bound, the map grows by one entry per task that ever
+/// logs, for the process lifetime (audit finding M25).
+const MAX_TASK_CONTEXTS: usize = 256;
+
+/// Age after which a rate-limit entry is considered stale and prunable.
+///
+/// Comfortably longer than any `min_interval` the callers use, so a live
+/// throttle is never dropped (audit finding M29).
+const RATE_LIMIT_PRUNE_AFTER: Duration = Duration::from_secs(3600);
+
+/// Maximum number of retained rate-limit entries. A second backstop behind
+/// the time-based prune, for the pathological case of many distinct keys
+/// inside one prune window.
+const MAX_RATE_LIMIT_ENTRIES: usize = 1024;
+
+/// A task's logging context plus the sequence number used for LRU eviction.
+struct TaskContextEntry {
+    context: LogContext,
+    /// Monotonic counter stamped on last use; the smallest value is evicted
+    /// when the map is at capacity.
+    last_used: u64,
+}
+
+/// Everything the logging path needs, behind **one** lock.
+///
+/// Previously the log path took three independent global mutexes — `LOGGER`
+/// (H7), `TASK_LOG_CONTEXTS` (M25), and `RATE_LIMITS` (M29) — none held
+/// together, so a rate-limited log line serialized across all three. Merging
+/// them into a single state means a log line takes **one** lock.
+struct LogState {
+    /// The active logger, if logging was initialized.
+    logger: Option<Logger>,
+    /// Per-task logging contexts, keyed by `tokio::task::Id`.
+    ///
+    /// The key is a `TaskId` (which is `Copy + Hash + Eq`) rather than the
+    /// rendered `String`, so the log path no longer allocates a `String` per
+    /// call just to look up its own context.
+    task_contexts: HashMap<tokio::task::Id, TaskContextEntry>,
+    /// Rate-limit state, keyed by the caller's rate key.
+    rate_limits: HashMap<String, RateLimitState>,
+}
+
+impl LogState {
+    fn new() -> Self {
+        Self {
+            logger: None,
+            task_contexts: HashMap::new(),
+            rate_limits: HashMap::new(),
+        }
+    }
+
+    /// Evict the least-recently-used task context if the map is at capacity.
+    fn evict_task_contexts_if_full(&mut self) {
+        while self.task_contexts.len() >= MAX_TASK_CONTEXTS {
+            let Some(oldest) = self
+                .task_contexts
+                .iter()
+                .min_by_key(|(_, entry)| entry.last_used)
+                .map(|(id, _)| *id)
+            else {
+                break;
+            };
+            self.task_contexts.remove(&oldest);
+        }
+    }
+
+    /// Drop rate-limit entries that are stale, and enforce the hard cap.
+    fn prune_rate_limits(&mut self, now: Instant) {
+        self.rate_limits.retain(|_, state| {
+            now.saturating_duration_since(state.last_emit) < RATE_LIMIT_PRUNE_AFTER
+        });
+        while self.rate_limits.len() > MAX_RATE_LIMIT_ENTRIES {
+            let Some(oldest) = self
+                .rate_limits
+                .iter()
+                .min_by_key(|(_, state)| state.last_emit)
+                .map(|(key, _)| key.clone())
+            else {
+                break;
+            };
+            self.rate_limits.remove(&oldest);
+        }
+    }
+}
+
+static LOG_STATE: std::sync::LazyLock<Mutex<LogState>> =
+    std::sync::LazyLock::new(|| Mutex::new(LogState::new()));
 static CLEANUP_STARTED: AtomicBool = AtomicBool::new(false);
-static TASK_LOG_CONTEXTS: OnceLock<Mutex<HashMap<String, LogContext>>> = OnceLock::new();
-static RATE_LIMITS: OnceLock<Mutex<HashMap<String, RateLimitState>>> = OnceLock::new();
+
+/// Sequence counter for task-context LRU ordering.
+static TASK_CONTEXT_CLOCK: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+/// Lock the log state, tolerating a poisoned mutex.
+///
+/// A panic inside a log call must not wedge the whole process, so the
+/// poisoned value is recovered rather than propagated.
+fn lock_log_state() -> std::sync::MutexGuard<'static, LogState> {
+    match LOG_STATE.lock() {
+        Ok(guard) => guard,
+        Err(poisoned) => poisoned.into_inner(),
+    }
+}
 
 /// Whether verbose diagnostics are enabled for this process.
 ///
@@ -113,8 +214,12 @@ pub fn set_provider_info(provider: &str, model: &str) {
     });
 }
 
-/// Get the current context as a prefix string
-fn context_prefix() -> String {
+/// Render the current context as a log-line prefix.
+///
+/// This reads the task-context map, so it takes the shared log-state lock.
+/// It must be called *before* the logger is locked, because both now live
+/// behind the same mutex.
+fn log_prefix() -> String {
     if let Some(task_ctx) = task_context_snapshot() {
         return context_prefix_for(&task_ctx);
     }
@@ -122,8 +227,13 @@ fn context_prefix() -> String {
     LOG_CONTEXT.with(|c| context_prefix_for(&c.borrow()))
 }
 
-fn current_task_id() -> Option<String> {
-    tokio::task::try_id().map(|id| id.to_string())
+/// The current task's id, if the caller is running inside a Tokio task.
+///
+/// `tokio::task::Id` is `Copy + Hash + Eq`, so it is used directly as the
+/// map key — the previous code rendered it to a `String` on every log line
+/// purely to look up its own context (audit finding M25).
+fn current_task_id() -> Option<tokio::task::Id> {
+    tokio::task::try_id()
 }
 
 fn with_task_context_mut(update: impl FnOnce(&mut LogContext)) -> bool {
@@ -131,21 +241,39 @@ fn with_task_context_mut(update: impl FnOnce(&mut LogContext)) -> bool {
         return false;
     };
 
-    let store = TASK_LOG_CONTEXTS.get_or_init(|| Mutex::new(HashMap::new()));
-    if let Ok(mut contexts) = store.lock() {
-        let ctx = contexts.entry(task_id).or_default();
-        update(ctx);
-        true
-    } else {
-        false
-    }
+    let mut state = lock_log_state();
+    state.evict_task_contexts_if_full();
+    let clock = TASK_CONTEXT_CLOCK.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let entry = state
+        .task_contexts
+        .entry(task_id)
+        .or_insert_with(|| TaskContextEntry {
+            context: LogContext::default(),
+            last_used: clock,
+        });
+    entry.last_used = clock;
+    update(&mut entry.context);
+    true
 }
 
 fn task_context_snapshot() -> Option<LogContext> {
     let task_id = current_task_id()?;
-    let store = TASK_LOG_CONTEXTS.get()?;
-    let contexts = store.lock().ok()?;
-    contexts.get(&task_id).cloned()
+    let mut state = lock_log_state();
+    let clock = TASK_CONTEXT_CLOCK.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let entry = state.task_contexts.get_mut(&task_id)?;
+    entry.last_used = clock;
+    Some(entry.context.clone())
+}
+
+/// Drop the current task's logging context.
+///
+/// Call this when a spawned task finishes so its context does not linger
+/// until the LRU bound evicts it (audit finding M25).
+pub fn clear_task_context() {
+    let Some(task_id) = current_task_id() else {
+        return;
+    };
+    lock_log_state().task_contexts.remove(&task_id);
 }
 
 /// Snapshot the current logging context for diagnostics that need stable,
@@ -182,9 +310,28 @@ fn context_prefix_for(ctx: &LogContext) -> String {
     }
 }
 
+/// The buffered log writer.
+///
+/// `std::fs::File` is **unbuffered**: every `write_all` is a `write(2)`
+/// syscall, and the old code issued one per log line while holding the
+/// global logger mutex. On a mechanical or network-backed disk that is
+/// 0.1-5ms per line, and it serializes every logging thread in the process
+/// for the duration of the disk write.
+///
+/// A `BufWriter` turns that into a memcpy into an in-process buffer, with
+/// the syscall amortized across many lines. The buffer is flushed on a
+/// background timer (see [`spawn_flush_thread`]) and explicitly on shutdown.
 pub struct Logger {
-    file: File,
+    file: BufWriter<File>,
+    /// Timestamp of the last flush, for the periodic-flush check.
+    last_flush: Instant,
 }
+
+/// How often buffered log lines are written to disk.
+const FLUSH_INTERVAL: Duration = Duration::from_millis(250);
+
+/// How much log data is buffered before an automatic flush is forced.
+const FLUSH_BUFFER_BYTES: usize = 64 * 1024;
 
 fn log_dir() -> Option<PathBuf> {
     crate::alphacode_storage::logs_dir().ok()
@@ -205,33 +352,59 @@ impl Logger {
             .open(&path)
             .ok()?;
 
-        Some(Self { file })
+        Some(Self {
+            file: BufWriter::with_capacity(FLUSH_BUFFER_BYTES, file),
+            last_flush: Instant::now(),
+        })
     }
 
-    fn write(&mut self, level: &str, message: &str) {
+    /// Write one log line using an already-rendered context prefix.
+    ///
+    /// The prefix is rendered by the caller (`log_prefix()`) *before* the
+    /// shared log-state lock is taken. Rendering it here would re-enter the
+    /// lock that owns the task-context map and deadlock, because the logger
+    /// and the context map now share a single mutex (audit finding M25).
+    fn write_with_prefix(&mut self, level: &str, message: &str, prefix: &str) {
         let timestamp = Local::now().format("%Y-%m-%d %H:%M:%S%.3f");
-        let ctx = context_prefix();
-        let line = format!("[{}] [{}] {}{}\n", timestamp, level, ctx, message);
+        let line = format!("[{}] [{}] {}{}\n", timestamp, level, prefix, message);
         if let Err(err) = self.file.write_all(line.as_bytes()) {
             eprintln!("alphacode logger write failed: {err}");
             return;
         }
+        // Flush when the interval elapsed. The check is a cheap `Instant`
+        // read, and it keeps the log's on-disk latency bounded to
+        // `FLUSH_INTERVAL` rather than growing without bound.
+        if self.last_flush.elapsed() >= FLUSH_INTERVAL {
+            self.flush();
+        }
+    }
+
+    /// Write buffered lines to disk.
+    fn flush(&mut self) {
         if let Err(err) = self.file.flush() {
             eprintln!("alphacode logger flush failed: {err}");
+            return;
         }
+        self.last_flush = Instant::now();
+    }
+}
+
+impl Drop for Logger {
+    fn drop(&mut self) {
+        // Best-effort final flush so the tail of the log is not lost when the
+        // process exits without an explicit shutdown.
+        let _ = self.file.flush();
     }
 }
 
 /// Initialize the logger (call once at startup)
 pub fn init() {
-    let mut guard = match LOGGER.lock() {
-        Ok(guard) => guard,
-        Err(poisoned) => poisoned.into_inner(),
-    };
-    if guard.is_none() {
-        *guard = Logger::new();
+    {
+        let mut state = lock_log_state();
+        if state.logger.is_none() {
+            state.logger = Logger::new();
+        }
     }
-    drop(guard);
 
     // Prune stale daily log files once per process, off the startup path so
     // disk I/O never blocks launch. cleanup_old_logs is scoped to our own
@@ -246,18 +419,49 @@ pub fn init() {
             .spawn(cleanup_old_logs)
             .ok();
     }
+
+    // Keep the log buffer from going stale during quiet periods.
+    spawn_flush_thread();
+}
+
+/// Flush any buffered log lines to disk.
+///
+/// Call this before a crash-sensitive path, before an explicit shutdown, or
+/// whenever the caller needs the log file to be up to date on disk.
+pub fn flush() {
+    let mut state = lock_log_state();
+    if let Some(logger) = state.logger.as_mut() {
+        logger.flush();
+    }
+}
+
+/// Background thread that flushes the log buffer on a fixed interval.
+///
+/// The buffer is also flushed inline whenever a write happens more than
+/// `FLUSH_INTERVAL` after the last flush, so this thread is a *bound* on
+/// staleness for quiet periods — not the only flush path. It exists so a
+/// single quiet second cannot leave the tail of the log unwritten.
+fn spawn_flush_thread() {
+    static FLUSH_THREAD_STARTED: AtomicBool = AtomicBool::new(false);
+    if !FLUSH_THREAD_STARTED.swap(true, Ordering::SeqCst) {
+        std::thread::Builder::new()
+            .name("alphacode-log-flush".to_string())
+            .spawn(|| {
+                loop {
+                    std::thread::sleep(FLUSH_INTERVAL);
+                    flush();
+                }
+            })
+            .ok();
+    }
 }
 
 /// Log an info message
-#[expect(
-    clippy::collapsible_if,
-    reason = "Logger lock + optional logger branching is intentionally straightforward"
-)]
 pub fn info(message: &str) {
-    if let Ok(mut guard) = LOGGER.lock() {
-        if let Some(logger) = guard.as_mut() {
-            logger.write("INFO", message);
-        }
+    let prefix = log_prefix();
+    let mut state = lock_log_state();
+    if let Some(logger) = state.logger.as_mut() {
+        logger.write_with_prefix("INFO", message, &prefix);
     }
 }
 
@@ -316,28 +520,20 @@ fn should_emit_throttled(key: &'static str) -> bool {
 }
 
 /// Log an error message
-#[expect(
-    clippy::collapsible_if,
-    reason = "Logger lock + optional logger branching is intentionally straightforward"
-)]
 pub fn error(message: &str) {
-    if let Ok(mut guard) = LOGGER.lock() {
-        if let Some(logger) = guard.as_mut() {
-            logger.write("ERROR", message);
-        }
+    let prefix = log_prefix();
+    let mut state = lock_log_state();
+    if let Some(logger) = state.logger.as_mut() {
+        logger.write_with_prefix("ERROR", message, &prefix);
     }
 }
 
 /// Log a warning message
-#[expect(
-    clippy::collapsible_if,
-    reason = "Logger lock + optional logger branching is intentionally straightforward"
-)]
 pub fn warn(message: &str) {
-    if let Ok(mut guard) = LOGGER.lock() {
-        if let Some(logger) = guard.as_mut() {
-            logger.write("WARN", message);
-        }
+    let prefix = log_prefix();
+    let mut state = lock_log_state();
+    if let Some(logger) = state.logger.as_mut() {
+        logger.write_with_prefix("WARN", message, &prefix);
     }
 }
 
@@ -354,16 +550,12 @@ pub fn truncate_for_log(value: &str, max_chars: usize) -> String {
 }
 
 /// Log a debug message (only if ALPHACODE_TRACE is set)
-#[expect(
-    clippy::collapsible_if,
-    reason = "Debug logging keeps env gating and logger access explicit"
-)]
 pub fn debug(message: &str) {
     if trace_enabled() {
-        if let Ok(mut guard) = LOGGER.lock() {
-            if let Some(logger) = guard.as_mut() {
-                logger.write("DEBUG", message);
-            }
+        let prefix = log_prefix();
+        let mut state = lock_log_state();
+        if let Some(logger) = state.logger.as_mut() {
+            logger.write_with_prefix("DEBUG", message, &prefix);
         }
     }
 }
@@ -432,22 +624,29 @@ pub fn event_rate_limited<K, V, I>(
     }
 
     let now = Instant::now();
-    let store = RATE_LIMITS.get_or_init(|| Mutex::new(HashMap::new()));
     let mut suppressed = 0;
-    let should_emit = match store.lock() {
-        Ok(mut guard) => match guard.get_mut(rate_key) {
-            Some(state) if now.duration_since(state.last_emit) < min_interval => {
-                state.suppressed = state.suppressed.saturating_add(1);
+    let should_emit = {
+        // The rate-limit state now lives in the shared log state, so a
+        // rate-limited log line takes **one** global lock instead of three
+        // (`LOGGER` + `TASK_LOG_CONTEXTS` + `RATE_LIMITS`).
+        let mut state = lock_log_state();
+        // Prune stale entries before inserting, so a never-reused key (an MCP
+        // server name, for example) cannot grow the map without bound
+        // (audit finding M29).
+        state.prune_rate_limits(now);
+        match state.rate_limits.get_mut(rate_key) {
+            Some(entry) if now.duration_since(entry.last_emit) < min_interval => {
+                entry.suppressed = entry.suppressed.saturating_add(1);
                 false
             }
-            Some(state) => {
-                suppressed = state.suppressed;
-                state.suppressed = 0;
-                state.last_emit = now;
+            Some(entry) => {
+                suppressed = entry.suppressed;
+                entry.suppressed = 0;
+                entry.last_emit = now;
                 true
             }
             None => {
-                guard.insert(
+                state.rate_limits.insert(
                     rate_key.to_string(),
                     RateLimitState {
                         last_emit: now,
@@ -456,8 +655,7 @@ pub fn event_rate_limited<K, V, I>(
                 );
                 true
             }
-        },
-        Err(_) => true,
+        }
     };
 
     if !should_emit {
@@ -475,10 +673,10 @@ pub fn event_rate_limited<K, V, I>(
 }
 
 fn write_level(level: LogLevel, message: &str) {
-    if let Ok(mut guard) = LOGGER.lock()
-        && let Some(logger) = guard.as_mut()
-    {
-        logger.write(level.as_str(), message);
+    let prefix = log_prefix();
+    let mut state = lock_log_state();
+    if let Some(logger) = state.logger.as_mut() {
+        logger.write_with_prefix(level.as_str(), message, &prefix);
     }
 }
 
@@ -571,18 +769,14 @@ pub fn auth_event(event: &str, provider: &str, fields: &[(&str, &str)]) {
         ));
     }
     let msg = format!("AUTH {}", parts.join(" "));
-    if let Ok(mut guard) = LOGGER.lock()
-        && let Some(logger) = guard.as_mut()
-    {
-        logger.write("AUTH", &msg);
+    let prefix = log_prefix();
+    let mut state = lock_log_state();
+    if let Some(logger) = state.logger.as_mut() {
+        logger.write_with_prefix("AUTH", &msg, &prefix);
     }
 }
 
 /// Log a tool call
-#[expect(
-    clippy::collapsible_if,
-    reason = "Logger lock + optional logger branching is intentionally straightforward"
-)]
 pub fn tool_call(name: &str, input: &str, output: &str) {
     let msg = format!(
         "TOOL[{}] input={} output={}",
@@ -590,24 +784,20 @@ pub fn tool_call(name: &str, input: &str, output: &str) {
         truncate(input, 200),
         truncate(output, 500)
     );
-    if let Ok(mut guard) = LOGGER.lock() {
-        if let Some(logger) = guard.as_mut() {
-            logger.write("TOOL", &msg);
-        }
+    let prefix = log_prefix();
+    let mut state = lock_log_state();
+    if let Some(logger) = state.logger.as_mut() {
+        logger.write_with_prefix("TOOL", &msg, &prefix);
     }
 }
 
 /// Log a crash/panic for auto-debug
-#[expect(
-    clippy::collapsible_if,
-    reason = "Logger lock + optional logger branching is intentionally straightforward"
-)]
 pub fn crash(error: &str, context: &str) {
     let msg = format!("CRASH: {} | Context: {}", error, context);
-    if let Ok(mut guard) = LOGGER.lock() {
-        if let Some(logger) = guard.as_mut() {
-            logger.write("CRASH", &msg);
-        }
+    let prefix = log_prefix();
+    let mut state = lock_log_state();
+    if let Some(logger) = state.logger.as_mut() {
+        logger.write_with_prefix("CRASH", &msg, &prefix);
     }
 }
 

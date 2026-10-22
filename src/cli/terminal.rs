@@ -175,6 +175,9 @@ pub fn install_panic_hook() {
 
     panic::set_hook(Box::new(move |info| {
         restore_terminal_after_failed_init();
+        // Flush the buffered log before the default hook prints the panic, so
+        // the crash context is on disk even if the process aborts right after.
+        crate::alphacode_logging::flush();
         default_hook(info);
 
         if let Some(session_id) = get_current_session() {
@@ -269,12 +272,39 @@ fn crash_resume_hint_lines(
     }
 }
 
-fn init_tui_terminal(inherited_terminal: bool) -> Result<ratatui::DefaultTerminal> {
-    if !io::stdin().is_terminal() || !io::stdout().is_terminal() {
-        return Err(anyhow!(
-            "alphacode TUI requires an interactive terminal (stdin/stdout must be a TTY)"
-        ));
+/// Fail fast when the process cannot host the TUI.
+///
+/// The TUI needs a real terminal on both ends: stdin for keystrokes and
+/// stdout for the frame. A launch that has either one redirected (a pipe, a
+/// file, `NUL`, a CI runner) cannot work, and the failure is much easier to
+/// diagnose when the message says *which* end is broken.
+///
+/// This runs before the background server is spawned: the server is a
+/// detached daemon, so a client that fails afterwards would leave it running
+/// with nobody to talk to it.
+pub fn ensure_interactive_terminal() -> Result<()> {
+    let stdin_is_tty = io::stdin().is_terminal();
+    let stdout_is_tty = io::stdout().is_terminal();
+    if stdin_is_tty && stdout_is_tty {
+        return Ok(());
     }
+
+    let broken = match (stdin_is_tty, stdout_is_tty) {
+        (false, true) => "stdin is not a terminal (keyboard input would be lost)",
+        (true, false) => "stdout is not a terminal (the UI would not be visible)",
+        (false, false) => {
+            "stdin and stdout are not terminals (keyboard input would be lost and the UI would not be visible)"
+        }
+        (true, true) => unreachable!("both streams are terminals, the check passed"),
+    };
+    Err(anyhow!(
+        "alphacode TUI requires an interactive terminal: {broken}.\n\
+         Run alphacode directly in a terminal window. Piping or redirecting its output (for example `alphacode | tee log`, `alphacode > out.txt`, or running it from a CI job or an IDE task) leaves no terminal to draw on."
+    ))
+}
+
+fn init_tui_terminal(inherited_terminal: bool) -> Result<ratatui::DefaultTerminal> {
+    ensure_interactive_terminal()?;
 
     if inherited_terminal {
         init_tui_terminal_resume()

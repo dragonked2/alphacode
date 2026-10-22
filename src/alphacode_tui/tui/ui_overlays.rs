@@ -293,6 +293,7 @@ pub(super) fn draw_help_overlay(frame: &mut Frame, area: Rect, scroll: usize, ap
         "/help <command>",
         "Show details for one command",
     ));
+    lines.push(help_entry("/find [text]", "Find text in the transcript"));
     lines.push(help_entry("/model", "List or switch models"));
     lines.push(help_entry("/model <name>", "Switch to a different model"));
     lines.push(help_entry(
@@ -519,6 +520,11 @@ pub(super) fn draw_help_overlay(frame: &mut Frame, area: Rect, scroll: usize, ap
     // The sections above are hand-curated for ordering, but they drift as
     // commands are added. Anything registered and not already shown gets listed
     // here so no working command is invisible in /help.
+    //
+    // The comparison is on the *first token* of the command name on both
+    // sides: a curated row may spell the syntax as "/find [text]" while the
+    // registry calls it "/find", and comparing the whole string would list the
+    // command twice.
     let shown: std::collections::HashSet<String> = lines
         .iter()
         .filter_map(|line| line.spans.get(1).map(|span| span.content.to_string()))
@@ -530,7 +536,10 @@ pub(super) fn draw_help_overlay(frame: &mut Frame, area: Rect, scroll: usize, ap
         })
         .collect();
     let uncovered: Vec<(&str, &str)> = crate::alphacode_tui::tui::app::registered_command_entries()
-        .filter(|(name, _)| !shown.contains(*name))
+        .filter(|(name, _)| {
+            let head = name.split_whitespace().next().unwrap_or_default();
+            !shown.contains(head)
+        })
         .collect();
     if !uncovered.is_empty() {
         lines.push(Line::from(""));
@@ -636,6 +645,27 @@ pub(super) fn draw_help_overlay(frame: &mut Frame, area: Rect, scroll: usize, ap
     ));
     lines.push(key_entry("Ctrl+X", "Cut entire input line to clipboard"));
     lines.push(key_entry(
+        "Shift+Left / Shift+Right",
+        "Select text in the composer (Ctrl/Alt+Shift extends by word)",
+    ));
+    lines.push(key_entry(
+        "Shift+Home / Shift+End",
+        "Select to the start / end of the draft",
+    ));
+    lines.push(key_entry(
+        "Ctrl+C",
+        "Copy the composer selection (no selection: interrupt the turn)",
+    ));
+    lines.push(key_entry(
+        "Ctrl+X",
+        "Cut the composer selection (or the whole draft when nothing is selected)",
+    ));
+    lines.push(key_entry(
+        "Esc",
+        "Dismiss the command palette (keeps the draft); press again to clear it",
+    ));
+    lines.push(key_entry("@", "Complete a file path from the project tree"));
+    lines.push(key_entry(
         "Ctrl+A",
         "Copy visible chat viewport plus nearby context",
     ));
@@ -663,7 +693,11 @@ pub(super) fn draw_help_overlay(frame: &mut Frame, area: Rect, scroll: usize, ap
     lines.push(key_entry("Cmd/Super+X / V", "Cut input / paste clipboard"));
     lines.push(key_entry("Ctrl+S", "Stash / pop input (save for later)"));
     lines.push(key_entry("Ctrl+Backspace", "Delete previous word in input"));
-    lines.push(key_entry("Ctrl+B / Ctrl+F", "Move by word left / right"));
+    lines.push(key_entry("Ctrl+B", "Move by word left in input"));
+    lines.push(key_entry(
+        &format!("{} / Ctrl+Right", alt("F")),
+        "Move by word right in input",
+    ));
     lines.push(key_entry("Ctrl+Left / Right", "Move by word left / right"));
     lines.push(key_entry(
         &format!("Shift+Enter / {}", alt("Enter")),
@@ -683,6 +717,7 @@ pub(super) fn draw_help_overlay(frame: &mut Frame, area: Rect, scroll: usize, ap
         "Ctrl+R",
         "Search prompt history (across sessions)",
     ));
+    lines.push(key_entry("Ctrl+F", "Find text in the transcript"));
     lines.push(key_entry(
         &format!("Ctrl+V / {}", alt("V")),
         "Paste clipboard (text or image)",

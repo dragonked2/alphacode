@@ -55,6 +55,26 @@ fn item_hashes(items: &[Value]) -> Vec<u64> {
     items.iter().map(stable_hash_json).collect()
 }
 
+/// Fold per-item digests into one digest.
+///
+/// Replaces `stable_hash_json(items)` on the hot path: that call re-serialized
+/// the entire message array a second time (every byte the per-item digests had
+/// already covered). Folding the digests gives the same "any item edit changes
+/// the value" property for change detection, at O(items) instead of O(bytes).
+///
+/// The fold is order-sensitive, so a reordered message array is still detected.
+fn fold_item_hashes(item_hashes: &[u64]) -> u64 {
+    let mut hasher = Sha256::new();
+    hasher.update(b"alphacode.provider.input.v1");
+    for hash in item_hashes {
+        hasher.update(hash.to_be_bytes());
+    }
+    let digest = hasher.finalize();
+    let mut bytes = [0_u8; 8];
+    bytes.copy_from_slice(&digest[..8]);
+    u64::from_be_bytes(bytes)
+}
+
 fn prefix_matches(current: &[u64], previous: &[u64]) -> bool {
     if previous.len() > current.len() {
         return false;
@@ -70,12 +90,46 @@ fn common_prefix_len(current: &[u64], previous: &[u64]) -> usize {
         .count()
 }
 
+/// Whether the provider canonical-input fingerprint should be computed.
+///
+/// The fingerprint is a **diagnostic**: it hashes the entire provider request
+/// (message array + every tool schema) to detect prompt-cache prefix drift.
+/// Computing it costs ~20x the wire payload in bytes read and ~3.6x the wire
+/// serialization time, on **every** provider request, retry included.
+///
+/// It is therefore off by default and only enabled when the operator asks for
+/// it with `ALPHACODE_TRACE`. Call sites must consult this gate *before*
+/// building the canonical payload, so the expensive `serde_json::to_value` /
+/// `json!` work is skipped too — gating only the final `log_...` call still
+/// pays for the payload construction.
+///
+/// Enabled by `ALPHACODE_TRACE` (the same switch that turns on debug logging)
+/// or by the explicit `ALPHACODE_PROVIDER_FINGERPRINT=1` override, so the
+/// diagnostic can be turned on without enabling all debug logging.
+#[inline]
+pub fn fingerprint_enabled() -> bool {
+    static ENABLED: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ENABLED.get_or_init(|| {
+        if matches!(
+            std::env::var("ALPHACODE_PROVIDER_FINGERPRINT").as_deref(),
+            Ok("1" | "true" | "TRUE" | "yes" | "YES")
+        ) {
+            return true;
+        }
+        crate::alphacode_logging::trace_enabled()
+    })
+}
+
 /// Log a privacy-preserving fingerprint of the provider-specific prompt payload.
 ///
 /// `payload` should be the prompt/cache-relevant request shape after provider-specific
 /// normalization, not the high-level Alphacode message list. Do not include volatile transport
 /// IDs unless they are intentionally part of the cache key. `items` should be the ordered
 /// provider-visible message/content array so prefix drift can be diagnosed by index.
+///
+/// This is a no-op unless [`fingerprint_enabled`] returns `true`. Callers
+/// should gate the *construction* of `payload` / `items` on the same check —
+/// building them is the dominant cost.
 #[allow(clippy::too_many_arguments)]
 pub fn log_provider_canonical_input(
     provider: &str,
@@ -88,10 +142,17 @@ pub fn log_provider_canonical_input(
     tool_count: Option<usize>,
     extra_fields: &[(&str, String)],
 ) {
+    if !fingerprint_enabled() {
+        return;
+    }
     let (request_hash, request_json_chars) = hash_and_len(payload);
     let item_hashes = item_hashes(items);
     let item_hashes_hash = stable_hash_json(&item_hashes);
-    let input_hash = stable_hash_json(items);
+    // The whole-array hash re-encodes every item that `item_hashes` already
+    // covers. Folding the per-item digests into a single digest gives the
+    // same change-detection property (any item edit changes the fold)
+    // without a second full serialization of the message array.
+    let input_hash = fold_item_hashes(&item_hashes);
     let (system_hash, system_json_chars) = match system {
         Some(system) => {
             let (hash, len) = hash_and_len(system);
@@ -222,5 +283,39 @@ mod tests {
             stable_hash_json(&json!({"a": 1})),
             stable_hash_json(&json!({"a": 2}))
         );
+    }
+
+    /// Phase 0.2 regression gate: the fingerprint must not be computed when
+    /// the log level is off. The audit measured the fingerprint path reading
+    /// 20x the wire payload on *every* provider request; this test fails if
+    /// that ever becomes unconditional again.
+    #[test]
+    fn fingerprint_is_gated_off_by_default() {
+        // The gate is a process-wide OnceLock, so this asserts the *default*
+        // state only when the env override is absent.
+        if std::env::var_os("ALPHACODE_PROVIDER_FINGERPRINT").is_some()
+            || crate::alphacode_logging::trace_enabled()
+        {
+            return;
+        }
+        assert!(!fingerprint_enabled());
+    }
+
+    /// The fold must preserve the change-detection property the whole-array
+    /// hash provided: any item edit changes the value, and reordering the
+    /// array changes the value too.
+    #[test]
+    fn folded_item_hashes_detect_edits_and_reordering() {
+        let items = vec![json!({"a": 1}), json!({"b": 2})];
+        let base = fold_item_hashes(&item_hashes(&items));
+
+        let edited = vec![json!({"a": 1}), json!({"b": 3})];
+        assert_ne!(base, fold_item_hashes(&item_hashes(&edited)));
+
+        let reordered = vec![json!({"b": 2}), json!({"a": 1})];
+        assert_ne!(base, fold_item_hashes(&item_hashes(&reordered)));
+
+        // Same content folds to the same value.
+        assert_eq!(base, fold_item_hashes(&item_hashes(&items)));
     }
 }

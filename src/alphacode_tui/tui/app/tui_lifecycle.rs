@@ -437,6 +437,7 @@ impl App {
             swarm_spawned_ids_cache: RefCell::new(None),
             command_usage: CommandUsageTracker::default(),
             cursor_pos: 0,
+            input_selection_anchor: None,
             scroll_offset: 0,
             auto_scroll_paused: false,
             active_skill: None,
@@ -730,6 +731,8 @@ impl App {
             recovered_queue_held_for_user_submit: false,
             tab_completion_state: None,
             command_suggestion_selected: 0,
+            dismissed_slash_prefix: None,
+            command_suggestions_mention: RefCell::new(None),
             app_started: Instant::now(),
             client_focused: true,
             runtime_memory_log,
@@ -780,6 +783,7 @@ impl App {
             workspace_client:
                 crate::alphacode_tui::tui::workspace_client::WorkspaceClientState::default(),
             prompt_history_search: None,
+            transcript_search: None,
             persisted_prompt_history: None,
         };
 
@@ -895,6 +899,7 @@ impl App {
             swarm_spawned_ids_cache: RefCell::new(None),
             command_usage: CommandUsageTracker::default(),
             cursor_pos: 0,
+            input_selection_anchor: None,
             scroll_offset: 0,
             auto_scroll_paused: false,
             active_skill: None,
@@ -1188,6 +1193,8 @@ impl App {
             recovered_queue_held_for_user_submit: false,
             tab_completion_state: None,
             command_suggestion_selected: 0,
+            dismissed_slash_prefix: None,
+            command_suggestions_mention: RefCell::new(None),
             app_started: Instant::now(),
             client_focused: true,
             runtime_memory_log,
@@ -1238,6 +1245,7 @@ impl App {
             workspace_client:
                 crate::alphacode_tui::tui::workspace_client::WorkspaceClientState::default(),
             prompt_history_search: None,
+            transcript_search: None,
             persisted_prompt_history: None,
         };
 

@@ -119,7 +119,7 @@ impl DecisionTrace {
             score,
         };
 
-        let mut events = self.events.lock().unwrap();
+        let mut events = self.lock_events();
         if events.len() >= self.max_events {
             // Drop oldest 10% to avoid constant reallocation
             let drain_count = (self.max_events / 10).max(1);
@@ -128,24 +128,33 @@ impl DecisionTrace {
         events.push(event);
     }
 
+    /// Lock the events mutex, recovering from poisoning.
+    ///
+    /// The event ring is a plain lossy log; a panic elsewhere while the lock
+    /// was held must not turn every later trace read into a panic of its own,
+    /// so the guarded value is recovered from the poison wrapper instead.
+    fn lock_events(&self) -> std::sync::MutexGuard<'_, Vec<DecisionTraceEvent>> {
+        self.events.lock().unwrap_or_else(|p| p.into_inner())
+    }
+
     /// Get all recorded events.
     pub fn events(&self) -> Vec<DecisionTraceEvent> {
-        self.events.lock().unwrap().clone()
+        self.lock_events().clone()
     }
 
     /// Get the number of recorded events.
     pub fn len(&self) -> usize {
-        self.events.lock().unwrap().len()
+        self.lock_events().len()
     }
 
     /// Check if the trace is empty.
     pub fn is_empty(&self) -> bool {
-        self.events.lock().unwrap().is_empty()
+        self.lock_events().is_empty()
     }
 
     /// Clear all recorded events.
     pub fn clear(&self) {
-        self.events.lock().unwrap().clear();
+        self.lock_events().clear();
     }
 
     /// Generate a summary from recorded events.

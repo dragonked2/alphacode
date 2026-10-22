@@ -513,6 +513,9 @@ fn test_shift_tab_model_favorite_hotkey_preserves_input_line() {
 #[test]
 fn test_tui_api_key_auth_refreshes_catalog_shows_diff_without_opening_picker() {
     let _env_lock = crate::storage::lock_test_env();
+    // This test publishes to the process-global bus, so it has to be
+    // serialized against the other bus participants in this file.
+    let _bus_guard = crate::bus::Bus::test_bus_lock();
     ensure_test_alphacode_home_if_unset();
     clear_persisted_test_ui_state();
     crate::alphacode_tui::tui::ui::clear_test_render_state_for_tests();
@@ -603,6 +606,9 @@ fn test_tui_api_key_auth_refreshes_catalog_shows_diff_without_opening_picker() {
 #[test]
 fn test_tui_cerebras_paste_key_lifecycle_has_no_degraded_success_messages() {
     let _env_lock = crate::storage::lock_test_env();
+    // This test reads the process-global bus, so it has to be serialized
+    // against the other bus participants in this file.
+    let _bus_guard = crate::bus::Bus::test_bus_lock();
     let _guard = AzureLoginEnvGuard::save(&[
         "CEREBRAS_API_KEY",
         "ALPHACODE_OPENROUTER_API_BASE",
@@ -945,6 +951,10 @@ fn test_tui_cerebras_paste_key_lifecycle_has_no_degraded_success_messages() {
 
 #[test]
 fn test_tui_openai_compatible_empty_catalog_does_not_switch_to_profile_default() {
+    let _env_lock = crate::storage::lock_test_env();
+    // This test publishes to and reads from the process-global bus, so it has
+    // to be serialized against the other bus participants in this file.
+    let _bus_guard = crate::bus::Bus::test_bus_lock();
     ensure_test_alphacode_home_if_unset();
     clear_persisted_test_ui_state();
     crate::alphacode_tui::tui::ui::clear_test_render_state_for_tests();
@@ -1005,6 +1015,10 @@ fn test_tui_openai_compatible_empty_catalog_does_not_switch_to_profile_default()
 
 #[test]
 fn test_tui_openai_compatible_local_refresh_failure_is_pending_not_final_failure() {
+    let _env_lock = crate::storage::lock_test_env();
+    // This test reads the process-global bus and fails on any `LoginCompleted`
+    // it sees, so it has to be serialized against the tests that publish one.
+    let _bus_guard = crate::bus::Bus::test_bus_lock();
     ensure_test_alphacode_home_if_unset();
     clear_persisted_test_ui_state();
     crate::alphacode_tui::tui::ui::clear_test_render_state_for_tests();
@@ -2807,6 +2821,9 @@ fn test_overnight_start_queues_remote_turn_without_stuck_sending() {
 #[test]
 fn alphax_free_remote_login_delegates_activation_to_server() {
     with_temp_alphacode_home(|| {
+        // This test publishes a `LoginCompleted` to the process-global bus, so
+        // it has to be serialized against the tests that read that bus.
+        let _bus_guard = crate::bus::Bus::test_bus_lock();
         let mut app = App::new_for_remote(None);
         let session_id = app.session.id.clone();
         let mut bus_rx = crate::bus::Bus::global().subscribe();

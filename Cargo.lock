@@ -65,7 +65,7 @@ checksum = "683d7910e743518b0e34f1186f92494becacb047c7b6bf616c96772180fef923"
 
 [[package]]
 name = "alphacode"
-version = "1.0.86"
+version = "1.0.87"
 dependencies = [
  "alphagrep",
  "anyhow",
@@ -169,11 +169,12 @@ dependencies = [
 
 [[package]]
 name = "alphagrep"
-version = "0.1.6"
+version = "0.1.7"
 dependencies = [
  "clap",
  "globset",
  "ignore",
+ "rayon",
  "regex",
  "serde",
  "serde_json",

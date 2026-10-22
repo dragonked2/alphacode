@@ -7,6 +7,7 @@ use crate::alphacode_tui::message::{
     parse_background_task_progress_notification_markdown, strip_ansi_escape_sequences,
 };
 pub(super) use cache_support::get_cached_message_lines;
+pub(super) use cache_support::get_cached_message_lines_shared;
 use cache_support::{centered_wrap_width, left_pad_lines_for_centered_mode};
 use std::borrow::Cow;
 use unicode_width::UnicodeWidthStr;

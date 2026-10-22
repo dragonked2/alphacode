@@ -1447,6 +1447,9 @@ fn import_continue_reaches_ready_quality_first_openai_model() {
     use crate::alphacode_tui::tui::app::onboarding_flow::ImportReview;
 
     with_temp_alphacode_home(|| {
+        // This test reads the process-global bus, so it has to be serialized
+        // against the tests that publish to it.
+        let _bus_guard = crate::bus::Bus::test_bus_lock();
         let legacy_auth = crate::alphacode_base::auth::codex::legacy_auth_file_path().expect("legacy auth path");
         std::fs::create_dir_all(legacy_auth.parent().expect("legacy auth parent"))
             .expect("create legacy auth dir");

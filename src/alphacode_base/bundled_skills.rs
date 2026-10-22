@@ -29,7 +29,10 @@ pub(super) const BUNDLED_SKILLS: &[BundledSkill] = &[
     BundledSkill {
         name: "playbook",
         body: include_str!("bundled_skills/playbook/SKILL.md"),
-        references: &[],
+        references: &[(
+            "extended",
+            include_str!("bundled_skills/playbook/extended/SKILL.md"),
+        )],
     },
     BundledSkill {
         name: "bugbounty",

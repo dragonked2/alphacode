@@ -1178,43 +1178,46 @@ impl Provider for BedrockProvider {
         } else {
             Some(vec![SystemContentBlock::Text(system.to_string())])
         };
-        let message_items = serde_json::to_value(messages)
-            .ok()
-            .and_then(|value| value.as_array().cloned())
-            .unwrap_or_default();
-        let system_value = (!system.trim().is_empty()).then(|| Value::String(system.to_string()));
-        let tools_value = if info.supports_tools && !tools.is_empty() {
-            serde_json::to_value(tools).ok()
-        } else {
-            None
-        };
-        let payload = json!({
-            "model": &model,
-            "system": system_value.as_ref(),
-            "messages": &message_items,
-            "tools": tools_value.as_ref(),
-            "supports_tools": info.supports_tools,
-            "supports_vision": info.supports_vision,
-            "inference_config_present": inference_config.is_some(),
-        });
-        crate::alphacode_provider_core::log_provider_canonical_input(
-            "bedrock",
-            &model,
-            "bedrock_converse_logical",
-            &payload,
-            &message_items,
-            system_value.as_ref(),
-            tools_value.as_ref(),
-            Some(if info.supports_tools { tools.len() } else { 0 }),
-            &[
-                ("supports_tools", info.supports_tools.to_string()),
-                ("supports_vision", info.supports_vision.to_string()),
-                (
-                    "inference_config_present",
-                    inference_config.is_some().to_string(),
-                ),
-            ],
-        );
+        if crate::alphacode_provider_core::fingerprint::fingerprint_enabled() {
+            let message_items = serde_json::to_value(messages)
+                .ok()
+                .and_then(|value| value.as_array().cloned())
+                .unwrap_or_default();
+            let system_value =
+                (!system.trim().is_empty()).then(|| Value::String(system.to_string()));
+            let tools_value = if info.supports_tools && !tools.is_empty() {
+                serde_json::to_value(tools).ok()
+            } else {
+                None
+            };
+            let payload = json!({
+                "model": &model,
+                "system": system_value.as_ref(),
+                "messages": &message_items,
+                "tools": tools_value.as_ref(),
+                "supports_tools": info.supports_tools,
+                "supports_vision": info.supports_vision,
+                "inference_config_present": inference_config.is_some(),
+            });
+            crate::alphacode_provider_core::log_provider_canonical_input(
+                "bedrock",
+                &model,
+                "bedrock_converse_logical",
+                &payload,
+                &message_items,
+                system_value.as_ref(),
+                tools_value.as_ref(),
+                Some(if info.supports_tools { tools.len() } else { 0 }),
+                &[
+                    ("supports_tools", info.supports_tools.to_string()),
+                    ("supports_vision", info.supports_vision.to_string()),
+                    (
+                        "inference_config_present",
+                        inference_config.is_some().to_string(),
+                    ),
+                ],
+            );
+        }
         let (tx, rx) = mpsc::channel::<Result<StreamEvent>>(64);
         tokio::spawn(async move {
             let client = Self::runtime_client().await;

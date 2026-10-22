@@ -214,6 +214,7 @@ struct IdleAnimationFastPathInputs {
     force_full_repaint: bool,
     composer_changed: bool,
     command_palette_visible: bool,
+    input_overlay_visible: bool,
 }
 
 /// Why the animation-only partial repaint must not run, or `None` when it may.
@@ -248,6 +249,13 @@ fn idle_animation_fast_path_blocked_reason(
         // pressing `/` in a fresh session made the menu blink in and out at
         // the chrome full-frame cadence. Stand down until the palette closes.
         Some("command_palette_visible")
+    } else if inputs.input_overlay_visible {
+        // The Ctrl+R history search and the Ctrl+F find-in-page overlays float
+        // over the same rows as the command palette, so they have to stand
+        // down for the same reason: this path resets and redraws exactly
+        // those rows, which would erase the overlay right after it was
+        // painted.
+        Some("input_overlay_visible")
     } else {
         None
     }
@@ -322,6 +330,8 @@ impl StatusSpinnerRenderer {
             command_palette_visible: slash_command_palette_may_be_visible(&app.input, || {
                 !app.command_suggestions().is_empty()
             }),
+            input_overlay_visible: app.prompt_history_search.is_some()
+                || app.transcript_search_is_open(),
         });
         if let Some(reason) = blocked {
             crate::alphacode_tui::tui::ui::note_idle_animation_fast_path_blocked(reason);
@@ -394,6 +404,14 @@ impl StatusSpinnerRenderer {
                 area,
                 crate::alphacode_tui::tui::TuiState::animation_elapsed(app),
             );
+            // Same guard as the one-cell spinner path: a blank working buffer
+            // would make ratatui's diff-based flush erase the whole screen.
+            if !buffer_has_visible_content(current_buffer) {
+                crate::logging::error(
+                    "TUI idle animation repaint produced an empty terminal buffer; skipping the partial repaint",
+                );
+                return Ok(false);
+            }
         }
 
         // Same protocol as the one-cell spinner fast path: keep ratatui's
@@ -469,6 +487,10 @@ impl StatusSpinnerRenderer {
             render_elapsed = render_start.elapsed();
         })?;
         let total_elapsed = draw_start.elapsed();
+        // The draw above refreshed the find-in-page hit index, so a step the
+        // user asked for while the index was still one frame behind can be
+        // applied now.
+        app.apply_pending_transcript_search_step();
         let changed_cells = previous_frame
             .filter(|previous| previous.area == completed.buffer.area)
             .map(|previous| {
@@ -547,25 +569,41 @@ impl StatusSpinnerRenderer {
             return Ok(false);
         };
         let status_area = crate::alphacode_tui::tui::ui::last_status_area();
-        let status_patchable = status_symbol
-            .zip(status_area)
-            .is_some_and(|(symbol, area)| {
-                render_status_spinner_into_buffer(previous_frame, area, symbol)
-            });
-        if !status_patchable {
+        let Some((symbol, status_area)) = status_symbol.zip(status_area) else {
+            return Ok(false);
+        };
+        if !render_status_spinner_into_buffer(previous_frame, status_area, symbol) {
             return Ok(false);
         }
 
-        let next_frame = {
+        // Copy the last frame into the terminal's buffer so the flush below
+        // is correct, then patch the single spinner cell in place.
+        //
+        // The terminal's current buffer MUST keep the patched frame when this
+        // function returns. ratatui's render pipeline is a diff pipeline:
+        // `Terminal::flush` diffs the *current* buffer against the *previous*
+        // one and sends only the differing cells to the backend, and
+        // `Terminal::swap_buffers` then resets the other buffer and flips
+        // them. Leaving the current buffer empty here would therefore make
+        // ratatui believe that every cell on screen has to be erased, which
+        // blanks the terminal (a black flash) on every spinner tick, and it
+        // would leave *both* of ratatui's buffers empty afterwards.
+        {
             let current_buffer = terminal.current_buffer_mut();
-            current_buffer.clone_from(previous_frame);
-            if let Some((symbol, area)) = status_symbol.zip(status_area)
-                && status_patchable
-            {
-                render_status_spinner_into_buffer_mut(current_buffer, area, symbol);
+            seed_terminal_buffer_with_spinner(current_buffer, previous_frame, status_area, symbol);
+            // The terminal's current buffer has to keep the frame — ratatui
+            // diffs it against the previous one and sends every difference
+            // to the backend, so an emptied buffer means "erase the whole
+            // screen". A blank buffer here is always a bug, never a real
+            // state, so refuse the fast path instead of blacking out the
+            // terminal: the caller falls back to a full redraw.
+            if !buffer_has_visible_content(current_buffer) {
+                crate::logging::error(
+                    "TUI spinner repaint produced an empty terminal buffer; skipping the partial repaint",
+                );
+                return Ok(false);
             }
-            current_buffer.clone()
-        };
+        }
 
         // Keep ratatui's virtual buffers authoritative while preserving the user's cursor position.
         // The only terminal mutation outside ratatui here is cursor save/restore; cell contents still
@@ -584,7 +622,12 @@ impl StatusSpinnerRenderer {
         )?;
         terminal.swap_buffers();
         terminal.backend_mut().flush()?;
-        self.last_frame = Some(next_frame);
+        // The remembered frame must show exactly what the terminal now shows,
+        // so patch the same spinner cell in it. Patching in place keeps this
+        // path at one full-buffer copy (the seed above) instead of two.
+        if let Some(last) = self.last_frame.as_mut() {
+            render_status_spinner_into_buffer_mut(last, status_area, symbol);
+        }
         // This path `clone_from`s the whole previous frame and patches one cell,
         // so the animation-only repaint's "everything outside the animated rows
         // is already seeded" assumption no longer holds. Make it re-seed once.
@@ -592,6 +635,44 @@ impl StatusSpinnerRenderer {
         crate::alphacode_tui::tui::ui::note_idle_animation_partial_repaint();
         Ok(true)
     }
+}
+
+/// Seed the terminal's current buffer with the last known frame and patch the
+/// single status-spinner cell in place.
+///
+/// The terminal's current buffer has to keep the patched frame when this
+/// returns. ratatui's render pipeline is a diff pipeline: `Terminal::flush`
+/// diffs the *current* buffer against the *previous* one and sends only the
+/// differing cells to the backend, and `Terminal::swap_buffers` then resets
+/// the other buffer and flips the two. An emptied current buffer therefore
+/// means "every cell on screen has to be erased", which blanks the terminal
+/// on every repaint.
+///
+/// The caller keeps the app's own copy of the frame in sync by patching the
+/// same cell in it, which is why this helper does not need to hand a buffer
+/// back: the frame stays where it is and both copies are patched.
+fn seed_terminal_buffer_with_spinner(
+    current_buffer: &mut Buffer,
+    previous_frame: &Buffer,
+    status_area: Rect,
+    symbol: &str,
+) {
+    current_buffer.clone_from(previous_frame);
+    render_status_spinner_into_buffer_mut(current_buffer, status_area, symbol);
+}
+
+/// Whether a buffer still holds something visible.
+///
+/// Used as a guard on the partial-repaint fast paths: a buffer that is
+/// completely blank means the repaint lost the frame, and ratatui's
+/// diff-based flush would turn that into "erase every cell on screen" — a
+/// black flash. The scan short-circuits on the first non-blank cell, so it
+/// costs almost nothing on a real frame.
+fn buffer_has_visible_content(buffer: &Buffer) -> bool {
+    buffer
+        .content
+        .iter()
+        .any(|cell| !cell.symbol().trim().is_empty())
 }
 
 fn render_status_spinner_into_buffer(buffer: &Buffer, area: Rect, symbol: &str) -> bool {
@@ -1258,6 +1339,7 @@ mod tests {
             force_full_repaint: false,
             composer_changed: false,
             command_palette_visible: false,
+            input_overlay_visible: false,
         };
         assert_eq!(
             idle_animation_fast_path_blocked_reason(&clean_idle_frame),
@@ -1285,6 +1367,33 @@ mod tests {
         assert_eq!(
             idle_animation_fast_path_blocked_reason(&typing_into_palette),
             Some("input_changed"),
+        );
+    }
+
+    /// The find-in-page and history-search overlays float over the same rows
+    /// as the command palette, so the animation-only repaint must stand down
+    /// for them too — otherwise the overlay is erased milliseconds after it
+    /// was painted.
+    #[test]
+    fn the_animation_only_path_refuses_to_run_while_an_input_overlay_is_up() {
+        let clean_idle_frame = IdleAnimationFastPathInputs {
+            has_previous_frame: true,
+            animation_active: true,
+            has_animation_area: true,
+            force_full_redraw: false,
+            force_full_repaint: false,
+            composer_changed: false,
+            command_palette_visible: false,
+            input_overlay_visible: false,
+        };
+        let overlay_open = IdleAnimationFastPathInputs {
+            input_overlay_visible: true,
+            ..clean_idle_frame
+        };
+        assert_eq!(
+            idle_animation_fast_path_blocked_reason(&overlay_open),
+            Some("input_overlay_visible"),
+            "an open input overlay must force full frames so the overlay survives"
         );
     }
 
@@ -1348,6 +1457,66 @@ mod tests {
         assert!(
             !render_status_spinner_into_buffer(&buffer, area, "◔"),
             "late overlays own the status cell until the next full frame"
+        );
+    }
+
+    /// The one-cell spinner repaint must not blank the terminal.
+    ///
+    /// ratatui's `Terminal::flush` diffs the *current* buffer against the
+    /// *previous* one and sends every differing cell to the backend, and
+    /// `Terminal::swap_buffers` then resets the other buffer and flips the
+    /// two. A repaint that emptied the current buffer therefore told ratatui
+    /// that the whole screen had to be erased: the terminal went black on
+    /// every spinner tick, which is what the user saw as "the TUI flashes
+    /// black and I can't see anything".
+    ///
+    /// This exercises the same seed/patch/flush/swap sequence the production
+    /// path uses and asserts that the screen survives it.
+    #[test]
+    fn the_spinner_repaint_keeps_the_screen_intact() {
+        use ratatui::backend::{Backend, TestBackend};
+        use ratatui::widgets::Paragraph;
+
+        let backend = TestBackend::new(8, 2);
+        let mut terminal = ratatui::Terminal::new(backend).expect("terminal");
+
+        // A full frame first, so the terminal holds a screenful of content.
+        // The frame is rendered into the current buffer, captured, and then
+        // flushed and swapped the same way a real render pass does, so the
+        // terminal ends up with the frame as its *previous* buffer and an
+        // empty current buffer — exactly the state the spinner repaint runs
+        // in.
+        let previous_frame = {
+            let mut frame = terminal.get_frame();
+            frame.render_widget(Paragraph::new("abcdefgh\nABCDEFGH"), frame.area());
+            terminal.current_buffer_mut().clone()
+        };
+        terminal.flush().expect("flush");
+        terminal.swap_buffers();
+        terminal.backend_mut().flush().expect("backend flush");
+
+        // The one-cell spinner repaint: seed the current buffer from the last
+        // frame and patch the spinner cell.
+        let status_area = Rect::new(2, 1, 6, 1);
+        seed_terminal_buffer_with_spinner(
+            terminal.current_buffer_mut(),
+            &previous_frame,
+            status_area,
+            "*",
+        );
+        terminal.flush().expect("flush");
+        terminal.swap_buffers();
+        terminal.backend_mut().flush().expect("backend flush");
+
+        // The screen must still show the frame: only the spinner cell changed.
+        let rendered = format!("{}", terminal.backend());
+        assert!(
+            rendered.contains("abcdefgh"),
+            "the spinner repaint erased the top row: {rendered}"
+        );
+        assert!(
+            rendered.contains("AB*DEFGH"),
+            "the spinner repaint must patch exactly one cell: {rendered}"
         );
     }
 }

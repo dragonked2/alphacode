@@ -41,7 +41,7 @@ pub use activity::{
     activity_snapshot, add_event, apply_remote_activity_snapshot, check_staleness, clear_activity,
     get_activity, pipeline_start, pipeline_update, record_injected_prompt, set_state,
 };
-use cache::{cache_graph, cached_graph};
+use cache::{cache_graph, cached_graph, cached_graph_arc};
 pub use pending::{
     PendingMemory, clear_all_injected_memories, clear_all_pending_memory, clear_injected_memories,
     clear_pending_memory, has_any_pending_memory, has_pending_memory, is_memory_injected,
@@ -50,6 +50,55 @@ pub use pending::{
     take_pending_memory,
 };
 use pending::{begin_memory_check, finish_memory_check};
+
+/// Aggregate graph-health counters used by the ambient prompt.
+///
+/// The counters describe one [`MemoryGraph`] exactly as the ambient health
+/// gatherer previously enumerated it, but computing them from a cached
+/// [`Arc<MemoryGraph>`] avoids deep-cloning the entire graph per ambient
+/// cycle just to produce a handful of integers (audit M22).
+#[derive(Debug, Clone, Default)]
+pub struct GraphHealthStats {
+    pub total: usize,
+    pub active: usize,
+    pub inactive: usize,
+    /// Active entries whose effective confidence is below 0.1.
+    pub low_confidence: usize,
+    /// Active entries with no embedding vector yet.
+    pub missing_embeddings: usize,
+    /// Times an edge of kind `Contradicts` appears; divide by 2 for the edge
+    /// count because the edges are stored bidirectionally.
+    pub contradiction_marks: usize,
+    pub last_consolidation: Option<DateTime<Utc>>,
+}
+
+/// Compute [`GraphHealthStats`] for one graph without mutating or cloning it.
+fn graph_health_stats(graph: &MemoryGraph) -> GraphHealthStats {
+    let mut stats = GraphHealthStats::default();
+    for entry in graph.memories.values() {
+        stats.total += 1;
+        if entry.active {
+            stats.active += 1;
+            if entry.effective_confidence() < 0.1 {
+                stats.low_confidence += 1;
+            }
+            if entry.embedding.is_none() {
+                stats.missing_embeddings += 1;
+            }
+        } else {
+            stats.inactive += 1;
+        }
+    }
+    for edges in graph.edges.values() {
+        for edge in edges {
+            if matches!(edge.kind, crate::memory_graph::EdgeKind::Contradicts) {
+                stats.contradiction_marks += 1;
+            }
+        }
+    }
+    stats.last_consolidation = graph.metadata.last_cluster_update;
+    stats
+}
 pub(crate) use prompt_support::format_context_for_extraction;
 pub use prompt_support::{
     focus_query_text, format_context_for_relevance, format_focused_query_for_relevance,
@@ -1651,6 +1700,35 @@ impl MemoryManager {
     }
 
     // ==================== Graph-Based Operations ====================
+
+    /// Read-only graph-health counters for the project graph.
+    ///
+    /// Computed from the cached [`MemoryGraph`] without cloning it when the
+    /// file is unchanged on disk; the full-load path is the fallback. This is
+    /// the cheap health-counting path introduced for audit M22 — the ambient
+    /// gatherer used to deep-clone both graphs per cycle just to count
+    /// entries.
+    pub fn project_graph_stats(&self) -> Result<GraphHealthStats> {
+        if !self.test_mode
+            && let Some(path) = self.project_memory_path()?
+            && let Some(shared) = cached_graph_arc(&path)
+        {
+            return Ok(graph_health_stats(&shared));
+        }
+        Ok(graph_health_stats(&self.load_project_graph()?))
+    }
+
+    /// Read-only graph-health counters for the global graph. See
+    /// [`MemoryManager::project_graph_stats`].
+    pub fn global_graph_stats(&self) -> Result<GraphHealthStats> {
+        if !self.test_mode {
+            let path = self.global_memory_path()?;
+            if let Some(shared) = cached_graph_arc(&path) {
+                return Ok(graph_health_stats(&shared));
+            }
+        }
+        Ok(graph_health_stats(&self.load_global_graph()?))
+    }
 
     /// Load project memories as a MemoryGraph with automatic migration
     pub fn load_project_graph(&self) -> Result<MemoryGraph> {

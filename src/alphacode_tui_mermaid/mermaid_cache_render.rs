@@ -1208,10 +1208,18 @@ fn render_mermaid_sized_internal(
         // Wrap mermaid library calls in catch_unwind for defense-in-depth
         let content_owned = content.to_string();
 
-        let prev_hook = panic::take_hook();
-        panic::set_hook(Box::new(|_| {
-            // Silently ignore panics from mermaid renderer
-        }));
+        // Silence the default panic hook for *this thread only* while the
+        // third-party layout/rasterise step runs.
+        //
+        // The previous implementation swapped the process-global panic hook
+        // (`take_hook` + `set_hook`) and restored it afterwards. That is racy
+        // in a multi-threaded TUI: the hook is global, so any panic raised by
+        // an unrelated thread in that window was silently swallowed, and two
+        // concurrent renders could restore each other's hooks out of order.
+        // `suppress_panic_output` installs one hook exactly once and consults
+        // a thread-local flag, so only panics raised on this thread are muted
+        // and other threads keep their normal crash output.
+        let panic_guard = crate::alphacode_core::panic_util::suppress_panic_output();
 
         let render_start = Instant::now();
         let render_result = panic::catch_unwind(move || -> Result<RenderStageBreakdown, String> {
@@ -1282,8 +1290,8 @@ fn render_mermaid_sized_internal(
             })
         });
 
-        // Restore the original panic hook
-        panic::set_hook(prev_hook);
+        // Restore the previous panic-hook state for this thread.
+        drop(panic_guard);
 
         // Handle the result
         let render_ms = render_start.elapsed().as_secs_f32() * 1000.0;

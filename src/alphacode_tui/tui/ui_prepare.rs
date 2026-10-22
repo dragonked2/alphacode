@@ -80,7 +80,7 @@ fn assistant_aux_data(
     }
 
     let key = AssistantAuxKey {
-        message_hash: msg.stable_cache_hash(),
+        message_hash: crate::alphacode_tui_messages::memoized_stable_cache_hash(msg),
         content_len: msg.content.len(),
         content_width,
         centered,
@@ -674,6 +674,7 @@ pub(super) fn prepare_messages(
         is_processing: app.is_processing(),
         streaming_text_len: app.streaming_text().len(),
         streaming_text_hash: super::hash_text_for_cache(app.streaming_text()),
+        streaming_text_version: app.streaming_text_version(),
         batch_progress_hash: active_batch_progress_hash(app),
         // An unpinned transcript must not reuse a previously prepared frame
         // containing anchored images. With no images, both modes are visually
@@ -1769,7 +1770,7 @@ fn render_message_into(
     }
 
     acc.segments.push((
-        msg.stable_cache_hash(),
+        crate::alphacode_tui_messages::memoized_stable_cache_hash(msg),
         acc.lines.len(),
         acc.raw_plain_lines.len(),
         acc.user_prompt_texts.len(),
@@ -2032,7 +2033,10 @@ pub(super) fn truncate_prepared_to_boundary(prepared: &mut PreparedMessages, kee
 pub(super) fn matching_prefix_len(base: &PreparedMessages, messages: &[DisplayMessage]) -> usize {
     let limit = base.message_boundaries.len().min(messages.len());
     let mut k = 0;
-    while k < limit && base.message_boundaries[k].msg_hash == messages[k].stable_cache_hash() {
+    while k < limit
+        && base.message_boundaries[k].msg_hash
+            == crate::alphacode_tui_messages::memoized_stable_cache_hash(&messages[k])
+    {
         k += 1;
     }
     k
@@ -2048,7 +2052,7 @@ pub(super) fn matching_suffix_len(base: &PreparedMessages, messages: &[DisplayMe
     let mut s = 0;
     while s < limit
         && base.message_boundaries[base_n - 1 - s].msg_hash
-            == messages[msg_n - 1 - s].stable_cache_hash()
+            == crate::alphacode_tui_messages::memoized_stable_cache_hash(&messages[msg_n - 1 - s])
     {
         s += 1;
     }
@@ -2357,7 +2361,25 @@ fn prepare_streaming_cached(
     } else {
         display_width
     };
-    let mut md_lines = app.render_streaming_markdown(content_width);
+    // Take the shared rendered lines instead of an owned `Vec<Line>`.
+    //
+    // The old path called `render_streaming_markdown`, which deep-clones the
+    // renderer's `Arc<Vec<Line>>` into an owned `Vec<Line>` — one clone of
+    // every `Span`/`String` in the rendered output, on **every** streaming
+    // tick. The shared path hands back the `Arc`; the only clone below is
+    // the one that is genuinely required (the centered path mutates the
+    // lines in place, and `Arc` contents cannot be mutated in place).
+    let md_lines_shared = app.render_streaming_markdown_shared(content_width);
+    let mut md_lines: Vec<Line<'static>> = if centered {
+        // The recenter pass mutates the lines, so it needs an owned copy.
+        md_lines_shared.as_ref().clone()
+    } else {
+        // No mutation is needed: move the shared lines out of the `Arc`.
+        match std::sync::Arc::try_unwrap(md_lines_shared) {
+            Ok(lines) => lines,
+            Err(shared) => shared.as_ref().clone(),
+        }
+    };
     if centered {
         markdown::recenter_structured_blocks_for_display(&mut md_lines, display_width);
     }

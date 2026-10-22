@@ -51,9 +51,15 @@ pub(super) fn render_stateful_image_safe(
     resize: Resize,
 ) -> bool {
     let widget = StatefulImage::default().resize(resize);
-    match panic::catch_unwind(panic::AssertUnwindSafe(|| {
+    // The default panic hook prints straight to stderr, which corrupts the
+    // TUI frame. The recovery below already logs the panic, so mute the hook
+    // for this thread only while the image widget renders.
+    let panic_guard = crate::alphacode_core::panic_util::suppress_panic_output();
+    let result = panic::catch_unwind(panic::AssertUnwindSafe(|| {
         widget.render(area, buf, protocol);
-    })) {
+    }));
+    drop(panic_guard);
+    match result {
         Ok(()) => true,
         Err(payload) => {
             crate::alphacode_tui_mermaid::log_warn(&format!(

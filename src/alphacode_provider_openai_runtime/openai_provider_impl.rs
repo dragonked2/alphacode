@@ -95,75 +95,84 @@ impl Provider for OpenAIProvider {
             OpenAITransportMode::WebSocket => true,
             OpenAITransportMode::Auto => Self::should_prefer_websocket(&model_id),
         };
-        let request_tools = request
+        // The tool count is needed by the lifecycle log below, so compute it
+        // without cloning the whole tools array. The array copy itself is only
+        // needed for the fingerprint diagnostic, which is off by default.
+        let request_tool_count = request
             .get("tools")
-            .cloned()
-            .unwrap_or_else(|| serde_json::json!([]));
-        let request_instructions = request.get("instructions").cloned();
-        let request_tool_count = request_tools
-            .as_array()
+            .and_then(|tools| tools.as_array())
             .map(|tools| tools.len())
             .unwrap_or(api_tools.len());
-        let canonical_payload = serde_json::json!({
-            "model": request.get("model"),
-            "instructions": request.get("instructions"),
-            "input": &input,
-            "tools": request.get("tools"),
-            "tool_choice": request.get("tool_choice"),
-            "parallel_tool_calls": request.get("parallel_tool_calls"),
-            "reasoning": request.get("reasoning"),
-            "context_management": request.get("context_management"),
-            "include": request.get("include"),
-            "service_tier": request.get("service_tier"),
-            "prompt_cache_key": request.get("prompt_cache_key"),
-            "prompt_cache_retention": request.get("prompt_cache_retention"),
-        });
+        // Used by the lifecycle log below, so it is computed unconditionally.
+        // Hashing one short string is cheap; the expensive part of the
+        // fingerprint (the canonical payload) is gated.
         let prompt_cache_key_hash = request
             .get("prompt_cache_key")
             .map(crate::alphacode_provider_core::fingerprint::stable_hash_json);
-        crate::alphacode_provider_core::fingerprint::log_provider_canonical_input(
-            "openai",
-            &model_id,
-            "openai_responses_full",
-            &canonical_payload,
-            &input,
-            request_instructions.as_ref(),
-            Some(&request_tools),
-            Some(request_tool_count),
-            &[
-                (
-                    "transport_mode",
-                    transport_mode_snapshot.as_str().to_string(),
-                ),
-                ("websocket_preferred", use_websocket_transport.to_string()),
-                ("input_item_count", input_item_count.to_string()),
-                ("chatgpt_mode", is_chatgpt_mode.to_string()),
-                ("request_kind", "full".to_string()),
-                ("cache_namespace", "full_request".to_string()),
-                (
-                    "prompt_cache_key_present",
-                    request.get("prompt_cache_key").is_some().to_string(),
-                ),
-                (
-                    "prompt_cache_key_hash",
-                    format!("{:?}", prompt_cache_key_hash),
-                ),
-                (
-                    "prompt_cache_retention",
-                    request
-                        .get("prompt_cache_retention")
-                        .map(|value| value.to_string())
-                        .unwrap_or_else(|| "null".to_string()),
-                ),
-                (
-                    "service_tier",
-                    request
-                        .get("service_tier")
-                        .map(|value| value.to_string())
-                        .unwrap_or_else(|| "null".to_string()),
-                ),
-            ],
-        );
+        if crate::alphacode_provider_core::fingerprint::fingerprint_enabled() {
+            let request_tools = request
+                .get("tools")
+                .cloned()
+                .unwrap_or_else(|| serde_json::json!([]));
+            let request_instructions = request.get("instructions").cloned();
+            let canonical_payload = serde_json::json!({
+                "model": request.get("model"),
+                "instructions": request.get("instructions"),
+                "input": &input,
+                "tools": request.get("tools"),
+                "tool_choice": request.get("tool_choice"),
+                "parallel_tool_calls": request.get("parallel_tool_calls"),
+                "reasoning": request.get("reasoning"),
+                "context_management": request.get("context_management"),
+                "include": request.get("include"),
+                "service_tier": request.get("service_tier"),
+                "prompt_cache_key": request.get("prompt_cache_key"),
+                "prompt_cache_retention": request.get("prompt_cache_retention"),
+            });
+            crate::alphacode_provider_core::fingerprint::log_provider_canonical_input(
+                "openai",
+                &model_id,
+                "openai_responses_full",
+                &canonical_payload,
+                &input,
+                request_instructions.as_ref(),
+                Some(&request_tools),
+                Some(request_tool_count),
+                &[
+                    (
+                        "transport_mode",
+                        transport_mode_snapshot.as_str().to_string(),
+                    ),
+                    ("websocket_preferred", use_websocket_transport.to_string()),
+                    ("input_item_count", input_item_count.to_string()),
+                    ("chatgpt_mode", is_chatgpt_mode.to_string()),
+                    ("request_kind", "full".to_string()),
+                    ("cache_namespace", "full_request".to_string()),
+                    (
+                        "prompt_cache_key_present",
+                        request.get("prompt_cache_key").is_some().to_string(),
+                    ),
+                    (
+                        "prompt_cache_key_hash",
+                        format!("{:?}", prompt_cache_key_hash),
+                    ),
+                    (
+                        "prompt_cache_retention",
+                        request
+                            .get("prompt_cache_retention")
+                            .map(|value| value.to_string())
+                            .unwrap_or_else(|| "null".to_string()),
+                    ),
+                    (
+                        "service_tier",
+                        request
+                            .get("service_tier")
+                            .map(|value| value.to_string())
+                            .unwrap_or_else(|| "null".to_string()),
+                    ),
+                ],
+            );
+        }
         let usage_snapshot = crate::alphacode_base::usage::get_openai_usage_sync();
         log_openai_stream_lifecycle(
             crate::alphacode_base::logging::LogLevel::Info,

@@ -24,16 +24,19 @@ fn unseen_changelog_entries_override() -> &'static std::sync::Mutex<Option<Vec<S
     OVERRIDE.get_or_init(|| std::sync::Mutex::new(None))
 }
 
-fn unseen_changelog_entries() -> Vec<String> {
+fn unseen_changelog_entries() -> std::borrow::Cow<'static, [String]> {
     #[cfg(test)]
     {
         if let Ok(guard) = unseen_changelog_entries_override().lock()
             && let Some(entries) = guard.clone()
         {
-            return entries;
+            return std::borrow::Cow::Owned(entries);
         }
     }
-    get_unseen_changelog_entries().clone()
+    // The unseen-entry list is memoized and immutable for the process
+    // lifetime (`OnceLock`), and the Updates box rebuilds on every draw,
+    // so borrow it instead of cloning every subject string each frame.
+    std::borrow::Cow::Borrowed(get_unseen_changelog_entries())
 }
 
 #[cfg(test)]
@@ -1001,8 +1004,25 @@ fn build_brand_line(
 /// Gradient separator line that visually divides the header from content.
 /// Uses smooth color blending across the brand gradient for a premium feel.
 /// Includes a subtle breathing animation for a living, polished look.
+///
+/// Results are memoized per (width, brand gradient): the full-frame blend is
+/// O(width) allocations plus a span per color run, and the separator is
+/// rebuilt on every render pass even when the header has not changed.
 fn build_gradient_separator(width: usize) -> Line<'static> {
+    use std::collections::HashMap;
+    use std::sync::{Mutex, OnceLock};
+
+    type SeparatorCache = Mutex<HashMap<(usize, [Color; 16]), Line<'static>>>;
+    static CACHE: OnceLock<SeparatorCache> = OnceLock::new();
+    let cache = CACHE.get_or_init(|| Mutex::new(HashMap::new()));
     let gradient = brand_gradient();
+    let key = (width, gradient);
+    if let Ok(map) = cache.lock()
+        && let Some(line) = map.get(&key)
+    {
+        return line.clone();
+    }
+
     let total_chars = width;
     let mut colors: Vec<Color> = Vec::with_capacity(total_chars);
     for i in 0..total_chars {

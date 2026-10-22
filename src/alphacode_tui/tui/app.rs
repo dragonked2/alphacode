@@ -83,6 +83,7 @@ pub(crate) mod onboarding_flow;
 mod onboarding_flow_control;
 mod onboarding_repair;
 mod onboarding_sim;
+mod path_suggest;
 mod productivity;
 mod prompt_history;
 mod remote;
@@ -105,6 +106,7 @@ mod swarm_hint;
 mod terminal_liveness;
 mod terminal_setup_command;
 mod todos_view;
+mod transcript_search;
 mod tui_lifecycle;
 mod tui_lifecycle_runtime;
 mod tui_state;
@@ -827,6 +829,12 @@ enum ColdCacheWarningTrigger {
 #[derive(Clone, Debug, Default)]
 struct StreamingProgress {
     streaming_text: String,
+    /// Monotonic counter bumped on every mutation of `streaming_text`.
+    ///
+    /// The prepared-frame cache keys on the live stream. Hashing the whole
+    /// buffer on every frame is O(bytes); this counter makes the "did the
+    /// stream change?" question O(1) and exact.
+    streaming_text_version: u64,
     // Live token usage (per turn)
     streaming_input_tokens: u64,
     streaming_output_tokens: u64,
@@ -875,6 +883,30 @@ struct StreamingProgress {
 }
 
 impl StreamingProgress {
+    /// Append to the live stream and bump the mutation counter.
+    ///
+    /// Every mutation of `streaming_text` goes through one of these three
+    /// helpers so the counter can never drift out of sync with the buffer.
+    fn push_text(&mut self, text: &str) {
+        if text.is_empty() {
+            return;
+        }
+        self.streaming_text.push_str(text);
+        self.streaming_text_version = self.streaming_text_version.wrapping_add(1);
+    }
+
+    /// Replace the live stream wholesale and bump the mutation counter.
+    fn set_text(&mut self, text: String) {
+        self.streaming_text = text;
+        self.streaming_text_version = self.streaming_text_version.wrapping_add(1);
+    }
+
+    /// Clear the live stream and bump the mutation counter.
+    fn clear_text(&mut self) {
+        self.streaming_text.clear();
+        self.streaming_text_version = self.streaming_text_version.wrapping_add(1);
+    }
+
     /// Check whether the tail of `streaming_text` shows a repeating pattern.
     /// Returns `true` when the model appears stuck in a loop (same n-gram
     /// repeated `MIN_STREAK` times or more). The check is O(window) and
@@ -1002,6 +1034,13 @@ pub struct App {
     /// [`CommandUsageTracker`].
     command_usage: CommandUsageTracker,
     cursor_pos: usize,
+    /// Anchor of the keyboard text selection in the composer (a byte offset
+    /// into `input`), or `None` when nothing is selected.
+    ///
+    /// The anchor and `cursor_pos` together describe the selected range:
+    /// `cursor_pos` is the moving end, the anchor is where the selection
+    /// started. An anchor equal to the cursor means "no selection".
+    input_selection_anchor: Option<usize>,
     scroll_offset: usize,
     /// Pauses auto-scroll when user scrolls up during streaming
     auto_scroll_paused: bool,
@@ -1705,6 +1744,20 @@ pub struct App {
     tab_completion_state: Option<(String, usize)>,
     // Selected row in the visible command suggestion list.
     command_suggestion_selected: usize,
+    /// Slash token the user dismissed the command palette for.
+    ///
+    /// `Esc` on an open palette closes the popup and leaves the draft alone;
+    /// a second `Esc` clears the draft as usual. The dismissal is scoped to
+    /// the token that was open, so typing a *different* command reopens the
+    /// palette immediately.
+    dismissed_slash_prefix: Option<String>,
+    /// The `@`-mention the current suggestion list was built from.
+    ///
+    /// Accepting a path replaces *that* token. Re-deriving the token from the
+    /// caret at acceptance time would replace the whole draft whenever the
+    /// caret had moved out of the mention in the meantime.
+    command_suggestions_mention:
+        RefCell<Option<crate::alphacode_tui::tui::app::path_suggest::MentionToken>>,
     // Time when app started (for startup animations)
     app_started: Instant,
     // Whether the client terminal currently has focus. When the terminal window
@@ -1817,6 +1870,8 @@ pub struct App {
     workspace_client: super::workspace_client::WorkspaceClientState,
     /// Reverse prompt-history search overlay state (Ctrl+R). None = closed.
     prompt_history_search: Option<prompt_history::PromptHistorySearchState>,
+    /// Find-in-page over the rendered transcript (Ctrl+F). None = closed.
+    transcript_search: Option<super::transcript_search::TranscriptSearchState>,
     /// Lazily-loaded persisted cross-session prompt history (oldest first,
     /// deduped). None until first use; see `prompt_history.rs`.
     persisted_prompt_history: Option<Vec<String>>,

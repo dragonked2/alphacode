@@ -47,16 +47,19 @@ impl AdaptiveCycle {
     }
 
     /// OBSERVE: ingest a raw tool observation. Returns false when duplicate.
+    ///
+    /// `ingest_observation` already dedups on the content hash, so calling
+    /// `is_novel` first would hash every large observation body twice on the
+    /// hottest path in the cycle (every tool observation, every agent). One
+    /// pass: ingest, and treat `None` as "not novel".
     pub fn observe(&mut self, tool: String, content: String, agent_id: Option<String>) -> bool {
-        if !self.evidence.is_novel(&content) {
-            return false;
-        }
-        if let Some(obs) = self.evidence.ingest_observation(tool, content, agent_id) {
-            self.state.evidence_ids.insert(obs.id.clone());
-            self.evidence_version += 1;
-            true
-        } else {
-            false
+        match self.evidence.ingest_observation(tool, content, agent_id) {
+            Some(obs) => {
+                self.state.evidence_ids.insert(obs.id.clone());
+                self.evidence_version += 1;
+                true
+            }
+            None => false,
         }
     }
 

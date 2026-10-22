@@ -633,14 +633,20 @@ impl MultiProvider {
         let sequence = Self::fallback_sequence(active);
         let mut notes: Vec<String> = Vec::new();
         let mut failover_reason: Option<String> = None;
-        let (estimated_input_chars, estimated_input_tokens) =
-            Self::estimate_request_input(messages, tools, mode);
 
         for candidate in sequence {
             let label = Self::provider_label(candidate);
             let key = Self::provider_key(candidate);
 
             if candidate != active && failover_reason.is_some() {
+                // The estimate is only consumed by the failover error message,
+                // which is built when a failover is *already* failing. It
+                // serializes the entire message array and tool schema set, so
+                // computing it eagerly meant paying a second full
+                // serialization of the request on every call for a value used
+                // almost never. Compute it here, in the branch that needs it.
+                let (estimated_input_chars, estimated_input_tokens) =
+                    Self::estimate_request_input(messages, tools, mode);
                 let prompt = self.build_failover_prompt(
                     active,
                     candidate,

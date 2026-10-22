@@ -85,13 +85,13 @@ impl App {
             }
         }
         if !committed.is_empty() {
-            self.streaming.streaming_text.push_str(&committed);
+            self.streaming.push_text(&committed);
         }
         // Re-append the live tail for the in-progress (partial) line.
         let partial =
             crate::alphacode_tui_markdown::reasoning_partial_markup(&self.reasoning_pending_line);
         self.reasoning_partial_len = partial.len();
-        self.streaming.streaming_text.push_str(&partial);
+        self.streaming.push_text(&partial);
         self.refresh_split_view_if_needed();
     }
 
@@ -109,9 +109,10 @@ impl App {
         self.strip_reasoning_partial_tail();
         let pending = std::mem::take(&mut self.reasoning_pending_line);
         if !pending.is_empty() {
-            self.streaming.streaming_text.push_str(
-                &crate::alphacode_tui_markdown::reasoning_line_markup(&pending),
-            );
+            self.streaming
+                .push_text(&crate::alphacode_tui_markdown::reasoning_line_markup(
+                    &pending,
+                ));
         }
         self.reasoning_streaming = false;
 
@@ -130,9 +131,9 @@ impl App {
         // renders as a normal paragraph.
         if !self.streaming.streaming_text.ends_with("\n\n") {
             if self.streaming.streaming_text.ends_with('\n') {
-                self.streaming.streaming_text.push('\n');
+                self.streaming.push_text("\n");
             } else {
-                self.streaming.streaming_text.push_str("\n\n");
+                self.streaming.push_text("\n\n");
             }
         }
         self.refresh_split_view_if_needed();

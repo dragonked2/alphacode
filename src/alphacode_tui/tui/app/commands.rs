@@ -788,6 +788,26 @@ pub(super) fn handle_cancel_command(app: &mut App, trimmed: &str) -> bool {
     true
 }
 
+/// `/find <text>` opens the find-in-page overlay with the query pre-filled.
+///
+/// `/search` is a registered alias. With no argument the overlay opens empty
+/// so the user can type the query, which is the same path as `Ctrl+F`.
+pub(super) fn handle_find_command(app: &mut App, trimmed: &str) -> bool {
+    let Some(rest) =
+        slash_command_rest(trimmed, "/find").or_else(|| slash_command_rest(trimmed, "/search"))
+    else {
+        return false;
+    };
+
+    let query = rest.trim();
+    if query.is_empty() {
+        app.open_transcript_search();
+    } else {
+        app.open_transcript_search_with_query(query);
+    }
+    true
+}
+
 pub(super) fn handle_help_command(app: &mut App, trimmed: &str) -> bool {
     if let Some(topic) = trimmed
         .strip_prefix("/help ")

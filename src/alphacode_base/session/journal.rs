@@ -56,6 +56,32 @@ pub(super) enum PersistVectorMode {
     Full,
 }
 
+/// How the provider-message cache must be rebuilt on the next access.
+///
+/// `Clean` and `Append` describe the *canonical* history: the cached
+/// provider-facing transcript is up to date, or is up to date except for a
+/// suffix that can be appended.
+///
+/// `Bodies` is the state left behind when the cached message **bodies** were
+/// released to free memory but the per-message **prefix hashes** were kept.
+/// The hashes are cheap (one `u64` per message) and are what the client-side
+/// cache tracker compares against, so releasing them too would produce
+/// spurious `CLIENT_CACHE_VIOLATION` reports. The bodies must still be
+/// re-derived, but the re-derivation can reuse the retained prefix hashes
+/// instead of recomputing the whole hash chain from scratch.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub(super) enum ProviderMessagesCacheMode {
+    /// The cached transcript is current.
+    #[default]
+    Clean,
+    /// The cached transcript is current except for a suffix.
+    Append,
+    /// The cached transcript must be rebuilt in full.
+    Full,
+    /// The cached bodies were released; the prefix hashes are still valid.
+    Bodies,
+}
+
 #[derive(Debug, Clone, Default)]
 pub(super) struct SessionPersistState {
     pub(super) snapshot_exists: bool,
@@ -68,6 +94,14 @@ pub(super) struct SessionPersistState {
     pub(super) memory_injections_mode: PersistVectorMode,
     pub(super) replay_events_mode: PersistVectorMode,
     pub(super) last_meta: Option<SessionJournalMeta>,
+    /// Size of the session journal in bytes, tracked in memory.
+    ///
+    /// The append path used to `stat` the journal after every append purely
+    /// to compare its size against `MAX_SESSION_JOURNAL_BYTES`. The append
+    /// already knows how many bytes it wrote, so the size can be maintained
+    /// as a counter and the `stat` removed from the hot path. `None` means
+    /// "not yet known" — the next save falls back to a `stat` to seed it.
+    pub(super) journal_bytes: Option<u64>,
 }
 
 pub(super) fn metadata_requires_snapshot(

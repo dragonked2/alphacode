@@ -510,6 +510,24 @@ impl ActionSpace {
             a.provenance = "builtin_security".to_string();
             space.register(a);
         }
+        // Defense-bypass tradecraft from the curated bypass catalog
+        // (see [`super::bypass`]). Registered like any other builtin so the
+        // adaptive cycle weighs bypass probes against normal recon/attack
+        // actions by the same cost/risk/info-gain scheme instead of the
+        // catalog having to be remembered by the operator (or the model).
+        for (id, desc, cost, risk, gain) in super::bypass::action_definitions() {
+            let mut a = Action::new(
+                format!("bypass_{id}"),
+                desc.to_string(),
+                ActionClass::Tool,
+                Vec::new(),
+            );
+            a.estimated_cost = cost;
+            a.estimated_risk = risk;
+            a.expected_information_gain = gain;
+            a.provenance = "builtin_bypass".to_string();
+            space.register(a);
+        }
         space
     }
 

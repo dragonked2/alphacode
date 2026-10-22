@@ -1119,6 +1119,11 @@ pub(super) fn insert_input_text(app: &mut App, text: &str) {
     // to reconcile the transcript viewport.
     app.follow_chat_bottom_for_typing();
 
+    // Typing or pasting over a live selection replaces it, exactly like every
+    // other text field. The removal happens before the undo snapshot so the
+    // whole "replace the selection" edit is a single undo step.
+    app.take_input_selection_for_insert();
+
     let at_end = app.cursor_pos == app.input.len();
 
     // A habitual space typed after an auto-inserted picker separator would
@@ -1435,6 +1440,7 @@ pub(super) fn clear_input_for_escape(app: &mut App) {
     }
     app.input.clear();
     app.cursor_pos = 0;
+    app.clear_input_selection();
     app.reset_tab_completion();
     app.sync_model_picker_preview_from_input();
     // Escape always resets the paste-burst detector; the user has
@@ -1975,7 +1981,13 @@ pub(super) fn handle_control_key(app: &mut App, code: KeyCode) -> bool {
             true
         }
         KeyCode::Char('x') => {
-            cut_input_line_to_clipboard(app);
+            // `Ctrl+X` cuts the selection when there is one, and the whole
+            // draft otherwise (the historic behaviour).
+            if app.has_input_selection() {
+                app.cut_input_selection_to_clipboard();
+            } else {
+                cut_input_line_to_clipboard(app);
+            }
             true
         }
         KeyCode::Char('a') => {
@@ -2089,7 +2101,13 @@ pub(super) fn handle_super_key(app: &mut App, code: KeyCode) -> bool {
             true
         }
         KeyCode::Char('x') => {
-            cut_input_line_to_clipboard(app);
+            // `Cmd+X` cuts the selection when there is one, and the whole
+            // draft otherwise (the historic behaviour).
+            if app.has_input_selection() {
+                app.cut_input_selection_to_clipboard();
+            } else {
+                cut_input_line_to_clipboard(app);
+            }
             true
         }
         KeyCode::Char('v') => {
@@ -2557,6 +2575,14 @@ pub(super) fn handle_modal_key(
     code: KeyCode,
     modifiers: KeyModifiers,
 ) -> Result<bool> {
+    // The transcript find-in-page overlay claims every key while it is open,
+    // so it is checked before the other modals: it is the most recently
+    // opened surface and the user is typing into it.
+    if app.transcript_search_is_open() {
+        app.handle_transcript_search_key(code, modifiers);
+        return Ok(true);
+    }
+
     if app.prompt_history_search.is_some() {
         app.handle_prompt_history_search_key(code, modifiers);
         return Ok(true);
@@ -2813,14 +2839,94 @@ fn collapse_recent_burst_into_placeholder(app: &mut App, lines: usize) {
     let _ = &content;
 }
 
+/// End of the word to the right of `pos`, for word-wise selection.
+///
+/// Unlike `find_word_boundary_forward` (which skips the current word *and* the
+/// whitespace after it, because it is used to jump between words), this stops
+/// at the end of the current word. That is what `Ctrl+Shift+Right` selects in
+/// every mainstream editor.
+fn word_end_forward(input: &str, pos: usize) -> usize {
+    let len = input.len();
+    let mut p = pos.min(len);
+    while p < len {
+        let ch = input[p..].chars().next().unwrap_or(' ');
+        if ch.is_whitespace() {
+            break;
+        }
+        p = crate::alphacode_tui::tui::core::next_grapheme_boundary(input, p);
+    }
+    p
+}
+
+/// Keyboard text selection in the composer.
+///
+/// Every text field on the planet supports `Shift+Arrow`; the composer only
+/// had mouse drags, which made "fix the typo in the middle of my prompt" a
+/// two-handed operation. This handler owns the `Shift` gestures:
+///
+/// - `Shift+Left` / `Shift+Right` — extend by one grapheme cluster
+/// - `Ctrl/Cmd/Alt+Shift+Left` / `...+Right` — extend by one word
+/// - `Shift+Home` / `Shift+End` — extend to the start / end of the draft
+pub(super) fn handle_input_selection_key(
+    app: &mut App,
+    code: KeyCode,
+    modifiers: KeyModifiers,
+) -> bool {
+    if !modifiers.contains(KeyModifiers::SHIFT) {
+        return false;
+    }
+    // Word-wise extension. Ctrl and Cmd are the readline/terminal norms;
+    // Alt is accepted too because several terminals forward Option as Alt
+    // and macOS-style keyboards send Cmd where others send Ctrl.
+    let wordwise =
+        modifiers.intersects(KeyModifiers::CONTROL | KeyModifiers::SUPER | KeyModifiers::ALT);
+
+    match code {
+        KeyCode::Left => {
+            let next = if wordwise {
+                app.find_word_boundary_back()
+            } else {
+                crate::alphacode_tui::tui::core::prev_grapheme_boundary(&app.input, app.cursor_pos)
+            };
+            app.extend_input_selection(next);
+            true
+        }
+        KeyCode::Right => {
+            let next = if wordwise {
+                word_end_forward(&app.input, app.cursor_pos)
+            } else {
+                crate::alphacode_tui::tui::core::next_grapheme_boundary(&app.input, app.cursor_pos)
+            };
+            app.extend_input_selection(next);
+            true
+        }
+        KeyCode::Home => {
+            app.extend_input_selection(0);
+            true
+        }
+        KeyCode::End => {
+            app.extend_input_selection(app.input.len());
+            true
+        }
+        _ => false,
+    }
+}
+
 pub(super) fn handle_basic_key(app: &mut App, code: KeyCode) -> bool {
     match code {
         KeyCode::Char(c) => handle_text_input(app, &c.to_string()),
         KeyCode::Backspace => {
+            // A live selection is deleted as a unit, exactly like every other
+            // text field: Backspace removes the selected range, and a second
+            // Backspace removes the character before the caret.
+            if app.delete_input_selection() {
+                return true;
+            }
             if app.cursor_pos > 0 {
                 // Clamp to a char boundary first: a cursor left mid-grapheme by
-                // any desync would otherwise make `drain` panic and take the
-                // whole process down (release builds use panic=abort).
+                // any desync would otherwise make `drain` panic. The editor
+                // has to stay correct on its own terms — a panic here would
+                // abort the turn, not just the keypress.
                 let pos = app.cursor_pos.min(app.input.len());
                 let pos = if app.input.is_char_boundary(pos) {
                     pos
@@ -2837,9 +2943,12 @@ pub(super) fn handle_basic_key(app: &mut App, code: KeyCode) -> bool {
             true
         }
         KeyCode::Delete => {
+            if app.delete_input_selection() {
+                return true;
+            }
             if app.cursor_pos < app.input.len() {
                 // Clamp to a char boundary so a desynced cursor can never panic
-                // `drain` (release builds use panic=abort).
+                // `drain`.
                 let pos = if app.input.is_char_boundary(app.cursor_pos) {
                     app.cursor_pos
                 } else {
@@ -2859,6 +2968,8 @@ pub(super) fn handle_basic_key(app: &mut App, code: KeyCode) -> bool {
             true
         }
         KeyCode::Left => {
+            // A caret move without Shift collapses any selection.
+            app.clear_input_selection();
             if app.cursor_pos > 0 {
                 app.cursor_pos = crate::alphacode_tui::tui::core::prev_grapheme_boundary(
                     &app.input,
@@ -2872,6 +2983,7 @@ pub(super) fn handle_basic_key(app: &mut App, code: KeyCode) -> bool {
             true
         }
         KeyCode::Right => {
+            app.clear_input_selection();
             if app.cursor_pos == app.input.len() && app.accept_input_history_completion() {
                 return true;
             }
@@ -2884,10 +2996,12 @@ pub(super) fn handle_basic_key(app: &mut App, code: KeyCode) -> bool {
             true
         }
         KeyCode::Home => {
+            app.clear_input_selection();
             app.cursor_pos = 0;
             true
         }
         KeyCode::End => {
+            app.clear_input_selection();
             app.cursor_pos = app.input.len();
             true
         }
@@ -3136,6 +3250,25 @@ impl App {
             return Ok(());
         }
 
+        // Keyboard text selection in the composer. This runs before the Alt /
+        // Ctrl chord handlers so `Alt+Shift+Left` extends the selection by word
+        // instead of being swallowed by the plain word-movement binding.
+        if handle_input_selection_key(self, code, modifiers) {
+            return Ok(());
+        }
+
+        // `Ctrl+C` with a live composer selection copies it (universal muscle
+        // memory) instead of quitting the app. Without a selection the chord
+        // keeps its interrupt/quit meaning.
+        if code == KeyCode::Char('c')
+            && modifiers.contains(KeyModifiers::CONTROL)
+            && !modifiers.contains(KeyModifiers::SUPER)
+            && self.has_input_selection()
+        {
+            self.copy_input_selection_to_clipboard();
+            return Ok(());
+        }
+
         if handle_pre_control_shortcuts(self, code, modifiers) {
             return Ok(());
         }
@@ -3160,6 +3293,15 @@ impl App {
 
         if code == KeyCode::Down && is_prompt_recall_modifier(modifiers) {
             handle_prompt_history_navigation(self, KeyCode::Down, KeyModifiers::CONTROL);
+            return Ok(());
+        }
+
+        // Ctrl+F opens find-in-page over the rendered transcript. This is the
+        // chord every editor and browser uses for "find", so it is worth the
+        // one binding it takes from the composer: word-forward stays
+        // available on Alt+F and Ctrl+Right.
+        if code == KeyCode::Char('f') && modifiers.contains(KeyModifiers::CONTROL) {
+            self.open_transcript_search();
             return Ok(());
         }
 
@@ -3587,7 +3729,7 @@ impl App {
         if self.reasoning_partial_len > 0 {
             self.reasoning_partial_len = 0;
         }
-        self.streaming.streaming_text.push_str(text);
+        self.streaming.push_text(text);
         // Repetition detection is a hard stop. Replaying the same prompt can
         // reproduce the same loop, while allowing the stream to continue after
         // an exhausted retry budget can burn tokens indefinitely.
@@ -3657,7 +3799,7 @@ impl App {
     }
 
     pub(super) fn replace_streaming_text(&mut self, text: String) {
-        self.streaming.streaming_text = text;
+        self.streaming.set_text(text);
         // The live reasoning tail belonged to the *previous* buffer. Keeping its
         // byte length would make `strip_reasoning_partial_tail` slice at an
         // offset that has no relation to the new contents (and can land
@@ -3670,7 +3812,7 @@ impl App {
     }
 
     pub(super) fn clear_streaming_render_state(&mut self) {
-        self.streaming.streaming_text.clear();
+        self.streaming.clear_text();
         self.streaming.reset_repetition();
         self.stream_message_ended = false;
         self.deferred_stream_done_id = None;

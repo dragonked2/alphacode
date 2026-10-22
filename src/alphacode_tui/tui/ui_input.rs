@@ -172,9 +172,17 @@ fn command_suggestions_overlay_rect(
 
 /// Whether the command palette is active for the current composer state.
 fn command_suggestions_active(app: &dyn TuiState, suggestions: &[(String, &'static str)]) -> bool {
+    if suggestions.is_empty() {
+        return false;
+    }
+    // An `@`-mention is an explicit composer mode, like a slash command: the
+    // path palette stays usable while a turn runs, because a queued prompt
+    // can still reference a file.
+    if app.has_active_mention() {
+        return true;
+    }
     let mode = composer_mode(app.input(), app.is_remote_mode());
-    !suggestions.is_empty()
-        && matches!(mode, ComposerMode::SlashCommand | ComposerMode::Chat)
+    matches!(mode, ComposerMode::SlashCommand | ComposerMode::Chat)
         && (matches!(mode, ComposerMode::SlashCommand) || !app.is_processing())
 }
 
@@ -369,6 +377,20 @@ fn command_suggestion_lines(
         let more_count = suggestions.len().saturating_sub(window_end);
         let selected_visible = selected.saturating_sub(window_start);
 
+        // Align the descriptions in a column. A palette whose descriptions
+        // start at a different column on every row is much harder to scan
+        // than a table, and the palette is a *list of options* — the reader is
+        // usually looking for the description, not the name.
+        let label_width = limited
+            .iter()
+            .map(|(cmd, _)| unicode_width::UnicodeWidthStr::width(cmd.as_str()))
+            .max()
+            .unwrap_or(0);
+
+        // The selected row carries a background so the eye can find it
+        // instantly, the same treatment the transcript uses for selections.
+        let selection_bg = super::selection_highlight::selection_bg_for(None);
+
         for (i, (cmd, desc)) in limited.iter().enumerate() {
             let is_selected = i == selected_visible;
             let command_style = if is_selected {
@@ -386,6 +408,10 @@ fn command_suggestion_lines(
                 command_style,
             )];
             row.extend(highlight(cmd, command_style));
+            let cmd_width = unicode_width::UnicodeWidthStr::width(cmd.as_str());
+            if cmd_width < label_width {
+                row.push(Span::raw(" ".repeat(label_width - cmd_width)));
+            }
             row.push(Span::styled(format!("  {}", desc), description_style));
             if i == 0 && window_start > 0 {
                 row.push(Span::styled(
@@ -399,7 +425,13 @@ fn command_suggestion_lines(
                     Style::default().fg(BrandTheme::dim()),
                 ));
             }
-            lines.push(Line::from(row));
+            let mut line = Line::from(row);
+            if is_selected {
+                for span in &mut line.spans {
+                    span.style = span.style.bg(selection_bg);
+                }
+            }
+            lines.push(line);
         }
     }
     if !suggestions.is_empty() {
@@ -419,8 +451,16 @@ fn command_suggestion_lines(
         } else {
             "Tab complete"
         };
+        // When the list is longer than the visible window, say where the
+        // selection sits. Without it the user has to count rows to know how
+        // far through a hundred commands they are.
+        let position_hint = if suggestions.len() > app::COMMAND_SUGGESTION_VISIBLE_LIMIT {
+            format!(" · {}/{}", selected + 1, suggestions.len())
+        } else {
+            String::new()
+        };
         lines.push(Line::from(Span::styled(
-            format!("  {} · {}", navigation_hint, enter_action),
+            format!("  {}{} · {}", navigation_hint, position_hint, enter_action),
             Style::default().fg(BrandTheme::dim()),
         )));
     }
@@ -3867,9 +3907,14 @@ pub(super) fn draw_input(
         return None;
     }
 
-    let (all_lines, cursor_line, cursor_col) = wrap_input_text(
+    // The wrapped segments are needed twice this frame — for the rendered rows
+    // and for the copy-selection snapshot — so they are computed once here.
+    let wrapped_segments = wrap_input_segments(input_text, line_width);
+
+    let (all_lines, cursor_line, cursor_col) = wrap_input_text_with_segments(
         input_text,
         cursor_pos,
+        &wrapped_segments,
         line_width,
         &num_str,
         &prompt_char,
@@ -3973,7 +4018,7 @@ pub(super) fn draw_input(
     // cover the typed text, never the prompt decoration.
     if visible_input_rows > 0 {
         let (wrapped_plain, raw_plain, line_map) =
-            input_copy_snapshot_parts(input_text, line_width);
+            input_copy_snapshot_parts(input_text, &wrapped_segments);
         let left_margins: Vec<u16> = (0..visible_input_rows)
             .map(|rel| {
                 let abs = scroll_offset + rel;
@@ -4040,6 +4085,57 @@ pub(super) fn draw_input(
         }
     }
 
+    // Paint the keyboard text selection over the composer text. The range is
+    // a byte range in the draft; the rendered rows are wrapped segments, so
+    // the range is mapped through the segment grapheme spans and then into
+    // display columns. The style matches the mouse-driven copy selection so
+    // both ways of selecting look identical.
+    if let Some((sel_start, sel_end)) = app.input_selection_range() {
+        // A live mouse copy-selection owns the highlight while it is active;
+        // painting both at once would fight over the same cells.
+        let mouse_selection_active = app.copy_selection_range().is_some_and(|range| {
+            range.start.pane == crate::alphacode_tui::tui::CopySelectionPane::Input
+                && range.end.pane == crate::alphacode_tui::tui::CopySelectionPane::Input
+        });
+        if !mouse_selection_active {
+            let start_grapheme = crate::alphacode_tui::tui::core::byte_offset_to_grapheme_index(
+                input_text, sel_start,
+            );
+            let end_grapheme =
+                crate::alphacode_tui::tui::core::byte_offset_to_grapheme_index(input_text, sel_end);
+            for rel in 0..visible_input_rows {
+                let abs = scroll_offset + rel;
+                let Some(segment) = wrapped_segments.get(abs) else {
+                    continue;
+                };
+                // The selection covers `[start_grapheme, end_grapheme)` in draft
+                // grapheme space. Clip it to this row's span.
+                let row_start = start_grapheme.max(segment.start_grapheme);
+                let row_end = end_grapheme.min(segment.end_grapheme);
+                if row_start >= row_end {
+                    continue;
+                }
+                let start_col = cursor_col_for_segment(segment, row_start);
+                let end_col = cursor_col_for_segment(segment, row_end);
+                let Some(line) = lines.get_mut(suggestions_offset + rel) else {
+                    continue;
+                };
+                // In centered mode the whole row is shifted by the row's own
+                // centering offset, so the highlight columns move with it.
+                let x_offset = if centered {
+                    (area.width as usize).saturating_sub(line.width()) / 2
+                } else {
+                    0
+                };
+                *line = highlight_line_selection(
+                    line,
+                    x_offset + prompt_len + start_col,
+                    x_offset + prompt_len + end_col,
+                );
+            }
+        }
+    }
+
     // Show a dim inline preview for a unique recent-prompt match. It is added
     // after selection painting so preview text is never copied or highlighted
     // as if it were part of the user's actual draft.
@@ -4048,6 +4144,7 @@ pub(super) fn draw_input(
         && !app.is_processing()
         && cursor_pos == input_text.len()
         && app.copy_selection_range().is_none()
+        && app.input_selection_range().is_none()
         && let Some(last_line) =
             lines.get_mut(suggestions_offset + cursor_line.saturating_sub(scroll_offset))
         && let Some(suffix) =
@@ -4119,9 +4216,8 @@ struct WrappedInputSegment {
 /// a soft wrap yields the original text without injected line breaks.
 fn input_copy_snapshot_parts(
     input: &str,
-    line_width: usize,
+    segments: &[WrappedInputSegment],
 ) -> (Vec<String>, Vec<String>, Vec<super::WrappedLineMap>) {
-    let segments = wrap_input_segments(input, line_width);
     let raw_lines: Vec<String> = input.split('\n').map(str::to_owned).collect();
 
     // (raw_line, display_col) at each grapheme boundary of the input.
@@ -4141,7 +4237,7 @@ fn input_copy_snapshot_parts(
 
     let mut wrapped_plain = Vec::with_capacity(segments.len());
     let mut line_map = Vec::with_capacity(segments.len());
-    for segment in &segments {
+    for segment in segments {
         let (raw_line, start_col) = boundaries
             .get(segment.start_grapheme)
             .copied()
@@ -4344,6 +4440,39 @@ pub(crate) fn wrap_input_text(
     caret_color: Color,
     prompt_len: usize,
 ) -> (Vec<Line<'static>>, usize, usize) {
+    let segments = wrap_input_segments(input, line_width);
+    wrap_input_text_with_segments(
+        input,
+        cursor_pos,
+        &segments,
+        line_width,
+        num_str,
+        prompt_char,
+        caret_color,
+        prompt_len,
+    )
+}
+
+/// Lay out the composer rows from an already-computed segment list.
+///
+/// The segment list is the expensive part of laying out the composer (it
+/// splits the input into graphemes and measures every one), and the frame
+/// needs it twice: once for the rendered rows and once for the copy-selection
+/// snapshot. Computing it once and passing it in halves that work.
+#[expect(
+    clippy::too_many_arguments,
+    reason = "Composer layout carries explicit render state to avoid hidden coupling"
+)]
+fn wrap_input_text_with_segments(
+    input: &str,
+    cursor_pos: usize,
+    wrapped_segments: &[WrappedInputSegment],
+    line_width: usize,
+    num_str: &str,
+    prompt_char: &str,
+    caret_color: Color,
+    prompt_len: usize,
+) -> (Vec<Line<'static>>, usize, usize) {
     // Every span built below is owned (`to_string()` / `segment.text.clone()`),
     // so the returned Lines never borrow `prompt_char`. Dropping the lifetime
     // lets callers build the prefix at runtime — it now embeds the active
@@ -4351,7 +4480,6 @@ pub(crate) fn wrap_input_text(
     // frame is drawn.
     let cursor_grapheme_pos =
         crate::alphacode_tui::tui::core::byte_offset_to_grapheme_index(input, cursor_pos);
-    let wrapped_segments = wrap_input_segments(input, line_width);
     let mut lines: Vec<Line> = Vec::new();
     let mut cursor_line = 0;
     let mut cursor_col = 0;
@@ -4425,6 +4553,8 @@ pub(crate) fn wrap_input_text(
 /// line, and the status bar instead.
 fn empty_composer_placeholder(max_width: usize, _prompt_char: &str) -> String {
     let candidates: &[&str] = &[
+        "Ask Alphacode anything · @ files · / commands · F1 help",
+        "Ask Alphacode anything · @ files · / commands",
         "Ask Alphacode anything · / commands · F1 help",
         "Ask Alphacode anything · / commands",
         "Ask Alphacode anything",

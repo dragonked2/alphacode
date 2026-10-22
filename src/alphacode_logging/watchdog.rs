@@ -124,12 +124,27 @@ pub fn beat(phase: &'static str) {
     LAST_BEAT_MS.store(now_ms(), Ordering::Relaxed);
     BEAT_COUNT.fetch_add(1, Ordering::Relaxed);
 
+    // Fast path: the phase has not changed since the last beat. Phase labels
+    // are `&'static str` literals, so the same call site always passes the
+    // same pointer — comparing pointers is a sound, **lock-free** test. A
+    // false negative (different address, identical content) merely falls
+    // through to the slow path, which compares content and returns early.
+    //
+    // The previous code took the global phase-table mutex on every frame and
+    // every streaming chunk, then linearly scanned the table.
+    if CURRENT_PHASE_PTR.load(Ordering::Relaxed) == phase.as_ptr() as usize {
+        return;
+    }
+
     let current = PHASE.load(Ordering::Relaxed);
     let table = phases();
     if table
         .lock()
         .is_ok_and(|guard| guard.get(current).is_some_and(|name| *name == phase))
     {
+        // Already the active phase (different pointer, same content): record
+        // the pointer so the next call hits the lock-free fast path.
+        CURRENT_PHASE_PTR.store(phase.as_ptr() as usize, Ordering::Relaxed);
         return;
     }
     let Ok(mut guard) = table.lock() else {
@@ -143,7 +158,17 @@ pub fn beat(phase: &'static str) {
         }
     };
     PHASE.store(index, Ordering::Relaxed);
+    CURRENT_PHASE_PTR.store(phase.as_ptr() as usize, Ordering::Relaxed);
 }
+
+/// Data pointer of the currently-active phase label.
+///
+/// Phase labels are `&'static str` literals, so a given call site always
+/// passes the *same* string with the same address. Comparing data pointers
+/// is therefore a sound, **lock-free** test for "the phase has not changed":
+/// a false negative (different address, same content) merely falls through
+/// to the slow path, which compares content and returns early.
+static CURRENT_PHASE_PTR: AtomicUsize = AtomicUsize::new(0);
 
 fn current_phase() -> &'static str {
     let index = PHASE.load(Ordering::Relaxed);

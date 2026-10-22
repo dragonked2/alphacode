@@ -311,42 +311,45 @@ impl AntigravityProvider {
             },
         };
 
-        let contents_value = serde_json::to_value(&request.request.contents).unwrap_or(Value::Null);
-        let content_items = contents_value.as_array().cloned().unwrap_or_default();
-        let system_value = request
-            .request
-            .system_instruction
-            .as_ref()
-            .and_then(|system| serde_json::to_value(system).ok());
-        let tools_value = request
-            .request
-            .tools
-            .as_ref()
-            .and_then(|tools| serde_json::to_value(tools).ok());
-        let payload = json!({
-            "model": &request.model,
-            "contents": contents_value,
-            "system_instruction": system_value.as_ref(),
-            "tools": tools_value.as_ref(),
-            "tool_config": &request.request.tool_config,
-        });
-        crate::alphacode_provider_core::fingerprint::log_provider_canonical_input(
-            "antigravity",
-            model,
-            "gemini_generate_content",
-            &payload,
-            &content_items,
-            system_value.as_ref(),
-            tools_value.as_ref(),
-            request.request.tools.as_ref().map(|tools| tools.len()),
-            &[
-                (
-                    "session_id_present",
-                    request.request.session_id.is_some().to_string(),
-                ),
-                ("project_present", (!request.project.is_empty()).to_string()),
-            ],
-        );
+        if crate::alphacode_provider_core::fingerprint::fingerprint_enabled() {
+            let contents_value =
+                serde_json::to_value(&request.request.contents).unwrap_or(Value::Null);
+            let content_items = contents_value.as_array().cloned().unwrap_or_default();
+            let system_value = request
+                .request
+                .system_instruction
+                .as_ref()
+                .and_then(|system| serde_json::to_value(system).ok());
+            let tools_value = request
+                .request
+                .tools
+                .as_ref()
+                .and_then(|tools| serde_json::to_value(tools).ok());
+            let payload = json!({
+                "model": &request.model,
+                "contents": contents_value,
+                "system_instruction": system_value.as_ref(),
+                "tools": tools_value.as_ref(),
+                "tool_config": &request.request.tool_config,
+            });
+            crate::alphacode_provider_core::fingerprint::log_provider_canonical_input(
+                "antigravity",
+                model,
+                "gemini_generate_content",
+                &payload,
+                &content_items,
+                system_value.as_ref(),
+                tools_value.as_ref(),
+                request.request.tools.as_ref().map(|tools| tools.len()),
+                &[
+                    (
+                        "session_id_present",
+                        request.request.session_id.is_some().to_string(),
+                    ),
+                    ("project_present", (!request.project.is_empty()).to_string()),
+                ],
+            );
+        }
 
         let response = self
             .client

@@ -1,6 +1,6 @@
 [package]
 name = "alphacode"
-version = "1.0.86"
+version = "1.0.87"
 authors = ["Ali Essam <tlbbeg313@gmail.com>"]
 description = "Terminal-native coding agent with multi-model orchestration, swarm coordination, and 40+ tools — built to make the smallest change that solves the problem."
 homepage = "https://alphacli.github.io/"
@@ -97,7 +97,7 @@ xa11y = "0.9"
 # Publishing note: a version requirement is mandatory next to `path`
 # (cargo rejects publishing path-only deps). `alphagrep` ships to crates.io
 # alongside this crate, so the two stay version-locked while vendored here.
-alphagrep = { version = "0.1.6", path = "alphagrep" }
+alphagrep = { version = "0.1.7", path = "alphagrep" }
 
 # TUI
 ratatui = "0.30"
@@ -244,7 +244,26 @@ objc2-app-kit = { version = "0.3", features = [
 opt-level = 3
 lto = "thin"
 codegen-units = 16
-panic = "abort"
+# `panic = "unwind"` (the default) is deliberate, and the single most
+# important stability setting in this file.
+#
+# The TUI relies on `std::panic::catch_unwind` to keep running when a frame
+# fails to render: `ui::draw` wraps the whole draw pass and falls back to a
+# "rendering error recovered" frame, and the mermaid renderer wraps the
+# third-party layout/rasterise step so a bad diagram degrades to an error
+# card instead of taking the process down.
+#
+# Under `panic = "abort"` every one of those `catch_unwind` calls is inert:
+# the first panic aborts the process before the handler can run, so the
+# recovery paths only exist in debug builds and the shipped binary dies on
+# the exact failures they were written to survive. Unwinding costs a little
+# binary size and a negligible amount of steady-state speed, and buys a
+# session that survives a single bad frame instead of losing the terminal.
+#
+# `cargo clippy` also flags `panic = "abort"` builds that contain
+# `catch_unwind` as unreachable recovery logic, so this must stay in sync
+# with the recovery sites in `alphacode_tui` and `alphacode_tui_mermaid`.
+panic = "unwind"
 strip = true
 debug = 0
 incremental = false
@@ -286,9 +305,11 @@ codegen-units = 1
 # full debug info. The heavy optional stacks (embeddings, pdf) are no longer
 # in `default`, so cold builds skip ~150 dependency crates entirely.
 #
-# `panic = "abort"` is deliberately absent from `[profile.test]`: the test
-# harness needs unwinding to catch and report `#[should_panic]` and failed
-# assertions, and cargo ignores the key there anyway.
+# The panic strategy is deliberately absent from `[profile.dev]` and
+# `[profile.test]`: both need unwinding — the test harness to catch and
+# report `#[should_panic]` and failed assertions, and the dev build to keep
+# the `catch_unwind` recovery paths in `alphacode_tui` exercisable while
+# working on them.
 [profile.dev]
 opt-level = 1
 codegen-units = 32

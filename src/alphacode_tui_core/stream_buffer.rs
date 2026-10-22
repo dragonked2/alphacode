@@ -232,6 +232,22 @@ impl StreamBuffer {
         self.jitter = JitterRecorder::default();
     }
 
+    /// Reset the pacing clock so the next reveal credits no elapsed time.
+    ///
+    /// The reveal controller measures its step from the previous reveal, so a
+    /// buffer that was created well before its first chunk credits that whole
+    /// idle gap (bounded by [`MAX_REVEAL_STEP`]) to the first chunk and dumps
+    /// it at once. That is the intended behaviour for a real turn — the user
+    /// has been waiting — but it makes "is there still a backlog?" depend on
+    /// wall-clock timing, which is not a question a test can answer reliably.
+    ///
+    /// Resetting the clock gives the caller a deterministic starting point.
+    pub fn reset_reveal_clock(&mut self) {
+        self.last_reveal = Instant::now();
+        self.carry = 0.0;
+        self.ceiling_carry = 0.0;
+    }
+
     /// Append a chunk, coalescing with the previous queue entry when it has the
     /// same kind so the queue stays short under token-level feeds.
     fn push_chunk(&mut self, kind: StreamKind, text: &str) {

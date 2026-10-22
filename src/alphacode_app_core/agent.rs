@@ -9,12 +9,14 @@ mod goal_evaluator;
 mod inline_tail;
 mod interrupts;
 mod messages;
+mod pacing;
 mod parallel_tools;
 mod playbook_match;
 mod prompting;
 mod provider;
 mod response_recovery;
 mod status;
+mod streamed_tool_results;
 mod streaming;
 mod tools;
 mod turn_execution;
@@ -24,8 +26,8 @@ mod utils;
 
 use self::streaming::{send_stream_keepalive_mpsc, stream_keepalive_ticker};
 use self::tools::{
-    cap_sdk_tool_content_for_history, cap_tool_output_for_history, print_tool_summary,
-    tool_output_side_pane_images, tool_output_to_content_blocks,
+    cap_sdk_tool_content_for_history, cap_tool_output_for_history, format_tool_output_preview,
+    print_tool_summary, tool_output_side_pane_images, tool_output_to_content_blocks,
 };
 use self::utils::trace_enabled;
 use crate::alphacode_app_core::build;
@@ -44,6 +46,7 @@ use crate::alphacode_app_core::session::{
 };
 use crate::alphacode_app_core::skill::SkillRegistry;
 use crate::alphacode_app_core::tool::{Registry, ToolContext, ToolExecutionMode};
+use crate::alphacode_tool_core::ToolExecutionClass;
 use anyhow::Result;
 use futures::StreamExt;
 use std::collections::{HashMap, HashSet};
@@ -374,25 +377,31 @@ impl Agent {
     }
 
     fn current_skills_snapshot(&self) -> Arc<SkillRegistry> {
+        let working_dir = self
+            .session
+            .working_dir
+            .as_deref()
+            .map(std::path::Path::new);
+        // Fast path: a fresh composed registry for this working dir is
+        // already cached — return a shared handle directly. A hit pays no
+        // registry clone and no project-overlay disk rescan (audit M23; the
+        // pre-fix path cloned the full registry (≈1 MB of `SKILL.md` text)
+        // and re-scanned three skill directories for every caller between
+        // full skill loads).
+        if let Some(shared) = SkillRegistry::effective_cached_peek(working_dir) {
+            return shared;
+        }
         // Global skills come from the process-wide shared registry; the
-        // project-local overlay is composed fresh from this session's
-        // workspace root so per-repo skills are session-scoped, immediately
-        // visible, and never leak across sessions (issue #457).
+        // project-local overlay is composed from this session's workspace
+        // root so per-repo skills are session-scoped, immediately visible,
+        // and never leak across sessions (issue #457).
         let global = self
             .registry
             .skills()
             .try_read()
             .map(|skills| Arc::new(skills.clone()))
             .unwrap_or_else(|_| self.skills.clone());
-        let working_dir = self
-            .session
-            .working_dir
-            .as_deref()
-            .map(std::path::Path::new);
-        Arc::new(SkillRegistry::effective_for_working_dir(
-            &global,
-            working_dir,
-        ))
+        SkillRegistry::effective_for_working_dir_cached(&global, working_dir)
     }
 
     pub fn available_skill_names(&self) -> Vec<String> {
@@ -702,7 +711,7 @@ impl Agent {
         Ok(())
     }
 
-    fn messages_for_provider(&mut self) -> (Vec<Message>, Option<CompactionEvent>) {
+    async fn messages_for_provider(&mut self) -> (Vec<Message>, Option<CompactionEvent>) {
         if self.provider.supports_compaction() || self.session.compaction.is_some() {
             let compaction = self.registry.compaction();
             match compaction.try_write() {
@@ -712,8 +721,9 @@ impl Agent {
                     let messages = {
                         let all_messages = self.session.provider_messages();
                         if self.provider.uses_alphacode_compaction() {
-                            let action =
-                                manager.ensure_context_fits(all_messages, self.provider.clone());
+                            let action = manager
+                                .ensure_context_fits(all_messages, self.provider.clone())
+                                .await;
                             match action {
                                 crate::compaction::CompactionAction::BackgroundStarted {
                                     trigger,

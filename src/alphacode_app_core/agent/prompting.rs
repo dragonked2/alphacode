@@ -321,14 +321,17 @@ impl Agent {
             );
         }
 
+        // One snapshot, used for both consumers. `current_skills_snapshot`
+        // deep-clones the whole skill registry and re-scans the project
+        // overlay directories, so calling it twice per prompt build cost two
+        // full registry clones plus two disk scans for the same data.
         let skills = self.current_skills_snapshot();
         let skill_prompt = self
             .active_skill
             .as_ref()
             .and_then(|name| skills.get(name).map(|skill| skill.get_prompt().to_string()));
 
-        let available_skills: Vec<crate::prompt::SkillInfo> = self
-            .current_skills_snapshot()
+        let available_skills: Vec<crate::prompt::SkillInfo> = skills
             .list()
             .iter()
             .map(|skill| crate::prompt::SkillInfo {

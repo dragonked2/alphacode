@@ -599,6 +599,8 @@ pub mod tests {
 
     include!("command_suggestions_cache.rs");
     include!("command_usage_rank.rs");
+    include!("composer_mentions.rs");
+    include!("composer_selection.rs");
     include!("hotkey_feedback_e2e.rs");
     include!("image_placeholder_commands.rs");
     include!("input_copy_selection.rs");
@@ -646,4 +648,5 @@ pub mod tests {
     include!("swarm_plan_no_inline_graph.rs");
     include!("terminal_setup_command.rs");
     include!("todo_card.rs");
+    include!("transcript_search.rs");
 }

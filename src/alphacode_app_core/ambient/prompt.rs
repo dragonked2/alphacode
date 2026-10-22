@@ -45,45 +45,26 @@ pub fn gather_memory_graph_health(
 ) -> MemoryGraphHealth {
     let mut health = MemoryGraphHealth::default();
 
-    // Accumulate stats from project + global graphs
-    for graph in [
-        memory_manager.load_project_graph(),
-        memory_manager.load_global_graph(),
-    ]
-    .into_iter()
-    .flatten()
-    {
-        let active_count = graph.memories.values().filter(|m| m.active).count();
-        let inactive_count = graph.memories.values().filter(|m| !m.active).count();
-        health.total += graph.memories.len();
-        health.active += active_count;
-        health.inactive += inactive_count;
+    // Accumulate stats from project + global graphs. The manager computes
+    // the counters from its cached graph without cloning it (audit M22);
+    // the old code deep-cloned both graphs per ambient cycle just to count
+    // entries.
+    let project_stats = memory_manager
+        .project_graph_stats()
+        .ok()
+        .unwrap_or_default();
+    let global_stats = memory_manager.global_graph_stats().ok().unwrap_or_default();
 
-        // Low confidence: effective confidence < 0.1
-        health.low_confidence += graph
-            .memories
-            .values()
-            .filter(|m| m.active && m.effective_confidence() < 0.1)
-            .count();
-
-        // Missing embeddings
-        health.missing_embeddings += graph
-            .memories
-            .values()
-            .filter(|m| m.active && m.embedding.is_none())
-            .count();
-
-        // Count contradiction edges
-        for edges in graph.edges.values() {
-            for edge in edges {
-                if matches!(edge.kind, crate::memory_graph::EdgeKind::Contradicts) {
-                    health.contradictions += 1;
-                }
-            }
-        }
+    for stats in [project_stats, global_stats] {
+        health.total += stats.total;
+        health.active += stats.active;
+        health.inactive += stats.inactive;
+        health.low_confidence += stats.low_confidence;
+        health.missing_embeddings += stats.missing_embeddings;
+        health.contradictions += stats.contradiction_marks;
 
         // Use last_cluster_update as a proxy for last consolidation
-        if let Some(ts) = graph.metadata.last_cluster_update {
+        if let Some(ts) = stats.last_consolidation {
             match health.last_consolidation {
                 Some(existing) if ts > existing => health.last_consolidation = Some(ts),
                 None => health.last_consolidation = Some(ts),

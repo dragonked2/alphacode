@@ -273,8 +273,24 @@ pub fn per_tool() -> HashMap<String, (u64, u64, u64, u64)> {
 mod tests {
     use super::*;
 
+    /// The metrics registry is process-global and every test in this module
+    /// resets it before recording.
+    ///
+    /// Without a shared lock the tests race each other: one test's `reset()`
+    /// wipes another's counters between its `record_*` call and its
+    /// assertion, which shows up as a flaky "expected 2 API calls, got 1".
+    /// The lock is held for the whole test so no other test can observe a
+    /// half-updated registry.
+    fn metrics_test_lock() -> std::sync::MutexGuard<'static, ()> {
+        static LOCK: std::sync::OnceLock<std::sync::Mutex<()>> = std::sync::OnceLock::new();
+        LOCK.get_or_init(|| std::sync::Mutex::new(()))
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+    }
+
     #[test]
     fn api_metrics_accumulate() {
+        let _guard = metrics_test_lock();
         reset();
         record_api_call(Duration::from_millis(100), 1000, 200);
         record_api_call(Duration::from_millis(300), 1500, 250);
@@ -288,6 +304,7 @@ mod tests {
 
     #[test]
     fn cache_hit_ratio_computes() {
+        let _guard = metrics_test_lock();
         reset();
         record_api_call(Duration::from_millis(100), 1000, 0);
         record_cache_tokens(4000, 0);
@@ -298,6 +315,7 @@ mod tests {
 
     #[test]
     fn tool_success_rate() {
+        let _guard = metrics_test_lock();
         reset();
         record_tool_call(Duration::from_millis(50), true);
         record_tool_call(Duration::from_millis(50), true);
@@ -311,6 +329,7 @@ mod tests {
 
     #[test]
     fn compaction_savings() {
+        let _guard = metrics_test_lock();
         reset();
         record_compaction(5000);
         record_compaction(3000);
@@ -320,6 +339,7 @@ mod tests {
 
     #[test]
     fn empty_snapshot_is_zero() {
+        let _guard = metrics_test_lock();
         reset();
         let s = snapshot();
         assert_eq!(s.api_calls, 0);
@@ -330,6 +350,7 @@ mod tests {
 
     #[test]
     fn per_tool_records() {
+        let _guard = metrics_test_lock();
         reset();
         record_tool_call_named("bash", Duration::from_millis(50), true);
         record_tool_call_named("bash", Duration::from_millis(70), false);

@@ -29,6 +29,35 @@ pub struct IncrementalMarkdownRenderer {
     rendered_mermaid_epoch: u64,
     /// Width constraint
     max_width: Option<usize>,
+    /// Rendered lines for the **stable prefix** — the text up to and
+    /// including `prefix_checkpoint` — and the byte length of that prefix.
+    ///
+    /// This is what turns the streaming render from O(n²) into O(n): the
+    /// renderer re-parses only the *volatile tail* (the text after the last
+    /// complete block) on each token batch and concatenates it onto the
+    /// already-rendered prefix, instead of re-parsing the whole accumulated
+    /// response every time.
+    ///
+    /// `prefix_lines` is `None` when no usable prefix exists yet, which
+    /// forces a full render.
+    prefix_lines: Option<std::sync::Arc<Vec<Line<'static>>>>,
+    /// Byte offset in the source text that `prefix_lines` was rendered from.
+    prefix_checkpoint: usize,
+    /// Source text of the prefix that `prefix_lines` was rendered from.
+    ///
+    /// Kept so the prefix can be re-validated cheaply (a byte-for-byte
+    /// comparison of the immutable prefix is O(prefix) but with no
+    /// allocation and no parsing) and so a text that was *rewritten* rather
+    /// than appended is detected and forces a full re-render.
+    prefix_text: String,
+    /// Whether the block that ends at `prefix_checkpoint` is followed by a
+    /// blank separator line.
+    ///
+    /// This belongs to the *cached prefix's* boundary, not to the newest
+    /// checkpoint: the tail is spliced onto the cached prefix, so the
+    /// separator between the two is the one the cached prefix's own block
+    /// calls for.
+    prefix_needs_separator: bool,
 }
 
 impl IncrementalMarkdownRenderer {
@@ -42,6 +71,10 @@ impl IncrementalMarkdownRenderer {
             rendered_mermaid_pending: false,
             rendered_mermaid_epoch: 0,
             max_width,
+            prefix_lines: None,
+            prefix_checkpoint: 0,
+            prefix_text: String::new(),
+            prefix_needs_separator: false,
         }
     }
 
@@ -97,23 +130,161 @@ impl IncrementalMarkdownRenderer {
             return std::sync::Arc::clone(&self.rendered_shared);
         }
 
-        // Full re-render required.
+        // Incremental path: re-render only the volatile tail.
         //
-        // We previously tried to splice newly-appended markdown from a saved checkpoint,
-        // but markdown block separators and list continuity make that unsafe without
-        // carrying richer parser state across updates. In practice this caused transient
-        // streaming artifacts like duplicated/misaligned content. Favor correctness here.
+        // The previous implementation re-parsed the *entire* accumulated
+        // response on every token batch. For a response of length n streamed
+        // in k batches that is O(n*k) parse work — quadratic in the response
+        // length, and it grows the longer the answer gets. On a long answer
+        // this showed up as a visibly stuttering stream.
         //
-        // The epoch is read *before* rendering: if a background diagram render
-        // completes mid-render, the stamp is already older than the new epoch
-        // and the next update re-renders instead of waiting forever.
+        // Instead we keep the *rendered* form of the stable prefix (the text
+        // up to the last complete markdown block) and re-render only what
+        // came after it. Because the prefix ends at a block boundary, its
+        // rendered lines cannot change when more text is appended, so
+        // re-rendering the tail and concatenating produces exactly the same
+        // output as a full render — at a fraction of the cost.
         //
-        // PERF: skip re-render when only a single streaming char was appended
-        // inside an open fence/math block tail AND the text is very long?
-        // Full parse is still required for correctness, but we avoid a second
-        // `String` copy by reusing capacity and share lines via `Arc`.
+        // Correctness guards:
+        //  - the prefix is only reused when the *source* prefix is unchanged
+        //    byte-for-byte, so a rewritten (not appended) response falls
+        //    back to a full render;
+        //  - the prefix must end on a block boundary that the renderer
+        //    recognises, so a block cannot be split across the boundary;
+        //  - the deferred-mermaid epoch is re-checked, because a background
+        //    diagram render can complete while the prefix is cached.
         let mermaid_epoch_before = mermaid::deferred_render_epoch();
-        let lines = render_markdown_with_width(full_text, self.max_width);
+
+        let checkpoint = self.find_last_complete_block_checkpoint(full_text);
+        let checkpoint_offset = checkpoint.map(|cp| cp.offset).unwrap_or(0);
+
+        // Can we reuse the cached prefix?
+        //
+        // Only when the document renders the same on its own as it does
+        // inside the full text. That holds for prose and headings, and fails
+        // for the constructs whose rendered form depends on the rest of the
+        // document (see [`supports_incremental_splice`]).
+        let can_reuse_prefix = supports_incremental_splice(full_text)
+            && match (&self.prefix_lines, self.prefix_checkpoint) {
+                (Some(_), 0) => false,
+                (Some(_), cp) => {
+                    cp <= checkpoint_offset
+                        && full_text
+                            .as_bytes()
+                            .starts_with(self.prefix_text.as_bytes())
+                }
+                (None, _) => false,
+            };
+
+        let (lines, new_prefix_lines, new_prefix_checkpoint, new_prefix_text, new_prefix_separator) =
+            if can_reuse_prefix {
+                let prefix = self
+                    .prefix_lines
+                    .as_ref()
+                    .expect("prefix_lines present when can_reuse_prefix");
+                let prefix_len = self.prefix_checkpoint;
+                // Re-render only the tail after the cached prefix.
+                let tail = &full_text[prefix_len..];
+                let tail_lines = render_markdown_with_width(tail, self.max_width);
+
+                // Splice the tail onto the cached prefix. The tail render starts
+                // on a block boundary, so it is a standalone document.
+                let mut combined: Vec<Line<'static>> =
+                    Vec::with_capacity(prefix.len() + tail_lines.len());
+                combined.extend(prefix.iter().cloned());
+                // The prefix render strips trailing blank separator lines, so
+                // restore the separator that the full renderer inserts between the
+                // last prefix block and the first tail block when the checkpoint
+                // requires it.
+                //
+                // The flag belongs to the *cached prefix's* boundary, not to the
+                // newest checkpoint: the cached prefix ends at
+                // `prefix_checkpoint`, and that is the boundary the tail is
+                // spliced onto.
+                if self.prefix_needs_separator {
+                    let last_blank = combined
+                        .last()
+                        .map(|line| {
+                            line.spans.is_empty()
+                                || line.spans.iter().all(|span| span.content.is_empty())
+                        })
+                        .unwrap_or(true);
+                    let tail_first_blank = tail_lines
+                        .first()
+                        .map(|line| {
+                            line.spans.is_empty()
+                                || line.spans.iter().all(|span| span.content.is_empty())
+                        })
+                        .unwrap_or(true);
+                    if !last_blank && !tail_first_blank {
+                        combined.push(Line::default());
+                    }
+                }
+                combined.extend(tail_lines);
+
+                // The new stable prefix is everything up to the newest
+                // checkpoint, and its rendered form is the prefix we already
+                // have plus the tail's rendering up to that point. Rather than
+                // re-render the prefix, we only advance the cached prefix when
+                // the *entire* tail has been consumed into the checkpoint, which
+                // keeps the cached prefix aligned with a block boundary.
+                let consumed = checkpoint_offset.saturating_sub(prefix_len);
+                let mut new_prefix_lines = std::sync::Arc::clone(prefix);
+                let mut new_prefix_checkpoint = prefix_len;
+                let mut new_prefix_text = self.prefix_text.clone();
+                let mut new_prefix_separator = self.prefix_needs_separator;
+                if consumed == full_text.len() - prefix_len && checkpoint_offset > prefix_len {
+                    // The checkpoint covers the whole tail: re-render the
+                    // checkpoint prefix once so the next batch has a bigger
+                    // stable base. This is a single O(checkpoint) render that
+                    // replaces many O(checkpoint) renders.
+                    let new_prefix = trim_trailing_blank_lines(render_markdown_with_width(
+                        &full_text[..checkpoint_offset],
+                        self.max_width,
+                    ));
+                    new_prefix_lines = std::sync::Arc::new(new_prefix);
+                    new_prefix_checkpoint = checkpoint_offset;
+                    new_prefix_text = full_text[..checkpoint_offset].to_string();
+                    new_prefix_separator = checkpoint.map(|cp| cp.needs_separator).unwrap_or(false);
+                } else {
+                    new_prefix_text.truncate(new_prefix_text.len().min(prefix_len));
+                }
+                (
+                    combined,
+                    Some(new_prefix_lines),
+                    new_prefix_checkpoint,
+                    new_prefix_text,
+                    new_prefix_separator,
+                )
+            } else {
+                // Full render: no usable cached prefix.
+                let lines = render_markdown_with_width(full_text, self.max_width);
+                // Cache the prefix for the next batch. The prefix render is a
+                // second pass over the prefix; it is amortised across every
+                // subsequent batch, so it pays for itself immediately.
+                let mut new_prefix_lines = None;
+                let mut new_prefix_checkpoint = 0;
+                let mut new_prefix_text = String::new();
+                let mut new_prefix_separator = false;
+                if checkpoint_offset > 0 && supports_incremental_splice(full_text) {
+                    let prefix = trim_trailing_blank_lines(render_markdown_with_width(
+                        &full_text[..checkpoint_offset],
+                        self.max_width,
+                    ));
+                    new_prefix_checkpoint = checkpoint_offset;
+                    new_prefix_text = full_text[..checkpoint_offset].to_string();
+                    new_prefix_lines = Some(std::sync::Arc::new(prefix));
+                    new_prefix_separator = checkpoint.map(|cp| cp.needs_separator).unwrap_or(false);
+                }
+                (
+                    lines,
+                    new_prefix_lines,
+                    new_prefix_checkpoint,
+                    new_prefix_text,
+                    new_prefix_separator,
+                )
+            };
+
         self.rendered_mermaid_pending = lines.iter().any(line_is_mermaid_pending_placeholder);
         self.rendered_mermaid_epoch = mermaid_epoch_before;
 
@@ -125,6 +296,11 @@ impl IncrementalMarkdownRenderer {
         // so this is a move, and the previous contents of `rendered_shared` are
         // dropped here rather than being deep-copied on every frame.
         self.rendered_shared = std::sync::Arc::new(lines);
+
+        self.prefix_lines = new_prefix_lines;
+        self.prefix_checkpoint = new_prefix_checkpoint;
+        self.prefix_text = new_prefix_text;
+        self.prefix_needs_separator = new_prefix_separator;
 
         // Find checkpoint for next incremental update
         self.refresh_checkpoint(full_text, true);
@@ -276,6 +452,7 @@ impl IncrementalMarkdownRenderer {
         self.last_checkpoint = 0;
         self.lines_at_checkpoint = 0;
         self.checkpoint_needs_separator = false;
+        self.prefix_needs_separator = false;
         self.rendered_mermaid_pending = false;
         self.rendered_mermaid_epoch = crate::alphacode_tui_mermaid::deferred_render_epoch();
     }
@@ -293,6 +470,72 @@ impl IncrementalMarkdownRenderer {
 struct CompleteBlockCheckpoint {
     offset: usize,
     needs_separator: bool,
+}
+
+/// Drop the trailing blank lines of a rendered block.
+/// Drop the trailing blank lines of a rendered block.
+///
+/// A prefix render is a *standalone* document, so it decides its own block
+/// separators: rendering `"# Heading\n\n"` on its own leaves a trailing blank
+/// line, while the same text as the head of a longer document does not (a
+/// heading sits tight against the paragraph that follows it).
+///
+/// The cached prefix therefore must not carry that separator. Keeping it would
+/// make the spliced output differ from a full render of the same text by one
+/// blank line — the incremental stream would show a paragraph pushed down by a
+/// line that the full render does not have. The separator is restored by the
+/// splice instead, from the checkpoint's own `needs_separator` flag.
+fn trim_trailing_blank_lines(mut lines: Vec<Line<'static>>) -> Vec<Line<'static>> {
+    while lines.last().is_some_and(|line| {
+        line.spans.is_empty() || line.spans.iter().all(|span| span.content.is_empty())
+    }) {
+        lines.pop();
+    }
+    lines
+}
+
+/// Whether the text can be rendered incrementally by splicing a cached prefix
+/// onto a freshly rendered tail.
+///
+/// The renderer is not a pure function of a block of text:
+///
+/// - it applies *document-wide* post-processing — structured blocks
+///   (blockquotes, tables, code fences) are centered inside the width, and the
+///   padding depends on how wide the widest line of the whole render is;
+/// - it carries *block state* across the document — list continuity, fence
+///   depth, blockquote depth, and the indentation of a continued list.
+///
+/// A prefix rendered on its own can therefore differ from the same text
+/// rendered as the head of the full document: a blockquote in the prefix gets
+/// centered against the prefix's own width instead of the document's, and a
+/// list that starts in the prefix and continues in the tail loses its
+/// indentation. Splicing such a prefix produces output that does not match a
+/// full render of the same text, which shows up as misaligned or duplicated
+/// content while the response streams.
+///
+/// Prose, headings, and inline formatting have no such context dependence, so
+/// the common case keeps the incremental path. Everything else falls back to a
+/// full render, which is always correct.
+fn supports_incremental_splice(text: &str) -> bool {
+    !text.lines().any(|line| {
+        let trimmed = line.trim_start();
+        trimmed.starts_with('>')
+            || trimmed.starts_with("- ")
+            || trimmed.starts_with("* ")
+            || trimmed.starts_with("+ ")
+            || trimmed.starts_with("```")
+            || trimmed.starts_with("~~~")
+            || trimmed.starts_with("$$")
+            || trimmed.starts_with('|')
+            || is_thematic_break_line(trimmed)
+            || is_ordered_list_marker(trimmed)
+    })
+}
+
+/// Whether the line starts an ordered-list item (`1.`, `12)`, ...).
+fn is_ordered_list_marker(line: &str) -> bool {
+    let digits = line.chars().take_while(char::is_ascii_digit).count();
+    digits > 0 && line[digits..].starts_with(['.', ')'])
 }
 
 pub(crate) fn is_heading_line(line: &str) -> bool {

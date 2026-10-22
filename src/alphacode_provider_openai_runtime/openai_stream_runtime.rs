@@ -652,13 +652,9 @@ pub(super) async fn try_persistent_ws_continuation(
     continuation_request["store"] = serde_json::json!(false);
     continuation_request["parallel_tool_calls"] = serde_json::json!(false);
 
-    let continuation_tools = continuation_request
+    let continuation_tool_count = continuation_request
         .get("tools")
-        .cloned()
-        .unwrap_or_else(|| serde_json::json!([]));
-    let continuation_instructions = continuation_request.get("instructions").cloned();
-    let continuation_tool_count = continuation_tools
-        .as_array()
+        .and_then(|tools| tools.as_array())
         .map(|tools| tools.len())
         .unwrap_or(0);
     let prompt_cache_key_hash = continuation_request
@@ -668,75 +664,82 @@ pub(super) async fn try_persistent_ws_continuation(
         .get("model")
         .and_then(|value| value.as_str())
         .unwrap_or("unknown");
-    let continuation_payload = serde_json::json!({
-        "type": continuation_request.get("type"),
-        "previous_response_id_hash": crate::alphacode_provider_core::fingerprint::stable_hash_str(&previous_response_id),
-        "model": continuation_request.get("model"),
-        "instructions": continuation_request.get("instructions"),
-        "input": &incremental_items,
-        "tools": continuation_request.get("tools"),
-        "tool_choice": continuation_request.get("tool_choice"),
-        "parallel_tool_calls": continuation_request.get("parallel_tool_calls"),
-        "reasoning": continuation_request.get("reasoning"),
-        "context_management": continuation_request.get("context_management"),
-        "include": continuation_request.get("include"),
-        "service_tier": continuation_request.get("service_tier"),
-        "prompt_cache_key": continuation_request.get("prompt_cache_key"),
-        "prompt_cache_retention": continuation_request.get("prompt_cache_retention"),
-    });
-    crate::alphacode_provider_core::fingerprint::log_provider_canonical_input(
-        "openai",
-        model_for_fingerprint,
-        "openai_responses_ws_delta",
-        &continuation_payload,
-        &incremental_items,
-        continuation_instructions.as_ref(),
-        Some(&continuation_tools),
-        Some(continuation_tool_count),
-        &[
-            (
-                "previous_response_id_present",
-                (!previous_response_id.is_empty()).to_string(),
-            ),
-            ("input_item_count", input_item_count.to_string()),
-            (
-                "last_input_item_count",
-                state.last_input_item_count.to_string(),
-            ),
-            (
-                "incremental_item_count",
-                incremental_items.len().to_string(),
-            ),
-            ("request_kind", "ws_delta".to_string()),
-            ("cache_namespace", "previous_response_delta".to_string()),
-            ("transport_mode", "websocket".to_string()),
-            (
-                "prompt_cache_key_present",
-                continuation_request
-                    .get("prompt_cache_key")
-                    .is_some()
-                    .to_string(),
-            ),
-            (
-                "prompt_cache_key_hash",
-                format!("{:?}", prompt_cache_key_hash),
-            ),
-            (
-                "prompt_cache_retention",
-                continuation_request
-                    .get("prompt_cache_retention")
-                    .map(|value| value.to_string())
-                    .unwrap_or_else(|| "null".to_string()),
-            ),
-            (
-                "service_tier",
-                continuation_request
-                    .get("service_tier")
-                    .map(|value| value.to_string())
-                    .unwrap_or_else(|| "null".to_string()),
-            ),
-        ],
-    );
+    if crate::alphacode_provider_core::fingerprint::fingerprint_enabled() {
+        let continuation_tools = continuation_request
+            .get("tools")
+            .cloned()
+            .unwrap_or_else(|| serde_json::json!([]));
+        let continuation_instructions = continuation_request.get("instructions").cloned();
+        let continuation_payload = serde_json::json!({
+            "type": continuation_request.get("type"),
+            "previous_response_id_hash": crate::alphacode_provider_core::fingerprint::stable_hash_str(&previous_response_id),
+            "model": continuation_request.get("model"),
+            "instructions": continuation_request.get("instructions"),
+            "input": &incremental_items,
+            "tools": continuation_request.get("tools"),
+            "tool_choice": continuation_request.get("tool_choice"),
+            "parallel_tool_calls": continuation_request.get("parallel_tool_calls"),
+            "reasoning": continuation_request.get("reasoning"),
+            "context_management": continuation_request.get("context_management"),
+            "include": continuation_request.get("include"),
+            "service_tier": continuation_request.get("service_tier"),
+            "prompt_cache_key": continuation_request.get("prompt_cache_key"),
+            "prompt_cache_retention": continuation_request.get("prompt_cache_retention"),
+        });
+        crate::alphacode_provider_core::fingerprint::log_provider_canonical_input(
+            "openai",
+            model_for_fingerprint,
+            "openai_responses_ws_delta",
+            &continuation_payload,
+            &incremental_items,
+            continuation_instructions.as_ref(),
+            Some(&continuation_tools),
+            Some(continuation_tool_count),
+            &[
+                (
+                    "previous_response_id_present",
+                    (!previous_response_id.is_empty()).to_string(),
+                ),
+                ("input_item_count", input_item_count.to_string()),
+                (
+                    "last_input_item_count",
+                    state.last_input_item_count.to_string(),
+                ),
+                (
+                    "incremental_item_count",
+                    incremental_items.len().to_string(),
+                ),
+                ("request_kind", "ws_delta".to_string()),
+                ("cache_namespace", "previous_response_delta".to_string()),
+                ("transport_mode", "websocket".to_string()),
+                (
+                    "prompt_cache_key_present",
+                    continuation_request
+                        .get("prompt_cache_key")
+                        .is_some()
+                        .to_string(),
+                ),
+                (
+                    "prompt_cache_key_hash",
+                    format!("{:?}", prompt_cache_key_hash),
+                ),
+                (
+                    "prompt_cache_retention",
+                    continuation_request
+                        .get("prompt_cache_retention")
+                        .map(|value| value.to_string())
+                        .unwrap_or_else(|| "null".to_string()),
+                ),
+                (
+                    "service_tier",
+                    continuation_request
+                        .get("service_tier")
+                        .map(|value| value.to_string())
+                        .unwrap_or_else(|| "null".to_string()),
+                ),
+            ],
+        );
+    }
 
     let request_text = match serde_json::to_string(&continuation_request) {
         Ok(t) => t,

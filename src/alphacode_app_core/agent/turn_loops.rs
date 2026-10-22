@@ -103,6 +103,9 @@ impl Agent {
         let mut context_limit_retries = 0u32;
         let mut incomplete_continuations = 0u32;
         let mut empty_post_tool_continuations = 0u32;
+        // Continuations injected when the model narrated an action it never
+        // performed. Bounded by Agent::MAX_STRANDED_INTENT_CONTINUATION_ATTEMPTS.
+        let mut stranded_intent_continuations = 0u32;
         // Automatic alternate-route attempts after a model-side refusal stop
         // (bounded by Agent::MAX_REFUSAL_ROTATIONS_PER_TURN so a policy that
         // keeps declining cannot cycle the whole pool in one request).
@@ -154,7 +157,7 @@ impl Agent {
                     repaired
                 ));
             }
-            let (messages, compaction_event) = self.messages_for_provider();
+            let (messages, compaction_event) = self.messages_for_provider().await;
             if let Some(event) = compaction_event {
                 // Reset cache tracker and tool lock on compaction since the message history changes
                 self.cache_tracker.reset();
@@ -261,6 +264,8 @@ impl Agent {
                 .then(|| Message::with_timestamps(messages_with_memory));
             let send_messages = stamped.as_deref().unwrap_or(messages_with_memory);
             let prompt_has_recent_tool_result = Self::messages_end_with_tool_result(send_messages);
+            let prompt_had_failed_tool_result =
+                Self::messages_have_failed_tool_result(send_messages);
             self.last_status_detail = None;
             let mut stream = match self
                 .provider
@@ -1173,6 +1178,25 @@ impl Agent {
 
             // If no tool calls, we're done
             if tool_calls.is_empty() {
+                // A model that narrated an action and stopped — after the tool
+                // it promised had already failed — leaves the user staring at
+                // a half-finished task. Ask it to actually act.
+                if self.maybe_continue_stranded_intent(
+                    &text_content,
+                    prompt_had_failed_tool_result,
+                    &mut stranded_intent_continuations,
+                )? {
+                    continue;
+                }
+                // A model that answers with a menu of options and a "which
+                // one?" question has parked the decision on the user and
+                // stopped. Ask it to pick and continue.
+                if self.maybe_continue_user_question_detour(
+                    &text_content,
+                    &mut stranded_intent_continuations,
+                )? {
+                    continue;
+                }
                 if self.maybe_continue_empty_post_tool_response(
                     visible_text_is_empty,
                     prompt_has_recent_tool_result,
@@ -1429,10 +1453,6 @@ impl Agent {
                 self.session.save()?;
             }
 
-            if tool_results_dirty {
-                self.session.save()?;
-            }
-
             if !generated_image_contexts.is_empty() {
                 for blocks in generated_image_contexts.drain(..) {
                     self.add_message(Role::User, blocks);
@@ -1453,13 +1473,17 @@ impl Agent {
                 ));
             }
 
-            // Rate-limit protection: add a minimum delay between consecutive API
-            // calls within the same turn. Free models on OpenRouter have strict
-            // per-minute limits (~10 RPM). Without this delay, the agent burns
-            // through the quota in seconds by calling the API immediately after
-            // each tool execution. The delay is short enough to be unnoticeable
-            // to the user but prevents hammering the provider.
-            tokio::time::sleep(tokio::time::Duration::from_millis(500)).await;
+            // Rate-limit protection: pace consecutive API calls within the
+            // same turn — but only where it is actually needed. Free-pool
+            // models are metered per-minute (~10 RPM); paid providers are
+            // not, and the final iteration of a turn has no next request to
+            // pace. The delay used to be unconditional, costing 500ms x N
+            // iterations on every provider.
+            if let Some(delay) =
+                super::pacing::inter_call_delay(Some(self.provider.model().as_str()), true)
+            {
+                tokio::time::sleep(delay).await;
+            }
         }
 
         Ok(final_text)
@@ -1788,12 +1812,9 @@ impl Agent {
                     );
                 }
                 if print_output {
-                    let preview = if output.output.len() > 200 {
-                        format!("{}...", crate::util::truncate_str(&output.output, 200))
-                    } else {
-                        output.output.clone()
-                    };
-                    println!("{}", preview.lines().next().unwrap_or("(done)"));
+                    // Print a bounded preview that states how much was left
+                    // out, instead of a single line that looks complete.
+                    println!("{}", format_tool_output_preview(&output.output));
                 }
 
                 let blocks = tool_output_to_content_blocks(tc.id.clone(), output.clone());
@@ -1901,6 +1922,49 @@ impl Agent {
             })
         })
     }
+
+    /// Whether the tool results the model was answering included a failure.
+    ///
+    /// The request that produced the model's closing message is the right
+    /// place to look: it holds the results of the tools that ran in the round
+    /// the model is responding to. A round whose tools failed is a round that
+    /// did not finish its work, and that is the context in which a model
+    /// that narrates an action instead of performing it leaves the user
+    /// stranded mid-task.
+    ///
+    /// The scan walks back over the tool results (and over the harness's own
+    /// continuation reminders, which are ordinary user text) and stops at the
+    /// first message that is neither, so a failure from an earlier round
+    /// cannot be mistaken for one from the round being answered.
+    pub(super) fn messages_have_failed_tool_result(messages: &[Message]) -> bool {
+        for message in messages.iter().rev() {
+            if !matches!(message.role, Role::User) {
+                return false;
+            }
+            let mut saw_tool_result = false;
+            let mut saw_continuation_reminder = false;
+            for block in &message.content {
+                match block {
+                    ContentBlock::ToolResult { is_error, .. } => {
+                        saw_tool_result = true;
+                        if matches!(is_error, Some(true)) {
+                            return true;
+                        }
+                    }
+                    ContentBlock::Text { text, .. }
+                        if text.trim().starts_with("<system-reminder>") =>
+                    {
+                        saw_continuation_reminder = true;
+                    }
+                    _ => {}
+                }
+            }
+            if !saw_tool_result && !saw_continuation_reminder {
+                return false;
+            }
+        }
+        false
+    }
 }
 
 #[cfg(test)]
@@ -1959,5 +2023,85 @@ mod tests {
         let messages = vec![user_text("hello")];
 
         assert!(!Agent::messages_end_with_tool_result(&messages));
+    }
+
+    fn failed_tool_result(id: &str) -> Message {
+        Message {
+            role: Role::User,
+            content: vec![ContentBlock::ToolResult {
+                tool_use_id: id.to_string(),
+                content: "exit code 1".to_string(),
+                is_error: Some(true),
+            }],
+            timestamp: None,
+            tool_duration_ms: Some(1),
+        }
+    }
+
+    fn assistant_text(text: &str) -> Message {
+        Message {
+            role: Role::Assistant,
+            content: vec![ContentBlock::Text {
+                text: text.to_string(),
+                cache_control: None,
+            }],
+            timestamp: None,
+            tool_duration_ms: None,
+        }
+    }
+
+    #[test]
+    fn failed_tool_results_are_detected_in_the_round_the_model_is_answering() {
+        let messages = vec![
+            user_text("add dispatch via sed"),
+            assistant_text("Let me try that."),
+            failed_tool_result("functions.bash:0"),
+        ];
+
+        assert!(Agent::messages_have_failed_tool_result(&messages));
+    }
+
+    #[test]
+    fn successful_tool_results_are_not_failures() {
+        let messages = vec![
+            user_text("add dispatch via sed"),
+            assistant_text("done"),
+            tool_result("functions.bash:0", "ok"),
+        ];
+
+        assert!(!Agent::messages_have_failed_tool_result(&messages));
+    }
+
+    #[test]
+    fn a_failure_from_an_earlier_round_does_not_count() {
+        // The scan stops at the assistant message that requested the tools, so
+        // a failure from a previous round cannot be mistaken for one from the
+        // round being answered.
+        let messages = vec![
+            user_text("add dispatch via sed"),
+            failed_tool_result("functions.bash:0"),
+            assistant_text("Let me try a different approach."),
+        ];
+
+        assert!(!Agent::messages_have_failed_tool_result(&messages));
+    }
+
+    #[test]
+    fn the_failure_signal_survives_a_continuation_reminder() {
+        let messages = vec![
+            user_text("add dispatch via sed"),
+            assistant_text("Let me try that."),
+            failed_tool_result("functions.bash:0"),
+            user_text("<system-reminder>You said you were about to act.</system-reminder>"),
+        ];
+
+        assert!(Agent::messages_have_failed_tool_result(&messages));
+    }
+
+    #[test]
+    fn a_plain_prompt_has_no_failed_tool_result() {
+        let messages = vec![user_text("hello")];
+
+        assert!(!Agent::messages_have_failed_tool_result(&messages));
     }
 }

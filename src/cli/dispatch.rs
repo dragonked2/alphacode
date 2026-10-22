@@ -923,6 +923,11 @@ async fn run_default_command(args: Args) -> Result<()> {
     }
 
     startup_profile::mark("client_mode_start");
+    // Fail before anything persistent happens if this process cannot host the
+    // TUI. The background server is a detached daemon: spawning it first and
+    // then failing on the terminal check would leave a running server with no
+    // client attached to it.
+    super::terminal::ensure_interactive_terminal()?;
     // The terminal background (OSC 11) query is a blocking round trip that used
     // to sit directly in front of TUI init. Start it here so it overlaps the
     // server check/spawn below. Safe only because nothing has entered raw mode

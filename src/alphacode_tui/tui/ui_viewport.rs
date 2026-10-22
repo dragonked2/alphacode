@@ -119,8 +119,9 @@ fn resolve_tail_follow_scroll(max_scroll: usize, viewport_height: usize) -> usiz
     }
 }
 
-use super::selection_highlight::highlight_line_selection;
-
+use super::selection_highlight::{
+    highlight_line_range, highlight_line_selection, search_current_hit_bg_for, search_hit_bg_for,
+};
 pub(crate) fn truncate_line_in_place_to_width(line: &mut Line<'static>, max_width: usize) {
     *line = crate::alphacode_tui_render::truncate_line_to_width(line, max_width);
 }
@@ -344,6 +345,20 @@ pub(super) fn draw_messages(
 
     super::set_last_max_scroll(max_scroll);
     update_user_prompt_positions(wrapped_user_prompt_starts);
+
+    // Refresh the find-in-page hit index against the transcript that is about
+    // to be painted. The scan is skipped when the query and the transcript
+    // are unchanged, so an idle TUI does not rescan on every frame.
+    if let Some(index) = app.transcript_search_index()
+        && let Some(view) = app.transcript_search()
+    {
+        crate::alphacode_tui::tui::transcript_search::refresh_index(
+            index,
+            &view.query,
+            view.case_sensitive,
+            &prepared,
+        );
+    }
 
     // When older compacted history is being loaded in, the app hands us the
     // reader's distance-from-bottom instead of an absolute offset. Distance from
@@ -872,6 +887,43 @@ pub(super) fn draw_messages(
         }
     }
 
+    // Find-in-page highlight: paint every hit of the active query that is on
+    // screen. The selected hit gets a stronger background so "where am I"
+    // is answerable at a glance.
+    //
+    // The columns come from the *plain* text of the wrapped line, which is
+    // exactly the text the paragraph is about to paint, so the highlight
+    // lands on the matched characters even though the rendered line also
+    // carries role prefixes and decorations.
+    if let Some(view) = app.transcript_search()
+        && !view.query.is_empty()
+    {
+        for (rel, line) in visible_lines.iter_mut().enumerate() {
+            let abs_idx = scroll + rel;
+            let Some(text) = prepared.wrapped_plain_line(abs_idx) else {
+                continue;
+            };
+            let hits = crate::alphacode_tui::tui::transcript_search::find_line_matches(
+                text,
+                &view.query,
+                view.case_sensitive,
+            );
+            if hits.is_empty() {
+                continue;
+            }
+            let is_current = view.current_line == Some(abs_idx);
+            for (start_col, end_col) in hits {
+                *line = highlight_line_range(line, start_col, end_col, |style| {
+                    if is_current {
+                        style.bg(search_current_hit_bg_for(style.bg))
+                    } else {
+                        style.bg(search_hit_bg_for(style.bg))
+                    }
+                });
+            }
+        }
+    }
+
     frame.render_widget(Paragraph::new(visible_lines), content_area);
 
     let centered = app.centered_mode();
@@ -1265,8 +1317,28 @@ fn pinned_todo_band_lines(
     if width < 8 || viewport_height < 9 {
         return Vec::new();
     }
+
+    // The band is rebuilt every frame, but its content only changes when the
+    // todo payload does. Caching the finished band turns a per-frame todo-card
+    // render plus a deep clone of every card line into a string comparison.
+    {
+        let cache = match pinned_todo_band_cache().lock() {
+            Ok(cache) => cache,
+            Err(poisoned) => poisoned.into_inner(),
+        };
+        if let Some(entry) = cache.as_ref()
+            && entry.width == width
+            && entry.viewport_height == viewport_height
+            && entry.payload == payload
+        {
+            return entry.lines.clone();
+        }
+    }
+
     let msg = crate::alphacode_tui::tui::DisplayMessage::todos(payload.to_string());
-    let card_lines = super::messages::get_cached_message_lines(
+    // Zero-copy variant: the shared render is reused instead of deep-cloning
+    // every line of the card just to keep a handful of them.
+    let card_lines = super::messages::get_cached_message_lines_shared(
         &msg,
         width,
         app.diff_mode(),
@@ -1300,25 +1372,51 @@ fn pinned_todo_band_lines(
         // slot, so the band showed a rule, a "+2 more (todo)" footer, and none
         // of the items it was counting. Drop it when the card is truncated —
         // the band already has its own separator underneath.
-        let mut pool = card_lines;
-        if pool.first().is_some_and(is_decorative_rule) {
-            pool.remove(0);
-        }
+        let skip_rule = usize::from(card_lines.first().is_some_and(is_decorative_rule));
+        let pool = &card_lines[skip_rule..];
         let hidden = pool.len().saturating_sub(shown);
-        lines.extend(pool.into_iter().take(shown));
+        lines.extend(pool.iter().take(shown).cloned());
         lines.push(Line::from(Span::styled(
             format!("  … +{} more (todo)", hidden),
             Style::default().fg(dim_color()),
         )));
     } else {
-        lines.extend(card_lines);
+        lines.extend(card_lines.iter().cloned());
     }
     // Separator between the pinned band and the scrolled transcript.
     lines.push(Line::from(Span::styled(
         "─".repeat(width as usize),
         Style::default().fg(dim_color()),
     )));
+
+    if let Ok(mut cache) = pinned_todo_band_cache().lock() {
+        *cache = Some(PinnedTodoBandCache {
+            payload: payload.to_string(),
+            width,
+            viewport_height,
+            lines: lines.clone(),
+        });
+    }
     lines
+}
+
+/// Memoized pinned-todo band.
+///
+/// Keyed by the todo payload and the geometry that shaped it. The payload is
+/// compared as a string rather than hashed so a stale band can never be
+/// served: the comparison is a `memcmp` over a few kilobytes, which is far
+/// cheaper than re-rendering the card.
+struct PinnedTodoBandCache {
+    payload: String,
+    width: u16,
+    viewport_height: u16,
+    lines: Vec<Line<'static>>,
+}
+
+fn pinned_todo_band_cache() -> &'static std::sync::Mutex<Option<PinnedTodoBandCache>> {
+    static CACHE: std::sync::OnceLock<std::sync::Mutex<Option<PinnedTodoBandCache>>> =
+        std::sync::OnceLock::new();
+    CACHE.get_or_init(|| std::sync::Mutex::new(None))
 }
 
 /// Largest absolute scroll offset the transcript can show.
