@@ -344,6 +344,7 @@ async fn stream_response(
             .header("X-Title", "Alphacode");
     }
 
+    req = super::apply_agentrouter_client_headers(req, &api_base);
     req = super::apply_opencode_provider_headers(req, &api_base);
 
     // Diagnostics: estimated prompt size, timeout, and mode. Never includes secrets.

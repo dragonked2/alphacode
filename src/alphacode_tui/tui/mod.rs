@@ -1,8 +1,6 @@
 pub mod account_picker;
 pub(crate) mod app;
 pub mod brand_ux;
-pub mod enhanced_status;
-pub mod improved_input;
 pub mod model_browser;
 pub mod model_browser_open;
 pub mod model_browser_render;
@@ -10,8 +8,6 @@ pub mod model_performance;
 pub mod picker_spacing;
 pub mod query_highlight;
 pub mod smart_model_picker;
-pub mod ui_console;
-pub mod ui_empty_state;
 pub mod ui_help;
 pub mod ui_polish;
 pub mod ui_professional;
@@ -756,85 +752,6 @@ pub trait TuiState {
 #[cfg(feature = "dev-bins")]
 pub fn debug_copy_selection_text_for_bench(range: CopySelectionRange) -> Option<String> {
     ui::copy_selection_text(range)
-}
-
-/// How a session is connected, described by what the link *means* rather than
-/// which transport carries it.
-///
-/// "websocket" and "https/sse" are the same trust decision reached by
-/// different routes, so they map to one channel. `InProcess` wins ties: a local
-/// session never reports a transport, and that absence is the strongest privacy
-/// statement the UI can make.
-///
-/// [`ConnectionChannel::label`] is deliberately ASCII (`[1]`..`[3]`, `[*]`) so it
-/// renders identically on terminals with no emoji or box-drawing coverage; the
-/// emoji lives only in the window title, where a missing glyph costs one
-/// character rather than a whole status-bar row.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum ConnectionChannel {
-    /// Provider in this process. Nothing crosses a socket.
-    InProcess,
-    /// Provider over a local stdio/subprocess pipe. Nothing crosses a network.
-    Local,
-    /// Provider over a network transport (TCP, websocket, HTTP/SSE). Encrypted
-    /// in transit, but the endpoint is a remote host.
-    Secure,
-    /// Transport not recognized, or none reported. Shown so an unexpected
-    /// transport is visible rather than silently rendered as local.
-    Unknown,
-}
-
-impl ConnectionChannel {
-    /// Human-facing channel name: an ASCII tier badge plus a plain-language
-    /// term, e.g. `[3] Secure channel`.
-    pub(crate) fn label(self) -> &'static str {
-        match self {
-            Self::InProcess => "[1] In-process",
-            Self::Local => "[2] Local channel",
-            Self::Secure => "[3] Secure channel",
-            Self::Unknown => "[*] Unknown channel",
-        }
-    }
-
-    pub(crate) fn color(self) -> ratatui::style::Color {
-        use crate::alphacode_tui::tui::brand_ux::BrandTheme;
-        match self {
-            Self::InProcess => BrandTheme::success(),
-            Self::Local => BrandTheme::tool(),
-            Self::Secure => BrandTheme::accent(),
-            Self::Unknown => BrandTheme::dim_bright(),
-        }
-    }
-}
-
-/// Classify a raw transport string into a trust channel.
-///
-/// `None` (no transport reported at all) means the provider is in-process.
-pub(crate) fn connection_channel(connection_type: Option<&str>) -> ConnectionChannel {
-    let Some(raw) = connection_type else {
-        return ConnectionChannel::InProcess;
-    };
-    let normalized = raw.trim().to_ascii_lowercase();
-    if normalized.is_empty() {
-        return ConnectionChannel::InProcess;
-    }
-    if normalized.contains("stdio")
-        || normalized.contains("subprocess")
-        || normalized == "cli"
-        || normalized.contains("in-process")
-        || normalized.contains("inprocess")
-    {
-        return ConnectionChannel::Local;
-    }
-    if normalized.contains("websocket")
-        || normalized == "ws"
-        || normalized == "wss"
-        || normalized.contains("http")
-        || normalized == "tcp"
-    {
-        return ConnectionChannel::Secure;
-    }
-    ConnectionChannel::Unknown
 }
 
 /// Window-title icon for the active connection.
@@ -1934,9 +1851,8 @@ pub fn prewarm_focused_side_panel(
 #[cfg(test)]
 mod tests {
     use super::{
-        CacheTtlInfo, ConnectionChannel, KvCacheProblemKind, connection_type_icon,
-        detect_kv_cache_problem, keyboard_enhancement_flags, resolve_subscribe_metadata,
-        scheduled_notification_text,
+        CacheTtlInfo, KvCacheProblemKind, connection_type_icon, detect_kv_cache_problem,
+        keyboard_enhancement_flags, resolve_subscribe_metadata, scheduled_notification_text,
     };
     use crate::alphacode_tui::ambient::AmbientStatus;
     use crate::alphacode_tui::tui::info_widget::AmbientWidgetData;
@@ -2169,69 +2085,6 @@ mod tests {
         assert_eq!(connection_type_icon(Some("http")), Some("🧠"));
         assert_eq!(connection_type_icon(Some("unknown")), None);
         assert_eq!(connection_type_icon(None), None);
-    }
-
-    #[test]
-    fn connection_channel_classifies_by_trust_not_transport() {
-        use super::connection_channel as channel;
-        // No transport reported at all is an in-process provider: the
-        // strongest privacy statement, and it must not render as remote.
-        assert_eq!(channel(None), ConnectionChannel::InProcess);
-        assert_eq!(channel(Some("")), ConnectionChannel::InProcess);
-        assert_eq!(channel(Some("  ")), ConnectionChannel::InProcess);
-
-        // Every stdio-ish spelling is the same trust decision.
-        for local in ["stdio", "subprocess", "cli", "in-process", "InProcess"] {
-            assert_eq!(
-                channel(Some(local)),
-                ConnectionChannel::Local,
-                "{local} should be a local channel"
-            );
-        }
-
-        // Every network transport is one channel: the protocol is an
-        // implementation detail, the trust boundary is the same.
-        for secure in [
-            "websocket",
-            "ws",
-            "wss",
-            "https",
-            "https/sse",
-            "http",
-            "tcp",
-        ] {
-            assert_eq!(
-                channel(Some(secure)),
-                ConnectionChannel::Secure,
-                "{secure} should be a secure channel"
-            );
-        }
-
-        // Anything unrecognized stays visible rather than being assumed safe.
-        assert_eq!(channel(Some("carrier-pigeon")), ConnectionChannel::Unknown);
-    }
-
-    #[test]
-    fn connection_channel_labels_are_ascii_and_carry_a_tier_badge() {
-        // Every label must render on a terminal with no emoji/box-drawing
-        // coverage, and must lead with its tier badge so the trust level is
-        // readable at a glance and stable across channels.
-        for (channel, badge) in [
-            (ConnectionChannel::InProcess, "[1]"),
-            (ConnectionChannel::Local, "[2]"),
-            (ConnectionChannel::Secure, "[3]"),
-            (ConnectionChannel::Unknown, "[*]"),
-        ] {
-            let label = channel.label();
-            assert!(
-                label.is_ascii(),
-                "channel label must render on any terminal: {label:?}"
-            );
-            assert!(
-                label.starts_with(badge),
-                "label {label:?} must lead with its tier badge {badge:?}"
-            );
-        }
     }
 
     #[test]

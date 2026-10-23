@@ -40,9 +40,6 @@ impl App {
             if let Ok(mut shared) = self.registry.skills().try_write() {
                 *shared = reloaded;
             }
-            // The composed effective-registry cache must not serve the
-            // pre-reload composition (audit M23 invalidation hook).
-            crate::skill::SkillRegistry::invalidate_effective_cache();
             self.invalidate_command_candidates_cache();
             // The header lists loaded skills; refresh it now rather than
             // waiting out the header cache TTL.

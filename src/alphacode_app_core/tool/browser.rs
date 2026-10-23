@@ -541,6 +541,18 @@ const MAX_BROWSER_CONTENT_CHARS: usize = 30_000;
 const DEFAULT_PAGE_WAIT_TIMEOUT_MS: u64 = 30_000;
 const MAX_PAGE_WAIT_TIMEOUT_MS: u64 = 90_000;
 
+/// The bridge's navigation failure: the extension waited for the tab's load
+/// state until the caller's timeout budget expired. SPAs (Discord, YouTube,
+/// Gmail) keep `document.readyState` in `loading` while the session can
+/// actually be used, so agents hit this on pages they could proceed with.
+const NAV_TIMEOUT_NEEDLE: &str = "timed out waiting for tab to load";
+
+/// Pure matcher for [`NAV_TIMEOUT_NEEDLE`] so tests can cover it without a
+/// bridge round-trip.
+fn is_navigation_timeout(message: &str) -> bool {
+    message.to_ascii_lowercase().contains(NAV_TIMEOUT_NEEDLE)
+}
+
 /// Actions that change page/tab state and are scoped to whichever tab the
 /// bridge resolves. When neither the caller nor the session pin names a tab,
 /// the bridge would target the user's currently active tab — so these refuse
@@ -1725,11 +1737,12 @@ fn bridge_request(action: &str, input: &BrowserInput) -> Result<(String, Value, 
             if input.selector.is_none()
                 && input.text.is_none()
                 && input.contains.is_none()
-                && input.x.is_none()
-                && input.y.is_none()
+                && input.index.is_none()
+                && !matches!((input.x, input.y), (Some(_), Some(_)))
             {
                 anyhow::bail!(
-                    "click requires one of: selector, text, contains, or x/y coordinates"
+                    "click requires one of: selector, text, contains, index (from interactables), \
+                     or both x and y coordinates"
                 );
             }
             // `contains` acts as a text match in the bridge; `text` wins if
@@ -1741,8 +1754,11 @@ fn bridge_request(action: &str, input: &BrowserInput) -> Result<(String, Value, 
             }
         }
         "hover" => {
-            if input.selector.is_none() && input.x.is_none() && input.y.is_none() {
-                anyhow::bail!("hover requires selector or x/y coordinates");
+            if input.selector.is_none()
+                && input.index.is_none()
+                && !matches!((input.x, input.y), (Some(_), Some(_)))
+            {
+                anyhow::bail!("hover requires selector, index, or both x and y coordinates");
             }
         }
         "drag_and_drop" => {
@@ -2314,6 +2330,7 @@ async fn recover_active_tab(params: &mut Value, ctx: &ToolContext) -> bool {
 }
 
 async fn run_bridge_with_tab_recovery(
+    logical_action: &str,
     bridge_action: &str,
     params: Value,
     ctx: &ToolContext,
@@ -2328,12 +2345,37 @@ async fn run_bridge_with_tab_recovery(
     }
 
     // Bug fix #13: never repoint a targeted or session-pinned request at
-    // the user's active tab. When the request names a tabId and that tab is
-    // gone, fail with the enrichment hint (list_tabs / select_tab / open)
-    // so the agent re-establishes its own tab. Untargeted reads keep the
-    // legacy active-tab recovery so a bridge restart doesn't strand them.
-    if params.get("tabId").and_then(Value::as_i64).is_some() {
-        return Err(err);
+    // the user's active tab wholesale. The request names a tab (explicitly
+    // or via the session pin) and the bridge reports it gone — closed,
+    // crashed, or invalidated by a bridge/extension restart.
+    if let Some(dead_tab_id) = params.get("tabId").and_then(Value::as_i64) {
+        // A session pin that names a dead tab is stale by definition. Forget
+        // it unconditionally: keeping it made every follow-up action retry the
+        // same dead id and fail identically (the agent loop reported on
+        // Discord admin sessions).
+        let pin_is_stale = session_tab_pin(&ctx.session_id) == Some(dead_tab_id);
+        if pin_is_stale {
+            forget_session_tab(&ctx.session_id, dead_tab_id);
+        }
+        // Pure reads may follow the legacy untargeted-read contract — resolve
+        // the currently active tab and retry once. Keyed off the *pin* being
+        // the dead tab, never an explicitly requested `tab_id`; and only for
+        // non-mutating actions (see `RETRYABLE_ACTIONS`).
+        if pin_is_stale && RETRYABLE_ACTIONS.contains(&logical_action) {
+            let mut recovered_params = params.clone();
+            if recover_active_tab(&mut recovered_params, ctx).await {
+                return firefox_run_bridge_command(bridge_action, recovered_params, ctx).await;
+            }
+        }
+        // Everything else stays fail-closed (bug fix #13), but the failure is
+        // now one-shot recoverable: the live tab inventory is appended so the
+        // agent can immediately `select_tab` with a real id (or `open` fresh)
+        // instead of discovering it through another failed round trip.
+        let hint = live_session_tabs_hint(ctx).await;
+        if hint.is_empty() {
+            return Err(err);
+        }
+        return Err(anyhow::anyhow!("{}\n\n{}", err, hint));
     }
 
     let mut recovered_params = params;
@@ -2343,8 +2385,121 @@ async fn run_bridge_with_tab_recovery(
     firefox_run_bridge_command(bridge_action, recovered_params, ctx).await
 }
 
+/// One-line-per-tab summary of the tabs currently open in Firefox, for error
+/// hints that turn a dead pinned tab into a single-`select_tab` recovery.
+///
+/// Empty string when the bridge is unreachable or exposes no tabs, so callers
+/// can append it unconditionally.
+async fn live_session_tabs_hint(ctx: &ToolContext) -> String {
+    let Ok(tabs) = firefox_run_bridge_command("listTabs", json!({}), ctx).await else {
+        return String::new();
+    };
+    let items: &[Value] = match tabs.get("tabs").and_then(Value::as_array) {
+        Some(array) => array,
+        None => match tabs.as_array() {
+            Some(array) => array,
+            None => &[],
+        },
+    };
+    if items.is_empty() {
+        return String::new();
+    }
+    const MAX_TABS_IN_HINT: usize = 12;
+    let mut lines = vec![format!("Tabs currently open in Firefox ({}):", items.len())];
+    for (position, tab) in items.iter().enumerate().take(MAX_TABS_IN_HINT) {
+        let _ = position;
+        let id = tab_id_from_value(tab);
+        // `str::get` is char-boundary safe (None on a split multibyte char).
+        let title = tab
+            .get("title")
+            .and_then(Value::as_str)
+            .unwrap_or("")
+            .trim()
+            .get(..40)
+            .unwrap_or("")
+            .trim_end()
+            .to_string();
+        let url = tab
+            .get("url")
+            .and_then(Value::as_str)
+            .unwrap_or("")
+            .trim()
+            .get(..60)
+            .unwrap_or("")
+            .to_string();
+        let active = tab.get("active").and_then(Value::as_bool).unwrap_or(false);
+        let active = if active { " [active]" } else { "" };
+        match id {
+            Some(id) => lines.push(format!("  tab_id={id} \"{title}\" {url}{active}")),
+            None => lines.push(format!("  \"{title}\" {url}{active}")),
+        }
+    }
+    if items.len() > MAX_TABS_IN_HINT {
+        lines.push(format!("  …{} more", items.len() - MAX_TABS_IN_HINT));
+    }
+    lines.push(
+        "Recover with action='select_tab' using one of the tab_ids above, or action='open' to \
+         start a fresh tab (prefer an already-authenticated one: reuse its server session)."
+            .to_string(),
+    );
+    lines.join("\n")
+}
+
+/// When a navigate-family bridge call dies with the extension's "Timed out
+/// waiting for tab to load" failure, retry the same request once with
+/// `wait: false` and return whatever content the bridge has mid-load.
+///
+/// The wait already consumed its full budget: the navigation is in flight (or
+/// the page is stuck in an SPA's perpetual `loading` state while perfectly
+/// usable). Failing the whole action forced the agent to retry manually with
+/// `wait:false`; doing it automatically keeps usable content flowing. No
+/// semantic risk: `wait` only injects an *extra* readiness delay — navigation
+/// itself is already underway, and a `wait: false` retry cannot duplicate it
+/// (the same URL in the same tab).
+async fn retry_navigation_without_wait(
+    first_result: Result<Value>,
+    logical_action: &str,
+    bridge_action: &str,
+    params: Value,
+    ctx: &ToolContext,
+) -> Result<Value> {
+    let err = match first_result {
+        Ok(value) => return Ok(value),
+        Err(err) => err,
+    };
+    if params.get("wait") == Some(&json!(false)) || !is_navigation_timeout(&err.to_string()) {
+        return Err(err);
+    }
+    let mut fallback_params = params;
+    if let Some(object) = fallback_params.as_object_mut() {
+        object.insert("wait".into(), json!(false));
+    }
+    crate::alphacode_base::logging::info(&format!(
+        "Page wait timed out after the full navigation budget; retrying '{logical_action}' once with wait=false to return mid-load content"
+    ));
+    match run_bridge_with_tab_recovery(logical_action, bridge_action, fallback_params, ctx).await {
+        // The retry succeeded: prefer it. The caller (or a follow-up snapshot)
+        // decides whether the mid-load content is good enough.
+        Ok(value) => Ok(value),
+        // The retry failed differently — that error is usually the sharper
+        // diagnosis (a dead tab, a bad URL). Surface it unless it is just the
+        // same timeout again.
+        Err(fallback_error) => {
+            if is_navigation_timeout(&fallback_error.to_string()) {
+                Err(err)
+            } else {
+                Err(fallback_error)
+            }
+        }
+    }
+}
+
 /// Bug fix #4: bounded retry with backoff for idempotent read-only bridge
 /// calls. Mutating actions are never retried — see `RETRYABLE_ACTIONS`.
+///
+/// Navigation-family actions additionally get a single `wait: false` fallback
+/// (see [`retry_navigation_without_wait`]) so a fully-consumed load budget on
+/// an SPA page returns mid-load content instead of dead-ending the action.
 async fn firefox_run_bridge_command_with_retry(
     logical_action: &str,
     bridge_action: &str,
@@ -2352,12 +2507,16 @@ async fn firefox_run_bridge_command_with_retry(
     ctx: &ToolContext,
 ) -> Result<Value> {
     if !RETRYABLE_ACTIONS.contains(&logical_action) {
-        return run_bridge_with_tab_recovery(bridge_action, params, ctx).await;
+        let first =
+            run_bridge_with_tab_recovery(logical_action, bridge_action, params.clone(), ctx).await;
+        return retry_navigation_without_wait(first, logical_action, bridge_action, params, ctx)
+            .await;
     }
 
     let mut last_err = None;
     for attempt in 0..=MAX_RETRIES {
-        match run_bridge_with_tab_recovery(bridge_action, params.clone(), ctx).await {
+        match run_bridge_with_tab_recovery(logical_action, bridge_action, params.clone(), ctx).await
+        {
             Ok(value) => return Ok(value),
             Err(err) => {
                 // Don't burn retries on errors that retrying can't fix
@@ -3769,6 +3928,43 @@ mod tests {
             error.to_string().contains("requires one of"),
             "unexpected error: {error}"
         );
+    }
+
+    /// An index from `interactables` output alone is a valid click target:
+    /// the bridge's `resolveElement` accepts it, and requiring a
+    /// selector/text/x/y on top of it dead-ended agents that had just read
+    /// an `index=N` line.
+    #[test]
+    fn click_accepts_an_index_alone() {
+        let input = browser_input(json!({"action": "click", "index": 3}));
+        let (_, params, _) = bridge_request("click", &input).expect("index is a click target");
+        assert_eq!(params["index"], json!(3));
+    }
+
+    #[test]
+    fn click_still_rejects_a_lone_x() {
+        let input = browser_input(json!({"action": "click", "x": 120}));
+        let error = bridge_request("click", &input).expect_err("x without y is unusable");
+        assert!(error.to_string().contains("requires one of"), "{error}");
+    }
+
+    #[test]
+    fn index_is_forwarded_for_hover() {
+        let input = browser_input(json!({"action": "hover", "index": 2}));
+        let (_, params, _) = bridge_request("hover", &input).expect("bridge request");
+        assert_eq!(params["index"], json!(2));
+    }
+
+    #[test]
+    fn navigation_timeout_needle_is_lowercase_matched() {
+        assert!(is_navigation_timeout(
+            "Browser bridge action 'navigate' failed: Timed out waiting for tab to load"
+        ));
+        assert!(is_navigation_timeout(
+            "timed out waiting for tab to load, giving up"
+        ));
+        assert!(!is_navigation_timeout("Tab loaded successfully"));
+        assert!(!is_navigation_timeout("Timeout waiting for the element"));
     }
 
     #[test]

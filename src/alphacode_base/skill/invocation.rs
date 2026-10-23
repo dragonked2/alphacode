@@ -50,13 +50,14 @@ mod tests {
     use crate::skill::{Skill, build_skill_search_text};
     use std::collections::HashMap;
     use std::path::PathBuf;
+    use std::sync::Arc;
 
     fn registry(names: &[&str]) -> SkillRegistry {
         let mut registry = SkillRegistry::default();
         for name in names {
             registry.skills.insert(
                 (*name).to_string(),
-                Skill {
+                Arc::new(Skill {
                     name: (*name).to_string(),
                     description: "Test skill".to_string(),
                     allowed_tools: None,
@@ -66,7 +67,7 @@ mod tests {
                     auto_invoke: false,
                     aliases: Vec::new(),
                     reference_files: HashMap::new(),
-                },
+                }),
             );
         }
         registry

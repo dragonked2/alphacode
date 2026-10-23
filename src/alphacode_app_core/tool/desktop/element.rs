@@ -31,11 +31,15 @@ pub struct ElementInfo {
 }
 
 /// Thread-safe store for ephemeral element references.
+#[derive(Debug)]
 pub(crate) struct ElementStore {
     entries: HashMap<String, StoredElement>,
+    /// Insertion order of element IDs, used to evict the *oldest* entry.
+    order: std::collections::VecDeque<String>,
     counter: u64,
 }
 
+#[derive(Debug)]
 struct StoredElement {
     info: ElementInfo,
     #[allow(dead_code)]
@@ -46,12 +50,18 @@ impl ElementStore {
     pub(crate) fn new() -> Self {
         Self {
             entries: HashMap::new(),
+            order: std::collections::VecDeque::new(),
             counter: 0,
         }
     }
 
     /// Register an xa11y element and return its ElementInfo.
-    pub fn register(&mut self, element: &xa11y::Element) -> ElementInfo {
+    ///
+    /// `app_name` records which *application* (window title) the element was
+    /// discovered under, so follow-up actions (click/type/focus via
+    /// `element_id`) re-resolve inside that same application instead of
+    /// whichever app is currently focused.
+    pub fn register(&mut self, element: &xa11y::Element, app_name: Option<String>) -> ElementInfo {
         self.counter = self.counter.wrapping_add(1);
         let id = format!("desk_{:05x}", self.counter);
         let data = element.data();
@@ -72,15 +82,18 @@ impl ElementStore {
             bounds: bounds_str,
             states,
             actions,
-            app_name: None,
+            app_name,
         };
 
-        // Evict oldest if at capacity
+        // Evict oldest if at capacity. `order` records insertion order, so
+        // popping from the front evicts the genuinely oldest entry (a
+        // HashMap's iteration order used to evict an arbitrary one).
         if self.entries.len() >= MAX_ELEMENTS
-            && let Some(oldest_key) = self.entries.keys().next().cloned()
+            && let Some(oldest) = self.order.pop_front()
         {
-            self.entries.remove(&oldest_key);
+            self.entries.remove(&oldest);
         }
+        self.order.push_back(id.clone());
 
         self.entries.insert(
             id,
@@ -102,6 +115,7 @@ impl ElementStore {
     #[allow(dead_code)]
     pub fn clear(&mut self) {
         self.entries.clear();
+        self.order.clear();
         self.counter = 0;
     }
 }

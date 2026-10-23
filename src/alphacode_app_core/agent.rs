@@ -382,26 +382,23 @@ impl Agent {
             .working_dir
             .as_deref()
             .map(std::path::Path::new);
-        // Fast path: a fresh composed registry for this working dir is
-        // already cached — return a shared handle directly. A hit pays no
-        // registry clone and no project-overlay disk rescan (audit M23; the
-        // pre-fix path cloned the full registry (≈1 MB of `SKILL.md` text)
-        // and re-scanned three skill directories for every caller between
-        // full skill loads).
-        if let Some(shared) = SkillRegistry::effective_cached_peek(working_dir) {
-            return shared;
-        }
         // Global skills come from the process-wide shared registry; the
         // project-local overlay is composed from this session's workspace
         // root so per-repo skills are session-scoped, immediately visible,
         // and never leak across sessions (issue #457).
-        let global = self
-            .registry
-            .skills()
-            .try_read()
-            .map(|skills| Arc::new(skills.clone()))
-            .unwrap_or_else(|_| self.skills.clone());
-        SkillRegistry::effective_for_working_dir_cached(&global, working_dir)
+        //
+        // Both halves are cheap to clone now that skill bodies are shared via
+        // `Arc` (audit M23), and the overlay is re-read whenever its sources
+        // change, so a freshly edited project skill is visible right away.
+        let global = self.registry.skills();
+        let global = match global.try_read() {
+            Ok(skills) => skills.clone(),
+            Err(_) => (*self.skills).clone(),
+        };
+        Arc::new(SkillRegistry::effective_for_working_dir(
+            &global,
+            working_dir,
+        ))
     }
 
     pub fn available_skill_names(&self) -> Vec<String> {

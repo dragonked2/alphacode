@@ -2,6 +2,8 @@ use anyhow::Result;
 use chrono::Utc;
 use serde::Deserialize;
 use std::collections::HashMap;
+use std::collections::hash_map::DefaultHasher;
+use std::hash::Hasher;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 #[cfg(not(test))]
@@ -11,36 +13,46 @@ use tokio::sync::RwLock;
 mod invocation;
 pub use invocation::SkillInvocation;
 
-// === Composed-effective-registry cache (audit M23) ===
+// === Project-local overlay cache (audit M23) ===
 
-/// How long a composed effective registry is reused before a rebuild. Short
-/// by design: skills can be installed or reloaded mid-session, and the cache
-/// is additionally invalidated explicitly at the replacement sites.
-const EFFECTIVE_CACHE_TTL: std::time::Duration = std::time::Duration::from_secs(2);
+/// How many composed project overlays are kept in memory. One entry per
+/// workspace root; the map is pruned so a long-lived daemon that visits many
+/// workspaces cannot grow it without bound.
+const OVERLAY_CACHE_MAX_ENTRIES: usize = 32;
 
-struct EffectiveCacheEntry {
-    registry: Arc<SkillRegistry>,
+/// Project-local skill roots, relative to the workspace root.
+const PROJECT_LOCAL_ROOTS: &[&str] = &[".alphacode", ".agents", ".claude"];
+
+struct OverlayCacheEntry {
+    overlay: Arc<SkillRegistry>,
+    /// Fingerprint of the on-disk sources the overlay was parsed from. A
+    /// changed fingerprint means the cached overlay is stale.
+    fingerprint: u64,
     built: std::time::Instant,
 }
 
-static EFFECTIVE_CACHE: std::sync::OnceLock<
-    std::sync::Mutex<HashMap<Option<PathBuf>, EffectiveCacheEntry>>,
+static OVERLAY_CACHE: std::sync::OnceLock<
+    std::sync::Mutex<HashMap<Option<PathBuf>, OverlayCacheEntry>>,
 > = std::sync::OnceLock::new();
 
-fn effective_cache() -> std::sync::MutexGuard<'static, HashMap<Option<PathBuf>, EffectiveCacheEntry>>
-{
-    let mutex = EFFECTIVE_CACHE.get_or_init(|| std::sync::Mutex::new(HashMap::new()));
-    mutex
+fn overlay_cache() -> std::sync::MutexGuard<'static, HashMap<Option<PathBuf>, OverlayCacheEntry>> {
+    OVERLAY_CACHE
+        .get_or_init(|| std::sync::Mutex::new(HashMap::new()))
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner())
 }
 
-struct EffectiveCache; // association for the map API below
+/// Nanosecond timestamp of a file's modification time, or 0 when the platform
+/// cannot report one. Used to fingerprint on-disk skill sources.
+fn file_stamp(meta: &std::fs::Metadata) -> u64 {
+    meta.modified().map(system_time_stamp).unwrap_or_default()
+}
 
-impl EffectiveCache {
-    fn prune(map: &mut HashMap<Option<PathBuf>, EffectiveCacheEntry>, now: std::time::Instant) {
-        map.retain(|_, entry| now.duration_since(entry.built) < EFFECTIVE_CACHE_TTL * 4);
-    }
+/// Nanosecond timestamp of a system time relative to the Unix epoch.
+fn system_time_stamp(time: std::time::SystemTime) -> u64 {
+    time.duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_nanos() as u64)
+        .unwrap_or_default()
 }
 
 /// A skill definition from SKILL.md
@@ -82,7 +94,12 @@ struct SkillFrontmatter {
 /// Registry of available skills
 #[derive(Debug, Default, Clone)]
 pub struct SkillRegistry {
-    skills: HashMap<String, Skill>,
+    /// Skills keyed by name.
+    ///
+    /// The values are shared (`Arc`) so cloning a registry — which happens on
+    /// every prompt build and on every project-overlay composition — copies
+    /// pointers instead of the megabyte-scale `SKILL.md` bodies (audit M23).
+    skills: HashMap<String, Arc<Skill>>,
 }
 
 /// Maximum directory depth scanned under a Claude Code plugin root when
@@ -336,76 +353,117 @@ impl SkillRegistry {
 
     /// Effective skills for a session: shared global skills plus the
     /// project-local overlay for the session's workspace root.
+    ///
+    /// The global half is shared through [`Arc`], so this composition copies
+    /// pointers rather than `SKILL.md` bodies (audit M23). The project half is
+    /// re-read from disk whenever the overlay sources change, so a skill that
+    /// was just edited is visible immediately.
     pub fn effective_for_working_dir(base: &Self, working_dir: Option<&Path>) -> Self {
         let mut effective = base.clone();
-        if let Ok(overlay) = Self::load_project_overlay(working_dir) {
-            effective.merge_overlay(overlay);
-        }
+        effective.merge_overlay(
+            Self::load_project_overlay_cached(working_dir)
+                .as_ref()
+                .clone(),
+        );
         effective
     }
 
-    /// Cached [`Self::effective_for_working_dir`], held as an [`Arc`].
+    /// Project-local overlay for `working_dir`, reusing the cached parse when
+    /// the on-disk sources have not changed since it was built.
     ///
-    /// Composing the effective registry costs two full registry clones (each
-    /// copying every `SKILL.md` body, ~1 MB on this workspace) plus a disk
-    /// rescan of the project-local skill directories, and the previous code
-    /// paid it on every consumer call — up to three clones per prompt build
-    /// (audit M23). The composed result is per-working-dir and, within the
-    /// TTL, invariant, so it is keyed by `working_dir` and shared.
-    ///
-    /// Invalidation is belt-and-braces: a short TTL bounds staleness, and
-    /// [`Self::invalidate_effective_cache`] is called wherever the global
-    /// registry is replaced (skill install/reload). The global *base* passed
-    /// via `base` is expected to be the shared process registry, so a cache
-    /// hit remains consistent with it between invalidation and TTL expiry.
-    pub fn effective_for_working_dir_cached(base: &Self, working_dir: Option<&Path>) -> Arc<Self> {
-        let now = std::time::Instant::now();
+    /// Parsing the overlay reads and parses every project-local `SKILL.md`,
+    /// which is wasteful when nothing changed between two prompt builds. The
+    /// cache is keyed by workspace root and validated against a fingerprint of
+    /// the sources (see [`Self::project_overlay_fingerprint`]), so an edited,
+    /// added or removed skill invalidates it immediately — skill edits stay
+    /// visible without a daemon restart (issue #457).
+    pub fn load_project_overlay_cached(working_dir: Option<&Path>) -> Arc<Self> {
+        let fingerprint = Self::project_overlay_fingerprint(working_dir);
         let key = working_dir.map(Path::to_path_buf);
-        if let Some(entry) = effective_cache().get(&key)
-            && now.duration_since(entry.built) < EFFECTIVE_CACHE_TTL
+
         {
-            return Arc::clone(&entry.registry);
+            let cache = overlay_cache();
+            if let Some(entry) = cache.get(&key)
+                && entry.fingerprint == fingerprint
+            {
+                return Arc::clone(&entry.overlay);
+            }
         }
 
-        let composed = Self::effective_for_working_dir(base, working_dir);
-        let shared = Arc::new(composed);
+        let overlay = Arc::new(Self::load_project_overlay(working_dir).unwrap_or_default());
         {
-            let mut cache = effective_cache();
+            let mut cache = overlay_cache();
+            if cache.len() >= OVERLAY_CACHE_MAX_ENTRIES
+                && let Some(oldest) = cache
+                    .iter()
+                    .min_by_key(|(_, entry)| entry.built)
+                    .map(|(key, _)| key.clone())
+            {
+                cache.remove(&oldest);
+            }
             cache.insert(
                 key,
-                EffectiveCacheEntry {
-                    registry: Arc::clone(&shared),
-                    built: now,
+                OverlayCacheEntry {
+                    overlay: Arc::clone(&overlay),
+                    fingerprint,
+                    built: std::time::Instant::now(),
                 },
             );
-            EffectiveCache::prune(&mut cache, now);
         }
-        shared
+        overlay
     }
 
-    /// Shared cache lookup only: `Some` when a fresh composed registry for
-    /// `working_dir` is cached. Snapshots check this first so a hit pays
-    /// neither the base-registry clone nor the overlay disk scan.
-    pub fn effective_cached_peek(working_dir: Option<&Path>) -> Option<Arc<Self>> {
-        // The guard must outlive `entry`: the entry borrows from the map that
-        // the guard owns, so returning a borrow of a temporary guard would
-        // drop the map's owner while the borrow is still live.
-        let cache = effective_cache();
-        let key = working_dir.map(Path::to_path_buf);
-        let entry = cache.get(&key)?;
-        if std::time::Instant::now().duration_since(entry.built) < EFFECTIVE_CACHE_TTL {
-            Some(Arc::clone(&entry.registry))
-        } else {
-            None
-        }
-    }
+    /// Fingerprint of the project-local skill sources for `working_dir`.
+    ///
+    /// Combines each project-local skill root's own modification time — which
+    /// changes when a skill directory is added or removed — with the
+    /// modification time and size of every `SKILL.md` it contains, which
+    /// change when a skill is edited. A different fingerprint means the cached
+    /// overlay no longer matches the files on disk.
+    fn project_overlay_fingerprint(working_dir: Option<&Path>) -> u64 {
+        let mut hasher = DefaultHasher::new();
+        for root in PROJECT_LOCAL_ROOTS {
+            let dir = Self::project_local_dir(working_dir, root);
+            hasher.write(root.as_bytes());
+            match std::fs::metadata(&dir) {
+                Ok(meta) => {
+                    hasher.write_u8(1);
+                    hasher.write_u64(file_stamp(&meta));
+                    hasher.write_u64(meta.len());
+                }
+                Err(_) => {
+                    // The root does not exist: nothing to load from it.
+                    hasher.write_u8(0);
+                    continue;
+                }
+            }
 
-    /// Drop the composed-effective-registry cache. Call after replacing the
-    /// process-wide global registry (skill install, `reload_skill`), so a
-    /// fresh composition is built on the next snapshot instead of serving a
-    /// stale one until the TTL expires.
-    pub fn invalidate_effective_cache() {
-        effective_cache().clear();
+            let mut files: Vec<(PathBuf, std::time::SystemTime, u64)> = Vec::new();
+            if let Ok(entries) = std::fs::read_dir(&dir) {
+                for entry in entries.flatten() {
+                    let path = entry.path();
+                    if !path.is_dir() {
+                        continue;
+                    }
+                    let skill_file = path.join("SKILL.md");
+                    let Ok(meta) = std::fs::metadata(&skill_file) else {
+                        continue;
+                    };
+                    files.push((
+                        skill_file,
+                        meta.modified().unwrap_or(std::time::UNIX_EPOCH),
+                        meta.len(),
+                    ));
+                }
+            }
+            files.sort_by(|a, b| a.0.cmp(&b.0));
+            for (path, modified, len) in files {
+                hasher.write(path.to_string_lossy().as_bytes());
+                hasher.write_u64(system_time_stamp(modified));
+                hasher.write_u64(len);
+            }
+        }
+        hasher.finish()
     }
 
     /// Load skills from all standard locations, with project-local locations
@@ -585,7 +643,7 @@ impl SkillRegistry {
                 if skill_file.exists()
                     && let Ok(skill) = Self::parse_skill(&skill_file)
                 {
-                    self.skills.insert(skill.name.clone(), skill);
+                    self.skills.insert(skill.name.clone(), Arc::new(skill));
                 }
             }
         }
@@ -648,7 +706,10 @@ impl SkillRegistry {
                     // Project-local overlay still wins over bundled, so use
                     // the entry API: only insert if no on-disk skill of the
                     // same name was already loaded.
-                    registry.skills.entry(parsed.name.clone()).or_insert(parsed);
+                    registry
+                        .skills
+                        .entry(parsed.name.clone())
+                        .or_insert_with(|| Arc::new(parsed));
                 }
                 Err(err) => {
                     crate::alphacode_logging::warn(&format!(
@@ -808,7 +869,7 @@ impl SkillRegistry {
 
     /// Get a skill by name
     pub fn get(&self, name: &str) -> Option<&Skill> {
-        self.skills.get(name)
+        self.skills.get(name).map(|skill| skill.as_ref())
     }
 
     /// List all available skills.
@@ -821,7 +882,7 @@ impl SkillRegistry {
     /// system prompt with identical length but different bytes, silently busting
     /// the Anthropic strict-prefix KV cache mid-conversation.
     pub fn list(&self) -> Vec<&Skill> {
-        let mut skills: Vec<&Skill> = self.skills.values().collect();
+        let mut skills: Vec<&Skill> = self.skills.values().map(|skill| skill.as_ref()).collect();
         skills.sort_by(|a, b| a.name.cmp(&b.name));
         skills
     }
@@ -870,7 +931,7 @@ impl SkillRegistry {
 
             // Any skill: a full name/alias mention ("ctf challenge",
             // "/bug bounty this") is explicit enough on its own.
-            if skill_name_is_mentioned(message, skill) {
+            if skill_name_is_mentioned(message, skill.as_ref()) {
                 return Some(skill.name.clone());
             }
 
@@ -891,7 +952,7 @@ impl SkillRegistry {
         if let Some(path) = path {
             if path.exists() {
                 let skill = Self::parse_skill(&path)?;
-                self.skills.insert(skill.name.clone(), skill);
+                self.skills.insert(skill.name.clone(), Arc::new(skill));
                 Ok(true)
             } else {
                 // Skill file was deleted
@@ -977,7 +1038,7 @@ impl SkillRegistry {
                 if skill_file.exists()
                     && let Ok(skill) = Self::parse_skill(&skill_file)
                 {
-                    self.skills.insert(skill.name.clone(), skill);
+                    self.skills.insert(skill.name.clone(), Arc::new(skill));
                     count += 1;
                 }
             }
@@ -1639,7 +1700,7 @@ mod tests {
         for name in names {
             reg_a
                 .skills
-                .insert(name.to_string(), test_skill(name, "d", "c"));
+                .insert(name.to_string(), Arc::new(test_skill(name, "d", "c")));
         }
 
         // Build a second registry with the reverse insertion order to maximize
@@ -1648,7 +1709,7 @@ mod tests {
         for name in names.iter().rev() {
             reg_b
                 .skills
-                .insert(name.to_string(), test_skill(name, "d", "c"));
+                .insert(name.to_string(), Arc::new(test_skill(name, "d", "c")));
         }
 
         let order_a: Vec<&str> = reg_a.list().iter().map(|s| s.name.as_str()).collect();
@@ -1729,7 +1790,7 @@ mod tests {
         let mut base = SkillRegistry::default();
         base.skills.insert(
             "session-skill".to_string(),
-            test_skill("session-skill", "global variant", "global body"),
+            Arc::new(test_skill("session-skill", "global variant", "global body")),
         );
         let effective = SkillRegistry::effective_for_working_dir(&base, Some(temp.path()));
         let skill = effective
@@ -2249,7 +2310,10 @@ mod tests {
                         && parsed.content.contains("G7"),
                     "bundled bugbounty body must contain the hunter methodology text"
                 );
-                registry.skills.entry(parsed.name.clone()).or_insert(parsed);
+                registry
+                    .skills
+                    .entry(parsed.name.clone())
+                    .or_insert_with(|| Arc::new(parsed));
                 found = true;
                 break;
             }

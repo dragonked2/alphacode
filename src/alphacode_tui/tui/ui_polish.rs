@@ -1,21 +1,14 @@
-//! Modern visual polish helpers — gradient separators, glass-effect surfaces,
-//! animated accent borders, and enhanced content frames.
+//! Modern visual polish helpers.
 //!
-//! These helpers build on the existing design-token system
-//! (`crate::alphacode_tui_style::tokens`) to add subtle, modern visual
-//! refinements: gradient divider lines between sections, softly tinted
-//! backgrounds for content panels, and a pulsing accent border that gives
-//! focused surfaces a "alive" feel without being distracting.
-//!
-//! All functions are purely additive — they never remove or alter existing
-//! content, only enhance the visual treatment around it.
+//! This module used to include a "glass surface" tint and a pulsing accent
+//! border style. Both were never wired into the live draw path, so only the
+//! helper that is actually used — `gradient_separator_line` for the
+//! transcript-to-composer separator — remains. Build new primitives on the
+//! design tokens in `crate::alphacode_tui_style` and `brand_ux::BrandTheme`
+//! where background/theme adaptation already happens frame-wide.
 
-use ratatui::{
-    layout::Rect,
-    style::{Color, Style},
-    text::{Line, Span},
-    widgets::Block,
-};
+use ratatui::style::{Color, Style};
+use ratatui::text::{Line, Span};
 
 use crate::alphacode_tui::tui::brand_ux::BrandTheme;
 
@@ -44,63 +37,10 @@ pub fn gradient_separator_line(width: usize, color: Color) -> Line<'static> {
 }
 
 // ---------------------------------------------------------------------------
-// Glass-effect surfaces
-// ---------------------------------------------------------------------------
-
-/// Render a "glass" surface — a very subtle background tint with a thin
-/// accent-colored left edge. Used to visually distinguish a content panel
-/// from the main transcript without the heavy look of a full border.
-///
-/// The left edge is 1 cell wide in the accent color; the rest of the area
-/// gets a barely-perceptible darkening.
-pub fn glass_surface(frame: &mut ratatui::Frame, area: Rect, accent: Color, bg_tint: Color) {
-    use ratatui::widgets::Widget;
-    // Fill the area with the subtle tint
-    let buffer = frame.buffer_mut();
-    for y in area.top()..area.bottom() {
-        for x in area.left()..area.right() {
-            let cell = &mut buffer[(x, y)];
-            if cell.symbol() == " " || cell.symbol().is_empty() {
-                cell.set_bg(bg_tint);
-            }
-        }
-    }
-    // Draw the left accent edge
-    if area.width >= 2 {
-        let edge = Rect {
-            x: area.x,
-            y: area.y,
-            width: 1,
-            height: area.height,
-        };
-        let block = Block::default().style(Style::default().fg(accent));
-        Widget::render(block, edge, buffer);
-    }
-}
-
-// ---------------------------------------------------------------------------
-// Animated accent border
-// ---------------------------------------------------------------------------
-
-/// Draw a border that pulses between the accent color and a dimmed version
-/// of it. The pulse is driven by `elapsed` seconds and completes one cycle
-/// every `cycle_secs` seconds.
-///
-/// This gives focused surfaces (modals, input areas, side panels) a subtle
-/// "alive" quality without the harshness of a blinking cursor or spinner.
-pub fn animated_accent_border(_area: Rect, accent: Color, elapsed: f32, cycle_secs: f32) -> Style {
-    let phase = (elapsed / cycle_secs.max(0.1)) % 1.0;
-    let pulse = (phase * std::f32::consts::TAU).sin() * 0.5 + 0.5; // 0..1
-    let dim = BrandTheme::dim();
-    let blended = blend_toward(dim, accent, 0.3 + 0.7 * pulse);
-    Style::default().fg(blended)
-}
-
-// ---------------------------------------------------------------------------
 // Helper: color blending
 // ---------------------------------------------------------------------------
 
-/// Blend `from` toward `by` by amount `t` (0.0 = `from`, 1.0 = `by`).
+/// Blend `from` toward `to` by amount `t` (0.0 = `from`, 1.0 = `to`).
 fn blend_toward(from: Color, by: Color, t: f32) -> Color {
     let t = t.clamp(0.0, 1.0);
     match (from, by) {
@@ -136,13 +76,5 @@ mod tests {
         let to = Color::Rgb(200, 200, 200);
         assert_eq!(blend_toward(from, to, 0.0), from);
         assert_eq!(blend_toward(from, to, 1.0), to);
-    }
-
-    #[test]
-    fn animated_accent_border_returns_style() {
-        let style =
-            animated_accent_border(Rect::new(0, 0, 80, 24), Color::Rgb(100, 150, 200), 0.5, 2.0);
-        // Just verify it doesn't panic and returns a valid style
-        let _ = style.fg;
     }
 }

@@ -33,8 +33,8 @@
 //! small false-negative rate for bounded memory growth in month-long
 //! sessions.
 
-use std::collections::VecDeque;
 use std::collections::hash_map::DefaultHasher;
+use std::collections::{HashMap, VecDeque};
 use std::hash::{Hash, Hasher};
 use std::sync::Mutex;
 use std::time::Instant;
@@ -61,44 +61,107 @@ struct Entry {
 }
 
 struct Cache {
-    entries: VecDeque<Entry>,
-    /// Map from hash to its index in `entries`. Small, so a HashMap is
-    /// appropriate; we keep both structures in sync under one lock.
-    by_hash: std::collections::HashMap<u64, usize>,
+    /// Insertion order of the cached hashes. Used for FIFO eviction: the
+    /// oldest entry is always at the front. Keeping the order separately
+    /// from the map means eviction is O(1) — no index rebuild is needed when
+    /// entries are dropped.
+    order: VecDeque<u64>,
+    /// Cached entries keyed by the hash of their body.
+    by_hash: HashMap<u64, Entry>,
     /// Current monotonic turn counter.
     turn: u64,
+    /// When the cache was last read or written.
+    last_touched: Option<Instant>,
 }
 
 impl Cache {
     fn new() -> Self {
         Self {
-            entries: VecDeque::with_capacity(DEFAULT_CAPACITY),
-            by_hash: std::collections::HashMap::with_capacity(DEFAULT_CAPACITY),
+            order: VecDeque::with_capacity(DEFAULT_CAPACITY),
+            by_hash: HashMap::with_capacity(DEFAULT_CAPACITY),
             turn: 0,
+            last_touched: None,
         }
     }
 
     /// Bump the turn counter. Called once at the start of every model turn
     /// so we can age out entries that are no longer relevant.
-    fn advance_turn(&mut self) {
+    ///
+    /// Returns the new turn number.
+    fn advance_turn(&mut self) -> u64 {
         self.turn = self.turn.saturating_add(1);
         // Opportunistic eviction: drop entries older than MAX_AGE_TURNS.
-        let mut evicted = false;
-        while let Some(front) = self.entries.front() {
-            if self.turn.saturating_sub(front.first_turn) > MAX_AGE_TURNS {
-                let removed = self.entries.pop_front().expect("front exists");
-                self.by_hash.remove(&removed.hash);
-                evicted = true;
-            } else {
+        // `order` is insertion-ordered and `first_turn` never decreases along
+        // it, so the expired entries are always at the front.
+        while let Some(&hash) = self.order.front() {
+            let expired = self
+                .by_hash
+                .get(&hash)
+                .is_some_and(|entry| self.turn.saturating_sub(entry.first_turn) > MAX_AGE_TURNS);
+            if !expired {
                 break;
             }
+            self.order.pop_front();
+            self.by_hash.remove(&hash);
         }
-        // After front-eviction, remaining indices shifted. Rebuild the index map.
-        if evicted && !self.by_hash.is_empty() {
-            for (idx, entry) in self.entries.iter().enumerate() {
-                self.by_hash.insert(entry.hash, idx);
-            }
+        self.turn
+    }
+
+    /// Insert a new entry, evicting the oldest entries when the cache is at
+    /// capacity. The caller must have already checked for an existing entry
+    /// with the same hash.
+    fn insert(&mut self, entry: Entry) {
+        while self.by_hash.len() >= DEFAULT_CAPACITY {
+            let Some(hash) = self.order.pop_front() else {
+                break;
+            };
+            self.by_hash.remove(&hash);
         }
+        let hash = entry.hash;
+        self.by_hash.insert(hash, entry);
+        self.order.push_back(hash);
+    }
+
+    /// Cache-aware half of [`should_dedup`].
+    ///
+    /// Returns `Some(marker)` when `body` repeats a cached output and
+    /// `None` when it is new. Kept on the cache so the behaviour can be
+    /// exercised against a private cache instead of the process-global one.
+    fn should_dedup(&mut self, tool_name: &str, body: &str) -> Option<String> {
+        if !is_dedupable(tool_name) {
+            return None;
+        }
+        if body.len() < MIN_DEDUP_LEN {
+            return None;
+        }
+        let hash = hash_bytes(body.as_bytes());
+        self.last_touched = Some(Instant::now());
+        let turn = self.turn;
+
+        // Look the body up BEFORE evicting anything: a repeat must be
+        // answered from the cache even when the cache sits at capacity.
+        // Evicting first could drop the very entry being looked up and
+        // report a known repeat as new.
+        if let Some(entry) = self.by_hash.get_mut(&hash) {
+            entry.last_seen_turn = turn;
+            entry.bytes_seen = entry.bytes_seen.saturating_add(body.len() as u64);
+            let placeholder = entry.placeholder.clone();
+            record_dedup_bytes(body.len() as u64);
+            return Some(placeholder);
+        }
+
+        let placeholder = format!(
+            "[{}_output_dedup_{}: repeated below; call the tool again if you need the full body]",
+            tool_name, turn
+        );
+        self.insert(Entry {
+            hash,
+            first_turn: turn,
+            last_seen_turn: turn,
+            bytes_seen: body.len() as u64,
+            placeholder: placeholder.clone(),
+        });
+        None
     }
 }
 
@@ -113,10 +176,13 @@ fn cache() -> std::sync::MutexGuard<'static, Option<Cache>> {
 }
 
 /// Bump the dedup turn counter. Call at the top of every model turn.
-pub fn advance_turn() {
+///
+/// Returns the new turn number.
+pub fn advance_turn() -> u64 {
     let mut g = cache();
-    if let Some(c) = g.as_mut() {
-        c.advance_turn();
+    match g.as_mut() {
+        Some(c) => c.advance_turn(),
+        None => 0,
     }
 }
 
@@ -133,54 +199,9 @@ pub fn hash_bytes(body: &[u8]) -> u64 {
 /// model). The `marker` is the placeholder text to substitute for the
 /// output body.
 pub fn should_dedup(tool_name: &str, body: &str) -> Option<String> {
-    if !is_dedupable(tool_name) {
-        return None;
-    }
-    if body.len() < MIN_DEDUP_LEN {
-        return None;
-    }
-    let hash = hash_bytes(body.as_bytes());
     let mut g = cache();
     let cache = g.as_mut().unwrap();
-
-    // Evict oldest if at capacity. Keep this BEFORE the lookup so a flood
-    // of new unique outputs does not block on a growing map.
-    while cache.entries.len() >= DEFAULT_CAPACITY {
-        if let Some(removed) = cache.entries.pop_front() {
-            cache.by_hash.remove(&removed.hash);
-        } else {
-            break;
-        }
-    }
-    // After front-eviction, remaining indices shifted. Rebuild the index map.
-    if !cache.by_hash.is_empty() {
-        for (idx, entry) in cache.entries.iter().enumerate() {
-            cache.by_hash.insert(entry.hash, idx);
-        }
-    }
-
-    if let Some(&idx) = cache.by_hash.get(&hash)
-        && let Some(entry) = cache.entries.get_mut(idx)
-    {
-        entry.last_seen_turn = cache.turn;
-        entry.bytes_seen = entry.bytes_seen.saturating_add(body.len() as u64);
-        return Some(entry.placeholder.clone());
-    }
-
-    let placeholder = format!(
-        "[{}_output_dedup_{}: repeated below; call the tool again if you need the full body]",
-        tool_name, cache.turn
-    );
-    let new_idx = cache.entries.len();
-    cache.entries.push_back(Entry {
-        hash,
-        first_turn: cache.turn,
-        last_seen_turn: cache.turn,
-        bytes_seen: body.len() as u64,
-        placeholder: placeholder.clone(),
-    });
-    cache.by_hash.insert(hash, new_idx);
-    None
+    cache.should_dedup(tool_name, body)
 }
 
 /// Tools whose output is deterministic. Extend this as more tools opt in.
@@ -232,7 +253,7 @@ pub fn stats() -> DedupStats {
         };
     };
     DedupStats {
-        entries: cache.entries.len(),
+        entries: cache.by_hash.len(),
         capacity: DEFAULT_CAPACITY,
         current_turn: cache.turn,
         total_dedup_bytes: TOTAL_DEDUP_BYTES.load(std::sync::atomic::Ordering::Relaxed),
@@ -249,7 +270,8 @@ pub fn record_dedup_bytes(bytes: u64) {
 /// Returns the timestamp the cache was last touched, or `None` if it has
 /// never been used.  Used by the health monitor to decide whether to flush.
 pub fn last_touched() -> Option<Instant> {
-    None
+    let g = cache();
+    g.as_ref().and_then(|cache| cache.last_touched)
 }
 
 // ---------------------------------------------------------------------------
@@ -380,6 +402,20 @@ impl Default for CallGuard {
 mod tests {
     use super::*;
 
+    /// Observe the turn counter and advance it in one atomic step.
+    ///
+    /// The dedup cache is process-global, so a `stats()` + `advance_turn()`
+    /// pair can race with another thread's advance (another test, or a live
+    /// session) and observe a jump of more than one turn. Reading the counter
+    /// and advancing it under the same lock keeps the observation atomic.
+    fn observe_and_advance_turn() -> (u64, u64) {
+        let mut g = cache();
+        let cache = g.as_mut().expect("cache is initialized on demand");
+        let before = cache.turn;
+        let after = cache.advance_turn();
+        (before, after)
+    }
+
     #[test]
     fn first_seen_is_not_deduped() {
         // Reset by advancing to a fresh turn
@@ -423,9 +459,42 @@ mod tests {
 
     #[test]
     fn advance_turn_increments() {
-        let before = stats().current_turn;
-        advance_turn();
-        let after = stats().current_turn;
+        let (before, after) = observe_and_advance_turn();
         assert_eq!(after, before + 1);
+    }
+
+    #[test]
+    fn repeat_is_deduped_even_when_the_cache_is_full() {
+        // Fill a private cache to capacity, then check that a repeat of the
+        // oldest entry is still recognised: eviction must not run before the
+        // lookup.
+        let mut cache = Cache::new();
+        let filler: Vec<String> = (0..DEFAULT_CAPACITY)
+            .map(|i| format!("filler body {i} {}", "x".repeat(MIN_DEDUP_LEN)))
+            .collect();
+        for body in &filler {
+            assert!(cache.should_dedup("read", body).is_none());
+        }
+        assert_eq!(cache.by_hash.len(), DEFAULT_CAPACITY);
+
+        assert!(
+            cache.should_dedup("read", &filler[0]).is_some(),
+            "a repeat must be deduped even when the cache is at capacity"
+        );
+    }
+
+    #[test]
+    fn dedup_hits_record_saved_bytes() {
+        let out = format!("unique body for byte accounting {}", "y".repeat(300));
+        let before = stats().total_dedup_bytes;
+        let mut cache = Cache::new();
+        assert!(cache.should_dedup("grep", &out).is_none());
+        assert!(cache.should_dedup("grep", &out).is_some());
+        let saved = stats().total_dedup_bytes.saturating_sub(before);
+        assert!(
+            saved >= out.len() as u64,
+            "a dedup hit must record the bytes it saved (saved {saved}, body {})",
+            out.len()
+        );
     }
 }

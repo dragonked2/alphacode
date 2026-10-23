@@ -57,7 +57,6 @@ struct DesktopInput {
     #[serde(default)]
     element_id: Option<String>,
     #[serde(default)]
-    #[allow(dead_code)]
     selector: Option<String>,
     #[serde(default)]
     role: Option<String>,
@@ -157,7 +156,10 @@ impl Tool for DesktopTool {
                 },
                 "selector": {
                     "type": "string",
-                    "description": "xa11y selector string (e.g. 'button[name=\"Save\"]'). Only available when the backend supports it."
+                    "description": "xa11y selector string. 'application[name=\"Firefox\"]' and \
+                        'window[name=\"...\"]' resolve the app regardless of exact window-title \
+                        case/prefix; other shapes resolve inside the focused application. Used by \
+                        find/click when selectors are more natural than role/name filters."
                 },
                 "role": {
                     "type": "string",
@@ -324,6 +326,27 @@ fn action_snapshot(input: &DesktopInput, timeout: Duration) -> Result<ToolOutput
 }
 
 fn action_find(input: &DesktopInput, timeout: Duration) -> Result<ToolOutput> {
+    // `selector` path: `application[name="..."]` / `window[name="..."]` resolve
+    // a whole app (agents copy this shape from xa11y's own not-found
+    // diagnostics), other shapes are pointed at role/name/value filters
+    // instead so the failure is instructive rather than a dead end.
+    if let Some(selector) = input.selector.clone() {
+        let value = selector.clone();
+        let element_id = safety::with_timeout(timeout, move || {
+            backend::register_selector(&value).map(|info| info.element_id)
+        })?;
+        let output = format!(
+            "Found element for selector \"{selector}\"\n\
+             \nUse element_id=\"{element_id}\" with click/type/focus/press to interact."
+        );
+        return Ok(ToolOutput::new(output)
+            .with_title("desktop find")
+            .with_metadata(json!({
+                "element_id": element_id,
+                "selector": selector,
+            })));
+    }
+
     let role_filter = input.role.clone();
     let name_filter = input.name.clone();
     let value_filter = input.value.clone();
@@ -344,7 +367,10 @@ fn action_find(input: &DesktopInput, timeout: Duration) -> Result<ToolOutput> {
     if matches.is_empty() {
         bail!(
             "ElementNotFound: No element matched role={:?}, name={:?}, value={:?}.\n\
-             Hint: Run desktop action='snapshot' to see available elements, or broaden your search.",
+             Hint: Run desktop action='snapshot' to see available elements, or broaden your search.\n\
+             Note: `application` matches the *window title*, not the process name — e.g. \
+             application='Firefox' now fuzzy-matches '<page> — Mozilla Firefox'; when unsure, \
+             run action='list_windows' first and copy a title fragment.",
             input.role,
             input.name,
             input.value
@@ -457,12 +483,15 @@ fn action_click(input: &DesktopInput, timeout: Duration) -> Result<ToolOutput> {
     }
 
     let element_id = input.element_id.clone();
+    let selector = input.selector.clone();
     let x = input.x;
     let y = input.y;
 
     safety::with_timeout(timeout, move || {
         if let Some(ref eid) = element_id {
             backend::click_element(eid)
+        } else if let Some(ref sel) = selector {
+            backend::click_selector(sel)
         } else if let (Some(xv), Some(yv)) = (x, y) {
             crate::logging::warn(&format!(
                 "desktop click using coordinates ({xv}, {yv}) — semantic element lookup is preferred"
@@ -470,8 +499,9 @@ fn action_click(input: &DesktopInput, timeout: Duration) -> Result<ToolOutput> {
             backend::click_coordinates(xv, yv)
         } else {
             bail!(
-            "click requires element_id or x/y coordinates. Use desktop action='find' first to locate an element."
-        );
+                "click requires element_id, selector, or x/y coordinates. Use desktop \
+                 action='find' first to locate an element."
+            );
         }
     })
     .map(|msg| ToolOutput::new(msg).with_title("desktop click"))

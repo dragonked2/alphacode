@@ -72,6 +72,10 @@ pub fn snapshot(
 ) -> Result<SnapshotResult> {
     let app = resolve_application(application)?;
     let children = app.children().map_err(map_xa11y_error)?;
+    // Record which application each element belongs to so `element_id` based
+    // actions can re-resolve inside the same app later (wrong-app clicks were
+    // the failure mode when the user switched applications between calls).
+    let app_name = app.name.clone();
 
     let mut windows = Vec::new();
     let mut total_elements = 0;
@@ -101,7 +105,13 @@ pub fn snapshot(
             .name
             .clone()
             .unwrap_or_else(|| "(untitled)".to_string());
-        let elements = collect_elements(child, depth, interactive_only, visible_only)?;
+        let elements = collect_elements(
+            child,
+            Some(app_name.clone()),
+            depth,
+            interactive_only,
+            visible_only,
+        )?;
         total_elements += elements.len();
 
         windows.push(WindowSnapshot { title, elements });
@@ -117,6 +127,7 @@ pub fn snapshot(
 /// Recursively collect elements from an xa11y element tree.
 fn collect_elements(
     element: &xa11y::Element,
+    app_name: Option<String>,
     max_depth: usize,
     interactive_only: bool,
     visible_only: bool,
@@ -124,6 +135,7 @@ fn collect_elements(
     let mut result = Vec::new();
     collect_elements_recursive(
         element,
+        &app_name,
         0,
         max_depth,
         interactive_only,
@@ -133,8 +145,10 @@ fn collect_elements(
     Ok(result)
 }
 
+#[allow(clippy::too_many_arguments)]
 fn collect_elements_recursive(
     element: &xa11y::Element,
+    app_name: &Option<String>,
     current_depth: usize,
     max_depth: usize,
     interactive_only: bool,
@@ -160,6 +174,7 @@ fn collect_elements_recursive(
             for child in &children {
                 collect_elements_recursive(
                     child,
+                    app_name,
                     current_depth + 1,
                     max_depth,
                     interactive_only,
@@ -175,7 +190,7 @@ fn collect_elements_recursive(
     let info = store
         .lock()
         .map_err(|_| anyhow::anyhow!("element store lock poisoned"))?
-        .register(element);
+        .register(element, app_name.clone());
     out.push(info);
 
     // Recurse into children
@@ -183,6 +198,7 @@ fn collect_elements_recursive(
         for child in &children {
             collect_elements_recursive(
                 child,
+                app_name,
                 current_depth + 1,
                 max_depth,
                 interactive_only,
@@ -231,6 +247,9 @@ pub fn find_elements(
 ) -> Result<Vec<ElementInfo>> {
     let app = resolve_application(application)?;
     let children = app.children().map_err(map_xa11y_error)?;
+    // Record which application each element belongs to so `element_id` based
+    // actions re-resolve inside the same application later.
+    let app_name = Some(app.name.clone());
 
     let mut matches = Vec::new();
 
@@ -246,12 +265,26 @@ pub fn find_elements(
             }
         }
 
+        // Descend only into window-like containers — mirrors the snapshot
+        // gate (Window | Dialog | Frame) plus Pane: Electron/Chromium apps
+        // regularly expose their top level as Pane or Frame, and a
+        // Window/Dialog-only gate silently yielded zero matches for them.
         let role_str = format!("{:?}", child.role);
-        if !role_str.contains("Window") && !role_str.contains("Dialog") {
+        let window_like = ["Window", "Dialog", "Frame", "Pane"]
+            .iter()
+            .any(|role| role_str.contains(role));
+        if !window_like {
             continue;
         }
 
-        find_in_subtree(child, role_filter, name_filter, value_filter, &mut matches)?;
+        find_in_subtree(
+            child,
+            &app_name,
+            role_filter,
+            name_filter,
+            value_filter,
+            &mut matches,
+        )?;
     }
 
     Ok(matches)
@@ -259,6 +292,7 @@ pub fn find_elements(
 
 fn find_in_subtree(
     element: &xa11y::Element,
+    app_name: &Option<String>,
     role_filter: Option<&str>,
     name_filter: Option<&str>,
     value_filter: Option<&str>,
@@ -269,13 +303,13 @@ fn find_in_subtree(
         let info = store
             .lock()
             .map_err(|_| anyhow::anyhow!("element store lock poisoned"))?
-            .register(element);
+            .register(element, app_name.clone());
         out.push(info);
     }
 
     if let Ok(children) = element.children() {
         for child in &children {
-            find_in_subtree(child, role_filter, name_filter, value_filter, out)?;
+            find_in_subtree(child, app_name, role_filter, name_filter, value_filter, out)?;
         }
     }
 
@@ -356,9 +390,11 @@ pub fn click_element(element_id: &str) -> Result<String> {
 
 pub fn click_coordinates(x: f64, y: f64) -> Result<String> {
     let sim = xa11y::input_sim().map_err(map_xa11y_error)?;
+    // Round, don't truncate: truncation systematically off-targets clicks on
+    // DPI-scaled displays (physical-pixel bounds from screenshots/UIA).
     let point = xa11y::Point {
-        x: x as i32,
-        y: y as i32,
+        x: x.round() as i32,
+        y: y.round() as i32,
     };
     sim.mouse().click(point).map_err(map_xa11y_error)?;
     Ok(format!("Clicked at ({x:.0}, {y:.0})."))
@@ -375,9 +411,9 @@ pub fn focus_element(element_id: &str) -> Result<String> {
 }
 
 pub fn focus_application(app_name: &str) -> Result<String> {
-    let app = xa11y::App::by_name(app_name, Duration::from_secs(3)).map_err(map_xa11y_error)?;
+    let app = resolve_application(Some(app_name))?;
     app.as_element().focus().map_err(map_xa11y_error)?;
-    Ok(format!("Focused application '{app_name}'."))
+    Ok(format!("Focused application '{}'.", app.name))
 }
 
 pub fn type_text_element(element_id: &str, text: &str) -> Result<String> {
@@ -438,8 +474,8 @@ pub fn scroll_element(element_id: &str, _dx: i32, dy: i32) -> Result<String> {
 pub fn scroll_coordinates(x: f64, y: f64, dx: i32, dy: i32) -> Result<String> {
     let sim = xa11y::input_sim().map_err(map_xa11y_error)?;
     let point = xa11y::Point {
-        x: x as i32,
-        y: y as i32,
+        x: x.round() as i32,
+        y: y.round() as i32,
     };
     let delta = xa11y::ScrollDelta::new(dx, dy);
     sim.mouse().scroll(point, delta).map_err(map_xa11y_error)?;
@@ -492,7 +528,7 @@ pub struct ScreenshotResult {
 
 pub fn screenshot(application: Option<&str>) -> Result<ScreenshotResult> {
     if let Some(app_name) = application {
-        let app = xa11y::App::by_name(app_name, Duration::from_secs(3)).map_err(map_xa11y_error)?;
+        let app = resolve_application(Some(app_name))?;
         let children = app.children().map_err(map_xa11y_error)?;
         let first_window = children.iter().find(|c| {
             let role = format!("{:?}", c.role);
@@ -540,28 +576,144 @@ fn rgba_to_png(pixels: &[u8], width: u32, height: u32) -> Result<Vec<u8>> {
 // Helpers
 // ---------------------------------------------------------------------------
 
-/// Resolve an application by name or get the foreground app.
+/// Resolve an application by name, or the foreground app when no name is
+/// given.
+///
+/// On Windows the accessibility layer exposes one top-level element per
+/// process whose *name is the mutable window title* (`list_apps` yields one
+/// top-level Window element per PID). An exact `App::by_name("Firefox")`
+/// therefore misses the very application the agent just saw in
+/// `list_windows` output (`<page> — Mozilla Firefox`). Preferred order:
+/// exact platform match (fast path) → case-insensitive → substring, with
+/// multi-process ambiguity reported as an error listing the candidates.
 fn resolve_application(name: Option<&str>) -> Result<xa11y::App> {
     match name {
-        Some(app_name) => {
-            xa11y::App::by_name(app_name, Duration::from_secs(3)).map_err(map_xa11y_error)
-        }
-        None => {
-            // Find the foreground app by looking for the focused element
-            xa11y::App::find(Duration::from_secs(1), |data| data.states.focused)
-                .map_err(map_xa11y_error)
+        None => xa11y::App::find(Duration::from_secs(1), |data| data.states.focused)
+            .map_err(map_xa11y_error),
+        Some(app_name) if app_name.trim().is_empty() => bail!(
+            "application name is empty; pass a window-title fragment (e.g. 'Firefox') or omit \
+             `application` to target the foreground app"
+        ),
+        Some(app_name) => resolve_application_by_name(app_name),
+    }
+}
+
+/// Case-insensitive, substring-tolerant application lookup. The ranked
+/// matching logic lives in [`match_app_candidates`] so it stays unit-testable
+/// without a live accessibility tree.
+fn resolve_application_by_name(query: &str) -> Result<xa11y::App> {
+    // Fast path: the platform's own exact match.
+    if let Ok(app) = xa11y::App::by_name(query, Duration::from_secs(3)) {
+        return Ok(app);
+    }
+    let provider = xa11y::provider().map_err(map_xa11y_error)?;
+    let mut apps = xa11y::App::list_with(provider).map_err(map_xa11y_error)?;
+    let names: Vec<String> = apps.iter().map(|app| app.name.trim().to_string()).collect();
+
+    let ranked = match_app_candidates(&names, query);
+    let Some(first) = ranked.first().copied() else {
+        return Err(anyhow::anyhow!(
+            "ElementNotFound: no running application matches '{query}' (exact or substring).{}",
+            running_apps_hint(&names)
+        ));
+    };
+
+    // Windows reports one entry per top-level window, so several candidates
+    // can belong to the same process — only genuinely different processes are
+    // ambiguous.
+    let mut distinct_pids: Vec<Option<u32>> = Vec::new();
+    for &idx in &ranked {
+        if !distinct_pids.contains(&apps[idx].pid) {
+            distinct_pids.push(apps[idx].pid);
         }
     }
+    if distinct_pids.len() > 1 {
+        let candidates = ranked
+            .iter()
+            .filter(|&&idx| !names[idx].is_empty())
+            .map(|&idx| format!("  - pid={:?} name='{}'", apps[idx].pid, names[idx]))
+            .collect::<Vec<_>>()
+            .join("\n");
+        bail!(
+            "ElementNotFound: '{query}' matches {count} applications from different processes; \
+             be more specific (full window title or a longer fragment):\n{candidates}",
+            count = candidates.lines().count()
+        );
+    }
+
+    Ok(apps.swap_remove(first))
+}
+
+/// Rank app names for a fuzzy query: case-insensitive exact matches win
+/// outright (when a process's window title is exactly what was asked for,
+/// substring candidates are noise and would only manufacture ambiguity);
+/// otherwise substring matches in either direction (`query ⊂ name` covers
+/// 'Firefox' → '<page> — Mozilla Firefox'; `name ⊂ query` covers an agent
+/// pasting yesterday's full title after the page shortened it). Returns
+/// indices into `names`; empty/blank names never match.
+fn match_app_candidates(names: &[String], query: &str) -> Vec<usize> {
+    let query = query.trim().to_lowercase();
+    if query.is_empty() {
+        return Vec::new();
+    }
+    let mut exact = Vec::new();
+    let mut contains = Vec::new();
+    for (idx, name) in names.iter().enumerate() {
+        let lower = name.trim().to_lowercase();
+        if lower.is_empty() {
+            continue;
+        }
+        if lower == query {
+            exact.push(idx);
+        } else if lower.contains(&query) || query.contains(&lower) {
+            contains.push(idx);
+        }
+    }
+    if !exact.is_empty() {
+        return exact;
+    }
+    contains
+}
+
+/// "These are the apps that are running" appendix for not-found errors — turn
+/// a dead end into a glanceable correction.
+fn running_apps_hint(names: &[String]) -> String {
+    let mut listed: Vec<&str> = Vec::new();
+    for name in names {
+        let trimmed = name.trim();
+        if trimmed.is_empty() || listed.iter().any(|seen| seen.eq_ignore_ascii_case(trimmed)) {
+            continue;
+        }
+        listed.push(trimmed);
+        if listed.len() >= 8 {
+            break;
+        }
+    }
+    if listed.is_empty() {
+        return " No applications are visible to the accessibility layer right now; run desktop \
+                action='list_windows' to check."
+            .to_string();
+    }
+    format!(
+        " Applications currently visible: {}.",
+        listed
+            .iter()
+            .map(|name| format!("'{name}'"))
+            .collect::<Vec<_>>()
+            .join(", ")
+    )
 }
 
 /// Resolve an element by its ephemeral ID.
 fn resolve_element(element_id: &str) -> Result<xa11y::Element> {
     let info = get_element_info(element_id)?;
 
-    // Try to find the element via the application
-    let app = match &info.app_name {
-        Some(name) => xa11y::App::by_name(name, Duration::from_secs(2)).map_err(map_xa11y_error)?,
-        None => xa11y::App::find(Duration::from_secs(1), |data| data.states.focused)
+    // Try to find the element via the application. Tolerant resolution
+    // matters here too: the stored app name is the window title, which may
+    // have changed since registration.
+    let app = match info.app_name.as_deref() {
+        Some(name) if !name.trim().is_empty() => resolve_application(Some(name))?,
+        _ => xa11y::App::find(Duration::from_secs(1), |data| data.states.focused)
             .map_err(map_xa11y_error)?,
     };
 
@@ -593,6 +745,102 @@ fn build_selector(info: &ElementInfo) -> String {
     } else {
         role_snake
     }
+}
+
+/// Parse an app-level selector — `application[name="X"]` / `window[name="X"]`
+/// (optionally with whitespace and single quotes) — into the app name.
+///
+/// This is the exact shape xa11y's own not-found diagnostics print
+/// (`application[name="<name>"]`), so agents copy it back into the tool
+/// verbatim. The selector grammar has no escape for quotes inside attribute
+/// values (a11y-core rejects such names), so the value is taken literally.
+pub(crate) fn parse_application_selector(selector: &str) -> Option<String> {
+    let trimmed = selector.trim();
+    let lower = trimmed.to_ascii_lowercase();
+    for prefix in ["application[", "window["] {
+        if !lower.starts_with(prefix) {
+            continue;
+        }
+        let rest = trimmed[prefix.len()..].trim_start();
+        let rest = rest.strip_prefix("name")?.trim_start().strip_prefix('=')?;
+        let attr = rest.trim_start();
+        let quote = *attr.as_bytes().first()?;
+        if quote != b'"' && quote != b'\'' {
+            return None;
+        }
+        let value = attr.get(1..)?;
+        let end = value.find(quote as char)?;
+        let name = value[..end].trim();
+        if name.is_empty() {
+            return None;
+        }
+        return Some(name.to_string());
+    }
+    None
+}
+
+/// Locate an element from an xa11y selector and register it so follow-up
+/// actions can use the returned `element_id`.
+///
+/// App-level selectors resolve the application tolerantly (exact →
+/// case-insensitive → substring over the running apps) and hand out its
+/// top-level element; other selectors resolve inside the focused
+/// application. App-level resolution bypasses `App::locator`, which only
+/// matches *descendants* of the app node — a locator search for
+/// `application[...]` could therefore never return the app itself.
+pub fn register_selector(selector: &str) -> Result<ElementInfo> {
+    let (element, owning_app) = match parse_application_selector(selector) {
+        Some(name) => {
+            let app = resolve_application(Some(&name))?;
+            (app.as_element(), app.name)
+        }
+        None => {
+            let app = resolve_application(None)?;
+            let element = app.locator(selector).element().map_err(map_xa11y_error)?;
+            (element, app.name)
+        }
+    };
+
+    let store = ELEMENT_STORE.get_or_init(|| std::sync::Mutex::new(ElementStore::new()));
+    let info = store
+        .lock()
+        .map_err(|_| anyhow::anyhow!("element store lock poisoned"))?
+        .register(&element, Some(owning_app));
+    Ok(info)
+}
+
+/// Click via an xa11y selector.
+///
+/// App-level targets (`application[name="..."]`) are activated rather than
+/// pressed: Window/Application role elements usually have no `press` action,
+/// so the flow is focus → mouse click on the window's center (skipped when
+/// bounds are unknown). Other selectors resolve inside the focused
+/// application and are pressed like stored elements.
+pub fn click_selector(selector: &str) -> Result<String> {
+    let info = register_selector(selector)?;
+    let element = resolve_element(&info.element_id)?;
+
+    if element.press().is_ok() {
+        return Ok(format!(
+            "Clicked element '{}' from selector '{selector}'.",
+            element_name(&element)
+        ));
+    }
+
+    element.focus().map_err(map_xa11y_error)?;
+    let center = element.data().bounds.map(|b| xa11y::Point {
+        x: b.x + (b.width as i32) / 2,
+        y: b.y + (b.height as i32) / 2,
+    });
+    if let Some(point) = center {
+        let sim = xa11y::input_sim().map_err(map_xa11y_error)?;
+        sim.mouse().click(point).map_err(map_xa11y_error)?;
+    }
+    Ok(format!(
+        "Activated '{}' from selector '{selector}' (focus{}).",
+        element_name(&element),
+        if center.is_some() { " + click" } else { "" }
+    ))
 }
 
 fn element_name(element: &xa11y::Element) -> String {
@@ -760,5 +1008,62 @@ mod tests {
         assert!(is_interactive_role(xa11y::Role::Button));
         assert!(is_interactive_role(xa11y::Role::TextField));
         assert!(!is_interactive_role(xa11y::Role::StaticText));
+    }
+
+    #[test]
+    fn app_matching_prefers_exact_then_substring() {
+        let names = vec![
+            "Mozilla Firefox".to_string(),
+            "Notes — Slack | Mozilla Firefox".to_string(),
+            "Settings".to_string(),
+            String::new(),
+            "Firefox".to_string(),
+        ];
+
+        // A case-insensitive exact match short-circuits: substring candidates
+        // are not considered alongside it.
+        let ranked = match_app_candidates(&names, "firefox");
+        let ranked_names: Vec<&str> = ranked.iter().map(|&i| names[i].as_str()).collect();
+        assert_eq!(ranked_names, vec!["Firefox"]);
+
+        // Same, regardless of the query's own casing.
+        assert_eq!(match_app_candidates(&names, "FIREFOX"), vec![4]);
+
+        // Substring fallback in both directions when nothing is exact.
+        assert_eq!(match_app_candidates(&names, "slack"), vec![1]);
+
+        // Query longer than the current titles (agent pasted a full title
+        // from earlier) still matches via the reverse containment: both
+        // "Mozilla Firefox" and "Firefox" are fragments of the query.
+        assert_eq!(
+            match_app_candidates(&names, "Mozilla Firefox Nightly"),
+            vec![0, 4]
+        );
+
+        // Blank queries and empty app names never participate.
+        assert!(match_app_candidates(&names, "   ").is_empty());
+        let one_empty = vec![String::new()];
+        assert!(match_app_candidates(&one_empty, "x").is_empty());
+    }
+
+    #[test]
+    fn application_selector_parsing() {
+        // The exact shape xa11y prints in its not-found diagnosis.
+        assert_eq!(
+            parse_application_selector(r#"application[name="Firefox"]"#),
+            Some("Firefox".to_string())
+        );
+        // Whitespace, single quotes, and the window alias are tolerated.
+        assert_eq!(
+            parse_application_selector(r#" window[ name = 'Notepad' ] "#),
+            Some("Notepad".to_string())
+        );
+        // Non-app selectors are rejected so they resolve inside the focused
+        // application instead.
+        assert_eq!(parse_application_selector(r#"button[name="Save"]"#), None);
+        assert_eq!(parse_application_selector("textfield"), None);
+        // Empty and unterminated values are rejected.
+        assert_eq!(parse_application_selector(r#"application[name=""]"#), None);
+        assert_eq!(parse_application_selector(r#"application[name="X"#), None);
     }
 }

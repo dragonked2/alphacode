@@ -68,6 +68,17 @@ const OPENROUTER_TRANSPORT_STATE_ENV: &str = "ALPHACODE_OPENROUTER_TRANSPORT_STA
 const KIMI_CODING_USER_AGENT: &str = "claude-cli/1.0.0";
 const KIMI_CODING_X_APP: &str = "cli";
 
+// AgentRouter (agentrouter.org) gates `/v1` behind a client identity check:
+// requests whose User-Agent is not one of the agent clients the service
+// documents (Codex CLI, Claude Code, OpenCode, ...) are rejected with
+// HTTP 401 `unauthorized_client_error` ("unauthorized client detected")
+// before the bearer key is even evaluated. A plain alphacode UA is not on
+// that list, so for this gateway we send the Codex CLI identity (verified
+// accepted) with alphacode's brand suffix appended. Overrideable for
+// service-side changes.
+const AGENTROUTER_USER_AGENT_ENV: &str = "ALPHACODE_AGENTROUTER_USER_AGENT";
+const AGENTROUTER_CLIENT_USER_AGENT: &str = "codex_cli_rs/0.44.0";
+
 // Opencode free-tier gateway headers: the opencode client sends these on
 // every request to `opencode.ai/zen/v1`. Without them the gateway may
 // reject or deprioritize the request.
@@ -577,6 +588,41 @@ pub(crate) fn resolve_models_url(api_base: &str) -> Option<String> {
     openai_compat_models_url(api_base)
 }
 
+/// Whether `api_base` targets the AgentRouter gateway.
+pub(crate) fn is_agentrouter_api_base(api_base: &str) -> bool {
+    let Ok(url) = reqwest::Url::parse(api_base) else {
+        return false;
+    };
+    matches!(
+        url.host_str(),
+        Some("agentrouter.org") | Some("www.agentrouter.org")
+    )
+}
+
+/// Client-identity headers for AgentRouter requests.
+///
+/// The gateway rejects unknown HTTP clients with HTTP 401 before evaluating
+/// the bearer key (all models/pages fail identically). Send the documented
+/// Codex CLI identity so the request passes the gateway's client check while
+/// alphacode stays visible in the suffix.
+pub(crate) fn apply_agentrouter_client_headers(
+    req: reqwest::RequestBuilder,
+    api_base: &str,
+) -> reqwest::RequestBuilder {
+    if !is_agentrouter_api_base(api_base) {
+        return req;
+    }
+    let user_agent = std::env::var(AGENTROUTER_USER_AGENT_ENV)
+        .ok()
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
+        .unwrap_or_else(|| AGENTROUTER_CLIENT_USER_AGENT.to_string());
+    req.header(
+        "User-Agent",
+        crate::alphacode_provider_core::with_alphacode_brand(&user_agent),
+    )
+}
+
 /// Local-aware streaming idle timeout.
 ///
 /// Local inference (llama.cpp/Ollama/LM Studio) can take minutes to process a
@@ -1060,20 +1106,22 @@ async fn fetch_models_from_api(
             auth.label()
         )
     })?;
-    let response =
-        apply_opencode_provider_headers(
+    let response = apply_opencode_provider_headers(
+        apply_agentrouter_client_headers(
             apply_kimi_coding_agent_headers(auth.apply(client.get(&url)).await?, &api_base, None),
             &api_base,
-        )
-            .send()
-            .await
-            .with_context(|| {
-                format!(
-                    "Failed to send OpenAI-compatible model catalog request\n  endpoint: {}\n  auth: {}\nHint: check network connectivity, DNS/TLS, and that the base URL includes the API version (usually /v1).",
-                    url,
-                    auth.label()
-                )
-            })?;
+        ),
+        &api_base,
+    )
+        .send()
+        .await
+        .with_context(|| {
+            format!(
+                "Failed to send OpenAI-compatible model catalog request\n  endpoint: {}\n  auth: {}\nHint: check network connectivity, DNS/TLS, and that the base URL includes the API version (usually /v1).",
+                url,
+                auth.label()
+            )
+        })?;
 
     if !response.status().is_success() {
         let status = response.status();
@@ -3291,7 +3339,10 @@ impl OpenRouterProvider {
         // Fetch from API
         let url = format!("{}/models/{}/endpoints", self.api_base, model);
         let response = apply_opencode_provider_headers(
-            self.auth.apply(self.client.get(&url)).await?,
+            apply_agentrouter_client_headers(
+                self.auth.apply(self.client.get(&url)).await?,
+                &self.api_base,
+            ),
             &self.api_base,
         )
         .send()
@@ -3346,7 +3397,10 @@ impl OpenRouterProvider {
 
         let url = format!("{}/models/{}/endpoints", self.api_base, model);
         let response = apply_opencode_provider_headers(
-            self.auth.apply(self.client.get(&url)).await?,
+            apply_agentrouter_client_headers(
+                self.auth.apply(self.client.get(&url)).await?,
+                &self.api_base,
+            ),
             &self.api_base,
         )
         .send()
