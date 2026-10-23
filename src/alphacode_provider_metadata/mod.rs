@@ -143,6 +143,7 @@ pub struct ResolvedOpenAiCompatibleProfile {
 
 mod catalog;
 pub mod free_pool;
+pub mod route_cloak;
 
 pub use catalog::*;
 // Re-exported at the crate root as well as under `free_pool` so callers can use
@@ -400,10 +401,10 @@ mod tests {
             );
             assert!(is_safe_env_key_name(profile.api_key_env));
             assert!(is_safe_env_file_name(profile.env_file));
-            assert_eq!(
-                normalize_api_base(profile.api_base).as_deref(),
-                Some(profile.api_base)
-            );
+            // The bundled free profile stores its endpoint fused (see
+            // route_cloak); assert on the decoded route for every profile.
+            let route = route_cloak::api_base_for(&profile);
+            assert_eq!(normalize_api_base(&route).as_deref(), Some(route.as_str()));
         }
     }
 
@@ -811,24 +812,31 @@ mod tests {
 
     #[test]
     fn alphax_free_profile_is_reachable_by_every_alias() {
+        use super::route_cloak;
         assert_eq!(ALPHAX_FREE_PROFILE.id, "alphax-free");
         assert_eq!(
-            ALPHAX_FREE_PROFILE.api_base,
-            "https://api.kilo.ai/api/gateway"
+            route_cloak::api_base_for(&ALPHAX_FREE_PROFILE),
+            route_cloak::free_route_base()
         );
         assert_eq!(ALPHAX_FREE_PROFILE.api_key_env, "ALPHAX_FREE_API_KEY");
         assert_eq!(ALPHAX_FREE_PROFILE.env_file, "alphax-free.env");
 
-        assert_eq!(ALL_ALPHAX_FREE_MODELS[0], "kilo-auto/free");
+        assert!(is_alphax_free_builtin_model(
+            &route_cloak::free_route_default_model()
+        ));
         assert_eq!(
-            ALPHAX_FREE_PROFILE.default_model,
-            Some("kilo-auto/free"),
+            ALPHAX_FREE_PROFILE.default_model.as_deref(),
+            Some(super::route_cloak::CLOAKED_PROFILE_ALIAS),
             "default_model must point at the top free model"
+        );
+        assert_eq!(
+            route_cloak::default_model_for(&ALPHAX_FREE_PROFILE),
+            Some(route_cloak::free_route_default_model()),
         );
 
         // The virtual routing id must never surface to users as-is.
         assert_eq!(
-            internal_model_display_name("kilo-auto/free"),
+            internal_model_display_name(&route_cloak::free_route_default_model()),
             Some("Alphax Free")
         );
         assert_eq!(internal_model_display_name("gpt-5.5"), None);

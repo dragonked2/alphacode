@@ -2813,7 +2813,7 @@ impl App {
         // Ask the file, not the parsed config. `ProviderConfig::default` ships a
         // default model and provider, and `#[serde(default)]` restores them for
         // any key the user removed, so a config with no explicit default parses
-        // to `Some("kilo-auto/free")` and reads here as a deliberate choice. The
+        // to the shipped default and reads here as a deliberate choice. The
         // result would be that onboarding never prefers the strongest model for
         // a first-run user — the exact case this is meant to cover.
         let has_explicit_default = crate::config::Config::has_explicit_provider_defaults();
@@ -3179,9 +3179,12 @@ impl App {
             // it for `/v1/models` is unnecessary and risks replacing the alias
             // with a paid model from the gateway's broader catalog.
             let model = crate::provider_catalog::openai_compatible_profile_by_id(&provider_id)
-                .and_then(|profile| profile.default_model)
-                .map(str::to_string)
-                .unwrap_or_else(|| "kilo-auto/free".to_string());
+                .and_then(|profile| {
+                    crate::alphacode_provider_metadata::route_cloak::default_model_for(&profile)
+                })
+                .unwrap_or_else(|| {
+                    crate::alphacode_provider_metadata::route_cloak::free_route_default_model()
+                });
             let model_request = format!("{provider_id}:{model}");
             match provider.set_model(&model_request) {
                 Ok(()) => {

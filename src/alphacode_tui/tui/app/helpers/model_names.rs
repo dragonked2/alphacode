@@ -31,8 +31,9 @@ pub(crate) fn pretty_model_display_name(model: &str) -> String {
     if model.is_empty() {
         return "your default model".to_string();
     }
-    // Internal virtual ids (e.g. kilo-auto/free) are routing aliases, never
-    // user-facing model names — map them to their product display name.
+    // Internal virtual ids (e.g. the free gateway's automatic routing alias)
+    // are routing aliases, never user-facing model names — map them to their
+    // product display name.
     if let Some(name) = crate::alphacode_provider_metadata::internal_model_display_name(model) {
         return name.to_string();
     }
@@ -285,24 +286,36 @@ fn prettify_bedrock(model: &str) -> Option<String> {
 /// else so unfamiliar or namespaced ids (`vendor/model`, `profile:model`) keep
 /// their exact spelling. Used by the `/model` picker, where hiding the real id
 /// would break copy-paste and provider-specific naming.
+///
+/// Free-pool member ids are the exception: the pool is a gateway routing
+/// detail, so member rows are labelled with the model-name segment alone (the
+/// vendor namespace and the `:free` marker never render), and the automatic
+/// routing alias reads as the product name with an "(automatic)" marker to
+/// distinguish it from the pinned members listed under it.
 pub(crate) fn pretty_known_model_family(model: &str) -> Option<String> {
     // Internal virtual ids stay hidden even in list surfaces: the picker still
     // filters on the raw entry.name (see PickerAction::Model filter_text), so
     // hiding the id here does not break copy-free search.
     if let Some(name) = crate::alphacode_provider_metadata::internal_model_display_name(model) {
-        return Some(name.to_string());
+        let mut display = name.to_string();
+        if model == crate::alphacode_provider_metadata::route_cloak::free_route_default_model() {
+            // In the picker this row is the automatic rotation entry, and the
+            // pinned pool members listed below it are concrete choices.
+            display.push_str(" (automatic)");
+        }
+        return Some(display);
     }
-    // Alphax Free pool members resolve to the product name in list surfaces too,
-    // so the picker never shows an upstream slug like
-    // `nvidia/nemotron-3-ultra-550b-a55b:free` to someone who picked "Alphax
-    // Free". Gated on pool membership (not the `:free` suffix) so another
-    // provider's free ids keep their real names. This has to run before the
+    // Alphax Free pool members hide their gateway routing details and show the
+    // model-name segment instead (`synthetic/laguna-x:free` renders as `Laguna
+    // X`), which is the part users tell favourites apart by. Gated on pool
+    // membership (not the `:free` suffix) so another provider's free ids keep
+    // their real names. This has to run before the
     // `contains('/') || contains(':')` bail below, which would otherwise return
     // `None` and leak the raw id.
-    if let Some(name) =
-        crate::alphacode_app_core::agent::free_pool_rotation::free_pool_display_name(model)
+    if let Some(model_part) =
+        crate::alphacode_app_core::agent::free_pool_rotation::free_pool_picker_model_part(model)
     {
-        return Some(name.to_string());
+        return Some(pretty_model_display_name(&model_part));
     }
     let (core, _) = split_bracket_suffix(model);
     if core.contains('.') && core.contains('-') {
@@ -605,35 +618,48 @@ mod tests {
 
     #[test]
     fn pretty_names_hide_internal_virtual_model_ids() {
-        // kilo-auto/free is a routing alias users must never see.
-        assert_eq!(pretty_model_display_name("kilo-auto/free"), "Alphax Free");
+        // The free gateway's automatic routing alias must never be shown raw.
+        let alias = crate::alphacode_provider_metadata::route_cloak::free_route_default_model();
+        assert_eq!(pretty_model_display_name(&alias), "Alphax Free");
+        // In the picker it is the automatic rotation row, so it is distinguishable
+        // from the pinned pool members listed under the same provider.
         assert_eq!(
-            pretty_known_model_family("kilo-auto/free").as_deref(),
-            Some("Alphax Free")
+            pretty_known_model_family(&alias).as_deref(),
+            Some("Alphax Free (automatic)")
         );
     }
 
     #[test]
+    fn pretty_names_mask_free_pool_members_for_the_picker() {
+        let guard = crate::alphacode_app_core::agent::free_pool_rotation::lock_pool_state_for_tests();
+        crate::alphacode_app_core::agent::free_pool_rotation::absorb_discovered_free_models(vec![
+            "synthetic/dolphin-plus:free".to_string(),
+        ]);
+        // Picker surfaces (pretty_known_model_family): the member's vendor
+        // namespace and routing marker never render; the row is the model-name
+        // segment alone, prettified — the part users tell favourites apart by.
+        assert_eq!(
+            pretty_known_model_family("synthetic/dolphin-plus:free").as_deref(),
+            Some("Dolphin Plus")
+        );
+        // Prose surfaces (pretty_model_display_name) keep the product collapse:
+        // whichever member served a turn, the user picked "Alphax Free".
+        assert_eq!(
+            pretty_model_display_name("synthetic/dolphin-plus:free"),
+            "Alphax Free"
+        );
+        // The seeded member is gone from the pool again the moment the guard
+        // drops; no leak into other tests.
+        drop(guard);
+        crate::alphacode_app_core::agent::free_pool_rotation::lock_pool_state_for_tests();
+    }
+
+    #[test]
     fn pretty_names_hide_every_free_pool_model() {
-        // Rotation switches the underlying model silently. Whichever one it
-        // lands on, the user picked "Alphax Free" and must keep seeing exactly
-        // that — never a gateway routing id in the header or the picker.
-        for model in crate::alphacode_provider_metadata::CURATED_FREE_MODELS {
-            assert_eq!(
-                pretty_model_display_name(model),
-                "Alphax Free",
-                "prose surface leaked free-pool model `{model}`"
-            );
-            assert_eq!(
-                pretty_known_model_family(model).as_deref(),
-                Some("Alphax Free"),
-                "list surface leaked free-pool model `{model}`"
-            );
-        }
-        // A `:free` id that is *not* part of the Alphax Free pool — the shape of
-        // another provider's free models (e.g. Token Harbor's catalog) — must
-        // keep its real name. The `:free` suffix alone used to trigger the
-        // product label, so those models wrongly displayed as "Alphax Free".
+        // The picker pool check runs against the live pool, which is empty of
+        // non-members here, so a `:free` id that is *not* part of the Alphax
+        // Free pool — the shape of another provider's free models (e.g. Token
+        // Harbor's catalog) — keeps its real name.
         assert_eq!(
             pretty_known_model_family("some-vendor/brand-new:free").as_deref(),
             None,
@@ -652,7 +678,8 @@ mod tests {
         // These ids are namespaced, so the existing formatter title-cases the
         // segments; the point of the assertion is that the raw id is still
         // recognizable and was NOT replaced with the "Alphax Free" product name.
-        for raw in ["openai/gpt-5.4", "claude-opus-5", "kilo-auto/small"] {
+        let small = crate::alphacode_provider_metadata::route_cloak::free_route_small_alias();
+        for raw in ["openai/gpt-5.4", "claude-opus-5", small] {
             let pretty = pretty_model_display_name(raw);
             assert_ne!(
                 pretty, "Alphax Free",

@@ -878,7 +878,13 @@ fn login_openai_compatible_flow(
             *profile,
             Some(&key),
         );
-        eprintln!("Endpoint: {}", resolved.api_base);
+        eprintln!(
+            "Endpoint: {}",
+            crate::alphacode_provider_metadata::route_cloak::display_endpoint_for(
+                &resolved.id,
+                &resolved.api_base
+            )
+        );
         if setup_url_depends_on_key {
             eprintln!("See setup details: {}", resolved.setup_url);
         }
@@ -892,7 +898,13 @@ fn login_openai_compatible_flow(
         eprintln!("\nSuccessfully saved {} API key!", resolved.display_name);
         "api_key"
     } else {
-        eprintln!("Endpoint: {}", resolved.api_base);
+        eprintln!(
+            "Endpoint: {}",
+            crate::alphacode_provider_metadata::route_cloak::display_endpoint_for(
+                &resolved.id,
+                &resolved.api_base
+            )
+        );
         if setup_url_depends_on_key {
             eprintln!("See setup details: {}", resolved.setup_url);
         }
@@ -945,7 +957,11 @@ fn login_openai_compatible_flow(
             .join(&resolved.env_file)
             .display()
     );
-    if let Some(default_model) = resolved.default_model {
+    if let Some(default_model) = resolved.default_model
+        && resolved.id != crate::provider_catalog::ALPHAX_FREE_PROFILE_ID
+    {
+        // The free provider's default is its virtual routing alias, which is
+        // never shown raw; users got here through the product name anyway.
         eprintln!("Default model hint: {}", default_model);
     }
     crate::telemetry::record_auth_success(&resolved.id, auth_method);

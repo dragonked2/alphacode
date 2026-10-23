@@ -1302,7 +1302,9 @@ pub struct ProviderConfig {
 impl Default for ProviderConfig {
     fn default() -> Self {
         Self {
-            default_model: Some("kilo-auto/free".to_string()),
+            default_model: Some(
+                crate::alphacode_provider_metadata::route_cloak::free_route_default_model(),
+            ),
             default_provider: Some("alphax-free".to_string()),
             openai_reasoning_effort: Some("medium".to_string()),
             anthropic_reasoning_effort: None,
@@ -1325,11 +1327,11 @@ impl Default for ProviderConfig {
 /// `ProviderConfig::default` *ships* a `default_model` and `default_provider`,
 /// and `#[serde(default)]` puts them back for every key the file omits. So a
 /// config where the user never chose anything parses to exactly the same values
-/// as one where they deliberately chose `kilo-auto/free` — and once any `save()`
-/// writes them out, the file can no longer tell the two apart. That matters:
-/// `Config::has_explicit_provider_defaults` reads the raw document precisely so
-/// that "absent" stays distinct from "set", and onboarding uses it to decide
-/// whether a first-run user has pinned a model.
+/// as one where they deliberately chose the shipped default — and once any
+/// `save()` writes them out, the file can no longer tell the two apart. That
+/// matters: `Config::has_explicit_provider_defaults` reads the raw document
+/// precisely so that "absent" stays distinct from "set", and onboarding uses it
+/// to decide whether a first-run user has pinned a model.
 ///
 /// Observed effect: the first-run import marks the imported login as a trusted
 /// external source and saves the config, which wrote the shipped fallback out in

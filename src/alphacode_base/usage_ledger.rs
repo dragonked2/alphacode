@@ -344,8 +344,8 @@ pub struct UsageRow {
 ///
 /// Every model the Alphax Free pool serves presents under the single product
 /// name ("Alphax Free"), regardless of which upstream the gateway happened to
-/// route a given turn to. Raw alias rows would leak server-side routing —
-/// `kilo-auto/free` is a routing *alias*, not a model the user selected — and
+/// route a given turn to. Raw alias rows would leak server-side routing — the
+/// leading pool id is a routing *alias*, not a model the user selected — and
 /// splitting one product across several pool ids would also split its spend
 /// across several rows. All pool members share the flat rate, so merging is
 /// exact, not an approximation.
@@ -448,8 +448,8 @@ pub fn usage_report() -> Option<crate::alphacode_usage_types::ProviderUsage> {
         format!("{} model(s), newest usage first", rows.len()),
     ));
     // Pool members are already collapsed under the shared product label, so a
-    // gateway alias like `kilo-auto/free` can never surface here: the user
-    // selected "Alphax Free", and that is the name every row reports.
+    // gateway routing alias can never surface here: the user selected "Alphax
+    // Free", and that is the name every row reports.
     for row in &rows {
         let cost_label = match row.cost_usd {
             Some(value) => format!("est. ${value:.4}"),
@@ -632,7 +632,7 @@ mod tests {
 
     #[test]
     fn pool_models_present_under_the_product_label_not_the_router_alias() {
-        // `/usage` must never show the raw gateway alias (`kilo-auto/free` is
+        // `/usage` must never show the raw gateway routing alias (it is
         // server-side routing, not a model the user picked). The pool serves
         // its turns behind the "Alphax Free" product name, and that is what
         // the report row is keyed by.
@@ -643,13 +643,14 @@ mod tests {
             cache_read_tokens: 2_400_000,
             cache_write_tokens: 0,
         };
-        let out = aggregate_display_rows(vec![("kilo-auto/free".to_string(), usage.clone())]);
+        let alias = crate::alphacode_provider_metadata::route_cloak::free_route_default_model();
+        let out = aggregate_display_rows(vec![(alias.clone(), usage.clone())]);
         assert_eq!(out.len(), 1, "one member id -> one display row");
         assert_eq!(out[0].label, "Alphax Free");
         assert_eq!(out[0].usage, usage);
         assert_eq!(
             out[0].cost_usd,
-            estimate_cost_usd("kilo-auto/free", &usage),
+            estimate_cost_usd(&alias, &usage),
             "group row keeps the member's priced cost"
         );
     }

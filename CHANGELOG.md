@@ -602,7 +602,8 @@ adheres to [Semantic Versioning](https://semver.org/).
   as one that admits destructive work.
 
 - **A cleared default model/provider could never be cleared.** `ProviderConfig::default`
-  ships `default_model = "kilo-auto/free"` and `default_provider = "alphax-free"`,
+  ships a default model (the free provider's automatic routing alias) and
+  `default_provider = "alphax-free"`,
   `#[serde(default)]` on the struct re-injects both for every key `config.toml`
   omits, and `save` drops a `None` field entirely because TOML has no null. So
   setting the default to nothing round-tripped straight back to the shipped value:
