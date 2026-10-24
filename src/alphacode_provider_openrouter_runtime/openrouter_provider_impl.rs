@@ -935,13 +935,10 @@ impl OpenRouterProvider {
         {
             return models;
         }
-        let mut merged = models;
-        for member in crate::alphacode_app_core::agent::free_pool_rotation::effective_free_pool() {
-            if !merged.iter().any(|existing| existing == &member) {
-                merged.push(member);
-            }
-        }
-        merged
+        // Alphax Free exposes only the automatic routing alias to the user;
+        // the individual pool members are an internal routing detail and must
+        // not appear in the picker/model list.
+        models
     }
 
     /// The disk cache entry usable for this provider, i.e. its own namespace

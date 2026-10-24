@@ -1038,6 +1038,13 @@ pub(in crate::alphacode_tui::tui::app) fn handle_server_event(
         ServerEvent::MessageEnd { .. } => {
             app.pause_streaming_tps(true);
             app.stream_message_ended = true;
+            // The model's response is complete. Any paced backlog left behind
+            // (a fast provider delivers most of the answer in one final burst)
+            // now drains with a bounded tail instead of dribbling at the
+            // live-stream ceiling for seconds after the turn is done, which
+            // also defers `Done` — and with it the composer — for that whole
+            // time.
+            app.stream_buffer.note_stream_ended();
             true
         }
         ServerEvent::RetryRollback { attempt, max } => {

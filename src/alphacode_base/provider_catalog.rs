@@ -621,14 +621,11 @@ pub fn openai_compatible_profile_static_models(profile: OpenAiCompatibleProfile)
             push("gemini-2.0-flash-lite");
         }
         "alphax-free" => {
-            // The full rotation pool, not just the default. The live catalog is
-            // disabled for this profile (the gateway's `/v1/models` returns
-            // mostly-paid rows), so this static list is the only thing that
-            // makes the free models knowable — both for `/model` and for
-            // automatic 429 rotation.
-            for model in crate::alphacode_provider_metadata::curated_free_models() {
-                push(model);
-            }
+            // Alphax Free exposes a single automatic-routing model alias to the
+            // user. The individual free pool members are a routing detail managed
+            // internally (see free_pool_rotation) and must not appear in the
+            // picker/model list. Only the automatic alias is user-facing.
+            push(&crate::alphacode_provider_metadata::route_cloak::free_route_default_model());
         }
         _ => {}
     }

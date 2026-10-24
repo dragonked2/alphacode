@@ -359,7 +359,7 @@ mod tests {
         let small = small_alias();
         assert!(!is_free_tier_model_id(&small));
         assert!(!curated_free_models().contains(&small.as_str()));
-        assert!(!merge_pool(&[]).iter().any(|m| *m == small));
+        assert!(!merge_pool(&[]).contains(&small));
     }
 
     #[test]

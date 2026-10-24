@@ -557,8 +557,10 @@ mod tests {
 
     #[test]
     fn waf_fingerprints_rank_spoofing_and_smuggling() {
-        let mut scope = LiveScope::default();
-        scope.mode = EngagementMode::BugBounty;
+        let mut scope = LiveScope {
+            mode: EngagementMode::BugBounty,
+            ..Default::default()
+        };
         scope
             .technologies
             .push(fingerprint("Cloudflare", TechCategory::Cdn));
@@ -588,10 +590,12 @@ mod tests {
         scope
             .technologies
             .push(fingerprint("unknown-origin", TechCategory::Os));
-        let mut ep = DiscoveredEndpoint::default();
-        ep.url = "https://t.example/account".into();
-        ep.path = "/account".into();
-        ep.cache_headers = vec![("X-Cache".into(), "MISS".into())];
+        let mut ep = DiscoveredEndpoint {
+            url: "https://t.example/account".into(),
+            path: "/account".into(),
+            cache_headers: vec![("X-Cache".into(), "MISS".into())],
+            ..Default::default()
+        };
         scope.discovered_endpoints.push(ep);
 
         let ranked = rank_for_scope(&scope);

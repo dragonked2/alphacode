@@ -715,6 +715,10 @@ impl App {
                                         self.pause_streaming_tps(true);
                                         self.stream_message_ended = true;
                                         saw_message_end = true;
+                                        // The model's response is complete; let any paced
+                                        // backlog drain with a bounded tail instead of the
+                                        // live-stream ceiling.
+                                        self.stream_buffer.note_stream_ended();
                                         if eager_stream_redraw {
                                             status_spinner_renderer.draw_full(self, terminal)?;
                                         }

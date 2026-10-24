@@ -50,6 +50,30 @@ const MAX_REVEAL_CPS: f32 = 960.0;
 /// whole burst at once, reintroducing the choppiness we are trying to remove.
 const MAX_REVEAL_STEP: Duration = Duration::from_millis(50);
 
+/// How long the remaining backlog may keep revealing after the model's message
+/// completes.
+///
+/// While the provider is still streaming, the wall-clock ceiling (960 cps)
+/// keeps large bursts from dropping in as a wall of text, and that is the
+/// right visual behaviour. But the same ceiling applies to text that arrived
+/// *after the model had already finished*: `Done` is deferred until the backlog
+/// drains, so a provider that delivers most of its answer in one final burst
+/// (with the message-end event tight behind it) keeps a large backlog
+/// dribbling at 960 cps for several seconds after the response is complete.
+/// The user waits with a spinner while the model has long since served the
+/// turn.
+///
+/// Once the stream has been observed to end, the reveal switches to a
+/// catch-up rate that empties whatever remains within this window regardless
+/// of backlog size, so the post-completion tail is bounded by the deadline
+/// (plus one redraw frame) instead of by the backlog length.
+const END_STREAM_TAIL_DRAIN: Duration = Duration::from_millis(750);
+
+/// Floor for the post-end catch-up rate computation, in seconds. Past the
+/// tail deadline the rate is `backlog / 0.05`, which empties any realistic
+/// backlog within one or two redraw frames instead of dividing by zero.
+const TAIL_DRAIN_MIN_STEP: f32 = 0.05;
+
 /// Maximum jitter-recorder events retained per series (arrivals / reveals).
 const JITTER_EVENT_CAP: usize = 4096;
 
@@ -98,6 +122,9 @@ pub struct StreamBuffer {
     /// Whether reasoning pushed through this buffer is still "open" (no close
     /// marker queued since the last reasoning chunk).
     reasoning_open: bool,
+    /// When the caller observed the provider's end-of-message (the model has
+    /// finished this response). `None` while the response is still streaming.
+    stream_ended_at: Option<Instant>,
     base_cps: f32,
     backlog_gain: f32,
     max_step: Duration,
@@ -125,6 +152,7 @@ impl StreamBuffer {
             carry: 0.0,
             ceiling_carry: 0.0,
             reasoning_open: false,
+            stream_ended_at: None,
             base_cps: BASE_REVEAL_CPS,
             backlog_gain: REVEAL_BACKLOG_GAIN,
             max_step: MAX_REVEAL_STEP,
@@ -170,12 +198,24 @@ impl StreamBuffer {
         self.reveal_now(Instant::now())
     }
 
+    /// Record that the provider signalled end-of-message for the current
+    /// response. From this point any remaining backlog drains with a bounded
+    /// tail ([`END_STREAM_TAIL_DRAIN`]) instead of the live-stream wall-clock
+    /// ceiling, and `push` calls for a *later* response reset to normal live
+    /// pacing.
+    pub fn note_stream_ended(&mut self) {
+        if self.stream_ended_at.is_none() {
+            self.stream_ended_at = Some(Instant::now());
+        }
+    }
+
     /// Force flush the entire backlog (call on message end, commit, or
     /// interrupt). Returns every remaining op in order.
     pub fn flush(&mut self) -> Vec<StreamOp> {
         self.carry = 0.0;
         self.ceiling_carry = 0.0;
         self.last_reveal = Instant::now();
+        self.stream_ended_at = None;
         let ops = self.drain_ops(self.backlog_chars, true);
         debug_assert!(self.queue.is_empty());
         self.backlog_chars = 0;
@@ -203,6 +243,7 @@ impl StreamBuffer {
         self.carry = 0.0;
         self.ceiling_carry = 0.0;
         self.reasoning_open = false;
+        self.stream_ended_at = None;
         self.last_reveal = Instant::now();
         self.jitter = JitterRecorder::default();
     }
@@ -254,6 +295,14 @@ impl StreamBuffer {
         let char_count = text.chars().count();
         self.backlog_chars += char_count;
         self.jitter.record_arrival(kind, char_count);
+        // A chunk after end-of-message belongs to the *next* response (the
+        // turn continued with another provider round). Restart live pacing for
+        // the new stream instead of inheriting the accelerated tail drain.
+        if self.stream_ended_at.take().is_some() {
+            self.last_reveal = Instant::now();
+            self.carry = 0.0;
+            self.ceiling_carry = 0.0;
+        }
         if let Some(QueuedOp::Chunk {
             kind: last_kind,
             text: last_text,
@@ -267,6 +316,29 @@ impl StreamBuffer {
             kind,
             text: text.to_string(),
         });
+    }
+
+    /// The wall-clock reveal ceiling in effect for a reveal step at `now`.
+    ///
+    /// While the provider is still streaming this is the live-stream ceiling
+    /// ([`MAX_REVEAL_CPS`]). Once `note_stream_ended` has fired and the
+    /// backlog is not yet empty, the ceiling becomes a catch-up rate that
+    /// empties the backlog at the tail deadline, so the post-completion tail
+    /// is measured in milliseconds rather than in backlog length.
+    fn effective_ceiling_rate_cps(&self, now: Instant) -> f32 {
+        let ended_at = match self.stream_ended_at {
+            None => return MAX_REVEAL_CPS,
+            Some(value) => value,
+        };
+        if self.backlog_chars == 0 {
+            return MAX_REVEAL_CPS;
+        }
+        let elapsed = now.saturating_duration_since(ended_at);
+        let remaining_secs = END_STREAM_TAIL_DRAIN
+            .saturating_sub(elapsed)
+            .as_secs_f32()
+            .max(TAIL_DRAIN_MIN_STEP);
+        self.backlog_chars as f32 / remaining_secs
     }
 
     /// Proportional, time-paced reveal. Advances the budget by the (clamped)
@@ -290,7 +362,7 @@ impl StreamBuffer {
 
         let cps = self.base_cps + self.backlog_chars as f32 * self.backlog_gain;
         self.carry += dt * cps;
-        self.ceiling_carry += dt * MAX_REVEAL_CPS;
+        self.ceiling_carry += dt * self.effective_ceiling_rate_cps(now);
 
         let controller_budget = self.carry.floor() as usize;
         let ceiling_budget = self.ceiling_carry.floor() as usize;
@@ -960,6 +1032,128 @@ mod tests {
             "reveal max chunk {} should be below arrival burst {}",
             profile.reasoning_reveals.max_chunk,
             profile.reasoning_arrivals.max_chunk
+        );
+    }
+
+    #[test]
+    fn note_stream_ended_bounds_the_post_end_tail() {
+        // A provider that delivers (almost) the whole answer in one final
+        // burst with MessageEnd right behind it used to keep the backlog
+        // dribbling at the live-stream ceiling after the model was already
+        // done. `note_stream_ended` must bound that tail to a short,
+        // backlog-independent window.
+        let start = Instant::now();
+        let mut buf = StreamBuffer::new();
+        buf.last_reveal = start;
+        buf.push_chunk(StreamKind::Text, &"a".repeat(3_000));
+        assert_eq!(
+            op_chars(&buf.reveal_now(start + Duration::from_millis(50))),
+            48
+        );
+
+        // The caller observes end-of-message; the remainder (2,952 chars) now
+        // drains faster than the live-stream ceiling allows.
+        let ended_at = start + Duration::from_millis(100);
+        buf.note_stream_ended();
+        let tail = drain_frames(&mut buf, ended_at, Duration::from_millis(50));
+        assert_eq!(tail.iter().sum::<usize>(), 2_952);
+        // Without end-of-mode, the same backlog at the 960 cps ceiling takes
+        // well over 60 frames of 50ms; with it the tail must finish within
+        // END_STREAM_TAIL_DRAIN (750ms) plus frame quantization.
+        assert!(
+            tail.len() <= 18,
+            "the post-end tail must finish within the bounded window, took {} frames: {tail:?}",
+            tail.len()
+        );
+    }
+
+    #[test]
+    fn note_stream_ended_tail_stays_proportional_per_frame() {
+        // Even though the tail drains at the catch-up rate, each individual
+        // frame must land only a proportional share of the backlog (roughly
+        // backlog * frame / deadline) and never dump everything at once.
+        let start = Instant::now();
+        let mut buf = StreamBuffer::new();
+        buf.last_reveal = start;
+        buf.push_chunk(StreamKind::Text, &"b".repeat(3_000));
+        buf.note_stream_ended();
+        let first = op_chars(&buf.reveal_now(start + Duration::from_millis(50)));
+        assert!(
+            first > 48,
+            "after the model is done the tail should catch up faster than the 960 cps ceiling (got {first})"
+        );
+        assert!(
+            first < 3_000,
+            "a single frame must not dump the entire tail backlog (got {first})"
+        );
+    }
+
+    #[test]
+    fn new_stream_after_end_restores_live_pacing() {
+        let start = Instant::now();
+        let mut buf = StreamBuffer::new();
+        buf.last_reveal = start;
+        buf.push_chunk(StreamKind::Text, &"a".repeat(3_000));
+        buf.note_stream_ended();
+        let flushed = buf.flush();
+        assert_eq!(op_chars(&flushed), 3_000);
+        assert!(buf.is_empty());
+
+        // A later provider round streams again: reveal must go back to the
+        // live wall-clock ceiling (48 chars per 50ms frame), not the tail rate.
+        let round2 = start + Duration::from_secs(5);
+        buf.push_chunk(StreamKind::Text, &"b".repeat(1_000));
+        let sizes = drain_frames(&mut buf, round2, Duration::from_millis(50));
+        assert_eq!(sizes.iter().sum::<usize>(), 1_000);
+        assert!(
+            sizes.iter().all(|&n| n <= 48),
+            "a new stream must pace at the live ceiling again, got {sizes:?}"
+        );
+        assert!(
+            sizes.len() >= 20,
+            "1,000 chars must drain at ~960 cps over many frames, got {sizes:?}"
+        );
+    }
+
+    #[test]
+    fn clear_resets_the_end_marked_state() {
+        let start = Instant::now();
+        let mut buf = StreamBuffer::new();
+        buf.last_reveal = start;
+        buf.push_chunk(StreamKind::Text, &"a".repeat(300));
+        buf.note_stream_ended();
+        buf.clear();
+
+        buf.push_chunk(StreamKind::Text, &"b".repeat(1_000));
+        let sizes = drain_frames(
+            &mut buf,
+            start + Duration::from_secs(2),
+            Duration::from_millis(50),
+        );
+        assert!(
+            sizes.iter().all(|&n| n <= 48),
+            "clear must restore live pacing, got {sizes:?}"
+        );
+    }
+
+    #[test]
+    fn flush_resets_the_end_marked_state() {
+        let start = Instant::now();
+        let mut buf = StreamBuffer::new();
+        buf.last_reveal = start;
+        buf.push_chunk(StreamKind::Text, &"a".repeat(300));
+        buf.note_stream_ended();
+        buf.flush();
+
+        buf.push_chunk(StreamKind::Text, &"b".repeat(1_000));
+        let sizes = drain_frames(
+            &mut buf,
+            start + Duration::from_secs(2),
+            Duration::from_millis(50),
+        );
+        assert!(
+            sizes.iter().all(|&n| n <= 48),
+            "flush must restore live pacing, got {sizes:?}"
         );
     }
 }
