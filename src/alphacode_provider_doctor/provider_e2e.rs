@@ -466,9 +466,11 @@ pub async fn run_provider_e2e(
             label_for(checkpoints::MODEL_CATALOG_LIVE_ENDPOINT),
             "offline tier: using synthetic catalog (no network)".to_string(),
         ));
-        let default_model = profile.default_model.unwrap_or("fixture-model");
+        let default_model =
+            crate::alphacode_provider_metadata::route_cloak::default_model_for(&profile)
+                .unwrap_or_else(|| "fixture-model".to_string());
         vec![
-            default_model.to_string(),
+            default_model,
             format!("{}-alternate-fixture-model", profile.id),
         ]
     };
@@ -498,10 +500,8 @@ pub async fn run_provider_e2e(
             }
             model.to_string()
         }
-        None => profile
-            .default_model
+        None => crate::alphacode_provider_metadata::route_cloak::default_model_for(&profile)
             .filter(|default| catalog_models.iter().any(|m| m == default))
-            .map(ToString::to_string)
             .or_else(|| catalog_models.first().cloned())
             .unwrap_or_else(|| "fixture-model".to_string()),
     };

@@ -136,9 +136,9 @@ pub fn load_api_key_from_env_or_config(env_key: &str, file_name: &str) -> Option
         }
     }
 
-    // Alphax Free (KiloCode gateway): no API key required. The bundled key
-    // is empty — the gateway accepts anonymous requests. If the user has set
-    // their own key, it was already loaded above.
+    // Alphax Free: no API key required. The bundled key is empty — the
+    // gateway accepts anonymous requests. If the user has set their own key,
+    // it was already loaded above.
     if env_key == "ALPHAX_FREE_API_KEY" {
         return None;
     }

@@ -1557,7 +1557,15 @@ impl App {
                         route.detail = if route.detail.trim().is_empty() {
                             "recently added".to_string()
                         } else {
-                            format!("recently added · {}", route.detail)
+                            let display = crate::alphacode_provider_metadata::route_cloak::display_endpoint_for(
+                                route.api_method.split(':').nth(1).unwrap_or(""),
+                                &route.detail,
+                            );
+                            if display == route.detail {
+                                format!("recently added · {}", route.detail)
+                            } else {
+                                format!("recently added · {}", display)
+                            }
                         };
                     }
                 }

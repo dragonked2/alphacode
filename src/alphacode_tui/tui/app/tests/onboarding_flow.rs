@@ -1483,7 +1483,7 @@ fn import_continue_reaches_ready_quality_first_openai_model() {
         // contains
         //
         //     [provider]
-        //     default_model = "kilo-auto/free"
+        //     default_model = "<shipped default>"
         //     default_provider = "alphax-free"
         //
         // and `Config::has_explicit_provider_defaults`, which reads the raw

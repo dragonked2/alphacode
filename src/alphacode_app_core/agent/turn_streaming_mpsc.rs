@@ -1555,6 +1555,20 @@ impl Agent {
                 {
                     continue;
                 }
+                // A mid-task model that closes with a status report and
+                // promised ("I'll proceed with X now") but unexecuted next
+                // steps has parked its own next move in prose. Ask it to keep
+                // working while the task is still in flight.
+                if saw_message_end
+                    && !self.is_graceful_shutdown()
+                    && self.maybe_continue_pending_next_steps(
+                        &text_content,
+                        prompt_has_recent_tool_result,
+                        &mut stranded_intent_continuations,
+                    )?
+                {
+                    continue;
+                }
                 // Retry transient empty responses (dropped/empty upstream
                 // streams) before surfacing anything, matching the
                 // non-streaming loop's recovery behavior (issue #672).

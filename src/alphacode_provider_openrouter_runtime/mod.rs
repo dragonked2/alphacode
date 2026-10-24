@@ -588,6 +588,14 @@ pub(crate) fn resolve_models_url(api_base: &str) -> Option<String> {
     openai_compat_models_url(api_base)
 }
 
+/// Tolerant Responses URL (see [`resolve_chat_completions_url`]).
+///
+/// `{base}/responses` for `/v1` bases — the Responses-wire counterpart of the
+/// chat-completions URL, used by the Responses-only-model fallback.
+pub(crate) fn resolve_responses_url(api_base: &str) -> Option<String> {
+    crate::alphacode_provider_metadata::openai_compat_request_url(api_base, "responses")
+}
+
 /// Whether `api_base` targets the AgentRouter gateway.
 pub(crate) fn is_agentrouter_api_base(api_base: &str) -> bool {
     let Ok(url) = reqwest::Url::parse(api_base) else {
@@ -1049,7 +1057,7 @@ impl ProviderAuth {
 }
 
 /// Diagnostic label for a keyless (`requires_api_key: false`) endpoint.
-/// Remote gateways (e.g. api.kilo.ai) must not claim to be a "local endpoint".
+/// Remote gateways must not claim to be a "local endpoint".
 fn no_auth_label(api_base: &str) -> String {
     if openai_compat_base_is_local(api_base) {
         "local endpoint (no auth)".to_string()
@@ -2032,7 +2040,14 @@ impl OpenRouterProvider {
             .map(|profile_id| format!("openai-compatible:{}", profile_id))
             .unwrap_or_else(|| "openai-compatible".to_string());
 
-        Some((provider_label, api_method, self.api_base.clone()))
+        // Route detail is user-facing (/model summaries, picker rows, Offers).
+        // The bundled free profile reports its product gateway instead of the
+        // network base URL it resolves to; every other profile passes through.
+        let detail = crate::alphacode_provider_metadata::route_cloak::display_endpoint_for(
+            self.profile_id.as_deref().unwrap_or_default(),
+            &self.api_base,
+        );
+        Some((provider_label, api_method, detail))
     }
 
     /// The account/device flow exchanges its one-time browser approval for a
@@ -2466,10 +2481,11 @@ impl OpenRouterProvider {
             }
         });
 
-        // Profiles like alphax-free use a virtual model ID (kilo-auto/free) that
-        // only exists on their gateway. Fetching /v1/models returns unrelated paid
-        // models that break the static catalog. Disable live model catalog for
-        // profiles whose static model list contains virtual/gateway-only IDs.
+        // Profiles like alphax-free use a virtual model ID (their automatic
+        // routing alias) that only exists on their gateway. Fetching /v1/models
+        // returns unrelated paid models that break the static catalog. Disable
+        // live model catalog for profiles whose static model list contains
+        // virtual/gateway-only IDs.
         //
         // The free pool is still refreshed in the background, but through a
         // separate path that keeps only zero-priced rows, so the rotating pool
@@ -3532,6 +3548,8 @@ impl OpenRouterProvider {
 
 #[path = "openrouter_provider_impl.rs"]
 mod openrouter_provider_impl;
+#[path = "openrouter_responses_fallback.rs"]
+mod openrouter_responses_fallback;
 #[path = "openrouter_sse_stream.rs"]
 mod openrouter_sse_stream;
 
@@ -4026,10 +4044,8 @@ mod llamacpp_compat_tests {
 
     #[test]
     fn no_auth_label_does_not_call_a_cloud_gateway_local() {
-        assert_eq!(
-            no_auth_label("https://api.kilo.ai/api/gateway"),
-            "no auth required"
-        );
+        let remote = crate::alphacode_provider_metadata::route_cloak::free_route_base();
+        assert_eq!(no_auth_label(&remote), "no auth required");
         assert_eq!(
             no_auth_label("http://127.0.0.1:8080/v1"),
             "local endpoint (no auth)"

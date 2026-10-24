@@ -157,8 +157,8 @@ impl Config {
     /// ships `default_model`/`default_provider`, `#[serde(default)]` on the
     /// struct re-injects them for every key the file omits, and `save` drops a
     /// `None` field entirely (TOML has no null). So a config where the user
-    /// deliberately cleared the default round-trips back to
-    /// `Some("kilo-auto/free")` on the next load, and every "did the user pick
+    /// deliberately cleared the default round-trips back to the shipped
+    /// default on the next load, and every "did the user pick
     /// this?" check reads the shipped default as a deliberate choice.
     ///
     /// The raw document is the only place where "absent" is still distinct from

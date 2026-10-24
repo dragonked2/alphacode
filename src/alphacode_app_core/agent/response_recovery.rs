@@ -254,6 +254,154 @@ impl Agent {
         MARKERS.iter().any(|marker| lower.contains(marker))
     }
 
+    /// True when the closing message shuts down work the task still needs.
+    ///
+    /// The harness treats "the model replied with text and stopped" as a
+    /// finished turn. That is right for a completed job and wrong for a
+    /// *pending job*: a model that ends a long autonomous run with a status
+    /// report like
+    ///
+    /// ```text
+    /// Immediate Next Steps (Unauthenticated)
+    /// 1. JWT alg:none test against the token endpoint
+    /// 2. Password reset challenge enumeration
+    ///
+    /// I'll proceed with testing the presigned URL endpoints now.
+    /// ```
+    ///
+    /// has not finished the task and has not been blocked — it has handed the
+    /// next move back in prose, and the session sits idle even though the
+    /// user asked for the whole job, which is the "alphacode stops and asks
+    /// whether to proceed" report.
+    ///
+    /// [`Self::is_unfulfilled_intent_message`] covers short narration ("Let me
+    /// fix this via sed.") but caps at 300 chars, which a status report blows
+    /// past by design, so long mid-task reports slip through. This matches the
+    /// report shape directly — an explicit next-steps heading, or a closing
+    /// first-person commitment to act — without a length cap.
+    ///
+    /// Messages that end by asking the user something are excluded: parking
+    /// the decision on the user is the question-detour recovery's shape, and
+    /// the two continuations must not collide. A genuine "I need credentials
+    /// to go further" blocker states a blocker and ends with none of these
+    /// markers, so it still stops the turn legitimately.
+    pub(crate) fn is_pending_next_steps_message(text: &str) -> bool {
+        let trimmed = text.trim();
+        if trimmed.is_empty() {
+            return false;
+        }
+
+        // The last non-empty line decides whether the ending is *user-directed*
+        // (a question, an offer) or *task-directed*. Only task-directed endings
+        // are this recovery's business.
+        let last_line = trimmed
+            .lines()
+            .rev()
+            .map(str::trim)
+            .find(|line| !line.is_empty())
+            .unwrap_or("");
+        let last_line_lower = last_line.to_lowercase();
+        const USER_DIRECTED_ENDINGS: &[&str] = &[
+            "?",
+            "let me know",
+            "shall i",
+            "should i",
+            "want me to",
+            "if you want",
+            "if you'd like",
+            "if you prefer",
+            "just say",
+        ];
+        if USER_DIRECTED_ENDINGS
+            .iter()
+            .any(|marker| last_line_lower.contains(marker))
+        {
+            return false;
+        }
+
+        // A report that enumerates what it plans to do next: a heading, or a
+        // labeled "next" section anywhere in the message.
+        const NEXT_STEPS_MARKERS: &[&str] = &[
+            "immediate next steps",
+            "next steps",
+            "next phase",
+            "next tests",
+            "next test:",
+            "up next",
+            "next move",
+        ];
+        let lower = trimmed.to_lowercase();
+        if NEXT_STEPS_MARKERS
+            .iter()
+            .any(|marker| lower.contains(marker))
+        {
+            return true;
+        }
+
+        // A closing commitment to act ("I'll proceed with the presigned-URL
+        // test now") without the heading. Deliberately uncapped on length:
+        // wrapping the commitment in a large report does not unmake it.
+        const COMMITMENT_MARKERS: &[&str] = &[
+            "i'll ",
+            "i will ",
+            "i'm going to ",
+            "about to ",
+            "let me ",
+            "let's ",
+            "now i ",
+            "next i ",
+        ];
+        COMMITMENT_MARKERS
+            .iter()
+            .any(|marker| lower.contains(marker))
+    }
+
+    /// Ask the model to execute the work it announced instead of stopping.
+    ///
+    /// The recovery for the turn dead-end where a long-running task closes
+    /// with a status report and promised next steps, leaving the session idle
+    /// mid-task.
+    ///
+    /// Fires only when the round's prompt ended with tool results — evidence
+    /// the task is mid-flight — because a plain question-and-answer turn that
+    /// happens to contain a forward-looking sentence must still be able to
+    /// end. Bounded by [`Self::MAX_STRANDED_INTENT_CONTINUATION_ATTEMPTS`]
+    /// via the shared counter, so a model that keeps reporting instead of
+    /// acting is not provoked forever.
+    pub(crate) fn maybe_continue_pending_next_steps(
+        &mut self,
+        visible_text: &str,
+        prompt_has_recent_tool_result: bool,
+        attempts: &mut u32,
+    ) -> Result<bool> {
+        if !prompt_has_recent_tool_result {
+            return Ok(false);
+        }
+        if !Self::is_pending_next_steps_message(visible_text) {
+            return Ok(false);
+        }
+        if *attempts >= Self::MAX_STRANDED_INTENT_CONTINUATION_ATTEMPTS {
+            logging::warn(
+                "Assistant ended a mid-task turn with announced next steps after the retry budget; ending turn",
+            );
+            return Ok(false);
+        }
+        *attempts += 1;
+        logging::warn(&format!(
+            "Assistant ended a mid-task turn with announced (unexecuted) next steps; requesting continuation (attempt {attempts}/{})",
+            Self::MAX_STRANDED_INTENT_CONTINUATION_ATTEMPTS
+        ));
+        self.add_message(
+            Role::User,
+            vec![ContentBlock::Text {
+                text: "<system-reminder> Your message announced next steps and then ended the turn before performing them. The task is not finished: execute those next steps now, one after another, and keep going until the original request is complete. Do not stop to report intermediate status or ask whether to proceed — intermediate findings go in your normal narration while you keep working, and a final report comes only when the task is done. Act; ask the user a question only when genuinely and concretely blocked, and then name that one blocker. Do not repeat this message.</system-reminder>".to_string(),
+                cache_control: None,
+            }],
+        );
+        self.session.save()?;
+        Ok(true)
+    }
+
     /// True when the closing message hands the decision back to the user
     /// instead of making a call.
     ///
@@ -614,6 +762,24 @@ impl Agent {
             if is_content_policy_rejection(error) {
                 logging::warn(&format!(
                     "Provider rejected the request under its content policy; attempting free-pool rotation: {}",
+                    error.lines().next().unwrap_or(error).trim()
+                ));
+                if let Some(delay) = self.maybe_rotate_free_pool_model(error) {
+                    return Ok(Some(delay));
+                }
+            }
+            // A routing 404 on the free pool ("the gateway has no route for
+            // this model id") is not a transient blip, but dead-ending the
+            // turn is also wrong: the pool usually holds models that *are*
+            // currently served. Rotate to the next healthy member and retry
+            // immediately — the unroutable id quarantines for a long window so
+            // this cannot ping-pong, and the rotation is bounded by one pool
+            // sweep (session stuck 404 → 30-min quarantine period).
+            if classify_rotation_trigger(error)
+                == super::free_pool_rotation::RotationTrigger::Unroutable
+            {
+                logging::warn(&format!(
+                    "Free gateway has no route for this model id; attempting free-pool rotation: {}",
                     error.lines().next().unwrap_or(error).trim()
                 ));
                 if let Some(delay) = self.maybe_rotate_free_pool_model(error) {
@@ -1247,6 +1413,16 @@ fn is_unroutable_model_error(lower: &str) -> bool {
         || lower.contains("no provider or endpoint")
         || lower.contains("no endpoint found")
         || lower.contains("every candidate endpoint was removed")
+        // Alphacode's own sanitized vocabulary for a free-gateway routing 404:
+        // the upstream body was deliberately stripped before this text reached
+        // recovery, so the product-level phrase must carry the signal.
+        || lower.contains("could not find an available route")
+        || lower.contains("no route for this model id")
+        // Alphacode's own sanitizer for the free gateway strips the upstream
+        // body but keeps the status; the only 404s it sanitizes are chat/
+        // responses route misses on the bundled gateway, so the sanitizer's
+        // own vocabulary plus the status carries the signal.
+        || lower.contains("upstream error details suppressed")
 }
 
 /// Compute a retry delay for a transient provider error, preferring the
@@ -1548,6 +1724,66 @@ mod provider_error_tests {
         // unfulfilled intent would continue every ordinary long answer.
         let long = format!("Let me explain what happened. {}", "detail ".repeat(80));
         assert!(!Agent::is_unfulfilled_intent_message(&long));
+    }
+
+    /// The reported "alphacode stops and asks whether to proceed" shape: a
+    /// 20-minute autonomous run that closes with a status report enumerating
+    /// "Immediate Next Steps" and a first-person commitment ("I'll proceed
+    /// with … now"), then ships no tool call. The task is still in flight —
+    /// this is a pending next-steps ending, not a finished one.
+    #[test]
+    fn a_mid_task_status_report_with_next_steps_is_pending() {
+        let status_report = "Unauthenticated Recon Complete — Status Report\n\n\
+Assets Mapped\n\
+target.example — Live, Next.js + OIDC auth, API gateway gw.target.example\n\n\
+Immediate Next Steps (Unauthenticated)\n\
+1. JWT alg:none bypass test against the token endpoint\n\
+2. Presigned URL endpoint — test unauthenticated generation\n\
+3. Password reset challenge — account enumeration / OTP bypass\n\
+4. CORS check on all API endpoints\n\n\
+The financial API is the highest-value unauthenticated surface. \
+I'll proceed with testing the presigned URL and password reset endpoints now.";
+        assert!(
+            Agent::is_pending_next_steps_message(status_report),
+            "a status report that enumerates next steps must be detected as pending"
+        );
+        // The commitment alone, wrapped in a long report, is still pending —
+        // the length cap that exempts reports from the short-narration check
+        // must not exempt them here.
+        let long_commitment = format!(
+            "Recon complete. Assets mapped; findings below.\n\n{}",
+            "Evidence line. ".repeat(60)
+        ) + "I'll proceed with the second attack surface now.";
+        assert!(Agent::is_pending_next_steps_message(&long_commitment));
+    }
+
+    #[test]
+    fn a_closure_that_hands_back_to_the_user_is_not_pending_next_steps() {
+        let blocked = "Recon phase complete and documented. Nothing else can run \
+unauthenticated; deeper testing needs account credentials, which I cannot create. \
+Stopping here until you provide test credentials.";
+        assert!(!Agent::is_pending_next_steps_message(blocked));
+    }
+
+    /// An ordinary completed-task report must never trigger a continuation,
+    /// and a plain question handing the decision back is the other recovery's
+    /// shape, not this one.
+    #[test]
+    fn finished_work_and_user_questions_are_not_pending_next_steps() {
+        assert!(!Agent::is_pending_next_steps_message(
+            "Refactor complete: handlers split, all 214 tests pass, build clean."
+        ));
+        assert!(!Agent::is_pending_next_steps_message(""));
+        let menu_with_question = "Given what recon found, there are two directions:\n\n\
+• Test the OIDC flows first\n\
+• Pivot to the API surfaces\n\n\
+Which should I tackle first?";
+        assert!(!Agent::is_pending_next_steps_message(menu_with_question));
+        // An offer to do optional extra work is user-directed even without a
+        // literal question.
+        assert!(!Agent::is_pending_next_steps_message(
+            "The requested report is delivered. I could also sweep the API docs next; let me know if you want that."
+        ));
     }
 
     /// The reported "alphacode stops and asks me a question" shape: a menu of

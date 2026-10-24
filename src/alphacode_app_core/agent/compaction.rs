@@ -144,7 +144,16 @@ impl Agent {
                 manager.set_budget(context_limit);
                 let (dropped, usage_pct) = {
                     let all_messages = self.session.provider_messages();
-                    manager.update_observed_input_tokens(context_limit as u64);
+                    // Do NOT fake the observed token count up to the limit
+                    // here. `hard_compact_with` sizes its drop from a
+                    // char-based estimate against `token_budget`, not from the
+                    // observed count, so the fake buys nothing — but it *does*
+                    // poison `effective_token_count_with` (it returns
+                    // `max(estimate, observed)`), which made the compaction
+                    // event report `pre_tokens` as the entire context window
+                    // (a 30k conversation was announced as
+                    // "2,000,000,000->30,525 tokens" for providers whose
+                    // unknown context window resolves to the 2e9 sentinel).
                     let usage_pct = manager.context_usage_with(all_messages) * 100.0;
                     let dropped = match manager.hard_compact_with(all_messages) {
                         Ok(dropped) => dropped,

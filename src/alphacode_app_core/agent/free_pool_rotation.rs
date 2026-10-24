@@ -3,13 +3,13 @@
 //!
 //! # The problem
 //!
-//! `kilo-auto/free` is a routing alias the gateway resolves server-side. Free
-//! tier limits are enforced **per upstream model**, so the alias can 429 while
-//! other zero-priced models serve traffic at that instant. AlphaCode's only
-//! pre-existing recovery was `maybe_continue_after_provider_error`, which
-//! retries the *same* alias with exponential backoff — re-rolling the gateway's
-//! dice against the same throttled backend. The user sees a hard stall for
-//! minutes while a perfectly good free model sits idle.
+//! The bundled automatic routing alias is one the gateway resolves
+//! server-side. Free tier limits are enforced **per upstream model**, so the
+//! alias can 429 while other zero-priced models serve traffic at that instant.
+//! AlphaCode's only pre-existing recovery was `maybe_continue_after_provider_error`,
+//! which retries the *same* alias with exponential backoff — re-rolling the
+//! gateway's dice against the same throttled backend. The user sees a hard
+//! stall for minutes while a perfectly good free model sits idle.
 //!
 //! # The mechanism
 //!
@@ -30,10 +30,12 @@
 //!
 //! Every model in the pool is presented to the user as "Alphax Free"
 //! ([`free_model_display_name`]). Rotation is a gateway implementation detail;
-//! surfacing `nvidia/nemotron-3-ultra-550b-a55b:free` in the header would be
-//! both alarming and meaningless. The switch still emits a `ModelChanged`
-//! event so the header, picker, and context budget resync rather than showing a
-//! stale model, but the name the user sees does not change.
+//! surfacing a concrete pool id in the header would be both alarming and
+//! meaningless. The switch still emits a `ModelChanged` event so the header,
+//! picker, and context budget resync rather than showing a stale model, but the
+//! name the user sees does not change. (Directly *picking* a member from the
+//! picker is a different surface and may label entries differently — picking is
+//! the user's choice; automatic rotation stays hidden.)
 
 use std::collections::HashMap;
 use std::sync::{Mutex, OnceLock};
@@ -45,13 +47,39 @@ use crate::alphacode_provider_metadata::free_pool::{
 // The curated floor is only asserted against, never used at runtime: rotation
 // reads the merged pool, which is a superset once a refresh has run.
 #[cfg(test)]
-use crate::alphacode_provider_metadata::free_pool::CURATED_FREE_MODELS;
+use crate::alphacode_provider_metadata::free_pool::curated_free_models;
+
+/// Serialize tests that touch the process-wide pool/quarantine state.
+///
+/// The rotation state is process-global by design, and tests in other modules
+/// (the display-name mapping in the TUI) exercise the same global state. A
+/// single shared lock keeps those test runs from racing each other.
+#[cfg(test)]
+pub(crate) static POOL_STATE_TEST_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+
+#[cfg(test)]
+pub(crate) fn lock_pool_state_for_tests() -> std::sync::MutexGuard<'static, ()> {
+    let guard = POOL_STATE_TEST_LOCK
+        .get_or_init(|| Mutex::new(()))
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    // Clearing under the lock gives every holder the same clean slate as the
+    // local tests' `reset()`.
+    if let Ok(mut map) = quarantine_map().lock() {
+        map.clear();
+    }
+    if let Ok(mut pool) = refreshed_pool().lock() {
+        pool.clear();
+    }
+    guard
+}
 
 /// Quarantine window after a rate-limit rejection.
 ///
-/// Long, because the 429 body Kilo returns for a daily cap says so explicitly
-/// and retrying inside this window cannot succeed. The user's real alternative
-/// is waiting for tomorrow, so a short window here would just burn the pool.
+/// Long, because the 429 body the gateway returns for a daily cap says so
+/// explicitly and retrying inside this window cannot succeed. The user's real
+/// alternative is waiting for tomorrow, so a short window here would just burn
+/// the pool.
 const RATE_LIMIT_QUARANTINE: Duration = Duration::from_secs(15 * 60);
 
 /// Quarantine window after a 5xx / timeout. Upstream capacity problems usually
@@ -88,10 +116,10 @@ const REFUSAL_QUARANTINE: Duration = Duration::from_secs(2 * 60);
 ///
 /// Long enough to stop the thrash that prompted it. The observed loop was:
 /// rotate onto a model the gateway does not currently serve, get a 404, fall
-/// back to `kilo-auto/free`, hit a real rate limit, and rotate back onto the
-/// unroutable id — repeating every few minutes for the life of the session. A
-/// routing 404 is a statement about the gateway's current lineup, not a
-/// capacity blip, so it is worth waiting out a refresh cycle rather than
+/// back to the automatic routing alias, hit a real rate limit, and rotate back
+/// onto the unroutable id — repeating every few minutes for the life of the
+/// session. A routing 404 is a statement about the gateway's current lineup,
+/// not a capacity blip, so it is worth waiting out a refresh cycle rather than
 /// re-testing a model that does not exist.
 const UNROUTABLE_QUARANTINE: Duration = Duration::from_secs(30 * 60);
 
@@ -214,7 +242,6 @@ pub fn free_pool_display_name(model: &str) -> Option<&'static str> {
         .any(|candidate| candidate == model)
         .then_some(ALPHAX_FREE_DISPLAY_NAME)
 }
-
 /// Quarantine `model` for the window implied by `trigger`.
 pub fn quarantine_model(model: &str, trigger: RotationTrigger) {
     let model = model.trim();
@@ -393,13 +420,10 @@ impl RotationNotice {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    static TEST_LOCK: Mutex<()> = Mutex::new(());
+    use crate::alphacode_provider_metadata::route_cloak;
 
     fn test_lock() -> std::sync::MutexGuard<'static, ()> {
-        TEST_LOCK
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner())
+        super::lock_pool_state_for_tests()
     }
 
     /// Tests share a process-wide quarantine map, so each one must start from a
@@ -415,16 +439,22 @@ mod tests {
         }
     }
 
+    /// The rotation floor is one alias; tests seed synthetic pool members
+    /// through the same absorb path the background refresh uses.
+    fn seed_pool(models: &[&str]) {
+        absorb_discovered_free_models(models.iter().map(|m| m.to_string()).collect());
+    }
+
     #[test]
     fn curated_pool_is_the_rotation_floor() {
         let _guard = test_lock();
         reset();
         let pool = effective_free_pool();
-        assert!(pool.len() >= CURATED_FREE_MODELS.len());
-        for curated in CURATED_FREE_MODELS {
+        assert!(pool.len() >= curated_free_models().len());
+        for curated in curated_free_models() {
             assert!(
                 pool.contains(&curated.to_string()),
-                "curated `{curated}` missing from pool"
+                "floor `{curated}` missing from pool"
             );
         }
     }
@@ -433,28 +463,36 @@ mod tests {
     fn a_quarantined_model_is_not_selected_again() {
         let _guard = test_lock();
         reset();
-        quarantine_model("poolside/laguna-s-2.1:free", RotationTrigger::RateLimited);
-        assert!(is_quarantined("poolside/laguna-s-2.1:free"));
-        let next = next_free_model("kilo-auto/free").expect("pool has alternatives");
-        assert_ne!(next, "poolside/laguna-s-2.1:free");
+        let alias = route_cloak::free_route_default_model();
+        // Seed two members and quarantine only one: rotation must pick the
+        // healthy member rather than the quarantined one (and never the
+        // current model itself).
+        seed_pool(&["synthetic/pool-a:free", "synthetic/pool-b:free"]);
+        quarantine_model("synthetic/pool-a:free", RotationTrigger::RateLimited);
+        assert!(is_quarantined("synthetic/pool-a:free"));
+        let next = next_free_model(&alias).expect("pool has alternatives");
+        assert_ne!(next, "synthetic/pool-a:free");
+        assert_ne!(next, alias);
     }
 
     #[test]
     fn rotation_moves_forward_rather_than_retrying_the_same_model() {
         let _guard = test_lock();
         reset();
-        let next = next_free_model("kilo-auto/free").expect("pool has alternatives");
-        assert_ne!(next, "kilo-auto/free");
+        let alias = route_cloak::free_route_default_model();
+        seed_pool(&["synthetic/pool-a:free"]);
+        let next = next_free_model(&alias).expect("pool has alternatives");
+        assert_ne!(next, alias);
     }
 
     #[test]
     fn clear_quarantine_returns_a_model_to_service() {
         let _guard = test_lock();
         reset();
-        quarantine_model("cohere/north-mini-code:free", RotationTrigger::Transient);
-        assert!(is_quarantined("cohere/north-mini-code:free"));
-        clear_quarantine("cohere/north-mini-code:free");
-        assert!(!is_quarantined("cohere/north-mini-code:free"));
+        quarantine_model("synthetic/pool-a:free", RotationTrigger::Transient);
+        assert!(is_quarantined("synthetic/pool-a:free"));
+        clear_quarantine("synthetic/pool-a:free");
+        assert!(!is_quarantined("synthetic/pool-a:free"));
     }
 
     #[test]
@@ -470,12 +508,13 @@ mod tests {
     fn refusal_quarantine_rotates_and_recovers_quickly() {
         let _guard = test_lock();
         reset();
-        quarantine_model("cohere/north-mini-code:free", RotationTrigger::Refusal);
+        seed_pool(&["synthetic/pool-a:free"]);
+        quarantine_model("synthetic/pool-a:free", RotationTrigger::Refusal);
         // The refusing upstream is held for this turn's retry…
-        assert!(is_quarantined("cohere/north-mini-code:free"));
+        assert!(is_quarantined("synthetic/pool-a:free"));
         // …rotation still finds a different member for the retried request…
-        let next = next_free_model("cohere/north-mini-code:free").expect("pool has alternatives");
-        assert_ne!(next, "cohere/north-mini-code:free");
+        let next = next_free_model("synthetic/pool-a:free").expect("pool has alternatives");
+        assert_ne!(next, "synthetic/pool-a:free");
         // …and the window is policy-short, not outage-long: well under a
         // rate-limit quarantine, and above the empty-response nudge window so
         // the retry demonstrably lands on a *different* upstream.
@@ -489,13 +528,14 @@ mod tests {
     fn only_pool_members_present_as_alphax_free() {
         let _guard = test_lock();
         reset();
-        // Curated pool members carry the product name.
+        seed_pool(&["synthetic/pool-a:free"]);
+        // The floor alias carries the product name.
         assert_eq!(
-            free_pool_display_name("kilo-auto/free"),
+            free_pool_display_name(&route_cloak::free_route_default_model()),
             Some(ALPHAX_FREE_DISPLAY_NAME)
         );
         assert_eq!(
-            free_pool_display_name("poolside/laguna-s-2.1:free"),
+            free_pool_display_name("synthetic/pool-a:free"),
             Some(ALPHAX_FREE_DISPLAY_NAME)
         );
         // A `:free` id from a different provider is not in the pool and must
@@ -533,8 +573,10 @@ mod tests {
     #[test]
     fn only_free_models_are_rotated() {
         let _guard = test_lock();
-        assert!(should_rotate_for_model("kilo-auto/free"));
-        assert!(should_rotate_for_model("poolside/laguna-s-2.1:free"));
+        assert!(should_rotate_for_model(
+            &route_cloak::free_route_default_model()
+        ));
+        assert!(should_rotate_for_model("synthetic/pool-a:free"));
         assert!(
             !should_rotate_for_model("openai/gpt-5.4"),
             "rotating a paid model would silently change the user's billing"
@@ -559,14 +601,38 @@ mod tests {
     fn an_unroutable_model_is_not_re_entered_while_the_pool_has_options() {
         let _guard = test_lock();
         reset();
-        // The only other pool member is busy, so the pool looks exhausted.
-        quarantine_model("kilo-auto/free", RotationTrigger::RateLimited);
-        quarantine_model("poolside/laguna-s-2.1:free", RotationTrigger::Unroutable);
+        let alias = route_cloak::free_route_default_model();
+        seed_pool(&["synthetic/pool-b:free"]);
+        // The alias is busy and the other member is unroutable, so the pool
+        // looks exhausted.
+        quarantine_model(&alias, RotationTrigger::RateLimited);
+        quarantine_model("synthetic/pool-b:free", RotationTrigger::Unroutable);
 
-        let next = next_free_model("poolside/laguna-s-2.1:free").expect("pool has members");
+        let next = next_free_model("synthetic/pool-b:free").expect("pool has members");
         assert_ne!(
-            next, "poolside/laguna-s-2.1:free",
+            next, "synthetic/pool-b:free",
             "the unroutable model must not be re-selected"
+        );
+    }
+
+    #[test]
+    fn sanitized_free_gateway_routing_404_classifies_as_unroutable() {
+        // The sanitized text that actually reaches recovery: the upstream body
+        // was stripped, so only alphacode's own product-level phrasing plus the
+        // 404 status carry the routing signal. A bare 404 without routing
+        // vocabulary stays a transient-class event.
+        use crate::alphacode_app_core::agent::response_recovery::classify_rotation_trigger;
+
+        let sanitized_full = "Alphax Free request failed (status: 404 Not Found).\nAlphax Free could not find an available route. Try again shortly or switch model with /model.";
+        assert_eq!(
+            classify_rotation_trigger(sanitized_full),
+            RotationTrigger::Unroutable
+        );
+        let sanitized_brief =
+            "Alphax Free request failed with HTTP 404; upstream error details suppressed";
+        assert_eq!(
+            classify_rotation_trigger(sanitized_brief),
+            RotationTrigger::Unroutable
         );
     }
 
@@ -576,9 +642,11 @@ mod tests {
     fn a_busy_model_remains_a_valid_last_resort() {
         let _guard = test_lock();
         reset();
-        quarantine_model("kilo-auto/free", RotationTrigger::RateLimited);
-        let next = next_free_model("kilo-auto/free").expect("pool is not exhausted yet");
-        assert_ne!(next, "kilo-auto/free");
+        let alias = route_cloak::free_route_default_model();
+        seed_pool(&["synthetic/pool-a:free"]);
+        quarantine_model(&alias, RotationTrigger::RateLimited);
+        let next = next_free_model(&alias).expect("pool is not exhausted yet");
+        assert_ne!(next, alias);
     }
 
     #[test]
@@ -605,14 +673,14 @@ openrouter/free. Every candidate endpoint was removed during routing","code":404
         let _guard = test_lock();
         reset();
         let notice = RotationNotice {
-            from_model: "kilo-auto/free".to_string(),
-            to_model: "nvidia/nemotron-3-ultra-550b-a55b:free".to_string(),
+            from_model: route_cloak::free_route_default_model(),
+            to_model: "synthetic/pool-b:free".to_string(),
             trigger: RotationTrigger::RateLimited,
         };
         let line = notice.status_line();
         assert!(line.contains(ALPHAX_FREE_DISPLAY_NAME));
         assert!(
-            !line.contains("nvidia/") && !line.contains(":free"),
+            !line.contains("synthetic/") && !line.contains(":free"),
             "status line must not expose the gateway routing id: {line}"
         );
     }
@@ -626,7 +694,7 @@ openrouter/free. Every candidate endpoint was removed during routing","code":404
             RotationTrigger::EmptyResponse,
         ] {
             let notice = RotationNotice {
-                from_model: "kilo-auto/free".to_string(),
+                from_model: route_cloak::free_route_default_model(),
                 to_model: "x".to_string(),
                 trigger,
             };

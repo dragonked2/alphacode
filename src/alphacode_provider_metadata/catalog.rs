@@ -1,3 +1,4 @@
+use super::route_cloak;
 use super::{
     LoginProviderAuthKind, LoginProviderAuthStateKey, LoginProviderDescriptor,
     LoginProviderSurfaceOrder, LoginProviderTarget, OpenAiCompatibleProfile,
@@ -437,8 +438,8 @@ pub const ALIBABA_CODING_PLAN_PROFILE: OpenAiCompatibleProfile = OpenAiCompatibl
     requires_api_key: true,
 };
 
-/// No bundled key needed — the Alphax Free tier routes through KiloCode's
-/// anonymous free gateway which requires no authentication.
+/// No bundled key needed — the Alphax Free tier routes through an anonymous
+/// free gateway which requires no authentication.
 pub const ALPHAX_FREE_BUNDLED_API_KEY: &str = "";
 
 /// Curated order of Alphax Free models. The post-login flagship picker
@@ -446,30 +447,49 @@ pub const ALPHAX_FREE_BUNDLED_API_KEY: &str = "";
 /// random row. Top-down = picker top-down.
 ///
 /// This is the *flagship ranking* list, answering only "which model should be
-/// selected on login" — hence a single entry, with `kilo-auto/free` leading as
-/// the gateway's own routing alias. The wider set the agent may rotate through
-/// after a 429 is a different question and lives in
-/// [`crate::alphacode_provider_metadata::CURATED_FREE_MODELS`]; adding models
+/// selected on login" — hence a single entry, with the gateway's own automatic
+/// routing alias leading. The wider set the agent may rotate through after a
+/// 429 is a different question and lives in
+/// [`crate::alphacode_provider_metadata::curated_free_models`]; adding models
 /// there must not change which model a fresh login selects.
-pub const ALL_ALPHAX_FREE_MODELS: &[&str] = &["kilo-auto/free"];
+pub fn alphax_free_flagship_order() -> &'static [&'static str] {
+    use std::sync::OnceLock;
+    static ORDER: OnceLock<&'static [&'static str]> = OnceLock::new();
+    ORDER.get_or_init(|| Box::leak(Box::from([route_cloak::leaked_free_route_default_model()])))
+}
+
+/// Nested preferred-order list for `provider_preferred_model_orders` sites
+/// that need a `&'static [&'static [&'static str]]` slice.
+pub fn alphax_free_preferred_orders() -> &'static [&'static [&'static str]] {
+    use std::sync::OnceLock;
+    static ORDERS: OnceLock<&'static [&'static [&'static str]]> = OnceLock::new();
+    ORDERS.get_or_init(|| Box::leak(Box::from([alphax_free_flagship_order()])))
+}
+
+/// Whether a model id is one of the built-in virtual ids shipped with the
+/// Alphax Free profile (i.e. part of its static interface rather than a live
+/// catalog row).
+pub fn is_alphax_free_builtin_model(model: &str) -> bool {
+    alphax_free_flagship_order().contains(&model)
+}
 
 pub const ALPHAX_FREE_PROFILE: OpenAiCompatibleProfile = OpenAiCompatibleProfile {
     id: "alphax-free",
     display_name: "Alphax Free",
-    api_base: "https://api.kilo.ai/api/gateway",
+    // Fused freely: route identifiers are decoded at runtime; see `route_cloak`.
+    api_base: route_cloak::CLOAKED_PROFILE_BASE,
     api_key_env: "ALPHAX_FREE_API_KEY",
     env_file: "alphax-free.env",
     setup_url: "",
-    default_model: Some("kilo-auto/free"),
+    default_model: Some(route_cloak::CLOAKED_PROFILE_ALIAS),
     requires_api_key: false,
 };
 
 /// User-facing display name for internal/virtual model ids that must never
-/// surface raw (e.g. `kilo-auto/free` is a routing alias, not a real model
-/// the user chose). Returns `None` for ordinary ids so callers pass them
+/// surface raw. Returns `None` for ordinary ids so callers pass them
 /// through unchanged.
 pub fn internal_model_display_name(model: &str) -> Option<&str> {
-    if ALL_ALPHAX_FREE_MODELS.contains(&model) {
+    if is_alphax_free_builtin_model(model) {
         return Some(ALPHAX_FREE_PROFILE.display_name);
     }
     None

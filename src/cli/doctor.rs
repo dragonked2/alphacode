@@ -262,9 +262,10 @@ fn default_auto_update_flag() -> bool {
 
 /// The model label to show, never the raw routing id.
 ///
-/// `kilo-auto/free` and friends are gateway routing aliases. A diagnostic that
-/// prints one re-introduces exactly the internal detail the rest of the UI
-/// maps away, so resolve through the same display-name layer the header uses.
+/// Routing aliases (the free gateway resolves them server-side) must not reach
+/// a diagnostic verbatim. A diagnostic that prints one re-introduces exactly
+/// the internal detail the rest of the UI maps away, so resolve through the
+/// same display-name layer the header uses.
 fn public_model_label(model: &str) -> String {
     if let Some(name) = crate::alphacode_provider_metadata::internal_model_display_name(model) {
         return name.to_string();

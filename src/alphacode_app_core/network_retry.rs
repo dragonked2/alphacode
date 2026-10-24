@@ -27,6 +27,21 @@ pub fn classify_message(message: &str) -> Option<String> {
 }
 
 fn classify_text(text: &str) -> Option<String> {
+    // An embedded HTTP status means the gateway successfully answered us —
+    // the network is obviously fine and the failure is a request-level
+    // verdict. Provider diagnostics routinely embed BOTH a `timeout: Ns`
+    // line (the request budget) and a `status: 4xx` line, and the `timeout`
+    // needle below would misread a permanent 400 as a dropped connection —
+    // sending recovery into a "network is offline" reconnect-probe loop even
+    // though connectivity never broke. Mirror the retry classifier's
+    // accounting: any 4xx except the timeout-shaped 408, the resolvable
+    // conflict 409, and the rate-limit 429 is not network evidence.
+    if let Some(status) = crate::alphacode_provider_core::retry::embedded_http_status(text)
+        && (400..500).contains(&status)
+        && !matches!(status, 408 | 409 | 429)
+    {
+        return None;
+    }
     let network_markers = [
         "connection reset",
         "connection aborted",
@@ -254,5 +269,40 @@ mod tests {
                 "should NOT classify as network interruption: {error}"
             );
         }
+    }
+
+    /// The AgentRouter misfire that started this guard: the gateway answered
+    /// with HTTP 400 ("please use /v1/responses instead"), and its annotated
+    /// diagnostic embedded BOTH a `timeout: 600s` line and `status: 400`. The
+    /// bare substring classifier matched `timeout` and claimed the network had
+    /// dropped, sending recovery into a reconnect-probe loop instead of
+    /// failing the turn on the real (permanent) cause.
+    #[test]
+    fn annotated_4xx_with_timeout_budget_is_not_network_evidence() {
+        let annotated = "HTTP 400 (bad request): the provider rejected the request payload.\n\n\
+            OpenAI-compatible chat request failed\n\
+            \x20 endpoint: https://example-gateway.invalid/v1/chat/completions\n\
+            \x20 model: gpt-5.6-sol\n\
+            \x20 status: 400 Bad Request\n\
+            \x20 response: {\"error\":{\"message\":\"model does not support \
+            chat completions, use /v1/responses instead\",\"timeout\": 600}}";
+        assert!(
+            classify_message(annotated).is_none(),
+            "a gateway that returned HTTP 400 is not an offline network"
+        );
+    }
+
+    /// The genuine timeout shapes must still classify even once the guard
+    /// exists, so recovery is not over-suppressed.
+    #[test]
+    fn transport_timeouts_still_classify() {
+        assert!(
+            classify_message(
+                "openai-compatible chat request failed\n  status: 504 gateway timeout\n  \
+             timeout: 180s"
+            )
+            .is_some()
+        );
+        assert!(classify_message("connection reset by peer").is_some());
     }
 }

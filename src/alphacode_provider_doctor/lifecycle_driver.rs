@@ -76,7 +76,9 @@ impl AuthLifecycleSpec {
         profile: OpenAiCompatibleProfile,
         auth_path: AuthLifecycleAuthPath,
     ) -> Self {
-        let default_model = profile.default_model.unwrap_or("fixture-model");
+        let default_model =
+            crate::alphacode_provider_metadata::route_cloak::default_model_for(&profile)
+                .unwrap_or_else(|| "fixture-model".to_string());
         let mut catalog_models_after_auth = vec![default_model.to_string()];
         catalog_models_after_auth.push(format!("{}-alternate-fixture-model", profile.id));
         Self {
@@ -488,13 +490,20 @@ impl AuthLifecycleDriver {
     ) -> Vec<String> {
         let mut transcript = Vec::new();
         if spec.auth_path.shows_paste_prompt() {
+            let endpoint = crate::alphacode_provider_metadata::route_cloak::display_endpoint_for(
+                &resolved.id,
+                &resolved.api_base,
+            );
             transcript.push(format!(
                 "**{} API Key**\n\nSetup docs: {}\nStored variable: `{}`\nEndpoint: `{}`\nSuggested default model: `{}`\n\n**Paste your API key below** (it will be saved securely), or type `/cancel` to abort.",
                 spec.provider_label,
                 resolved.setup_url,
                 resolved.api_key_env,
-                resolved.api_base,
-                resolved.default_model.as_deref().unwrap_or("none")
+                endpoint,
+                crate::alphacode_provider_metadata::route_cloak::display_endpoint_for(
+                    &resolved.id,
+                    resolved.default_model.as_deref().unwrap_or("none")
+                )
             ));
             transcript.push(format!(
                 "**{} API key saved.**\n\nStored at `{}`.\nFetching the model catalog. Switch models anytime with /model.",
@@ -651,14 +660,19 @@ mod tests {
     {
         let resolved =
             crate::alphacode_base::provider_catalog::resolve_openai_compatible_profile(profile);
+        let profile_id = resolved.id.clone();
+        let endpoint = crate::alphacode_provider_metadata::route_cloak::display_endpoint_for(
+            &profile_id,
+            &resolved.api_base,
+        );
         let mut event = crate::live_tests::LiveVerificationEvent::new(
             test_name,
-            resolved.id,
+            profile_id,
             resolved.display_name,
             auth,
             result,
         )
-        .with_endpoint(resolved.api_base)
+        .with_endpoint(endpoint)
         .with_capabilities(capabilities)
         .with_standard_end_to_end_checkpoints()
         .with_metadata(

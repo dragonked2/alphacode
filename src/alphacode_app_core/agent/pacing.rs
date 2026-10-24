@@ -68,8 +68,9 @@ mod tests {
 
     #[test]
     fn free_tier_models_are_paced() {
+        let alias = crate::alphacode_provider_metadata::route_cloak::free_route_default_model();
         assert_eq!(
-            inter_call_delay(Some("kilo-auto/free"), true),
+            inter_call_delay(Some(&alias), true),
             Some(FREE_TIER_INTER_CALL_DELAY)
         );
         assert_eq!(
@@ -81,7 +82,13 @@ mod tests {
     #[test]
     fn the_final_iteration_is_never_paced() {
         // Even a free-tier model must not sleep before the turn ends.
-        assert_eq!(inter_call_delay(Some("kilo-auto/free"), false), None);
+        assert_eq!(
+            inter_call_delay(
+                Some(&crate::alphacode_provider_metadata::route_cloak::free_route_default_model()),
+                false
+            ),
+            None
+        );
     }
 
     #[test]

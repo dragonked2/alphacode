@@ -1121,7 +1121,10 @@ pub fn remote_current_openai_compatible_route_for_model(
         provider: resolved.display_name,
         api_method: format!("openai-compatible:{}", resolved.id),
         available: true,
-        detail: resolved.api_base,
+        detail: crate::alphacode_provider_metadata::route_cloak::display_endpoint_for(
+            &resolved.id,
+            &resolved.api_base,
+        ),
         cheapness: None,
     })
 }
@@ -1147,15 +1150,16 @@ pub fn remote_openai_compatible_route_for_model(model: &str) -> Option<ModelRout
         else {
             continue;
         };
+        let gateway_note = crate::alphacode_provider_metadata::route_cloak::display_endpoint_for(
+            &resolved.id,
+            &resolved.api_base,
+        );
         let detail = if from_live_catalog {
-            resolved.api_base.clone()
+            gateway_note
         } else if resolved.api_base.trim().is_empty() {
             "fallback: static provider model list".to_string()
         } else {
-            format!(
-                "{}; fallback: static provider model list",
-                resolved.api_base
-            )
+            format!("{gateway_note}; fallback: static provider model list")
         };
         return Some(ModelRoute {
             model: model.to_string(),

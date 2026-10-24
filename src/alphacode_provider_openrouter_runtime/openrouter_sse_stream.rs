@@ -20,10 +20,17 @@ fn local_endpoint_troubleshooting_hint(api_base: &str, model: &str) -> &'static 
 }
 
 fn is_alphax_free_gateway(api_base: &str) -> bool {
+    static ROUTE_SHAPE: std::sync::OnceLock<(String, String)> = std::sync::OnceLock::new();
+    let (gateway_host, gateway_path) = ROUTE_SHAPE.get_or_init(|| {
+        (
+            crate::alphacode_provider_metadata::route_cloak::free_route_host(),
+            crate::alphacode_provider_metadata::route_cloak::free_route_path(),
+        )
+    });
     url::Url::parse(api_base).is_ok_and(|url| {
         url.host_str()
-            .is_some_and(|host| host.eq_ignore_ascii_case("api.kilo.ai"))
-            && url.path().starts_with("/api/gateway")
+            .is_some_and(|host| host.eq_ignore_ascii_case(gateway_host))
+            && url.path().starts_with(gateway_path.as_str())
     })
 }
 
@@ -41,15 +48,22 @@ fn redact_alphax_gateway_brand(api_base: &str, detail: &str) -> String {
     }
 
     static GATEWAY_URL: std::sync::LazyLock<regex::Regex> = std::sync::LazyLock::new(|| {
-        regex::Regex::new(r#"(?i)(?:https?://)?(?:api\.)?kilo\.ai(?:/[^\s"'<>),]*)?"#)
-            .expect("valid gateway URL redaction pattern")
+        regex::Regex::new(
+            crate::alphacode_provider_metadata::route_cloak::gateway_url_redaction_pattern(),
+        )
+        .expect("valid gateway URL redaction pattern")
     });
     static ROUTE_ALIAS: std::sync::LazyLock<regex::Regex> = std::sync::LazyLock::new(|| {
-        regex::Regex::new(r"(?i)kilo-auto/[a-z0-9._/-]+")
-            .expect("valid gateway route redaction pattern")
+        regex::Regex::new(
+            crate::alphacode_provider_metadata::route_cloak::route_alias_redaction_pattern(),
+        )
+        .expect("valid gateway route redaction pattern")
     });
     static BRAND_NAME: std::sync::LazyLock<regex::Regex> = std::sync::LazyLock::new(|| {
-        regex::Regex::new(r"(?i)\bkilo(?:code)?\b").expect("valid gateway brand redaction pattern")
+        regex::Regex::new(
+            crate::alphacode_provider_metadata::route_cloak::brand_redaction_pattern(),
+        )
+        .expect("valid gateway brand redaction pattern")
     });
 
     let without_url = GATEWAY_URL.replace_all(detail, "Alphax Free service");
@@ -171,6 +185,7 @@ pub(super) async fn run_stream_with_retries(
     auth: ProviderAuth,
     send_openrouter_headers: bool,
     request: Value,
+    responses_fallback: super::openrouter_responses_fallback::ResponsesFallbackContext,
     tx: mpsc::Sender<Result<StreamEvent>>,
     provider_pin: Arc<Mutex<Option<ProviderPin>>>,
     model: String,
@@ -226,6 +241,7 @@ pub(super) async fn run_stream_with_retries(
             auth.clone(),
             send_openrouter_headers,
             request.clone(),
+            &responses_fallback,
             attempt_tx,
             Arc::clone(&provider_pin),
             model.clone(),
@@ -295,6 +311,7 @@ async fn stream_response(
     auth: ProviderAuth,
     send_openrouter_headers: bool,
     request: Value,
+    responses_fallback: &super::openrouter_responses_fallback::ResponsesFallbackContext,
     tx: mpsc::Sender<Result<StreamEvent>>,
     provider_pin: Arc<Mutex<Option<ProviderPin>>>,
     model: String,
@@ -312,6 +329,27 @@ async fn stream_response(
     let model_label = crate::alphacode_provider_metadata::internal_model_display_name(&model)
         .unwrap_or(&model)
         .to_string();
+
+    // The gateway already reported this (endpoint, model) as Responses-only:
+    // skip the known-to-fail chat POST and go straight to `/v1/responses`.
+    if super::openrouter_responses_fallback::responses_required(&api_base, &model)
+        && let Some(responses_request) =
+            super::openrouter_responses_fallback::build_responses_request(
+                responses_fallback,
+                &request,
+            )
+    {
+        return stream_via_responses_endpoint(
+            client,
+            api_base,
+            auth,
+            send_openrouter_headers,
+            responses_request,
+            tx,
+            model,
+        )
+        .await;
+    }
 
     let invalid_endpoint_label = user_facing_endpoint_label(&api_base, &api_base);
     let url = super::resolve_chat_completions_url(&api_base).ok_or_else(|| {
@@ -389,6 +427,33 @@ async fn stream_response(
             crate::alphacode_provider_core::retry_after::retry_after(response.headers());
         let upstream_body =
             crate::alphacode_base::util::http_error_body(response, "HTTP error").await;
+
+        // Responses-only model on a `new-api`-style gateway: the gateway told us
+        // to move this model to `/v1/responses`. Rebuild the identical turn on
+        // the Responses wire (and remember it) instead of reporting a dead-end
+        // 400. Errors from the Responses attempt surface as-is.
+        if let Some(responses_request) =
+            super::openrouter_responses_fallback::fallback_request_from_chat_rejection(
+                status,
+                &upstream_body,
+                &api_base,
+                &model,
+                responses_fallback,
+                &request,
+            )
+        {
+            return stream_via_responses_endpoint(
+                client,
+                api_base,
+                auth,
+                send_openrouter_headers,
+                responses_request,
+                tx,
+                model,
+            )
+            .await;
+        }
+
         let context_overflow = super::response_body_reports_context_overflow(&upstream_body);
         // The Alphax gateway can return nested router/provider payloads. Never
         // put those implementation details in an anyhow error: errors are
@@ -533,6 +598,209 @@ async fn stream_response(
     Ok(())
 }
 
+/// Stream one turn through the OpenAI **Responses** API endpoint
+/// (`{base}/responses`).
+///
+/// Used when a gateway model is Responses-only (e.g. AgentRouter's GPT
+/// `*-sol`/`*-astra` models): either directly via the memoized fast path, or
+/// right after the gateway rejected `/chat/completions` for this model.
+async fn stream_via_responses_endpoint(
+    client: Client,
+    api_base: String,
+    auth: ProviderAuth,
+    send_openrouter_headers: bool,
+    request: Value,
+    tx: mpsc::Sender<Result<StreamEvent>>,
+    model: String,
+) -> Result<()> {
+    use crate::alphacode_message_types::ConnectionPhase;
+    let _ = tx
+        .send(Ok(StreamEvent::ConnectionPhase {
+            phase: ConnectionPhase::SendingRequest,
+        }))
+        .await;
+    let request_start = std::time::Instant::now();
+    let stream_idle_timeout = super::effective_stream_idle_timeout(&api_base);
+    let model_label = crate::alphacode_provider_metadata::internal_model_display_name(&model)
+        .unwrap_or(&model)
+        .to_string();
+
+    let invalid_endpoint_label = user_facing_endpoint_label(&api_base, &api_base);
+    let url = super::resolve_responses_url(&api_base).ok_or_else(|| {
+        anyhow::anyhow!(
+            "OpenAI Responses request failed\n  endpoint: invalid base '{}'\n  model: {}\n  auth: {}\n  mode: streaming",
+            invalid_endpoint_label,
+            model_label,
+            auth.label()
+        )
+    })?;
+    let endpoint_label = user_facing_endpoint_label(&api_base, url.as_str());
+    let request_estimate = super::estimate_chat_request_tokens(&request);
+    let suppress_upstream_error_details = is_alphax_free_gateway(&api_base);
+
+    let mut req = super::apply_agentrouter_client_headers(
+        super::apply_kimi_coding_agent_headers(
+            auth.apply(
+                client
+                    .post(&url)
+                    .header("Content-Type", "application/json")
+                    .header("Accept-Encoding", "identity"),
+            )
+            .await?,
+            &api_base,
+            Some(&model),
+        ),
+        &api_base,
+    );
+
+    if send_openrouter_headers {
+        req = req
+            .header(
+                "HTTP-Referer",
+                crate::alphacode_provider_core::ALPHACODE_HOMEPAGE,
+            )
+            .header("X-Title", "Alphacode");
+    }
+
+    let response = crate::alphacode_provider_core::transport::send_with_initial_response_timeout(
+        req.json(&request),
+        stream_idle_timeout,
+    )
+    .await
+    .map_err(|error| {
+        let hint = local_endpoint_troubleshooting_hint(&api_base, &model);
+        let message = format!(
+            "Failed to send OpenAI Responses request\n  endpoint: {}\n  model: {}\n  auth: {}\n  mode: streaming\n  context_estimate: ~{} tokens\n  timeout: {}s\n{}",
+            endpoint_label,
+            model_label,
+            auth.label(),
+            request_estimate,
+            stream_idle_timeout.as_secs(),
+            hint
+        );
+        if suppress_upstream_error_details {
+            anyhow::anyhow!(message)
+        } else {
+            error.context(message)
+        }
+    })?;
+
+    let response_ms = request_start.elapsed().as_millis();
+    crate::alphacode_base::logging::info(&format!(
+        "Initial HTTP response received in {}ms (status={})",
+        response_ms,
+        response.status()
+    ));
+
+    if !response.status().is_success() {
+        let status = response.status();
+        let retry_after =
+            crate::alphacode_provider_core::retry_after::retry_after(response.headers());
+        let upstream_body =
+            crate::alphacode_base::util::http_error_body(response, "HTTP error").await;
+        let context_overflow = super::response_body_reports_context_overflow(&upstream_body);
+        let body = if suppress_upstream_error_details {
+            crate::alphacode_base::logging::warn(&format!(
+                "Alphax Free responses request failed with HTTP {}; upstream error details suppressed",
+                status.as_u16()
+            ));
+            String::new()
+        } else {
+            redact_alphax_gateway_brand(&api_base, &upstream_body)
+        };
+        let mut hint =
+            http_status_troubleshooting_hint(status, &api_base, &model, request_estimate);
+        if context_overflow {
+            let learned = super::parse_reported_context_tokens(&upstream_body);
+            if let Some(limit) = learned {
+                super::record_learned_context_limit(&api_base, &model, limit);
+            }
+            hint = match learned {
+                Some(limit) => format!(
+                    "{}\nContext hint: the prompt (~{} tokens) exceeded the server context. This endpoint reported a {}-token window (n_ctx), which is now used for prompt budgeting. Compact the session (/compact), drop large tool outputs, or restart the server with a larger context.",
+                    hint, request_estimate, limit
+                ),
+                None => format!(
+                    "{}\nContext hint: the prompt (~{} tokens) exceeded the server context. Compact the session (/compact), drop large tool outputs, or restart llama-server with a larger `-c` (e.g. `-c 16384`).",
+                    hint, request_estimate
+                ),
+            };
+        }
+        let message = if suppress_upstream_error_details {
+            alphax_free_http_error(status, context_overflow)
+        } else {
+            format!(
+                "OpenAI Responses request failed\n  endpoint: {}\n  model: {}\n  auth: {}\n  mode: streaming\n  context_estimate: ~{} tokens\n  timeout: {}s\n  status: {}\n  response: {}\n{}",
+                endpoint_label,
+                model_label,
+                auth.label(),
+                request_estimate,
+                stream_idle_timeout.as_secs(),
+                status,
+                body,
+                hint
+            )
+        };
+        return Err(
+            crate::alphacode_provider_core::retry_after::error_with_retry_after(
+                message,
+                retry_after,
+            ),
+        );
+    }
+
+    let _ = tx
+        .send(Ok(StreamEvent::ConnectionPhase {
+            phase: ConnectionPhase::WaitingForResponse,
+        }))
+        .await;
+
+    let mut stream = crate::alphacode_provider_openai::stream::OpenAIResponsesStream::new(
+        response.bytes_stream(),
+    );
+
+    let idle_timeout_secs = stream_idle_timeout.as_secs();
+    loop {
+        let event = match tokio::time::timeout(stream_idle_timeout, stream.next()).await {
+            Ok(Some(Ok(event))) => event,
+            Ok(Some(Err(error))) => {
+                let detail = if suppress_upstream_error_details {
+                    "the automatic route returned an invalid stream".to_string()
+                } else {
+                    error.to_string()
+                };
+                anyhow::bail!(
+                    "OpenAI Responses stream error\n  endpoint: {}\n  model: {}\n  auth: {}\n  mode: streaming\n  error: {}",
+                    endpoint_label,
+                    model_label,
+                    auth.label(),
+                    detail
+                );
+            }
+            Ok(None) => break, // stream ended normally
+            Err(_) => {
+                crate::alphacode_base::logging::warn(&format!(
+                    "OpenAI Responses SSE stream timed out (no data for {}s)",
+                    idle_timeout_secs
+                ));
+                anyhow::bail!(
+                    "OpenAI Responses stream timeout\n  endpoint: {}\n  model: {}\n  auth: {}\n  mode: streaming\n  timeout: no data received for {} seconds\n{}",
+                    endpoint_label,
+                    model_label,
+                    auth.label(),
+                    idle_timeout_secs,
+                    local_endpoint_troubleshooting_hint(&api_base, &model)
+                );
+            }
+        };
+        if tx.send(Ok(event)).await.is_err() {
+            return Ok(());
+        }
+    }
+
+    Ok(())
+}
+
 /// Extract the HTTP status code reported in a formatted provider error string.
 ///
 /// Error strings produced in this module embed the status as `status: <code>`
@@ -574,19 +842,33 @@ mod tests {
 
     #[test]
     fn alphax_error_details_hide_gateway_brand_and_routing_ids() {
-        let detail = "Request to https://api.kilo.ai/api/gateway/v1 failed for kilo-auto/free: KiloCode is unavailable";
-        let redacted = redact_alphax_gateway_brand("https://api.kilo.ai/api/gateway", detail);
+        let base = crate::alphacode_provider_metadata::route_cloak::free_route_base();
+        let alias = crate::alphacode_provider_metadata::route_cloak::free_route_default_model();
+        let brand = crate::alphacode_provider_metadata::route_cloak::free_route_brand_word();
+        let detail = format!("Request to {base}/v1 failed for {alias}: {brand} is unavailable");
+        let redacted = redact_alphax_gateway_brand(&base, &detail);
 
         assert!(redacted.contains("Alphax Free service"));
         assert!(redacted.contains("automatic free route"));
-        assert!(!redacted.to_ascii_lowercase().contains("kilo"));
+        let lowered = redacted.to_ascii_lowercase();
+        let efficient =
+            crate::alphacode_provider_metadata::route_cloak::free_route_efficient_alias();
+        let auto_prefix = crate::alphacode_provider_metadata::route_cloak::free_route_auto_prefix();
+        let host = crate::alphacode_provider_metadata::route_cloak::free_route_host();
+        for fragment in [brand, alias, efficient, auto_prefix, host, base.clone()] {
+            assert!(
+                !lowered.contains(&fragment.to_ascii_lowercase()),
+                "redacted detail must not retain route fragment `{fragment}`: {redacted}"
+            );
+        }
     }
 
     #[test]
     fn other_provider_error_details_are_unchanged() {
-        let detail = "https://api.kilo.ai is shown as a user supplied proxy URL";
+        let base = crate::alphacode_provider_metadata::route_cloak::free_route_base();
+        let detail = format!("{base} is shown as a user supplied proxy URL");
         assert_eq!(
-            redact_alphax_gateway_brand("https://api.openrouter.ai/api/v1", detail),
+            redact_alphax_gateway_brand("https://api.openrouter.ai/api/v1", &detail),
             detail
         );
     }
@@ -669,11 +951,11 @@ mod tests {
     #[test]
     fn http_status_hint_blames_the_status_not_the_network() {
         use reqwest::StatusCode;
-        let remote = "https://api.kilo.ai/api/gateway";
+        let remote = crate::alphacode_provider_metadata::route_cloak::free_route_base();
         let hint = http_status_troubleshooting_hint(
             StatusCode::BAD_REQUEST,
-            remote,
-            "kilo-auto/free",
+            &remote,
+            &crate::alphacode_provider_metadata::route_cloak::free_route_default_model(),
             163_116,
         );
         assert!(
@@ -683,17 +965,17 @@ mod tests {
         assert!(hint.contains("HTTP 400"), "hint names the status: {hint}");
         assert!(hint.contains("/compact"), "hint suggests shrinking context");
 
-        let auth = http_status_troubleshooting_hint(StatusCode::UNAUTHORIZED, remote, "m", 10);
+        let auth = http_status_troubleshooting_hint(StatusCode::UNAUTHORIZED, &remote, "m", 10);
         assert!(auth.contains("/login"), "401 points at /login: {auth}");
 
-        let not_found = http_status_troubleshooting_hint(StatusCode::NOT_FOUND, remote, "m", 10);
+        let not_found = http_status_troubleshooting_hint(StatusCode::NOT_FOUND, &remote, "m", 10);
         assert!(
             not_found.contains("/v1"),
             "404 still mentions the base-URL form: {not_found}"
         );
 
         let server =
-            http_status_troubleshooting_hint(StatusCode::SERVICE_UNAVAILABLE, remote, "m", 10);
+            http_status_troubleshooting_hint(StatusCode::SERVICE_UNAVAILABLE, &remote, "m", 10);
         assert!(server.contains("HTTP 503"), "5xx named: {server}");
 
         // Local endpoints keep their server-specific advice regardless of status.

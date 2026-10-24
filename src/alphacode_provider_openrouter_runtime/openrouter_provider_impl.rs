@@ -333,6 +333,15 @@ impl Provider for OpenRouterProvider {
         let auth = self.auth.clone();
         let send_openrouter_headers = self.send_openrouter_headers;
         let request_for_retries = request;
+        // Kept alongside the chat body so a Responses-only model (e.g.
+        // AgentRouter's GPT sol/astra models rejecting /chat/completions with
+        // "please use /v1/responses") can be retried on the Responses wire
+        // without reverse-engineering the transformed chat JSON.
+        let responses_fallback = super::openrouter_responses_fallback::ResponsesFallbackContext {
+            messages: effective_messages.clone(),
+            system: system.to_string(),
+            tools: tools.to_vec(),
+        };
         let model_for_stream = model.clone();
         let provider_pin = Arc::clone(&self.provider_pin);
 
@@ -352,6 +361,7 @@ impl Provider for OpenRouterProvider {
                 auth,
                 send_openrouter_headers,
                 request_for_retries,
+                responses_fallback,
                 tx,
                 provider_pin,
                 model_for_stream,
@@ -551,7 +561,9 @@ impl Provider for OpenRouterProvider {
     }
 
     fn available_models_display(&self) -> Vec<String> {
-        let finalize = |models: Vec<String>| self.filter_profile_chat_supported_models(models);
+        let finalize = |models: Vec<String>| {
+            self.filter_profile_chat_supported_models(self.augment_free_pool_models(models))
+        };
         let with_current_model = |mut models: Vec<String>| {
             let current = self.model();
             if !current.trim().is_empty() && !models.iter().any(|model| model == &current) {
@@ -908,6 +920,28 @@ impl OpenRouterProvider {
         self.is_user_named_profile()
             .then(|| self.profile_id.clone())
             .flatten()
+    }
+
+    /// Alphax Free builds its picker list from the automatic route plus every
+    /// pool member the background discovery refresh has absorbed.
+    ///
+    /// The pool is process-local and discovery lands asynchronously, so a fresh
+    /// session lists the automatic route first and gains member rows once the
+    /// refresh completes. Reopening the picker reads the merged list again, and
+    /// rotation keeps working for members regardless of picker visibility.
+    pub(crate) fn augment_free_pool_models(&self, models: Vec<String>) -> Vec<String> {
+        if self.profile_id.as_deref()
+            != Some(crate::alphacode_provider_metadata::ALPHAX_FREE_PROFILE_ID)
+        {
+            return models;
+        }
+        let mut merged = models;
+        for member in crate::alphacode_app_core::agent::free_pool_rotation::effective_free_pool() {
+            if !merged.iter().any(|existing| existing == &member) {
+                merged.push(member);
+            }
+        }
+        merged
     }
 
     /// The disk cache entry usable for this provider, i.e. its own namespace

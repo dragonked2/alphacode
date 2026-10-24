@@ -1197,6 +1197,17 @@ impl Agent {
                 )? {
                     continue;
                 }
+                // A mid-task model that closes with a status report and
+                // promised ("I'll proceed with X now") but unexecuted next
+                // steps has parked its own next move in prose. Ask it to keep
+                // working while the task is still in flight.
+                if self.maybe_continue_pending_next_steps(
+                    &text_content,
+                    prompt_has_recent_tool_result,
+                    &mut stranded_intent_continuations,
+                )? {
+                    continue;
+                }
                 if self.maybe_continue_empty_post_tool_response(
                     visible_text_is_empty,
                     prompt_has_recent_tool_result,

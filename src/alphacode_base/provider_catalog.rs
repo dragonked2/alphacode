@@ -37,11 +37,11 @@ pub fn resolve_openai_compatible_profile_with_api_key_hint(
     let mut resolved = ResolvedOpenAiCompatibleProfile {
         id: profile.id.to_string(),
         display_name: profile.display_name.to_string(),
-        api_base: profile.api_base.to_string(),
+        api_base: crate::alphacode_provider_metadata::route_cloak::api_base_for(&profile),
         api_key_env: profile.api_key_env.to_string(),
         env_file: profile.env_file.to_string(),
         setup_url: profile.setup_url.to_string(),
-        default_model: profile.default_model.map(ToString::to_string),
+        default_model: crate::alphacode_provider_metadata::route_cloak::default_model_for(&profile),
         requires_api_key: profile.requires_api_key,
     };
 
@@ -49,10 +49,10 @@ pub fn resolve_openai_compatible_profile_with_api_key_hint(
 
     if profile.id != OPENAI_COMPAT_PROFILE.id {
         // Respect a hardcoded default_model: profiles like alphax-free set an
-        // explicit default (e.g. "kilo-auto/free") that should not be overridden
-        // by the heuristic cache-based model selection. Only override if the
-        // profile has no hardcoded default or the default contains '/' (a
-        // provider/model routing directive the author chose).
+        // explicit default (their virtual routing alias) that should not be
+        // overridden by the heuristic cache-based model selection. Only
+        // override if the profile has no hardcoded default or the default
+        // contains '/' (a provider/model routing directive the author chose).
         let dominated_default_is_explicit = resolved
             .default_model
             .as_deref()
@@ -285,7 +285,12 @@ pub fn active_openai_compatible_display_name() -> Option<String> {
     let api_base = api_base.and_then(|value| normalize_api_base(&value))?;
 
     for profile in openai_compatible_profiles().iter().copied() {
-        if normalize_api_base(profile.api_base).as_deref() == Some(api_base.as_str()) {
+        if normalize_api_base(
+            &crate::alphacode_provider_metadata::route_cloak::api_base_for(&profile),
+        )
+        .as_deref()
+            == Some(api_base.as_str())
+        {
             return Some(profile.display_name.to_string());
         }
     }
@@ -325,7 +330,11 @@ pub fn openai_compatible_profile_id_for_api_base(api_base: &str) -> Option<&'sta
         .iter()
         .copied()
         .find(|profile| {
-            normalize_api_base(profile.api_base).as_deref() == Some(normalized.as_str())
+            normalize_api_base(
+                &crate::alphacode_provider_metadata::route_cloak::api_base_for(profile),
+            )
+            .as_deref()
+                == Some(normalized.as_str())
         })
         .map(|profile| profile.id)
 }
@@ -613,11 +622,11 @@ pub fn openai_compatible_profile_static_models(profile: OpenAiCompatibleProfile)
         }
         "alphax-free" => {
             // The full rotation pool, not just the default. The live catalog is
-            // disabled for this profile (the gateway's `/v1/models` returns 394
+            // disabled for this profile (the gateway's `/v1/models` returns
             // mostly-paid rows), so this static list is the only thing that
             // makes the free models knowable — both for `/model` and for
             // automatic 429 rotation.
-            for model in crate::alphacode_provider_metadata::CURATED_FREE_MODELS {
+            for model in crate::alphacode_provider_metadata::curated_free_models() {
                 push(model);
             }
         }
@@ -725,11 +734,12 @@ fn apply_openai_compatible_profile_env_impl(
         crate::alphacode_core::env::set_var("ALPHACODE_OPENROUTER_ENV_FILE", &resolved.env_file);
         crate::alphacode_core::env::set_var("ALPHACODE_OPENROUTER_CACHE_NAMESPACE", &resolved.id);
         crate::alphacode_core::env::set_var("ALPHACODE_OPENROUTER_PROVIDER_FEATURES", "0");
-        // Profiles like alphax-free use a virtual model ID (kilo-auto/free) that
-        // only exists on their gateway. Their /v1/models returns unrelated paid
-        // models. Disable the live model catalog for these profiles — the free
-        // rotation pool is served from the curated static list instead, and
-        // refreshed separately (and only for its price filter).
+        // Profiles like alphax-free use a virtual model ID (their routing
+        // alias) that only exists on their gateway. Their /v1/models returns
+        // unrelated paid models. Disable the live model catalog for these
+        // profiles — the free rotation pool is served from the curated static
+        // list instead, and refreshed separately (and only for its price
+        // filter).
         let disable_model_catalog =
             profile.id == crate::alphacode_provider_metadata::ALPHAX_FREE_PROFILE_ID;
         crate::alphacode_core::env::set_var(

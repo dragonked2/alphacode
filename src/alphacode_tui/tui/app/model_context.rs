@@ -988,12 +988,30 @@ impl App {
             }
         }
 
+        // Raise the observed count so `force_compact_with`'s usage gate
+        // (which reads `effective_token_count_with` = `max(estimate,
+        // observed)`) agrees to run even when the provider reports no
+        // streaming usage and the context limit is unknown — the faked value
+        // is only needed *during* that call. Capture the honest count first,
+        // then restore it before anything that emits a compaction event:
+        // leaving the faked value in place made the event report `pre_tokens`
+        // as the entire context window (a ~30k conversation was announced as
+        // "2,000,000,000->30,525 tokens" on a model whose unknown window
+        // resolves to the 2e9 sentinel).
+        let real_pre_tokens = manager.effective_token_count_with(&provider_messages) as u64;
         let observed_tokens = self
             .current_stream_context_tokens()
             .unwrap_or(self.context_limit);
         manager.update_observed_input_tokens(observed_tokens);
 
-        match manager.force_compact_with(&provider_messages, self.provider.clone()) {
+        let forced = manager.force_compact_with(&provider_messages, self.provider.clone());
+        // Honesty is restored for both outcomes: on success the background
+        // compaction event is applied later from the real counts, and on
+        // failure the emergency paths (hard compact / truncation) size and
+        // report from the real pre-tokens.
+        manager.update_observed_input_tokens(real_pre_tokens);
+
+        match forced {
             Ok(()) => Some(
                 "⚡ Auto-compaction started - summarizing old messages in background. Retry in a moment."
                     .to_string(),
@@ -1681,8 +1699,8 @@ pub(super) fn handle_model_command(app: &mut App, trimmed: &str) -> bool {
                 }
                 let mut msg = model_switch_failure_message(&error_text, app.is_remote);
                 // Hint about TokenRouter/OpenRouter for models with '/' (e.g. qwen/qwen3.8-max-free)
-                // but not for the current provider's own virtual model IDs (e.g. kilo-auto/free
-                // on alphax-free).
+                // but not for the current provider's own virtual model IDs (a
+                // nameless routing alias is fine even though it also has '/').
                 let is_current_provider_model = app
                     .provider
                     .available_models_display()

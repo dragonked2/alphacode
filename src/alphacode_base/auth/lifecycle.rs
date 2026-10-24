@@ -338,8 +338,8 @@ fn provider_preferred_model_orders(
         Some("azure-openai") => &[crate::provider::ALL_OPENAI_MODELS],
         // Gemini (Code Assist OAuth) and Antigravity both serve Gemini models.
         Some("gemini") | Some("antigravity") => &[ALL_GEMINI_MODELS],
-        // Alphax Free (opencode gateway): rank curated free models first.
-        Some("alphax-free") => &[crate::alphacode_provider_metadata::ALL_ALPHAX_FREE_MODELS],
+        // Alphax Free (bundled free gateway): rank curated free models first.
+        Some("alphax-free") => crate::alphacode_provider_metadata::alphax_free_preferred_orders(),
         // Experiential Labs + TheHive AI free-gift catalogs: flagship first.
         Some("explabs") => &[ALL_EXPLABS_MODELS],
         Some("hive") => &[ALL_HIVE_MODELS],
@@ -2544,10 +2544,10 @@ mod tests {
                 &["zai-org/glm-5.3-flash"],
                 "zai-org/glm-5.3-flash",
             ),
-            // Alphax Free now serves the whole free pool. `kilo-auto/free` must
-            // still win when a paid row sorts ahead of it, and the rest of the
-            // pool must never outrank it either: the default is the user's
-            // first choice and rotation handles the rest on demand.
+            // Alphax Free now serves the whole free pool. the automatic routing
+            // alias must still win when a paid row sorts ahead of it, and the
+            // rest of the pool must never outrank it either: the default is the
+            // user's first choice and rotation handles the rest on demand.
             (
                 "alphax-free",
                 "openai-compatible:alphax-free",
@@ -2555,10 +2555,10 @@ mod tests {
                 &[
                     "deepseek-v4-flash",
                     "openai/gpt-5.4",
-                    "kilo-auto/free",
+                    crate::alphacode_provider_metadata::route_cloak::leaked_free_route_default_model(),
                     "poolside/laguna-s-2.1:free",
                 ],
-                "kilo-auto/free",
+                crate::alphacode_provider_metadata::route_cloak::leaked_free_route_default_model(),
             ),
         ];
 
