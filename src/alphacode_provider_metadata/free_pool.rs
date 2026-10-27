@@ -61,9 +61,7 @@ pub fn curated_free_models() -> &'static [&'static str] {
     use std::sync::OnceLock;
     static CURATED: OnceLock<&'static [&'static str]> = OnceLock::new();
     CURATED.get_or_init(|| {
-        Box::leak(Box::from([
-            super::route_cloak::leaked_free_route_default_model(),
-        ]))
+        Box::leak(Box::from([super::route_cloak::leaked_free_route_default_model()]))
     })
 }
 
@@ -359,7 +357,7 @@ mod tests {
         let small = small_alias();
         assert!(!is_free_tier_model_id(&small));
         assert!(!curated_free_models().contains(&small.as_str()));
-        assert!(!merge_pool(&[]).contains(&small));
+        assert!(!merge_pool(&[]).iter().any(|m| *m == small));
     }
 
     #[test]
@@ -403,16 +401,19 @@ mod tests {
             filtered,
             vec![
                 route_cloak::free_route_default_model(),
-                "synth-a/xs:free".to_string(),
-                "synth-b/y:free".to_string()
+                "synth-a/xs:free",
+                "synth-b/y:free"
             ]
         );
     }
 
     #[test]
     fn filter_drops_duplicates_keeping_first() {
-        let filtered =
-            filter_free_tier_ids(["synth-a/xs:free", "openai/gpt-5.4", "synth-a/xs:free"]);
+        let filtered = filter_free_tier_ids([
+            "synth-a/xs:free",
+            "openai/gpt-5.4",
+            "synth-a/xs:free",
+        ]);
         assert_eq!(filtered, vec!["synth-a/xs:free"]);
     }
 
@@ -499,10 +500,7 @@ mod tests {
             Some(65_536),
             "lookups are trim/case-insensitive, matching the wire data"
         );
-        assert_eq!(
-            free_model_context_limit("synth-b/ultra:free"),
-            Some(1_048_576)
-        );
+        assert_eq!(free_model_context_limit("synth-b/ultra:free"), Some(1_048_576));
         assert_eq!(
             free_model_context_limit("synth-c/no-limit:free"),
             None,

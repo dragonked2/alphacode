@@ -652,6 +652,28 @@ impl Provider for OpenRouterProvider {
         self.available_models_display()
     }
 
+    /// Alphax Free builds its picker list from the automatic route plus every
+    /// pool member the background discovery refresh has absorbed.
+    ///
+    /// The pool is process-local and discovery lands asynchronously, so a fresh
+    /// session lists the automatic route first and gains member rows once the
+    /// refresh completes. Reopening the picker reads the merged list again, and
+    /// rotation keeps working for members regardless of picker visibility.
+    pub(crate) fn augment_free_pool_models(&self, models: Vec<String>) -> Vec<String> {
+        if self.profile_id.as_deref()
+            != Some(crate::alphacode_provider_metadata::ALPHAX_FREE_PROFILE_ID)
+        {
+            return models;
+        }
+        let mut merged = models;
+        for member in crate::alphacode_app_core::agent::free_pool_rotation::effective_free_pool() {
+            if !merged.iter().any(|existing| existing == &member) {
+                merged.push(member);
+            }
+        }
+        merged
+    }
+
     fn model_routes(&self) -> Vec<crate::alphacode_provider_core::ModelRoute> {
         let (provider_label, api_method, detail) = self
             .direct_openai_compatible_route_parts()

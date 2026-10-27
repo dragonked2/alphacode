@@ -3,6 +3,7 @@ use super::{
     LoginProviderAuthKind, LoginProviderAuthStateKey, LoginProviderDescriptor,
     LoginProviderSurfaceOrder, LoginProviderTarget, OpenAiCompatibleProfile,
 };
+use super::route_cloak;
 
 pub const OPENCODE_PROFILE: OpenAiCompatibleProfile = OpenAiCompatibleProfile {
     id: "opencode",

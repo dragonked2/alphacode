@@ -403,7 +403,7 @@ mod tests {
             assert!(is_safe_env_file_name(profile.env_file));
             // The bundled free profile stores its endpoint fused (see
             // route_cloak); assert on the decoded route for every profile.
-            let route = route_cloak::api_base_for(profile);
+            let route = route_cloak::api_base_for(&profile);
             assert_eq!(normalize_api_base(&route).as_deref(), Some(route.as_str()));
         }
     }
@@ -825,7 +825,7 @@ mod tests {
             &route_cloak::free_route_default_model()
         ));
         assert_eq!(
-            ALPHAX_FREE_PROFILE.default_model,
+            ALPHAX_FREE_PROFILE.default_model.as_deref(),
             Some(super::route_cloak::CLOAKED_PROFILE_ALIAS),
             "default_model must point at the top free model"
         );

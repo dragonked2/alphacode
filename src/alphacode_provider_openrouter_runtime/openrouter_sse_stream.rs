@@ -604,6 +604,10 @@ async fn stream_response(
 /// Used when a gateway model is Responses-only (e.g. AgentRouter's GPT
 /// `*-sol`/`*-astra` models): either directly via the memoized fast path, or
 /// right after the gateway rejected `/chat/completions` for this model.
+#[expect(
+    clippy::too_many_arguments,
+    reason = "stream helpers thread transport, auth, request, event channel, and pin state explicitly"
+)]
 async fn stream_via_responses_endpoint(
     client: Client,
     api_base: String,
@@ -851,11 +855,15 @@ mod tests {
         assert!(redacted.contains("Alphax Free service"));
         assert!(redacted.contains("automatic free route"));
         let lowered = redacted.to_ascii_lowercase();
-        let efficient =
-            crate::alphacode_provider_metadata::route_cloak::free_route_efficient_alias();
-        let auto_prefix = crate::alphacode_provider_metadata::route_cloak::free_route_auto_prefix();
-        let host = crate::alphacode_provider_metadata::route_cloak::free_route_host();
-        for fragment in [brand, alias, efficient, auto_prefix, host, base.clone()] {
+        let cloak = crate::alphacode_provider_metadata::route_cloak;
+        for fragment in [
+            cloak::free_route_brand_word(),
+            cloak::free_route_default_model(),
+            cloak::free_route_efficient_alias(),
+            cloak::free_route_auto_prefix(),
+            cloak::free_route_host(),
+            base.clone(),
+        ] {
             assert!(
                 !lowered.contains(&fragment.to_ascii_lowercase()),
                 "redacted detail must not retain route fragment `{fragment}`: {redacted}"

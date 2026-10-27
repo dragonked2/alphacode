@@ -40,7 +40,7 @@ fn openai_compatible_profiles_are_well_formed() {
         );
         assert!(
             normalize_api_base(
-                &crate::alphacode_provider_metadata::route_cloak::api_base_for(profile)
+                &crate::alphacode_provider_metadata::route_cloak::api_base_for(&profile)
             )
             .is_some(),
             "profile {} has an unusable api_base: {}",

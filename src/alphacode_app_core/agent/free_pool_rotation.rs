@@ -44,6 +44,7 @@ use std::time::{Duration, Instant};
 use crate::alphacode_provider_metadata::free_pool::{
     ALPHAX_FREE_DISPLAY_NAME, is_free_tier_model_id, merge_pool,
 };
+use crate::alphacode_provider_metadata::route_cloak;
 // The curated floor is only asserted against, never used at runtime: rotation
 // reads the merged pool, which is a superset once a refresh has run.
 #[cfg(test)]
@@ -242,6 +243,44 @@ pub fn free_pool_display_name(model: &str) -> Option<&'static str> {
         .any(|candidate| candidate == model)
         .then_some(ALPHAX_FREE_DISPLAY_NAME)
 }
+
+/// The model-name segment of a free-pool member id, for picker rows that list
+/// concrete pool members, or `None` when the label does not apply.
+///
+/// When discovery lands, the Alphax Free picker gains a row per pool member so
+/// a favourite can be pinned directly. Those rows are labelled only with the
+/// member's model-name segment — everything before the `/` is a gateway routing
+/// namespace and the `:free` marker is the gateway's tier tag, and neither is
+/// ours to advertise. The automatic routing alias is excluded: it already
+/// presents under its product name (`free_model_display_name` collapses to
+/// "Alphax Free"), which is what the default row should keep showing.
+///
+/// Membership is the same pool-backed check [`free_pool_display_name`] uses, so
+/// a `:free` id from another provider's catalog never picks up this label.
+/// Callers prettify the returned segment with their own display formatter.
+pub fn free_pool_picker_model_part(model: &str) -> Option<String> {
+    let model = model.trim();
+    if model.is_empty() || model == route_cloak::free_route_default_model() {
+        return None;
+    }
+    let is_member = effective_free_pool()
+        .iter()
+        .any(|candidate| candidate == model);
+    if !is_member {
+        return None;
+    }
+    // Strip the routing namespace (the id's first segment) and the tier marker.
+    let name_part = model.rsplit('/').next()?;
+    if name_part.is_empty() {
+        return None;
+    }
+    let name_part = name_part.strip_suffix(":free").unwrap_or(name_part);
+    if name_part.is_empty() {
+        return None;
+    }
+    Some(name_part.to_string())
+}
+
 /// Quarantine `model` for the window implied by `trigger`.
 pub fn quarantine_model(model: &str, trigger: RotationTrigger) {
     let model = model.trim();
@@ -464,10 +503,7 @@ mod tests {
         let _guard = test_lock();
         reset();
         let alias = route_cloak::free_route_default_model();
-        // Seed two members and quarantine only one: rotation must pick the
-        // healthy member rather than the quarantined one (and never the
-        // current model itself).
-        seed_pool(&["synthetic/pool-a:free", "synthetic/pool-b:free"]);
+        seed_pool(&["synthetic/pool-a:free"]);
         quarantine_model("synthetic/pool-a:free", RotationTrigger::RateLimited);
         assert!(is_quarantined("synthetic/pool-a:free"));
         let next = next_free_model(&alias).expect("pool has alternatives");
@@ -543,6 +579,34 @@ mod tests {
         assert_eq!(free_pool_display_name("tokenharbor/qwen3-max:free"), None);
         assert_eq!(free_pool_display_name("openai/gpt-5.4"), None);
         assert_eq!(free_pool_display_name(""), None);
+    }
+
+    #[test]
+    fn picker_model_part_strips_the_gateway_routing_details() {
+        let _guard = test_lock();
+        reset();
+        seed_pool(&["synthetic/pool-a:free", "synthetic/pool-b:legacy:free"]);
+        // Only the model-name segment survives: the first part of the id is a
+        // gateway routing namespace and the `:free` marker is its tier tag.
+        assert_eq!(
+            free_pool_picker_model_part("synthetic/pool-a:free"),
+            Some("pool-a".to_string())
+        );
+        assert_eq!(
+            free_pool_picker_model_part("synthetic/pool-b:legacy:free"),
+            Some("pool-b:legacy".to_string())
+        );
+        // The automatic routing alias keeps its product label, so it is excluded.
+        assert_eq!(
+            free_pool_picker_model_part(&route_cloak::free_route_default_model()),
+            None
+        );
+        // Non-members return None regardless of shape, so ids from other
+        // providers are never draped in these labels.
+        assert_eq!(free_pool_picker_model_part("tokenharbor/qwen3-max:free"), None);
+        assert_eq!(free_pool_picker_model_part("openai/gpt-5.4"), None);
+        assert_eq!(free_pool_picker_model_part(""), None);
+        assert_eq!(free_pool_picker_model_part(":free"), None);
     }
 
     #[test]

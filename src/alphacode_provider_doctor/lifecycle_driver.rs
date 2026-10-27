@@ -672,7 +672,12 @@ mod tests {
             auth,
             result,
         )
-        .with_endpoint(endpoint)
+        .with_endpoint(
+            crate::alphacode_provider_metadata::route_cloak::display_endpoint_for(
+                &resolved.id,
+                &resolved.api_base,
+            ),
+        )
         .with_capabilities(capabilities)
         .with_standard_end_to_end_checkpoints()
         .with_metadata(

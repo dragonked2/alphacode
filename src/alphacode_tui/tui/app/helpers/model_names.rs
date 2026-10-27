@@ -287,11 +287,11 @@ fn prettify_bedrock(model: &str) -> Option<String> {
 /// their exact spelling. Used by the `/model` picker, where hiding the real id
 /// would break copy-paste and provider-specific naming.
 ///
-/// Alphax Free pool members are no exception: the user asked to pick a
-/// concrete free model by its real id (`inclusionai/ling-3.0-flash-sante:free`,
-/// for one), so namespaced/gateway free ids render byte-exact and stay
-/// copy-pasteable, exactly like every other namespaced id. Only the automatic
-/// routing alias stays masked (it is a virtual route, not a model).
+/// Free-pool member ids are the exception: the pool is a gateway routing
+/// detail, so member rows are labelled with the model-name segment alone (the
+/// vendor namespace and the `:free` marker never render), and the automatic
+/// routing alias reads as the product name with an "(automatic)" marker to
+/// distinguish it from the pinned members listed under it.
 pub(crate) fn pretty_known_model_family(model: &str) -> Option<String> {
     // Internal virtual ids stay hidden even in list surfaces: the picker still
     // filters on the raw entry.name (see PickerAction::Model filter_text), so
@@ -304,6 +304,18 @@ pub(crate) fn pretty_known_model_family(model: &str) -> Option<String> {
             display.push_str(" (automatic)");
         }
         return Some(display);
+    }
+    // Alphax Free pool members hide their gateway routing details and show the
+    // model-name segment instead (`synthetic/laguna-x:free` renders as `Laguna
+    // X`), which is the part users tell favourites apart by. Gated on pool
+    // membership (not the `:free` suffix) so another provider's free ids keep
+    // their real names. This has to run before the
+    // `contains('/') || contains(':')` bail below, which would otherwise return
+    // `None` and leak the raw id.
+    if let Some(model_part) =
+        crate::alphacode_app_core::agent::free_pool_rotation::free_pool_picker_model_part(model)
+    {
+        return Some(pretty_model_display_name(&model_part));
     }
     // (No free-pool masking here any more: concrete free ids render byte-exact,
     // falling through to the namespaced bail below, as the user-facing decision
@@ -621,19 +633,17 @@ mod tests {
     }
 
     #[test]
-    fn pretty_names_show_free_pool_members_verbatim_in_the_picker() {
-        let guard =
-            crate::alphacode_app_core::agent::free_pool_rotation::lock_pool_state_for_tests();
+    fn pretty_names_mask_free_pool_members_for_the_picker() {
+        let guard = crate::alphacode_app_core::agent::free_pool_rotation::lock_pool_state_for_tests();
         crate::alphacode_app_core::agent::free_pool_rotation::absorb_discovered_free_models(vec![
             "synthetic/dolphin-plus:free".to_string(),
         ]);
-        // Picker surfaces (pretty_known_model_family): the member's real id
-        // renders byte-exact so the user can identify and re-copy the model
-        // they picked.
+        // Picker surfaces (pretty_known_model_family): the member's vendor
+        // namespace and routing marker never render; the row is the model-name
+        // segment alone, prettified — the part users tell favourites apart by.
         assert_eq!(
             pretty_known_model_family("synthetic/dolphin-plus:free").as_deref(),
-            None,
-            "a namespaced free id stays verbatim in the picker"
+            Some("Dolphin Plus")
         );
         // Prose surfaces (pretty_model_display_name) keep the product collapse:
         // whichever member served a turn, the user picked "Alphax Free".
@@ -644,8 +654,7 @@ mod tests {
         // The seeded member is gone from the pool again the moment the guard
         // drops; no leak into other tests.
         drop(guard);
-        let _relock =
-            crate::alphacode_app_core::agent::free_pool_rotation::lock_pool_state_for_tests();
+        crate::alphacode_app_core::agent::free_pool_rotation::lock_pool_state_for_tests();
     }
 
     #[test]
@@ -673,7 +682,7 @@ mod tests {
         // segments; the point of the assertion is that the raw id is still
         // recognizable and was NOT replaced with the "Alphax Free" product name.
         let small = crate::alphacode_provider_metadata::route_cloak::free_route_small_alias();
-        for raw in ["openai/gpt-5.4", "claude-opus-5", small.as_str()] {
+        for raw in ["openai/gpt-5.4", "claude-opus-5", small] {
             let pretty = pretty_model_display_name(raw);
             assert_ne!(
                 pretty, "Alphax Free",
