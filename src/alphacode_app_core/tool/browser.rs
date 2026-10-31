@@ -356,6 +356,17 @@ struct BrowserInput {
     tab_id: Option<i64>,
     #[serde(default)]
     window_id: Option<i64>,
+    /// Firefox container (contextual identity) cookie store, e.g.
+    /// `firefox-container-3`. pwnfox isolates its tabs by container, so this is
+    /// how the agent scopes `list_tabs` to one pwnfox profile, or opens a new
+    /// tab inside a specific profile instead of the default (uncontained) one.
+    #[serde(
+        default,
+        alias = "cookieStoreId",
+        alias = "container_id",
+        alias = "containerId"
+    )]
+    cookie_store_id: Option<String>,
     #[serde(default)]
     frame_id: Option<i64>,
     #[serde(default)]
@@ -734,6 +745,10 @@ impl Tool for BrowserTool {
                 "include_hidden",
                 json!({"type": "boolean", "description": "Act on elements that exist but are not visible (collapsed menus, display:none widgets, off-screen items). Default false."}),
             ),
+            (
+                "cookie_store_id",
+                json!({"type": "string", "description": "Firefox container / contextual identity id, e.g. 'firefox-container-3'. Use with list_tabs to see only the tabs of one pwnfox profile, or with new_tab/open to create the tab inside that profile instead of the default container."}),
+            ),
             ("wait", json!({"type": "boolean"})),
             (
                 "new_tab",
@@ -753,7 +768,7 @@ impl Tool for BrowserTool {
             ("behavior", json!({"type": "string"})),
             (
                 "timeout_ms",
-                json!({"type": "integer", "description": "For navigation, defaults to 30000 ms and is capped at 90000 ms."}),
+                json!({"type": "integer", "description": "Timeout in milliseconds. Navigation defaults to 30000 (maximum 90000); eval defaults to 10000 (range 100–120000). Also used by wait."}),
             ),
             (
                 "path",
@@ -1363,7 +1378,22 @@ fn enrich_browser_error(action: &str, err: anyhow::Error) -> anyhow::Error {
             "{msg}\n\nHint: the Firefox bridge is not connected. Run action='status' once, then action='setup' if it is not ready; avoid repeatedly retrying the browser action."
         );
     }
+    if lower.contains("missing host permission") || lower.contains("missing host permissions") {
+        return anyhow::anyhow!(
+            "{msg}\n\nHint: Firefox has not granted the browser extension access to this site, or the page is a restricted browser/internal page. Check the extension's site permissions and the selected tab; browser-internal pages cannot be scripted."
+        );
+    }
     if action == "eval" || bridge_is_evaluate(&msg) {
+        if lower.contains("evaluate timed out") {
+            return anyhow::anyhow!(
+                "{msg}\n\nHint: the script did not finish before its deadline. Use 'timeout_ms' for a longer deadline, or split the operation into smaller steps. A timed-out script may still have performed actions; inspect the page before retrying."
+            );
+        }
+        if lower.contains("not a valid url") || lower.contains("invalid url") {
+            return anyhow::anyhow!(
+                "{msg}\n\nHint: relative fetch URLs may be resolved against the extension context. Use an absolute URL (for example, new URL(path, location.href).href), or explicitly use 'page_world': true if page-origin execution is needed. Check the target and permissions before retrying a request that can change state."
+            );
+        }
         if lower.contains("await is only valid in async") {
             return anyhow::anyhow!(
                 "{msg}\n\nHint: top-level `await` is supported by a current bridge, but this error came from an old extension. Update with action='setup', or wrap manually: `return (async () => {{ ... return await fetch(u).then(r => r.text()); }})()`."
@@ -1892,6 +1922,10 @@ fn bridge_request(action: &str, input: &BrowserInput) -> Result<(String, Value, 
             if let Some(page_world) = input.page_world {
                 params.insert("pageWorld".into(), json!(page_world));
             }
+            params.insert(
+                "timeoutMs".into(),
+                json!(input.timeout_ms.unwrap_or(10_000).clamp(100, 120_000)),
+            );
         }
         "scroll" => {
             if let Some(x) = input.x {
@@ -2234,6 +2268,12 @@ fn apply_common_targeting(params: &mut Map<String, Value>, input: &BrowserInput)
     if let Some(include_hidden) = input.include_hidden {
         params.insert("includeHidden".into(), json!(include_hidden));
     }
+    // Firefox container targeting (pwnfox): scope a tab list to one contextual
+    // identity, or create a tab inside it. The extension filters `listTabs` by
+    // `cookieStoreId` and honours it on `createTab`.
+    if let Some(cookie_store_id) = &input.cookie_store_id {
+        params.insert("cookieStoreId".into(), json!(cookie_store_id));
+    }
 }
 
 /// Detect the bridge's target-resolution failures without treating ordinary
@@ -2247,6 +2287,12 @@ fn apply_common_targeting(params: &mut Map<String, Value>, input: &BrowserInput)
 /// contains "error: tab".
 fn missing_tab_error(message: &str) -> bool {
     let lower = message.to_ascii_lowercase();
+    // JavaScript exceptions can contain any text, including "no tab". The
+    // script may already have changed the page, so never replay it as a tab
+    // resolution failure just because its exception mentions a tab.
+    if lower.contains("evaluate error:") {
+        return false;
+    }
     [
         "no active tab",
         "active tab not found",
@@ -2330,7 +2376,7 @@ async fn recover_active_tab(params: &mut Value, ctx: &ToolContext) -> bool {
 }
 
 async fn run_bridge_with_tab_recovery(
-    logical_action: &str,
+    _logical_action: &str,
     bridge_action: &str,
     params: Value,
     ctx: &ToolContext,
@@ -2357,15 +2403,22 @@ async fn run_bridge_with_tab_recovery(
         if pin_is_stale {
             forget_session_tab(&ctx.session_id, dead_tab_id);
         }
-        // Pure reads may follow the legacy untargeted-read contract — resolve
-        // the currently active tab and retry once. Keyed off the *pin* being
-        // the dead tab, never an explicitly requested `tab_id`; and only for
-        // non-mutating actions (see `RETRYABLE_ACTIONS`).
-        if pin_is_stale && RETRYABLE_ACTIONS.contains(&logical_action) {
-            let mut recovered_params = params.clone();
-            if recover_active_tab(&mut recovered_params, ctx).await {
-                return firefox_run_bridge_command(bridge_action, recovered_params, ctx).await;
-            }
+        // Even a read must not silently inspect the user's unrelated tab.
+        // Recover our workspace with a fresh background tab; never replay the
+        // failed eval/click or assume the old authentication state survived.
+        if pin_is_stale
+            && let Ok(created) = firefox_run_bridge_command(
+                "newSession",
+                json!({"url":"about:blank", "focus":false, "wait":false}),
+                ctx,
+            )
+            .await
+            && let Some(tab_id) = tab_id_from_value(&created)
+        {
+            remember_session_tab(&ctx.session_id, tab_id);
+            return Err(anyhow::anyhow!(
+                "{err}\n\nRecovered an isolated background tab: {tab_id}. The failed action was not replayed. Open the authorized challenge URL in this tab, inspect current state, then continue. The user's active tab was not selected."
+            ));
         }
         // Everything else stays fail-closed (bug fix #13), but the failure is
         // now one-shot recoverable: the live tab inventory is appended so the
@@ -2609,13 +2662,25 @@ async fn firefox_run_bridge_command(
         anyhow::anyhow!(message)
     })?;
     let label = format!("Browser bridge action '{action}'");
-    let output = super::recon_common::wait_bounded(child, &label, BRIDGE_COMMAND_TIMEOUT)
+    // Allow the extension's requested eval deadline to expire before killing
+    // the bridge process, including time for IPC and error delivery.
+    let command_timeout = if action == "evaluate" {
+        params
+            .get("timeoutMs")
+            .and_then(Value::as_u64)
+            .map(|ms| Duration::from_millis(ms.clamp(100, 120_000)) + Duration::from_secs(15))
+            .unwrap_or(BRIDGE_COMMAND_TIMEOUT)
+            .max(BRIDGE_COMMAND_TIMEOUT)
+    } else {
+        BRIDGE_COMMAND_TIMEOUT
+    };
+    let output = super::recon_common::wait_bounded(child, &label, command_timeout)
         .await
         .map_err(|error| {
             if error.contains("timed out") {
                 anyhow::anyhow!(
                     "Browser bridge action '{action}' did not respond within {}s. Firefox may be showing a modal dialog, or the native bridge host is stuck. Run action='status' to check the bridge, then action='setup' to repair it.",
-                    BRIDGE_COMMAND_TIMEOUT.as_secs()
+                    command_timeout.as_secs()
                 )
             } else {
                 anyhow::anyhow!(error)
@@ -3160,6 +3225,44 @@ mod tests {
         let input = browser_input(json!({"action": "eval", "script": "  \n"}));
         let error = bridge_request("eval", &input).expect_err("empty script");
         assert!(error.to_string().contains("non-empty script"));
+    }
+
+    #[test]
+    fn eval_timeout_is_forwarded_with_extension_bounds() {
+        for (requested, expected) in [(1, 100), (25_000, 25_000), (200_000, 120_000)] {
+            let input = browser_input(
+                json!({"action": "eval", "script": "document.title", "timeout_ms": requested}),
+            );
+            let (_, params, _) = bridge_request("eval", &input).unwrap();
+            assert_eq!(params["timeoutMs"], expected);
+        }
+        let input = browser_input(json!({"action": "eval", "script": "document.title"}));
+        let (_, params, _) = bridge_request("eval", &input).unwrap();
+        assert_eq!(params["timeoutMs"], 10_000);
+    }
+
+    #[test]
+    fn eval_failures_explain_url_permissions_and_timeout_without_retrying() {
+        let url = enrich_browser_error(
+            "eval",
+            anyhow::anyhow!("Evaluate error: TypeError: /api is not a valid URL"),
+        )
+        .to_string();
+        assert!(url.contains("new URL(path, location.href).href"));
+        let permission = enrich_browser_error(
+            "eval",
+            anyhow::anyhow!("Missing host permission for the tab"),
+        )
+        .to_string();
+        assert!(permission.contains("site permissions"));
+        let timeout =
+            enrich_browser_error("eval", anyhow::anyhow!("Evaluate timed out after 10000ms"))
+                .to_string();
+        assert!(timeout.contains("may still have performed actions"));
+        assert!(!missing_tab_error("Evaluate error: Error: no tab"));
+        assert!(!missing_tab_error(
+            "Browser bridge action 'evaluate' failed: Error: Evaluate error: Error: tab not found"
+        ));
     }
 
     #[test]
@@ -3918,6 +4021,36 @@ mod tests {
         let input = browser_input(json!({"action": "interactables", "contains": "Sign in"}));
         let (_, params, _) = bridge_request("interactables", &input).expect("bridge request");
         assert_eq!(params["text"], json!("Sign in"));
+    }
+
+    /// pwnfox isolates its tabs by Firefox container (contextual identity), so
+    /// the bridge call must carry the container's cookie store: filtering
+    /// `list_tabs` to one profile, and opening a new tab inside it.
+    #[test]
+    fn container_cookie_store_reaches_the_bridge() {
+        let listed = browser_input(json!({
+            "action": "list_tabs",
+            "cookie_store_id": "firefox-container-3",
+        }));
+        let (_, params, _) = bridge_request("list_tabs", &listed).expect("bridge request");
+        assert_eq!(params["cookieStoreId"], json!("firefox-container-3"));
+
+        // A container-scoped new tab: `new_tab` maps to the extension's
+        // `newSession`/`createTab`, which honours `cookieStoreId`.
+        let opened = browser_input(json!({
+            "action": "new_tab",
+            "url": "https://target.example",
+            "cookie_store_id": "firefox-container-3",
+        }));
+        let (action, params, _) = bridge_request("new_tab", &opened).expect("bridge request");
+        assert_eq!(action, "newSession");
+        assert_eq!(params["cookieStoreId"], json!("firefox-container-3"));
+
+        // Absent unless asked for, so default (uncontained) behaviour is
+        // unchanged.
+        let plain = browser_input(json!({"action": "list_tabs"}));
+        let (_, params, _) = bridge_request("list_tabs", &plain).expect("bridge request");
+        assert!(params.get("cookieStoreId").is_none());
     }
 
     #[test]

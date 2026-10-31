@@ -45,6 +45,9 @@ pub fn resolve_openai_compatible_profile_with_api_key_hint(
         requires_api_key: profile.requires_api_key,
     };
 
+    if profile.id == crate::alphacode_base::auth::orcarouter::PROFILE_ID {
+        resolved.api_base = crate::alphacode_base::auth::orcarouter::api_base();
+    }
     apply_profile_key_based_endpoint_overrides(profile, &mut resolved, api_key_hint);
 
     if profile.id != OPENAI_COMPAT_PROFILE.id {
@@ -147,7 +150,14 @@ fn newest_released_model_for_resolved_openai_compatible_profile(
         .enumerate()
         .filter_map(|(index, model)| {
             let id = model.id.trim().to_string();
-            let created = model.created?;
+            // Local servers commonly omit `created` (LM Studio does). Keep
+            // their catalog order usable instead of leaving the provider with
+            // no default model after a successful /models refresh.
+            let created = match model.created {
+                Some(created) => created,
+                None if matches!(profile_id, "lmstudio" | "ollama") => 0,
+                None => return None,
+            };
             // Never auto-select an obviously non-chat model (TTS/speech/embeddings/
             // rerankers/image/etc.) as a profile's default. Catalogs like Groq,
             // NVIDIA NIM, and Chutes expose their entire model list, and the
@@ -253,6 +263,11 @@ pub fn resolve_openai_compatible_profile_selection(input: &str) -> Option<OpenAi
     let provider = resolve_login_provider(input)?;
     match provider.target {
         LoginProviderTarget::OpenAiCompatible(profile) => Some(profile),
+        // The PKCE login shares the API-key profile's inference slot, so both
+        // OrcaRouter entry points resolve to one lifecycle/catalog identity.
+        LoginProviderTarget::OrcaRouterOAuth => {
+            Some(crate::alphacode_provider_metadata::ORCAROUTER_PROFILE)
+        }
         _ => None,
     }
 }
@@ -620,6 +635,13 @@ pub fn openai_compatible_profile_static_models(profile: OpenAiCompatibleProfile)
             push("gemini-2.0-flash");
             push("gemini-2.0-flash-lite");
         }
+        "orcarouter" => {
+            // Fallback only; the live `/v1/models` catalog is authoritative once
+            // it has landed for this profile.
+            for model in ORCAROUTER_SEED_MODELS {
+                push(model);
+            }
+        }
         "alphax-free" => {
             // The full rotation pool, not just the default. The live catalog is
             // disabled for this profile (the gateway's `/v1/models` returns
@@ -636,7 +658,144 @@ pub fn openai_compatible_profile_static_models(profile: OpenAiCompatibleProfile)
     models
 }
 
-pub fn openai_compatible_profile_model_supports_chat(_profile_id: &str, _model: &str) -> bool {
+/// Verified seed for the OrcaRouter profile.
+///
+/// This is only a fallback for the moment the live `GET /v1/models` catalog has
+/// not landed yet (first run, outage). Every entry was confirmed against the
+/// live catalog, and the live catalog always wins once it is cached — OrcaRouter
+/// rotates its routing aliases and adds models faster than any static list can
+/// track.
+pub const ORCAROUTER_SEED_MODELS: &[&str] = &[
+    "orcarouter/auto",
+    "openai/gpt-5.5",
+    "anthropic/claude-opus-4.8",
+    "google/gemini-3.5-flash",
+    "deepseek/deepseek-v4-pro",
+];
+
+/// Endpoint types/capabilities that mean "this model can serve a chat
+/// completion". Aggregators advertise these per model; a model served only as
+/// `embeddings` or `image-generation` must never be offered as a chat model.
+const CHAT_ENDPOINT_TYPES: &[&str] = &[
+    "openai",
+    "openai-response",
+    "anthropic",
+    "gemini",
+    "chat_completions",
+    "chat-completion",
+];
+
+const NON_CHAT_ENDPOINT_TYPES: &[&str] = &[
+    "embeddings",
+    "embedding",
+    "image-generation",
+    "image_generation",
+    "rerank",
+    "reranking",
+];
+
+/// Look up a model row in a profile's cached live catalog.
+///
+/// Built-in profiles refresh their catalog into the shared default cache
+/// namespace, while named profiles get one namespace each. Read the profile's
+/// own namespace first, then fall back to the default namespace but only when
+/// that cache was written by this profile's endpoint — otherwise rows from a
+/// different gateway would leak capability data across providers.
+fn cached_profile_model_info(
+    profile_id: &str,
+    model: &str,
+) -> Option<crate::alphacode_provider_openrouter::ModelInfo> {
+    let model = model.trim();
+    let find = |cache: crate::alphacode_provider_openrouter::DiskCache| {
+        cache
+            .models
+            .into_iter()
+            .find(|candidate| candidate.id.eq_ignore_ascii_case(model))
+    };
+
+    if let Some(info) =
+        crate::alphacode_provider_openrouter::load_disk_cache_entry_for_namespace(profile_id)
+            .and_then(&find)
+    {
+        return Some(info);
+    }
+
+    let profile = openai_compatible_profile_by_id(profile_id)?;
+    let expected_source = crate::alphacode_provider_metadata::route_cloak::api_base_for(&profile);
+    let default_cache = crate::alphacode_provider_openrouter::load_disk_cache_entry()?;
+    let source_matches = default_cache
+        .source_api_base
+        .as_deref()
+        .and_then(normalize_api_base)
+        .zip(normalize_api_base(&expected_source))
+        .is_some_and(|(actual, expected)| actual == expected);
+    if !source_matches {
+        return None;
+    }
+    find(default_cache)
+}
+
+/// Chat-capability gate for OrcaRouter rows.
+///
+/// Precedence: advertised chat endpoint/capability wins; a row advertised only
+/// as non-chat (embedding, image generation, rerank) is rejected; rows with no
+/// advertised capability at all fall back to the verified seed, and anything
+/// still unknown is allowed because an unadvertised catalog must not make a
+/// working model unusable.
+fn orcarouter_model_supports_chat(model: &str) -> bool {
+    let Some(info) = cached_profile_model_info(
+        crate::alphacode_provider_metadata::ORCAROUTER_PROFILE.id,
+        model,
+    ) else {
+        return true;
+    };
+
+    let advertised: Vec<&str> = info
+        .supported_endpoint_types
+        .iter()
+        .chain(info.endpoint_capabilities.iter())
+        .map(String::as_str)
+        .collect();
+    if advertised.is_empty() {
+        return true;
+    }
+    if advertised
+        .iter()
+        .any(|value| CHAT_ENDPOINT_TYPES.contains(value))
+    {
+        return true;
+    }
+    !advertised
+        .iter()
+        .all(|value| NON_CHAT_ENDPOINT_TYPES.contains(value))
+}
+
+/// Whether a catalog row advertises image input.
+///
+/// `None` means the catalog does not say, so the caller keeps its own default
+/// instead of guessing in either direction.
+pub fn openai_compatible_profile_model_supports_image_input(
+    profile_id: &str,
+    model: &str,
+) -> Option<bool> {
+    if !profile_id.eq_ignore_ascii_case(crate::alphacode_provider_metadata::ORCAROUTER_PROFILE.id) {
+        return None;
+    }
+    let info = cached_profile_model_info(profile_id, model)?;
+    if info.input_modalities.is_empty() {
+        return None;
+    }
+    Some(
+        info.input_modalities
+            .iter()
+            .any(|modality| modality.eq_ignore_ascii_case("image")),
+    )
+}
+
+pub fn openai_compatible_profile_model_supports_chat(profile_id: &str, model: &str) -> bool {
+    if profile_id.eq_ignore_ascii_case(crate::alphacode_provider_metadata::ORCAROUTER_PROFILE.id) {
+        return orcarouter_model_supports_chat(model);
+    }
     true
 }
 

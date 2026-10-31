@@ -908,10 +908,9 @@ async fn handle_remote_key_internal(
                     if let Some(help) = app.command_help(topic) {
                         app.push_display_message(DisplayMessage::system(help));
                     } else {
-                        app.push_display_message(DisplayMessage::error(format!(
-                            "Unknown command '{}'. Use /help to list commands.",
-                            topic.trim()
-                        )));
+                        app.push_display_message(DisplayMessage::error(
+                            app_mod::commands::unknown_command_message(app, topic),
+                        ));
                     }
                     return Ok(());
                 }

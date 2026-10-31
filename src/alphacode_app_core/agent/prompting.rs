@@ -1,6 +1,6 @@
 use super::Agent;
 use crate::alphacode_app_core::logging;
-use crate::alphacode_app_core::message::{Message, Role, ToolDefinition};
+use crate::alphacode_app_core::message::{ContentBlock, Message, Role, ToolDefinition};
 
 /// Free-function for probe-burst detection: `true` when the tool call looks
 /// like an outbound network probe (HTTP request or a recon/attack binary).
@@ -33,8 +33,7 @@ fn tool_call_is_network_probe(name: &str, input_text: &str) -> bool {
         "httprobe",
         "mapcidr",
     ];
-    const WEB_TOOLS: &[&str] = &["webfetch"];
-    if WEB_TOOLS.contains(&name) {
+    if crate::tool::scope::is_network_tool(name) {
         return true;
     }
     if name != "bash" {
@@ -48,25 +47,10 @@ fn tool_call_is_network_probe(name: &str, input_text: &str) -> bool {
 
 /// Free-function probe-burst reminder. Returns the reminder text when the
 /// recent tool-call history looks like an unattributed probe grind: a run of
-/// ≥`PROBE_BURST_THRESHOLD` consecutive network probes with no
-/// hypothesis-tracking artifact (`todo`, `memory`, `session_search`, or
-/// `plan`) anywhere in the scanned window, and no non-probe tool call after
-/// the run started that would indicate interleaved analysis.
+/// ≥`PROBE_BURST_THRESHOLD` consecutive network probes after the most recent
+/// analysis or checkpoint call. An older checkpoint does not exempt a new run.
 fn probe_burst_reminder(tool_calls: &[(String, String)]) -> Option<String> {
     const PROBE_BURST_THRESHOLD: usize = 10;
-    const TRACKING_TOOLS: &[&str] = &["todo", "memory", "session_search", "plan", "skill_manage"];
-
-    // The run we measure is the suffix of consecutive probe calls. A tracking
-    // tool anywhere in the scanned window means hypotheses are being
-    // maintained, so the fourth consecutive blind probe is still costly but
-    // already accounted for; do not nag.
-    let tracking_present = tool_calls
-        .iter()
-        .any(|(name, _)| TRACKING_TOOLS.contains(&name.as_str()));
-    if tracking_present {
-        return None;
-    }
-
     let mut run = 0usize;
     for (name, input) in tool_calls.iter().rev() {
         if tool_call_is_network_probe(name, input) {
@@ -81,7 +65,7 @@ fn probe_burst_reminder(tool_calls: &[(String, String)]) -> Option<String> {
     let reminder = format!(
         "\n\n# Probe Grind Detected\n\n\
         {} consecutive probing tool calls with no hypothesis ledger update \
-        (todo / memory) anywhere in this window. If this session is security \
+        since the last checkpoint. If this session is security \
         research, this is the unattributed probe grind that turns hours into \
         nothing:\n\n\
         1. Name the hypothesis each probe targets (an id like `H3: If IDOR exists on /api/orders/<foreign-id>, a foreign id returns 200`). Drop probes with no open hypothesis.\n\
@@ -103,6 +87,7 @@ impl Agent {
         split: &crate::prompt::SplitSystemPrompt,
         tools: &[ToolDefinition],
         tier: crate::prompt::PromptTier,
+        messages: &[Message],
     ) {
         let system_tokens = split.estimated_tokens();
         let tool_tokens = ToolDefinition::aggregate_prompt_token_estimate(tools);
@@ -127,6 +112,31 @@ impl Agent {
             system_tokens,
             tool_tokens,
             tools.len()
+        ));
+        // These are byte counts, not provider token counts. They help separate
+        // a large conversation or tool output from the fixed prompt without
+        // logging user content, image data, or credentials.
+        let mut text_bytes = 0usize;
+        let mut result_bytes = 0usize;
+        let mut images = 0usize;
+        for block in messages.iter().flat_map(|message| &message.content) {
+            match block {
+                ContentBlock::Text { text, .. } => {
+                    text_bytes = text_bytes.saturating_add(text.len())
+                }
+                ContentBlock::ToolResult { content, .. } => {
+                    result_bytes = result_bytes.saturating_add(content.len())
+                }
+                ContentBlock::Image { .. } => images += 1,
+                _ => {}
+            }
+        }
+        logging::info(&format!(
+            "Prompt history accounting: messages={} text_bytes={} tool_result_bytes={} images={} (excludes tool inputs, reasoning and injected memory)",
+            messages.len(),
+            text_bytes,
+            result_bytes,
+            images
         ));
     }
 
@@ -259,8 +269,8 @@ impl Agent {
     }
 
     /// Detect probe bursts: a long run of consecutive network-probing tool
-    /// calls with no hypothesis-tracking artifact (`todo`, `memory`) anywhere
-    /// in the window. During security research this is the signature of the
+    /// calls since the last analysis or hypothesis checkpoint. During security
+    /// research this is the signature of the
     /// unattributed probe grind that burns whole sessions on blind requests;
     /// during ordinary scripted work it usually means the calls should have
     /// been batched. Injection is advisory (a system reminder), not an
@@ -271,8 +281,8 @@ impl Agent {
         let mut tool_calls: Vec<(String, String)> = Vec::new();
         let msg_count = self.session.messages.len();
         let start = msg_count.saturating_sub(20);
-        'outer: for stored in &self.session.messages[start..] {
-            for block in &stored.content {
+        'outer: for stored in self.session.messages[start..].iter().rev() {
+            for block in stored.content.iter().rev() {
                 if let crate::alphacode_app_core::message::ContentBlock::ToolUse {
                     name,
                     input,
@@ -288,6 +298,7 @@ impl Agent {
             }
         }
 
+        tool_calls.reverse();
         if let Some(reminder) = probe_burst_reminder(&tool_calls)
             && !reminder.trim().is_empty()
         {
@@ -326,10 +337,29 @@ impl Agent {
         // overlay directories, so calling it twice per prompt build cost two
         // full registry clones plus two disk scans for the same data.
         let skills = self.current_skills_snapshot();
-        let skill_prompt = self
+        let mut skill_prompt = self
             .active_skill
             .as_ref()
             .and_then(|name| skills.get(name).map(|skill| skill.get_prompt().to_string()));
+
+        let ctf_requested = self
+            .active_skill
+            .as_deref()
+            .is_some_and(|name| matches!(name, "ctf" | "ctf-workflow"))
+            || self
+                .latest_user_text()
+                .is_some_and(|text| super::challenge_context::is_ctf_request(&text));
+        let ledger = self.session.working_dir.as_deref().and_then(|directory| {
+            super::challenge_context::ledger_context(std::path::Path::new(directory))
+        });
+        if (ctf_requested || ledger.is_some())
+            && self.active_skill.as_deref() != Some("ctf-workflow")
+            && let Some(workflow) = skills.get("ctf-workflow")
+        {
+            skill_prompt
+                .get_or_insert_with(String::new)
+                .push_str(&format!("\n\n{}", workflow.get_prompt()));
+        }
 
         let available_skills: Vec<crate::prompt::SkillInfo> = skills
             .list()
@@ -359,6 +389,9 @@ impl Agent {
         );
 
         self.append_current_turn_system_reminder(&mut split);
+        if let Some(ledger) = ledger {
+            split.dynamic_part.push_str(&ledger);
+        }
         self.detect_verification_loop(&mut split);
         self.detect_probe_burst(&mut split);
         self.append_prompt_autopilot_briefing(&mut split, resolved_tier);
@@ -557,5 +590,12 @@ mod probe_burst_tests {
             .map(|n| bash(&format!("curl -s https://site/api/page/{n}")))
             .collect();
         assert!(probe_burst_reminder(&calls).is_none());
+    }
+
+    #[test]
+    fn an_old_checkpoint_does_not_exempt_a_new_probe_grind() {
+        let mut calls = vec![("todo".to_string(), "{}".to_string())];
+        calls.extend((0..12).map(|n| bash(&format!("curl https://site/{n}"))));
+        assert!(probe_burst_reminder(&calls).is_some());
     }
 }

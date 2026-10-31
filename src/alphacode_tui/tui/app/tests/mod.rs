@@ -601,6 +601,7 @@ pub mod tests {
     include!("command_usage_rank.rs");
     include!("composer_mentions.rs");
     include!("composer_selection.rs");
+    include!("help_topics.rs");
     include!("hotkey_feedback_e2e.rs");
     include!("image_placeholder_commands.rs");
     include!("input_copy_selection.rs");

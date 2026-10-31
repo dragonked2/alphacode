@@ -99,37 +99,42 @@ impl SpinnerStyle {
     }
 }
 
-/// Alphacode brand identity colors.
-/// The 16-stop gradient sweeps a wider, smoother band of the spectrum than the
-/// legacy 8-stop version: violet → blue → cyan → teal → green → lime → amber
-/// → coral → pink → magenta. Each stop is hand-tuned to read at every
-/// terminal width, including 256-color and Indexed fallbacks.
+/// Brand accents follow the selected palette without mixing in status colors.
 pub struct BrandTheme;
 
 impl BrandTheme {
-    /// Primary gradient colors (left to right). 16 stops sweep the spectrum,
-    /// each derived from a palette role so theme presets recolor the entire
-    /// gradient. Ordered by hue family: violet → blue → cyan → teal → green →
-    /// amber → violet. No pink/rose — the sweep stays in cool-to-warm territory.
+    /// A restrained gradient built from brand and heading roles. Status colors
+    /// remain reserved for success, warnings, and errors.
     pub fn gradient() -> [Color; 16] {
         [
-            role_color(Role::Accent),      //  0  violet/purple
-            role_color(Role::Memory),      //  1  deep violet
-            role_color(Role::Spinner),     //  2  purple
-            role_color(Role::User),        //  3  blue
-            role_color(Role::Heading),     //  4  sky-blue
-            role_color(Role::FileLink),    //  5  light cyan
-            role_color(Role::Asap),        //  6  cyan
-            role_color(Role::PanelBorder), //  7  teal
-            role_color(Role::Ai),          //  8  green/mint
-            role_color(Role::Success),     //  9  green
-            role_color(Role::DiffAdd),     // 10  bright green
-            role_color(Role::Queued),      // 11  amber
-            role_color(Role::Warning),     // 12  warm amber
-            role_color(Role::Info),        // 13  blue (return to cool)
-            role_color(Role::HeaderIcon),  // 14  cyan-blue
-            role_color(Role::Accent),      // 15  violet (loop back)
+            role_color(Role::Accent),
+            role_color(Role::Accent),
+            role_color(Role::Memory),
+            role_color(Role::Memory),
+            role_color(Role::HeaderName),
+            role_color(Role::HeaderName),
+            role_color(Role::Heading),
+            role_color(Role::Heading),
+            role_color(Role::FileLink),
+            role_color(Role::FileLink),
+            role_color(Role::Heading),
+            role_color(Role::Heading),
+            role_color(Role::HeaderName),
+            role_color(Role::Memory),
+            role_color(Role::Accent),
+            role_color(Role::Accent),
         ]
+    }
+
+    /// A smooth ramp of `count` colours across the brand gradient.
+    ///
+    /// Multi-row wordmark art used to take `gradient()[row % 16]`, which —
+    /// because the 16-stop array repeats each hue twice — handed the six block
+    /// rows only three distinct colours and drew hard horizontal bands. A
+    /// continuous ramp keeps the logo reading as one object and is calmer to
+    /// look at than a stripe per row.
+    pub fn gradient_rows(count: usize) -> Vec<Color> {
+        Self::gradient_wide(count.max(2))
     }
 
     /// Extended gradient for wide separators and progress bars (32 stops).
@@ -775,11 +780,17 @@ impl StatusBar {
 
 /// Startup splash screen.
 ///
-/// Provides responsive multi-tier banners that adapt to terminal width:
-/// - 73+ cols: full block-letter ASCII art
-/// - 53+ cols: compact block letters
-/// - 33+ cols: monospace spaced letters
-/// - 25+ cols: minimal wordmark
+/// Provides responsive multi-tier banners that adapt to terminal width. The
+/// thresholds below are the art widths from [`crate::alphacode_brand::WORDMARK_LADDER`]
+/// (`wordmark_art` reserves a 4-column inset, so the *terminal* widths are these
+/// plus four):
+/// - 73 cols: full block-letter art ([`crate::alphacode_brand::WORDMARK_BLOCK`])
+/// - 63 cols: compact block letters ([`crate::alphacode_brand::WORDMARK_COMPACT`])
+/// - 17 cols: monospace spaced letters ([`crate::alphacode_brand::WORDMARK_MONOSPACE`])
+/// - 13 cols: minimal wordmark ([`crate::alphacode_brand::WORDMARK_MINIMAL`])
+///
+/// Below 13 columns no tier fits and the splash renders nothing rather than
+/// wrapping the logo.
 pub struct SplashScreen;
 
 impl SplashScreen {
@@ -789,46 +800,43 @@ impl SplashScreen {
         Self::banner_with_features(max_width, true)
     }
 
+    /// The centred ASCII-art wordmark on its own — no chips, no tagline.
+    ///
+    /// This is the tier-selection entry point for every surface that wants the
+    /// logo: it reads the shared [`crate::alphacode_brand::WORDMARK_LADDER`], so
+    /// a given terminal width produces the same art in the splash, the header
+    /// and the CLI banner. The splash used to keep a fourth private copy, and
+    /// its narrowest tier was written as a **raw** string — it printed the
+    /// literal characters `\u{2039} alphacode \u{203a}` instead of `‹ AlphaCode ›`.
+    pub fn wordmark_art(max_width: usize) -> Vec<Line<'static>> {
+        let Some(art) = crate::alphacode_brand::wordmark_for(max_width.saturating_sub(4)) else {
+            return Vec::new();
+        };
+        let colors = BrandTheme::gradient_rows(art.len());
+        art.iter()
+            .enumerate()
+            .map(|(index, row)| {
+                Line::from(Span::styled(
+                    (*row).to_string(),
+                    Style::default()
+                        .fg(colors[index % colors.len()])
+                        .add_modifier(Modifier::BOLD),
+                ))
+                .alignment(Alignment::Center)
+            })
+            .collect()
+    }
+
     /// Build the banner with optional feature row. Disabling the feature
     /// row is useful on tiny terminals (≤33 cols) where the chip strip
     /// would wrap or look cluttered.
     pub fn banner_with_features(max_width: usize, with_features: bool) -> Vec<Line<'static>> {
-        // Responsive banner tiers — each fits a progressively narrower terminal
-        let banners: [&[&str]; 4] = [
-            &[
-                r"  █████╗ ██╗     ██████╗ ██╗  ██╗ █████╗  ██████╗ ██████╗ ██████╗ ███████╗",
-                r" ██╔══██╗██║     ██╔══██╗██║  ██║██╔══██╗██╔════╝██╔═══██╗██╔══██╗██╔════╝",
-                r" ███████║██║     ██████╔╝███████║███████║██║     ██║   ██║██║  ██║█████╗  ",
-                r" ██╔══██║██║     ██╔═══╝ ██╔══██║██╔══██║██║     ██║   ██║██║  ██║██╔══╝  ",
-                r" ██║  ██║███████╗██║     ██║  ██║██║  ██║╚██████╗╚██████╔╝██████╔╝███████╗",
-                r" ╚═╝  ╚═╝╚══════╝╚═╝     ╚═╝  ╚═╝╚═╝  ╚═╝ ╚═════╝ ╚═════╝ ╚═════╝ ╚══════╝",
-            ],
-            &[
-                r"  ██   ██     █████  ██  ██   ██    █████  ████  █████  ██████ ",
-                r" ████  ██     ██  ██ ██  ██  ████  ██     ██  ██ ██  ██ ██     ",
-                r"██  ██ ██     █████  ██████ ██  ██ ██     ██  ██ ██  ██ █████  ",
-                r"██████ ██     ██     ██  ██ ██████ ██     ██  ██ ██  ██ ██     ",
-                r"██  ██ ██████ ██     ██  ██ ██  ██  █████  ████  █████  ██████ ",
-            ],
-            &[r"A L P H A C O D E"],
-            &[r"\u{2039} alphacode \u{203a}"],
-        ];
-
-        let fit_width = max_width.saturating_sub(4);
-        let Some(art) = banners.iter().find(|art| {
-            art.iter()
-                .all(|row| unicode_width::UnicodeWidthStr::width(*row) <= fit_width)
-        }) else {
+        let art = Self::wordmark_art(max_width);
+        if art.is_empty() {
             return Vec::new();
-        };
-
-        let gradient = BrandTheme::gradient();
-        let mut lines: Vec<Line<'static>> = Vec::with_capacity(art.len() + 3);
-
-        for (index, row) in art.iter().enumerate() {
-            let style = Style::default().fg(gradient[index % gradient.len()]).bold();
-            lines.push(Line::from(Span::styled(row.to_string(), style)).alignment(Alignment::Left));
         }
+        let mut lines: Vec<Line<'static>> = Vec::with_capacity(art.len() + 4);
+        lines.extend(art);
 
         // Feature chip strip — only on banners that are wide enough that the
         // chips fit on one line. Otherwise the strip would wrap and look
@@ -838,11 +846,20 @@ impl SplashScreen {
             lines.push(Line::from(""));
             lines.push(SplashScreen::elite_feature_row());
         }
+        // Chip and tagline rows carry no explicit alignment, so the
+        // `Paragraph::alignment(Center)` used by every draw site centres them
+        // with the art. Only the art rows pin `Center` themselves, because a
+        // `Line` alignment overrides the paragraph's.
 
-        // Tagline
-        lines.push(Line::from(""));
-        let tagline = if max_width > 55 {
-            vec![
+        // Tagline. Each tier is gated on the width it actually needs, measured
+        // in display cells, so the splash never hands a too-narrow terminal a
+        // row it has to wrap. The previous fixed 27-cell short form overran
+        // every width from 17 to 24 — exactly the band where the minimal
+        // wordmark still fits — and dropped below 17 entirely, because even
+        // the minimal art uses 13 of those columns.
+        let tagline = if max_width >= SplashScreen::full_tagline_width() {
+            lines.push(Line::from(""));
+            Some(vec![
                 Span::styled(
                     "  ✦ ",
                     Style::default()
@@ -866,9 +883,10 @@ impl SplashScreen {
                         .fg(BrandTheme::gradient_color(5))
                         .add_modifier(Modifier::BOLD),
                 ),
-            ]
-        } else {
-            vec![
+            ])
+        } else if max_width >= SplashScreen::compact_tagline_width() {
+            lines.push(Line::from(""));
+            Some(vec![
                 Span::styled(
                     "  ✦ ",
                     Style::default()
@@ -887,29 +905,56 @@ impl SplashScreen {
                         .fg(BrandTheme::gradient_color(5))
                         .add_modifier(Modifier::BOLD),
                 ),
-            ]
+            ])
+        } else {
+            // Too narrow for any tagline: the wordmark alone is the splash.
+            None
         };
-        lines.push(Line::from(tagline));
+        if let Some(tagline) = tagline {
+            lines.push(Line::from(tagline));
+        }
 
         lines
+    }
+
+    /// Columns the short tagline needs (`"  ✦ Type to get started ✦"`).
+    ///
+    /// Measured rather than hard-coded so an edit to the tagline text cannot
+    /// silently reintroduce the overflow this gate exists to prevent.
+    pub fn compact_tagline_width() -> usize {
+        "  \u{2726} Type to get started \u{2726}".chars().count()
+    }
+
+    /// Columns the full tagline needs.
+    ///
+    /// The gate used to be the round number `> 55`; measuring keeps the choice
+    /// exact, so widening the tagline cannot push it past the edge of a
+    /// terminal that still passes the check.
+    pub fn full_tagline_width() -> usize {
+        "  \u{2726} Your AI coding companion \u{00b7} Type to get started \u{2726}"
+            .chars()
+            .count()
     }
 
     /// Build a minimal one-line welcome message.
     pub fn welcome_line() -> Line<'static> {
         Line::from(vec![
             Span::styled(
-                "◆ ",
+                format!("{} ", crate::alphacode_brand::MARK),
                 Style::default()
                     .fg(BrandTheme::gradient_color(0))
                     .add_modifier(Modifier::BOLD),
             ),
             Span::styled(
-                "alphacode",
+                crate::alphacode_brand::DISPLAY_NAME,
                 Style::default()
                     .fg(BrandTheme::accent())
                     .add_modifier(Modifier::BOLD),
             ),
-            Span::styled(" is ready ✨", Style::default().fg(BrandTheme::success())),
+            // No trailing emoji: `✨` is emoji-presentation and double-width,
+            // which both clashes with the single-width brand mark and can
+            // invalidate ratatui's cell-width cache mid-frame.
+            Span::styled(" is ready", Style::default().fg(BrandTheme::success())),
         ])
     }
 
@@ -1085,6 +1130,48 @@ mod tests {
                 assert!(w <= width, "banner row width {} exceeds max {}", w, width);
             }
         }
+    }
+
+    /// The splash must never emit a row wider than the terminal at *any* width.
+    ///
+    /// The sample list above happens to skip the band where the short tagline
+    /// (27 cells) overran the minimal wordmark (13 cells): every width from 17
+    /// to 24 drew a tagline wider than the logo it sat under, and the whole
+    /// splash vanished below 17 because `wordmark_art` correctly declined. A
+    /// full sweep is the only way this stays fixed — a handful of round numbers
+    /// is exactly the check that let the bug through.
+    #[test]
+    fn splash_rows_fit_every_width_from_0_to_200() {
+        for width in 0..=200usize {
+            for line in SplashScreen::banner_with_features(width, true) {
+                let cells: usize = line
+                    .spans
+                    .iter()
+                    .map(|s| unicode_width::UnicodeWidthStr::width(s.content.as_ref()))
+                    .sum();
+                assert!(
+                    cells <= width,
+                    "splash row is {cells} cells wide at terminal width {width}"
+                );
+            }
+        }
+    }
+
+    /// Below the narrowest wordmark the splash degrades to *nothing* rather
+    /// than to a fragment, because its draw sites fall back to a text label.
+    #[test]
+    fn splash_is_empty_below_the_minimal_wordmark() {
+        for width in 0..=12usize {
+            assert!(
+                SplashScreen::banner(width).is_empty(),
+                "expected no splash art at width {width}"
+            );
+        }
+        // At the minimal tier's width the logo must still appear.
+        assert!(
+            !SplashScreen::banner(17).is_empty(),
+            "minimal wordmark should render at width 17"
+        );
     }
 
     #[test]

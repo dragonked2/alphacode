@@ -285,7 +285,7 @@ fn render_human(
 ) {
     println!(
         "{}",
-        crate::cli::output::CliOutput::section("Alphacode doctor")
+        crate::cli::output::CliOutput::section("AlphaCode doctor")
     );
     println!();
 

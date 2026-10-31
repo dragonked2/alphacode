@@ -25,6 +25,14 @@ pub(crate) enum PendingLogin {
         expected_state: String,
         redirect_uri: String,
     },
+    /// Waiting for user to paste an OrcaRouter OAuth callback URL/query or code.
+    ///
+    /// The PKCE attempt is carried whole so the verifier is exchanged only after
+    /// the callback is validated against the same attempt's `state`.
+    OrcaRouterOAuth {
+        attempt: crate::alphacode_base::auth::orcarouter::PkceAttempt,
+        redirect_uri: String,
+    },
     /// Waiting for user to paste an API key for an OpenAI-compatible provider.
     ApiKeyProfile {
         provider_id: String,
@@ -67,6 +75,10 @@ impl PendingLogin {
             Self::OpenAiAccount { .. } => Some(("openai".to_string(), "oauth".to_string())),
             Self::Gemini { .. } => Some(("gemini".to_string(), "oauth".to_string())),
             Self::Antigravity { .. } => Some(("antigravity".to_string(), "oauth".to_string())),
+            Self::OrcaRouterOAuth { .. } => Some((
+                crate::alphacode_base::auth::orcarouter::PROFILE_ID.to_string(),
+                "oauth".to_string(),
+            )),
             Self::ApiKeyProfile {
                 provider_id,
                 auth_method,

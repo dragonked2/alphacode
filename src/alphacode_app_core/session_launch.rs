@@ -94,13 +94,14 @@ pub fn resumed_window_title(session_id: &str) -> String {
         crate::alphacode_base::process_title::terminal_display_title_for_id(session_id);
     let session_label =
         crate::alphacode_base::process_title::terminal_session_label(&session_name, None);
-    let fallback_label = if let Some(server_info) =
+    // The product name is supplied by `terminal_window_title`, so the fallback
+    // carries only the server (when it is a non-default one) and the session.
+    let fallback_label = crate::alphacode_base::process_title::terminal_fallback_label(
         crate::registry::find_server_by_socket_sync(&server::socket_path())
-    {
-        format!("alphacode/{} {}", server_info.name, session_label)
-    } else {
-        format!("alphacode {}", session_label)
-    };
+            .map(|server_info| server_info.name)
+            .as_deref(),
+        &session_label,
+    );
     crate::alphacode_base::process_title::terminal_window_title(
         icon,
         display_title.as_deref(),

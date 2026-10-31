@@ -7,6 +7,8 @@
 
 use super::{accent_color, blend_color, rgb};
 use ratatui::prelude::*;
+use unicode_segmentation::UnicodeSegmentation;
+use unicode_width::UnicodeWidthStr;
 
 pub(crate) fn selection_bg_for(base_bg: Option<Color>) -> Color {
     let fallback = rgb(32, 38, 48);
@@ -86,8 +88,8 @@ pub(crate) fn highlight_line_range(
 
     for span in &line.spans {
         let highlighted_style = resolve(&span.style);
-        for ch in span.content.chars() {
-            let width = unicode_width::UnicodeWidthChar::width(ch).unwrap_or(0);
+        for grapheme in span.content.graphemes(true) {
+            let width = grapheme.width();
             let selected = if width == 0 {
                 col > start_col && col <= end_col
             } else {
@@ -101,10 +103,10 @@ pub(crate) fn highlight_line_range(
             };
 
             if current_style == Some(style) {
-                current_text.push(ch);
+                current_text.push_str(grapheme);
             } else {
                 flush(&mut rebuilt, &mut current_text, &mut current_style);
-                current_text.push(ch);
+                current_text.push_str(grapheme);
                 current_style = Some(style);
             }
 
@@ -162,5 +164,18 @@ mod tests {
                 .any(|span| span.style.bg == Some(Color::Red)),
             "a wide character overlapping the range must be highlighted"
         );
+    }
+
+    #[test]
+    fn emoji_clusters_do_not_shift_following_highlights() {
+        let line = line_of("👩\u{200d}💻x");
+        let highlighted = highlight_line_range(&line, 2, 3, |_| Style::default().bg(Color::Red));
+        let red: String = highlighted
+            .spans
+            .iter()
+            .filter(|span| span.style.bg == Some(Color::Red))
+            .map(|span| span.content.as_ref())
+            .collect();
+        assert_eq!(red, "x");
     }
 }

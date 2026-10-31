@@ -55,7 +55,8 @@ use ratatui::{
 use crate::alphacode_tui::tui::ui_transitions::{Transition, ease_out_cubic};
 use crate::alphacode_tui_style::icons::Icon;
 use crate::alphacode_tui_style::palette::{Role, role_color};
-use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
+use unicode_segmentation::UnicodeSegmentation;
+use unicode_width::UnicodeWidthStr;
 
 /// Severity tier — drives the color and icon of the toast.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -118,7 +119,12 @@ impl Toast {
     }
 
     fn is_expired(&self, now: Instant) -> bool {
-        now >= self.expires_at()
+        // Expanding a notification is an explicit request to inspect its
+        // diagnostics. Never remove that content while it is being read; the
+        // user can dismiss it with Esc once they are done. Collapsed toasts
+        // remain intentionally short-lived so routine status chatter does not
+        // accumulate over the transcript.
+        !self.expanded && now >= self.expires_at()
     }
 }
 
@@ -402,13 +408,13 @@ fn compact_toast_message(message: &str) -> (String, Option<String>) {
 fn truncate_to_width(text: &str, max_width: usize) -> String {
     let mut width = 0usize;
     let mut end = 0usize;
-    for (index, character) in text.char_indices() {
-        let character_width = UnicodeWidthChar::width(character).unwrap_or(0);
-        if width.saturating_add(character_width) > max_width {
+    for (index, grapheme) in text.grapheme_indices(true) {
+        let grapheme_width = grapheme.width();
+        if width.saturating_add(grapheme_width) > max_width {
             break;
         }
-        width += character_width;
-        end = index + character.len_utf8();
+        width += grapheme_width;
+        end = index + grapheme.len();
     }
     text[..end].trim_end().to_string()
 }
@@ -693,15 +699,28 @@ pub fn draw(frame: &mut ratatui::Frame, area: Rect) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::{Mutex, MutexGuard};
 
-    /// Tests share the process-global queue. Each test clears at start
-    /// and end to avoid cross-test contamination.
+    // The production queue is intentionally process-global, so tests must
+    // serialize all queue access. Clearing before/after a test alone is not
+    // sufficient when Rust's test runner executes two of these tests at once.
+    static TOAST_TEST_LOCK: Mutex<()> = Mutex::new(());
+
+    fn test_guard() -> MutexGuard<'static, ()> {
+        TOAST_TEST_LOCK
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+    }
+
+    /// Tests share the process-global queue. The guard makes the reset
+    /// deterministic even under the default parallel test runner.
     fn reset() {
         clear();
     }
 
     #[test]
     fn push_and_count() {
+        let _guard = test_guard();
         reset();
         assert_eq!(count(), 0);
         push_error("first");
@@ -713,6 +732,7 @@ mod tests {
 
     #[test]
     fn max_visible_caps_queue() {
+        let _guard = test_guard();
         reset();
         for i in 0..10 {
             push_error(format!("toast {i}"));
@@ -724,6 +744,7 @@ mod tests {
 
     #[test]
     fn ttl_expires_toast() {
+        let _guard = test_guard();
         reset();
         push_with_ttl(Severity::Error, "instant", None, Duration::from_millis(0));
         // After 0ms TTL, the toast is already expired at snapshot time.
@@ -733,7 +754,26 @@ mod tests {
     }
 
     #[test]
+    fn expanded_toast_stays_visible_past_its_ttl_until_dismissed() {
+        let _guard = test_guard();
+        reset();
+        push_with_ttl(
+            Severity::Error,
+            "diagnostic details",
+            Some("Open the log for the full request trace".to_string()),
+            Duration::from_millis(0),
+        );
+        expand(0);
+
+        assert_eq!(count(), 1, "expanded diagnostics must not vanish mid-read");
+        dismiss(0);
+        assert_eq!(count(), 0);
+        reset();
+    }
+
+    #[test]
     fn clear_removes_all() {
+        let _guard = test_guard();
         reset();
         push_error("a");
         push_warning("b");
@@ -744,6 +784,7 @@ mod tests {
 
     #[test]
     fn severity_icon_role_mapping_is_distinct() {
+        let _guard = test_guard();
         // Each severity picks a distinct role. If two ever collapse to
         // the same role, the toast colors will be indistinguishable and
         // this test fails.
@@ -759,6 +800,7 @@ mod tests {
 
     #[test]
     fn long_errors_collapse_to_a_short_preview_and_keep_details() {
+        let _guard = test_guard();
         let raw = format!(
             "Error: provider request failed after retries\nCaused by: {}",
             "upstream diagnostic details ".repeat(30)
@@ -774,6 +816,7 @@ mod tests {
 
     #[test]
     fn short_errors_stay_unchanged() {
+        let _guard = test_guard();
         let (preview, details) = compact_toast_message("Could not connect");
         assert_eq!(preview, "Could not connect");
         assert!(details.is_none());
@@ -781,6 +824,7 @@ mod tests {
 
     #[test]
     fn dismiss_removes_one() {
+        let _guard = test_guard();
         reset();
         push_error("a");
         push_error("b");
@@ -793,5 +837,15 @@ mod tests {
         assert_eq!(snap[0].message, "a");
         assert_eq!(snap[1].message, "c");
         reset();
+    }
+
+    #[test]
+    fn toast_preview_preserves_graphemes_and_terminal_width() {
+        let _guard = test_guard();
+        assert_eq!(
+            truncate_to_width("e\u{301}👩\u{200d}💻x", 3),
+            "e\u{301}👩\u{200d}💻"
+        );
+        assert_eq!(truncate_to_width("e\u{301}👩\u{200d}💻x", 1), "e\u{301}");
     }
 }

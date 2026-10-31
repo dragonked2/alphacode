@@ -211,6 +211,29 @@ pub(super) fn context_adaptive_tools(
     selected
 }
 
+/// Keep the discovery entry point and explicitly promoted tools available to
+/// local models even when relevance scoring would otherwise drop them.
+pub(super) fn context_adaptive_tools_with_promotions(
+    tools: &[ToolDefinition],
+    query: &str,
+    context_window: usize,
+    promoted: &std::collections::HashSet<String>,
+) -> Vec<ToolDefinition> {
+    let mut selected = context_adaptive_tools(tools, query, context_window);
+    if crate::prompt::looks_like_trivial_chat(query) {
+        return selected;
+    }
+    for tool in tools {
+        if (tool.name == "tool_help" || promoted.contains(&tool.name))
+            && !selected.iter().any(|existing| existing.name == tool.name)
+        {
+            selected.push(compact_tool_definition(tool));
+        }
+    }
+    selected.sort_by(|a, b| a.name.cmp(&b.name));
+    selected
+}
+
 impl Agent {
     pub(super) fn uses_compact_local_context(&self) -> bool {
         self.provider.is_local_endpoint()
@@ -540,6 +563,23 @@ impl Agent {
         if tool_name == "mcp" {
             self.unlock_tools();
         }
+        // Listing or re-enabling tools should not invalidate the prompt cache.
+        // Only rebuild when a promotion is absent from the locked snapshot.
+        if tool_name == "tool_help"
+            && let Some(locked) = self.locked_tools.as_ref()
+        {
+            let promoted = crate::tool::tool_help::promoted_tools(&self.session.id);
+            if promoted.iter().any(|name| {
+                !locked.iter().any(|tool| &tool.name == name)
+                    && self
+                        .allowed_tools
+                        .as_ref()
+                        .is_none_or(|allowed| allowed.contains(name))
+                    && !self.disabled_tools.contains(name)
+            }) {
+                self.unlock_tools();
+            }
+        }
     }
 
     pub fn is_canary(&self) -> bool {
@@ -680,12 +720,27 @@ impl Agent {
     }
 
     /// Build the agent's tool definitions from the registry, applying the
-    /// session's `allowed_tools`, `disabled_tools`, and self-dev filters.
+    /// session's `allowed_tools`, `disabled_tools`, self-dev filters, and
+    /// progressive disclosure.
+    ///
+    /// Disclosure trims the *advertised* set only. `Registry::execute` resolves
+    /// against the full tool map, so a hidden tool remains callable if the model
+    /// names it (and becomes advertised once promoted via `tool_help`).
     async fn build_filtered_tool_definitions(&self) -> Vec<ToolDefinition> {
-        let mut tools = self.registry.definitions(self.allowed_tools.as_ref()).await;
-        if !self.disabled_tools.is_empty() {
-            tools.retain(|tool| !self.disabled_tools.contains(&tool.name));
-        }
+        let policy = crate::tool::disclosure::DisclosurePolicy::parse(
+            &crate::config::config().tools.disclosure,
+        );
+        let forced: std::collections::HashSet<String> =
+            self.allowed_tools.iter().flatten().cloned().collect();
+        let promoted = crate::tool::tool_help::promoted_tools(&self.session.id);
+        let selection = crate::tool::disclosure::DisclosureSelection::new();
+        let mut tools = self
+            .registry
+            .definitions_filtered(self.allowed_tools.as_ref(), |name| {
+                !self.disabled_tools.contains(name)
+                    && selection.is_visible(name, policy, &forced, &promoted)
+            })
+            .await;
         Self::apply_selfdev_tool_surface(&mut tools, self.session.is_canary);
         tools
     }
@@ -1016,7 +1071,19 @@ impl Agent {
 
     /// Start an interactive REPL
     pub async fn repl(&mut self) -> Result<()> {
-        println!("Alphacode - Coding Agent");
+        // This interactive REPL is the surface with the longest dwell time and
+        // it previously showed no wordmark at all — just a one-line heading.
+        // Use the shared banner art when the terminal can render it, and fall
+        // back to the plain heading so narrow or ASCII-only terminals still
+        // get an unambiguous greeting instead of a wrapped logo.
+        let banner = crate::alphacode_core::output_style::startup_banner(
+            crate::alphacode_core::console::terminal_width(),
+        );
+        if banner.is_empty() {
+            println!("{} - Coding Agent", crate::alphacode_brand::DISPLAY_NAME);
+        } else {
+            println!("{banner}");
+        }
         println!("Type your message, or 'quit' to exit.");
 
         // Show available skills
@@ -1231,6 +1298,28 @@ mod local_context_tests {
             json!({}),
         )];
         assert!(context_adaptive_tools(&tools, "hello", 16_384).is_empty());
+    }
+
+    #[test]
+    fn local_tool_selection_keeps_discovery_and_explicit_promotions() {
+        let tools = vec![
+            definition("read", "Read files".into(), json!({"type":"object"})),
+            definition("tool_help", "Find tools".into(), json!({"type":"object"})),
+            definition(
+                "sqlmap",
+                "Test SQL injection".into(),
+                json!({"type":"object"}),
+            ),
+        ];
+        let promoted = ["sqlmap".to_string()].into_iter().collect();
+        let selected = context_adaptive_tools_with_promotions(
+            &tools,
+            "Inspect the repository",
+            4096,
+            &promoted,
+        );
+        assert!(selected.iter().any(|tool| tool.name == "tool_help"));
+        assert!(selected.iter().any(|tool| tool.name == "sqlmap"));
     }
 
     #[test]

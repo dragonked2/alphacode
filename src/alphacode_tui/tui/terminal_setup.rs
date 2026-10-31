@@ -233,7 +233,7 @@ pub fn supports_modified_enter_reporting() -> Option<bool> {
 /// Configure tmux so a capable outer terminal's Shift+Enter reaches alphacode.
 pub fn apply_tmux(home: &Path) -> std::io::Result<Applied> {
     let path = tmux_config_path(home);
-    let existing = std::fs::read_to_string(&path).unwrap_or_default();
+    let existing = read_config_or_empty(&path)?;
     match tmux_config_with_block(&existing) {
         None => Ok(Applied::AlreadyConfigured),
         Some(updated) => {
@@ -251,7 +251,7 @@ pub fn apply_tmux(home: &Path) -> std::io::Result<Applied> {
 /// Configure WezTerm to opt in to the kitty keyboard protocol.
 pub fn apply_wezterm(home: &Path) -> std::io::Result<Applied> {
     let path = wezterm_config_path(home);
-    let existing = std::fs::read_to_string(&path).unwrap_or_default();
+    let existing = read_config_or_empty(&path)?;
     if wezterm_config_is_configured(&existing) {
         return Ok(Applied::AlreadyConfigured);
     }
@@ -282,6 +282,14 @@ pub fn apply_wezterm(home: &Path) -> std::io::Result<Applied> {
     })
 }
 
+fn read_config_or_empty(path: &Path) -> std::io::Result<String> {
+    match std::fs::read_to_string(path) {
+        Ok(contents) => Ok(contents),
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(String::new()),
+        Err(err) => Err(err),
+    }
+}
+
 /// Instructions for Terminal.app, which cannot be fixed by config alone.
 ///
 /// Terminal.app has no CSI u support, and its `keyMapBoundKeys` GUI does not
@@ -305,6 +313,26 @@ pub fn apple_terminal_guidance() -> Applied {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn setup_preserves_configs_that_cannot_be_read_as_utf8() {
+        let home = tempfile::tempdir().expect("tempdir");
+        for (path, apply) in [
+            (
+                tmux_config_path(home.path()),
+                apply_tmux as fn(&Path) -> std::io::Result<Applied>,
+            ),
+            (
+                wezterm_config_path(home.path()),
+                apply_wezterm as fn(&Path) -> std::io::Result<Applied>,
+            ),
+        ] {
+            let original = [0xff, 0xfe];
+            std::fs::write(&path, original).expect("seed config");
+            assert!(apply(home.path()).is_err());
+            assert_eq!(std::fs::read(path).expect("read config"), original);
+        }
+    }
 
     #[test]
     fn tmux_is_diagnosed_first_because_it_masks_a_capable_terminal() {

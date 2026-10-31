@@ -1430,6 +1430,17 @@ impl crate::alphacode_tui::tui::TuiState for App {
         self.context_snapshot().info.unwrap_or_default()
     }
 
+    fn current_context_tokens(&self) -> Option<u64> {
+        self.current_stream_context_tokens().or_else(|| {
+            let snapshot = self.context_snapshot();
+            snapshot
+                .fresh
+                .then_some(snapshot.info)
+                .flatten()
+                .and_then(|info| (info.total_chars > 0).then(|| info.estimated_tokens() as u64))
+        })
+    }
+
     fn context_limit(&self) -> Option<usize> {
         Some(self.context_limit as usize)
     }
@@ -1447,20 +1458,20 @@ impl crate::alphacode_tui::tui::TuiState for App {
     }
 
     fn info_widget_data(&self) -> crate::alphacode_tui::tui::info_widget::InfoWidgetData {
-        // The floating session widget no longer renders the Todos/Plan block:
-        // it duplicated the /todos card and the composer's active-work ribbon,
-        // stole the transcript's right margin, and the per-frame todo/goal
-        // gather made the widget height flap as the list changed. The session
-        // card now holds only model/context/background/git state, while todo
-        // history stays on demand (inline `/todos` card, `/todos pin`, and the
-        // `/todos panel` side screen).
-        //
-        // This also removes per-frame disk reads of the session todo/plan
-        // files and the swarm plan projection, which were the largest
-        // avoidable cost in `info_widget_data` above.
-        let todos = Vec::new();
-        let todo_goals = Vec::new();
-        let todos_are_swarm_plan = false;
+        let session_id = if self.is_remote {
+            self.remote_session_id.as_deref()
+        } else {
+            Some(self.session.id.as_str())
+        };
+        let todos_are_swarm_plan = self.swarm_enabled && !self.swarm_plan_items.is_empty();
+        let (todos, todo_goals) = if todos_are_swarm_plan {
+            (
+                crate::alphacode_tui::tui::info_widget::swarm_plan_todos(&self.swarm_plan_items),
+                Vec::new(),
+            )
+        } else {
+            super::helpers::gather_todos_and_goals_for_session(session_id)
+        };
 
         let context_snapshot = self.context_snapshot();
         let context_info = if let Some(context_info) = context_snapshot.info.clone() {

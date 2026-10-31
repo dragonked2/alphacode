@@ -115,3 +115,26 @@ fn help_overlay_shows_catchup_and_back_once_with_current_syntax() {
     );
     assert_eq!(back.first().map(|entry| entry.as_str()), Some("/back"));
 }
+
+#[test]
+fn narrow_help_wraps_descriptions_instead_of_clipping_them() {
+    let _lock = viewport_snapshot_test_lock();
+    let state = TestState::default();
+    let mut terminal =
+        ratatui::Terminal::new(ratatui::backend::TestBackend::new(34, 500)).expect("test terminal");
+    terminal
+        .draw(|frame| overlays::draw_help_overlay(frame, frame.area(), 0, &state))
+        .expect("draw help overlay");
+    let buffer = terminal.backend().buffer();
+    let rows: Vec<String> = (0..buffer.area.height)
+        .map(|y| {
+            (1..buffer.area.width - 1)
+                .map(|x| buffer[(x, y)].symbol())
+                .collect::<String>()
+                .trim()
+                .to_string()
+        })
+        .collect();
+    let flattened = rows.join(" ");
+    assert!(flattened.contains("Show live-test evidence for the current provider/model"));
+}

@@ -9,8 +9,8 @@ fn inline_view_display_width(text: &str) -> usize {
 pub(super) fn inline_ui_height(app: &dyn TuiState) -> u16 {
     match app.inline_ui_state() {
         Some(crate::alphacode_tui::tui::InlineUiStateRef::Interactive(picker)) => {
-            let visible_rows = picker.filtered.len() as u16;
-            let rows_needed = visible_rows + 1 + 2; // header + rounded border
+            let visible_rows = picker.filtered.len().min(20) as u16;
+            let rows_needed = visible_rows.saturating_add(3); // header + rounded border
             // Reserve one extra row for the model-picker hotkey hint that is
             // rendered ABOVE the box (outside its border). Shown for runtime model
             // pickers in both focused and preview modes.
@@ -25,8 +25,8 @@ pub(super) fn inline_ui_height(app: &dyn TuiState) -> u16 {
             rows_needed.min(20) + hint_rows
         }
         Some(crate::alphacode_tui::tui::InlineUiStateRef::View(view)) => {
-            let visible_rows = view.lines.len().max(1) as u16;
-            let rows_needed = visible_rows + 1 + 2; // header + rounded border
+            let visible_rows = view.lines.len().clamp(1, 10) as u16;
+            let rows_needed = visible_rows.saturating_add(3); // header + rounded border
             rows_needed.min(10)
         }
         None => 0,

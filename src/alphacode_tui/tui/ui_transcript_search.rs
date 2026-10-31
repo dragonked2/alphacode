@@ -13,6 +13,8 @@ use ratatui::{prelude::*, widgets::Paragraph};
 
 use super::super::TuiState;
 use super::super::brand_ux::BrandTheme;
+use unicode_segmentation::UnicodeSegmentation;
+use unicode_width::UnicodeWidthStr;
 
 /// Only the test-only `counter_text` helper below needs the view type, so the
 /// import is gated to avoid an unused-import warning in normal builds.
@@ -45,19 +47,6 @@ pub(super) fn draw_transcript_search_overlay(
 
     let mut lines: Vec<Line<'static>> = Vec::with_capacity(OVERLAY_HEIGHT as usize);
 
-    // Row 1: the query, the case-sensitivity marker, and the hit counter.
-    let mut query_spans: Vec<Span<'static>> = vec![
-        Span::styled("Find ", accent),
-        Span::styled(view.query.clone(), Style::default()),
-    ];
-    if view.case_sensitive {
-        query_spans.push(Span::styled(
-            " Aa",
-            Style::default().fg(BrandTheme::warning()),
-        ));
-    }
-    query_spans.push(Span::styled("█", accent));
-
     let counter = if view.match_count == 0 {
         if view.query.is_empty() {
             "type to search".to_string()
@@ -73,10 +62,26 @@ pub(super) fn draw_transcript_search_overlay(
         dim
     };
 
+    // Keep the match count visible when a long query fills the bar. Preserve
+    // whole graphemes and show an ellipsis when the beginning is hidden.
+    let counter_width = counter.width();
+    let fixed_width = 5 + usize::from(view.case_sensitive) * 3 + 1 + 2 + counter_width;
+    let query_width = (rect.width as usize).saturating_sub(fixed_width);
+    let mut query_spans: Vec<Span<'static>> = vec![
+        Span::styled("Find ", accent),
+        Span::styled(fit_query_end(&view.query, query_width), Style::default()),
+    ];
+    if view.case_sensitive {
+        query_spans.push(Span::styled(
+            " Aa",
+            Style::default().fg(BrandTheme::warning()),
+        ));
+    }
+    query_spans.push(Span::styled("█", accent));
+
     let mut query_line = Line::from(query_spans);
     let centered = app.centered_mode();
     let used = query_line.width();
-    let counter_width = unicode_width::UnicodeWidthStr::width(counter.as_str());
     if !centered && used + counter_width + 2 <= rect.width as usize {
         // Right-align the counter at the edge of the bar.
         let pad = rect.width as usize - used - counter_width;
@@ -91,18 +96,27 @@ pub(super) fn draw_transcript_search_overlay(
     lines.push(query_line);
 
     // Row 2: the keys that drive the overlay.
-    lines.push(Line::from(vec![
-        Span::styled("↑↓", muted),
-        Span::styled(" next/prev  ", dim),
-        Span::styled("⏎", muted),
-        Span::styled(" next  ", dim),
-        Span::styled("⇧⏎", muted),
-        Span::styled(" prev  ", dim),
-        Span::styled("Alt+C", muted),
-        Span::styled(" case  ", dim),
-        Span::styled("Esc", muted),
-        Span::styled(" close", dim),
-    ]));
+    lines.push(if rect.width < 55 {
+        Line::from(vec![
+            Span::styled("↑↓", muted),
+            Span::styled(" navigate  ", dim),
+            Span::styled("Esc", muted),
+            Span::styled(" close", dim),
+        ])
+    } else {
+        Line::from(vec![
+            Span::styled("↑↓", muted),
+            Span::styled(" next/prev  ", dim),
+            Span::styled("⏎", muted),
+            Span::styled(" next  ", dim),
+            Span::styled("⇧⏎", muted),
+            Span::styled(" prev  ", dim),
+            Span::styled("Alt+C", muted),
+            Span::styled(" case  ", dim),
+            Span::styled("Esc", muted),
+            Span::styled(" close", dim),
+        ])
+    });
 
     if centered {
         // Match the command palette: in centered mode the overlay is centred
@@ -116,6 +130,27 @@ pub(super) fn draw_transcript_search_overlay(
 
     frame.render_widget(ratatui::widgets::Clear, rect);
     frame.render_widget(Paragraph::new(lines), rect);
+}
+
+fn fit_query_end(query: &str, width: usize) -> String {
+    if query.width() <= width {
+        return query.to_owned();
+    }
+    if width == 0 {
+        return String::new();
+    }
+    let mut parts = Vec::new();
+    let mut used = 1;
+    for grapheme in query.graphemes(true).rev() {
+        let next = grapheme.width();
+        if used + next > width {
+            break;
+        }
+        used += next;
+        parts.push(grapheme);
+    }
+    parts.reverse();
+    format!("…{}", parts.concat())
 }
 
 /// Place the overlay next to the composer.
@@ -175,6 +210,12 @@ mod tests {
             match_count: matches,
             current_line: None,
         }
+    }
+
+    #[test]
+    fn long_query_keeps_whole_graphemes_and_tail() {
+        assert_eq!(fit_query_end("abc界e\u{301}", 4), "…界e\u{301}");
+        assert_eq!(fit_query_end("anything", 0), "");
     }
 
     #[test]

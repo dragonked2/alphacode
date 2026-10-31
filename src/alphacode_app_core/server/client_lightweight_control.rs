@@ -72,6 +72,8 @@ pub(super) struct LightweightControlContext<'a> {
     pub(super) swarm_event_tx: &'a broadcast::Sender<SwarmEvent>,
     pub(super) mcp_pool: &'a Arc<crate::mcp::SharedMcpPool>,
     pub(super) soft_interrupt_queues: &'a SessionInterruptQueues,
+    pub(super) shutdown_signals:
+        &'a Arc<RwLock<HashMap<String, crate::alphacode_agent_runtime::InterruptSignal>>>,
     pub(super) await_members_runtime: &'a AwaitMembersRuntime,
     pub(super) swarm_mutation_runtime: &'a SwarmMutationRuntime,
 }
@@ -99,6 +101,7 @@ pub(super) async fn handle_lightweight_control_request(
         swarm_event_tx,
         mcp_pool,
         soft_interrupt_queues,
+        shutdown_signals,
         await_members_runtime,
         swarm_mutation_runtime,
     } = context;
@@ -127,6 +130,33 @@ pub(super) async fn handle_lightweight_control_request(
     });
 
     match request {
+        Request::DesktopCommand {
+            id,
+            action,
+            session_id,
+            value,
+        } => {
+            let result = super::desktop_control::execute(
+                &action,
+                session_id.as_deref(),
+                value.as_deref(),
+                sessions,
+                client_connections,
+                swarm_members,
+                swarms_by_id,
+                event_history,
+                event_counter,
+                swarm_event_tx,
+                soft_interrupt_queues,
+                shutdown_signals,
+            )
+            .await;
+            let (ok, output) = match result {
+                Ok(value) => (true, value.to_string()),
+                Err(error) => (false, error.to_string()),
+            };
+            let _ = client_event_tx.send(ServerEvent::DebugResponse { id, ok, output });
+        }
         Request::CommShare {
             id,
             session_id: req_session_id,

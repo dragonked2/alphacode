@@ -248,7 +248,7 @@ fn test_alphacode_subscription_set_route_is_wire_safe() -> Result<()> {
             model: "gpt-5.5".to_string(),
             runtime_key: crate::alphacode_provider_core::RuntimeKey::AlphacodeSubscription,
             api_method: "alphacode-subscription".to_string(),
-            provider_label: "Alphacode Subscription".to_string(),
+            provider_label: "AlphaCode Subscription".to_string(),
             detail: "alphacode subscription routing · managed server-side".to_string(),
         },
     };

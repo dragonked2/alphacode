@@ -8,7 +8,7 @@
 //! memory before parsing it means the allocation happens on the server's side,
 //! so a local client can OOM the server rather than itself.
 //!
-//! [`read_frame_line`] caps the read. Once the cap is exceeded the reader stops
+//! [`FrameReader`] caps the read. Once the cap is exceeded the reader stops
 //! appending and drains the remainder of the oversized frame before reporting
 //! it, which keeps the stream in sync: the next call returns the first frame
 //! after the oversized one instead of a fragment of a torn line.
@@ -36,58 +36,132 @@ pub(crate) enum FrameRead {
     Eof,
 }
 
-/// Read one newline-delimited frame, refusing to buffer more than `limit` bytes.
-///
-/// Unlike `read_line`, this never allocates in proportion to the length of an
-/// unterminated line: the destination buffer stops growing at `limit` and the
-/// rest of the frame is consumed and discarded.
-pub(crate) async fn read_frame_line<R>(reader: &mut R, limit: usize) -> std::io::Result<FrameRead>
-where
-    R: AsyncBufRead + Unpin,
-{
-    // `read_until` appends into a Vec<u8>, which cannot panic on a partial UTF-8
-    // sequence at a chunk boundary the way a byte-sliced `String` would. It also
-    // returns only when it has consumed the delimiter or hit EOF, so a single
-    // call always completes one frame — there is nothing to retry in a loop.
-    let mut buf: Vec<u8> = Vec::new();
+/// State survives cancellation of a read by `select!`, including while an
+/// oversized frame is being drained. Each connection owns one instance.
+#[derive(Default)]
+pub(crate) struct FrameReader {
+    buffer: Vec<u8>,
+    oversized: bool,
+}
 
-    let read = reader.read_until(b'\n', &mut buf).await?;
-    if read == 0 {
-        // Peer closed. A partial trailing frame is a truncated request, not a
-        // valid one — report it as EOF so the caller tears the session down the
-        // same way it handles a clean disconnect.
-        return Ok(FrameRead::Eof);
+impl FrameReader {
+    /// Read a frame while storing at most `limit` bytes. Oversized frames are
+    /// drained through their newline so the next request remains aligned.
+    pub(crate) async fn read<R>(
+        &mut self,
+        reader: &mut R,
+        limit: usize,
+    ) -> std::io::Result<FrameRead>
+    where
+        R: AsyncBufRead + Unpin,
+    {
+        loop {
+            // fill_buf is cancellation safe. Update our persistent state and
+            // consume the bytes without an intervening await.
+            let available = reader.fill_buf().await?;
+            if available.is_empty() {
+                let oversized = std::mem::take(&mut self.oversized);
+                self.buffer.clear();
+                return Ok(if oversized {
+                    FrameRead::TooLarge { limit }
+                } else {
+                    FrameRead::Eof
+                });
+            }
+            let end = available.iter().position(|&byte| byte == b'\n');
+            let count = end.map_or(available.len(), |index| index + 1);
+            if !self.oversized {
+                if count > limit.saturating_sub(self.buffer.len()) {
+                    self.oversized = true;
+                    self.buffer.clear();
+                } else {
+                    self.buffer.extend_from_slice(&available[..count]);
+                }
+            }
+            reader.consume(count);
+            if end.is_some() {
+                if std::mem::take(&mut self.oversized) {
+                    return Ok(FrameRead::TooLarge { limit });
+                }
+                let bytes = std::mem::take(&mut self.buffer);
+                let decoded = String::from_utf8(bytes)
+                    .map_err(|error| std::io::Error::new(std::io::ErrorKind::InvalidData, error))?;
+                return Ok(FrameRead::Line(decoded));
+            }
+        }
     }
-    if buf.len() > limit {
-        // `read_until` already stopped at the delimiter, so the stream is
-        // already back on a frame boundary and the rest of the frame has been
-        // consumed. No manual drain is needed: dropping `buf` here discards the
-        // oversized bytes without allocating further, and the next call reads
-        // the following frame. The allocation is bounded by the single
-        // `read_until` call, which is the win over an unbounded `read_line`.
-        return Ok(FrameRead::TooLarge { limit });
-    }
-    // `read_until` splits on a byte delimiter, so a frame that is truncated
-    // mid-character (client died between bytes) or is not valid UTF-8 at all
-    // will not decode. Recover the bytes from the error rather than losing
-    // them, then decode lossily: a garbage frame still has to reach the request
-    // decoder so it is rejected as malformed JSON instead of panicking the
-    // connection.
-    let decoded = match String::from_utf8(buf) {
-        Ok(decoded) => decoded,
-        Err(error) => String::from_utf8_lossy(&error.into_bytes()).into_owned(),
-    };
-    Ok(FrameRead::Line(decoded))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use tokio::io::AsyncWriteExt;
+    use tokio::time::{Duration, timeout};
+
+    #[tokio::test]
+    async fn cancelled_reads_preserve_partial_frames() {
+        let (mut writer, stream) = tokio::io::duplex(64);
+        let mut reader = tokio::io::BufReader::new(stream);
+        let mut frames = FrameReader::default();
+        writer.write_all(b"{\"id\":").await.unwrap();
+        assert!(
+            timeout(Duration::from_millis(20), frames.read(&mut reader, 64))
+                .await
+                .is_err()
+        );
+        writer.write_all(b"1}\n").await.unwrap();
+        assert!(
+            matches!(frames.read(&mut reader, 64).await.unwrap(), FrameRead::Line(line) if line == "{\"id\":1}\n")
+        );
+    }
+
+    #[tokio::test]
+    async fn oversized_unterminated_frame_remains_bounded_across_cancellation() {
+        let (mut writer, stream) = tokio::io::duplex(1024);
+        let mut reader = tokio::io::BufReader::with_capacity(32, stream);
+        let mut frames = FrameReader::default();
+        writer.write_all(&[b'x'; 512]).await.unwrap();
+        assert!(
+            timeout(Duration::from_millis(20), frames.read(&mut reader, 16))
+                .await
+                .is_err()
+        );
+        assert!(frames.oversized);
+        assert!(frames.buffer.len() <= 16);
+        writer.write_all(b"\n{}\n").await.unwrap();
+        assert!(matches!(
+            frames.read(&mut reader, 16).await.unwrap(),
+            FrameRead::TooLarge { limit: 16 }
+        ));
+        assert!(
+            matches!(frames.read(&mut reader, 16).await.unwrap(), FrameRead::Line(line) if line == "{}\n")
+        );
+    }
+
+    #[tokio::test]
+    async fn truncated_frame_is_not_dispatched() {
+        let mut reader = tokio::io::BufReader::new(&b"{\"id\":1}"[..]);
+        assert!(matches!(
+            FrameReader::default().read(&mut reader, 64).await.unwrap(),
+            FrameRead::Eof
+        ));
+    }
+
+    #[tokio::test]
+    async fn invalid_utf8_is_rejected_instead_of_changing_request_content() {
+        let mut reader = tokio::io::BufReader::new(&b"{\"text\":\"\xff\"}\n"[..]);
+        let error = FrameReader::default()
+            .read(&mut reader, 64)
+            .await
+            .unwrap_err();
+        assert_eq!(error.kind(), std::io::ErrorKind::InvalidData);
+    }
 
     #[tokio::test]
     async fn reads_a_normal_frame() {
         let mut reader = tokio::io::BufReader::new(&b"{\"id\":1}\n"[..]);
-        match read_frame_line(&mut reader, MAX_CLIENT_FRAME_BYTES)
+        match FrameReader::default()
+            .read(&mut reader, MAX_CLIENT_FRAME_BYTES)
             .await
             .expect("read ok")
         {
@@ -101,7 +175,11 @@ mod tests {
         let payload = "a".repeat(8);
         let frame = format!("{payload}\n");
         let mut reader = tokio::io::BufReader::new(frame.as_bytes());
-        match read_frame_line(&mut reader, 9).await.expect("read ok") {
+        match FrameReader::default()
+            .read(&mut reader, 9)
+            .await
+            .expect("read ok")
+        {
             FrameRead::Line(line) => assert_eq!(line, frame),
             other => panic!("expected a line at the limit, got {other:?}"),
         }
@@ -119,11 +197,16 @@ mod tests {
         stream.extend_from_slice(b"{\"id\":2}\n");
         let mut reader = tokio::io::BufReader::new(&stream[..]);
 
-        match read_frame_line(&mut reader, 16).await.expect("read ok") {
+        match FrameReader::default()
+            .read(&mut reader, 16)
+            .await
+            .expect("read ok")
+        {
             FrameRead::TooLarge { limit } => assert_eq!(limit, 16),
             other => panic!("expected TooLarge, got {other:?}"),
         }
-        match read_frame_line(&mut reader, MAX_CLIENT_FRAME_BYTES)
+        match FrameReader::default()
+            .read(&mut reader, MAX_CLIENT_FRAME_BYTES)
             .await
             .expect("read ok")
         {
@@ -138,7 +221,11 @@ mod tests {
         // waiting forever for a terminator that will never come.
         let stream = [b'x'; 128];
         let mut reader = tokio::io::BufReader::new(&stream[..]);
-        match read_frame_line(&mut reader, 16).await.expect("read ok") {
+        match FrameReader::default()
+            .read(&mut reader, 16)
+            .await
+            .expect("read ok")
+        {
             FrameRead::TooLarge { limit } => assert_eq!(limit, 16),
             other => panic!("expected TooLarge, got {other:?}"),
         }
@@ -148,7 +235,8 @@ mod tests {
     async fn reports_eof_on_a_clean_close() {
         let mut reader = tokio::io::BufReader::new(&b""[..]);
         assert!(matches!(
-            read_frame_line(&mut reader, MAX_CLIENT_FRAME_BYTES)
+            FrameReader::default()
+                .read(&mut reader, MAX_CLIENT_FRAME_BYTES)
                 .await
                 .expect("read ok"),
             FrameRead::Eof
@@ -162,7 +250,8 @@ mod tests {
         // slicing elsewhere in the codebase had.
         let frame = "é".repeat(8) + "\n";
         let mut reader = tokio::io::BufReader::new(frame.as_bytes());
-        match read_frame_line(&mut reader, MAX_CLIENT_FRAME_BYTES)
+        match FrameReader::default()
+            .read(&mut reader, MAX_CLIENT_FRAME_BYTES)
             .await
             .expect("read ok")
         {

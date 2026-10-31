@@ -193,6 +193,10 @@ impl Agent {
         Ok(current)
     }
 
+    pub fn current_reasoning_effort(&self) -> Option<String> {
+        self.provider.reasoning_effort()
+    }
+
     pub fn subagent_model(&self) -> Option<String> {
         self.session.subagent_model.clone()
     }
@@ -235,6 +239,25 @@ impl Agent {
         self.log_env_snapshot("rename_session");
         self.session.save()?;
         Ok(self.session.display_title_or_name().to_string())
+    }
+
+    /// Update the saved-chat marker in the authoritative session.
+    pub fn set_session_bookmark(&mut self, saved: bool, label: Option<String>) -> Result<()> {
+        if saved {
+            self.session.mark_saved(label);
+        } else {
+            self.session.unmark_saved();
+        }
+        self.session.save()?;
+        Ok(())
+    }
+
+    pub fn session_bookmark(&self) -> (bool, Option<String>) {
+        (self.session.saved, self.session.save_label.clone())
+    }
+
+    pub fn session_display_title(&self) -> String {
+        self.session.display_title_or_name().to_string()
     }
 
     pub fn autoreview_enabled(&self) -> Option<bool> {

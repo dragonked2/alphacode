@@ -1547,6 +1547,50 @@ pub(in crate::alphacode_tui::tui::app) fn handle_server_event(
                 false
             }
         }
+        ServerEvent::ExternalUserPrompt {
+            session_id,
+            content,
+        } => {
+            let active = app
+                .remote_session_id
+                .as_deref()
+                .or(app.resume_session_id.as_deref())
+                .unwrap_or(app.session.id.as_str());
+            if active == session_id {
+                app.push_display_message(DisplayMessage::user(content));
+                app.set_status_notice("Prompt sent from desktop");
+                true
+            } else {
+                false
+            }
+        }
+        ServerEvent::SessionBookmark {
+            session_id,
+            saved,
+            label,
+        } => {
+            let active = app
+                .remote_session_id
+                .as_deref()
+                .or(app.resume_session_id.as_deref())
+                .unwrap_or(app.session.id.as_str());
+            if active == session_id {
+                if saved {
+                    app.session.mark_saved(label);
+                } else {
+                    app.session.unmark_saved();
+                }
+                crate::alphacode_tui::tui::session_picker::invalidate_session_list_cache();
+                app.set_status_notice(if saved {
+                    "Chat saved"
+                } else {
+                    "Chat removed from saved"
+                });
+                true
+            } else {
+                false
+            }
+        }
         ServerEvent::Reloading { .. } => {
             app.append_reload_message("🔄 Server reload initiated...");
             // In-process server reloads (self-dev build-reload) keep the same

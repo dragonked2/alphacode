@@ -980,7 +980,12 @@ fn test_pinned_side_diagram_layout_allocates_right_pane() {
 
     let _diagram_lock = crate::alphacode_tui::tui::mermaid::active_diagram_test_lock();
     crate::alphacode_tui::tui::mermaid::clear_active_diagrams();
-    crate::alphacode_tui::tui::mermaid::register_active_diagram(0x111, 900, 450, Some("side".to_string()));
+    crate::alphacode_tui::tui::mermaid::register_active_diagram(
+        0x111,
+        900,
+        450,
+        Some("side".to_string()),
+    );
 
     crate::alphacode_tui::tui::visual_debug::enable();
     let backend = ratatui::backend::TestBackend::new(120, 40);
@@ -1028,7 +1033,12 @@ fn test_pinned_top_diagram_layout_allocates_top_pane() {
 
     let _diagram_lock = crate::alphacode_tui::tui::mermaid::active_diagram_test_lock();
     crate::alphacode_tui::tui::mermaid::clear_active_diagrams();
-    crate::alphacode_tui::tui::mermaid::register_active_diagram(0x222, 500, 900, Some("top".to_string()));
+    crate::alphacode_tui::tui::mermaid::register_active_diagram(
+        0x222,
+        500,
+        900,
+        Some("top".to_string()),
+    );
 
     crate::alphacode_tui::tui::visual_debug::enable();
     let backend = ratatui::backend::TestBackend::new(120, 40);
@@ -1048,7 +1058,12 @@ fn test_pinned_top_diagram_layout_allocates_top_pane() {
         "diagram pane too short: {}",
         diagram.height
     );
-    assert_eq!(messages.y, diagram.y + diagram.height);
+    let diagram_bottom = diagram.y + diagram.height;
+    assert!(messages.y >= diagram_bottom, "transcript overlaps diagram");
+    assert!(
+        messages.y - diagram_bottom <= 1,
+        "unexpected gap after diagram separator"
+    );
     assert!(
         frame
             .render_order
@@ -1114,7 +1129,12 @@ fn test_pinned_tall_diagram_does_not_crush_transcript() {
     let _diagram_lock = crate::alphacode_tui::tui::mermaid::active_diagram_test_lock();
     crate::alphacode_tui::tui::mermaid::clear_active_diagrams();
     // Tall portrait diagram like the flowchart that triggered the bug.
-    crate::alphacode_tui::tui::mermaid::register_active_diagram(0x444, 1320, 1800, Some("tall".to_string()));
+    crate::alphacode_tui::tui::mermaid::register_active_diagram(
+        0x444,
+        1320,
+        1800,
+        Some("tall".to_string()),
+    );
 
     crate::alphacode_tui::tui::visual_debug::enable();
     let backend = ratatui::backend::TestBackend::new(120, 40);
@@ -1348,4 +1368,3 @@ fn test_side_pane_scroll_by_clamps_to_rendered_extent() {
     assert!(app.side_pane_scroll_by(-3));
     assert_eq!(app.diff_pane_scroll, 7);
 }
-

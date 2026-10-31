@@ -40,7 +40,7 @@ fn openai_compatible_profiles_are_well_formed() {
         );
         assert!(
             normalize_api_base(
-                &crate::alphacode_provider_metadata::route_cloak::api_base_for(&profile)
+                &crate::alphacode_provider_metadata::route_cloak::api_base_for(profile)
             )
             .is_some(),
             "profile {} has an unusable api_base: {}",
@@ -236,4 +236,250 @@ fn agentrouter_anthropic_login_provider_is_registered() {
             surface
         );
     }
+}
+
+// ---------------------------------------------------------------------------
+// OrcaRouter
+// ---------------------------------------------------------------------------
+
+/// A temp `ALPHACODE_HOME` so the live-catalog lookups below read a cache this
+/// test wrote instead of whatever the developer machine has.
+struct OrcaCatalogHome {
+    _dir: tempfile::TempDir,
+    _lock: crate::storage::TestEnvGuard,
+    previous: Option<std::ffi::OsString>,
+}
+
+impl OrcaCatalogHome {
+    fn new() -> Self {
+        // One `ALPHACODE_HOME` at a time: these tests redirect it, and a
+        // concurrent redirect would point the cache lookup at another test's
+        // directory.
+        let lock = crate::storage::lock_test_env();
+        let dir = tempfile::tempdir().expect("temp home");
+        let previous = std::env::var_os("ALPHACODE_HOME");
+        crate::alphacode_core::env::set_var("ALPHACODE_HOME", dir.path());
+        Self {
+            _dir: dir,
+            _lock: lock,
+            previous,
+        }
+    }
+}
+
+impl Drop for OrcaCatalogHome {
+    fn drop(&mut self) {
+        match self.previous.take() {
+            Some(value) => crate::alphacode_core::env::set_var("ALPHACODE_HOME", value),
+            None => crate::alphacode_core::env::remove_var("ALPHACODE_HOME"),
+        }
+    }
+}
+
+fn orcarouter_profile() -> OpenAiCompatibleProfile {
+    openai_compatible_profile_by_id("orcarouter").expect("orcarouter profile must be registered")
+}
+
+#[test]
+fn orcarouter_profile_targets_the_inference_origin_and_key_slot() {
+    let profile = orcarouter_profile();
+    let resolved = resolve_openai_compatible_profile(profile);
+    assert_eq!(resolved.api_base, "https://api.orcarouter.ai/v1");
+    assert_eq!(resolved.env_file, "orcarouter.env");
+    assert!(resolved.requires_api_key);
+    // The auth origin is a different host than the inference origin; the
+    // exchange endpoint must never be derived from the API base.
+    assert_ne!(
+        crate::alphacode_base::auth::orcarouter::auth_base(),
+        resolved.api_base
+    );
+}
+
+#[test]
+fn orcarouter_seed_models_are_offered_before_the_live_catalog_lands() {
+    let models = openai_compatible_profile_static_models(orcarouter_profile());
+    assert_eq!(
+        models,
+        vec![
+            "orcarouter/auto",
+            "openai/gpt-5.5",
+            "anthropic/claude-opus-4.8",
+            "google/gemini-3.5-flash",
+            "deepseek/deepseek-v4-pro",
+        ]
+    );
+}
+
+#[test]
+fn orcarouter_default_model_is_in_the_seed_list() {
+    let profile = orcarouter_profile();
+    let default_model = profile.default_model.expect("declares a default model");
+    assert!(
+        openai_compatible_profile_static_models(profile)
+            .iter()
+            .any(|model| model == default_model),
+        "default model {} is not in the seed list",
+        default_model
+    );
+}
+
+#[test]
+fn orcarouter_login_providers_are_registered_and_discoverable() {
+    use crate::provider_catalog::LoginProviderSurface;
+
+    let api = resolve_login_provider("orcarouter").expect("orcarouter login provider must resolve");
+    assert!(matches!(
+        api.target,
+        LoginProviderTarget::OpenAiCompatible(profile) if profile.id == "orcarouter"
+    ));
+    let oauth = resolve_login_provider("orcarouter-oauth")
+        .expect("orcarouter-oauth login provider must resolve");
+    assert!(matches!(oauth.target, LoginProviderTarget::OrcaRouterOAuth));
+
+    for provider in [api, oauth] {
+        for surface in [
+            LoginProviderSurface::CliLogin,
+            LoginProviderSurface::TuiLogin,
+            LoginProviderSurface::ServerBootstrap,
+            LoginProviderSurface::AutoInit,
+            LoginProviderSurface::AuthStatus,
+        ] {
+            assert!(
+                provider.order.for_surface(surface).is_some(),
+                "{} should be listed on {:?}",
+                provider.id,
+                surface
+            );
+        }
+    }
+}
+
+#[test]
+fn orcarouter_both_logins_boot_one_inference_profile() {
+    let api = resolve_login_provider("orcarouter").expect("api provider");
+    let oauth = resolve_login_provider("orcarouter-oauth").expect("oauth provider");
+    // Different ids, different auth kinds, same inference slot.
+    assert_ne!(api.id, oauth.id);
+    assert_ne!(api.auth_kind, oauth.auth_kind);
+    let resolved = resolve_openai_compatible_profile(orcarouter_profile());
+    assert_eq!(
+        crate::provider::MultiProvider::config_default_provider_for_login_provider(oauth),
+        Some(resolved.id.as_str())
+    );
+}
+
+/// Embedding-only and image-generation rows must never be offered as chat
+/// models; a model that advertises a chat endpoint, or advertises nothing at
+/// all, stays available.
+#[test]
+fn orcarouter_endpoint_capabilities_gate_chat_models() {
+    use crate::alphacode_provider_openrouter::ModelInfo;
+    use crate::provider_catalog::openai_compatible_profile_model_supports_chat;
+
+    let _home = OrcaCatalogHome::new();
+    let model =
+        |id: &str, endpoints: &[&str], capabilities: &[&str], modalities: &[&str]| ModelInfo {
+            id: id.to_string(),
+            name: id.to_string(),
+            context_length: Some(128_000),
+            pricing: Default::default(),
+            created: Some(1_700_000_000),
+            supported_endpoint_types: endpoints.iter().map(|v| v.to_string()).collect(),
+            endpoint_capabilities: capabilities.iter().map(|v| v.to_string()).collect(),
+            input_modalities: modalities.iter().map(|v| v.to_string()).collect(),
+        };
+    crate::alphacode_provider_openrouter::save_disk_cache_with_source_for_namespace(
+        "orcarouter",
+        &[
+            model(
+                "openai/gpt-5.5",
+                &["openai"],
+                &["chat_completions"],
+                &["text", "image"],
+            ),
+            model(
+                "anthropic/claude-opus-4.8",
+                &["anthropic"],
+                &[],
+                &["text", "image", "file"],
+            ),
+            model("embed/text-3", &["embeddings"], &["embedding"], &["text"]),
+            model(
+                "img/flux",
+                &["image-generation"],
+                &["image_generation"],
+                &["text"],
+            ),
+            model("mystery/model", &[], &[], &[]),
+        ],
+        Some("https://api.orcarouter.ai/v1"),
+    );
+
+    for chat_model in [
+        "openai/gpt-5.5",
+        "anthropic/claude-opus-4.8",
+        "mystery/model",
+    ] {
+        assert!(
+            openai_compatible_profile_model_supports_chat("orcarouter", chat_model),
+            "{chat_model} advertises chat (or nothing) and must stay selectable"
+        );
+    }
+    for non_chat_model in ["embed/text-3", "img/flux"] {
+        assert!(
+            !openai_compatible_profile_model_supports_chat("orcarouter", non_chat_model),
+            "{non_chat_model} is not a chat model and must not be offered"
+        );
+    }
+
+    // Other profiles keep their permissive behavior.
+    assert!(openai_compatible_profile_model_supports_chat(
+        "groq",
+        "embed/text-3"
+    ));
+}
+
+#[test]
+fn orcarouter_multimodal_support_follows_the_catalog() {
+    use crate::alphacode_provider_openrouter::ModelInfo;
+
+    let _home = OrcaCatalogHome::new();
+    let model = |id: &str, modalities: &[&str]| ModelInfo {
+        id: id.to_string(),
+        name: id.to_string(),
+        context_length: None,
+        pricing: Default::default(),
+        created: None,
+        supported_endpoint_types: vec!["openai".to_string()],
+        endpoint_capabilities: Vec::new(),
+        input_modalities: modalities.iter().map(|v| v.to_string()).collect(),
+    };
+    crate::alphacode_provider_openrouter::save_disk_cache_with_source_for_namespace(
+        "orcarouter",
+        &[
+            model("vision/model", &["text", "image"]),
+            model("text/model", &["text"]),
+            model("unknown/model", &[]),
+        ],
+        Some("https://api.orcarouter.ai/v1"),
+    );
+
+    use crate::provider_catalog::openai_compatible_profile_model_supports_image_input;
+    assert_eq!(
+        openai_compatible_profile_model_supports_image_input("orcarouter", "vision/model"),
+        Some(true)
+    );
+    assert_eq!(
+        openai_compatible_profile_model_supports_image_input("orcarouter", "text/model"),
+        Some(false)
+    );
+    // Unadvertised: the caller keeps its own default rather than guessing.
+    assert_eq!(
+        openai_compatible_profile_model_supports_image_input("orcarouter", "unknown/model"),
+        None
+    );
+    assert_eq!(
+        openai_compatible_profile_model_supports_image_input("groq", "vision/model"),
+        None
+    );
 }

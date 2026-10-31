@@ -313,7 +313,7 @@ mod tests {
 
         runtime.block_on(async {
             let provider = AlphacodeProvider::new();
-            assert_eq!(provider.name(), "Alphacode Subscription");
+            assert_eq!(provider.name(), "AlphaCode Subscription");
             let model = provider.model();
             assert!(
                 crate::subscription_catalog::is_curated_model(&model),
@@ -365,7 +365,7 @@ mod tests {
             expected_models
         );
         assert!(plus_routes.iter().all(|route| {
-            route.provider == "Alphacode Subscription"
+            route.provider == "AlphaCode Subscription"
                 && route.api_method == "alphacode-subscription"
                 && route.available
         }));
@@ -384,7 +384,7 @@ mod tests {
             crate::alphacode_provider_core::RuntimeKey::AlphacodeSubscription
         );
         assert_eq!(route_selection.api_method, "alphacode-subscription");
-        assert_eq!(route_selection.provider_label, "Alphacode Subscription");
+        assert_eq!(route_selection.provider_label, "AlphaCode Subscription");
         assert_eq!(flagship_routes.len(), 19);
         assert!(
             flagship_routes

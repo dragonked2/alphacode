@@ -38,7 +38,7 @@ use super::comm_sync::{
     CommResyncPlanContext, handle_comm_plan_status, handle_comm_read_context,
     handle_comm_resync_plan, handle_comm_status, handle_comm_summary,
 };
-use super::frame_reader::{FrameRead, MAX_CLIENT_FRAME_BYTES, read_frame_line};
+use super::frame_reader::{FrameRead, FrameReader, MAX_CLIENT_FRAME_BYTES};
 use super::provider_control::{
     handle_cycle_model, handle_notify_auth_changed, handle_refresh_models,
     handle_set_compaction_mode, handle_set_model, handle_set_premium_mode,
@@ -369,6 +369,7 @@ pub(super) async fn handle_client(
 ) -> Result<()> {
     let (reader, writer) = stream.into_split();
     let mut reader = BufReader::new(reader);
+    let mut frame_reader = FrameReader::default();
     let writer = Arc::new(Mutex::new(writer));
     let mut line = String::new();
 
@@ -376,7 +377,7 @@ pub(super) async fn handle_client(
         line.clear();
         // Bounded read: an unterminated frame must not be able to grow the
         // buffer without limit and OOM the server.
-        let frame = match read_frame_line(&mut reader, MAX_CLIENT_FRAME_BYTES).await {
+        let frame = match frame_reader.read(&mut reader, MAX_CLIENT_FRAME_BYTES).await {
             Ok(frame) => frame,
             Err(error) => {
                 crate::logging::error(&format!(
@@ -431,6 +432,7 @@ pub(super) async fn handle_client(
                             swarm_event_tx: &swarm_event_tx,
                             mcp_pool: &mcp_pool,
                             soft_interrupt_queues: &soft_interrupt_queues,
+                            shutdown_signals: &shutdown_signals,
                             await_members_runtime: &await_members_runtime,
                             swarm_mutation_runtime: &swarm_mutation_runtime,
                         },
@@ -702,7 +704,7 @@ pub(super) async fn handle_client(
             biased;
             // Prioritize direct client I/O so subscribe/ping/message requests do not get
             // starved behind noisy background bus traffic.
-            frame = read_frame_line(&mut reader, MAX_CLIENT_FRAME_BYTES) => {
+            frame = frame_reader.read(&mut reader, MAX_CLIENT_FRAME_BYTES) => {
                 let n = match frame {
                     Ok(FrameRead::Line(line_value)) => {
                         line.push_str(&line_value);
@@ -2723,6 +2725,13 @@ pub(super) async fn handle_client(
             }
 
             // These are handled via channels, not direct requests from TUI
+            Request::DesktopCommand { id, .. } => {
+                let _ = client_event_tx.send(ServerEvent::Error {
+                    id,
+                    message: "Desktop commands require a separate connection".to_string(),
+                    retry_after_secs: None,
+                });
+            }
             Request::ClientDebugCommand { id, .. } => {
                 handle_client_debug_command(id, &client_event_tx).await;
             }

@@ -16,6 +16,13 @@ use ratatui::{
 use super::selection_highlight::highlight_line_selection;
 
 use super::config_overlay::{self, ConfigSetting};
+use std::sync::atomic::{AtomicUsize, Ordering};
+
+static HELP_MAX_SCROLL: AtomicUsize = AtomicUsize::new(0);
+
+pub(crate) fn help_max_scroll() -> usize {
+    HELP_MAX_SCROLL.load(Ordering::Relaxed)
+}
 
 /// Render the interactive settings overlay (`/config ui`).
 ///
@@ -45,7 +52,8 @@ pub(super) fn draw_config_overlay(
                 .add_modifier(Modifier::BOLD),
         ))
         .borders(Borders::ALL)
-        .border_style(Style::default().fg(dim_color()));
+        .border_type(ratatui::widgets::BorderType::Rounded)
+        .border_style(Style::default().fg(border_color()));
     frame.render_widget(Clear, layout.frame);
     frame.render_widget(block, layout.frame);
     // The mouse handler dismisses the overlay on a click outside the box, and
@@ -72,6 +80,10 @@ pub(super) fn draw_config_overlay(
                     Style::default().fg(dim_color())
                 };
                 ListItem::new(Line::from(vec![
+                    Span::styled(
+                        if index == selected { "▸" } else { " " },
+                        Style::default().fg(accent_color()),
+                    ),
                     Span::styled(format!(" {marker:>3}  "), marker_style),
                     Span::styled(format!("{:<22}", setting.label), base.fg(user_text())),
                     Span::styled(setting.description.to_string(), base.fg(dim_color())),
@@ -755,9 +767,15 @@ pub(super) fn draw_help_overlay(frame: &mut Frame, area: Rect, scroll: usize, ap
 
     lines.push(Line::from(""));
 
+    // Pre-wrap so the scroll range counts the same visible rows that the
+    // terminal renders. Otherwise descriptions are silently clipped on narrow
+    // screens and scrolling cannot reach the missing text.
+    let width = area.width.saturating_sub(2).max(1) as usize;
+    let lines = super::markdown::wrap_lines(lines, width);
     let total_lines = lines.len();
     let visible_height = area.height.saturating_sub(2) as usize;
     let max_scroll = total_lines.saturating_sub(visible_height);
+    HELP_MAX_SCROLL.store(max_scroll, Ordering::Relaxed);
     let scroll = scroll.min(max_scroll);
 
     let scroll_info = if total_lines > visible_height {
@@ -772,21 +790,27 @@ pub(super) fn draw_help_overlay(frame: &mut Frame, area: Rect, scroll: usize, ap
     };
 
     let title = format!(" Help {} ", scroll_info);
+    let footer = if area.width < 60 {
+        " Esc close · ↑↓ scroll "
+    } else {
+        " F1/Esc/q close · mouse/j/k scroll · PgUp/PgDn/Space page · /help <cmd> details "
+    };
     let block = Block::default()
         .title(Span::styled(
             title,
             Style::default().fg(ai_text()).add_modifier(Modifier::BOLD),
         ))
         .title_bottom(Line::from(Span::styled(
-            " F1/Esc/q close · mouse/j/k scroll · PgUp/PgDn/Space page · /help <cmd> details ",
+            footer,
             Style::default().fg(dim_color()),
         )))
         .borders(Borders::ALL)
-        .border_style(Style::default().fg(dim_color()));
+        .border_type(ratatui::widgets::BorderType::Rounded)
+        .border_style(Style::default().fg(border_color()));
 
     let paragraph = Paragraph::new(lines)
         .block(block)
-        .scroll((scroll as u16, 0));
+        .scroll((scroll.min(u16::MAX as usize) as u16, 0));
 
     frame.render_widget(paragraph, area);
 }

@@ -98,11 +98,13 @@ impl App {
         let icon = connection_type_icon(self.connection_type.as_deref()).unwrap_or(session_icon);
         let session_label =
             crate::alphacode_base::process_title::terminal_session_label(&session_name, None);
-        let fallback_label = if server_name.eq_ignore_ascii_case("alphacode") {
-            format!("alphacode {session_label}")
-        } else {
-            format!("alphacode/{} {session_label}", server_name.to_lowercase())
-        };
+        // The brand is added by `terminal_window_title`; adding it here too
+        // produced titles that named the product twice, the second time in the
+        // lowercase slug spelling.
+        let fallback_label = crate::alphacode_base::process_title::terminal_fallback_label(
+            Some(server_name),
+            &session_label,
+        );
         if server_name.eq_ignore_ascii_case("alphacode") {
             crate::alphacode_base::process_title::set_client_display_title(
                 &session_name,

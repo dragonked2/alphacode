@@ -17,6 +17,7 @@ pub mod lifecycle;
 pub mod login_diagnostics;
 pub mod login_flows;
 pub mod oauth;
+pub mod orcarouter;
 pub(crate) mod refresh_coordinator;
 pub mod refresh_state;
 mod status_types;
@@ -557,6 +558,25 @@ impl AuthStatus {
             }
             crate::provider_catalog::LoginProviderTarget::OpenAiCompatible(profile) => {
                 if crate::provider_catalog::openai_compatible_profile_is_configured(profile) {
+                    // OrcaRouter keys do not refresh. A key the relay already
+                    // rejected with 401 is "expired" until the user logs in
+                    // again, even though the credential bytes are still stored.
+                    if profile.id == crate::alphacode_base::auth::orcarouter::PROFILE_ID
+                        && crate::alphacode_base::auth::orcarouter::needs_reauth()
+                    {
+                        AuthState::Expired
+                    } else {
+                        AuthState::Available
+                    }
+                } else {
+                    AuthState::NotConfigured
+                }
+            }
+            crate::provider_catalog::LoginProviderTarget::OrcaRouterOAuth => {
+                // Both OrcaRouter logins share one credential slot.
+                if crate::alphacode_base::auth::orcarouter::needs_reauth() {
+                    AuthState::Expired
+                } else if crate::alphacode_base::auth::orcarouter::load_key().is_some() {
                     AuthState::Available
                 } else {
                     AuthState::NotConfigured
@@ -651,6 +671,16 @@ impl AuthStatus {
                     } else {
                         format!("local endpoint (`{}`)", resolved.api_base)
                     }
+                } else {
+                    "not configured".to_string()
+                }
+            }
+            crate::provider_catalog::LoginProviderTarget::OrcaRouterOAuth => {
+                if self.state_for_provider(provider) == AuthState::Available {
+                    format!(
+                        "OAuth 2.0 + PKCE, key (`{}`)",
+                        crate::alphacode_base::auth::orcarouter::API_KEY_ENV
+                    )
                 } else {
                     "not configured".to_string()
                 }
@@ -919,7 +949,33 @@ impl AuthStatus {
                     source,
                     detail,
                     AuthExpiryConfidence::NotApplicable,
-                    AuthRefreshSupport::NotApplicable,
+                    if profile.id == crate::alphacode_base::auth::orcarouter::PROFILE_ID {
+                        // A minted `sk-orca-...` key cannot be refreshed by
+                        // exchange; recovery is always a fresh authorization.
+                        AuthRefreshSupport::ManualRelogin
+                    } else {
+                        AuthRefreshSupport::NotApplicable
+                    },
+                    AuthValidationMethod::PresenceCheck,
+                )
+            }
+            crate::provider_catalog::LoginProviderTarget::OrcaRouterOAuth => {
+                let (source, detail) = summarize_sources(vec![
+                    env_source(crate::alphacode_base::auth::orcarouter::API_KEY_ENV),
+                    config_source(
+                        crate::alphacode_base::auth::orcarouter::API_KEY_ENV,
+                        crate::alphacode_base::auth::orcarouter::ENV_FILE,
+                        format!(
+                            "~/.config/alphacode/{}",
+                            crate::alphacode_base::auth::orcarouter::ENV_FILE
+                        ),
+                    ),
+                ]);
+                (
+                    source,
+                    detail,
+                    AuthExpiryConfidence::NotApplicable,
+                    AuthRefreshSupport::ManualRelogin,
                     AuthValidationMethod::PresenceCheck,
                 )
             }

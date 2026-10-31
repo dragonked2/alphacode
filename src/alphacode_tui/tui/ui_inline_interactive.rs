@@ -1,5 +1,6 @@
 use super::*;
 use ratatui::widgets::{Block, BorderType, Borders};
+use unicode_segmentation::UnicodeSegmentation;
 use unicode_width::UnicodeWidthStr;
 
 /// Model tier for visual grouping and styling
@@ -64,13 +65,13 @@ fn truncate_display(text: &str, max_width: usize) -> String {
 
     let mut out = String::new();
     let mut used = 0usize;
-    for ch in text.chars() {
-        let ch_width = unicode_width::UnicodeWidthChar::width(ch).unwrap_or(0);
-        if used + ch_width + 1 > max_width {
+    for grapheme in text.graphemes(true) {
+        let grapheme_width = grapheme.width();
+        if used + grapheme_width + 1 > max_width {
             break;
         }
-        out.push(ch);
-        used += ch_width;
+        out.push_str(grapheme);
+        used += grapheme_width;
     }
     out.push('…');
     out
@@ -715,7 +716,7 @@ pub(super) fn draw_inline_interactive(frame: &mut Frame, app: &dyn TuiState, are
 
     if picker.filtered.is_empty() {
         lines.push(Line::from(Span::styled(
-            "   no matches",
+            "   No matches · edit search or press Esc to clear",
             Style::default().fg(dim_color()).italic(),
         )));
         frame.render_widget(Paragraph::new(lines), inner);
@@ -1101,6 +1102,14 @@ pub(super) fn draw_inline_interactive_v2(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn picker_truncation_preserves_combined_characters() {
+        assert_eq!(
+            truncate_display("e\u{301}👩\u{200d}💻xyz", 4),
+            "e\u{301}👩\u{200d}💻…"
+        );
+    }
 
     #[test]
     fn format_elapsed_scales_precision_with_duration() {

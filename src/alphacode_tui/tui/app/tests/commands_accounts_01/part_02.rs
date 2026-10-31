@@ -230,7 +230,7 @@ fn test_subscription_command_shows_alphacode_status_scaffold() {
         .last()
         .expect("missing /subscription response");
     assert_eq!(msg.role, "system");
-    assert!(msg.content.contains("Alphacode Subscription Status"));
+    assert!(msg.content.contains("AlphaCode Subscription Status"));
     assert!(msg.content.contains("/login alphacode"));
     assert!(msg.content.contains("Claude Opus 4.8"));
     assert!(msg.content.contains("GPT-5.5"));

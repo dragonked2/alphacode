@@ -288,3 +288,16 @@ fn fd_redirects_are_not_denied_from_a_protected_working_directory() {
         );
     }
 }
+#[test]
+fn literal_loop_variable_named_source_is_not_a_shell_invocation() {
+    assert_ne!(
+        level_of(
+            "for source in https://example.test/a https://example.test/b; do curl --silent \"$source\"; done"
+        ),
+        RiskLevel::Catastrophic
+    );
+    assert_eq!(
+        level_of("for source in one two; do rm -rf ~; done"),
+        RiskLevel::Catastrophic
+    );
+}

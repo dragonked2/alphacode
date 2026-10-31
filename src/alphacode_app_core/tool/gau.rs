@@ -5,12 +5,6 @@ use serde::Deserialize;
 use serde_json::{Value, json};
 use std::collections::HashMap;
 
-/// Recommended time limit for gau (`-t`), in seconds. Only applied when the
-/// caller sets `t`: several gau builds reject `-t` as an unknown flag, so the
-/// flag must stay opt-in rather than always-sent.
-#[allow(dead_code)]
-const RECOMMENDED_TIMEOUT_SECS: u64 = 30;
-
 pub struct GauTool;
 
 #[derive(Deserialize)]
@@ -58,7 +52,7 @@ impl Tool for GauTool {
                 },
                 "no_color": {
                     "type": "boolean",
-                    "description": "Suppress color codes. Default: false."
+                    "description": "Accepted for compatibility; URL output is uncolored."
                 },
                 "o": {
                     "type": "boolean",
@@ -78,7 +72,7 @@ impl Tool for GauTool {
                 },
                 "t": {
                     "type": "integer",
-                    "description": "Time limit in seconds. Default: 30."
+                    "description": "HTTP client timeout in seconds; uses gau's default when omitted."
                 }
             }
         })
@@ -109,7 +103,8 @@ impl Tool for GauTool {
             ));
         }
 
-        let (urls, total, truncated) = super::recon_common::parse_lines(&output.stdout);
+        let filtered = format_gau_output(&output.stdout, &params);
+        let (urls, total, truncated) = super::recon_common::parse_lines(filtered.as_bytes());
 
         let mut result = format!("gau found {total} URLs for {}:\n\n", params.domain);
 
@@ -144,30 +139,25 @@ fn build_args(params: &GauInput) -> Result<Vec<String>> {
     let mut args = Vec::new();
 
     if let Some(threads) = params.threads {
-        args.push("-threads".to_string());
+        args.push("--threads".to_string());
         args.push(threads.to_string());
     }
 
-    if params.no_color {
-        args.push("-nc".to_string());
+    if [params.o, params.p, params.q]
+        .into_iter()
+        .flatten()
+        .filter(|enabled| *enabled)
+        .count()
+        > 1
+    {
+        anyhow::bail!("gau output modes 'o', 'p', and 'q' are mutually exclusive");
     }
-    if params.o.unwrap_or(false) {
-        args.push("-o".to_string());
-    }
-    if params.p.unwrap_or(false) {
-        args.push("-p".to_string());
-    }
-    if params.q.unwrap_or(false) {
-        args.push("-q".to_string());
-    }
+    let _ = params.no_color;
     if params.s.unwrap_or(false) {
-        args.push("-s".to_string());
+        args.push("--subs".to_string());
     }
-    // Only send -t when the caller explicitly opts in. Some gau builds
-    // (notably v2.x from lc/gau) treat -t as an unknown flag and exit 2,
-    // so the schema-advertised 30s default is now caller-driven.
     if let Some(timeout) = params.t {
-        args.push("-t".to_string());
+        args.push("--timeout".to_string());
         args.push(timeout.to_string());
     }
 
@@ -178,6 +168,40 @@ fn build_args(params: &GauInput) -> Result<Vec<String>> {
     args.push(domain);
 
     Ok(args)
+}
+
+/// Apply the legacy output options locally; gau v2 does not provide those
+/// switches. Filtering happens before output limits and result counts.
+fn format_gau_output(raw: &[u8], params: &GauInput) -> String {
+    let text = String::from_utf8_lossy(raw);
+    let mut seen = std::collections::HashSet::new();
+    let mut result = String::new();
+    let suffix = format!(".{}", params.domain.to_ascii_lowercase());
+    for line in text.lines().map(str::trim).filter(|line| !line.is_empty()) {
+        let Ok(url) = url::Url::parse(line) else {
+            continue;
+        };
+        let Some(host) = url.host_str() else { continue };
+        if params.s.unwrap_or(false) && !host.to_ascii_lowercase().ends_with(&suffix) {
+            continue;
+        }
+        let value = if params.o.unwrap_or(false) {
+            if !seen.insert(host.to_ascii_lowercase()) {
+                continue;
+            }
+            host
+        } else if params.p.unwrap_or(false) {
+            url.path()
+        } else if params.q.unwrap_or(false) {
+            let Some(query) = url.query() else { continue };
+            query
+        } else {
+            line
+        };
+        result.push_str(value);
+        result.push('\n');
+    }
+    result
 }
 
 #[cfg(test)]
@@ -198,5 +222,21 @@ mod tests {
         };
         let args = build_args(&input).expect("build_args");
         assert!(args.contains(&"example.com".to_string()));
+    }
+
+    #[test]
+    fn gau_v2_flags_and_legacy_filters_are_supported() {
+        let input: GauInput = serde_json::from_value(json!({"domain":"example.com", "threads":2, "no_color":true, "s":true, "t":4, "o":true})).unwrap();
+        let args = build_args(&input).unwrap();
+        assert!(args.contains(&"--threads".to_string()));
+        assert!(args.contains(&"--timeout".to_string()));
+        assert!(args.contains(&"--subs".to_string()));
+        assert!(
+            !args
+                .iter()
+                .any(|arg| ["-nc", "-o", "-t", "-s"].contains(&arg.as_str()))
+        );
+        let result = format_gau_output(b"https://example.com/a\nhttps://sub.example.com/a\nhttps://sub.example.com/b\nhttps://other.com/\n", &input);
+        assert_eq!(result, "sub.example.com\n");
     }
 }

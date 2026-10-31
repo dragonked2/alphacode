@@ -353,6 +353,9 @@ fn format_gpt_id_from_segments(rest: &str) -> String {
 /// (Claude 4.5 Opus, GPT-5.2 Codex), generic title-cased prettification otherwise.
 fn header_model_display_name(model: &str, provider_name: &str) -> String {
     let raw = model.trim();
+    if let Some(name) = crate::alphacode_provider_metadata::internal_model_display_name(raw) {
+        return name.to_string();
+    }
 
     // Claude family ids ("claude-opus-4-6", "claude-3-5-sonnet-latest",
     // "claude-haiku-4.5") render as "Claude <version> <Family>" for any
@@ -846,75 +849,45 @@ fn gradient_text_spans(text: &str) -> Vec<Span<'static>> {
     spans
 }
 
-/// ASCII-art "ALPHACODE" wordmark for the persistent header, widest variant
-/// first. Each entry is a complete banner; `build_alpha_banner` picks the
-/// first one that fits the available width. Widths are measured from the art
-/// itself rather than hardcoded so editing a row cannot silently start
-/// overflowing.
+/// Branded ASCII-art wordmark for the header, widest variant first.
 ///
-/// - `BANNER_BLOCK` (73 cols): full box-drawing block letters.
-/// - `BANNER_COMPACT` (63 cols): smaller filled-block letters for narrower panes.
-/// - `BANNER_MONOSPACE` (43 cols): plain monospace lettering, no glyph art.
-/// - `BANNER_MINIMAL` (25 cols): bare wordmark with separators, for very
-///   narrow terminals.
-const BANNER_BLOCK: &[&str] = &[
-    r" █████╗ ██╗     ██████╗ ██╗  ██╗ █████╗  ██████╗ ██████╗ ██████╗ ███████╗",
-    r"██╔══██╗██║     ██╔══██╗██║  ██║██╔══██╗██╔════╝██╔═══██╗██╔══██╗██╔════╝",
-    r"███████║██║     ██████╔╝███████║███████║██║     ██║   ██║██║  ██║█████╗  ",
-    r"██╔══██║██║     ██╔═══╝ ██╔══██║██╔══██║██║     ██║   ██║██║  ██║██╔══╝  ",
-    r"██║  ██║███████╗██║     ██║  ██║██║  ██║╚██████╗╚██████╔╝██████╔╝███████╗",
-    r"╚═╝  ╚═╝╚══════╝╚═╝     ╚═╝  ╚═╝╚═╝  ╚═╝ ╚═════╝ ╚═════╝ ╚═════╝ ╚══════╝",
-];
-
-const BANNER_COMPACT: &[&str] = &[
-    r"  ██   ██     █████  ██  ██   ██    █████  ████  █████  ██████ ",
-    r" ████  ██     ██  ██ ██  ██  ████  ██     ██  ██ ██  ██ ██     ",
-    r"██  ██ ██     █████  ██████ ██  ██ ██     ██  ██ ██  ██ █████  ",
-    r"██████ ██     ██     ██  ██ ██████ ██     ██  ██ ██  ██ ██     ",
-    r"██  ██ ██████ ██     ██  ██ ██  ██  █████  ████  █████  ██████ ",
-];
-
-const BANNER_MONOSPACE: &[&str] = &[r"A L P H A C O D E"];
-
-const BANNER_MINIMAL: &[&str] = &[r"‹ alphacode ›"];
-
-const ALPHA_BANNERS: [&[&str]; 4] = [
-    BANNER_BLOCK,
-    BANNER_COMPACT,
-    BANNER_MONOSPACE,
-    BANNER_MINIMAL,
-];
-
-/// Build the ASCII-art "ALPHACODE" wordmark for the header, or an empty vec when
-/// even the narrowest variant cannot fit.
+/// The tier comes from the shared [`crate::alphacode_brand::wordmark_for`]
+/// selector, so the header cannot disagree with the splash or the CLI banner
+/// about which wordmark a given width receives. Each surface used to carry its
+/// own copy of the tier list and they had already drifted (the header printed
+/// `‹ alphacode ›` while the canonical wordmark is `‹ AlphaCode ›`).
+///
+/// This deliberately reads the **full** ladder, not a text-only subset. The
+/// six-row block art *is* the logo, and the header has always drawn it on
+/// terminals wide enough to hold it (73 cells). Routing the header through a
+/// compact-only selector silently downgraded every wide terminal to the
+/// one-row `A L P H A C O D E` mark, so the art stopped appearing anywhere it
+/// was meant to be seen.
+///
+/// Returns an empty vec when even the narrowest tier cannot fit, so the caller
+/// falls back to the text brand line instead of wrapping the art.
 ///
 /// `width` is the full header width; the same 4-column headroom the model line
 /// reserves is applied here so the banner never wraps once the render area
 /// subtracts its side margins.
 fn build_alpha_banner(width: usize) -> Vec<Line<'static>> {
     let fit_width = width.saturating_sub(4);
-    let Some(art) = ALPHA_BANNERS.iter().find(|art| {
-        art.iter()
-            .all(|row| unicode_width::UnicodeWidthStr::width(*row) <= fit_width)
-    }) else {
+    let Some(art) = crate::alphacode_brand::wordmark_for(fit_width) else {
         return Vec::new();
     };
 
-    // Gradient wordmark: each banner row is tinted with the next brand hue
-    // (cyan -> blue -> purple -> pink -> green -> amber) so the logo reads
-    // as a flowing multi-color gradient that adapts to the active preset
-    // instead of a single flat color.
-    let gradient = brand_gradient();
+    // Warm gold shades distinguish the wordmark from the rest of the theme.
+    let colors = [rgb(255, 215, 100), rgb(235, 178, 55), rgb(198, 139, 35)];
     let mut lines: Vec<Line<'static>> = art
         .iter()
         .enumerate()
         .map(|(index, row)| {
-            let style = Style::default().fg(gradient[index % gradient.len()]).bold();
-            Line::from(Span::styled(row.to_string(), style)).alignment(Alignment::Left)
+            let style = Style::default().fg(colors[index % colors.len()]).bold();
+            Line::from(Span::styled(row.to_string(), style)).alignment(Alignment::Center)
         })
         .collect();
     // Separate the wordmark from the status rows below it.
-    lines.push(Line::from("").alignment(Alignment::Left));
+    lines.push(Line::from("").alignment(Alignment::Center));
     lines
 }
 
@@ -950,7 +923,7 @@ fn collect_status_items(app: &dyn TuiState) -> Vec<&'static str> {
     items
 }
 
-/// The brand line: gradient "alphacode" word, version stamp, optional
+/// The brand line: gradient brand word, version stamp, optional
 /// "self-dev" suffix for canary builds, and any status badges collected by
 /// `collect_status_items`. Only rendered when the ASCII banner above it didn't
 /// fit (`show_wordmark`), so the brand name isn't shown twice back to back.
@@ -961,13 +934,13 @@ fn build_brand_line(
     width: usize,
 ) -> Line<'static> {
     let mut spans = if show_wordmark {
-        gradient_text_spans("alphacode")
+        gradient_text_spans(crate::alphacode_brand::DISPLAY_NAME)
     } else {
         Vec::new()
     };
     if !spans.is_empty() {
         // Always pair the wordmark with the running version so the brand stamp
-        // doubles as a build identity ("alphacode v1.0.0").
+        // doubles as a build identity ("AlphaCode v1.0.0").
         let version = crate::alphacode_build_meta::version();
         spans.push(Span::styled(
             format!(" v{}", version),
@@ -984,7 +957,7 @@ fn build_brand_line(
     if width >= 96 {
         let prefix = if spans.is_empty() { "" } else { " · " };
         spans.push(Span::styled(
-            format!("{prefix}https://alphacli.github.io/"),
+            format!("{prefix}{}", crate::alphacode_brand::HOMEPAGE),
             Style::default()
                 .fg(dim_color())
                 .add_modifier(Modifier::UNDERLINED),
@@ -1039,7 +1012,7 @@ fn build_gradient_separator(width: usize) -> Line<'static> {
     for i in 1..=total_chars {
         if i == total_chars || colors[i] != colors[i - 1] {
             let n = i - run_start;
-            let text: String = std::iter::repeat_n('━', n).collect();
+            let text: String = std::iter::repeat_n('─', n).collect();
             spans.push(Span::styled(
                 text,
                 Style::default()
@@ -1193,22 +1166,33 @@ fn build_model_line(
     // header keeps model identity, connection and the `/model` hint only.
 
     if !model_is_placeholder {
-        push_if_fits(
-            &mut spans,
-            &mut len,
-            fit_width,
-            " \u{00b7} ".to_string(),
-            Style::default().fg(border_color()),
-        );
-        push_if_fits(
-            &mut spans,
-            &mut len,
-            fit_width,
-            "/model to switch".to_string(),
-            Style::default()
-                .fg(muted_text_color())
-                .add_modifier(Modifier::ITALIC),
-        );
+        // The separator and the hint it introduces fit or fail together. They
+        // used to be pushed independently, so whenever the hint did not fit the
+        // line still ended in a dangling " · " -- visible on every terminal
+        // narrower than the hint, which read as a cut-off string rather than a
+        // deliberate omission.
+        const HINT: &str = "/model to switch";
+        const SEPARATOR: &str = " \u{00b7} ";
+        let needed = unicode_width::UnicodeWidthStr::width(SEPARATOR)
+            + unicode_width::UnicodeWidthStr::width(HINT);
+        if len + needed <= fit_width {
+            push_if_fits(
+                &mut spans,
+                &mut len,
+                fit_width,
+                SEPARATOR.to_string(),
+                Style::default().fg(border_color()),
+            );
+            push_if_fits(
+                &mut spans,
+                &mut len,
+                fit_width,
+                HINT.to_string(),
+                Style::default()
+                    .fg(muted_text_color())
+                    .add_modifier(Modifier::ITALIC),
+            );
+        }
     }
 
     Some(Line::from(spans).alignment(Alignment::Left))
@@ -1226,16 +1210,14 @@ fn build_persistent_header_with_auth(
     let w = width as usize;
     let fit_width = w.saturating_sub(4);
 
-    // The ALPHACODE wordmark costs six rows. Hiding it once the transcript has
-    // content was tried and reverted: it did not recover the missing transcript
-    // rows it was meant to free, and because the banner vanished the instant the
-    // first message landed it produced an 8-row mass reflow with a -3 column
-    // shift (see smoothness_benchmark_simulated_streaming_turn_stays_within_budget,
-    // which went from passing to `mass_reflow_events: 1`). Trading a stable
-    // layout for rows nobody could see was a bad deal.
+    // Keep the header compact and stable throughout the conversation, avoiding
+    // a large reflow when the first message arrives.
     let banner = build_alpha_banner(w);
     let banner_rendered = !banner.is_empty();
-    let mut lines: Vec<Line> = banner;
+    let mut lines: Vec<Line> = banner
+        .into_iter()
+        .map(|line| line.alignment(align))
+        .collect();
     lines.push(build_brand_line(
         app,
         align,
@@ -1247,7 +1229,13 @@ fn build_persistent_header_with_auth(
     // separator breaks the idle-animation partial repaint, which reproduces
     // every cell outside the animated rows from the previous frame; a
     // breathing separator would freeze mid-breath between full frames.
-    lines.push(build_gradient_separator(w));
+    // The header's own lines are *wrapped* at `width - 1` (see
+    // `prepare_header_cached`), so a separator drawn at exactly `width` would
+    // always wrap: ratatui's `Paragraph` does not wrap, it clips, and the
+    // `wrap_line` pass before it emits the overflow as a second row. The frame
+    // then showed a full-width rule followed by a lone one-cell dash -- a
+    // glitch that appeared at every terminal size. Match the wrap width.
+    lines.push(build_gradient_separator(w.saturating_sub(1)));
 
     if let Some(model_line) = build_model_line(app, &model, &nice_model, auth, active, fit_width) {
         lines.push(model_line);
@@ -1421,6 +1409,68 @@ pub(super) fn build_updates_box_lines(width: u16, max_lines: usize) -> Vec<Line<
 // Combined entry point
 // ---------------------------------------------------------------------------
 
+/// Rows the always-visible banner band occupies above the transcript.
+///
+/// The banner is pinned to the top of the chat column (it no longer scrolls
+/// away with the transcript), and reserves a fixed slice of the available
+/// height: one sixth, clamped so a tiny terminal still has transcript room and
+/// a huge one is not swallowed by chrome. The wordmark art itself is variable
+/// height (six rows on wide terminals, fewer as the terminal narrows). Select
+/// an entire tier that fits the height budget rather than clipping the art.
+pub(super) fn banner_band_height(width: u16, available_height: u16) -> u16 {
+    if width < 12 || available_height < 12 {
+        return 0;
+    }
+    // Reserve the top sixth, bounded so the transcript keeps the majority of
+    // the screen. Minimum 1 keeps the brand line visible on short terminals.
+    let sixth = available_height / 6;
+    let budget = sixth.clamp(1, 12);
+    // Build only the banner (not the model/auth lines) to learn its real
+    // height. `build_alpha_banner` is a pure width→art lookup.
+    banner_wordmark(width, budget).map_or(1, |art| art.len() as u16)
+}
+
+fn banner_wordmark(width: u16, height: u16) -> Option<&'static [&'static str]> {
+    let fit_width = usize::from(width.saturating_sub(4));
+    crate::alphacode_brand::WORDMARK_LADDER
+        .iter()
+        .copied()
+        .find(|tier| {
+            tier.len() <= usize::from(height)
+                && tier
+                    .iter()
+                    .all(|row| unicode_width::UnicodeWidthStr::width(*row) <= fit_width)
+        })
+}
+
+/// Build exactly `height` rows for the pinned banner band.
+///
+/// The band is drawn in its own layout chunk above the transcript, so it must
+/// use only a complete wordmark tier that fits the reserved rows.
+pub(super) fn build_banner_band_lines(
+    app: &dyn TuiState,
+    width: u16,
+    height: u16,
+) -> Vec<Line<'static>> {
+    if height == 0 {
+        return Vec::new();
+    }
+    let _ = app;
+    let gold = [rgb(255, 215, 100), rgb(235, 178, 55), rgb(198, 139, 35)];
+    banner_wordmark(width, height)
+        .unwrap_or(&[crate::alphacode_brand::DISPLAY_NAME])
+        .iter()
+        .enumerate()
+        .map(|(i, row)| {
+            Line::from(Span::styled(
+                *row,
+                Style::default().fg(gold[i % gold.len()]).bold(),
+            ))
+            .alignment(Alignment::Center)
+        })
+        .collect()
+}
+
 /// Build both header sections from one authentication snapshot. Credential
 /// discovery can touch several files on Windows, so the render path must not
 /// repeat it for the persistent and secondary portions of the same frame.
@@ -1434,6 +1484,13 @@ pub(super) fn build_header_sections(
         build_persistent_header_with_auth(app, width, &auth, active),
         build_secondary_header_lines(app, width),
     )
+}
+
+/// Number of wordmark rows at the start of the normal header, including its
+/// separator row. The remaining status and session details are still useful
+/// when the wordmark is pinned separately.
+pub(super) fn header_wordmark_rows(width: u16) -> usize {
+    build_alpha_banner(usize::from(width)).len()
 }
 
 // ---------------------------------------------------------------------------
@@ -1450,6 +1507,52 @@ mod tests {
     use anyhow::Result;
     use async_trait::async_trait;
     use std::sync::Arc;
+
+    /// The pinned banner band is sized to the top ~sixth of the chat column,
+    /// never vanishes on a usable terminal, and never exceeds the wordmark art
+    /// height (so it cannot leave a blank gap).
+    #[test]
+    fn banner_band_reserves_the_top_sixth_bounded_by_the_art() {
+        // One sixth of a tall terminal, clamped to the art height.
+        let tall = banner_band_height(100, 48);
+        assert!(tall >= 1, "a tall terminal must reserve a banner row");
+        assert!(
+            tall <= 48 / 6 + 1,
+            "banner must not exceed ~1/6: got {tall}"
+        );
+        assert!(tall <= build_alpha_banner(100).len() as u16);
+
+        // Very short terminals get no band (nothing to pin without starving
+        // the transcript).
+        assert_eq!(banner_band_height(100, 8), 0);
+        // Too narrow for any wordmark gets no band.
+        assert_eq!(banner_band_height(6, 40), 0);
+    }
+
+    #[test]
+    fn banner_selects_complete_art_for_the_available_height() {
+        for height in 12..=60 {
+            let band = banner_band_height(100, height);
+            let art = banner_wordmark(100, band).expect("wordmark fits");
+            assert_eq!(art.len(), usize::from(band));
+            assert!(band <= height / 6);
+            assert!(
+                art == crate::alphacode_brand::WORDMARK_BLOCK
+                    || art == crate::alphacode_brand::WORDMARK_COMPACT
+                    || art == crate::alphacode_brand::WORDMARK_MONOSPACE_ROWS
+                    || art == crate::alphacode_brand::WORDMARK_MINIMAL_ROWS
+            );
+        }
+    }
+
+    #[test]
+    fn header_uses_the_public_label_for_internal_model_aliases() {
+        let alias = crate::alphacode_provider_metadata::route_cloak::free_route_default_model();
+        assert_eq!(
+            header_model_display_name(&alias, ""),
+            crate::alphacode_provider_metadata::internal_model_display_name(&alias).unwrap()
+        );
+    }
 
     /// Substring matching on "opus"/"sonnet"/"haiku" used to rename any model
     /// that happened to contain a family word, including local fine-tunes and
@@ -1631,6 +1734,81 @@ mod tests {
             !line.spans.is_empty(),
             "gradient separator should produce output"
         );
+    }
+
+    /// The separator must occupy exactly one row after wrapping.
+    ///
+    /// Header lines are wrapped at `width - 1` before rendering, so a
+    /// separator drawn at exactly `width` always spilled its last cell onto an
+    /// extra row: the frame showed the full rule followed by a lone dash, at
+    /// every terminal size. `wrap_lines` is the same function
+    /// `prepare_header_cached` uses, so this measures the real pipeline.
+    #[test]
+    fn gradient_separator_occupies_one_row_after_wrapping() {
+        let app = create_test_app();
+        for width in [200u16, 160, 120, 100, 80, 60, 40, 24] {
+            let (persistent, _) = build_header_sections(&app, width);
+            let separators: Vec<Line<'static>> = persistent
+                .into_iter()
+                .filter(|line| {
+                    let text: String = line.spans.iter().map(|s| s.content.as_ref()).collect();
+                    !text.is_empty() && text.chars().all(|ch| ch == '\u{2500}')
+                })
+                .collect();
+            assert_eq!(
+                separators.len(),
+                1,
+                "expected exactly one gradient separator at width {width}"
+            );
+            let wrapped = crate::alphacode_tui_markdown::wrap_lines(separators, width as usize);
+            assert_eq!(
+                wrapped.len(),
+                1,
+                "separator wrapped into {} rows at width {width}; \
+                 it must stay one row so the header height is stable",
+                wrapped.len()
+            );
+        }
+    }
+
+    /// A truncated header line must not end in a dangling separator.
+    ///
+    /// The middle dot before "/model to switch" was pushed independently of the
+    /// hint, so on a terminal too narrow for the hint the model line still
+    /// ended in " . " -- which reads as a string cut off mid-way rather than
+    /// one that deliberately omitted a section.
+    #[test]
+    fn model_line_never_ends_with_a_dangling_separator() {
+        let app = create_test_app();
+        for width in [200u16, 120, 80, 60, 44, 40, 30, 24] {
+            for line in rendered_header_lines(&app, width) {
+                let trimmed = line.trim_end();
+                assert!(
+                    !trimmed.ends_with('\u{00b7}'),
+                    "header line at width {width} ends with a dangling separator: {trimmed:?}"
+                );
+            }
+        }
+    }
+
+    /// No header row may exceed the terminal width. ratatui's `Paragraph` does
+    /// not wrap -- it clips -- so an over-wide row silently loses its tail, and
+    /// the one-cell headroom the wrap pass reserves (`width - 1`) is what keeps
+    /// the last column free of half-drawn borders.
+    #[test]
+    fn header_rows_never_exceed_the_terminal_width() {
+        let app = create_test_app();
+        for width in [200u16, 160, 120, 100, 80, 60, 40, 24] {
+            let (mut persistent, secondary) = build_header_sections(&app, width);
+            persistent.extend(secondary);
+            for line in &persistent {
+                assert!(
+                    line.width() <= width as usize,
+                    "header row is {} cells at terminal width {width}",
+                    line.width()
+                );
+            }
+        }
     }
 
     /// The separator used to stop at 120 columns, leaving a dead gap on wide
@@ -2226,10 +2404,9 @@ mod tests {
 
     #[test]
     fn alpha_banners_are_row_width_consistent_and_fit_in_priority_order() {
-        // Every banner's rows must share one display width (ragged rows would
-        // misalign the block-letter art), and each banner must actually spell
-        // out the brand rather than being a broken/legacy placeholder.
-        for art in ALPHA_BANNERS {
+        // The header draws the shared ladder, and every tier must stay
+        // internally aligned so it cannot shear the header layout.
+        for art in crate::alphacode_brand::WORDMARK_LADDER {
             let widths: Vec<usize> = art
                 .iter()
                 .map(|row| unicode_width::UnicodeWidthStr::width(*row))
@@ -2241,14 +2418,31 @@ mod tests {
             );
         }
 
-        // Widest variant is tried first, so a wide terminal gets the full
-        // block-letter wordmark.
+        // A wide terminal gets the real logo: the six-row block art, not a
+        // single-row text substitute. This is the regression that made the
+        // banner look absent -- the header had been routed through the
+        // compact-only selector, so the art never rendered anywhere.
         let wide = build_alpha_banner(120);
         assert!(!wide.is_empty());
+        assert_eq!(wide[0].alignment, Some(Alignment::Center));
         let wide_text = flatten(&wide);
+        assert_eq!(
+            wide.len(),
+            crate::alphacode_brand::WORDMARK_BLOCK.len() + 1,
+            "wide banner should be the block art plus a separator row: {wide_text}"
+        );
         assert!(
-            wide_text.contains('█'),
-            "wide banner should use block glyphs: {wide_text}"
+            wide_text.contains("██╔══██╗"),
+            "wide banner should be the block-letter wordmark: {wide_text}"
+        );
+
+        // Just past the block art's 73 cells the next tier down is the compact
+        // art, which is still multi-row.
+        let medium = build_alpha_banner(70);
+        assert_eq!(
+            medium.len(),
+            crate::alphacode_brand::WORDMARK_COMPACT.len() + 1,
+            "a 66-cell header should fall to the compact art"
         );
 
         // A very narrow terminal falls back to the minimal wordmark rather
@@ -2274,8 +2468,7 @@ mod tests {
     fn brand_line_shows_wordmark_only_when_banner_is_absent() {
         let app = create_test_app();
 
-        // Wide enough for the ASCII banner: the block art renders as visual
-        // glyphs but does not contain the literal text "alphacode", so the
+        // The spaced wordmark does not contain the literal text "alphacode", so the
         // word count should be zero (the brand line only adds the wordmark
         // when the banner is absent).
         let wide_lines = build_persistent_header(&app, 120);

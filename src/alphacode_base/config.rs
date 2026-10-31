@@ -580,6 +580,13 @@ pub struct ToolConfig {
     pub disabled: Vec<String>,
     /// Disable all built-in tools unless `enabled` is provided.
     pub disable_base_tools: bool,
+    /// How many tool *definitions* to advertise to the model each request.
+    ///
+    /// `"progressive"` (default) advertises the core + standard surface and
+    /// promotes specialized tools on demand, cutting the static prompt prefix
+    /// dramatically without removing any capability. `"legacy"` advertises every
+    /// enabled tool on every request (the pre-disclosure behaviour).
+    pub disclosure: String,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]

@@ -193,3 +193,103 @@ fn separator_rule_never_overwrites_the_last_transcript_line() {
         rows.join("\n")
     );
 }
+
+#[test]
+fn short_terminals_keep_composer_and_picker_visible() {
+    use crate::alphacode_tui::tui::{
+        InlineInteractiveState, PickerAction, PickerEntry, PickerKind, PickerOption,
+    };
+    let _lock = viewport_snapshot_test_lock();
+    let entries: Vec<_> = (0..30)
+        .map(|i| PickerEntry {
+            name: format!("model-{i}"),
+            options: vec![PickerOption::new(
+                "provider".into(),
+                "api".into(),
+                true,
+                String::new(),
+                None,
+            )],
+            action: PickerAction::Model,
+            selected_option: 0,
+            is_current: false,
+            is_default: false,
+            is_favorite: false,
+            recommended: false,
+            recommendation_rank: usize::MAX,
+            usage_score: 0,
+            old: false,
+            created_date: None,
+            effort: None,
+        })
+        .collect();
+    let state = TestState {
+        input: "DRAFT sentinel".into(),
+        suppress_info_widgets: true,
+        inline_interactive_state: Some(InlineInteractiveState {
+            kind: PickerKind::Model,
+            filtered: (0..entries.len()).collect(),
+            entries,
+            selected: 0,
+            column: 0,
+            filter: String::new(),
+            preview: false,
+        }),
+        ..Default::default()
+    };
+    for height in [9, 12, 16, 24] {
+        clear_flicker_frame_history_for_tests();
+        let (rows, layout) = draw_frame(&state, 80, height);
+        let input = layout.input_area.expect("composer");
+        assert!(input.height >= 3, "height {height}: {input:?}");
+        assert!(layout.messages_area.height >= 1, "height {height}");
+        assert!(
+            rows.iter().any(|row| row.contains("DRAFT sentinel")),
+            "height {height}: {}",
+            rows.join("\n")
+        );
+        assert!(
+            rows.iter().any(|row| row.contains("MODEL")),
+            "picker missing at height {height}: {}",
+            rows.join("\n")
+        );
+    }
+}
+
+#[test]
+fn long_draft_keeps_its_cursor_visible_even_with_one_input_row() {
+    let _lock = viewport_snapshot_test_lock();
+    let mut state = working_state(Vec::new(), None);
+    state.input = (0..20)
+        .map(|i| format!("draft-line-{i:02}"))
+        .collect::<Vec<_>>()
+        .join("\n");
+    state.cursor_pos = 0;
+    let (rows, layout) = draw_frame(&state, 80, 5);
+    assert_eq!(layout.input_area.expect("input").height, 3);
+    assert!(
+        rows.iter().any(|row| row.contains("draft-line-00")),
+        "{}",
+        rows.join("\n")
+    );
+    assert!(
+        !rows.iter().any(|row| row.contains("draft-line-19")),
+        "{}",
+        rows.join("\n")
+    );
+}
+
+#[test]
+fn tiny_terminal_clears_old_hit_targets_and_shows_resize_hint() {
+    let _lock = viewport_snapshot_test_lock();
+    let state = working_state(Vec::new(), None);
+    let _ = draw_frame(&state, 80, 24);
+    let (rows, layout) = draw_frame(&state, 11, 4);
+    assert!(
+        rows.iter().any(|row| row.contains("Resize")),
+        "{}",
+        rows.join("\n")
+    );
+    assert!(layout.input_area.is_none());
+    assert_eq!(layout.messages_area, Rect::default());
+}

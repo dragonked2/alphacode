@@ -48,7 +48,7 @@ fn swatch_for(preset: &ThemeSeed) -> [(u8, u8, u8); 8] {
 const USAGE: &str = "Usage:\n  \
     /theme                  List looks, moods, and themes\n  \
     /theme <name>           Apply a mood or theme (saved to config, applied immediately)\n  \
-    /theme off              Drop back to alphacode's built-in palette\n\n\
+    /theme off              Restore the Royal Gold default\n\n\
     moods: calm · vibrant · cozy · focus · paper · night";
 
 /// What the user asked for. Split out from [`handle_theme_command`] so the
@@ -95,7 +95,11 @@ pub(super) fn handle_theme_command(app: &mut App, trimmed: &str) -> bool {
 /// The preset currently in effect, if any.
 fn active() -> Option<&'static ThemeSeed> {
     let configured = &crate::config::config().display.preset;
-    preset_by_id(configured)
+    preset_by_id(if configured.trim().is_empty() {
+        "royal-gold"
+    } else {
+        configured
+    })
 }
 
 fn list_themes(app: &mut App) {
@@ -212,7 +216,7 @@ fn mood_display_name(id: &str) -> String {
 fn clear_theme(app: &mut App) {
     match persist("") {
         Ok(()) => app.push_display_message(DisplayMessage::system(
-            "Theme cleared. Back to alphacode's built-in palette.".to_string(),
+            "Theme cleared. Royal Gold is active.".to_string(),
         )),
         Err(error) => app.push_display_message(DisplayMessage::error(format!(
             "Failed to clear the theme: {error}"

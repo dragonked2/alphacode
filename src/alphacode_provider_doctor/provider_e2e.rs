@@ -467,7 +467,7 @@ pub async fn run_provider_e2e(
             "offline tier: using synthetic catalog (no network)".to_string(),
         ));
         let default_model =
-            crate::alphacode_provider_metadata::route_cloak::default_model_for(profile)
+            crate::alphacode_provider_metadata::route_cloak::default_model_for(&profile)
                 .unwrap_or_else(|| "fixture-model".to_string());
         vec![
             default_model,
@@ -500,7 +500,7 @@ pub async fn run_provider_e2e(
             }
             model.to_string()
         }
-        None => crate::alphacode_provider_metadata::route_cloak::default_model_for(profile)
+        None => crate::alphacode_provider_metadata::route_cloak::default_model_for(&profile)
             .filter(|default| catalog_models.iter().any(|m| m == default))
             .or_else(|| catalog_models.first().cloned())
             .unwrap_or_else(|| "fixture-model".to_string()),
@@ -1398,7 +1398,7 @@ impl NativeProviderKind {
             },
             Self::Alphacode => NativeProviderSpec {
                 provider_id: "alphacode",
-                label: "Alphacode Subscription",
+                label: "AlphaCode Subscription",
                 // The transport is OpenAI-compatible internally, but the public
                 // route identity is the managed Alphacode subscription. Model
                 // switches use a bare model id so they stay on that runtime.

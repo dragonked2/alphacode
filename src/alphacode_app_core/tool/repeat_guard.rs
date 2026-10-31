@@ -131,6 +131,7 @@ fn entry_for<'a>(state: &'a mut State, key: &CallKey) -> &'a mut u32 {
             };
             state.failures.remove(&oldest);
             state.malformed.remove(&oldest);
+            state.last_error.remove(&oldest);
         }
         state.order.push_back(key.clone());
     }
@@ -149,10 +150,23 @@ fn malformed_entry_for<'a>(state: &'a mut State, key: &CallKey) -> &'a mut u32 {
             };
             state.failures.remove(&oldest);
             state.malformed.remove(&oldest);
+            state.last_error.remove(&oldest);
         }
         state.order.push_back(key.clone());
     }
     state.malformed.entry(key.clone()).or_insert(0)
+}
+
+fn bounded_error(message: &str) -> String {
+    let message = message.trim();
+    if message.len() <= 500 {
+        return message.to_string();
+    }
+    let mut end = 500;
+    while !message.is_char_boundary(end) {
+        end -= 1;
+    }
+    format!("{}…", &message[..end])
 }
 
 /// How many times this exact call has already failed in `session`. `known` says
@@ -189,12 +203,7 @@ pub fn record_failure_with_error(
     if let Some(message) = error {
         // Bound stored length: error chains can be long; the refusal only
         // quotes the head.
-        let mut short = message.trim().to_string();
-        if short.len() > 500 {
-            short.truncate(500);
-            short.push('…');
-        }
-        state.last_error.insert(key, short);
+        state.last_error.insert(key, bounded_error(message));
     }
 }
 
@@ -224,12 +233,7 @@ pub fn record_malformed_with_error(session: &str, name: &str, input: &Value, err
     let count = malformed_entry_for(&mut state, &key);
     *count = count.saturating_add(1);
     if let Some(message) = error {
-        let mut short = message.trim().to_string();
-        if short.len() > 500 {
-            short.truncate(500);
-            short.push('…');
-        }
-        state.last_error.insert(key, short);
+        state.last_error.insert(key, bounded_error(message));
     }
 }
 
@@ -255,6 +259,7 @@ pub fn record_success(session: &str, name: &str, input: &Value) {
     // malformed streak survived a success.
     state.failures.remove(&key);
     state.malformed.remove(&key);
+    state.last_error.remove(&key);
     state.order.retain(|existing| existing != &key);
 }
 
@@ -305,6 +310,46 @@ pub fn clear_session(session: &str) {
 mod tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn unicode_errors_are_truncated_safely_and_cleared_on_success() {
+        let session = "test-guard-unicode-error";
+        let input = json!({"unicode": true});
+        let message = format!("{}é-tail", "a".repeat(499));
+        for malformed in [false, true] {
+            if malformed {
+                record_malformed_with_error(session, "bash", &input, Some(&message));
+            } else {
+                record_failure_with_error(session, "bash", true, &input, Some(&message));
+            }
+            assert_eq!(
+                last_error(session, "bash", true, &input),
+                Some(format!("{}…", "a".repeat(499)))
+            );
+            record_success(session, "bash", &input);
+            assert_eq!(last_error(session, "bash", true, &input), None);
+        }
+        clear_session(session);
+    }
+
+    #[test]
+    fn eviction_removes_error_text_in_both_tiers() {
+        for malformed in [false, true] {
+            let mut state = State::default();
+            for index in 0..=MAX_ENTRIES {
+                let key = key_for("eviction", "tool", true, &json!({"index": index}));
+                if malformed {
+                    *malformed_entry_for(&mut state, &key) += 1;
+                } else {
+                    *entry_for(&mut state, &key) += 1;
+                }
+                state.last_error.insert(key, "error".to_string());
+            }
+            assert_eq!(state.last_error.len(), MAX_ENTRIES);
+            let oldest = key_for("eviction", "tool", true, &json!({"index": 0}));
+            assert!(!state.last_error.contains_key(&oldest));
+        }
+    }
 
     #[test]
     fn unknown_name_streak_counts_by_name_only() {

@@ -454,3 +454,21 @@ fn from_pairs_still_starts_from_the_built_in_defaults() {
     assert_eq!(palette.rgb(Role::Ai), Role::Ai.default_rgb());
     assert!(!palette.is_overridden(Role::Ai));
 }
+
+#[test]
+fn royal_gold_stays_readable_on_dark_and_light_surfaces() {
+    for seed in [super::ROYAL_GOLD, super::ROYAL_GOLD_LIGHT] {
+        for foreground in [seed.fg, seed.fg_muted, seed.accent] {
+            assert!(
+                contrast(foreground, seed.surface) >= 4.5,
+                "{} has insufficient text contrast",
+                seed.id
+            );
+        }
+        assert!(
+            contrast(seed.fg, seed.surface_alt) >= 4.5,
+            "{} has insufficient selected-row contrast",
+            seed.id
+        );
+    }
+}

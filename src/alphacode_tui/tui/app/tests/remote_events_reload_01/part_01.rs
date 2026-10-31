@@ -1252,10 +1252,16 @@ fn test_remote_done_waits_for_paced_backlog_and_one_live_frame() {
         message.role != "assistant" || !message.content.contains(response)
     }));
 
-    // The first tick drains the short backlog, but deliberately leaves the live
-    // streaming representation visible for one frame before committing it.
-    std::thread::sleep(Duration::from_millis(60));
-    rt.block_on(crate::alphacode_tui::tui::app::remote::handle_tick(&mut app, &mut remote));
+    // Drain at the configured pace. The number of frames depends on the
+    // terminal's reveal speed; the frame that empties the backlog must still
+    // leave the live representation visible before Done is replayed.
+    for _ in 0..40 {
+        std::thread::sleep(Duration::from_millis(20));
+        rt.block_on(crate::alphacode_tui::tui::app::remote::handle_tick(&mut app, &mut remote));
+        if app.stream_buffer.is_empty() {
+            break;
+        }
+    }
     assert!(app.stream_buffer.is_empty());
     assert!(app.is_processing);
     assert_eq!(app.deferred_stream_done_id, Some(42));

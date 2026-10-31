@@ -1,18 +1,43 @@
+use super::frame_reader::{FrameRead, FrameReader};
 use super::{connect_socket, debug_socket_path, socket_path};
 use crate::alphacode_app_core::protocol::{HistoryMessage, Request, ServerEvent, TranscriptMode};
 use crate::alphacode_app_core::transport::{ReadHalf, WriteHalf};
 use anyhow::Result;
 use std::path::PathBuf;
-use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+use tokio::io::{AsyncWriteExt, BufReader};
+
+// History responses can be much larger than requests, but must still be bounded.
+const MAX_SERVER_EVENT_BYTES: usize = 64 * 1024 * 1024;
 
 /// Client for connecting to a running server
 pub struct Client {
     reader: BufReader<ReadHalf>,
+    frames: FrameReader,
     writer: WriteHalf,
     next_id: u64,
 }
 
 impl Client {
+    /// Run a desktop operation on a separate lightweight connection.
+    pub async fn desktop_command(
+        &mut self,
+        action: &str,
+        session_id: Option<&str>,
+        value: Option<&str>,
+    ) -> Result<u64> {
+        let id = self.next_id;
+        self.next_id += 1;
+        let request = Request::DesktopCommand {
+            id,
+            action: action.to_string(),
+            session_id: session_id.map(str::to_string),
+            value: value.map(str::to_string),
+        };
+        let json = serde_json::to_string(&request)? + "\n";
+        self.writer.write_all(json.as_bytes()).await?;
+        Ok(id)
+    }
+
     pub async fn connect() -> Result<Self> {
         Self::connect_with_path(socket_path()).await
     }
@@ -22,6 +47,7 @@ impl Client {
         let (reader, writer) = stream.into_split();
         Ok(Self {
             reader: BufReader::new(reader),
+            frames: FrameReader::default(),
             writer,
             next_id: 1,
         })
@@ -36,6 +62,7 @@ impl Client {
         let (reader, writer) = stream.into_split();
         Ok(Self {
             reader: BufReader::new(reader),
+            frames: FrameReader::default(),
             writer,
             next_id: 1,
         })
@@ -51,6 +78,48 @@ impl Client {
             content: content.to_string(),
             images: vec![],
             system_reminder: None,
+        };
+        let json = serde_json::to_string(&request)? + "\n";
+        self.writer.write_all(json.as_bytes()).await?;
+        Ok(id)
+    }
+
+    /// Cancel the turn running on this connection.
+    pub async fn cancel(&mut self) -> Result<u64> {
+        let id = self.next_id;
+        self.next_id += 1;
+        let request = Request::Cancel { id };
+        let json = serde_json::to_string(&request)? + "\n";
+        self.writer.write_all(json.as_bytes()).await?;
+        Ok(id)
+    }
+
+    /// Send a response to a command waiting for input.
+    pub async fn send_stdin_response(&mut self, request_id: &str, input: &str) -> Result<u64> {
+        let id = self.next_id;
+        self.next_id += 1;
+        let request = Request::StdinResponse {
+            id,
+            request_id: request_id.to_string(),
+            input: input.to_string(),
+        };
+        let json = serde_json::to_string(&request)? + "\n";
+        self.writer.write_all(json.as_bytes()).await?;
+        Ok(id)
+    }
+
+    /// Set reasoning effort for a connected session.
+    pub async fn set_reasoning_effort(
+        &mut self,
+        effort: String,
+        target_session_id: Option<String>,
+    ) -> Result<u64> {
+        let id = self.next_id;
+        self.next_id += 1;
+        let request = Request::SetReasoningEffort {
+            id,
+            effort,
+            target_session_id,
         };
         let json = serde_json::to_string(&request)? + "\n";
         self.writer.write_all(json.as_bytes()).await?;
@@ -95,11 +164,17 @@ impl Client {
 
     /// Read the next event from the server
     pub async fn read_event(&mut self) -> Result<ServerEvent> {
-        let mut line = String::new();
-        let n = self.reader.read_line(&mut line).await?;
-        if n == 0 {
-            anyhow::bail!("Server disconnected");
-        }
+        let line = match self
+            .frames
+            .read(&mut self.reader, MAX_SERVER_EVENT_BYTES)
+            .await?
+        {
+            FrameRead::Line(line) => line,
+            FrameRead::Eof => anyhow::bail!("Server disconnected"),
+            FrameRead::TooLarge { limit } => {
+                anyhow::bail!("Server event exceeded the {limit}-byte limit")
+            }
+        };
         let event: ServerEvent = serde_json::from_str(&line)?;
         Ok(event)
     }
@@ -113,12 +188,7 @@ impl Client {
         self.writer.write_all(json.as_bytes()).await?;
 
         loop {
-            let mut line = String::new();
-            let n = self.reader.read_line(&mut line).await?;
-            if n == 0 {
-                anyhow::bail!("Server disconnected");
-            }
-            let event: ServerEvent = serde_json::from_str(&line)?;
+            let event = self.read_event().await?;
 
             match event {
                 ServerEvent::Pong { id: pong_id } => return Ok(pong_id == id),
@@ -137,13 +207,7 @@ impl Client {
         let json = serde_json::to_string(&request)? + "\n";
         self.writer.write_all(json.as_bytes()).await?;
 
-        let mut line = String::new();
-        let n = self.reader.read_line(&mut line).await?;
-        if n == 0 {
-            anyhow::bail!("Server disconnected");
-        }
-        let event: ServerEvent = serde_json::from_str(&line)?;
-        Ok(event)
+        self.read_event().await
     }
 
     pub async fn clear(&mut self) -> Result<()> {
@@ -172,12 +236,7 @@ impl Client {
         let json = serde_json::to_string(&request)? + "\n";
         self.writer.write_all(json.as_bytes()).await?;
         for _ in 0..10 {
-            let mut line = String::new();
-            let n = self.reader.read_line(&mut line).await?;
-            if n == 0 {
-                anyhow::bail!("Server disconnected");
-            }
-            let event: ServerEvent = serde_json::from_str(&line)?;
+            let event = self.read_event().await?;
             match event {
                 ServerEvent::Ack { .. } => continue,
                 _ => return Ok(event),

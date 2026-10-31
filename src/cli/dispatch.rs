@@ -124,7 +124,18 @@ pub(crate) async fn run_main(mut args: Args) -> Result<()> {
         crate::config::invalidate_config_cache();
     }
 
+    if args.gui {
+        return super::gui::run(false, false, false).await;
+    }
+
     match args.command {
+        Some(Command::Gui {
+            once,
+            preview,
+            bridge,
+        }) => {
+            super::gui::run(once, preview, bridge).await?;
+        }
         Some(Command::Serve {
             temporary_server,
             owner_pid,
@@ -179,7 +190,7 @@ pub(crate) async fn run_main(mut args: Args) -> Result<()> {
                         })
                     );
                 } else {
-                    println!("Alphacode server is running.");
+                    println!("AlphaCode server is running.");
                 }
             }
             ServerCommand::Keepalive => {
@@ -205,6 +216,13 @@ pub(crate) async fn run_main(mut args: Args) -> Result<()> {
             json,
             ndjson,
         }) => {
+            if !json && !ndjson && !output::quiet_enabled() && std::io::stderr().is_terminal() {
+                let banner =
+                    output::styled_startup_banner(crate::alphacode_core::console::terminal_width());
+                if !banner.is_empty() {
+                    eprintln!("{banner}");
+                }
+            }
             commands::run_single_message_command(
                 &args.provider,
                 args.model.as_deref(),

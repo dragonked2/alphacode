@@ -577,6 +577,46 @@ async fn subagent_tool_is_not_registered() {
 
 struct BareSchemaTool;
 
+struct CountingSchemaTool(std::sync::Arc<std::sync::atomic::AtomicUsize>);
+
+#[async_trait]
+impl Tool for CountingSchemaTool {
+    fn name(&self) -> &str {
+        "counting_schema"
+    }
+    fn description(&self) -> &str {
+        "Count schema construction."
+    }
+    fn parameters_schema(&self) -> Value {
+        self.0.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        json!({"type": "object"})
+    }
+    async fn execute(&self, _: Value, _: ToolContext) -> Result<ToolOutput> {
+        Ok(ToolOutput::new("ok"))
+    }
+}
+
+#[tokio::test]
+async fn filtered_definitions_do_not_build_excluded_schemas() {
+    let provider: Arc<dyn Provider> = Arc::new(MockProvider);
+    let registry = Registry::new(provider).await;
+    let calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    registry
+        .register(
+            "counting_schema".into(),
+            Arc::new(CountingSchemaTool(calls.clone())),
+        )
+        .await;
+    registry
+        .definitions_filtered(None, |name| name == "read")
+        .await;
+    assert_eq!(calls.load(std::sync::atomic::Ordering::Relaxed), 0);
+    registry
+        .definitions_filtered(None, |name| name == "counting_schema")
+        .await;
+    assert_eq!(calls.load(std::sync::atomic::Ordering::Relaxed), 1);
+}
+
 #[async_trait]
 impl Tool for BareSchemaTool {
     fn name(&self) -> &str {
@@ -1449,4 +1489,152 @@ fn agent_facing_error_edit_missing_field_shows_example() {
             && message_lower.contains("new_string"),
         "{message}"
     );
+}
+
+/// Regression guard for the prompt budget.
+///
+/// The static prefix (system prompt + skills catalog + advertised tool
+/// definitions) is re-sent on every request, so its size is the dominant cost
+/// of a session. This asserts the measured budget rather than a style target:
+/// raise it only with a measured justification.
+#[tokio::test]
+async fn advertised_prefix_stays_within_budget() {
+    let provider: Arc<dyn Provider> = Arc::new(MockProvider);
+    let registry = Registry::new(provider).await;
+    let defs = registry.definitions(None).await;
+
+    use crate::tool::disclosure::{DisclosurePolicy, DisclosureSelection};
+    let mut advertised = defs.clone();
+    DisclosureSelection::new().apply(
+        &mut advertised,
+        DisclosurePolicy::Progressive,
+        &std::collections::HashSet::new(),
+        &std::collections::HashSet::new(),
+    );
+
+    let tool_chars: usize = advertised.iter().map(|d| d.prompt_chars()).sum();
+
+    let skills = crate::alphacode_app_core::skill::SkillRegistry::shared_snapshot();
+    let infos: Vec<crate::prompt::SkillInfo> = skills
+        .list()
+        .iter()
+        .map(|s| crate::prompt::SkillInfo {
+            name: s.name.clone(),
+            description: s.description.clone(),
+        })
+        .collect();
+    let (split, _info) = crate::prompt::build_system_prompt_split_with_tier(
+        crate::prompt::PromptTier::Standard,
+        None,
+        &infos,
+        false,
+        None,
+        None,
+        crate::prompt::PromptCapabilities::default(),
+    );
+
+    let total_chars = split.static_part.len() + tool_chars;
+    let total_tokens = total_chars / 4;
+    println!(
+        "estimated prefix: {total_tokens} tokens ({total_chars} bytes; system={} tools={} tool_count={})",
+        split.static_part.len(),
+        tool_chars,
+        advertised.len()
+    );
+    assert!(
+        total_tokens <= 10_000,
+        "advertised prefix is ~{total_tokens} tokens ({total_chars} chars: \
+         prompt={}, tools={}); the budget is 10k. Hide more tools or trim the prompt.",
+        split.static_part.len(),
+        tool_chars
+    );
+    // Progressive disclosure must keep the advertised surface small.
+    assert!(
+        advertised.len() < defs.len() / 2,
+        "advertised {} of {} tools; progressive disclosure should advertise a minority",
+        advertised.len(),
+        defs.len()
+    );
+}
+
+/// End-to-end proof of the progressive-disclosure contract:
+///
+/// 1. A specialized tool is not advertised by default.
+/// 2. `tool_help` promotes it.
+/// 3. The very next definition build advertises it.
+///
+/// This is the property that lets the prompt stay small without losing
+/// capability, so it is worth asserting as a whole rather than in pieces.
+#[tokio::test]
+async fn tool_help_promotion_reaches_the_advertised_set() {
+    use crate::alphacode_app_core::tool::disclosure::{DisclosurePolicy, DisclosureSelection};
+
+    let provider: Arc<dyn Provider> = Arc::new(MockProvider);
+    let registry = Registry::new(provider).await;
+    let defs = registry.definitions(None).await;
+    let forced = std::collections::HashSet::new();
+
+    // Pick a tool progressive disclosure deliberately hides.
+    let hidden_name = "sqlmap".to_string();
+    assert!(
+        defs.iter().any(|d| d.name == hidden_name),
+        "sqlmap must exist in the registry"
+    );
+
+    let session = format!("promotion-test-{}", std::process::id());
+    crate::tool::tool_help::clear_session(&session);
+
+    // 1. Not advertised before promotion.
+    let mut before = defs.clone();
+    DisclosureSelection::new().apply(
+        &mut before,
+        DisclosurePolicy::Progressive,
+        &forced,
+        &crate::tool::tool_help::promoted_tools(&session),
+    );
+    assert!(
+        !before.iter().any(|d| d.name == hidden_name),
+        "sqlmap should not be advertised before promotion"
+    );
+
+    // 2. Promote through the public tool surface.
+    let ctx = ToolContext {
+        session_id: session.clone(),
+        message_id: String::new(),
+        tool_call_id: String::new(),
+        working_dir: None,
+        stdin_request_tx: None,
+        graceful_shutdown_signal: None,
+        execution_mode: ToolExecutionMode::Direct,
+    };
+    registry
+        .execute(
+            "tool_help",
+            serde_json::json!({"tools": [hidden_name]}),
+            ctx,
+        )
+        .await
+        .expect("tool_help must accept a valid tool name");
+
+    // 3. Advertised on the next build.
+    let mut after = defs.clone();
+    DisclosureSelection::new().apply(
+        &mut after,
+        DisclosurePolicy::Progressive,
+        &forced,
+        &crate::tool::tool_help::promoted_tools(&session),
+    );
+    assert!(
+        after.iter().any(|d| d.name == hidden_name),
+        "sqlmap must be advertised after promotion"
+    );
+    // And the promotion must still be a small addition, not a full reveal.
+    assert!(
+        after.len() < defs.len() / 2,
+        "promotion should not advertise the whole registry ({} of {})",
+        after.len(),
+        defs.len()
+    );
+
+    crate::tool::tool_help::clear_session(&session);
 }

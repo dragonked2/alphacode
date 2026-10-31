@@ -58,6 +58,34 @@ pub fn terminal_title(title: impl AsRef<str>) -> String {
     crate::output_style::terminal_text(title.as_ref()).into_owned()
 }
 
+/// Center the shared brand art for a human-facing terminal. Callers decide
+/// whether a banner belongs in their output (never in JSON or redirected data).
+///
+/// Re-exported from core, which is the only implementation: the `run` banner,
+/// the interactive REPL and the TUI all resolve the same shared wordmark ladder.
+/// A second copy here is exactly how those surfaces drifted apart before.
+pub use crate::alphacode_core::output_style::{startup_banner, startup_banner_with_unicode};
+
+pub fn styled_startup_banner(width: usize) -> String {
+    let banner = startup_banner(width);
+    if !console::ansi_enabled() || banner.is_empty() {
+        return banner;
+    }
+    let lines: Vec<&str> = banner.lines().collect();
+    let colors = crate::alphacode_tui::tui::brand_ux::BrandTheme::gradient_rows(lines.len());
+    lines
+        .into_iter()
+        .zip(colors)
+        .map(|(line, color)| match color {
+            ratatui::style::Color::Rgb(r, g, b) => {
+                format!("\u{1b}[1;38;2;{r};{g};{b}m{line}\u{1b}[0m")
+            }
+            _ => line.to_string(),
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
 pub fn stderr_blank_line() {
     if !quiet_enabled() {
         eprintln!();
@@ -430,6 +458,28 @@ fn styled_header_row(headers: &[&str], widths: &[usize]) -> String {
 mod tests {
     use super::*;
 
+    #[test]
+    fn startup_banner_fits_every_width_and_centers_its_rows() {
+        for width in 0..=200 {
+            let banner = startup_banner_with_unicode(width, true);
+            if let Some(art) = crate::alphacode_brand::wordmark_for(width) {
+                for (line, row) in banner.lines().zip(art.iter()) {
+                    let row_width = unicode_width::UnicodeWidthStr::width(*row);
+                    let padding = (width - row_width) / 2;
+                    assert_eq!(line, format!("{}{row}", " ".repeat(padding)));
+                    assert!(
+                        unicode_width::UnicodeWidthStr::width(line) <= width,
+                        "banner overflows width {width}: {line:?}"
+                    );
+                }
+            } else {
+                assert!(banner.is_empty());
+            }
+        }
+        assert_eq!(startup_banner_with_unicode(9, false), "AlphaCode");
+        assert!(startup_banner_with_unicode(80, false).is_ascii());
+    }
+
     fn guard() -> std::sync::MutexGuard<'static, ()> {
         console::test_override_lock()
     }
@@ -464,6 +514,7 @@ mod tests {
             CliOutput::confirm("Continue?"),
             CliOutput::error_block("what", "why", Some("fix")),
             CliOutput::version_banner("alphacode", "1.0.0", 40),
+            styled_startup_banner(80),
         ];
         for line in rendered {
             assert!(!line.contains('\u{1b}'), "escape leaked: {line:?}");

@@ -1,4 +1,4 @@
-//! CLI orchestration for the Alphacode account device authorization flow.
+//! CLI orchestration for the AlphaCode account device authorization flow.
 //!
 //! Protocol parsing and HTTP behavior live in `subscription_api` so the CLI and
 //! TUI share the same contract and redaction guarantees.
@@ -46,7 +46,7 @@ where
         let delay = backoff.delay();
         if tokio::time::Instant::now() + delay >= deadline {
             anyhow::bail!(
-                "Alphacode account login timed out before browser approval. Run `alphacode account login` to try again."
+                "AlphaCode account login timed out before browser approval. Run `alphacode account login` to try again."
             );
         }
         tokio::select! {
@@ -78,7 +78,7 @@ where
                 "The browser approval expired or was already exchanged. Run `alphacode account login` to start a new single-use flow."
             ),
             Ok(TokenPollOutcome::Denied) => {
-                anyhow::bail!("Alphacode account login was canceled or denied in the browser.")
+                anyhow::bail!("AlphaCode account login was canceled or denied in the browser.")
             }
             Err(error) if error.is_temporary() => {
                 if !reported_offline {
@@ -116,7 +116,7 @@ pub(super) async fn login_alphacode_device_flow(no_browser: bool) -> Result<Logi
     )
     .await
     .map_err(anyhow::Error::new)
-    .context("Failed to start Alphacode account login")?;
+    .context("Failed to start AlphaCode account login")?;
 
     eprintln!("\nAlphacode Account Login");
     eprintln!("  Opening the secure account approval page:");
@@ -174,7 +174,7 @@ pub(super) async fn login_alphacode_device_flow(no_browser: bool) -> Result<Logi
                 .map(|tier| tier.display_name().to_string())
                 .unwrap_or(me.tier);
             eprintln!(
-                "  ✓ {} plan is active. Alphacode account login is complete.",
+                "  ✓ {} plan is active. AlphaCode account login is complete.",
                 tier
             );
             LoginCompletion::Active

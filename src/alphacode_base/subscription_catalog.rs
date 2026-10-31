@@ -11,7 +11,7 @@ pub const ALPHACODE_SUBSCRIPTION_ACTIVE_ENV: &str = "ALPHACODE_SUBSCRIPTION_ACTI
 pub const DEFAULT_ALPHACODE_API_BASE: &str = "https://api.alphacode.sh/v1";
 pub const ALPHACODE_PRICING_URL: &str = "https://alphacode.sh/pricing";
 pub const ALPHACODE_ACCOUNT_URL: &str = "https://alphacode.sh/account";
-pub const ALPHACODE_PROVIDER_DISPLAY_NAME: &str = "Alphacode Subscription";
+pub const ALPHACODE_PROVIDER_DISPLAY_NAME: &str = "AlphaCode Subscription";
 pub const ALPHACODE_ROUTE_API_METHOD: &str = "alphacode-subscription";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]

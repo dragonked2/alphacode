@@ -427,6 +427,17 @@ async fn stream_response(
             crate::alphacode_provider_core::retry_after::retry_after(response.headers());
         let upstream_body =
             crate::alphacode_base::util::http_error_body(response, "HTTP error").await;
+        if status.as_u16() == 401 {
+            match &auth {
+                ProviderAuth::AuthorizationBearer { token, .. } => {
+                    crate::alphacode_base::auth::orcarouter::note_unauthorized(&api_base, token)
+                }
+                ProviderAuth::HeaderValue { value, .. } => {
+                    crate::alphacode_base::auth::orcarouter::note_unauthorized(&api_base, value)
+                }
+                _ => {}
+            }
+        }
 
         // Responses-only model on a `new-api`-style gateway: the gateway told us
         // to move this model to `/v1/responses`. Rebuild the identical turn on
@@ -604,10 +615,6 @@ async fn stream_response(
 /// Used when a gateway model is Responses-only (e.g. AgentRouter's GPT
 /// `*-sol`/`*-astra` models): either directly via the memoized fast path, or
 /// right after the gateway rejected `/chat/completions` for this model.
-#[expect(
-    clippy::too_many_arguments,
-    reason = "stream helpers thread transport, auth, request, event channel, and pin state explicitly"
-)]
 async fn stream_via_responses_endpoint(
     client: Client,
     api_base: String,
@@ -702,6 +709,17 @@ async fn stream_via_responses_endpoint(
             crate::alphacode_provider_core::retry_after::retry_after(response.headers());
         let upstream_body =
             crate::alphacode_base::util::http_error_body(response, "HTTP error").await;
+        if status.as_u16() == 401 {
+            match &auth {
+                ProviderAuth::AuthorizationBearer { token, .. } => {
+                    crate::alphacode_base::auth::orcarouter::note_unauthorized(&api_base, token)
+                }
+                ProviderAuth::HeaderValue { value, .. } => {
+                    crate::alphacode_base::auth::orcarouter::note_unauthorized(&api_base, value)
+                }
+                _ => {}
+            }
+        }
         let context_overflow = super::response_body_reports_context_overflow(&upstream_body);
         let body = if suppress_upstream_error_details {
             crate::alphacode_base::logging::warn(&format!(
@@ -855,13 +873,12 @@ mod tests {
         assert!(redacted.contains("Alphax Free service"));
         assert!(redacted.contains("automatic free route"));
         let lowered = redacted.to_ascii_lowercase();
-        let cloak = crate::alphacode_provider_metadata::route_cloak;
         for fragment in [
-            cloak::free_route_brand_word(),
-            cloak::free_route_default_model(),
-            cloak::free_route_efficient_alias(),
-            cloak::free_route_auto_prefix(),
-            cloak::free_route_host(),
+            crate::alphacode_provider_metadata::route_cloak::free_route_brand_word(),
+            crate::alphacode_provider_metadata::route_cloak::free_route_default_model(),
+            crate::alphacode_provider_metadata::route_cloak::free_route_efficient_alias(),
+            crate::alphacode_provider_metadata::route_cloak::free_route_auto_prefix(),
+            crate::alphacode_provider_metadata::route_cloak::free_route_host(),
             base.clone(),
         ] {
             assert!(

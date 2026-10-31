@@ -68,25 +68,79 @@ pub fn terminal_display_title_for_id(session_id: &str) -> Option<String> {
         })
 }
 
-/// Build the deliberately minimal terminal window title. The emoji already
-/// identifies the session/connection, so do not repeat `alphacode` or the memorable
-/// animal name in window chrome.
+/// Build the terminal window title.
+///
+/// The window title is the one piece of chrome that leaves the terminal (tab
+/// bars, window switchers, the menubar label), so it leads with the branded
+/// product name and follows with the session label. The icon stays in front to
+/// keep the connection/session kind scannable. Labels are normalised and
+/// truncated so a long generated title cannot push the brand out of view.
 pub fn terminal_window_title(
     icon: &str,
     display_title: Option<&str>,
     fallback_label: Option<&str>,
     is_selfdev: bool,
 ) -> String {
-    let display_title = display_title
+    let label = display_title
+        .or(fallback_label)
+        .and_then(normalized_display_title)
+        .map(|title| truncate_chars(&title, 48));
+    let branded = crate::alphacode_brand::window_title(label.as_deref(), is_selfdev);
+    let title = if icon.is_empty() {
+        branded
+    } else {
+        format!("{icon} {branded}")
+    };
+    crate::output_style::terminal_text(&title).into_owned()
+}
+
+/// Fallback window label for a session that has no human-authored title.
+///
+/// Deliberately **excludes** the product name. [`terminal_window_title`] already
+/// leads with the brand, and the call sites used to prepend their own lowercase
+/// copy, which produced titles like `AlphaCode · alphacode Fox` — the name
+/// twice, the second time misspelled. A remote server still contributes its
+/// name so the window says which server the session came from; the default
+/// server is named after the product, so repeating it would be redundant.
+///
+/// Kept here rather than in each caller because the resume-window path, the
+/// live TUI title sync and the spawn helpers each carried their own version of
+/// this expression and had already drifted apart.
+pub fn terminal_fallback_label(server_name: Option<&str>, session_label: &str) -> String {
+    match server_name
+        .map(str::trim)
+        .filter(|name| !name.is_empty() && !name.eq_ignore_ascii_case(crate::alphacode_brand::SLUG))
+    {
+        Some(server) => format!("{}/{}", server.to_lowercase(), session_label),
+        None => session_label.to_string(),
+    }
+}
+
+/// Menu-entry title for one session: icon plus label, deliberately **without**
+/// the product name.
+///
+/// A menubar lists sessions *under the app's own name*, so repeating
+/// `AlphaCode ·` on every row spends the row's width on information the menu
+/// already shows. The standalone window title keeps the brand; the per-session
+/// rows inside a menu do not.
+pub fn terminal_session_menu_title(
+    icon: &str,
+    display_title: Option<&str>,
+    is_selfdev: bool,
+) -> String {
+    let label = display_title
         .and_then(normalized_display_title)
         .map(|title| truncate_chars(&title, 48));
     let suffix = if is_selfdev { " [self-dev]" } else { "" };
-    let title = match display_title {
-        Some(title) => format!("{icon} {title}{suffix}"),
-        None => match fallback_label.and_then(normalized_display_title) {
-            Some(label) => format!("{icon} {label}{suffix}"),
-            None => format!("{icon}{suffix}"),
-        },
+    let body = match label {
+        Some(label) => format!("{label}{suffix}"),
+        None => suffix.trim_start().to_string(),
+    };
+    let title = match (icon.is_empty(), body.is_empty()) {
+        (true, true) => String::new(),
+        (true, false) => body,
+        (false, true) => icon.to_string(),
+        (false, false) => format!("{icon} {body}"),
     };
     crate::output_style::terminal_text(&title).into_owned()
 }
@@ -171,7 +225,7 @@ mod tests {
     }
 
     #[test]
-    fn terminal_window_title_omits_product_and_animal_names() {
+    fn terminal_window_title_leads_with_the_branded_product_name() {
         assert_eq!(
             terminal_window_title(
                 "🐙",
@@ -179,11 +233,17 @@ mod tests {
                 Some("alphacode Octopus"),
                 false
             ),
-            "🐙 resume window title"
+            "🐙 AlphaCode \u{00b7} resume window title"
+        );
+        // With no explicit title the fallback label still rides behind the
+        // brand, so the window never loses its identity.
+        assert_eq!(
+            terminal_window_title("🐙", None, Some("Octopus"), false),
+            "🐙 AlphaCode \u{00b7} Octopus"
         );
         assert_eq!(
-            terminal_window_title("🐙", None, Some("alphacode Octopus"), false),
-            "🐙 alphacode Octopus"
+            terminal_window_title("🐙", None, None, false),
+            "🐙 AlphaCode"
         );
         assert_eq!(
             terminal_window_title(
@@ -192,7 +252,44 @@ mod tests {
                 Some("alphacode Octopus"),
                 true
             ),
-            "🐙 resume window title [self-dev]"
+            "🐙 AlphaCode \u{00b7} resume window title [self-dev]"
+        );
+        // Window chrome must never fall back to the lowercase slug.
+        assert!(!terminal_window_title("", Some("x"), None, false).contains("alphacode"));
+    }
+
+    /// The fallback label must not repeat the product name.
+    ///
+    /// Every caller used to build this string itself as `"alphacode {label}"`,
+    /// which `terminal_window_title` then prefixed with the brand — so a real
+    /// window read `AlphaCode · alphacode Fox`: the name twice, once in the
+    /// wrong case. The helper now returns a bare label for the default server.
+    #[test]
+    fn fallback_label_never_repeats_the_product_name() {
+        assert_eq!(terminal_fallback_label(None, "Fox"), "Fox");
+        // The default server is named after the product; repeating it would be
+        // the exact duplication this helper exists to prevent.
+        assert_eq!(terminal_fallback_label(Some("alphacode"), "Fox"), "Fox");
+        assert_eq!(terminal_fallback_label(Some("AlphaCode"), "Fox"), "Fox");
+        assert_eq!(terminal_fallback_label(Some("  "), "Fox"), "Fox");
+        // Whitespace around a real server name must not leak into the title.
+        assert_eq!(
+            terminal_fallback_label(Some("  Octopus "), "Fox"),
+            "octopus/Fox"
+        );
+    }
+
+    /// End to end: the composed window title names the product once, and never
+    /// in the lowercase slug spelling.
+    #[test]
+    fn window_title_names_the_product_once_and_in_branded_case() {
+        let label = terminal_fallback_label(Some("alphacode"), "Fox");
+        let title = terminal_window_title("", None, Some(&label), false);
+        assert_eq!(title, "AlphaCode \u{00b7} Fox");
+        assert_eq!(title.matches("lphaCode").count(), 1, "brand appears once");
+        assert!(
+            !title.contains("alphacode"),
+            "window chrome must not use the slug: {title:?}"
         );
     }
 

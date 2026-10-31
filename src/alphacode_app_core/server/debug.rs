@@ -33,7 +33,7 @@ use anyhow::Result;
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use std::time::Instant;
-use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+use tokio::io::{AsyncWriteExt, BufReader};
 use tokio::sync::{Mutex, RwLock, broadcast, mpsc};
 
 type ChannelSubscriptions = Arc<RwLock<HashMap<String, HashMap<String, HashSet<String>>>>>;
@@ -279,14 +279,17 @@ pub(super) async fn handle_debug_client(
 ) -> Result<()> {
     let (reader, mut writer) = stream.into_split();
     let mut reader = BufReader::new(reader);
-    let mut line = String::new();
+    let mut frame_reader = super::frame_reader::FrameReader::default();
 
     loop {
-        line.clear();
-        let n = reader.read_line(&mut line).await?;
-        if n == 0 {
-            break;
-        }
+        let line = match frame_reader
+            .read(&mut reader, super::frame_reader::MAX_CLIENT_FRAME_BYTES)
+            .await?
+        {
+            super::frame_reader::FrameRead::Line(line) => line,
+            super::frame_reader::FrameRead::TooLarge { .. } => continue,
+            super::frame_reader::FrameRead::Eof => break,
+        };
 
         let request = match decode_request(&line) {
             Ok(r) => r,

@@ -3,7 +3,7 @@ setlocal enabledelayedexpansion
 
 REM === ALPHACODE ENTERPRISE RELEASE AUTOMATOR ===
 REM Just edit the VERSION below and double click this file
-set "VERSION=1.0.89"
+set "VERSION=1.0.90"
 
 if "%VERSION%"=="" (
     echo [ERROR] VERSION is empty. Edit this file and set VERSION.

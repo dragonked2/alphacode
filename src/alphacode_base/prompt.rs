@@ -569,6 +569,10 @@ pub fn looks_like_trivial_chat(text: &str) -> bool {
         "compare",
         "analyze",
         "review",
+        "inspect",
+        "audit",
+        "investigate",
+        "verify",
         "implement",
         "generate",
         "compile",
@@ -711,15 +715,24 @@ pub fn build_system_prompt_split_with_tier(
             static_parts.push(content);
         }
 
-        // Add available skills list (fairly static)
+        // Add available skills list (fairly static).
+        //
+        // Keep a short capability hint: names alone are often ambiguous and
+        // do not give the model enough information to select the right skill.
         if !available_skills.is_empty() {
-            let mut skills_section = "# Available Skills\n\nYou have access to the following specialized skills. PROACTIVELY use them when the user's task matches their domain — do NOT wait for the user to explicitly invoke them with `/skillname`. Load a skill with `skill_manage` (action=load) when its expertise is relevant to the current task:\n".to_string();
+            let mut skills_section = "# Available Skills
+
+Load with `skill_manage` (action=load, name=<skill>) when the task matches. PROACTIVELY load a matching skill rather than asking the user to invoke it. `skill_manage` (action=info) returns the full description.
+".to_string();
             for skill in available_skills {
-                skills_section.push_str(&format!("\n- `/{}` - {}", skill.name, skill.description));
+                let description = skill
+                    .description
+                    .split_whitespace()
+                    .collect::<Vec<_>>()
+                    .join(" ");
+                let hint: String = description.chars().take(160).collect();
+                skills_section.push_str(&format!("\n- `{}`: {}", skill.name, hint));
             }
-            skills_section.push_str(
-                "\n\nWhen a user asks about available skills or capabilities, mention these skills. When a skill matches the user's request, load it automatically rather than asking the user to invoke it.",
-            );
             info.skills_chars = skills_section.len();
             static_parts.push(skills_section);
         }
@@ -1193,6 +1206,8 @@ mod tests {
         assert!(!looks_like_trivial_chat("run the tests"));
         assert!(!looks_like_trivial_chat("let me think"));
         assert!(!looks_like_trivial_chat("implement a REST API"));
+        assert!(!looks_like_trivial_chat("Inspect the repository"));
+        assert!(!looks_like_trivial_chat("audit the code"));
         // Question marks about workspace context must not be short-circuited.
         assert!(!looks_like_trivial_chat("where is the cache?"));
         // "?" is fine for short greetings and capability questions.
@@ -1247,16 +1262,40 @@ mod tests {
         let combined = format!("{}\\n\\n{}", split.static_part, split.dynamic_part);
         assert!(combined.contains("inspect the relevant files or state"));
         assert!(combined.contains("verify the result"));
-        // The always-on prompt was ~2.5k chars until 1.0.79 folded the
-        // security-research playbook into it. This budget is a growth guard,
-        // not a style target: it exists to fail if the prompt balloons past
-        // roughly a 24k-token always-on cost.
+        // Growth guard, not a style target. The prompt peaked at ~91k chars
+        // (~23k tokens) when the security playbook was folded inline; that text
+        // now lives in the auto-invoking bundled skills (bugbounty,
+        // finding-validation, recon-ops, playbook, ...), so the always-on
+        // contract must stay small. Raise this only with measured justification.
         assert!(
-            split.static_part.len() < 96_000,
-            "always-on system prompt should stay under the 96k-char budget; got {} chars",
+            split.static_part.len() < 24_000,
+            "always-on system prompt should stay under the 24k-char budget; got {} chars",
             split.static_part.len()
         );
         assert!(!combined.contains("Chain-of-Thought Reasoning"));
+    }
+
+    #[test]
+    fn skill_catalog_keeps_a_bounded_description_for_discovery() {
+        let skills = vec![SkillInfo {
+            name: "example".into(),
+            description: format!("Review database migrations {}", "details ".repeat(100)),
+        }];
+        let (prompt, _) = build_system_prompt_split_with_tier(
+            PromptTier::Standard,
+            None,
+            &skills,
+            false,
+            None,
+            None,
+            PromptCapabilities::default(),
+        );
+        assert!(
+            prompt
+                .static_part
+                .contains("`example`: Review database migrations")
+        );
+        assert!(!prompt.static_part.contains(&"details ".repeat(100)));
     }
 
     #[test]

@@ -33,7 +33,7 @@ pub async fn run_client() -> Result<()> {
 
     println!(
         "{}",
-        os::colorized("● Connected to Alphacode server", "\u{1b}[38;5;10m")
+        os::colorized("● Connected to AlphaCode server", "\u{1b}[38;5;10m")
     );
     println!(
         "{}",
@@ -45,7 +45,13 @@ pub async fn run_client() -> Result<()> {
     println!();
 
     loop {
-        print!("{}", os::colorized("› ", "\u{1b}[38;5;45m"));
+        let (r, g, b) = crate::alphacode_core::output_enhance::pick_for_terminal_bg(
+            crate::alphacode_core::output_enhance::PaletteToken::Accent,
+        );
+        print!(
+            "{}",
+            crate::alphacode_core::output_style::truecolor("› ", r, g, b)
+        );
         io::stdout().flush()?;
 
         let mut input = String::new();
@@ -582,7 +588,7 @@ pub fn list_sessions() -> Result<()> {
             let crate::alphacode_tui_session_picker::ResumeTarget::AlphacodeSession { session_id } =
                 &resolved_target
             else {
-                anyhow::bail!("Claude takeover did not produce a Alphacode session");
+                anyhow::bail!("Claude takeover did not produce an AlphaCode session");
             };
             let exe = std::env::current_exe()?;
             let mut session_cwd = std::env::current_dir()?;

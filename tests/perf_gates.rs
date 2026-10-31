@@ -56,6 +56,8 @@
 #![cfg(test)]
 
 use std::collections::HashSet;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
 use alphacode::tui::PickerOption;
@@ -255,6 +257,15 @@ fn sort_cycles_scale_linearly_with_row_count() {
 #[test]
 fn report_absolute_budgets() {
     // Speculative-open, cache hit.
+    //
+    // The cache-hit invariant — "a fresh cache slot must never invoke the
+    // build closure" — cannot be asserted with a panicking closure: the
+    // closure runs on a *spawned worker thread* where `open_browser` wraps it
+    // in `catch_unwind`, so a panic there is swallowed and the test would
+    // still pass. Instead the hit closure sets a flag the test owns; the flag
+    // is asserted after the hit has been observed. Only the hit closure touches
+    // it, so the cold worker below (which runs concurrently) cannot race it.
+    let hit_build_called = Arc::new(AtomicBool::new(false));
     let options = make_options(50);
     let cached = match open_browser(
         None,
@@ -263,7 +274,7 @@ fn report_absolute_budgets() {
         None,
         &HashSet::new(),
         None,
-        || panic!("cache hit must not invoke the build closure"),
+        Vec::new,
     ) {
         OpenOutcome::Skeleton { state, .. } => state,
         _ => panic!("expected skeleton"),
@@ -278,6 +289,7 @@ fn report_absolute_budgets() {
         cached_at: Instant::now(),
     };
 
+    let hit_flag = Arc::clone(&hit_build_called);
     let started = Instant::now();
     let outcome = open_browser(
         Some(&slot),
@@ -286,12 +298,23 @@ fn report_absolute_budgets() {
         None,
         &HashSet::new(),
         None,
-        || panic!("cache hit must not invoke the build closure"),
+        move || {
+            hit_flag.store(true, Ordering::SeqCst);
+            panic!("cache hit must not invoke the build closure")
+        },
     );
     let cache_hit = started.elapsed();
     assert!(
         matches!(outcome, OpenOutcome::CacheHit(_)),
         "expected cache hit"
+    );
+    // A cache hit must return before the closure is ever polled, so the flag
+    // must still be clear here. (On a *miss* the closure would panic on the
+    // worker thread — reported by the test harness — which is a loud failure
+    // in its own right, but the flag assertion below is the deterministic gate.)
+    assert!(
+        !hit_build_called.load(Ordering::SeqCst),
+        "cache hit must not invoke the build closure"
     );
     report(
         "open-cache-hit",
@@ -323,6 +346,28 @@ fn report_absolute_budgets() {
         cold_options.len(),
         cold_open,
         ABSOLUTE_BUDGETS.cold_open,
+    );
+
+    // Join the cold-build worker. The cold closure is a trivial clone, so this
+    // returns promptly once the worker has published `Replaced` + `Complete`.
+    let cold_finished = match Instant::now().checked_add(Duration::from_secs(10)) {
+        Some(deadline) => loop {
+            if Instant::now() > deadline {
+                panic!("cold build worker did not finish within 10s");
+            }
+            match rx.try_recv() {
+                Ok(_) => break true,
+                Err(std::sync::mpsc::TryRecvError::Empty) => {
+                    std::thread::sleep(Duration::from_millis(1));
+                }
+                Err(std::sync::mpsc::TryRecvError::Disconnected) => break false,
+            }
+        },
+        None => false,
+    };
+    assert!(
+        cold_finished,
+        "cold build must publish a delta so the skeleton leaves the loading state"
     );
 
     // Drain any pending deltas so the build worker thread can exit.

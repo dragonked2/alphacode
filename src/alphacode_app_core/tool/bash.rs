@@ -99,9 +99,9 @@ const PROGRESS_MARKER_PREFIX: &str = "ALPHACODE_PROGRESS ";
 const CHECKPOINT_MARKER_PREFIX: &str = "ALPHACODE_CHECKPOINT ";
 const BACKGROUND_PROGRESS_GUIDANCE: &str = "For long-running background commands, prefer scripts or commands that periodically print progress updates. Best format: print lines starting with `ALPHACODE_PROGRESS ` followed by JSON like {\"percent\":42,\"message\":\"Running\"} or {\"current\":120,\"total\":1000,\"unit\":\"batches\",\"message\":\"Epoch 2/5\",\"eta_seconds\":30}. Supported JSON fields are `percent`, `message`, `current`, `total`, `unit`, `eta_seconds`, and optional `kind`=`indeterminate` or `kind`=`checkpoint`. For milestone-style wakeups, print `ALPHACODE_CHECKPOINT {\"message\":\"Unit tests passed\"}`. Generic fallback output that can be parsed includes `42%`, `3/10 tests`, `3 of 10 steps`, `1.5/3.0 GiB`, or phase lines like `Compiling ...`, `Downloading ...`, `Running ...`, and `Building ...`. If you are writing the script yourself, add these progress/checkpoint lines explicitly. Put large temporary files, worktrees, and virtual environments under `$ALPHACODE_SCRATCH_DIR`, not `/tmp`, because `/tmp` may be RAM-backed.";
 #[cfg(not(windows))]
-const BASH_TOOL_DESCRIPTION: &str = "Run a shell command. Commands execute in bash on all operating systems (including Windows via Git Bash). Use POSIX syntax: ls, mv, rm, cp, grep. Use forward slashes for paths. This is your primary tool for building, testing, inspecting systems, running git, and executing any shell operation. Always include error handling and use appropriate timeouts. Choose the smallest command that answers the question: prefer `grep -n`, `rg`, `git diff --stat`, or a targeted read over a full build when you only need to inspect state. After a code change, run the project's tests (or at minimum the previously-passing subset) to confirm no regressions. Never claim a command succeeded unless you actually saw it succeed in the output.";
+const BASH_TOOL_DESCRIPTION: &str = "Run a shell command (bash). Use POSIX syntax and forward slashes for paths. Primary tool for builds, tests, git, and system inspection. Pick the smallest command that answers the question, then inspect the output. Never claim a command succeeded unless you saw it succeed.";
 #[cfg(windows)]
-const WINDOWS_SHELL_TOOL_DESCRIPTION: &str = "Run a shell command. Commands execute in Git Bash on Windows (POSIX-compatible). Use POSIX syntax: ls, mv, rm, cp, grep, cat, head, tail, wc, find, xargs. Use forward slashes for paths (C:/Users not C:\\Users). Never use cmd.exe syntax (dir, copy, del, move, type) or PowerShell ($env, Get-ChildItem). For PowerShell-specific APIs, prefix with: powershell -Command '...'. This is your primary tool for building, testing, inspecting systems, running git, and executing any shell operation. Always include error handling and use appropriate timeouts. Choose the smallest command that answers the question: prefer `grep -n`, `git diff --stat`, or a targeted read over a full build when you only need to inspect state. After a code change, run the project's tests (or at minimum the previously-passing subset) to confirm no regressions. Never claim a command succeeded unless you actually saw it succeed in the output.";
+const WINDOWS_SHELL_TOOL_DESCRIPTION: &str = "Run a shell command in Git Bash (POSIX). Use POSIX syntax (ls, mv, rm, cp, grep, cat, find, xargs) and forward slashes for paths. Never use cmd.exe syntax (dir, copy, del, type) or PowerShell environment syntax ($env, Get-ChildItem); for PowerShell-only APIs use a wrapper script. Primary tool for builds, tests, git, and system inspection. Pick the smallest command that answers the question, then inspect the output. Never claim a command succeeded unless you saw it succeed.";
 #[cfg(windows)]
 const WINDOWS_CMD_SHELL_TOOL_DESCRIPTION: &str = "Run a shell command. Git Bash is not installed, so commands execute in cmd.exe. Use Windows syntax (dir, copy, del, type); POSIX utilities and pipelines may not be available. Quote URLs containing query parameters, especially `&` or `|`, with double quotes; unquoted URL operators are rejected before execution. Use `webfetch` for HTTP reads. For PowerShell-specific APIs, prefix with: powershell -NoProfile -Command '...'. This is your primary tool for local Windows commands. Always include error handling and use appropriate timeouts. Prefer targeted commands over full output.";
 
@@ -686,6 +686,11 @@ fn configure_shell_process(command: &mut TokioCommand) {
     // a GUI host or a terminal that does not provide a console handle.
     const CREATE_NO_WINDOW: u32 = 0x0800_0000;
     command.as_std_mut().creation_flags(CREATE_NO_WINDOW);
+    // Captured Python output must not inherit the Windows ANSI code page.
+    // Apply to both Git Bash and cmd.exe, including background commands.
+    command
+        .env("PYTHONIOENCODING", "utf-8")
+        .env("PYTHONUTF8", "1");
 }
 
 fn build_shell_command(cmd_str: &str) -> TokioCommand {
@@ -862,6 +867,21 @@ mod utf8_truncation_tests {
         truncate_middle,
     };
     use serde_json::json;
+
+    #[cfg(windows)]
+    #[tokio::test]
+    async fn windows_shell_captures_python_output_as_utf8() {
+        let output = build_shell_command("python -c \"print(chr(0x2192) + chr(0x2630))\"")
+            .output()
+            .await
+            .expect("Python fixture");
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        assert!(String::from_utf8(output.stdout).unwrap().contains("→☰"));
+    }
 
     #[cfg(windows)]
     #[test]

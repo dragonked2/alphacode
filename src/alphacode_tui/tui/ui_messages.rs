@@ -226,6 +226,15 @@ fn render_assistant_segments(
 
 /// Render the inner markdown of a ```plan block as a bordered plan card.
 fn render_plan_card(body: &str, width: u16) -> Vec<Line<'static>> {
+    // A fixed-width box cannot fit a narrow viewport. Keep the whole plan
+    // readable as wrapped markdown rather than clipping its border and text.
+    if width < 32 {
+        let inner_width = usize::from(width.max(1));
+        return markdown::wrap_lines(
+            markdown::render_markdown_with_width(body, Some(inner_width)),
+            inner_width,
+        );
+    }
     let border_style = Style::default().fg(rgb(165, 140, 252));
     let max_box_width = (width.saturating_sub(4) as usize).clamp(28, 100);
     let inner_width = max_box_width.saturating_sub(4).max(8);
@@ -634,11 +643,11 @@ fn render_theme_preview(msg: &DisplayMessage, width: u16) -> Vec<Line<'static>> 
     lines.push(Line::from(""));
     match payload.active.as_deref() {
         Some(id) => lines.push(Line::from(Span::styled(
-            format!("Active: {id}. `/theme off` restores the built-in palette."),
+            format!("Active: {id}. `/theme off` restores Royal Gold."),
             Style::default().fg(system_message_color()),
         ))),
         None => lines.push(Line::from(Span::styled(
-            "Active: alphacode's built-in palette. Per-role tweaks live in `/colors`.",
+            "Active: Royal Gold. Per-role tweaks live in `/colors`.",
             Style::default().fg(system_message_color()),
         ))),
     }

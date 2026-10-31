@@ -194,11 +194,8 @@ fn build_args(params: &DnsxInput) -> Result<Vec<String>> {
         args.push("-l".to_string());
         args.push(super::recon_common::validate_file_arg(list, "list")?);
     } else if !params.targets.is_empty() {
-        // `-d` / `-domain`, NOT `-target`. dnsx registers only
-        // `-l/-list`, `-d/-domain` and `-w/-wordlist` for input; there is no
-        // `-target` flag, so the previous builder made the entire `targets`
-        // input path fail with "flag provided but not defined" (exit 2).
-        // `-d` accepts a comma-separated list, so one flag covers them all.
+        // -d starts wordlist-based brute forcing and requires -w. Ordinary
+        // explicit targets belong to -l, which also accepts comma-separated hosts.
         let mut joined = String::new();
         for (i, target) in params.targets.iter().enumerate() {
             let t = super::recon_common::validate_target(target)?;
@@ -207,7 +204,7 @@ fn build_args(params: &DnsxInput) -> Result<Vec<String>> {
             }
             joined.push_str(&t);
         }
-        args.push("-d".to_string());
+        args.push("-l".to_string());
         args.push(joined);
     }
 
@@ -298,12 +295,9 @@ mod tests {
         assert!(args.contains(&"-a".to_string()));
     }
 
-    /// Regression: the old builder emitted `-target`, which dnsx does not
-    /// register. Its only input flags are `-l/-list`, `-d/-domain` and
-    /// `-w/-wordlist`, so the whole `targets` path exited 2 with "flag
-    /// provided but not defined".
+    /// -d requires a brute-force wordlist; explicit hosts use -l instead.
     #[test]
-    fn targets_use_dash_d_not_a_nonexistent_target_flag() {
+    fn targets_use_list_flag_without_requiring_a_wordlist() {
         let input = DnsxInput {
             list: None,
             targets: vec!["example.com".to_string(), "test.example.com".to_string()],
@@ -328,9 +322,11 @@ mod tests {
             !args.contains(&"-target".to_string()),
             "-target is not a dnsx flag: {args:?}"
         );
-        assert!(args.contains(&"-d".to_string()), "missing -d: {args:?}");
-        // `-d` takes a comma-separated list, so one flag covers them all.
-        let d = args.iter().position(|a| a == "-d").expect("-d present");
+        assert!(
+            !args.contains(&"-d".to_string()),
+            "-d requires -w: {args:?}"
+        );
+        let d = args.iter().position(|a| a == "-l").expect("-l present");
         assert_eq!(args[d + 1], "example.com,test.example.com");
     }
 

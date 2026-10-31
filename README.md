@@ -19,7 +19,7 @@
 
 <div align="center">
 
-<img src="https://capsule-render.vercel.app/api?type=waving&color=0:0F0C29,45:302B63,100:24243E&height=220&section=header&text=AlphaCode&fontSize=68&fontColor=ffffff&animation=fadeIn&fontAlignY=35&desc=Open-Source%20AI%20Coding%20Agent%20%7C%20Browser%20Agent%20%7C%20Desktop%20Automation&descAlignY=55&descSize=17" width="100%" alt="AlphaCode: open-source Rust AI coding agent for the terminal with Firefox browser automation and desktop automation">
+<img src="https://capsule-render.vercel.app/api?type=waving&color=0:171511,45:59421F,100:171511&height=220&section=header&text=AlphaCode&fontSize=68&fontColor=F7D88C&animation=fadeIn&fontAlignY=35&desc=Open-Source%20AI%20Coding%20Agent%20%7C%20Browser%20Agent%20%7C%20Desktop%20Automation&descAlignY=55&descSize=17" width="100%" alt="AlphaCode: open-source Rust AI coding agent for the terminal with Firefox browser automation and desktop automation">
 
 # AlphaCode: Open-Source AI Coding Agent for Your Terminal
 
@@ -28,7 +28,7 @@
 Works with **Claude, GPT, Gemini, GitHub Copilot, OpenRouter, and local models** (Ollama, LM Studio). Start free, no API key required.
 
 [![GitHub stars](https://img.shields.io/github/stars/dragonked2/alphacode?style=for-the-badge&label=Stars&labelColor=1a1a2e&color=FFD34D)](https://github.com/dragonked2/alphacode/stargazers)
-[![Latest release](https://img.shields.io/github/v/release/dragonked2/alphacode?style=for-the-badge&label=Release&labelColor=1a1a2e&color=6E56CF)](https://github.com/dragonked2/alphacode/releases)
+[![Latest release](https://img.shields.io/github/v/release/dragonked2/alphacode?style=for-the-badge&label=Release&labelColor=1a1a2e&color=D7A93F)](https://github.com/dragonked2/alphacode/releases)
 [![MIT license](https://img.shields.io/github/license/dragonked2/alphacode?style=for-the-badge&label=License&labelColor=1a1a2e&color=F5A623)](LICENSE)
 [![Open issues](https://img.shields.io/github/issues/dragonked2/alphacode?style=for-the-badge&label=Issues&labelColor=1a1a2e&color=FF6B6B)](https://github.com/dragonked2/alphacode/issues)
 
@@ -36,7 +36,7 @@ Works with **Claude, GPT, Gemini, GitHub Copilot, OpenRouter, and local models**
 ![macOS](https://img.shields.io/badge/macOS-supported-2CBB5D?style=flat-square&logo=apple&logoColor=white&labelColor=1a1a2e)
 ![Linux](https://img.shields.io/badge/Linux-supported-2CBB5D?style=flat-square&logo=linux&logoColor=white&labelColor=1a1a2e)
 ![Rust](https://img.shields.io/badge/Rust-native-DE5D43?style=flat-square&logo=rust&logoColor=white&labelColor=1a1a2e)
-![40+ tools](https://img.shields.io/badge/Agent%20tools-40%2B-6E56CF?style=flat-square&labelColor=1a1a2e)
+![40+ tools](https://img.shields.io/badge/Agent%20tools-40%2B-D7A93F?style=flat-square&labelColor=1a1a2e)
 ![Free to start](https://img.shields.io/badge/Free%20to%20start-no%20API%20key-2CBB5D?style=flat-square&labelColor=1a1a2e)
 
 [**Quick start**](#quick-start) · [Demo](#demo) · [Features](#features) · [Docs](docs/) · [Website](https://alphacli.github.io/) · [Releases](https://github.com/dragonked2/alphacode/releases) · [Firefox Agent](https://addons.mozilla.org/en-US/firefox/addon/alphacode-browser-agent/) · [Report a bug](https://github.com/dragonked2/alphacode/issues)
@@ -59,7 +59,7 @@ curl -fsSL https://raw.githubusercontent.com/dragonked2/alphacode/main/scripts/i
 irm https://raw.githubusercontent.com/dragonked2/alphacode/main/scripts/install.ps1 | iex
 ```
 
-Then run `alphacode doctor` and `alphacode`. Full walkthrough in the [Quick start](#quick-start).
+Then run `alphacode doctor` and `alphacode`. On Windows, `alphacode --gui` opens the desktop interface. Full walkthrough in the [Quick start](#quick-start).
 
 ## Find what you need
 
@@ -384,6 +384,7 @@ AlphaCode is model-agnostic. Start with the built-in free AI lane, or connect a 
 | AWS Bedrock | AWS credentials | Build with `--features bedrock` when required |
 | Azure | Azure AD or API key | Build with `--features azure-auth` when required |
 | OpenRouter | API key | Access to a wide range of models |
+| OrcaRouter | API key or browser login (OAuth 2.0 + PKCE) | One gateway for many models; the model list is read from `GET /v1/models`, so the picker excludes models advertised only for non-chat tasks |
 | OpenAI-compatible endpoint | Endpoint-specific key or configuration | Add with `alphacode provider add <name>` |
 
 ### Provider and model commands
@@ -401,6 +402,14 @@ alphacode model use <model>        # Select a model
 In the terminal UI, type `/model` to open the model and provider selector.
 
 ### Local models (Ollama, LM Studio, and other OpenAI-compatible servers)
+
+For LM Studio, load a chat model and start **Local Server** on its default port
+(`1234`). Then run `alphacode --provider lmstudio`. AlphaCode asks
+`http://localhost:1234/v1/models` for the currently available models and picks
+the first chat model. To choose one explicitly, run
+`alphacode --provider lmstudio --model <model-id>` using the exact ID shown by
+LM Studio. For Ollama, start the server and run `alphacode --provider ollama`;
+you can also pass `--model <model-id>`.
 
 AlphaCode uses the context window reported by the server when available. For local models with up to 32K context, it uses a shorter task prompt and a bounded set of relevant tool schemas. Simple greetings may not need tool schemas at all.
 
@@ -690,6 +699,8 @@ A health monitor records memory use, slow operations, error rates, and subsystem
 | `[compaction]` | Context management |
 | `[power]` | Power-management behavior |
 | `[gateway]` | Remote gateway settings |
+
+Royal Gold is the default terminal look, with a matching palette for light terminal backgrounds. Use `/theme` to browse other themes, `/theme royal-gold` to select it, or `/theme off` to return to the default. Your saved theme and individual `/colors` overrides are preserved.
 
 See [`docs/configuration.md`](docs/configuration.md) for the full reference.
 

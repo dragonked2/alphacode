@@ -1,6 +1,6 @@
 [package]
 name = "alphacode"
-version = "1.0.89"
+version = "1.0.90"
 authors = ["Ali Essam <tlbbeg313@gmail.com>"]
 description = "Terminal-native coding agent with multi-model orchestration, swarm coordination, and 40+ tools — built to make the smallest change that solves the problem."
 homepage = "https://alphacli.github.io/"
@@ -14,7 +14,7 @@ readme = "README.md"
 # ballooned every upload and tripped crates.io's edge timeouts on publish.
 exclude = [
     "alphacode-demo.mp4",
-    "AlphaCode-Browser-Agent-1.6.2.xpi",
+    "AlphaCode-Browser-Agent-1.6.3.xpi",
     "logo.png",
 ]
 
@@ -318,6 +318,11 @@ incremental = true
 
 [profile.dev.package."*"]
 opt-level = 2
+
+# Self-development builds and reload tooling expect artifacts under
+# target/selfdev. Inherit the fast, unwind-enabled development settings.
+[profile.selfdev]
+inherits = "dev"
 
 [profile.test]
 opt-level = 1

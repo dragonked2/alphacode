@@ -29,7 +29,7 @@ pub(crate) enum ProviderAuthArg {
 #[derive(Parser, Debug)]
 #[command(name = "alphacode")]
 #[command(version = crate::alphacode_build_meta::version())]
-#[command(about = "Alphacode: a blazing-fast terminal coding agent for 40+ models")]
+#[command(about = "AlphaCode: a blazing-fast terminal coding agent for 40+ models")]
 #[command(
     after_help = "Website: https://alphacli.github.io/\nSource:  https://github.com/dragonked2/alphacode"
 )]
@@ -144,12 +144,28 @@ pub(crate) struct Args {
     #[arg(long, global = true, value_name = "TOKENS")]
     pub(crate) mcp_tools_token_threshold: Option<usize>,
 
+    /// Open the Windows desktop interface.
+    #[arg(long)]
+    pub(crate) gui: bool,
+
     #[command(subcommand)]
     pub(crate) command: Option<Command>,
 }
 
 #[derive(Subcommand, Debug)]
 pub(crate) enum Command {
+    /// Open the Windows desktop interface.
+    Gui {
+        /// Open a preview without connecting to a server.
+        #[arg(long)]
+        preview: bool,
+        /// Print a machine-readable status snapshot.
+        #[arg(long, conflicts_with = "preview")]
+        once: bool,
+        /// Internal desktop transport.
+        #[arg(long, hide = true, conflicts_with_all = ["once", "preview"])]
+        bridge: bool,
+    },
     /// Start the agent server (background daemon)
     Serve {
         /// Internal: mark this server as temporary so it can self-clean when its owner exits.
@@ -172,7 +188,7 @@ pub(crate) enum Command {
         server_name: Option<String>,
     },
 
-    /// Run as an Agent Client Protocol (ACP) adapter backed by the Alphacode daemon
+    /// Run as an Agent Client Protocol (ACP) adapter backed by the AlphaCode daemon
     Acp,
 
     /// Manage the background server daemon (e.g. `alphacode server stop`).
@@ -258,7 +274,7 @@ pub(crate) enum Command {
         api_key_env: Option<String>,
     },
 
-    /// Log in to and manage your Alphacode account
+    /// Log in to and manage your AlphaCode account
     Account {
         #[command(subcommand)]
         action: AccountCommand,
@@ -347,7 +363,7 @@ pub(crate) enum Command {
     #[command(subcommand)]
     Ambient(AmbientCommand),
 
-    /// Optional Alphacode Cloud/Jade integration commands
+    /// Optional AlphaCode Cloud/Jade integration commands
     #[command(subcommand)]
     Cloud(CloudCommand),
 
@@ -369,12 +385,12 @@ pub(crate) enum Command {
     /// Review and respond to pending ambient permission requests
     Permissions,
 
-    /// Inject externally transcribed text into the active Alphacode TUI
+    /// Inject externally transcribed text into the active AlphaCode TUI
     Transcript {
         /// Transcript text. If omitted, reads from stdin.
         text: Option<String>,
 
-        /// How to apply the transcript inside Alphacode
+        /// How to apply the transcript inside AlphaCode
         #[arg(long, value_enum, default_value = "send")]
         mode: TranscriptModeArg,
 
@@ -631,7 +647,7 @@ pub(crate) enum AccountCommand {
         #[arg(long)]
         json: bool,
     },
-    /// Open the public Alphacode account management page
+    /// Open the public AlphaCode account management page
     Manage,
     /// Revoke the current key when reachable, then securely clear local state
     Logout,
@@ -748,7 +764,7 @@ pub(crate) enum CloudSessionsCommand {
 
     /// Upload a specific local session JSON file to Jade cloud storage
     Upload {
-        /// Path to a local Alphacode session JSON file
+        /// Path to a local AlphaCode session JSON file
         session_file: String,
 
         /// Upload without Jade's redaction pass
@@ -759,9 +775,9 @@ pub(crate) enum CloudSessionsCommand {
         jade: JadeCloudOptions,
     },
 
-    /// Upload the newest local Alphacode session to Jade cloud storage
+    /// Upload the newest local AlphaCode session to Jade cloud storage
     UploadLatest {
-        /// Directory containing local Alphacode session JSON files
+        /// Directory containing local AlphaCode session JSON files
         #[arg(long, default_value = "~/.alphacode/sessions")]
         sessions_dir: String,
 
@@ -775,7 +791,7 @@ pub(crate) enum CloudSessionsCommand {
 
     /// Sync new or changed local sessions to Jade cloud storage (idempotent; safe to schedule)
     Sync {
-        /// Directory containing local Alphacode session JSON files (default: ~/.alphacode/sessions)
+        /// Directory containing local AlphaCode session JSON files (default: ~/.alphacode/sessions)
         #[arg(long)]
         sessions_dir: Option<String>,
 

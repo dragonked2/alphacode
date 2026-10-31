@@ -198,6 +198,15 @@ where
                 // Build panicked. Send a Complete so the picker leaves the
                 // skeleton state; the caller will then see the skeleton until
                 // it dismisses.
+                //
+                // This runs on a spawned worker, so the panic has already been
+                // reported by the default hook but is otherwise unobservable
+                // here. Log it explicitly: without this a failed build looks
+                // like an empty model list, which is indistinguishable from a
+                // provider that legitimately returned no routes.
+                crate::alphacode_logging::error(
+                    "model_browser: row build panicked; leaving an empty browser",
+                );
                 let _ = tx.send(RowDelta::Complete {
                     total: 0,
                     elapsed_ms: started.elapsed().as_millis() as u64,

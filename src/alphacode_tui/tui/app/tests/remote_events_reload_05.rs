@@ -200,61 +200,53 @@ fn test_completion_gate_nudges_stop_after_budget_exhausted() {
 
 #[test]
 fn test_save_input_for_reload_removes_stale_file_when_state_is_empty() {
-    let mut app = create_test_app();
-    let session_id = format!("test-391-stale-{}", std::process::id());
+    // `ALPHACODE_HOME` is process-global and `save_input_for_reload` resolves it
+    // internally. Without the env lock a concurrent test that scopes its own
+    // home can point this save at a directory it then deletes, so the write
+    // fails silently (`save_input_for_reload` ignores the io::Error) and the
+    // first assertion flakes in a full run while passing in isolation. Scope a
+    // hermetic home for the whole body, like the other reload tests here.
+    with_temp_alphacode_home(|| {
+        let mut app = create_test_app();
+        let session_id = format!("test-391-stale-{}", std::process::id());
 
-    // First reload snapshot holds a queued message.
-    app.queued_messages.push("old queued".to_string());
-    app.save_input_for_reload(&session_id);
+        // First reload snapshot holds a queued message.
+        app.queued_messages.push("old queued".to_string());
+        app.save_input_for_reload(&session_id);
 
-    let path = crate::storage::alphacode_dir()
-        .expect("alphacode dir")
-        .join(format!("client-input-{}", session_id));
-    assert!(path.exists(), "first save should write the reload file");
+        let path = crate::storage::alphacode_dir()
+            .expect("alphacode dir")
+            .join(format!("client-input-{}", session_id));
+        assert!(path.exists(), "first save should write the reload file");
 
-    // An empty save while the file is FRESH must preserve it: another client
-    // attached to the same session may have just saved its own queued
-    // messages during the same reload handoff.
-    app.queued_messages.clear();
-    app.save_input_for_reload(&session_id);
-    assert!(
-        path.exists(),
-        "an empty save must not delete a fresh reload file (multi-client safety)"
-    );
+        // An empty save while the file is FRESH must preserve it: another client
+        // attached to the same session may have just saved its own queued
+        // messages during the same reload handoff.
+        app.queued_messages.clear();
+        app.save_input_for_reload(&session_id);
+        assert!(
+            path.exists(),
+            "an empty save must not delete a fresh reload file (multi-client safety)"
+        );
 
-    // Backdate the file past the staleness window; now an empty save must
-    // remove it so a long-stale queue cannot resurrect on a later restore.
-    #[cfg(unix)]
-    {
-        let stale_age_secs = 400; // > 300s staleness cutoff
-        let target = std::time::SystemTime::now() - Duration::from_secs(stale_age_secs);
-        let since_epoch = target
-            .duration_since(std::time::SystemTime::UNIX_EPOCH)
-            .expect("clock before epoch");
-        let times = [
-            libc::timespec {
-                tv_sec: since_epoch.as_secs() as libc::time_t,
-                tv_nsec: 0,
-            },
-            libc::timespec {
-                tv_sec: since_epoch.as_secs() as libc::time_t,
-                tv_nsec: 0,
-            },
-        ];
-        let c_path = std::ffi::CString::new(path.to_str().expect("utf8 path")).expect("c path");
-        let rc = unsafe { libc::utimensat(libc::AT_FDCWD, c_path.as_ptr(), times.as_ptr(), 0) };
-        assert_eq!(rc, 0, "backdating the reload file mtime should succeed");
+        // Backdate the file past the staleness window; now an empty save must
+        // remove it so a long-stale queue cannot resurrect on a later restore.
+        // `File::set_modified` is portable, so the branch that actually deletes
+        // the file is covered on every OS instead of only under `cfg(unix)`.
+        let stale = std::time::SystemTime::now() - std::time::Duration::from_secs(400);
+        std::fs::File::options()
+            .write(true)
+            .open(&path)
+            .expect("reopen reload file")
+            .set_modified(stale)
+            .expect("backdate the reload file mtime");
 
         app.save_input_for_reload(&session_id);
         assert!(
             !path.exists(),
             "an empty save must remove a stale reload file so old queued messages cannot resurrect"
         );
-    }
-    #[cfg(not(unix))]
-    {
-        let _ = std::fs::remove_file(&path);
-    }
+    });
 }
 
 /// Repeated provider guardrail refusals must trip the circuit breaker and

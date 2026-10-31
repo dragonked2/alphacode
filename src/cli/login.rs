@@ -305,10 +305,18 @@ pub async fn run_login_provider(
                 login_bedrock_flow().map(|_| LoginFlowOutcome::Completed)
             }
             LoginProviderTarget::Azure => login_azure_flow().map(|_| LoginFlowOutcome::Completed),
+            LoginProviderTarget::OpenAiCompatible(profile)
+                if profile.id == auth::orcarouter::PROFILE_ID =>
+            {
+                login_orcarouter_flow().map(|_| LoginFlowOutcome::Completed)
+            }
             LoginProviderTarget::OpenAiCompatible(profile) => {
                 login_openai_compatible_flow(&profile, &options)
                     .map(|_| LoginFlowOutcome::Completed)
             }
+            LoginProviderTarget::OrcaRouterOAuth => login_orcarouter_oauth_flow(options.no_browser)
+                .await
+                .map(|_| LoginFlowOutcome::Completed),
             LoginProviderTarget::Cursor => login_cursor_flow().map(|_| LoginFlowOutcome::Completed),
             LoginProviderTarget::Copilot => {
                 login_copilot_flow(options.no_browser).map(|_| LoginFlowOutcome::Completed)
@@ -640,6 +648,149 @@ fn login_openrouter_flow() -> Result<()> {
             .display()
     );
     crate::telemetry::record_auth_success("openrouter", "api_key");
+    Ok(())
+}
+
+/// OrcaRouter API key path: a key minted in the console (`sk-orca-...`).
+fn login_orcarouter_flow() -> Result<()> {
+    eprintln!("Setting up OrcaRouter (API key)...");
+    eprintln!("Create a key at: https://www.orcarouter.ai/console\n");
+    eprint!("Paste your OrcaRouter API key: ");
+    io::stdout().flush()?;
+
+    let key = read_secret_line()?;
+
+    if key.is_empty() {
+        anyhow::bail!("No API key provided.");
+    }
+
+    if let Some(warning) = auth::orcarouter::key_prefix_warning(&key) {
+        eprintln!("Warning: {warning}");
+    }
+
+    auth::orcarouter::save_key(&key)?;
+    eprintln!("\nSaved OrcaRouter API key. It will be checked when you make a request.");
+    eprintln!(
+        "Stored at {}",
+        crate::storage::app_config_dir()?
+            .join(auth::orcarouter::ENV_FILE)
+            .display()
+    );
+    eprintln!(
+        "Inference endpoint: {}",
+        crate::provider_catalog::resolve_openai_compatible_profile(
+            crate::provider_catalog::ORCAROUTER_PROFILE
+        )
+        .api_base
+    );
+    crate::telemetry::record_auth_success(auth::orcarouter::PROFILE_ID, "api_key");
+    Ok(())
+}
+
+/// OrcaRouter OAuth 2.0 + PKCE path.
+///
+/// Flow A (RFC 8252 loopback redirection): the browser is sent to the auth
+/// origin with a plain-loopback `callback_url`, and the code lands back on a
+/// listener bound before the browser opens. When the listener cannot be bound
+/// the same attempt degrades to a manual paste of the callback URL, so the
+/// verifier is never reused across attempts and never crosses the wire in a URL.
+async fn login_orcarouter_oauth_flow(no_browser: bool) -> Result<()> {
+    let auth_base = auth::orcarouter::auth_base();
+    eprintln!("Logging in to OrcaRouter (OAuth 2.0 + PKCE)...");
+
+    // Every attempt gets a fresh verifier and state.
+    let (attempt, _challenge) = auth::orcarouter::begin_attempt();
+
+    let listener = auth::oauth::bind_callback_listener(0).ok();
+    let redirect_uri = match listener.as_ref().map(|listener| listener.local_addr()) {
+        Some(Ok(addr)) => format!("http://127.0.0.1:{}/cb", addr.port()),
+        _ => format!(
+            "http://127.0.0.1:{}/cb",
+            auth::orcarouter::FALLBACK_CALLBACK_PORT
+        ),
+    };
+    let auth_url = auth::orcarouter::authorize_url(&auth_base, &redirect_uri, &attempt);
+
+    eprintln!("\nOpen this URL in your browser:\n");
+    eprintln!("{}\n", auth_url);
+    if let Some(qr) = crate::login_qr::indented_section(
+        &auth_url,
+        "Scan this QR on another device if this machine has no browser:",
+        "    ",
+    ) {
+        eprintln!("{qr}\n");
+    }
+
+    let browser_opened = if auth::browser_suppressed(no_browser) {
+        false
+    } else {
+        open::that(&auth_url).is_ok()
+    };
+
+    let mut code: Option<String> = None;
+    if browser_opened && let Some(listener) = listener {
+        eprintln!(
+            "Waiting up to {}s for the automatic callback on {}",
+            auth::orcarouter::CALLBACK_WAIT_SECS,
+            redirect_uri
+        );
+        match tokio::time::timeout(
+            std::time::Duration::from_secs(auth::orcarouter::CALLBACK_WAIT_SECS),
+            auth::oauth::wait_for_callback_async_on_listener(listener, &attempt.state),
+        )
+        .await
+        {
+            Ok(Ok(received)) => code = Some(received),
+            Ok(Err(err)) => {
+                eprintln!("Automatic callback failed ({err}). Falling back to manual paste.")
+            }
+            Err(_) => {
+                eprintln!("Timed out waiting for the callback. Falling back to manual paste.")
+            }
+        }
+    }
+
+    let code = match code {
+        Some(code) => code,
+        None => {
+            eprintln!(
+                "After approving in the browser, paste the full callback URL (or just the code) here:\n"
+            );
+            eprint!("> ");
+            io::stdout().flush()?;
+            let mut input = String::new();
+            io::stdin().read_line(&mut input)?;
+            let (code, state) = auth::orcarouter::parse_callback_input(&input);
+            if code.is_empty() {
+                anyhow::bail!("No authorization code entered.");
+            }
+            if let Some(received) = state
+                && received != attempt.state
+            {
+                anyhow::bail!(
+                    "OAuth state mismatch — this callback belongs to a different login attempt. Run the login again."
+                );
+            }
+            code
+        }
+    };
+
+    eprintln!("Exchanging authorization code for an OrcaRouter key...");
+    let issued = auth::orcarouter::exchange_code(&auth_base, &attempt, &code).await?;
+    auth::orcarouter::save_key(&issued.key)?;
+
+    eprintln!("\nSuccessfully logged in to OrcaRouter!");
+    eprintln!("Key {} saved.", auth::orcarouter::redact_key(&issued.key));
+    eprintln!(
+        "Stored at {}",
+        crate::storage::app_config_dir()?
+            .join(auth::orcarouter::ENV_FILE)
+            .display()
+    );
+    eprintln!(
+        "Revoke this app's access anytime at https://www.orcarouter.ai/console/authorized-apps"
+    );
+    crate::telemetry::record_auth_success(auth::orcarouter::PROFILE_ID, "oauth");
     Ok(())
 }
 

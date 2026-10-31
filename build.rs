@@ -126,6 +126,7 @@ fn main() {
 
     emit_build_environment(&info);
     configure_mmdr();
+    configure_windows_desktop(&repo_root);
 }
 
 fn default_build_version(base: Version) -> String {
@@ -552,4 +553,121 @@ fn parse_bool(value: &str) -> bool {
         value.trim().to_ascii_lowercase().as_str(),
         "1" | "true" | "yes" | "on" | "dirty"
     )
+}
+
+/// Embed the application icon and compile the Windows desktop host. The host
+/// embeds its WPF script so an installed binary needs no adjacent source files.
+fn configure_windows_desktop(root: &Path) {
+    let target = env::var("TARGET").unwrap_or_default();
+    if !target.contains("windows") {
+        return;
+    }
+    let out = PathBuf::from(env::var_os("OUT_DIR").expect("OUT_DIR"));
+    let icon = root.join("assets").join("app-icons").join("alphacode.ico");
+    let manifest = root
+        .join("assets")
+        .join("app-icons")
+        .join("alphacode.manifest");
+    let host_source = root.join("src").join("cli").join("gui").join("GuiHost.cs");
+    let ui = root.join("src").join("cli").join("gui").join("gui.ps1");
+    for path in [&icon, &manifest, &host_source, &ui] {
+        println!("cargo:rerun-if-changed={}", path.display());
+    }
+    let host = out.join("AlphaCode.Desktop.exe");
+    if !cfg!(windows) {
+        // Cross-builds cannot use Windows PowerShell's .NET Framework host.
+        fs::write(&host, []).expect("write unavailable GUI host marker");
+        println!("cargo:warning=Windows GUI host requires a native Windows build");
+    } else {
+        let windir = PathBuf::from(env::var_os("WINDIR").expect("WINDIR"));
+        let compiler = windir
+            .join("Microsoft.NET")
+            .join("Framework64")
+            .join("v4.0.30319")
+            .join("csc.exe");
+        let automation = Command::new("powershell.exe")
+            .args([
+                "-NoProfile",
+                "-NonInteractive",
+                "-Command",
+                "[System.Management.Automation.PSObject].Assembly.Location",
+            ])
+            .output()
+            .expect("find Windows PowerShell assembly");
+        assert!(
+            automation.status.success(),
+            "could not find Windows PowerShell assembly"
+        );
+        let assembly = String::from_utf8(automation.stdout).expect("PowerShell assembly path");
+        let result = Command::new(compiler)
+            .args(["/nologo", "/target:winexe"])
+            .arg(format!("/out:{}", host.display()))
+            .arg(format!("/reference:{}", assembly.trim()))
+            .arg(format!("/resource:{},AlphaCode.UI", ui.display()))
+            .arg(format!("/win32icon:{}", icon.display()))
+            .arg(format!("/win32manifest:{}", manifest.display()))
+            .arg(host_source)
+            .output()
+            .expect("start desktop host compiler");
+        assert!(
+            result.status.success(),
+            "desktop host build failed: {} {}",
+            String::from_utf8_lossy(&result.stdout),
+            String::from_utf8_lossy(&result.stderr)
+        );
+    }
+    println!(
+        "cargo:rustc-env=ALPHACODE_DESKTOP_HOST_BYTES={}",
+        host.display()
+    );
+    if target.contains("msvc") {
+        let source = out.join("alphacode-icon.rc");
+        let resource = out.join("alphacode-icon.res");
+        let icon_path = icon.to_string_lossy().replace('\\', "\\\\");
+        fs::write(&source, format!("1 ICON \"{icon_path}\"\n"))
+            .expect("write icon resource source");
+        let result = Command::new(windows_resource_compiler())
+            .arg("/nologo")
+            .arg(format!("/fo{}", resource.display()))
+            .arg(&source)
+            .output();
+        match result {
+            Ok(result) if result.status.success() => {
+                println!("cargo:rustc-link-arg-bin=alphacode={}", resource.display())
+            }
+            Ok(result) => panic!(
+                "icon resource build failed: {}",
+                String::from_utf8_lossy(&result.stderr)
+            ),
+            Err(error) => panic!(
+                "Windows resource compiler not found: {error}. Load the MSVC build environment before building."
+            ),
+        }
+    }
+}
+
+/// Cargo can find MSVC without vcvars being loaded; find an installed SDK's
+/// resource compiler as well so ordinary Windows builds can embed the icon.
+fn windows_resource_compiler() -> PathBuf {
+    let sdk = env::var_os("WindowsSdkDir").map(PathBuf::from).or_else(|| {
+        env::var_os("ProgramFiles(x86)")
+            .map(PathBuf::from)
+            .map(|path| path.join("Windows Kits").join("10"))
+    });
+    if let Some(sdk) = sdk {
+        let bin = sdk.join("bin");
+        if let Ok(entries) = fs::read_dir(bin) {
+            let mut candidates: Vec<_> = entries.flatten().map(|entry| entry.path()).collect();
+            candidates.sort();
+            for version in candidates.into_iter().rev() {
+                for arch in ["x64", "x86", "arm64"] {
+                    let compiler = version.join(arch).join("rc.exe");
+                    if compiler.is_file() {
+                        return compiler;
+                    }
+                }
+            }
+        }
+    }
+    PathBuf::from("rc.exe")
 }

@@ -244,6 +244,36 @@ pub fn free_pool_display_name(model: &str) -> Option<&'static str> {
         .then_some(ALPHAX_FREE_DISPLAY_NAME)
 }
 
+/// Inverse of [`free_pool_display_name`]: turn the product label a user-facing
+/// surface shows back into the model id that should be sent to the gateway.
+///
+/// Display surfaces intentionally collapse the pool onto one row labelled
+/// "Alphax Free", and those surfaces then feed the user's choice back to the
+/// session as if it were a model id. Without this resolver that round trip
+/// sends the *label* upstream, which is not a routable model, so picking the
+/// pool row from the desktop picker failed. Resolving to the automatic routing
+/// alias is the correct mapping: it is the curated floor every other pool
+/// member falls back to, and it keeps the gateway free to pick whichever
+/// upstream serves the turn.
+///
+/// Only the exact product label resolves. A label with decoration such as the
+/// picker's "(automatic)" suffix, or an ordinary model id, passes through
+/// unchanged — this must never rewrite a real model name.
+pub fn resolve_free_pool_model_selection(model: &str) -> Option<&'static str> {
+    let model = model.trim();
+    // The picker decorates the automatic row, so accept an optional trailing
+    // marker when matching. Nothing else is stripped: a suffix test on
+    // arbitrary text would hijack ids that merely start the same way.
+    let base = model
+        .strip_suffix("(automatic)")
+        .map(str::trim_end)
+        .unwrap_or(model);
+    if !base.eq_ignore_ascii_case(ALPHAX_FREE_DISPLAY_NAME) {
+        return None;
+    }
+    Some(route_cloak::leaked_free_route_default_model())
+}
+
 /// The model-name segment of a free-pool member id, for picker rows that list
 /// concrete pool members, or `None` when the label does not apply.
 ///
@@ -416,7 +446,11 @@ pub fn next_free_model(current: &str) -> Option<String> {
         // Genuinely nothing but unroutable ids left: prefer a non-unroutable
         // pool member, and only then allow one back so the turn is not stalled
         // forever by a pool the gateway has stopped serving.
-        .or_else(|| effective_free_pool().into_iter().find(|c| c != current))
+        .or_else(|| {
+            effective_free_pool()
+                .into_iter()
+                .find(|c| c != current && !quarantined.contains(c))
+        })
         .or_else(|| soonest_recoverable(true))
 }
 
@@ -503,7 +537,7 @@ mod tests {
         let _guard = test_lock();
         reset();
         let alias = route_cloak::free_route_default_model();
-        seed_pool(&["synthetic/pool-a:free"]);
+        seed_pool(&["synthetic/pool-a:free", "synthetic/pool-b:free"]);
         quarantine_model("synthetic/pool-a:free", RotationTrigger::RateLimited);
         assert!(is_quarantined("synthetic/pool-a:free"));
         let next = next_free_model(&alias).expect("pool has alternatives");
@@ -582,6 +616,54 @@ mod tests {
     }
 
     #[test]
+    fn the_product_label_resolves_back_to_the_routing_alias() {
+        let _guard = test_lock();
+        reset();
+        // A surface that shows the label must be able to hand the choice back
+        // as a routable id, otherwise selecting the pool row sends our own UI
+        // copy upstream as a model name.
+        assert_eq!(
+            resolve_free_pool_model_selection(ALPHAX_FREE_DISPLAY_NAME),
+            Some(route_cloak::free_route_default_model().as_str())
+        );
+        // The picker decorates the automatic row; the marker must not defeat
+        // the lookup.
+        assert_eq!(
+            resolve_free_pool_model_selection("Alphax Free (automatic)"),
+            Some(route_cloak::free_route_default_model().as_str())
+        );
+        assert_eq!(
+            resolve_free_pool_model_selection("  alphax free  "),
+            Some(route_cloak::free_route_default_model().as_str())
+        );
+        // Real model ids are never rewritten by this helper.
+        let alias = route_cloak::free_route_default_model();
+        assert_eq!(resolve_free_pool_model_selection(&alias), None);
+        assert_eq!(
+            resolve_free_pool_model_selection("synthetic/pool-a:free"),
+            None
+        );
+        assert_eq!(resolve_free_pool_model_selection("openai/gpt-5.4"), None);
+        // Prefix-ish text must not be hijacked into the pool label.
+        assert_eq!(resolve_free_pool_model_selection("Alphax Free Turbo"), None);
+        assert_eq!(resolve_free_pool_model_selection(""), None);
+    }
+
+    #[test]
+    fn display_name_and_selection_resolution_round_trip() {
+        let _guard = test_lock();
+        reset();
+        seed_pool(&["synthetic/pool-a:free"]);
+        let alias = route_cloak::free_route_default_model();
+        // forward(alias) == label, and inverse(label) == alias.
+        let label = free_pool_display_name(&alias).expect("alias is a pool member");
+        assert_eq!(
+            resolve_free_pool_model_selection(label),
+            Some(alias.as_str())
+        );
+    }
+
+    #[test]
     fn picker_model_part_strips_the_gateway_routing_details() {
         let _guard = test_lock();
         reset();
@@ -603,7 +685,10 @@ mod tests {
         );
         // Non-members return None regardless of shape, so ids from other
         // providers are never draped in these labels.
-        assert_eq!(free_pool_picker_model_part("tokenharbor/qwen3-max:free"), None);
+        assert_eq!(
+            free_pool_picker_model_part("tokenharbor/qwen3-max:free"),
+            None
+        );
         assert_eq!(free_pool_picker_model_part("openai/gpt-5.4"), None);
         assert_eq!(free_pool_picker_model_part(""), None);
         assert_eq!(free_pool_picker_model_part(":free"), None);

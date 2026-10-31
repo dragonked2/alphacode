@@ -339,6 +339,12 @@ profile = "full"
 # disabled = ["browser", "gmail", "swarm"]
 # Disable all built-in tools unless enabled is set.
 disable_base_tools = false
+# How many tool definitions to advertise per request.
+# "progressive" (default) sends a core surface (~14 tools) and keeps the rest
+# callable but unadvertised; the model pulls them in with the `tool_help` tool.
+# This is the single biggest prompt-cost lever: advertising every tool costs
+# ~30k tokens per request. "legacy" advertises every enabled tool every turn.
+disclosure = "progressive"
 
 [acp]
 # Agent Client Protocol adapter compatibility profile: standard, extended, or full.

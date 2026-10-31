@@ -1379,91 +1379,88 @@ fn render_single_widget(frame: &mut Frame, placement: &WidgetPlacement, data: &I
     // across all widget frames. Uses a subtle, professional border that
     // blends with the dark theme.
     let border_color = rgb(48, 54, 76);
-    let title_color = rgb(88, 95, 118);
     let mut block = Block::default()
         .borders(Borders::ALL)
         .border_type(BorderType::Rounded)
         .border_style(Style::default().fg(border_color));
 
-    // Add descriptive titles to widgets for visual hierarchy
+    // Widget titles unify on palette roles and single-width marks.
+    //
+    // Every title here used to carry a hand-picked RGB literal, so the side
+    // panel ignored the active theme and clashed with the rest of the chrome.
+    // Several also led with multi-cell emoji (\u{1f4b0}, \u{1f9e0}, \u{1f916},
+    // \u{1f504}, and U+26A1/U+23f3 which default to emoji presentation). A
+    // double-width glyph in a one-row border title shifts everything after it
+    // and can invalidate ratatui's cell-width cache mid-frame; the geometric
+    // marks below are all one cell and one colour role.
+    use crate::alphacode_tui_style::{Role, role_color};
+    let title_style = |role: Role| Style::default().fg(role_color(role));
+
     match placement.kind {
         WidgetKind::Overview => {
+            // The session widget anchors the panel, so it carries the product
+            // mark: " ◆ AlphaCode · Session ".
             block = block.title(Span::styled(
-                " ◈ Session ",
-                Style::default().fg(rgb(125, 195, 255)),
+                crate::alphacode_brand::section_title("Session"),
+                title_style(Role::HeaderIcon),
             ));
         }
         WidgetKind::WorkspaceMap => {
             block = block.title(Span::styled(
                 " \u{2630} Workspace ",
-                Style::default().fg(title_color),
+                title_style(Role::Info),
             ));
         }
         WidgetKind::Todos => {
             block = block.title(Span::styled(
                 " \u{2714} Todos ",
-                Style::default().fg(rgb(108, 230, 158)),
+                title_style(Role::TodoDone),
             ));
         }
         WidgetKind::ModelInfo => {
             block = block.title(Span::styled(
                 " \u{2699} Model ",
-                Style::default().fg(rgb(125, 195, 255)),
+                title_style(Role::HeaderIcon),
             ));
         }
         WidgetKind::ContextUsage => {
-            block = block.title(Span::styled(
-                " \u{2637} Context ",
-                Style::default().fg(rgb(148, 188, 255)),
-            ));
+            block = block.title(Span::styled(" \u{2637} Context ", title_style(Role::Info)));
         }
         WidgetKind::UsageLimits => {
-            block = block.title(Span::styled(
-                " \u{1f4b0} Usage ",
-                Style::default().fg(rgb(255, 195, 88)),
-            ));
+            block = block.title(Span::styled(" \u{25d4} Usage ", title_style(Role::Warning)));
         }
         WidgetKind::KvCache => {
-            block = block.title(Span::styled(
-                " \u{26a1} Cache ",
-                Style::default().fg(rgb(255, 215, 78)),
-            ));
+            block = block.title(Span::styled(" \u{25a4} Cache ", title_style(Role::Warning)));
         }
         WidgetKind::MemoryActivity => {
-            block = block.title(Span::styled(
-                " \u{1f9e0} Memory ",
-                Style::default().fg(rgb(205, 168, 255)),
-            ));
+            block = block.title(Span::styled(" \u{25ce} Memory ", title_style(Role::Memory)));
         }
         WidgetKind::SwarmStatus => {
             block = block.title(Span::styled(
-                " \u{1f916} Agents ",
-                Style::default().fg(rgb(108, 215, 255)),
+                " \u{2726} Agents ",
+                title_style(Role::SwarmAgent),
             ));
         }
         WidgetKind::Compaction => {
             block = block.title(Span::styled(
-                " \u{1f504} Compact ",
-                Style::default().fg(rgb(138, 235, 188)),
+                " \u{21ba} Compact ",
+                title_style(Role::Success),
             ));
         }
         WidgetKind::BackgroundTasks => {
             block = block.title(Span::styled(
-                " \u{23f3} Tasks ",
-                Style::default().fg(rgb(138, 142, 165)),
+                " \u{25f4} Tasks ",
+                title_style(Role::MutedText),
             ));
         }
         WidgetKind::AmbientMode => {
             block = block.title(Span::styled(
-                " \u{23f0} Ambient ",
-                Style::default().fg(rgb(255, 215, 78)),
+                " \u{25cb} Ambient ",
+                title_style(Role::Warning),
             ));
         }
         WidgetKind::GitStatus => {
-            block = block.title(Span::styled(
-                " \u{2442} Git ",
-                Style::default().fg(rgb(125, 195, 255)),
-            ));
+            block = block.title(Span::styled(" \u{2442} Git ", title_style(Role::Info)));
         }
         _ => {}
     }
@@ -2056,6 +2053,14 @@ fn render_sections(
         lines.push(telemetry);
     }
 
+    if !data.todos.is_empty() {
+        if matches!(focus, Some(InfoPageKind::TodosExpanded)) {
+            lines.extend(render_todos_expanded(data, inner));
+        } else {
+            lines.extend(render_todos_compact(data, inner));
+        }
+    }
+
     if let Some(queue_mode) = data.queue_mode {
         lines.push(Line::from(vec![
             Span::styled("Queue ", Style::default().fg(rgb(140, 140, 150))),
@@ -2070,14 +2075,6 @@ fn render_sections(
                     .bold(),
             ),
         ]));
-    }
-
-    if !data.todos.is_empty() {
-        if matches!(focus, Some(InfoPageKind::TodosExpanded)) {
-            lines.extend(render_todos_expanded(data, inner));
-        } else {
-            lines.extend(render_todos_compact(data, inner));
-        }
     }
 
     if matches!(focus, Some(InfoPageKind::MemoryExpanded))
@@ -2109,6 +2106,45 @@ fn render_sections(
     }
 
     lines
+}
+
+#[cfg(test)]
+mod session_todo_visibility_tests {
+    use super::*;
+
+    #[test]
+    fn session_overview_keeps_todos_ahead_of_queue_in_small_spaces() {
+        let data = InfoWidgetData {
+            model: Some("example".into()),
+            queue_mode: Some(true),
+            todos: vec![crate::todo::TodoItem {
+                id: "one".into(),
+                content: "test task".into(),
+                status: "in_progress".into(),
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+        let lines = render_sections(&data, Rect::new(0, 0, 40, 5), None);
+        let text: Vec<String> = lines
+            .iter()
+            .map(|line| {
+                line.spans
+                    .iter()
+                    .map(|span| span.content.as_ref())
+                    .collect()
+            })
+            .collect();
+        let todos = text
+            .iter()
+            .position(|line| line.contains("Todos"))
+            .expect("todo section");
+        let queue = text
+            .iter()
+            .position(|line| line.contains("Queue"))
+            .expect("queue section");
+        assert!(todos < queue);
+    }
 }
 
 fn render_overview_telemetry(

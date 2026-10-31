@@ -107,9 +107,6 @@ impl Agent {
         let mut context_limit_retries = 0u32;
         let mut incomplete_continuations = 0u32;
         let mut empty_post_tool_continuations = 0u32;
-        // Continuations injected when the model narrated an action it never
-        // performed. Bounded by Agent::MAX_STRANDED_INTENT_CONTINUATION_ATTEMPTS.
-        let mut stranded_intent_continuations = 0u32;
         // Automatic alternate-route attempts after a model-side refusal stop
         // (bounded by Agent::MAX_REFUSAL_ROTATIONS_PER_TURN so a policy that
         // keeps declining cannot cycle the whole pool in one request).
@@ -189,15 +186,20 @@ impl Agent {
                 });
             }
 
-            // Reuse cached tools when available (tool list doesn't change mid-turn)
+            // Tool discovery or MCP changes invalidate the agent snapshot.
+            // Drop the per-turn copy as well so the next request sees it.
+            if self.locked_tools.is_none() {
+                cached_tools = None;
+            }
             if cached_tools.is_none() {
                 let definitions = self.tool_definitions().await;
                 cached_tools = Some(if self.uses_compact_local_context() {
                     let query = self.latest_user_text().unwrap_or_default();
-                    super::turn_execution::context_adaptive_tools(
+                    super::turn_execution::context_adaptive_tools_with_promotions(
                         &definitions,
                         &query,
                         self.provider.context_window(),
+                        &crate::tool::tool_help::promoted_tools(&self.session.id),
                     )
                 } else {
                     definitions
@@ -227,7 +229,7 @@ impl Agent {
                 cached_static_prompt = Some((std::sync::Arc::clone(&sp), tier));
                 (sp, tier)
             };
-            self.log_prompt_prefix_accounting(&split_prompt, tools, prompt_tier);
+            self.log_prompt_prefix_accounting(&split_prompt, tools, prompt_tier, &messages);
 
             // Check for client-side cache violations before memory injection.
             // Memory is an ephemeral suffix that changes each turn; tracking it would cause
@@ -299,8 +301,6 @@ impl Agent {
                 .then(|| Message::with_timestamps(messages_with_memory));
             let send_messages = stamped.as_deref().unwrap_or(messages_with_memory);
             let prompt_has_recent_tool_result = Self::messages_end_with_tool_result(send_messages);
-            let prompt_had_failed_tool_result =
-                Self::messages_have_failed_tool_result(send_messages);
             let provider = Arc::clone(&self.provider);
             // Capture the model id the request was issued with. A provider may
             // transparently switch models mid-request (e.g. Anthropic's retired
@@ -1530,45 +1530,6 @@ impl Agent {
             // Injecting before tool_results would break the API requirement that
             // tool_use must be immediately followed by tool_result.
             if tool_calls.is_empty() {
-                // A model that narrated an action and stopped — after the tool
-                // it promised had already failed — leaves the user staring at
-                // a half-finished task. Ask it to actually act.
-                if saw_message_end
-                    && !self.is_graceful_shutdown()
-                    && self.maybe_continue_stranded_intent(
-                        &text_content,
-                        prompt_had_failed_tool_result,
-                        &mut stranded_intent_continuations,
-                    )?
-                {
-                    continue;
-                }
-                // A model that answers with a menu of options and a "which
-                // one?" question has parked the decision on the user and
-                // stopped. Ask it to pick and continue.
-                if saw_message_end
-                    && !self.is_graceful_shutdown()
-                    && self.maybe_continue_user_question_detour(
-                        &text_content,
-                        &mut stranded_intent_continuations,
-                    )?
-                {
-                    continue;
-                }
-                // A mid-task model that closes with a status report and
-                // promised ("I'll proceed with X now") but unexecuted next
-                // steps has parked its own next move in prose. Ask it to keep
-                // working while the task is still in flight.
-                if saw_message_end
-                    && !self.is_graceful_shutdown()
-                    && self.maybe_continue_pending_next_steps(
-                        &text_content,
-                        prompt_has_recent_tool_result,
-                        &mut stranded_intent_continuations,
-                    )?
-                {
-                    continue;
-                }
                 // Retry transient empty responses (dropped/empty upstream
                 // streams) before surfacing anything, matching the
                 // non-streaming loop's recovery behavior (issue #672).
@@ -2493,6 +2454,84 @@ mod tests {
             .expect("provider retry should recover the turn");
 
         assert_eq!(provider.calls.load(Ordering::SeqCst), 2);
+    }
+
+    /// A provider that answers every turn with a greeting-shaped reply: a
+    /// short intro, a bulleted capability list, and a closing question. That
+    /// shape used to be misread as a stalled "menu of options" and forced into
+    /// a second, unrequested turn; it must NOT be.
+    #[derive(Clone)]
+    struct GreetingProvider {
+        calls: Arc<AtomicUsize>,
+    }
+
+    #[async_trait::async_trait]
+    impl crate::alphacode_app_core::provider::Provider for GreetingProvider {
+        async fn complete(
+            &self,
+            _messages: &[Message],
+            _tools: &[ToolDefinition],
+            _system: &str,
+            _resume_session_id: Option<&str>,
+        ) -> anyhow::Result<crate::alphacode_app_core::provider::EventStream> {
+            self.calls.fetch_add(1, Ordering::SeqCst);
+            let reply = "Hey! I'm ready to help.\n\nI can help with:\n\n\
+• Reading and editing code\n\
+• Running builds and tests\n\
+• Web research\n\n\
+What would you like to work on today?";
+            Ok(Box::pin(tokio_stream::iter([
+                Ok(StreamEvent::TextDelta(reply.to_string())),
+                Ok(StreamEvent::MessageEnd {
+                    stop_reason: Some("stop".to_string()),
+                }),
+            ])))
+        }
+
+        fn name(&self) -> &str {
+            "greeting-test"
+        }
+
+        fn model(&self) -> String {
+            "greeting-test-model".to_string()
+        }
+
+        fn fork(&self) -> Arc<dyn crate::alphacode_app_core::provider::Provider> {
+            Arc::new(self.clone())
+        }
+    }
+
+    /// Regression: a fresh conversational turn ("hi") whose reply happens to
+    /// contain a bulleted list and a closing question must end after exactly
+    /// one provider call. The menu-of-options continuation is a *mid-task*
+    /// recovery and must not fire when no tool has run.
+    #[tokio::test]
+    async fn fresh_turn_with_bulleted_question_is_not_force_continued() {
+        let _env_lock = crate::storage::lock_test_env();
+        let temp_home = tempfile::tempdir().expect("temporary AlphaCode home");
+        let previous_home = std::env::var_os("ALPHACODE_HOME");
+        crate::alphacode_core::env::set_var("ALPHACODE_HOME", temp_home.path());
+        let _restore_home = RestoreAlphacodeHome(previous_home);
+
+        let provider = Arc::new(GreetingProvider {
+            calls: Arc::new(AtomicUsize::new(0)),
+        });
+        let mut agent = Agent::new(
+            provider.clone(),
+            crate::alphacode_app_core::tool::Registry::empty(),
+        );
+        let (event_tx, _event_rx) = tokio::sync::mpsc::unbounded_channel();
+
+        agent
+            .run_once_streaming_mpsc("hi", Vec::new(), None, event_tx)
+            .await
+            .expect("greeting turn should complete");
+
+        assert_eq!(
+            provider.calls.load(Ordering::SeqCst),
+            1,
+            "a fresh greeting turn must not be force-continued into a second model call"
+        );
     }
 
     fn tool_call(name: &str, input: serde_json::Value) -> ToolCall {

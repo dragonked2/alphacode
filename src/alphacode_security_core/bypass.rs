@@ -590,7 +590,7 @@ mod tests {
         scope
             .technologies
             .push(fingerprint("unknown-origin", TechCategory::Os));
-        let mut ep = DiscoveredEndpoint {
+        let ep = DiscoveredEndpoint {
             url: "https://t.example/account".into(),
             path: "/account".into(),
             cache_headers: vec![("X-Cache".into(), "MISS".into())],

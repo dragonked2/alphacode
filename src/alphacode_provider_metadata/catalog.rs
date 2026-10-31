@@ -3,7 +3,6 @@ use super::{
     LoginProviderAuthKind, LoginProviderAuthStateKey, LoginProviderDescriptor,
     LoginProviderSurfaceOrder, LoginProviderTarget, OpenAiCompatibleProfile,
 };
-use super::route_cloak;
 
 pub const OPENCODE_PROFILE: OpenAiCompatibleProfile = OpenAiCompatibleProfile {
     id: "opencode",
@@ -608,6 +607,28 @@ pub const UNIKEY_PROFILE: OpenAiCompatibleProfile = OpenAiCompatibleProfile {
     requires_api_key: true,
 };
 
+pub const ORCAROUTER_PROFILE: OpenAiCompatibleProfile = OpenAiCompatibleProfile {
+    id: "orcarouter",
+    display_name: "OrcaRouter",
+    // OrcaRouter is an OpenAI-compatible model gateway (chat, streaming,
+    // tools, reasoning, vision) with two credential paths: a pasted API key
+    // (`orcarouter`) and an OAuth 2.0 + PKCE browser authorization
+    // (`orcarouter-oauth`) that mints the same kind of durable `sk-orca-...`
+    // key. Both paths share this inference endpoint and this credential slot,
+    // which is why they are two login descriptors over one profile instead of
+    // two providers.
+    //
+    // `default_model` is the gateway's automatic router alias; the live
+    // `GET /v1/models` catalog is authoritative once a key is configured, and
+    // a small verified seed keeps a fresh install usable during an outage.
+    api_base: "https://api.orcarouter.ai/v1",
+    api_key_env: "ORCAROUTER_API_KEY",
+    env_file: "orcarouter.env",
+    setup_url: "https://www.orcarouter.ai/console",
+    default_model: Some("orcarouter/auto"),
+    requires_api_key: true,
+};
+
 pub const OPENAI_COMPAT_PROFILE: OpenAiCompatibleProfile = OpenAiCompatibleProfile {
     id: "openai-compatible",
     display_name: "OpenAI-compatible",
@@ -643,7 +664,7 @@ pub const ATRIA_PROFILE: OpenAiCompatibleProfile = OpenAiCompatibleProfile {
     requires_api_key: true,
 };
 
-pub(crate) const OPENAI_COMPAT_PROFILES: [OpenAiCompatibleProfile; 48] = [
+pub(crate) const OPENAI_COMPAT_PROFILES: [OpenAiCompatibleProfile; 49] = [
     GMICLOUD_PROFILE,
     OPENCODE_PROFILE,
     OPENCODE_GO_PROFILE,
@@ -690,6 +711,7 @@ pub(crate) const OPENAI_COMPAT_PROFILES: [OpenAiCompatibleProfile; 48] = [
     UNOROUTER_PROFILE,
     CODECRAFT_PROFILE,
     UNIKEY_PROFILE,
+    ORCAROUTER_PROFILE,
     OPENAI_COMPAT_PROFILE,
     ATRIA_PROFILE,
 ];
@@ -735,7 +757,7 @@ pub const AUTO_IMPORT_LOGIN_PROVIDER: LoginProviderDescriptor = LoginProviderDes
 
 pub const ALPHACODE_LOGIN_PROVIDER: LoginProviderDescriptor = LoginProviderDescriptor {
     id: "alphacode",
-    display_name: "Alphacode Subscription",
+    display_name: "AlphaCode Subscription",
     auth_kind: LoginProviderAuthKind::ApiKey,
     auth_state_key: LoginProviderAuthStateKey::Alphacode,
     auth_status_method: "API key",
@@ -1290,6 +1312,32 @@ pub const TOKENROUTER_LOGIN_PROVIDER: LoginProviderDescriptor = LoginProviderDes
     order: LoginProviderSurfaceOrder::new(Some(5), Some(5), Some(5), Some(5), Some(5)),
 };
 
+pub const ORCAROUTER_LOGIN_PROVIDER: LoginProviderDescriptor = LoginProviderDescriptor {
+    id: "orcarouter",
+    display_name: "OrcaRouter - API",
+    auth_kind: LoginProviderAuthKind::ApiKey,
+    auth_state_key: LoginProviderAuthStateKey::OpenRouterLike,
+    auth_status_method: "API key",
+    aliases: &["orca-router", "orcarouter-api"],
+    menu_detail: "API key (sk-orca-...), OpenAI-compatible model gateway",
+    recommended: false,
+    target: LoginProviderTarget::OpenAiCompatible(ORCAROUTER_PROFILE),
+    order: LoginProviderSurfaceOrder::new(Some(45), Some(45), Some(45), Some(45), Some(45)),
+};
+
+pub const ORCAROUTER_OAUTH_LOGIN_PROVIDER: LoginProviderDescriptor = LoginProviderDescriptor {
+    id: "orcarouter-oauth",
+    display_name: "OrcaRouter - Auth",
+    auth_kind: LoginProviderAuthKind::OAuth,
+    auth_state_key: LoginProviderAuthStateKey::OpenRouterLike,
+    auth_status_method: "OAuth 2.0 + PKCE",
+    aliases: &["orca-router-auth", "orcarouter-auth", "orcarouter-pkce"],
+    menu_detail: "browser authorization (OAuth 2.0 + PKCE)",
+    recommended: false,
+    target: LoginProviderTarget::OrcaRouterOAuth,
+    order: LoginProviderSurfaceOrder::new(Some(46), Some(46), Some(46), Some(46), Some(46)),
+};
+
 pub const OPENAI_COMPAT_LOGIN_PROVIDER: LoginProviderDescriptor = LoginProviderDescriptor {
     id: "openai-compatible",
     display_name: "OpenAI-compatible",
@@ -1494,7 +1542,7 @@ pub const GOOGLE_LOGIN_PROVIDER: LoginProviderDescriptor = LoginProviderDescript
     order: LoginProviderSurfaceOrder::new(Some(13), None, None, None, None),
 };
 
-pub(crate) const LOGIN_PROVIDERS: [LoginProviderDescriptor; 60] = [
+pub(crate) const LOGIN_PROVIDERS: [LoginProviderDescriptor; 62] = [
     AUTO_IMPORT_LOGIN_PROVIDER,
     CLAUDE_LOGIN_PROVIDER,
     ALPHAX_FREE_LOGIN_PROVIDER,
@@ -1548,6 +1596,8 @@ pub(crate) const LOGIN_PROVIDERS: [LoginProviderDescriptor; 60] = [
     OLLAMA_LOGIN_PROVIDER,
     DRAGONMETA_LOGIN_PROVIDER,
     TOKENROUTER_LOGIN_PROVIDER,
+    ORCAROUTER_LOGIN_PROVIDER,
+    ORCAROUTER_OAUTH_LOGIN_PROVIDER,
     OPENAI_COMPAT_LOGIN_PROVIDER,
     CURSOR_LOGIN_PROVIDER,
     COPILOT_LOGIN_PROVIDER,

@@ -52,7 +52,7 @@ impl RuntimeProviderId {
 
     pub const fn label(self) -> &'static str {
         match self {
-            Self::Alphacode => "Alphacode Subscription",
+            Self::Alphacode => "AlphaCode Subscription",
             Self::Claude => "Anthropic/Claude",
             Self::ClaudeApiKey => "Anthropic API",
             Self::AgentRouterAnthropic => "AgentRouter (Anthropic)",

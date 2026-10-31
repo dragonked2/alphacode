@@ -133,6 +133,15 @@ pub enum ProviderChoice {
     Codecraft,
     #[value(alias = "getunikey", alias = "unikey-ai")]
     Unikey,
+    #[value(alias = "orca-router", alias = "orca-router-api")]
+    Orcarouter,
+    #[value(
+        alias = "orca-router-auth",
+        alias = "orcarouter-auth",
+        alias = "orcarouter-pkce",
+        alias = "orcarouter-oauth"
+    )]
+    OrcarouterOauth,
     #[value(alias = "compat", alias = "custom")]
     OpenaiCompatible,
     Cursor,
@@ -203,6 +212,8 @@ impl ProviderChoice {
             Self::Tokenrouter => "tokenrouter",
             Self::Codecraft => "codecraft",
             Self::Unikey => "unikey",
+            Self::Orcarouter => "orcarouter",
+            Self::OrcarouterOauth => "orcarouter-oauth",
             Self::OpenaiCompatible => "openai-compatible",
             Self::Cursor => "cursor",
             Self::Copilot => "copilot",
@@ -414,6 +425,14 @@ const PROVIDER_CHOICE_LOGIN_PROVIDERS: &[(ProviderChoice, LoginProviderDescripto
         crate::provider_catalog::UNIKEY_LOGIN_PROVIDER,
     ),
     (
+        ProviderChoice::Orcarouter,
+        crate::provider_catalog::ORCAROUTER_LOGIN_PROVIDER,
+    ),
+    (
+        ProviderChoice::OrcarouterOauth,
+        crate::provider_catalog::ORCAROUTER_OAUTH_LOGIN_PROVIDER,
+    ),
+    (
         ProviderChoice::OpenaiCompatible,
         crate::provider_catalog::OPENAI_COMPAT_LOGIN_PROVIDER,
     ),
@@ -450,6 +469,9 @@ pub fn login_provider_choice_mappings() -> &'static [(ProviderChoice, LoginProvi
 pub fn profile_for_choice(choice: &ProviderChoice) -> Option<OpenAiCompatibleProfile> {
     match login_provider_for_choice(choice)?.target {
         LoginProviderTarget::OpenAiCompatible(profile) => Some(profile),
+        // The PKCE login mints a key for the same inference profile as the
+        // API-key entry, so `--provider orcarouter-oauth` boots that profile.
+        LoginProviderTarget::OrcaRouterOAuth => Some(crate::provider_catalog::ORCAROUTER_PROFILE),
         _ => None,
     }
 }
@@ -1383,6 +1405,23 @@ pub async fn login_and_bootstrap_provider(
             }
             Arc::new(multi)
         }
+        LoginProviderTarget::OrcaRouterOAuth => {
+            // OAuth and API-key logins share one inference profile: the PKCE
+            // exchange persists an `sk-orca-...` key in the same slot, so the
+            // runtime bootstrap is identical.
+            disable_subscription_runtime_mode();
+            let profile = crate::provider_catalog::ORCAROUTER_PROFILE;
+            apply_openai_compatible_profile_env(Some(profile));
+            let multi = provider::MultiProvider::new();
+            let resolved = resolve_openai_compatible_profile(profile);
+            crate::provider::activation::apply_openai_compatible_runtime(
+                resolved.default_model.clone(),
+            )?;
+            if let Some(model) = resolved.default_model.as_deref() {
+                let _ = multi.set_model(model);
+            }
+            Arc::new(multi)
+        }
         LoginProviderTarget::Cursor => {
             disable_subscription_runtime_mode();
             clear_initial_model_provider();
@@ -1491,7 +1530,7 @@ async fn init_provider_with_options(
 
     let provider: Arc<dyn provider::Provider> = match choice {
         ProviderChoice::Alphacode => {
-            init_notice("Using Alphacode subscription provider");
+            init_notice("Using AlphaCode subscription provider");
             Arc::new(provider::alphacode::AlphacodeProvider::new())
         }
         ProviderChoice::Claude => {
@@ -1628,6 +1667,8 @@ async fn init_provider_with_options(
         | ProviderChoice::Tokenrouter
         | ProviderChoice::Codecraft
         | ProviderChoice::Unikey
+        | ProviderChoice::Orcarouter
+        | ProviderChoice::OrcarouterOauth
         | ProviderChoice::OpenaiCompatible => {
             disable_subscription_runtime_mode();
             let profile = profile_for_choice(choice)
@@ -1654,6 +1695,26 @@ async fn init_provider_with_options(
                     )?;
                 }
                 runtime_model_hint = resolved.default_model.clone();
+                if let Some(explicit_model) = model.map(str::trim).filter(|model| !model.is_empty())
+                {
+                    runtime_model_hint = Some(explicit_model.to_string());
+                }
+                if matches!(choice, ProviderChoice::Lmstudio | ProviderChoice::Ollama)
+                    && model.is_none_or(|model| model.trim().is_empty())
+                {
+                    let api_key = crate::provider_catalog::load_api_key_from_env_or_config(
+                        &resolved.api_key_env,
+                        &resolved.env_file,
+                    );
+                    let model =
+                        crate::alphacode_provider_openrouter_runtime::discover_local_initial_model(
+                            &resolved.api_base,
+                            &resolved.id,
+                            api_key.as_deref(),
+                        )
+                        .await?;
+                    runtime_model_hint = Some(model);
+                }
                 resolved.display_name
             };
             init_notice(&format!(

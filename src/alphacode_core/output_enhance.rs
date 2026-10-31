@@ -32,29 +32,29 @@ use crate::output_style::{emoji_enabled, terminal_text};
 /// for a dark default terminal and a light default terminal — the
 /// `pick_for_terminal_bg()` helper picks the right one.
 pub mod palette {
-    /// Alphacode primary blue (used for headings, prompts, links).
-    pub const ACCENT: (u8, u8, u8) = (120, 180, 255);
+    /// Royal gold for headings and prompts.
+    pub const ACCENT: (u8, u8, u8) = (232, 190, 96);
     /// Alphacode success green.
     pub const SUCCESS: (u8, u8, u8) = (90, 200, 130);
     /// Alphacode warn amber.
     pub const WARN: (u8, u8, u8) = (240, 180, 80);
     /// Alphacode error red.
     pub const ERROR: (u8, u8, u8) = (240, 100, 100);
-    /// Alphacode info cyan.
-    pub const INFO: (u8, u8, u8) = (110, 200, 220);
+    /// Warm gold for informational highlights.
+    pub const INFO: (u8, u8, u8) = (229, 193, 115);
     /// Alphacode neutral gray (used for hints, secondary text).
     pub const MUTED: (u8, u8, u8) = (140, 150, 165);
-    /// Alphacode highlight magenta (for selected items, active markers).
-    pub const HIGHLIGHT: (u8, u8, u8) = (220, 130, 220);
+    /// Bright gold for selected items and active markers.
+    pub const HIGHLIGHT: (u8, u8, u8) = (245, 207, 111);
 
     /// Light-bg variants (slightly darker for contrast on white).
-    pub const ACCENT_LIGHT: (u8, u8, u8) = (30, 100, 200);
+    pub const ACCENT_LIGHT: (u8, u8, u8) = (126, 83, 14);
     pub const SUCCESS_LIGHT: (u8, u8, u8) = (30, 140, 60);
     pub const WARN_LIGHT: (u8, u8, u8) = (180, 120, 0);
     pub const ERROR_LIGHT: (u8, u8, u8) = (200, 50, 50);
-    pub const INFO_LIGHT: (u8, u8, u8) = (30, 130, 160);
+    pub const INFO_LIGHT: (u8, u8, u8) = (123, 83, 19);
     pub const MUTED_LIGHT: (u8, u8, u8) = (90, 100, 115);
-    pub const HIGHLIGHT_LIGHT: (u8, u8, u8) = (160, 60, 160);
+    pub const HIGHLIGHT_LIGHT: (u8, u8, u8) = (126, 83, 14);
 }
 
 /// Detect whether the terminal background is light. We use

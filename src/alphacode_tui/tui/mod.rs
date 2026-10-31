@@ -494,6 +494,15 @@ pub trait TuiState {
             fresh: true,
         }
     }
+    /// Current context size, distinct from cumulative session token usage.
+    fn current_context_tokens(&self) -> Option<u64> {
+        let snapshot = self.context_snapshot();
+        snapshot
+            .fresh
+            .then_some(snapshot.info)
+            .flatten()
+            .and_then(|info| (info.total_chars > 0).then(|| info.estimated_tokens() as u64))
+    }
     /// Context window limit in tokens (if known)
     fn context_limit(&self) -> Option<usize>;
     /// Whether floating information widgets should be drawn for this state.

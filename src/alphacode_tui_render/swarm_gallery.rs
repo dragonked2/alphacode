@@ -18,7 +18,7 @@ use crate::alphacode_tui_render::swarm_tiles::{
 /// Accent color for a member lifecycle status.
 pub fn status_accent(status: &str) -> Color {
     match status {
-        "spawned" => rgb(140, 140, 150),
+        "spawned" | "queued" => rgb(140, 140, 150),
         "ready" => rgb(120, 180, 120),
         "running" | "streaming" => rgb(255, 200, 100),
         "thinking" => rgb(140, 180, 255),
@@ -80,7 +80,7 @@ pub fn status_glyph(status: &str, spinner_frame: usize) -> &'static str {
         "blocked" | "waiting_network" => "⏸",
         "failed" | "crashed" => "✗",
         "stopped" => "◼",
-        "spawned" => "·",
+        "spawned" | "queued" => "·",
         _ => "•",
     }
 }
@@ -97,7 +97,7 @@ fn card_status_glyph(status: &str) -> &'static str {
         "blocked" | "waiting_network" => "⏸",
         "failed" | "crashed" => "✗",
         "stopped" => "◼",
-        "spawned" => "·",
+        "spawned" | "queued" => "·",
         _ => "•",
     }
 }
@@ -107,10 +107,30 @@ fn card_status_label(status: &str) -> &'static str {
         "running" | "streaming" | "thinking" => "Working",
         "completed" | "done" => "Completed",
         "ready" | "spawned" => "Ready",
-        "blocked" | "waiting_network" => "Blocked",
+        "queued" => "Queued",
+        "blocked" => "Blocked",
+        "waiting_network" => "Waiting for network",
         "failed" | "crashed" => "Failed",
         "stopped" => "Stopped",
-        _ => "Working",
+        _ => "Unknown",
+    }
+}
+
+#[cfg(test)]
+mod lifecycle_label_tests {
+    use super::{card_status_label, format_model};
+
+    #[test]
+    fn queued_and_network_wait_are_not_reported_as_working() {
+        assert_eq!(card_status_label("queued"), "Queued");
+        assert_eq!(card_status_label("waiting_network"), "Waiting for network");
+        assert_eq!(card_status_label("unrecognized"), "Unknown");
+    }
+
+    #[test]
+    fn model_variants_remain_distinguishable() {
+        assert_eq!(format_model("openai:gpt-5.6-sol"), "GPT-5.6-sol");
+        assert_eq!(format_model("openai:gpt-5.6-luna"), "GPT-5.6-luna");
     }
 }
 
@@ -127,10 +147,7 @@ fn format_elapsed(seconds: u64) -> String {
 
 fn format_model(model: &str) -> String {
     let routed = model.rsplit([':', '/']).next().unwrap_or(model);
-    let model = routed
-        .strip_suffix("-sol")
-        .or_else(|| routed.strip_suffix("-luna"))
-        .unwrap_or(routed);
+    let model = routed;
     if let Some(rest) = model.strip_prefix("gpt-") {
         format!("GPT-{rest}")
     } else {
@@ -2374,7 +2391,7 @@ mod tests {
             "assigned agent emoji missing: {all}"
         );
         assert!(
-            all.contains("reviewer · Working · GPT-5.6 · OpenAI OAuth"),
+            all.contains("reviewer · Working · GPT-5.6-sol · OpenAI OAuth"),
             "stable status/model/route metadata missing: {all}"
         );
         assert!(
@@ -2398,7 +2415,7 @@ mod tests {
             .collect::<Vec<_>>()
             .join("\n");
         assert!(
-            live.contains("reviewer · 00:18 · GPT-5.6 · OpenAI OAuth · high"),
+            live.contains("reviewer · 00:18 · GPT-5.6-sol · OpenAI OAuth · high"),
             "live header metadata missing: {live}"
         );
         assert!(
@@ -2432,7 +2449,10 @@ mod tests {
         // Wide: everything fits. Narrow: route drops before model, model before
         // status, and the label always survives.
         let wide = plain_line(&render_swarm_chat_cards(std::slice::from_ref(&worker), 100)[0]);
-        assert!(wide.contains("Working · GPT-5.6 · OpenAI OAuth"), "{wide}");
+        assert!(
+            wide.contains("Working · GPT-5.6-sol · OpenAI OAuth"),
+            "{wide}"
+        );
         let mid = plain_line(&render_swarm_chat_cards(std::slice::from_ref(&worker), 34)[0]);
         assert!(
             mid.contains("Working") && !mid.contains("OpenAI OAuth"),

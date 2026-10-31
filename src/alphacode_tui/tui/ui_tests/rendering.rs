@@ -1,6 +1,70 @@
 use super::*;
 
 #[test]
+fn banner_transcript_and_composer_render_in_separate_areas() {
+    let _lock = viewport_snapshot_test_lock();
+    for count in [1, 80] {
+        crate::alphacode_tui::tui::ui::clear_test_render_state_for_tests();
+        let state = TestState {
+            input: "composer sentinel".into(),
+            display_messages: (0..count)
+                .map(|_| DisplayMessage::user("transcript sentinel"))
+                .collect(),
+            suppress_info_widgets: true,
+            ..Default::default()
+        };
+        let backend = ratatui::backend::TestBackend::new(100, 40);
+        let mut terminal = ratatui::Terminal::new(backend).expect("terminal");
+        terminal
+            .draw(|frame| draw_inner(frame, &state))
+            .expect("render");
+        let buffer = terminal.backend().buffer();
+        let rows: Vec<String> = (0..40)
+            .map(|y| (0..100).map(|x| buffer[(x, y)].symbol()).collect())
+            .collect();
+        assert!(
+            rows[..6].iter().any(|row| !row.trim().is_empty()),
+            "banner missing"
+        );
+        assert!(
+            rows.iter().any(|row| row.contains("transcript sentinel")),
+            "transcript missing"
+        );
+        assert!(
+            rows[30..]
+                .iter()
+                .any(|row| row.contains("composer sentinel")),
+            "composer missing"
+        );
+    }
+}
+
+#[test]
+fn conversation_and_help_render_across_terminal_sizes() {
+    let _lock = viewport_snapshot_test_lock();
+    let mut state = TestState {
+        input: "Fix the layout 界 e\u{301}".to_string(),
+        display_messages: vec![
+            DisplayMessage::user("Please review this project"),
+            DisplayMessage::assistant("I will inspect the code and explain the changes."),
+        ],
+        ..Default::default()
+    };
+    for (width, height) in [(20, 6), (40, 12), (60, 20), (80, 24), (120, 32), (160, 45)] {
+        for help in [false, true] {
+            state.help_scroll = help.then_some(0);
+            let backend = ratatui::backend::TestBackend::new(width, height);
+            let mut terminal = ratatui::Terminal::new(backend).expect("terminal");
+            // Exercise the real draw path without the production panic fallback,
+            // so a broken layout fails this test instead of hiding the error.
+            terminal
+                .draw(|frame| draw_inner(frame, &state))
+                .expect("render");
+        }
+    }
+}
+
+#[test]
 fn test_render_rounded_box_sides_aligned() {
     let content = vec![
         Line::from("short"),

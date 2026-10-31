@@ -357,22 +357,20 @@ static UNICODE_CACHE: OnceLock<bool> = OnceLock::new();
 /// `COLUMNS`, then a real ioctl. Falls back to [`FALLBACK_WIDTH`] so callers
 /// never have to handle `None`.
 ///
-/// Cached: a renderer may call this once per line, and the ioctl does not
-/// change mid-frame.
+/// Read on demand so long-running console sessions follow terminal resizes.
+/// Renderers that need a stable width should capture it once per frame.
 pub fn terminal_width() -> usize {
     let override_value = WIDTH_OVERRIDE.load(Ordering::Relaxed);
     if override_value != 0 {
         return clamp_width(override_value as usize - 1);
     }
-    *WIDTH_CACHE.get_or_init(|| {
-        if let Some(width) = env_width() {
-            return clamp_width(width);
-        }
-        match crossterm::terminal::size() {
-            Ok((cols, _)) if cols > 0 => clamp_width(cols as usize),
-            _ => FALLBACK_WIDTH,
-        }
-    })
+    if let Some(width) = env_width() {
+        return clamp_width(width);
+    }
+    match crossterm::terminal::size() {
+        Ok((cols, _)) if cols > 0 => clamp_width(cols as usize),
+        _ => FALLBACK_WIDTH,
+    }
 }
 
 fn env_width() -> Option<usize> {
@@ -392,11 +390,9 @@ fn clamp_width(width: usize) -> usize {
     width.clamp(MIN_USABLE_WIDTH, MAX_USABLE_WIDTH)
 }
 
-static WIDTH_CACHE: OnceLock<usize> = OnceLock::new();
-
 /// Usable terminal height in rows, or `None` when it cannot be determined.
 ///
-/// Unlike width, height is not cached: it changes whenever the user resizes,
+/// Like width, height is not cached: it changes whenever the user resizes,
 /// and layout decisions (how many rows to show) must track a resize.
 pub fn terminal_height() -> Option<usize> {
     crossterm::terminal::size()
@@ -422,12 +418,44 @@ mod tests {
     /// Serialize env mutation across tests (process env is global).
     static ENV_LOCK: Mutex<()> = Mutex::new(());
 
+    struct RestoreEnv(Vec<(String, Option<String>)>);
+
+    impl Drop for RestoreEnv {
+        fn drop(&mut self) {
+            for (key, value) in self.0.drain(..) {
+                match value {
+                    Some(value) => unsafe { std::env::set_var(key, value) },
+                    None => unsafe { std::env::remove_var(key) },
+                }
+            }
+        }
+    }
+
     fn env_scope(vars: &[(&str, Option<&str>)], body: impl FnOnce()) {
         let _guard = ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
-        let saved: Vec<(String, Option<String>)> = vars
+        // Test processes can inherit NO_COLOR=1 or TERM=dumb from CI. Start
+        // each capability case from a known baseline so unrelated ambient
+        // settings cannot change the assertion.
+        const CAPABILITY_VARS: &[&str] = &[
+            NO_COLOR_ENV,
+            NO_COLOR_ENV_ALPHACODE,
+            FORCE_COLOR_ENV,
+            FORCE_COLOR_ENV_ALT,
+            CLICOLOR_ENV,
+            ASCII_ONLY_ENV,
+            "TERM",
+            "LANG",
+            "LC_ALL",
+            "LC_CTYPE",
+        ];
+        let saved: Vec<(String, Option<String>)> = CAPABILITY_VARS
             .iter()
-            .map(|(k, _)| ((*k).to_string(), std::env::var(k).ok()))
+            .map(|k| ((*k).to_string(), std::env::var(k).ok()))
             .collect();
+        let _restore = RestoreEnv(saved);
+        for key in CAPABILITY_VARS {
+            unsafe { std::env::remove_var(key) };
+        }
         for (k, v) in vars {
             match v {
                 Some(val) => unsafe { std::env::set_var(k, val) },
@@ -435,12 +463,6 @@ mod tests {
             }
         }
         body();
-        for (k, v) in saved {
-            match v {
-                Some(val) => unsafe { std::env::set_var(&k, val) },
-                None => unsafe { std::env::remove_var(&k) },
-            }
-        }
     }
 
     #[test]

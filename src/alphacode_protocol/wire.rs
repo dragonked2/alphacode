@@ -187,6 +187,18 @@ pub enum Request {
         message: String,
     },
 
+    /// A bounded desktop operation against the local server. This uses the
+    /// regular authenticated transport and does not attach a new TUI client.
+    #[serde(rename = "desktop_command")]
+    DesktopCommand {
+        id: u64,
+        action: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        session_id: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        value: Option<String>,
+    },
+
     /// Inject externally transcribed text into a live TUI session.
     #[serde(rename = "transcript")]
     Transcript {
@@ -1058,6 +1070,19 @@ pub enum ServerEvent {
         title: Option<String>,
         display_title: String,
     },
+
+    /// Saved-chat state changed in another attached client.
+    #[serde(rename = "session_bookmark")]
+    SessionBookmark {
+        session_id: String,
+        saved: bool,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        label: Option<String>,
+    },
+
+    /// A user started a turn from another attached interface.
+    #[serde(rename = "external_user_prompt")]
+    ExternalUserPrompt { session_id: String, content: String },
 
     /// Full conversation history (response to GetHistory)
     #[serde(rename = "history")]

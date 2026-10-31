@@ -849,6 +849,16 @@ pub struct TaskOutcome {
     pub note: String,
 }
 
+fn truncate_utf8_bytes(text: &mut String, max_bytes: usize) {
+    if text.len() > max_bytes {
+        let mut end = max_bytes;
+        while !text.is_char_boundary(end) {
+            end -= 1;
+        }
+        text.truncate(end);
+    }
+}
+
 /// Execute one orchestrator task: hydrate its parameters from the current
 /// state, run the tool against every hydrated input, persist raw output, and
 /// return the text `complete_task` should ingest.
@@ -927,9 +937,7 @@ async fn execute_task(
                 }
             }
         }
-        if raw_text.len() > 256 * 1024 {
-            raw_text.truncate(256 * 1024);
-        }
+        truncate_utf8_bytes(&mut raw_text, 256 * 1024);
         if lines.len() >= 2_000 {
             break;
         }
@@ -1114,6 +1122,19 @@ async fn write_report(
 mod tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn captured_output_truncates_at_utf8_boundaries() {
+        let mut text = format!("{}é-end", "a".repeat(256 * 1024 - 1));
+        truncate_utf8_bytes(&mut text, 256 * 1024);
+        assert_eq!(text, "a".repeat(256 * 1024 - 1));
+
+        let mut text = "é".to_string();
+        truncate_utf8_bytes(&mut text, 2);
+        assert_eq!(text, "é");
+        truncate_utf8_bytes(&mut text, 1);
+        assert!(text.is_empty());
+    }
 
     async fn hydrate(
         tool: &str,

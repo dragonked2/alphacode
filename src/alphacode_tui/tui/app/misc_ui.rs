@@ -576,7 +576,8 @@ impl App {
     }
 
     pub(super) fn handle_help_key(&mut self, code: KeyCode) -> Result<()> {
-        let scroll = self.help_scroll.unwrap_or(0);
+        let max_scroll = crate::alphacode_tui::tui::ui::help_max_scroll();
+        let scroll = self.help_scroll.unwrap_or(0).min(max_scroll);
         match code {
             KeyCode::Esc | KeyCode::F(1) | KeyCode::Char('q') => {
                 self.help_scroll = None;
@@ -597,7 +598,7 @@ impl App {
                 self.help_scroll = Some(0);
             }
             KeyCode::End | KeyCode::Char('G') => {
-                self.help_scroll = Some(usize::MAX);
+                self.help_scroll = Some(max_scroll);
             }
             _ => {}
         }

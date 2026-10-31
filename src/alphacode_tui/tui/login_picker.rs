@@ -281,34 +281,38 @@ impl LoginPicker {
                 }
                 return Ok(OverlayAction::Close);
             }
-            KeyCode::Char('q') if !modifiers.contains(KeyModifiers::CONTROL) => {
-                return Ok(OverlayAction::Close);
-            }
             KeyCode::Char('c') if modifiers.contains(KeyModifiers::CONTROL) => {
                 return Ok(OverlayAction::Close);
             }
-            KeyCode::Up | KeyCode::Char('k') => {
+            KeyCode::Up => {
                 self.selected = self.selected.saturating_sub(1);
             }
-            KeyCode::Down | KeyCode::Char('j') => {
+            KeyCode::Down => {
                 let max = self.filtered.len().saturating_sub(1);
                 self.selected = (self.selected + 1).min(max);
             }
-            KeyCode::PageUp | KeyCode::Char('K') => {
+            KeyCode::PageUp => {
                 self.selected = self.selected.saturating_sub(6);
             }
-            KeyCode::PageDown | KeyCode::Char('J') => {
+            KeyCode::PageDown => {
                 let max = self.filtered.len().saturating_sub(1);
                 self.selected = (self.selected + 6).min(max);
             }
-            KeyCode::Home | KeyCode::Char('g') => {
+            KeyCode::Home => {
                 self.selected = 0;
             }
-            KeyCode::End | KeyCode::Char('G') => {
+            KeyCode::End => {
                 self.selected = self.filtered.len().saturating_sub(1);
             }
             KeyCode::Backspace => {
-                if self.filter.pop().is_some() {
+                if let Some((index, _)) =
+                    unicode_segmentation::UnicodeSegmentation::grapheme_indices(
+                        self.filter.as_str(),
+                        true,
+                    )
+                    .next_back()
+                {
+                    self.filter.truncate(index);
                     self.apply_filter();
                 }
             }
@@ -316,7 +320,7 @@ impl LoginPicker {
                 if let Some(item) = self.selected_item() {
                     return Ok(OverlayAction::Execute(item.provider));
                 }
-                return Ok(OverlayAction::Close);
+                return Ok(OverlayAction::Continue);
             }
             KeyCode::Char(c)
                 if !modifiers.contains(KeyModifiers::CONTROL)
@@ -378,6 +382,7 @@ impl LoginPicker {
                 Span::styled(" clear / close ", Style::default().fg(muted_dark())),
             ]))
             .borders(Borders::ALL)
+            .border_type(ratatui::widgets::BorderType::Rounded)
             .border_style(Style::default().fg(panel_border()));
         frame.render_widget(block, area);
 
@@ -398,9 +403,18 @@ impl LoginPicker {
 
         self.render_header(frame, rows[0]);
 
+        let narrow = rows[1].width < 72;
         let body = Layout::default()
-            .direction(Direction::Horizontal)
-            .constraints([Constraint::Percentage(37), Constraint::Percentage(63)])
+            .direction(if narrow {
+                Direction::Vertical
+            } else {
+                Direction::Horizontal
+            })
+            .constraints(if narrow {
+                [Constraint::Percentage(55), Constraint::Percentage(45)]
+            } else {
+                [Constraint::Percentage(37), Constraint::Percentage(63)]
+            })
             .split(rows[1]);
 
         self.render_provider_list(frame, body[0]);
@@ -409,7 +423,11 @@ impl LoginPicker {
         let footer = Paragraph::new(Line::from(vec![
             Span::styled("Tip ", Style::default().fg(muted_dark())),
             Span::styled(
-                "Move or click through providers on the left; the focused provider expands on the right with setup and account details.",
+                if narrow {
+                    "Select a provider to see its setup details below."
+                } else {
+                    "Select a provider to see its setup details on the right."
+                },
                 Style::default().fg(muted_text()),
             ),
         ]));
@@ -1024,6 +1042,39 @@ fn centered_rect(percent_x: u16, percent_y: u16, area: Rect) -> Rect {
 mod tests {
     use super::*;
     use ratatui::{Terminal, backend::TestBackend, widgets::Paragraph};
+
+    #[test]
+    fn narrow_login_keeps_the_provider_list_readable() {
+        let mut picker = LoginPicker::with_summary("Login", vec![], LoginPickerSummary::default());
+        let mut terminal = Terminal::new(TestBackend::new(60, 24)).expect("terminal");
+        terminal.draw(|frame| picker.render(frame)).expect("render");
+        assert!(picker.last_provider_list_area.unwrap().width >= 40);
+    }
+
+    #[test]
+    fn filter_accepts_navigation_letters_and_enter_keeps_empty_search_open() {
+        let mut picker = LoginPicker::with_summary("Login", vec![], LoginPickerSummary::default());
+        for ch in "qgjkJGK".chars() {
+            assert!(matches!(
+                picker
+                    .handle_overlay_key(KeyCode::Char(ch), KeyModifiers::NONE)
+                    .unwrap(),
+                OverlayAction::Continue
+            ));
+        }
+        assert_eq!(picker.filter, "qgjkJGK");
+        picker.filter.push_str("e\u{301}");
+        picker
+            .handle_overlay_key(KeyCode::Backspace, KeyModifiers::NONE)
+            .unwrap();
+        assert_eq!(picker.filter, "qgjkJGK");
+        assert!(matches!(
+            picker
+                .handle_overlay_key(KeyCode::Enter, KeyModifiers::NONE)
+                .unwrap(),
+            OverlayAction::Continue
+        ));
+    }
 
     fn buffer_to_text(buffer: &ratatui::buffer::Buffer) -> String {
         let area = buffer.area;

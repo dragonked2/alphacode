@@ -7,6 +7,7 @@ use super::color_support::rgb;
 use crate::alphacode_session_types::SessionStatus;
 use crate::alphacode_tui::session::{CrashedSessionsInfo, Session};
 use crate::alphacode_tui::tui::{DisplayMessage, markdown};
+use crate::alphacode_tui_style::palette::{Role, role_color};
 use anyhow::Result;
 use crossterm::event::{self, Event, KeyCode, KeyEventKind, KeyModifiers, MouseEventKind};
 use ratatui::{
@@ -100,7 +101,9 @@ fn format_time_ago(time: chrono::DateTime<chrono::Utc>) -> String {
     let now = chrono::Utc::now();
     let duration = now.signed_duration_since(time);
 
-    let seconds = duration.num_seconds();
+    // Session timestamps can be ahead of the local clock after sync or clock
+    // adjustments; showing a negative number of seconds ago is confusing.
+    let seconds = duration.num_seconds().max(0);
     if seconds < 60 {
         return format!("{}s ago", seconds);
     }
@@ -192,6 +195,7 @@ struct PreviewCacheKey {
     /// wrapped-line cache is rebuilt (and match highlighting reapplied) whenever
     /// the `/resume` search text changes.
     search_query: String,
+    palette: crate::alphacode_tui_style::palette::Palette,
 }
 
 /// Cached, fully-wrapped preview content. Built on a cache miss (selection
@@ -1117,11 +1121,8 @@ impl SessionPicker {
                 self.rebuild_items();
             }
             KeyCode::Enter => {
-                self.search_active = false;
-                if self.visible_sessions.is_empty() {
-                    self.search_query.clear();
-                    self.rebuild_items();
-                } else {
+                if !self.visible_sessions.is_empty() {
+                    self.search_active = false;
                     let targets = self.selection_or_current_targets();
                     if !targets.is_empty() {
                         return Ok(OverlayAction::Selected(
@@ -1141,7 +1142,11 @@ impl SessionPicker {
                 self.rebuild_items();
             }
             KeyCode::Backspace => {
-                self.search_query.pop();
+                let end = super::core::prev_grapheme_boundary(
+                    &self.search_query,
+                    self.search_query.len(),
+                );
+                self.search_query.truncate(end);
                 self.rebuild_items();
             }
             // Ctrl+U clears the whole query (like readline's kill-to-start).
@@ -1286,9 +1291,9 @@ impl SessionPicker {
 
     fn render_preview(&mut self, frame: &mut Frame, area: Rect) {
         let empty_border_color = if self.focus == PaneFocus::Preview {
-            rgb(110, 175, 155)
+            role_color(Role::PanelBorder)
         } else {
-            rgb(55, 60, 75)
+            role_color(Role::PanelBorderMuted)
         };
 
         if let Some(message) = self.loading_message.as_deref() {
@@ -1296,6 +1301,7 @@ impl SessionPicker {
                 .borders(Borders::ALL)
                 .border_type(BorderType::Rounded)
                 .title(" Preview ")
+                .title_bottom(" Tab sessions ")
                 .border_style(Style::default().fg(empty_border_color));
             let body = vec![
                 Line::from(vec![
@@ -1326,6 +1332,7 @@ impl SessionPicker {
                 .borders(Borders::ALL)
                 .border_type(BorderType::Rounded)
                 .title(" Preview ")
+                .title_bottom(" Tab sessions ")
                 .border_style(Style::default().fg(empty_border_color));
             let paragraph = Paragraph::new("No session selected")
                 .block(block)
@@ -1345,14 +1352,15 @@ impl SessionPicker {
         // Draw the bordered block first so we know the inner rect (which drives
         // wrapping width and the scrollbar decision) before building content.
         let preview_border_color = if self.focus == PaneFocus::Preview {
-            rgb(110, 175, 155)
+            role_color(Role::PanelBorder)
         } else {
-            rgb(55, 60, 75)
+            role_color(Role::PanelBorderMuted)
         };
         let block = Block::default()
             .borders(Borders::ALL)
             .border_type(BorderType::Rounded)
             .title(" Preview ")
+            .title_bottom(" Tab sessions · ↑↓ scroll ")
             .border_style(Style::default().fg(preview_border_color));
         let inner = block.inner(area);
         frame.render_widget(block, area);
@@ -1371,6 +1379,7 @@ impl SessionPicker {
             centered,
             diff_mode,
             search_query: self.search_query.trim().to_lowercase(),
+            palette: crate::alphacode_tui_style::palette::palette(),
         };
         let cache_valid = self
             .preview_cache
@@ -1527,11 +1536,11 @@ impl SessionPicker {
         align: Alignment,
         diff_mode: crate::config::DiffDisplayMode,
     ) -> PreviewRenderCache {
-        let user_color: Color = rgb(138, 180, 248);
-        let user_text: Color = rgb(245, 245, 255);
-        let dim_color: Color = rgb(80, 80, 80);
-        let header_icon_color: Color = rgb(120, 210, 230);
-        let header_session_color: Color = rgb(255, 255, 255);
+        let user_color = role_color(Role::User);
+        let user_text = role_color(Role::UserText);
+        let dim_color = role_color(Role::MutedText);
+        let header_icon_color = role_color(Role::HeaderIcon);
+        let header_session_color = role_color(Role::HeaderSession);
 
         let preview_inner_width = area.width.saturating_sub(2);
         let assistant_width = preview_inner_width.saturating_sub(2);
@@ -1573,7 +1582,7 @@ impl SessionPicker {
         lines.push(
             Line::from(vec![Span::styled(
                 session.title.clone(),
-                Style::default().fg(Color::White),
+                Style::default().fg(role_color(Role::AiText)),
             )])
             .alignment(align),
         );
@@ -1607,25 +1616,31 @@ impl SessionPicker {
 
         // Status line with details
         let (status_icon, status_text, status_color) = match &session.status {
-            SessionStatus::Active => ("▶", "Active".to_string(), rgb(100, 200, 100)),
-            SessionStatus::Closed => ("✓", "Closed normally".to_string(), Color::DarkGray),
+            SessionStatus::Active => ("▶", "Active".to_string(), role_color(Role::Success)),
+            SessionStatus::Closed => (
+                "✓",
+                "Closed normally".to_string(),
+                role_color(Role::MutedText),
+            ),
             SessionStatus::Crashed { message } => {
                 let text = match message {
                     Some(msg) => format!("Crashed: {}", safe_truncate(msg, 80)),
                     None => "Crashed".to_string(),
                 };
-                ("💥", text, rgb(220, 100, 100))
+                ("💥", text, role_color(Role::Error))
             }
-            SessionStatus::Reloaded => ("🔄", "Reloaded".to_string(), rgb(138, 180, 248)),
+            SessionStatus::Reloaded => ("🔄", "Reloaded".to_string(), role_color(Role::Info)),
             SessionStatus::Compacted => (
                 "📦",
                 "Compacted (context too large)".to_string(),
-                rgb(255, 193, 7),
+                role_color(Role::Warning),
             ),
-            SessionStatus::RateLimited => ("⏳", "Rate limited".to_string(), rgb(186, 139, 255)),
+            SessionStatus::RateLimited => {
+                ("⏳", "Rate limited".to_string(), role_color(Role::Warning))
+            }
             SessionStatus::Error { message } => {
                 let text = format!("Error: {}", safe_truncate(message, 40));
-                ("❌", text, rgb(220, 100, 100))
+                ("❌", text, role_color(Role::Error))
             }
         };
         lines.push(
@@ -1667,7 +1682,7 @@ impl SessionPicker {
         lines.push(
             Line::from(vec![Span::styled(
                 "─".repeat(area.width.saturating_sub(4) as usize),
-                Style::default().fg(rgb(60, 60, 60)),
+                Style::default().fg(role_color(Role::Border)),
             )])
             .alignment(align),
         );
@@ -1951,7 +1966,15 @@ impl SessionPicker {
         if area.height == 0 {
             return;
         }
-        let accent = rgb(130, 224, 215);
+        if area.height < 3 || area.width < 20 {
+            frame.render_widget(
+                Paragraph::new("↑↓ choose · Enter select")
+                    .style(Style::default().fg(role_color(Role::MutedText))),
+                area,
+            );
+            return;
+        }
+        let accent = role_color(Role::Accent);
         let inner = area.inner(Margin {
             horizontal: 2,
             vertical: 1,
@@ -2058,11 +2081,17 @@ impl SessionPicker {
             // Reserve ~20% of the height for the onboarding prompt and actions,
             // clamped to a sensible band.
             let total = frame.area().height;
-            let reserved = ((total as u32 * 20 / 100) as u16).clamp(7, total.saturating_sub(6));
-            v_constraints.push(Constraint::Length(reserved.max(7)));
+            let reserved = ((total as u32 * 20 / 100) as u16)
+                .max(7)
+                .min(total.saturating_sub(6));
+            v_constraints.push(Constraint::Length(reserved));
         }
         if has_banner {
-            v_constraints.push(Constraint::Length(1));
+            v_constraints.push(Constraint::Length(if frame.area().height >= 16 {
+                4
+            } else {
+                1
+            }));
         }
         if has_search {
             v_constraints.push(Constraint::Length(1));
@@ -2095,38 +2124,57 @@ impl SessionPicker {
 
             let cursor_char = if self.search_active { "▎" } else { "" };
             let search_line = Line::from(vec![
-                Span::styled(" 🔍 ", Style::default().fg(rgb(130, 224, 215))),
+                Span::styled(" Search ", Style::default().fg(role_color(Role::Accent))),
                 Span::styled(
                     &self.search_query,
                     Style::default()
-                        .fg(rgb(220, 230, 240))
+                        .fg(role_color(Role::AiText))
                         .add_modifier(Modifier::BOLD),
                 ),
-                Span::styled(cursor_char, Style::default().fg(rgb(130, 224, 215))),
+                Span::styled(cursor_char, Style::default().fg(role_color(Role::Accent))),
                 if self.search_active {
-                    Span::styled("  Esc to clear", Style::default().fg(rgb(80, 85, 100)))
+                    Span::styled(
+                        "  Esc to clear",
+                        Style::default().fg(role_color(Role::MutedText)),
+                    )
                 } else {
-                    Span::styled("  / to edit", Style::default().fg(rgb(80, 85, 100)))
+                    Span::styled(
+                        "  / to edit",
+                        Style::default().fg(role_color(Role::MutedText)),
+                    )
                 },
             ]);
-            let search_widget =
-                Paragraph::new(search_line).style(Style::default().bg(rgb(22, 26, 38)));
+            let search_widget = Paragraph::new(search_line);
             frame.render_widget(search_widget, search_area);
         }
 
         let main_area = v_chunks[chunk_idx];
 
-        // Split main area horizontally for list and preview
-        let chunks = Layout::default()
-            .direction(Direction::Horizontal)
-            .constraints([Constraint::Percentage(40), Constraint::Percentage(60)])
-            .split(main_area);
-
-        self.last_list_area = Some(chunks[0]);
-        self.last_preview_area = Some(chunks[1]);
-
-        self.render_session_list(frame, chunks[0]);
-        self.render_preview(frame, chunks[1]);
+        // At narrow widths, give the focused pane the full screen. Tab and
+        // left/right already switch focus, so both panes remain reachable.
+        if main_area.width < 80 {
+            match self.focus {
+                PaneFocus::Sessions => {
+                    self.last_list_area = Some(main_area);
+                    self.last_preview_area = None;
+                    self.render_session_list(frame, main_area);
+                }
+                PaneFocus::Preview => {
+                    self.last_list_area = None;
+                    self.last_preview_area = Some(main_area);
+                    self.render_preview(frame, main_area);
+                }
+            }
+        } else {
+            let chunks = Layout::default()
+                .direction(Direction::Horizontal)
+                .constraints([Constraint::Percentage(40), Constraint::Percentage(60)])
+                .split(main_area);
+            self.last_list_area = Some(chunks[0]);
+            self.last_preview_area = Some(chunks[1]);
+            self.render_session_list(frame, chunks[0]);
+            self.render_preview(frame, chunks[1]);
+        }
         self.render_claude_takeover_confirmation(frame);
     }
 
@@ -2195,6 +2243,7 @@ impl SessionPicker {
         super::theme_detect::init_theme_mode();
         let mut terminal = std::panic::catch_unwind(std::panic::AssertUnwindSafe(ratatui::init))
             .map_err(|payload| {
+                crate::alphacode_tui_style::restore_terminal_quietly();
                 let msg = if let Some(s) = payload.downcast_ref::<&str>() {
                     (*s).to_string()
                 } else if let Some(s) = payload.downcast_ref::<String>() {
@@ -2204,62 +2253,68 @@ impl SessionPicker {
                 };
                 anyhow::anyhow!("failed to initialize session picker terminal: {}", msg)
             })?;
-        // Initialize mermaid image picker (fast default, optional probe via env)
-        super::mermaid::init_picker();
         let perf_policy = crate::perf::tui_policy();
-        let keyboard_enhanced = if perf_policy.enable_keyboard_enhancement {
-            super::enable_keyboard_enhancement()
-        } else {
-            false
-        };
+        let mut keyboard_enhanced = false;
         let mouse_capture = perf_policy.enable_mouse_capture;
-        crossterm::execute!(std::io::stdout(), crossterm::event::EnableBracketedPaste)?;
-        if mouse_capture {
-            crossterm::execute!(std::io::stdout(), crossterm::event::EnableMouseCapture)?;
-        }
+        // Keep fallible setup and the event loop inside a closure so all
+        // errors reach the terminal cleanup below before returning.
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(
+            || -> Result<Option<PickerResult>> {
+                super::mermaid::init_picker();
+                if perf_policy.enable_keyboard_enhancement {
+                    keyboard_enhanced = super::enable_keyboard_enhancement();
+                }
+                crossterm::execute!(std::io::stdout(), crossterm::event::EnableBracketedPaste)?;
+                if mouse_capture {
+                    crossterm::execute!(std::io::stdout(), crossterm::event::EnableMouseCapture)?;
+                }
 
-        let result = loop {
-            // Keep live working/ready badges current while the picker idles.
-            self.maybe_refresh_live_presence();
-            terminal.draw(|frame| {
-                self.render(frame);
-                // Standalone picker loop bypasses `ui::draw`; adapt for light
-                // terminal themes here (no-op on dark).
-                crate::alphacode_tui_style::adapt_buffer_for_theme(frame.buffer_mut());
-                // ...then apply the user's `[display.colors]` overrides. This
-                // pass used to be missing here, so every configured color was
-                // silently ignored in the picker while the rest of the app
-                // honored it. Must run after the theme flip so a configured
-                // color is not luminance-flipped into something unreadable.
-                // No-op when nothing is configured.
-                crate::alphacode_tui_style::palette::adapt_buffer_for_palette(frame.buffer_mut());
-                crate::alphacode_tui::tui::ui::adapt_buffer_for_emoji_preference(
-                    frame.buffer_mut(),
-                );
-            })?;
-            if event::poll(Duration::from_millis(100))? {
-                match event::read()? {
-                    Event::Key(key) => {
-                        if key.kind != KeyEventKind::Press {
-                            continue;
-                        }
+                loop {
+                    // Keep live working/ready badges current while the picker idles.
+                    self.maybe_refresh_live_presence();
+                    terminal.draw(|frame| {
+                        self.render(frame);
+                        // Standalone picker loop bypasses `ui::draw`; adapt for light
+                        // terminal themes here (no-op on dark).
+                        crate::alphacode_tui_style::adapt_buffer_for_theme(frame.buffer_mut());
+                        // ...then apply the user's `[display.colors]` overrides. This
+                        // pass used to be missing here, so every configured color was
+                        // silently ignored in the picker while the rest of the app
+                        // honored it. Must run after the theme flip so a configured
+                        // color is not luminance-flipped into something unreadable.
+                        // No-op when nothing is configured.
+                        crate::alphacode_tui_style::palette::adapt_buffer_for_palette(
+                            frame.buffer_mut(),
+                        );
+                        crate::alphacode_tui::tui::ui::adapt_buffer_for_emoji_preference(
+                            frame.buffer_mut(),
+                        );
+                    })?;
+                    if event::poll(Duration::from_millis(100))? {
+                        match event::read()? {
+                            Event::Key(key) => {
+                                if key.kind != KeyEventKind::Press {
+                                    continue;
+                                }
 
-                        match self.handle_overlay_key(key.code, key.modifiers)? {
-                            OverlayAction::Continue => {}
-                            OverlayAction::Close => break Ok(None),
-                            OverlayAction::Selected(result) => break Ok(Some(result)),
+                                match self.handle_overlay_key(key.code, key.modifiers)? {
+                                    OverlayAction::Continue => {}
+                                    OverlayAction::Close => break Ok(None),
+                                    OverlayAction::Selected(result) => break Ok(Some(result)),
+                                }
+                            }
+                            Event::Mouse(mouse) => match mouse.kind {
+                                MouseEventKind::ScrollUp | MouseEventKind::ScrollDown => {
+                                    self.handle_mouse_scroll(mouse.column, mouse.row, mouse.kind);
+                                }
+                                _ => {}
+                            },
+                            _ => {}
                         }
                     }
-                    Event::Mouse(mouse) => match mouse.kind {
-                        MouseEventKind::ScrollUp | MouseEventKind::ScrollDown => {
-                            self.handle_mouse_scroll(mouse.column, mouse.row, mouse.kind);
-                        }
-                        _ => {}
-                    },
-                    _ => {}
                 }
-            }
-        };
+            },
+        ));
 
         let _ = crossterm::execute!(std::io::stdout(), crossterm::event::DisableBracketedPaste);
         if mouse_capture {
@@ -2271,7 +2326,10 @@ impl SessionPicker {
         crate::alphacode_tui_style::restore_terminal_quietly();
         super::mermaid::clear_image_state();
 
-        result
+        match result {
+            Ok(result) => result,
+            Err(payload) => std::panic::resume_unwind(payload),
+        }
     }
 }
 
@@ -2302,4 +2360,78 @@ pub fn pick_session() -> Result<Option<PickerResult>> {
 
     let picker = SessionPicker::new_grouped(server_groups, orphan_sessions);
     picker.run()
+}
+
+#[cfg(test)]
+mod responsive_render_tests {
+    use super::*;
+    use ratatui::{Terminal, backend::TestBackend};
+
+    fn draw(picker: &mut SessionPicker, width: u16, height: u16) -> Vec<String> {
+        let mut terminal = Terminal::new(TestBackend::new(width, height)).expect("terminal");
+        terminal.draw(|frame| picker.render(frame)).expect("render");
+        let buffer = terminal.backend().buffer();
+        (0..height)
+            .map(|y| (0..width).map(|x| buffer[(x, y)].symbol()).collect())
+            .collect()
+    }
+
+    #[test]
+    fn narrow_picker_keeps_both_panes_reachable() {
+        let mut picker = SessionPicker::loading();
+        draw(&mut picker, 48, 16);
+        assert_eq!(picker.last_list_area, Some(Rect::new(0, 0, 48, 16)));
+        assert_eq!(picker.last_preview_area, None);
+        picker.handle_focus_navigation_key(KeyCode::Tab, KeyModifiers::NONE);
+        let rows = draw(&mut picker, 48, 16);
+        assert_eq!(picker.last_list_area, None);
+        assert_eq!(picker.last_preview_area, Some(Rect::new(0, 0, 48, 16)));
+        assert!(rows.iter().any(|row| row.contains("Tab sessions")));
+        draw(&mut picker, 100, 24);
+        assert!(picker.last_list_area.is_some());
+        assert!(picker.last_preview_area.is_some());
+    }
+
+    #[test]
+    fn onboarding_with_sessions_survives_small_terminal_heights() {
+        let mut picker = SessionPicker::loading();
+        picker.onboarding_banner = Some(vec![Line::from("Welcome")]);
+        picker.visible_sessions.push(SessionRef::Flat(0));
+        for height in 1..16 {
+            draw(&mut picker, 40, height);
+        }
+    }
+
+    #[test]
+    fn empty_search_has_actionable_feedback() {
+        let mut picker = SessionPicker::loading();
+        picker.loading_message = None;
+        picker.search_query = "missing".to_string();
+        let rows = draw(&mut picker, 60, 15);
+        assert!(rows.iter().any(|row| row.contains("No matching sessions")));
+        assert!(rows.iter().any(|row| row.contains("Edit or clear")));
+    }
+
+    #[test]
+    fn empty_search_can_be_edited_after_enter_and_backspace_removes_a_grapheme() {
+        let mut picker = SessionPicker::loading();
+        picker.loading_message = None;
+        picker.search_active = true;
+        picker.search_query = "missinge\u{301}".to_string();
+        picker
+            .handle_search_key(KeyCode::Backspace, KeyModifiers::NONE)
+            .unwrap();
+        assert_eq!(picker.search_query, "missing");
+        picker
+            .handle_search_key(KeyCode::Enter, KeyModifiers::NONE)
+            .unwrap();
+        assert!(picker.search_active);
+        assert_eq!(picker.search_query, "missing");
+    }
+
+    #[test]
+    fn future_session_timestamp_does_not_show_negative_age() {
+        let future = chrono::Utc::now() + chrono::Duration::minutes(5);
+        assert_eq!(format_time_ago(future), "0s ago");
+    }
 }

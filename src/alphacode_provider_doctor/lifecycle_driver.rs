@@ -661,10 +661,6 @@ mod tests {
         let resolved =
             crate::alphacode_base::provider_catalog::resolve_openai_compatible_profile(profile);
         let profile_id = resolved.id.clone();
-        let endpoint = crate::alphacode_provider_metadata::route_cloak::display_endpoint_for(
-            &profile_id,
-            &resolved.api_base,
-        );
         let mut event = crate::live_tests::LiveVerificationEvent::new(
             test_name,
             profile_id,

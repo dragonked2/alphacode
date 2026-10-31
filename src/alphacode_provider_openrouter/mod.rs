@@ -44,7 +44,7 @@ pub fn known_providers() -> Vec<String> {
     KNOWN_PROVIDERS.iter().map(|p| (*p).to_string()).collect()
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct ModelInfo {
     pub id: String,
     #[serde(default)]
@@ -54,6 +54,19 @@ pub struct ModelInfo {
     pub pricing: ModelPricing,
     #[serde(default)]
     pub created: Option<u64>,
+    /// Endpoint kinds the model is served on, when the catalog advertises them
+    /// (OrcaRouter-style gateways use `openai`, `anthropic`, `embeddings`,
+    /// `image-generation`, ...). Empty means "not advertised".
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub supported_endpoint_types: Vec<String>,
+    /// Concrete endpoint capabilities (`chat_completions`, `embedding`,
+    /// `image_generation`, ...). Empty means "not advertised".
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub endpoint_capabilities: Vec<String>,
+    /// Accepted input modalities (`text`, `image`, `file`, `audio`, `video`).
+    /// Empty means "not advertised".
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub input_modalities: Vec<String>,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]

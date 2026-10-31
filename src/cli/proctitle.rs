@@ -9,7 +9,11 @@ use crate::alphacode_base::process_title::{compact_process_title, session_name, 
 use crate::cli::args::{AmbientCommand, Args, Command};
 
 pub(crate) fn initial_title(args: &Args) -> String {
+    if args.gui {
+        return "alphacode gui".to_string();
+    }
     match &args.command {
+        Some(Command::Gui { .. }) => "alphacode gui".to_string(),
         Some(Command::Serve { .. }) => "alphacode:server".to_string(),
         Some(Command::Acp) => "alphacode acp".to_string(),
         Some(Command::Server { .. }) => "alphacode server".to_string(),

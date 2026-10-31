@@ -808,6 +808,24 @@ pub(super) fn handle_find_command(app: &mut App, trimmed: &str) -> bool {
     true
 }
 
+/// The user-facing message for a `/help <topic>` miss.
+///
+/// A bare "Unknown command" is a dead end exactly when the user is asking for
+/// help. When the typo-tolerant matcher finds close registry names, name them
+/// so the user can retry instead of re-reading the whole reference.
+pub(super) fn unknown_command_message(app: &App, topic: &str) -> String {
+    let topic = topic.trim();
+    let suggestions = app.command_help_suggestions(topic);
+    if suggestions.is_empty() {
+        format!("Unknown command '{topic}'. Use /help to list commands.")
+    } else {
+        format!(
+            "Unknown command '{topic}'. Did you mean {}? Use /help to list commands.",
+            suggestions.join(", ")
+        )
+    }
+}
+
 pub(super) fn handle_help_command(app: &mut App, trimmed: &str) -> bool {
     if let Some(topic) = trimmed
         .strip_prefix("/help ")
@@ -816,10 +834,7 @@ pub(super) fn handle_help_command(app: &mut App, trimmed: &str) -> bool {
         if let Some(help) = app.command_help(topic) {
             app.push_display_message(DisplayMessage::system(help));
         } else {
-            app.push_display_message(DisplayMessage::error(format!(
-                "Unknown command '{}'. Use /help to list commands.",
-                topic.trim()
-            )));
+            app.push_display_message(DisplayMessage::error(unknown_command_message(app, topic)));
         }
         return true;
     }

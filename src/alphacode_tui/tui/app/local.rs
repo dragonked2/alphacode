@@ -284,8 +284,10 @@ pub(super) fn handle_bus_event(
         }
         Ok(BusEvent::TodoUpdated(event)) => {
             if event.session_id == app.session.id {
+                super::helpers::refresh_todos_cache_now(&event.session_id);
                 app.update_terminal_title();
-                app.refresh_todos_view_now()
+                app.refresh_todos_view_now();
+                true
             } else {
                 false
             }

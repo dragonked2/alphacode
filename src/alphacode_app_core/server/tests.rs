@@ -247,6 +247,166 @@ async fn test_agent(provider: Arc<dyn Provider>) -> Arc<Mutex<Agent>> {
     Arc::new(Mutex::new(Agent::new(provider, registry)))
 }
 
+#[tokio::test]
+async fn desktop_live_prompt_queues_as_user_input_without_replacing_the_client() {
+    let agent = test_agent(Arc::new(StreamingMockProvider::default())).await;
+    let guard = agent.lock().await;
+    let id = guard.session_id().to_string();
+    let queue = guard.soft_interrupt_queue();
+    let sessions = Arc::new(RwLock::new(HashMap::from([(
+        id.clone(),
+        Arc::clone(&agent),
+    )])));
+    let queues = Arc::new(RwLock::new(HashMap::from([(
+        id.clone(),
+        Arc::clone(&queue),
+    )])));
+    let (disconnect_tx, _disconnect_rx) = mpsc::unbounded_channel();
+    let connections = Arc::new(RwLock::new(HashMap::from([(
+        "client".to_string(),
+        super::ClientConnectionInfo {
+            client_id: "client".to_string(),
+            session_id: id.clone(),
+            client_instance_id: None,
+            debug_client_id: None,
+            connected_at: Instant::now(),
+            last_seen: Instant::now(),
+            is_processing: true,
+            current_tool_name: None,
+            terminal_env: Vec::new(),
+            disconnect_tx,
+        },
+    )])));
+    let (tx, _rx) = mpsc::unbounded_channel();
+    let members = Arc::new(RwLock::new(HashMap::from([(
+        id.clone(),
+        attached_swarm_member(&id, tx),
+    )])));
+    let (swarms, history, counter, events) = empty_swarm_status_state();
+    let signals = Arc::new(RwLock::new(HashMap::new()));
+    let result = super::desktop_control::execute(
+        "prompt",
+        Some(&id),
+        Some("Review this"),
+        &sessions,
+        &connections,
+        &members,
+        &swarms,
+        &history,
+        &counter,
+        &events,
+        &queues,
+        &signals,
+    )
+    .await
+    .unwrap();
+    assert_eq!(result["queued"], true);
+    let pending = queue.lock().unwrap();
+    assert_eq!(pending.len(), 1);
+    assert_eq!(pending[0].content, "Review this");
+    assert!(matches!(
+        pending[0].source,
+        crate::alphacode_agent_runtime::SoftInterruptSource::User
+    ));
+    drop(pending);
+    assert_eq!(connections.read().await.len(), 1);
+    drop(guard);
+}
+
+#[tokio::test]
+async fn desktop_control_discovers_and_sends_to_a_real_local_session() -> Result<()> {
+    let _storage_guard = crate::storage::lock_test_env();
+    let temp = tempfile::TempDir::new()?;
+    let _env = configure_test_env(&temp);
+    let provider = Arc::new(StreamingMockProvider::default());
+    provider.queue_response(vec![
+        StreamEvent::TextDelta("Desktop response".to_string()),
+        StreamEvent::MessageEnd { stop_reason: None },
+    ]);
+    let socket = temp.path().join("desktop-test.sock");
+    let debug = temp.path().join("desktop-debug.sock");
+    let server = Server::new_with_paths(provider, socket.clone(), debug.clone());
+    let main_listener = crate::transport::Listener::bind(&socket)?;
+    let debug_listener = crate::transport::Listener::bind(&debug)?;
+    let (runtime, main_handle, debug_handle) = server
+        .finish_startup_after_bind(main_listener, debug_listener, Instant::now())
+        .await;
+    let mut terminal = super::Client::connect_with_path(socket.clone()).await?;
+    terminal.subscribe().await?;
+    let session_id = timeout(Duration::from_secs(20), async {
+        loop {
+            match terminal.read_event().await? {
+                ServerEvent::SessionId { session_id } | ServerEvent::History { session_id, .. } => {
+                    return Ok::<_, anyhow::Error>(session_id);
+                }
+                ServerEvent::Error { message, .. } => anyhow::bail!(message),
+                _ => {}
+            }
+        }
+    })
+    .await??;
+
+    let mut desktop = super::Client::connect_with_path(socket.clone()).await?;
+    let request_id = desktop.desktop_command("sessions", None, None).await?;
+    let sessions = timeout(Duration::from_secs(5), async {
+        loop {
+            if let ServerEvent::DebugResponse { id, ok, output } = desktop.read_event().await?
+                && id == request_id
+            {
+                assert!(ok, "{output}");
+                return Ok::<serde_json::Value, anyhow::Error>(serde_json::from_str(&output)?);
+            }
+        }
+    })
+    .await??;
+    assert!(
+        sessions
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|row| row["session_id"] == session_id)
+    );
+
+    let mut desktop = super::Client::connect_with_path(socket).await?;
+    let request_id = desktop
+        .desktop_command("prompt", Some(&session_id), Some("Review this workspace"))
+        .await?;
+    timeout(Duration::from_secs(5), async {
+        loop {
+            if let ServerEvent::DebugResponse { id, ok, output } = desktop.read_event().await?
+                && id == request_id
+            {
+                assert!(ok, "{output}");
+                return Ok::<(), anyhow::Error>(());
+            }
+        }
+    })
+    .await??;
+    timeout(Duration::from_secs(20), async {
+        let mut saw_prompt = false;
+        let mut saw_reply = false;
+        loop {
+            match terminal.read_event().await? {
+                ServerEvent::ExternalUserPrompt { content, .. } => {
+                    saw_prompt = content == "Review this workspace"
+                }
+                ServerEvent::TextDelta { text } => saw_reply |= text.contains("Desktop response"),
+                ServerEvent::Done { id: 0 } if saw_prompt && saw_reply => {
+                    return Ok::<(), anyhow::Error>(());
+                }
+                ServerEvent::Error { message, .. } => anyhow::bail!(message),
+                _ => {}
+            }
+        }
+    })
+    .await??;
+    drop(terminal);
+    runtime.shutdown().await;
+    let _ = main_handle.await;
+    let _ = debug_handle.await;
+    Ok(())
+}
+
 #[allow(clippy::type_complexity)]
 fn empty_swarm_status_state() -> (
     Arc<RwLock<HashMap<String, std::collections::HashSet<String>>>>,

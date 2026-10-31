@@ -183,6 +183,15 @@ pub fn concise_tool_error_summary(content: &str) -> Option<String> {
             .or_else(|| line.strip_prefix("Failed:"))
             .map(str::trim);
         if let Some(detail) = detail {
+            // Put the actionable browser exception before the width limit;
+            // the repeated bridge wrapper used to consume the whole row.
+            if let Some(rest) = detail.strip_prefix("Browser bridge action '")
+                && let Some((action, cause)) = rest.split_once("' failed: ")
+            {
+                let cause = cause.strip_prefix("Error: ").unwrap_or(cause);
+                let cause = cause.strip_prefix("Evaluate error: ").unwrap_or(cause);
+                return Some(format!("{}: {}", action, truncate_tail_display(cause, 80)));
+            }
             if let Some(field) = detail.strip_prefix("missing field ") {
                 return Some(format!(
                     "invalid input: missing {}",
@@ -350,6 +359,14 @@ mod tests {
             concise_tool_error_summary("--- Command finished with exit code: 2 ---").as_deref(),
             Some("exit 2")
         );
+    }
+
+    #[test]
+    fn browser_error_summary_keeps_the_underlying_exception() {
+        let summary = concise_tool_error_summary(
+            "[browser] Error: Browser bridge action 'evaluate' failed: Error: Evaluate error: TypeError: /api is not a valid URL."
+        ).unwrap();
+        assert_eq!(summary, "evaluate: TypeError: /api is not a valid URL.");
     }
 
     #[test]

@@ -107,8 +107,11 @@ pub fn configured_palette() -> (crate::alphacode_tui_style::Palette, Vec<String>
     let mut problems = Vec::new();
 
     let preset = display.preset.trim();
-    let base = if preset.is_empty() {
-        crate::alphacode_tui_style::Palette::default()
+    let base = if preset.is_empty()
+        || crate::alphacode_tui_style::presets::preset_by_id(preset)
+            .is_some_and(|seed| seed.id == "royal-gold")
+    {
+        royal_gold_palette(crate::alphacode_tui_style::theme_mode::is_light_theme())
     } else {
         // Moods (e.g. "calm") resolve like presets; `resolve_palette` handles
         // both, so a mood pointer in the config always renders.
@@ -118,7 +121,7 @@ pub fn configured_palette() -> (crate::alphacode_tui_style::Palette, Vec<String>
                 problems.push(format!(
                     "display.preset: unknown theme '{preset}' (run /theme to list presets)"
                 ));
-                crate::alphacode_tui_style::Palette::default()
+                royal_gold_palette(crate::alphacode_tui_style::theme_mode::is_light_theme())
             }
         }
     };
@@ -136,6 +139,15 @@ pub fn configured_palette() -> (crate::alphacode_tui_style::Palette, Vec<String>
     );
 
     (palette, problems)
+}
+
+fn royal_gold_palette(light: bool) -> crate::alphacode_tui_style::Palette {
+    use crate::alphacode_tui_style::presets::{ROYAL_GOLD, ROYAL_GOLD_LIGHT};
+    if light {
+        ROYAL_GOLD_LIGHT.palette()
+    } else {
+        ROYAL_GOLD.palette()
+    }
 }
 
 /// Install the user's configured color palette.

@@ -782,7 +782,7 @@ fn route_matches_activation(route: &ModelRoute, activation: &AuthActivationResul
             );
         }
         "alphacode" => {
-            // Alphacode subscription routes deliberately keep their managed public
+            // AlphaCode subscription routes deliberately keep their managed public
             // identity even though the runtime reuses OpenRouter transport code.
             return matches!(
                 api_method,
@@ -1387,7 +1387,7 @@ mod tests {
             ("openai", "openai", "OpenAI"),
             ("openai-key", "openai-api", "OpenAI API"),
             ("openrouter", "openrouter", "OpenRouter"),
-            ("subscription", "alphacode", "Alphacode Subscription"),
+            ("subscription", "alphacode", "AlphaCode Subscription"),
             ("bedrock", "bedrock", "AWS Bedrock"),
             ("cursor", "cursor", "Cursor"),
             ("copilot", "copilot", "GitHub Copilot"),
@@ -1647,10 +1647,56 @@ mod tests {
     }
 
     #[test]
+    fn orcarouter_logins_share_one_lifecycle_identity() {
+        let _sandbox =
+            crate::alphacode_base::auth::test_sandbox::AuthTestSandbox::new().expect("sandbox");
+
+        // Both OrcaRouter entry points must normalize to the *same* identity:
+        // one inference profile, one credential slot, one catalog namespace.
+        for hint in [
+            "orcarouter",
+            "orca-router",
+            "orcarouter-api",
+            "orcarouter-oauth",
+            "orca-router-auth",
+            "orcarouter-pkce",
+            "orcarouter-auth",
+        ] {
+            assert_eq!(
+                normalized_auth_provider_id(Some(hint)),
+                Some("orcarouter"),
+                "{hint} must normalize to the shared OrcaRouter profile"
+            );
+        }
+        assert_eq!(
+            model_switch_request_for_provider_id(
+                Some("orcarouter-oauth"),
+                "mock",
+                "orcarouter/auto"
+            ),
+            "orcarouter:orcarouter/auto"
+        );
+        assert_eq!(
+            provider_display_label(Some("orcarouter-oauth")).as_deref(),
+            Some("OrcaRouter")
+        );
+
+        let activation = activate_auth_change(&AuthActivationRequest::new(
+            None,
+            Some(AuthChanged::new("orcarouter-oauth")),
+        ));
+        assert_eq!(activation.provider_id.as_deref(), Some("orcarouter"));
+        assert_eq!(
+            std::env::var("ALPHACODE_OPENROUTER_API_BASE").as_deref(),
+            Ok("https://api.orcarouter.ai/v1")
+        );
+    }
+
+    #[test]
     fn alphacode_auth_lifecycle_matches_only_managed_subscription_routes() {
         let activation = AuthActivationResult {
             provider_id: Some("alphacode".to_string()),
-            provider_label: Some("Alphacode Subscription".to_string()),
+            provider_label: Some("AlphaCode Subscription".to_string()),
             activated_model: Some("gpt-5.5".to_string()),
             expected_runtime: Some("alphacode-subscription".to_string()),
             expected_catalog_namespace: Some("alphacode-subscription".to_string()),
@@ -1659,7 +1705,7 @@ mod tests {
             route("gpt-5.5", "OpenRouter", "openrouter", true),
             route(
                 "gpt-5.5",
-                "Alphacode Subscription",
+                "AlphaCode Subscription",
                 crate::subscription_catalog::ALPHACODE_ROUTE_API_METHOD,
                 true,
             ),
@@ -1668,7 +1714,7 @@ mod tests {
         let report = validate_catalog_invariants(&activation, Some("gpt-5.5"), &routes);
         assert!(
             report.ok(),
-            "canonical Alphacode route should match: {report:?}"
+            "canonical AlphaCode route should match: {report:?}"
         );
         assert_eq!(report.selectable_provider_routes, 1);
         assert_eq!(
@@ -1679,7 +1725,7 @@ mod tests {
             )]
         );
         assert_eq!(
-            activation.model_switch_request("Alphacode Subscription", "gpt-5.5"),
+            activation.model_switch_request("AlphaCode Subscription", "gpt-5.5"),
             "gpt-5.5"
         );
     }
@@ -2043,6 +2089,7 @@ mod tests {
                     context_length: None,
                     pricing: Default::default(),
                     created: Some(1_700_000_000),
+                    ..Default::default()
                 },
                 crate::alphacode_provider_openrouter::ModelInfo {
                     id: "qwen-3-235b-a22b-instruct-2507".to_string(),
@@ -2050,6 +2097,7 @@ mod tests {
                     context_length: None,
                     pricing: Default::default(),
                     created: Some(1_800_000_000),
+                    ..Default::default()
                 },
             ],
             Some("https://api.cerebras.ai/v1"),
@@ -2526,12 +2574,12 @@ mod tests {
                 "gemini-3-pro-preview",
             ),
             (
-                // Experiential Labs (Free Gift from Alphacode): the curated
+                // Experiential Labs (Free Gift from AlphaCode): the curated
                 // free-model list must still pick gpt-6-astra as the flagship
                 // even when a weaker model appears first in the catalog.
                 "explabs",
                 "openai-compatible:explabs",
-                "Experiential Labs (Free Gift from Alphacode)",
+                "Experiential Labs (Free Gift from AlphaCode)",
                 &["deepseek-v4-flash", "qwen3.8-27b", "gpt-6-astra"],
                 "gpt-6-astra",
             ),
@@ -2540,7 +2588,7 @@ mod tests {
             (
                 "hive",
                 "openai-compatible:hive",
-                "TheHive AI (Free Gift from Alphacode)",
+                "TheHive AI (Free Gift from AlphaCode)",
                 &["zai-org/glm-5.3-flash"],
                 "zai-org/glm-5.3-flash",
             ),

@@ -198,7 +198,7 @@ fn should_skip_for_environment() -> bool {
 /// machine-readable subcommand skips the prompt so automation never hangs.
 fn is_prompt_eligible_command(args: &crate::cli::args::Args) -> bool {
     use crate::cli::args::Command;
-    if args.quiet || args.internal_reload_helper {
+    if args.quiet || args.internal_reload_helper || args.gui {
         return false;
     }
     match &args.command {
@@ -215,7 +215,7 @@ fn print_star_prompt() {
     // Plain println!/print! (no ANSI) so the prompt renders on every terminal,
     // including Windows conhost without VT processing.
     println!();
-    println!("  Welcome to Alphacode!");
+    println!("  Welcome to AlphaCode!");
     println!();
     println!("  A one-time, two-click way to support the project:");
     println!();
@@ -226,11 +226,11 @@ fn print_star_prompt() {
     println!("      {}", BUY_ME_A_COFFEE_URL);
     println!();
     println!("  Saying yes stars the repo automatically when the `gh` CLI is");
-    println!("  logged in, opens the support page, and starts Alphacode as usual.");
+    println!("  logged in, opens the support page, and starts AlphaCode as usual.");
     println!();
-    println!("  Agree to support Alphacode?");
-    println!("    [y] Yes  -> continue to Alphacode");
-    println!("    [n] No   -> close Alphacode");
+    println!("  Agree to support AlphaCode?");
+    println!("    [y] Yes  -> continue to AlphaCode");
+    println!("    [n] No   -> close AlphaCode");
     println!();
 }
 
@@ -264,14 +264,14 @@ pub(crate) fn ensure_star_consent_or_exit(args: &crate::cli::args::Args) {
             Ok(0) => {
                 // EOF (e.g. stdin closed): fail closed per spec.
                 println!();
-                println!("  No input received. Closing Alphacode.");
+                println!("  No input received. Closing AlphaCode.");
                 println!("  Star us later at {}", REPO_URL);
                 std::process::exit(0);
             }
             Ok(_) => {}
             Err(_) => {
                 println!();
-                println!("  Could not read input. Closing Alphacode.");
+                println!("  Could not read input. Closing AlphaCode.");
                 std::process::exit(0);
             }
         }
@@ -298,23 +298,23 @@ pub(crate) fn ensure_star_consent_or_exit(args: &crate::cli::args::Args) {
                 }
                 // Consent was just given at an attached interactive terminal:
                 // open the support page once, then continue straight into
-                // Alphacode startup.
+                // AlphaCode startup.
                 open_buy_me_a_coffee_page();
                 println!();
-                println!("  Thank you for supporting Alphacode!");
+                println!("  Thank you for supporting AlphaCode!");
                 println!();
                 return;
             }
             Some(false) => {
                 println!();
-                println!("  You chose not to star {}. Closing Alphacode.", REPO_URL);
+                println!("  You chose not to star {}. Closing AlphaCode.", REPO_URL);
                 println!("  Re-run `alphacode` anytime to reconsider.");
                 std::process::exit(0);
             }
             None => {
                 if attempt + 1 >= MAX_ATTEMPTS {
                     println!();
-                    println!("  Too many invalid attempts. Closing Alphacode.");
+                    println!("  Too many invalid attempts. Closing AlphaCode.");
                     std::process::exit(0);
                 }
                 println!("  Please type 'y' to agree or 'n' to disagree.");

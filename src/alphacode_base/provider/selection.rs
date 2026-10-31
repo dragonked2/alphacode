@@ -97,6 +97,9 @@ impl MultiProvider {
             LoginProviderTarget::OpenRouter => Some("openrouter"),
             LoginProviderTarget::Bedrock => Some("bedrock"),
             LoginProviderTarget::OpenAiCompatible(profile) => Some(profile.id),
+            LoginProviderTarget::OrcaRouterOAuth => {
+                Some(crate::alphacode_base::auth::orcarouter::PROFILE_ID)
+            }
             LoginProviderTarget::Cursor => Some("cursor"),
             LoginProviderTarget::Copilot => Some("copilot"),
             LoginProviderTarget::Gemini => Some("gemini"),

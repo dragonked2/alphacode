@@ -64,6 +64,9 @@ pub fn runtime_id_for_login_provider(
         LoginProviderTarget::Bedrock => Some(RuntimeProviderId::Bedrock),
         LoginProviderTarget::Azure => Some(RuntimeProviderId::AzureOpenAi),
         LoginProviderTarget::OpenAiCompatible(_) => Some(RuntimeProviderId::OpenAiCompatible),
+        // OrcaRouter OAuth mints a durable `sk-orca-...` key for the same
+        // OpenAI-compatible inference profile as the API-key entry.
+        LoginProviderTarget::OrcaRouterOAuth => Some(RuntimeProviderId::OpenAiCompatible),
         LoginProviderTarget::Cursor => Some(RuntimeProviderId::Cursor),
         LoginProviderTarget::Copilot => Some(RuntimeProviderId::Copilot),
         LoginProviderTarget::Gemini => Some(RuntimeProviderId::Gemini),

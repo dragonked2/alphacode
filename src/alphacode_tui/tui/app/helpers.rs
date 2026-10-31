@@ -11,6 +11,12 @@ use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 use std::time::Duration;
 
+// Shared with the CLI/server resume path so the TUI window title cannot drift
+// from it. This module used to define a private copy which had already
+// diverged (it took the socket path through a different module and emitted a
+// second, lowercase product name in the fallback label).
+use crate::alphacode_app_core::session_launch::resumed_window_title;
+
 type AmbientInfoCacheEntry = (std::time::Instant, bool, Option<AmbientWidgetData>, bool);
 
 static AMBIENT_INFO_CACHE: Mutex<Option<AmbientInfoCacheEntry>> = Mutex::new(None);
@@ -85,6 +91,18 @@ pub(crate) fn invalidate_todos_cache(session_id: &str) {
     {
         *ts = backdated_now(Duration::from_secs(3600));
         *refreshing = false;
+    }
+}
+
+/// Refresh immediately when the local bus reports a completed todo write.
+pub(crate) fn refresh_todos_cache_now(session_id: &str) {
+    let todos = crate::todo::load_todos(session_id).unwrap_or_default();
+    let goals = crate::todo::load_goals(session_id).unwrap_or_default();
+    if let Ok(mut cache) = TODOS_CACHE.lock() {
+        cache.insert(
+            session_id.to_string(),
+            (std::time::Instant::now(), todos, goals, false),
+        );
     }
 }
 
@@ -737,7 +755,10 @@ fn build_fresh_session_command(socket: Option<&str>) -> crate::terminal_launch::
         args.push(socket.to_string());
     }
     crate::terminal_launch::TerminalCommand::new(&exe, args)
-        .title("alphacode · new session".to_string())
+        .title(format!(
+            "{} \u{00b7} new session",
+            crate::alphacode_brand::DISPLAY_NAME
+        ))
         .kind("new-terminal")
         .fresh_spawn()
 }
@@ -753,28 +774,6 @@ pub(super) fn spawn_fresh_session_in_new_terminal(cwd: &Path) -> anyhow::Result<
     let socket = std::env::var("ALPHACODE_SOCKET").ok();
     let command = build_fresh_session_command(socket.as_deref());
     crate::terminal_launch::spawn_command_in_new_terminal(&command, cwd)
-}
-
-fn resumed_window_title(session_id: &str) -> String {
-    let session_name = crate::alphacode_base::process_title::session_name(session_id);
-    let icon = crate::id::session_icon(&session_name);
-    let display_title =
-        crate::alphacode_base::process_title::terminal_display_title_for_id(session_id);
-    let session_label =
-        crate::alphacode_base::process_title::terminal_session_label(&session_name, None);
-    let fallback_label = if let Some(server_info) = crate::registry::find_server_by_socket_sync(
-        &crate::alphacode_app_core::server::socket_path(),
-    ) {
-        format!("alphacode/{} {}", server_info.name, session_label)
-    } else {
-        format!("alphacode {}", session_label)
-    };
-    crate::alphacode_base::process_title::terminal_window_title(
-        icon,
-        display_title.as_deref(),
-        Some(&fallback_label),
-        false,
-    )
 }
 
 #[cfg(unix)]
@@ -1067,32 +1066,31 @@ pub(super) fn gather_todos_and_goals_for_session(
             }
             let stale = (todos.clone(), goals.clone());
             *refreshing = true;
+            let refresh_generation = *ts;
             let session_id = session_id.to_string();
             std::thread::spawn(move || {
                 let (todos, goals) = fetch(&session_id);
-                if let Ok(mut cache) = TODOS_CACHE.lock() {
+                if let Ok(mut cache) = TODOS_CACHE.lock()
+                    && cache
+                        .get(&session_id)
+                        .is_some_and(|(ts, _, _, refreshing)| {
+                            *ts == refresh_generation && *refreshing
+                        })
+                {
                     cache.insert(session_id, (Instant::now(), todos, goals, false));
                 }
             });
             return stale;
         }
 
-        let session_id = session_id.to_string();
+        // Seed the first frame synchronously: an asynchronous first read can
+        // finish after the last redraw of a restored, deeply idle session.
+        let (todos, goals) = fetch(session_id);
         cache.insert(
-            session_id.clone(),
-            (
-                backdated_now(TTL + Duration::from_secs(1)),
-                Vec::new(),
-                Vec::new(),
-                true,
-            ),
+            session_id.to_string(),
+            (Instant::now(), todos.clone(), goals.clone(), false),
         );
-        std::thread::spawn(move || {
-            let (todos, goals) = fetch(&session_id);
-            if let Ok(mut cache) = TODOS_CACHE.lock() {
-                cache.insert(session_id, (Instant::now(), todos, goals, false));
-            }
-        });
+        return (todos, goals);
     }
     (Vec::new(), Vec::new())
 }

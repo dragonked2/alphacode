@@ -94,10 +94,11 @@ fn format_session_menu_item_title_with_display(
 ) -> String {
     let display = crate::id::extract_session_name(session_id).unwrap_or(session_id);
     let icon = crate::id::session_icon(display);
-    let label = crate::alphacode_base::process_title::terminal_window_title(
+    // Menu rows sit under the app's own name, so they use the unbranded
+    // session title; only the standalone window title carries the brand.
+    let label = crate::alphacode_base::process_title::terminal_session_menu_title(
         icon,
         display_title,
-        None,
         false,
     );
     if streaming {

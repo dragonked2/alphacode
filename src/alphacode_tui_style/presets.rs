@@ -147,6 +147,7 @@ impl ThemeSeed {
 /// Every built-in preset, in menu order: dark themes first, then light.
 pub const PRESETS: &[ThemeSeed] = &[
     // --- Premium dark themes ---
+    ROYAL_GOLD,
     ALPHACODE,
     AURORA_PRO,
     OBSIDIAN,
@@ -278,6 +279,50 @@ pub fn resolve_palette(id: &str) -> Option<Palette> {
         .map(ThemeSeed::palette)
 }
 
+/// AlphaCode's default look: warm gold accents on quiet charcoal surfaces.
+pub const ROYAL_GOLD: ThemeSeed = ThemeSeed {
+    id: "royal-gold",
+    display_name: "Royal Gold",
+    description: "Warm gold and ivory on charcoal",
+    is_dark: true,
+    fg: (245, 239, 224),
+    fg_muted: (197, 184, 157),
+    fg_subtle: (156, 144, 121),
+    surface: (29, 26, 22),
+    surface_alt: (56, 46, 29),
+    border: (102, 83, 50),
+    red: (255, 130, 125),
+    orange: (245, 185, 105),
+    yellow: (245, 207, 111),
+    green: (135, 211, 165),
+    cyan: (238, 211, 150),
+    blue: (229, 193, 115),
+    magenta: (218, 177, 94),
+    accent: (232, 190, 96),
+};
+
+/// Readable counterpart for terminals with a light background.
+pub const ROYAL_GOLD_LIGHT: ThemeSeed = ThemeSeed {
+    id: "royal-gold-light",
+    display_name: "Royal Gold Light",
+    description: "Deep gold and ink on warm ivory",
+    is_dark: false,
+    fg: (44, 38, 29),
+    fg_muted: (91, 76, 52),
+    fg_subtle: (108, 92, 68),
+    surface: (248, 244, 234),
+    surface_alt: (235, 222, 190),
+    border: (147, 122, 77),
+    red: (166, 45, 40),
+    orange: (138, 74, 18),
+    yellow: (126, 83, 14),
+    green: (35, 112, 65),
+    cyan: (120, 83, 28),
+    blue: (123, 83, 19),
+    magenta: (129, 84, 20),
+    accent: (126, 83, 14),
+};
+
 pub const ALPHACODE: ThemeSeed = ThemeSeed {
     id: "alphacode",
     display_name: "AlphaCode",
@@ -301,7 +346,7 @@ pub const ALPHACODE: ThemeSeed = ThemeSeed {
 
 // Phase 1b: three branded themes. Same hex resolution as existing presets,
 // but tuned for a quieter, more deliberate look than the 39 community themes.
-// AURORA_PRO is the new default; the others are explicit alternatives.
+// These remain available as explicit alternatives to Royal Gold.
 
 /// Premium, dark, teal-on-graphite. The brand gradient survives, but only as
 /// the focus ring on the active element. Body text is one near-white; accent

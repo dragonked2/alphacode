@@ -464,6 +464,7 @@ fn blit_idle(
 /// pace redraws on it. (See `idle_donut_paces_redraws` for the gating logic
 /// and the regression tests below for the static invariants.)
 fn render_idle_wordmark(buf: &mut Buffer, area: Rect) {
+    use crate::alphacode_tui::tui::brand_ux::BrandTheme;
     use crate::alphacode_tui_style::theme::blend_color;
     use crate::alphacode_tui_style::{Role, role_color};
     use ratatui::style::Style;
@@ -482,7 +483,13 @@ fn render_idle_wordmark(buf: &mut Buffer, area: Rect) {
 
     // Three lines: a gradient wordmark, a breathing separator, and a hint.
     // The wordmark uses per-character gradient coloring for a premium feel.
-    let wordmark = "\u{2728} alphacode";
+    //
+    // The mark comes from the brand module: a single codepoint with default
+    // text presentation. It previously carried a `✨` (U+2728) prefix, which
+    // is double-width *and* emoji-presentation — the exact glyph class that
+    // invalidates ratatui's cell-width cache mid-frame and made the
+    // animation-only partial repaint disagree with the full frame.
+    let wordmark = crate::alphacode_brand::mark_label();
     let hint = "type a message below to get started  \u{2022}  / for commands";
 
     // Build a breathing separator using varied line-drawing characters
@@ -505,28 +512,26 @@ fn render_idle_wordmark(buf: &mut Buffer, area: Rect) {
         _ => (area_h as u16 / 2).saturating_sub(1),
     };
 
-    // Gradient colors for the wordmark characters
-    let gradient = [
-        role_color(Role::HeaderIcon), // cyan
-        role_color(Role::Info),       // blue
-        role_color(Role::Accent),     // purple
-        role_color(Role::ModelName),  // pink
-        role_color(Role::Warning),    // amber
-        role_color(Role::Success),    // green
-        role_color(Role::HeaderIcon), // cyan
-    ];
+    // One continuous brand ramp across the wordmark.
+    //
+    // This used to hardcode seven role stops (cyan, blue, purple, pink, amber,
+    // green, cyan), so an 11-cell word swept the entire palette — including a
+    // warning amber and a success green inside a logo. Interpolating the brand
+    // gradient keeps the wordmark reading as a single soft object instead of a
+    // row of coloured letters.
+    let gradient = BrandTheme::gradient_rows(wordmark.chars().count());
 
     // Render wordmark with per-character gradient
     let wordmark_row = start_row_offset;
     if wordmark_row < area_h as u16 {
-        // Measure in display columns, not `char`s. The leading sparkle is
-        // double-width: counting characters both mis-centres the wordmark and
-        // drops the following space into the sparkle's trailing cell - a cell the
-        // terminal renders as part of the glyph, not as a blank. A full frame
-        // reaches the terminal through ratatui's diff, which never emits that
-        // trailing column, so styling it here made the animation-only partial
-        // repaint disagree with the full frame.
-        let wordmark_w = unicode_width::UnicodeWidthStr::width(wordmark);
+        // Measure in display columns, not `char`s. A double-width mark in this
+        // position used to drop the following space into its trailing cell — a
+        // cell the terminal renders as part of the glyph, not as a blank. A full
+        // frame reaches the terminal through ratatui's diff, which never emits
+        // that trailing column, so styling it here made the animation-only
+        // partial repaint disagree with the full frame. The brand mark is
+        // single-width, and this stays width-aware in case a theme is not.
+        let wordmark_w = unicode_width::UnicodeWidthStr::width(wordmark.as_str());
         if wordmark_w <= area_w {
             let center_offset = (area.width as usize).saturating_sub(wordmark_w) / 2;
             let y = area_top + wordmark_row;
@@ -887,11 +892,11 @@ mod tests {
                 let buf_area = Rect::new(0, 0, w, h);
                 let mut buf = Buffer::empty(buf_area);
                 render_idle_animation(&mut buf, area, 0.5);
-                // Reservations narrower than the wordmark ("alphacode" = 9
-                // chars) cannot render anything; that is a documented
+                // Reservations narrower than the wordmark ("◆ AlphaCode" = 11
+                // cells) cannot render anything; that is a documented
                 // no-op, not a failure. Wider reservations must draw at
                 // least one glyph.
-                if w < 9 {
+                if w < 11 {
                     continue;
                 }
                 let mut any_text = false;

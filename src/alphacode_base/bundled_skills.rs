@@ -27,6 +27,11 @@
 /// by the subskill directory name (e.g. `hunt-sqli`).
 pub(super) const BUNDLED_SKILLS: &[BundledSkill] = &[
     BundledSkill {
+        name: "ctf-workflow",
+        body: include_str!("bundled_skills/ctf-workflow/SKILL.md"),
+        references: &[],
+    },
+    BundledSkill {
         name: "playbook",
         body: include_str!("bundled_skills/playbook/SKILL.md"),
         references: &[(

@@ -56,3 +56,6 @@ scripts/.[a-zA-Z0-9_-]*.ps1
 # Local cargo target dirs used by dev scripts (not /target)
 .cargo_target_test/
 .target-perf/
+
+# Search-engine site-verification files (served from the web root, not the crate)
+google*.html

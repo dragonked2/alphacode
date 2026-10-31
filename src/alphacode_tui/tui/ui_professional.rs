@@ -17,7 +17,7 @@ use ratatui::text::{Line, Span};
 pub fn section_banner(title: &str) -> Vec<Line<'static>> {
     let accent = BrandTheme::accent();
     let gradient = BrandTheme::gradient();
-    let border_width = title.len() + 4;
+    let border_width = unicode_width::UnicodeWidthStr::width(title) + 6;
 
     let mut underline_spans = Vec::with_capacity(border_width);
     for i in 0..border_width {
@@ -44,5 +44,11 @@ mod tests {
         let lines = section_banner("Test");
         assert!(!lines.is_empty());
         assert!(lines[0].to_string().contains("Test"));
+    }
+
+    #[test]
+    fn banner_underline_tracks_display_width() {
+        let lines = section_banner("界e\u{301}");
+        assert_eq!(lines[1].width(), lines[0].width());
     }
 }

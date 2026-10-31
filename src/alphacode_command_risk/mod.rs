@@ -457,6 +457,27 @@ pub fn assess(command: &str, ctx: &RiskContext) -> RiskAssessment {
 }
 
 fn assess_segment(tokens: &[Token], ctx: &RiskContext, findings: &mut Vec<RiskFinding>) {
+    // A literal `for source in a b` header contains a variable name and data,
+    // not an invocation of the `source` builtin. Bodies are separate segments
+    // and still assessed. Dynamic substitutions remain on the cautious path.
+    if tokens.first().is_some_and(|token| token.text == "for")
+        && tokens.get(2).is_some_and(|token| token.text == "in")
+        && tokens.get(1).is_some_and(|token| {
+            let mut chars = token.text.chars();
+            chars
+                .next()
+                .is_some_and(|ch| ch.is_ascii_alphabetic() || ch == '_')
+                && chars.all(|ch| ch.is_ascii_alphanumeric() || ch == '_')
+        })
+        && tokens[3..].iter().all(|token| {
+            !token.text.contains(['$', '`'])
+                && token.text != "do"
+                && !token.is_truncating_redirect_target
+                && !token.is_operator
+        })
+    {
+        return;
+    }
     // Leading `VAR=value` assignments set the environment for the command that
     // follows and are not the command. They must be stripped *before* the
     // wrapper loop: the loop only skipped them after a wrapper program, so a

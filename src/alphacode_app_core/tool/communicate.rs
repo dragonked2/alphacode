@@ -383,6 +383,31 @@ fn in_flight_swarm_session_ids(members: &[AgentInfo], coordinator_session_id: &s
         .collect()
 }
 
+/// Wait on every worker that can free capacity, including workers that were
+/// already running before this dispatch wave. Preserve order and deduplicate.
+fn run_plan_await_sessions(in_flight: Vec<String>, assigned: Vec<String>) -> Vec<String> {
+    let mut seen = std::collections::HashSet::new();
+    in_flight
+        .into_iter()
+        .chain(assigned)
+        .filter(|id| seen.insert(id.clone()))
+        .collect()
+}
+
+#[cfg(test)]
+mod run_plan_await_session_tests {
+    use super::run_plan_await_sessions;
+
+    #[test]
+    fn awaits_existing_and_new_workers_without_duplicates() {
+        let workers = run_plan_await_sessions(
+            vec!["existing".into(), "shared".into()],
+            vec!["new".into(), "shared".into()],
+        );
+        assert_eq!(workers, ["existing", "shared", "new"]);
+    }
+}
+
 /// Fetch-and-filter convenience over [`in_flight_swarm_session_ids`] for call
 /// sites that do not otherwise need the member snapshot.
 async fn fetch_in_flight_swarm_sessions(session_id: &str) -> Result<Vec<String>> {
@@ -1457,7 +1482,15 @@ async fn run_swarm_plan_loop(
             .await;
         let no_more_runnable = summary.active_ids.is_empty()
             && summary.next_ready_ids.is_empty()
+            && summary.ready_ids.is_empty()
             && in_flight_sessions.is_empty();
+        if no_more_runnable && terminal_count < summary.item_count {
+            return Err(anyhow::anyhow!(
+                "run_plan stalled: {} of {} plan nodes are not terminal, but no worker or runnable task is available. Inspect `swarm plan_status` before retrying.",
+                summary.item_count.saturating_sub(terminal_count),
+                summary.item_count,
+            ));
+        }
         if no_more_runnable || terminal_count >= summary.item_count {
             let mut output =
                 format_run_plan_terminal_summary(loop_count, &summary, assignment_count);
@@ -1621,11 +1654,7 @@ async fn run_swarm_plan_loop(
             assigned_sessions.len(),
         );
 
-        let await_sessions = if assigned_sessions.is_empty() {
-            in_flight_sessions
-        } else {
-            assigned_sessions
-        };
+        let await_sessions = run_plan_await_sessions(in_flight_sessions, assigned_sessions);
 
         if await_sessions.is_empty() {
             if active_count > 0 {
@@ -1962,17 +1991,28 @@ pub struct CommunicateTool {
 
 impl CommunicateTool {
     pub fn new() -> Self {
-        const BASE_DESCRIPTION: &str =
-            "Coordinate agents: spawn workers with a prompt, message them, and manage swarm plans.";
-        let swarm_prompt = crate::prompt::load_swarm_prompt(None);
-        let description = if swarm_prompt.is_empty() {
-            BASE_DESCRIPTION.to_string()
-        } else {
-            format!(
-                "{BASE_DESCRIPTION}\n\nSwarm prompt (user-tunable via ~/.alphacode/swarm-prompt.md):\n{swarm_prompt}"
-            )
-        };
-        Self { description }
+        // The swarm tool is the highest-cost definition in the whole registry:
+        // it is one tool, yet it used to concatenate the entire 22 KB
+        // `swarm-prompt.md` (worker model-routing policy) into its description.
+        // That text was paid on *every* request in *every* session, and it was
+        // never addressed to the coordinator reading it — it is guidance for
+        // spawned workers. Keep the description about the tool's surface, and
+        // let the policy reach workers through their own prompt / the
+        // `swarm-prompt` command that already exists on the TUI side.
+        const BASE_DESCRIPTION: &str = "\
+Coordinate sub-agents: spawn workers, message them, and drive swarm plans and task graphs.
+
+Core actions: `spawn` (label + prompt; optional model/effort), `run_plan` (drives a
+task graph in the background), `complete_node` (typed artifact handoff), `list`
+(roster), `list_models` (routable ids), `read`/`message`/`dm` (shared context and
+direct messaging), `status`/`plan_status` (progress), `stop`/`cleanup`.
+
+Use it for work that genuinely parallelizes. For a single focused task, do the work
+directly instead of delegating. Worker model-routing policy is tunable with the
+`/swarm-prompt` command and is not repeated here.";
+        Self {
+            description: BASE_DESCRIPTION.to_string(),
+        }
     }
 }
 

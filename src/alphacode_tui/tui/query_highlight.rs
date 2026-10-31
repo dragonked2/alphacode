@@ -136,7 +136,7 @@ pub fn highlight_within(
     if total <= budget {
         return spans_for_range(text, matched.as_deref(), 0, chars.len(), base, hit);
     } // Something has to be clipped, so one column per ellipsis is reserved.
-    // The anchor (first matched character) must always be visible.
+    // Keep the first matched character visible when the column can fit it.
     let anchor = matched
         .as_ref()
         .and_then(|m| m.first().copied())
@@ -164,9 +164,10 @@ pub fn highlight_within(
         end += 1;
     }
 
-    // Ensure the anchor is included even when wide chars compress the window.
+    // A single wide character plus the clipping markers may not fit in a very
+    // narrow column. Never force it past the available width.
     if anchor >= end && anchor < chars.len() {
-        end = anchor + 1;
+        return vec![Span::styled("…", base)];
     }
 
     let lead_ellipsis = start > 0;
@@ -366,6 +367,14 @@ mod tests {
         let width: usize = spans.iter().map(|s| s.width()).sum();
         assert!(width <= 7, "wide chars overflowed the budget: {width}");
         assert!(plain(&spans).contains(NEEDLE));
+    }
+
+    #[test]
+    fn tiny_budgets_do_not_overflow_even_for_wide_matches() {
+        for budget in 1..=4 {
+            let spans = highlight_within("abc界def", "界", budget, base(), hit());
+            assert!(spans.iter().map(|span| span.width()).sum::<usize>() <= budget);
+        }
     }
 
     #[test]

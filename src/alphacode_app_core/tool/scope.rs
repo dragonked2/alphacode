@@ -84,6 +84,7 @@ pub(crate) fn is_network_tool(tool: &str) -> bool {
     matches!(
         tool,
         "webfetch"
+            | "ctf_web_recon"
             | "httpflow"
             | "scrapling"
             | "dalfox"

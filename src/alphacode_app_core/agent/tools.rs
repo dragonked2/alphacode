@@ -2,7 +2,18 @@ use crate::alphacode_app_core::message::{ContentBlock, ToolCall};
 use crate::alphacode_app_core::tool::ToolOutput;
 use crate::terminal_println as println;
 
-pub(super) const MAX_TOOL_OUTPUT_CHARS_FOR_HISTORY: usize = 1024 * 1024;
+/// Hard ceiling on a single tool result stored in conversation history.
+///
+/// This is a *prompt budget*, not a transport limit. Every retained character
+/// is re-sent on every subsequent request in the turn, so a 1 MiB cap let one
+/// `grep -r` or failed build dump ~250k tokens into history that the model then
+/// re-reads on each iteration. History is capped per result; tools that
+/// genuinely need large output should write to a file and read targeted
+/// sections, which the truncation notice already tells the model to do.
+///
+/// 48k chars (~12k tokens) keeps a full stack trace or test summary intact
+/// while preventing any single call from dominating the window.
+pub(super) const MAX_TOOL_OUTPUT_CHARS_FOR_HISTORY: usize = 48 * 1024;
 
 /// Cap tool output for history. Uses smart truncation: preserves the last
 /// N lines (which typically contain the final result/summary) and the first
@@ -32,12 +43,10 @@ pub(super) fn cap_tool_output_for_history(tool_name: &str, mut output: ToolOutpu
         .collect();
     let dropped = original_chars - head_limit - tail_limit;
     output.output = format!(
-        "{}\n\n[Tool output truncated by alphacode: tool `{}` produced {} chars; kept {} head + {} tail chars to protect the remote protocol, session history, and prompt cache. Redirect large logs to a file and read targeted sections.]\n\n{}",
+        "{}\n\n[truncated: `{}` produced {} chars; kept head+tail. Redirect large logs to a file and read the section you need.]\n\n{}",
         head.trim_end(),
         tool_name,
         original_chars,
-        head_limit,
-        tail_limit,
         tail.trim_start(),
     );
     // Surface the cut on the transcript row (see guard_context_overflow for
@@ -250,9 +259,23 @@ mod tests {
         let output = ToolOutput::new("x".repeat(MAX_TOOL_OUTPUT_CHARS_FOR_HISTORY + 10));
         let capped = cap_tool_output_for_history("bash", output);
         assert!(capped.output.len() < MAX_TOOL_OUTPUT_CHARS_FOR_HISTORY + 1_000);
-        assert!(capped.output.contains("Tool output truncated by alphacode"));
-        assert!(capped.output.contains("tool `bash` produced"));
+        assert!(capped.output.contains("[truncated: `bash` produced"));
         assert!(capped.output.contains("Redirect large logs to a file"));
+        // The notice is paid on every retained result, so it must stay short.
+        assert!(
+            capped.output.len() < 200_000,
+            "truncated result must not stay near the old 1 MiB ceiling"
+        );
+    }
+
+    /// A single oversized tool result must not be able to dominate the prompt.
+    #[test]
+    fn history_cap_is_a_prompt_budget_not_a_transport_limit() {
+        // The cap is a constant, so this is checked at compile time: a regression
+        // that raises MAX_TOOL_OUTPUT_CHARS_FOR_HISTORY above 64 KiB fails the
+        // build instead of shipping a prompt that re-sends the oversized result
+        // every turn. (const blocks cannot format, so the message is static.)
+        const { assert!(MAX_TOOL_OUTPUT_CHARS_FOR_HISTORY <= 64 * 1024) };
     }
 
     #[test]

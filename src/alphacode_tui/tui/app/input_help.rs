@@ -198,6 +198,80 @@ impl App {
             "account" | "accounts" => {
                 "/account\nOpen the inline account picker showing both Claude and OpenAI accounts together. It lists saved accounts plus new/replace actions for each provider.\n\n/account claude  or  /account openai\nOpen the inline picker filtered to that provider.\n\n/account <provider> settings\nShow provider-specific account/settings details.\n\n/account <provider> login\nStart or refresh credentials for a provider.\n\n/account claude add  or  /account openai add\nCreate the next numbered OAuth account directly.\n\n/account <provider> switch <label>\nSwitch the active account for multi-account providers.\n\n/account <provider> remove <label>\nRemove a saved account.\n\n/account default-provider <provider|auto>\nSet the preferred default provider for future sessions.\n\n/account default-model <model|clear>\nSet the preferred default model for future sessions.\n\nOpenAI-specific settings:\n  /account openai transport ...\n  /account openai effort ...\n  /account openai fast on|off\n\nCustom provider settings:\n  /account openai-compatible api-base ...\n  /account openai-compatible api-key-name ...\n  /account openai-compatible env-file ...\n  /account openai-compatible default-model ..."
             }
+            "theme" => {
+                "/theme\nList the built-in looks, moods, and themes with truecolor previews.\n\n/theme <name>\nApply a mood or theme (saved to config, applied immediately).\n\n/theme off\nRestore the Royal Gold default.\n\n/colors retunes individual roles on top of the base a theme sets."
+            }
+            "colors" | "color" => {
+                "/colors\nList every configurable color role.\n\n/colors <role> <#rrggbb>\nSet one role's color (saved to config).\n\n/colors reset [role]\nReset one role, or all of them.\n\n/colors harmony\nScore the palette and list what to fix.\n\n/colors generate <#rrggbb>\nBuild a whole harmonious palette from one seed color.\n\n/colors export\nPrint the palette as config TOML."
+            }
+            "keys" | "keybindings" => {
+                "/keys\nShow detected terminal and OS shortcuts and any conflicts with alphacode's own keybindings.\n\n/keys refresh\nRescan the machine instead of reusing the cached snapshot (up to a day old)."
+            }
+            "diff" => {
+                "/diff\nCycle the diff display mode (off -> inline -> full -> pinned -> file).\n\n/diff <off|inline|full|pinned|file>\nSet a specific mode.\n\n/diff status\nShow the current mode."
+            }
+            "transport" => {
+                "/transport\nShow the current connection transport and the available ones.\n\n/transport <auto|https|websocket>\nSet the transport."
+            }
+            "cancel" | "stop" => {
+                "/cancel\nInterrupt the turn or operation currently in flight (also Ctrl+C).\nThe session and its context are preserved."
+            }
+            "session" => "/session\nAlias for /resume: open the interactive session picker.",
+            "active" => {
+                "/active\nManage the live sessions on this server and see which are working versus ready."
+            }
+            "update" => {
+                "/update\nStart a background update and reload automatically when the new binary is ready.\n\n/reload\nReload into an already-downloaded binary without rebuilding."
+            }
+            "transcript" => {
+                "/transcript\nOpen the current session transcript file in your editor.\n\n/transcript path\nPrint the transcript path instead of opening it."
+            }
+            "thinking-display" => {
+                "/thinking-display\nShow the current thinking-display mode.\n\n/thinking-display <off|full|current>\n  off      never show thinking text\n  full     keep every thinking trace in the transcript\n  current  show live thinking, then collapse it once a tool runs or the answer commits\n\nTo change how hard the model thinks, use /effort."
+            }
+            "remote" => {
+                "/remote\nReach this session from another machine over the network.\n\n/remote on | off\nEnable or disable the gateway.\n\n/remote pair\nShow a pairing code and QR for a new device.\n\n/remote revoke <device>\nRemove a paired device.\n\nSetup: /remote on, restart the server, then /remote pair."
+            }
+            "ssh" => {
+                "/ssh\nList configured SSH remotes.\n\n/ssh add [name]\nAdd a remote (alphacode asks for the target).\n\n/ssh <name>\nConnect to a remote.\n\n/ssh status\nShow connection status.\n\n/ssh disconnect <name>\nDisconnect. Alphacode stores targets only, never SSH passwords."
+            }
+            "workspace" => {
+                "/workspace\nShow workspace status.\n\n/workspace on | off\nEnable or disable workspace mode.\n\n/workspace add [right|up|down]\nSplit the current session and place it in the workspace."
+            }
+            "terminal-setup" => {
+                "/terminal-setup\nConfigure your terminal so Shift+Enter inserts a newline (via the kitty keyboard protocol). Safe to run repeatedly."
+            }
+            "record" => "/record\nRecord a demo capture of the current session.",
+            "telemetry" => {
+                "/telemetry\nShow what anonymous telemetry alphacode sends.\n\n/telemetry <everything|no-prompts|nothing>\nSet the telemetry level."
+            }
+            "feedback" => "/feedback\nSend feedback about alphacode.",
+            "support" => "/support\nOpen a support email draft with your diagnostics prefilled.",
+            "skills" => {
+                "/skills\nList loaded skills and alphacode-endorsed recommendations.\n\nActivate a skill by typing its slash command (for example /optimization)."
+            }
+            "productivity" | "wrapped" => {
+                "/productivity\nGenerate your productivity report from session transcripts.\n\nAlias: /wrapped."
+            }
+            "test" => {
+                "/test [claim]\nRun layered verification against a claim or the current changes and produce a proof artifact."
+            }
+            "initiatives" => {
+                "/initiatives\nOpen the initiatives (goals) overview in the side panel.\n\n/initiatives resume\nResume the most relevant active initiative.\n\n/initiatives show <id>\nOpen a specific initiative."
+            }
+            "models" => {
+                return Some(format!(
+                    "/models is an alias for /model.\n\n{}",
+                    self.command_help("model")?
+                ));
+            }
+            "hotkeys" => "/hotkeys\nList hotkeys together with your personal usage counts.",
+            "debug-visual" => {
+                "/debug-visual\nToggle the visual debug overlay used to inspect TUI layout and widget placements."
+            }
+            "screenshot-mode" | "screenshot" => {
+                "/screenshot-mode\nToggle screenshot capture mode.\n\n/screenshot\nCapture a screenshot debug state."
+            }
             "save" => {
                 "/save\nBookmark the current session so it appears at the top of /resume.\n\n/save <label>\nBookmark with a custom label for easy identification.\n\nSaved sessions are shown in a dedicated \"Saved\" section in the session picker."
             }
@@ -214,7 +288,7 @@ impl App {
             "continue" | "resumeall" | "resume-all" if self.is_remote => {
                 "/continue\nContinue every interrupted live session that would auto-resume on a reload.\n\nThe server walks all currently-live sessions and, for each idle one that still owes the model a reply (a turn that errored or was interrupted mid-generation), injects the standard \"continue where you left off\" reminder so it picks back up. Sessions that are busy, fresh, or already complete are left untouched.\n\nAlias: /resumeall."
             }
-            _ => return None,
+            _ => return self.registry_help(topic.as_str()),
         };
         let help = help.replace(
             "{effort_keys}",
@@ -232,5 +306,84 @@ impl App {
             &format!("{}+", crate::alphacode_tui_core::keybind::alt_label()),
         );
         Some(help)
+    }
+
+    /// Detailed help for a command that has no hand-written `/help` topic.
+    ///
+    /// `/help <cmd>` used to answer with "Unknown command" for any command the
+    /// palette advertised but the hand-written topic table had not covered —
+    /// currently most of the registry. That is the worst possible answer from a
+    /// *help* command: the user asked about a command alphacode just suggested,
+    /// and the reply claimed it does not exist.
+    ///
+    /// Two salvage paths, both derived from the single registry the palette and
+    /// `/help` already share, so a newly registered command is documented the
+    /// moment it is registered:
+    /// 1. exact registry hit → say what the command is and how to see the rest;
+    /// 2. alias rows that name their target (`Alias for /x`) → redirect to that
+    ///    command's full help;
+    /// 3. otherwise `None` so the caller can offer a spell-corrected guess.
+    ///
+    /// A registry row that carries the whole definition inline — the compact
+    /// `"/cmd\nline one\nline two"` shape — is printed verbatim, because that
+    /// *is* its detailed help.
+    pub(super) fn registry_help(&self, topic: &str) -> Option<String> {
+        let needle = format!("/{}", topic.trim().trim_start_matches('/').to_lowercase());
+        let (name, help) = crate::alphacode_tui::tui::app::registered_command_entries()
+            .find(|(name, _)| name.to_lowercase() == needle)?;
+
+        // An alias row names its target; the target's own help is far more
+        // useful than the one-line "Alias for ..." registry text.
+        if let Some(target) = help.strip_prefix("Alias for /") {
+            let target = target.trim();
+            if let Some(detailed) = self.command_help(target) {
+                return Some(format!("{name} is an alias for /{target}.\n\n{detailed}"));
+            }
+        }
+        if help.contains('\n') {
+            return Some(help.to_string());
+        }
+        Some(format!(
+            "{name}\n{help}\n\nRun {name} to use it, or /help to list every command."
+        ))
+    }
+
+    /// Up to three registered commands that look like a typo of `topic`.
+    ///
+    /// Used only to make the miss message actionable ("Did you mean /theme?")
+    /// instead of a dead end. Ranking reuses the same typo-tolerant matcher the
+    /// palette uses, so `/help conver` suggests `/convert`-style neighbours the
+    /// user already sees while typing.
+    pub(super) fn command_help_suggestions(&self, topic: &str) -> Vec<String> {
+        let needle = format!("/{}", topic.trim().trim_start_matches('/').to_lowercase());
+        if needle.len() < 3 {
+            return Vec::new();
+        }
+        let mut scored: Vec<(i32, String)> =
+            crate::alphacode_tui::tui::app::registered_command_entries()
+                .filter_map(|(name, _)| {
+                    crate::alphacode_tui::tui::fuzzy::fuzzy_score(&needle, &name.to_lowercase())
+                        .or_else(|| {
+                            // A trailing replacement (them3 → theme) can fall below
+                            // the palette's score floor. Help should still offer a
+                            // command with just one substituted character.
+                            let candidate = name.to_lowercase();
+                            (needle.chars().count() == candidate.chars().count()
+                                && needle.chars().nth(1) == candidate.chars().nth(1)
+                                && needle
+                                    .chars()
+                                    .zip(candidate.chars())
+                                    .filter(|(left, right)| left != right)
+                                    .count()
+                                    == 1)
+                                .then_some(0)
+                        })
+                        .map(|score| (score, name.to_string()))
+                })
+                .collect();
+        // Highest score first; ties broken alphabetically for a stable list.
+        scored.sort_by(|a, b| b.0.cmp(&a.0).then_with(|| a.1.cmp(&b.1)));
+        scored.dedup_by(|a, b| a.1 == b.1);
+        scored.into_iter().take(3).map(|(_, name)| name).collect()
     }
 }

@@ -108,7 +108,7 @@ pub struct DisplayConfig {
     /// Built-in theme preset, e.g. `tokyo-night`. Supplies a complete, coherent
     /// base palette so a full theme does not have to be hand-written as 39
     /// `colors` entries. Individual `colors` overrides still win over the
-    /// preset. Empty (the default) keeps alphacode's built-in palette. Run
+    /// preset. Empty selects the default Royal Gold palette. Run
     /// `/theme` to list the available presets.
     #[serde(default)]
     pub preset: String,
@@ -182,13 +182,9 @@ impl Default for DisplayConfig {
             native_scrollbars: NativeScrollbarConfig::default(),
             keybinding_hints: true,
             theme: String::new(),
-            // First-run look: brand-new users land on the calm professional
-            // preset (soft dark, one accent) — the friendly look for people
-            // new to the tool. The vibrant classic is still one command away:
-            // `/theme vibrant` restores Cyber Space, `/theme` lists moods and
-            // presets, and any explicitly applied theme is written here and
-            // honored forever after (nothing overwrites a decided choice).
-            preset: String::from("aurora-pro"),
+            // New installations use Royal Gold. Explicitly saved presets and
+            // individual color overrides continue to take precedence.
+            preset: String::from("royal-gold"),
             colors: std::collections::BTreeMap::new(),
             active_sessions_manager: false,
             external_sessions: true,

@@ -1,5 +1,39 @@
 use super::*;
 use ratatui::widgets::Wrap;
+use unicode_segmentation::UnicodeSegmentation;
+use unicode_width::UnicodeWidthStr;
+
+fn truncate_picker_text(text: &str, max_width: usize, keep_end: bool) -> String {
+    if max_width == 0 {
+        return String::new();
+    }
+    if text.width() <= max_width {
+        return text.to_owned();
+    }
+    let budget = max_width.saturating_sub(1);
+    let graphemes: Vec<&str> = text.graphemes(true).collect();
+    let mut selected = Vec::new();
+    let mut width = 0;
+    let iter: Box<dyn Iterator<Item = &&str>> = if keep_end {
+        Box::new(graphemes.iter().rev())
+    } else {
+        Box::new(graphemes.iter())
+    };
+    for grapheme in iter {
+        let next = UnicodeWidthStr::width(*grapheme);
+        if width + next > budget {
+            break;
+        }
+        width += next;
+        selected.push(*grapheme);
+    }
+    if keep_end {
+        selected.reverse();
+        format!("…{}", selected.concat())
+    } else {
+        format!("{}…", selected.concat())
+    }
+}
 
 impl SessionPicker {
     fn running_spinner_frame() -> usize {
@@ -20,11 +54,7 @@ impl SessionPicker {
             _ => return None,
         };
 
-        let reason_display = if reason.chars().count() > 54 {
-            format!("{}...", safe_truncate(reason, 51))
-        } else {
-            reason.to_string()
-        };
+        let reason_display = truncate_picker_text(reason, 54, false);
 
         Some(Line::from(vec![
             Span::styled("     ", Style::default()),
@@ -158,11 +188,7 @@ impl SessionPicker {
         let title = session.title.trim();
         let short_name = session.short_name.trim();
         let primary = if title.is_empty() { short_name } else { title };
-        if primary.chars().count() > 54 {
-            format!("{}...", safe_truncate(primary, 51))
-        } else {
-            primary.to_string()
-        }
+        truncate_picker_text(primary, 54, false)
     }
 
     #[cfg(test)]
@@ -181,25 +207,25 @@ impl SessionPicker {
         is_selected: bool,
         spinner_frame: usize,
     ) -> Vec<Line<'static>> {
-        let dim: Color = rgb(110, 115, 130);
-        let dimmer: Color = rgb(80, 85, 100);
-        let user_clr: Color = rgb(138, 180, 248);
-        let accent: Color = rgb(186, 139, 255);
-        let batch_restore: Color = rgb(255, 140, 140);
+        let dim = role_color(Role::MutedText);
+        let dimmer = role_color(Role::Dim);
+        let user_clr = role_color(Role::User);
+        let accent = role_color(Role::Accent);
+        let batch_restore = role_color(Role::Error);
 
         let created_ago = format_time_ago(session.created_at);
         let in_batch_restore = self.crashed_session_ids.contains(&session.id);
         let is_marked = self.selected_session_ids.contains(&session.id);
         let same_dir = self.session_in_current_dir(session);
-        let same_dir_clr: Color = rgb(120, 200, 140);
+        let same_dir_clr = role_color(Role::Success);
         let highlight_tokens = self.active_highlight_tokens();
 
         let name_style = if is_selected {
             Style::default()
-                .fg(rgb(160, 240, 180))
+                .fg(role_color(Role::Accent))
                 .add_modifier(Modifier::BOLD)
         } else {
-            Style::default().fg(rgb(210, 210, 220))
+            Style::default().fg(role_color(Role::AiText))
         };
 
         let canary_marker = if session.is_canary { " 🔬" } else { "" };
@@ -208,10 +234,10 @@ impl SessionPicker {
         let selection_marker = if is_marked { "● " } else { "○ " };
         let selection_style = if is_marked {
             Style::default()
-                .fg(rgb(140, 220, 160))
+                .fg(role_color(Role::Success))
                 .add_modifier(Modifier::BOLD)
         } else {
-            Style::default().fg(rgb(80, 80, 90))
+            Style::default().fg(role_color(Role::MutedText))
         };
 
         let time_ago = format_time_ago(session.last_message_time);
@@ -222,7 +248,7 @@ impl SessionPicker {
         let is_current = self.session_is_current(session);
         let live_badge = if self.session_is_live(session) {
             if session.source == SessionSource::ClaudeCode {
-                Some(("●", rgb(120, 210, 255), "live Claude".to_string()))
+                Some(("●", role_color(Role::Info), "live Claude".to_string()))
             } else if self.session_is_streaming(session) {
                 let label = match self.session_streaming_duration(session) {
                     Some(elapsed) => format!("working {}", format_short_duration(elapsed)),
@@ -231,11 +257,11 @@ impl SessionPicker {
                 Some((
                     crate::alphacode_tui_render::swarm_gallery::STRIP_SPINNER_FRAMES[spinner_frame
                         % crate::alphacode_tui_render::swarm_gallery::STRIP_SPINNER_FRAMES.len()],
-                    rgb(255, 193, 7),
+                    role_color(Role::Warning),
                     label,
                 ))
             } else {
-                Some(("●", rgb(100, 220, 130), "ready".to_string()))
+                Some(("●", role_color(Role::Success), "ready".to_string()))
             }
         } else {
             None
@@ -243,19 +269,25 @@ impl SessionPicker {
         let (status_icon, status_color, time_label) = match live_badge {
             Some(badge) => badge,
             None => match &session.status {
-                SessionStatus::Active => ("▶", rgb(100, 200, 100), "active".to_string()),
+                SessionStatus::Active => ("▶", role_color(Role::Success), "active".to_string()),
                 SessionStatus::Closed => ("✓", dim, format!("closed {}", time_ago)),
-                SessionStatus::Crashed { .. } => {
-                    ("💥", rgb(220, 100, 100), format!("crashed {}", time_ago))
-                }
+                SessionStatus::Crashed { .. } => (
+                    "💥",
+                    role_color(Role::Error),
+                    format!("crashed {}", time_ago),
+                ),
                 SessionStatus::Reloaded => ("🔄", user_clr, format!("reloaded {}", time_ago)),
-                SessionStatus::Compacted => {
-                    ("📦", rgb(255, 193, 7), format!("compacted {}", time_ago))
-                }
+                SessionStatus::Compacted => (
+                    "📦",
+                    role_color(Role::Warning),
+                    format!("compacted {}", time_ago),
+                ),
                 SessionStatus::RateLimited => ("⏳", accent, format!("rate-limited {}", time_ago)),
-                SessionStatus::Error { .. } => {
-                    ("❌", rgb(220, 100, 100), format!("errored {}", time_ago))
-                }
+                SessionStatus::Error { .. } => (
+                    "❌",
+                    role_color(Role::Error),
+                    format!("errored {}", time_ago),
+                ),
             },
         };
 
@@ -357,20 +389,7 @@ impl SessionPicker {
         };
 
         let dir_part = if let Some(ref dir) = session.working_dir {
-            let dir_display = if dir.chars().count() > 28 {
-                let chars: Vec<char> = dir.chars().collect();
-                let suffix: String = chars
-                    .iter()
-                    .rev()
-                    .take(25)
-                    .collect::<Vec<_>>()
-                    .into_iter()
-                    .rev()
-                    .collect();
-                format!("...{}", suffix)
-            } else {
-                dir.clone()
-            };
+            let dir_display = truncate_picker_text(dir, 28, true);
             format!("  📁 {}", dir_display)
         } else {
             String::new()
@@ -397,11 +416,7 @@ impl SessionPicker {
             && !prompt.is_empty()
         {
             let prompt = prompt.replace('\n', " ");
-            let prompt_display = if prompt.chars().count() > 72 {
-                format!("{}...", safe_truncate(&prompt, 69))
-            } else {
-                prompt
-            };
+            let prompt_display = truncate_picker_text(&prompt, 72, false);
             let mut prompt_spans = vec![
                 Span::styled("     ", Style::default()),
                 Span::styled("prompt: ", Style::default().fg(dimmer)),
@@ -439,8 +454,8 @@ impl SessionPicker {
     }
 
     pub(super) fn render_session_list(&mut self, frame: &mut Frame, area: Rect) {
-        let server_color: Color = rgb(255, 200, 100);
-        let dim: Color = rgb(100, 100, 100);
+        let server_color = role_color(Role::Accent);
+        let dim = role_color(Role::MutedText);
         let spinner_frame = Self::running_spinner_frame();
         let spinner = crate::alphacode_tui_render::swarm_gallery::STRIP_SPINNER_FRAMES[spinner_frame
             % crate::alphacode_tui_render::swarm_gallery::STRIP_SPINNER_FRAMES.len()];
@@ -475,6 +490,27 @@ impl SessionPicker {
                     "     s cycles to all sessions · Esc closes",
                     Style::default().fg(dim),
                 )])),
+            ]
+        } else if self.items.is_empty() {
+            let (title, hint) = if self.search_query.is_empty() {
+                ("No sessions found", "Start a session to see it here.")
+            } else {
+                (
+                    "No matching sessions",
+                    "Edit or clear the search to see more.",
+                )
+            };
+            vec![
+                ListItem::new(Line::from(Span::styled(
+                    format!("  {title}"),
+                    Style::default()
+                        .fg(role_color(Role::AiText))
+                        .add_modifier(Modifier::BOLD),
+                ))),
+                ListItem::new(Line::from(Span::styled(
+                    format!("  {hint}"),
+                    Style::default().fg(role_color(Role::MutedText)),
+                ))),
             ]
         } else {
             self.items
@@ -642,7 +678,9 @@ impl SessionPicker {
         let mut help = if self.loading_message.is_some() {
             " Esc cancel ".to_string()
         } else if self.search_active {
-            " type to filter · Ctrl+J/K or ↑↓ nav · Ctrl+W word-del · Esc cancel ".to_string()
+            " Type to filter · ↑↓ navigate · Esc close ".to_string()
+        } else if area.width < 60 {
+            " ↑↓ select · Enter open · Tab preview · / search · q close ".to_string()
         } else {
             match crate::config::config().keybindings.session_picker_enter {
                 crate::config::SessionPickerResumeAction::CurrentTerminal => {
@@ -657,8 +695,8 @@ impl SessionPicker {
             help = format!(" T take over live Claude ·{}", help);
         }
 
-        let border_dim: Color = rgb(55, 60, 75);
-        let border_focus: Color = rgb(120, 180, 160);
+        let border_dim = role_color(Role::PanelBorderMuted);
+        let border_focus = role_color(Role::PanelBorder);
         let border_color = if self.focus == PaneFocus::Sessions {
             border_focus
         } else {
@@ -684,18 +722,18 @@ impl SessionPicker {
                     .title(Line::from(title_parts))
                     .title_bottom(Line::from(Span::styled(
                         help,
-                        Style::default().fg(rgb(80, 80, 80)),
+                        Style::default().fg(role_color(Role::MutedText)),
                     )))
                     .border_style(Style::default().fg(border_color)),
             )
             .highlight_style(if self.onboarding_start_new_highlighted() {
                 // Focus is on the onboarding "Start a new session" row; dim the
                 // list selection so only one row reads as active.
-                Style::default().fg(rgb(150, 150, 160))
+                Style::default().fg(role_color(Role::MutedText))
             } else {
                 Style::default()
-                    .bg(rgb(30, 38, 50))
-                    .fg(rgb(180, 230, 200))
+                    .bg(role_color(Role::SelectionBg))
+                    .fg(role_color(Role::AiText))
                     .add_modifier(Modifier::BOLD)
             })
             .highlight_symbol("▸ ");
@@ -788,5 +826,20 @@ impl SessionPicker {
             )
             .wrap(Wrap { trim: false });
         frame.render_widget(block, area);
+    }
+}
+
+#[cfg(test)]
+mod truncation_tests {
+    use super::truncate_picker_text;
+
+    #[test]
+    fn preserves_graphemes_and_fits_terminal_cells() {
+        assert_eq!(
+            truncate_picker_text("e\u{301}界界", 4, false),
+            "e\u{301}界…"
+        );
+        assert_eq!(truncate_picker_text("界界e\u{301}", 4, true), "…界e\u{301}");
+        assert_eq!(truncate_picker_text("abc", 0, false), "");
     }
 }

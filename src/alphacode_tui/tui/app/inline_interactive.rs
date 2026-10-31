@@ -39,6 +39,63 @@ const MODEL_PICKER_USAGE_VERSION: u8 = 1;
 const MODEL_PICKER_FAVORITES_FILE: &str = "model_picker_favorites.json";
 const MODEL_PICKER_FAVORITES_VERSION: u8 = 1;
 
+type ModelPickerSelection = (String, Option<String>, Option<(String, String)>);
+
+struct ModelPickerPosition {
+    filter: String,
+    preview: bool,
+    column: usize,
+    selected: Option<ModelPickerSelection>,
+}
+
+impl ModelPickerPosition {
+    fn capture(picker: &InlineInteractiveState) -> Option<Self> {
+        if !picker_is_runtime_model_picker(picker) {
+            return None;
+        }
+        let selected = picker
+            .filtered
+            .get(picker.selected)
+            .and_then(|&index| picker.entries.get(index))
+            .map(|entry| {
+                let route = entry
+                    .active_option()
+                    .map(|option| (option.provider.clone(), option.api_method.clone()));
+                (entry.name.clone(), entry.effort.clone(), route)
+            });
+        Some(Self {
+            filter: picker.filter.clone(),
+            preview: picker.preview,
+            column: picker.column,
+            selected,
+        })
+    }
+
+    fn restore(self, picker: &mut InlineInteractiveState) {
+        picker.filter = self.filter;
+        picker.preview = self.preview;
+        App::apply_inline_interactive_filter(picker);
+        if let Some((name, effort, route)) = self.selected
+            && let Some((position, &index)) =
+                picker.filtered.iter().enumerate().find(|(_, index)| {
+                    let entry = &picker.entries[**index];
+                    entry.name == name && entry.effort == effort
+                })
+        {
+            picker.selected = position;
+            if let Some((provider, method)) = route
+                && let Some(option) = picker.entries[index]
+                    .options
+                    .iter()
+                    .position(|option| option.provider == provider && option.api_method == method)
+            {
+                picker.entries[index].selected_option = option;
+            }
+        }
+        picker.column = self.column.min(picker.max_navigable_column());
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct RemoteModelCatalogCache {
     version: u8,
@@ -939,6 +996,13 @@ impl App {
             return false;
         }
 
+        let position = preserve_input
+            .then(|| {
+                self.inline_interactive_state
+                    .as_ref()
+                    .and_then(ModelPickerPosition::capture)
+            })
+            .flatten();
         let entries = cache.entries.clone();
         let entry_count = entries.len();
         let route_count = cache.route_count;
@@ -953,6 +1017,11 @@ impl App {
             filter: String::new(),
             preview: false,
         });
+        if let Some(position) = position
+            && let Some(picker) = self.inline_interactive_state.as_mut()
+        {
+            position.restore(picker);
+        }
         if !preserve_input {
             self.input.clear();
             self.cursor_pos = 0;
@@ -1298,6 +1367,15 @@ impl App {
         if pending.request_id != self.model_picker_load_request_id {
             return false;
         }
+        // A late background result must not reopen a dismissed picker or
+        // replace another overlay the user opened in the meantime.
+        if !self
+            .inline_interactive_state
+            .as_ref()
+            .is_some_and(picker_is_runtime_model_picker)
+        {
+            return false;
+        }
 
         let current_model = if self.is_remote {
             self.remote_provider_model
@@ -1452,12 +1530,12 @@ impl App {
         let mut model_order: Vec<String> = Vec::new();
         let mut model_options: BTreeMap<String, Vec<PickerOption>> = BTreeMap::new();
         for r in &routes {
-            if !model_options.contains_key(&r.model) {
-                model_order.push(r.model.clone());
-            }
             model_options
                 .entry(r.model.clone())
-                .or_default()
+                .or_insert_with(|| {
+                    model_order.push(r.model.clone());
+                    Vec::new()
+                })
                 // Phase 1a: use ::new() so precomputed detail fields are populated.
                 .push(PickerOption::new(
                     r.provider.clone(),
@@ -1833,18 +1911,13 @@ impl App {
             );
         }
 
-        let previous_picker = self.inline_interactive_state.as_ref().and_then(|picker| {
-            if picker.kind == PickerKind::Model {
-                Some((
-                    picker.preview,
-                    picker.filter.clone(),
-                    picker.selected,
-                    picker.column,
-                ))
-            } else {
-                None
-            }
-        });
+        let previous_picker = preserve_input
+            .then(|| {
+                self.inline_interactive_state
+                    .as_ref()
+                    .and_then(ModelPickerPosition::capture)
+            })
+            .flatten();
         let saved_input = if preserve_input {
             Some((self.input.clone(), self.cursor_pos))
         } else {
@@ -1873,14 +1946,10 @@ impl App {
             preview: false,
         });
 
-        if let Some((preview, filter, selected, column)) = previous_picker
+        if let Some(position) = previous_picker
             && let Some(ref mut picker) = self.inline_interactive_state
         {
-            picker.preview = preview;
-            picker.filter = filter;
-            picker.selected = selected.min(picker.filtered.len().saturating_sub(1));
-            picker.column = column.min(picker.max_navigable_column());
-            Self::apply_inline_interactive_filter(picker);
+            position.restore(picker);
         }
 
         if let Some((input, cursor_pos)) = saved_input {
@@ -3711,7 +3780,7 @@ impl App {
             }
             KeyCode::Char(c) => {
                 if let Some(ref mut picker) = self.inline_interactive_state
-                    && !c.is_whitespace()
+                    && !c.is_control()
                 {
                     picker.filter.push(c);
                     Self::apply_inline_interactive_filter(picker);
@@ -3734,19 +3803,45 @@ impl App {
             // Prepare the query once per keystroke instead of re-parsing and
             // re-lowercasing it for every entry.
             let prepared = crate::alphacode_fuzzy::PreparedTokenQuery::new(&picker.filter);
-            let mut scored: Vec<(usize, bool, i32)> = picker
+            let mut scored: Vec<(usize, bool, i32, Option<usize>)> = picker
                 .entries
                 .iter()
                 .enumerate()
                 .filter_map(|(i, m)| {
                     let filter_text = picker.filter_text(m);
-                    prepared.score(&filter_text).map(|s| {
+                    let mut matched = prepared.score(&filter_text).map(|score| (score, None));
+                    // A model can have multiple providers. Search its other
+                    // routes when the active one does not match, and select
+                    // the matching route so Enter uses what the user found.
+                    if matched.is_none()
+                        && picker.kind == PickerKind::Model
+                        && matches!(m.action, PickerAction::Model)
+                        && m.options.len() > 1
+                    {
+                        let pretty = crate::alphacode_tui::tui::app::helpers::model_names::pretty_known_model_family(&m.name)
+                            .unwrap_or_default();
+                        for (option_index, route) in m.options.iter().enumerate() {
+                            if option_index == m.selected_option {
+                                continue;
+                            }
+                            let candidate = format!(
+                                "{} {} {} {} {}", m.name, pretty, route.provider, route.api_method, route.detail
+                            );
+                            if let Some(score) = prepared.score(&candidate)
+                                && matched.as_ref().is_none_or(|(best, _)| score > *best)
+                            {
+                                matched = Some((score, Some(option_index)));
+                            }
+                        }
+                    }
+                    matched.map(|(s, option)| {
                         let usage_bonus = m.usage_score.min(i32::MAX as u32) as i32;
-                        let bonus = usage_bonus + if m.recommended { 5 } else { 0 };
+                        let bonus = usage_bonus.saturating_add(if m.recommended { 5 } else { 0 });
                         (
                             i,
                             m.name.eq_ignore_ascii_case(query),
                             s.saturating_add(bonus),
+                            option,
                         )
                     })
                 })
@@ -3761,7 +3856,15 @@ impl App {
                     )
                     .then(picker.entries[a.0].name.cmp(&picker.entries[b.0].name))
             });
-            picker.filtered = scored.into_iter().map(|(i, _, _)| i).collect();
+            picker.filtered = scored
+                .into_iter()
+                .map(|(i, _, _, option)| {
+                    if let Some(option) = option {
+                        picker.entries[i].selected_option = option;
+                    }
+                    i
+                })
+                .collect();
         }
         if picker.filtered.is_empty() {
             picker.selected = 0;
@@ -3785,15 +3888,12 @@ impl App {
             .iter()
             .map(|&i| picker.entries[i].name.as_str())
             .collect();
-        let first = names[0].to_lowercase();
-        let first_chars: Vec<char> = first.chars().collect();
+        let first_chars: Vec<char> = names[0].chars().collect();
         let mut prefix_len = first_chars.len();
         for name in names.iter().skip(1) {
-            let lower = (*name).to_lowercase();
-            let chars: Vec<char> = lower.chars().collect();
             let mut common = 0;
-            for (a, b) in first_chars.iter().zip(chars.iter()) {
-                if a == b {
+            for (a, b) in first_chars.iter().zip(name.chars()) {
+                if a.to_lowercase().eq(b.to_lowercase()) {
                     common += 1;
                 } else {
                     break;
@@ -3801,9 +3901,9 @@ impl App {
             }
             prefix_len = prefix_len.min(common);
         }
-        if prefix_len > picker.filter.len() {
+        if prefix_len > picker.filter.chars().count() {
             let first_original = &picker.entries[picker.filtered[0]].name;
-            picker.filter = first_original[..prefix_len].to_string();
+            picker.filter = first_original.chars().take(prefix_len).collect();
             Self::apply_inline_interactive_filter(picker);
         }
     }
@@ -3812,14 +3912,14 @@ impl App {
 #[cfg(test)]
 mod tests {
     use super::{
-        REMOTE_MODEL_CATALOG_CACHE_MAX_AGE_SECS, REMOTE_MODEL_CATALOG_CACHE_VERSION,
-        REMOTE_MODEL_CATALOG_MAX_DETAIL_BYTES, RemoteModelCatalogCache,
-        filter_routes_by_provider_allowlist, key_char_eq_ignore_ascii_case,
-        model_picker_effort_matches_default, model_picker_route_is_current,
-        model_picker_route_is_default, model_picker_route_is_recommended,
-        picker_is_runtime_model_picker, remote_model_catalog_cache_is_fresh,
-        remote_model_catalog_cache_origin, remote_model_catalog_snapshot_is_safe,
-        route_supports_reasoning_effort,
+        ModelPickerPosition, REMOTE_MODEL_CATALOG_CACHE_MAX_AGE_SECS,
+        REMOTE_MODEL_CATALOG_CACHE_VERSION, REMOTE_MODEL_CATALOG_MAX_DETAIL_BYTES,
+        RemoteModelCatalogCache, filter_routes_by_provider_allowlist,
+        key_char_eq_ignore_ascii_case, model_picker_effort_matches_default,
+        model_picker_route_is_current, model_picker_route_is_default,
+        model_picker_route_is_recommended, picker_is_runtime_model_picker,
+        remote_model_catalog_cache_is_fresh, remote_model_catalog_cache_origin,
+        remote_model_catalog_snapshot_is_safe, route_supports_reasoning_effort,
     };
     use crate::alphacode_tui::tui::{
         AgentModelTarget, App, InlineInteractiveState, PickerAction, PickerEntry, PickerKind,
@@ -3858,6 +3958,75 @@ mod tests {
 
     fn picker_option(provider: &str) -> PickerOption {
         picker_option_with_method(provider, "test")
+    }
+
+    #[test]
+    fn model_refresh_preserves_selected_model_and_route_after_reordering() {
+        let mut selected = picker_entry("model-b", "first", 0);
+        selected.options.push(picker_option("second"));
+        selected.selected_option = 1;
+        let old = InlineInteractiveState {
+            kind: PickerKind::Model,
+            entries: vec![picker_entry("model-a", "first", 0), selected.clone()],
+            filtered: vec![0, 1],
+            selected: 1,
+            column: 1,
+            filter: "model".into(),
+            preview: false,
+        };
+        let position = ModelPickerPosition::capture(&old).unwrap();
+        selected.options.reverse();
+        selected.selected_option = 1;
+        let mut refreshed = InlineInteractiveState {
+            kind: PickerKind::Model,
+            entries: vec![selected, picker_entry("model-a", "first", 0)],
+            filtered: vec![0, 1],
+            selected: 0,
+            column: 0,
+            filter: String::new(),
+            preview: false,
+        };
+        position.restore(&mut refreshed);
+        let entry = &refreshed.entries[refreshed.filtered[refreshed.selected]];
+        assert_eq!(entry.name, "model-b");
+        assert_eq!(entry.active_option().unwrap().provider, "second");
+        assert_eq!(refreshed.filter, "model");
+    }
+
+    #[test]
+    fn model_completion_handles_multibyte_names() {
+        let mut picker = InlineInteractiveState {
+            kind: PickerKind::Model,
+            entries: vec![
+                picker_entry("éclair-one", "provider", 0),
+                picker_entry("éclair-two", "provider", 0),
+            ],
+            filtered: vec![0, 1],
+            selected: 0,
+            column: 0,
+            filter: "é".into(),
+            preview: false,
+        };
+        App::tab_complete_inline_interactive_filter(&mut picker);
+        assert_eq!(picker.filter, "éclair-");
+    }
+
+    #[test]
+    fn model_search_finds_and_selects_a_nonactive_provider() {
+        let mut entry = picker_entry("example-model", "Alpha", 0);
+        entry.options.push(picker_option("Beta"));
+        let mut picker = InlineInteractiveState {
+            kind: PickerKind::Model,
+            entries: vec![entry],
+            filtered: vec![0],
+            selected: 0,
+            column: 0,
+            filter: "example beta".into(),
+            preview: false,
+        };
+        App::apply_inline_interactive_filter(&mut picker);
+        assert_eq!(picker.filtered, vec![0]);
+        assert_eq!(picker.entries[0].active_option().unwrap().provider, "Beta");
     }
 
     #[test]

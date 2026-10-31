@@ -295,10 +295,12 @@ fn test_handle_remote_event_redraws_observe_tool_exec_immediately() {
             &mut terminal,
             &mut remote,
             &mut state,
-            crate::alphacode_tui::tui::backend::RemoteRead::Event(crate::protocol::ServerEvent::ToolStart {
-                id: "tool_read".to_string(),
-                name: "read".to_string(),
-            }),
+            crate::alphacode_tui::tui::backend::RemoteRead::Event(
+                crate::protocol::ServerEvent::ToolStart {
+                    id: "tool_read".to_string(),
+                    name: "read".to_string(),
+                },
+            ),
         ))
         .expect("tool start should succeed");
     if needs_redraw {
@@ -306,10 +308,7 @@ fn test_handle_remote_event_redraws_observe_tool_exec_immediately() {
             .draw(|frame| crate::alphacode_tui::tui::ui::draw(frame, &app))
             .unwrap();
     }
-    assert!(matches!(
-        outcome,
-        remote::RemoteEventOutcome::Continue
-    ));
+    assert!(matches!(outcome, remote::RemoteEventOutcome::Continue));
 
     let (outcome, needs_redraw) = rt
         .block_on(remote::handle_remote_event(
@@ -317,9 +316,12 @@ fn test_handle_remote_event_redraws_observe_tool_exec_immediately() {
             &mut terminal,
             &mut remote,
             &mut state,
-            crate::alphacode_tui::tui::backend::RemoteRead::Event(crate::protocol::ServerEvent::ToolInput {
-                delta: r#"{"file_path":"src/main.rs","start_line":1,"end_line":10}"#.to_string(),
-            }),
+            crate::alphacode_tui::tui::backend::RemoteRead::Event(
+                crate::protocol::ServerEvent::ToolInput {
+                    delta: r#"{"file_path":"src/main.rs","start_line":1,"end_line":10}"#
+                        .to_string(),
+                },
+            ),
         ))
         .expect("tool input should succeed");
     if needs_redraw {
@@ -327,10 +329,7 @@ fn test_handle_remote_event_redraws_observe_tool_exec_immediately() {
             .draw(|frame| crate::alphacode_tui::tui::ui::draw(frame, &app))
             .unwrap();
     }
-    assert!(matches!(
-        outcome,
-        remote::RemoteEventOutcome::Continue
-    ));
+    assert!(matches!(outcome, remote::RemoteEventOutcome::Continue));
 
     let (outcome, needs_redraw) = rt
         .block_on(remote::handle_remote_event(
@@ -338,10 +337,12 @@ fn test_handle_remote_event_redraws_observe_tool_exec_immediately() {
             &mut terminal,
             &mut remote,
             &mut state,
-            crate::alphacode_tui::tui::backend::RemoteRead::Event(crate::protocol::ServerEvent::ToolExec {
-                id: "tool_read".to_string(),
-                name: "read".to_string(),
-            }),
+            crate::alphacode_tui::tui::backend::RemoteRead::Event(
+                crate::protocol::ServerEvent::ToolExec {
+                    id: "tool_read".to_string(),
+                    name: "read".to_string(),
+                },
+            ),
         ))
         .expect("tool exec should succeed");
     assert!(needs_redraw, "observe tool exec should request redraw");
@@ -350,10 +351,7 @@ fn test_handle_remote_event_redraws_observe_tool_exec_immediately() {
             .draw(|frame| crate::alphacode_tui::tui::ui::draw(frame, &app))
             .unwrap();
     }
-    assert!(matches!(
-        outcome,
-        remote::RemoteEventOutcome::Continue
-    ));
+    assert!(matches!(outcome, remote::RemoteEventOutcome::Continue));
 
     let text = buffer_to_text(&terminal);
     assert!(
@@ -422,10 +420,12 @@ fn test_handle_remote_event_redraws_observe_tool_done_immediately() {
             &mut terminal,
             &mut remote,
             &mut state,
-            crate::alphacode_tui::tui::backend::RemoteRead::Event(crate::protocol::ServerEvent::ToolStart {
-                id: "tool_read".to_string(),
-                name: "read".to_string(),
-            }),
+            crate::alphacode_tui::tui::backend::RemoteRead::Event(
+                crate::protocol::ServerEvent::ToolStart {
+                    id: "tool_read".to_string(),
+                    name: "read".to_string(),
+                },
+            ),
         ))
         .expect("tool start should succeed");
     if needs_redraw {
@@ -439,9 +439,12 @@ fn test_handle_remote_event_redraws_observe_tool_done_immediately() {
             &mut terminal,
             &mut remote,
             &mut state,
-            crate::alphacode_tui::tui::backend::RemoteRead::Event(crate::protocol::ServerEvent::ToolInput {
-                delta: r#"{"file_path":"src/main.rs","start_line":1,"end_line":10}"#.to_string(),
-            }),
+            crate::alphacode_tui::tui::backend::RemoteRead::Event(
+                crate::protocol::ServerEvent::ToolInput {
+                    delta: r#"{"file_path":"src/main.rs","start_line":1,"end_line":10}"#
+                        .to_string(),
+                },
+            ),
         ))
         .expect("tool input should succeed");
     if needs_redraw {
@@ -455,10 +458,12 @@ fn test_handle_remote_event_redraws_observe_tool_done_immediately() {
             &mut terminal,
             &mut remote,
             &mut state,
-            crate::alphacode_tui::tui::backend::RemoteRead::Event(crate::protocol::ServerEvent::ToolExec {
-                id: "tool_read".to_string(),
-                name: "read".to_string(),
-            }),
+            crate::alphacode_tui::tui::backend::RemoteRead::Event(
+                crate::protocol::ServerEvent::ToolExec {
+                    id: "tool_read".to_string(),
+                    name: "read".to_string(),
+                },
+            ),
         ))
         .expect("tool exec should succeed");
     if needs_redraw {
@@ -473,12 +478,14 @@ fn test_handle_remote_event_redraws_observe_tool_done_immediately() {
             &mut terminal,
             &mut remote,
             &mut state,
-            crate::alphacode_tui::tui::backend::RemoteRead::Event(crate::protocol::ServerEvent::ToolDone {
-                id: "tool_read".to_string(),
-                name: "read".to_string(),
-                output: "1 fn main() {}".to_string(),
-                error: None,
-            }),
+            crate::alphacode_tui::tui::backend::RemoteRead::Event(
+                crate::protocol::ServerEvent::ToolDone {
+                    id: "tool_read".to_string(),
+                    name: "read".to_string(),
+                    output: "1 fn main() {}".to_string(),
+                    error: None,
+                },
+            ),
         ))
         .expect("tool done should succeed");
     assert!(needs_redraw, "observe tool done should request redraw");
@@ -487,10 +494,7 @@ fn test_handle_remote_event_redraws_observe_tool_done_immediately() {
             .draw(|frame| crate::alphacode_tui::tui::ui::draw(frame, &app))
             .unwrap();
     }
-    assert!(matches!(
-        outcome,
-        remote::RemoteEventOutcome::Continue
-    ));
+    assert!(matches!(outcome, remote::RemoteEventOutcome::Continue));
 
     let text = buffer_to_text(&terminal);
     assert!(
@@ -828,20 +832,23 @@ fn test_swarm_completion_notification_inserts_agent_snapshot_without_report_pros
     );
     assert!(!last.content.contains("Demo completed"));
 
-    let rendered =
-        crate::alphacode_tui::tui::ui::render_swarm_message(last, 100, crate::config::DiffDisplayMode::Off)
+    let rendered = crate::alphacode_tui::tui::ui::render_swarm_message(
+        last,
+        100,
+        crate::config::DiffDisplayMode::Off,
+    )
+    .iter()
+    .map(|line| {
+        line.spans
             .iter()
-            .map(|line| {
-                line.spans
-                    .iter()
-                    .map(|span| span.content.as_ref())
-                    .collect::<String>()
-            })
-            .collect::<Vec<_>>()
-            .join("\n");
+            .map(|span| span.content.as_ref())
+            .collect::<String>()
+    })
+    .collect::<Vec<_>>()
+    .join("\n");
     assert_eq!(
         rendered.trim(),
-        "🐄 ✓ card demo · Completed · GPT-5.6 · OpenAI OAuth",
+        "🐄 ✓ card demo · Completed · GPT-5.6-sol · OpenAI OAuth",
         "completed transcript snapshots should stay stable and one-line"
     );
     assert!(!rendered.contains("README first heading"));
@@ -963,4 +970,3 @@ fn test_handle_remote_disconnect_flushes_streaming_text_and_sets_reconnect_state
         last.content
     );
 }
-

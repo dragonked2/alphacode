@@ -745,7 +745,7 @@ impl Tool for TodoTool {
                 },
                 "plan": {
                     "type": "object",
-                    "description": "Plan-level understanding of the request. Send on first write and whenever understanding changes.",
+                    "description": "Plan-level understanding. Send on first write and whenever it changes.",
                     "required": ["user_intention", "understands_user_intent"],
                     "properties": {
                         "user_intention": {
@@ -762,7 +762,7 @@ impl Tool for TodoTool {
                 },
                 "goals": {
                     "type": "array",
-                    "description": "Goal-level assessments, one per todo group (null = ungrouped). Omitted groups are retained.",
+                    "description": "Goal-level assessments, one per todo group (null = ungrouped).",
                     "items": {
                         "type": "object",
                         "required": ["closed_feedback_loop", "feedback_loop"],

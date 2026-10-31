@@ -803,7 +803,7 @@ impl App {
             // Descriptions come straight from the preset catalog so the picker
             // cannot drift from the themes that actually exist.
             let mut suggestions: Vec<(String, &'static str)> =
-                vec![("/theme off".into(), "Restore the built-in palette")];
+                vec![("/theme off".into(), "Restore Royal Gold")];
             suggestions.extend(
                 crate::alphacode_tui_style::PRESETS
                     .iter()

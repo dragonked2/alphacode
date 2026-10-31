@@ -559,15 +559,17 @@ fn test_tui_api_key_auth_refreshes_catalog_shows_diff_without_opening_picker() {
     let activation = rt.block_on(async {
         loop {
             match tokio::time::timeout(Duration::from_secs(2), bus_rx.recv()).await {
-                Ok(Ok(
-                    event @ crate::bus::BusEvent::ProviderModelActivated { .. },
-                )) if matches!(
-                    &event,
-                    crate::bus::BusEvent::ProviderModelActivated {
-                        model,
-                        ..
-                    } if model == "state-space-alpha"
-                ) => break event,
+                Ok(Ok(event @ crate::bus::BusEvent::ProviderModelActivated { .. }))
+                    if matches!(
+                        &event,
+                        crate::bus::BusEvent::ProviderModelActivated {
+                            model,
+                            ..
+                        } if model == "state-space-alpha"
+                    ) =>
+                {
+                    break event;
+                }
                 Ok(Ok(_)) => continue,
                 other => panic!("expected ProviderModelActivated event, got {other:?}"),
             }
@@ -735,15 +737,15 @@ fn test_tui_cerebras_paste_key_lifecycle_has_no_degraded_success_messages() {
                         Ok(crate::bus::BusEvent::UiActivity(activity)),
                     );
                 }
-                Ok(Ok(
-                    event @ crate::bus::BusEvent::ProviderModelActivated { .. },
-                )) if matches!(
-                    &event,
-                    crate::bus::BusEvent::ProviderModelActivated {
-                        provider_key: Some(key),
-                        ..
-                    } if key == "cerebras"
-                ) => {
+                Ok(Ok(event @ crate::bus::BusEvent::ProviderModelActivated { .. }))
+                    if matches!(
+                        &event,
+                        crate::bus::BusEvent::ProviderModelActivated {
+                            provider_key: Some(key),
+                            ..
+                        } if key == "cerebras"
+                    ) =>
+                {
                     activation_events += 1;
                     if let crate::bus::BusEvent::ProviderModelActivated {
                         model,
@@ -1194,6 +1196,25 @@ fn test_model_picker_state_space_preserves_provider_labels_after_route_hydration
         "opening the model list must not collapse every route to the recently authenticated direct provider: {:?}",
         routes_by_model
     );
+}
+
+#[test]
+fn model_picker_background_load_does_not_reopen_after_dismissal() {
+    ensure_test_alphacode_home_if_unset();
+    clear_persisted_test_ui_state();
+    let provider: Arc<dyn Provider> = Arc::new(CountingModelRoutesProvider {
+        calls: StdArc::new(AtomicUsize::new(0)),
+        route_count: 2,
+        delay: Duration::from_millis(75),
+    });
+    let rt = tokio::runtime::Runtime::new().unwrap();
+    let registry = rt.block_on(crate::tool::Registry::new(provider.clone()));
+    let mut app = App::new_for_test_harness(provider, registry);
+    app.open_model_picker();
+    assert!(app.pending_model_picker_load.is_some());
+    app.inline_interactive_state = None;
+    wait_for_model_picker_load(&mut app);
+    assert!(app.inline_interactive_state.is_none());
 }
 
 #[test]

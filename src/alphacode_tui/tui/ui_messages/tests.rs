@@ -2975,6 +2975,25 @@ fn render_assistant_message_plan_card_wraps_instead_of_truncating() {
 }
 
 #[test]
+fn narrow_plan_keeps_content_within_terminal_width() {
+    let body = "# Plan\n\nFirst verify the output and keep every useful detail.";
+    for width in [12, 20, 31] {
+        let lines = super::render_plan_card(body, width);
+        assert!(lines.iter().all(|line| line.width() <= usize::from(width)));
+        let text = lines
+            .iter()
+            .map(extract_line_text)
+            .collect::<Vec<_>>()
+            .join(" ");
+        let normalized = text.split_whitespace().collect::<Vec<_>>().join(" ");
+        assert!(
+            normalized.contains("useful detail"),
+            "width {width}: {text}"
+        );
+    }
+}
+
+#[test]
 fn render_swarm_message_preserves_inline_image_placeholder_lines() {
     let saved = crate::alphacode_tui::tui::markdown::center_code_blocks();
     crate::alphacode_tui::tui::markdown::set_center_code_blocks(false);

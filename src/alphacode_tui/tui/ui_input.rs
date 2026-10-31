@@ -81,12 +81,60 @@ pub(crate) fn composer_inner_area(area: Rect) -> Rect {
     }
 }
 
-fn composer_frame_block() -> ratatui::widgets::Block<'static> {
+/// Narrowest composer that still shows the brand badge. Below this the top
+/// border belongs entirely to the transcript edge and the badge is dropped
+/// rather than crowding the frame.
+const COMPOSER_BRAND_MIN_WIDTH: u16 = 56;
+
+/// Rounded-frame chrome for the composer.
+///
+/// The frame carries the product mark on its top-right corner: the one piece of
+/// always-visible chrome where the brand can live without stealing a text row
+/// from the editor. The border takes the warning colour while a turn is
+/// running so the composer's state is readable from the frame alone, and the
+/// subtle dim colour otherwise so it stays out of the way.
+fn composer_frame_block(busy: bool) -> ratatui::widgets::Block<'static> {
     use ratatui::widgets::{Block, BorderType};
+
+    let border = if busy {
+        BrandTheme::warning()
+    } else {
+        BrandTheme::dim()
+    };
     Block::default()
         .borders(ratatui::widgets::Borders::ALL)
         .border_type(BorderType::Rounded)
-        .border_style(Style::default().fg(crate::alphacode_tui::tui::brand_ux::BrandTheme::dim()))
+        .border_style(Style::default().fg(border))
+}
+
+/// Paint the brand badge into the right end of the composer's top border.
+///
+/// The badge is drawn as a one-row overlay rather than a `Block` title because
+/// the frame's geometry readers (`composer_inner_area`, click hit-testing, the
+/// cursor row) all derive from the border inset; keeping the badge out of the
+/// `Block` means it cannot change how much title space the border allocates.
+/// It is skipped on narrow frames where it would crowd the frame edge.
+fn draw_composer_brand_badge(frame: &mut Frame, frame_area: Rect) {
+    if frame_area.width < COMPOSER_BRAND_MIN_WIDTH || frame_area.height == 0 {
+        return;
+    }
+    let badge = crate::alphacode_brand::widget_title();
+    let badge_w = unicode_width::UnicodeWidthStr::width(badge.as_str()) as u16;
+    // Stop one column short of the rounded corner so the frame still closes.
+    let right_edge = frame_area.right().saturating_sub(1);
+    if badge_w >= frame_area.width.saturating_sub(2) {
+        return;
+    }
+    let rect = Rect {
+        x: right_edge.saturating_sub(badge_w),
+        y: frame_area.y,
+        width: badge_w,
+        height: 1,
+    };
+    frame.render_widget(
+        Paragraph::new(Span::styled(badge, Style::default().fg(BrandTheme::dim()))),
+        rect,
+    );
 }
 
 /// Prepare a transient status string for rendering inside the TUI.
@@ -109,7 +157,15 @@ fn composer_frame_block() -> ratatui::widgets::Block<'static> {
 /// status row, and an embedded `\n` would silently clip the rest of the text.
 fn normalize_repaint_sensitive_notice_text(text: &str) -> String {
     let stripped = crate::alphacode_base::message::strip_ansi_escape_sequences(text);
-    stripped.replace(['\n', '\r'], " ").replace("⚠️", "⚠")
+    stripped
+        .chars()
+        .filter_map(|ch| match ch {
+            '\n' | '\r' | '\t' => Some(' '),
+            ch if ch.is_control() => None,
+            ch => Some(ch),
+        })
+        .collect::<String>()
+        .replace("⚠️", "⚠")
 }
 
 fn command_suggestion_window_start(selected: usize, suggestion_count: usize) -> usize {
@@ -1139,8 +1195,8 @@ fn idle_context_fragment(app: &dyn TuiState, input_tokens: u64) -> String {
 
 /// Return the compact context label shared by the idle tip and stats rows.
 fn idle_context_suffix(app: &dyn TuiState) -> Option<String> {
-    let (total_in, _) = app.total_session_tokens()?;
-    (total_in > 0).then(|| format!(" · ctx={}", idle_context_fragment(app, total_in)))
+    let used = app.current_context_tokens()?;
+    (used > 0).then(|| format!(" · ctx={}", idle_context_fragment(app, used)))
 }
 
 /// Reserve space for context before selecting an idle tip, so truncation of a
@@ -1196,7 +1252,10 @@ fn idle_session_stats_line(app: &dyn TuiState, max_width: usize) -> Option<Line<
     }
 
     let model_short = super::shorten_model_name(&app.provider_model());
-    let context = (total_in > 0).then(|| idle_context_fragment(app, total_in));
+    let context = app
+        .current_context_tokens()
+        .filter(|used| *used > 0)
+        .map(|used| idle_context_fragment(app, used));
 
     // Below this width even the shortest useful arrangement crowds itself; the
     // compact builder's hard-reserved `tokens · ctx` layout reads better.
@@ -1524,14 +1583,8 @@ pub(super) fn draw_status(frame: &mut Frame, app: &dyn TuiState, area: Rect, pen
                         muted_text_color(),
                     ));
                 }
-                if input_tokens > 0 {
-                    let ctx = match app.context_limit() {
-                        Some(limit) if limit > 0 => {
-                            let pct = ((input_tokens as f64 / limit as f64) * 100.0).round() as u64;
-                            format!("ctx={}%", pct.min(999))
-                        }
-                        _ => format!("ctx={}", format_stream_tokens(input_tokens)),
-                    };
+                if let Some(used) = app.current_context_tokens().filter(|used| *used > 0) {
+                    let ctx = format!("ctx={}", idle_context_fragment(app, used));
                     segments.push(StatusSegment::new(1, ctx, muted_text_color()));
                 }
                 if input_tokens > 0 || output_tokens > 0 {
@@ -2738,6 +2791,14 @@ mod tests {
     }
 
     #[test]
+    fn status_notices_keep_controls_out_of_terminal_cells() {
+        assert_eq!(
+            normalize_repaint_sensitive_notice_text("工具\tready\u{0008}\u{0007}\u{007f}"),
+            "工具 ready"
+        );
+    }
+
+    #[test]
     fn normalize_repaint_sensitive_notice_text_preserves_ordinary_text() {
         // Stripping must not eat content the user actually meant to see.
         for text in [
@@ -3928,14 +3989,16 @@ pub(super) fn draw_input(
     if has_suggestions {
         // Overlay pass owns the palette rows; no inline hint line competes
         // with it.
-    } else if let Some(shell_hint) = shell_mode_hint(mode) {
+    } else if area.height > 1
+        && let Some(shell_hint) = shell_mode_hint(mode)
+    {
         hint_shown = true;
         hint_line = Some(shell_hint.trim().to_string());
         lines.push(Line::from(Span::styled(
             shell_hint,
             Style::default().fg(BrandTheme::success()),
         )));
-    } else if app.next_prompt_new_session_armed() {
+    } else if area.height > 1 && app.next_prompt_new_session_armed() {
         hint_shown = true;
         let hint = "  \u{2197} Next prompt opens a new session";
         hint_line = Some(hint.trim().to_string());
@@ -3945,7 +4008,7 @@ pub(super) fn draw_input(
                 .fg(BrandTheme::info())
                 .add_modifier(Modifier::ITALIC),
         )));
-    } else if app.is_processing() && !input_text.is_empty() {
+    } else if area.height > 1 && app.is_processing() && !input_text.is_empty() {
         hint_shown = true;
         let hint = if app.queue_mode() {
             "  Ctrl/Cmd+Enter sends now \u{00b7} Enter queues"
@@ -3984,11 +4047,7 @@ pub(super) fn draw_input(
     // scroll control the user sees. The input's only job is to keep
     // the cursor on screen.
     //
-    // If everything fits, no scroll. If content overflows, pin the
-    // bottom: the last `available_for_input` lines (those ending
-    // with the cursor) are shown. This matches every modern TUI
-    // editor (vim, emacs, micro, helix) and is what the user
-    // expects when they paste 30 lines and then press Enter.
+    // Keep the cursor visible even when it moves up into a long draft.
     let scroll_offset = if total_input_lines + suggestions_offset <= visible_height {
         0
     } else {
@@ -3996,8 +4055,10 @@ pub(super) fn draw_input(
         if total_input_lines <= available_for_input {
             0
         } else {
-            // Pin to bottom: show lines [total - available, total).
-            total_input_lines.saturating_sub(available_for_input)
+            cursor_line
+                .saturating_add(1)
+                .saturating_sub(available_for_input)
+                .min(total_input_lines.saturating_sub(available_for_input))
         }
     };
 
@@ -4162,7 +4223,8 @@ pub(super) fn draw_input(
     // interior so text and hints never ride on the border cells. Static (not
     // animated): the idle-animation partial repaint only patches animated rows
     // and would freeze a breathing border mid-breath between full frames.
-    frame.render_widget(composer_frame_block(), frame_area);
+    frame.render_widget(composer_frame_block(app.is_processing()), frame_area);
+    draw_composer_brand_badge(frame, frame_area);
 
     // Active-work ribbon paints the live task summary into the top border row
     // while a turn runs; drawn after the block so it owns those border cells.

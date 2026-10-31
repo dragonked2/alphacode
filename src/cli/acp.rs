@@ -122,11 +122,11 @@ impl DaemonSession {
         let mut reader = self.reader.lock().await;
         let n = reader.read_line(&mut line).await?;
         if n == 0 {
-            anyhow::bail!("Alphacode daemon disconnected");
+            anyhow::bail!("AlphaCode daemon disconnected");
         }
         let event = serde_json::from_str(&line).with_context(|| {
             format!(
-                "failed to decode Alphacode daemon event: {}",
+                "failed to decode AlphaCode daemon event: {}",
                 line.trim_end()
             )
         })?;
@@ -224,7 +224,7 @@ impl AcpRuntime {
                     self.write_error_value(
                         id,
                         JSONRPC_METHOD_NOT_FOUND,
-                        format!("Unsupported Alphacode ACP extension method: {method}"),
+                        format!("Unsupported AlphaCode ACP extension method: {method}"),
                     )
                     .await?;
                 }
@@ -276,7 +276,7 @@ impl AcpRuntime {
                 self.write_error_value(
                     id,
                     JSONRPC_INTERNAL_ERROR,
-                    format!("Failed to create Alphacode session: {err:#}"),
+                    format!("Failed to create AlphaCode session: {err:#}"),
                 )
                 .await?;
             }
@@ -329,7 +329,7 @@ impl AcpRuntime {
                 self.write_error_value(
                     id,
                     JSONRPC_INTERNAL_ERROR,
-                    format!("Failed to attach Alphacode session '{session_id}': {err:#}"),
+                    format!("Failed to attach AlphaCode session '{session_id}': {err:#}"),
                 )
                 .await?;
             }
@@ -860,7 +860,7 @@ impl EventMapper {
                 "sessionUpdate": "agent_message_chunk",
                 "content": {
                     "type": "text",
-                    "text": format!("\n[Alphacode compacted context: {trigger}]\n"),
+                    "text": format!("\n[AlphaCode compacted context: {trigger}]\n"),
                 }
             })],
             ServerEvent::SessionRenamed { display_title, .. } => vec![json!({
@@ -871,7 +871,7 @@ impl EventMapper {
                 "sessionUpdate": "agent_message_chunk",
                 "content": {
                     "type": "text",
-                    "text": format!("\n[Alphacode MCP status: {}]\n", servers.join(", ")),
+                    "text": format!("\n[AlphaCode MCP status: {}]\n", servers.join(", ")),
                 }
             })],
             _ => {
@@ -929,7 +929,7 @@ fn initialize_result(params: &Value, profile: AcpProfile) -> Value {
         "agentCapabilities": agent_capabilities,
         "agentInfo": {
             "name": "alphacode",
-            "title": "Alphacode",
+            "title": "AlphaCode",
             "version": crate::alphacode_build_meta::pkg_version(),
         },
         "authMethods": [],
@@ -962,7 +962,7 @@ fn ensure_no_acp_mcp_servers(params: &Value) -> std::result::Result<(), String> 
         None | Some(Value::Null) => Ok(()),
         Some(Value::Array(items)) if items.is_empty() => Ok(()),
         Some(_) => Err(
-            "ACP mcpServers are not supported yet; configure MCP servers in Alphacode config.toml"
+            "ACP mcpServers are not supported yet; configure MCP servers in AlphaCode config.toml"
                 .to_string(),
         ),
     }

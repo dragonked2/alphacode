@@ -74,6 +74,7 @@ mod onboarding;
 mod output_style;
 #[path = "ui_overlays.rs"]
 mod overlays;
+pub(crate) use overlays::help_max_scroll;
 #[path = "ui_pinned.rs"]
 mod pinned_ui;
 #[path = "ui_prepare.rs"]
@@ -1406,6 +1407,10 @@ struct FullPrepCacheKey {
     expanded_images_version: u64,
     /// Signature of live swarm member cards embedded beneath spawn tool calls.
     swarm_members_signature: u64,
+    /// Whether the in-scroll header is baked into the prepared frame. The
+    /// banner is pinned above the transcript in normal layouts, so a frame
+    /// prepared without it must never be served to a caller that expects it.
+    include_header: bool,
 }
 
 #[derive(Clone)]
@@ -2825,19 +2830,21 @@ pub(crate) fn debug_chat_image_regions_json() -> String {
 /// that silently changed meaning when a chunk was inserted is exactly how the
 /// debug overlay ended up labelling the notification row "input".
 ///
-/// Slot 7 is the inline-UI/composer spacing. It is never drawn into, so it has
-/// no constant of its own, but it still occupies a slot — which is why
-/// `CHUNK_INPUT` is 8 and not 7.
-const CHUNK_MESSAGES: usize = 0;
-const CHUNK_TRANSCRIPT_GAP: usize = 1;
-const CHUNK_QUEUED: usize = 2;
-const CHUNK_SWARM_STRIP: usize = 3;
-const CHUNK_STATUS: usize = 4;
-const CHUNK_NOTIFICATION: usize = 5;
-const CHUNK_INLINE_UI: usize = 6;
-const CHUNK_INPUT: usize = 8;
-const CHUNK_OVERSCROLL: usize = 9;
-const CHUNK_DONUT: usize = 10;
+/// The pinned banner band above the transcript. It is its own chunk (rather
+/// than part of the scrollable messages area) so the brand banner stays on
+/// screen no matter how far the transcript is scrolled.
+const CHUNK_BANNER: usize = 0;
+const CHUNK_MESSAGES: usize = 1;
+const CHUNK_TRANSCRIPT_GAP: usize = 2;
+const CHUNK_QUEUED: usize = 3;
+const CHUNK_SWARM_STRIP: usize = 4;
+const CHUNK_STATUS: usize = 5;
+const CHUNK_NOTIFICATION: usize = 6;
+const CHUNK_INLINE_UI: usize = 7;
+// Slot 8 is the inline-UI/composer spacing.
+const CHUNK_INPUT: usize = 9;
+const CHUNK_OVERSCROLL: usize = 10;
+const CHUNK_DONUT: usize = 11;
 
 pub fn draw(frame: &mut Frame, app: &dyn TuiState) {
     record_idle_animation_area(None);
@@ -2972,6 +2979,25 @@ fn draw_inner(frame: &mut Frame, app: &dyn TuiState) {
     if let Some(picker_cell) = app.account_picker_overlay() {
         let mut picker = picker_cell.borrow_mut();
         picker.render(frame);
+        finalize_frame_metrics(
+            app,
+            total_start,
+            Duration::ZERO,
+            total_start.elapsed(),
+            None,
+        );
+        return;
+    }
+
+    if area.width < 12 || area.height < 5 {
+        // Mouse hit-testing must not keep using the previous larger layout.
+        record_layout_snapshot(Rect::default(), None, None, None);
+        record_status_area(Rect::default());
+        frame.render_widget(
+            Paragraph::new("Resize terminal to at least 12 columns × 5 rows")
+                .style(Style::default().fg(warning_color())),
+            area,
+        );
         finalize_frame_metrics(
             app,
             total_start,
@@ -3214,11 +3240,11 @@ fn draw_inner(frame: &mut Frame, app: &dyn TuiState) {
     } else {
         Vec::new()
     };
-    let swarm_strip_height = swarm_strip_lines.len() as u16;
+    let requested_swarm_height = swarm_strip_lines.len().min(u16::MAX as usize) as u16;
 
     // Calculate pending messages (queued + interleave) for numbering and layout
     let pending_count = input_ui::pending_prompt_count(app);
-    let queued_height = pending_count.min(3) as u16;
+    let requested_queued_height = pending_count.min(3) as u16;
 
     // Count user messages to show next prompt number
     let user_count = app.display_user_message_count();
@@ -3234,17 +3260,52 @@ fn draw_inner(frame: &mut Frame, app: &dyn TuiState) {
         input_ui::wrapped_input_line_count(app, composer_wrapped_width, next_prompt).min(10) as u16;
     // Add 1 line for command suggestions, shell mode hints, or the Ctrl+Enter hint.
     let hint_line_height = input_ui::input_hint_line_height(app);
-    let inline_block_height: u16 = inline_ui_height(app);
-    let inline_ui_gap_height: u16 = if inline_block_height > 0 { 1 } else { 0 };
+    let requested_inline_height = inline_ui_height(app);
     // The frame's top and bottom border rows are permanent chrome, not composer
     // growth: reserve them outright and keep them out of the donut's budget.
     let frame_rows = input_ui::COMPOSER_FRAME_ROWS;
-    let input_height = base_input_height + hint_line_height + frame_rows;
+    let requested_input_height = base_input_height + hint_line_height + frame_rows;
+    // Reserve transcript and status rows before assigning optional
+    // chrome. On short terminals the composer scrolls internally instead of
+    // displacing itself or the picker outside the available layout.
+    let picker_reserve = if requested_inline_height > 0 && chat_area.height >= 9 {
+        4
+    } else {
+        0
+    };
+    let transcript_reserve = if chat_area.height >= 12 { 3 } else { 1 };
+    let essential_rows = 1 + transcript_reserve;
+    let input_height = requested_input_height.min(
+        chat_area
+            .height
+            .saturating_sub(essential_rows + picker_reserve),
+    );
+    let mut remaining = chat_area
+        .height
+        .saturating_sub(input_height + essential_rows);
+    let desired_banner = header::banner_band_height(chat_area.width, chat_area.height);
+    let minimum_picker = if requested_inline_height > 0 { 4 } else { 0 };
+    let banner_height = desired_banner.min(remaining.saturating_sub(minimum_picker));
+    remaining -= banner_height;
+    let inline_block_height = requested_inline_height.min(remaining);
+    remaining -= inline_block_height;
+    let notification_height = u16::from(app.has_notification()).min(remaining);
+    remaining -= notification_height;
+    let queued_height = requested_queued_height.min(remaining);
+    remaining -= queued_height;
+    let swarm_strip_height = requested_swarm_height.min(remaining);
+    remaining -= swarm_strip_height;
+    let inline_ui_gap_height = u16::from(inline_block_height > 0).min(remaining);
+    remaining -= inline_ui_gap_height;
+    let overscroll_height = u16::from(app.chat_overscroll_active()).min(remaining);
+    remaining -= overscroll_height;
 
     if let Some(ref mut capture) = debug_capture {
         capture.render_order.push("prepare_messages".to_string());
     }
     let prep_start = Instant::now();
+    // Rows reserved for the pinned banner band above the transcript. Computed
+    // here so the transcript preparation and the later layout agree on it.
     let chat_left_inset = left_aligned_content_inset(chat_area.width, app.centered_mode());
     let wide_prepare_width = chat_area.width.saturating_sub(chat_left_inset);
     let narrow_prepare_width = wide_prepare_width.saturating_sub(1);
@@ -3266,7 +3327,17 @@ fn draw_inner(frame: &mut Frame, app: &dyn TuiState) {
         let started = Instant::now();
         let prepared =
             mermaid::with_preferred_aspect_ratio(transcript_mermaid_aspect_ratio, || {
-                prepare::prepare_messages(app, width, chat_area.height)
+                // When the banner is pinned above the transcript (see
+                // CHUNK_BANNER) the prepared frame must not bake a second copy
+                // into its scrollable line total. On a terminal too small for
+                // the band there is nothing pinned, so fall back to the
+                // in-scroll header the transcript has always carried.
+                let include_header = banner_height == 0;
+                if include_header {
+                    prepare::prepare_messages(app, width, chat_area.height)
+                } else {
+                    prepare::prepare_messages_with(app, width, chat_area.height, false)
+                }
             });
         note_prep_prepare_at(started.elapsed());
         prepared
@@ -3299,11 +3370,10 @@ fn draw_inner(frame: &mut Frame, app: &dyn TuiState) {
 
     let show_donut = !onboarding_welcome && super::idle_donut_active(app);
     let donut_height: u16 =
-        idle_donut_reserved_height(show_donut, input_height.saturating_sub(frame_rows));
-    let notification_height: u16 = if app.has_notification() { 1 } else { 0 };
+        idle_donut_reserved_height(show_donut, input_height.saturating_sub(frame_rows))
+            .min(remaining);
     // Elastic overscroll status line revealed when the user scrolls past the
     // bottom of the transcript. Rendered directly below the input line.
-    let overscroll_height: u16 = if app.chat_overscroll_active() { 1 } else { 0 };
     let fixed_height = 1
         + queued_height
         + swarm_strip_height
@@ -3314,6 +3384,11 @@ fn draw_inner(frame: &mut Frame, app: &dyn TuiState) {
         + overscroll_height
         + donut_height; // status + queued + swarm strip + notification + inline UI + gap + input + overscroll + donut
     let available_height = chat_area.height;
+    // The pinned banner band consumes rows above the transcript, so the
+    // transcript itself only has `available_height - banner_height` rows to work
+    // with. Account for it here so the packed/scrolling decision and the
+    // max-scroll math match the real remaining height.
+    let transcript_budget_height = available_height.saturating_sub(banner_height);
     // Overflow decisions (native scrollbar, and thus the wrap width) must not
     // depend on the transient overscroll row. Otherwise revealing the line at
     // the fits/overflows boundary flips the scrollbar on, re-wraps the whole
@@ -3332,8 +3407,8 @@ fn draw_inner(frame: &mut Frame, app: &dyn TuiState) {
     };
     let overflows = |prepared: &PreparedChatFrame| {
         let started = Instant::now();
-        let result =
-            (prepared.total_wrapped_lines().max(1) as u16) + stable_fixed_height > available_height;
+        let result = (prepared.total_wrapped_lines().max(1) as u16) + stable_fixed_height
+            > transcript_budget_height;
         note_prep_overflow(started.elapsed());
         result
     };
@@ -3400,25 +3475,13 @@ fn draw_inner(frame: &mut Frame, app: &dyn TuiState) {
     let content_height = prepared.total_wrapped_lines().max(1) as u16;
 
     // Use packed layout when content fits, scrolling layout otherwise
-    let use_packed = !swarm_page_active && content_height + fixed_height <= available_height;
+    let use_packed =
+        !swarm_page_active && content_height + fixed_height <= transcript_budget_height;
 
-    // Rows the transcript leaves unused between its last line and the bottom
-    // chrome, reserved as their own chunk instead of being handed back to
-    // ratatui. Every constraint below is a `Length`, and ratatui's default
-    // `Flex::Start` parks whatever the constraints do not claim in the final
-    // spacer — i.e. *below* the composer. The packed layout therefore floated
-    // the status line and composer in the middle of the screen with a blank
-    // band under them (11 rows on a 40-row terminal), and every transcript
-    // line that arrived pushed the composer one row further down. Claiming
-    // the slack here keeps the transcript top-anchored and pins the bottom
-    // chrome to the bottom of the chat column, which is where the composer
-    // belongs in every terminal chat UI.
-    //
-    // The scrolling branch leaves this at zero: there `Min(3)` already absorbs
-    // every spare row, so the chunk is a no-op and the packed/scrolling
-    // split stays a pure decision about how the transcript sizes itself.
+    // Give unused rows to the transcript viewport. This keeps bottom chrome
+    // pinned while allowing widgets to dock in genuinely empty viewport space.
     let transcript_gap = if use_packed {
-        available_height.saturating_sub(content_height + fixed_height)
+        transcript_budget_height.saturating_sub(content_height + fixed_height)
     } else {
         0
     };
@@ -3426,25 +3489,36 @@ fn draw_inner(frame: &mut Frame, app: &dyn TuiState) {
     // Layout: messages (includes header), slack, queued, swarm, status,
     // notification, inline UI, gap, input, overscroll, donut.
     // All vertical chunks are within the chat_area (left column).
+    //
+    // The banner is pinned in its own band at the very top of the chat column
+    // (CHUNK_BANNER, sized above) so the brand stays visible while the
+    // transcript scrolls, instead of scrolling away with the messages.
+    let banner_lines = if banner_height > 0 {
+        header::build_banner_band_lines(app, chat_area.width, banner_height)
+    } else {
+        Vec::new()
+    };
     let chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints(if use_packed {
             vec![
-                Constraint::Length(content_height.max(1)), // CHUNK_MESSAGES
-                Constraint::Length(transcript_gap),        // CHUNK_TRANSCRIPT_GAP
-                Constraint::Length(queued_height),         // CHUNK_QUEUED
-                Constraint::Length(swarm_strip_height),    // CHUNK_SWARM_STRIP
-                Constraint::Length(1),                     // CHUNK_STATUS
-                Constraint::Length(notification_height),   // CHUNK_NOTIFICATION
-                Constraint::Length(inline_block_height),   // CHUNK_INLINE_UI
-                Constraint::Length(inline_ui_gap_height),  // CHUNK_INLINE_GAP
-                Constraint::Length(input_height),          // CHUNK_INPUT
-                Constraint::Length(overscroll_height),     // CHUNK_OVERSCROLL
-                Constraint::Length(donut_height),          // CHUNK_DONUT
+                Constraint::Length(banner_height), // CHUNK_BANNER
+                Constraint::Length(content_height.max(1).saturating_add(transcript_gap)), // CHUNK_MESSAGES
+                Constraint::Length(0),                   // CHUNK_TRANSCRIPT_GAP
+                Constraint::Length(queued_height),       // CHUNK_QUEUED
+                Constraint::Length(swarm_strip_height),  // CHUNK_SWARM_STRIP
+                Constraint::Length(1),                   // CHUNK_STATUS
+                Constraint::Length(notification_height), // CHUNK_NOTIFICATION
+                Constraint::Length(inline_block_height), // CHUNK_INLINE_UI
+                Constraint::Length(inline_ui_gap_height), // CHUNK_INLINE_GAP
+                Constraint::Length(input_height),        // CHUNK_INPUT
+                Constraint::Length(overscroll_height),   // CHUNK_OVERSCROLL
+                Constraint::Length(donut_height),        // CHUNK_DONUT
             ]
         } else {
             vec![
-                Constraint::Min(3),                       // CHUNK_MESSAGES (scrollable)
+                Constraint::Length(banner_height),        // CHUNK_BANNER
+                Constraint::Min(transcript_reserve),      // CHUNK_MESSAGES (scrollable)
                 Constraint::Length(transcript_gap),       // CHUNK_TRANSCRIPT_GAP (always 0 here)
                 Constraint::Length(queued_height),        // CHUNK_QUEUED
                 Constraint::Length(swarm_strip_height),   // CHUNK_SWARM_STRIP
@@ -3459,6 +3533,13 @@ fn draw_inner(frame: &mut Frame, app: &dyn TuiState) {
         })
         .split(chat_area);
     record_status_area(chunks[CHUNK_STATUS]);
+
+    // Pinned banner band: the brand wordmark stays at the top of the chat
+    // column no matter how far the transcript has scrolled.
+    if banner_height > 0 && !banner_lines.is_empty() {
+        clear_area(frame, chunks[CHUNK_BANNER]);
+        frame.render_widget(Paragraph::new(banner_lines.clone()), chunks[CHUNK_BANNER]);
+    }
 
     // Draw the inline swarm strip directly above the status line if present.
     if swarm_strip_height > 0 {

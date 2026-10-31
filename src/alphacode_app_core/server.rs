@@ -31,6 +31,7 @@ mod debug_session_admin;
 mod debug_swarm_read;
 mod debug_swarm_write;
 mod debug_testers;
+mod desktop_control;
 mod durable_state;
 mod frame_reader;
 mod headless;

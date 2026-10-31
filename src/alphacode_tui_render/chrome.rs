@@ -8,6 +8,7 @@ pub const MAX_CENTERED_CONTENT_WIDTH: usize = 96;
 
 pub fn clear_area(frame: &mut Frame, area: Rect) {
     let buffer = frame.buffer_mut();
+    let area = area.intersection(*buffer.area());
     for y in area.top()..area.bottom() {
         for x in area.left()..area.right() {
             buffer[(x, y)].reset();
@@ -20,6 +21,7 @@ pub fn clear_area(frame: &mut Frame, area: Rect) {
 /// surface without overwhelming the content.
 pub fn fill_background(frame: &mut Frame, area: Rect, color: Color) {
     let buffer = frame.buffer_mut();
+    let area = area.intersection(*buffer.area());
     for y in area.top()..area.bottom() {
         for x in area.left()..area.right() {
             let cell = &mut buffer[(x, y)];
@@ -34,6 +36,7 @@ pub fn fill_background(frame: &mut Frame, area: Rect, color: Color) {
 /// The gradient fades from `color` at the left to dim at the right, giving
 /// a subtle visual separation between sections without a hard border.
 pub fn draw_gradient_separator(frame: &mut Frame, area: Rect, color: Color) {
+    let area = area.intersection(*frame.buffer_mut().area());
     if area.width == 0 || area.height == 0 {
         return;
     }
@@ -152,5 +155,25 @@ pub fn align_if_unset(line: Line<'static>, align: Alignment) -> Line<'static> {
         line
     } else {
         line.alignment(align)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use ratatui::{Terminal, backend::TestBackend};
+
+    #[test]
+    fn chrome_clips_rectangles_to_the_frame() {
+        let mut terminal = Terminal::new(TestBackend::new(4, 2)).unwrap();
+        terminal
+            .draw(|frame| {
+                fill_background(frame, Rect::new(3, 1, 8, 8), Color::Blue);
+                draw_gradient_separator(frame, Rect::new(3, 1, 8, 8), Color::Red);
+                clear_area(frame, Rect::new(3, 1, 8, 8));
+                clear_area(frame, Rect::new(20, 20, 2, 2));
+            })
+            .unwrap();
+        assert_eq!(terminal.backend().buffer()[(3, 1)].symbol(), " ");
     }
 }

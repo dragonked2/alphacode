@@ -1261,6 +1261,7 @@ mod tests {
                         context_length: None,
                         pricing: crate::alphacode_provider_openrouter::ModelPricing::default(),
                         created: None,
+                        ..Default::default()
                     })
                     .collect(),
             };
@@ -1386,6 +1387,7 @@ mod tests {
                     context_length: None,
                     pricing: crate::alphacode_provider_openrouter::ModelPricing::default(),
                     created: None,
+                    ..Default::default()
                 })
                 .collect(),
         };

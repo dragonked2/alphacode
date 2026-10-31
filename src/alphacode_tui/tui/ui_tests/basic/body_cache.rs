@@ -491,6 +491,7 @@ fn test_full_prep_cache_state_keeps_multiple_width_entries() {
         expanded_images_version: 0,
         swarm_members_signature: 0,
     inline_images_visible: true,
+        include_header: true,
     };
     let key_b = FullPrepCacheKey {
         width: 39,
@@ -565,6 +566,7 @@ fn test_full_prep_cache_state_does_not_reuse_a_different_mermaid_aspect_profile(
         inline_images_visible: true,
         expanded_images_version: 0,
         swarm_members_signature: 0,
+        include_header: true,
     };
     let resized_key = FullPrepCacheKey {
         mermaid_aspect_bucket: Some(2500),
@@ -600,6 +602,7 @@ fn test_full_prep_cache_state_evicts_oldest_entries() {
         expanded_images_version: 0,
         swarm_members_signature: 0,
         inline_images_visible: true,
+        include_header: true,
         };
         let prepared = make_prepared_chat_frame(Arc::new(PreparedMessages {
             wrapped_lines: vec![Line::from(format!("{idx}"))],
@@ -646,6 +649,7 @@ fn test_full_prep_cache_state_accepts_large_single_entry_within_total_budget() {
         expanded_images_version: 0,
         swarm_members_signature: 0,
     inline_images_visible: true,
+        include_header: true,
     };
     let prepared = make_prepared_chat_frame_with_content_bytes(3 * 1024 * 1024, "full-large-");
 
@@ -679,6 +683,7 @@ fn test_full_prep_cache_state_retains_oversized_hot_entry() {
         expanded_images_version: 0,
         swarm_members_signature: 0,
     inline_images_visible: true,
+        include_header: true,
     };
     let prepared = make_oversized_prepared_chat_frame("full-oversized-");
 
@@ -714,6 +719,7 @@ fn test_full_prep_cache_state_keeps_two_oversized_width_entries_hot() {
         expanded_images_version: 0,
         swarm_members_signature: 0,
     inline_images_visible: true,
+        include_header: true,
     };
     let key_b = FullPrepCacheKey {
         width: 139,
@@ -1100,4 +1106,3 @@ fn test_prefix_reuse_truncation_matches_full_build() {
     let full = super::prepare::prepare_body(&short_state, width, false);
     assert_prepared_equivalent(&reuse, &full, "truncation");
 }
-

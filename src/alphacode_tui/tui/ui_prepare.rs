@@ -652,6 +652,22 @@ pub(super) fn prepare_messages(
     width: u16,
     height: u16,
 ) -> Arc<PreparedChatFrame> {
+    prepare_messages_with(app, width, height, true)
+}
+
+/// Prepare the transcript.
+///
+/// `include_header` is false when the caller pins the banner to the top of the
+/// chat column instead of letting it scroll with the transcript. The header is
+/// then omitted from the prepared frame entirely, so it is neither drawn twice
+/// nor counted in the scrollable line total (which would leave dead scroll
+/// space above the first message).
+pub(super) fn prepare_messages_with(
+    app: &dyn TuiState,
+    width: u16,
+    height: u16,
+    include_header: bool,
+) -> Arc<PreparedChatFrame> {
     // A cached prepared frame intentionally owns only image ids. Recover any
     // staged source evicted by the byte budget or a visibility toggle before an
     // exact frame-cache hit can bypass the normal anchored-image resolver.
@@ -659,7 +675,7 @@ pub(super) fn prepare_messages(
     super::inline_image_ui::restage_requested_payloads(app);
     super::note_prep_restage(restage_start.elapsed());
     if cfg!(test) {
-        return Arc::new(prepare_messages_inner(app, width, height));
+        return Arc::new(prepare_messages_inner(app, width, height, include_header));
     }
 
     let key = FullPrepCacheKey {
@@ -687,6 +703,7 @@ pub(super) fn prepare_messages(
         inline_images_visible: app.inline_images_visible(),
         expanded_images_version: app.expanded_images_version(),
         swarm_members_signature: swarm_members_signature(&app.swarm_members_for_transcript()),
+        include_header,
     };
 
     super::note_full_prep_request();
@@ -722,7 +739,7 @@ pub(super) fn prepare_messages(
     super::note_full_prep_cache_miss();
 
     let build_start = Instant::now();
-    let prepared = Arc::new(prepare_messages_inner(app, width, height));
+    let prepared = Arc::new(prepare_messages_inner(app, width, height, include_header));
     super::note_full_prep_built(prepared.as_ref(), build_start.elapsed());
 
     {
@@ -769,9 +786,15 @@ fn build_top_pad_lines(width: u16, pad_top: usize) -> Vec<Line<'static>> {
     lines
 }
 
-fn prepare_messages_inner(app: &dyn TuiState, width: u16, height: u16) -> PreparedChatFrame {
+fn prepare_messages_inner(
+    app: &dyn TuiState,
+    width: u16,
+    height: u16,
+    include_header: bool,
+) -> PreparedChatFrame {
     let header_start = Instant::now();
-    let header_prepared = prepare_header_cached(app, width);
+    // Keep the session details while omitting the separately pinned wordmark.
+    let header_prepared = prepare_header_cached(app, width, include_header);
     let header_ms = header_start.elapsed().as_secs_f64() * 1000.0;
 
     let body_start = Instant::now();
@@ -952,8 +975,14 @@ fn prepare_messages_inner(app: &dyn TuiState, width: u16, height: u16) -> Prepar
         // re-applied above the header once the conversation starts. That keeps
         // the header at the same screen position when the first prompt
         // arrives; the padding then simply scrolls away as the transcript
-        // grows instead of vanishing in one jump.
-        let pad_top = initial_header_pad_top(height, header_prepared.wrapped_lines.len());
+        // grows instead of vanishing in one jump. When the banner is pinned
+        // outside the transcript there is no in-scroll header to center, so no
+        // pad is applied (it would just be a blank gap under the pinned band).
+        let pad_top = if include_header {
+            initial_header_pad_top(height, header_prepared.wrapped_lines.len())
+        } else {
+            0
+        };
         let mut centered = build_top_pad_lines(width, pad_top);
         centered.reserve(wrapped_lines.len());
         centered.extend(wrapped_lines);
@@ -990,8 +1019,13 @@ fn prepare_messages_inner(app: &dyn TuiState, width: u16, height: u16) -> Prepar
     let compose_start = Instant::now();
     // Re-apply the initial-screen centering pad above the header so the
     // transition from the empty screen to the first message does not shift
-    // anything. The pad scrolls off naturally as the transcript grows.
-    let pad_top = initial_header_pad_top(height, header_prepared.wrapped_lines.len());
+    // anything. The pad scrolls off naturally as the transcript grows. Skipped
+    // when the header is pinned outside the transcript (see `include_header`).
+    let pad_top = if include_header {
+        initial_header_pad_top(height, header_prepared.wrapped_lines.len())
+    } else {
+        0
+    };
     let padded_header = if pad_top > 0 {
         let mut lines = build_top_pad_lines(width, pad_top);
         lines.reserve(header_prepared.wrapped_lines.len());
@@ -1092,10 +1126,11 @@ pub(crate) fn invalidate_header_prep_cache() {
 
 /// Hash of the header inputs that are cheap to read every frame. Anything
 /// expensive (disk probes) is intentionally excluded and covered by the TTL.
-fn header_prep_signature(app: &dyn TuiState, width: u16) -> u64 {
+fn header_prep_signature(app: &dyn TuiState, width: u16, include_header: bool) -> u64 {
     use std::hash::{Hash, Hasher};
     let mut hasher = std::collections::hash_map::DefaultHasher::new();
     width.hash(&mut hasher);
+    include_header.hash(&mut hasher);
     app.provider_model().hash(&mut hasher);
     app.provider_name().hash(&mut hasher);
     app.session_display_name().hash(&mut hasher);
@@ -1127,9 +1162,17 @@ fn header_prep_signature(app: &dyn TuiState, width: u16) -> u64 {
     hasher.finish()
 }
 
-fn prepare_header_cached(app: &dyn TuiState, width: u16) -> Arc<PreparedMessages> {
+fn prepare_header_cached(
+    app: &dyn TuiState,
+    width: u16,
+    include_header: bool,
+) -> Arc<PreparedMessages> {
     let build = || {
         let (mut all_header_lines, secondary_lines) = header::build_header_sections(app, width);
+        if !include_header {
+            let wordmark_rows = header::header_wordmark_rows(width).min(all_header_lines.len());
+            all_header_lines.drain(..wordmark_rows);
+        }
         all_header_lines.extend(secondary_lines);
         Arc::new(wrap_lines(all_header_lines, &[], &[], &[], width))
     };
@@ -1138,7 +1181,7 @@ fn prepare_header_cached(app: &dyn TuiState, width: u16) -> Arc<PreparedMessages
         return build();
     }
 
-    let signature = header_prep_signature(app, width);
+    let signature = header_prep_signature(app, width, include_header);
 
     if let Ok(cache) = header_prep_cache().lock()
         && let Some(state) = cache.as_ref()

@@ -31,76 +31,26 @@ pub(crate) fn calculate_input_lines(input: &str, line_width: usize) -> usize {
 }
 
 pub(super) fn shorten_model_name(model: &str) -> String {
-    let model = if model.contains('/') {
-        let stem = model.rsplit('/').next().unwrap_or(model);
-        stem.strip_suffix(".gguf")
-            .unwrap_or(stem)
-            .strip_suffix(".bin")
-            .unwrap_or(stem)
-    } else {
-        model
-    };
-    if model.contains('/') {
-        // Slashed ids (e.g. qwen/qwen3.8-max-free): show a compact form
-        // like `qwen3.8max` instead of the full path.
-        return model
-            .split('/')
-            .next_back()
-            .unwrap_or(model)
-            .replace('-', "");
+    if let Some(name) = crate::alphacode_provider_metadata::internal_model_display_name(model) {
+        return name.to_string();
     }
-    if model.contains("opus") {
-        if model.contains("4-5") || model.contains("4.5") {
-            return "claude4.5opus".to_string();
-        }
-        return "claudeopus".to_string();
-    }
-    if model.contains("sonnet") {
-        if model.contains("3-5") || model.contains("3.5") {
-            return "claude3.5sonnet".to_string();
-        }
-        return "claudesonnet".to_string();
-    }
-    if model.contains("haiku") {
-        return "claudehaiku".to_string();
-    }
-    if model.contains("gemini") {
-        if model.contains("2.5") {
-            return "gemini2.5".to_string();
-        }
-        if model.contains("2.0") {
-            return "gemini2.0".to_string();
-        }
-        return "gemini".to_string();
-    }
-    if model.contains("deepseek") {
-        if model.contains("r1") {
-            return "deepseek-r1".to_string();
-        }
-        return "deepseek".to_string();
-    }
-    if model.contains("qwen") {
-        return "qwen".to_string();
-    }
-    if model.starts_with("gpt-5") {
-        return model.replace("gpt-", "gpt").replace("-", "");
-    }
-    if model.starts_with("gpt-4") {
-        return model.replace("gpt-", "").replace("-", "");
-    }
-    if model.starts_with("gpt-3") {
-        return "gpt3.5".to_string();
-    }
-    model.split('-').take(3).collect::<Vec<_>>().join("")
+    // The status line already fits or drops segments to suit the viewport.
+    // Keep the actual model identity rather than guessing a family/version.
+    let stem = model.rsplit(['/', '\\']).next().unwrap_or(model);
+    stem.strip_suffix(".gguf")
+        .or_else(|| stem.strip_suffix(".bin"))
+        .unwrap_or(stem)
+        .to_string()
 }
 
 pub fn format_status_for_debug(app: &dyn TuiState) -> String {
-    let summary = build_status_summary_with_context(
+    let summary = build_status_summary_with_current_context(
         Some(&app.provider_model()),
         None,
         app.total_session_tokens(),
         app.connection_type().is_some(),
         app.context_limit(),
+        app.current_context_tokens(),
     );
     let body: String = match app.status() {
         ProcessingStatus::Idle => {
@@ -165,9 +115,7 @@ pub fn format_status_for_debug(app: &dyn TuiState) -> String {
 /// Combines the current model (shortened), the running task hint classified
 /// via [`TaskKind`], the connection state, and any session token totals into
 /// a single `key=value` line. Pure function: no I/O, no model calls.
-// Legacy four-argument form kept for external callers and tests; new code
-// should prefer `build_status_summary_with_context` so the context-usage
-// segment is included.
+// Legacy form for callers that only have cumulative session totals.
 #[allow(dead_code)]
 pub fn build_status_summary(
     model: Option<&str>,
@@ -178,15 +126,11 @@ pub fn build_status_summary(
     build_status_summary_with_context(model, task_hint, tokens, connected, None)
 }
 
-/// Format a context-usage percentage for the header strip. Tokens are the
-/// request input size; when no limit is known the raw token count is shown
-/// instead of a percentage. Returns e.g. `ctx=42%` or `ctx=118k`. (The header
-/// keeps this visible at all times so usage never surprises the user.)
-fn format_context_fragment(
-    tokens: Option<(u64, u64)>,
-    context_limit: Option<usize>,
-) -> Option<String> {
-    let (input, _output) = tokens?;
+/// Format a context-usage percentage for the header strip. When no limit is
+/// known the current context token count is shown instead of a percentage.
+/// Returns e.g. `ctx=42%` or `ctx=118k`.
+fn format_context_fragment(tokens: Option<u64>, context_limit: Option<usize>) -> Option<String> {
+    let input = tokens?;
     if input == 0 {
         return None;
     }
@@ -195,18 +139,37 @@ fn format_context_fragment(
             let pct = ((input as f64 / limit as f64) * 100.0).round() as u64;
             Some(format!("ctx={}%", pct.min(999)))
         }
+        _ if input < 1000 => Some(format!("ctx={input}")),
         _ => Some(format!("ctx={}k", input / 1000)),
     }
 }
 
-/// Like [`build_status_summary`] but also renders a steady context-usage
-/// segment whenever token totals and a context limit are available.
+/// Build a status summary when only cumulative session totals are available.
+/// Session totals cannot be used to infer current context usage.
 pub fn build_status_summary_with_context(
     model: Option<&str>,
     task_hint: Option<&str>,
     tokens: Option<(u64, u64)>,
     connected: bool,
     context_limit: Option<usize>,
+) -> String {
+    build_status_summary_with_current_context(
+        model,
+        task_hint,
+        tokens,
+        connected,
+        context_limit,
+        None,
+    )
+}
+
+fn build_status_summary_with_current_context(
+    model: Option<&str>,
+    task_hint: Option<&str>,
+    tokens: Option<(u64, u64)>,
+    connected: bool,
+    context_limit: Option<usize>,
+    context_tokens: Option<u64>,
 ) -> String {
     use crate::alphacode_provider_core::selection::TaskKind;
 
@@ -230,7 +193,7 @@ pub fn build_status_summary_with_context(
 
     // Context usage — placed right after the model so it is always visible in
     // the header, even while streaming.
-    if let Some(fragment) = format_context_fragment(tokens, context_limit) {
+    if let Some(fragment) = format_context_fragment(context_tokens, context_limit) {
         parts.push(fragment);
     }
 
@@ -247,12 +210,28 @@ pub fn build_status_summary_with_context(
         parts.push(format!("tokens={}k/{}k", input / 1000, output / 1000));
     }
 
-    parts.join(" | ")
+    // A middot reads as one calm strip; the pipe used to cut the header into
+    // hard-edged cells that competed with the transcript.
+    parts.join(" \u{00b7} ")
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn compact_model_label_preserves_identity_and_local_weight_stems() {
+        assert_eq!(shorten_model_name("qwen/qwen3:8b"), "qwen3:8b");
+        assert_ne!(shorten_model_name("my-sonnet-4-copy"), "claudesonnet");
+        assert_eq!(shorten_model_name("weights/custom.gguf"), "custom");
+        assert_eq!(shorten_model_name("gpt-4o"), "gpt-4o");
+        assert_eq!(shorten_model_name("claude-sonnet-4-5"), "claude-sonnet-4-5");
+        let alias = crate::alphacode_provider_metadata::route_cloak::free_route_default_model();
+        assert_eq!(
+            shorten_model_name(&alias),
+            crate::alphacode_provider_metadata::internal_model_display_name(&alias).unwrap()
+        );
+    }
 
     #[test]
     fn build_status_summary_includes_model_and_task() {
@@ -270,24 +249,26 @@ mod tests {
 
     #[test]
     fn build_status_summary_with_context_shows_percent() {
-        let s = build_status_summary_with_context(
+        let s = build_status_summary_with_current_context(
             Some("claude-opus-4-5"),
             None,
             Some((84_000, 4_500)),
             true,
             Some(200_000),
+            Some(84_000),
         );
         assert!(s.contains("ctx=42%"), "got: {}", s);
     }
 
     #[test]
     fn build_status_summary_with_context_falls_back_to_tokens() {
-        let s = build_status_summary_with_context(
+        let s = build_status_summary_with_current_context(
             Some("gpt-5"),
             None,
             Some((118_000, 500)),
             false,
             None,
+            Some(118_000),
         );
         assert!(s.contains("ctx=118k"), "got: {}", s);
     }
@@ -296,6 +277,28 @@ mod tests {
     fn build_status_summary_with_context_omits_when_empty() {
         let s = build_status_summary_with_context(Some("gpt-5"), None, None, true, Some(200_000));
         assert!(!s.contains("ctx="), "got: {}", s);
+    }
+
+    #[test]
+    fn cumulative_tokens_are_not_reported_as_context_usage() {
+        let s = build_status_summary_with_context(
+            Some("gpt-5"),
+            None,
+            Some((800_000, 10_000)),
+            true,
+            Some(200_000),
+        );
+        assert!(s.contains("tokens=800k/10k"), "got: {s}");
+        assert!(!s.contains("ctx="), "got: {s}");
+        let s = build_status_summary_with_current_context(
+            Some("gpt-5"),
+            None,
+            Some((800_000, 10_000)),
+            true,
+            Some(200_000),
+            Some(20_000),
+        );
+        assert!(s.contains("ctx=10%"), "got: {s}");
     }
 
     #[test]

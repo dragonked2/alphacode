@@ -711,7 +711,7 @@ fn test_mouse_click_in_wrapped_input_moves_cursor_to_second_visual_line() {
     app.set_centered(false);
     app.session.short_name = Some("test".to_string());
 
-    let backend = ratatui::backend::TestBackend::new(11, 16);
+    let backend = ratatui::backend::TestBackend::new(12, 16);
     let mut terminal = ratatui::Terminal::new(backend).expect("failed to create test terminal");
     render_and_snap(&app, &mut terminal);
 
@@ -727,10 +727,9 @@ fn test_mouse_click_in_wrapped_input_moves_cursor_to_second_visual_line() {
         modifiers: KeyModifiers::empty(),
     });
 
-    // The two-column prompt plus the border column leaves seven columns for
-    // text on the 9-column interior. Column six on the second visual row maps
-    // after the third character of that segment ("abc|"), i.e. the absolute
-    // end of the wrapped draft.
+    // At the minimum supported width the ten-column interior leaves eight
+    // text columns after the prompt. A click beyond the two remaining
+    // characters on the second visual row clamps to the draft's end.
     assert_eq!(app.cursor_pos, 10);
 }
 

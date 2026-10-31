@@ -238,3 +238,52 @@ fn unikey_cli_aliases_parse() {
         );
     }
 }
+
+#[test]
+fn orcarouter_choices_cover_both_login_paths() {
+    let api = login_provider_for_choice(&ProviderChoice::Orcarouter)
+        .expect("orcarouter choice must map to a login provider");
+    assert_eq!(api.id, "orcarouter");
+    assert!(matches!(
+        api.target,
+        LoginProviderTarget::OpenAiCompatible(profile) if profile.id == "orcarouter"
+    ));
+    assert_eq!(ProviderChoice::Orcarouter.as_arg_value(), "orcarouter");
+
+    let oauth = login_provider_for_choice(&ProviderChoice::OrcarouterOauth)
+        .expect("orcarouter-oauth choice must map to a login provider");
+    assert_eq!(oauth.id, "orcarouter-oauth");
+    assert!(matches!(oauth.target, LoginProviderTarget::OrcaRouterOAuth));
+    assert_eq!(
+        ProviderChoice::OrcarouterOauth.as_arg_value(),
+        "orcarouter-oauth"
+    );
+
+    // Both choices boot the same inference profile; only the login differs.
+    for choice in [ProviderChoice::Orcarouter, ProviderChoice::OrcarouterOauth] {
+        assert_eq!(
+            profile_for_choice(&choice)
+                .expect("orcarouter choices expose the shared inference profile")
+                .id,
+            "orcarouter"
+        );
+        assert_eq!(
+            choice_for_login_provider(login_provider_for_choice(&choice).expect("mapped provider")),
+            Some(choice)
+        );
+    }
+    assert_ne!(api.id, oauth.id);
+
+    for (alias, expected) in [
+        ("orca-router", ProviderChoice::Orcarouter),
+        ("orca-router-auth", ProviderChoice::OrcarouterOauth),
+    ] {
+        assert_eq!(
+            ProviderChoice::from_str(alias, true).ok(),
+            Some(expected),
+            "alias {} should parse to {:?}",
+            alias,
+            expected
+        );
+    }
+}

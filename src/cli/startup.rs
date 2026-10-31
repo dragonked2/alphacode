@@ -15,6 +15,19 @@ fn sync_output_style_from_config() {
     crate::output_style::set_emoji_enabled(crate::config::config().display.emoji);
 }
 
+fn spawn_background_thread(name: &'static str, job: impl FnOnce() + Send + 'static) {
+    let result = std::thread::Builder::new()
+        .name(name.to_string())
+        .spawn(move || {
+            if std::panic::catch_unwind(std::panic::AssertUnwindSafe(job)).is_err() {
+                crate::logging::error(&format!("background task {name} panicked"));
+            }
+        });
+    if let Err(error) = result {
+        crate::logging::warn(&format!("could not start background task {name}: {error}"));
+    }
+}
+
 pub async fn run() -> Result<()> {
     startup_profile::init();
 
@@ -33,26 +46,26 @@ pub async fn run() -> Result<()> {
     // Old log pruning now runs on a background thread inside logging::init(),
     // so it no longer blocks startup. Memory-event logs have a separate,
     // longer (14-day) retention, so prune them on their own background thread.
-    std::thread::Builder::new()
-        .name("alphacode-memlog-cleanup".to_string())
-        .spawn(crate::memory_log::cleanup_old_memory_logs)
-        .ok();
+    spawn_background_thread(
+        "alphacode-memlog-cleanup",
+        crate::memory_log::cleanup_old_memory_logs,
+    );
     // Prune stale per-session `.bak` recovery copies (never the transcripts
     // themselves) so the sessions directory does not grow without bound.
-    std::thread::Builder::new()
-        .name("alphacode-session-bak-prune".to_string())
-        .spawn(crate::session::prune_old_session_backups)
-        .ok();
+    spawn_background_thread(
+        "alphacode-session-bak-prune",
+        crate::session::prune_old_session_backups,
+    );
     // Pre-warm the config cache on a background thread so the first config
     // read (file I/O + TOML parse + env overrides) overlaps with the
     // provider-registration calls below instead of blocking the critical
     // path. If the background thread is still running when sync_output_style
     // below calls config(), the read lock will wait — still no worse than
     // synchronous loading, but in the common case the cache is already hot.
-    std::thread::Builder::new()
-        .name("alphacode-config-prewarm".to_string())
-        .spawn(crate::config::prewarm_config_cache)
-        .ok();
+    spawn_background_thread(
+        "alphacode-config-prewarm",
+        crate::config::prewarm_config_cache,
+    );
     logging::info("alphacode starting");
 
     // Wire config-reload reactions without making config depend on auth/bus:
@@ -126,10 +139,10 @@ pub async fn run() -> Result<()> {
 
     // Keybinding default warnings are non-critical: fire them on a detached
     // thread so they never add to the perceived startup latency.
-    std::thread::Builder::new()
-        .name("alphacode-keybind-warn".to_string())
-        .spawn(crate::alphacode_tui::tui::keybind::log_keybinding_default_warnings)
-        .ok();
+    spawn_background_thread(
+        "alphacode-keybind-warn",
+        crate::alphacode_tui::tui::keybind::log_keybinding_default_warnings,
+    );
     crate::platform::raise_nofile_limit_best_effort(8_192);
     startup_profile::mark("nofile_limit");
 
@@ -148,34 +161,31 @@ pub async fn run() -> Result<()> {
     health::register_subsystem("ambient");
     health::register_subsystem("swarm");
     crate::session_watchdog::init();
-    std::thread::Builder::new()
-        .name("alphacode-health-reporter".to_string())
-        .spawn(|| {
-            loop {
-                std::thread::sleep(health::REPORT_INTERVAL);
-                // A reporter is a best-effort observability task. Keep a bad
-                // sample, serialization bug, or watchdog regression from
-                // terminating the process (or silently killing the reporter).
-                let iteration = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                    if let Some(rss) = health::current_rss_bytes() {
-                        health::record_rss_sample(rss);
-                        crate::session_watchdog::record_rss(rss);
-                    }
-                    health::report();
-                    // Run watchdog health check periodically.
-                    let action = crate::session_watchdog::check_health();
-                    if action != crate::session_watchdog::RecoveryAction::None {
-                        crate::session_watchdog::record_recovery(action);
-                    }
-                }));
-                if iteration.is_err() {
-                    crate::logging::error(
-                        "health reporter iteration panicked; continuing with the next sample",
-                    );
+    spawn_background_thread("alphacode-health-reporter", || {
+        loop {
+            std::thread::sleep(health::REPORT_INTERVAL);
+            // A reporter is a best-effort observability task. Keep a bad
+            // sample, serialization bug, or watchdog regression from
+            // terminating the process (or silently killing the reporter).
+            let iteration = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                if let Some(rss) = health::current_rss_bytes() {
+                    health::record_rss_sample(rss);
+                    crate::session_watchdog::record_rss(rss);
                 }
+                health::report();
+                // Run watchdog health check periodically.
+                let action = crate::session_watchdog::check_health();
+                if action != crate::session_watchdog::RecoveryAction::None {
+                    crate::session_watchdog::record_recovery(action);
+                }
+            }));
+            if iteration.is_err() {
+                crate::logging::error(
+                    "health reporter iteration panicked; continuing with the next sample",
+                );
             }
-        })
-        .ok();
+        }
+    });
     startup_profile::mark("health_init");
 
     telemetry::record_install_if_first_run();
@@ -311,6 +321,7 @@ pub fn register_external_provider_runtimes() {
 
 fn parse_and_prepare_args() -> Result<Args> {
     let args = Args::parse();
+    validate_gui_args(&args)?;
     startup_profile::mark("args_parse");
 
     if let Some(chord) = args.spawn_hotkey.as_deref() {
@@ -337,6 +348,13 @@ fn parse_and_prepare_args() -> Result<Args> {
     crate::cli::proctitle::set_initial_title(&args);
 
     Ok(args)
+}
+
+fn validate_gui_args(args: &Args) -> Result<()> {
+    if args.gui && args.command.is_some() {
+        anyhow::bail!("--gui cannot be combined with a subcommand");
+    }
+    Ok(())
 }
 
 fn validate_remote_working_dir(remote_working_dir: Option<&str>) -> Result<()> {
@@ -494,6 +512,9 @@ fn spawn_background_update_check(args: &Args) {
 /// for one so the log never claims a different reason than the gate actually
 /// used.
 fn background_update_skip_reason(args: &Args) -> &'static str {
+    if args.gui {
+        return "desktop launch skips the background update check";
+    }
     if args.quiet {
         return "--quiet suppresses all non-error output";
     }
@@ -503,10 +524,10 @@ fn background_update_skip_reason(args: &Args) -> &'static str {
     if let Some(command) = &args.command
         && matches!(
             command,
-            Command::Update | Command::Serve { .. } | Command::Acp
+            Command::Update | Command::Serve { .. } | Command::Acp | Command::Gui { .. }
         )
     {
-        return "this subcommand manages updates itself";
+        return "this subcommand skips the background update check";
     }
     if args.resume.is_some() {
         return "resuming a session skips the background check";
@@ -515,11 +536,15 @@ fn background_update_skip_reason(args: &Args) -> &'static str {
 }
 
 fn should_spawn_background_update_check(args: &Args) -> bool {
-    !args.quiet
+    !args.gui
+        && !args.quiet
         && !args.no_update
         && !matches!(
             args.command,
-            Some(Command::Update) | Some(Command::Serve { .. }) | Some(Command::Acp)
+            Some(Command::Update)
+                | Some(Command::Serve { .. })
+                | Some(Command::Acp)
+                | Some(Command::Gui { .. })
         )
         && args.resume.is_none()
 }
@@ -678,6 +703,18 @@ mod tests {
 
     fn parse_args(argv: &[&str]) -> Args {
         Args::parse_from(argv)
+    }
+
+    #[test]
+    fn gui_flag_and_subcommand_are_recognized() {
+        let args = parse_args(&["alphacode", "--gui"]);
+        assert!(args.gui);
+        assert!(!should_spawn_background_update_check(&args));
+        assert!(matches!(
+            parse_args(&["alphacode", "gui", "--preview"]).command,
+            Some(Command::Gui { preview: true, .. })
+        ));
+        assert!(validate_gui_args(&parse_args(&["alphacode", "--gui", "run", "hello"])).is_err());
     }
 
     #[test]

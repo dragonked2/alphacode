@@ -1202,6 +1202,49 @@ fn parse_openai_compatible_models_response(raw_body: &str) -> Result<Vec<ModelIn
     Ok(models)
 }
 
+/// Resolve a local server's initial model before constructing the synchronous
+/// provider. A fresh LM Studio install has no disk catalog yet, so provider
+/// construction cannot choose a model until this first request completes.
+pub async fn discover_local_initial_model(
+    api_base: &str,
+    profile_id: &str,
+    api_key: Option<&str>,
+) -> Result<String> {
+    let url = openai_compat_models_url(api_base).context("invalid local model server URL")?;
+    let request = crate::alphacode_provider_core::shared_http_client()
+        .get(&url)
+        .timeout(std::time::Duration::from_secs(5));
+    let request = if let Some(key) = api_key.filter(|key| !key.trim().is_empty()) {
+        request.bearer_auth(key)
+    } else {
+        request
+    };
+    let response = request
+        .send()
+        .await
+        .with_context(|| format!("Could not reach {profile_id} at {url}. Start its local server and load a chat model."))?
+        .error_for_status()
+        .with_context(|| format!("{profile_id} rejected the model list request at {url}"))?;
+    let body = response
+        .text()
+        .await
+        .context("could not read local model list")?;
+    let models = parse_openai_compatible_models_response(&body)?;
+    let model = select_local_initial_model(&models, profile_id)
+        .context("the local server has no chat model loaded")?;
+    save_disk_cache_with_source_for_namespace(profile_id, &models, Some(api_base));
+    Ok(model.to_string())
+}
+
+fn select_local_initial_model<'a>(models: &'a [ModelInfo], profile_id: &str) -> Option<&'a str> {
+    models.iter().map(|model| model.id.trim()).find(|id| {
+        crate::alphacode_base::provider::is_listable_model_name(id)
+            && crate::provider_catalog::openai_compatible_profile_model_supports_chat(
+                profile_id, id,
+            )
+    })
+}
+
 fn parse_model_info_value(value: &Value) -> Option<ModelInfo> {
     let object = value.as_object()?;
     let id = object
@@ -1243,7 +1286,45 @@ fn parse_model_info_value(value: &Value) -> Option<ModelInfo> {
         }),
         pricing: parse_model_pricing(object.get("pricing")),
         created: object.get("created").and_then(value_as_u64),
+        supported_endpoint_types: string_list_field(object, &["supported_endpoint_types"]),
+        endpoint_capabilities: string_list_field(object, &["endpoint_capabilities"]),
+        input_modalities: object
+            .get("architecture")
+            .and_then(Value::as_object)
+            .map(|architecture| {
+                string_list_field(architecture, &["input_modalities", "modality_input"])
+            })
+            .unwrap_or_default(),
     })
+}
+
+/// Read a list-of-strings field, tolerating the two shapes gateways use:
+/// a JSON array, or a comma/space separated string.
+fn string_list_field(object: &serde_json::Map<String, Value>, keys: &[&str]) -> Vec<String> {
+    for key in keys {
+        let Some(value) = object.get(*key) else {
+            continue;
+        };
+        match value {
+            Value::Array(items) => {
+                return items
+                    .iter()
+                    .filter_map(Value::as_str)
+                    .map(|item| item.trim().to_ascii_lowercase())
+                    .filter(|item| !item.is_empty())
+                    .collect();
+            }
+            Value::String(text) => {
+                return text
+                    .split([',', ' ', '|'])
+                    .map(|item| item.trim().to_ascii_lowercase())
+                    .filter(|item| !item.is_empty())
+                    .collect();
+            }
+            _ => {}
+        }
+    }
+    Vec::new()
 }
 
 fn first_u64_field(object: &serde_json::Map<String, Value>, keys: &[&str]) -> Option<u64> {
@@ -2473,13 +2554,23 @@ impl OpenRouterProvider {
 
         let static_context_limits = openai_compatible_profile_static_context_limits(profile);
         let static_models = openai_compatible_profile_static_models(profile);
-        let model = resolved.default_model.clone().unwrap_or_else(|| {
-            if profile.id == OPENAI_COMPAT_PROFILE.id {
-                "gpt-4o".to_string()
-            } else {
-                DEFAULT_MODEL.to_string()
-            }
-        });
+        let model = if matches!(profile.id, "lmstudio" | "ollama") {
+            initial_model_for_runtime(
+                None,
+                resolved.default_model.clone(),
+                &static_models,
+                &api_base,
+                Some(profile.id),
+            )?
+        } else {
+            resolved.default_model.clone().unwrap_or_else(|| {
+                if profile.id == OPENAI_COMPAT_PROFILE.id {
+                    "gpt-4o".to_string()
+                } else {
+                    DEFAULT_MODEL.to_string()
+                }
+            })
+        };
 
         // Profiles like alphax-free use a virtual model ID (their automatic
         // routing alias) that only exists on their gateway. Fetching /v1/models
@@ -3554,6 +3645,10 @@ mod openrouter_responses_fallback;
 mod openrouter_sse_stream;
 
 #[cfg(test)]
+#[path = "orcarouter_live_tests.rs"]
+mod orcarouter_live_tests;
+
+#[cfg(test)]
 mod initial_model_tests {
     use super::{DEFAULT_API_BASE, DEFAULT_MODEL, initial_model_for_runtime};
 
@@ -3947,6 +4042,7 @@ mod llamacpp_compat_tests {
             context_length: Some(131_072),
             pricing: ModelPricing::default(),
             created: None,
+            ..Default::default()
         });
 
         record_learned_context_limit(&provider.api_base, model, 4096);
@@ -4019,6 +4115,18 @@ mod llamacpp_compat_tests {
         let arr = r#"[{"id":"spark","name":"spark"}]"#;
         let models = parse_openai_compatible_models_response(arr).expect("parse array");
         assert_eq!(models[0].id, "spark");
+    }
+
+    #[test]
+    fn local_bootstrap_uses_first_advertised_chat_model() {
+        let models = parse_openai_compatible_models_response(
+            r#"{"data":[{"id":"text-embedding-local"},{"id":"qwen3-coder-8b"},{"id":"other-chat"}]}"#,
+        )
+        .expect("valid local catalog");
+        assert_eq!(
+            select_local_initial_model(&models, "lmstudio"),
+            Some("qwen3-coder-8b")
+        );
     }
 
     #[test]

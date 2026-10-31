@@ -634,7 +634,8 @@ mod tests {
 
     #[test]
     fn pretty_names_mask_free_pool_members_for_the_picker() {
-        let guard = crate::alphacode_app_core::agent::free_pool_rotation::lock_pool_state_for_tests();
+        let guard =
+            crate::alphacode_app_core::agent::free_pool_rotation::lock_pool_state_for_tests();
         crate::alphacode_app_core::agent::free_pool_rotation::absorb_discovered_free_models(vec![
             "synthetic/dolphin-plus:free".to_string(),
         ]);
@@ -654,7 +655,7 @@ mod tests {
         // The seeded member is gone from the pool again the moment the guard
         // drops; no leak into other tests.
         drop(guard);
-        crate::alphacode_app_core::agent::free_pool_rotation::lock_pool_state_for_tests();
+        drop(crate::alphacode_app_core::agent::free_pool_rotation::lock_pool_state_for_tests());
     }
 
     #[test]
@@ -682,7 +683,7 @@ mod tests {
         // segments; the point of the assertion is that the raw id is still
         // recognizable and was NOT replaced with the "Alphax Free" product name.
         let small = crate::alphacode_provider_metadata::route_cloak::free_route_small_alias();
-        for raw in ["openai/gpt-5.4", "claude-opus-5", small] {
+        for raw in ["openai/gpt-5.4", "claude-opus-5", small.as_str()] {
             let pretty = pretty_model_display_name(raw);
             assert_ne!(
                 pretty, "Alphax Free",

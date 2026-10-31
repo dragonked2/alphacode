@@ -25,6 +25,9 @@ pub mod alphacode_auth_types;
 pub mod alphacode_azure_auth;
 pub mod alphacode_background_types;
 pub mod alphacode_batch_types;
+// Canonical product identity. Declared here (it was previously an orphaned
+// file, so nothing could import it and every surface kept its own literal).
+pub mod alphacode_brand;
 pub mod alphacode_build_meta;
 pub mod alphacode_build_support;
 pub mod alphacode_command_risk;

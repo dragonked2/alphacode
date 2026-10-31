@@ -217,34 +217,60 @@ pub fn selfdev_build_command_for_target(
             vec![("alphacode", "alphacode")]
         }
     };
-    let wrapper = repo_dir.join("scripts").join("dev_cargo.sh");
-    if wrapper.is_file() {
-        let script = wrapper.to_string_lossy();
-        let command = specs
-            .iter()
-            .map(|(package, binary)| {
-                format!(
-                    "{} build --profile {} -p {} --bin {}",
-                    shell_escape(&script),
-                    SELFDEV_CARGO_PROFILE,
-                    package,
-                    binary
-                )
-            })
-            .collect::<Vec<_>>()
-            .join(" && ");
-        return SelfDevBuildCommand {
-            program: "bash".to_string(),
-            args: vec!["-lc".to_string(), command],
-            display: display_build_command("scripts/dev_cargo.sh", &specs),
-        };
+    // On Windows, `bash` may resolve to the WSL compatibility shim even when
+    // no WSL distribution is installed. The workspace currently has one build
+    // target, so invoke Cargo directly instead of depending on a shell.
+    #[cfg(windows)]
+    {
+        let (package, binary) = specs[0];
+        SelfDevBuildCommand {
+            program: "cargo".to_string(),
+            args: [
+                "build",
+                "--profile",
+                SELFDEV_CARGO_PROFILE,
+                "-p",
+                package,
+                "--bin",
+                binary,
+            ]
+            .into_iter()
+            .map(str::to_string)
+            .collect(),
+            display: display_build_command("cargo", &specs),
+        }
     }
+    #[cfg(not(windows))]
+    {
+        let wrapper = repo_dir.join("scripts").join("dev_cargo.sh");
+        if wrapper.is_file() {
+            let script = wrapper.to_string_lossy();
+            let command = specs
+                .iter()
+                .map(|(package, binary)| {
+                    format!(
+                        "{} build --profile {} -p {} --bin {}",
+                        shell_escape(&script),
+                        SELFDEV_CARGO_PROFILE,
+                        package,
+                        binary
+                    )
+                })
+                .collect::<Vec<_>>()
+                .join(" && ");
+            return SelfDevBuildCommand {
+                program: "bash".to_string(),
+                args: vec!["-lc".to_string(), command],
+                display: display_build_command("scripts/dev_cargo.sh", &specs),
+            };
+        }
 
-    let command = display_build_command("cargo", &specs);
-    SelfDevBuildCommand {
-        program: "bash".to_string(),
-        args: vec!["-lc".to_string(), command.clone()],
-        display: command,
+        let command = display_build_command("cargo", &specs);
+        SelfDevBuildCommand {
+            program: "bash".to_string(),
+            args: vec!["-lc".to_string(), command.clone()],
+            display: command,
+        }
     }
 }
 
@@ -303,6 +329,7 @@ fn build_target_for_paths<'a>(paths: impl Iterator<Item = &'a str>) -> SelfDevBu
     SelfDevBuildTarget::Tui
 }
 
+#[cfg(not(windows))]
 fn shell_escape(value: &str) -> String {
     format!("'{}'", value.replace('\'', "'\\''"))
 }
@@ -760,6 +787,26 @@ mod tests {
                 );
             }
         }
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn windows_build_invokes_cargo_without_wsl_shell() {
+        let repo = repo_fixture(false);
+        let command = selfdev_build_command_for_target(repo.path(), SelfDevBuildTarget::Tui);
+        assert_eq!(command.program, "cargo");
+        assert_eq!(
+            command.args,
+            [
+                "build",
+                "--profile",
+                SELFDEV_CARGO_PROFILE,
+                "-p",
+                "alphacode",
+                "--bin",
+                "alphacode"
+            ]
+        );
     }
 
     /// The desktop app was removed from this build: no target may resurrect a

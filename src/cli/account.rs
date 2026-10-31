@@ -9,7 +9,7 @@ pub(crate) async fn run_login(no_browser: bool) -> Result<()> {
 pub(crate) async fn run_status(json: bool) -> Result<()> {
     let Some(api_key) = crate::subscription_catalog::configured_api_key() else {
         anyhow::bail!(
-            "No Alphacode account credential is configured. Run `alphacode account login` to sign in."
+            "No AlphaCode account credential is configured. Run `alphacode account login` to sign in."
         );
     };
     let client = crate::provider::shared_http_client();
@@ -24,7 +24,7 @@ pub(crate) async fn run_status(json: bool) -> Result<()> {
                 .parsed_tier()
                 .map(|tier| tier.display_name().to_string())
                 .unwrap_or_else(|| me.tier.clone());
-            println!("Alphacode Account");
+            println!("AlphaCode Account");
             println!("  Email:  {}", me.email);
             println!("  Plan:   {} ({})", tier, me.status);
             println!(
@@ -41,7 +41,7 @@ pub(crate) async fn run_status(json: bool) -> Result<()> {
             crate::subscription_catalog::clear_account_credentials()
                 .context("The account key is revoked, and local credential cleanup failed")?;
             anyhow::bail!(
-                "The Alphacode account key was revoked or expired. Local credentials were cleared. Run `alphacode account login` to sign in again."
+                "The AlphaCode account key was revoked or expired. Local credentials were cleared. Run `alphacode account login` to sign in again."
             )
         }
         Err(error) => Err(anyhow::Error::new(error)),
@@ -50,7 +50,7 @@ pub(crate) async fn run_status(json: bool) -> Result<()> {
 
 pub(crate) fn run_manage() -> Result<()> {
     let url = crate::subscription_catalog::ALPHACODE_ACCOUNT_URL;
-    println!("Opening Alphacode account management: {url}");
+    println!("Opening AlphaCode account management: {url}");
     if crate::alphacode_base::auth::browser_suppressed(false) {
         println!("Browser launch is disabled. Open the URL above manually.");
         return Ok(());
@@ -76,20 +76,20 @@ pub(crate) async fn run_logout() -> Result<()> {
     // Local cleanup is unconditional, including offline and already-revoked
     // cases. This is the security boundary the CLI can always enforce.
     crate::subscription_catalog::clear_account_credentials()
-        .context("Failed to securely clear local Alphacode account credentials")?;
+        .context("Failed to securely clear local AlphaCode account credentials")?;
     crate::alphacode_base::auth::AuthStatus::invalidate_cache();
 
     match (api_key.is_some(), remote) {
         (false, _) => {
             println!(
-                "No local Alphacode account credential was present. Local account cache is clear."
+                "No local AlphaCode account credential was present. Local account cache is clear."
             )
         }
         (true, Ok(())) => println!(
-            "Alphacode account key revoked. Local credentials and account cache were securely cleared."
+            "AlphaCode account key revoked. Local credentials and account cache were securely cleared."
         ),
         (true, Err(AccountApiError::Unauthorized)) => println!(
-            "The Alphacode account key was already revoked. Local credentials and account cache were securely cleared."
+            "The AlphaCode account key was already revoked. Local credentials and account cache were securely cleared."
         ),
         (true, Err(AccountApiError::Offline(_))) => println!(
             "Local credentials and account cache were securely cleared. The account API was offline, so remote key revocation could not be confirmed."

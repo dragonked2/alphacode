@@ -118,20 +118,15 @@ const COLOR_RESET: &str = "\u{1b}[0m";
 const COLOR_BOLD: &str = "\u{1b}[1m";
 
 // Truecolor ANSI sequences for rich gradients and premium formatting
-const TC_CYAN: &str = "\u{1b}[38;2;80;220;215m";
-const TC_BLUE: &str = "\u{1b}[38;2;130;180;255m";
-const TC_PURPLE: &str = "\u{1b}[38;2;170;130;255m";
+const TC_GOLD_LIGHT: &str = "\u{1b}[38;2;238;211;150m";
+const TC_GOLD: &str = "\u{1b}[38;2;232;190;96m";
+const TC_GOLD_DEEP: &str = "\u{1b}[38;2;218;177;94m";
 const TC_GREEN: &str = "\u{1b}[38;2;120;210;120m";
 const TC_YELLOW: &str = "\u{1b}[38;2;240;220;100m";
 const TC_RED: &str = "\u{1b}[38;2;240;80;80m";
 const TC_GRAY: &str = "\u{1b}[38;2;160;165;175m";
 const TC_GRAY_DIM: &str = "\u{1b}[38;2;100;105;115m";
 const TC_WHITE: &str = "\u{1b}[38;2;230;235;245m";
-const TC_BG_DARK: &str = "\u{1b}[48;2;18;20;30m";
-const TC_GRADIENT_A: &str = "\u{1b}[38;2;130;180;255m";
-const TC_GRADIENT_B: &str = "\u{1b}[38;2;150;160;255m";
-const TC_GRADIENT_C: &str = "\u{1b}[38;2;170;140;255m";
-const TC_GRADIENT_D: &str = "\u{1b}[38;2;190;120;255m";
 
 /// Format with a color. Returns a new String (not a Cow) so callers can chain formatting.
 ///
@@ -211,7 +206,7 @@ pub fn badge_error(text: &str) -> String {
     format!("{TC_RED}{COLOR_BOLD} \u{2717} {text}{COLOR_RESET}")
 }
 pub fn badge_info(text: &str) -> String {
-    format!("{TC_CYAN}{COLOR_BOLD} \u{2139} {text}{COLOR_RESET}")
+    format!("{TC_GOLD_LIGHT}{COLOR_BOLD} \u{2139} {text}{COLOR_RESET}")
 }
 
 /// Styled label-value pairs for structured output.
@@ -224,60 +219,56 @@ pub fn separator(width: usize) -> String {
     format!("{TC_GRAY_DIM}{}{COLOR_RESET}", "\u{2500}".repeat(width))
 }
 
-/// Compact header replacing the large ASCII logo. Enhanced with truecolor gradient.
-pub fn compact_header(
-    version: &str,
-    provider: &str,
-    model: &str,
-    server: &str,
-    workspace: &str,
-) -> String {
-    format!(
-        "{tc_bg}{TC_GRADIENT_A}{COLOR_BOLD} \u{2554}\u{2550}\u{2557} {COLOR_RESET} {TC_GRADIENT_A}AlphaCode{COLOR_RESET} {TC_GRADIENT_B}v{version}{COLOR_RESET} {TC_GRAY_DIM}\u{2502}{COLOR_RESET} {TC_GRAY}Provider   {TC_CYAN}{provider}{COLOR_RESET} {TC_GRAY_DIM}\u{2502}{COLOR_RESET} {TC_GRAY}Model      {TC_WHITE}{COLOR_BOLD}{model}{COLOR_RESET} {TC_GRAY_DIM}\u{2502}{COLOR_RESET} {TC_GRAY}Server     {TC_WHITE}{server}{COLOR_RESET} {TC_GRAY_DIM}\u{2502}{COLOR_RESET} {TC_GRAY}Workspace  {TC_WHITE}{workspace}{COLOR_RESET} {TC_GREEN}{COLOR_BOLD}\u{25cf} Ready{COLOR_RESET}",
-        tc_bg = TC_BG_DARK,
-        version = version,
-        provider = provider,
-        model = model,
-        server = server,
-        workspace = workspace,
-    )
+/// Center the shared brand wordmark for a human-facing terminal.
+///
+/// Returns an empty string when no tier fits (or when the console cannot render
+/// the glyphs and even the plain display name is too wide), so callers degrade
+/// to a text heading rather than wrapping the art.
+///
+/// This lives in core — next to [`console`](crate::alphacode_core::console),
+/// which answers the two questions a renderer must ask first ("may I emit
+/// Unicode?" and "how wide is the terminal?") — because every surface needs it:
+/// the `run` banner, the interactive REPL, and any future non-TUI entry point.
+/// The previous CLI-only copy meant the REPL and other layers had no shared path
+/// to the wordmark and simply printed a bare heading instead.
+pub fn startup_banner(width: usize) -> String {
+    startup_banner_with_unicode(width, crate::alphacode_core::console::unicode_supported())
 }
 
-/// Full startup banner with ASCII art and gradient coloring. Rendered once at launch.
-pub fn startup_banner(version: &str, provider: &str, model: &str) -> String {
-    let banner = format!(
-        "{TC_BG_DARK}{TC_GRADIENT_A}\n\
-         {TC_GRADIENT_A}     \u{2554}\u{2550}\u{2557}\u{2554}\u{2550}\u{2557}\u{2554}\u{2566}\u{2557}\
-         \u{2554}\u{2550}\u{2550}\u{2557}\u{2554}\u{2550}\u{2557}\
-         \u{2554}\u{2566}\u{2557}\u{2554}\u{2550}\u{2557}\
-         \u{2554}\u{2550}\u{2557}\u{2554}\u{2550}\u{2557}{COLOR_RESET}\n\
-         {TC_GRADIENT_B}     \u{2560}\u{2550}\u{255d}\u{2551} \u{2551}\u{2551}\
-         \u{2563}\u{256a}\u{255d}\u{2551} \u{2551} \u{2551}\
-         \u{2560}\u{2550}\u{2563}\u{2551} \u{2551} \u{2551}\
-         \u{2560}\u{2550}\u{2563}\u{2551}{COLOR_RESET}\n\
-         {TC_GRADIENT_C}     \u{2569}  \u{255a}\u{2550}\u{2569}\
-         \u{2569} \u{2569}\u{255a}\u{2550}\u{2569}\
-         \u{2569}\u{2569}\u{2569}\u{2569}\u{2569}\u{2569}\
-         \u{2569}\u{2569}\u{2569} \u{2569} \u{255a}\u{2550}\u{2569}\
-         \u{2569} \u{2569} \u{255a}\u{2550}\u{2569}\
-         \u{255a}\u{2569}{COLOR_RESET}\n\
-         {TC_GRADIENT_D}     {TC_GRAY_DIM}Multi-model orchestration \
-         \u{00b7} swarm coordination{COLOR_RESET}\n\
-         {TC_BG_DARK}{COLOR_RESET}"
-    );
-    let info_line = format!(
-        "{TC_GRAY}  v{version}{COLOR_RESET} {TC_GRAY_DIM}\u{00b7}{COLOR_RESET} \
-         {TC_WHITE}{provider}{COLOR_RESET} {TC_GRAY_DIM}\u{00b7}{COLOR_RESET} \
-         {TC_CYAN}{model}{COLOR_RESET} {TC_GREEN}{COLOR_BOLD}\u{25cf} Ready{COLOR_RESET}"
-    );
-    format!("{banner}\n{info_line}")
+/// [`startup_banner`] with the Unicode capability passed in explicitly.
+///
+/// Split out so the capability branch is testable without touching the
+/// process-global console cache (and so callers that have already resolved the
+/// answer need not ask again).
+pub fn startup_banner_with_unicode(width: usize, unicode: bool) -> String {
+    use unicode_width::UnicodeWidthStr;
+
+    let rows: Option<&[&str]> = if unicode {
+        crate::alphacode_brand::wordmark_for(width)
+    } else if width >= crate::alphacode_brand::WORDMARK_MONOSPACE.len() {
+        Some(crate::alphacode_brand::WORDMARK_MONOSPACE_ROWS)
+    } else if width >= crate::alphacode_brand::DISPLAY_NAME.len() {
+        Some(&[crate::alphacode_brand::DISPLAY_NAME])
+    } else {
+        None
+    };
+    let Some(rows) = rows else {
+        return String::new();
+    };
+    rows.iter()
+        .map(|row| {
+            let padding = width.saturating_sub(UnicodeWidthStr::width(*row)) / 2;
+            format!("{}{row}", " ".repeat(padding))
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
 }
 
 /// Copyright notice for terminal output.
 pub fn copyright_notice(version: &str) -> String {
     let year = 2026;
     format!(
-        "{TC_CYAN}AlphaCode{COLOR_RESET} {TC_GRAY_DIM}v{version}{COLOR_RESET}  \
+        "{TC_GOLD_LIGHT}AlphaCode{COLOR_RESET} {TC_GRAY_DIM}v{version}{COLOR_RESET}  \
          {TC_GRAY_DIM}\u{00a9} {year} AlphaCode. All rights reserved.{COLOR_RESET}",
         version = version,
         year = year,
@@ -295,7 +286,7 @@ pub fn aligned_header(label: &str, value: &str) -> String {
 
 /// Clean prompt formatting.
 pub fn prompt_header(title: &str) -> String {
-    format!("{COLOR_BOLD}{TC_CYAN}{title}{COLOR_RESET}\n")
+    format!("{COLOR_BOLD}{TC_GOLD_LIGHT}{title}{COLOR_RESET}\n")
 }
 pub fn prompt_field(label: &str, value: &str) -> String {
     format!("{TC_GRAY}{label}{COLOR_RESET}\n{TC_WHITE}{value}{COLOR_RESET}\n")
@@ -309,12 +300,12 @@ pub fn prompt_action(text: &str) -> String {
 
 /// Concise progress messages.
 pub fn progress(text: &str) -> String {
-    format!("{TC_BLUE}{text}{COLOR_RESET}")
+    format!("{TC_GOLD}{text}{COLOR_RESET}")
 }
 
 /// Formatted progress with a spinner-style indicator.
 pub fn progress_spinner(text: &str) -> String {
-    format!("{TC_PURPLE}{COLOR_BOLD}\u{27f3}{COLOR_RESET} {TC_BLUE}{text}{COLOR_RESET}")
+    format!("{TC_GOLD_DEEP}{COLOR_BOLD}\u{27f3}{COLOR_RESET} {TC_GOLD}{text}{COLOR_RESET}")
 }
 
 /// Rewrite errors to be short, actionable, and readable.
@@ -346,11 +337,11 @@ pub fn success_message(text: &str) -> String {
 pub fn info_block(title: &str, body: &str) -> String {
     let mut out = String::new();
     out.push_str(&format!(
-        "{TC_CYAN}{COLOR_BOLD}  \u{2503} {title}{COLOR_RESET}\n"
+        "{TC_GOLD_LIGHT}{COLOR_BOLD}  \u{2503} {title}{COLOR_RESET}\n"
     ));
     for line in body.lines() {
         out.push_str(&format!(
-            "{TC_CYAN}  \u{2503}{COLOR_RESET} {TC_GRAY}{line}{COLOR_RESET}\n"
+            "{TC_GOLD_LIGHT}  \u{2503}{COLOR_RESET} {TC_GRAY}{line}{COLOR_RESET}\n"
         ));
     }
     out

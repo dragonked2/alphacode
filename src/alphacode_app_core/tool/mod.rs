@@ -18,11 +18,14 @@ mod conversation_search;
 mod corsy;
 mod crlfuzz;
 mod cron;
+mod ctf_progress_guard;
 mod ctf_tools;
+mod ctf_web_recon;
 mod dalfox;
 mod debug_socket;
 pub mod desktop;
 pub(crate) mod diff_utils;
+pub mod disclosure;
 mod discover;
 mod dnsx;
 mod doctor;
@@ -72,6 +75,7 @@ mod skill;
 mod sqlmap;
 mod subfinder;
 mod todo;
+pub mod tool_help;
 mod unfurl;
 mod waybackurls;
 mod webfetch;
@@ -141,6 +145,40 @@ struct SessionToolPolicy {
 static SESSION_TOOL_POLICIES: LazyLock<StdRwLock<HashMap<String, SessionToolPolicy>>> =
     LazyLock::new(|| StdRwLock::new(HashMap::new()));
 
+/// Every tool name the registry has registered in this process.
+///
+/// `tool_help` needs to enumerate tools that progressive disclosure is
+/// *currently hiding*, and it has no handle on the registry (tools receive only
+/// a [`ToolContext`]). Rather than widen `ToolContext` for one caller, the
+/// registry publishes its name set here when it is constructed. This is
+/// append-only and cheap: it holds strings, not tools.
+static TOOL_MANIFEST: LazyLock<StdRwLock<std::collections::BTreeSet<String>>> =
+    LazyLock::new(|| StdRwLock::new(std::collections::BTreeSet::new()));
+
+/// Publish the full set of registered tool names for discovery surfaces.
+pub(crate) fn publish_tool_manifest<I, S>(names: I)
+where
+    I: IntoIterator<Item = S>,
+    S: AsRef<str>,
+{
+    let mut manifest = TOOL_MANIFEST
+        .write()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    for name in names {
+        manifest.insert(name.as_ref().to_string());
+    }
+}
+
+/// Snapshot of every tool name registered in this process, sorted.
+pub fn known_tool_names() -> Vec<String> {
+    TOOL_MANIFEST
+        .read()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .iter()
+        .cloned()
+        .collect()
+}
+
 pub(crate) fn set_session_tool_policy(
     session_id: &str,
     allowed_tools: Option<HashSet<String>>,
@@ -164,6 +202,8 @@ pub(crate) fn clear_session_tool_policy(session_id: &str) {
         .unwrap_or_else(|poisoned| poisoned.into_inner());
     policies.remove(session_id);
     repeat_guard::clear_session(session_id);
+    ctf_progress_guard::clear(session_id);
+    tool_help::clear_session(session_id);
 }
 
 fn session_tool_policy(session_id: &str) -> Option<SessionToolPolicy> {
@@ -994,6 +1034,7 @@ impl Registry {
             Self::insert_tool_timed(&mut m, &mut timings, "ls", ls::LsTool::new);
             Self::insert_tool_timed(&mut m, &mut timings, "bash", bash::BashTool::new);
             Self::insert_tool_timed(&mut m, &mut timings, "browser", browser::BrowserTool::new);
+            Self::insert_tool(&mut m, "ctf_web_recon", ctf_web_recon::CtfWebReconTool);
             Self::insert_tool_timed(&mut m, &mut timings, "open", open::OpenTool::new);
             #[cfg(target_os = "macos")]
             Self::insert_tool_timed(
@@ -1103,6 +1144,12 @@ impl Registry {
             Self::insert_tool_timed(&mut m, &mut timings, "jwt", || jwt::JwtTool);
             Self::insert_tool_timed(&mut m, &mut timings, "invalid", invalid::InvalidTool::new);
             Self::insert_tool_timed(&mut m, &mut timings, "todo", todo::TodoTool::new);
+            Self::insert_tool_timed(
+                &mut m,
+                &mut timings,
+                "tool_help",
+                tool_help::ToolHelpTool::new,
+            );
             Self::insert_tool_timed(&mut m, &mut timings, "bg", bg::BgTool::new);
             // CTF-specific tools
             Self::insert_tool_timed(
@@ -1255,6 +1302,9 @@ impl Registry {
         let session_tools_ms = session_tools_start.elapsed().as_millis();
 
         let write_start = std::time::Instant::now();
+        // Publish the full name set so `tool_help` can enumerate tools that
+        // progressive disclosure is currently hiding.
+        publish_tool_manifest(tools_map.keys().cloned());
         *registry.tools.write().await = tools_map;
         let write_ms = write_start.elapsed().as_millis();
         crate::logging::info(&format!(
@@ -1275,10 +1325,23 @@ impl Registry {
         &self,
         allowed_tools: Option<&HashSet<String>>,
     ) -> Vec<ToolDefinition> {
+        self.definitions_filtered(allowed_tools, |_| true).await
+    }
+
+    /// Avoid building schemas for tools excluded from this request.
+    pub async fn definitions_filtered<F>(
+        &self,
+        allowed_tools: Option<&HashSet<String>>,
+        include: F,
+    ) -> Vec<ToolDefinition>
+    where
+        F: Fn(&str) -> bool,
+    {
         let tools = self.tools.read().await;
         let mut defs: Vec<ToolDefinition> = tools
             .iter()
             .filter(|(name, _)| allowed_tools.map(|set| set.contains(*name)).unwrap_or(true))
+            .filter(|(name, _)| include(name))
             .map(|(name, tool)| {
                 let mut def = tool.to_definition();
                 // Use registry key as the tool name (important for MCP tools where
@@ -1774,6 +1837,18 @@ impl Registry {
                 Some(&reason),
             );
             return Err(anyhow::anyhow!("{reason}"));
+        }
+        if matches!(
+            ctx.execution_mode,
+            crate::alphacode_tool_core::ToolExecutionMode::AgentTurn
+        ) {
+            ctf_progress_guard::check(
+                &ctx.session_id,
+                ctx.working_dir.as_deref(),
+                resolved_name,
+                &input,
+            )
+            .map_err(anyhow::Error::msg)?;
         }
 
         // Rate/concurrency budget for network work. Held across the call so the

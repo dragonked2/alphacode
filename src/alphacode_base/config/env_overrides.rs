@@ -120,6 +120,9 @@ impl Config {
         {
             self.tools.disable_base_tools = parsed;
         }
+        if let Ok(v) = std::env::var("ALPHACODE_TOOL_DISCLOSURE") {
+            self.tools.disclosure = v;
+        }
 
         // ACP adapter
         if let Ok(v) = std::env::var("ALPHACODE_ACP_PROFILE") {

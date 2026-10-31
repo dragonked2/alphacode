@@ -73,7 +73,7 @@ impl App {
         let runtime_mode = crate::subscription_catalog::is_runtime_mode_enabled();
         let cached_tier = crate::subscription_catalog::cached_tier();
 
-        let mut message = String::from("Alphacode Subscription Status\n\n");
+        let mut message = String::from("AlphaCode Subscription Status\n\n");
         message.push_str(&format!(
             "  - Credentials: {}\n",
             if configured_key {
@@ -174,7 +174,7 @@ impl App {
                                 crate::bus::UiActivity::background(
                                     Some(session_id),
                                     format!(
-                                        "Alphacode Subscription Account\n\n  - Email: {}\n  - Tier: {} ({})\n  - Usage: ${:.2} of ${:.2}{}",
+                                        "AlphaCode Subscription Account\n\n  - Email: {}\n  - Tier: {} ({})\n  - Usage: ${:.2} of ${:.2}{}",
                                         me.email,
                                         tier_label,
                                         me.status,
@@ -344,7 +344,18 @@ impl App {
                     &resolved.env_file,
                     None,
                 )?;
+                if resolved.id == crate::alphacode_base::auth::orcarouter::PROFILE_ID {
+                    crate::alphacode_base::auth::orcarouter::clear_needs_reauth();
+                }
                 Ok(format!("Logged out of {} API key.", resolved.display_name))
+            }
+            LoginProviderTarget::OrcaRouterOAuth => {
+                crate::alphacode_base::auth::orcarouter::clear_key()?;
+                crate::alphacode_base::auth::orcarouter::clear_needs_reauth();
+                Ok(
+                    "Logged out of OrcaRouter. The minted key was removed locally; revoke it on the server at https://www.orcarouter.ai/console/authorized-apps."
+                        .to_string(),
+                )
             }
             LoginProviderTarget::Cursor => {
                 crate::alphacode_base::auth::cursor::clear_api_key()?;
@@ -584,6 +595,9 @@ impl App {
             crate::provider_catalog::LoginProviderTarget::Azure => self.start_azure_login(),
             crate::provider_catalog::LoginProviderTarget::OpenAiCompatible(profile) => {
                 self.start_openai_compatible_profile_login(profile)
+            }
+            crate::provider_catalog::LoginProviderTarget::OrcaRouterOAuth => {
+                self.start_orcarouter_oauth_login()
             }
             crate::provider_catalog::LoginProviderTarget::Cursor => self.start_cursor_login(),
             crate::provider_catalog::LoginProviderTarget::Copilot => self.start_copilot_login(),
@@ -1576,6 +1590,11 @@ impl App {
         &mut self,
         profile: crate::provider_catalog::OpenAiCompatibleProfile,
     ) {
+        if profile.id == crate::alphacode_base::auth::orcarouter::PROFILE_ID {
+            self.start_orcarouter_login();
+            return;
+        }
+
         if profile.id == crate::provider_catalog::OPENAI_COMPAT_PROFILE.id {
             let resolved = crate::provider_catalog::resolve_openai_compatible_profile(profile);
             self.push_display_message(DisplayMessage::system(format!(
@@ -1755,6 +1774,144 @@ impl App {
             endpoint: endpoint.map(|value| value.to_string()),
             api_key_optional,
             openai_compatible_profile,
+        });
+    }
+
+    fn start_orcarouter_login(&mut self) {
+        self.start_api_key_login(
+            "OrcaRouter",
+            "https://www.orcarouter.ai/console",
+            crate::alphacode_base::auth::orcarouter::ENV_FILE,
+            crate::alphacode_base::auth::orcarouter::API_KEY_ENV,
+            Some("orcarouter/auto"),
+            None,
+            false,
+            Some(crate::provider_catalog::ORCAROUTER_PROFILE),
+        );
+    }
+
+    fn start_orcarouter_oauth_login(&mut self) {
+        crate::telemetry::record_auth_started(
+            crate::alphacode_base::auth::orcarouter::PROFILE_ID,
+            "oauth",
+        );
+
+        let auth_base = crate::alphacode_base::auth::orcarouter::auth_base();
+        let (attempt, _challenge) = crate::alphacode_base::auth::orcarouter::begin_attempt();
+
+        let listener = crate::alphacode_base::auth::oauth::bind_callback_listener(0).ok();
+        let redirect_uri = match listener.as_ref().map(|listener| listener.local_addr()) {
+            Some(Ok(addr)) => format!("http://127.0.0.1:{}/cb", addr.port()),
+            _ => format!(
+                "http://127.0.0.1:{}/cb",
+                crate::alphacode_base::auth::orcarouter::FALLBACK_CALLBACK_PORT
+            ),
+        };
+        let auth_url = crate::alphacode_base::auth::orcarouter::authorize_url(
+            &auth_base,
+            &redirect_uri,
+            &attempt,
+        );
+
+        let qr_section = crate::login_qr::markdown_section_for_tui(
+            &auth_url,
+            "Scan this on another device if this machine has no browser, then paste the full callback URL or code here:",
+        )
+        .map(|section| format!("\n\n{section}"))
+        .unwrap_or_default();
+
+        let callback_available = listener.is_some();
+        let browser_opened = Self::open_auth_browser(&auth_url);
+
+        if let Some(listener) = listener {
+            let attempt_for_task = attempt.clone();
+            let redirect_clone = redirect_uri.clone();
+            tokio::spawn(async move {
+                let code = tokio::time::timeout(
+                    std::time::Duration::from_secs(
+                        crate::alphacode_base::auth::orcarouter::CALLBACK_WAIT_SECS,
+                    ),
+                    crate::alphacode_base::auth::oauth::wait_for_callback_async_on_listener(
+                        listener,
+                        &attempt_for_task.state,
+                    ),
+                )
+                .await
+                .map_err(|_| "OrcaRouter login timed out; please try again.".to_string())
+                .and_then(|result| result.map_err(|e| format!("Callback failed: {}", e)));
+
+                let (success, message) = match code {
+                    Ok(code) => {
+                        match crate::alphacode_base::auth::orcarouter::exchange_code(
+                            &auth_base,
+                            &attempt_for_task,
+                            &code,
+                        )
+                        .await
+                        .and_then(|issued| {
+                            match crate::alphacode_base::auth::orcarouter::save_key(&issued.key) {
+                                Ok(()) => Ok(issued),
+                                Err(err) => Err(err),
+                            }
+                        }) {
+                            Ok(issued) => (
+                                true,
+                                format!(
+                                    "Successfully logged in to OrcaRouter! Key {} saved to {}.",
+                                    crate::alphacode_base::auth::orcarouter::redact_key(
+                                        &issued.key
+                                    ),
+                                    redirect_clone
+                                ),
+                            ),
+                            Err(err) => (false, format!("OrcaRouter login failed: {}", err)),
+                        }
+                    }
+                    Err(err) => (false, format!("OrcaRouter login failed: {}", err)),
+                };
+                Bus::global().publish(BusEvent::LoginCompleted(LoginCompleted {
+                    provider: crate::alphacode_base::auth::orcarouter::PROFILE_ID.to_string(),
+                    success,
+                    message,
+                }));
+            });
+        }
+
+        let callback_line = if callback_available {
+            format!(
+                "Waiting for the callback on {}... (completes automatically)\n",
+                redirect_uri
+            )
+        } else {
+            "The local callback listener could not start; finish in any browser and paste the full callback URL or code here.\n".to_string()
+        };
+        let preflight = Self::record_oauth_preflight(
+            crate::alphacode_base::auth::orcarouter::PROFILE_ID,
+            browser_opened,
+            Some(&redirect_uri),
+            Some(callback_available),
+        );
+
+        self.push_display_message(DisplayMessage::system(format!(
+            "OrcaRouter Login (OAuth 2.0 + PKCE)\n\n\
+             Opening your browser to authorize alphacode...\n\n\
+             If the browser didn't open, visit:\n{}\n\n\
+             {}{}\
+             Paste the full callback URL (or just the code) here to finish. Type /cancel to abort.{}\n\n\
+             A new `sk-orca-...` key is minted for this app; revoke it anytime at https://www.orcarouter.ai/console/authorized-apps",
+            auth_url,
+            callback_line,
+            if preflight.is_empty() {
+                String::new()
+            } else {
+                format!("{}\n", preflight)
+            },
+            qr_section
+        )));
+        self.set_status_notice("Login: OrcaRouter waiting...");
+        self.begin_pending_login(PendingLogin::OrcaRouterOAuth {
+            attempt,
+            redirect_uri,
         });
     }
 
@@ -2285,6 +2442,68 @@ impl App {
                 });
                 self.push_display_message(DisplayMessage::system(
                     "Exchanging Antigravity callback for tokens...".to_string(),
+                ));
+            }
+            PendingLogin::OrcaRouterOAuth {
+                attempt,
+                redirect_uri,
+            } => {
+                let (code, callback_state) =
+                    crate::alphacode_base::auth::orcarouter::parse_callback_input(&input);
+                if code.is_empty() {
+                    self.push_display_message(DisplayMessage::error(
+                        "No OrcaRouter authorization code found in that input. Paste the full callback URL or the code itself.".to_string(),
+                    ));
+                    self.pending_login = Some(PendingLogin::OrcaRouterOAuth {
+                        attempt,
+                        redirect_uri,
+                    });
+                    return;
+                }
+                if let Some(callback_state) = callback_state.as_deref()
+                    && callback_state != attempt.state
+                {
+                    crate::telemetry::record_auth_failed_reason(
+                        crate::alphacode_base::auth::orcarouter::PROFILE_ID,
+                        "oauth",
+                        "state_mismatch",
+                    );
+                    self.push_display_message(DisplayMessage::error(
+                        "OAuth state mismatch: that callback belongs to a different login attempt. Run the login again.".to_string(),
+                    ));
+                    return;
+                }
+
+                self.set_status_notice("Login: exchanging...");
+                let auth_base = crate::alphacode_base::auth::orcarouter::auth_base();
+                tokio::spawn(async move {
+                    let result = async {
+                        let issued = crate::alphacode_base::auth::orcarouter::exchange_code(
+                            &auth_base, &attempt, &code,
+                        )
+                        .await?;
+                        crate::alphacode_base::auth::orcarouter::save_key(&issued.key)?;
+                        Ok::<_, anyhow::Error>(issued)
+                    }
+                    .await;
+                    let (success, message) = match result {
+                        Ok(issued) => (
+                            true,
+                            format!(
+                                "Successfully logged in to OrcaRouter! Key {} saved. Revoke it anytime at https://www.orcarouter.ai/console/authorized-apps",
+                                crate::alphacode_base::auth::orcarouter::redact_key(&issued.key)
+                            ),
+                        ),
+                        Err(err) => (false, format!("OrcaRouter login failed: {}", err)),
+                    };
+                    Bus::global().publish(BusEvent::LoginCompleted(LoginCompleted {
+                        provider: crate::alphacode_base::auth::orcarouter::PROFILE_ID.to_string(),
+                        success,
+                        message,
+                    }));
+                });
+                self.push_display_message(DisplayMessage::system(
+                    "Exchanging the OrcaRouter authorization code for a key...".to_string(),
                 ));
             }
             PendingLogin::ApiKeyProfile {

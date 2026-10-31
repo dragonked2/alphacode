@@ -88,7 +88,7 @@ impl Tool for FfufTool {
                 },
                 "no_color": {
                     "type": "boolean",
-                    "description": "Suppress color codes. Default: false."
+                    "description": "Accepted for compatibility; structured tool output is always uncolored."
                 }
             }
         })
@@ -124,7 +124,11 @@ impl Tool for FfufTool {
         // previous behaviour fed all of that to the model verbatim and, unlike
         // every sibling tool, reported no `count` — so a caller could not tell
         // an empty scan from a truncated one.
-        let (lines, total, truncated) = super::recon_common::parse_lines(&output.stdout);
+        let (records, total, truncated) = super::recon_common::parse_lines(&output.stdout);
+        let lines: Vec<String> = records
+            .iter()
+            .map(|line| format_ffuf_result(line))
+            .collect::<Result<_>>()?;
 
         let mut result = format!("ffuf found {total} results for {}:\n\n", params.url);
         for line in &lines {
@@ -232,11 +236,25 @@ fn build_args(params: &FfufInput) -> Result<Vec<String>> {
         }
     }
 
-    if params.no_color {
-        args.push("-nc".to_string());
-    }
+    // ffuf has -c, not -nc. JSON lines in silent mode contain only findings,
+    // with stable status/size metadata and no progress banner or ANSI escapes.
+    let _ = params.no_color;
+    args.extend(["-c=false", "-s", "-json"].into_iter().map(str::to_string));
 
     Ok(args)
+}
+
+fn format_ffuf_result(line: &str) -> Result<String> {
+    let item: Value = serde_json::from_str(line)
+        .map_err(|error| anyhow::anyhow!("ffuf returned invalid JSON result: {error}"))?;
+    let url = item
+        .get("url")
+        .and_then(Value::as_str)
+        .ok_or_else(|| anyhow::anyhow!("ffuf result did not contain a URL"))?;
+    let status = item.get("status").and_then(Value::as_u64).unwrap_or(0);
+    let length = item.get("length").and_then(Value::as_u64).unwrap_or(0);
+    let words = item.get("words").and_then(Value::as_u64).unwrap_or(0);
+    Ok(format!("{status}  {url}  ({length} bytes, {words} words)"))
 }
 
 #[cfg(test)]
@@ -262,6 +280,26 @@ mod tests {
         assert!(args.contains(&"https://example.com/FUZZ".to_string()));
         assert!(args.contains(&"-w".to_string()));
         assert!(args.contains(&"common.txt".to_string()));
+    }
+
+    #[test]
+    fn no_color_uses_supported_ffuf_flags_and_structured_results() {
+        let input: FfufInput = serde_json::from_value(
+            json!({"url":"http://example.com/FUZZ", "wordlist":"words.txt", "no_color":true}),
+        )
+        .unwrap();
+        let args = build_args(&input).unwrap();
+        assert!(!args.iter().any(|arg| arg == "-nc"));
+        assert!(args.iter().any(|arg| arg == "-c=false"));
+        assert!(args.iter().any(|arg| arg == "-json"));
+        assert_eq!(
+            format_ffuf_result(
+                r#"{"url":"http://example.com/hit","status":200,"length":12,"words":2}"#
+            )
+            .unwrap(),
+            "200  http://example.com/hit  (12 bytes, 2 words)"
+        );
+        assert!(format_ffuf_result("ffuf banner").is_err());
     }
 
     /// Regression: the old builder defaulted to the bare relative path
