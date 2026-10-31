@@ -4,6 +4,20 @@ All notable changes to Alphacode are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project
 adheres to [Semantic Versioning](https://semver.org/).
 
+## [Unreleased]
+
+### Fixed
+
+- Lifecycle hooks (`[hooks]`) now see the attached client's terminal env
+  instead of the shared server's startup env. Hooks run inside the server, so
+  with several clients they all saw the terminal that happened to start it,
+  and a hook could not tell which tmux/zellij/herdr pane a session is shown
+  in. They now get the same client snapshot as spawn/focus hooks (#405):
+  `TMUX_PANE`, `ZELLIJ_PANE_ID`, `HERDR_PANE_ID`, ... natively and as
+  `ALPHACODE_CLIENT_<NAME>`. Server terminal vars the client did not send are
+  dropped rather than mixed in. Sessions with no attached client keep the
+  server's env.
+
 ## [1.0.90] - 2026-10-31
 
 ### Added

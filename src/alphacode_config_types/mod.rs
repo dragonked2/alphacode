@@ -761,6 +761,10 @@ pub struct TerminalConfig {
 /// `ALPHACODE_HOOK_SESSION_ID`, `ALPHACODE_HOOK_CWD`, event-specific fields, and a
 /// `ALPHACODE_HOOK_PAYLOAD` JSON mirror). Hook processes get
 /// `ALPHACODE_HOOKS_DISABLED=1` so nested alphacode invocations don't recurse.
+/// While a client is attached to the session, hooks see that client's
+/// terminal env (`CLIENT_TERMINAL_ENV_VARS`, also as `ALPHACODE_CLIENT_<NAME>`)
+/// instead of the shared server's startup env, so they can address the pane
+/// the session is shown in (#405).
 ///
 /// All hooks except `pre_tool` are observers: detached, fire-and-forget,
 /// failures only logged. `pre_tool` is a gate: alphacode waits for it and exit
