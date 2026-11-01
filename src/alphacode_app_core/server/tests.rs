@@ -1123,3 +1123,20 @@ async fn startup_ready_signal_is_not_blocked_by_headless_recovery_delay() -> Res
 
     Ok(())
 }
+
+#[tokio::test]
+async fn agent_clear_drops_hook_client_env_of_the_closed_session() {
+    let _guard = crate::storage::lock_test_env();
+    let agent = test_agent(Arc::new(StreamingMockProvider::default())).await;
+    let mut guard = agent.lock().await;
+    let old_session_id = guard.session_id().to_string();
+    crate::hooks::set_session_client_env(
+        &old_session_id,
+        vec![("HERDR_PANE_ID".to_string(), "w1:p2".to_string())],
+    );
+
+    guard.clear();
+
+    assert_ne!(guard.session_id(), old_session_id);
+    assert_eq!(crate::hooks::session_client_env(&old_session_id), None);
+}
