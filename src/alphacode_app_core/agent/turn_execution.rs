@@ -461,6 +461,9 @@ impl Agent {
 
         self.session.mark_closed();
         self.persist_session_best_effort("pre-clear session close state");
+        // `Agent::mark_closed` is bypassed here, so drop the closed session's
+        // hook client env ourselves.
+        crate::hooks::clear_session_client_env(&self.session.id);
 
         let mut new_session = Session::create(None, None);
         new_session.mark_active();
