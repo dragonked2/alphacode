@@ -1066,6 +1066,12 @@ Before opening a pull request, check that:
 
 Read [`CONTRIBUTING.md`](CONTRIBUTING.md) before submitting a change.
 
+## Contributors
+
+Thanks to everyone who has contributed code, tests, or reviews to AlphaCode.
+
+- [@levz0r](https://github.com/levz0r) — lifecycle hooks now inherit the attached client's terminal env (#20), so hooks target the pane a session is actually shown in.
+
 ## Support AlphaCode
 
 If AlphaCode saves you time, star the repository, report reproducible bugs, suggest improvements, improve the docs, test releases, or contribute code. Sharing it with a teammate helps too.
