@@ -252,6 +252,13 @@ impl Provider for OpenRouterProvider {
             }
         }
 
+        // Encode the body once. The pre-flight guard needs its size, the
+        // transport needs its bytes, and a debug fingerprint may need its
+        // shape — so measuring with a throwaway serialization and then letting
+        // `req.json()` serialize the same tree a second time doubled the
+        // per-request CPU on exactly the long sessions where it hurts most.
+        let request_body = serde_json::to_vec(&request).unwrap_or_default();
+
         // Pre-flight context guard: never send a request whose estimated
         // prompt + reserved output exceeds the known server context. Without
         // this, a 11_934-token prompt against an 8_192-token llama-server
@@ -259,7 +266,7 @@ impl Provider for OpenRouterProvider {
         // `exceed_context_size_error`. Fail fast with actionable diagnostics.
         {
             let context_window = self.context_window();
-            let estimated_prompt = super::estimate_chat_request_tokens(&request);
+            let estimated_prompt = request_body.len() / 4;
             let reserved_output = self.max_tokens.unwrap_or(2048) as usize;
             if estimated_prompt.saturating_add(reserved_output) > context_window {
                 let (system_tokens, conversation_tokens, tools_tokens) =
@@ -285,44 +292,52 @@ impl Provider for OpenRouterProvider {
             }
         }
 
-        let message_items = request
-            .get("messages")
-            .and_then(|value| value.as_array())
-            .cloned()
-            .unwrap_or_default();
-        let tools_value = request.get("tools").cloned();
-        let system_value = message_items
-            .first()
-            .filter(|message| message.get("role").and_then(|role| role.as_str()) == Some("system"))
-            .cloned();
-        let tool_count = tools_value
-            .as_ref()
-            .and_then(|value| value.as_array())
-            .map(|tools| tools.len())
-            .unwrap_or(0);
-        crate::alphacode_provider_core::fingerprint::log_provider_canonical_input(
-            if self.supports_provider_features {
-                "openrouter"
-            } else {
-                "openai-compatible"
-            },
-            &model,
-            "chat_completions",
-            &request,
-            &message_items,
-            system_value.as_ref(),
-            tools_value.as_ref(),
-            Some(tool_count),
-            &[
-                ("cache_supported", cache_supported.to_string()),
-                ("cache_control_added", cache_control_added.to_string()),
-                ("thinking_enabled", format!("{:?}", thinking_enabled)),
-                (
-                    "provider_features",
-                    self.supports_provider_features.to_string(),
-                ),
-            ],
-        );
+        // Canonical-input fingerprinting is a debugging aid that is off unless an
+        // operator turns it on. Building its inputs means deep-cloning every
+        // message, the system prompt and the full tool schemas — a copy of the
+        // whole prompt per request — so only pay for it when it will be used.
+        if crate::alphacode_provider_core::fingerprint::fingerprint_enabled() {
+            let message_items = request
+                .get("messages")
+                .and_then(|value| value.as_array())
+                .cloned()
+                .unwrap_or_default();
+            let tools_value = request.get("tools").cloned();
+            let system_value = message_items
+                .first()
+                .filter(|message| {
+                    message.get("role").and_then(|role| role.as_str()) == Some("system")
+                })
+                .cloned();
+            let tool_count = tools_value
+                .as_ref()
+                .and_then(|value| value.as_array())
+                .map(|tools| tools.len())
+                .unwrap_or(0);
+            crate::alphacode_provider_core::fingerprint::log_provider_canonical_input(
+                if self.supports_provider_features {
+                    "openrouter"
+                } else {
+                    "openai-compatible"
+                },
+                &model,
+                "chat_completions",
+                &request,
+                &message_items,
+                system_value.as_ref(),
+                tools_value.as_ref(),
+                Some(tool_count),
+                &[
+                    ("cache_supported", cache_supported.to_string()),
+                    ("cache_control_added", cache_control_added.to_string()),
+                    ("thinking_enabled", format!("{:?}", thinking_enabled)),
+                    (
+                        "provider_features",
+                        self.supports_provider_features.to_string(),
+                    ),
+                ],
+            );
+        }
 
         // OpenRouter uses HTTPS/SSE transport only
         crate::alphacode_base::logging::info("OpenRouter transport: HTTPS (SSE)");
@@ -361,6 +376,7 @@ impl Provider for OpenRouterProvider {
                 auth,
                 send_openrouter_headers,
                 request_for_retries,
+                bytes::Bytes::from(request_body),
                 responses_fallback,
                 tx,
                 provider_pin,
@@ -529,6 +545,11 @@ impl Provider for OpenRouterProvider {
             return Ok(());
         }
         let requested = effort.trim().to_ascii_lowercase();
+        let requested = if matches!(requested.as_str(), "default" | "auto") {
+            String::new()
+        } else {
+            requested
+        };
         let mut accepted = self.available_efforts().contains(&requested.as_str());
         if !self.supports_deepseek_reasoning_effort()
             && !self.supports_openai_reasoning_effort()

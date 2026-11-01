@@ -18,6 +18,9 @@ use crate::alphacode_tui::tui::session_facts;
 use ratatui::{prelude::*, style::Modifier, widgets::Paragraph};
 use unicode_segmentation::UnicodeSegmentation;
 
+#[path = "ui_composer_chrome.rs"]
+mod composer_chrome;
+
 fn shell_mode_color() -> Color {
     success_color()
 }
@@ -85,6 +88,13 @@ pub(crate) fn composer_inner_area(area: Rect) -> Rect {
 /// border belongs entirely to the transcript edge and the badge is dropped
 /// rather than crowding the frame.
 const COMPOSER_BRAND_MIN_WIDTH: u16 = 56;
+
+fn composer_brand_reserved_width(area: Rect) -> usize {
+    if area.width < COMPOSER_BRAND_MIN_WIDTH {
+        return 0;
+    }
+    unicode_width::UnicodeWidthStr::width(crate::alphacode_brand::widget_title().as_str()) + 3
+}
 
 /// Rounded-frame chrome for the composer.
 ///
@@ -669,21 +679,9 @@ pub(super) fn wrapped_input_line_count(
         return 1;
     }
 
-    // Keep prompt numbering out of the composer: the numbered queued rows are
-    // only meaningful once a prompt has been sent. This also leaves a stable,
-    // easy-to-scan mode prefix at the edit point.
-    let num_str = String::new();
-    let (prompt_char, caret_color) = input_prompt(app);
-    let (lines, _, _) = wrap_input_text(
-        app.input(),
-        app.cursor_pos(),
-        line_width,
-        &num_str,
-        &prompt_char,
-        caret_color,
-        prompt_len,
-    );
-    lines.len().max(1)
+    // Measuring height needs no styled Lines or cursor scan. The same cached
+    // segments are reused by drawing and mouse hit-testing below.
+    wrap_input_segments(app.input(), line_width).len().max(1)
 }
 
 pub(super) fn pending_prompt_count(app: &dyn TuiState) -> usize {
@@ -1444,6 +1442,7 @@ fn compact_idle_session_stats_line(
 }
 
 pub(super) fn draw_status(frame: &mut Frame, app: &dyn TuiState, area: Rect, pending_count: usize) {
+    let turn_changes = super::work_summary::turn_changes(app, area.width);
     let elapsed = app.elapsed().map(|d| d.as_secs_f32()).unwrap_or(0.0);
     let stale_secs = app.time_since_activity().map(|d| d.as_secs_f32());
     let (cache_read, cache_creation) = app.streaming_cache_tokens();
@@ -1571,6 +1570,13 @@ pub(super) fn draw_status(frame: &mut Frame, app: &dyn TuiState, area: Rect, pen
                 // and context usage survive (the same `ctx=` reading as the
                 // idle line, so it reads identically in both states).
                 let mut segments: Vec<StatusSegment> = Vec::with_capacity(6);
+                if let Some(changes) = &turn_changes {
+                    segments.push(StatusSegment::new(
+                        3,
+                        super::line_plain_text(changes).trim().to_owned(),
+                        super::accent_color(),
+                    ));
+                }
                 segments.push(StatusSegment::new(
                     2,
                     streaming_liveness_label(time_str, stale_secs, stream_message_ended),
@@ -1745,6 +1751,13 @@ pub(super) fn draw_status(frame: &mut Frame, app: &dyn TuiState, area: Rect, pen
                 // elapsed time, the queued count, or the cache warning off
                 // the row — the least useful piece is dropped first.
                 let mut segments: Vec<StatusSegment> = Vec::with_capacity(7);
+                if let Some(changes) = &turn_changes {
+                    segments.push(StatusSegment::new(
+                        4,
+                        super::line_plain_text(changes).trim().to_owned(),
+                        super::accent_color(),
+                    ));
+                }
                 if let Some(detail) = tool_detail {
                     segments.push(StatusSegment::new(2, detail, dim_color()));
                 }
@@ -1819,6 +1832,8 @@ pub(super) fn draw_status(frame: &mut Frame, app: &dyn TuiState, area: Rect, pen
                 Span::styled("⚠ ", Style::default().fg(warning_color)),
                 Span::styled(warning, Style::default().fg(warning_color)),
             ])
+        } else if let Some(changes) = &turn_changes {
+            changes.clone()
         } else if let Some(tip) =
             idle_status_tip_line(app, area.width as usize, app.animation_elapsed() as u64)
         {
@@ -1835,6 +1850,8 @@ pub(super) fn draw_status(frame: &mut Frame, app: &dyn TuiState, area: Rect, pen
         } else {
             Line::from("")
         }
+    } else if let Some(changes) = &turn_changes {
+        changes.clone()
     } else if let Some(tip) =
         idle_status_tip_line(app, area.width as usize, app.animation_elapsed() as u64)
     {
@@ -1955,6 +1972,25 @@ fn streaming_status_spans(
 mod tests {
     use super::*;
     use ratatui::style::Modifier;
+
+    #[test]
+    fn input_layout_cache_reuses_geometry_and_invalidates_content_and_width() {
+        let input = "a\u{754c}e\u{301}\u{1f469}\u{200d}\u{1f4bb}\nsecond line";
+        let first = wrap_input_segments(input, 8);
+        let again = wrap_input_segments(input, 8);
+        assert!(std::rc::Rc::ptr_eq(&first, &again));
+        assert_eq!(*first, compute_input_segments(input, 8));
+        let resized = wrap_input_segments(input, 12);
+        assert!(!std::rc::Rc::ptr_eq(&first, &resized));
+        assert_eq!(*resized, compute_input_segments(input, 12));
+        let edited = wrap_input_segments("different draft", 12);
+        assert_eq!(*edited, compute_input_segments("different draft", 12));
+        let oversized = "x".repeat(INPUT_LAYOUT_CACHE_BYTES + 1);
+        let large = wrap_input_segments(&oversized, 80);
+        let large_again = wrap_input_segments(&oversized, 80);
+        assert!(!std::rc::Rc::ptr_eq(&large, &large_again));
+        INPUT_LAYOUT_CACHE.with(|slot| assert!(slot.borrow().is_none()));
+    }
 
     #[test]
     fn right_fact_stack_shifts_up_as_a_unit_when_bottom_row_is_occupied() {
@@ -3830,13 +3866,13 @@ fn right_fact_cell_is_blank(cell: &ratatui::buffer::Cell) -> bool {
 ///
 /// Glyphs are CP437-safe (`►`, `•`, `·`) per the project's console-font
 /// policy.
-fn draw_active_work_border_title(frame: &mut Frame, app: &dyn TuiState, frame_area: Rect) {
+fn draw_active_work_border_title(frame: &mut Frame, app: &dyn TuiState, frame_area: Rect) -> bool {
     if frame_area.width < 16 {
-        return;
+        return false;
     }
     let mut tasks = app.active_work_tasks();
     if tasks.is_empty() {
-        return;
+        return false;
     }
     tasks.truncate(3);
     // Live elapsed readout rides on the end of the ribbon; the processing
@@ -3874,64 +3910,35 @@ fn draw_active_work_border_title(frame: &mut Frame, app: &dyn TuiState, frame_ar
         }
     }
 
-    // Budget: leave ≥3 border cells after the left corner and ≥3 before the
-    // right corner; everything beyond the budget is dropped or clipped.
-    let budget = frame_area.width.saturating_sub(8) as usize;
-    let mut spans: Vec<Span> = Vec::new();
-    let mut used = 0usize;
-    let mut skip_rest = false;
+    // Titles and the brand share a border; reserve their space explicitly.
+    // The shared truncator respects display cells and grapheme boundaries.
+    let budget = usize::from(frame_area.width.saturating_sub(6))
+        .saturating_sub(composer_brand_reserved_width(frame_area));
+    let mut spans = Vec::new();
     for (index, (label, state)) in tasks.iter().enumerate() {
-        let mut piece = String::new();
         if index > 0 {
-            piece.push_str(" \u{00B7} "); // ·
+            spans.push(Span::styled(" · ", Style::default().fg(BrandTheme::dim())));
         }
-        piece.push_str(state_marker(state));
-        piece.push_str(label);
-        let width = piece.chars().count();
-        if used + width > budget && !spans.is_empty() {
-            skip_rest = true;
-            break;
-        }
-        if used + width > budget && spans.is_empty() {
-            // First piece alone overflows: clip to the ellipsized form so the
-            // ribbon still fits on small composers.
-            let keep = budget.saturating_sub(1);
-            let clipped: String = piece.chars().take(keep).collect();
-            spans.push(Span::styled(
-                format!("{clipped}\u{2026}"), // …
-                state_style(state),
-            ));
-            skip_rest = true;
-            break;
-        }
-        used += width;
-        spans.push(Span::styled(piece, state_style(state)));
-    }
-    if skip_rest {
         spans.push(Span::styled(
-            " \u{00B7} \u{2026}".to_string(), // " · …"
-            Style::default().fg(BrandTheme::dim()),
+            format!(
+                "{}{}",
+                state_marker(state),
+                normalize_repaint_sensitive_notice_text(label)
+            ),
+            state_style(state),
         ));
     }
-    let columns = spans
-        .iter()
-        .map(|span| span.width())
-        .sum::<usize>()
-        .min(budget);
-    if columns == 0 {
-        return;
-    }
-
-    let ribbon_area = Rect::new(
-        frame_area.x.saturating_add(3),
-        frame_area.y,
-        columns.min(frame_area.width.saturating_sub(6) as usize) as u16,
-        1,
+    let line = super::box_utils::truncate_line_with_ellipsis_to_width(&Line::from(spans), budget);
+    frame.render_widget(
+        Paragraph::new(line),
+        Rect::new(
+            frame_area.x.saturating_add(3),
+            frame_area.y,
+            budget as u16,
+            1,
+        ),
     );
-    if ribbon_area.width == 0 {
-        return;
-    }
-    frame.render_widget(Paragraph::new(Line::from(spans)), ribbon_area);
+    true
 }
 
 pub(super) fn draw_input(
@@ -3964,7 +3971,7 @@ pub(super) fn draw_input(
     let reserved_width = send_mode_reserved_width(app);
     let line_width = (area.width as usize).saturating_sub(prompt_len + reserved_width);
 
-    if line_width == 0 {
+    if line_width == 0 || area.height == 0 {
         return None;
     }
 
@@ -4048,19 +4055,12 @@ pub(super) fn draw_input(
     // the cursor on screen.
     //
     // Keep the cursor visible even when it moves up into a long draft.
-    let scroll_offset = if total_input_lines + suggestions_offset <= visible_height {
-        0
-    } else {
-        let available_for_input = visible_height.saturating_sub(suggestions_offset).max(1);
-        if total_input_lines <= available_for_input {
-            0
-        } else {
-            cursor_line
-                .saturating_add(1)
-                .saturating_sub(available_for_input)
-                .min(total_input_lines.saturating_sub(available_for_input))
-        }
-    };
+    let scroll_offset = input_scroll_offset(
+        total_input_lines,
+        suggestions_offset,
+        visible_height,
+        cursor_line,
+    );
 
     for line in all_lines.into_iter().skip(scroll_offset) {
         lines.push(line);
@@ -4228,7 +4228,36 @@ pub(super) fn draw_input(
 
     // Active-work ribbon paints the live task summary into the top border row
     // while a turn runs; drawn after the block so it owns those border cells.
-    draw_active_work_border_title(frame, app, frame_area);
+    let has_work_title = draw_active_work_border_title(frame, app, frame_area);
+    if !has_work_title {
+        let label = match mode {
+            ComposerMode::Chat => " Message ",
+            ComposerMode::SlashCommand => " Command ",
+            ComposerMode::ShellLocal => " Local shell ",
+            ComposerMode::ShellRemote => " Server shell ",
+        };
+        let budget = usize::from(frame_area.width.saturating_sub(6))
+            .saturating_sub(composer_brand_reserved_width(frame_area));
+        if label.len() <= budget {
+            frame.render_widget(
+                Paragraph::new(label).style(
+                    Style::default()
+                        .fg(caret_color)
+                        .add_modifier(Modifier::BOLD),
+                ),
+                Rect::new(frame_area.x + 3, frame_area.y, label.len() as u16, 1),
+            );
+        }
+    }
+    composer_chrome::draw_footer(
+        frame,
+        app,
+        mode,
+        frame_area,
+        scroll_offset,
+        visible_input_rows,
+        total_input_lines,
+    );
 
     let paragraph = if centered {
         Paragraph::new(
@@ -4257,7 +4286,10 @@ pub(super) fn draw_input(
         area.x + prompt_len as u16 + cursor_col as u16
     };
 
-    let cursor = Position::new(cursor_x, cursor_y);
+    let cursor = Position::new(
+        cursor_x.min(area.right().saturating_sub(1)),
+        cursor_y.min(area.bottom().saturating_sub(1)),
+    );
     frame.set_cursor_position(cursor);
     draw_send_mode_indicator(frame, app, area);
     Some(cursor)
@@ -4269,6 +4301,20 @@ struct WrappedInputSegment {
     start_grapheme: usize,
     end_grapheme: usize,
     display_width: usize,
+}
+
+/// Shared by cursor painting and click mapping; never assume the tail of a
+/// long draft is visible after the user moves the caret upward.
+fn input_scroll_offset(total: usize, hints: usize, height: usize, cursor_line: usize) -> usize {
+    let visible = height.saturating_sub(hints).max(1);
+    if total <= visible {
+        0
+    } else {
+        cursor_line
+            .saturating_add(1)
+            .saturating_sub(visible)
+            .min(total - visible)
+    }
 }
 
 /// Wrapped/raw text plus the wrapped-to-raw line map for the composer's
@@ -4314,7 +4360,47 @@ fn input_copy_snapshot_parts(
     (wrapped_plain, raw_lines, line_map)
 }
 
-fn wrap_input_segments(input: &str, line_width: usize) -> Vec<WrappedInputSegment> {
+const INPUT_LAYOUT_CACHE_BYTES: usize = 256 * 1024;
+const INPUT_LAYOUT_CACHE_ROWS: usize = 4096;
+
+struct InputLayoutCache {
+    input: String,
+    width: usize,
+    segments: std::rc::Rc<Vec<WrappedInputSegment>>,
+}
+
+thread_local! {
+    // One draft per UI thread, with explicit text/row limits. Cursor changes
+    // and repeated frames reuse geometry; content and width changes invalidate it.
+    static INPUT_LAYOUT_CACHE: std::cell::RefCell<Option<InputLayoutCache>> = const { std::cell::RefCell::new(None) };
+}
+
+fn wrap_input_segments(input: &str, line_width: usize) -> std::rc::Rc<Vec<WrappedInputSegment>> {
+    INPUT_LAYOUT_CACHE.with(|slot| {
+        let mut slot = slot.borrow_mut();
+        if let Some(cached) = slot.as_ref()
+            && cached.width == line_width
+            && cached.input == input
+        {
+            return std::rc::Rc::clone(&cached.segments);
+        }
+        let segments = std::rc::Rc::new(compute_input_segments(input, line_width));
+        *slot = if input.len() <= INPUT_LAYOUT_CACHE_BYTES
+            && segments.len() <= INPUT_LAYOUT_CACHE_ROWS
+        {
+            Some(InputLayoutCache {
+                input: input.to_string(),
+                width: line_width,
+                segments: std::rc::Rc::clone(&segments),
+            })
+        } else {
+            None
+        };
+        segments
+    })
+}
+
+fn compute_input_segments(input: &str, line_width: usize) -> Vec<WrappedInputSegment> {
     let graphemes: Vec<&str> = input.graphemes(true).collect();
     if graphemes.is_empty() {
         return vec![WrappedInputSegment {
@@ -4438,7 +4524,12 @@ pub(crate) fn input_cursor_pos_from_screen(
     let area = composer_inner_area(area);
     // Clicks on the top border row or either wall are chrome, not text: do
     // not move the caret for them.
-    if row < area.y || column < area.x || column >= area.x.saturating_add(area.width) {
+    if area.height == 0
+        || row < area.y
+        || row >= area.bottom()
+        || column < area.x
+        || column >= area.right()
+    {
         return None;
     }
 
@@ -4451,20 +4542,27 @@ pub(crate) fn input_cursor_pos_from_screen(
     }
 
     let wrapped_lines = wrap_input_segments(input_text, line_width);
-    let hint_lines = input_hint_line_height(app) as usize;
+    // Rendering drops hints when the interior has only one row.
+    let hint_lines = if area.height > 1 {
+        input_hint_line_height(app) as usize
+    } else {
+        0
+    };
     let visible_height = area.height as usize;
     let total_input_lines = wrapped_lines.len().max(1);
 
-    let scroll_offset = if total_input_lines + hint_lines <= visible_height {
-        0
-    } else {
-        let available_for_input = visible_height.saturating_sub(hint_lines).max(1);
-        if total_input_lines <= available_for_input {
-            0
-        } else {
-            total_input_lines.saturating_sub(available_for_input)
-        }
-    };
+    let cursor_grapheme = crate::alphacode_tui::tui::core::byte_offset_to_grapheme_index(
+        input_text,
+        app.cursor_pos(),
+    );
+    let cursor_line = wrapped_lines
+        .iter()
+        .position(|segment| {
+            cursor_grapheme >= segment.start_grapheme && cursor_grapheme <= segment.end_grapheme
+        })
+        .unwrap_or(total_input_lines.saturating_sub(1));
+    let scroll_offset =
+        input_scroll_offset(total_input_lines, hint_lines, visible_height, cursor_line);
 
     let screen_line = row.saturating_sub(area.y) as usize;
     if screen_line < hint_lines {
@@ -4493,6 +4591,7 @@ pub(crate) fn input_cursor_pos_from_screen(
     Some(crate::alphacode_tui::tui::core::grapheme_index_to_byte_offset(input_text, grapheme_index))
 }
 
+#[cfg(test)]
 pub(crate) fn wrap_input_text(
     input: &str,
     cursor_pos: usize,

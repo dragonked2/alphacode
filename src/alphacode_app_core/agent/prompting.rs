@@ -69,7 +69,7 @@ fn probe_burst_reminder(tool_calls: &[(String, String)]) -> Option<String> {
         research, this is the unattributed probe grind that turns hours into \
         nothing:\n\n\
         1. Name the hypothesis each probe targets (an id like `H3: If IDOR exists on /api/orders/<foreign-id>, a foreign id returns 200`). Drop probes with no open hypothesis.\n\
-        2. Record the discriminating observation each probe produced; three identical results retire the hypothesis instead of feeding it a fourth variant.\n\
+        2. Record the discriminating observation each probe produced; equivalent results require a control and reachability check; pause inconclusive paths rather than declaring them refuted.\n\
         3. If the live hypotheses are all dead, stop: log the kill decision and move to the next highest-value attack surface. Repointing the same payloads is not progress.\n\n\
         If this is not security research, batch the repeated calls into one scripted command with bounded output and open a todo list to track the work.",
         run,
@@ -88,8 +88,11 @@ impl Agent {
         tools: &[ToolDefinition],
         tier: crate::prompt::PromptTier,
         messages: &[Message],
+        capability_brief: &str,
     ) {
-        let system_tokens = split.estimated_tokens();
+        let system_tokens = split
+            .estimated_tokens()
+            .saturating_add(crate::util::estimate_tokens(capability_brief));
         let tool_tokens = ToolDefinition::aggregate_prompt_token_estimate(tools);
         let prefix_tokens = system_tokens.saturating_add(tool_tokens);
         // The default estimate is necessarily a guess because neither the
@@ -390,6 +393,11 @@ impl Agent {
 
         self.append_current_turn_system_reminder(&mut split);
         if let Some(ledger) = ledger {
+            split.dynamic_part.push_str(&ledger);
+        }
+        if let Some(ledger) = self.session.working_dir.as_deref().and_then(|directory| {
+            super::challenge_context::hunt_ledger_context(std::path::Path::new(directory))
+        }) {
             split.dynamic_part.push_str(&ledger);
         }
         self.detect_verification_loop(&mut split);

@@ -1433,13 +1433,24 @@ pub(super) async fn handle_client(
                 // Hooks fired while binding the session (e.g. `session_start` on
                 // resume) run in this server, so point them at this client's
                 // terminal rather than the server's startup env (#405).
-                if !terminal_env.is_empty() {
-                    let hook_session_id =
-                        target_session_id.as_deref().unwrap_or(&client_session_id);
+                //
+                // Only seed the registry for a session that actually exists: the
+                // target id comes from the peer, and an entry for a session this
+                // connection never binds would outlive it.
+                let target_is_live = match target_session_id.as_deref() {
+                    Some(target) => crate::session::session_exists(target),
+                    None => false,
+                };
+                let hook_session_id = match target_session_id.as_deref() {
+                    Some(target) if target_is_live => Some(target),
+                    Some(_) => None,
+                    None => Some(client_session_id.as_str()),
+                };
+                if let Some(hook_session_id) = hook_session_id {
                     crate::hooks::set_session_client_env(hook_session_id, terminal_env.clone());
                 }
                 if let Some(target_session_id) = target_session_id {
-                    if crate::session::session_exists(&target_session_id) {
+                    if target_is_live {
                         let pre_resume_session_id = client_session_id.clone();
                         agent = handle_resume_session(
                             id,

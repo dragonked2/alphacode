@@ -78,7 +78,7 @@ impl SessionPicker {
         // Clamp to the last rendered maximum when we have one (mouse momentum and
         // post-first-render scrolling); otherwise advance freely and let the next
         // render clamp (keyboard paging before the first preview render).
-        self.scroll_offset = if self.preview_max_scroll > 0 {
+        self.scroll_offset = if self.preview_cache.is_some() {
             target.min(self.preview_max_scroll)
         } else {
             target

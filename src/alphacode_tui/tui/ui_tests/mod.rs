@@ -264,9 +264,14 @@ struct TestState {
     swarm_panel_selected: usize,
     swarm_panel_focused: bool,
     swarm_panel_full_page: bool,
+    work_tasks: Vec<(String, &'static str)>,
+    side_pane_focused: bool,
 }
 
 impl crate::alphacode_tui::tui::TuiState for TestState {
+    fn active_work_tasks(&self) -> Vec<(String, &'static str)> {
+        self.work_tasks.clone()
+    }
     fn display_messages(&self) -> &[DisplayMessage] {
         &self.display_messages
     }
@@ -535,7 +540,7 @@ impl crate::alphacode_tui::tui::TuiState for TestState {
         100
     }
     fn diff_pane_focus(&self) -> bool {
-        false
+        self.side_pane_focused
     }
     fn side_panel(&self) -> &crate::side_panel::SidePanelSnapshot {
         static EMPTY: std::sync::LazyLock<crate::side_panel::SidePanelSnapshot> =

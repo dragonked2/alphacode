@@ -216,7 +216,9 @@ pub fn help_reference() -> Vec<Line<'static>> {
 
     let shortcuts: &[(&str, &str)] = &[
         ("Enter", "Submit prompt"),
-        ("Shift+Enter", "New line in input"),
+        ("Shift/Alt+Enter", "New line in input"),
+        ("\\ then Enter", "New line on any terminal"),
+        ("F1", "Open help; Esc closes it"),
         ("/ [Tab]", "Show command suggestions"),
         ("Up / Down", "Message history"),
         ("Ctrl+B", "Move back one word"),

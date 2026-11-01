@@ -1945,8 +1945,8 @@ fn format_swarm_model_list(
     }
     out.push_str(
         "\nAvailable model routes. Pass the `id` column verbatim as the spawn model \
-         (e.g. 'openai-api-key:gpt-5.5'); a bare model name also works when the \
-         provider is unambiguous:\n",
+         without guessing provider prefixes. Omit model to inherit, or use auto for \
+         live-catalog selection:\n",
     );
     for route in model_routes {
         let availability = if route.available {
@@ -2017,7 +2017,7 @@ directly instead of delegating. Worker model-routing policy is tunable with the
 }
 
 #[derive(Clone, Deserialize)]
-struct CommunicateInput {
+pub(super) struct CommunicateInput {
     action: String,
     #[serde(default)]
     key: Option<String>,
@@ -2262,7 +2262,7 @@ impl Tool for CommunicateTool {
                 },
                 "model": {
                     "type": "string",
-                    "description": "Model for spawned agents, e.g. 'gpt-5.5' or 'claude-api:opus'. Omit to inherit; see list_models."
+                    "description": "Exact route ID from list_models, inherit, or auto. Omit to inherit unless agents.swarm_model pins a route. Auto uses live availability and cost metadata; no fixed model names."
                 },
                 "effort": {
                     "type": "string",
@@ -2805,7 +2805,19 @@ impl Tool for CommunicateTool {
                     .clone()
                     .ok_or_else(|| anyhow::anyhow!("'nodes' is required for task_graph action"))?;
                 if nodes.is_empty() {
-                    return Err(anyhow::anyhow!("'nodes' must include at least one node"));
+                    // An empty array is how a caller asks to *inspect* the graph
+                    // rather than mutate it, so answer the question instead of
+                    // rejecting the call. It is also what a truncated tool call
+                    // produces; either way the caller needs the current state,
+                    // not a dead end.
+                    let summary = fetch_plan_status(&ctx.session_id).await?;
+                    let mut output = format_plan_status(&summary);
+                    output.output.push_str(
+                        "\nNo nodes were submitted, so the graph was not changed. \
+                         Pass a non-empty `nodes` array of {id, content, kind?, depends_on?, priority?} \
+                         to seed or extend it.\n",
+                    );
+                    return Ok(output);
                 }
                 let count = nodes.len();
                 let mut seed_nodes = nodes.clone();
@@ -3148,9 +3160,16 @@ impl Tool for CommunicateTool {
             }
 
             "summary" => {
-                let target = params.target_session.ok_or_else(|| {
-                    anyhow::anyhow!("'target_session' is required for summary action")
-                })?;
+                // Default to the caller's own session. Asking for a summary
+                // without naming a target is not an error worth failing: the
+                // caller almost always means "my session", and the surrounding
+                // management actions (status, report, plan_status) have no
+                // target at all. Previously this returned a hard error, which
+                // lost the read for a purely syntactic omission.
+                let target = params
+                    .target_session
+                    .clone()
+                    .unwrap_or_else(|| ctx.session_id.clone());
 
                 let request = Request::CommSummary {
                     id: REQUEST_ID,
@@ -3172,9 +3191,12 @@ impl Tool for CommunicateTool {
             }
 
             "read_context" => {
-                let target = params.target_session.ok_or_else(|| {
-                    anyhow::anyhow!("'target_session' is required for read_context action")
-                })?;
+                // Same reasoning as `summary`: an omitted target means the
+                // caller's own session, not a usage error.
+                let target = params
+                    .target_session
+                    .clone()
+                    .unwrap_or_else(|| ctx.session_id.clone());
 
                 let request = Request::CommReadContext {
                     id: REQUEST_ID,
@@ -3601,5 +3623,29 @@ impl Tool for CommunicateTool {
                 params.action
             )),
         }
+    }
+}
+
+#[cfg(test)]
+mod input_tests {
+    /// `summary` and `read_context` used to hard-fail when `target_session` was
+    /// omitted, even though the caller almost always means "my own session". The
+    /// omission is syntactic, so the read should default instead of erroring.
+    #[test]
+    fn session_scoped_reads_do_not_require_an_explicit_target() {
+        // `to_session` and `target_session` are documented aliases, and both must
+        // still normalize into the same field for these actions.
+        let via_alias: super::CommunicateInput = serde_json::from_value(
+            serde_json::json!({"action": "summary", "to_session": "sess-9"}),
+        )
+        .expect("alias payload should deserialize");
+        assert_eq!(via_alias.target_session, None);
+        assert_eq!(via_alias.to_session.as_deref(), Some("sess-9"));
+
+        // Neither field present is the shape that used to error out.
+        let bare: super::CommunicateInput =
+            serde_json::from_value(serde_json::json!({"action": "read_context"}))
+                .expect("a target-less read should deserialize");
+        assert_eq!(bare.target_session, None);
     }
 }

@@ -1518,6 +1518,11 @@ fn render_message_into(
             }
         }
         "assistant" => {
+            if let Some(line) = super::work_summary::checkpoint(ctx.messages, msg_global_idx, width)
+            {
+                acc.push_auto(align_if_unset(line, align));
+                acc.push_blank();
+            }
             let content_width = width.saturating_sub(4);
             let cached = get_cached_message_lines(
                 msg,
@@ -2128,6 +2133,17 @@ pub(super) fn suffix_reuse_compatible(
     base_prompt_offset: usize,
 ) -> bool {
     if drop_msgs == 0 || drop_msgs >= base.message_boundaries.len() {
+        return false;
+    }
+    // A checkpoint on the first reused assistant depends on the tool block
+    // immediately before it. Rebuild when that block crosses the prepend cut.
+    if messages
+        .get(head_count)
+        .is_some_and(|m| m.effective_role() == "assistant")
+        && messages[..head_count.min(messages.len())]
+            .last()
+            .is_some_and(|m| matches!(m.effective_role(), "tool" | "meta" | "reasoning"))
+    {
         return false;
     }
     let anchored = super::inline_image_ui::resolve_anchored_items_cached(app);

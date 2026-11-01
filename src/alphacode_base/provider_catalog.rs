@@ -112,6 +112,31 @@ pub fn resolve_openai_compatible_profile_with_api_key_hint(
         resolved.default_model = Some(model);
     }
 
+    // The generic profile's declared default (`alpha`) belongs to the
+    // Dragonmeta local server. Once the endpoint is pointed somewhere else —
+    // LM Studio, llama.cpp, vLLM, a relay — that name refers to a model the
+    // server does not have. The pinned model is also what the header/status
+    // line prints, so the session read "alpha" while an entirely different
+    // model served the request.
+    //
+    // Trust what the endpoint actually advertises, but only when it advertises
+    // something *contradicting* the declared default: if the live catalog
+    // contains the default, keep it; if there is no usable live catalog (cold
+    // install, server not started yet), keep it too. Only a real catalog that
+    // omits the default proves the default is borrowed.
+    if let Some(declared) = resolved.default_model.clone() {
+        let advertised =
+            newest_released_model_for_resolved_openai_compatible_profile(profile.id, &resolved);
+        if let Some(advertised) = advertised
+            && !advertised.eq_ignore_ascii_case(declared.trim())
+        {
+            let live_catalog_lists_declared = live_catalog_contains_model(&resolved, &declared);
+            if !live_catalog_lists_declared {
+                resolved.default_model = Some(advertised);
+            }
+        }
+    }
+
     if api_base_uses_localhost(&resolved.api_base)
         || env_override("ALPHACODE_OPENAI_COMPAT_API_BASE").is_some()
     {
@@ -119,6 +144,38 @@ pub fn resolve_openai_compatible_profile_with_api_key_hint(
     }
 
     resolved
+}
+
+/// Whether this endpoint's live catalog actually lists `model`.
+///
+/// Used to tell a *declared* default apart from one the endpoint really
+/// serves: a catalog that names the model confirms it, a catalog that does
+/// not name it proves the default belongs to a different server. A missing
+/// catalog (server not started, cache never written) answers `true` so callers
+/// never override a default on no evidence at all.
+fn live_catalog_contains_model(resolved: &ResolvedOpenAiCompatibleProfile, model: &str) -> bool {
+    let model = model.trim();
+    if model.is_empty() {
+        return true;
+    }
+    let Some(cache) =
+        crate::alphacode_provider_openrouter::load_disk_cache_entry_for_namespace(&resolved.id)
+    else {
+        return true;
+    };
+    // A catalog written by a different endpoint says nothing about this one.
+    let source_matches = cache
+        .source_api_base
+        .as_deref()
+        .and_then(normalize_api_base)
+        .is_some_and(|source| Some(source) == normalize_api_base(&resolved.api_base));
+    if !source_matches {
+        return true;
+    }
+    cache
+        .models
+        .iter()
+        .any(|entry| entry.id.trim().eq_ignore_ascii_case(model))
 }
 
 pub fn newest_released_model_for_openai_compatible_profile(profile_id: &str) -> Option<String> {
@@ -131,7 +188,9 @@ fn newest_released_model_for_resolved_openai_compatible_profile(
     profile_id: &str,
     resolved: &ResolvedOpenAiCompatibleProfile,
 ) -> Option<String> {
-    openai_compatible_profile_by_id(profile_id)?;
+    // Validates the id; the resolved profile (not the raw id) carries the
+    // endpoint whose cache we are about to read.
+    let _ = openai_compatible_profile_by_id(profile_id)?;
     let cache =
         crate::alphacode_provider_openrouter::load_disk_cache_entry_for_namespace(&resolved.id)?;
 
@@ -150,14 +209,15 @@ fn newest_released_model_for_resolved_openai_compatible_profile(
         .enumerate()
         .filter_map(|(index, model)| {
             let id = model.id.trim().to_string();
-            // Local servers commonly omit `created` (LM Studio does). Keep
-            // their catalog order usable instead of leaving the provider with
-            // no default model after a successful /models refresh.
-            let created = match model.created {
-                Some(created) => created,
-                None if matches!(profile_id, "lmstudio" | "ollama") => 0,
-                None => return None,
-            };
+            // `created` is recency metadata, not a validity signal. Hosted
+            // gateways publish it; local servers usually do not — LM Studio
+            // reports `created: null` for *every* model it serves. Treating a
+            // missing timestamp as "skip this row" therefore threw away the
+            // whole local catalog, which is why an LM Studio login produced no
+            // derived default: the picker had no model to activate and the
+            // session fell through to a literal bundled id instead of the
+            // loaded model.
+            let created = model.created.unwrap_or(0);
             // Never auto-select an obviously non-chat model (TTS/speech/embeddings/
             // rerankers/image/etc.) as a profile's default. Catalogs like Groq,
             // NVIDIA NIM, and Chutes expose their entire model list, and the

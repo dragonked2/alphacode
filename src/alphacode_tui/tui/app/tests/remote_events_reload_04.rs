@@ -139,10 +139,11 @@ fn test_remote_error_with_retryable_pending_schedules_retry() {
         .expect("retry should surface a connection status message");
     assert_eq!(retry_notice.role, "system");
     assert!(retry_notice.content.contains("Connection lost - retrying"));
-    assert!(retry_notice.content.contains(&format!(
-        "attempt 1/{}",
-        App::AUTO_RETRY_MAX_ATTEMPTS
-    )));
+    assert!(
+        retry_notice
+            .content
+            .contains(&format!("attempt 1/{}", App::AUTO_RETRY_MAX_ATTEMPTS))
+    );
     assert!(retry_notice.content.contains("Remote request failed"));
 }
 
@@ -845,8 +846,14 @@ fn test_remote_tui_state_prefers_cached_model_during_brief_connecting_phase() {
 
     let app = App::new_for_remote(Some(session_id.to_string()));
 
-    assert_eq!(crate::alphacode_tui::tui::TuiState::provider_model(&app), "gpt-5.4");
-    assert_eq!(crate::alphacode_tui::tui::TuiState::provider_name(&app), "openai");
+    assert_eq!(
+        crate::alphacode_tui::tui::TuiState::provider_model(&app),
+        "gpt-5.4"
+    );
+    assert_eq!(
+        crate::alphacode_tui::tui::TuiState::provider_name(&app),
+        "openai"
+    );
     assert_eq!(
         crate::alphacode_tui::tui::TuiState::session_display_name(&app).as_deref(),
         Some("otter")
@@ -878,8 +885,14 @@ fn test_remote_tui_state_falls_back_to_cached_model_after_startup_phase_clears()
     let mut app = App::new_for_remote(Some(session_id.to_string()));
     app.clear_remote_startup_phase();
 
-    assert_eq!(crate::alphacode_tui::tui::TuiState::provider_model(&app), "gpt-5.4");
-    assert_eq!(crate::alphacode_tui::tui::TuiState::provider_name(&app), "openai");
+    assert_eq!(
+        crate::alphacode_tui::tui::TuiState::provider_model(&app),
+        "gpt-5.4"
+    );
+    assert_eq!(
+        crate::alphacode_tui::tui::TuiState::provider_name(&app),
+        "openai"
+    );
 
     if let Some(prev_home) = prev_home {
         crate::alphacode_core::env::set_var("ALPHACODE_HOME", prev_home);
@@ -929,7 +942,10 @@ fn test_new_for_remote_uses_startup_stub_without_loading_full_transcript() {
     // So the stripped `session.messages` is expected to be empty here.
     assert_eq!(app.session.messages.len(), 0);
     assert_eq!(app.remote_session_id.as_deref(), Some(session_id));
-    assert_eq!(crate::alphacode_tui::tui::TuiState::provider_model(&app), "gpt-5.4");
+    assert_eq!(
+        crate::alphacode_tui::tui::TuiState::provider_model(&app),
+        "gpt-5.4"
+    );
 
     if let Some(prev_home) = prev_home {
         crate::alphacode_core::env::set_var("ALPHACODE_HOME", prev_home);
@@ -974,7 +990,10 @@ fn test_remote_tui_state_shows_connected_after_startup_phase_clears_without_mode
         app.remote_session_id = Some("session_connected_123".to_string());
         app.clear_remote_startup_phase();
 
-        assert_eq!(crate::alphacode_tui::tui::TuiState::provider_model(&app), "connected");
+        assert_eq!(
+            crate::alphacode_tui::tui::TuiState::provider_model(&app),
+            "connected"
+        );
         assert_eq!(crate::alphacode_tui::tui::TuiState::provider_name(&app), "");
     });
 }
@@ -1017,8 +1036,14 @@ fn test_remote_tui_state_prefers_configured_model_during_brief_connecting_phase(
 
     let app = App::new_for_remote(None);
 
-    assert_eq!(crate::alphacode_tui::tui::TuiState::provider_model(&app), "gpt-5.4");
-    assert_eq!(crate::alphacode_tui::tui::TuiState::provider_name(&app), "openai");
+    assert_eq!(
+        crate::alphacode_tui::tui::TuiState::provider_model(&app),
+        "gpt-5.4"
+    );
+    assert_eq!(
+        crate::alphacode_tui::tui::TuiState::provider_name(&app),
+        "openai"
+    );
 
     if let Some(prev_model) = prev_model {
         crate::alphacode_core::env::set_var("ALPHACODE_MODEL", prev_model);
@@ -1047,7 +1072,9 @@ fn test_remote_tui_state_shows_starting_server_phase_in_header() {
 fn test_remote_tui_state_shows_loading_session_phase_in_header() {
     with_neutral_remote_model_hints(|| {
         let mut app = App::new_for_remote(None);
-        app.set_remote_startup_phase(crate::alphacode_tui::tui::app::RemoteStartupPhase::LoadingSession);
+        app.set_remote_startup_phase(
+            crate::alphacode_tui::tui::app::RemoteStartupPhase::LoadingSession,
+        );
 
         assert_eq!(
             crate::alphacode_tui::tui::TuiState::provider_model(&app),
@@ -1060,7 +1087,9 @@ fn test_remote_tui_state_shows_loading_session_phase_in_header() {
 fn test_remote_tui_state_shows_startup_elapsed_in_header() {
     with_neutral_remote_model_hints(|| {
         let mut app = App::new_for_remote(None);
-        app.set_remote_startup_phase(crate::alphacode_tui::tui::app::RemoteStartupPhase::Connecting);
+        app.set_remote_startup_phase(
+            crate::alphacode_tui::tui::app::RemoteStartupPhase::Connecting,
+        );
         app.remote_startup_phase_started =
             Some(std::time::Instant::now() - std::time::Duration::from_secs(5));
 
@@ -1075,7 +1104,9 @@ fn test_remote_tui_state_shows_startup_elapsed_in_header() {
 fn test_remote_startup_phase_does_not_require_duplicate_status_notice() {
     with_neutral_remote_model_hints(|| {
         let mut app = App::new_for_remote(None);
-        app.set_remote_startup_phase(crate::alphacode_tui::tui::app::RemoteStartupPhase::Connecting);
+        app.set_remote_startup_phase(
+            crate::alphacode_tui::tui::app::RemoteStartupPhase::Connecting,
+        );
 
         assert_eq!(
             crate::alphacode_tui::tui::TuiState::provider_model(&app),
@@ -1083,7 +1114,9 @@ fn test_remote_startup_phase_does_not_require_duplicate_status_notice() {
         );
         assert_eq!(app.status_notice(), None);
 
-        app.set_remote_startup_phase(crate::alphacode_tui::tui::app::RemoteStartupPhase::LoadingSession);
+        app.set_remote_startup_phase(
+            crate::alphacode_tui::tui::app::RemoteStartupPhase::LoadingSession,
+        );
         assert_eq!(
             crate::alphacode_tui::tui::TuiState::provider_model(&app),
             "loading session…"
@@ -1095,7 +1128,9 @@ fn test_remote_startup_phase_does_not_require_duplicate_status_notice() {
 #[test]
 fn test_remote_tui_state_shows_reconnecting_phase_in_header() {
     let mut app = App::new_for_remote(None);
-    app.set_remote_startup_phase(crate::alphacode_tui::tui::app::RemoteStartupPhase::Reconnecting { attempt: 3 });
+    app.set_remote_startup_phase(
+        crate::alphacode_tui::tui::app::RemoteStartupPhase::Reconnecting { attempt: 3 },
+    );
 
     assert_eq!(
         crate::alphacode_tui::tui::TuiState::provider_model(&app),
@@ -1110,9 +1145,14 @@ fn test_remote_header_keeps_known_model_during_brief_loading_session_phase() {
     // over it. That pre-settle churn is exactly what made spawns look unstable.
     let mut app = App::new_for_remote(None);
     app.session.model = Some("claude-fable-5".to_string());
-    app.set_remote_startup_phase(crate::alphacode_tui::tui::app::RemoteStartupPhase::LoadingSession);
+    app.set_remote_startup_phase(
+        crate::alphacode_tui::tui::app::RemoteStartupPhase::LoadingSession,
+    );
 
-    assert_eq!(crate::alphacode_tui::tui::TuiState::provider_model(&app), "claude-fable-5");
+    assert_eq!(
+        crate::alphacode_tui::tui::TuiState::provider_model(&app),
+        "claude-fable-5"
+    );
 
     // A genuinely stuck load still surfaces the phase label after the grace
     // period so the user can tell something is wrong.
@@ -1136,8 +1176,10 @@ fn test_remote_effort_identity_falls_back_to_session_model_before_history() {
 
     let (provider, model) = app.remote_effort_identity();
     assert_eq!(model.as_deref(), Some("claude-fable-5"));
-    let efforts =
-        crate::alphacode_tui::tui::app::inferred_reasoning_efforts(provider.as_deref(), model.as_deref());
+    let efforts = crate::alphacode_tui::tui::app::inferred_reasoning_efforts(
+        provider.as_deref(),
+        model.as_deref(),
+    );
     assert!(
         !efforts.is_empty(),
         "pre-History effort cycling must resolve levels from the model hint"
@@ -1210,7 +1252,8 @@ fn test_info_widget_remote_openai_uses_remote_provider_for_usage_and_context() {
     app.is_remote = true;
     app.remote_provider_name = Some("OpenAI".to_string());
     app.remote_provider_model = Some("gpt-5.4".to_string());
-    app.remote_resolved_credential = Some(crate::alphacode_provider_core::ResolvedCredential::Oauth);
+    app.remote_resolved_credential =
+        Some(crate::alphacode_provider_core::ResolvedCredential::Oauth);
     app.update_context_limit_for_model("gpt-5.4");
 
     let data = crate::alphacode_tui::tui::TuiState::info_widget_data(&app);
@@ -1345,7 +1388,8 @@ fn test_info_widget_remote_anthropic_api_key_shows_cost_based_usage() {
     app.is_remote = true;
     app.remote_provider_name = Some("Claude".to_string());
     app.remote_provider_model = Some("claude-sonnet-4-20250514".to_string());
-    app.remote_resolved_credential = Some(crate::alphacode_provider_core::ResolvedCredential::ApiKey);
+    app.remote_resolved_credential =
+        Some(crate::alphacode_provider_core::ResolvedCredential::ApiKey);
     app.token_accounting.total_input_tokens = 12_000;
     app.token_accounting.total_output_tokens = 3_400;
 
@@ -1367,7 +1411,8 @@ fn test_info_widget_remote_anthropic_api_key_shows_cost_based_usage() {
 
     // OAuth subscription keeps subscription bars; the server now reports the
     // resolved credential directly, so the widget reflects AnthropicOAuth.
-    app.remote_resolved_credential = Some(crate::alphacode_provider_core::ResolvedCredential::Oauth);
+    app.remote_resolved_credential =
+        Some(crate::alphacode_provider_core::ResolvedCredential::Oauth);
     let data = crate::alphacode_tui::tui::TuiState::info_widget_data(&app);
     assert_eq!(
         data.auth_method,
@@ -1388,7 +1433,8 @@ fn test_info_widget_remote_openai_billing_follows_resolved_credential() {
     app.token_accounting.total_input_tokens = 12_000;
     app.token_accounting.total_output_tokens = 3_400;
 
-    app.remote_resolved_credential = Some(crate::alphacode_provider_core::ResolvedCredential::ApiKey);
+    app.remote_resolved_credential =
+        Some(crate::alphacode_provider_core::ResolvedCredential::ApiKey);
     let data = crate::alphacode_tui::tui::TuiState::info_widget_data(&app);
     assert_eq!(
         data.auth_method,
@@ -1402,7 +1448,8 @@ fn test_info_widget_remote_openai_billing_follows_resolved_credential() {
     assert_eq!(usage.input_tokens, 12_000);
     assert_eq!(usage.output_tokens, 3_400);
 
-    app.remote_resolved_credential = Some(crate::alphacode_provider_core::ResolvedCredential::Oauth);
+    app.remote_resolved_credential =
+        Some(crate::alphacode_provider_core::ResolvedCredential::Oauth);
     let data = crate::alphacode_tui::tui::TuiState::info_widget_data(&app);
     assert_eq!(
         data.auth_method,
@@ -1682,7 +1729,8 @@ fn test_remote_anthropic_api_key_accrues_cost_from_token_usage() {
     app.is_remote = true;
     app.remote_provider_name = Some("Claude".to_string());
     app.remote_provider_model = Some("claude-sonnet-4-6".to_string());
-    app.remote_resolved_credential = Some(crate::alphacode_provider_core::ResolvedCredential::ApiKey);
+    app.remote_resolved_credential =
+        Some(crate::alphacode_provider_core::ResolvedCredential::ApiKey);
     crate::provider::anthropic::set_cache_ttl_1h(true);
 
     // One completed call with split-accounting cache telemetry.
@@ -1713,7 +1761,8 @@ fn test_remote_anthropic_api_key_accrues_cost_from_token_usage() {
     oauth_app.is_remote = true;
     oauth_app.remote_provider_name = Some("Claude".to_string());
     oauth_app.remote_provider_model = Some("claude-sonnet-4-6".to_string());
-    oauth_app.remote_resolved_credential = Some(crate::alphacode_provider_core::ResolvedCredential::Oauth);
+    oauth_app.remote_resolved_credential =
+        Some(crate::alphacode_provider_core::ResolvedCredential::Oauth);
     oauth_app.handle_server_event(
         crate::protocol::ServerEvent::TokenUsage {
             input: 1_000,
@@ -1739,7 +1788,8 @@ fn test_resumed_session_seeds_cost_from_history_token_totals() {
     app.is_remote = true;
     app.remote_provider_name = Some("Claude".to_string());
     app.remote_provider_model = Some("claude-sonnet-4-6".to_string());
-    app.remote_resolved_credential = Some(crate::alphacode_provider_core::ResolvedCredential::ApiKey);
+    app.remote_resolved_credential =
+        Some(crate::alphacode_provider_core::ResolvedCredential::ApiKey);
     crate::provider::anthropic::set_cache_ttl_1h(true);
 
     let totals = crate::protocol::TokenUsageTotals {
@@ -1773,7 +1823,8 @@ fn test_resumed_session_seeds_cost_from_history_token_totals() {
     oauth_app.is_remote = true;
     oauth_app.remote_provider_name = Some("Claude".to_string());
     oauth_app.remote_provider_model = Some("claude-sonnet-4-6".to_string());
-    oauth_app.remote_resolved_credential = Some(crate::alphacode_provider_core::ResolvedCredential::Oauth);
+    oauth_app.remote_resolved_credential =
+        Some(crate::alphacode_provider_core::ResolvedCredential::Oauth);
     oauth_app.seed_cost_from_history_totals(&totals);
     assert_eq!(oauth_app.cost.total_cost, 0.0);
 }
@@ -1791,7 +1842,8 @@ fn test_remote_fast_mode_tier_bills_premium_rates_and_reprices_on_toggle() {
     app.is_remote = true;
     app.remote_provider_name = Some("Claude".to_string());
     app.remote_provider_model = Some("claude-opus-4-6".to_string());
-    app.remote_resolved_credential = Some(crate::alphacode_provider_core::ResolvedCredential::ApiKey);
+    app.remote_resolved_credential =
+        Some(crate::alphacode_provider_core::ResolvedCredential::ApiKey);
 
     // Each TokenUsage below simulates a separate completed API call, so reset
     // the per-call usage bookkeeping between them (a real session does this at
@@ -1985,7 +2037,9 @@ fn test_debug_command_side_panel_latency_bench_reports_immediate_redraw() {
     // against 16.0ms purely from machine load, while passing in isolation. The
     // behavioral assertions above are the real subject, so gate only the timing
     // (refs #592).
-    let p95 = value["summary"]["latency_ms"]["p95"].as_f64().unwrap_or(0.0);
+    let p95 = value["summary"]["latency_ms"]["p95"]
+        .as_f64()
+        .unwrap_or(0.0);
     assert_perf_budget(p95 < 16.0, || {
         format!("side-panel p95 should stay within a 60fps frame budget: {result}")
     });
@@ -2272,7 +2326,10 @@ fn test_externally_started_turn_adopts_processing_state_and_settles_on_done() {
         app.status
     );
 
-    app.handle_server_event(crate::protocol::ServerEvent::MessageEnd { stop_reason: None }, &mut remote);
+    app.handle_server_event(
+        crate::protocol::ServerEvent::MessageEnd { stop_reason: None },
+        &mut remote,
+    );
     app.handle_server_event(crate::protocol::ServerEvent::Done { id: 0 }, &mut remote);
 
     // Streaming text is revealed at a paced rate, so a `Done` that arrives with
@@ -2506,3 +2563,199 @@ fn test_credential_failure_breaker_resets_on_turn_success() {
     );
 }
 
+/// F1 is advertised by the composer footer in every mode, but the remote key
+/// path had no `KeyCode::F(1)` arm at all: clients connected to a server could
+/// only reach help by typing `/help`. This asserts the remote path now opens and
+/// closes help exactly like the local path, without disturbing the draft.
+#[test]
+fn test_remote_f1_opens_and_closes_help_without_losing_the_draft() {
+    let mut app = create_test_app();
+    app.is_remote = true;
+    app.input = "keep this remote draft".to_string();
+    app.cursor_pos = app.input.len();
+    assert!(app.help_scroll.is_none());
+
+    let rt = tokio::runtime::Runtime::new().expect("runtime");
+    let _guard = rt.enter();
+    let mut remote = crate::alphacode_tui::tui::backend::RemoteConnection::dummy();
+
+    rt.block_on(app.handle_remote_key(KeyCode::F(1), KeyModifiers::empty(), &mut remote))
+        .expect("F1 should open help in remote mode");
+    assert_eq!(app.help_scroll, Some(0), "F1 must open help remotely");
+    assert_eq!(
+        app.input, "keep this remote draft",
+        "opening help must not touch the draft"
+    );
+
+    rt.block_on(app.handle_remote_key(KeyCode::F(1), KeyModifiers::empty(), &mut remote))
+        .expect("F1 should close help in remote mode");
+    assert!(
+        app.help_scroll.is_none(),
+        "a second F1 must close help rather than stack it"
+    );
+    assert_eq!(
+        app.input, "keep this remote draft",
+        "closing help must not touch the draft"
+    );
+}
+
+/// F1 with a modifier is not the help shortcut, in either mode. Pinned so a
+/// future broad `F(1)` match does not swallow Ctrl+F1-style chords.
+#[test]
+fn test_remote_f1_with_modifiers_does_not_open_help() {
+    let mut app = create_test_app();
+    app.is_remote = true;
+
+    let rt = tokio::runtime::Runtime::new().expect("runtime");
+    let _guard = rt.enter();
+    let mut remote = crate::alphacode_tui::tui::backend::RemoteConnection::dummy();
+
+    rt.block_on(app.handle_remote_key(KeyCode::F(1), KeyModifiers::CONTROL, &mut remote))
+        .expect("modified F1 should be handled without error");
+    assert!(
+        app.help_scroll.is_none(),
+        "Ctrl+F1 must not open the help overlay"
+    );
+}
+
+#[test]
+fn effort_acknowledgments_preserve_confirmed_state_and_ignore_older_requests() {
+    let mut app = create_test_app();
+    app.is_remote = true;
+    app.remote_reasoning_effort = Some("high".into());
+    app.note_remote_effort_request(19, "low".into());
+    app.note_remote_effort_request(20, "xhigh".into());
+    let rt = tokio::runtime::Runtime::new().unwrap();
+    let _guard = rt.enter();
+    let mut remote = crate::alphacode_tui::tui::backend::RemoteConnection::dummy();
+    assert!(app.handle_server_event(
+        crate::protocol::ServerEvent::ReasoningEffortChanged {
+            id: 19,
+            effort: Some("low".into()),
+            error: None
+        },
+        &mut remote
+    ));
+    assert_eq!(app.remote_reasoning_effort.as_deref(), Some("low"));
+    assert_eq!(
+        app.remote_requested_reasoning_effort.as_ref().map(|v| v.0),
+        Some(20)
+    );
+    assert!(app.handle_server_event(
+        crate::protocol::ServerEvent::ReasoningEffortChanged {
+            id: 20,
+            effort: None,
+            error: Some("unsupported".into())
+        },
+        &mut remote
+    ));
+    assert_eq!(app.remote_reasoning_effort.as_deref(), Some("low"));
+    assert!(app.remote_requested_reasoning_effort.is_none());
+    app.note_remote_effort_request(21, "medium".into());
+    assert!(app.handle_server_event(
+        crate::protocol::ServerEvent::ReasoningEffortChanged {
+            id: 21,
+            effort: Some("medium".into()),
+            error: None
+        },
+        &mut remote
+    ));
+    assert_eq!(app.remote_reasoning_effort.as_deref(), Some("medium"));
+    assert!(app.remote_requested_reasoning_effort.is_none());
+    assert!(!app.handle_server_event(
+        crate::protocol::ServerEvent::ReasoningEffortChanged {
+            id: 19,
+            effort: Some("high".into()),
+            error: None
+        },
+        &mut remote
+    ));
+    assert_eq!(app.remote_reasoning_effort.as_deref(), Some("medium"));
+}
+
+#[test]
+fn effort_controls_use_remote_capabilities_and_do_not_mutate_the_local_stand_in() {
+    let mut app = create_test_app();
+    app.is_remote = true;
+    app.remote_provider_name = Some("anthropic".into());
+    app.remote_provider_model = Some("claude-sonnet-4-6".into());
+    app.remote_reasoning_effort = Some("high".into());
+    let suggestions = app.get_suggestions_for("/effort ");
+    assert!(
+        suggestions
+            .iter()
+            .any(|(command, _)| command == "/effort swarm-deep")
+    );
+    assert!(
+        suggestions
+            .iter()
+            .any(|(command, _)| command == "/effort default")
+    );
+    assert!(
+        !suggestions
+            .iter()
+            .any(|(command, _)| command == "/effort minimal")
+    );
+    let before = app.provider.reasoning_effort();
+    app.cycle_effort(-1);
+    assert_eq!(app.provider.reasoning_effort(), before);
+    assert_eq!(app.remote_reasoning_effort.as_deref(), Some("high"));
+    assert!(app.status_notice().unwrap_or_default().contains("Connect"));
+}
+
+#[test]
+fn saving_local_effort_replaces_stale_session_effort_with_the_effective_value() {
+    with_temp_alphacode_home(|| {
+        let mut app = create_test_app();
+        app.session.reasoning_effort = Some("swarm-deep".into());
+        app.persist_local_reasoning_effort();
+        let effective = app.provider.reasoning_effort();
+        assert_eq!(app.session.reasoning_effort, effective);
+        let persisted =
+            crate::session::Session::load(&app.session.id).expect("reload saved session");
+        assert_eq!(persisted.reasoning_effort, effective);
+        crate::alphacode_app_core::session_effort::forget_session_effort(&app.session.id);
+    });
+}
+
+#[test]
+fn effort_requests_survive_initial_history_but_not_a_session_switch() {
+    with_temp_alphacode_home(|| {
+        let mut app = create_test_app();
+        app.is_remote = true;
+        app.remote_session_id = None;
+        app.note_remote_effort_request(5, "high".into());
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        let _guard = rt.enter();
+        let mut remote = crate::alphacode_tui::tui::backend::RemoteConnection::dummy();
+        let history = |id, session: &str| {
+            serde_json::from_value::<crate::protocol::ServerEvent>(
+                serde_json::json!({"type":"history", "id":id, "session_id":session, "messages":[]}),
+            )
+            .expect("minimal history payload")
+        };
+        app.handle_server_event(history(1, "effort_initial_attach"), &mut remote);
+        assert!(app.remote_effort_requests.contains(&5));
+        assert!(app.handle_server_event(
+            crate::protocol::ServerEvent::ReasoningEffortChanged {
+                id: 5,
+                effort: Some("high".into()),
+                error: None
+            },
+            &mut remote
+        ));
+        assert_eq!(app.remote_reasoning_effort.as_deref(), Some("high"));
+        app.note_remote_effort_request(6, "low".into());
+        app.handle_server_event(history(2, "effort_different_session"), &mut remote);
+        assert!(app.remote_effort_requests.is_empty());
+        assert!(!app.handle_server_event(
+            crate::protocol::ServerEvent::ReasoningEffortChanged {
+                id: 6,
+                effort: Some("low".into()),
+                error: None
+            },
+            &mut remote
+        ));
+        assert!(app.remote_reasoning_effort.is_none());
+    });
+}

@@ -270,10 +270,8 @@ async fn forward_pending_reasoning_effort(app: &mut App, remote: &mut RemoteConn
         return;
     };
     match remote.set_reasoning_effort(&effort).await {
-        Ok(()) => {
-            // Optimistically track the requested effort so the widget/header
-            // reflect the picker choice; ReasoningEffortChanged confirms it.
-            app.remote_reasoning_effort = Some(effort);
+        Ok(request_id) => {
+            app.note_remote_effort_request(request_id, effort);
         }
         Err(error) => {
             app.push_display_message(DisplayMessage::error(format!(
@@ -757,6 +755,9 @@ pub(super) async fn handle_remote_event<B: Backend>(
 ) -> Result<(RemoteEventOutcome, bool)> {
     match event {
         RemoteRead::Disconnected(reason) => {
+            app.remote_requested_reasoning_effort = None;
+            app.remote_effort_response_id = 0;
+            app.remote_effort_requests.clear();
             if let RemoteDisconnectReason::Protocol(error) = &reason {
                 let detail = format_disconnect_reason(&reason);
                 crate::logging::error(&format!(

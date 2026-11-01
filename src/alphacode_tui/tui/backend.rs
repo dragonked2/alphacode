@@ -884,14 +884,16 @@ impl RemoteConnection {
     }
 
     /// Set reasoning effort on the server (for OpenAI models)
-    pub async fn set_reasoning_effort(&mut self, effort: &str) -> Result<()> {
+    pub async fn set_reasoning_effort(&mut self, effort: &str) -> Result<u64> {
+        let id = self.next_request_id;
         let request = Request::SetReasoningEffort {
             id: self.next_request_id,
             effort: effort.to_string(),
             target_session_id: None,
         };
         self.next_request_id += 1;
-        self.send_request(request).await
+        self.send_request(request).await?;
+        Ok(id)
     }
 
     /// Set service tier on the server (for OpenAI models)

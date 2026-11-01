@@ -18,7 +18,7 @@ techniques.
 Before probing, read the challenge descriptions, attached files, provided hints,
 and explicit scope. Create `challenge.md` in the session workspace using `write`;
 do not overwrite an existing ledger. AlphaCode re-reads this file into each
-system prompt, including after compaction. Keep it short (under 12 KiB).
+system prompt, including after compaction. Keep its current-state summary short (under 12 KiB); archive raw transcripts separately.
 
 Record: challenge IDs and objectives; exact hints with source attribution;
 authorized origins; observed headers and stack evidence; known credentials with
@@ -39,7 +39,8 @@ not proof that the requested route exists; compare a missing-route baseline.
 Stop on rate limits. Do not use a server error alone as exploit evidence.
 
 Limit each hypothesis to three initial discriminating experiments. Three
-equivalent negatives close it; changing a payload's spelling does not create a
+equivalent results trigger a control and reachability check, not automatic
+refutation. Masked or non-discriminating results remain inconclusive; changing a payload's spelling does not create a
 new hypothesis. After ten probing tool calls, checkpoint and pivot. Reopen a
 closed hypothesis only with recorded new evidence. Never turn failed guesses
 into unbounded password loops: use only credentials supported by challenge
@@ -75,7 +76,7 @@ Activities may include:
 
 Avoid unnecessary damage to the host beyond what is needed to solve the challenge.
 
-Alphacode carries a built-in CTF arsenal: `pwntools`, `radare2`, `ghidra`, `angr`, `binwalk`, `steghide`, `exiftool`, `volatility`, `tshark`, `z3`, `hashcat`, `john`, plus the `flag_scanner`, `challenge_classifier`, and `ctf_auto_solver` helpers. Reach for the matching tool instead of hand-assembling bash equivalents; `challenge_classifier` is useful for a fast first pass and then run targeted tools yourself.
+Alphacode exposes wrappers for a CTF arsenal (verify advertised schemas and installed dependencies first): `pwntools`, `radare2`, `ghidra`, `angr`, `binwalk`, `steghide`, `exiftool`, `volatility`, `tshark`, `z3`, `hashcat`, `john`, plus the `flag_scanner`, `challenge_classifier`, and `ctf_auto_solver` helpers. Reach for the matching tool instead of hand-assembling bash equivalents; `challenge_classifier` is useful for a fast first pass and then run targeted tools yourself.
 
 ## CTF workflow for web challenges
 
@@ -122,8 +123,8 @@ Do not claim a solve based on a matching word or intermediate response.
 - Give every hypothesis a time budget.
 - Define what observation would confirm or disprove it.
 - When the budget expires, reassess the evidence.
-- If the next experiment fails to support the hypothesis, reduce confidence or reject it.
-- At regular checkpoints, eliminate stale hypotheses.
+- Distinguish refuted predictions from blocked, paused, and inconclusive tests; a timeout or repeated wildcard response is not refutation.
+- At regular checkpoints, reprioritize by information gained and record why stale paths are paused.
 - Keep a limited combined budget for exotic explanations until ordinary explanations have been tested.
 - Reopen a rejected hypothesis only when new evidence materially changes the analysis.
 

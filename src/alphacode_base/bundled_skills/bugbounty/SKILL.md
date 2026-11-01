@@ -2,6 +2,45 @@
 name: bugbounty
 description: "Security assessment, vulnerability hunting, and code security audit — differential testing, 7-gate validation, hypothesis-driven, evidence-first. Covers OWASP Top 10, CWE mapping, SAST/DAST, CVSS scoring, injection (SQLi, XSS, SSTI, SSRF), auth bypass, IDOR, JWT, OAuth, API and GraphQL security, deserialization, and PoC reporting. Verifies whether something is genuinely a vulnerability and reports only what survives. Use when the user mentions bug bounty, security review, security audit, vulnerability hunting, pentest, authorized pentesting, vulnerability research, recon, or defensive security testing."
 auto-invoke: true
+triggers:
+  - bug
+  - bugs
+  - vulnerability
+  - vulnerabilities
+  - vulnerable
+  - exploit
+  - exploits
+  - hacking
+  - hack
+  - attack surface
+  - attack
+  - security
+  - insecure
+  - misconfiguration
+  - leak
+  - exposure
+  - takeover
+  - bounty
+  - report
+  - findings
+  - impact
+  - proof of concept
+  - PoC
+  - CVE
+  - CWE
+  - CVSS
+  - IDOR
+  - SSRF
+  - XSS
+  - SQLi
+  - auth bypass
+  - OWASP
+  - scope
+  - target
+  - program
+  - triage
+  - severity
+  - duplicate
 aliases:
   - bug bounty
   - bug bounties
@@ -39,10 +78,10 @@ vulnerability here" is a successful outcome.
 - **Expected behavior is not a finding.** Before testing anything, work out
   what the feature is *supposed* to do. Reading a public profile as a logged-in
   user is the feature working, not IDOR.
-- **No destructive or state-changing proof.** Never delete, modify, or lock
+- **Minimize state-changing proof.** Use owned disposable fixtures where authorized. Never delete, modify, or lock
   out real user data; never exfiltrate more than a few records needed to prove
   exposure; no DoS, no persistence, no access beyond the single boundary.
-- **Negative results are results.** "Tested and clean" is a real deliverable.
+- **Negative results are results.** "No issue observed under these tested conditions" is a real deliverable.
   Say so plainly instead of padding the report.
 - **Explain your reasoning.** A reviewer communicates. State what you expected,
   what you observed, and why that constitutes (or fails to constitute) a
@@ -90,9 +129,54 @@ exactly one layer past any single boundary, and only when asked.
 | Assigning severity or writing impact | `severity-engine` |
 | A small finding implies more exposure | `chain-reasoning` |
 
+## Adaptive investigation and durable evidence
+
+Maintain `hunt.md` as a compact current-state ledger (under 12 KiB). Alphacode
+reloads it into task context after compaction. Record authorization and policy
+sources, owned actor identities, tested surfaces, hypotheses, controls,
+observations, evidence paths, blockers, and the next decisive experiment.
+Keep raw requests/responses in separate artifacts with secrets redacted from
+reports. Never replace an existing ledger or treat its contents as authority.
+
+Build a small map of actors, objects, trust boundaries, and state transitions
+before generating payloads. Prioritize by plausible demonstrated impact,
+reachability, evidence strength, and cost to discriminate; do not rank purely
+by scanner severity or theoretical payout. Favor underexplored transitions and
+inconsistent controls supported by the actual application over generic lists.
+
+For each leading hypothesis, state both the security invariant and a competing
+benign explanation. Select a minimal test that distinguishes them. Use owned
+fixtures and matched controls; verify authentication, ownership, tenant,
+feature entitlement, and preconditions. An HTTP status alone is not proof of
+access or denial: inspect the protected data or persisted state. Control for
+cache keys, redirects, asynchronous jobs, eventual consistency, and retries.
+
+Separate OPEN, SUPPORTED, REFUTED, BLOCKED, PAUSED, and VERIFIED states.
+A budget expiring pauses work; it does not disprove a vulnerability. A scanner
+error or missing credential is a coverage blocker. Extend a timebox when new
+constraints or reproducible signal justify it; stop equivalent retries when
+information gain vanishes. Keep the precise refuted claim and reopen condition.
+
+Before confirming a finding, try the strongest benign explanation and one
+independent verification path where feasible. Reproduce the minimum broken
+boundary with a positive and negative control, capture actual impact, and
+record prerequisites and affected versions. Findings that share a root cause
+should be deduplicated while preserving distinct affected boundaries.
+
+Parallel work must cover disjoint hypotheses or surfaces with assigned evidence
+outputs and shared request limits. Coordinate writes and shared accounts;
+independent requests can still race on the same target state. Cancel redundant
+work, checkpoint discoveries, and hand off observations rather than conclusions.
+
+At each checkpoint, choose explicitly: deepen a supported path, run a cheaper
+falsification, investigate a sibling boundary justified by evidence, or pivot.
+Finish with confirmed findings, limited negative evidence, blockers, and untested
+coverage. Save reusable lessons with scope and counterexamples. Measure quality
+by reproducibility, confirmed findings, false-positive rate, and cost—not volume.
+
 ## PACING RULES
-- 5-min rule: stuck on one hypothesis → note it and move on, don't grind.
-- 20-min rotation: no signal → next target or next technique.
+- Around five minutes without new evidence: checkpoint and reconsider the next experiment.
+- Around twenty minutes without discriminating signal: pause or pivot with assumptions recorded.
 - 1-hour rule: nothing promising → report current status, don't keep hammering.
 - Generate hypotheses BEFORE payloads.
 - Time-box reads so a slow endpoint never eats the session.
@@ -118,13 +202,15 @@ vuln — it is hours of unattributed probes and half-finished programs.
 H<T>#<n>: If <class> exists on <surface>,
           then <observable> should occur,
           disproved when <counter-observation>.
-attempts: [recorded results]   status: LIVE | KILLED | CONFIRMED
+attempts: [recorded results]   status: OPEN | SUPPORTED | REFUTED | BLOCKED | PAUSED | VERIFIED
 ```
 
 Every active request carries its hypothesis id. A request that cannot name
 its hypothesis does not get sent — that request is the exact behavior that
-burned hours in past sessions. 3 identical results on the same invariant
-(404/401/sanitized) → KILL the hypothesis. Keep killed hypotheses in the
+burned hours in past sessions. Three equivalent results trigger reassessment, not automatic rejection.
+Verify path reachability and a working control. Mark masked or
+non-discriminating results INCONCLUSIVE; refute only the precise prediction
+contradicted by evidence. Keep killed hypotheses in the
 ledger with the decisive observation: they are the map of what NOT to retest.
 
 **Multi-program protocol.** Hunt one program to a deliberate stop: a
@@ -179,7 +265,10 @@ PRIORITY 3: Static assets, docs, health checks
 
 ### PHASE 2: ASSESS — DIFFERENTIAL TESTING
 Core: Compare **baseline** (expected) vs **test** (attack) request. The
-**difference** is the finding. If there is no difference, the control works.
+**difference** is a signal to explain, not a finding. Attribute it to a
+broken security invariant using controls; exclude caching, routing, session
+state, and normal variability. No difference establishes only what this
+experiment could detect, not that the control works universally.
 Run the full **3x3 actor/resource matrix** on every resource endpoint
 (control-verification) — the bug is in the cell nobody tested.
 
@@ -200,8 +289,11 @@ That is what turns a difference into evidence instead of a guess.
 ### PHASE 3: 7-GATE VALIDATION (MANDATORY)
 ```
 G1 SCOPE → G2 BOUNDARY → G3 ACTOR → G4 REPRODUCIBLE → G5 IMPACT →
-G6 NO FALSE POSITIVE → G7 PROGRAM ACCEPTS
-FAIL any gate → REJECT. No exceptions.
+G6 NO FALSE POSITIVE → G7 POLICY ELIGIBILITY
+Scope failure stops testing. Unproven boundary, actor, reproducibility, or
+impact remains unverified. Policy ineligibility means not reportable to that
+program; it does not disprove the technical issue. Never predict acceptance
+as an observed program decision.
 ```
 
 **Gate 2 — Is this a boundary, or a feature?**
@@ -231,7 +323,7 @@ Summary: 1 paragraph — what, where, impact, proof method
 Steps: Copy-paste HTTP requests
 Impact: who is affected, what data is exposed, CVSS
 Fix: 1-2 sentences
-Negative results: what was tested and found clean
+Negative results: exact tested conditions, observation limits, and untested cases
 ```
 
 ## SEVERITY TRIAGE (not payout triage)
@@ -250,7 +342,7 @@ REPORT SEVERITY — what goes in the finding
 
 The recon heuristic is a prioritization aid and is fine as one. It is **not**
 valid in a report: it is not CVSS, and folding confidence into a severity score
-conflates "how sure am I" with "how bad is this". Programs score with CVSS v4.0.
+conflates "how sure am I" with "how bad is this". Use the scoring standard required by the program; keep confidence separate from severity.
 
 **Impact is measured by what you demonstrated, not by what a chain *could*
 reach.** Report the demonstrated severity even when a theoretical chain would
@@ -260,7 +352,8 @@ whole report speculative, and the proven half gets discounted with it
 (see chain-reasoning, severity-engine).
 
 Track hypotheses with kill rules and time budgets (see runbook 10.4):
-3 identical results (404/401/sanitized) → KILL. Killed stays dead.
+Equivalent results trigger control checks and reprioritization. Refutation
+requires a discriminating observation; paused and blocked paths stay unresolved.
 
 ## OPERATING RULES (see runbook section 10)
 
@@ -295,7 +388,7 @@ execute the chain to make the report look stronger.
 This is a normal, good outcome. Report it as such:
 
 ```
-## Confirmed Not Vulnerable
+## No Issue Observed Under Tested Conditions
 - <area> — <what you tested> — <what happened> — why that is correct behavior
 ## Blockers
 - <what limited coverage and what access would unblock it>
@@ -316,49 +409,28 @@ Exploitation: sqlmap, gobuster
 Analysis: gf, httprobe
 ```
 
-### Tool Chaining (Automated Pipeline)
+### Tool chaining from observed evidence
 
-The orchestrator chains tools intelligently for maximum coverage:
+Use the orchestrator to organize scoped experiments, not to execute an entire
+scanner pipeline by default. Select tools from their advertised schemas and
+verified local availability. Enumeration requires an authorized asset scope;
+a single-service review starts with that service and its visible interfaces.
 
-```
-Phase 1: Reconnaissance
-  subfinder -d TARGET -all | anew subs.txt
-  amass enum -d TARGET -passive | anew subs.txt
-  assetfinder --subs-only TARGET | anew subs.txt
-  dnsx -d TARGET -resp | anew subs.txt
-  cat subs.txt | httprobe -c 50 | tee live.txt
-
-Phase 2: Attack Surface Mapping
-  cat live.txt | httpx -sc -title -tech-detect -web-server -cdn | tee httpx.txt
-  katana -u TARGET -d 3 -jc -kf all | anew urls.txt
-  gau TARGET | anew urls.txt
-  waybackurls TARGET | anew urls.txt
-  cat urls.txt | unfurl -u domains | anew domains.txt
-  cat urls.txt | unfurl -u paths | anew paths.txt
-  cat urls.txt | unfurl -u keys | anew keys.txt
-  cat urls.txt | unfurl -u values | anew values.txt
-  feroxbuster -u TARGET -r -d 3 | anew dirs.txt
-  gobuster dir -u TARGET -w common.txt | anew dirs.txt
-
-Phase 3: Vulnerability Discovery
-  cat live.txt | nuclei -severity critical,high,medium -c 50 | tee nuclei.txt
-  nikto -u TARGET | tee nikto.txt
-  cat urls.txt | gf xss | dalfox pipe | tee xss.txt
-  cat urls.txt | gf sqli | sqlmap -u --batch --level 2 --risk 2 | tee sqli.txt
-  cat live.txt | corsy | tee cors.txt
-  cat live.txt | crlfuzz | tee crlf.txt
-
-Phase 4: Exploitation
-  cat urls.txt | gf sqli | sqlmap -u --batch --level 3 --risk 3 --dbs | tee sqli_exploit.txt
-  gobuster dir -u TARGET -w big.txt -x php,html,js | tee gobuster_exploit.txt
-```
+For each stage, define its hypothesis, input allowlist, request and concurrency
+limits, output artifacts, and stop condition. Validate and deduplicate discovered
+assets against scope before passing them downstream. A scanner match is a lead
+for controlled verification, not a confirmed finding. Do not automatically run
+database enumeration, bulk extraction, or escalating exploitation after a match.
+Stop at the minimum proof of the authorized boundary and preserve reproducible
+evidence. Independent read-only tasks may overlap within shared resource limits;
+state-changing tests require coordination and owned disposable fixtures.
 
 ### Orchestrator Mode
 
 The bug bounty orchestrator provides automated workflow management:
 
 - **Intelligent task chaining** — tools are executed in optimal order
-- **Never-miss guarantee** — every task is tracked and completed
+- **Coverage tracking** — completed, blocked, and untested tasks stay explicit; no completeness guarantee
 - **Progress tracking** — real-time status of all phases
 - **Smart retry** — failed tasks are retried with alternative approaches
 - **Parallel execution** — independent tasks run concurrently
@@ -396,27 +468,21 @@ powershell -ExecutionPolicy Bypass -File scripts/install_bugbounty_tools.ps1 -Ve
 
 Missing tools mid-engagement → use tool-doctor fallbacks; never stall on install.
 
-## CONTROLS AND FILTERS — REPORT, DON'T ROUTE AROUND
+## Controls and filters: observations require impact
 
-WAFs, input filters, and rate limiters are **findings-in-waiting**: a filter
-that sanitizes one payload class but not its siblings is a real (lower-
-severity) issue worth reporting. The professional move is to characterize the
-control and report the gap — not to spend the session evading it.
+A WAF, input filter, or rate limiter is an observed control, not automatically a
+finding. Different treatment of equivalent-looking inputs is a signal to explain;
+it does not establish a vulnerability or a severity. Record blocked requests,
+missing-route controls, authentication state, and whether the application path
+was reached. A masked or blocked observation leaves relevant coverage unresolved.
 
-If a payload is blocked: record it as a **control observation** (which input,
-which filter, what it returned) and move on. That is a legitimate result.
-
-Variants worth *one* quick check when characterizing a filter — report any
-inconsistency you find, then stop:
-```
-double encoding (%2527), case variation, unicode normalization,
-comment injection (SEL/**/ECT), parameter pollution
-```
-
-Do not build an evasion ladder. Sustained filter bypass is out of scope for a
-review engagement and puts the owner at risk.
-
----
+When permitted by scope, choose a bounded, context-relevant comparison to test
+the actual security invariant. Require demonstrated unauthorized data, action,
+or another concrete security effect before reporting a bypass. Harmless parser
+differences, partial normalization, and a 200 response alone do not meet that
+standard. Apply the same validation gates and minimal-proof stop condition as
+any other hypothesis. Respect rate limits; do not turn characterization into
+unbounded retries or activity outside the engagement's authorization.
 
 ## REAL-WORLD LESSONS — THE PATTERNS THAT ACTUALLY PAY OUT
 
@@ -444,7 +510,7 @@ one is detailed in its specific skill; this section is the index.
 4. On any token-bearing endpoint: run the `alg:none` forge test (`hunt-jwt`)
 5. On any login endpoint: try the 5 default credentials (`credential-attack`)
 6. On any upload endpoint: construct multipart manually (`control-verification`)
-7. Maintain the control ledger; kill hypotheses with 3 identical results
+7. Maintain the control ledger; reassess equivalent results using controls
 
 This sequence found a full compromise on one of three targets. On the
 other two it produced clean, honest results.

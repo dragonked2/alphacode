@@ -25,7 +25,7 @@ pub(crate) fn selection_fg_for(base_fg: Option<Color>) -> Option<Color> {
 /// hits, and a loud background on all of them drowns the transcript.
 pub(crate) fn search_hit_bg_for(base_bg: Option<Color>) -> Color {
     let fallback = rgb(32, 38, 48);
-    blend_color(base_bg.unwrap_or(fallback), Color::Rgb(214, 168, 58), 0.30)
+    blend_color(base_bg.unwrap_or(fallback), accent_color(), 0.30)
 }
 
 /// Background of the find-in-page hit the user is currently on.
@@ -34,7 +34,7 @@ pub(crate) fn search_hit_bg_for(base_bg: Option<Color>) -> Color {
 /// glance even when the hit is off the centre of the viewport.
 pub(crate) fn search_current_hit_bg_for(base_bg: Option<Color>) -> Color {
     let fallback = rgb(32, 38, 48);
-    blend_color(base_bg.unwrap_or(fallback), Color::Rgb(240, 190, 60), 0.62)
+    blend_color(base_bg.unwrap_or(fallback), accent_color(), 0.62)
 }
 
 /// Apply a copy-selection highlight to a single display line between

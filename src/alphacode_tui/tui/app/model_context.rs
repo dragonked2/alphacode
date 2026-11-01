@@ -117,6 +117,11 @@ impl App {
                 self.session.provider_key.as_deref(),
             );
         self.session.model = Some(active_model.clone());
+        self.session.reasoning_effort = self.provider.reasoning_effort();
+        crate::alphacode_app_core::session_effort::record_session_effort(
+            &self.session.id,
+            self.session.reasoning_effort.as_deref(),
+        );
         if let Err(e) = self.session.save() {
             crate::logging::warn(&format!("Failed to save session: {e}"));
         }
@@ -667,42 +672,24 @@ impl App {
     }
 
     pub(super) fn cycle_effort(&mut self, direction: i8) {
-        // Remote/self-dev sessions infer the level list from provider+model (the
-        // same source the model picker uses), since `self.provider` is a local
-        // stand-in. Local sessions read the real provider. This keeps the cycle
-        // and the picker consistent (both expose swarm / swarm-deep).
-        let efforts = if self.is_remote {
-            let (provider_name, provider_model) = self.remote_effort_identity();
-            inferred_reasoning_efforts(provider_name.as_deref(), provider_model.as_deref())
-        } else {
-            self.provider.available_efforts()
-        };
+        if self.is_remote {
+            self.set_status_notice("Connect to the server to change effort");
+            return;
+        }
+        let efforts = self.provider.available_efforts();
         if efforts.is_empty() {
             self.set_status_notice("Reasoning effort not available for this provider");
             return;
         }
 
-        let current = if self.is_remote {
-            self.remote_reasoning_effort_hint()
-        } else {
-            self.provider.reasoning_effort()
-        };
-        let current_index = current
-            .as_ref()
-            .and_then(|c| efforts.iter().position(|e| *e == c.as_str()))
-            .unwrap_or(efforts.len() - 1); // default to last (highest)
-
+        let current = self.provider.reasoning_effort();
         let len = efforts.len();
-        let next_index = if direction > 0 {
-            if current_index + 1 >= len {
-                current_index // already at max
-            } else {
-                current_index + 1
-            }
-        } else if current_index == 0 {
-            0 // already at min
-        } else {
-            current_index - 1
+        let Some(next_index) = crate::alphacode_provider_core::reasoning::next_effort_index(
+            &efforts,
+            current.as_deref(),
+            direction,
+        ) else {
+            return;
         };
 
         let next_effort = efforts[next_index];
@@ -718,14 +705,43 @@ impl App {
 
         match self.provider.set_reasoning_effort(next_effort) {
             Ok(()) => {
-                let label = effort_display_label(next_effort);
-                let bar = effort_bar(next_index, len);
+                self.persist_local_reasoning_effort();
+                let effective = self.provider.reasoning_effort();
+                let label = effective
+                    .as_deref()
+                    .map(effort_display_label)
+                    .unwrap_or("default");
+                let index = effective
+                    .as_deref()
+                    .and_then(|effort| efforts.iter().position(|value| *value == effort))
+                    .unwrap_or(next_index);
+                let bar = effort_bar(index, len);
                 self.set_status_notice(format!("Effort: {} {}", label, bar));
             }
             Err(e) => {
                 self.set_status_notice(format!("Effort switch failed: {}", e));
             }
         }
+    }
+
+    pub(super) fn persist_local_reasoning_effort(&mut self) {
+        self.session.reasoning_effort = self.provider.reasoning_effort();
+        crate::alphacode_app_core::session_effort::record_session_effort(
+            &self.session.id,
+            self.session.reasoning_effort.as_deref(),
+        );
+        self.invalidate_model_picker_cache();
+        if let Err(error) = self.session.save() {
+            self.push_display_message(DisplayMessage::error(format!(
+                "Effort changed, but the session could not be saved: {error}"
+            )));
+        }
+    }
+
+    pub(super) fn note_remote_effort_request(&mut self, id: u64, effort: String) {
+        self.remote_effort_requests.insert(id);
+        self.remote_requested_reasoning_effort = Some((id, effort));
+        self.invalidate_model_picker_cache();
     }
 
     pub(super) fn update_context_limit_for_model(&mut self, model: &str) {
@@ -1725,8 +1741,18 @@ pub(super) fn handle_model_command(app: &mut App, trimmed: &str) -> bool {
         app.record_keybinding_slow(
             crate::alphacode_tui::tui::app::shortcut_hints::LearnableAction::EffortCycle,
         );
-        let current = app.provider.reasoning_effort();
-        let efforts = app.provider.available_efforts();
+        let (current, efforts) = if app.is_remote {
+            let (provider, model) = app.remote_effort_identity();
+            (
+                app.remote_reasoning_effort.clone(),
+                inferred_reasoning_efforts(provider.as_deref(), model.as_deref()),
+            )
+        } else {
+            (
+                app.provider.reasoning_effort(),
+                app.provider.available_efforts(),
+            )
+        };
         if efforts.is_empty() {
             app.push_display_message(DisplayMessage::system(
                 "Reasoning effort not available for this provider.".to_string(),
@@ -1757,12 +1783,19 @@ pub(super) fn handle_model_command(app: &mut App, trimmed: &str) -> bool {
     }
 
     if let Some(level) = trimmed.strip_prefix("/effort ") {
+        if app.is_remote {
+            app.push_display_message(DisplayMessage::error(
+                "Connect to the server to change effort.",
+            ));
+            return true;
+        }
         app.record_keybinding_slow(
             crate::alphacode_tui::tui::app::shortcut_hints::LearnableAction::EffortCycle,
         );
         let level = level.trim();
         match app.provider.set_reasoning_effort(level) {
             Ok(()) => {
+                app.persist_local_reasoning_effort();
                 let new_effort = app.provider.reasoning_effort();
                 let label = new_effort
                     .as_deref()

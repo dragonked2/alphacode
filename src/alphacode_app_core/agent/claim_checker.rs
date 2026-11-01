@@ -125,6 +125,8 @@ pub struct SessionEvidence {
     pub succeeded_commands: Vec<String>,
     /// Tests whose output shows a pass.
     pub passed_tests: Vec<String>,
+    /// Files targeted by successful mutation tool calls.
+    pub modified_files: Vec<String>,
     /// Structured proofs declared by the report, matched to claims below.
     pub proofs: Vec<ProofObject>,
 }
@@ -140,6 +142,9 @@ impl SessionEvidence {
         use std::collections::HashMap;
 
         let mut inputs: HashMap<String, (String, serde_json::Value)> = HashMap::new();
+        let mut evidence = SessionEvidence::default();
+        let mut call_counts: HashMap<String, usize> = HashMap::new();
+
         for message in messages {
             for block in &message.content {
                 if let ContentBlock::ToolUse {
@@ -147,15 +152,8 @@ impl SessionEvidence {
                 } = block
                 {
                     inputs.insert(id.clone(), (name.clone(), input.clone()));
+                    continue;
                 }
-            }
-        }
-
-        let mut evidence = SessionEvidence::default();
-        let mut call_counts: HashMap<String, usize> = HashMap::new();
-
-        for message in messages {
-            for block in &message.content {
                 let ContentBlock::ToolResult {
                     tool_use_id,
                     content,
@@ -164,27 +162,40 @@ impl SessionEvidence {
                 else {
                     continue;
                 };
-                let Some((tool_name, input)) = inputs.get(tool_use_id) else {
+                let Some((tool_name, input)) = inputs.remove(tool_use_id) else {
                     continue;
                 };
                 *call_counts.entry(tool_name.clone()).or_insert(0) += 1;
 
                 if !is_error.unwrap_or(false)
+                    && ["write", "edit", "multiedit"]
+                        .iter()
+                        .any(|name| tool_name.eq_ignore_ascii_case(name))
+                    && let Some(path) = input.get("file_path").and_then(|value| value.as_str())
+                {
+                    evidence.modified_files.push(path.to_string());
+                }
+
+                if !is_error.unwrap_or(false)
+                    && tool_name.eq_ignore_ascii_case("bash")
                     && let Some(cmd) = input.get("command").and_then(|v| v.as_str())
                     && indicates_success(content)
                 {
                     evidence.succeeded_commands.push(cmd.to_string());
                 }
 
-                for test in passed_tests(content) {
-                    evidence.passed_tests.push(test);
+                if !is_error.unwrap_or(false)
+                    && tool_name.eq_ignore_ascii_case("bash")
+                    && input.get("command").and_then(|v| v.as_str()).is_some()
+                {
+                    evidence.passed_tests.extend(passed_tests(content));
                 }
 
                 if HTTP_EVIDENCE_TOOLS
                     .iter()
                     .any(|t| tool_name.eq_ignore_ascii_case(t))
                     && let Some(exchange) =
-                        HttpExchange::parse_http_transcript(tool_name, input, content)
+                        HttpExchange::parse_http_transcript(&tool_name, &input, content)
                 {
                     evidence.exchanges.push(exchange);
                 }
@@ -231,34 +242,36 @@ fn indicates_success(output: &str) -> bool {
     if failed.iter().any(|marker| lower.contains(marker)) {
         return false;
     }
-    [
-        "exit code 0",
-        "exit code: 0",
-        "exit status 0",
-        "process exited with 0",
-    ]
-    .iter()
-    .any(|marker| lower.contains(marker))
+    output.lines().rev().find_map(|line| {
+        let lower = line.trim().to_ascii_lowercase();
+        [
+            "exit code:",
+            "exit code",
+            "exit status",
+            "process exited with",
+        ]
+        .iter()
+        .filter_map(|prefix| lower.strip_prefix(prefix))
+        .find_map(|code| code.trim().parse::<i32>().ok())
+    }) == Some(0)
 }
 
 /// Extract test names whose output shows them passing.
 fn passed_tests(output: &str) -> Vec<String> {
     let mut passed = Vec::new();
     for line in output.lines() {
-        let lower = line.to_ascii_lowercase();
-        let ok = lower.contains("test result: ok") || lower.contains("... ok");
-        if !ok {
+        let Some(rest) = line.trim().strip_prefix("test ") else {
             continue;
-        }
-        if let Some(start) = line.find("test ") {
-            let rest = &line[start + 5..];
-            let name: String = rest
+        };
+        let Some(name) = rest.strip_suffix(" ... ok") else {
+            continue;
+        };
+        if !name.is_empty()
+            && name
                 .chars()
-                .take_while(|c| c.is_alphanumeric() || *c == '_' || *c == ':')
-                .collect();
-            if !name.is_empty() {
-                passed.push(name);
-            }
+                .all(|c| c.is_alphanumeric() || matches!(c, '_' | ':' | '-'))
+        {
+            passed.push(name.to_string());
         }
     }
     passed
@@ -336,20 +349,41 @@ pub fn check_claim(
     match &claim.claim_type {
         ClaimType::FileModified(path) => {
             let full_path = working_dir.join(path);
-            if full_path.exists() {
-                ClaimCheckResult::verified(claim, format!("File '{}' exists", path))
+            if !full_path.is_file() {
+                return ClaimCheckResult::unverified(
+                    claim,
+                    format!("File '{}' does NOT exist", path),
+                );
+            }
+            let observed = full_path.canonicalize().ok().is_some_and(|target| {
+                evidence.modified_files.iter().any(|written| {
+                    working_dir.join(written).canonicalize().ok().as_ref() == Some(&target)
+                })
+            });
+            if observed {
+                ClaimCheckResult::verified(
+                    claim,
+                    format!("Successful mutation of '{}' observed in session", path),
+                )
             } else {
-                ClaimCheckResult::unverified(claim, format!("File '{}' does NOT exist", path))
+                ClaimCheckResult::unverified(
+                    claim,
+                    format!(
+                        "File '{}' exists, but no successful mutation was observed",
+                        path
+                    ),
+                )
             }
         }
 
         ClaimType::TestPassed(test_name) => {
             // Previously hardcoded to `verified: true`. A test only counts if
             // its output was actually observed in this session.
-            let observed = evidence
-                .passed_tests
-                .iter()
-                .any(|t| t == test_name || t.ends_with(test_name));
+            let observed = evidence.passed_tests.iter().any(|t| {
+                t == test_name
+                    || t.strip_suffix(test_name)
+                        .is_some_and(|prefix| prefix.ends_with("::"))
+            });
             if observed {
                 ClaimCheckResult::verified(
                     claim,
@@ -372,7 +406,7 @@ pub fn check_claim(
             let observed = evidence
                 .succeeded_commands
                 .iter()
-                .any(|c| c == cmd || c.contains(cmd.as_str()) || cmd.contains(c.as_str()));
+                .any(|c| c.trim() == cmd.trim());
             if observed {
                 ClaimCheckResult::verified(
                     claim,
@@ -872,7 +906,7 @@ mod tests {
     #[test]
     fn a_command_claim_without_observed_success_is_not_verified() {
         let result = check_claim(
-            &claim(ClaimType::CommandSucceeded("cargo test".into())),
+            &claim(ClaimType::CommandSucceeded("cargo test --lib".into())),
             Path::new("."),
             &SessionEvidence::default(),
         );
@@ -899,7 +933,7 @@ mod tests {
         );
         let evidence = SessionEvidence::from_messages(&messages);
         let result = check_claim(
-            &claim(ClaimType::CommandSucceeded("cargo test".into())),
+            &claim(ClaimType::CommandSucceeded("cargo test --lib".into())),
             Path::new("."),
             &evidence,
         );
@@ -938,6 +972,92 @@ mod tests {
             &evidence,
         );
         assert!(result.verified, "{}", result.evidence);
+    }
+
+    #[test]
+    fn unrelated_or_failed_outputs_do_not_verify_tests() {
+        for (tool, failed) in [("read", false), ("bash", true)] {
+            let mut messages = transcript_of_tool(
+                tool,
+                serde_json::json!({"command": "cargo test"}),
+                "test misleading_example ... ok",
+            );
+            if let ContentBlock::ToolResult { is_error, .. } = &mut messages[1].content[0] {
+                *is_error = Some(failed);
+            }
+            assert!(
+                SessionEvidence::from_messages(&messages)
+                    .passed_tests
+                    .is_empty()
+            );
+        }
+    }
+
+    #[test]
+    fn evidence_requires_a_preceding_call_and_consumes_results_once() {
+        let mut messages = transcript_of_tool(
+            "bash",
+            serde_json::json!({"command": "cargo test"}),
+            "test actual_test ... ok\nExit code: 0",
+        );
+        messages.push(messages[1].clone());
+        let evidence = SessionEvidence::from_messages(&messages);
+        assert_eq!(evidence.passed_tests, vec!["actual_test"]);
+        assert_eq!(evidence.tool_calls, vec![("bash".to_string(), 1)]);
+        messages.swap(0, 1);
+        messages.pop();
+        assert!(
+            SessionEvidence::from_messages(&messages)
+                .passed_tests
+                .is_empty()
+        );
+    }
+
+    #[test]
+    fn quoted_markers_and_summary_lines_are_not_execution_evidence() {
+        assert!(!super::indicates_success("documentation says exit code 0"));
+        assert!(!super::indicates_success("Exit code: 01"));
+        assert!(super::indicates_success("Exit code: 0"));
+        assert!(!super::indicates_success("Exit code: 0\nExit code: 2"));
+        assert!(super::passed_tests("test result: ok. 12 passed").is_empty());
+        assert!(super::passed_tests("example: test invented ... ok").is_empty());
+    }
+
+    #[test]
+    fn command_and_test_names_do_not_match_arbitrary_substrings() {
+        let evidence = SessionEvidence {
+            succeeded_commands: vec!["echo cargo test".to_string()],
+            passed_tests: vec!["not_test_login".to_string()],
+            ..SessionEvidence::default()
+        };
+        assert!(
+            !check_claim(
+                &claim(ClaimType::CommandSucceeded("cargo test".into())),
+                Path::new("."),
+                &evidence
+            )
+            .verified
+        );
+        assert!(
+            !check_claim(
+                &claim(ClaimType::TestPassed("test_login".into())),
+                Path::new("."),
+                &evidence
+            )
+            .verified
+        );
+        let evidence = SessionEvidence {
+            passed_tests: vec!["module::test_login".to_string()],
+            ..SessionEvidence::default()
+        };
+        assert!(
+            check_claim(
+                &claim(ClaimType::TestPassed("test_login".into())),
+                Path::new("."),
+                &evidence
+            )
+            .verified
+        );
     }
 
     // --- step 2: HTTP status semantics -------------------------------------
@@ -1312,13 +1432,27 @@ mod tests {
     }
 
     #[test]
-    fn check_file_claim_exists() {
+    fn file_existence_alone_does_not_verify_a_modification() {
         let claim = Claim {
             text: "modified Cargo.toml".into(),
             claim_type: ClaimType::FileModified("Cargo.toml".into()),
         };
         let result = check_claim(&claim, Path::new("."), &SessionEvidence::default());
-        assert!(result.verified);
+        assert!(!result.verified);
+        let messages = transcript_of_tool(
+            "write",
+            serde_json::json!({"file_path": "./Cargo.toml"}),
+            "Wrote Cargo.toml",
+        );
+        let evidence = SessionEvidence::from_messages(&messages);
+        assert!(check_claim(&claim, Path::new("."), &evidence).verified);
+        let messages = transcript_of_tool(
+            "write",
+            serde_json::json!({"file_path": "./src/lib.rs"}),
+            "Wrote src/lib.rs",
+        );
+        let evidence = SessionEvidence::from_messages(&messages);
+        assert!(!check_claim(&claim, Path::new("."), &evidence).verified);
     }
 
     #[test]

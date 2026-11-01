@@ -1232,6 +1232,7 @@ fn test_remote_done_waits_for_paced_backlog_and_one_live_frame() {
     app.current_message_id = Some(42);
     app.is_processing = true;
     app.status = ProcessingStatus::Streaming;
+    app.stream_buffer = crate::alphacode_tui_core::StreamBuffer::new();
     let response = "paced text";
     // The reveal controller measures its step from the previous reveal, and the
     // buffer was created when the app was built. Without this reset the

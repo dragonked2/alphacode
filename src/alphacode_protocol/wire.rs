@@ -21,7 +21,71 @@ pub struct TaskGraphNodeSpec {
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub depends_on: Vec<String>,
     #[serde(default, skip_serializing_if = "is_zero_u8")]
+    #[serde(deserialize_with = "priority_from_number_or_label")]
     pub priority: u8,
+}
+
+/// Rank for a priority word. Lower runs first, matching
+/// `alphacode_plan::priority_rank`.
+fn priority_rank_label(label: &str) -> Option<u8> {
+    match label.to_ascii_lowercase().as_str() {
+        "critical" | "urgent" | "high" | "p0" => Some(0),
+        "medium" | "normal" | "p1" => Some(1),
+        "low" | "p2" => Some(2),
+        _ => None,
+    }
+}
+
+/// Accept a rank as a number, a numeric string, or a word.
+///
+/// The schema says `priority` is an integer, but "high" is the natural thing for
+/// an agent to write; rejecting the whole graph over vocabulary loses the work.
+fn priority_from_number_or_label<'de, D>(deserializer: D) -> Result<u8, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    use serde::de::Visitor;
+    struct Priority;
+    impl<'de> Visitor<'de> for Priority {
+        type Value = u8;
+        fn expecting(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+            f.write_str("a priority rank (0-255) or label (high, medium, low)")
+        }
+        fn visit_u64<E: serde::de::Error>(self, v: u64) -> Result<u8, E> {
+            u8::try_from(v).map_err(|_| E::custom(format!("priority {v} out of range for u8")))
+        }
+        fn visit_i64<E: serde::de::Error>(self, v: i64) -> Result<u8, E> {
+            u8::try_from(v).map_err(|_| E::custom(format!("priority {v} out of range for u8")))
+        }
+        fn visit_f64<E: serde::de::Error>(self, v: f64) -> Result<u8, E> {
+            if v.fract() == 0.0 && (0.0..=f64::from(u8::MAX)).contains(&v) {
+                Ok(v as u8)
+            } else {
+                Err(E::custom(format!("priority {v} is not a valid rank")))
+            }
+        }
+        fn visit_str<E: serde::de::Error>(self, v: &str) -> Result<u8, E> {
+            let trimmed = v.trim();
+            if trimmed.is_empty() {
+                return Ok(0);
+            }
+            if let Ok(rank) = trimmed.parse::<u8>() {
+                return Ok(rank);
+            }
+            priority_rank_label(trimmed).ok_or_else(|| {
+                E::custom(format!(
+                    "priority {trimmed:?} is neither a rank nor a label (high, medium, low)"
+                ))
+            })
+        }
+        fn visit_none<E: serde::de::Error>(self) -> Result<u8, E> {
+            Ok(0)
+        }
+        fn visit_unit<E: serde::de::Error>(self) -> Result<u8, E> {
+            Ok(0)
+        }
+    }
+    deserializer.deserialize_any(Priority)
 }
 
 fn is_zero_u8(value: &u8) -> bool {
@@ -1472,4 +1536,96 @@ pub enum ServerEvent {
         /// Tool call ID this is associated with
         tool_call_id: String,
     },
+}
+
+#[cfg(test)]
+mod wire_priority_tests {
+    use super::TaskGraphNodeSpec;
+
+    fn parse(value: &str) -> TaskGraphNodeSpec {
+        serde_json::from_str(value).expect("node spec should deserialize")
+    }
+
+    #[test]
+    fn priority_accepts_numbers_numeric_strings_and_labels() {
+        // The schema says integer, and a number must keep working.
+        assert_eq!(
+            parse(r#"{"id":"a","content":"x","priority":3}"#).priority,
+            3
+        );
+        // Models routinely emit numbers as strings.
+        assert_eq!(
+            parse(r#"{"id":"a","content":"x","priority":"2"}"#).priority,
+            2
+        );
+        // "high" is the natural word; it must rank first rather than fail.
+        assert_eq!(
+            parse(r#"{"id":"a","content":"x","priority":"high"}"#).priority,
+            0
+        );
+        assert_eq!(
+            parse(r#"{"id":"a","content":"x","priority":"MEDIUM"}"#).priority,
+            1
+        );
+        assert_eq!(
+            parse(r#"{"id":"a","content":"x","priority":"low"}"#).priority,
+            2
+        );
+    }
+
+    #[test]
+    fn priority_defaults_to_zero_when_absent_or_null() {
+        assert_eq!(parse(r#"{"id":"a","content":"x"}"#).priority, 0);
+        assert_eq!(
+            parse(r#"{"id":"a","content":"x","priority":null}"#).priority,
+            0
+        );
+        assert_eq!(
+            parse(r#"{"id":"a","content":"x","priority":""}"#).priority,
+            0
+        );
+    }
+
+    #[test]
+    fn priority_rejects_values_with_no_rank_meaning() {
+        // A word that is neither a label nor a number should still be an error:
+        // silently guessing a rank would hide a real mistake.
+        let error = serde_json::from_str::<TaskGraphNodeSpec>(
+            r#"{"id":"a","content":"x","priority":"sometime"}"#,
+        )
+        .expect_err("unknown label should not deserialize");
+        assert!(error.to_string().contains("priority"), "{error}");
+    }
+
+    #[test]
+    fn label_ranks_match_the_plan_crate() {
+        // Wire ranks and plan ranks must agree, or a node labelled "high" would
+        // schedule behind a numeric one.
+        for (label, expected) in [
+            ("high", 0u8),
+            ("urgent", 0),
+            ("medium", 1),
+            ("normal", 1),
+            ("low", 2),
+        ] {
+            assert_eq!(
+                crate::alphacode_plan::priority_rank(label),
+                expected,
+                "{label}"
+            );
+            let spec = parse(&format!(
+                r#"{{"id":"a","content":"x","priority":"{label}"}}"#
+            ));
+            assert_eq!(spec.priority, expected, "{label}");
+        }
+    }
+
+    #[test]
+    fn explicit_zero_priority_is_still_skipped_when_serializing() {
+        // The wire keeps payloads small by omitting a zero rank; this must not
+        // change now that a label can produce the same value.
+        let spec = parse(r#"{"id":"a","content":"x","priority":"high"}"#);
+        let json = serde_json::to_string(&spec).expect("serialize");
+        assert!(!json.contains("priority"), "{json}");
+    }
 }

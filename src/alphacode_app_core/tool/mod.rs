@@ -9,6 +9,7 @@ mod batch;
 mod bg;
 pub mod bounty_bridge;
 mod browser;
+pub(crate) mod capabilities;
 mod cariddi;
 mod clipboard;
 mod communicate;
@@ -1275,6 +1276,12 @@ impl Registry {
 
         let base_start = std::time::Instant::now();
         let mut tools_map = Self::base_tools(&skills);
+        // Bind discovery to this registry, including late registrations/removals.
+        Self::insert_tool(
+            &mut tools_map,
+            "tool_help",
+            tool_help::ToolHelpTool::for_registry(&registry),
+        );
         let base_ms = base_start.elapsed().as_millis();
 
         // Per-session tools that need provider/registry references

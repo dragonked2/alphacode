@@ -682,6 +682,21 @@ fn swarm_broadcast_key(
     )
 }
 
+// Snapshot fanout is synchronous under the snapshot guard. Prefer all live
+// attachments; restored closed attachments must not suppress the primary sender.
+fn send_swarm_snapshot(member: &SwarmMember, event: &ServerEvent) -> usize {
+    let mut delivered = 0;
+    let mut has_live_attachment = false;
+    for tx in member.event_txs.values().filter(|tx| !tx.is_closed()) {
+        has_live_attachment = true;
+        delivered += usize::from(tx.send(event.clone()).is_ok());
+    }
+    if !has_live_attachment {
+        delivered += usize::from(member.event_tx.send(event.clone()).is_ok());
+    }
+    delivered
+}
+
 async fn broadcast_swarm_status_now(
     session_ids: Vec<String>,
     swarm_members: &Arc<RwLock<HashMap<String, SwarmMember>>>,
@@ -706,7 +721,9 @@ async fn broadcast_swarm_status_now(
                     task_label: m.task_label.clone(),
                     role: Some(m.role.clone()),
                     is_headless: Some(m.is_headless),
-                    live_attachments: Some(m.event_txs.len()),
+                    live_attachments: Some(
+                        m.event_txs.values().filter(|tx| !tx.is_closed()).count(),
+                    ),
                     status_age_secs: Some(status_age_secs(m.last_status_change)),
                     output_tail: m.output_tail.clone(),
                     report_back_to_session_id: m.report_back_to_session_id.clone(),
@@ -730,12 +747,13 @@ async fn broadcast_swarm_status_now(
         })
         .collect();
 
-    drop(members_guard);
     let event = ServerEvent::SwarmStatus {
         members: members_list,
     };
     for sid in session_ids {
-        let _ = fanout_session_event(swarm_members, &sid, event.clone()).await;
+        if let Some(member) = members_guard.get(&sid) {
+            send_swarm_snapshot(member, &event);
+        }
     }
 }
 
@@ -841,71 +859,60 @@ pub(super) async fn broadcast_swarm_plan_with_previous(
     swarm_members: &Arc<RwLock<HashMap<String, SwarmMember>>>,
     swarms_by_id: &Arc<RwLock<HashMap<String, HashSet<String>>>>,
 ) {
-    let (version, items, summary, mut participants): (
-        u64,
-        Vec<PlanItem>,
-        crate::protocol::PlanGraphStatus,
-        Vec<String>,
-    ) = {
-        let plans = swarm_plans.read().await;
-        let Some(vp) = plans.get(swarm_id) else {
-            return;
-        };
-        let newly_ready_ids = previous_items
-            .map(|before| newly_ready_item_ids(before, &vp.items))
-            .unwrap_or_default();
-        let mut p: Vec<String> = vp.participants.iter().cloned().collect();
-        p.sort();
-        (
-            vp.version,
-            vp.items.clone(),
-            crate::protocol::PlanGraphStatus::from_versioned_plan(
-                swarm_id,
-                vp,
-                Some(3),
-                newly_ready_ids,
-            ),
-            p,
-        )
-    };
-
-    if participants.is_empty() {
+    // Resolve routing before taking the plan snapshot. Keep the plan read
+    // guard through synchronous sends so an older snapshot cannot overtake
+    // a newer version while waiting for a routing lock.
+    let fallback = {
         let swarms = swarms_by_id.read().await;
-        participants = swarms
-            .get(swarm_id)
-            .map(|s| {
-                let mut ids: Vec<String> = s.iter().cloned().collect();
-                ids.sort();
-                ids
-            })
-            .unwrap_or_default();
+        swarms.get(swarm_id).cloned().unwrap_or_default()
+    };
+    let plans = swarm_plans.read().await;
+    let members = swarm_members.read().await;
+    let Some(plan) = plans.get(swarm_id) else {
+        return;
+    };
+    let mut participants: Vec<String> = plan.participants.iter().cloned().collect();
+    let is_live = |sid: &String| {
+        members.get(sid).is_some_and(|member| {
+            !member.event_tx.is_closed() || member.event_txs.values().any(|tx| !tx.is_closed())
+        })
+    };
+    if !participants.iter().any(is_live) {
+        participants.extend(fallback);
     }
-
+    participants.sort();
+    participants.dedup();
     if participants.is_empty() {
         return;
     }
-
-    let item_count = items.len();
+    let version = plan.version;
+    let item_count = plan.items.len();
+    let newly_ready_ids = previous_items
+        .map(|before| newly_ready_item_ids(before, &plan.items))
+        .unwrap_or_default();
     let reason_label = reason.clone().unwrap_or_else(|| "unspecified".to_string());
     let event = ServerEvent::SwarmPlan {
         swarm_id: swarm_id.to_string(),
         version,
-        items,
+        items: plan.items.clone(),
         participants: participants.clone(),
         reason,
-        summary: Some(summary),
+        summary: Some(crate::protocol::PlanGraphStatus::from_versioned_plan(
+            swarm_id,
+            plan,
+            Some(3),
+            newly_ready_ids,
+        )),
     };
-
-    let members = swarm_members.read().await;
     let participant_count = participants.len();
     let mut delivered_count = 0usize;
     for sid in participants {
-        if let Some(member) = members.get(&sid)
-            && member.event_tx.send(event.clone()).is_ok()
-        {
-            delivered_count += 1;
+        if let Some(member) = members.get(&sid) {
+            delivered_count += send_swarm_snapshot(member, &event);
         }
     }
+    drop(plans);
+    drop(members);
     log_swarm_lifecycle(
         "plan_broadcast",
         vec![
@@ -938,8 +945,8 @@ pub(super) async fn send_swarm_plan_to_session(
         return;
     };
 
+    let plans = swarm_plans.read().await;
     let event = {
-        let plans = swarm_plans.read().await;
         let Some(vp) = plans.get(&swarm_id) else {
             return;
         };
@@ -978,7 +985,7 @@ pub(super) async fn send_swarm_plan_to_session(
 
     let members = swarm_members.read().await;
     if let Some(member) = members.get(session_id) {
-        let _ = member.event_tx.send(event);
+        send_swarm_snapshot(member, &event);
     }
 }
 
@@ -1770,6 +1777,33 @@ mod tests {
         }
     }
 
+    #[tokio::test]
+    async fn snapshots_reach_all_live_attachments_and_ignore_closed_ones() {
+        let (mut member, mut primary) = swarm_member("worker", "agent", false);
+        let (tx1, mut rx1) = mpsc::unbounded_channel();
+        let (tx2, mut rx2) = mpsc::unbounded_channel();
+        member.event_txs.insert("first".to_string(), tx1);
+        member.event_txs.insert("second".to_string(), tx2);
+        let event = ServerEvent::SwarmStatus {
+            members: Vec::new(),
+        };
+        assert_eq!(super::send_swarm_snapshot(&member, &event), 2);
+        assert!(rx1.try_recv().is_ok());
+        assert!(rx2.try_recv().is_ok());
+        assert!(primary.try_recv().is_err());
+        drop(rx1);
+        drop(rx2);
+        assert_eq!(super::send_swarm_snapshot(&member, &event), 1);
+        assert!(primary.try_recv().is_ok());
+        let members = Arc::new(RwLock::new(HashMap::from([("worker".to_string(), member)])));
+        super::broadcast_swarm_status_now(vec!["worker".to_string()], &members).await;
+        let ServerEvent::SwarmStatus { members } = primary.try_recv().expect("status snapshot")
+        else {
+            panic!("expected status snapshot");
+        };
+        assert_eq!(members[0].live_attachments, Some(0));
+    }
+
     #[test]
     fn truncate_detail_collapses_whitespace_and_ellipsizes() {
         assert_eq!(truncate_detail("hello   there\nworld", 11), "hello th...");
@@ -2079,29 +2113,9 @@ mod tests {
         }
     }
 
-    /// Deterministic demonstration of the mutate->broadcast version-inversion
-    /// race (wiring-audit.plan-broadcast-ordering).
-    ///
-    /// `broadcast_swarm_plan_with_previous` snapshots `(version, items)` under
-    /// `swarm_plans.read()`, releases the lock, and only later (after further
-    /// await points on `swarms_by_id.read()` / `swarm_members.read()`) sends
-    /// on `member.event_tx`. A second mutator can bump the version AND
-    /// complete its own broadcast inside that window, so a single ordered
-    /// mpsc channel can deliver v6 before v5.
-    ///
-    /// This test parks broadcast A (snapshot v5, empty participants, so it
-    /// must await `swarms_by_id.read()`) behind a held `swarms_by_id.write()`
-    /// guard, lets mutator B bump to v6 and broadcast it, then releases A.
-    /// The worker receives [6, 5]: inverted versions on one channel.
-    ///
-    /// If this test starts failing with versions == [6, 6] or [5, 6], the
-    /// race has been fixed (e.g. by holding the plan lock through send or by
-    /// stamping a send-order sequence); update the wiring audit and consider
-    /// whether the TUI-side monotonicity guard (server_events.rs SwarmPlan
-    /// handler currently overwrites `swarm_plan_version` unconditionally) is
-    /// still needed.
+    /// Routing waits must not let an obsolete plan overtake a new one.
     #[tokio::test]
-    async fn swarm_plan_broadcast_versions_can_invert_on_one_member_channel() {
+    async fn swarm_plan_broadcast_versions_remain_monotonic() {
         let swarm_plans = Arc::new(RwLock::new(HashMap::from([(
             "swarm-1".to_string(),
             VersionedPlan {
@@ -2122,8 +2136,7 @@ mod tests {
             HashSet::from(["worker".to_string()]),
         )])));
 
-        // Hold a write guard on swarms_by_id so broadcast A parks after it
-        // has already snapshotted version 5 from swarm_plans.
+        // Park broadcast A before it reads the plan snapshot.
         let gate = swarms_by_id.write().await;
 
         let a = tokio::spawn({
@@ -2142,20 +2155,20 @@ mod tests {
             }
         });
         // Current-thread test runtime: yielding runs A until it parks on the
-        // contended swarms_by_id.read().await, past its v5 snapshot.
+        // contended swarms_by_id.read().await, before its snapshot.
         for _ in 0..16 {
             tokio::task::yield_now().await;
         }
 
-        // Mutator B: bump to v6 and register an explicit participant so B's
-        // broadcast skips the swarms_by_id fallback and is not blocked by
-        // the gate. This mirrors real mutators (write, release, broadcast).
+        // Advance the plan while A is waiting for routing.
         {
             let mut plans = swarm_plans.write().await;
             let vp = plans.get_mut("swarm-1").expect("plan");
             vp.version = 6;
             vp.participants.insert("worker".to_string());
         }
+        // Both broadcasts resolve routing before reading the latest plan.
+        drop(gate);
         broadcast_swarm_plan(
             "swarm-1",
             Some("mutator_2".to_string()),
@@ -2164,10 +2177,6 @@ mod tests {
             &swarms_by_id,
         )
         .await;
-
-        // Release A: it resumes with its stale v5 snapshot and sends it
-        // after v6 on the same ordered channel.
-        drop(gate);
         a.await.expect("broadcast task");
 
         let mut versions = Vec::new();
@@ -2176,48 +2185,12 @@ mod tests {
                 versions.push(version);
             }
         }
-        assert_eq!(
-            versions,
-            vec![6, 5],
-            "expected version inversion on one member channel; if this fails \
-             the mutate->broadcast race may have been fixed (update the \
-             wiring audit)"
-        );
+        assert_eq!(versions, vec![6, 6]);
     }
 
-    /// Deterministic demonstration of the SwarmStatus immediate-path
-    /// snapshot-vs-send inversion (wiring-audit.status-proposal-ordering).
-    ///
-    /// `broadcast_swarm_status_now` snapshots member statuses under
-    /// `swarm_members.read()`, drops the guard, then awaits
-    /// `fanout_session_event` (a `swarm_members.write()` acquisition) before
-    /// sending. Swarms below `ALPHACODE_SWARM_STATUS_DEBOUNCE_MEMBER_THRESHOLD`
-    /// (default 2) take this immediate, non-debounced path on every status
-    /// change, so two concurrent broadcasts can deliver an old snapshot after
-    /// a newer one on the same ordered mpsc channel. A last-write-wins
-    /// consumer (the TUI SwarmStatus handler) is then left showing the stale
-    /// status until the next unrelated broadcast.
-    ///
-    /// Unlike the SwarmPlan inversion test above, there is no second lock we
-    /// can gate on: the status path snapshots from the same `swarm_members`
-    /// lock it later writes, so holding any guard also blocks the mutator.
-    /// Instead this test uses tokio's cooperative budget (128 units per task
-    /// poll on a current-thread runtime; every RwLock acquisition consumes
-    /// exactly one). Draining 126 units leaves broadcast A exactly enough for
-    /// `swarms_by_id.read()` and the `swarm_members.read()` snapshot, forcing
-    /// a yield at the (uncontended) `swarm_members.write()` inside
-    /// `fanout_session_event`, i.e. precisely inside the race window between
-    /// snapshot and send.
-    ///
-    /// If this test starts failing with `["running", "running"]` or
-    /// `["ready", "running"]`, the race has been fixed (e.g. by holding the
-    /// read lock through the send, or by stamping a monotonic sequence on
-    /// SwarmStatus and dropping stale ones consumer-side); update the wiring
-    /// audit. If it fails because broadcast A parks somewhere else, the tokio
-    /// coop budget constants changed: re-derive the `128 - 2` drain count.
+    /// Legacy scheduler-specific fixture; snapshot fanout now sends without awaiting.
     #[tokio::test]
-    #[ignore = "toolchain-dependent coop-budget forcing; race demonstration no longer reproducible deterministically on this toolchain"]
-    async fn swarm_status_immediate_broadcasts_can_invert_on_one_member_channel() {
+    async fn swarm_status_immediate_broadcasts_remain_monotonic() {
         let (worker, mut worker_rx) = swarm_member("worker", "agent", false);
         let swarm_members = Arc::new(RwLock::new(HashMap::from([("worker".to_string(), worker)])));
         let swarms_by_id = Arc::new(RwLock::new(HashMap::from([(
@@ -2225,38 +2198,26 @@ mod tests {
             HashSet::from(["worker".to_string()]),
         )])));
 
-        // Broadcast A: snapshots status "ready", then is forced to yield at
-        // the fanout write acquisition, before sending.
+        // Exercise a cooperative yield near snapshot acquisition.
         let a = tokio::spawn({
             let swarm_members = Arc::clone(&swarm_members);
             let swarms_by_id = Arc::clone(&swarms_by_id);
             async move {
-                // Initial task budget is 128. Leave exactly 2 units so the two
-                // read acquisitions (session-id list + status snapshot)
-                // succeed and the fanout write acquisition forces a yield.
                 for _ in 0..126 {
                     tokio::task::coop::consume_budget().await;
                 }
                 broadcast_swarm_status("swarm-1", &swarm_members, &swarms_by_id).await;
             }
         });
-        // Single yield on the current-thread runtime: A runs its entire first
-        // poll (budget drain + both reads) and parks after snapshotting
-        // "ready". Its coop yield happens *before* joining the lock queue, so
-        // every acquisition below is uncontended and the mutator finishes
-        // within one poll, before A is re-polled.
         tokio::task::yield_now().await;
 
-        // Concurrent mutator: flips the status and completes its own
-        // immediate broadcast while A is parked between snapshot and send.
+        // Whether A runs before or after this mutation, its send must be ordered.
         {
             let mut members = swarm_members.write().await;
             members.get_mut("worker").expect("worker member").status = "running".to_string();
         }
         broadcast_swarm_status("swarm-1", &swarm_members, &swarms_by_id).await;
 
-        // Release A: it resumes with a fresh budget and sends its stale
-        // "ready" snapshot after "running" on the same ordered channel.
         a.await.expect("broadcast task");
 
         let mut statuses = Vec::new();
@@ -2267,23 +2228,13 @@ mod tests {
                 statuses.push(members[0].status.clone());
             }
         }
-        assert_eq!(
-            statuses,
-            vec!["running".to_string(), "ready".to_string()],
-            "expected status inversion (new-then-old) on one member channel; \
-             if this fails with the correct order, the snapshot-vs-send race \
-             may have been fixed (update the wiring audit)"
-        );
+        assert_eq!(statuses.len(), 2);
+        assert_eq!(statuses.last().map(String::as_str), Some("running"));
     }
 
-    /// Restored (persisted) plan participants with dead channels starve live
-    /// swarm members of plan broadcasts: the fallback to swarms_by_id only
-    /// triggers when `participants` is EMPTY, so a participant set that only
-    /// contains stale sessions (e.g. restored after a server restart, where
-    /// `from_persisted_member` gives every member a closed event_tx) means
-    /// nobody receives the snapshot, not even live members of the swarm.
+    /// Restored closed participant channels must not hide live swarm members.
     #[tokio::test]
-    async fn stale_participants_starve_live_members_of_plan_broadcasts() {
+    async fn stale_participants_do_not_starve_live_members_of_plan_broadcasts() {
         let swarm_plans = Arc::new(RwLock::new(HashMap::from([(
             "swarm-1".to_string(),
             VersionedPlan {
@@ -2320,12 +2271,10 @@ mod tests {
         )
         .await;
 
-        assert!(
-            live_rx.try_recv().is_err(),
-            "live member unexpectedly received the plan broadcast; stale \
-             participant starvation may have been fixed (update the wiring \
-             audit)"
-        );
+        assert!(matches!(
+            live_rx.try_recv(),
+            Ok(ServerEvent::SwarmPlan { version: 7, .. })
+        ));
     }
 
     #[tokio::test]

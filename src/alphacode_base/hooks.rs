@@ -48,9 +48,15 @@ static SESSION_CLIENT_ENV: LazyLock<RwLock<HashMap<String, ClientTerminalEnv>>> 
     LazyLock::new(|| RwLock::new(HashMap::new()));
 
 /// Record the terminal env of the client attached to `session_id` (#405), so
-/// hooks for that session target the client's terminal. An empty snapshot
-/// clears the entry and hooks fall back to the server's own env.
+/// hooks for that session target the client's terminal. Only keys in
+/// [`CLIENT_TERMINAL_ENV_VARS`](crate::terminal_launch::CLIENT_TERMINAL_ENV_VARS)
+/// are kept
+/// ([`sanitize_client_terminal_env`](crate::terminal_launch::sanitize_client_terminal_env)):
+/// the snapshot comes from a socket peer, and a hook must never pick
+/// up e.g. `PATH` or `LD_PRELOAD` from it. An empty snapshot, or one with no
+/// terminal vars, clears the entry and hooks fall back to the server's own env.
 pub fn set_session_client_env(session_id: &str, env: Vec<(String, String)>) {
+    let env: ClientTerminalEnv = crate::terminal_launch::sanitize_client_terminal_env(env);
     let mut map = SESSION_CLIENT_ENV
         .write()
         .unwrap_or_else(std::sync::PoisonError::into_inner);
@@ -69,7 +75,7 @@ pub fn clear_session_client_env(session_id: &str) {
         .remove(session_id);
 }
 
-fn session_client_env(session_id: &str) -> Option<Vec<(String, String)>> {
+pub(crate) fn session_client_env(session_id: &str) -> Option<Vec<(String, String)>> {
     SESSION_CLIENT_ENV
         .read()
         .unwrap_or_else(std::sync::PoisonError::into_inner)
@@ -630,6 +636,42 @@ mod tests {
         );
         set_session_client_env("ses_client_env_empty", Vec::new());
         assert_eq!(session_client_env("ses_client_env_empty"), None);
+    }
+
+    #[test]
+    fn client_terminal_env_keeps_only_terminal_vars() {
+        set_session_client_env(
+            "ses_client_env_filter",
+            vec![
+                ("HERDR_PANE_ID".to_string(), "w1:p2".to_string()),
+                ("PATH".to_string(), "/tmp/evil".to_string()),
+                ("LD_PRELOAD".to_string(), "/tmp/evil.so".to_string()),
+            ],
+        );
+        let cmd = build_hook_process(
+            "hook",
+            &HookEvent::new("turn_start").session_id("ses_client_env_filter"),
+        )
+        .expect("hook command");
+        clear_session_client_env("ses_client_env_filter");
+
+        assert_eq!(hook_env(&cmd, "HERDR_PANE_ID"), Some(Some("w1:p2".into())));
+        assert_eq!(hook_env(&cmd, "PATH"), None);
+        assert_eq!(hook_env(&cmd, "LD_PRELOAD"), None);
+        assert_eq!(hook_env(&cmd, "ALPHACODE_CLIENT_PATH"), None);
+    }
+
+    #[test]
+    fn client_env_without_terminal_vars_clears_the_session_entry() {
+        set_session_client_env(
+            "ses_client_env_none",
+            vec![("TMUX_PANE".to_string(), "%3".to_string())],
+        );
+        set_session_client_env(
+            "ses_client_env_none",
+            vec![("PATH".to_string(), "/tmp/evil".to_string())],
+        );
+        assert_eq!(session_client_env("ses_client_env_none"), None);
     }
 
     #[cfg(unix)]

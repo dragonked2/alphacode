@@ -14,6 +14,7 @@ use crate::alphacode_tui_render::swarm_gallery::{
     render_swarm_compact, render_swarm_dock, render_swarm_live_card, render_swarm_panel,
     render_swarm_strip, render_swarm_strip_vertical, status_accent, status_glyph,
 };
+use crate::alphacode_tui_style::theme::accent_color;
 use ratatui::prelude::*;
 use std::collections::{HashMap, HashSet};
 
@@ -180,7 +181,7 @@ pub(crate) fn render_swarm_page_lines(
         .count();
 
     let mut out = vec![Line::from(vec![
-        Span::styled("🐝 ", Style::default().fg(Color::Rgb(255, 200, 100))),
+        Span::styled("🐝 ", Style::default().fg(accent_color())),
         Span::styled(
             "swarm",
             Style::default().fg(Color::Rgb(230, 230, 240)).bold(),
@@ -380,13 +381,10 @@ fn render_swarm_tree_row(
     let mut spans = vec![
         Span::styled(
             if selected { "▸ " } else { "  " },
-            Style::default().fg(Color::Rgb(255, 200, 100)),
+            Style::default().fg(accent_color()),
         ),
         Span::styled(prefix, Style::default().fg(Color::Rgb(75, 75, 88))),
-        Span::styled(
-            format!("{icon} "),
-            Style::default().fg(Color::Rgb(255, 200, 100)),
-        ),
+        Span::styled(format!("{icon} "), Style::default().fg(accent_color())),
         Span::styled(
             format!("{} ", status_glyph(&member.status, spinner_frame)),
             Style::default().fg(status_accent(&member.status)),

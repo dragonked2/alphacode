@@ -36,6 +36,8 @@ use std::time::{Duration, Instant};
 use unicode_width::UnicodeWidthStr;
 #[path = "ui_animations.rs"]
 mod animations;
+#[path = "ui_work_summary.rs"]
+mod work_summary;
 pub(crate) use animations::{
     idle_animation_debug_json, idle_donut_reserved_height, last_idle_animation_area,
     note_idle_animation_fast_path_blocked, note_idle_animation_full_repaint,
@@ -2871,9 +2873,18 @@ pub fn draw(frame: &mut Frame, app: &dyn TuiState) {
     // is reclaimed even when no image widget renders again.
     crate::alphacode_tui::tui::mermaid::render_pending_terminal_image_cleanup(frame.buffer_mut());
 }
+/// Transcript line counts can exceed terminal coordinate limits. Decide
+/// scrolling before converting any dimensions to Ratatui's u16 coordinates.
+fn transcript_overflows(content_rows: usize, fixed_rows: u16, available_rows: u16) -> bool {
+    content_rows.max(1).saturating_add(usize::from(fixed_rows)) > usize::from(available_rows)
+}
+
 fn draw_inner(frame: &mut Frame, app: &dyn TuiState) {
     let area = frame.area().intersection(*frame.buffer_mut().area());
     if area.width == 0 || area.height == 0 {
+        clear_copy_viewport_snapshot();
+        record_layout_snapshot(Rect::default(), None, None, None);
+        record_status_area(Rect::default());
         return;
     }
 
@@ -2893,6 +2904,26 @@ fn draw_inner(frame: &mut Frame, app: &dyn TuiState) {
     // Uses Color::Reset (terminal default bg) so text selection highlighting works
     // natively in all terminal emulators.
     clear_area(frame, area);
+
+    if area.width < 12 || area.height < 5 {
+        // Mouse hit-testing must not keep using the previous larger layout.
+        record_layout_snapshot(Rect::default(), None, None, None);
+        record_status_area(Rect::default());
+        frame.render_widget(
+            Paragraph::new("Resize terminal\nMinimum 12 × 5\nCtrl+C to exit")
+                .wrap(ratatui::widgets::Wrap { trim: true })
+                .style(Style::default().fg(warning_color())),
+            area,
+        );
+        finalize_frame_metrics(
+            app,
+            total_start,
+            Duration::ZERO,
+            total_start.elapsed(),
+            None,
+        );
+        return;
+    }
 
     if let Some(scroll) = app.changelog_scroll() {
         overlays::draw_changelog_overlay(frame, area, scroll, app);
@@ -2979,25 +3010,6 @@ fn draw_inner(frame: &mut Frame, app: &dyn TuiState) {
     if let Some(picker_cell) = app.account_picker_overlay() {
         let mut picker = picker_cell.borrow_mut();
         picker.render(frame);
-        finalize_frame_metrics(
-            app,
-            total_start,
-            Duration::ZERO,
-            total_start.elapsed(),
-            None,
-        );
-        return;
-    }
-
-    if area.width < 12 || area.height < 5 {
-        // Mouse hit-testing must not keep using the previous larger layout.
-        record_layout_snapshot(Rect::default(), None, None, None);
-        record_status_area(Rect::default());
-        frame.render_widget(
-            Paragraph::new("Resize terminal to at least 12 columns × 5 rows")
-                .style(Style::default().fg(warning_color())),
-            area,
-        );
         finalize_frame_metrics(
             app,
             total_start,
@@ -3283,7 +3295,7 @@ fn draw_inner(frame: &mut Frame, app: &dyn TuiState) {
     let mut remaining = chat_area
         .height
         .saturating_sub(input_height + essential_rows);
-    let desired_banner = header::banner_band_height(chat_area.width, chat_area.height);
+    let desired_banner = header::conversation_banner_height(app, chat_area.width, chat_area.height);
     let minimum_picker = if requested_inline_height > 0 { 4 } else { 0 };
     let banner_height = desired_banner.min(remaining.saturating_sub(minimum_picker));
     remaining -= banner_height;
@@ -3407,8 +3419,11 @@ fn draw_inner(frame: &mut Frame, app: &dyn TuiState) {
     };
     let overflows = |prepared: &PreparedChatFrame| {
         let started = Instant::now();
-        let result = (prepared.total_wrapped_lines().max(1) as u16) + stable_fixed_height
-            > transcript_budget_height;
+        let result = transcript_overflows(
+            prepared.total_wrapped_lines(),
+            stable_fixed_height,
+            transcript_budget_height,
+        );
         note_prep_overflow(started.elapsed());
         result
     };
@@ -3425,13 +3440,13 @@ fn draw_inner(frame: &mut Frame, app: &dyn TuiState) {
     let initial_content_height;
     let (prepared, chat_scrollbar_visible) = if !scrollbar_enabled {
         let prepared_wide = prepare_at(wide_prepare_width);
-        initial_content_height = prepared_wide.total_wrapped_lines().max(1) as u16;
+        initial_content_height = prepared_wide.total_wrapped_lines().max(1);
         (prepared_wide, false)
     } else if last_chat_scrollbar_visible() {
         // Scrollbar was visible last frame: prepare the narrow (reserved-column)
         // layout first. If it still overflows we keep it without touching wide.
         let prepared_narrow = prepare_at(narrow_prepare_width);
-        initial_content_height = prepared_narrow.total_wrapped_lines().max(1) as u16;
+        initial_content_height = prepared_narrow.total_wrapped_lines().max(1);
         if overflows(&prepared_narrow) {
             (prepared_narrow, true)
         } else {
@@ -3443,7 +3458,7 @@ fn draw_inner(frame: &mut Frame, app: &dyn TuiState) {
         // No scrollbar last frame: prepare the wide layout first. Only when it
         // overflows do we evaluate the narrow layout to decide on the scrollbar.
         let prepared_wide = prepare_at(wide_prepare_width);
-        initial_content_height = prepared_wide.total_wrapped_lines().max(1) as u16;
+        initial_content_height = prepared_wide.total_wrapped_lines().max(1);
         if !overflows(&prepared_wide) {
             (prepared_wide, false)
         } else {
@@ -3472,16 +3487,18 @@ fn draw_inner(frame: &mut Frame, app: &dyn TuiState) {
             .collect();
     }
     let prep_elapsed = prep_start.elapsed();
-    let content_height = prepared.total_wrapped_lines().max(1) as u16;
+    let content_height = prepared.total_wrapped_lines().max(1);
 
     // Use packed layout when content fits, scrolling layout otherwise
-    let use_packed =
-        !swarm_page_active && content_height + fixed_height <= transcript_budget_height;
+    let use_packed = !swarm_page_active
+        && !transcript_overflows(content_height, fixed_height, transcript_budget_height);
 
     // Give unused rows to the transcript viewport. This keeps bottom chrome
     // pinned while allowing widgets to dock in genuinely empty viewport space.
     let transcript_gap = if use_packed {
-        transcript_budget_height.saturating_sub(content_height + fixed_height)
+        transcript_budget_height
+            .saturating_sub(u16::try_from(content_height).unwrap_or(u16::MAX))
+            .saturating_sub(fixed_height)
     } else {
         0
     };
@@ -3503,17 +3520,21 @@ fn draw_inner(frame: &mut Frame, app: &dyn TuiState) {
         .constraints(if use_packed {
             vec![
                 Constraint::Length(banner_height), // CHUNK_BANNER
-                Constraint::Length(content_height.max(1).saturating_add(transcript_gap)), // CHUNK_MESSAGES
-                Constraint::Length(0),                   // CHUNK_TRANSCRIPT_GAP
-                Constraint::Length(queued_height),       // CHUNK_QUEUED
-                Constraint::Length(swarm_strip_height),  // CHUNK_SWARM_STRIP
-                Constraint::Length(1),                   // CHUNK_STATUS
+                Constraint::Length(
+                    u16::try_from(content_height)
+                        .unwrap_or(u16::MAX)
+                        .saturating_add(transcript_gap),
+                ), // CHUNK_MESSAGES
+                Constraint::Length(0),             // CHUNK_TRANSCRIPT_GAP
+                Constraint::Length(queued_height), // CHUNK_QUEUED
+                Constraint::Length(swarm_strip_height), // CHUNK_SWARM_STRIP
+                Constraint::Length(1),             // CHUNK_STATUS
                 Constraint::Length(notification_height), // CHUNK_NOTIFICATION
                 Constraint::Length(inline_block_height), // CHUNK_INLINE_UI
                 Constraint::Length(inline_ui_gap_height), // CHUNK_INLINE_GAP
-                Constraint::Length(input_height),        // CHUNK_INPUT
-                Constraint::Length(overscroll_height),   // CHUNK_OVERSCROLL
-                Constraint::Length(donut_height),        // CHUNK_DONUT
+                Constraint::Length(input_height),  // CHUNK_INPUT
+                Constraint::Length(overscroll_height), // CHUNK_OVERSCROLL
+                Constraint::Length(donut_height),  // CHUNK_DONUT
             ]
         } else {
             vec![
@@ -3553,7 +3574,7 @@ fn draw_inner(frame: &mut Frame, app: &dyn TuiState) {
     // Capture layout info for visual debug
     if let Some(ref mut capture) = debug_capture {
         capture.layout.use_packed = use_packed;
-        capture.layout.estimated_content_height = content_height as usize;
+        capture.layout.estimated_content_height = content_height;
         capture.layout.messages_area = Some(chunks[CHUNK_MESSAGES].into());
         if queued_height > 0 {
             capture.layout.queued_area = Some(chunks[CHUNK_QUEUED].into());
@@ -3623,8 +3644,8 @@ fn draw_inner(frame: &mut Frame, app: &dyn TuiState) {
     note_chat_layout(ChatLayoutMetrics {
         chat_area,
         messages_area,
-        initial_content_height: initial_content_height as usize,
-        content_height: content_height as usize,
+        initial_content_height,
+        content_height,
         chat_scrollbar_visible,
         use_packed_layout: use_packed,
         has_side_panel_content,

@@ -6,17 +6,204 @@ adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [1.0.91] - 2026-11-01
+
+### Added
+
+- The model can now see which tools this session actually has. A live,
+  policy-filtered capability map is attached to the dynamic prompt on each
+  request: registered/advertised counts, capability-family samples, and how to
+  discover a deferred schema. Progressive disclosure still keeps individual
+  schemas out of the request, but "hidden from the prompt" is no longer
+  indistinguishable from "not available".
+- `tool_help` gained explicit `search`, `list`, and `enable` actions. `search`
+  matches names, bounded descriptions, and capability-family hints *without*
+  promoting the schemas it finds, so inspecting the catalog is cheap; `enable`
+  loads selected schemas; omitting the action keeps the previous automatic
+  promotion for `tools`/`query`. Broad query-only matches above eight tools
+  return a bounded catalog for selection instead of promoting everything, and
+  catalog output is capped at forty entries and about 8 KiB. Malformed input is
+  now a validation error instead of a silent listing of unrelated tools.
+- Skills can declare `triggers:` in frontmatter - outcome vocabulary ("find
+  bugs", "prove the impact") kept separate from `aliases`, so a trigger word
+  does not have to behave like a slash-command alias.
+- Background runs now wake the agent that launched them. A `bash` call with
+  `run_in_background` implies `wake`, so a finished command resumes the session
+  instead of leaving it idle until someone pressed Alt+B. `bg wait` clears the
+  wake flag the moment it commits to waiting, because blocking on the result
+  *is* the rendezvous - leaving the flag armed injected the same completion as
+  a second turn racing the wait's own return.
+- `agents.plan_max_nodes` (default 40, env `ALPHACODE_PLAN_MAX_NODES`) caps how
+  large one task graph may grow. Deep mode rewards splitting and adds a
+  critique/verify gate per composite, so a 14-node seed was observed reaching
+  75 nodes before most seed nodes had finished. Seeding is never blocked; only
+  growth past the cap is, and the error names the limit so the agent
+  consolidates instead of splitting again.
+- The browser tool's script runner returns the value of a bare
+  `await <expression>`. The obvious form -
+  `await fetch(u).then(r => r.text())` - is a statement, so its value was
+  discarded and the caller got `null` back from every script written that way.
+- Reasoning effort is now a shared, bounded control ladder. One stepping
+  function replaces the duplicated cycling logic in the hotkey, `/effort`, and
+  the model picker, so the three cannot disagree. An unknown default starts from
+  an ordinary reasoning level instead of implicitly selecting a swarm mode,
+  though explicit progression into swarm modes still works.
+- `research_ledger_context` gives the challenge/hunt workflows a stable path to
+  their evidence ledger, and reports a missing ledger as a restorable
+  precondition when the path is not a regular file.
+
+### Changed
+
+- Remote reasoning effort is tracked as two states: the request in flight and
+  the effort the server has confirmed. Transmission failures no longer mutate
+  confirmed state; acknowledgments advance it, retain any newer pending
+  request, clear rejected requests, invalidate picker state, and redraw.
+  Untracked and stale acknowledgments are ignored, and disconnects or session
+  changes clear the tracking. The header hint reads the confirmed value, so it
+  can no longer advertise an effort the server never accepted.
+- The OpenAI catalog's effort levels are canonicalized, deduplicated, and
+  ordered. An explicitly empty capability list exposes no selectable effort
+  (including swarm sentinels); explicit invalid levels are rejected; and the
+  default reasoning level is applied only when the current model's capability
+  list supports it.
+- An OpenAI-compatible profile's declared default model is no longer trusted
+  blindly. `alpha` belongs to the Dragonmeta local server, so pointing the
+  generic profile at LM Studio, llama.cpp, vLLM, or a relay left the header and
+  status line naming a model the endpoint did not have. When a live catalog
+  contradicts the declared default the advertised model is adopted; a cold
+  install or an endpoint with no usable catalog keeps the declared value.
+- Duplicate notifications merge into one card with a visible occurrence count.
+  The timeout extends without restarting the slide-in animation or collapsing
+  diagnostics the user is currently reading. Messages, hints, and recovery text
+  also have terminal escape and control sequences stripped while keeping
+  readable paragraphs.
+- The wordmark keeps a single brand row for the whole conversation. Active
+  conversations previously competed with the decorative banner, which could
+  re-expand at the end of a turn; size is now chosen from terminal geometry
+  rather than message or processing state.
+- The composer's existing bottom border now carries width-fitted shortcuts
+  (Enter adapts to send, queue, immediate continuation, command selection, or
+  shell execution; Alt+Enter teaches multiline; F1 opens help; an active turn
+  exposes Esc to stop). The top border names Message, Command, Local shell, or
+  Server shell. Focus guidance shows scrolling and Esc-to-return when a
+  side/diagram pane has focus, instead of advertising a key that would go to the
+  wrong target.
+- The CTF entrypoint selects a workflow from actual inputs and routes to the
+  existing category references, instead of loading copied installation,
+  scanning, submission, and pseudo-ML examples into every task.
+  Automatic-submission and automation-disguise instructions were removed.
+
 ### Fixed
 
-- Lifecycle hooks (`[hooks]`) now see the attached client's terminal env
+- Lifecycle hooks (`[hooks]`) now see the *attached client's* terminal env
   instead of the shared server's startup env. Hooks run inside the server, so
-  with several clients they all saw the terminal that happened to start it,
-  and a hook could not tell which tmux/zellij/herdr pane a session is shown
-  in. They now get the same client snapshot as spawn/focus hooks (#405):
-  `TMUX_PANE`, `ZELLIJ_PANE_ID`, `HERDR_PANE_ID`, ... natively and as
+  with several clients they all saw the terminal that happened to start it and
+  could not tell which tmux/zellij/herdr pane a session is shown in. They now
+  get the same client snapshot as spawn/focus hooks (#405): `TMUX_PANE`,
+  `ZELLIJ_PANE_ID`, `HERDR_PANE_ID`, ... natively and as
   `ALPHACODE_CLIENT_<NAME>`. Server terminal vars the client did not send are
-  dropped rather than mixed in. Sessions with no attached client keep the
+  dropped rather than mixed in; sessions with no attached client keep the
   server's env.
+- A client terminal-env snapshot is filtered to the known terminal variables
+  before it can reach a hook process. The snapshot arrives over a socket, so
+  without the allow-list a peer could inject `PATH` or `LD_PRELOAD` into the
+  hook's environment. A snapshot containing no terminal variables clears the
+  session's entry rather than installing an empty one.
+- `Agent::clear` now drops the closed session from the hook client-env
+  registry. It closes the session without going through `mark_closed`, so the
+  entry leaked and a later session reusing the id could inherit the previous
+  client's terminal.
+- The in-app updater rejects absolute, drive-absolute, and UNC archive entry
+  names before handing them to `zip`'s `enclosed_name`. From `zip` 9 that helper
+  *strips* a leading separator (`/absolute.txt` becomes `absolute.txt`) instead
+  of returning `None`, so an absolute entry was silently flattened into the
+  extraction root and installed content from a path the archive did not choose.
+  Unreadable entry names are skipped.
+- The inline todo card appears on its own. `refresh_todo_card_if_needed` only
+  ever refreshed an *existing* card, so a long turn could write a dozen todos
+  and the user saw none of them unless they already knew the todo hotkey or
+  `/todos`. The card now opens once when the session's list becomes non-empty,
+  is still dismissible, and a dismissal survives later writes instead of being
+  undone by the next background update.
+- The header rule no longer spills onto an extra row. Header lines wrap at
+  `width - 1` but the separator was built at exactly `width`, so every frame
+  showed a full-width rule followed by a lone one-cell dash.
+- Transcript line counts are no longer narrowed to `u16` before scrollbar and
+  packed-layout decisions. Above 65,535 rows the cast wrapped and adding chrome
+  could overflow; decisions and diagnostics now keep `usize` counts and convert
+  only for on-screen dimensions.
+- A zero-size resize clears layout, status, and copy-selection snapshots instead
+  of leaving the previous frame's hit-testing geometry live. Click mapping in a
+  multi-line draft now uses the same caret-based viewport as painting, so
+  clicking a visible row no longer selects a different line after the draft is
+  scrolled; hidden hints and collapsed borders are excluded from mapping.
+- Preview wheel momentum stops when a rendered preview fits without scrolling.
+  A zero maximum was mistaken for an unknown maximum, so scroll steps kept being
+  accepted and discarded by the next render. Long preview offsets now saturate
+  at the existing `u16` scroll limit instead of wrapping.
+- Session labels, task titles, and onboarding geometry measure terminal cells
+  and slice on grapheme boundaries. CJK and joined emoji no longer overwrite the
+  brand badge or truncate mid-character.
+- Prefix deduplication no longer drops repeated incremental reasoning tokens;
+  reasoning deltas are preserved exactly as received.
+- Intermediate SSE events are no longer rescanned from the beginning on every
+  network refill. A separate scan cursor retains only the three-byte overlap a
+  split LF/CRLF delimiter needs, and scanning works on bytes so an overlap
+  position inside a UTF-8 sequence cannot panic.
+- Batch results retain image attachments in original call order, including when
+  read-only tools complete concurrently. Previously only the text survived
+  aggregation.
+- Completion-evidence reconstruction joins tool calls and results
+  chronologically and consumes each matching call exactly once, so orphan
+  results, future calls, and duplicate results no longer manufacture evidence.
+  Test and command success requires a successful `bash` result carrying a
+  command argument (a file read or an errored tool cannot supply execution
+  evidence), file-modification verification requires an existing regular file
+  *and* a successful write/edit/multiedit to the same canonical path, and test
+  evidence requires an actual `test name ... ok` line rather than summary text
+  that previously invented a test named `result`.
+- Plan and status broadcasts hold their member snapshot guard through delivery.
+  An older plan version can no longer overtake a newer mutation while waiting on
+  routing or member locks, and status delivery no longer takes an extra
+  write-lock per recipient on a hot path.
+- Gemini provider instances reuse one lazily initialized HTTP client instead of
+  rebuilding clients and connection pools per request.
+
+### Performance
+
+- Unicode draft layout is cached per exact draft text and width. Height
+  measurement built styled rows and scanned the caret, then drawing and clicking
+  recomputed the same grapheme segments; a bounded thread-local geometry cache
+  (one entry, 256 KiB of input, 4,096 wrapped rows) now serves all three paths.
+  Isolated measurement: a 2,900-byte Unicode draft drops from 39.5 us of
+  segmentation to 0.07 us of warm lookup, and a 29,000-byte draft from 503.6 us
+  to 0.82 us. Editing the text or changing wrap width still misses the cache;
+  painting and copy snapshots do other work, so this is not a whole-application
+  speedup.
+- SSE event framing no longer rescans all previously seen bytes per refill.
+  Isolated measurement: a 10,000-byte event delivered in 32-byte fragments drops
+  from 615.7 us to 16.7 us, and a 100,000-byte event from 53.2 ms to 152.9 us.
+  These deliberately tiny fragments expose the prior quadratic scan and are not
+  a claim about ordinary packet sizes.
+- Terminal reveal no longer throttles received text at 960 characters/second
+  with a completion tail; both TUI constructors and continuation resets select
+  immediate reveal, leaving redraw scheduling to control paints. The paced
+  buffer remains available for callers that explicitly choose it.
+- Inline worker previews retain only the final 1,400 Unicode characters of the
+  growing response, bounding work and memory independently of response length
+  (regression covers a 140,000-character four-byte tail). The preview stays
+  separate from canonical response storage.
+
+### Security
+
+- The `zip` crate moves from 2 to 9, and the updater's entry-name validation was
+  strengthened to match the new `enclosed_name` behavior described above.
+
+### Notes
+
+- Performance figures are isolated benchmarks of extracted functions on one
+  machine. They exclude terminal painting, JSON decoding, network RTT, and model
+  inference, and are not end-to-end or tokens-per-second multipliers.
 
 ## [1.0.90] - 2026-10-31
 

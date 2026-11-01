@@ -21,86 +21,34 @@ Do not create unnecessary delegation layers.
 
 ---
 
-# 1. Model Routing
+# 1. Dynamic Model Routing
 
-Run:
+Do not embed vendor/model versions or a permanent role-to-model table in a
+swarm plan. Available routes change with the coordinator, account, credentials,
+provider catalogs, local endpoints, and user configuration.
 
-`swarm list_models`
-
-when the available model routes need to be confirmed.
-
-Default worker:
-
-`claude-api:claude-fable-5`
-
-Use:
-
-### Implementation / Coding
-
-`gpt-5.5`
-
-Recommended:
-
-`effort: "low"`
-
-Use for:
-
-* Code implementation
-* Refactoring
-* Patches
-* Test creation
-* Mechanical transformations
-* Build fixes
-* Repository modifications
-* Automation scripts
-
-### Investigation / Security / Review
-
-`claude-api:claude-fable-5`
-
-Use for:
-
-* Security research
-* Vulnerability analysis
-* Reverse engineering
-* Root-cause investigation
-* Architecture analysis
-* Code review
-* Threat modeling
-* Debugging
-* Test strategy
-* Exploitability analysis
-* Verification
-
-### Bulk Context / Retrieval
-
-`gpt-5.5`
-
-Recommended:
-
-`effort: "none"`
-
-Use for:
-
-* Large repository reads
-* Log extraction
-* File indexing
-* Summarization
-* Symbol discovery
-* Documentation extraction
-* Large-scale context preparation
-
-### User-Specified Model
-
-If the user explicitly requests a model, honor that request when the route is available.
-
-If the requested route is unavailable:
-
-1. Fall back to the closest suitable available model.
-2. Preserve the requested task characteristics.
-3. Do not stop solely because the requested route is unavailable.
-
-If model routing is uncertain, omit `model` and inherit the coordinator model.
+- Omit `model` to inherit the coordinator's working model and authentication
+  route unless the user has configured an explicit `agents.swarm_model` pin.
+- `model: "inherit"` overrides a configured pin and inherits the coordinator.
+- `model: "auto"` asks the server to use live route metadata: retain a usable
+  coordinator route; if that route is explicitly unavailable, select an
+  available catalog route deterministically using reported cost as a fallback
+  criterion. Cost is not a capability or quality rating. Unknown catalog state
+  preserves coordinator inheritance rather than fabricating a model choice.
+- Use `swarm list_models` to inspect current route IDs, availability, configured
+  pins, and reported costs. Pass an advertised ID exactly when selecting a
+  particular model or authentication route. Never invent a model identifier.
+- Honor explicit user model/provider choices. Do not change accounts, credentials,
+  privacy requirements, or cost constraints merely to obtain a different model.
+- Select workers for task needs using actual capabilities and measured results,
+  not a model's brand or version string. If capability data is absent, start
+  with the coordinator and verify its result rather than claiming an optimal
+  specialist. Use independent verification for important results.
+- Choose reasoning effort from what the active provider supports; omit an
+  override when uncertain. Do not force a fixed effort for every task category.
+- After a route failure, inspect the error and current catalog, use bounded
+  recovery, and disclose any fallback. Do not repeatedly retry an unavailable
+  route or attribute a fallback worker's output to the requested model.
 
 ---
 

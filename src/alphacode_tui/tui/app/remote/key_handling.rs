@@ -76,20 +76,10 @@ async fn apply_remote_effort_direction(
     }
     let current = app.remote_reasoning_effort_hint();
     let current = current.as_deref();
-    let current_index = current
-        .and_then(|c| efforts.iter().position(|e| *e == c))
-        .unwrap_or(efforts.len() - 1);
-    let len = efforts.len();
-    let next_index = if direction > 0 {
-        if current_index + 1 >= len {
-            current_index
-        } else {
-            current_index + 1
-        }
-    } else if current_index == 0 {
-        0
-    } else {
-        current_index - 1
+    let Some(next_index) =
+        crate::alphacode_provider_core::reasoning::next_effort_index(&efforts, current, direction)
+    else {
+        return Ok(());
     };
     let next_effort = efforts[next_index];
     if Some(next_effort) == current {
@@ -100,13 +90,13 @@ async fn apply_remote_effort_direction(
             if direction > 0 { "max" } else { "min" }
         ));
     } else {
-        app.remote_reasoning_effort = Some(next_effort.to_string());
+        let request_id = remote.set_reasoning_effort(next_effort).await?;
+        app.note_remote_effort_request(request_id, next_effort.to_string());
         app.invalidate_model_picker_cache();
         app.set_status_notice(format!(
-            "Effort: {} (will apply to next request)",
+            "Effort: {} (awaiting confirmation)",
             app_mod::effort_display_label(next_effort)
         ));
-        remote.set_reasoning_effort(next_effort).await?;
     }
     Ok(())
 }
@@ -286,6 +276,20 @@ async fn handle_remote_key_internal(
     }
 
     if app.handle_onboarding_continue_prompt_key(code) {
+        return Ok(());
+    }
+
+    // F1 is the standard, terminal-friendly way to reach help, and the composer
+    // advertises it in every mode. Toggle it explicitly before overlay routing
+    // so a second F1 closes the existing help without touching the draft.
+    // This arm was missing from the remote path entirely: clients connected to a
+    // server could only reach help by typing `/help`.
+    if code == KeyCode::F(1) && modifiers.is_empty() {
+        app.help_scroll = if app.help_scroll.is_some() {
+            None
+        } else {
+            Some(0)
+        };
         return Ok(());
     }
 
@@ -1179,8 +1183,7 @@ async fn handle_remote_key_internal(
                 }
 
                 if trimmed == "/effort" {
-                    let current = app.remote_reasoning_effort_hint();
-                    let current = current.as_deref();
+                    let current = app.remote_reasoning_effort.as_deref();
                     let label = current
                         .map(app_mod::effort_display_label)
                         .unwrap_or("default");
@@ -1205,9 +1208,20 @@ async fn handle_remote_key_internal(
                             }
                         })
                         .collect();
+                    let pending = app
+                        .remote_requested_reasoning_effort
+                        .as_ref()
+                        .map(|(_, effort)| {
+                            format!(
+                                "\nRequested: {} (awaiting server confirmation)",
+                                app_mod::effort_display_label(effort)
+                            )
+                        })
+                        .unwrap_or_default();
                     app.push_display_message(DisplayMessage::system(format!(
-                        "Effort: {}\nAvailable: {}\nUse /effort <level> or {} to change.",
+                        "Effort: {}{}\nAvailable: {}\nUse /effort <level> or {} to change.",
                         label,
+                        pending,
                         list.join(" · "),
                         crate::alphacode_tui::tui::keybind::effort_switch_keys_label()
                     )));
@@ -1215,25 +1229,17 @@ async fn handle_remote_key_internal(
                 }
 
                 if let Some(level) = trimmed.strip_prefix("/effort ") {
-                    let level = level.trim();
+                    let level = level.trim().to_ascii_lowercase();
                     if level.is_empty() {
                         app.push_display_message(DisplayMessage::error("Usage: /effort <level>"));
                         return Ok(());
                     }
-                    let (provider_name, provider_model) = app.remote_effort_identity();
-                    let efforts = app_mod::inferred_reasoning_efforts(
-                        provider_name.as_deref(),
-                        provider_model.as_deref(),
-                    );
-                    if efforts.contains(&level) {
-                        app.remote_reasoning_effort = Some(level.to_string());
-                        app.invalidate_model_picker_cache();
-                        app.set_status_notice(format!(
-                            "Effort: {} (will apply to next request)",
-                            app_mod::effort_display_label(level)
-                        ));
-                    }
-                    remote.set_reasoning_effort(level).await?;
+                    let request_id = remote.set_reasoning_effort(&level).await?;
+                    app.note_remote_effort_request(request_id, level.clone());
+                    app.set_status_notice(format!(
+                        "Effort: {} (awaiting confirmation)",
+                        app_mod::effort_display_label(&level)
+                    ));
                     return Ok(());
                 }
 

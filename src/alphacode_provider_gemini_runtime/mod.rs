@@ -1150,16 +1150,21 @@ fn is_vpc_sc_error(err: &anyhow::Error) -> bool {
 /// this client talks to, and the explicit HTTP/1.1 negotiation matches the
 /// upstream behaviour we depend on.
 fn gemini_http_client() -> reqwest::Client {
-    reqwest::Client::builder()
-        .user_agent(crate::alphacode_provider_core::ALPHACODE_USER_AGENT)
-        .http1_only()
-        .connect_timeout(Duration::from_secs(20))
-        .timeout(Duration::from_secs(90))
-        .pool_idle_timeout(Duration::from_secs(120))
-        .pool_max_idle_per_host(4)
-        .tcp_keepalive(Some(Duration::from_secs(30)))
-        .build()
-        .unwrap_or_else(|_| crate::alphacode_provider_core::shared_http_client())
+    static CLIENT: std::sync::OnceLock<reqwest::Client> = std::sync::OnceLock::new();
+    CLIENT
+        .get_or_init(|| {
+            reqwest::Client::builder()
+                .user_agent(crate::alphacode_provider_core::ALPHACODE_USER_AGENT)
+                .http1_only()
+                .connect_timeout(Duration::from_secs(20))
+                .timeout(Duration::from_secs(90))
+                .pool_idle_timeout(Duration::from_secs(120))
+                .pool_max_idle_per_host(4)
+                .tcp_keepalive(Some(Duration::from_secs(30)))
+                .build()
+                .unwrap_or_else(|_| crate::alphacode_provider_core::shared_http_client())
+        })
+        .clone()
 }
 
 fn is_transient_gemini_transport_error(err: &reqwest::Error) -> bool {

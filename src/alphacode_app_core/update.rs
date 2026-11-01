@@ -1164,6 +1164,21 @@ fn extract_zip_asset_into(bytes: &[u8], extract_dir: &Path) -> Result<()> {
         if entry.is_dir() {
             continue;
         }
+        // Reject absolute entry names BEFORE `enclosed_name()`. From zip 9 that
+        // helper *strips* a leading separator (`/absolute.txt` becomes
+        // `absolute.txt`) instead of returning `None`, so an absolute entry
+        // used to be silently flattened into the extraction root — content
+        // from a path the attacker did not choose is still content the
+        // updater should not install. Drive-absolute (`C:\...`) and UNC
+        // (`\\server\share`) names are caught by the same test on Windows.
+        let raw_name = match entry.name() {
+            Ok(name) => name.to_string(),
+            // An unreadable entry name is exactly the kind of entry to skip.
+            Err(_) => continue,
+        };
+        if raw_name.starts_with('/') || raw_name.starts_with('\\') || raw_name.contains(':') {
+            continue;
+        }
         let Some(rel) = entry.enclosed_name() else {
             continue;
         };
@@ -1494,7 +1509,10 @@ mod tests {
         let mut buffer = std::io::Cursor::new(Vec::new());
         {
             let mut writer = zip::ZipWriter::new(&mut buffer);
-            let options: zip::write::FileOptions<'_, ()> = zip::write::FileOptions::default()
+            // `SimpleFileOptions` is zip 9's alias for the plain (no extra
+            // field) `FileOptions`; the explicit lifetime pair the old version
+            // required is no longer spelled at call sites.
+            let options = zip::write::SimpleFileOptions::default()
                 .compression_method(zip::CompressionMethod::Deflated);
             for (name, contents) in entries {
                 writer.start_file(*name, options).expect("start_file");

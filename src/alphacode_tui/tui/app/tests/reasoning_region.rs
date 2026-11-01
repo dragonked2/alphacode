@@ -508,6 +508,7 @@ fn remote_reasoning_delta_burst_is_paced_not_dumped() {
         app.is_processing = true;
         app.status = ProcessingStatus::Streaming;
 
+        app.stream_buffer = crate::alphacode_tui_core::StreamBuffer::new();
         let burst = "x".repeat(400);
         app.handle_server_event(
             crate::protocol::ServerEvent::ReasoningDelta { text: burst },

@@ -185,6 +185,9 @@ pub(super) async fn run_stream_with_retries(
     auth: ProviderAuth,
     send_openrouter_headers: bool,
     request: Value,
+    // The chat body already encoded by the caller. The context pre-flight
+    // guard and the wire send share this one serialization.
+    request_body: bytes::Bytes,
     responses_fallback: super::openrouter_responses_fallback::ResponsesFallbackContext,
     tx: mpsc::Sender<Result<StreamEvent>>,
     provider_pin: Arc<Mutex<Option<ProviderPin>>>,
@@ -241,6 +244,7 @@ pub(super) async fn run_stream_with_retries(
             auth.clone(),
             send_openrouter_headers,
             request.clone(),
+            request_body.clone(),
             &responses_fallback,
             attempt_tx,
             Arc::clone(&provider_pin),
@@ -311,6 +315,7 @@ async fn stream_response(
     auth: ProviderAuth,
     send_openrouter_headers: bool,
     request: Value,
+    request_body: bytes::Bytes,
     responses_fallback: &super::openrouter_responses_fallback::ResponsesFallbackContext,
     tx: mpsc::Sender<Result<StreamEvent>>,
     provider_pin: Arc<Mutex<Option<ProviderPin>>>,
@@ -386,10 +391,12 @@ async fn stream_response(
     req = super::apply_opencode_provider_headers(req, &api_base);
 
     // Diagnostics: estimated prompt size, timeout, and mode. Never includes secrets.
-    let request_estimate = super::estimate_chat_request_tokens(&request);
+    // The caller already encoded the body; recounting by serializing the whole
+    // request again doubled the per-request CPU on long sessions.
+    let request_estimate = request_body.len() / 4;
     let suppress_upstream_error_details = is_alphax_free_gateway(&api_base);
     let response = crate::alphacode_provider_core::transport::send_with_initial_response_timeout(
-        req.json(&request),
+        req.body(request_body),
         stream_idle_timeout,
     )
     .await

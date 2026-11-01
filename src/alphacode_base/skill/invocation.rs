@@ -66,6 +66,7 @@ mod tests {
                     search_text: build_skill_search_text(name, "Test skill", "content"),
                     auto_invoke: false,
                     aliases: Vec::new(),
+                    triggers: Vec::new(),
                     reference_files: HashMap::new(),
                 }),
             );

@@ -1119,9 +1119,12 @@ pub(super) fn insert_input_text(app: &mut App, text: &str) {
     // to reconcile the transcript viewport.
     app.follow_chat_bottom_for_typing();
 
-    // Typing or pasting over a live selection replaces it, exactly like every
-    // other text field. The removal happens before the undo snapshot so the
-    // whole "replace the selection" edit is a single undo step.
+    // Preserve the entire pre-edit draft before removing a selection, so
+    // replacement (including paste) is a single reversible editing action.
+    let replacing_selection = app.input_selection_range().is_some();
+    if replacing_selection {
+        app.remember_input_undo_state();
+    }
     app.take_input_selection_for_insert();
 
     let at_end = app.cursor_pos == app.input.len();
@@ -1134,7 +1137,9 @@ pub(super) fn insert_input_text(app: &mut App, text: &str) {
         return;
     }
 
-    app.remember_input_undo_state();
+    if !replacing_selection {
+        app.remember_input_undo_state();
+    }
 
     // After a picker command is fully typed (or completed without a trailing
     // space), the next printable character starts its filter. Insert the
@@ -3315,14 +3320,13 @@ impl App {
         // Enter on a toast toggles expand/collapse (when not processing and
         // no other input is focused).
         if code == KeyCode::Enter
+            && modifiers.is_empty()
             && !self.is_processing
             && self.input.is_empty()
-            && crate::alphacode_tui::tui::ui_error_toast::count() > 0
+            && let Some(index) = crate::alphacode_tui::tui::ui_error_toast::count().checked_sub(1)
         {
-            // Expand/collapse the most recent toast (index 0 = oldest,
-            // last = newest; we expand the newest visible one).
-            let count = crate::alphacode_tui::tui::ui_error_toast::count();
-            crate::alphacode_tui::tui::ui_error_toast::toggle_expand(count - 1);
+            // Index 0 is oldest; toggle the newest visible toast.
+            crate::alphacode_tui::tui::ui_error_toast::toggle_expand(index);
             return Ok(());
         }
 

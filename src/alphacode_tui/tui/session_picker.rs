@@ -1406,7 +1406,8 @@ impl SessionPicker {
         let (content_area, scrollbar_area) =
             super::ui::split_native_scrollbar_area(inner, show_scrollbar);
 
-        let max_scroll = total_lines.saturating_sub(visible_height) as u16;
+        let max_scroll =
+            u16::try_from(total_lines.saturating_sub(visible_height)).unwrap_or(u16::MAX);
         self.preview_max_scroll = max_scroll;
         // The transcript for the selected session may still be loading on a
         // background thread, in which case this frame only shows a "Loading…"
@@ -1426,7 +1427,9 @@ impl SessionPicker {
             // context) instead of jumping to the bottom of the transcript.
             self.scroll_offset = match first_match_line {
                 Some(line) if !self.search_query.trim().is_empty() => {
-                    (line.saturating_sub(2) as u16).min(max_scroll)
+                    u16::try_from(line.saturating_sub(2))
+                        .unwrap_or(u16::MAX)
+                        .min(max_scroll)
                 }
                 _ => max_scroll,
             };
@@ -1989,11 +1992,12 @@ impl SessionPicker {
         let prompt_height = prompt_lines
             .iter()
             .map(|line| {
-                let width = line.width().max(1) as u16;
-                width.div_ceil(content_width.max(1))
+                line.width()
+                    .max(1)
+                    .div_ceil(usize::from(content_width.max(1)))
             })
-            .sum::<u16>()
-            .min(inner.height.saturating_sub(2));
+            .fold(0usize, usize::saturating_add)
+            .min(usize::from(inner.height.saturating_sub(2))) as u16;
         let review_y = inner.y + inner.height.saturating_sub(1) / 2;
         let prompt_y = review_y
             .saturating_sub(prompt_height.saturating_add(2))
@@ -2366,6 +2370,31 @@ pub fn pick_session() -> Result<Option<PickerResult>> {
 mod responsive_render_tests {
     use super::*;
     use ratatui::{Terminal, backend::TestBackend};
+
+    #[test]
+    fn fitted_preview_stops_scroll_momentum() {
+        let mut picker = SessionPicker::loading();
+        picker.preview_cache = Some(PreviewRenderCache {
+            key: PreviewCacheKey {
+                content_hash: 0,
+                inner_width: 40,
+                inner_height: 10,
+                centered: false,
+                diff_mode: crate::config::config().display.diff_mode,
+                search_query: String::new(),
+                palette: crate::alphacode_tui_style::palette::palette(),
+            },
+            wrapped_lines: vec![Line::from("short preview")],
+            show_scrollbar: false,
+            first_match_line: None,
+        });
+        assert!(!picker.scroll_preview_down(3));
+        assert_eq!(picker.scroll_offset, 0);
+        picker.preview_max_scroll = 8;
+        assert!(picker.scroll_preview_down(20));
+        assert_eq!(picker.scroll_offset, 8);
+        assert!(!picker.scroll_preview_down(3));
+    }
 
     fn draw(picker: &mut SessionPicker, width: u16, height: u16) -> Vec<String> {
         let mut terminal = Terminal::new(TestBackend::new(width, height)).expect("terminal");

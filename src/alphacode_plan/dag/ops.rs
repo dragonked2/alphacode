@@ -257,6 +257,29 @@ pub fn expand_node(
                 "expand requires at least one child".into(),
             ));
         }
+
+        // Growth guard. Deep mode inserts a gate for every composite node, so an
+        // expansion of N children typically costs N+1 nodes. Refuse before any
+        // staging so a rejected expansion leaves the graph untouched, and say
+        // what the limit is so the caller consolidates instead of retrying.
+        let limit = crate::config::config().agents.plan_max_nodes;
+        if limit > 0 {
+            let projected = graph
+                .len()
+                .saturating_add(children.len())
+                .saturating_add(usize::from(graph.mode.requires_gates()));
+            if projected > limit {
+                return Err(DagError::GateMisuse(format!(
+                    "plan node cap reached: this graph has {} nodes and expanding '{}' by {} \
+                     child(ren) would reach {projected}, above the limit of {limit}. \
+                     Finish or drop work instead of splitting further, or raise \
+                     agents.plan_max_nodes / ALPHACODE_PLAN_MAX_NODES.",
+                    graph.len(),
+                    node_id,
+                    children.len()
+                )));
+            }
+        }
     }
 
     // Validate child ids and dependency references. Collect the validated ids

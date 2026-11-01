@@ -554,9 +554,9 @@ pub(crate) async fn execute_account_command_remote(
         }
         AccountCommand::SetOpenAiEffort(value) => {
             save_openai_effort_setting_local(app, value.as_deref());
-            if let Some(value) = value.as_deref() {
-                remote.set_reasoning_effort(value).await?;
-            }
+            let effort = value.as_deref().unwrap_or("default");
+            let request_id = remote.set_reasoning_effort(effort).await?;
+            app.note_remote_effort_request(request_id, effort.to_string());
         }
         AccountCommand::SetOpenAiFast(enabled) => {
             save_openai_fast_setting_local(app, enabled);
@@ -732,8 +732,16 @@ fn save_openai_effort_setting_local(app: &mut App, value: Option<&str>) {
     }
     match crate::config::Config::set_openai_reasoning_effort(value) {
         Ok(()) => {
-            if let Some(value) = value {
-                let _ = app.provider.set_reasoning_effort(value);
+            if !app.is_remote && app.provider.name().eq_ignore_ascii_case("openai") {
+                match app
+                    .provider
+                    .set_reasoning_effort(value.unwrap_or("default"))
+                {
+                    Ok(()) => app.persist_local_reasoning_effort(),
+                    Err(error) => app.push_display_message(DisplayMessage::error(format!(
+                        "Default saved, but current-session effort could not be changed: {error}"
+                    ))),
+                }
             }
             let label = value.unwrap_or("(provider default)");
             app.set_status_notice(format!("Effort: {}", label));

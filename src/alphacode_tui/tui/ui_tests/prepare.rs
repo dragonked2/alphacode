@@ -610,6 +610,9 @@ fn test_prepare_messages_shows_live_batch_progress_in_chat_history() {
     assert!(
         rendered
             .iter()
+            // Changelog entries above the batch may legitimately mention
+            // issue numbers such as #20. Only batch rows own this contract.
+            .skip_while(|line| !line.contains("◌ batch · 1/2 done"))
             .all(|line| !line.contains("#1") && !line.contains("#2")),
         "live batch rows should align with completed rows in {:?}",
         rendered
@@ -1282,4 +1285,40 @@ fn test_prepare_messages_renders_anchored_reasoning_message_in_flow() {
         "sentinel must be stripped: {:?}",
         joined[reasoning_idx]
     );
+}
+
+#[test]
+fn work_checkpoints_render_and_turn_totals_reset_on_new_prompt() {
+    let _guard = viewport_snapshot_test_lock();
+    let mut edited = DisplayMessage::system("Success");
+    edited.role = "tool".to_owned();
+    edited.tool_data = Some(crate::message::ToolCall {
+        name: "edit".to_owned(),
+        input: serde_json::json!({"file_path": "src/lib.rs", "old_string": "old\n", "new_string": "new\nextra\n"}),
+        ..Default::default()
+    });
+    let mut state = TestState {
+        display_messages: vec![
+            DisplayMessage::user("Fix it"),
+            edited,
+            DisplayMessage::assistant("The fix is ready for verification."),
+        ],
+        messages_version: 1,
+        ..Default::default()
+    };
+    let prepared = prepare::prepare_messages(&state, 120, 32);
+    let lines = prepared.materialize_all_lines();
+    let text = lines
+        .iter()
+        .map(line_plain_text)
+        .collect::<Vec<_>>()
+        .join("\n");
+    assert!(text.contains("Edited 1 file"), "{text}");
+    assert!(text.contains("+2 -1 edit lines"), "{text}");
+    assert!(work_summary::turn_changes(&state, 120).is_some());
+    state
+        .display_messages
+        .push(DisplayMessage::user("Next task"));
+    state.messages_version += 1;
+    assert!(work_summary::turn_changes(&state, 120).is_none());
 }

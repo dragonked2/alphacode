@@ -207,3 +207,33 @@ fn the_selection_text_is_the_selected_range() {
     }
     assert_eq!(app.selected_input_text().as_deref(), Some("hello"));
 }
+
+#[test]
+fn selection_replacement_undo_restores_the_entire_unicode_draft() {
+    let mut app = create_test_app();
+    app.input = "hello \u{4e16}\u{754c}".to_string();
+    app.cursor_pos = app.input.len();
+    let original = app.input.clone();
+    app.handle_key(KeyCode::Home, KeyModifiers::SHIFT)
+        .expect("select");
+    let selected_caret = app.cursor_pos;
+    app.handle_key(KeyCode::Char('x'), KeyModifiers::NONE)
+        .expect("replace");
+    assert_eq!(app.input, "x");
+    app.undo_input_change();
+    assert_eq!(app.input, original);
+    assert_eq!(app.cursor_pos, selected_caret);
+}
+
+#[test]
+fn direct_selection_replacement_removes_the_selected_range() {
+    let mut app = create_test_app();
+    app.input = "hello world".to_string();
+    app.cursor_pos = 6;
+    app.handle_key(KeyCode::End, KeyModifiers::SHIFT)
+        .expect("select word");
+    assert!(app.replace_input_selection("there"));
+    assert_eq!(app.input, "hello there");
+    app.undo_input_change();
+    assert_eq!(app.input, "hello world");
+}

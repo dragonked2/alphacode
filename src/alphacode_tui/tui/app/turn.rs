@@ -461,7 +461,7 @@ impl App {
                                         // Clear streaming state and continue with new turn
                                         self.clear_streaming_render_state();
                                         self.streaming_tool_calls.clear();
-                                        self.stream_buffer = StreamBuffer::new();
+                                        self.stream_buffer = StreamBuffer::low_latency();
                                         reasoning_content.clear();
                                         interleaved = true;
                                         // Continue to next iteration of outer loop (new API call)

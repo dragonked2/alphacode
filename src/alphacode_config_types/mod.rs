@@ -593,6 +593,23 @@ pub struct AgentsConfig {
     /// Env override: `ALPHACODE_SWARM_MAX_CONCURRENT_AGENTS`.
     #[serde(default = "default_swarm_max_concurrent_agents")]
     pub swarm_max_concurrent_agents: usize,
+    /// Maximum number of nodes one task graph may contain before further
+    /// decompositions are refused.
+    ///
+    /// Deep mode rewards decomposition, and every composite node also gains a
+    /// critique/verify gate, so a plan can outgrow its seed several times over.
+    /// That is useful up to a point and then it is just cost: a 14-node seed was
+    /// observed reaching 75 nodes before most seed nodes had finished. This cap
+    /// makes further `expand_node`/`inject_gap` calls fail with a message that
+    /// names the limit, so an agent consolidates instead of splitting again.
+    /// Seeding a graph is never blocked - only growth beyond the cap.
+    /// `0` disables the cap. Env override: `ALPHACODE_PLAN_MAX_NODES`.
+    #[serde(default = "default_plan_max_nodes")]
+    pub plan_max_nodes: usize,
+}
+
+fn default_plan_max_nodes() -> usize {
+    40
 }
 
 fn default_swarm_max_concurrent_agents() -> usize {
@@ -636,6 +653,7 @@ impl Default for AgentsConfig {
             memory_embedding_base_url: None,
             memory_embedding_dim: None,
             swarm_max_concurrent_agents: default_swarm_max_concurrent_agents(),
+            plan_max_nodes: default_plan_max_nodes(),
         }
     }
 }

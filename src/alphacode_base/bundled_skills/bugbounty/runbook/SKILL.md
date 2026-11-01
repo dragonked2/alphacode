@@ -458,8 +458,8 @@ Track each hypothesis with a kill criterion and a time budget:
 
 Kill rules (strict):
 
-- 3 variations, same result (404 / 401 / sanitized) → KILL.
-- No response change after 2 more attempts → KILL.
+- 3 equivalent results → check controls and reachability; pause inconclusive tests instead of declaring the control secure.
+- No information gain → pause with a recorded blind spot and reopening condition.
 - Framework guess contradicts fingerprint → KILL immediately.
 
 A killed hypothesis stays dead. Do not re-test it under a new name.

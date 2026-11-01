@@ -483,3 +483,170 @@ fn orcarouter_multimodal_support_follows_the_catalog() {
         None
     );
 }
+
+/// LM Studio reports `created: null` for every model it serves. Those rows
+/// must still count as *models*: an undated row is valid, and discarding
+/// undated rows emptied the catalog and left the login with no default.
+#[test]
+fn undated_local_models_still_yield_a_default() {
+    use crate::alphacode_provider_openrouter::ModelInfo;
+
+    let _home = OrcaCatalogHome::new();
+    let previous = std::env::var_os("ALPHACODE_OPENAI_COMPAT_API_BASE");
+    crate::alphacode_core::env::set_var(
+        "ALPHACODE_OPENAI_COMPAT_API_BASE",
+        "http://localhost:1234/v1",
+    );
+
+    let model = |id: &str| ModelInfo {
+        id: id.to_string(),
+        name: String::new(),
+        context_length: None,
+        pricing: Default::default(),
+        // Exactly what LM Studio sends.
+        created: None,
+        supported_endpoint_types: Vec::new(),
+        endpoint_capabilities: Vec::new(),
+        input_modalities: Vec::new(),
+    };
+    crate::alphacode_provider_openrouter::save_disk_cache_with_source_for_namespace(
+        "openai-compatible",
+        &[
+            model("qwen3.8-9b-heretic-uncensored"),
+            model("text-embedding-nomic-embed-text-v1.5"),
+        ],
+        Some("http://localhost:1234/v1"),
+    );
+
+    assert_eq!(
+        crate::provider_catalog::newest_released_model_for_openai_compatible_profile(
+            "openai-compatible"
+        )
+        .as_deref(),
+        Some("qwen3.8-9b-heretic-uncensored"),
+        "an undated chat model is still a usable default; the embedding row is filtered"
+    );
+
+    let resolved =
+        resolve_openai_compatible_profile(crate::provider_catalog::OPENAI_COMPAT_PROFILE);
+    assert_eq!(
+        resolved.default_model.as_deref(),
+        Some("qwen3.8-9b-heretic-uncensored")
+    );
+
+    match previous {
+        Some(value) => {
+            crate::alphacode_core::env::set_var("ALPHACODE_OPENAI_COMPAT_API_BASE", value)
+        }
+        None => crate::alphacode_core::env::remove_var("ALPHACODE_OPENAI_COMPAT_API_BASE"),
+    }
+}
+
+/// A `[providers.<name>]`-free live catalog written under the generic
+/// `openai-compatible` namespace but produced by a *different* endpoint than
+/// the resolved one must not be trusted as evidence about that endpoint.
+#[test]
+fn borrowed_generic_default_is_replaced_by_what_the_endpoint_advertises() {
+    use crate::alphacode_provider_openrouter::ModelInfo;
+
+    let _home = OrcaCatalogHome::new();
+    let previous = std::env::var_os("ALPHACODE_OPENAI_COMPAT_API_BASE");
+    crate::alphacode_core::env::set_var(
+        "ALPHACODE_OPENAI_COMPAT_API_BASE",
+        "http://localhost:1234/v1",
+    );
+
+    let model = |id: &str| ModelInfo {
+        id: id.to_string(),
+        name: String::new(),
+        context_length: None,
+        pricing: Default::default(),
+        created: None,
+        supported_endpoint_types: Vec::new(),
+        endpoint_capabilities: Vec::new(),
+        input_modalities: Vec::new(),
+    };
+    // What LM Studio reports: the loaded GGUF plus an embedding model, and
+    // crucially no model named `alpha`.
+    crate::alphacode_provider_openrouter::save_disk_cache_with_source_for_namespace(
+        "openai-compatible",
+        &[
+            model("qwen3.8-9b-heretic-uncensored"),
+            model("text-embedding-nomic-embed-text-v1.5"),
+        ],
+        Some("http://localhost:1234/v1"),
+    );
+
+    let resolved =
+        resolve_openai_compatible_profile(crate::provider_catalog::OPENAI_COMPAT_PROFILE);
+    assert_eq!(
+        resolved.default_model.as_deref(),
+        Some("qwen3.8-9b-heretic-uncensored"),
+        "the session must pin a model this endpoint actually serves, not the \
+         Dragonmeta `alpha` default"
+    );
+
+    match previous {
+        Some(value) => {
+            crate::alphacode_core::env::set_var("ALPHACODE_OPENAI_COMPAT_API_BASE", value)
+        }
+        None => crate::alphacode_core::env::remove_var("ALPHACODE_OPENAI_COMPAT_API_BASE"),
+    }
+}
+
+/// The mirror case: when the endpoint itself lists the declared default, the
+/// declared default wins. Dragonmeta serves `alpha`, so a catalog containing
+/// `alpha` must not be second-guessed by the "pick the strongest tier" rule.
+#[test]
+fn declared_default_survives_a_catalog_that_actually_serves_it() {
+    use crate::alphacode_provider_openrouter::ModelInfo;
+
+    let _home = OrcaCatalogHome::new();
+    let previous = std::env::var_os("ALPHACODE_OPENAI_COMPAT_API_BASE");
+    crate::alphacode_core::env::set_var(
+        "ALPHACODE_OPENAI_COMPAT_API_BASE",
+        "http://127.0.0.1:8080/v1",
+    );
+
+    let model = |id: &str| ModelInfo {
+        id: id.to_string(),
+        name: String::new(),
+        context_length: None,
+        pricing: Default::default(),
+        created: None,
+        supported_endpoint_types: Vec::new(),
+        endpoint_capabilities: Vec::new(),
+        input_modalities: Vec::new(),
+    };
+    crate::alphacode_provider_openrouter::save_disk_cache_with_source_for_namespace(
+        "openai-compatible",
+        &[model("alpha"), model("some-other-local-model")],
+        Some("http://127.0.0.1:8080/v1"),
+    );
+
+    let resolved =
+        resolve_openai_compatible_profile(crate::provider_catalog::OPENAI_COMPAT_PROFILE);
+    assert_eq!(
+        resolved.default_model.as_deref(),
+        Some("alpha"),
+        "a catalog that lists the declared default confirms it"
+    );
+
+    match previous {
+        Some(value) => {
+            crate::alphacode_core::env::set_var("ALPHACODE_OPENAI_COMPAT_API_BASE", value)
+        }
+        None => crate::alphacode_core::env::remove_var("ALPHACODE_OPENAI_COMPAT_API_BASE"),
+    }
+}
+
+/// With no catalog at all (cold install, server not started), the declared
+/// default must survive: there is no evidence it is wrong, and blanking the
+/// header would be worse than showing the bundled expectation.
+#[test]
+fn declared_default_survives_a_missing_catalog() {
+    let _home = OrcaCatalogHome::new();
+    let resolved =
+        resolve_openai_compatible_profile(crate::provider_catalog::OPENAI_COMPAT_PROFILE);
+    assert_eq!(resolved.default_model.as_deref(), Some("alpha"));
+}

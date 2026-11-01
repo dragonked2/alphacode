@@ -111,6 +111,8 @@ pub struct Toast {
     /// Whether the toast is expanded to show the full message and hint.
     /// Collapsed toasts show a truncated preview; expanded show everything.
     pub expanded: bool,
+    /// Number of consecutive identical notifications merged into this card.
+    pub occurrences: u32,
 }
 
 impl Toast {
@@ -341,7 +343,9 @@ pub fn push_with_ttl_and_recovery(
     _expanded: Option<bool>,
     ttl: Duration,
 ) {
-    let raw_message = message.into();
+    let raw_message = clean_toast_text(&message.into());
+    let hint = hint.map(|text| clean_toast_text(&text));
+    let recovery = recovery.map(|text| clean_toast_text(&text));
     let (message, details) = compact_toast_message(&raw_message);
     let hint = match (hint, details) {
         (Some(hint), Some(details)) => Some(format!("{details}\n\nSuggestion: {hint}")),
@@ -352,6 +356,22 @@ pub fn push_with_ttl_and_recovery(
     let mut guard = TOASTS
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let now = Instant::now();
+    guard.retain(|toast| !toast.is_expired(now));
+    if let Some(previous) = guard.last_mut().filter(|toast| {
+        toast.severity == severity
+            && toast.message == message
+            && toast.hint == hint
+            && toast.recovery == recovery
+    }) {
+        previous.occurrences = previous.occurrences.saturating_add(1);
+        // Extend readability without restarting the slide-in animation or
+        // collapsing diagnostics the user is currently inspecting.
+        previous.ttl = now
+            .saturating_duration_since(previous.created_at)
+            .saturating_add(ttl);
+        return;
+    }
     guard.push(Toast {
         severity,
         message,
@@ -360,6 +380,7 @@ pub fn push_with_ttl_and_recovery(
         created_at: Instant::now(),
         ttl,
         expanded: false,
+        occurrences: 1,
     });
     // Keep only the most-recent `MAX_VISIBLE_TOASTS` to bound the screen
     // real estate. The oldest in the queue is evicted first.
@@ -368,6 +389,22 @@ pub fn push_with_ttl_and_recovery(
         let drop = len - MAX_VISIBLE_TOASTS;
         guard.drain(0..drop);
     }
+}
+
+/// Notifications are plain terminal cells, never terminal control sequences.
+fn clean_toast_text(text: &str) -> String {
+    let plain = crate::alphacode_base::message::strip_ansi_escape_sequences(text);
+    plain
+        .replace("\r\n", "\n")
+        .chars()
+        .filter_map(|ch| match ch {
+            '\r' => Some('\n'),
+            '\t' => Some(' '),
+            '\n' => Some(ch),
+            ch if ch.is_control() => None,
+            ch => Some(ch),
+        })
+        .collect()
 }
 
 fn compact_toast_message(message: &str) -> (String, Option<String>) {
@@ -531,6 +568,14 @@ pub fn count() -> usize {
     snapshot().len()
 }
 
+fn toast_expand_hint(toast: &Toast) -> &'static str {
+    if toast.recovery.is_some() {
+        "▸ Enter: suggestions · Esc: dismiss"
+    } else {
+        "▸ Enter: details · Esc: dismiss"
+    }
+}
+
 /// Render the toast queue into `area`.
 ///
 /// Layout: anchored to the bottom-right of the supplied area, with a
@@ -596,10 +641,19 @@ pub fn draw(frame: &mut ratatui::Frame, area: Rect) {
                 + toast
                     .recovery
                     .as_deref()
-                    .map(|recovery| wrapped_line_count(recovery, inner_width))
+                    .map(|recovery| {
+                        recovery
+                            .lines()
+                            .enumerate()
+                            .map(|(index, line)| {
+                                let prefix = if index == 0 { " ↳ " } else { "   " };
+                                wrapped_line_count(&format!("{prefix}{line}"), inner_width)
+                            })
+                            .sum::<usize>()
+                    })
                     .unwrap_or(0)
         } else if toast.hint.is_some() || toast.recovery.is_some() {
-            1
+            wrapped_line_count(toast_expand_hint(toast), inner_width)
         } else {
             0
         };
@@ -629,7 +683,7 @@ pub fn draw(frame: &mut ratatui::Frame, area: Rect) {
 
         let border_color = role_color(toast.severity.role());
         // Show expand/collapse indicator when hint is available.
-        let expand_indicator = if toast.hint.is_some() {
+        let expand_indicator = if toast.hint.is_some() || toast.recovery.is_some() {
             if toast.expanded { " ▾" } else { " ▸" }
         } else {
             ""
@@ -639,9 +693,14 @@ pub fn draw(frame: &mut ratatui::Frame, area: Rect) {
             .border_style(Style::default().fg(border_color))
             .title(Span::styled(
                 format!(
-                    " {} {} {} ",
+                    " {} {}{}{} ",
                     toast.severity.icon(),
                     toast.severity.label(),
+                    if toast.occurrences > 1 {
+                        format!(" ×{}", toast.occurrences)
+                    } else {
+                        String::new()
+                    },
                     expand_indicator
                 ),
                 Style::default()
@@ -678,13 +737,7 @@ pub fn draw(frame: &mut ratatui::Frame, area: Rect) {
             }
         } else if toast.hint.is_some() || toast.recovery.is_some() {
             // Collapsed: show expand indicator.
-            let collapse_hint = if toast.hint.is_some() && toast.recovery.is_some() {
-                "▸ Enter: suggestions · Esc: dismiss"
-            } else if toast.hint.is_some() {
-                "▸ Enter: details · Esc: dismiss"
-            } else {
-                "▸ Enter: suggestions · Esc: dismiss"
-            };
+            let collapse_hint = toast_expand_hint(toast);
             lines.push(Line::from(Span::styled(
                 collapse_hint,
                 Style::default().fg(role_color(Role::Dim)),
@@ -716,6 +769,38 @@ mod tests {
     /// deterministic even under the default parallel test runner.
     fn reset() {
         clear();
+    }
+
+    #[test]
+    fn repeated_notifications_keep_one_readable_card() {
+        let _guard = test_guard();
+        reset();
+        push_error_with_hint("Connection lost", "Retrying");
+        expand(0);
+        let first = snapshot()[0].created_at;
+        for _ in 0..20 {
+            push_error_with_hint("Connection lost", "Retrying");
+        }
+        let cards = snapshot();
+        assert_eq!(cards.len(), 1);
+        assert_eq!(cards[0].occurrences, 21);
+        assert_eq!(cards[0].created_at, first);
+        assert!(cards[0].expanded);
+        push_error_with_hint("Connection lost", "Use /login");
+        assert_eq!(
+            count(),
+            2,
+            "different recovery guidance must remain distinct"
+        );
+        reset();
+    }
+
+    #[test]
+    fn notification_content_cannot_leak_terminal_controls() {
+        assert_eq!(
+            clean_toast_text("\x1b[31mFailed\x1b[0m\r\nTry\t/login\x07"),
+            "Failed\nTry /login"
+        );
     }
 
     #[test]

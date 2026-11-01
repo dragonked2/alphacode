@@ -657,8 +657,20 @@ pub(crate) fn effective_stream_idle_timeout(api_base: &str) -> std::time::Durati
 /// Rough token estimate for a chat-completions request body (`chars/4`).
 /// Used for pre-flight context guards and failure diagnostics only.
 pub(crate) fn estimate_chat_request_tokens(request: &serde_json::Value) -> usize {
-    let serialized = serde_json::to_string(request).unwrap_or_default();
-    serialized.len() / 4
+    serialized_request_len(request) / 4
+}
+
+/// Byte length of the request exactly as it will go on the wire.
+///
+/// Serializing the whole body once and keeping the bytes lets the context
+/// pre-flight guard measure the real payload and the transport send those same
+/// bytes, instead of encoding the entire transcript twice (once to count
+/// characters, once for `req.json`). On a long session that double encode was
+/// hundreds of milliseconds of pure CPU per request.
+pub(crate) fn serialized_request_len(request: &serde_json::Value) -> usize {
+    serde_json::to_vec(request)
+        .map(|bytes| bytes.len())
+        .unwrap_or(0)
 }
 
 /// Roughly attribute the request estimate to its prompt components for
@@ -1898,9 +1910,8 @@ impl OpenRouterProvider {
             return None;
         }
         match value.as_str() {
+            "default" | "auto" => None,
             "none" | "low" | "medium" | "high" | "max" | "swarm" | "swarm-deep" => Some(value),
-            // Match the existing OpenAI UX: accept unknown non-empty effort values
-            // by snapping to the strongest setting instead of rejecting the command.
             other => {
                 crate::alphacode_base::logging::info(&format!(
                     "Warning: Ignoring unsupported DeepSeek reasoning effort '{}'; expected none|low|medium|high|max.",
@@ -1917,6 +1928,7 @@ impl OpenRouterProvider {
             return None;
         }
         match value.as_str() {
+            "default" | "auto" => None,
             "none" | "minimal" | "low" | "medium" | "high" | "xhigh" | "max" | "swarm"
             | "swarm-deep" => Some(value),
             other => {
@@ -1935,6 +1947,7 @@ impl OpenRouterProvider {
             return None;
         }
         match value.as_str() {
+            "default" | "auto" => None,
             "none" | "minimal" | "low" | "medium" | "high" | "xhigh" | "swarm" | "swarm-deep" => {
                 Some(value)
             }
@@ -3788,6 +3801,21 @@ mod profile_catalog_backoff_tests {
 #[cfg(test)]
 mod reasoning_effort_profile_tests {
     use super::OpenRouterProvider;
+
+    #[test]
+    fn default_effort_clears_every_supported_wire_vocabulary() {
+        for value in ["default", " AUTO "] {
+            assert_eq!(OpenRouterProvider::normalize_reasoning_effort(value), None);
+            assert_eq!(
+                OpenRouterProvider::normalize_openai_reasoning_effort(value),
+                None
+            );
+            assert_eq!(
+                OpenRouterProvider::normalize_unified_reasoning_effort(value),
+                None
+            );
+        }
+    }
 
     #[test]
     fn dragonmeta_and_deepseek_profiles_support_reasoning_effort() {

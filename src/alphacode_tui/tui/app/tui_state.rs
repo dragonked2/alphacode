@@ -110,25 +110,29 @@ impl App {
     /// reported one yet, so pre-settle effort cycling starts from the value the
     /// session will actually use instead of assuming the maximum.
     pub(super) fn remote_reasoning_effort_hint(&self) -> Option<String> {
-        self.remote_reasoning_effort.clone().or_else(|| {
-            let (provider, model) = self.remote_effort_identity();
-            let provider = provider.unwrap_or_default().to_ascii_lowercase();
-            let model = model.unwrap_or_default().to_ascii_lowercase();
-            let cfg = &crate::config::config().provider;
-            if provider.contains("anthropic")
-                || provider.contains("claude")
-                || model.starts_with("claude-")
-            {
-                cfg.anthropic_reasoning_effort.clone()
-            } else if provider.contains("openai")
-                || provider.contains("codex")
-                || model.starts_with("gpt-")
-            {
-                cfg.openai_reasoning_effort.clone()
-            } else {
-                None
-            }
-        })
+        self.remote_requested_reasoning_effort
+            .as_ref()
+            .map(|(_, effort)| effort.clone())
+            .or_else(|| self.remote_reasoning_effort.clone())
+            .or_else(|| {
+                let (provider, model) = self.remote_effort_identity();
+                let provider = provider.unwrap_or_default().to_ascii_lowercase();
+                let model = model.unwrap_or_default().to_ascii_lowercase();
+                let cfg = &crate::config::config().provider;
+                if provider.contains("anthropic")
+                    || provider.contains("claude")
+                    || model.starts_with("claude-")
+                {
+                    cfg.anthropic_reasoning_effort.clone()
+                } else if provider.contains("openai")
+                    || provider.contains("codex")
+                    || model.starts_with("gpt-")
+                {
+                    cfg.openai_reasoning_effort.clone()
+                } else {
+                    None
+                }
+            })
     }
 
     fn remote_header_provider_model(&self) -> Option<String> {

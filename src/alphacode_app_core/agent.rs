@@ -1,6 +1,7 @@
 #![cfg_attr(test, allow(clippy::await_holding_lock))]
 
 mod budget_enforcer;
+mod capability_awareness;
 mod challenge_context;
 mod claim_checker;
 mod compaction;

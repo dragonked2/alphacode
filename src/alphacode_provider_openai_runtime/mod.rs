@@ -1007,6 +1007,7 @@ impl OpenAIProvider {
             return None;
         }
         match value.as_str() {
+            "default" | "auto" => None,
             // `swarm` is a UI sentinel meaning "max effort + use the swarm tool".
             // We keep it stored so the UI/session reflect it and the agent injects
             // the swarm directive; it is translated to a real effort at request time
@@ -1060,6 +1061,11 @@ impl OpenAIProvider {
             Ok(mut effort) => *effort = None,
             Err(poisoned) => *poisoned.into_inner() = None,
         }
+    }
+
+    fn effective_default_reasoning_effort(&self) -> Option<String> {
+        Self::default_reasoning_effort_for_model(&self.model())
+            .filter(|effort| self.available_efforts().contains(&effort.as_str()))
     }
 
     /// Translate a stored reasoning effort into the value sent to the API.
@@ -1383,3 +1389,50 @@ use self::websocket_health::{
     record_websocket_success, summarize_websocket_fallback_reason, websocket_activity_timeout_kind,
     websocket_cooldown_remaining, websocket_next_activity_timeout_secs_with_completion,
 };
+
+#[cfg(test)]
+mod effort_control_tests {
+    use super::*;
+
+    #[test]
+    fn catalog_efforts_are_ordered_unique_and_empty_means_unsupported() {
+        let provider = OpenAIProvider::new_browser_only();
+        *provider.model.try_write().unwrap() = "gpt-effort-test".into();
+        provider.model_reasoning_efforts.write().unwrap().insert(
+            "gpt-effort-test".into(),
+            vec!["HIGH".into(), "low".into(), "high".into(), "invalid".into()],
+        );
+        assert_eq!(
+            provider.available_efforts(),
+            vec!["low", "high", "swarm", "swarm-deep"]
+        );
+        provider.set_reasoning_effort("high").unwrap();
+        provider.set_reasoning_effort("default").unwrap();
+        assert!(provider.reasoning_effort.read().unwrap().is_none());
+        provider
+            .model_reasoning_efforts
+            .write()
+            .unwrap()
+            .insert("gpt-effort-test".into(), Vec::new());
+        assert!(provider.available_efforts().is_empty());
+        assert!(provider.set_reasoning_effort("swarm").is_err());
+    }
+
+    #[test]
+    fn unsupported_model_defaults_are_not_reported_or_sent() {
+        let provider = OpenAIProvider::new_browser_only();
+        *provider.model.try_write().unwrap() = "gpt-5.6-sol".into();
+        *provider.reasoning_effort.write().unwrap() = None;
+        provider
+            .model_reasoning_efforts
+            .write()
+            .unwrap()
+            .insert("gpt-5.6-sol".into(), vec!["high".into()]);
+        assert_eq!(provider.effective_default_reasoning_effort(), None);
+        assert_eq!(provider.reasoning_effort(), None);
+        provider.set_reasoning_effort("high").unwrap();
+        assert_eq!(provider.reasoning_effort().as_deref(), Some("high"));
+        provider.set_reasoning_effort(" AUTO ").unwrap();
+        assert_eq!(provider.reasoning_effort(), None);
+    }
+}

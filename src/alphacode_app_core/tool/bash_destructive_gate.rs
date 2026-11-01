@@ -99,7 +99,7 @@ Never mix shell syntaxes."
 
             "run_in_background": {
                 "type": "boolean",
-                "description": "Run in background. Emit `ALPHACODE_PROGRESS {json}` lines for progress reporting."
+                "description": "Run in background. Emit `ALPHACODE_PROGRESS {json}` lines for progress reporting. Completion wakes the agent (same as `wake: true`) unless `wake` is explicitly false."
             },
 
             "notify": {
@@ -109,7 +109,7 @@ Never mix shell syntaxes."
 
             "wake": {
                 "type": "boolean",
-                "description": "Wake on completion."
+                "description": "Wake on completion. Defaults to true when `run_in_background` is set, so a finished background task resumes the agent instead of waiting to be noticed."
             },
 
             "justification": {

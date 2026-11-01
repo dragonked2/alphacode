@@ -732,6 +732,16 @@ impl Tool for BgTool {
                 let wait_duration = Duration::from_secs(capped_wait);
 
                 if task_ids.len() > 1 {
+                    // Blocking on `wait` *is* the rendezvous with the result. If
+                    // the task also carries `wake`, its completion injects a
+                    // background-task turn while this call is still running, so
+                    // the agent gets the same result twice and the injected turn
+                    // races the wait's own return. Clear the flag the moment we
+                    // are committed to waiting; the caller can re-arm it with
+                    // `action="delivery"` if it really wants a wake afterwards.
+                    for id in &task_ids {
+                        let _ = manager.update_delivery(id, true, false).await;
+                    }
                     let mode = params.wait_mode.as_deref().unwrap_or("any");
                     let mode = if matches!(mode, "all" | "first_failure") {
                         mode
@@ -775,6 +785,9 @@ impl Tool for BgTool {
                         "Missing task_id; provide a task_id or use latest=true"
                     ));
                 };
+                // See the multi-task branch above: blocking here is the
+                // rendezvous, so the completion must not also wake the agent.
+                let _ = manager.update_delivery(&task_id, true, false).await;
                 match manager
                     .wait(
                         &task_id,

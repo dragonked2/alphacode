@@ -1506,12 +1506,40 @@ fn bridge_compatible_eval_script(script: &str) -> String {
         || matches!(source.chars().next(), Some('{' | ';' | '/'))
         || source.starts_with("\"use strict\"")
         || source.starts_with("'use strict'");
-    let body = if starts_with_statement {
+    let body = if let Some(awaited) = bare_await_expression(source) {
+        // A bare `await expr` is a *statement*, so its value was discarded and
+        // the caller got `null` back from every
+        // "await fetch(u).then(r => r.text())" style script. Returning the
+        // awaited expression makes the obvious form behave as it reads.
+        format!("return (await ({awaited}));")
+    } else if starts_with_statement {
         source.to_string()
     } else {
         format!("return (\n{source}\n);")
     };
     format!("(async () => {{\n{body}\n}})()")
+}
+
+/// The operand of a script that is exactly `await <expression>`.
+///
+/// Returns `None` for anything more involved (`await x; return y`,
+/// `const a = await x`), which stays on the statement path because there the
+/// author is explicitly controlling what gets returned.
+fn bare_await_expression(source: &str) -> Option<&str> {
+    let rest = source.strip_prefix("await")?;
+    // `await` must be a whole word, not the prefix of an identifier.
+    if rest
+        .chars()
+        .next()
+        .is_some_and(|ch| ch.is_ascii_alphanumeric() || ch == '_' || ch == '$')
+    {
+        return None;
+    }
+    let rest = rest.trim();
+    if rest.is_empty() || rest.contains(';') {
+        return None;
+    }
+    Some(rest)
 }
 
 /// Which bridge action backs a given logical action.
@@ -3189,6 +3217,44 @@ mod tests {
         );
         assert!(script.contains("const response = await fetch('/health')"));
         assert!(script.contains("return await response.text()"));
+    }
+
+    /// A bare `await expr` must produce the awaited value.
+    ///
+    /// As a statement the value is discarded, so every
+    /// `await fetch(u).then(r => r.text())` script silently returned `null`.
+    #[test]
+    fn eval_bare_await_returns_its_value() {
+        let script = bridge_compatible_eval_script("await fetch('/v1/me').then(r => r.json())");
+        assert!(
+            script.contains("return (await (fetch('/v1/me').then(r => r.json())));"),
+            "bare await must be returned: {script}"
+        );
+    }
+
+    /// Explicit control flow must not be rewritten.
+    #[test]
+    fn eval_await_with_semicolon_keeps_the_author_s_flow() {
+        let script = bridge_compatible_eval_script("await setup(); return state.ready");
+        assert!(
+            script.contains("await setup(); return state.ready"),
+            "{script}"
+        );
+        assert!(!script.contains("return (await ("), "{script}");
+    }
+
+    /// `awaitSomething` is an identifier, not the `await` operator.
+    #[test]
+    fn eval_await_prefixed_identifier_is_not_treated_as_bare_await() {
+        let script = bridge_compatible_eval_script("awaitAll(items)");
+        assert!(
+            script.contains(
+                "return (
+awaitAll(items)
+);"
+            ),
+            "{script}"
+        );
     }
 
     #[test]

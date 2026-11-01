@@ -435,6 +435,13 @@ swarm_spawn_mode = "inline"
 # Env override: ALPHACODE_SWARM_MAX_CONCURRENT_AGENTS
 swarm_max_concurrent_agents = 32
 #
+# Max nodes one task graph may contain before further decomposition is refused.
+# Deep mode rewards splitting work and adds a critique/verify gate per composite,
+# so a plan can outgrow its seed several times over. Seeding is never blocked;
+# only growth past this cap is. 0 disables the cap.
+# Env override: ALPHACODE_PLAN_MAX_NODES
+plan_max_nodes = 40
+#
 # Max percentage (1-90) of the chat height the inline swarm gallery band may use.
 # Unset = built-in default (40%). Lower values keep more transcript visible; set
 # near the minimum to collapse the gallery to a thin strip.

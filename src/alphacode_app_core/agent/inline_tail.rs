@@ -42,7 +42,13 @@ impl InlineTailBuffer {
     /// Replace the live streaming text with the accumulated `text` so far.
     pub(crate) fn set_live(&mut self, text: &str) {
         self.live.clear();
-        self.live.push_str(text);
+        // Bound both copying and retained memory to the visible suffix.
+        let start = text
+            .char_indices()
+            .rev()
+            .nth(MAX_CHARS - 1)
+            .map_or(0, |(offset, _)| offset);
+        self.live.push_str(&text[start..]);
     }
 
     /// Commit the live text into the rolling buffer (end of a message) and
@@ -180,6 +186,18 @@ fn floor_char_boundary(text: &str, index: usize) -> usize {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn live_tail_is_bounded_on_unicode_boundaries() {
+        let mut tail = InlineTailBuffer::default();
+        let text = "\u{1f680}".repeat(MAX_CHARS * 100);
+        tail.set_live(&text);
+        assert_eq!(tail.live.chars().count(), MAX_CHARS);
+        assert!(text.ends_with(&tail.live));
+        tail.commit_live();
+        assert!(tail.render().chars().count() <= MAX_CHARS);
+        assert!(text.ends_with(&tail.render()));
+    }
 
     #[test]
     fn live_text_renders_and_survives_commit() {

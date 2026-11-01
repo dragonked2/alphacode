@@ -159,9 +159,11 @@ pub fn focus_session_via_hook_with_env(
         .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::null());
-    for (key, value) in client_terminal_env {
-        cmd.env(key, value);
-        cmd.env(format!("ALPHACODE_CLIENT_{key}"), value);
+    for (key, value) in
+        crate::terminal_launch::sanitize_client_terminal_env(client_terminal_env.to_vec())
+    {
+        cmd.env(&key, &value);
+        cmd.env(format!("ALPHACODE_CLIENT_{key}"), &value);
     }
     match crate::platform::spawn_detached(&mut cmd) {
         Ok(_) => true,

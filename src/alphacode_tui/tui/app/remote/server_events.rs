@@ -735,7 +735,18 @@ pub(in crate::alphacode_tui::tui::app) fn handle_server_event(
                 app.apply_stream_ops(ops);
             }
             app.last_stream_activity = Some(Instant::now());
-            eager_stream_redraw
+            // Reasoning used to force an immediate full frame per delta. A
+            // reasoning model emits those at hundreds of tokens per second, so
+            // the loop spent its whole budget redrawing and the *visible*
+            // stream crawled at a fraction of the model's real rate (measured:
+            // ~450 tok/s produced by the server, ~15 tok/s reaching the
+            // screen). The periodic redraw tick (`handle_tick` →
+            // `periodic_redraw_required`, which reports "processing"/"streaming"
+            // for exactly this state) already repaints while a turn is live, so
+            // let it own the cadence. Reasoning *transitions* — `ReasoningDone`,
+            // the first answer token — still return an eager redraw, so nothing
+            // that a user would notice as a stall depends on this branch.
+            false
         }
         ServerEvent::ReasoningDone { .. } => {
             app.thinking_start = None;
@@ -1834,6 +1845,11 @@ pub(in crate::alphacode_tui::tui::app) fn handle_server_event(
                 app.status_detail = status_detail;
             }
             app.remote_reasoning_effort = reasoning_effort;
+            if session_changed && prev_session_id.is_some() {
+                app.remote_requested_reasoning_effort = None;
+                app.remote_effort_response_id = 0;
+                app.remote_effort_requests.clear();
+            }
             app.remote_service_tier = service_tier;
             app.remote_compaction_mode = Some(compaction_mode);
             app.set_side_panel_snapshot(side_panel);
@@ -2474,12 +2490,34 @@ pub(in crate::alphacode_tui::tui::app) fn handle_server_event(
             // redraw happens.
             true
         }
-        ServerEvent::ReasoningEffortChanged { effort, error, .. } => {
+        ServerEvent::ReasoningEffortChanged { id, effort, error } => {
+            if !app.remote_effort_requests.remove(&id) {
+                return false;
+            }
+            if id < app.remote_effort_response_id {
+                return false;
+            }
+            app.remote_effort_response_id = id;
+            if app
+                .remote_requested_reasoning_effort
+                .as_ref()
+                .is_some_and(|(request_id, _)| id < *request_id)
+            {
+                if error.is_none() {
+                    app.remote_reasoning_effort = effort;
+                    app.invalidate_model_picker_cache();
+                    return true;
+                }
+                return false;
+            }
+            app.remote_requested_reasoning_effort = None;
+            app.invalidate_model_picker_cache();
             if let Some(err) = error {
                 app.push_display_message(DisplayMessage::error(format!(
                     "Failed to set effort: {}",
                     err
                 )));
+                app.set_status_notice("Effort switch failed");
             } else {
                 app.remote_reasoning_effort = effort.clone();
                 let label = effort
@@ -2492,7 +2530,7 @@ pub(in crate::alphacode_tui::tui::app) fn handle_server_event(
                 )));
                 app.set_status_notice(format!("Effort: {}", label));
             }
-            false
+            true
         }
         ServerEvent::ServiceTierChanged {
             service_tier,

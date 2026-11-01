@@ -841,7 +841,21 @@ impl App {
         }
 
         if prefix.starts_with("/effort ") {
-            let efforts = ["none", "minimal", "low", "medium", "high", "xhigh", "max"];
+            let (mut efforts, provider) = if self.is_remote {
+                let (provider, model) = self.remote_effort_identity();
+                (
+                    inferred_reasoning_efforts(provider.as_deref(), model.as_deref()),
+                    provider.unwrap_or_default(),
+                )
+            } else {
+                (
+                    self.provider.available_efforts(),
+                    self.provider.name().to_string(),
+                )
+            };
+            if !efforts.is_empty() && !provider.to_ascii_lowercase().contains("copilot") {
+                efforts.push("default");
+            }
             return self.rank_suggestions(
                 input,
                 efforts
@@ -1871,12 +1885,11 @@ impl App {
     /// Replace the selected text with `text`. Returns `true` when a selection
     /// was replaced.
     pub fn replace_input_selection(&mut self, text: &str) -> bool {
-        let Some((start, _end)) = self.input_selection_range() else {
+        let Some((start, end)) = self.input_selection_range() else {
             return false;
         };
         self.remember_input_undo_state();
-        self.input.replace_range(start..start, "");
-        self.input.insert_str(start, text);
+        self.input.replace_range(start..end, text);
         self.cursor_pos = start + text.len();
         self.input_selection_anchor = None;
         self.reset_tab_completion();

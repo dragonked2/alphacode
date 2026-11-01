@@ -146,6 +146,20 @@ pub fn snapshot_client_terminal_env() -> Vec<(String, String)> {
         .collect()
 }
 
+/// Keep only the terminal-identifying vars from a client-supplied snapshot.
+///
+/// The snapshot arrives from a socket peer, so it must never be trusted to
+/// name its own keys: forwarding it verbatim would let a client inject
+/// arbitrary env (`PATH`, `LD_PRELOAD`, ...) into the spawn/focus/hook
+/// processes the server starts on its behalf. Every consumer of a client
+/// snapshot routes through this, so the allow-list is enforced once, at the
+/// boundary, instead of once per sink.
+pub fn sanitize_client_terminal_env(env: Vec<(String, String)>) -> Vec<(String, String)> {
+    env.into_iter()
+        .filter(|(key, _)| CLIENT_TERMINAL_ENV_VARS.contains(&key.as_str()))
+        .collect()
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct SpawnAttempt {
     pub terminal: String,
@@ -558,7 +572,7 @@ fn spawn_metadata_env(command: &TerminalCommand, cwd: &Path) -> Vec<(String, Str
     // value the spawned process/hook would otherwise see) and under a
     // `ALPHACODE_CLIENT_<NAME>` alias so hooks can explicitly distinguish the
     // client's terminal from the server's.
-    for (key, value) in &command.client_terminal_env {
+    for (key, value) in sanitize_client_terminal_env(command.client_terminal_env.clone()) {
         env.push((key.clone(), value.clone()));
         env.push((format!("ALPHACODE_CLIENT_{key}"), value.clone()));
     }
@@ -846,6 +860,51 @@ mod tests {
             !env.iter().any(|(k, _)| k.starts_with("ALPHACODE_CLIENT_")),
             "no client terminal env should produce no ALPHACODE_CLIENT_* keys"
         );
+    }
+
+    #[test]
+    fn spawn_metadata_env_drops_non_terminal_keys_from_client_env() {
+        // The client snapshot arrives from a socket peer. Even though
+        // `set_session_client_env` already filters it, a spawn must not rely on
+        // that: forwarding `PATH`/`LD_PRELOAD` verbatim would hand a connecting
+        // client arbitrary code execution in the hook/spawn process.
+        let command = TerminalCommand::new("/usr/local/bin/alphacode", Vec::new())
+            .kind("swarm-agent")
+            .session_id("ses_peer")
+            .client_terminal_env(vec![
+                ("HERDR_PANE_ID".to_string(), "w1:p2".to_string()),
+                ("PATH".to_string(), "/tmp/evil".to_string()),
+                ("LD_PRELOAD".to_string(), "/tmp/evil.so".to_string()),
+            ]);
+        let env = spawn_metadata_env(&command, Path::new("/tmp/work"));
+
+        assert!(
+            !env.iter()
+                .any(|(k, _)| k == "PATH" || k == "ALPHACODE_CLIENT_PATH"),
+            "PATH from a client snapshot must never reach the spawn hook"
+        );
+        assert!(
+            !env.iter()
+                .any(|(k, _)| k == "LD_PRELOAD" || k == "ALPHACODE_CLIENT_LD_PRELOAD"),
+            "LD_PRELOAD from a client snapshot must never reach the spawn hook"
+        );
+        // The terminal var the snapshot legitimately carried still flows.
+        assert!(
+            env.iter()
+                .any(|(k, v)| k == "HERDR_PANE_ID" && v == "w1:p2"),
+            "allow-listed terminal vars must still be exported"
+        );
+    }
+
+    #[test]
+    fn sanitize_client_terminal_env_keeps_only_allow_listed_keys() {
+        let sanitized = sanitize_client_terminal_env(vec![
+            ("TMUX_PANE".to_string(), "%3".to_string()),
+            ("PATH".to_string(), "/tmp/evil".to_string()),
+            ("LDYNAMIC".to_string(), "x".to_string()),
+            ("ALPHACODE_CLIENT_PATH".to_string(), "y".to_string()),
+        ]);
+        assert_eq!(sanitized, vec![("TMUX_PANE".to_string(), "%3".to_string())]);
     }
 
     #[test]

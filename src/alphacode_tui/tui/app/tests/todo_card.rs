@@ -47,31 +47,21 @@ fn toggle_todo_card_moves_stale_card_to_bottom_instead_of_stacking() {
 fn todos_command_defaults_to_card_and_panel_subcommand_keeps_side_panel() {
     let mut app = create_test_app();
 
-    assert!(commands::handle_session_command(
-        &mut app, "/todos"
-    ));
+    assert!(commands::handle_session_command(&mut app, "/todos"));
     assert!(app.display_messages.iter().any(|m| m.role == "todos"));
     assert!(!app.todos_view_enabled());
 
-    assert!(commands::handle_session_command(
-        &mut app,
-        "/todos panel"
-    ));
+    assert!(commands::handle_session_command(&mut app, "/todos panel"));
     assert!(app.todos_view_enabled());
 
-    assert!(commands::handle_session_command(
-        &mut app,
-        "/todos off"
-    ));
+    assert!(commands::handle_session_command(&mut app, "/todos off"));
     assert!(!app.todos_view_enabled());
 }
 
 #[test]
 fn todo_alias_shows_card() {
     let mut app = create_test_app();
-    assert!(commands::handle_session_command(
-        &mut app, "/todo"
-    ));
+    assert!(commands::handle_session_command(&mut app, "/todo"));
     assert!(app.display_messages.iter().any(|m| m.role == "todos"));
 }
 
@@ -326,3 +316,114 @@ fn pinned_todo_band_renders_at_top_when_scrolled() {
     let _ = crate::todo::save_todos(&session_id, &[]);
 }
 
+/// A long turn writes todos but the user never presses anything. Before this
+/// fix the card only ever refreshed an existing card, so it could not appear on
+/// its own: `refresh_todo_card_if_needed` returned early whenever no card was
+/// present. The auto-open path must create it exactly once.
+#[test]
+fn todo_card_auto_opens_once_when_the_session_has_todos() {
+    with_temp_alphacode_home(|| {
+        let mut app = create_test_app();
+        let session_id = app.session.id.clone();
+
+        // With no todos on disk the probe must stay quiet.
+        app.todo_card_probed_at = None;
+        assert!(!app.refresh_todo_card_if_needed(), "no todos means no card");
+        assert!(!app.display_messages.iter().any(|m| m.role == "todos"));
+
+        crate::todo::save_todos(
+            &session_id,
+            &[crate::todo::TodoItem {
+                id: "t1".to_string(),
+                content: "Audit the hint surfaces".to_string(),
+                status: "in_progress".to_string(),
+                priority: "high".to_string(),
+                confidence: Some(70),
+                ..Default::default()
+            }],
+        )
+        .expect("seed session todos");
+
+        // The probe is throttled, so clear the stamp to model "a second elapsed".
+        app.todo_card_probed_at = None;
+        assert!(
+            app.refresh_todo_card_if_needed(),
+            "the card should open by itself once todos exist"
+        );
+        assert_eq!(
+            app.display_messages
+                .iter()
+                .filter(|m| m.role == "todos")
+                .count(),
+            1,
+            "auto-open must not stack cards"
+        );
+
+        // A second probe finds the card already there and does not duplicate it.
+        app.todo_card_probed_at = None;
+        app.refresh_todo_card_if_needed();
+        assert_eq!(
+            app.display_messages
+                .iter()
+                .filter(|m| m.role == "todos")
+                .count(),
+            1
+        );
+    });
+}
+
+/// Dismissing the card must survive further todo writes: the user closed it on
+/// purpose, and a background update should not re-open it mid-read.
+#[test]
+fn dismissed_todo_card_does_not_reopen_on_the_next_write() {
+    with_temp_alphacode_home(|| {
+        let mut app = create_test_app();
+        let session_id = app.session.id.clone();
+
+        app.show_todo_card();
+        assert_eq!(
+            app.display_messages
+                .iter()
+                .filter(|m| m.role == "todos")
+                .count(),
+            1
+        );
+
+        // Close it, exactly as the hotkey or /todos does.
+        app.toggle_todo_card();
+        assert!(!app.display_messages.iter().any(|m| m.role == "todos"));
+        assert!(app.todo_card_dismissed, "dismissal must be recorded");
+
+        crate::todo::save_todos(
+            &session_id,
+            &[crate::todo::TodoItem {
+                id: "t2".to_string(),
+                content: "Keep working".to_string(),
+                status: "pending".to_string(),
+                priority: "medium".to_string(),
+                ..Default::default()
+            }],
+        )
+        .expect("write more todos");
+
+        app.todo_card_probed_at = None;
+        assert!(
+            !app.refresh_todo_card_if_needed(),
+            "a dismissed card must not reopen"
+        );
+
+        // Asking for it again clears the dismissal.
+        app.show_todo_card();
+        assert!(!app.todo_card_dismissed);
+        assert_eq!(
+            app.display_messages
+                .iter()
+                .filter(|m| m.role == "todos")
+                .count(),
+            1
+        );
+        if let Some(idx) = app.display_messages.iter().rposition(|m| m.role == "todos") {
+            app.remove_display_message(idx);
+        }
+    });
+}

@@ -19,24 +19,45 @@ fn truncated_stream_payload_context(data: &str) -> String {
 ///
 /// Accepts both `\n\n` and `\r\n\r\n` event delimiters. Only handling `\n\n`
 /// meant CRLF streams accumulated many events into one blob (see #565).
-/// Draining in place avoids the O(buffer^2) copy of reassigning the buffer.
-fn take_sse_event(buffer: &mut String) -> Option<String> {
-    let crlf = buffer.find("\r\n\r\n");
-    let lf = buffer.find("\n\n");
-    let (pos, sep_len) = match (crlf, lf) {
-        (Some(c), Some(l)) if c <= l => (c, 4),
-        (Some(c), None) => (c, 4),
-        (_, Some(l)) => (l, 2),
-        (None, None) => return None,
+/// Advance a cursor instead of moving the remaining network chunk per event.
+/// A chunk containing N events is consumed without quadratic suffix copies.
+fn take_sse_event(buffer: &mut String, start: &mut usize, scan: &mut usize) -> Option<String> {
+    let scan_start = (*scan).max(*start).min(buffer.len());
+    // Search both delimiter forms together. Two separate `find` calls scan
+    // the entire suffix for absent CRLF delimiters on LF-only streams.
+    let bytes = &buffer.as_bytes()[scan_start..];
+    let delimiter = bytes.iter().enumerate().find_map(|(pos, byte)| {
+        if *byte == b'\n' && bytes[pos..].starts_with(b"\n\n") {
+            Some((pos, 2))
+        } else if *byte == b'\r' && bytes[pos..].starts_with(b"\r\n\r\n") {
+            Some((pos, 4))
+        } else {
+            None
+        }
+    });
+    let Some((pos, sep_len)) = delimiter else {
+        // Only a delimiter straddling the refill boundary can begin in the
+        // last three inspected bytes. Do not rescan the whole partial event.
+        *scan = buffer.len().saturating_sub(3).max(*start);
+        return None;
     };
-    let event = buffer[..pos].to_string();
-    buffer.drain(..pos + sep_len);
+    let pos = scan_start + pos;
+    let event = buffer[*start..pos].to_string();
+    *start = pos + sep_len;
+    *scan = *start;
+    if *start == buffer.len() {
+        buffer.clear();
+        *start = 0;
+        *scan = 0;
+    }
     Some(event)
 }
 
 pub struct OpenRouterStream {
     inner: Pin<Box<dyn Stream<Item = Result<Bytes, reqwest::Error>> + Send>>,
     buffer: String,
+    buffer_start: usize,
+    buffer_scan: usize,
     /// Carries incomplete multi-byte UTF-8 sequences across chunk boundaries
     /// so split CJK characters are not dropped (#609).
     utf8: crate::alphacode_core::util::Utf8StreamDecoder,
@@ -49,7 +70,6 @@ pub struct OpenRouterStream {
     provider_emitted: bool,
     model: String,
     provider_pin: Arc<Mutex<Option<ProviderPin>>>,
-    reasoning_buffer: String,
     finish_reason: Option<String>,
     message_end_emitted: bool,
 }
@@ -70,6 +90,8 @@ impl OpenRouterStream {
         Self {
             inner: Box::pin(stream),
             buffer: String::new(),
+            buffer_start: 0,
+            buffer_scan: 0,
             utf8: crate::alphacode_core::util::Utf8StreamDecoder::new(),
             partial_json: None,
             pending: VecDeque::new(),
@@ -77,7 +99,6 @@ impl OpenRouterStream {
             provider_emitted: false,
             model,
             provider_pin,
-            reasoning_buffer: String::new(),
             finish_reason: None,
             message_end_emitted: false,
         }
@@ -220,7 +241,11 @@ impl OpenRouterStream {
             return Some(event);
         }
 
-        while let Some(event_str) = take_sse_event(&mut self.buffer) {
+        while let Some(event_str) = take_sse_event(
+            &mut self.buffer,
+            &mut self.buffer_start,
+            &mut self.buffer_scan,
+        ) {
             // Collect every `data:` line in the event. Keeping only the last one
             // silently dropped content whenever multiple events landed in a
             // single parsed chunk (see #565).
@@ -260,7 +285,8 @@ impl OpenRouterStream {
                 requeued.push_str("data: [DONE]\n\n");
             }
             if !requeued.is_empty() {
-                self.buffer.insert_str(0, &requeued);
+                self.buffer.insert_str(self.buffer_start, &requeued);
+                self.buffer_scan = self.buffer_start;
             }
             // Re-join a JSON object the proxy split across two SSE events.
             let data = match self.partial_json.take() {
@@ -293,7 +319,8 @@ impl OpenRouterStream {
                             self.partial_json = Some(partial.clone());
                         }
                         if !requeued.is_empty() {
-                            self.buffer.insert_str(0, &requeued);
+                            self.buffer.insert_str(self.buffer_start, &requeued);
+                            self.buffer_scan = self.buffer_start;
                             continue;
                         }
                         if split.trailing_partial.is_some() {
@@ -345,18 +372,12 @@ impl OpenRouterStream {
                             .and_then(|c| c.as_str())
                             && !reasoning_content.is_empty()
                         {
-                            let reasoning_delta =
-                                if reasoning_content.starts_with(&self.reasoning_buffer) {
-                                    &reasoning_content[self.reasoning_buffer.len()..]
-                                } else {
-                                    reasoning_content
-                                };
-                            self.reasoning_buffer = reasoning_content.to_string();
-                            if !reasoning_delta.is_empty() {
-                                self.pending.push_back(StreamEvent::ThinkingDelta(
-                                    reasoning_delta.to_string(),
-                                ));
-                            }
+                            // A delta is incremental, even when it repeats the previous
+                            // token or starts with the same prefix. Prefix deduplication
+                            // silently deleted valid model output.
+                            self.pending.push_back(StreamEvent::ThinkingDelta(
+                                reasoning_content.to_string(),
+                            ));
                         }
 
                         // Text content
@@ -473,6 +494,13 @@ impl Stream for OpenRouterStream {
             match self.inner.as_mut().poll_next(cx) {
                 Poll::Ready(Some(Ok(bytes))) => {
                     let text = self.utf8.decode(&bytes);
+                    // Compact once per refill, rather than once per SSE event.
+                    let start = self.buffer_start;
+                    if start > 0 && start >= self.buffer.len() / 2 {
+                        self.buffer.drain(..start);
+                        self.buffer_start = 0;
+                        self.buffer_scan = self.buffer_scan.saturating_sub(start);
+                    }
                     self.buffer.push_str(&text);
                 }
                 Poll::Ready(Some(Err(e))) => {
@@ -485,7 +513,9 @@ impl Stream for OpenRouterStream {
                     if !tail.is_empty() {
                         self.buffer.push_str(&tail);
                     }
-                    if !self.buffer.trim().is_empty() && !self.buffer.ends_with("\n\n") {
+                    if !self.buffer[self.buffer_start..].trim().is_empty()
+                        && !self.buffer.ends_with("\n\n")
+                    {
                         self.buffer.push_str("\n\n");
                         if let Some(event) = self.parse_next_event() {
                             return Poll::Ready(Some(Ok(event)));
@@ -538,11 +568,84 @@ mod tests {
     }
 
     #[test]
+    fn fragmented_sse_retains_only_a_delimiter_overlap() {
+        for separator in ["\n\n", "\r\n\r\n"] {
+            let expected = format!("data: {}", "\u{754c}".repeat(10_000));
+            let mut buffer = String::new();
+            let mut start = 0;
+            let mut scan = 0;
+            // Char boundaries deliberately leave the scan index inside UTF-8.
+            for chunk in expected.chars() {
+                buffer.push(chunk);
+                assert!(take_sse_event(&mut buffer, &mut start, &mut scan).is_none());
+                assert!(buffer.len().saturating_sub(scan) <= 3);
+            }
+            for (index, byte) in separator.chars().enumerate() {
+                buffer.push(byte);
+                let event = take_sse_event(&mut buffer, &mut start, &mut scan);
+                if index + 1 == separator.len() {
+                    assert_eq!(event.as_deref(), Some(expected.as_str()));
+                } else {
+                    assert!(event.is_none());
+                }
+            }
+            assert_eq!((start, scan), (0, 0));
+        }
+    }
+
+    #[test]
+    fn batched_sse_events_advance_without_moving_the_remaining_chunk() {
+        let mut buffer = "data: first\n\ndata: second\n\npartial".to_string();
+        let original = buffer.clone();
+        let mut start = 0;
+        let mut scan = 0;
+        assert_eq!(
+            take_sse_event(&mut buffer, &mut start, &mut scan).as_deref(),
+            Some("data: first")
+        );
+        assert_eq!(buffer, original);
+        assert_eq!(
+            take_sse_event(&mut buffer, &mut start, &mut scan).as_deref(),
+            Some("data: second")
+        );
+        assert_eq!(&buffer[start..], "partial");
+        assert!(take_sse_event(&mut buffer, &mut start, &mut scan).is_none());
+    }
+
+    #[test]
+    fn repeated_reasoning_deltas_are_preserved() {
+        let mut stream = OpenRouterStream::new(
+            futures::stream::empty(),
+            "test".into(),
+            Arc::new(Mutex::new(None)),
+        );
+        stream.buffer = concat!(
+            "data: {\"choices\":[{\"delta\":{\"reasoning\":\"a\"}}]}\n\n",
+            "data: {\"choices\":[{\"delta\":{\"reasoning\":\"a\"}}]}\n\n",
+            "data: {\"choices\":[{\"delta\":{\"reasoning\":\"abc\"}}]}\n\n"
+        )
+        .into();
+        for expected in ["a", "a", "abc"] {
+            assert!(
+                matches!(stream.parse_next_event(), Some(StreamEvent::ThinkingDelta(text)) if text == expected)
+            );
+        }
+    }
+
+    #[test]
     fn take_sse_event_splits_crlf_delimited_events() {
         let mut buffer = "data: a\r\n\r\ndata: b\r\n\r\n".to_string();
-        assert_eq!(take_sse_event(&mut buffer).as_deref(), Some("data: a"));
-        assert_eq!(take_sse_event(&mut buffer).as_deref(), Some("data: b"));
-        assert_eq!(take_sse_event(&mut buffer), None);
+        let mut start = 0;
+        let mut scan = 0;
+        assert_eq!(
+            take_sse_event(&mut buffer, &mut start, &mut scan).as_deref(),
+            Some("data: a")
+        );
+        assert_eq!(
+            take_sse_event(&mut buffer, &mut start, &mut scan).as_deref(),
+            Some("data: b")
+        );
+        assert_eq!(take_sse_event(&mut buffer, &mut start, &mut scan), None);
     }
 
     #[test]

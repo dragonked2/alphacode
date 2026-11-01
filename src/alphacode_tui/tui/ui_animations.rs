@@ -684,6 +684,7 @@ mod tests {
     /// and all idle variants.
     #[test]
     fn direct_blit_matches_paragraph() {
+        crate::alphacode_tui_style::color::pin_truecolor_for_tests();
         type Sampler = fn(f32, usize, usize, &mut [bool], &mut [f32], &mut [f32]);
         let samplers: &[(&str, Sampler)] = &[
             ("donut", sample_donut),

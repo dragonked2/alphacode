@@ -1353,6 +1353,9 @@ pub struct App {
     remote_startup_phase: Option<RemoteStartupPhase>,
     remote_startup_phase_started: Option<Instant>,
     remote_reasoning_effort: Option<String>,
+    remote_requested_reasoning_effort: Option<(u64, String)>,
+    remote_effort_response_id: u64,
+    remote_effort_requests: std::collections::HashSet<u64>,
     remote_service_tier: Option<String>,
     remote_transport: Option<String>,
     remote_compaction_mode: Option<crate::config::CompactionMode>,
@@ -1526,6 +1529,15 @@ pub struct App {
     /// Hash of the todo payload rendered into the inline chat todo card, used
     /// to keep the card live-updating while it stays in the transcript.
     todo_card_rendered_hash: u64,
+    /// Set when the user explicitly closes the inline todo card, so the next
+    /// todo write does not immediately re-open it. Cleared on a new session and
+    /// whenever the user asks for the card again.
+    todo_card_dismissed: bool,
+    /// Last time the tick probed disk for a todo list to auto-open the card.
+    /// `refresh_todo_card_if_needed` runs every tick; without this throttle the
+    /// auto-open check would stat and parse the session's todo file on every
+    /// frame. One second matches the pinned-band throttle.
+    todo_card_probed_at: Option<Instant>,
     /// JSON payload for the pinned todo band (display.pin_todos). `None` when
     /// the feature is off or the session has no todos. Refreshed on tick.
     /// The renderer wiring for these three fields is landing separately, so

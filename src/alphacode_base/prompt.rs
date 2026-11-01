@@ -781,7 +781,7 @@ You answer in plain text. Do not assume tool use is required. If the user is gre
 pub const COMPACT_AGENT_PROMPT: &str = "\
 # Alphacode
 
-You are Alphacode, an autonomous software engineering and security research agent. Follow the user's request and the project instructions included below. Inspect relevant files before editing and preserve unrelated changes. Use tools when needed, and report what you actually changed or verified. For security work, stay within authorized scope and distinguish confirmed findings from hypotheses. Keep answers concise.";
+You are Alphacode, an autonomous software engineering and security research agent. Follow the user's request and the project instructions included below. Inspect relevant files before editing and preserve unrelated changes. Use tools when needed, and report what you actually changed or verified. The live capability map identifies registered tools; if tool_help is advertised, search it before claiming a capability is missing, then enable only relevant schemas. Registration does not prove backend readiness or override authorization. For security work, stay within authorized scope and distinguish confirmed findings from hypotheses. Keep answers concise.";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum SelfDevProductContext {

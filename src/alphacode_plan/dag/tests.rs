@@ -1390,3 +1390,88 @@ fn simulator_flat_deep_seed_grows_via_root_gate() {
     assert_eq!(gap.origin, Some(NodeOrigin::Gap));
     assert!(g.get("plan::gate").unwrap().is_done());
 }
+
+/// Deep mode rewards decomposition and adds a gate per composite, so a plan can
+/// outgrow its seed several times over: a 14-node seed was observed reaching 75
+/// nodes before most seed nodes finished. Growth past `agents.plan_max_nodes`
+/// must be refused with a message that names the limit, so an agent consolidates
+/// instead of splitting again.
+///
+/// The cap is process configuration rather than a graph parameter, so this test
+/// reads it and asserts the boundary from whichever side the setting is on.
+#[test]
+fn expand_refuses_growth_past_the_configured_node_cap() {
+    let limit = crate::config::config().agents.plan_max_nodes;
+    if limit == 0 {
+        // Cap explicitly disabled: only the boundary above matters, nothing to
+        // assert about refusal. Kept as an explicit branch so a run with the cap
+        // off does not look like silent test skipping.
+        return;
+    }
+
+    // Build a graph that is already at the cap.
+    let mode = if limit > 1 { Mode::Deep } else { Mode::Light };
+    let root_gate_count = usize::from(mode.requires_gates());
+    let specs: Vec<NodeSpec> = (0..limit.saturating_sub(root_gate_count))
+        .map(|i| spec(&format!("n{i}"), NodeKind::Explore))
+        .collect();
+    let mut g = dag(mode, specs);
+    assert_eq!(g.len(), limit, "seed should reach the cap exactly");
+
+    // Pick a node to expand. In Deep mode a gate was inserted at seed time, so
+    // dispatch the first real (non-gate) node.
+    let target = g
+        .nodes()
+        .iter()
+        .find(|node| !node.is_gate)
+        .map(|node| node.id.clone())
+        .expect("seeded graph has a non-gate node");
+    dispatch(&mut g, &target, "w0");
+
+    let before = g.len();
+    let error = expand_node(
+        &mut g,
+        &target,
+        "w0",
+        vec![spec("child", NodeKind::Explore)],
+    )
+    .expect_err("expansion past the cap must be refused");
+
+    let message = error.to_string();
+    assert!(
+        message.contains(&limit.to_string()),
+        "error should name the limit {limit}: {message}"
+    );
+    assert!(
+        message.contains("plan_max_nodes"),
+        "error should name the setting to raise: {message}"
+    );
+    assert_eq!(
+        g.len(),
+        before,
+        "a refused expansion must leave the graph untouched"
+    );
+}
+
+#[test]
+fn light_expansion_can_reach_the_node_cap_exactly() {
+    let limit = crate::config::config().agents.plan_max_nodes;
+    if limit < 2 {
+        return;
+    }
+    let mut graph = dag(
+        Mode::Light,
+        (0..limit - 1)
+            .map(|i| spec(&format!("n{i}"), NodeKind::Explore))
+            .collect(),
+    );
+    dispatch(&mut graph, "n0", "worker");
+    expand_node(
+        &mut graph,
+        "n0",
+        "worker",
+        vec![spec("child", NodeKind::Explore)],
+    )
+    .expect("light expansion adds no gate and fits the cap");
+    assert_eq!(graph.len(), limit);
+}

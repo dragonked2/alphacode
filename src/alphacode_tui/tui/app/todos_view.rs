@@ -32,6 +32,9 @@ impl App {
         {
             self.remove_display_message(idx);
             self.todo_card_rendered_hash = 0;
+            // Remember the dismissal so the next todo write does not immediately
+            // re-open a card the user just closed.
+            self.todo_card_dismissed = true;
             self.set_status_notice("Todos card dismissed");
             return;
         }
@@ -41,6 +44,8 @@ impl App {
     /// Push (or move to the bottom) the inline todo card with fresh data. The
     /// transcript keeps at most one card so repeated toggles don't stack.
     pub(super) fn show_todo_card(&mut self) {
+        // An explicit request always wins over an earlier dismissal.
+        self.todo_card_dismissed = false;
         let session_id = self.active_client_session_id().map(str::to_string);
         let todos = load_current_session_todos(session_id.as_deref());
         let goals = load_current_session_goals(session_id.as_deref());
@@ -62,11 +67,40 @@ impl App {
 
     /// Live-refresh the inline todo card when the session todo list changed.
     /// Returns true when the transcript was updated.
+    ///
+    /// This also *creates* the card the first time this session's todo list
+    /// becomes non-empty. It previously only refreshed an existing card, which
+    /// meant the surface never appeared on its own: a long turn could write a
+    /// dozen todos and the user saw none of them unless they knew to press the
+    /// todo hotkey or type `/todos`. The card is still dismissible; dismissing
+    /// it sets `todo_card_dismissed` so the next todo write does not resurrect
+    /// a card the user just closed.
     pub(super) fn refresh_todo_card_if_needed(&mut self) -> bool {
-        let Some(idx) = self.latest_todo_card_index() else {
-            return false;
-        };
         let session_id = self.active_client_session_id().map(str::to_string);
+
+        let Some(idx) = self.latest_todo_card_index() else {
+            // No card yet. Create one only when there is something to show and
+            // the user has not dismissed the card for this session. This path
+            // runs every tick, so the disk probe is throttled like the pinned
+            // band rather than re-reading the todo file on every frame.
+            if self.todo_card_dismissed {
+                return false;
+            }
+            const PROBE_INTERVAL: std::time::Duration = std::time::Duration::from_secs(1);
+            if self
+                .todo_card_probed_at
+                .is_some_and(|at| at.elapsed() < PROBE_INTERVAL)
+            {
+                return false;
+            }
+            self.todo_card_probed_at = Some(Instant::now());
+            if load_current_session_todos(session_id.as_deref()).is_empty() {
+                return false;
+            }
+            self.show_todo_card();
+            return true;
+        };
+
         let todos = load_current_session_todos(session_id.as_deref());
         let goals = load_current_session_goals(session_id.as_deref());
         let plan = load_current_session_plan(session_id.as_deref());

@@ -12,7 +12,10 @@
 //! * `tool_help { "tools": ["sqlmap", "nuclei"] }` — promote those tools. From
 //!   the next request on, their full schemas are advertised and the model can
 //!   call them normally.
-//! * `tool_help { "query": "sql" }` — promote every tool whose name matches.
+//! * `tool_help { "action": "search", "query": "binary analysis" }` — inspect
+//!   names, descriptions and families without promoting schemas.
+//! * `tool_help { "query": "sql" }` — promote a small matching set. Broad
+//!   queries ask the model to choose exact tools instead of loading everything.
 //!
 //! Promotion is sticky for the session. It is also cheap: the tool list snapshot
 //! is unlocked once, which costs a single intentional prompt-cache miss — the
@@ -74,15 +77,47 @@ struct ToolHelpInput {
     #[serde(default)]
     query: Option<String>,
     #[serde(default)]
+    action: Option<String>,
+    #[serde(default)]
     tools: Option<Vec<String>>,
 }
 
 /// Lists and promotes tools that progressive disclosure keeps off the wire.
-pub struct ToolHelpTool;
+type LiveTools = tokio::sync::RwLock<std::collections::HashMap<String, std::sync::Arc<dyn Tool>>>;
+
+pub struct ToolHelpTool {
+    live: Option<std::sync::Weak<LiveTools>>,
+}
 
 impl ToolHelpTool {
     pub fn new() -> Self {
-        Self
+        Self { live: None }
+    }
+
+    pub(crate) fn for_registry(registry: &super::Registry) -> Self {
+        Self {
+            live: Some(std::sync::Arc::downgrade(&registry.tools)),
+        }
+    }
+
+    async fn catalog(&self) -> Vec<(String, String)> {
+        if let Some(live) = &self.live {
+            let Some(tools) = live.upgrade() else {
+                return Vec::new();
+            };
+            let tools = tools.read().await;
+            let mut catalog: Vec<_> = tools
+                .iter()
+                .map(|(name, tool)| (name.clone(), tool.description().chars().take(512).collect()))
+                .collect();
+            catalog.sort_by(|a, b| a.0.cmp(&b.0));
+            return catalog;
+        }
+        // Compatibility for standalone callers; production instances use a live registry.
+        super::known_tool_names()
+            .into_iter()
+            .map(|name| (name, String::new()))
+            .collect()
     }
 }
 
@@ -99,11 +134,10 @@ impl Tool for ToolHelpTool {
     }
 
     fn description(&self) -> &str {
-        "Find and enable specialized tools. Only a core set of tool schemas is loaded \
-         each turn to keep requests small; every other tool still exists and runs \
-         once enabled. Call with no arguments to list the hidden tools, or pass \
-         `tools` (exact names) / `query` (substring) to enable them — they are \
-         advertised in the next model request."
+        "Discover tools in this session. Use action=search with a task query to match names, \
+         descriptions, and capability families without loading schemas. Then pass tools with exact \
+         names to enable only what is useful. With no arguments, list hidden tools. Registration \
+         does not guarantee an installed binary, authenticated account, or running backend."
     }
 
     fn parameters_schema(&self) -> Value {
@@ -111,6 +145,10 @@ impl Tool for ToolHelpTool {
             "type": "object",
             "properties": {
                 "intent": super::intent_schema_property(),
+                "action": {
+                    "type": "string", "enum": ["list", "search", "enable"],
+                    "description": "search inspects matching tools without promoting them; enable loads selected schemas. Omitting action preserves automatic promotion for tools/query."
+                },
                 "tools": {
                     "type": "array",
                     "items": {"type": "string"},
@@ -118,20 +156,27 @@ impl Tool for ToolHelpTool {
                 },
                 "query": {
                     "type": "string",
-                    "description": "Substring of tool names, e.g. \"sql\" or \"ffuf\". Enables every match."
+                    "description": "Search names, descriptions, or capability families. Use action=search to inspect matches without enabling them."
                 }
             }
         })
     }
 
     async fn execute(&self, input: Value, ctx: ToolContext) -> Result<ToolOutput> {
-        let params: ToolHelpInput = serde_json::from_value(input).unwrap_or_default();
+        let params: ToolHelpInput = serde_json::from_value(input)?;
+        let action = params.action.as_deref().unwrap_or("auto");
+        anyhow::ensure!(
+            matches!(action, "auto" | "list" | "search" | "enable"),
+            "unknown tool_help action; use list, search, or enable"
+        );
 
         // Everything the registry knows about, minus the always-advertised set.
         let session_policy = super::session_tool_policy(&ctx.session_id);
-        let all: Vec<String> = super::known_tool_names()
+        let catalog: Vec<_> = self
+            .catalog()
+            .await
             .into_iter()
-            .filter(|name| {
+            .filter(|(name, _)| {
                 session_policy.as_ref().is_none_or(|policy| {
                     !policy.disabled_tools.contains(name)
                         && policy
@@ -141,6 +186,34 @@ impl Tool for ToolHelpTool {
                 })
             })
             .collect();
+        let all: Vec<String> = catalog.iter().map(|(name, _)| name.clone()).collect();
+        {
+            let mut sessions = SESSION_PROMOTED
+                .write()
+                .unwrap_or_else(|error| error.into_inner());
+            if let Some(promoted) = sessions.get_mut(&ctx.session_id) {
+                promoted.retain(|name| all.binary_search(name).is_ok());
+            }
+        }
+
+        if action == "search" {
+            let query = params.query.as_deref().unwrap_or_default().trim();
+            anyhow::ensure!(
+                !query.is_empty(),
+                "tool_help search requires a non-empty query"
+            );
+            let matches: Vec<_> = catalog
+                .iter()
+                .filter(|(name, description)| {
+                    super::capabilities::matches_query(name, description, query)
+                })
+                .cloned()
+                .collect();
+            return Ok(ToolOutput::new(format_catalog(
+                &matches,
+                "Search results (not enabled)",
+            )));
+        }
 
         let policy = crate::tool::disclosure::DisclosurePolicy::parse(
             &crate::config::config().tools.disclosure,
@@ -148,7 +221,10 @@ impl Tool for ToolHelpTool {
         // A hidden tool is one this session has not promoted and that the
         // policy does not advertise by default.
         let already: std::collections::HashSet<String> = promoted_tools(&ctx.session_id);
-        let forced = std::collections::HashSet::new();
+        let forced = session_policy
+            .as_ref()
+            .and_then(|policy| policy.allowed_tools.clone())
+            .unwrap_or_default();
         let selection = crate::tool::disclosure::DisclosureSelection::new();
         let hidden: Vec<String> = all
             .iter()
@@ -157,14 +233,31 @@ impl Tool for ToolHelpTool {
             .collect();
 
         // --- Promotion path ---
-        let mut requested: Vec<String> = params.tools.clone().unwrap_or_default();
+        if action == "list" {
+            let entries: Vec<_> = catalog
+                .iter()
+                .filter(|(name, _)| hidden.contains(name))
+                .cloned()
+                .collect();
+            return Ok(ToolOutput::new(format_catalog(&entries, "Hidden tools")));
+        }
+        let mut requested: Vec<String> = params
+            .tools
+            .clone()
+            .unwrap_or_default()
+            .into_iter()
+            .map(|name| super::Registry::resolve_tool_name(&name).to_string())
+            .collect();
         if let Some(query) = params.query.as_deref() {
             let needle = query.trim().to_ascii_lowercase();
             if !needle.is_empty() {
                 requested.extend(
-                    all.iter()
-                        .filter(|name| name.to_ascii_lowercase().contains(&needle))
-                        .cloned(),
+                    catalog
+                        .iter()
+                        .filter(|(name, description)| {
+                            super::capabilities::matches_query(name, description, &needle)
+                        })
+                        .map(|(name, _)| name.clone()),
                 );
             }
         }
@@ -186,7 +279,9 @@ impl Tool for ToolHelpTool {
                 .clone()
                 .unwrap_or_default()
                 .into_iter()
-                .filter(|name| !known.contains(name))
+                .filter(|name| {
+                    !known.contains(&super::Registry::resolve_tool_name(name).to_string())
+                })
                 .collect();
 
             if valid.is_empty() {
@@ -195,11 +290,33 @@ impl Tool for ToolHelpTool {
                     msg.push_str(&format!(" Unknown: {}.", unknown.join(", ")));
                 }
                 if !hidden.is_empty() {
-                    msg.push_str(&format!("\n\nHidden tools: {}", hidden.join(", ")));
+                    let entries: Vec<_> = catalog
+                        .iter()
+                        .filter(|(name, _)| hidden.contains(name))
+                        .cloned()
+                        .collect();
+                    msg.push_str(&format!("\n\n{}", format_catalog(&entries, "Hidden tools")));
                 }
                 return Ok(ToolOutput::new(msg));
             }
 
+            let valid: Vec<_> = valid
+                .into_iter()
+                .collect::<std::collections::BTreeSet<_>>()
+                .into_iter()
+                .collect();
+            if valid.len() > 8 && params.tools.as_ref().is_none_or(Vec::is_empty) {
+                let entries: Vec<_> = catalog
+                    .iter()
+                    .filter(|(name, _)| valid.contains(name))
+                    .cloned()
+                    .collect();
+                return Ok(ToolOutput::new(format!(
+                    "Broad query matched {} tools. No schemas loaded; choose exact tools to enable.\n{}",
+                    valid.len(),
+                    format_catalog(&entries, "Matches")
+                )));
+            }
             let newly = promote_tools(&ctx.session_id, &valid);
             let mut msg = format!(
                 "Enabled {} tool(s): {}.\nTheir schemas are advertised in the next model request; \
@@ -222,16 +339,49 @@ impl Tool for ToolHelpTool {
                 "Every available tool is already advertised. Nothing is hidden.".to_string(),
             ));
         }
-        let mut msg = format!(
-            "{} tool(s) are available but not advertised, to keep requests small. \
-             Enable with tool_help {{\"tools\": [...]}} or {{\"query\": \"...\"}}:\n",
-            hidden.len()
+        anyhow::ensure!(
+            action != "enable",
+            "tool_help enable requires tools or a query"
         );
-        for name in &hidden {
-            msg.push_str(&format!("- {name}\n"));
-        }
-        Ok(ToolOutput::new(msg))
+        let entries: Vec<_> = catalog
+            .into_iter()
+            .filter(|(name, _)| hidden.contains(name))
+            .collect();
+        Ok(ToolOutput::new(format_catalog(
+            &entries,
+            "Tools available but not advertised",
+        )))
     }
+}
+
+fn format_catalog(entries: &[(String, String)], heading: &str) -> String {
+    let mut output = format!(
+        "{heading}: {} tool(s). Enable exact names with tool_help tools=[...].\n",
+        entries.len()
+    );
+    let mut shown = 0;
+    for (name, description) in entries.iter().take(40) {
+        let hint: String = description
+            .split_whitespace()
+            .flat_map(|word| word.chars().chain(std::iter::once(' ')))
+            .take(120)
+            .collect();
+        let line = format!(
+            "- {} [{}]: {}\n",
+            serde_json::to_string(name).unwrap_or_default(),
+            super::capabilities::family(name),
+            serde_json::to_string(&hint).unwrap_or_default()
+        );
+        if output.len() + line.len() > 8000 {
+            break;
+        }
+        output.push_str(&line);
+        shown += 1;
+    }
+    if shown < entries.len() {
+        output.push_str("More matches omitted; narrow the query.\n");
+    }
+    output
 }
 
 #[cfg(test)]
@@ -252,9 +402,130 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn live_catalog_tracks_registration_removal_and_registry_isolation() {
+        let first = super::super::Registry::empty();
+        let second = super::super::Registry::empty();
+        let help = ToolHelpTool::for_registry(&first);
+        let context = ctx("th-live", &[]);
+        second
+            .register(
+                "mcp__other__private_tool".into(),
+                std::sync::Arc::new(ToolHelpTool::new()),
+            )
+            .await;
+        first
+            .register("ghidra".into(), std::sync::Arc::new(ToolHelpTool::new()))
+            .await;
+        let output = help
+            .execute(
+                json!({"action":"search", "query":"binary analysis"}),
+                context.clone(),
+            )
+            .await
+            .unwrap();
+        assert!(output.output.contains("ghidra"));
+        assert!(!output.output.contains("private_tool"));
+        assert!(promoted_tools("th-live").is_empty());
+        help.execute(json!({"tools":["ghidra","ghidra"]}), context.clone())
+            .await
+            .unwrap();
+        assert_eq!(promoted_tools("th-live").len(), 1);
+        first.unregister("ghidra").await;
+        let output = help
+            .execute(json!({"tools":["ghidra"]}), context)
+            .await
+            .unwrap();
+        assert!(output.output.contains("No matching tools"));
+        assert!(!promoted_tools("th-live").contains("ghidra"));
+        clear_session("th-live");
+    }
+
+    #[tokio::test]
+    async fn invalid_requests_do_not_silently_list_or_promote_tools() {
+        let tool = ToolHelpTool::new();
+        let context = ctx("th-invalid", &["ghidra"]);
+        assert!(
+            tool.execute(json!({"tools":12}), context.clone())
+                .await
+                .is_err()
+        );
+        assert!(
+            tool.execute(json!({"action":"search"}), context)
+                .await
+                .is_err()
+        );
+        assert!(promoted_tools("th-invalid").is_empty());
+    }
+
+    #[tokio::test]
+    async fn search_respects_policy_and_alias_promotion_is_canonical() {
+        let registry = super::super::Registry::empty();
+        registry
+            .register("ghidra".into(), std::sync::Arc::new(ToolHelpTool::new()))
+            .await;
+        registry
+            .register("bash".into(), std::sync::Arc::new(ToolHelpTool::new()))
+            .await;
+        let help = ToolHelpTool::for_registry(&registry);
+        let context = ctx("th-policy-search", &[]);
+        super::super::set_session_tool_policy(
+            "th-policy-search",
+            Some(["bash".into()].into_iter().collect()),
+            std::collections::HashSet::new(),
+        );
+        let output = help
+            .execute(
+                json!({"action":"search","query":"binary analysis"}),
+                context.clone(),
+            )
+            .await
+            .unwrap();
+        assert!(!output.output.contains("ghidra"));
+        let output = help
+            .execute(json!({"tools":["shell_exec"]}), context)
+            .await
+            .unwrap();
+        assert!(promoted_tools("th-policy-search").contains("bash"));
+        assert!(!output.output.contains("Unknown"));
+        super::super::clear_session_tool_policy("th-policy-search");
+    }
+
+    #[test]
+    fn catalog_output_is_bounded_for_large_names_and_descriptions() {
+        let entries = vec![("mcp__large".into(), "x".repeat(10_000)); 100];
+        assert!(format_catalog(&entries, "Matches").len() < 8100);
+    }
+
+    #[tokio::test]
+    async fn broad_queries_inspect_instead_of_promoting_every_schema() {
+        let registry = super::super::Registry::empty();
+        for index in 0..12 {
+            registry
+                .register(
+                    format!("mcp__sample__{index}"),
+                    std::sync::Arc::new(ToolHelpTool::new()),
+                )
+                .await;
+        }
+        let help = ToolHelpTool::for_registry(&registry);
+        let output = help
+            .execute(json!({"query":"integration"}), ctx("th-broad", &[]))
+            .await
+            .unwrap();
+        assert!(output.output.contains("No schemas loaded"));
+        assert!(promoted_tools("th-broad").is_empty());
+    }
+
+    #[tokio::test]
     async fn lists_hidden_tools() {
         clear_session("th-list");
-        let tool = ToolHelpTool::new();
+        let registry = super::super::Registry::empty();
+        for name in ["read", "bash", "sqlmap", "volatility"] {
+            registry
+                .register(name.into(), std::sync::Arc::new(ToolHelpTool::new()))
+                .await;
+        }
+        let tool = ToolHelpTool::for_registry(&registry);
         let out = tool
             .execute(
                 json!({}),
@@ -264,7 +535,7 @@ mod tests {
             .expect("execute");
         assert!(out.output.contains("sqlmap"), "{}", out.output);
         assert!(out.output.contains("volatility"), "{}", out.output);
-        assert!(!out.output.contains("- read"), "{}", out.output);
+        assert!(!out.output.contains("- \"read\" ["), "{}", out.output);
     }
 
     #[tokio::test]

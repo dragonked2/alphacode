@@ -1,6 +1,6 @@
 [package]
 name = "alphacode"
-version = "1.0.90"
+version = "1.0.91"
 authors = ["Ali Essam <tlbbeg313@gmail.com>"]
 description = "Terminal-native coding agent with multi-model orchestration, swarm coordination, and 40+ tools — built to make the smallest change that solves the problem."
 homepage = "https://alphacli.github.io/"
@@ -83,7 +83,7 @@ tar = "0.4"
 # Windows release assets are published as `.zip` (see release.yml +
 # scripts/install.ps1). The in-app updater used to silently fail on
 # Windows because it had no zip extractor at all.
-zip = { version = "2", default-features = false, features = ["deflate"] }
+zip = { version = "9", default-features = false, features = ["deflate"] }
 thiserror = "1"
 proctitle = "0.1"
 memchr = "2"

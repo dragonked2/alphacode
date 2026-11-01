@@ -68,6 +68,10 @@ pub struct Skill {
     /// matches keywords in its description or search text.
     pub auto_invoke: bool,
     pub aliases: Vec<String>,
+    /// Outcome vocabulary that also routes to this skill (frontmatter
+    /// `triggers:`), kept separate from `aliases` so a trigger word never has
+    /// to behave like a slash-command alias.
+    pub triggers: Vec<String>,
     /// Reference files bundled in the skill directory (e.g. `references/*.md`).
     /// Keyed by filename relative to the skill directory.
     pub reference_files: HashMap<String, String>,
@@ -86,6 +90,15 @@ struct SkillFrontmatter {
     /// Claude Code extension: user-facing aliases for this skill.
     #[serde(default)]
     aliases: Option<Vec<String>>,
+    /// Extra words that should route to this skill.
+    ///
+    /// `description` explains the *method* ("differential testing, 7-gate
+    /// validation, CWE mapping"), which is not the vocabulary a user reaches
+    /// for when describing the *outcome* they want ("find bugs", "prove the
+    /// impact"). Without this, routing depends on the description happening to
+    /// use the same words the user did.
+    #[serde(default)]
+    triggers: Option<Vec<String>>,
     /// Optional source attribution (ignored by the runtime).
     #[serde(default)]
     sources: Option<String>,
@@ -664,6 +677,7 @@ impl SkillRegistry {
             allowed_tools,
             auto_invoke,
             aliases,
+            triggers,
             sources: _,
         } = frontmatter;
 
@@ -683,6 +697,7 @@ impl SkillRegistry {
             search_text,
             auto_invoke: auto_invoke.unwrap_or(false),
             aliases: normalize_aliases(aliases),
+            triggers: normalize_aliases(triggers),
             reference_files,
         })
     }
@@ -772,6 +787,7 @@ impl SkillRegistry {
             allowed_tools,
             auto_invoke,
             aliases,
+            triggers,
             sources: _,
         } = frontmatter;
         let allowed_tools =
@@ -790,6 +806,7 @@ impl SkillRegistry {
             search_text,
             auto_invoke: auto_invoke.unwrap_or(false),
             aliases: normalize_aliases(aliases),
+            triggers: normalize_aliases(triggers),
             reference_files,
         })
     }
@@ -887,61 +904,58 @@ impl SkillRegistry {
         skills
     }
 
-    /// Find the first `auto_invoke` skill whose search text matches keywords in
-    /// the user's message. Matching is case-insensitive and requires at least 2
-    /// non-trivial words from the skill's search text to appear in `message`.
-    /// Returns `Some(skill_name)` on match, `None` otherwise.
+    /// Find the skill that best matches the user's message.
+    ///
+    /// Two tiers, strongest first. The previous implementation only had the
+    /// explicit tier plus a raw word-overlap count that fired on incidental
+    /// words, so a plain request ("hunt bugs on this trading platform's API")
+    /// loaded nothing while an unrelated sentence could load the wrong skill.
+    ///
+    /// 1. **Explicit mention** — the message names the skill or one of its
+    ///    aliases (`"bug bounty"`, `/pentest`). Works for every skill, and is
+    ///    checked across all skills before scoring so a named skill is never
+    ///    outranked.
+    /// 2. **Intent match** — how much of the skill's own distinguishing
+    ///    vocabulary the message covers. Only `auto-invoke` skills are
+    ///    eligible. A skill with a small vocabulary needs one hit; a large
+    ///    multi-purpose one needs two. This is what makes "find bugs in this
+    ///    trading platform" load the bug-bounty playbook instead of leaving
+    ///    the agent to improvise.
+    ///
+    /// Activating the wrong skill injects wrong instructions into the whole
+    /// turn, so a weak guess is worse than no guess: ties and near-misses
+    /// return `None`.
     pub fn find_auto_invoke_match(&self, message: &str) -> Option<String> {
-        let msg_lower = message.to_lowercase();
-        let msg_words: Vec<&str> = msg_lower.split_whitespace().collect();
-        if msg_words.len() < 2 {
+        let msg_set = match_words(message);
+        if msg_set.len() < 2 {
             return None;
         }
 
-        // Check ALL skills (not just auto_invoke ones) so that skills without
-        // the auto-invoke frontmatter flag can still be matched by strong
-        // keyword overlap. The auto_invoke flag only controls whether a skill
-        // is *eligible* for the 2-keyword fast path; a single strong match
-        // (skill name or alias mentioned explicitly) fires for any skill.
         for skill in self.skills.values() {
-            // Match only the skill's own name(/aliases) and description, not the
-            // full body text. The body is hundreds of words of prose — common
-            // terms like "first", "line" and "step" appear in nearly every
-            // SKILL.md and used to auto-fire the wrong skill on mundane input.
-            // Whole-word (not substring) matching so "research" does not fire
-            // on "recherche" and "ctf" stays "ctf".
-            let mut keywords = Vec::new();
-            keywords.push(skill.name.as_str());
-            keywords.extend(skill.aliases.iter().map(String::as_str));
-            keywords.push(skill.description.as_str());
-            let search_lower = keywords.join("\n").to_lowercase();
-            let search_words: Vec<&str> = search_lower
-                .split_whitespace()
-                .filter(|w| w.len() > 3)
-                .collect();
-            let matches = search_words
-                .iter()
-                .filter(|sw| msg_words.iter().any(|mw| *mw == **sw))
-                .count();
-
-            // auto_invoke skills: 2+ keyword matches trigger activation.
-            if skill.auto_invoke && matches >= 2 {
-                return Some(skill.name.clone());
-            }
-
-            // Any skill: a full name/alias mention ("ctf challenge",
-            // "/bug bounty this") is explicit enough on its own.
             if skill_name_is_mentioned(message, skill.as_ref()) {
                 return Some(skill.name.clone());
             }
+        }
 
-            // auto_invoke skills: single strong keyword match from the
-            // description also triggers (lower bar than the 2-keyword path).
-            if skill.auto_invoke && matches >= 1 {
-                return Some(skill.name.clone());
+        // Highest coverage wins; ties prefer the larger vocabulary (more
+        // specific skill), then the name, so a HashMap's iteration order can
+        // never change which skill is chosen.
+        let mut best: Option<(usize, usize, &str)> = None;
+        for skill in self.skills.values() {
+            if !skill.auto_invoke {
+                continue;
+            }
+            let terms = skill_match_terms(skill.as_ref());
+            let matched = terms.iter().filter(|term| msg_set.contains(*term)).count();
+            if matched < auto_invoke_threshold(terms.len()) {
+                continue;
+            }
+            let candidate = (matched, terms.len(), skill.name.as_str());
+            if best.is_none_or(|best| candidate > best) {
+                best = Some(candidate);
             }
         }
-        None
+        best.map(|(_, _, name)| name.to_string())
     }
 
     /// Reload a specific skill by name
@@ -1573,6 +1587,131 @@ fn skill_name_is_mentioned(message: &str, skill: &Skill) -> bool {
     mentions(&skill.name) || skill.aliases.iter().any(|alias| mentions(alias))
 }
 
+/// Words that carry no routing signal. A skill's description nearly always
+/// contains them, so counting them would let any message match any skill.
+const SKILL_MATCH_STOPWORDS: &[&str] = &[
+    "about", "after", "also", "among", "another", "because", "before", "being", "between", "both",
+    "does", "each", "either", "every", "from", "have", "into", "itself", "just", "like", "make",
+    "many", "more", "most", "much", "must", "need", "needs", "only", "other", "over", "same",
+    "should", "some", "such", "than", "that", "their", "them", "then", "there", "these", "they",
+    "this", "those", "through", "under", "until", "upon", "very", "want", "well", "were", "what",
+    "when", "where", "which", "while", "will", "with", "within", "without", "would", "your",
+    "yours", "using", "used", "uses", "use",
+];
+
+/// Index words that describe a *class of work* rather than a specific skill.
+/// They are too common across the bundled skills to decide a match on their
+/// own, so they only help once a distinguishing term has already hit.
+const SKILL_MATCH_GENERIC_TERMS: &[&str] = &[
+    "analysis",
+    "audit",
+    "best",
+    "build",
+    "check",
+    "code",
+    "comprehensive",
+    "create",
+    "design",
+    "development",
+    "expert",
+    "generate",
+    "guide",
+    "improve",
+    "include",
+    "improvement",
+    "methodology",
+    "method",
+    "plan",
+    "practical",
+    "production",
+    "project",
+    "review",
+    "system",
+    "task",
+    "test",
+    "testing",
+    "tool",
+    "tools",
+    "work",
+    "workflow",
+    "write",
+    "writing",
+];
+
+/// Split a message or skill description into comparable lowercase words.
+fn match_words(text: &str) -> std::collections::HashSet<String> {
+    text.split(|c: char| !c.is_alphanumeric() && c != '-' && c != '+')
+        .map(str::trim)
+        .map(|word| word.trim_matches('-').to_lowercase())
+        .filter(|word| word.len() > 3)
+        .filter(|word| !SKILL_MATCH_STOPWORDS.contains(&word.as_str()))
+        .map(|word| stem_word(&word))
+        .collect()
+}
+
+/// Crude English stemming so a description saying "vulnerability hunting" and
+/// a user saying "hunt vulnerabilities" compare equal.
+///
+/// Deliberately tiny: the goal is matching vocabulary, not linguistics, and an
+/// over-eager stemmer would collide unrelated words.
+fn stem_word(word: &str) -> String {
+    if let Some(stem) = word.strip_suffix("ies").filter(|stem| stem.len() > 3) {
+        return format!("{stem}y");
+    }
+    if let Some(stem) = word.strip_suffix("ing").filter(|stem| stem.len() > 4) {
+        return stem.to_string();
+    }
+    if let Some(stem) = word.strip_suffix('s').filter(|stem| stem.len() > 3) {
+        return stem.to_string();
+    }
+    word.to_string()
+}
+
+/// The routing vocabulary of a skill: its name, aliases, and the
+/// *distinguishing* words of its description.
+fn skill_match_terms(skill: &Skill) -> std::collections::HashSet<String> {
+    // The generic-word filter has to apply to EVERY source, not just the
+    // description. The `penetration test` alias otherwise contributes the bare
+    // word `test`, which made "fix the failing test in the parser" route to the
+    // security skill. Phrases still match exactly through
+    // `skill_name_is_mentioned`; this vocabulary is only for scoring.
+    let keep = |word: String| -> Option<String> {
+        if SKILL_MATCH_GENERIC_TERMS.contains(&word.as_str()) {
+            None
+        } else {
+            Some(word)
+        }
+    };
+    let mut terms: std::collections::HashSet<String> = match_words(&skill.name)
+        .into_iter()
+        .filter_map(&keep)
+        .collect();
+    for alias in &skill.aliases {
+        terms.extend(match_words(alias).into_iter().filter_map(&keep));
+    }
+    for trigger in &skill.triggers {
+        terms.extend(match_words(trigger).into_iter().filter_map(&keep));
+    }
+    for word in match_words(&skill.description) {
+        if let Some(word) = keep(word) {
+            terms.insert(word);
+        }
+    }
+    terms
+}
+
+/// How many distinct skill terms a message must cover before the skill is
+/// considered a match.
+///
+/// One. Requiring two sounds safer but made the matcher useless in practice:
+/// real requests are short and reuse only a word or two of a long description
+/// ("hunt bugs in this API" shares exactly one term with the security skill).
+/// The stopword and generic-term filters are what keep this precise, not an
+/// arithmetic bar the user cannot see.
+fn auto_invoke_threshold(_term_count: usize) -> usize {
+    1
+}
+
 /// Normalize frontmatter aliases: trim, drop empties/duplicates, keep order.
 fn normalize_aliases(aliases: Option<Vec<String>>) -> Vec<String> {
     let mut out = Vec::new();
@@ -1617,6 +1756,7 @@ mod tests {
             search_text: build_skill_search_text(name, description, content),
             auto_invoke: false,
             aliases: Vec::new(),
+            triggers: Vec::new(),
             reference_files: HashMap::new(),
         }
     }
@@ -2251,6 +2391,58 @@ mod tests {
             registry.find_auto_invoke_match("thanks, that worked"),
             None,
             "unrelated small talk must not activate any skill"
+        );
+    }
+
+    /// A plain task description — no skill name, no alias — must still load
+    /// the security playbook.
+    ///
+    /// This is the reported bug: the user asked AlphaCode to "use bugbounty
+    /// hunting skills" on a target and it improvised instead, because the
+    /// matcher only fired on a literal name/alias mention.
+    #[test]
+    fn bundled_bugbounty_auto_activates_from_a_plain_task_description() {
+        let registry = SkillRegistry::load().expect("load skills");
+        for message in [
+            "hunt for vulnerabilities in this trading platform API",
+            "do a security audit of this web app and report findings",
+            "find bugs in this endpoint and prove the impact",
+            "run a pentest against the staging host",
+        ] {
+            assert_eq!(
+                registry.find_auto_invoke_match(message),
+                Some("bugbounty".to_string()),
+                "a plain security task must auto-activate the bug-bounty skill: {message}"
+            );
+        }
+    }
+
+    /// Ordinary conversation must stay unrouted: activating the wrong skill
+    /// injects wrong instructions into the whole turn.
+    #[test]
+    fn incidental_word_overlap_does_not_activate_a_skill() {
+        let registry = SkillRegistry::load().expect("load skills");
+        for message in [
+            "thanks, that worked",
+            "fix the failing test in the parser",
+            "what time is it",
+            "rename this variable to userId",
+        ] {
+            assert_eq!(
+                registry.find_auto_invoke_match(message),
+                None,
+                "unrelated message must not activate any skill: {message}"
+            );
+        }
+    }
+
+    /// An explicit mention always wins over vocabulary scoring.
+    #[test]
+    fn explicit_skill_mention_outranks_intent_scoring() {
+        let registry = SkillRegistry::load().expect("load skills");
+        assert_eq!(
+            registry.find_auto_invoke_match("use the ctf skill on this challenge"),
+            Some("ctf".to_string())
         );
     }
 

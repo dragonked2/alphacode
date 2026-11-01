@@ -3753,7 +3753,14 @@ impl App {
                             }
                         }
                         if let Some(effort) = effort {
-                            let _ = self.provider.set_reasoning_effort(&effort);
+                            match self.provider.set_reasoning_effort(&effort) {
+                                Ok(()) => self.persist_local_reasoning_effort(),
+                                Err(error) => {
+                                    self.push_display_message(DisplayMessage::error(format!("Model switched, but effort '{}' could not be applied: {error}", effort)));
+                                    self.set_status_notice("Model switched; effort change failed");
+                                    return Ok(());
+                                }
+                            }
                         }
                         if !route_detail.is_empty() {
                             self.push_display_message(DisplayMessage::system(format!(

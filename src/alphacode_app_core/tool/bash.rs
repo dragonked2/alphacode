@@ -868,6 +868,23 @@ mod utf8_truncation_tests {
     };
     use serde_json::json;
 
+    /// A background run must resume the agent that launched it. The regression
+    /// was silent: the command finished, the status file said `completed`, and
+    /// the session stayed idle until someone pressed Alt+B.
+    #[test]
+    fn background_runs_wake_the_agent_by_default() {
+        assert!(
+            super::wake_for_background_run(false, Some(true)),
+            "run_in_background must imply wake so completion resumes the agent"
+        );
+        // An explicit wake still opts in on its own.
+        assert!(super::wake_for_background_run(true, None));
+        assert!(super::wake_for_background_run(true, Some(false)));
+        // Foreground runs never wake, and neither does an explicit opt-out.
+        assert!(!super::wake_for_background_run(false, None));
+        assert!(!super::wake_for_background_run(false, Some(false)));
+    }
+
     #[cfg(windows)]
     #[tokio::test]
     async fn windows_shell_captures_python_output_as_utf8() {
@@ -1240,6 +1257,19 @@ struct BashInput {
 
 fn default_true() -> bool {
     true
+}
+
+/// Whether a background run should wake the agent when it finishes.
+///
+/// `run_in_background: true` used to leave `wake` at its `false` default, so a
+/// finished task wrote its status file and then nothing happened: the session
+/// idled until a human pressed Alt+B. Alt+B is the *hand-off* control (move a
+/// running tool to the background), not a resume mechanism, so a run that was
+/// already launched in the background had no way to report back to the agent
+/// that requested it. An explicit `wake` still wins, so callers that prefer to
+/// poll with `bg wait` can opt out.
+fn wake_for_background_run(explicit_wake: bool, run_in_background: Option<bool>) -> bool {
+    explicit_wake || run_in_background.unwrap_or(false)
 }
 
 /// Repair the common Windows invocation `python3 ...` when Python is
@@ -1792,7 +1822,15 @@ impl BashTool {
         let timeout_ms = params.timeout.map(|timeout| timeout.min(MAX_TIMEOUT_MS));
         let timeout_duration = timeout_ms.map(Duration::from_millis);
 
-        let wake = params.wake;
+        // An explicit `run_in_background: true` is a request to keep working
+        // asynchronously, so its completion must resume the agent by default.
+        // Leaving `wake` at its `false` default meant the task finished, wrote
+        // its status file, and then nothing happened: the session sat idle
+        // until a person noticed and pressed Alt+B (which is the *hand-off*
+        // path, not a resume mechanism). The caller can still opt out with an
+        // explicit `"wake": false` when it genuinely wants to keep going
+        // without the result.
+        let wake = wake_for_background_run(params.wake, params.run_in_background);
         let notify = params.notify || wake;
         let info = crate::background::global()
             .spawn_with_notify(

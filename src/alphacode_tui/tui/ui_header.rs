@@ -876,13 +876,11 @@ fn build_alpha_banner(width: usize) -> Vec<Line<'static>> {
         return Vec::new();
     };
 
-    // Warm gold shades distinguish the wordmark from the rest of the theme.
-    let colors = [rgb(255, 215, 100), rgb(235, 178, 55), rgb(198, 139, 35)];
+    let accent = BrandTheme::accent();
     let mut lines: Vec<Line<'static>> = art
         .iter()
-        .enumerate()
-        .map(|(index, row)| {
-            let style = Style::default().fg(colors[index % colors.len()]).bold();
+        .map(|row| {
+            let style = Style::default().fg(accent).bold();
             Line::from(Span::styled(row.to_string(), style)).alignment(Alignment::Center)
         })
         .collect();
@@ -1430,6 +1428,12 @@ pub(super) fn banner_band_height(width: u16, available_height: u16) -> u16 {
     banner_wordmark(width, budget).map_or(1, |art| art.len() as u16)
 }
 
+/// Keep the same responsive wordmark before, during, and after a conversation.
+/// Terminal geometry, rather than message or processing state, determines size.
+pub(super) fn conversation_banner_height(_app: &dyn TuiState, width: u16, height: u16) -> u16 {
+    banner_band_height(width, height)
+}
+
 fn banner_wordmark(width: u16, height: u16) -> Option<&'static [&'static str]> {
     let fit_width = usize::from(width.saturating_sub(4));
     crate::alphacode_brand::WORDMARK_LADDER
@@ -1456,17 +1460,13 @@ pub(super) fn build_banner_band_lines(
         return Vec::new();
     }
     let _ = app;
-    let gold = [rgb(255, 215, 100), rgb(235, 178, 55), rgb(198, 139, 35)];
+    let accent = BrandTheme::accent();
     banner_wordmark(width, height)
         .unwrap_or(&[crate::alphacode_brand::DISPLAY_NAME])
         .iter()
-        .enumerate()
-        .map(|(i, row)| {
-            Line::from(Span::styled(
-                *row,
-                Style::default().fg(gold[i % gold.len()]).bold(),
-            ))
-            .alignment(Alignment::Center)
+        .map(|row| {
+            Line::from(Span::styled(*row, Style::default().fg(accent).bold()))
+                .alignment(Alignment::Center)
         })
         .collect()
 }
@@ -2404,6 +2404,14 @@ mod tests {
 
     #[test]
     fn alpha_banners_are_row_width_consistent_and_fit_in_priority_order() {
+        let accent = BrandTheme::accent();
+        for width in [40, 80, 120, 200] {
+            for line in build_alpha_banner(width) {
+                for span in line.spans.iter().filter(|span| !span.content.is_empty()) {
+                    assert_eq!(span.style.fg, Some(accent));
+                }
+            }
+        }
         // The header draws the shared ladder, and every tier must stay
         // internally aligned so it cannot shear the header layout.
         for art in crate::alphacode_brand::WORDMARK_LADDER {

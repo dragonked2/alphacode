@@ -157,7 +157,7 @@ impl Agent {
                 // it so chat can proceed (local llama.cpp models accept no
                 // effort field). Log at info level to avoid scary errors.
                 let msg = format!("{e:#}").to_ascii_lowercase();
-                if msg.contains("not supported") {
+                if msg.contains("not supported") || msg.contains("unsupported") {
                     crate::logging::info(&format!(
                         "Session reasoning effort '{}' not supported by this model/profile; continuing without it.",
                         effort
@@ -169,6 +169,8 @@ impl Agent {
                         effort, e
                     ));
                 }
+            } else {
+                self.session.reasoning_effort = self.provider.reasoning_effort();
             }
         } else {
             self.session.reasoning_effort = self.provider.reasoning_effort();
@@ -176,10 +178,8 @@ impl Agent {
         // Mirror the effort into the deadlock-free side-table so server handlers
         // (e.g. the swarm seed handler) can learn this session's effort without
         // taking the agent lock.
-        crate::session_effort::record_session_effort(
-            &self.session.id,
-            self.session.reasoning_effort.as_deref(),
-        );
+        let effective = self.provider.reasoning_effort();
+        crate::session_effort::record_session_effort(&self.session.id, effective.as_deref());
     }
 
     pub fn set_reasoning_effort(&mut self, effort: &str) -> Result<Option<String>> {

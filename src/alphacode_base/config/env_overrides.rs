@@ -377,6 +377,11 @@ impl Config {
                 self.agents.swarm_max_concurrent_agents = parsed;
             }
         }
+        if let Ok(v) = std::env::var("ALPHACODE_PLAN_MAX_NODES") {
+            if let Ok(parsed) = v.trim().parse::<usize>() {
+                self.agents.plan_max_nodes = parsed;
+            }
+        }
         if let Ok(v) = std::env::var("ALPHACODE_MEMORY_MODEL") {
             let trimmed = v.trim();
             self.agents.memory_model = if trimmed.is_empty() {

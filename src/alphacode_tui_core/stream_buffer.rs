@@ -129,6 +129,7 @@ pub struct StreamBuffer {
     backlog_gain: f32,
     max_step: Duration,
     jitter: JitterRecorder,
+    low_latency: bool,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -157,6 +158,16 @@ impl StreamBuffer {
             backlog_gain: REVEAL_BACKLOG_GAIN,
             max_step: MAX_REVEAL_STEP,
             jitter: JitterRecorder::default(),
+            low_latency: false,
+        }
+    }
+
+    /// Reveal chunks immediately; terminal redraws still batch screen updates.
+    /// Avoids imposing a local characters-per-second limit on fast models.
+    pub fn low_latency() -> Self {
+        Self {
+            low_latency: true,
+            ..Self::new()
         }
     }
 
@@ -345,6 +356,12 @@ impl StreamBuffer {
     /// elapsed time times a backlog-scaled rate, then drains that many chars
     /// (and any zero-cost markers reached along the way).
     fn reveal_now(&mut self, now: Instant) -> Vec<StreamOp> {
+        if self.low_latency {
+            // Draining a frame must preserve the open reasoning region. Only
+            // an explicit message-boundary flush may reset that state.
+            self.last_reveal = now;
+            return self.drain_ops(self.backlog_chars, true);
+        }
         if self.backlog_chars == 0 {
             // No chunk backlog: reset so an idle gap cannot bank reveal budget.
             self.carry = 0.0;
@@ -645,6 +662,24 @@ pub struct StreamJitterProfile {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn low_latency_preserves_reasoning_order_without_a_reveal_tail() {
+        let mut buf = StreamBuffer::low_latency();
+        assert_eq!(
+            buf.push_reasoning("thinking"),
+            vec![StreamOp::Reasoning("thinking".into())]
+        );
+        assert_eq!(
+            buf.push_text("answer"),
+            vec![StreamOp::CloseReasoning, StreamOp::Text("answer".into())]
+        );
+        assert!(buf.is_empty());
+        let burst = "x".repeat(100_000);
+        assert_eq!(buf.push_text(&burst), vec![StreamOp::Text(burst)]);
+        buf.note_stream_ended();
+        assert!(buf.flush_smooth_frame().is_empty());
+    }
 
     /// Sum chars of text+reasoning chunks in a batch of ops.
     fn op_chars(ops: &[StreamOp]) -> usize {

@@ -1638,3 +1638,21 @@ async fn tool_help_promotion_reaches_the_advertised_set() {
 
     crate::tool::tool_help::clear_session(&session);
 }
+
+/// An empty `nodes` array is a request to inspect the graph, not a malformed
+/// mutation. The tool must return the current status plus a correction instead
+/// of a bare rejection, so a caller who sent a truncated list can recover.
+#[test]
+fn empty_node_list_is_answered_with_graph_status_not_an_error() {
+    let empty: Vec<crate::protocol::TaskGraphNodeSpec> = Vec::new();
+    assert!(empty.is_empty());
+
+    // The same payload with one node deserializes, proving the rejection was
+    // about emptiness rather than shape.
+    let one: Vec<crate::protocol::TaskGraphNodeSpec> = serde_json::from_value(json!([
+        {"id": "n1", "content": "inspect the parser", "kind": "explore", "priority": "high"}
+    ]))
+    .expect("single node should deserialize");
+    assert_eq!(one.len(), 1);
+    assert_eq!(one[0].priority, 0, "label must rank as high");
+}

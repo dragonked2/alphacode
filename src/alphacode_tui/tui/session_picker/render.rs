@@ -11,27 +11,29 @@ fn truncate_picker_text(text: &str, max_width: usize, keep_end: bool) -> String 
         return text.to_owned();
     }
     let budget = max_width.saturating_sub(1);
-    let graphemes: Vec<&str> = text.graphemes(true).collect();
-    let mut selected = Vec::new();
     let mut width = 0;
-    let iter: Box<dyn Iterator<Item = &&str>> = if keep_end {
-        Box::new(graphemes.iter().rev())
-    } else {
-        Box::new(graphemes.iter())
-    };
-    for grapheme in iter {
-        let next = UnicodeWidthStr::width(*grapheme);
-        if width + next > budget {
-            break;
-        }
-        width += next;
-        selected.push(*grapheme);
-    }
     if keep_end {
-        selected.reverse();
-        format!("…{}", selected.concat())
+        let mut start = text.len();
+        for (index, grapheme) in text.grapheme_indices(true).rev() {
+            let next = grapheme.width();
+            if width + next > budget {
+                break;
+            }
+            width += next;
+            start = index;
+        }
+        format!("…{}", &text[start..])
     } else {
-        format!("{}…", selected.concat())
+        let mut end = 0;
+        for (index, grapheme) in text.grapheme_indices(true) {
+            let next = grapheme.width();
+            if width + next > budget {
+                break;
+            }
+            width += next;
+            end = index + grapheme.len();
+        }
+        format!("{}…", &text[..end])
     }
 }
 
@@ -307,7 +309,7 @@ impl SessionPicker {
         line1_spans.extend([
             Span::styled(canary_marker, Style::default().fg(rgb(255, 193, 7))),
             Span::styled(debug_marker, Style::default().fg(rgb(180, 180, 180))),
-            Span::styled(saved_marker, Style::default().fg(rgb(255, 180, 100))),
+            Span::styled(saved_marker, Style::default().fg(role_color(Role::Accent))),
             Span::styled(
                 format!(" {}", status_icon),
                 Style::default().fg(status_color),
@@ -315,7 +317,7 @@ impl SessionPicker {
             Span::styled(format!("  {}", time_label), Style::default().fg(dim)),
         ]);
         if let Some(ref label) = session.save_label {
-            let label_style = Style::default().fg(rgb(255, 200, 140));
+            let label_style = Style::default().fg(role_color(Role::Accent));
             line1_spans.push(Span::styled("  \"".to_string(), label_style));
             line1_spans.extend(Self::highlight_spans(label, &highlight_tokens, label_style));
             line1_spans.push(Span::styled("\"".to_string(), label_style));
@@ -841,5 +843,10 @@ mod truncation_tests {
         );
         assert_eq!(truncate_picker_text("界界e\u{301}", 4, true), "…界e\u{301}");
         assert_eq!(truncate_picker_text("abc", 0, false), "");
+        for keep_end in [false, true] {
+            assert_eq!(truncate_picker_text("👩‍💻界", 1, keep_end), "…");
+        }
+        assert_eq!(truncate_picker_text("👩‍💻界界", 5, false), "👩‍💻界…");
+        assert_eq!(truncate_picker_text("界界👩‍💻", 5, true), "…界👩‍💻");
     }
 }

@@ -193,6 +193,11 @@ impl Agent {
                     definitions
                 });
             }
+            let capability_names = self.session_capability_names().await;
+            // Drop removed or newly restricted tools even while schemas are locked.
+            if let Some(cached) = cached_tools.as_mut() {
+                cached.retain(|tool| capability_names.binary_search(&tool.name).is_ok());
+            }
             let tools: &[ToolDefinition] = cached_tools.as_deref().unwrap();
             let messages: std::sync::Arc<[Message]> = messages.into();
             // Non-blocking memory: uses pending result from last turn, spawns check for next turn
@@ -211,7 +216,21 @@ impl Agent {
                 cached_static_prompt = Some((std::sync::Arc::clone(&sp), tier));
                 (sp, tier)
             };
-            self.log_prompt_prefix_accounting(&split_prompt, tools, prompt_tier, &messages);
+            let capability_brief = crate::tool::capabilities::request_brief(
+                &capability_names,
+                tools,
+                self.uses_compact_local_context(),
+                self.provider.handles_tools_internally(),
+            );
+            let request_dynamic_prompt =
+                format!("{}{}", split_prompt.dynamic_part, capability_brief);
+            self.log_prompt_prefix_accounting(
+                &split_prompt,
+                tools,
+                prompt_tier,
+                &messages,
+                &capability_brief,
+            );
 
             // Check for client-side cache violations before memory injection.
             // Memory is an ephemeral suffix that changes each turn; tracking it would cause
@@ -272,7 +291,7 @@ impl Agent {
                     send_messages,
                     tools,
                     &split_prompt.static_part,
-                    &split_prompt.dynamic_part,
+                    &request_dynamic_prompt,
                     self.provider_session_id.as_deref(),
                 )
                 .await

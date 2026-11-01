@@ -258,28 +258,30 @@ impl CliOutput {
     pub fn box_text(title: &str, lines: &[&str], width: usize) -> Vec<String> {
         let bc = enhance::box_chars::pick();
         let budget = console::fit_width(width);
-        // 2 cells of vertical border + 2 cells of inner padding on each side.
-        let inner = budget.saturating_sub(6);
-        if inner == 0 {
+        // One cell of border and padding per side, shared by every row.
+        if budget < 6 {
             return lines.iter().map(|line| line.to_string()).collect();
         }
-
-        let mut result = Vec::new();
-        if !title.is_empty() {
-            result.push(format!(
-                "{}{}",
-                " ".repeat(KV_INDENT),
-                enhance::box_top(title, budget)
-            ));
-        }
-        let horizontal = bc.h.to_string().repeat(inner);
-        result.push(format!("{}{horizontal}{}", bc.tl, bc.tr));
+        let inner = budget - 4;
+        let horizontal = bc.h.to_string().repeat(budget - 2);
+        let title = enhance::truncate_ellipsis(&crate::output_style::terminal_text(title), inner);
+        let top = if title.is_empty() {
+            horizontal.clone()
+        } else {
+            let label = format!(" {title} ");
+            format!(
+                "{label}{}",
+                bc.h.to_string()
+                    .repeat((budget - 2).saturating_sub(enhance::display_width(&label)))
+            )
+        };
+        let mut result = vec![format!("{}{top}{}", bc.tl, bc.tr)];
         for line in lines {
-            // Wrap first, then pad: padding an over-long line and letting the
-            // terminal soft-wrap it is what pushes the right border off-screen.
-            for row in enhance::wrap_line(line, inner).lines() {
+            let wrapped = enhance::wrap_line(line, inner);
+            // Preserve blank rows as deliberate spacing inside the box.
+            for row in wrapped.split('\n') {
                 result.push(format!(
-                    "{} {}{}",
+                    "{} {} {}",
                     bc.v,
                     enhance::pad_end_to(row, inner),
                     bc.v
@@ -634,15 +636,24 @@ mod tests {
         let _guard = guard();
         console::set_width_override(Some(48));
         let rows = CliOutput::box_text("Audit", &["short", "a much longer line of prose"], 40);
-        let body: Vec<usize> = rows
-            .iter()
-            .filter(|row| row.starts_with('|') || row.starts_with('\u{2502}'))
-            .map(|row| enhance::display_width(row))
-            .collect();
-        assert!(!body.is_empty(), "box produced no bordered rows");
-        for width in &body {
-            assert_eq!(*width, body[0], "box rows were not rectangular");
-            assert!(*width <= 48, "box overflowed the terminal: {width}");
+        for row in &rows {
+            assert_eq!(
+                enhance::display_width(row),
+                40,
+                "misaligned box row: {row:?}"
+            );
+        }
+        let rows = CliOutput::box_text(
+            "A very long title that must fit the requested width",
+            &["", "wide: \u{4e16}\u{754c}"],
+            20,
+        );
+        for row in &rows {
+            assert_eq!(
+                enhance::display_width(row),
+                20,
+                "misaligned narrow box: {row:?}"
+            );
         }
         console::set_width_override(None);
     }

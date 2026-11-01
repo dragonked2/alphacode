@@ -56,7 +56,7 @@ impl Provider for OpenAIProvider {
             .unwrap_or_else(|poisoned| poisoned.into_inner().clone())
             // No explicit user effort: fall back to the model's alphacode-side
             // default (e.g. `low` for GPT-5.6 Sol).
-            .or_else(|| Self::default_reasoning_effort_for_model(&model_id));
+            .or_else(|| self.effective_default_reasoning_effort());
         // Map the `swarm` sentinel (and any future aliases) to the real effort
         // value the API understands.
         let api_reasoning_effort = self.api_reasoning_effort(reasoning_effort.as_deref());
@@ -901,12 +901,13 @@ impl Provider for OpenAIProvider {
             // Surface the *effective* effort so the UI/status reflects the
             // model default (e.g. `low` for GPT-5.6 Sol) when the user has
             // not picked one explicitly.
-            .or_else(|| Self::default_reasoning_effort_for_model(&self.model()))
+            .or_else(|| self.effective_default_reasoning_effort())
     }
 
     fn set_reasoning_effort(&self, effort: &str) -> Result<()> {
         let requested = effort.trim().to_ascii_lowercase();
         if !requested.is_empty()
+            && !matches!(requested.as_str(), "default" | "auto")
             && crate::alphacode_provider_core::canonical_reasoning_effort(&requested).is_none()
             && !crate::alphacode_base::prompt::is_swarm_effort(&requested)
         {
@@ -916,9 +917,7 @@ impl Provider for OpenAIProvider {
             );
         }
         let normalized = Self::normalize_reasoning_effort(effort);
-        if let Some(requested) = normalized.as_deref()
-            && !crate::alphacode_base::prompt::is_swarm_effort(requested)
-        {
+        if let Some(requested) = normalized.as_deref() {
             let available = self.available_efforts();
             if !available.contains(&requested) {
                 anyhow::bail!(
@@ -964,13 +963,20 @@ impl Provider for OpenAIProvider {
             .map(|efforts| efforts.get(&model).cloned())
             .unwrap_or_else(|poisoned| poisoned.into_inner().get(&model).cloned());
         if let Some(advertised) = advertised {
-            let mut efforts: Vec<&'static str> = advertised
+            let supported: std::collections::HashSet<&'static str> = advertised
                 .iter()
                 .filter_map(|effort| {
                     crate::alphacode_provider_core::canonical_reasoning_effort(effort)
                 })
                 .collect();
-            efforts.extend(["swarm", "swarm-deep"]);
+            let mut efforts: Vec<_> = crate::alphacode_provider_core::OPENAI_SELECTABLE_EFFORTS
+                .iter()
+                .copied()
+                .filter(|effort| supported.contains(effort))
+                .collect();
+            if !efforts.is_empty() {
+                efforts.extend(["swarm", "swarm-deep"]);
+            }
             return efforts;
         }
         crate::alphacode_provider_core::OPENAI_SELECTABLE_EFFORTS.to_vec()

@@ -397,6 +397,7 @@ impl Tool for BatchTool {
         // Format results: pre-size to avoid O(n^2) regrowth on large
         // fan-outs (20 x 50KB outputs). Estimate 4KB per tool upfront.
         let mut output = String::with_capacity(num_tools * 4096);
+        let mut images = Vec::new();
         let mut success_count = 0;
         let mut error_count = 0;
         let mut failed_tools = Vec::new();
@@ -408,6 +409,7 @@ impl Tool for BatchTool {
             match result {
                 Ok(out) => {
                     success_count += 1;
+                    images.extend(out.images);
                     let max_per_tool = 50_000 / num_tools.max(1);
                     if out.output.len() > max_per_tool {
                         output.push_str(crate::util::truncate_str(&out.output, max_per_tool));
@@ -444,7 +446,9 @@ impl Tool for BatchTool {
             success_count, error_count
         ));
 
-        Ok(ToolOutput::new(output))
+        let mut result = ToolOutput::new(output);
+        result.images = images;
+        Ok(result)
     }
 }
 
@@ -512,7 +516,7 @@ mod tests {
             }
             tokio::time::sleep(Duration::from_millis(20)).await;
             active.fetch_sub(1, Ordering::SeqCst);
-            Ok(ToolOutput::new(id))
+            Ok(ToolOutput::new(id.clone()).with_labeled_image("image/png", id.clone(), id))
         }
     }
 
@@ -619,5 +623,14 @@ mod tests {
         );
         assert!(result.output.contains("--- [1] probe_read ---"));
         assert!(result.output.contains("--- [7] probe_write ---"));
+        assert_eq!(
+            result
+                .images
+                .iter()
+                .map(|image| image.data.as_str())
+                .collect::<Vec<_>>(),
+            vec!["r1", "r2", "r3", "r4", "r5", "w1", "w2"],
+            "batch must preserve images in call order despite concurrent completion",
+        );
     }
 }

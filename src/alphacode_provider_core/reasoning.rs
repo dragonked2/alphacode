@@ -58,6 +58,32 @@ pub fn canonical_reasoning_effort(value: &str) -> Option<&'static str> {
     }
 }
 
+/// Step a capability-provided ladder without wrapping or inventing a swarm
+/// selection when the current provider default is unknown.
+pub fn next_effort_index(efforts: &[&str], current: Option<&str>, direction: i8) -> Option<usize> {
+    let known = current.and_then(|current| {
+        efforts
+            .iter()
+            .position(|effort| effort.eq_ignore_ascii_case(current.trim()))
+    });
+    let ordinary = |effort: &&str| !matches!(*effort, "swarm" | "swarm-deep");
+    let anchor = known
+        .or_else(|| efforts.iter().position(|effort| *effort == "medium"))
+        .or_else(|| efforts.iter().position(ordinary))?;
+    let next = if direction > 0 {
+        anchor.saturating_add(1).min(efforts.len() - 1)
+    } else if direction < 0 {
+        anchor.saturating_sub(1)
+    } else {
+        anchor
+    };
+    if known.is_none() && !ordinary(&efforts[next]) {
+        Some(anchor)
+    } else {
+        Some(next)
+    }
+}
+
 /// Infer the selectable effort ladder when only provider/model identity is
 /// available, such as in a remote TUI session.
 pub fn inferred_reasoning_efforts(
@@ -142,6 +168,36 @@ pub fn inferred_reasoning_efforts(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn effort_steps_are_bounded_and_unknown_defaults_do_not_enable_swarm() {
+        assert_eq!(
+            next_effort_index(OPENAI_SELECTABLE_EFFORTS, None, 1),
+            Some(4)
+        );
+        assert_eq!(
+            next_effort_index(OPENAI_SELECTABLE_EFFORTS, Some("auto"), -1),
+            Some(2)
+        );
+        assert_eq!(
+            next_effort_index(OPENAI_SELECTABLE_EFFORTS, Some(" HIGH "), 1),
+            Some(5)
+        );
+        assert_eq!(
+            next_effort_index(&["high", "swarm", "swarm-deep"], None, 1),
+            Some(0)
+        );
+        assert_eq!(
+            next_effort_index(&["high", "swarm", "swarm-deep"], Some("high"), 1),
+            Some(1)
+        );
+        assert_eq!(
+            next_effort_index(OPENAI_SELECTABLE_EFFORTS, Some("none"), -1),
+            Some(0)
+        );
+        assert_eq!(next_effort_index(&[], None, 1), None);
+        assert_eq!(next_effort_index(&["swarm", "swarm-deep"], None, 1), None);
+    }
 
     #[test]
     fn provider_ladders_preserve_distinct_max_semantics() {
