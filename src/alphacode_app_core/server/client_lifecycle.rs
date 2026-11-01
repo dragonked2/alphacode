@@ -33,7 +33,7 @@ use super::comm_control::{
 use super::comm_plan::{
     handle_comm_approve_plan, handle_comm_propose_plan, handle_comm_reject_plan,
 };
-use super::comm_session::{handle_comm_spawn, handle_comm_stop};
+use super::comm_session::{handle_comm_spawn, handle_comm_stop, sync_hook_client_env};
 use super::comm_sync::{
     CommResyncPlanContext, handle_comm_plan_status, handle_comm_read_context,
     handle_comm_resync_plan, handle_comm_status, handle_comm_summary,
@@ -1126,6 +1126,7 @@ pub(super) async fn handle_client(
                         info.current_tool_name = None;
                     }
                 }
+                sync_hook_client_env(&client_session_id, &client_connections).await;
                 start_processing_message(
                     ProcessingMessage {
                         id,
@@ -1428,6 +1429,14 @@ pub(super) async fn handle_client(
                             info.terminal_env = terminal_env.clone();
                         }
                     }
+                }
+                // Hooks fired while binding the session (e.g. `session_start` on
+                // resume) run in this server, so point them at this client's
+                // terminal rather than the server's startup env (#405).
+                if !terminal_env.is_empty() {
+                    let hook_session_id =
+                        target_session_id.as_deref().unwrap_or(&client_session_id);
+                    crate::hooks::set_session_client_env(hook_session_id, terminal_env.clone());
                 }
                 if let Some(target_session_id) = target_session_id {
                     if crate::session::session_exists(&target_session_id) {

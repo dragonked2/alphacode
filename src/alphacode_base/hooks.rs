@@ -20,8 +20,16 @@
 //!
 //! Hook processes get `ALPHACODE_HOOKS_DISABLED=1` in their environment so a
 //! hook that itself invokes alphacode does not recursively trigger hooks.
+//!
+//! Hooks run inside the long-lived shared server, so its startup env names
+//! whichever terminal happened to spawn it. When a client is attached to the
+//! session, hooks instead see that client's terminal env (#405), the same
+//! snapshot spawn/focus hooks already use. That lets a hook address the
+//! terminal pane the session is actually shown in (tmux/zellij/herdr/...).
 
+use std::collections::HashMap;
 use std::path::PathBuf;
+use std::sync::{LazyLock, RwLock};
 
 /// Maximum bytes of JSON payload exported via `ALPHACODE_HOOK_PAYLOAD`.
 const PAYLOAD_ENV_LIMIT: usize = 16 * 1024;
@@ -29,6 +37,45 @@ const PAYLOAD_ENV_LIMIT: usize = 16 * 1024;
 const TOOL_INPUT_ENV_LIMIT: usize = 16 * 1024;
 /// Maximum chars of hook stderr used as a block reason.
 const BLOCK_REASON_LIMIT: usize = 2000;
+
+type ClientTerminalEnv = Vec<(String, String)>;
+
+/// Terminal env of the client driving each session, keyed by session id.
+/// Hook dispatch is synchronous and runs below the server layer, so the server
+/// mirrors its per-connection snapshots here instead of hooks reaching into
+/// async server state.
+static SESSION_CLIENT_ENV: LazyLock<RwLock<HashMap<String, ClientTerminalEnv>>> =
+    LazyLock::new(|| RwLock::new(HashMap::new()));
+
+/// Record the terminal env of the client attached to `session_id` (#405), so
+/// hooks for that session target the client's terminal. An empty snapshot
+/// clears the entry and hooks fall back to the server's own env.
+pub fn set_session_client_env(session_id: &str, env: Vec<(String, String)>) {
+    let mut map = SESSION_CLIENT_ENV
+        .write()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    if env.is_empty() {
+        map.remove(session_id);
+    } else {
+        map.insert(session_id.to_string(), env);
+    }
+}
+
+/// Forget the client terminal env for a session that has closed.
+pub fn clear_session_client_env(session_id: &str) {
+    SESSION_CLIENT_ENV
+        .write()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .remove(session_id);
+}
+
+fn session_client_env(session_id: &str) -> Option<Vec<(String, String)>> {
+    SESSION_CLIENT_ENV
+        .read()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .get(session_id)
+        .cloned()
+}
 
 /// Decision returned by the `pre_tool` gate hook.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -153,7 +200,25 @@ fn payload_json(event: &HookEvent) -> String {
     truncate_bytes(&payload, PAYLOAD_ENV_LIMIT).to_string()
 }
 
+/// Swap the server's terminal-identifying env for the attached client's. The
+/// server's own values are dropped first so a hook never mixes two terminals,
+/// e.g. the server's `HERDR_PANE_ID` with a client running outside Herdr.
+/// Each var is also exported as `ALPHACODE_CLIENT_<NAME>`, matching focus hooks.
+fn apply_client_terminal_env(cmd: &mut std::process::Command, event: &HookEvent) {
+    let Some(client_env) = event.session_id.as_deref().and_then(session_client_env) else {
+        return;
+    };
+    for key in crate::terminal_launch::CLIENT_TERMINAL_ENV_VARS {
+        cmd.env_remove(key);
+    }
+    for (key, value) in client_env {
+        cmd.env(format!("ALPHACODE_CLIENT_{key}"), &value);
+        cmd.env(key, value);
+    }
+}
+
 fn apply_event_env(cmd: &mut std::process::Command, event: &HookEvent) {
+    apply_client_terminal_env(cmd, event);
     cmd.env("ALPHACODE_HOOKS_DISABLED", "1");
     cmd.env("ALPHACODE_HOOK_EVENT", event.event);
     if let Some(session_id) = &event.session_id {
@@ -519,5 +584,103 @@ mod tests {
             None => crate::alphacode_core::env::remove_var("ALPHACODE_HOOK_TURN_END"),
         }
         assert_eq!(recorded, "turn_end|ses_obs|ok|1");
+    }
+
+    fn hook_env(cmd: &std::process::Command, key: &str) -> Option<Option<String>> {
+        cmd.get_envs()
+            .find(|(name, _)| *name == key)
+            .map(|(_, value)| value.map(|value| value.to_string_lossy().into_owned()))
+    }
+
+    #[test]
+    fn hook_env_uses_attached_client_terminal_only_for_its_session() {
+        let session = HookEvent::new("turn_start").session_id("ses_client_env");
+        set_session_client_env(
+            "ses_client_env",
+            vec![("HERDR_PANE_ID".to_string(), "w1:p2".to_string())],
+        );
+        let attached = build_hook_process("hook", &session).expect("hook command");
+        let other = build_hook_process(
+            "hook",
+            &HookEvent::new("turn_start").session_id("ses_other"),
+        )
+        .expect("hook command");
+        clear_session_client_env("ses_client_env");
+        let cleared = build_hook_process("hook", &session).expect("hook command");
+
+        assert_eq!(
+            hook_env(&attached, "HERDR_PANE_ID"),
+            Some(Some("w1:p2".into()))
+        );
+        assert_eq!(
+            hook_env(&attached, "ALPHACODE_CLIENT_HERDR_PANE_ID"),
+            Some(Some("w1:p2".into()))
+        );
+        // Server terminal vars the client did not report are dropped, not mixed in.
+        assert_eq!(hook_env(&attached, "TMUX"), Some(None));
+        assert_eq!(hook_env(&other, "HERDR_PANE_ID"), None);
+        assert_eq!(hook_env(&cleared, "HERDR_PANE_ID"), None);
+    }
+
+    #[test]
+    fn empty_client_terminal_env_clears_the_session_entry() {
+        set_session_client_env(
+            "ses_client_env_empty",
+            vec![("TMUX_PANE".to_string(), "%3".to_string())],
+        );
+        set_session_client_env("ses_client_env_empty", Vec::new());
+        assert_eq!(session_client_env("ses_client_env_empty"), None);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn observer_hook_sees_client_pane_instead_of_server_pane() {
+        let _guard = crate::storage::lock_test_env();
+        let temp = tempfile::TempDir::new().expect("temp dir");
+        let record = temp.path().join("pane.txt");
+        let script = write_executable_script(
+            temp.path(),
+            "pane.sh",
+            &format!(
+                "#!/bin/sh\nprintf '%s|%s' \"$HERDR_PANE_ID\" \"$ALPHACODE_CLIENT_HERDR_PANE_ID\" > {}\n",
+                crate::terminal_launch::sh_escape(&record.to_string_lossy())
+            ),
+        );
+
+        let prev_hook = std::env::var_os("ALPHACODE_HOOK_TURN_START");
+        let prev_pane = std::env::var_os("HERDR_PANE_ID");
+        crate::alphacode_core::env::set_var(
+            "ALPHACODE_HOOK_TURN_START",
+            script.to_string_lossy().to_string(),
+        );
+        // The pane that happened to start the shared server.
+        crate::alphacode_core::env::set_var("HERDR_PANE_ID", "w1:server");
+        set_session_client_env(
+            "ses_pane",
+            vec![("HERDR_PANE_ID".to_string(), "w1:client".to_string())],
+        );
+
+        dispatch_observer(HookEvent::new("turn_start").session_id("ses_pane"));
+
+        let mut recorded = String::new();
+        for _ in 0..100 {
+            if let Ok(data) = std::fs::read_to_string(&record)
+                && !data.is_empty()
+            {
+                recorded = data;
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(20));
+        }
+        clear_session_client_env("ses_pane");
+        match prev_hook {
+            Some(value) => crate::alphacode_core::env::set_var("ALPHACODE_HOOK_TURN_START", value),
+            None => crate::alphacode_core::env::remove_var("ALPHACODE_HOOK_TURN_START"),
+        }
+        match prev_pane {
+            Some(value) => crate::alphacode_core::env::set_var("HERDR_PANE_ID", value),
+            None => crate::alphacode_core::env::remove_var("HERDR_PANE_ID"),
+        }
+        assert_eq!(recorded, "w1:client|w1:client");
     }
 }

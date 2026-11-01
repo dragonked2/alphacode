@@ -959,6 +959,7 @@ impl Agent {
             self.persist_session_best_effort("session close state");
         }
         self.fire_session_lifecycle_hook("session_end", "close");
+        crate::hooks::clear_session_client_env(&self.session.id);
     }
 
     /// Fire a session lifecycle observer hook (`session_start`/`session_end`).

@@ -64,6 +64,16 @@ async fn client_terminal_env_for_session(
         .unwrap_or_default()
 }
 
+/// Mirror the attached client's terminal env into the hooks registry before a
+/// turn runs, so turn and tool hooks target that client's terminal instead of
+/// the server's startup env (#405). A missing snapshot keeps the last one.
+pub(super) async fn sync_hook_client_env(session_id: &str, client_connections: &ClientConnections) {
+    let env = client_terminal_env_for_session(session_id, client_connections).await;
+    if !env.is_empty() {
+        crate::hooks::set_session_client_env(session_id, env);
+    }
+}
+
 fn create_visible_spawn_session(
     working_dir: Option<&str>,
     model_override: Option<&str>,

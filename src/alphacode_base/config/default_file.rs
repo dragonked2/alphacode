@@ -558,6 +558,11 @@ swarm_max_concurrent_agents = 32
 #   ALPHACODE_HOOK_CWD         - session working directory (also the hook's cwd)
 #   ALPHACODE_HOOK_PAYLOAD     - JSON mirror of all fields
 # Hook processes get ALPHACODE_HOOKS_DISABLED=1 so nested alphacode calls don't recurse.
+# Hooks run in the shared server, but while a client is attached to the session
+# they see that client's terminal env (TMUX_PANE, ZELLIJ_PANE_ID, HERDR_PANE_ID,
+# ...; also as ALPHACODE_CLIENT_<NAME>), so a hook can target the right pane. A
+# session_start for a brand-new session fires before the client attaches and
+# still sees the server's env.
 #
 # All hooks except pre_tool are observers: detached, fire-and-forget, failures
 # only logged. Env overrides: ALPHACODE_HOOK_TURN_START, ALPHACODE_HOOK_TURN_END,
