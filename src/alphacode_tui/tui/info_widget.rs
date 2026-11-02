@@ -963,7 +963,10 @@ static WIDGETS_STATE: Mutex<Option<WidgetsState>> = Mutex::new(None);
 fn get_or_init_state() -> std::sync::MutexGuard<'static, Option<WidgetsState>> {
     let mut guard = WIDGETS_STATE.lock().unwrap_or_else(|e| e.into_inner());
     if guard.is_none() {
-        *guard = Some(WidgetsState::default());
+        *guard = Some(WidgetsState {
+            enabled: crate::config::config().display.info_widget,
+            ..WidgetsState::default()
+        });
     }
     guard
 }
@@ -973,6 +976,14 @@ pub fn toggle_enabled() {
     let mut guard = get_or_init_state();
     if let Some(state) = guard.as_mut() {
         state.enabled = !state.enabled;
+    }
+}
+
+/// Show or hide all widgets (user preference for this window).
+pub fn set_enabled(enabled: bool) {
+    let mut guard = get_or_init_state();
+    if let Some(state) = guard.as_mut() {
+        state.enabled = enabled;
     }
 }
 
@@ -1109,6 +1120,128 @@ pub(crate) fn note_widget_pass_skipped() {
         state.anchors.clear();
         state.swarm_dock_last_engaged = None;
     }
+    drop(guard);
+    store_close_targets(&[]);
+}
+
+/// Width of the column `info_widget_position = "pinned"` reserves on the right
+/// of the transcript: the widget itself plus a one-cell gutter on its left.
+pub const PINNED_COLUMN_WIDTH: u16 = 40;
+/// Narrowest transcript the pinned column will squeeze down to. Below this the
+/// panel falls back to flowing in the margin rather than crushing the chat.
+const PINNED_MIN_CHAT_WIDTH: u16 = 60;
+
+/// Width to reserve for the pinned info column in a chat area `area_width`
+/// wide, or `None` when the panel should flow in the margin instead (flow
+/// mode, or a terminal too narrow for a fixed column).
+pub fn pinned_column_width(area_width: u16) -> Option<u16> {
+    pinned_column_width_for(
+        crate::config::config().display.info_widget_position,
+        area_width,
+    )
+}
+
+fn pinned_column_width_for(
+    position: crate::config::InfoWidgetPosition,
+    area_width: u16,
+) -> Option<u16> {
+    (position == crate::config::InfoWidgetPosition::Pinned
+        && area_width >= PINNED_COLUMN_WIDTH + PINNED_MIN_CHAT_WIDTH)
+        .then_some(PINNED_COLUMN_WIDTH)
+}
+
+/// Placements for `info_widget_position = "pinned"`: widgets stacked top-down
+/// in a fixed `column` in priority order, Overview first and absorbing its
+/// mergeable widgets exactly as in flow mode. Widgets that no longer fit below
+/// the ones above are skipped.
+pub fn calculate_pinned_placements(column: Rect, data: &InfoWidgetData) -> Vec<WidgetPlacement> {
+    let mut guard = get_or_init_state();
+    let Some(state) = guard.as_mut() else {
+        return Vec::new();
+    };
+    let placements = if state.enabled {
+        stack_pinned(column, data)
+    } else {
+        Vec::new()
+    };
+    // Flow-mode anchors are keyed to transcript lines; they mean nothing here
+    // and would be stale if the user switches back.
+    state.anchors.clear();
+    state.placements = placements.clone();
+    if swarm_dock_engaged(state) {
+        state.swarm_dock_last_engaged = Some(Instant::now());
+    }
+    placements
+}
+
+fn stack_pinned(column: Rect, data: &InfoWidgetData) -> Vec<WidgetPlacement> {
+    let inner = Rect {
+        x: column.x.saturating_add(1),
+        width: column.width.saturating_sub(1),
+        ..column
+    };
+    let mut available = data.available_widgets();
+    available.sort_by_key(|k| *k != WidgetKind::Overview);
+    let overview = available.first() == Some(&WidgetKind::Overview);
+
+    let mut placements = Vec::new();
+    let mut top = inner.y;
+    for kind in available {
+        if overview && is_overview_mergeable(kind) {
+            continue;
+        }
+        let room = inner.bottom().saturating_sub(top);
+        if room < kind.min_height() + 2 {
+            continue;
+        }
+        let height = calculate_widget_height(kind, data, inner.width, room).min(room);
+        if height <= 2 {
+            continue;
+        }
+        placements.push(WidgetPlacement {
+            kind,
+            rect: Rect::new(inner.x, top, inner.width, height),
+            side: Side::Right,
+        });
+        top = top.saturating_add(height + 1);
+    }
+    placements
+}
+
+/// Screen cells of the `[x]` on each drawn widget's top border, published by
+/// [`render_all`] so the mouse handler can hit-test what was actually drawn.
+static CLOSE_TARGETS: Mutex<Vec<Rect>> = Mutex::new(Vec::new());
+
+fn store_close_targets(targets: &[Rect]) {
+    let mut guard = CLOSE_TARGETS.lock().unwrap_or_else(|e| e.into_inner());
+    guard.clear();
+    guard.extend_from_slice(targets);
+}
+
+/// The `[x]` sits right-aligned in the top border, just inside the corner.
+fn close_button_rect(widget: Rect) -> Option<Rect> {
+    (widget.width >= 8 && widget.height >= 3).then(|| {
+        Rect::new(
+            widget.right().saturating_sub(1 + CLOSE_BUTTON.len() as u16),
+            widget.y,
+            CLOSE_BUTTON.len() as u16,
+            1,
+        )
+    })
+}
+
+const CLOSE_BUTTON: &str = "[x]";
+
+/// Whether a click at (`column`, `row`) lands on a widget's `[x]`.
+pub fn close_button_hit(column: u16, row: u16) -> bool {
+    let targets = CLOSE_TARGETS.lock().unwrap_or_else(|e| e.into_inner());
+    point_hits(&targets, column, row)
+}
+
+fn point_hits(targets: &[Rect], column: u16, row: u16) -> bool {
+    targets
+        .iter()
+        .any(|r| column >= r.x && column < r.right() && row >= r.y && row < r.bottom())
 }
 
 /// Clear the remembered per-frame widget placements (and anchors). Tests that
@@ -1369,6 +1502,11 @@ pub fn render_all(frame: &mut Frame, placements: &[WidgetPlacement], data: &Info
     for placement in placements {
         render_single_widget(frame, placement, data);
     }
+    let targets: Vec<Rect> = placements
+        .iter()
+        .filter_map(|p| close_button_rect(p.rect))
+        .collect();
+    store_close_targets(&targets);
 }
 
 /// Render a single widget at its placement
@@ -1463,6 +1601,11 @@ fn render_single_widget(frame: &mut Frame, placement: &WidgetPlacement, data: &I
             block = block.title(Span::styled(" \u{2442} Git ", title_style(Role::Info)));
         }
         _ => {}
+    }
+    if close_button_rect(rect).is_some() {
+        block = block.title_top(
+            Line::from(Span::styled(CLOSE_BUTTON, title_style(Role::Dim))).right_aligned(),
+        );
     }
 
     let inner = block.inner(rect);
@@ -2408,5 +2551,105 @@ fn format_event_for_expanded(
             ("📋", format!("{} memories", count), rgb(140, 140, 150))
         }
         _ => ("·", String::new(), rgb(100, 100, 110)),
+    }
+}
+
+#[cfg(test)]
+mod pinned_tests {
+    use super::*;
+    use crate::config::InfoWidgetPosition;
+    use ratatui::{Terminal, backend::TestBackend};
+
+    fn session_data() -> InfoWidgetData {
+        InfoWidgetData {
+            model: Some("alphax-free".to_string()),
+            context_limit: Some(256_000),
+            observed_context_tokens: Some(90_000),
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn pinned_column_needs_pinned_mode_and_room_for_the_chat() {
+        let enough = PINNED_COLUMN_WIDTH + PINNED_MIN_CHAT_WIDTH;
+        assert_eq!(
+            pinned_column_width_for(InfoWidgetPosition::Pinned, enough),
+            Some(PINNED_COLUMN_WIDTH)
+        );
+        assert_eq!(
+            pinned_column_width_for(InfoWidgetPosition::Pinned, enough - 1),
+            None
+        );
+        assert_eq!(pinned_column_width_for(InfoWidgetPosition::Flow, 300), None);
+    }
+
+    #[test]
+    fn pinned_widgets_stack_from_the_top_of_the_column() {
+        let column = Rect::new(80, 2, PINNED_COLUMN_WIDTH, 30);
+        let placements = stack_pinned(column, &session_data());
+
+        let first = placements.first().expect("overview placed");
+        assert_eq!(first.kind, WidgetKind::Overview);
+        assert_eq!(first.rect.x, column.x + 1, "one-cell gutter on the left");
+        assert_eq!(first.rect.width, column.width - 1);
+        assert_eq!(first.rect.y, column.y);
+        assert!(
+            placements.iter().all(|p| !is_overview_mergeable(p.kind)),
+            "Overview absorbs mergeable widgets: {placements:?}"
+        );
+        for pair in placements.windows(2) {
+            assert!(
+                pair[1].rect.y > pair[0].rect.bottom(),
+                "gap between widgets"
+            );
+        }
+        assert!(
+            placements
+                .iter()
+                .all(|p| p.rect.bottom() <= column.bottom())
+        );
+    }
+
+    #[test]
+    fn pinned_column_too_short_places_nothing() {
+        let column = Rect::new(0, 0, PINNED_COLUMN_WIDTH, 3);
+        assert!(stack_pinned(column, &session_data()).is_empty());
+    }
+
+    #[test]
+    fn close_button_sits_inside_the_top_right_corner() {
+        let widget = Rect::new(10, 5, 40, 8);
+        assert_eq!(close_button_rect(widget), Some(Rect::new(46, 5, 3, 1)));
+        assert_eq!(close_button_rect(Rect::new(0, 0, 7, 8)), None);
+        assert_eq!(close_button_rect(Rect::new(0, 0, 40, 2)), None);
+
+        let targets = [Rect::new(46, 5, 3, 1)];
+        assert!(point_hits(&targets, 46, 5));
+        assert!(point_hits(&targets, 48, 5));
+        assert!(!point_hits(&targets, 45, 5));
+        assert!(!point_hits(&targets, 49, 5));
+        assert!(!point_hits(&targets, 46, 6));
+    }
+
+    #[test]
+    fn rendered_widget_draws_the_close_button_where_it_is_hit_tested() {
+        let data = session_data();
+        let placements = stack_pinned(Rect::new(0, 0, PINNED_COLUMN_WIDTH, 20), &data);
+        let first = placements.first().expect("overview placed").rect;
+        let button = close_button_rect(first).expect("wide enough for [x]");
+
+        let mut terminal = Terminal::new(TestBackend::new(PINNED_COLUMN_WIDTH, 20)).unwrap();
+        terminal
+            .draw(|frame| {
+                for placement in &placements {
+                    render_single_widget(frame, placement, &data);
+                }
+            })
+            .unwrap();
+        let buffer = terminal.backend().buffer();
+        let drawn: String = (button.x..button.right())
+            .map(|x| buffer[(x, button.y)].symbol().to_string())
+            .collect();
+        assert_eq!(drawn, CLOSE_BUTTON);
     }
 }

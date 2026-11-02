@@ -6,6 +6,17 @@ adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Added
+
+- The info widget panel can be pinned: `display.info_widget_position = "pinned"`
+  stacks it in a fixed column on the right of the transcript, which wraps
+  narrower so the panel never covers text or moves while output scrolls. The
+  default `"flow"` keeps today's margin-docked behaviour. The column is 40
+  cells and needs a chat area of at least 100; narrower windows fall back to flow.
+- Each info widget has an `[x]` in its top border; clicking it hides the panel
+  for the window, like the toggle key.
+- `display.info_widget = false` starts the TUI with the panel hidden.
+
 ## [1.0.91] - 2026-11-01
 
 ### Added
