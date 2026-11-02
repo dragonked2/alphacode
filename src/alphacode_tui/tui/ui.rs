@@ -3208,6 +3208,22 @@ fn draw_inner(frame: &mut Frame, app: &dyn TuiState) {
         (chat_area, None)
     };
 
+    // `info_widget_position = "pinned"` reserves a fixed column on the right of
+    // the transcript. Decide it before the transcript is prepared so lines wrap
+    // to the narrower width instead of running underneath the panel.
+    let widget_data_start = Instant::now();
+    let widget_data = app.info_widget_data();
+    let widget_data_elapsed = widget_data_start.elapsed();
+    let pinned_info_width = if app.info_widget_overlays_enabled()
+        && !swarm_page_active
+        && info_widget::is_enabled()
+        && !widget_data.available_widgets().is_empty()
+    {
+        info_widget::pinned_column_width(chat_area.width)
+    } else {
+        None
+    };
+
     // Inline swarm strip: when `swarm_spawn_mode = inline` and this session
     // manages agents, render a compact strip (vertical agent list by default,
     // see `agents.swarm_strip_layout`) directly above the status line instead
@@ -3319,7 +3335,10 @@ fn draw_inner(frame: &mut Frame, app: &dyn TuiState) {
     // Rows reserved for the pinned banner band above the transcript. Computed
     // here so the transcript preparation and the later layout agree on it.
     let chat_left_inset = left_aligned_content_inset(chat_area.width, app.centered_mode());
-    let wide_prepare_width = chat_area.width.saturating_sub(chat_left_inset);
+    let wide_prepare_width = chat_area
+        .width
+        .saturating_sub(chat_left_inset)
+        .saturating_sub(pinned_info_width.unwrap_or(0));
     let narrow_prepare_width = wide_prepare_width.saturating_sub(1);
     let pinned_mermaid_aspect_ratio =
         diagram_area.and_then(|area| pinned_diagram_preferred_aspect_ratio(area, pane_position));
@@ -3639,7 +3658,9 @@ fn draw_inner(frame: &mut Frame, app: &dyn TuiState) {
     let draw_start = Instant::now();
 
     // Messages area is the first chunk within the chat column (already excludes diagram).
-    let messages_area = chunks[CHUNK_MESSAGES];
+    // A pinned info column, when reserved, is carved off its right edge.
+    let (messages_area, pinned_info_column) =
+        split_pinned_info_column(chunks[CHUNK_MESSAGES], pinned_info_width);
     let _ = swarm_strip_height;
     note_chat_layout(ChatLayoutMetrics {
         chat_area,
@@ -3854,9 +3875,6 @@ fn draw_inner(frame: &mut Frame, app: &dyn TuiState) {
     let chrome_elapsed = chrome_start.elapsed();
 
     // Draw info widget overlays (skip during idle animation - they look out of place)
-    let widget_data_start = Instant::now();
-    let widget_data = app.info_widget_data();
-    let widget_data_elapsed = widget_data_start.elapsed();
     let mut widget_render_ms: Option<f32> = None;
     let mut placements: Vec<info_widget::WidgetPlacement> = Vec::new();
     // Info widgets live inside the console, not on the terminal's edge: dock
@@ -3869,7 +3887,10 @@ fn draw_inner(frame: &mut Frame, app: &dyn TuiState) {
         if let Some(ref mut capture) = debug_capture {
             capture.render_order.push("render_info_widgets".to_string());
         }
-        placements = info_widget::calculate_placements(widget_bounds, &margins, &widget_data);
+        placements = match pinned_info_column {
+            Some(column) => info_widget::calculate_pinned_placements(column, &widget_data),
+            None => info_widget::calculate_placements(widget_bounds, &margins, &widget_data),
+        };
 
         if let Some(ref mut capture) = debug_capture {
             let placement_captures = capture_widget_placements(&placements);
@@ -3884,7 +3905,11 @@ fn draw_inner(frame: &mut Frame, app: &dyn TuiState) {
             // always true and useless; instead verify each placement still fits
             // within the free margin the layout reported for the rows it covers.
             for placement in &placements {
-                if widget_overlaps_content(placement, widget_bounds, &margins) {
+                // Pinned widgets own their column; only margin-docked ones can
+                // intrude into transcript content.
+                if pinned_info_column.is_none()
+                    && widget_overlaps_content(placement, widget_bounds, &margins)
+                {
                     capture.anomaly(format!(
                         "Info widget {:?} intrudes into content (rect {:?})",
                         placement.kind, placement.rect
@@ -4103,6 +4128,46 @@ pub(crate) fn render_native_scrollbar(
     frame.render_widget(Paragraph::new(lines), area);
 }
 
+/// Split a fixed info-widget column of `width` off the right of `area`. Returns
+/// the area unchanged (and no column) when nothing is reserved or it won't fit.
+fn split_pinned_info_column(area: Rect, width: Option<u16>) -> (Rect, Option<Rect>) {
+    match width {
+        Some(width) if width > 0 && area.width > width => {
+            let chat = Rect {
+                width: area.width - width,
+                ..area
+            };
+            let column = Rect {
+                x: area.x + chat.width,
+                width,
+                ..area
+            };
+            (chat, Some(column))
+        }
+        _ => (area, None),
+    }
+}
+
 #[cfg(test)]
 #[path = "ui_tests/mod.rs"]
 mod tests;
+
+#[cfg(test)]
+mod pinned_info_column_tests {
+    use super::*;
+
+    #[test]
+    fn pinned_info_column_is_carved_off_the_right_edge() {
+        let area = Rect::new(2, 1, 120, 40);
+        let (chat, column) = split_pinned_info_column(area, Some(40));
+        assert_eq!(chat, Rect::new(2, 1, 80, 40));
+        assert_eq!(column, Some(Rect::new(82, 1, 40, 40)));
+    }
+
+    #[test]
+    fn no_pinned_info_column_leaves_the_area_alone() {
+        let area = Rect::new(0, 0, 30, 10);
+        assert_eq!(split_pinned_info_column(area, None), (area, None));
+        assert_eq!(split_pinned_info_column(area, Some(30)), (area, None));
+    }
+}

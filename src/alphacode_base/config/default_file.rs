@@ -134,6 +134,18 @@ pin_images = true
 # scrolls, like the sticky previous-prompt preview (default: false)
 # pin_todos = false
 
+# Show the info widget panel (Session, Todos, ...) at startup (default: true).
+# The toggle key (keybindings.info_widget_toggle) and the panel's [x] still
+# show/hide it for the current window.
+# info_widget = true
+
+# Where the info widget panel is drawn (default: "flow")
+#   "flow"   - float in the transcript's empty right margin, moving with it
+#   "pinned" - fixed 40-column panel on the right; the transcript wraps
+#              narrower. Needs a chat area of at least 100 columns; narrower
+#              windows fall back to "flow".
+# info_widget_position = "flow"
+
 # Wrap long lines in the pinned diff pane (default: true)
 # Set to false for horizontal scrolling instead of wrapping
 diff_line_wrap = true

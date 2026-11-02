@@ -4,6 +4,46 @@ All notable changes to Alphacode are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project
 adheres to [Semantic Versioning](https://semver.org/).
 
+## [1.0.92] - 2026-11-02
+
+### Added
+
+- The info widget panel can be pinned: `display.info_widget_position = "pinned"`
+  stacks it in a fixed column on the right of the transcript, which wraps
+  narrower so the panel never covers text or moves while output scrolls. The
+  default `"flow"` keeps today's margin-docked behaviour. The column is 40
+  cells and needs a chat area of at least 100; narrower windows fall back to flow.
+- Each info widget has an `[x]` in its top border; clicking it hides the panel
+  for the window, like the toggle key.
+- `display.info_widget = false` starts the TUI with the panel hidden.
+
+### Fixed
+
+- A new session no longer inherits a previous session's swarm plan. Swarm state
+  is keyed by the workspace (the git common dir), so a plan outlives the session
+  that created it; the plan was still being handed to unrelated later sessions by
+  two paths. `send_swarm_plan_to_session` (subscribe/resume/history refresh) now
+  only replays a plan to a session listed in its `participants`, and
+  `broadcast_swarm_plan` no longer widens delivery to every swarm member when the
+  plan's participants are absent or all dead. Sessions still join a plan through
+  the normal paths (`seed`, `assign_task`, `resync_plan`), which add them as
+  participants, so a reconnecting owner keeps its plan graph.
+- The inline `Plan graph · vN` transcript card is only created when the
+  transcript can actually draw a diagram: mermaid rendering *and* a native
+  terminal image protocol. Previously the card was gated on the mermaid setting
+  alone, while the markdown renderer also requires a native protocol, so on
+  terminals without Kitty/iTerm2/Sixel the card degraded into ~100 lines of raw
+  `flowchart LR …` source. The live plan is still shown by the swarm strip and
+  the dedicated swarm page.
+
+### Changed
+
+- Windows release binaries now carry a `VERSIONINFO` resource. The build script
+  previously emitted only an icon, so the shipped executable reported
+  `FileVersion 0.0.0.0` with empty `CompanyName`, `ProductName` and
+  `FileDescription`. File/product versions are derived from the crate version so
+  they cannot drift from the build.
+
 ## [Unreleased]
 
 ## [1.0.91] - 2026-11-01

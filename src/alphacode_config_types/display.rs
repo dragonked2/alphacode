@@ -1,8 +1,9 @@
 //! `[display]` section of the config: TUI/CLI presentation settings.
 
 use super::{
-    DiagramDisplayMode, DiffDisplayMode, LatexRenderingMode, MarkdownSpacingMode,
-    NativeScrollbarConfig, OverscrollStatusMode, ReasoningDisplayMode, default_true,
+    DiagramDisplayMode, DiffDisplayMode, InfoWidgetPosition, LatexRenderingMode,
+    MarkdownSpacingMode, NativeScrollbarConfig, OverscrollStatusMode, ReasoningDisplayMode,
+    default_true,
 };
 use serde::{Deserialize, Serialize};
 
@@ -54,6 +55,16 @@ pub struct DisplayConfig {
     /// it scrolls, like the sticky previous-prompt preview (default: false)
     #[serde(default)]
     pub pin_todos: bool,
+    /// Show the info widget panel when the TUI starts (default: true). The
+    /// panel's toggle key and its `[x]` still show/hide it per window.
+    #[serde(default = "default_true")]
+    pub info_widget: bool,
+    /// Where the info widget panel is drawn: "flow" (default) floats in the
+    /// transcript's empty margin, "pinned" keeps it in a fixed right column.
+    /// Pinned needs a chat area of at least 100 columns and falls back to flow
+    /// below that.
+    #[serde(deserialize_with = "crate::alphacode_config_types::serde_lenient::lenient_enum")]
+    pub info_widget_position: InfoWidgetPosition,
     /// Show a small decorative idle decoration before the first prompt.
     ///
     /// The decoration is intentionally *calm*: a stable wordmark with optional
@@ -154,6 +165,8 @@ impl Default for DisplayConfig {
             mouse_capture: true,
             pin_images: true,
             pin_todos: false,
+            info_widget: true,
+            info_widget_position: InfoWidgetPosition::default(),
             queue_mode: false,
             auto_server_reload: true,
             debug_socket: false,
@@ -233,5 +246,28 @@ impl DisplayConfig {
     /// Whether reasoning content should be generated/requested at all.
     pub fn reasoning_enabled(&self) -> bool {
         !matches!(self.reasoning_display(), ReasoningDisplayMode::Off)
+    }
+}
+
+#[cfg(test)]
+mod info_widget_config_tests {
+    use super::*;
+
+    #[test]
+    fn info_widget_options_default_to_shown_and_flowing() {
+        let display: DisplayConfig = toml::from_str("").unwrap();
+        assert!(display.info_widget);
+        assert_eq!(display.info_widget_position, InfoWidgetPosition::Flow);
+    }
+
+    #[test]
+    fn info_widget_options_parse_and_unknown_position_falls_back() {
+        let display: DisplayConfig =
+            toml::from_str("info_widget = false\ninfo_widget_position = \"pinned\"").unwrap();
+        assert!(!display.info_widget);
+        assert_eq!(display.info_widget_position, InfoWidgetPosition::Pinned);
+
+        let display: DisplayConfig = toml::from_str("info_widget_position = \"sideways\"").unwrap();
+        assert_eq!(display.info_widget_position, InfoWidgetPosition::Flow);
     }
 }

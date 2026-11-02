@@ -171,6 +171,19 @@ pub enum DiagramDisplayMode {
     Pinned,
 }
 
+/// Where the info widget panel (Session, Todos, ...) is drawn.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum InfoWidgetPosition {
+    /// Float in the transcript's empty right margin, riding with the lines
+    /// they are docked next to.
+    #[default]
+    Flow,
+    /// Stack in a fixed column on the right of the transcript. The transcript
+    /// wraps narrower so the panel never covers text and never moves.
+    Pinned,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum DiagramPanePosition {

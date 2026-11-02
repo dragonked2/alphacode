@@ -12,15 +12,73 @@ fn allow_runtime_identity_mismatch() -> bool {
 /// Title prefix of the client-only inline plan-graph card.
 const PLAN_GRAPH_TITLE_PREFIX: &str = "Plan graph · ";
 
+/// Whether the transcript can actually turn the plan graph into a diagram.
+///
+/// The markdown renderer only draws a mermaid block when a *native* terminal
+/// image protocol is present (`should_render_mermaid_block`); on any other
+/// terminal the block falls back to printing the raw Mermaid source. Creating
+/// the card on `mermaid_rendering_enabled()` alone therefore dumped ~100 lines
+/// of `flowchart LR …` into the transcript on unsupported terminals. Gate on
+/// both signals so the card only exists when it renders as a diagram.
+fn plan_graph_diagram_renderable() -> bool {
+    crate::alphacode_tui::tui::markdown::mermaid_rendering_enabled()
+        && crate::alphacode_tui::tui::mermaid::native_image_protocol_available()
+}
+
+#[cfg(test)]
+mod plan_graph_capability_tests {
+    use super::plan_graph_diagram_renderable;
+
+    /// A transcript that cannot draw the diagram must not create the card,
+    /// even when mermaid rendering is enabled in config. Without a native
+    /// terminal image protocol the markdown renderer prints the raw Mermaid
+    /// source, which is what produced the ~100-line `flowchart LR …` dump.
+    #[test]
+    fn plan_graph_card_is_suppressed_without_a_native_image_protocol() {
+        let enabled = crate::alphacode_tui::tui::markdown::with_mermaid_rendering_override(
+            Some(true),
+            || {
+                crate::alphacode_tui::tui::mermaid::with_image_protocol_override(
+                    Some(false),
+                    plan_graph_diagram_renderable,
+                )
+            },
+        );
+        assert!(
+            !enabled,
+            "no native image protocol must disable the inline plan graph card"
+        );
+    }
+
+    /// With both signals present the card is created.
+    #[test]
+    fn plan_graph_card_is_created_with_a_native_image_protocol() {
+        let enabled = crate::alphacode_tui::tui::markdown::with_mermaid_rendering_override(
+            Some(true),
+            || {
+                crate::alphacode_tui::tui::mermaid::with_image_protocol_override(
+                    Some(true),
+                    plan_graph_diagram_renderable,
+                )
+            },
+        );
+        assert!(
+            enabled,
+            "diagram-capable terminal should get the plan graph card"
+        );
+    }
+}
+
 /// Upsert the inline plan-graph card for a `SwarmPlan` broadcast.
 ///
 /// The transcript carries at most one diagram, which coalesces in place so a
 /// swarm that ticks several times a second cannot flood the transcript. A
 /// version bump rewrites the existing card; if unrelated messages (a DM, a
 /// tool row) landed after it, the card is moved back to the bottom so the plan
-/// stays the newest thing in view. An emptied plan drops the card, and with
-/// mermaid rendering disabled no card is ever created — the live plan is still
-/// shown by the swarm strip and the dedicated swarm page either way.
+/// stays the newest thing in view. An emptied plan drops the card, and when the
+/// transcript cannot render a diagram (mermaid disabled, or no native terminal
+/// image protocol) no card is ever created — the live plan is still shown by
+/// the swarm strip and the dedicated swarm page either way.
 ///
 /// Returns whether the transcript changed.
 fn upsert_swarm_plan_graph_message(
@@ -28,7 +86,7 @@ fn upsert_swarm_plan_graph_message(
     version: u64,
     items: &[crate::plan::PlanItem],
 ) -> bool {
-    let diagram = if crate::alphacode_tui::tui::markdown::mermaid_rendering_enabled() {
+    let diagram = if plan_graph_diagram_renderable() {
         crate::plan::mermaid::swarm_plan_mermaid(items)
     } else {
         None
@@ -605,6 +663,18 @@ pub(in crate::alphacode_tui::tui::app) fn handle_server_event(
     event: ServerEvent,
     remote: &mut impl RemoteEventState,
 ) -> bool {
+    // A clipboard control failure must not reset the live model turn's state
+    // or be mistaken for a failed prompt.
+    if let ServerEvent::Error { id, message, .. } = &event
+        && app
+            .pending_session_copy
+            .as_ref()
+            .is_some_and(|pending| pending.request_id == *id)
+    {
+        app.pending_session_copy = None;
+        app.set_status_notice(format!("Session copy failed: {message}"));
+        return true;
+    }
     let eager_stream_redraw = !crate::perf::tui_policy().enable_decorative_animations;
     if app.is_processing {
         app.last_stream_activity = Some(Instant::now());
@@ -2189,6 +2259,14 @@ pub(in crate::alphacode_tui::tui::app) fn handle_server_event(
             // History is the completion signal for a session attach/resume and
             // can replace the entire visible transcript. Request a frame now so
             // the new session does not appear stuck until another event arrives.
+            true
+        }
+        ServerEvent::SessionTranscript {
+            id,
+            session_id,
+            text,
+        } => {
+            app_mod::commands_copy::receive_session_transcript(app, id, session_id, text);
             true
         }
         ServerEvent::CompactedHistory {

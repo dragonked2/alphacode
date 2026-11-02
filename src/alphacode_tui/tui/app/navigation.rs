@@ -1396,6 +1396,14 @@ impl App {
             picker_cell.borrow_mut().handle_overlay_mouse(mouse);
             finish_mouse_event!(false, "account_picker_overlay");
         }
+        if matches!(mouse.kind, MouseEventKind::Down(MouseButton::Left))
+            && super::super::info_widget::close_button_hit(mouse.column, mouse.row)
+        {
+            // Same as the toggle key: hides every info widget for this window.
+            super::super::info_widget::set_enabled(false);
+            self.set_status_notice("Info widget: OFF");
+            finish_mouse_event!(false, "info_widget_close");
+        }
         self.normalize_diagram_state();
         let diagram_available = self.diagram_available();
         let layout = super::super::ui::last_layout_snapshot();
