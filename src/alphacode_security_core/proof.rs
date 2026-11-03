@@ -35,10 +35,10 @@ const MAX_BODY_CHARS: usize = 8_192;
 
 /// A single observed HTTP exchange, reconstructed from real tool output.
 ///
-/// This is the ground truth for "a request was sent and this is what came
-/// back". It is only ever built by [`HttpExchange::parse_http_transcript`],
-/// which reads an actual tool result, so a `HttpExchange` in hand means the
-/// exchange really happened.
+/// Parsed tool output can supply this evidence, but this public, deserializable
+/// structure is not itself proof of provenance. Cross-check it against trusted
+/// session observations with [`ProofObject::verify_against`]. Request headers
+/// and content beyond the retention limit are not represented here.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct HttpExchange {
     pub method: String,
@@ -149,11 +149,16 @@ impl HttpExchange {
     }
 
     /// Identity of the exchange for cross-checking against observed activity:
-    /// same method, same URL, same status.
+    /// Match the retained request, response, and tool provenance. A shared URL
+    /// and status alone cannot authenticate evidence from another response.
     pub fn matches_observed(&self, other: &Self) -> bool {
         self.method.eq_ignore_ascii_case(&other.method)
             && self.url == other.url
             && self.status == other.status
+            && self.request_body == other.request_body
+            && self.response_headers == other.response_headers
+            && self.response_body == other.response_body
+            && self.source_tool == other.source_tool
     }
 
     /// Character length of the observed body, for differential comparison.
@@ -317,21 +322,23 @@ impl BaselineComparison {
         }
     }
 
-    /// Whether the difference is large enough to be a finding rather than
-    /// noise.
+    /// Whether the response difference clears a heuristic signal threshold.
+    /// This does not establish security impact or exclude dynamic-page noise.
     ///
     /// A status change always counts. A body change has to clear both an
     /// absolute and a relative floor, so a page that grows by 40 bytes between
     /// two renders is not reported as a data-exposure finding.
     pub fn is_material(&self) -> bool {
-        if self.difference.status_changed {
+        // Serialized summaries are untrusted; derive the signal from exchanges.
+        let actual = Self::new(&self.label, self.baseline.clone(), self.treatment.clone());
+        if actual.difference.status_changed {
             return true;
         }
-        if !self.difference.body_len_materially_changed {
+        if !actual.difference.body_len_materially_changed {
             return false;
         }
         let baseline_len = (self.baseline.body_len() as u64).max(1);
-        let delta = self.difference.body_len_delta.unwrap_or(0).unsigned_abs();
+        let delta = actual.difference.body_len_delta.unwrap_or(0).unsigned_abs();
         delta * 4 >= baseline_len
     }
 }
@@ -345,6 +352,8 @@ pub enum ProofDefect {
     MissingTestExchange,
     /// The exchange was never seen in the session's tool history.
     ExchangeNotObserved,
+    /// A comparison cites a different treatment or an unobserved control.
+    InvalidBaseline,
     /// No reproduction steps, so a third party cannot repeat the test.
     MissingReproductionSteps,
     /// No expected behaviour to compare against.
@@ -387,6 +396,9 @@ impl ProofDefect {
             Self::MissingTestExchange => "no observed request/response was attached",
             Self::ExchangeNotObserved => {
                 "the attached request/response was not observed in this session"
+            }
+            Self::InvalidBaseline => {
+                "baseline evidence is unobserved or does not match the test exchange"
             }
             Self::MissingReproductionSteps => "no reproduction steps were provided",
             Self::MissingExpectedBehavior => "no expected behaviour was stated",
@@ -515,6 +527,17 @@ impl ProofObject {
             defects.push(ProofDefect::BehaviorMatchesExpectation);
         }
 
+        if let Some(comparison) = self.baseline.as_ref() {
+            let control_observed = observed.is_none_or(|history| {
+                history
+                    .iter()
+                    .any(|o| o.matches_observed(&comparison.baseline))
+            });
+            if !comparison.treatment.matches_observed(exchange) || !control_observed {
+                defects.push(ProofDefect::InvalidBaseline);
+            }
+        }
+
         match self.baseline.as_ref() {
             None => defects.push(ProofDefect::MissingBaseline),
             Some(baseline) if !baseline.is_material() => {
@@ -524,12 +547,19 @@ impl ProofObject {
                     baseline.label
                 ));
             }
-            Some(baseline) => observations.push(format!(
-                "baseline '{}' differs (status_changed={}, body_len_delta={:?})",
-                baseline.label,
-                baseline.difference.status_changed,
-                baseline.difference.body_len_delta
-            )),
+            Some(baseline) => {
+                let actual = BaselineComparison::new(
+                    &baseline.label,
+                    baseline.baseline.clone(),
+                    baseline.treatment.clone(),
+                );
+                observations.push(format!(
+                    "baseline '{}' differs (status_changed={}, body_len_delta={:?}); security impact requires review",
+                    actual.label,
+                    actual.difference.status_changed,
+                    actual.difference.body_len_delta
+                ));
+            }
         }
 
         ProofVerdict::fail(defects, observations)
@@ -934,9 +964,62 @@ mod tests {
     #[test]
     fn a_proof_matches_the_observed_history_it_cites() {
         let proof = complete_proof();
-        let observed = vec![proof.test_exchange.clone().expect("proof has an exchange")];
+        let observed = vec![
+            proof.test_exchange.clone().expect("proof has an exchange"),
+            proof.baseline.as_ref().unwrap().baseline.clone(),
+        ];
         let verdict = proof.verify_against(&observed);
         assert!(verdict.verified, "defects: {:?}", verdict.defects);
+    }
+
+    #[test]
+    fn altered_response_cannot_borrow_an_observed_status() {
+        let proof = complete_proof();
+        let mut altered = proof.test_exchange.clone().unwrap();
+        altered.response_body = Some("ordinary response".to_string());
+        let history = vec![altered, proof.baseline.as_ref().unwrap().baseline.clone()];
+        assert!(
+            proof
+                .verify_against(&history)
+                .defects
+                .contains(&ProofDefect::ExchangeNotObserved)
+        );
+    }
+
+    #[test]
+    fn unobserved_control_and_unrelated_treatment_are_rejected() {
+        let mut proof = complete_proof();
+        let treatment = proof.test_exchange.clone().unwrap();
+        assert!(
+            proof
+                .verify_against(std::slice::from_ref(&treatment))
+                .defects
+                .contains(&ProofDefect::InvalidBaseline)
+        );
+        let control = proof.baseline.as_ref().unwrap().baseline.clone();
+        proof
+            .baseline
+            .as_mut()
+            .unwrap()
+            .treatment
+            .url
+            .push_str("/unrelated");
+        assert!(
+            proof
+                .verify_against(&[treatment, control])
+                .defects
+                .contains(&ProofDefect::InvalidBaseline)
+        );
+    }
+
+    #[test]
+    fn forged_difference_does_not_create_a_material_signal() {
+        let e = exchange("GET", "https://example.com/admin", 403, "denied");
+        let mut comparison = BaselineComparison::new("same", e.clone(), e);
+        comparison.difference.status_changed = true;
+        comparison.difference.body_len_delta = Some(i64::MIN);
+        comparison.difference.body_len_materially_changed = true;
+        assert!(!comparison.is_material());
     }
 
     #[test]

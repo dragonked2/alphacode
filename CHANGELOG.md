@@ -46,6 +46,99 @@ adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [1.0.93] - 2026-11-03
+
+### Security
+
+- The Windows release no longer contains a nested executable, which was the
+  root cause of the `Gen:Variant.Barys` detection reported against 1.0.92.
+  `alphacode.exe` had carried the .NET/WPF GUI host inside it
+  (`include_bytes!`), then wrote it to `%USERPROFILE%\.alphacode\gui\` and
+  executed it on the first `alphacode gui`. Two complete PE images in one
+  unsigned file, one dropping and launching the other, is the packer/dropper
+  shape generic engines score. It was confirmed structurally: the 1.0.92 binary
+  held PE images at offsets 0 and 60,102,752; the same debug build now holds
+  exactly one. The host ships as a sibling `AlphaCode.Desktop.exe`, resolved by
+  `resolve_desktop_host()` (override, then beside the binary, then the legacy
+  directory so in-place upgrades keep working). The embedded layout remains
+  available behind the opt-in `embedded-gui-host` cargo feature.
+- The release pipeline now packages `alphacode.exe` and `AlphaCode.Desktop.exe`
+  together and fails if either binary contains more than one PE image
+  (`scripts/verify-pe-single-image.py`). A future change cannot silently
+  reintroduce the detection.
+- Disclosure of what the 1.0.92 verdict actually was, since it matters for
+  anyone triaging the report: VirusTotal showed 8/65 for
+  `alphacode-windows-x86_64(2).zip` (sha256
+  `aa30c118…f279c1ca`), and seven of those eight share one engine. BitDefender
+  reported `Gen:Variant.Barys.381847`; MicroWorld-eScan, ALYac, VIPRE, GData and
+  Emsisoft reported the same family, and Arcabit its `Trojan.Barys` naming.
+  CTX added `zip.unknown.generic`. Microsoft, CrowdStrike, SentinelOne,
+  Kaspersky, ESET, Sophos, Fortinet and Trend Micro all returned clean. It was a
+  single heuristic family, not eight independent analyses.
+
+### Added
+
+- Long-running commands leave the foreground on their own. A `bash` call that
+  produced no output for the idle window (2 minutes;
+  `ALPHACODE_BASH_AUTO_BACKGROUND_IDLE_MS`, `0` disables) is handed to the
+  background manager instead of blocking the turn until its timeout. The command
+  keeps running, the session is woken on completion, and the tool result names
+  the task id. Alt+B was previously the only way out, which required a human
+  watching the terminal. Output *staleness* is the trigger rather than total
+  runtime, so a compiler or scanner that keeps printing stays in the foreground,
+  and commands that legitimately wait (an interactive prompt, `tail -f`,
+  `cargo watch`, server processes) are exempt. `"auto_background": false` opts
+  out per call.
+- Windows GUI integration: the installer creates a Start-menu shortcut and a
+  Desktop shortcut for the GUI, and records an AppUserModelID so Windows groups
+  its windows, shows the right icon and offers the normal "Pin to taskbar"
+  entry. Programmatic taskbar pinning is not attempted because Windows 10
+  removed it; the installer says so instead of shipping a verb that fails.
+  `-NoShortcuts` and `-NoDesktopShortcut` opt out, and the uninstaller removes
+  both shortcuts and the registry identity.
+- `scripts/dev-check.sh` runs fmt, clippy, check and tests through one rerunnable
+  command, applying the MSVC environment and a dedicated `CARGO_TARGET_DIR`.
+- `scripts/verify-pe-single-image.py` fails when a binary embeds another PE
+  image.
+
+### Fixed
+
+- Proactive compaction could never fire for a model missing from the catalog.
+  Providers report `DEFAULT_CONTEXT_LIMIT` (2,000,000,000 tokens) for an unknown
+  model, deliberately, so prompt sizing never fails closed — but that number was
+  then used as the compaction budget, and 85% of 2e9 is unreachable by any real
+  transcript. Compaction therefore only ran reactively, after the provider
+  returned a context-limit error. The budget now maps that sentinel to a
+  conservative 128k, and context usage is computed against a non-zero budget.
+- The compaction summary prompt embedded tool inputs verbatim, so a `write` or
+  `apply_patch` call put an entire file body into the request that was supposed
+  to compress the transcript. Inputs are now bounded at 400 characters with an
+  explicit truncation marker.
+- `Cargo.toml` is the single source of the release version, and the release
+  workflow now fails if it disagrees with the tag. Previously a tag could
+  publish a crate labelled with the previous version, and since the Windows
+  VERSIONINFO resource is built from the crate version, Explorer's Properties
+  dialog would advertise the stale number.
+- Two library tests no longer assert internal mechanics instead of behaviour.
+  The read-buffer test demanded byte-identical capacity across a
+  `split_off`-based drain that legitimately reallocates down to the retain
+  floor; it now asserts the contract that matters (never below the floor, never
+  regrown past the original). The header test demanded the literal string
+  `alphacode` at a 5-column width, where a 4-cell budget can only produce
+  `Alp...`; it now asserts the line is non-blank and that its leading run is a
+  real prefix of the brand.
+- Two env-var tests raced each other on `ALPHACODE_TOOL_DESCRIPTION_MAX_CHARS`
+  and failed intermittently (`left: 1024, right: 3000`) because cargo runs tests
+  in parallel and the variable is process-global. Both now hold the crate's
+  existing `lock_test_env()` guard.
+- `alphacode --version` could report an older release than the binary was built
+  from. The release-tag fallback used `git describe --abbrev=0`, which returns
+  the nearest tag rather than one at HEAD, and accepted it without checking —
+  so a build from an untagged tree advertised whichever old tag happened to be
+  closest (observed: `v1.0.91` from a 1.0.93 build whose VERSIONINFO correctly
+  said 1.0.93). It now requires `--exact-match` and otherwise falls back to the
+  crate version.
+
 ## [1.0.91] - 2026-11-01
 
 ### Added

@@ -100,7 +100,12 @@ pub enum StreamOp {
 /// One queued backlog entry.
 #[derive(Debug)]
 enum QueuedOp {
-    Chunk { kind: StreamKind, text: String },
+    Chunk {
+        kind: StreamKind,
+        text: String,
+        byte_offset: usize,
+        remaining_chars: usize,
+    },
     CloseReasoning,
 }
 
@@ -264,7 +269,9 @@ impl StreamBuffer {
             .queue
             .iter()
             .map(|op| match op {
-                QueuedOp::Chunk { text, .. } => text.len(),
+                QueuedOp::Chunk {
+                    text, byte_offset, ..
+                } => text.len().saturating_sub(*byte_offset),
                 QueuedOp::CloseReasoning => 0,
             })
             .sum();
@@ -317,15 +324,20 @@ impl StreamBuffer {
         if let Some(QueuedOp::Chunk {
             kind: last_kind,
             text: last_text,
+            remaining_chars,
+            ..
         }) = self.queue.back_mut()
             && *last_kind == kind
         {
             last_text.push_str(text);
+            *remaining_chars += char_count;
             return;
         }
         self.queue.push_back(QueuedOp::Chunk {
             kind,
             text: text.to_string(),
+            byte_offset: 0,
+            remaining_chars: char_count,
         });
     }
 
@@ -419,7 +431,12 @@ impl StreamBuffer {
                     self.queue.pop_front();
                     ops.push(StreamOp::CloseReasoning);
                 }
-                Some(QueuedOp::Chunk { kind, text }) => {
+                Some(QueuedOp::Chunk {
+                    kind,
+                    text,
+                    byte_offset,
+                    remaining_chars,
+                }) => {
                     if char_count == 0 {
                         if drain_all_markers {
                             // flush() always passes the full backlog as budget,
@@ -429,21 +446,40 @@ impl StreamBuffer {
                         break;
                     }
                     let kind = *kind;
-                    let available = text.chars().count();
+                    let available = *remaining_chars;
                     let take = char_count.min(available);
                     let chunk = if take == available {
                         match self.queue.pop_front() {
-                            Some(QueuedOp::Chunk { text, .. }) => text,
+                            Some(QueuedOp::Chunk {
+                                mut text,
+                                byte_offset,
+                                ..
+                            }) => {
+                                if byte_offset > 0 {
+                                    text.replace_range(..byte_offset, "");
+                                }
+                                text
+                            }
                             _ => break,
                         }
                     } else {
-                        let end = text
+                        // Inspect only the newly revealed prefix. Counting and
+                        // shifting the entire tail every frame was quadratic
+                        // for a large coalesced provider response.
+                        let end = text[*byte_offset..]
                             .char_indices()
                             .nth(take)
-                            .map(|(idx, _)| idx)
+                            .map(|(idx, _)| *byte_offset + idx)
                             .unwrap_or(text.len());
-                        let chunk = text[..end].to_string();
-                        text.replace_range(..end, "");
+                        let chunk = text[*byte_offset..end].to_string();
+                        *byte_offset = end;
+                        *remaining_chars -= take;
+                        // Compact only after a sizeable consumed prefix owns
+                        // at least half the allocation: amortized linear work.
+                        if *byte_offset >= 64 * 1024 && *byte_offset >= text.len() / 2 {
+                            text.replace_range(..*byte_offset, "");
+                            *byte_offset = 0;
+                        }
                         chunk
                     };
                     char_count -= take;

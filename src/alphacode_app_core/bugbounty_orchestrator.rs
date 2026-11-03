@@ -1,8 +1,7 @@
-//! Bug Bounty Orchestrator — the "beast mode" intelligence layer.
+//! Evidence-led bug bounty task orchestration.
 //!
-//! This module orchestrates the complete bug bounty workflow from target
-//! understanding to vulnerability reporting. It chains tools intelligently,
-//! never misses any task, and provides comprehensive attack surface mapping.
+//! A task graph bounds execution; it does not establish exhaustive coverage.
+//! Keep discovery, partial execution, and proof verification distinct.
 
 use anyhow::Result;
 use serde::{Deserialize, Serialize};
@@ -86,6 +85,37 @@ pub struct BountyTask {
     pub retry_count: u32,
     /// Maximum retries
     pub max_retries: u32,
+}
+
+/// Audit of one executor attempt. Input indices refer to the persisted manifest.
+/// Completing a task makes its observations available to dependents; this audit
+/// separately records whether every hydrated call and observation was retained.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TaskCoverage {
+    pub target: String,
+    pub task_id: String,
+    pub tool: String,
+    pub inputs_planned: usize,
+    pub inputs_attempted: usize,
+    pub successful_calls: usize,
+    pub in_flight_input_index: Option<usize>,
+    pub failed_input_indices: Vec<usize>,
+    pub deferred_input_indices: Vec<usize>,
+    pub omitted_observation_lines: usize,
+    pub aggregate_output_truncated: bool,
+    pub stop_reason: String,
+    pub input_manifest: String,
+    pub raw_artifacts: Vec<String>,
+}
+
+impl TaskCoverage {
+    pub fn is_partial(&self) -> bool {
+        self.in_flight_input_index.is_some()
+            || self.successful_calls < self.inputs_planned
+            || !self.failed_input_indices.is_empty()
+            || self.omitted_observation_lines > 0
+            || self.aggregate_output_truncated
+    }
 }
 
 /// A plausible DNS hostname: labels of alphanumerics/hyphens/underscores,
@@ -178,8 +208,8 @@ fn is_vulnerability_line(line: &str) -> bool {
 /// Consecutive completed turns that produce no new signal before the hunt is
 /// considered to have stopped yielding results.
 ///
-/// Two is deliberate: one dry turn is normal variance, two in a row with the
-/// runnable surface empty means continuing only repeats known work.
+/// Dry turns affect the stop reason only after runnable work is exhausted;
+/// they never cancel pending runnable coverage.
 const NO_SIGNAL_TURN_LIMIT: u32 = 10;
 
 /// Why the orchestrator stopped working.
@@ -192,6 +222,8 @@ const NO_SIGNAL_TURN_LIMIT: u32 = 10;
 pub enum StopReason {
     /// Every task has run and there is nothing left to execute.
     SurfaceExhausted,
+    /// The generated queue ended, but a recorded attempt still has gaps.
+    CoverageIncomplete,
     /// Tasks remain, but all of them are waiting on prerequisites that can
     /// never complete (a failed dependency).
     Blocked,
@@ -206,6 +238,7 @@ impl StopReason {
     pub fn as_str(&self) -> &'static str {
         match self {
             Self::SurfaceExhausted => "surface_exhausted",
+            Self::CoverageIncomplete => "coverage_incomplete",
             Self::Blocked => "blocked",
             Self::NoNewSignal => "no_new_signal",
             Self::Continue => "continue",
@@ -255,6 +288,8 @@ pub struct BugBountyOrchestrator {
     pub ports: Arc<RwLock<HashSet<u16>>>,
     /// Discovered services
     pub services: Arc<RwLock<HashMap<String, String>>>,
+    /// Each attempt is retained, including failed and interrupted fan-out.
+    pub execution_coverage: Arc<RwLock<Vec<TaskCoverage>>>,
 }
 
 impl BugBountyOrchestrator {
@@ -271,6 +306,7 @@ impl BugBountyOrchestrator {
             observed_exchanges: Arc::new(RwLock::new(Vec::new())),
             ports: Arc::new(RwLock::new(HashSet::new())),
             services: Arc::new(RwLock::new(HashMap::new())),
+            execution_coverage: Arc::new(RwLock::new(Vec::new())),
         }
     }
 
@@ -299,8 +335,10 @@ impl BugBountyOrchestrator {
         proof: ProofObject,
     ) -> ProofVerdict {
         let id = id.into();
-        let exchanges = self.observed_exchanges.read().await.clone();
-        let verdict = proof.verify_against(&exchanges);
+        let verdict = {
+            let exchanges = self.observed_exchanges.read().await;
+            proof.verify_against(&exchanges)
+        };
         if verdict.verified {
             self.verified_findings.write().await.insert(
                 id.clone(),
@@ -814,11 +852,13 @@ impl BugBountyOrchestrator {
     /// Get all tasks for a specific phase.
     pub async fn get_tasks_for_phase(&self, phase: BountyPhase) -> Vec<BountyTask> {
         let tasks = self.tasks.read().await;
-        tasks
+        let mut phase_tasks: Vec<_> = tasks
             .values()
             .filter(|t| t.phase == phase)
             .cloned()
-            .collect()
+            .collect();
+        phase_tasks.sort_by(|a, b| a.priority.cmp(&b.priority).then_with(|| a.id.cmp(&b.id)));
+        phase_tasks
     }
 
     /// Get all pending tasks.
@@ -905,7 +945,7 @@ impl BugBountyOrchestrator {
         let tool = tool.to_ascii_lowercase();
         for raw in output.lines() {
             let line = raw.trim();
-            if line.is_empty() {
+            if line.is_empty() || line.starts_with("[coverage]") {
                 continue;
             }
             // Skip anything that is obviously not a result.
@@ -946,7 +986,7 @@ impl BugBountyOrchestrator {
                         self.record_port(port).await;
                         self.record_service(host, "http").await;
                     } else if is_hostname(line) {
-                        self.record_url(line).await;
+                        self.record_subdomain(line).await;
                     }
                 }
                 "naabu" | "nmap" => {
@@ -956,8 +996,12 @@ impl BugBountyOrchestrator {
                 }
                 "nuclei" | "nikto" | "sqlmap" | "dalfox" | "corsy" | "crlfuzz" => {
                     if is_vulnerability_line(line) {
+                        use sha2::{Digest, Sha256};
+                        // Content identity is stable across retries and parallel
+                        // completions; a collection length is neither.
+                        let digest = format!("{:x}", Sha256::digest(line.as_bytes()));
                         self.record_vulnerability(
-                            format!("{tool}:{}", self.vulnerabilities.read().await.len()),
+                            format!("{tool}:{digest}"),
                             crate::alphacode_core::util::truncate_str(line, 300).to_string(),
                         )
                         .await;
@@ -1036,6 +1080,15 @@ impl BugBountyOrchestrator {
             self.observed_exchanges.read(),
         );
         let current_phase = *current_phase;
+        let coverage = self.execution_coverage.read().await;
+        let partial_task_attempts = coverage
+            .iter()
+            .filter(|attempt| attempt.is_partial())
+            .count();
+        let deferred_tool_calls = coverage
+            .iter()
+            .map(|attempt| attempt.deferred_input_indices.len())
+            .sum();
 
         let total_tasks = tasks.len();
         let completed_tasks = tasks.values().filter(|t| t.completed).count();
@@ -1054,6 +1107,8 @@ impl BugBountyOrchestrator {
             exchanges_observed: exchanges.len(),
             ports_found: ports.len(),
             services_found: services.len(),
+            partial_task_attempts,
+            deferred_tool_calls,
         }
     }
 
@@ -1081,6 +1136,15 @@ impl BugBountyOrchestrator {
             tasks.values().filter(|t| !t.completed).count()
         };
         if pending == 0 {
+            if self
+                .execution_coverage
+                .read()
+                .await
+                .iter()
+                .any(TaskCoverage::is_partial)
+            {
+                return StopReason::CoverageIncomplete;
+            }
             return if dried_up_turns >= NO_SIGNAL_TURN_LIMIT {
                 StopReason::NoNewSignal
             } else {
@@ -1098,7 +1162,7 @@ impl BugBountyOrchestrator {
     /// Get all tasks that are ready to execute (all dependencies completed).
     pub async fn get_ready_tasks(&self) -> Vec<BountyTask> {
         let tasks = self.tasks.read().await;
-        tasks
+        let mut ready: Vec<_> = tasks
             .values()
             .filter(|t| {
                 !t.completed
@@ -1107,7 +1171,9 @@ impl BugBountyOrchestrator {
                         .all(|dep| tasks.get(dep).is_some_and(|d| d.completed))
             })
             .cloned()
-            .collect()
+            .collect();
+        ready.sort_by(|a, b| a.priority.cmp(&b.priority).then_with(|| a.id.cmp(&b.id)));
+        ready
     }
 
     /// Execute all ready tasks in parallel, respecting dependencies.
@@ -1324,6 +1390,10 @@ pub struct OrchestratorSummary {
     pub ports_found: usize,
     /// Number of services found
     pub services_found: usize,
+    #[serde(default)]
+    pub partial_task_attempts: usize,
+    #[serde(default)]
+    pub deferred_tool_calls: usize,
 }
 
 impl std::fmt::Display for OrchestratorSummary {
@@ -1344,6 +1414,12 @@ impl std::fmt::Display for OrchestratorSummary {
         writeln!(f, "Exchanges observed: {}", self.exchanges_observed)?;
         writeln!(f, "Ports: {}", self.ports_found)?;
         writeln!(f, "Services: {}", self.services_found)?;
+        writeln!(
+            f,
+            "Partial task attempts: {} · Deferred hydrated calls: {}",
+            self.partial_task_attempts, self.deferred_tool_calls
+        )?;
+        writeln!(f, "Task completion is not exhaustive assessment coverage.")?;
         Ok(())
     }
 }
@@ -1710,6 +1786,7 @@ mod tests {
         );
         let baseline = exchange("GET", "https://example.com/api/search", 403, "forbidden");
         assert!(orchestrator.record_exchange(treatment.clone()).await);
+        assert!(orchestrator.record_exchange(baseline.clone()).await);
 
         let verdict = orchestrator
             .record_verified_finding("f1", proof_for(treatment, baseline))

@@ -106,24 +106,12 @@ impl BrandTheme {
     /// A restrained gradient built from brand and heading roles. Status colors
     /// remain reserved for success, warnings, and errors.
     pub fn gradient() -> [Color; 16] {
-        [
-            role_color(Role::Accent),
-            role_color(Role::Accent),
-            role_color(Role::Memory),
-            role_color(Role::Memory),
-            role_color(Role::HeaderName),
-            role_color(Role::HeaderName),
-            role_color(Role::Heading),
-            role_color(Role::Heading),
-            role_color(Role::FileLink),
-            role_color(Role::FileLink),
-            role_color(Role::Heading),
-            role_color(Role::Heading),
-            role_color(Role::HeaderName),
-            role_color(Role::Memory),
-            role_color(Role::Accent),
-            role_color(Role::Accent),
-        ]
+        let accent = role_color(Role::Accent);
+        let info = role_color(Role::UserText);
+        std::array::from_fn(|index| {
+            let phase = index.min(15 - index) as f32 / 7.0;
+            blend_rgb(accent, info, phase * 0.12)
+        })
     }
 
     /// A smooth ramp of `count` colours across the brand gradient.
@@ -785,7 +773,8 @@ impl StatusBar {
 /// (`wordmark_art` reserves a 4-column inset, so the *terminal* widths are these
 /// plus four):
 /// - 73 cols: full block-letter art ([`crate::alphacode_brand::WORDMARK_BLOCK`])
-/// - 63 cols: compact block letters ([`crate::alphacode_brand::WORDMARK_COMPACT`])
+/// - 53 cols: condensed block letters ([`crate::alphacode_brand::WORDMARK_COMPACT`])
+/// - 35 cols: narrow block letters ([`crate::alphacode_brand::WORDMARK_NARROW`])
 /// - 17 cols: monospace spaced letters ([`crate::alphacode_brand::WORDMARK_MONOSPACE`])
 /// - 13 cols: minimal wordmark ([`crate::alphacode_brand::WORDMARK_MINIMAL`])
 ///
@@ -812,14 +801,12 @@ impl SplashScreen {
         let Some(art) = crate::alphacode_brand::wordmark_for(max_width.saturating_sub(4)) else {
             return Vec::new();
         };
-        let colors = BrandTheme::gradient_rows(art.len());
         art.iter()
-            .enumerate()
-            .map(|(index, row)| {
+            .map(|row| {
                 Line::from(Span::styled(
                     (*row).to_string(),
                     Style::default()
-                        .fg(colors[index % colors.len()])
+                        .fg(BrandTheme::accent())
                         .add_modifier(Modifier::BOLD),
                 ))
                 .alignment(Alignment::Center)
@@ -1071,6 +1058,20 @@ mod tests {
     /// terminal.
     fn pin_truecolor() {
         crate::alphacode_tui_style::color::pin_truecolor_for_tests();
+    }
+
+    #[test]
+    fn resized_block_banners_keep_one_brand_color() {
+        for width in [39, 57, 80, 160] {
+            let lines = SplashScreen::wordmark_art(width);
+            assert_eq!(lines.len(), 6, "width {width}");
+            for line in lines {
+                assert!(line.width() <= width);
+                for span in line.spans {
+                    assert_eq!(span.style.fg, Some(BrandTheme::accent()));
+                }
+            }
+        }
     }
 
     #[test]

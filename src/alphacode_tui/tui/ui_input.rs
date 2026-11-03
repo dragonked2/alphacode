@@ -100,16 +100,18 @@ fn composer_brand_reserved_width(area: Rect) -> usize {
 ///
 /// The frame carries the product mark on its top-right corner: the one piece of
 /// always-visible chrome where the brand can live without stealing a text row
-/// from the editor. The border takes the warning colour while a turn is
+/// from the editor. The border takes the accent colour while a turn is
 /// running so the composer's state is readable from the frame alone, and the
-/// subtle dim colour otherwise so it stays out of the way.
-fn composer_frame_block(busy: bool) -> ratatui::widgets::Block<'static> {
+/// subtle neutral colour otherwise so it stays out of the way.
+fn composer_frame_block(busy: bool, focused: bool) -> ratatui::widgets::Block<'static> {
     use ratatui::widgets::{Block, BorderType};
 
-    let border = if busy {
-        BrandTheme::warning()
+    let border = if focused {
+        BrandTheme::accent()
+    } else if busy {
+        BrandTheme::info()
     } else {
-        BrandTheme::dim()
+        border_color()
     };
     Block::default()
         .borders(ratatui::widgets::Borders::ALL)
@@ -382,7 +384,7 @@ pub(super) fn draw_command_suggestions_overlay(frame: &mut Frame, app: &dyn TuiS
     if !command_suggestions_active(app, &suggestions) {
         return;
     }
-    let mut lines = command_suggestion_lines(app, &suggestions);
+    let mut lines = command_suggestion_lines(app, &suggestions, usize::from(area.width));
     let Some(rect) = command_suggestions_overlay_rect(area, lines.len() as u16, frame.area())
     else {
         return;
@@ -392,12 +394,12 @@ pub(super) fn draw_command_suggestions_overlay(frame: &mut Frame, app: &dyn TuiS
         .map(|line| truncate_line_with_ellipsis(line, area.width as usize))
         .collect();
     lines = fit_command_suggestion_lines_to_height(lines, rect.height as usize);
-    if app.centered_mode() {
-        lines = lines
-            .into_iter()
-            .map(|l| l.alignment(Alignment::Center))
-            .collect();
-    }
+    // Tabular command labels and descriptions share one left edge even when
+    // prose is centered; centering each row independently breaks the columns.
+    lines = lines
+        .into_iter()
+        .map(|line| line.alignment(Alignment::Left))
+        .collect();
     frame.render_widget(ratatui::widgets::Clear, rect);
     frame.render_widget(Paragraph::new(lines), rect);
 }
@@ -405,6 +407,7 @@ pub(super) fn draw_command_suggestions_overlay(frame: &mut Frame, app: &dyn TuiS
 fn command_suggestion_lines(
     app: &dyn TuiState,
     suggestions: &[(String, &'static str)],
+    width: usize,
 ) -> Vec<Line<'static>> {
     // Highlight the characters of each command that the typed query matched.
     // We only highlight the command token itself (the part before the first
@@ -420,14 +423,18 @@ fn command_suggestion_lines(
         .fg(BrandTheme::accent())
         .add_modifier(Modifier::BOLD);
     let unselected_style = Style::default().fg(BrandTheme::info());
-    let desc_selected_style = Style::default().fg(BrandTheme::accent());
-    let desc_unselected_style = Style::default().fg(BrandTheme::dim());
+    let desc_selected_style = Style::default().fg(BrandTheme::dim_bright());
+    let desc_unselected_style = Style::default().fg(BrandTheme::dim_bright());
 
     if suggestions.len() == 1 {
         let (cmd, desc) = &suggestions[0];
         let mut spans = vec![Span::styled("▸ ", selected_style)];
-        spans.extend(highlight(cmd, accent_style));
-        spans.push(Span::styled(format!("  {}", desc), accent_style));
+        let command = truncate_line_with_ellipsis(
+            Line::from(highlight(cmd, accent_style)),
+            width.saturating_sub(4) / 2,
+        );
+        spans.extend(command.spans);
+        spans.push(Span::styled(format!("  {}", desc), desc_selected_style));
         lines.push(Line::from(spans));
     } else if !suggestions.is_empty() {
         let selected = app
@@ -451,7 +458,8 @@ fn command_suggestion_lines(
             .iter()
             .map(|(cmd, _)| unicode_width::UnicodeWidthStr::width(cmd.as_str()))
             .max()
-            .unwrap_or(0);
+            .unwrap_or(0)
+            .min(width.saturating_sub(4) / 2);
 
         // The selected row carries a background so the eye can find it
         // instantly, the same treatment the transcript uses for selections.
@@ -473,8 +481,10 @@ fn command_suggestion_lines(
                 if is_selected { "▸ " } else { "  " },
                 command_style,
             )];
-            row.extend(highlight(cmd, command_style));
-            let cmd_width = unicode_width::UnicodeWidthStr::width(cmd.as_str());
+            let command =
+                truncate_line_with_ellipsis(Line::from(highlight(cmd, command_style)), label_width);
+            let cmd_width = command.width();
+            row.extend(command.spans);
             if cmd_width < label_width {
                 row.push(Span::raw(" ".repeat(label_width - cmd_width)));
             }
@@ -526,7 +536,7 @@ fn command_suggestion_lines(
             String::new()
         };
         lines.push(Line::from(Span::styled(
-            format!("  {}{} · {}", navigation_hint, position_hint, enter_action),
+            format!("  {} · {}{}", enter_action, navigation_hint, position_hint),
             Style::default().fg(BrandTheme::dim()),
         )));
     }
@@ -645,9 +655,9 @@ pub(super) fn input_prompt(app: &dyn TuiState) -> (String, Color) {
     } else if app.is_processing() {
         // The prompt glyph must keep its identity while a turn runs: swapping
         // it for the ellipsis made the composer read as a status line instead
-        // of an editor. Busy stays visible from the warm prompt color, the
+        // of an editor. Busy stays visible from the accent prompt color, the
         // queue hint line, and the task ribbon on the frame border.
-        ("> ".to_string(), BrandTheme::warning())
+        ("> ".to_string(), BrandTheme::accent())
     } else {
         // An active skill deliberately does NOT get a mode prefix. Echoing the
         // skill name inside the composer ("> bugbounty") pushed the typed text
@@ -4223,7 +4233,11 @@ pub(super) fn draw_input(
     // interior so text and hints never ride on the border cells. Static (not
     // animated): the idle-animation partial repaint only patches animated rows
     // and would freeze a breathing border mid-breath between full frames.
-    frame.render_widget(composer_frame_block(app.is_processing()), frame_area);
+    let composer_focused = !app.diff_pane_focus() && !app.diagram_focus();
+    frame.render_widget(
+        composer_frame_block(app.is_processing(), composer_focused),
+        frame_area,
+    );
     draw_composer_brand_badge(frame, frame_area);
 
     // Active-work ribbon paints the live task summary into the top border row
@@ -4231,6 +4245,8 @@ pub(super) fn draw_input(
     let has_work_title = draw_active_work_border_title(frame, app, frame_area);
     if !has_work_title {
         let label = match mode {
+            ComposerMode::Chat if !composer_focused => " Message · Esc to focus ",
+            ComposerMode::Chat if app.next_prompt_new_session_armed() => " New chat ",
             ComposerMode::Chat => " Message ",
             ComposerMode::SlashCommand => " Command ",
             ComposerMode::ShellLocal => " Local shell ",
@@ -4736,7 +4752,7 @@ fn send_mode_indicator(app: &dyn TuiState) -> (&'static str, Color) {
     } else if app.next_prompt_new_session_armed() {
         ("↗", info_color())
     } else if app.queue_mode() {
-        ("⏳", queued_color())
+        ("queue", queued_color())
     } else if let Some(ref conn) = app.connection_type() {
         let lower = conn.to_lowercase();
         // ASCII tags, not Nerd-Font icons: 󰌘/󰆍/󰖟 render as a lone "?" on

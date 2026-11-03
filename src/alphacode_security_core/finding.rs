@@ -770,7 +770,20 @@ mod tests {
         assert_eq!(finding.stage, FindingStage::ConfirmedFinding);
 
         // Reportable only against a history that actually contains the request.
-        assert!(finding.is_reportable(std::slice::from_ref(&treatment)));
+        assert!(
+            finding.is_reportable(&[
+                treatment,
+                finding
+                    .proof
+                    .as_ref()
+                    .unwrap()
+                    .baseline
+                    .as_ref()
+                    .unwrap()
+                    .baseline
+                    .clone(),
+            ])
+        );
         assert!(
             !finding.is_reportable(&[exchange("GET", "https://example.com/other", 500, "x")]),
             "a proof citing an unobserved request is not reportable"

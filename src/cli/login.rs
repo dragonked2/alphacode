@@ -321,6 +321,13 @@ pub async fn run_login_provider(
             LoginProviderTarget::Copilot => {
                 login_copilot_flow(options.no_browser).map(|_| LoginFlowOutcome::Completed)
             }
+            LoginProviderTarget::Gemini
+                if std::env::var("ALPHACODE_GUI_BROWSER_LOGIN").is_ok_and(|value| value == "1")
+                    && std::env::var("ALPHACODE_GUI_LOGIN_METHOD")
+                        .is_ok_and(|value| value == "api_key") =>
+            {
+                login_gemini_api_key_flow().map(|_| LoginFlowOutcome::Completed)
+            }
             LoginProviderTarget::Gemini => login_gemini_flow(options.no_browser)
                 .await
                 .map(|_| LoginFlowOutcome::Completed),

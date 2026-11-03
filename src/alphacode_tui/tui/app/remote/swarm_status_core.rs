@@ -119,6 +119,13 @@ pub(in crate::alphacode_tui::tui::app) fn swarm_status_transition_notice(
     let active = next.iter().filter(|m| is_active_status(&m.status)).count();
     segments.push(if active > 0 {
         format!("{active}/{} active", next.len())
+    } else if next.iter().any(|member| {
+        !matches!(
+            member.status.as_str(),
+            "completed" | "done" | "ready" | "failed" | "crashed" | "stopped"
+        )
+    }) {
+        "no agents active · unfinished work remains".to_string()
     } else {
         format!("all {} finished", next.len())
     });
@@ -219,6 +226,15 @@ mod tests {
             member("bat", "spawned"),  // new member: spawn already visible
         ];
         assert_eq!(swarm_status_transition_notice(&prev, &next), None);
+    }
+
+    #[test]
+    fn blocked_agents_are_not_reported_as_finished() {
+        let prev = vec![member("ant", "running")];
+        let next = vec![member("ant", "blocked")];
+        let notice = swarm_status_transition_notice(&prev, &next).unwrap();
+        assert!(notice.contains("unfinished work remains"));
+        assert!(!notice.contains("all 1 finished"));
     }
 
     #[test]

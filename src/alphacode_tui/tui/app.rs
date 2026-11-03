@@ -54,6 +54,7 @@ mod auth_account_picker_saved_accounts;
 mod catchup;
 mod commands;
 mod commands_colors;
+mod commands_copy;
 mod commands_dispatch;
 mod commands_improve;
 mod commands_overnight;
@@ -307,6 +308,7 @@ struct ModelPickerCacheSignature {
 
 #[derive(Debug, Clone)]
 struct ModelPickerCache {
+    created_at: std::time::Instant,
     signature: ModelPickerCacheSignature,
     entries: Vec<super::PickerEntry>,
     route_count: usize,
@@ -1252,6 +1254,7 @@ pub struct App {
     restart_requested: Option<String>,
     // Pasted content storage (displayed as placeholders, expanded on submit)
     pasted_contents: Vec<String>,
+    clipboard_paste_draft: Option<(String, String, usize)>,
     // Pending pasted images (media_type, base64_data) attached to next message
     pending_images: Vec<(String, String)>,
     // One-shot flag: the next submitted prompt is routed to a new headed session.
@@ -1401,6 +1404,8 @@ pub struct App {
     runtime_mode: AppRuntimeMode,
     // Remote rewind/undo request waiting for the server's replacement History payload.
     pending_remote_rewind_notice: Option<PendingRemoteRewindNotice>,
+    pending_session_copy: Option<commands_copy::PendingSessionCopy>,
+    clipboard_copy_job: Option<commands_copy::ClipboardCopyJob>,
     // History-recovery watchdog for the "stuck on loading session…" bug. When a
     // remote (re)connect never receives the bootstrap `History` event, every
     // prompt path is gated behind `has_loaded_history()` and the session is

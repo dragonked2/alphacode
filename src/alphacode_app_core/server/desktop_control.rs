@@ -9,6 +9,29 @@ use std::collections::{HashMap, HashSet, VecDeque};
 use std::sync::{Arc, atomic::AtomicU64};
 use tokio::sync::{RwLock, broadcast};
 
+/// Desktop pickers offer only routes that can be used with configured auth.
+/// Route-less single-provider runtimes already own their authenticated catalog.
+fn desktop_model_options(
+    catalog: crate::alphacode_provider_core::ModelCatalogSnapshot,
+) -> Vec<String> {
+    let allowed: HashSet<&str> = catalog
+        .model_routes
+        .iter()
+        .filter(|route| route.available)
+        .map(|route| route.model.as_str())
+        .collect();
+    let mut seen = HashSet::new();
+    catalog
+        .available_models
+        .into_iter()
+        .filter(|model| {
+            !model.trim().is_empty()
+                && (catalog.model_routes.is_empty() || allowed.contains(model.as_str()))
+                && seen.insert(model.clone())
+        })
+        .collect()
+}
+
 #[expect(
     clippy::too_many_arguments,
     reason = "desktop control shares existing server state"
@@ -21,6 +44,7 @@ pub(super) async fn execute(
     connections: &Arc<RwLock<HashMap<String, ClientConnectionInfo>>>,
     members: &Arc<RwLock<HashMap<String, SwarmMember>>>,
     swarms: &Arc<RwLock<HashMap<String, HashSet<String>>>>,
+    plans: &Arc<RwLock<HashMap<String, super::VersionedPlan>>>,
     history: &Arc<RwLock<VecDeque<SwarmEvent>>>,
     counter: &Arc<AtomicU64>,
     events: &broadcast::Sender<SwarmEvent>,
@@ -81,6 +105,60 @@ pub(super) async fn execute(
         .any(|connection| connection.session_id == id);
     if !connected {
         bail!("This chat is no longer connected")
+    }
+    // Read-only work snapshots must remain available while the agent is busy.
+    // Snapshot each map independently; never await disk I/O under a map lock.
+    if action == "workflow" {
+        let (swarm_id, swarm) = {
+            let members = members.read().await;
+            let swarm_id = members.get(id).and_then(|member| member.swarm_id.clone());
+            let mut rows: Vec<_> = members.values()
+                .filter(|member| member.session_id == id || swarm_id.as_ref().is_some_and(|swarm| member.swarm_id.as_ref() == Some(swarm)))
+                .map(|member| json!({"session_id": member.session_id, "name": member.friendly_name.as_deref().unwrap_or(&member.session_id), "status": member.status, "role": member.role, "detail": member.detail}))
+                .collect();
+            rows.sort_by(|a, b| a["session_id"].as_str().cmp(&b["session_id"].as_str()));
+            rows.truncate(200);
+            (swarm_id, rows)
+        };
+        let plan = {
+            let plans = plans.read().await;
+            swarm_id.as_ref().and_then(|id| plans.get(id)).cloned()
+        };
+        let session_id = id.to_string();
+        let (todos, intention) = tokio::task::spawn_blocking(move || {
+            let todos = crate::todo::load_todos(&session_id)?;
+            let intention = crate::todo::load_plan(&session_id)?.user_intention;
+            Ok::<_, anyhow::Error>((todos, intention))
+        })
+        .await??;
+        let todo_count = todos.len();
+        let completed = todos
+            .iter()
+            .filter(|todo| todo.status == "completed")
+            .count();
+        let todos: Vec<_> = todos
+            .into_iter()
+            .take(300)
+            .map(|todo| {
+                json!({
+                    "id": todo.id, "content": crate::util::truncate_str(&todo.content, 2000),
+                    "status": todo.status, "group": todo.group, "blocked_by": todo.blocked_by,
+                    "assigned_to": todo.assigned_to,
+                })
+            })
+            .collect();
+        let swarm_plan = plan.map(|plan| {
+            let graph = crate::plan::summarize_plan_graph(&plan.items);
+            json!({"version": plan.version, "item_count": plan.items.len(),
+                "items": plan.items.iter().take(300).map(|item| json!({"id": item.id, "content": crate::util::truncate_str(&item.content, 2000), "status": item.status, "assigned_to": item.assigned_to})).collect::<Vec<_>>(),
+                "ready": graph.ready_ids.len(), "active": graph.active_ids.len(), "completed": graph.completed_ids.len(),
+                "failed": graph.failed_ids.len(), "blocked": graph.blocked_ids.len(), "cycles": graph.cycle_ids.len(),
+            })
+        });
+        return Ok(
+            json!({"available": true, "session_id": id, "todos": todos, "todo_count": todo_count,
+            "completed": completed, "intention": intention, "swarm": swarm, "swarm_plan": swarm_plan}),
+        );
     }
     let agent = sessions
         .read()
@@ -173,7 +251,7 @@ pub(super) async fn execute(
                 "state" => {
                     let (saved, label) = agent.session_bookmark();
                     Ok(
-                        json!({"model": agent.provider_model(), "provider": agent.provider_name(), "models": agent.available_models_display(), "effort": agent.current_reasoning_effort(), "title": agent.session_display_title(), "saved": saved, "save_label": label}),
+                        json!({"model": agent.provider_model(), "provider": agent.provider_name(), "models": desktop_model_options(agent.model_catalog_snapshot()), "effort": agent.current_reasoning_effort(), "title": agent.session_display_title(), "saved": saved, "save_label": label}),
                     )
                 }
                 "tools" => Ok(json!(agent.tool_names().await)),
@@ -237,5 +315,77 @@ pub(super) async fn execute(
             }
         }
         _ => bail!("Unknown desktop action"),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::desktop_model_options;
+    use crate::alphacode_provider_core::{ModelCatalogSnapshot, ModelRoute};
+
+    #[test]
+    fn desktop_models_require_an_available_route_without_hiding_shared_models() {
+        let route = |model: &str, available| ModelRoute {
+            model: model.into(),
+            provider: "test".into(),
+            api_method: "test".into(),
+            available,
+            detail: String::new(),
+            cheapness: None,
+        };
+        let catalog = ModelCatalogSnapshot::new(
+            None,
+            Some("logged-out-model".into()),
+            [
+                "logged-out-model",
+                "shared",
+                "local-model",
+                "shared",
+                "unknown",
+                "",
+            ]
+            .into_iter()
+            .map(str::to_string)
+            .collect(),
+            vec![
+                route("logged-out-model", false),
+                route("shared", false),
+                route("shared", true),
+                route("local-model", true),
+            ],
+        );
+        assert_eq!(desktop_model_options(catalog), ["shared", "local-model"]);
+    }
+
+    #[test]
+    fn desktop_models_do_not_fall_back_to_unavailable_catalogs() {
+        let catalog = ModelCatalogSnapshot::new(
+            None,
+            None,
+            vec!["unavailable".into()],
+            vec![ModelRoute {
+                model: "unavailable".into(),
+                provider: "signed out".into(),
+                api_method: "test".into(),
+                available: false,
+                detail: String::new(),
+                cheapness: None,
+            }],
+        );
+        assert!(desktop_model_options(catalog).is_empty());
+    }
+
+    #[test]
+    fn desktop_models_preserve_route_less_runtime_and_local_model_names() {
+        let catalog = ModelCatalogSnapshot::new(
+            None,
+            None,
+            vec![
+                "lmstudio/community-model".into(),
+                "lmstudio/community-model".into(),
+            ],
+            vec![],
+        );
+        assert_eq!(desktop_model_options(catalog), ["lmstudio/community-model"]);
     }
 }

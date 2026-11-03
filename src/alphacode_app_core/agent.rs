@@ -940,6 +940,11 @@ impl Agent {
         &self.session.id
     }
 
+    /// Full retained text snapshot for an explicit session clipboard export.
+    pub fn session_clipboard_transcript(&self) -> Option<String> {
+        self.session.clipboard_transcript()
+    }
+
     pub(crate) fn set_working_dir_for_pending_context(&mut self, working_dir: Option<String>) {
         if working_dir.is_some() {
             self.session.working_dir = working_dir;

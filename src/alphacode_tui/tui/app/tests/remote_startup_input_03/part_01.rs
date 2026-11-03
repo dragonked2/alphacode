@@ -473,6 +473,9 @@ fn test_restore_session_with_selfdev_reload_tool_result_queues_continuation() {
     use crate::alphacode_tui::session::Session;
 
     let mut app = create_test_app();
+    // Keep save/restore on the same ALPHACODE_HOME when parallel tests redirect it.
+    // App construction takes the render lock, so acquire the environment lock afterward.
+    let _env_lock = crate::storage::lock_test_env();
 
     let mut session = Session::create(None, None);
     session.add_message(

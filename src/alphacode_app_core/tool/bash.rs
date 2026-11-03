@@ -18,9 +18,10 @@ use std::path::Path;
 #[cfg(unix)]
 use std::process::Command as StdCommand;
 use std::process::Stdio;
+use std::sync::Arc;
 use std::sync::LazyLock;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
-#[cfg(unix)]
 use std::time::Instant;
 use tokio::io::{AsyncBufReadExt, AsyncRead, AsyncReadExt, AsyncWriteExt, BufReader};
 use tokio::process::Command as TokioCommand;
@@ -55,6 +56,11 @@ const MAX_CAPTURED_STREAM_BYTES: usize = 4 * MAX_OUTPUT_LEN;
 /// than dropping the entire captured prefix. Read failures are swallowed and
 /// whatever was captured before them is returned, which is exactly what
 /// `let _ = out.read_to_string(&mut buf)` used to leave behind.
+///
+/// Only the unix reload-persistable path and the tests read a file/stream
+/// without needing the activity signal; the piped foreground path uses
+/// [`read_stream_capped_tracked`] so it can auto-background a silent command.
+#[cfg(any(unix, test))]
 async fn read_stream_capped<R>(reader: &mut R, cap: usize) -> String
 where
     R: AsyncRead + Unpin,
@@ -162,6 +168,170 @@ fn truncate_middle(text: &str, head: usize, tail: usize) -> String {
         removed,
         text[head_end..tail_start].lines().count(),
         &text[tail_start..],
+    )
+}
+
+// ── automatic backgrounding ─────────────────────────────────────────────────
+//
+// A foreground command that emits no output for a long time previously blocked
+// the agent until a human noticed and pressed Alt+B. Alt+B is a *hand-off*
+// control: the work only escaped the foreground because a person intervened.
+// With no human watching an autonomous session, a silent long build could stall
+// the turn for its entire timeout. These knobs give the tool the same hand-off
+// on its own, so the agent keeps working and is woken when the command finishes.
+//
+// The signal is output *staleness*, deliberately not absolute runtime: a
+// command that keeps printing (a real `cargo build`, a test runner, a scanner)
+// is making progress and stays in the foreground, where its output is streamed
+// into the turn and no background card is needed. Only a command that has gone
+// quiet long enough that a human would have reached for Alt+B is detached.
+
+/// Default staleness (no stdout/stderr activity) before a foreground command is
+/// auto-detached. Set well above a slow compiler's silent crate-compile phase so
+/// ordinary work is never interrupted.
+const DEFAULT_AUTO_BACKGROUND_IDLE_MS: u64 = 120_000;
+/// Floor for the configurable idle window. Below this the heuristic fires often
+/// enough to be disruptive, and a command that prints once a minute would flap.
+const MIN_AUTO_BACKGROUND_IDLE_MS: u64 = 10_000;
+/// How often the supervisor samples output activity.
+const AUTO_BACKGROUND_POLL_MS: u64 = 500;
+
+/// Resolve the idle window that triggers auto-backgrounding.
+///
+/// `ALPHACODE_BASH_AUTO_BACKGROUND_IDLE_MS` accepts any millisecond value;
+/// `0` disables the behaviour entirely (the pre-existing manual Alt+B path is
+/// untouched either way). A positive value below the floor is clamped so a typo
+/// cannot make the tool detach every command.
+fn auto_background_idle() -> Duration {
+    let raw = std::env::var("ALPHACODE_BASH_AUTO_BACKGROUND_IDLE_MS")
+        .ok()
+        .and_then(|value| value.trim().parse::<u64>().ok())
+        .unwrap_or(DEFAULT_AUTO_BACKGROUND_IDLE_MS);
+    if raw == 0 {
+        return Duration::ZERO;
+    }
+    Duration::from_millis(raw.max(MIN_AUTO_BACKGROUND_IDLE_MS))
+}
+
+/// Whether a command is server-lifetime tooling whose interruption would break
+/// the session. These keep the pre-existing behaviour (no automatic hand-off).
+/// `run_in_background` is already handled before this point.
+fn command_is_server_lifetime(command: &str) -> bool {
+    const NEEDLES: &[&str] = &[
+        "alphacode auto-poke",
+        "alphacode overnight",
+        "alphacode gateway",
+        "cargo watch",
+        "npm run dev",
+        "pnpm dev",
+        "yarn dev",
+        "vite dev",
+        "tail -f",
+        "journalctl -f",
+        "docker logs -f",
+    ];
+    let lowered = command.to_ascii_lowercase();
+    NEEDLES.iter().any(|needle| lowered.contains(needle))
+}
+
+/// Whether the per-invocation opt-out was supplied.
+fn auto_background_disabled(params: &BashInput) -> bool {
+    params.auto_background == Some(false)
+}
+
+/// Tracks output activity so a supervisor (or an inline loop) can tell whether a
+/// command has gone quiet. Any byte written to either stream is activity.
+///
+/// All clones share one origin instant, so a reader task and the supervisor
+/// measuring the same tracker compare against the same clock rather than two
+/// `Instant`s taken microseconds apart.
+#[derive(Clone)]
+struct ActivityTracker {
+    origin: Instant,
+    last_activity_ms: Arc<AtomicU64>,
+}
+
+impl ActivityTracker {
+    fn new() -> Self {
+        Self {
+            origin: Instant::now(),
+            last_activity_ms: Arc::new(AtomicU64::new(0)),
+        }
+    }
+
+    fn record(&self) {
+        self.last_activity_ms
+            .store(self.origin.elapsed().as_millis() as u64, Ordering::Relaxed);
+    }
+
+    /// Elapsed time since the last observed output, or since creation if the
+    /// command has been silent from the start.
+    fn idle(&self) -> Duration {
+        let now = self.origin.elapsed().as_millis() as u64;
+        Duration::from_millis(now.saturating_sub(self.last_activity_ms.load(Ordering::Relaxed)))
+    }
+}
+
+/// Read a child stream into a bounded prefix, keep draining to EOF, and stamp
+/// `activity` on every chunk so a silent command can be told apart from a busy
+/// one. Same contract as [`read_stream_capped`]; the only addition is the
+/// activity signal.
+async fn read_stream_capped_tracked<R>(
+    reader: &mut R,
+    cap: usize,
+    activity: ActivityTracker,
+) -> String
+where
+    R: AsyncRead + Unpin,
+{
+    let mut kept: Vec<u8> = Vec::with_capacity(cap.min(64 * 1024));
+    let mut chunk = [0_u8; 16 * 1024];
+    loop {
+        match reader.read(&mut chunk).await {
+            Ok(0) => break,
+            Ok(read) => {
+                activity.record();
+                let room = cap.saturating_sub(kept.len());
+                if room > 0 {
+                    let take = room.min(read);
+                    kept.extend_from_slice(&chunk[..take]);
+                }
+            }
+            Err(_) => break,
+        }
+    }
+    String::from_utf8_lossy(&kept).into_owned()
+}
+
+/// The message returned in place of a live foreground result once a command has
+/// been handed to the background manager.
+fn auto_background_output(
+    task_id: &str,
+    display_name: &str,
+    output_file: &str,
+    status_file: &str,
+    elapsed: Duration,
+) -> String {
+    format!(
+        "Command produced no output for {:.0}s, so it was automatically moved to the background \
+         (not killed) to keep this session responsive.\n\n\
+         Task ID: {}\n\
+         Name: {}\n\
+         Foreground time used: {:.1}s\n\
+         Output file: {}\n\
+         Status file: {}\n\n\
+         The command is still running; do not rerun it unless you intentionally want a second copy.\n\
+         It will wake this session when it completes. Use `bg` with action=\"status\" and \
+         task_id=\"{}\" to check progress, or action=\"wait\" to block on completion.\n\
+         If it was silent because it is genuinely interactive, rerun it in the foreground with \
+         \"auto_background\": false.",
+        elapsed.as_secs_f64(),
+        task_id,
+        display_name,
+        elapsed.as_secs_f64(),
+        output_file,
+        status_file,
+        task_id,
     )
 }
 
@@ -861,12 +1031,15 @@ fn format_command_output(mut output: String, exit_code: Option<i32>) -> String {
 mod utf8_truncation_tests {
     #[cfg(any(windows, unix))]
     use super::build_shell_command;
-    use super::{BashTool, Tool, ToolContext, format_command_output, read_stream_capped};
     use super::{
-        DEFAULT_TIMEOUT_MS, MAX_CAPTURED_STREAM_BYTES, MAX_OUTPUT_LEN, MAX_TIMEOUT_MS,
+        ActivityTracker, DEFAULT_AUTO_BACKGROUND_IDLE_MS, DEFAULT_TIMEOUT_MS,
+        MAX_CAPTURED_STREAM_BYTES, MAX_OUTPUT_LEN, MAX_TIMEOUT_MS, MIN_AUTO_BACKGROUND_IDLE_MS,
+        auto_background_idle, command_is_server_lifetime, read_stream_capped_tracked,
         truncate_middle,
     };
+    use super::{BashTool, Tool, ToolContext, format_command_output, read_stream_capped};
     use serde_json::json;
+    use std::time::Duration;
 
     /// A background run must resume the agent that launched it. The regression
     /// was silent: the command finished, the status file said `completed`, and
@@ -1078,6 +1251,77 @@ mod utf8_truncation_tests {
         assert!(out.contains("omitted from the middle"));
     }
 
+    /// Auto-backgrounding exists so an autonomous session is never blocked on a
+    /// silent command waiting for a human to press Alt+B. The policy must be
+    /// individually testable: server-lifetime tooling has to stay exempt, and the
+    /// idle window must never be so small that it detaches ordinary work.
+    #[test]
+    fn auto_background_policy_is_conservative() {
+        let default_idle = auto_background_idle();
+        assert!(default_idle >= Duration::from_millis(MIN_AUTO_BACKGROUND_IDLE_MS));
+        assert!(default_idle <= Duration::from_millis(DEFAULT_AUTO_BACKGROUND_IDLE_MS));
+
+        for command in [
+            "alphacode auto-poke --once",
+            "tail -f /tmp/a.log",
+            "docker logs -f api",
+            "cargo watch -x test",
+        ] {
+            assert!(
+                command_is_server_lifetime(command),
+                "{command} should be exempt from auto-backgrounding"
+            );
+        }
+        for command in [
+            "cargo build --release",
+            "npm test",
+            "git status",
+            "nuclei -l hosts",
+        ] {
+            assert!(
+                !command_is_server_lifetime(command),
+                "{command} should remain eligible for auto-backgrounding"
+            );
+        }
+    }
+
+    /// The tracker is shared between the reader tasks and the supervisor, so a
+    /// clone must observe the same clock and a record must reset the idle
+    /// measurement rather than only advancing it.
+    #[test]
+    fn activity_tracker_measures_silence_from_last_output() {
+        let tracker = ActivityTracker::new();
+        std::thread::sleep(Duration::from_millis(30));
+        assert!(
+            tracker.idle() >= Duration::from_millis(20),
+            "a silent command accrues idle time"
+        );
+        tracker.record();
+        assert!(
+            tracker.idle() < Duration::from_millis(20),
+            "output must reset the idle clock"
+        );
+        let clone = tracker.clone();
+        std::thread::sleep(Duration::from_millis(20));
+        assert!(clone.idle() >= tracker.idle());
+    }
+
+    /// Both streams must feed the tracker: a command that only writes to stderr
+    /// is still making progress and must not be detached.
+    #[tokio::test]
+    async fn tracked_reader_marks_activity_on_every_stream() {
+        let tracker = ActivityTracker::new();
+        std::thread::sleep(Duration::from_millis(25));
+        let before = tracker.idle();
+        let mut reader = std::io::Cursor::new(b"partial progress\n".to_vec());
+        let captured = read_stream_capped_tracked(&mut reader, 1024, tracker.clone()).await;
+        assert_eq!(captured, "partial progress\n");
+        assert!(
+            tracker.idle() < before,
+            "reader output must refresh activity"
+        );
+    }
+
     /// A real build needs a long budget, and the cap must not sit *below* the
     /// default: that made an explicit `timeout` unable to extend anything, which
     /// is what killed 10-minute test runs at 600s.
@@ -1246,6 +1490,11 @@ struct BashInput {
     timeout: Option<u64>,
     #[serde(default)]
     run_in_background: Option<bool>,
+    /// Foreground only: opt out of automatic backgrounding when the command is
+    /// silent past the idle window. `None` (the default) allows the hand-off;
+    /// `false` keeps the command in the foreground until it finishes or its
+    /// timeout is reached.
+    auto_background: Option<bool>,
     #[serde(default = "default_true")]
     notify: bool,
     #[serde(default)]
@@ -1448,7 +1697,18 @@ impl BashTool {
             .min(MAX_TIMEOUT_MS);
         let timeout_duration = Duration::from_millis(timeout_ms);
 
+        // A command legitimately waiting for human input is *expected* to go
+        // silent; auto-detaching it would strand the prompt. Same for
+        // server-lifetime tooling, which is deliberately long-running.
         let has_stdin_channel = ctx.stdin_request_tx.is_some();
+        let auto_idle = if auto_background_disabled(params)
+            || !has_stdin_channel
+            || command_is_server_lifetime(&params.command)
+        {
+            Duration::ZERO
+        } else {
+            auto_background_idle()
+        };
 
         let mut command = build_shell_command(&params.command);
         command
@@ -1479,6 +1739,10 @@ impl BashTool {
         let stdin_tx = ctx.stdin_request_tx.clone();
         let tool_call_id = ctx.tool_call_id.clone();
         let title_for_work = title.clone();
+        // Shared with the supervisor below; every output byte refreshes it.
+        let activity = ActivityTracker::new();
+        let activity_for_stdout = activity.clone();
+        let activity_for_stderr = activity.clone();
 
         // Run the command (read stdout/stderr, service stdin, wait for exit) in a
         // dedicated task so that, if it exceeds the foreground timeout, we can hand
@@ -1488,7 +1752,12 @@ impl BashTool {
                 let stdout_task = tokio::spawn(async move {
                     let mut buf = String::new();
                     if let Some(mut out) = stdout_handle {
-                        buf = read_stream_capped(&mut out, MAX_CAPTURED_STREAM_BYTES).await;
+                        buf = read_stream_capped_tracked(
+                            &mut out,
+                            MAX_CAPTURED_STREAM_BYTES,
+                            activity_for_stdout,
+                        )
+                        .await;
                     }
                     buf
                 });
@@ -1496,7 +1765,12 @@ impl BashTool {
                 let stderr_task = tokio::spawn(async move {
                     let mut buf = String::new();
                     if let Some(mut err) = stderr_handle {
-                        buf = read_stream_capped(&mut err, MAX_CAPTURED_STREAM_BYTES).await;
+                        buf = read_stream_capped_tracked(
+                            &mut err,
+                            MAX_CAPTURED_STREAM_BYTES,
+                            activity_for_stderr,
+                        )
+                        .await;
                     }
                     buf
                 });
@@ -1593,61 +1867,115 @@ impl BashTool {
                 Ok(ToolOutput::new(output).with_title(title_for_work))
             });
 
-        match tokio::time::timeout(timeout_duration, &mut work_handle).await {
-            Ok(join_result) => match join_result {
-                Ok(Ok(output)) => Ok(output),
-                Ok(Err(e)) => Err(anyhow::anyhow!("Command failed: {}", e)),
-                Err(join_err) => Err(anyhow::anyhow!("Command task panicked: {}", join_err)),
-            },
-            Err(_) => {
-                // Timed out, but the command is still running. Instead of killing
-                // it, promote it to a background task so it keeps running, renders
-                // as a background-task card, and the agent is told where to find it.
-                let display_name =
-                    summarize_background_command(params.intent.as_deref(), &params.command);
-                let info = crate::background::global()
-                    .adopt_with_options(
-                        "bash",
-                        Some(display_name.clone()),
-                        &ctx.session_id,
-                        params.notify,
-                        params.wake,
-                        work_handle,
-                    )
-                    .await;
-
-                let output = format!(
-                    "Command exceeded the foreground timeout after {:.1}s and is continuing in background (not killed).\n\n\
-                     Task ID: {}\n\
-                     Name: {}\n\
-                     Output file: {}\n\
-                     Status file: {}\n\n\
-                     The command is still running; do not rerun it unless you intentionally want a second copy.\n\
-                     Use `bg` with action=\"wait\" and task_id=\"{}\" to wait for completion or the next progress checkpoint.\n\
-                     Use `bg` with action=\"output\" and task_id=\"{}\" to inspect output.\n\
-                     If you expected it to finish quickly and it did not, the `timeout` parameter is in MILLISECONDS; pass a larger value or omit it.",
-                    timeout_ms as f64 / 1000.0,
-                    info.task_id,
-                    display_name,
-                    info.output_file.display(),
-                    info.status_file.display(),
-                    info.task_id,
-                    info.task_id,
-                );
-
-                Ok(ToolOutput::new(output)
-                    .with_title(title)
-                    .with_metadata(json!({
-                        "background": true,
-                        "task_id": info.task_id,
-                        "display_name": display_name,
-                        "output_file": info.output_file.to_string_lossy(),
-                        "status_file": info.status_file.to_string_lossy(),
-                        "timeout_promoted": true,
-                        "foreground_timeout_ms": timeout_ms,
-                    })))
+        let started = Instant::now();
+        // True when the supervisor handed the command off because it went
+        // silent; false when the absolute foreground timeout expired first.
+        let detached_for_idle = {
+            // Drive the command to completion while watching two deadlines: the
+            // absolute foreground timeout and, when enabled, the output-idle
+            // window that hands a silent command to the background manager.
+            // Each slice awaits the real handle, so a completion is observed
+            // immediately rather than at the next poll tick.
+            let deadline = started + timeout_duration;
+            let poll = Duration::from_millis(AUTO_BACKGROUND_POLL_MS);
+            loop {
+                let now = Instant::now();
+                let remaining = deadline.saturating_duration_since(now);
+                let slice = if auto_idle.is_zero() {
+                    remaining
+                } else {
+                    remaining.min(poll)
+                };
+                match tokio::time::timeout(slice, &mut work_handle).await {
+                    Ok(join_result) => {
+                        return match join_result {
+                            Ok(Ok(output)) => Ok(output),
+                            Ok(Err(e)) => Err(anyhow::anyhow!("Command failed: {}", e)),
+                            Err(join_err) => {
+                                Err(anyhow::anyhow!("Command task panicked: {}", join_err))
+                            }
+                        };
+                    }
+                    Err(_) => {
+                        if Instant::now() >= deadline {
+                            break false;
+                        }
+                        if !auto_idle.is_zero() && activity.idle() >= auto_idle {
+                            break true;
+                        }
+                    }
+                }
             }
+        };
+
+        // Either the foreground timeout expired or the command went silent long
+        // enough. Both cases keep the command running and hand it to the
+        // background manager, which wakes this session on completion.
+        let display_name = summarize_background_command(params.intent.as_deref(), &params.command);
+        let info = crate::background::global()
+            .adopt_with_options(
+                "bash",
+                Some(display_name.clone()),
+                &ctx.session_id,
+                params.notify,
+                params.wake,
+                work_handle,
+            )
+            .await;
+
+        let elapsed = started.elapsed();
+        if detached_for_idle {
+            let output = auto_background_output(
+                &info.task_id,
+                &display_name,
+                &info.output_file.to_string_lossy(),
+                &info.status_file.to_string_lossy(),
+                elapsed,
+            );
+            return Ok(ToolOutput::new(output)
+                .with_title(title)
+                .with_metadata(json!({
+                    "background": true,
+                    "task_id": info.task_id,
+                    "display_name": display_name,
+                    "output_file": info.output_file.to_string_lossy(),
+                    "status_file": info.status_file.to_string_lossy(),
+                    "auto_backgrounded": true,
+                    "idle_ms": auto_idle.as_millis() as u64,
+                    "foreground_elapsed_ms": elapsed.as_millis() as u64,
+                })));
         }
+
+        let output = format!(
+            "Command exceeded the foreground timeout after {:.1}s and is continuing in background (not killed).\n\n\
+             Task ID: {}\n\
+             Name: {}\n\
+             Output file: {}\n\
+             Status file: {}\n\n\
+             The command is still running; do not rerun it unless you intentionally want a second copy.\n\
+             Use `bg` with action=\"wait\" and task_id=\"{}\" to wait for completion or the next progress checkpoint.\n\
+             Use `bg` with action=\"output\" and task_id=\"{}\" to inspect output.\n\
+             If you expected it to finish quickly and it did not, the `timeout` parameter is in MILLISECONDS; pass a larger value or omit it.",
+            timeout_ms as f64 / 1000.0,
+            info.task_id,
+            display_name,
+            info.output_file.display(),
+            info.status_file.display(),
+            info.task_id,
+            info.task_id,
+        );
+
+        Ok(ToolOutput::new(output)
+            .with_title(title)
+            .with_metadata(json!({
+                "background": true,
+                "task_id": info.task_id,
+                "display_name": display_name,
+                "output_file": info.output_file.to_string_lossy(),
+                "status_file": info.status_file.to_string_lossy(),
+                "timeout_promoted": true,
+                "foreground_timeout_ms": timeout_ms,
+            })))
     }
 
     #[cfg(unix)]
@@ -1690,6 +2018,16 @@ impl BashTool {
         let mut child = crate::platform::spawn_detached(&mut cmd)?;
         let pid = child.id();
         let shutdown_signal = ctx.graceful_shutdown_signal.clone();
+        // Same automatic hand-off as the piped path, driven by output-file
+        // growth instead of pipe activity.
+        let auto_idle =
+            if auto_background_disabled(params) || command_is_server_lifetime(&params.command) {
+                Duration::ZERO
+            } else {
+                auto_background_idle()
+            };
+        let mut observed_bytes: u64 = 0;
+        let mut last_growth = Instant::now();
 
         loop {
             if let Some(status) = child.try_wait()? {
@@ -1712,6 +2050,54 @@ impl BashTool {
                             .unwrap_or_else(|| params.command.clone()),
                     ),
                 );
+            }
+
+            if !auto_idle.is_zero() {
+                let size = std::fs::metadata(&info.output_file)
+                    .map(|meta| meta.len())
+                    .unwrap_or(observed_bytes);
+                if size > observed_bytes {
+                    observed_bytes = size;
+                    last_growth = Instant::now();
+                } else if last_growth.elapsed() >= auto_idle {
+                    let elapsed = started.elapsed();
+                    manager
+                        .register_detached_task(
+                            &info,
+                            "bash",
+                            Some(display_name.clone()),
+                            &ctx.session_id,
+                            pid,
+                            &started_at,
+                            params.notify,
+                            params.wake,
+                        )
+                        .await;
+                    let output = auto_background_output(
+                        &info.task_id,
+                        &display_name,
+                        &info.output_file.to_string_lossy(),
+                        &info.status_file.to_string_lossy(),
+                        elapsed,
+                    );
+                    return Ok(ToolOutput::new(output)
+                        .with_title(
+                            params
+                                .intent
+                                .clone()
+                                .unwrap_or_else(|| params.command.clone()),
+                        )
+                        .with_metadata(json!({
+                            "background": true,
+                            "task_id": info.task_id,
+                            "output_file": info.output_file.to_string_lossy(),
+                            "status_file": info.status_file.to_string_lossy(),
+                            "auto_backgrounded": true,
+                            "idle_ms": auto_idle.as_millis() as u64,
+                            "foreground_elapsed_ms": elapsed.as_millis() as u64,
+                            "pid": pid,
+                        })));
+                }
             }
 
             if started.elapsed() >= timeout_duration {

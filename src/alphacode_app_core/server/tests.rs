@@ -292,6 +292,7 @@ async fn desktop_live_prompt_queues_as_user_input_without_replacing_the_client()
         &connections,
         &members,
         &swarms,
+        &Arc::new(RwLock::new(HashMap::new())),
         &history,
         &counter,
         &events,
@@ -310,6 +311,36 @@ async fn desktop_live_prompt_queues_as_user_input_without_replacing_the_client()
     ));
     drop(pending);
     assert_eq!(connections.read().await.len(), 1);
+    // The agent lock is deliberately still held: work snapshots must not wait
+    // for a running turn, and must not include members from another swarm.
+    let (other_tx, _other_rx) = mpsc::unbounded_channel();
+    let mut other = attached_swarm_member("unrelated", other_tx);
+    other.swarm_id = Some("another-swarm".to_string());
+    members.write().await.insert("unrelated".to_string(), other);
+    let workflow = timeout(
+        Duration::from_secs(2),
+        super::desktop_control::execute(
+            "workflow",
+            Some(&id),
+            None,
+            &sessions,
+            &connections,
+            &members,
+            &swarms,
+            &Arc::new(RwLock::new(HashMap::new())),
+            &history,
+            &counter,
+            &events,
+            &queues,
+            &signals,
+        ),
+    )
+    .await
+    .expect("work poll waited for the agent")
+    .unwrap();
+    assert_eq!(workflow["available"], true);
+    assert_eq!(workflow["swarm"].as_array().unwrap().len(), 1);
+    assert_eq!(workflow["swarm"][0]["session_id"], id);
     drop(guard);
 }
 

@@ -42,6 +42,10 @@ fn deps_satisfied(graph: &TaskGraph, node: &TaskNode) -> bool {
 /// Dispatch a ready node to `worker`: assign ownership and flip it to `Running`.
 /// Returns false if the node is not currently dispatchable.
 pub fn dispatch(graph: &mut TaskGraph, node_id: &str, worker: &str) -> bool {
+    let worker = worker.trim();
+    if worker.is_empty() {
+        return false;
+    }
     let dispatchable = graph
         .get(node_id)
         .map(|node| node.status == NodeStatus::Queued && deps_satisfied(graph, node))

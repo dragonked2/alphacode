@@ -42,6 +42,7 @@ mod model;
 mod persistence;
 mod render;
 mod storage_paths;
+mod transcript;
 pub use crate::alphacode_session_types::{
     EnvSnapshot, GitState, SessionImproveMode, SessionStatus, StoredCompactionState,
     StoredDisplayRole, StoredMemoryInjection, StoredMessage, StoredTokenUsage,

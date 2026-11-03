@@ -9,6 +9,17 @@
 // test thread that consults the same gate (e.g. the side-panel
 // placeholder-mode tests in ui_pinned_tests.rs).
 
+/// Plan-graph fixtures assert the inline card exists, which now requires a
+/// native terminal image protocol (see `plan_graph_diagram_renderable`). The
+/// picker is process-global and may already be initialized, so pin the
+/// capability per thread instead of relying on picker state.
+fn create_plan_graph_app() -> App {
+    // Pin per-thread: `force_test_kitty_picker` is a no-op once the global
+    // picker has been initialized by an earlier test.
+    crate::alphacode_tui::tui::mermaid::pin_test_image_protocol(true);
+    create_test_app()
+}
+
 fn swarm_plan_graph_item(id: &str, content: &str) -> crate::plan::PlanItem {
     crate::plan::PlanItem {
         content: content.to_string(),
@@ -110,7 +121,7 @@ impl Drop for DiagramModeOverrideGuard {
 fn test_upsert_in_place_plan_bump_accumulates_stale_active_diagrams() {
     let _render_lock = scroll_render_test_lock();
     let _mode_guard = DiagramModeOverrideGuard::pinned();
-    let mut app = create_test_app();
+    let mut app = create_plan_graph_app();
     app.diagram_mode = crate::config::DiagramDisplayMode::Pinned;
     app.diagram_pane_enabled = true;
     let rt = tokio::runtime::Runtime::new().unwrap();
@@ -243,7 +254,7 @@ fn test_upsert_in_place_plan_bump_accumulates_stale_active_diagrams() {
 #[test]
 fn test_new_registration_silently_shifts_parked_diagram_selection() {
     let _render_lock = scroll_render_test_lock();
-    let mut app = create_test_app();
+    let mut app = create_plan_graph_app();
     app.diagram_mode = crate::config::DiagramDisplayMode::Pinned;
     app.diagram_pane_enabled = true;
 
@@ -318,7 +329,7 @@ fn test_new_registration_silently_shifts_parked_diagram_selection() {
 #[test]
 fn test_active_diagrams_cap_eviction_swaps_currently_shown_diagram() {
     let _render_lock = scroll_render_test_lock();
-    let mut app = create_test_app();
+    let mut app = create_plan_graph_app();
     app.diagram_mode = crate::config::DiagramDisplayMode::Pinned;
     app.diagram_pane_enabled = true;
 
@@ -369,7 +380,7 @@ fn test_active_diagrams_cap_eviction_swaps_currently_shown_diagram() {
 fn test_offscreen_plan_graph_message_still_registers_active_diagram() {
     let _render_lock = scroll_render_test_lock();
     let _mode_guard = DiagramModeOverrideGuard::pinned();
-    let mut app = create_test_app();
+    let mut app = create_plan_graph_app();
     app.diagram_mode = crate::config::DiagramDisplayMode::Pinned;
     app.diagram_pane_enabled = true;
     let rt = tokio::runtime::Runtime::new().unwrap();
@@ -434,7 +445,7 @@ fn test_offscreen_plan_graph_message_still_registers_active_diagram() {
 fn test_session_change_history_leaks_previous_session_active_diagram() {
     let _render_lock = scroll_render_test_lock();
     let _mode_guard = DiagramModeOverrideGuard::pinned();
-    let mut app = create_test_app();
+    let mut app = create_plan_graph_app();
     app.diagram_mode = crate::config::DiagramDisplayMode::Pinned;
     app.diagram_pane_enabled = true;
     let rt = tokio::runtime::Runtime::new().unwrap();
@@ -581,7 +592,7 @@ fn history_event_for_session(session_id: &str) -> crate::protocol::ServerEvent {
 
 #[test]
 fn test_swarm_plan_event_pushes_inline_plan_graph_message() {
-    let mut app = create_test_app();
+    let mut app = create_plan_graph_app();
     let rt = tokio::runtime::Runtime::new().unwrap();
     let _guard = rt.enter();
     let mut remote = crate::alphacode_tui::tui::backend::RemoteConnection::dummy();
@@ -674,7 +685,7 @@ fn test_swarm_plan_event_pushes_inline_plan_graph_message() {
 
 #[test]
 fn test_plan_scope_notification_stays_off_the_transcript() {
-    let mut app = create_test_app();
+    let mut app = create_plan_graph_app();
     let rt = tokio::runtime::Runtime::new().unwrap();
     let _guard = rt.enter();
     let mut remote = crate::alphacode_tui::tui::backend::RemoteConnection::dummy();
@@ -728,7 +739,7 @@ fn test_non_plan_swarm_message_between_plan_versions_moves_plan_graph_to_bottom(
     // A non-plan-scope swarm chat card (e.g. a DM) landing between two
     // SwarmPlan events must NOT stack a second diagram: the single plan-graph
     // message is moved to the bottom of the transcript instead.
-    let mut app = create_test_app();
+    let mut app = create_plan_graph_app();
     let rt = tokio::runtime::Runtime::new().unwrap();
     let _guard = rt.enter();
     let mut remote = crate::alphacode_tui::tui::backend::RemoteConnection::dummy();
@@ -782,7 +793,7 @@ fn test_non_plan_swarm_message_between_plan_versions_moves_plan_graph_to_bottom(
 fn test_out_of_order_older_swarm_plan_version_is_dropped() {
     // A stale (older-version) SwarmPlan broadcast racing behind a newer one
     // must be ignored: neither the diagram nor the snapshot state regresses.
-    let mut app = create_test_app();
+    let mut app = create_plan_graph_app();
     let rt = tokio::runtime::Runtime::new().unwrap();
     let _guard = rt.enter();
     let mut remote = crate::alphacode_tui::tui::backend::RemoteConnection::dummy();
@@ -830,7 +841,7 @@ fn test_history_session_change_clears_swarm_plan_state_and_plan_graph_does_not_r
     // Wiring-audit claim 3: the History server event clears swarm_plan_items
     // (server_events.rs ~1637) on session change and the plan-graph chat
     // message does not reappear from the restored history.
-    let mut app = create_test_app();
+    let mut app = create_plan_graph_app();
     let rt = tokio::runtime::Runtime::new().unwrap();
     let _guard = rt.enter();
     let mut remote = crate::alphacode_tui::tui::backend::RemoteConnection::dummy();
@@ -880,7 +891,7 @@ fn test_swarm_plan_pushes_no_plan_graph_message_when_mermaid_disabled() {
     // plan-graph message (raw mermaid source would be noise), while the plan
     // snapshot state is still applied. Uses the scoped thread-local override
     // instead of mutating the process env, which would race parallel tests.
-    let mut app = create_test_app();
+    let mut app = create_plan_graph_app();
     let rt = tokio::runtime::Runtime::new().unwrap();
     let _guard = rt.enter();
     let mut remote = crate::alphacode_tui::tui::backend::RemoteConnection::dummy();
@@ -1063,7 +1074,7 @@ fn assert_full_discard_clears_diagrams_but_keeps_plan_state(app: &mut App, path:
 fn test_local_clear_command_clears_active_diagrams_but_keeps_swarm_plan_state() {
     let _render_lock = scroll_render_test_lock();
     let _mode_guard = DiagramModeOverrideGuard::pinned();
-    let mut app = create_test_app();
+    let mut app = create_plan_graph_app();
     app.diagram_mode = crate::config::DiagramDisplayMode::Pinned;
     app.diagram_pane_enabled = true;
     let rt = tokio::runtime::Runtime::new().unwrap();
@@ -1092,7 +1103,7 @@ fn test_local_clear_command_clears_active_diagrams_but_keeps_swarm_plan_state() 
 fn test_local_clear_command_empties_margin_info_widget_diagram_list() {
     let _render_lock = scroll_render_test_lock();
     let _mode_guard = DiagramModeOverrideGuard::margin();
-    let mut app = create_test_app();
+    let mut app = create_plan_graph_app();
     app.diagram_mode = crate::config::DiagramDisplayMode::Margin;
     let rt = tokio::runtime::Runtime::new().unwrap();
     let _guard = rt.enter();
@@ -1132,7 +1143,7 @@ fn test_local_clear_command_empties_margin_info_widget_diagram_list() {
 fn test_local_rewind_and_undo_leave_stale_active_diagram_and_swarm_plan_state() {
     let _render_lock = scroll_render_test_lock();
     let _mode_guard = DiagramModeOverrideGuard::pinned();
-    let mut app = create_test_app();
+    let mut app = create_plan_graph_app();
     app.diagram_mode = crate::config::DiagramDisplayMode::Pinned;
     app.diagram_pane_enabled = true;
     let rt = tokio::runtime::Runtime::new().unwrap();
@@ -1189,7 +1200,7 @@ fn test_local_rewind_and_undo_leave_stale_active_diagram_and_swarm_plan_state() 
 fn test_recover_session_without_tools_leaves_stale_active_diagram_and_swarm_plan_state() {
     let _render_lock = scroll_render_test_lock();
     let _mode_guard = DiagramModeOverrideGuard::pinned();
-    let mut app = create_test_app();
+    let mut app = create_plan_graph_app();
     app.diagram_mode = crate::config::DiagramDisplayMode::Pinned;
     app.diagram_pane_enabled = true;
     let rt = tokio::runtime::Runtime::new().unwrap();
@@ -1219,7 +1230,7 @@ fn test_recover_session_without_tools_leaves_stale_active_diagram_and_swarm_plan
 fn test_remote_clear_command_clears_active_diagrams_but_keeps_swarm_plan_state() {
     let _render_lock = scroll_render_test_lock();
     let _mode_guard = DiagramModeOverrideGuard::pinned();
-    let mut app = create_test_app();
+    let mut app = create_plan_graph_app();
     app.diagram_mode = crate::config::DiagramDisplayMode::Pinned;
     app.diagram_pane_enabled = true;
     app.is_remote = true;
@@ -1256,7 +1267,7 @@ fn test_remote_clear_command_clears_active_diagrams_but_keeps_swarm_plan_state()
 fn test_disconnected_ctrl_l_clears_view_but_keeps_queue_and_swarm_plan_state() {
     let _render_lock = scroll_render_test_lock();
     let _mode_guard = DiagramModeOverrideGuard::pinned();
-    let mut app = create_test_app();
+    let mut app = create_plan_graph_app();
     app.diagram_mode = crate::config::DiagramDisplayMode::Pinned;
     app.diagram_pane_enabled = true;
     let rt = tokio::runtime::Runtime::new().unwrap();
@@ -1301,7 +1312,7 @@ fn test_disconnected_ctrl_l_clears_view_but_keeps_queue_and_swarm_plan_state() {
 #[test]
 fn test_info_widget_diagram_list_populated_only_in_margin_mode() {
     let _render_lock = scroll_render_test_lock();
-    let mut app = create_test_app();
+    let mut app = create_plan_graph_app();
 
     let _diagram_lock = crate::alphacode_tui::tui::mermaid::active_diagram_test_lock();
     crate::alphacode_tui::tui::mermaid::clear_active_diagrams();
@@ -1341,7 +1352,7 @@ fn test_info_widget_diagram_list_populated_only_in_margin_mode() {
 fn test_margin_mode_plan_bump_accumulates_stale_diagram_in_info_widget_list() {
     let _render_lock = scroll_render_test_lock();
     let _mode_guard = DiagramModeOverrideGuard::margin();
-    let mut app = create_test_app();
+    let mut app = create_plan_graph_app();
     app.diagram_mode = crate::config::DiagramDisplayMode::Margin;
     let rt = tokio::runtime::Runtime::new().unwrap();
     let _guard = rt.enter();
@@ -1453,7 +1464,7 @@ fn test_margin_mode_plan_bump_accumulates_stale_diagram_in_info_widget_list() {
 #[test]
 fn test_margin_mode_has_no_diagram_selection_and_always_shows_newest() {
     let _render_lock = scroll_render_test_lock();
-    let mut app = create_test_app();
+    let mut app = create_plan_graph_app();
     app.diagram_mode = crate::config::DiagramDisplayMode::Margin;
     app.diagram_pane_enabled = true;
 
@@ -1531,7 +1542,7 @@ fn test_margin_mode_has_no_diagram_selection_and_always_shows_newest() {
 fn test_margin_mode_session_switch_keeps_orphaned_diagram_in_info_widget() {
     let _render_lock = scroll_render_test_lock();
     let _mode_guard = DiagramModeOverrideGuard::margin();
-    let mut app = create_test_app();
+    let mut app = create_plan_graph_app();
     app.diagram_mode = crate::config::DiagramDisplayMode::Margin;
     let rt = tokio::runtime::Runtime::new().unwrap();
     let _guard = rt.enter();
@@ -1599,7 +1610,7 @@ fn test_margin_mode_session_switch_keeps_orphaned_diagram_in_info_widget() {
 fn test_compacted_history_window_drops_plan_graph_but_leaks_diagram_and_plan_state() {
     let _render_lock = scroll_render_test_lock();
     let _mode_guard = DiagramModeOverrideGuard::pinned();
-    let mut app = create_test_app();
+    let mut app = create_plan_graph_app();
     app.diagram_mode = crate::config::DiagramDisplayMode::Pinned;
     app.diagram_pane_enabled = true;
     let rt = tokio::runtime::Runtime::new().unwrap();
@@ -1663,7 +1674,7 @@ fn test_compacted_history_window_drops_plan_graph_but_leaks_diagram_and_plan_sta
 fn test_remote_rewind_history_response_is_not_session_changed_and_leaks_plan_state() {
     let _render_lock = scroll_render_test_lock();
     let _mode_guard = DiagramModeOverrideGuard::pinned();
-    let mut app = create_test_app();
+    let mut app = create_plan_graph_app();
     app.diagram_mode = crate::config::DiagramDisplayMode::Pinned;
     app.diagram_pane_enabled = true;
     app.is_remote = true;
@@ -1759,7 +1770,7 @@ fn test_remote_rewind_history_response_is_not_session_changed_and_leaks_plan_sta
 fn test_local_session_picker_switch_is_never_consumed_and_keeps_plan_graph_state() {
     let _render_lock = scroll_render_test_lock();
     let _mode_guard = DiagramModeOverrideGuard::pinned();
-    let mut app = create_test_app();
+    let mut app = create_plan_graph_app();
     app.diagram_mode = crate::config::DiagramDisplayMode::Pinned;
     app.diagram_pane_enabled = true;
     assert!(!app.is_remote, "this pins the local (non-remote) mode path");
@@ -1896,7 +1907,7 @@ fn assert_streaming_preview_cleared(hash: u64, path: &str) {
 #[test]
 fn test_local_clear_command_clears_streaming_preview_diagram() {
     let _render_lock = scroll_render_test_lock();
-    let mut app = create_test_app();
+    let mut app = create_plan_graph_app();
     let hash: u64 = 0x0005_17EA_11ED_0001;
     seed_streaming_preview(&mut app, hash);
 
@@ -1916,7 +1927,7 @@ fn test_local_clear_command_clears_streaming_preview_diagram() {
 #[test]
 fn test_local_rewind_and_undo_clear_streaming_preview_diagram() {
     let _render_lock = scroll_render_test_lock();
-    let mut app = create_test_app();
+    let mut app = create_plan_graph_app();
 
     app.session.replace_messages(Vec::new());
     for idx in 1..=2 {
@@ -1955,7 +1966,7 @@ fn test_local_rewind_and_undo_clear_streaming_preview_diagram() {
 #[test]
 fn test_recover_session_without_tools_clears_streaming_preview_diagram() {
     let _render_lock = scroll_render_test_lock();
-    let mut app = create_test_app();
+    let mut app = create_plan_graph_app();
     let hash: u64 = 0x0005_17EA_11ED_0003;
     seed_streaming_preview(&mut app, hash);
 
@@ -1981,7 +1992,7 @@ fn test_recover_session_without_tools_clears_streaming_preview_diagram() {
 #[test]
 fn test_commit_with_emptied_stream_buffer_clears_streaming_preview_diagram() {
     let _render_lock = scroll_render_test_lock();
-    let mut app = create_test_app();
+    let mut app = create_plan_graph_app();
     let hash: u64 = 0x0005_17EA_11ED_0004;
     seed_streaming_preview(&mut app, hash);
 

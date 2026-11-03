@@ -1,5 +1,71 @@
 // Issue #544: stray Enter after a bracketed paste must not submit.
 #[test]
+fn control_v_terminal_delivery_collapses_like_alt_v() {
+    use crate::alphacode_tui::bus::{
+        ClipboardPasteCompleted, ClipboardPasteContent, ClipboardPasteKind,
+    };
+
+    for terminal_delivered in [false, true] {
+        let mut app = create_test_app();
+        let before = "Explain:  please";
+        let cursor = "Explain: ".len();
+        let text = "first\nsecond 👩‍💻";
+        app.set_input_for_test(before);
+        app.cursor_pos = cursor;
+        let session_id = app.active_client_session_id().unwrap().to_string();
+        app.clipboard_paste_draft = Some((session_id.clone(), before.to_string(), cursor));
+        if terminal_delivered {
+            app.input.insert_str(cursor, text);
+            app.cursor_pos += text.len();
+        }
+        assert!(
+            app.handle_clipboard_paste_completed(ClipboardPasteCompleted {
+                session_id,
+                kind: ClipboardPasteKind::Smart,
+                content: ClipboardPasteContent::Text(text.to_string()),
+            })
+        );
+        assert_eq!(app.input, "Explain: [pasted content] please");
+        assert_eq!(app.pasted_contents, vec![text.to_string()]);
+        assert_eq!(
+            app.expand_paste_placeholders(&app.input.clone()),
+            "Explain: first\nsecond 👩‍💻 please"
+        );
+    }
+}
+
+#[test]
+fn pasting_matching_text_does_not_silently_discard_the_paste() {
+    let mut app = create_test_app();
+    app.set_input_for_test("hello");
+    app.cursor_pos = app.input.len();
+    app.handle_paste("hello".to_string());
+    assert_eq!(app.input, "hello[pasted content]");
+    assert_eq!(
+        app.expand_paste_placeholders(&app.input.clone()),
+        "hellohello"
+    );
+}
+
+#[test]
+fn control_v_does_not_duplicate_a_terminal_paste_token() {
+    use crate::alphacode_tui::bus::{
+        ClipboardPasteCompleted, ClipboardPasteContent, ClipboardPasteKind,
+    };
+    let mut app = create_test_app();
+    let session_id = app.active_client_session_id().unwrap().to_string();
+    app.clipboard_paste_draft = Some((session_id.clone(), String::new(), 0));
+    app.handle_paste("hello\nworld".to_string());
+    app.handle_clipboard_paste_completed(ClipboardPasteCompleted {
+        session_id,
+        kind: ClipboardPasteKind::Smart,
+        content: ClipboardPasteContent::Text("hello\nworld".to_string()),
+    });
+    assert_eq!(app.input, "[pasted content]");
+    assert_eq!(app.pasted_contents.len(), 1);
+}
+
+#[test]
 fn bare_enter_immediately_after_paste_does_not_submit() {
     // Windows Terminal / conhost sends a separate bare Enter key event after
     // a bracketed paste ending with \n; it must not submit the chat (#544).
@@ -117,4 +183,3 @@ fn repeated_continuations_build_a_multi_line_draft() {
 
     assert_eq!(app.input, "one\ntwo\nthree");
 }
-

@@ -102,6 +102,11 @@ Never mix shell syntaxes."
                 "description": "Run in background. Emit `ALPHACODE_PROGRESS {json}` lines for progress reporting. Completion wakes the agent (same as `wake: true`) unless `wake` is explicitly false."
             },
 
+            "auto_background": {
+                "type": "boolean",
+                "description": "Foreground only. A command that stays silent for a long time is automatically moved to the background (it keeps running and wakes the agent) so the session is not blocked. Defaults to true. Set false for an interactive command that legitimately reads input or waits without printing."
+            },
+
             "notify": {
                 "type": "boolean",
                 "description": "Notify on completion."

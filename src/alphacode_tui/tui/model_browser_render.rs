@@ -26,6 +26,7 @@ use ratatui::prelude::*;
 use ratatui::widgets::{Block, Borders, List, ListItem, ListState, Paragraph, Wrap};
 
 use super::query_highlight;
+use crate::alphacode_tui_style::palette::{Role, role_color};
 
 use crate::alphacode_tui::tui::RouteDetailSeverity;
 #[allow(unused_imports)]
@@ -53,49 +54,75 @@ pub enum BrowserKey {
 /// Top hotkey hint printed above the browser box.
 pub fn top_hint_line() -> Line<'static> {
     Line::from(vec![
-        Span::styled(" ", Style::default().fg(Color::DarkGray)),
+        Span::styled(
+            " Enter",
+            Style::default()
+                .fg(role_color(Role::Accent))
+                .add_modifier(Modifier::BOLD),
+        ),
+        Span::styled(
+            " select  ",
+            Style::default().fg(role_color(Role::MutedText)),
+        ),
+        Span::styled(
+            "↑↓",
+            Style::default()
+                .fg(role_color(Role::Accent))
+                .add_modifier(Modifier::BOLD),
+        ),
+        Span::styled(
+            " navigate  ",
+            Style::default().fg(role_color(Role::MutedText)),
+        ),
+        Span::styled(" ", Style::default().fg(role_color(Role::MutedText))),
         Span::styled(
             "Tab",
             Style::default()
-                .fg(Color::Cyan)
+                .fg(role_color(Role::Accent))
                 .add_modifier(Modifier::BOLD),
         ),
-        Span::styled(" sort  ", Style::default().fg(Color::DarkGray)),
+        Span::styled(" sort  ", Style::default().fg(role_color(Role::MutedText))),
         Span::styled(
             "1-9",
             Style::default()
-                .fg(Color::Cyan)
+                .fg(role_color(Role::Accent))
                 .add_modifier(Modifier::BOLD),
         ),
-        Span::styled(" jump  ", Style::default().fg(Color::DarkGray)),
+        Span::styled(" jump  ", Style::default().fg(role_color(Role::MutedText))),
         Span::styled(
             "p",
             Style::default()
-                .fg(Color::Cyan)
+                .fg(role_color(Role::Accent))
                 .add_modifier(Modifier::BOLD),
         ),
-        Span::styled(" provider  ", Style::default().fg(Color::DarkGray)),
+        Span::styled(
+            " provider  ",
+            Style::default().fg(role_color(Role::MutedText)),
+        ),
         Span::styled(
             "t",
             Style::default()
-                .fg(Color::Cyan)
+                .fg(role_color(Role::Accent))
                 .add_modifier(Modifier::BOLD),
         ),
-        Span::styled(" tier  ", Style::default().fg(Color::DarkGray)),
+        Span::styled(" tier  ", Style::default().fg(role_color(Role::MutedText))),
         Span::styled(
             "c",
             Style::default()
-                .fg(Color::Cyan)
+                .fg(role_color(Role::Accent))
                 .add_modifier(Modifier::BOLD),
         ),
-        Span::styled(" capability  ", Style::default().fg(Color::DarkGray)),
+        Span::styled(
+            " capability  ",
+            Style::default().fg(role_color(Role::MutedText)),
+        ),
         Span::styled(
             "Esc",
             Style::default()
-                .fg(Color::Cyan)
+                .fg(role_color(Role::Accent))
                 .add_modifier(Modifier::BOLD),
         ),
-        Span::styled(" close", Style::default().fg(Color::DarkGray)),
+        Span::styled(" close", Style::default().fg(role_color(Role::MutedText))),
     ])
 }
 
@@ -112,21 +139,24 @@ pub fn bottom_hint_line(state: &ModelBrowserState) -> Line<'static> {
     let mut spans = Vec::new();
     spans.push(Span::styled(
         " Search ",
-        Style::default().fg(Color::DarkGray),
+        Style::default().fg(role_color(Role::MutedText)),
     ));
     if query.is_empty() {
         spans.push(Span::styled(
             "type to filter",
             Style::default()
-                .fg(Color::DarkGray)
+                .fg(role_color(Role::MutedText))
                 .add_modifier(Modifier::ITALIC),
         ));
     } else {
         spans.push(Span::styled(
             query.to_string(),
-            Style::default().fg(Color::White),
+            Style::default().fg(role_color(Role::AiText)),
         ));
-        spans.push(Span::styled("▏", Style::default().fg(Color::Cyan)));
+        spans.push(Span::styled(
+            "▏",
+            Style::default().fg(role_color(Role::Accent)),
+        ));
         spans.push(Span::styled(
             format!(
                 " {count} match{}{}",
@@ -138,9 +168,9 @@ pub fn bottom_hint_line(state: &ModelBrowserState) -> Line<'static> {
                 }
             ),
             Style::default().fg(if count == 0 {
-                Color::Red
+                role_color(Role::Error)
             } else {
-                Color::DarkGray
+                role_color(Role::MutedText)
             }),
         ));
         spans.push(Span::styled("  ", Style::default()));
@@ -148,22 +178,22 @@ pub fn bottom_hint_line(state: &ModelBrowserState) -> Line<'static> {
     spans.extend([Span::styled(
         format!(" Sort: {} ", state.sort.label()),
         Style::default()
-            .fg(Color::Cyan)
+            .fg(role_color(Role::Accent))
             .add_modifier(Modifier::BOLD),
     )]);
     spans.push(Span::styled(
         format!("\u{2022} {count}/{total} models  "),
-        Style::default().fg(Color::Gray),
+        Style::default().fg(role_color(Role::MutedText)),
     ));
     if state.loading.is_some() {
         spans.push(Span::styled(
             "\u{2022} loading\u{2026}",
-            Style::default().fg(Color::Yellow),
+            Style::default().fg(role_color(Role::Warning)),
         ));
     } else if state.facets.active_count() > 0 {
         spans.push(Span::styled(
             format!("\u{2022} {} filter(s) ", state.facets.active_count()),
-            Style::default().fg(Color::Magenta),
+            Style::default().fg(role_color(Role::ModelName)),
         ));
     }
     Line::from(spans)
@@ -185,9 +215,9 @@ pub fn render_facets(
             let active = state.facets.providers.contains(p);
             let marker = if active { "\u{25cf}" } else { "\u{25cb}" };
             let color = if active {
-                Color::Magenta
+                role_color(Role::ModelName)
             } else {
-                Color::DarkGray
+                role_color(Role::MutedText)
             };
             ListItem::new(Line::from(vec![
                 Span::styled(
@@ -196,18 +226,24 @@ pub fn render_facets(
                 ),
                 Span::styled(
                     format!("{:>2}. ", idx + 1),
-                    Style::default().fg(Color::DarkGray),
+                    Style::default().fg(role_color(Role::MutedText)),
                 ),
-                Span::styled(p.clone(), Style::default().fg(Color::White)),
-                Span::styled(format!("  ({count})"), Style::default().fg(Color::DarkGray)),
+                Span::styled(p.clone(), Style::default().fg(role_color(Role::AiText))),
+                Span::styled(
+                    format!("  ({count})"),
+                    Style::default().fg(role_color(Role::MutedText)),
+                ),
             ]))
         })
         .collect();
 
     let block = Block::default()
         .borders(Borders::RIGHT)
-        .border_style(Style::default().fg(Color::DarkGray))
-        .title(Span::styled(" PROVIDER ", Style::default().fg(Color::Cyan)));
+        .border_style(Style::default().fg(role_color(Role::MutedText)))
+        .title(Span::styled(
+            " PROVIDER ",
+            Style::default().fg(role_color(Role::Accent)),
+        ));
     let list = List::new(items).block(block);
     ratatui::prelude::Widget::render(list, area, buf);
 }
@@ -217,10 +253,10 @@ pub fn render_models(state: &ModelBrowserState, area: Rect, buf: &mut Buffer) {
     let models_block = || {
         Block::default()
             .borders(Borders::RIGHT)
-            .border_style(Style::default().fg(Color::DarkGray))
+            .border_style(Style::default().fg(role_color(Role::MutedText)))
             .title(Span::styled(
                 format!(" MODELS ({}) ", state.filtered.len()),
-                Style::default().fg(Color::Cyan),
+                Style::default().fg(role_color(Role::Accent)),
             ))
     };
 
@@ -238,8 +274,15 @@ pub fn render_models(state: &ModelBrowserState, area: Rect, buf: &mut Buffer) {
     // block paints a right border, so the usable row width is three columns
     // narrower than the area.
     let models_width = area.width.saturating_sub(3) as usize;
-    let height = area.height as usize;
-    let start = state.selected.saturating_sub(height / 2);
+    let height = models_block().inner(area).height as usize;
+    if height == 0 {
+        models_block().render(area, buf);
+        return;
+    }
+    let start = state
+        .selected
+        .saturating_sub(height / 2)
+        .min(state.filtered.len().saturating_sub(height));
     let end = (start + height).min(state.filtered.len());
 
     let items: Vec<ListItem> = state.filtered[start..end]
@@ -250,16 +293,24 @@ pub fn render_models(state: &ModelBrowserState, area: Rect, buf: &mut Buffer) {
             let absolute = start + idx;
             let is_selected = absolute == state.selected;
             let n = absolute + 1;
-            let num_pad = format!("{:>3}. ", n.min(999));
+            let num_pad = if models_width >= 16 {
+                format!("{:>3}. ", n.min(999))
+            } else {
+                String::new()
+            };
+            let number_width = num_pad.len();
+            let show_current = row.is_current && models_width >= 28;
+            let show_default = row.is_default && models_width >= 44;
+            let show_tier = models_width >= 56;
 
             let mut spans = vec![Span::styled(
                 num_pad,
                 if is_selected {
                     Style::default()
-                        .fg(Color::Yellow)
+                        .fg(role_color(Role::Warning))
                         .add_modifier(Modifier::BOLD)
                 } else {
-                    Style::default().fg(Color::DarkGray)
+                    Style::default().fg(role_color(Role::MutedText))
                 },
             )];
 
@@ -267,17 +318,25 @@ pub fn render_models(state: &ModelBrowserState, area: Rect, buf: &mut Buffer) {
             // when the name is wider than the column.
             let name_style = if is_selected {
                 Style::default()
-                    .fg(Color::Cyan)
+                    .fg(role_color(Role::Accent))
                     .add_modifier(Modifier::BOLD)
             } else if row.is_favorite {
-                Style::default().fg(Color::Magenta)
+                Style::default().fg(role_color(Role::ModelName))
             } else {
-                Style::default().fg(Color::White)
+                Style::default().fg(role_color(Role::AiText))
             };
             let hit_style = Style::default()
-                .fg(Color::Yellow)
+                .fg(role_color(Role::Warning))
                 .add_modifier(Modifier::BOLD | Modifier::UNDERLINED);
-            let name_budget = models_width.saturating_sub(name_badge_width(row)).max(6);
+            let badge_width = number_width
+                + usize::from(show_current) * 10
+                + usize::from(show_default) * 9
+                + if show_tier {
+                    3 + row.tier.label().len()
+                } else {
+                    0
+                };
+            let name_budget = models_width.saturating_sub(badge_width);
             spans.extend(query_highlight::highlight_within(
                 row.pretty_name(),
                 &state.facets.text,
@@ -285,27 +344,29 @@ pub fn render_models(state: &ModelBrowserState, area: Rect, buf: &mut Buffer) {
                 name_style,
                 hit_style,
             ));
-            if row.is_current {
+            if show_current {
                 spans.push(Span::styled(
                     "  \u{2190}current",
                     Style::default()
-                        .fg(Color::Green)
+                        .fg(role_color(Role::Success))
                         .add_modifier(Modifier::BOLD),
                 ));
             }
-            if row.is_default {
+            if show_default {
                 spans.push(Span::styled(
                     "  default",
                     Style::default()
-                        .fg(Color::Cyan)
+                        .fg(role_color(Role::Accent))
                         .add_modifier(Modifier::ITALIC),
                 ));
             }
-            let tier_label = format!(" [{}]", row.tier.label());
-            spans.push(Span::styled(
-                tier_label,
-                Style::default().fg(tier_color(row.tier)),
-            ));
+            if show_tier {
+                let tier_label = format!(" [{}]", row.tier.label());
+                spans.push(Span::styled(
+                    tier_label,
+                    Style::default().fg(tier_color(row.tier)),
+                ));
+            }
             ListItem::new(Line::from(spans))
         })
         .collect();
@@ -316,8 +377,8 @@ pub fn render_models(state: &ModelBrowserState, area: Rect, buf: &mut Buffer) {
         .block(block)
         .highlight_style(
             Style::default()
-                .bg(Color::Rgb(35, 40, 55))
-                .fg(Color::White)
+                .bg(role_color(Role::SelectionBg))
+                .fg(role_color(Role::AiText))
                 .add_modifier(Modifier::BOLD),
         )
         .highlight_symbol("\u{25b8} ");
@@ -333,17 +394,25 @@ pub fn render_detail(state: &ModelBrowserState, area: Rect, buf: &mut Buffer) {
         lines.push(Line::from(Span::styled(
             row.pretty_name().to_string(),
             Style::default()
-                .fg(Color::Cyan)
+                .fg(role_color(Role::Accent))
                 .add_modifier(Modifier::BOLD),
         )));
         lines.push(Line::from(""));
-        lines.push(detail_row("Provider", &row.provider, Color::White));
-        lines.push(detail_row("Auth", &row.api_method, Color::White));
+        lines.push(detail_row(
+            "Provider",
+            &row.provider,
+            role_color(Role::AiText),
+        ));
+        lines.push(detail_row(
+            "Auth",
+            &row.api_method,
+            role_color(Role::AiText),
+        ));
         if let Some(c) = row.context_window {
             lines.push(detail_row(
                 "Context",
                 &format!("{}k tokens", c / 1000),
-                Color::White,
+                role_color(Role::AiText),
             ));
         }
         if let Some(c) = row.cost_in_micros {
@@ -352,39 +421,41 @@ pub fn render_detail(state: &ModelBrowserState, area: Rect, buf: &mut Buffer) {
                 "$/M in/out",
                 &format!("${:.2}", dollars),
                 if dollars < 1.0 {
-                    Color::Green
+                    role_color(Role::Success)
                 } else {
-                    Color::White
+                    role_color(Role::AiText)
                 },
             ));
         }
         if !row.capabilities.is_empty() {
             let caps: Vec<&str> = row.capabilities.iter().map(|c| c.label()).collect();
-            lines.push(detail_row("Caps", &caps.join(" \u{2022} "), Color::White));
+            lines.push(detail_row(
+                "Caps",
+                &caps.join(" \u{2022} "),
+                role_color(Role::AiText),
+            ));
         }
         if let Some(detail) = &row.detail {
             lines.push(Line::from(""));
             let style = match row.detail_severity {
-                RouteDetailSeverity::Unavailable => {
-                    Style::default().fg(Color::Red).add_modifier(Modifier::BOLD)
-                }
-                RouteDetailSeverity::Warn => Style::default().fg(Color::Yellow),
-                RouteDetailSeverity::Info => Style::default().fg(Color::Cyan),
-                RouteDetailSeverity::None => Style::default().fg(Color::Gray),
+                RouteDetailSeverity::Unavailable => Style::default()
+                    .fg(role_color(Role::Error))
+                    .add_modifier(Modifier::BOLD),
+                RouteDetailSeverity::Warn => Style::default().fg(role_color(Role::Warning)),
+                RouteDetailSeverity::Info => Style::default().fg(role_color(Role::Accent)),
+                RouteDetailSeverity::None => Style::default().fg(role_color(Role::MutedText)),
             };
             lines.push(Line::from(Span::styled(detail.clone(), style)));
         }
     } else {
         lines.push(Line::from(Span::styled(
             "(no selection)",
-            Style::default().fg(Color::DarkGray),
+            Style::default().fg(role_color(Role::MutedText)),
         )));
     }
-    let para = Paragraph::new(lines).block(
-        Block::default()
-            .borders(Borders::NONE)
-            .title(Span::styled(" DETAIL ", Style::default().fg(Color::Cyan))),
-    );
+    let para = Paragraph::new(lines).block(Block::default().borders(Borders::NONE).title(
+        Span::styled(" DETAIL ", Style::default().fg(role_color(Role::Accent))),
+    ));
     para.render(area, buf);
 }
 
@@ -392,23 +463,10 @@ fn detail_row(label: &str, value: &str, color: Color) -> Line<'static> {
     Line::from(vec![
         Span::styled(
             format!("{:<12} ", label),
-            Style::default().fg(Color::DarkGray),
+            Style::default().fg(role_color(Role::MutedText)),
         ),
         Span::styled(value.to_string(), Style::default().fg(color)),
     ])
-}
-
-/// Columns the trailing badges (row number, current / default markers, tier)
-/// occupy, so the highlighted name can be sized to the space actually left.
-fn name_badge_width(row: &BrowserRow) -> usize {
-    let mut width = 5; // "  1. "
-    if row.is_current {
-        width += 10; // "  \u{2190}current"
-    }
-    if row.is_default {
-        width += 9; // "  default"
-    }
-    width + 3 + row.tier.label().len() // " [pro]"
 }
 
 /// Lines shown in place of the result list when nothing matches.
@@ -420,12 +478,12 @@ fn empty_state_lines(state: &ModelBrowserState) -> Vec<Line<'static>> {
             } else {
                 "No models available for this provider yet."
             },
-            Style::default().fg(Color::Gray),
+            Style::default().fg(role_color(Role::MutedText)),
         ))];
         if state.loading.is_some() {
             lines.push(Line::from(Span::styled(
                 "The catalog is still being fetched.",
-                Style::default().fg(Color::DarkGray),
+                Style::default().fg(role_color(Role::MutedText)),
             )));
         }
         return lines;
@@ -436,38 +494,41 @@ fn empty_state_lines(state: &ModelBrowserState) -> Vec<Line<'static>> {
         return vec![
             Line::from(Span::styled(
                 "No models match the active filters.",
-                Style::default().fg(Color::Gray),
+                Style::default().fg(role_color(Role::MutedText)),
             )),
             Line::from(Span::styled(
                 "Esc clears the provider, tier and capability filters.",
-                Style::default().fg(Color::DarkGray),
+                Style::default().fg(role_color(Role::MutedText)),
             )),
         ];
     }
 
     vec![
         Line::from(vec![
-            Span::styled("No models match ", Style::default().fg(Color::Gray)),
+            Span::styled(
+                "No models match ",
+                Style::default().fg(role_color(Role::MutedText)),
+            ),
             Span::styled(
                 query.to_string(),
                 Style::default()
-                    .fg(Color::White)
+                    .fg(role_color(Role::AiText))
                     .add_modifier(Modifier::BOLD),
             ),
         ]),
         Line::from(Span::styled(
             "Try fewer characters, or Esc to clear the search and filters.",
-            Style::default().fg(Color::DarkGray),
+            Style::default().fg(role_color(Role::MutedText)),
         )),
     ]
 }
 
 fn tier_color(tier: ModelTier) -> Color {
     match tier {
-        ModelTier::Free => Color::Green,
-        ModelTier::Fast => Color::Yellow,
-        ModelTier::Standard => Color::White,
-        ModelTier::Premium => Color::Magenta,
+        ModelTier::Free => role_color(Role::Success),
+        ModelTier::Fast => role_color(Role::Warning),
+        ModelTier::Standard => role_color(Role::AiText),
+        ModelTier::Premium => role_color(Role::ModelName),
     }
 }
 
@@ -488,7 +549,12 @@ pub fn visible_providers(state: &ModelBrowserState) -> Vec<String> {
 /// Render the entire browser into a single area. Caller is responsible for
 /// surrounding the browser with its hint lines.
 pub fn render_browser(state: &ModelBrowserState, area: Rect, buf: &mut Buffer) {
-    if area.width < 30 || area.height < 5 {
+    if area.width == 0 || area.height == 0 {
+        return;
+    }
+    // Keep model selection usable when three columns would crowd out the list.
+    if area.width < 72 || area.height < 5 {
+        render_models(state, area, buf);
         return;
     }
     let providers = visible_providers(state);
@@ -660,12 +726,35 @@ mod tests {
                 render_browser(&state, f.area(), f.buffer_mut());
             })
             .unwrap();
-        // No assertion needed; just check it doesn't panic.
+        let buf = terminal.backend().buffer();
+        let text: String = buf.content.iter().map(|cell| cell.symbol()).collect();
+        assert!(text.contains("MODELS"));
+        assert!(text.contains("a"));
     }
 
     #[test]
     fn tier_color_distinguishes_tiers() {
         assert_ne!(tier_color(ModelTier::Free), tier_color(ModelTier::Premium));
+    }
+
+    #[test]
+    fn narrow_model_picker_prioritizes_model_names_over_badges() {
+        let mut row = row_with("alphabet-model", "X", ModelTier::Premium);
+        row.is_current = true;
+        row.is_default = true;
+        let state = ModelBrowserState::new(vec![row]);
+        for width in [12, 20, 32, 48, 71, 100] {
+            let mut terminal = Terminal::new(TestBackend::new(width, 8)).unwrap();
+            terminal
+                .draw(|frame| render_models(&state, frame.area(), frame.buffer_mut()))
+                .unwrap();
+            let buf = terminal.backend().buffer();
+            let text: String = buf.content.iter().map(|cell| cell.symbol()).collect();
+            assert!(
+                text.contains("alpha"),
+                "model name hidden at {width}: {text}"
+            );
+        }
     }
 
     #[test]

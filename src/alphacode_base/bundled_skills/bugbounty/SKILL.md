@@ -71,16 +71,43 @@ vulnerability here" is a successful outcome.
    version banners are not vulnerabilities. Programs reject these routinely and
    they waste the owner's triage time.
 
+## Investigation continuity
+
+Load `experiment-design` when an observation needs a decisive test, a lead stalls,
+or several plausible paths compete. It provides invariant-driven experiments,
+bounded creative pivots and capability-compatible chain planning. Keep this
+reference on demand; do not paste the entire technique library into each turn.
+
+For broad or resumed work, load `investigation-control` to connect the asset
+inventory, coverage matrix, clue register and hypothesis graph. Use its
+impact-led prioritization, orphan-clue reconciliation and recovery checkpoints.
+Read `chain-reasoning` when a proven primitive enables another permitted test;
+require compatible prerequisites and evidence for every claimed chain edge.
+
+## PROFESSIONAL HUNT LOOP
+
+Load `real-world-validation` before selecting active tests or promoting a
+candidate. It defines the experiment record, modern surface priorities,
+control-specific bypass reasoning, false-positive checks and stop criteria.
+Specialized examples are hypotheses, not known-working exploits. Confirm
+technology, version, configuration, scope and observed impact before using them.
+
+For current framework, HTTP parser and agent/MCP research, load `current-research`
+when those surfaces are observed. It includes dated primary sources and
+applicability checks; refresh vendor advisories before relying on version claims.
+
 ## CORE PRINCIPLES
 
-- **Prove the boundary, then stop.** Demonstrate the *minimum* needed to show
-  the boundary is broken. Do not escalate further unless the user asks.
+- **Prove each boundary, then continue the assessment.** Demonstrate the *minimum* needed to show
+  the boundary is broken. Stop that proof and continue the next applicable
+  authorized coverage item. Do not escalate that finding beyond the agreed scope.
 - **Expected behavior is not a finding.** Before testing anything, work out
   what the feature is *supposed* to do. Reading a public profile as a logged-in
   user is the feature working, not IDOR.
 - **Minimize state-changing proof.** Use owned disposable fixtures where authorized. Never delete, modify, or lock
-  out real user data; never exfiltrate more than a few records needed to prove
-  exposure; no DoS, no persistence, no access beyond the single boundary.
+  out real user data. Use minimal owned canaries; if unrelated data appears, stop
+  that proof and retain only the redacted evidence needed to describe it. No DoS
+  or persistence; further validation follows the engagement authorization.
 - **Negative results are results.** "No issue observed under these tested conditions" is a real deliverable.
   Say so plainly instead of padding the report.
 - **Explain your reasoning.** A reviewer communicates. State what you expected,
@@ -102,16 +129,17 @@ does not mean "everything is exploitable" — that assumption manufactures false
 positives. It means **an untested control is recorded as `UNTESTED`, never as
 `OK`**.
 
-Run the **3x3 actor/resource matrix** (anonymous / User A / User B × own /
-other / nonexistent) on every resource endpoint, and maintain a control ledger
+Use applicable actor/resource comparisons (anonymous, owned accounts A/B, own,
+other-owned-account, nonexistent and intentionally shared fixtures), and maintain a control ledger
 where each control is a row with a test and a result. See
 `control-verification` for the full per-class falsification catalog — authn,
 authz, tenant isolation, validation, encoding, rate limits, session, cache,
 file access, error handling — and the false-negative traps (`/v1` vs `/v2`,
 `GET` vs `DELETE`, body id vs path id, GraphQL, bulk endpoints, exports).
 
-**Verify broadly, escalate narrowly.** Test every control in the ledger; go
-exactly one layer past any single boundary, and only when asked.
+**Verify broadly, prove precisely.** Select relevant controls for each operation.
+Test further chain edges only within existing authorization when needed to prove
+the requested consequence; record compatible prerequisites and stop at sufficient proof.
 
 ## ROUTING — WHICH SKILL FOR WHICH SURFACE
 
@@ -175,11 +203,13 @@ coverage. Save reusable lessons with scope and counterexamples. Measure quality
 by reproducibility, confirmed findings, false-positive rate, and cost—not volume.
 
 ## PACING RULES
-- Around five minutes without new evidence: checkpoint and reconsider the next experiment.
-- Around twenty minutes without discriminating signal: pause or pivot with assumptions recorded.
-- 1-hour rule: nothing promising → report current status, don't keep hammering.
-- Generate hypotheses BEFORE payloads.
-- Time-box reads so a slow endpoint never eats the session.
+
+Checkpoint when a test block stops producing new evidence. Review reachability,
+controls, prerequisites and cost before choosing to deepen, falsify or pivot.
+Time estimates are planning hints, not automatic reasons to abandon the program.
+Honor the agreed budget and user stop; do not promise an endless hunt or a fixed
+number of Critical/High findings. Report verified issues promptly while continuing
+independent authorized coverage. Severity follows evidence, never a quota.
 
 ## HUNT DISCIPLINE (session-level rules — read before the first request)
 
@@ -188,9 +218,9 @@ vuln — it is hours of unattributed probes and half-finished programs.
 
 **Before the first active request, in this order:**
 1. Load the relevant class skill(s) (`skill_manage load`) — including this one.
-2. Open the `todo` list: one item per planned surface + the kill criteria
-   ("retire after 3 dead hypotheses", "no discriminating signal in a block →
-   pivot and log it"). No todo list → no active testing.
+2. Track planned surfaces, hypotheses, budgets and stop/reopen conditions in
+   the existing task or engagement ledger. Repeated equivalent observations
+   trigger control checks and a better experiment, not automatic refutation.
 3. Load prior knowledge (`memory`, `session_search`) for the target: previous
    findings, killed hypotheses, recon data, policy notes.
 4. Cache the program's actual policy page: scope, exclusions, reward classes.
@@ -213,12 +243,12 @@ non-discriminating results INCONCLUSIVE; refute only the precise prediction
 contradicted by evidence. Keep killed hypotheses in the
 ledger with the decisive observation: they are the map of what NOT to retest.
 
-**Multi-program protocol.** Hunt one program to a deliberate stop: a
-confirmed finding, or a written kill decision. Do not jump between programs
-mid-investigation. A killed program stays dead — returning to it requires NEW
-evidence (new scope, new recon, new intel, or new code), not just unspent
-frustration. Record each stop: `KILLED After testing <hypotheses>: <what
-ruled it out>. Revisit only with: <specific new evidence>`.
+**Program continuity.** Keep the user's selected program and current hypotheses
+through discovery, validation and reporting. A confirmed finding ends that proof,
+not the assessment. A refuted hypothesis closes only the claim actually tested.
+Do not label an entire program killed because several tests were negative.
+Revisit a tested claim when code, scope, identity, state or new evidence changes
+its assumptions. Record the reason rather than repeating equivalent probes.
 
 **Evidence ledger per failed test.** Failed tests are deliverables too:
 
@@ -241,20 +271,19 @@ errors, and never report "clean" while the probing tooling is failing.
 Write the scope file (IN-SCOPE / OUT-OF-SCOPE / severity focus / forbidden
 actions). Check every new host against it. No scope file → no testing.
 
-### PHASE 0: RECON (5 min — see recon, recon-js, recon-deep, tool-doctor)
+### PHASE 0: RECON (adapt to scope and surface)
 
-```bash
-# 0. Tools one at a time (tool-doctor); missing → install or fallback, never stall
-#    bash scripts/install_bugbounty_tools.sh go     # ProjectDiscovery pipeline
-#    bash scripts/install_bugbounty_tools.sh --verify
-# 1. Fingerprint first (headers, framework, WAF) — framework routes, not generic wordlists
-# 2. JS bundle before fuzzing (recon-js): chunks → endpoints → secrets
-# 3. Subdomains via native tools only — NEVER websearch for enumeration
-subfinder -d TARGET -all | dnsx -resp | httpx -sc -title -tech-detect
-ffuf -u TARGET/FUZZ -w common.txt -mc 200
-katana -u TARGET -d 3 -jc | grep -oE "/api/[a-zA-Z0-9/_-]+" | sort -u
-curl -s TARGET/.well-known/security.txt; curl -s TARGET/robots.txt
-```
+Read supplied artifacts, prior notes, published interfaces and ordinary user
+journeys first. Use passive discovery and bounded active checks where permitted.
+Frontend bundles, historical URLs and DNS relationships are leads, not proof of
+reachability or authorization. Validate each discovered destination before
+probing, following redirects or forwarding it to another tool. Select available
+tools for a concrete question; do not run a default scanner pipeline.
+
+Maintain both an asset inventory and a behavior map. Record which service makes
+each decision, which actor can reach it, and what protected data, authority or
+value crosses the boundary. Missing tools should trigger a useful fallback,
+not an unsupported conclusion about the target.
 
 ### PHASE 1: MAP (5 min)
 ```
@@ -269,19 +298,12 @@ Core: Compare **baseline** (expected) vs **test** (attack) request. The
 broken security invariant using controls; exclude caching, routing, session
 state, and normal variability. No difference establishes only what this
 experiment could detect, not that the control works universally.
-Run the full **3x3 actor/resource matrix** on every resource endpoint
-(control-verification) — the bug is in the cell nobody tested.
-
-```
-IDOR:    User A → User B's resource → should FAIL
-SSRF:    External URL → 200, Internal URL → should FAIL
-XSS:     Normal input → safe, Payload → should FAIL (encoded)
-SQLi:    Normal query → expected, Injection → different result
-Auth:    Valid token → 200, Invalid → should FAIL (401/403)
-Race:    1 request → 1 success, 20 parallel → should FAIL (still 1)
-Method:  GET auth'd, DELETE unauth'd → should FAIL
-Version: /v2 auth'd, /v1 unauth'd → should FAIL
-```
+Use applicable identity, ownership, method, version and lifecycle comparisons
+from `control-verification` and `investigation-control`. Require working controls
+and private owned canaries or settled state. A 200, accepted input, callback or
+timing difference alone does not prove the intended security consequence.
+Concurrency tests require explicit applicability and a shared bounded budget;
+there is no universal safe parallel-request count.
 
 Before running a test, state in one line what the **correct** behavior is.
 That is what turns a difference into evidence instead of a guess.
@@ -326,23 +348,18 @@ Fix: 1-2 sentences
 Negative results: exact tested conditions, observation limits, and untested cases
 ```
 
-## SEVERITY TRIAGE (not payout triage)
+## PRIORITIZATION AND SEVERITY
 
-Two different models, for two different jobs. Do not mix them.
+Prioritize tests by reachable consequences, observed prerequisites, a decisive
+oracle, information gain and cost. Use the Now/Next/Later/Blocked tiers in
+`investigation-control`; uncertainty is a reason to choose a discriminating
+experiment, not automatically discard a surface. Reconcile lower-priority gaps
+before ending within the agreed budget.
 
-```
-RECON TRIAGE — deciding what to spend time on
-  Score = Impact(1-5) × Exploitability(1-5) × Confidence(1-5)
-  60-125 → TEST NOW | 30-59 → TEST NEXT | <30 → SKIP
-
-REPORT SEVERITY — what goes in the finding
-  CVSS v4.0 base, computed with a calculator, demonstrated metrics only.
-  See severity-engine.
-```
-
-The recon heuristic is a prioritization aid and is fine as one. It is **not**
-valid in a report: it is not CVSS, and folding confidence into a severity score
-conflates "how sure am I" with "how bad is this". Use the scoring standard required by the program; keep confidence separate from severity.
+Finding severity is separate from test priority and confidence. Apply the
+program's scoring standard and justify metrics using demonstrated effects and
+preconditions. Use `severity-engine` when scoring; do not turn a homemade
+impact-times-confidence score into CVSS or promise a payout.
 
 **Impact is measured by what you demonstrated, not by what a chain *could*
 reach.** Report the demonstrated severity even when a theoretical chain would
@@ -360,28 +377,19 @@ requires a discriminating observation; paused and blocked paths stay unresolved.
 Priority order: auth/authZ → backend-reaching input → business logic →
 info disclosure → UI-only last. Checkpoint notes every ~5 min.
 Differential testing (authed vs unauthed) for everything auth-adjacent.
-Filter at fetch time (`head`, `--max-time`, status-only flags). No-finding
-checklist before declaring clean.
+Bound time and output while preserving original evidence on disk. Status-only
+checks are discovery signals, not validation. Reconcile coverage and limits
+before concluding the assessment.
 
-## IMPACT SUFFICIENCY (the anti-escalation rule)
+## IMPACT SUFFICIENCY
 
-Once a boundary crossing is proven, the review is **done**. Write it up.
-
-```
-IDOR read proven      → STOP. Do not attempt write access, then admin.
-SSRF blind proven     → STOP. Do not scan internal ranges or pull cloud metadata.
-Open redirect proven  → STOP. Do not build an OAuth abuse chain uninvited.
-XSS reflected proven  → STOP. Do not attempt to steal a real admin session.
-```
-
-Escalate further only when:
-- the base finding is already verified **and**
-- the user explicitly asks for deeper impact, **and**
-- the next step is still within the scope file's rules.
-
-Where a chain is genuinely relevant, describe it as an analyst note ("this may
-compound with an XSS on the same origin") and let the owner decide. Do not
-execute the chain to make the report look stronger.
+Stop an individual proof when the requested consequence is demonstrated with
+minimal evidence. Preserve reproducible artifacts and draft the finding promptly;
+continue the remaining independent coverage. Do not expand the consequence just
+to raise severity. Existing authorization determines whether a necessary chain
+edge may be tested; do not ask again for actions already authorized. A new action
+outside that boundary requires clarification. Use only owned fixtures, avoid
+unrelated data, and verify cleanup. Untested chain edges remain hypotheses.
 
 ## WHEN YOU FIND NOTHING
 
@@ -396,8 +404,8 @@ This is a normal, good outcome. Report it as such:
 - <areas out of scope or not reached>
 ```
 
-State coverage honestly. A short, accurate "clean" report is worth more than a
-long list of unverified suspicions.
+State coverage honestly. Report only the tested conditions and limits; do not
+call the entire target clean from a finite set of negative tests.
 
 ## TOOLS
 ```
@@ -429,11 +437,11 @@ state-changing tests require coordination and owned disposable fixtures.
 
 The bug bounty orchestrator provides automated workflow management:
 
-- **Intelligent task chaining** — tools are executed in optimal order
+- **Task dependencies** — generated tasks have explicit execution prerequisites
 - **Coverage tracking** — completed, blocked, and untested tasks stay explicit; no completeness guarantee
 - **Progress tracking** — real-time status of all phases
-- **Smart retry** — failed tasks are retried with alternative approaches
-- **Parallel execution** — independent tasks run concurrently
+- **Retry accounting** — inspect failed attempts and unresolved prerequisites
+- **Execution planning** — coordinate any parallel work within shared limits
 
 Use `alphacode bugbounty orchestrate TARGET` to start the automated workflow.
 
@@ -484,36 +492,21 @@ standard. Apply the same validation gates and minimal-proof stop condition as
 any other hypothesis. Respect rate limits; do not turn characterization into
 unbounded retries or activity outside the engagement's authorization.
 
-## REAL-WORLD LESSONS — THE PATTERNS THAT ACTUALLY PAY OUT
+## Evidence-informed technique selection
 
-These are cross-cutting patterns observed across multiple engagements. Each
-one is detailed in its specific skill; this section is the index.
+Past anecdotes do not establish yield or universal applicability. Frontend code
+can reveal interfaces but does not contain every endpoint. Token mutation is
+relevant only to an observed token-verification hypothesis. Credential testing
+requires scope permission and a bounded account/lockout plan; never try default
+credentials automatically on every login. Public unauthenticated data plus
+wildcard CORS does not alone establish a data breach. Content-type behavior is
+client-specific: inspect the request actually sent rather than assuming a tool's
+default MIME type. Respect rate limits; a limiter's presence or absence needs a
+concrete security consequence before it becomes a finding.
 
-| # | Lesson | Skill |
-|---|--------|-------|
-| 1 | **JS bundle is the highest-yield first step.** Every API endpoint, auth config, and sometimes hardcoded secrets live in frontend JS. Analyse it before any wordlist. Chain the chunks — endpoints live in lazy-loaded bundles too. | `recon-js` |
-| 2 | **`alg:none` JWT bypass is trivial to test.** `jwt forge --algorithm none` produces a valid token in one call. Run it on every token-bearing endpoint — it is the cheapest highest-severity test in the arsenal. | `hunt-jwt` |
-| 3 | **Small wordlists win.** A 47-word list built from company vocabulary cracked an 8-digit numeric admin password in seconds. Try the 5 default credentials first, then a <100-word target-derived list. | `credential-attack` |
-| 4 | **`curl -F` sends `application/octet-stream`.** The server-side MIME filter sees this even for valid images. Manual multipart with an explicit `Content-Type` on the part is required to test upload filters honestly. | `control-verification` |
-| 5 | **Every destructive action must be reversible.** Create a test artifact, test on it, delete it, then **verify deletion by re-querying the API** — do not trust the 204. If you cannot restore it, do not touch it, and report the damage honestly. | `manual-blackbox` |
-| 6 | **CORS `*` + unauthenticated API = full data breach from any malicious website.** This compound risk turns a broken API into a security advisory. | `manual-blackbox` |
-| 7 | **`grep -oE` with `-` mid-class fails silently.** A null grep result looks like "no endpoints found". Verify on a known-good line before trusting it. | `recon-js` |
-| 8 | **Windows `cmd.exe` interprets `&` in URLs.** Write URLs to files or use env vars to avoid shell parsing issues. | (general) |
-| 9 | **A clean target is a good result.** One of three targets had zero findings after thorough testing. That is a deliverable. | `manual-blackbox` |
-| 10 | **Rate-limit behaviour is the finding, not an obstacle.** Record the threshold; do not try to defeat it. | `credential-attack` |
-
-### The highest-yield sequence for an unknown SPA
-
-1. Download the JS bundle(s) — all chunks, not just the main one (`recon-js`)
-2. Extract endpoints, auth config, secrets (`recon-js` section 3)
-3. Test bundle-derived endpoints **unauthenticated** first (`hunt-api`)
-4. On any token-bearing endpoint: run the `alg:none` forge test (`hunt-jwt`)
-5. On any login endpoint: try the 5 default credentials (`credential-attack`)
-6. On any upload endpoint: construct multipart manually (`control-verification`)
-7. Maintain the control ledger; reassess equivalent results using controls
-
-This sequence found a full compromise on one of three targets. On the
-other two it produced clean, honest results.
+Prefer controlled experiments with plausible impact over memorized payload
+sequences. Save reusable lessons with prerequisites, counterexamples, scope and
+evidence; distinguish a repeatable observation from an anecdote.
 
 ## REPORTING TEMPLATE
 ```

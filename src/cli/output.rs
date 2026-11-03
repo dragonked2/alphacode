@@ -72,13 +72,19 @@ pub fn styled_startup_banner(width: usize) -> String {
         return banner;
     }
     let lines: Vec<&str> = banner.lines().collect();
-    let colors = crate::alphacode_tui::tui::brand_ux::BrandTheme::gradient_rows(lines.len());
+    let colors = std::iter::repeat_n(
+        crate::alphacode_tui::tui::brand_ux::BrandTheme::accent(),
+        lines.len(),
+    );
     lines
         .into_iter()
         .zip(colors)
         .map(|(line, color)| match color {
             ratatui::style::Color::Rgb(r, g, b) => {
                 format!("\u{1b}[1;38;2;{r};{g};{b}m{line}\u{1b}[0m")
+            }
+            ratatui::style::Color::Indexed(index) => {
+                format!("\u{1b}[1;38;5;{index}m{line}\u{1b}[0m")
             }
             _ => line.to_string(),
         })
@@ -181,6 +187,7 @@ impl CliOutput {
 
     /// Render a key/value pair with the value highlighted in a specific color.
     pub fn key_value_colored(key: &str, value: &str, color: &str) -> String {
+        let color = if console::ansi_enabled() { color } else { "" };
         format!(
             "{}{}{}{}{}{}",
             " ".repeat(KV_INDENT),
@@ -214,7 +221,23 @@ impl CliOutput {
 
     /// Render a dimmed/hint line.
     pub fn hint(message: &str) -> String {
-        format!("{}  {}{}", " ".repeat(KV_INDENT), message, enhance::reset())
+        let (r, g, b) = enhance::pick_for_terminal_bg(enhance::PaletteToken::Muted);
+        let text = enhance::wrap_line(
+            message,
+            console::terminal_width().saturating_sub(KV_INDENT).max(1),
+        );
+        text.lines()
+            .map(|line| {
+                format!(
+                    "{}{}{}{}",
+                    " ".repeat(KV_INDENT),
+                    enhance::rgb_escape(r, g, b, true),
+                    line,
+                    enhance::reset()
+                )
+            })
+            .collect::<Vec<_>>()
+            .join("\n")
     }
 
     /// Render a bold title line.
@@ -295,8 +318,9 @@ impl CliOutput {
     /// Render a table with a bold header, a rule, and body rows.
     ///
     /// `widths` declares the display-cell width of each column. Columns are
-    /// fitted to the terminal when the declared total overflows, so a wide
-    /// table degrades to "fewer, narrower columns" rather than a wrapped mess.
+    /// fitted to the terminal when the declared total overflows. Oversized
+    /// columns shrink first; trailing columns are omitted only when the
+    /// readable minimum still cannot fit.
     /// Returns an empty `Vec` when even the first column cannot fit.
     pub fn table(headers: &[&str], rows: &[Vec<&str>], widths: &[usize]) -> Vec<String> {
         let widths = fit_widths(
@@ -335,7 +359,11 @@ impl CliOutput {
     /// them, and the percentage is right-aligned so a bar that grows from 9% to
     /// 10% does not shift the whole line.
     pub fn progress_bar(label: &str, progress: f32, width: usize) -> String {
-        let progress = progress.clamp(0.0, 1.0);
+        let progress = if progress.is_nan() {
+            0.0
+        } else {
+            progress.clamp(0.0, 1.0)
+        };
         let pct = format!("{:>3.0}%", progress * 100.0);
         let tone = if progress >= 1.0 {
             enhance::PaletteToken::Success
@@ -349,11 +377,22 @@ impl CliOutput {
         let (r, g, b) = enhance::pick_for_terminal_bg(tone);
         let bc = enhance::box_chars::pick();
 
-        // "  " + label + " [" + bar + "] " + pct
-        const CHROME_CELLS: usize = 6;
-        let used =
-            KV_INDENT + enhance::display_width(label) + CHROME_CELLS + enhance::display_width(&pct);
-        let bar_width = console::fit_width(width).saturating_sub(used);
+        let budget = console::fit_width(width);
+        if budget < 16 {
+            if budget <= enhance::display_width(pct.trim_start()) {
+                return enhance::truncate_ellipsis(pct.trim_start(), budget);
+            }
+            let label = enhance::truncate_ellipsis(label, budget.saturating_sub(pct.len() + 1));
+            return format!("{label} {pct}").trim_start().to_string();
+        }
+        // Keep a useful bar and the percentage visible even with long labels.
+        const CHROME_CELLS: usize = 4; // " [" + "] "
+        let label = enhance::truncate_ellipsis(
+            label,
+            budget.saturating_sub(KV_INDENT + CHROME_CELLS + pct.len() + 4),
+        );
+        let used = KV_INDENT + enhance::display_width(&label) + CHROME_CELLS + pct.len();
+        let bar_width = budget.saturating_sub(used);
         let filled = (progress * bar_width as f32).round() as usize;
         let empty = bar_width.saturating_sub(filled);
 
@@ -405,40 +444,69 @@ impl CliOutput {
     }
 }
 
-/// Shrink `widths` until the whole row fits the terminal, dropping trailing
-/// columns first.
+/// Shrink oversized columns to a readable floor before dropping trailing
+/// columns that still cannot fit.
 ///
-/// A dropped column releases its width, so the surviving columns can expand
-/// into the freed space rather than leaving a ragged right edge. This is the
-/// behaviour a reader wants: a table that shows three useful columns beats one
-/// that shows all six and wraps every row into unreadable ribbons.
+/// Keep as many useful columns as the terminal supports without wrapping rows
+/// into unreadable ribbons.
 fn fit_widths(widths: &[usize], column_count: usize) -> Vec<usize> {
-    // Every column costs its width plus a two-cell gutter.
-    let total = |widths: &[usize]| widths.iter().sum::<usize>() + widths.len() * 2;
     let budget = console::terminal_width();
     let min_column = 8usize;
-
-    let mut fitted: Vec<usize> = widths.iter().copied().take(column_count).collect();
-    if fitted.is_empty() {
+    let mut fitted: Vec<usize> = widths
+        .iter()
+        .copied()
+        .take(column_count)
+        .map(|width| width.max(min_column))
+        .collect();
+    if fitted.is_empty() || budget <= 2 {
         return Vec::new();
     }
-    // Clamp narrow columns up to the legible minimum before shedding columns,
-    // so shedding is driven by real overflow rather than by a zero width.
-    for width in &mut fitted {
-        *width = (*width).max(min_column);
+    // Remove a column only if every column at its minimum would overflow.
+    while fitted.len() > 1 && fitted.len().saturating_mul(min_column + 2) > budget {
+        fitted.pop();
     }
-
-    while total(&fitted) > budget {
-        if fitted.len() > 1 {
-            fitted.pop();
-            continue;
+    if fitted.len() == 1 {
+        fitted[0] = fitted[0].min(budget - 2);
+        return fitted;
+    }
+    let total = |widths: &[usize]| {
+        widths
+            .iter()
+            .fold(widths.len().saturating_mul(2), |sum, width| {
+                sum.saturating_add(*width)
+            })
+    };
+    if total(&fitted) <= budget {
+        return fitted;
+    }
+    // Find a shared cap for wide columns. Narrow columns keep their requested
+    // size; wide columns give up space evenly rather than sacrificing one.
+    let desired = fitted.clone();
+    let mut low = min_column;
+    let mut high = fitted.iter().copied().max().unwrap_or(min_column);
+    while low < high {
+        let distance = high - low;
+        let cap = low + distance / 2 + distance % 2;
+        let used = fitted
+            .iter()
+            .fold(fitted.len().saturating_mul(2), |sum, width| {
+                sum.saturating_add((*width).min(cap))
+            });
+        if used <= budget {
+            low = cap;
+        } else {
+            high = cap - 1;
         }
-        // A single column that is still too wide: clip it to the terminal.
-        let available = budget.saturating_sub(2);
-        if available == 0 {
-            return Vec::new();
+    }
+    for width in &mut fitted {
+        *width = (*width).min(low);
+    }
+    let mut spare = budget.saturating_sub(total(&fitted));
+    for (width, desired) in fitted.iter_mut().zip(desired) {
+        if spare > 0 && *width < desired {
+            *width += 1;
+            spare -= 1;
         }
-        fitted[0] = fitted[0].min(available);
     }
     fitted
 }

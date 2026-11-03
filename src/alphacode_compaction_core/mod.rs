@@ -748,6 +748,29 @@ pub fn build_compaction_prompt_with_context(
     format!("{}\n\n---\n\n{}", conversation_text, prompt_template)
 }
 
+/// Render a tool-call input for the summarization prompt, bounded.
+///
+/// Inputs carry whole file bodies (`write`), large patch payloads
+/// (`apply_patch`) and long command strings. Embedding them verbatim made the
+/// summarizer's own prompt dominate the transcript it was supposed to compress,
+/// which is both a token cost on every compaction and a risk of overflowing the
+/// summary request itself. The summary only needs *what* was done, not the
+/// bytes: keep a generous head so the intent is readable and drop the rest with
+/// an explicit marker.
+pub fn bounded_tool_input(input: &serde_json::Value) -> String {
+    /// Enough to recognize the call's shape without carrying a file body.
+    const MAX_INPUT_CHARS: usize = 400;
+    let rendered = input.to_string();
+    if rendered.len() <= MAX_INPUT_CHARS {
+        return rendered;
+    }
+    format!(
+        "{}... (truncated from {} chars)",
+        crate::alphacode_compaction_core::truncate_str_boundary(&rendered, MAX_INPUT_CHARS),
+        rendered.len()
+    )
+}
+
 pub fn build_compaction_conversation_text(
     messages: &[Message],
     existing_summary: Option<&Summary>,
@@ -777,10 +800,10 @@ pub fn build_compaction_conversation_text(
                         if let Some(path) = input.get("file_path").and_then(|v| v.as_str()) {
                             format!("[Tool: {} -> {}]", name, path)
                         } else {
-                            format!("[Tool: {} - {}]", name, input)
+                            format!("[Tool: {} - {}]", name, bounded_tool_input(input))
                         }
                     } else {
-                        format!("[Tool: {} - {}]", name, input)
+                        format!("[Tool: {} - {}]", name, bounded_tool_input(input))
                     };
                     conversation_text.push_str(&summary);
                     conversation_text.push('\n');
@@ -1542,6 +1565,52 @@ pub fn tail_str_boundary(value: &str, max_bytes: usize) -> &str {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The summarizer prompt must not carry whole file bodies. A `write` call
+    /// embeds the entire file in `input`, and before this bound the compaction
+    /// request was larger than the transcript it was compressing.
+    #[test]
+    fn tool_inputs_are_bounded_in_the_summary_prompt() {
+        let body = "x".repeat(50_000);
+        let input = serde_json::json!({"file_path": "/tmp/big.rs", "content": body});
+        let rendered = bounded_tool_input(&input);
+        assert!(
+            rendered.len() < 1_000,
+            "tool input was not bounded: {} chars",
+            rendered.len()
+        );
+        assert!(rendered.contains("truncated from"));
+        // Small inputs stay readable and unmarked.
+        let small = serde_json::json!({"command": "cargo test"});
+        assert_eq!(bounded_tool_input(&small), small.to_string());
+    }
+
+    /// A summarized transcript must never embed the raw file body, but it must
+    /// still record which file was touched so continuation stays possible.
+    #[test]
+    fn conversation_text_records_paths_without_file_bodies() {
+        let message = Message {
+            role: Role::Assistant,
+            content: vec![ContentBlock::ToolUse {
+                id: "call-1".into(),
+                name: "write".into(),
+                input: serde_json::json!({
+                    "file_path": "/tmp/generated.rs",
+                    "content": "y".repeat(20_000),
+                }),
+                thought_signature: None,
+            }],
+            timestamp: None,
+            tool_duration_ms: None,
+        };
+        let text = build_compaction_conversation_text(&[message], None);
+        assert!(text.contains("/tmp/generated.rs"), "{text}");
+        assert!(
+            text.len() < 2_000,
+            "conversation text still carries a file body: {} chars",
+            text.len()
+        );
+    }
 
     #[test]
     fn effective_context_split_accounting_adds_cache_counters() {

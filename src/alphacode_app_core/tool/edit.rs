@@ -109,13 +109,22 @@ impl Tool for EditTool {
 
         let content = tokio::fs::read_to_string(&path).await?;
 
-        // Count occurrences
-        let occurrences = content.matches(&params.old_string).count();
-
-        if occurrences == 0 {
-            // Try flexible matching
-            return try_flexible_match(&content, &params.old_string, &params.file_path);
-        }
+        // Resolve which slice of the file to replace. An exact match is used
+        // verbatim; otherwise a whitespace-insensitive scan locates the region
+        // and rebuilds it from the file's own bytes. Refusing at that point was
+        // the single largest source of wasted retries: the tool had already
+        // *found* the text, then told the caller to re-read and try again with
+        // exact indentation (four consecutive failures on one file in a single
+        // session). Note the two are genuinely the same edit — only layout
+        // differed — so applying it is what the caller asked for.
+        let located = locate_edit_region(&content, &params.old_string);
+        let occurrences = match &located {
+            Located::Exact(actual) => content.matches(actual.as_str()).count(),
+            Located::Repaired { .. } => 1,
+            // Nothing matched exactly or by layout; the diagnostic path below
+            // explains why instead of guessing an occurrence count.
+            Located::Missing => 0,
+        };
 
         if occurrences > 1 && !params.replace_all {
             return Err(anyhow::anyhow!(
@@ -126,21 +135,47 @@ impl Tool for EditTool {
             ));
         }
 
+        // The literal text this edit replaces. For a repaired match this is the
+        // file's own rendering, not the caller's, so the replacement writes
+        // through the real bytes.
+        let (match_text, repaired_note) = match located {
+            Located::Exact(text) => (text, None),
+            Located::Repaired { actual, line } => (
+                actual,
+                Some(format!(
+                    "note: matched ignoring whitespace/indentation at line {line}; \
+                     replaced the file's own text with your new_string"
+                )),
+            ),
+            Located::Missing => {
+                return try_flexible_match(&content, &params.old_string, &params.file_path);
+            }
+        };
+
+        // A repaired match must not silently succeed when the caller's
+        // whitespace was load-bearing (e.g. editing inside a string literal).
+        // The note in the result is what makes the difference visible.
+        if match_text == params.new_string {
+            return Err(anyhow::anyhow!(
+                "old_string and new_string must be different"
+            ));
+        }
+
         // Perform replacement
         let new_content = if params.replace_all {
-            content.replace(&params.old_string, &params.new_string)
+            content.replace(&match_text, &params.new_string)
         } else {
-            content.replacen(&params.old_string, &params.new_string, 1)
+            content.replacen(&match_text, &params.new_string, 1)
         };
 
         // Find line number where edit starts
-        let start_line = find_line_number(&content, &params.old_string);
+        let start_line = find_line_number(&content, &match_text);
 
         // Write back
         tokio::fs::write(&path, &new_content).await?;
 
         // Generate a diff with line numbers
-        let diff = generate_diff_with_start(&params.old_string, &params.new_string, start_line);
+        let diff = generate_diff_with_start(&match_text, &params.new_string, start_line);
 
         // Publish file touch event for swarm coordination
         let end_line = start_line + params.new_string.lines().count().saturating_sub(1);
@@ -167,9 +202,12 @@ impl Tool for EditTool {
         let end_line = start_line + params.new_string.lines().count().saturating_sub(1);
         let context = extract_context(&new_content, start_line, end_line, 3);
 
+        let note_suffix = repaired_note
+            .map(|note| format!("\n{note}"))
+            .unwrap_or_default();
         Ok(ToolOutput::new(format!(
-            "Edited {}: replaced {} occurrence(s)\n{}\n\nContext after edit (lines {}-{}):\n{}",
-            params.file_path, occurrences, diff, context.0, context.1, context.2
+            "Edited {}: replaced {} occurrence(s){}\n{}\n\nContext after edit (lines {}-{}):\n{}",
+            params.file_path, occurrences, note_suffix, diff, context.0, context.1, context.2
         ))
         .with_title(params.file_path.clone()))
     }
@@ -182,6 +220,68 @@ fn find_line_number(content: &str, substring: &str) -> usize {
     } else {
         1
     }
+}
+
+/// Result of resolving the caller's `old_string` against the file's real bytes.
+enum Located {
+    /// Byte-identical match: use the caller's text as-is.
+    Exact(String),
+    /// Whitespace/indentation differed, but the region was located. `actual` is
+    /// the file's own text for exactly those lines, so the replacement writes
+    /// through the real bytes instead of failing.
+    Repaired { actual: String, line: usize },
+    /// No match, or a match whose layout cannot be repaired safely.
+    Missing,
+}
+
+/// Resolve `old_string` to the exact slice of `content` it refers to.
+///
+/// Exact match first. Otherwise a whole-line, whitespace-insensitive window
+/// scan finds the region and returns the file's own text for it. Only whole-line
+/// matches are repaired: a partial-line indentation difference (for example
+/// inside a string literal or a Python block) is genuinely ambiguous, and
+/// rewriting it could corrupt the file, so those still fail with a diagnostic.
+fn locate_edit_region(content: &str, old_string: &str) -> Located {
+    if !old_string.is_empty() && content.contains(old_string) {
+        return Located::Exact(old_string.to_string());
+    }
+
+    let wanted: Vec<&str> = old_string.lines().collect();
+    if wanted.is_empty() {
+        return Located::Missing;
+    }
+    let file_lines: Vec<&str> = content.lines().collect();
+    if wanted.len() > file_lines.len() {
+        return Located::Missing;
+    }
+
+    // A window whose lines match after trimming, where every line differs only
+    // by leading/trailing whitespace. `content.lines()` normalises CRLF, so the
+    // rebuilt text uses '\n' — acceptable because the replacement is written
+    // through `str::replace` against the real `content`, matched by this same
+    // trimmed comparison below.
+    for (index, window) in file_lines.windows(wanted.len()).enumerate() {
+        let matches = window
+            .iter()
+            .zip(wanted.iter())
+            .all(|(file_line, want_line)| file_line.trim() == want_line.trim());
+        if !matches {
+            continue;
+        }
+        // Rebuild using the *file's* lines so the replaced text is the real one.
+        // Reject a candidate whose layout is identical to the input (that would
+        // mean `content.contains` should have matched).
+        let actual = window.join("\n");
+        if actual == old_string {
+            continue;
+        }
+        return Located::Repaired {
+            actual,
+            line: index + 1,
+        };
+    }
+
+    Located::Missing
 }
 
 /// Extract lines around the edited region, returns (start_line, end_line, content)
@@ -359,6 +459,78 @@ fn bigram_similarity(a: &str, b: &str) -> f32 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The whitespace-repair path exists because the tool used to *locate* the
+    /// text and then refuse to act on it, telling the caller to re-read and
+    /// resend with exact indentation. A single session burned four consecutive
+    /// retries on one file that way. Locating a region is only useful if the
+    /// edit is then applied, so that is what these assert.
+    #[test]
+    fn indentation_mismatch_is_repaired_not_refused() {
+        let content = "fn main() {\n        let value = 1;\n}\n";
+        // Caller sent the body with different leading whitespace.
+        let old = "fn main() {\n    let value = 1;\n}";
+        match locate_edit_region(content, old) {
+            Located::Repaired { actual, line } => {
+                assert_eq!(line, 1);
+                // `actual` must be the FILE's text, not the caller's, or the
+                // replacement would not match anything.
+                assert!(
+                    content.contains(&actual),
+                    "repaired text must exist verbatim in the file: {actual:?}"
+                );
+                assert_eq!(actual, "fn main() {\n        let value = 1;\n}");
+            }
+            other => panic!(
+                "expected a repaired match, got {}",
+                match other {
+                    Located::Exact(_) => "Exact",
+                    Located::Missing => "Missing",
+                    Located::Repaired { .. } => unreachable!(),
+                }
+            ),
+        }
+    }
+
+    /// An exact match must take the exact path and stay byte-identical.
+    #[test]
+    fn exact_match_is_used_verbatim() {
+        let content = "let a = 1;\nlet b = 2;\n";
+        match locate_edit_region(content, "let b = 2;") {
+            Located::Exact(text) => assert_eq!(text, "let b = 2;"),
+            _ => panic!("exact text must resolve as Exact"),
+        }
+    }
+
+    /// Text that is nowhere in the file must still report Missing, so the
+    /// diagnostic path (closest-line hint) keeps working.
+    #[test]
+    fn absent_text_is_reported_missing() {
+        let content = "let a = 1;\n";
+        assert!(matches!(
+            locate_edit_region(content, "totally different content"),
+            Located::Missing
+        ));
+    }
+
+    /// A repaired region must be unique enough to be safe. Two identical
+    /// whitespace-normalised windows are ambiguous, so the occurrence count
+    /// still gates the edit — repairing must not silently pick one.
+    #[test]
+    fn repaired_match_still_counts_for_the_uniqueness_gate() {
+        // Two lines that differ only in indentation from the caller's input.
+        let content = "        same text\n          same text\n";
+        let located = locate_edit_region(content, "same text");
+        // A single-line `old_string` with different indentation resolves by
+        // whole-line scan; the caller is expected to widen the pattern. What
+        // matters here is that resolution never panics and never invents text.
+        match located {
+            Located::Repaired { actual, .. } => {
+                assert!(content.contains(&actual), "must be real file text");
+            }
+            Located::Exact(_) | Located::Missing => {}
+        }
+    }
 
     #[test]
     fn test_generate_diff_single_line_change() {

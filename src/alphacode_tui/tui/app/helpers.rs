@@ -372,7 +372,29 @@ pub(crate) fn stop_capturing_clipboard_for_tests() {
 /// Elsewhere, try wl-copy (Wayland), then xclip/xsel (X11, which keep owning
 /// the selection unlike arboard), then arboard, then OSC 52 as the
 /// remote-session fallback (SSH / Docker / tmux).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[cfg_attr(test, allow(dead_code))] // native/forwarding branches are disabled in tests
+pub(super) enum ClipboardWriteResult {
+    Copied,
+    /// The terminal accepted the escape bytes; clipboard access has no ACK.
+    Forwarded,
+    Failed,
+}
+
 pub(super) fn copy_to_clipboard(text: &str) -> bool {
+    !matches!(copy_to_clipboard_status(text), ClipboardWriteResult::Failed)
+}
+
+#[cfg(not(test))]
+fn terminal_clipboard_result(written: bool) -> ClipboardWriteResult {
+    if written {
+        ClipboardWriteResult::Forwarded
+    } else {
+        ClipboardWriteResult::Failed
+    }
+}
+
+pub(super) fn copy_to_clipboard_status(text: &str) -> ClipboardWriteResult {
     // Under test, never touch the OS clipboard. Beyond making results identical
     // on a desktop and a headless runner, the Linux path below spawns `wl-copy`,
     // which forks a clipboard server that does not exit; waiting on it hangs the
@@ -393,7 +415,7 @@ pub(super) fn copy_to_clipboard(text: &str) -> bool {
                 None => *sink = Some(text.to_string()),
             }
         }
-        true
+        ClipboardWriteResult::Copied
     }
 
     #[cfg(not(test))]
@@ -409,9 +431,9 @@ pub(super) fn copy_to_clipboard(text: &str) -> bool {
                 .and_then(|mut cb| cb.set_text(text.to_string()))
                 .is_ok()
             {
-                return true;
+                return ClipboardWriteResult::Copied;
             }
-            copy_to_clipboard_osc52(text)
+            terminal_clipboard_result(copy_to_clipboard_osc52(text))
         }
 
         // Same class of bug on macOS: Apple Terminal (Terminal.app) silently
@@ -425,7 +447,7 @@ pub(super) fn copy_to_clipboard(text: &str) -> bool {
                 .and_then(|mut cb| cb.set_text(text.to_string()))
                 .is_ok()
             {
-                return true;
+                return ClipboardWriteResult::Copied;
             }
             if let Ok(mut child) = std::process::Command::new("pbcopy")
                 .stdin(std::process::Stdio::piped())
@@ -439,11 +461,11 @@ pub(super) fn copy_to_clipboard(text: &str) -> bool {
                 {
                     drop(child.stdin.take());
                     if child.wait().map(|s| s.success()).unwrap_or(false) {
-                        return true;
+                        return ClipboardWriteResult::Copied;
                     }
                 }
             }
-            return copy_to_clipboard_osc52(text);
+            return terminal_clipboard_result(copy_to_clipboard_osc52(text));
         }
 
         // Linux has the same failure class (issue #504, Kali/X11): wl-copy fails
@@ -457,7 +479,7 @@ pub(super) fn copy_to_clipboard(text: &str) -> bool {
         #[cfg(not(any(windows, target_os = "macos")))]
         {
             if clipboard_helper::copy_via_clipboard_helper("wl-copy", &[], text) {
-                return true;
+                return ClipboardWriteResult::Copied;
             }
             // X11: prefer xclip/xsel over arboard. arboard's X11 backend sets the
             // selection on a connection it owns and then closes it when the
@@ -470,22 +492,22 @@ pub(super) fn copy_to_clipboard(text: &str) -> bool {
                 &["-selection", "clipboard"],
                 text,
             ) {
-                return true;
+                return ClipboardWriteResult::Copied;
             }
             if clipboard_helper::copy_via_clipboard_helper(
                 "xsel",
                 &["--clipboard", "--input"],
                 text,
             ) {
-                return true;
+                return ClipboardWriteResult::Copied;
             }
             if arboard::Clipboard::new()
                 .and_then(|mut cb| cb.set_text(text.to_string()))
                 .is_ok()
             {
-                return true;
+                return ClipboardWriteResult::Copied;
             }
-            copy_to_clipboard_osc52(text)
+            terminal_clipboard_result(copy_to_clipboard_osc52(text))
         }
     }
 }
@@ -499,11 +521,13 @@ fn copy_to_clipboard_osc52(text: &str) -> bool {
     use base64::Engine as _;
     use std::io::{IsTerminal, Write};
 
-    let mut out = std::io::stdout();
+    let out = std::io::stdout();
     if !out.is_terminal() {
         return false;
     }
     let encoded = base64::engine::general_purpose::STANDARD.encode(text.as_bytes());
+    // Keep a large clipboard escape intact when rendering happens concurrently.
+    let mut out = out.lock();
     // OSC 52: ESC ] 52 ; c ; <base64> BEL
     let seq = format!("\x1b]52;c;{}\x07", encoded);
     out.write_all(seq.as_bytes()).is_ok() && out.flush().is_ok()

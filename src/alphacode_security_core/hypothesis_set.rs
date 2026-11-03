@@ -102,7 +102,9 @@ impl HypothesisSet {
         for h in self.hypotheses.values() {
             if matches!(
                 h.status,
-                HypothesisStatus::Refuted | HypothesisStatus::Supported
+                HypothesisStatus::Refuted
+                    | HypothesisStatus::Supported
+                    | HypothesisStatus::InsufficientData
             ) {
                 continue;
             }
@@ -140,6 +142,11 @@ impl HypothesisSet {
         self.hypotheses
             .values()
             .filter(|h| h.should_promote())
+            .filter(|h| {
+                self.required_verification
+                    .get(&h.id)
+                    .is_none_or(Vec::is_empty)
+            })
             .collect()
     }
 }
@@ -186,6 +193,17 @@ mod tests {
         set.insert(a);
         set.insert(b);
         assert_eq!(set.most_urgent().unwrap().id, "b");
+    }
+
+    #[test]
+    fn blocked_hypotheses_do_not_consume_the_next_test_slot() {
+        let mut set = HypothesisSet::new();
+        set.insert(hypo("blocked", "/x"));
+        set.mark_insufficient("blocked", vec!["second owned tenant required".into()]);
+        assert!(set.most_urgent().is_none());
+        assert!(set.get("blocked").is_some());
+        set.insert(hypo("testable", "/y"));
+        assert_eq!(set.most_urgent().unwrap().id, "testable");
     }
 
     #[test]

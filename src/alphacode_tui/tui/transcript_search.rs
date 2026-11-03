@@ -27,6 +27,8 @@
 //! every frame.
 
 use std::cell::RefCell;
+use std::sync::Arc;
+use unicode_segmentation::UnicodeSegmentation;
 
 use crate::alphacode_tui_messages::{PreparedChatFrame, PreparedSectionKind};
 
@@ -87,6 +89,10 @@ pub struct TranscriptSearchIndex {
     pub signature: TranscriptSearchSignature,
     /// Hits in document order.
     pub matches: Vec<TranscriptSearchMatch>,
+    // Retain the immutable source so pointer identity cannot be recycled while
+    // this index is cached. Arc::make_mut also invalidates this identity.
+    source: Option<Arc<Vec<String>>>,
+    source_start: usize,
 }
 
 impl TranscriptSearchIndex {
@@ -122,7 +128,7 @@ impl TranscriptSearchState {
         self.query_cursor = 0;
         self.selected = 0;
         self.pending_step = 0;
-        self.index.borrow_mut().matches.clear();
+        *self.index.borrow_mut() = TranscriptSearchIndex::default();
     }
 }
 
@@ -171,43 +177,54 @@ pub fn find_line_matches(text: &str, query: &str, case_sensitive: bool) -> Vec<(
     }
 
     let needle: Vec<char> = query.chars().collect();
-    let chars: Vec<(usize, char)> = text.char_indices().collect();
+    let chars: Vec<char> = text.chars().collect();
     if chars.len() < needle.len() {
         return Vec::new();
     }
 
-    // Prefix display widths let a hit's column range be computed in O(1)
-    // instead of re-measuring the line prefix for every hit.
-    let mut prefix_widths: Vec<usize> = Vec::with_capacity(chars.len() + 1);
+    // Map each scalar to its complete grapheme's cell range. Summing scalar
+    // widths overcounts ZWJ emoji and flags, shifting all subsequent hits.
+    let mut cell_ranges = Vec::with_capacity(chars.len());
     let mut width = 0usize;
-    for &(_, ch) in &chars {
-        prefix_widths.push(width);
-        width += unicode_width::UnicodeWidthChar::width(ch).unwrap_or(0);
+    for grapheme in text.graphemes(true) {
+        let end = width + unicode_width::UnicodeWidthStr::width(grapheme);
+        cell_ranges.extend(grapheme.chars().map(|_| (width, end)));
+        width = end;
     }
-    prefix_widths.push(width);
 
     let folded_needle: Vec<char> = needle
         .iter()
         .map(|ch| fold_char(*ch, case_sensitive))
         .collect();
-    // Fold the haystack once instead of once per comparison: the scan is
-    // O(line × query), and folding is the expensive half.
-    let folded: Vec<char> = chars
-        .iter()
-        .map(|&(_, ch)| fold_char(ch, case_sensitive))
-        .collect();
+    // KMP keeps repeated-prefix queries linear instead of comparing the
+    // entire query at every column of a large tool-output line.
+    let mut failure = vec![0usize; folded_needle.len()];
+    let mut matched = 0usize;
+    for i in 1..folded_needle.len() {
+        while matched > 0 && folded_needle[i] != folded_needle[matched] {
+            matched = failure[matched - 1];
+        }
+        if folded_needle[i] == folded_needle[matched] {
+            matched += 1;
+        }
+        failure[i] = matched;
+    }
 
     let mut hits = Vec::new();
-    let mut start = 0usize;
-    while start + needle.len() <= chars.len() {
-        let matched = folded[start..start + needle.len()]
-            .iter()
-            .enumerate()
-            .all(|(offset, ch)| *ch == folded_needle[offset]);
-        if matched {
-            hits.push((prefix_widths[start], prefix_widths[start + needle.len()]));
+    matched = 0;
+    for (end, &ch) in chars.iter().enumerate() {
+        let folded = fold_char(ch, case_sensitive);
+        while matched > 0 && folded != folded_needle[matched] {
+            matched = failure[matched - 1];
         }
-        start += 1;
+        if folded == folded_needle[matched] {
+            matched += 1;
+        }
+        if matched == folded_needle.len() {
+            let start = end + 1 - matched;
+            hits.push((cell_ranges[start].0, cell_ranges[end].1));
+            matched = failure[matched - 1];
+        }
     }
     hits
 }
@@ -248,10 +265,22 @@ pub fn refresh_index(
     case_sensitive: bool,
     prepared: &PreparedChatFrame,
 ) {
+    let body = prepared
+        .sections
+        .iter()
+        .find(|s| s.kind == PreparedSectionKind::Body);
+    let source = body.map(|s| &s.prepared.wrapped_plain_lines);
+    let source_start = body.map_or(0, |s| s.line_start);
     let signature = TranscriptSearchSignature::for_frame(query, case_sensitive, prepared);
     {
         let current = index.borrow();
-        if current.is_current_for(&signature) {
+        let same_source = match (&current.source, source) {
+            (Some(old), Some(new)) => Arc::ptr_eq(old, new),
+            (None, None) => true,
+            _ => false,
+        };
+        if current.is_current_for(&signature) && same_source && current.source_start == source_start
+        {
             return;
         }
     }
@@ -277,6 +306,8 @@ pub fn refresh_index(
     };
 
     let mut current = index.borrow_mut();
+    current.source = source.cloned();
+    current.source_start = source_start;
     current.signature = signature;
     current.matches = matches;
 }
@@ -284,6 +315,35 @@ pub fn refresh_index(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn repeated_prefix_queries_keep_overlapping_hits() {
+        assert_eq!(
+            find_line_matches("abababab", "abab", true),
+            vec![(0, 4), (2, 6), (4, 8)]
+        );
+        assert!(
+            find_line_matches(
+                &"a".repeat(20_000),
+                &format!("{}b", "a".repeat(1_000)),
+                true
+            )
+            .is_empty()
+        );
+    }
+
+    #[test]
+    fn search_columns_follow_grapheme_cell_widths() {
+        assert_eq!(
+            find_line_matches("👩\u{200d}💻 target", "target", true),
+            vec![(3, 9)]
+        );
+        assert_eq!(find_line_matches("🇪🇬 target", "target", true), vec![(3, 9)]);
+        assert_eq!(
+            find_line_matches("e\u{301}x", "\u{301}", true),
+            vec![(0, 1)]
+        );
+    }
 
     #[test]
     fn finds_a_match_and_reports_display_columns() {

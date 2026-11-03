@@ -1265,11 +1265,16 @@ mod tests {
 
     #[test]
     fn a_vulnerability_claim_with_a_full_proof_verifies_against_observed_history() {
-        let messages = transcript(
+        let mut messages = transcript(
             "https://example.com/api/search?q=%27%20OR%201=1--",
             "GET",
             "HTTP 500 Internal Server Error\nURL: https://example.com/api/search?q=%27%20OR%201=1--\n\nSQL syntax error near OR",
         );
+        messages.extend(transcript(
+            "https://example.com/api/search",
+            "GET",
+            "HTTP 403 Forbidden\nURL: https://example.com/api/search\n\nforbidden",
+        ));
         let evidence = SessionEvidence::from_messages(&messages);
 
         let report = format!(

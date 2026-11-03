@@ -76,7 +76,7 @@ fn swarm_status_style(status: &str) -> (Color, &'static str) {
         "failed" => (rgb(255, 100, 100), "🚫"),
         "completed" => (rgb(100, 200, 100), "✓"),
         "stopped" => (rgb(140, 140, 150), "■"),
-        "crashed" => (rgb(255, 80, 80), "!"),
+        "crashed" => (crate::alphacode_tui_style::theme::error_color(), "!"),
         _ => (rgb(140, 140, 150), "·"),
     }
 }

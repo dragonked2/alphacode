@@ -620,7 +620,9 @@ fn prepare_active_batch_progress(
                 hidden_completed += 1;
                 continue;
             }
-            crate::bus::BatchSubcallState::Failed => ("✗", rgb(220, 100, 100)),
+            crate::bus::BatchSubcallState::Failed => {
+                ("✗", crate::alphacode_tui_style::theme::error_color())
+            }
         };
 
         lines.push(tools_ui::render_batch_subcall_line(

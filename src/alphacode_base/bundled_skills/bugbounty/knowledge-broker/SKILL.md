@@ -28,44 +28,27 @@ searchsploit apache struts 2.5
 searchsploit --cve 2024-1234
 ```
 
-### Component Matching
+### Component applicability
 
-When you observe a technology, check if it's vulnerable:
+For each lead record the primary advisory URL, retrieval date, actual package,
+affected/fixed range, required feature/configuration, attacker privileges,
+reachable input and decisive test. A fingerprint is a lead, not vulnerability
+proof. Backported patches and downstream packages require their own evidence.
+A widely used component is not inherently more vulnerable. Prefer the vendor's
+advisory and patch/regression test to copied version-to-CVE tables.
 
-```
-OBSERVED: nginx 1.18.0
-→ Check: Known CVEs for nginx 1.18.0
-→ Result: CVE-2021-23017 (DNS resolver off-by-one, Medium)
-→ Applicability: Only if using DNS resolver feature
-→ Action: Verify DNS resolver is enabled, test for heap overflow
+Do not translate a memory-safety advisory into a production crash test without
+explicit permission for that effect. Prefer supplied source and an isolated
+replica when validating fragile or disruptive prerequisites.
 
-OBSERVED: OpenSSH_8.2p1
-→ Check: Known CVEs for OpenSSH 8.2p1
-→ Result: CVE-2021-28041 (double-free, Medium — needs sshd configured for privilege separation)
-→ Applicability: Low unless specific config
-→ Action: Skip unless pentest requires SSH vuln assessment
+### KEV/EPSS enrichment
 
-OBSERVED: npm:lodash@4.17.20
-→ Check: Known CVEs for lodash 4.17.20
-→ Result: CVE-2021-23337 (command injection via template, High)
-→ Applicability: HIGH — lodash is widely used
-→ Action: Test if user input reaches lodash template function
-```
-
-### KEV/EPSS Enrichment
-
-```
-For any CVE, check:
-1. CISA KEV (Known Exploited Vulnerabilities) — actively exploited in the wild
-2. EPSS (Exploit Prediction Scoring System) — probability of exploitation in next 30 days
-3. CVSS score — severity rating
-4. NVD analysis — official assessment
-
-KEV + High EPSS = MUST TEST
-KEV + Low EPSS = Should test
-No KEV + High EPSS = Should test
-No KEV + Low EPSS = Nice to have
-```
+Use exploitation intelligence to order applicable, permitted work after checking
+reachability and prerequisites. KEV inclusion, EPSS and CVSS describe different
+things; none establishes that this target is vulnerable or authorizes a test.
+Record the retrieval date and distinguish likelihood information from observed
+impact. Never derive bounty severity or a mandatory exploit decision from an
+EPSS threshold alone.
 
 ---
 
@@ -73,102 +56,12 @@ No KEV + Low EPSS = Nice to have
 
 ### OWASP Web Security Testing Guide (WSTG)
 
-```
-WSTG-01: Information Gathering
-  - WSTG-01-01: Test Role of HTTP Methods
-  - WSTG-01-02: Fingerprint Web Application
-  - WSTG-01-03: Review Webserver Metafiles
-  - WSTG-01-04: Enumerate Applications on Webserver
-  - WSTG-01-05: Review Page Content for Leaked Info
-  - WSTG-01-06: Identify Entry Points
-  - WSTG-01-07: Map Execution Paths Through App
-  - WSTG-01-08: Fingerprint Platform
-
-WSTG-02: Configuration and Deployment Management Testing
-  - WSTG-02-01: Test Network Infrastructure Configuration
-  - WSTG-02-02: Test Application Platform Configuration
-  - WSTG-02-03: Test File Extensions for Sensitive Information
-  - WSTG-02-04: Review Old Backup and Unreferenced Files
-  - WSTG-02-05: Enumerate Infrastructure and Admin Interfaces
-  - WSTG-02-06: Testing HTTP Methods
-  - WSTG-02-07: Test HTTP Strict Transport Security
-  - WSTG-02-08: Test RIAAM Policy Headers
-
-WSTG-03: Identity Management Testing
-  - WSTG-03-01: Test Role Definitions
-  - WSTG-03-02: Test User Registration Process
-  - WSTG-03-03: Test Account Provisioning Process
-  - WSTG-03-04: Testing for Account Enumeration and Guessable User Accounts
-  - WSTG-03-05: Testing for Weak or Unenforced Username Policy
-
-WSTG-04: Authentication Testing
-  - WSTG-04-01: Testing for Credentials Transported over an Encrypted Channel
-  - WSTG-04-02: Testing for Default Credentials
-  - WSTG-04-03: Testing for Weak Lock Out Mechanism
-  - WSTG-04-04: Testing for Bypassing Authentication Schema
-  - WSTG-04-05: Testing for Remember Me Token Schema
-  - WSTG-04-06: Testing for Browser Cache Weaknesses
-  - WSTG-04-07: Testing for Weak Password Policy
-  - WSTG-04-08: Testing for Weak Security Question Recovery
-  - WSTG-04-09: Testing for Weak Password Change Functionality
-  - WSTG-04-10: Testing for Weaker Authentication in Alternative Channel
-
-WSTG-05: Authorization Testing
-  - WSTG-05-01: Testing Directory Traversal / File Include
-  - WSTG-05-02: Testing for Bypassing Authorization Schema
-  - WSTG-05-03: Testing for Privilege Escalation
-  - WSTG-05-04: Testing for Insecure Direct Object References
-
-WSTG-06: Session Management Testing
-  - WSTG-06-01: Testing for Session Management Schema
-  - WSTG-06-02: Testing for Cookie Attributes
-  - WSTG-06-03: Testing for Session Fixation
-  - WSTG-06-04: Testing for Exposed Session Variables
-  - WSTG-06-05: Testing for Cross-Site Request Forgery
-  - WSTG-06-06: Testing for Logout Functionality
-  - WSTG-06-07: Testing Session Timeout
-  - WSTG-06-08: Testing for Session Puzzling
-  - WSTG-06-09: Testing for Session Hijacking
-
-WSTG-07: Input Validation Testing
-  - WSTG-07-01: Testing for Reflected Cross-Site Scripting
-  - WSTG-07-02: Testing for Stored Cross-Site Scripting
-  - WSTG-07-03: Testing for HTTP Verb Tampering
-  - WSTG-07-04: Testing for HTTP Parameter Pollution
-  - WSTG-07-05: Testing for SQL Injection
-  - WSTG-07-06: Testing for LDAP Injection
-  - WSTG-07-07: Testing for XML Injection
-  - WSTG-07-08: Testing for SSI Injection
-  - WSTG-07-09: Testing for XPath Injection
-  - WSTG-07-10: Testing for IMAP SMTP Injection
-  - WSTG-07-11: Testing for Code Injection
-  - WSTG-07-12: Testing for OS Command Injection
-  - WSTG-07-13: Testing for Format String Injection
-  - WSTG-07-14: Testing for Incubated Vulnerabilities
-  - WSTG-07-15: Testing for HTTP Incoming Requests
-  - WSTG-07-16: Testing for Host Header Injection
-  - WSTG-07-17: Testing for Server-Side Template Injection
-
-WSTG-08: Error Handling
-  - WSTG-08-01: Testing for Improper Error Handling
-  - WSTG-08-02: Testing for Stack Traces
-
-WSTG-09: Cryptography Testing
-  - WSTG-09-01: Testing for Weak TLS/SSL Ciphers
-  - WSTG-09-02: Testing for Padding Oracle
-  - WSTG-09-03: Testing for Sensitive Information Sent via Unencrypted Channels
-  - WSTG-09-04: Testing for Weak Encryption
-
-WSTG-10: Business Logic Testing
-  - WSTG-10-01: Test Business Logic Data Validation
-  - WSTG-10-02: Test Ability to Forge Requests
-  - WSTG-10-03: Test Integrity Checks
-  - WSTG-10-04: Test for Process Timing
-  - WSTG-10-05: Test Number of Times a Function Can Be Used
-  - WSTG-10-06: Defense in Depth Test
-  - WSTG-10-07: Test Upload of Unexpected File Types
-  - WSTG-10-08: Test Upload of Malicious Files
-```
+Use the official guide at https://owasp.org/www-project-web-security-testing-guide/.
+Select relevant identity, authentication, authorization, session, input handling,
+configuration, client-side and business-logic tests from the observed surface.
+Record the guide version and exact identifier from that version when citing a
+test. Do not invent sequential WSTG IDs or imply a generic checklist is a coverage
+result. Track applicability and evidence in `investigation-control`.
 
 ### MITRE ATT&CK for Enterprise
 

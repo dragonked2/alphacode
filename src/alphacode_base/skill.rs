@@ -926,15 +926,20 @@ impl SkillRegistry {
     /// turn, so a weak guess is worse than no guess: ties and near-misses
     /// return `None`.
     pub fn find_auto_invoke_match(&self, message: &str) -> Option<String> {
+        let tokens = skill_mention_tokens(message);
+        // Prefer the longest explicit phrase, then the name, independently of
+        // HashMap order. Tokenize the message once for the entire registry.
+        if let Some((_, name)) = self
+            .skills
+            .values()
+            .filter_map(|skill| skill_mention_length(&tokens, skill).map(|len| (len, &skill.name)))
+            .max()
+        {
+            return Some(name.clone());
+        }
         let msg_set = match_words(message);
         if msg_set.len() < 2 {
             return None;
-        }
-
-        for skill in self.skills.values() {
-            if skill_name_is_mentioned(message, skill.as_ref()) {
-                return Some(skill.name.clone());
-            }
         }
 
         // Highest coverage wins; ties prefer the larger vocabulary (more
@@ -1440,7 +1445,7 @@ impl Skill {
             prompt.push_str("\n\n---\n\n## Reference Files\n\n");
             prompt.push_str("The following reference files are available for this skill. ");
             prompt.push_str("Load them with `skill_manage` (action=read) when needed:\n\n");
-            for name in self.reference_files.keys() {
+            for name in self.list_references() {
                 prompt.push_str(&format!("- `{}`\n", name));
             }
         }
@@ -1455,7 +1460,9 @@ impl Skill {
 
     /// List all available reference file names
     pub fn list_references(&self) -> Vec<&str> {
-        self.reference_files.keys().map(|s| s.as_str()).collect()
+        let mut names: Vec<&str> = self.reference_files.keys().map(String::as_str).collect();
+        names.sort_unstable();
+        names
     }
 
     /// Load additional files from the skill directory
@@ -1563,28 +1570,30 @@ fn build_skill_search_text(name: &str, description: &str, content: &str) -> Stri
     normalize_skill_search_text(&format!("{}\n{}\n{}", name, description, content))
 }
 
-/// True when the message explicitly names the skill (name or an alias as
-/// stand-alone tokens), e.g. "ctf challenge walkthrough" or "/bug bounty this".
-/// Token matching (not substring) so "rage" does not fire on "courage".
-fn skill_name_is_mentioned(message: &str, skill: &Skill) -> bool {
-    let tokens: Vec<String> = message
+/// Normalize explicit mention tokens once per message. Preserve hyphenated
+/// skill names and split slash commands; avoid substring matches.
+fn skill_mention_tokens(message: &str) -> Vec<String> {
+    message
         .split(|c: char| c.is_whitespace() || c == '/')
         .map(|t| {
             t.trim_matches(|c: char| !c.is_alphanumeric() && c != '-')
                 .to_lowercase()
         })
         .filter(|t| !t.is_empty())
-        .collect();
-    let mentions = |raw: &str| {
-        let lowered = raw.to_lowercase();
-        let want: Vec<&str> = lowered
-            .split_whitespace()
-            .map(|t| t.trim_matches(|c: char| !c.is_alphanumeric() && c != '-'))
-            .filter(|t| !t.is_empty())
-            .collect();
-        !want.is_empty() && want.iter().all(|w| tokens.iter().any(|t| t == w))
-    };
-    mentions(&skill.name) || skill.aliases.iter().any(|alias| mentions(alias))
+        .collect()
+}
+
+fn skill_mention_length(tokens: &[String], skill: &Skill) -> Option<usize> {
+    std::iter::once(&skill.name)
+        .chain(skill.aliases.iter())
+        .filter_map(|raw| {
+            let want = skill_mention_tokens(raw);
+            // A phrase must be contiguous and ordered: "bug in the bounty
+            // calculator" is not an explicit mention of "bug bounty".
+            (!want.is_empty() && tokens.windows(want.len()).any(|window| window == want))
+                .then_some(want.len())
+        })
+        .max()
 }
 
 /// Words that carry no routing signal. A skill's description nearly always
@@ -1674,7 +1683,7 @@ fn skill_match_terms(skill: &Skill) -> std::collections::HashSet<String> {
     // description. The `penetration test` alias otherwise contributes the bare
     // word `test`, which made "fix the failing test in the parser" route to the
     // security skill. Phrases still match exactly through
-    // `skill_name_is_mentioned`; this vocabulary is only for scoring.
+    // `skill_mention_length`; this vocabulary is only for scoring.
     let keep = |word: String| -> Option<String> {
         if SKILL_MATCH_GENERIC_TERMS.contains(&word.as_str()) {
             None
@@ -1759,6 +1768,60 @@ mod tests {
             triggers: Vec::new(),
             reference_files: HashMap::new(),
         }
+    }
+
+    #[test]
+    fn explicit_mentions_are_ordered_phrases_and_support_single_words() {
+        let mut bounty = test_skill("bugbounty", "Assessment", "");
+        bounty.aliases = vec!["bug bounty".into()];
+        assert_eq!(
+            skill_mention_length(&skill_mention_tokens("try /bugbounty"), &bounty),
+            Some(1)
+        );
+        assert_eq!(
+            skill_mention_length(&skill_mention_tokens("run BUG BOUNTY please"), &bounty),
+            Some(2)
+        );
+        for message in ["bug in the bounty calculator", "bounty bug", "bug bug"] {
+            assert_eq!(
+                skill_mention_length(&skill_mention_tokens(message), &bounty),
+                None
+            );
+        }
+        let mut registry = SkillRegistry::default();
+        registry
+            .skills
+            .insert(bounty.name.clone(), Arc::new(bounty));
+        assert_eq!(
+            registry.find_auto_invoke_match("/bugbounty"),
+            Some("bugbounty".into())
+        );
+    }
+
+    #[test]
+    fn explicit_mentions_and_reference_prompts_are_deterministic() {
+        let mut registry = SkillRegistry::default();
+        let mut broad = test_skill("broad", "", "");
+        broad.aliases = vec!["security".into()];
+        let mut focused = test_skill("focused", "", "");
+        focused.aliases = vec!["security audit".into()];
+        for skill in [broad, focused] {
+            registry.skills.insert(skill.name.clone(), Arc::new(skill));
+        }
+        assert_eq!(
+            registry.find_auto_invoke_match("security audit"),
+            Some("focused".into())
+        );
+        let mut a = test_skill("references", "", "");
+        let mut b = a.clone();
+        for key in ["zeta", "alpha", "middle"] {
+            a.reference_files.insert(key.into(), key.into());
+        }
+        for key in ["middle", "alpha", "zeta"] {
+            b.reference_files.insert(key.into(), key.into());
+        }
+        assert_eq!(a.list_references(), vec!["alpha", "middle", "zeta"]);
+        assert_eq!(a.get_prompt(), b.get_prompt());
     }
 
     fn write_test_skill(root: &Path, scope: &str, name: &str) {

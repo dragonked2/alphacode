@@ -1,6 +1,6 @@
 [package]
 name = "alphacode"
-version = "1.0.92"
+version = "1.0.93"
 authors = ["Ali Essam <tlbbeg313@gmail.com>"]
 description = "Terminal-native coding agent with multi-model orchestration, swarm coordination, and 40+ tools — built to make the smallest change that solves the problem."
 homepage = "https://alphacli.github.io/"
@@ -192,6 +192,16 @@ mermaid-renderer = ["dep:mermaid-rs-renderer"]
 serde = []
 dev-bins = []
 test-support = []
+# Windows GUI host. `alphacode gui` used to ship the .NET/WPF host as a
+# secondary PE embedded via `include_bytes!`, then write it to
+# `%USERPROFILE%\.alphacode\gui\AlphaCode.Desktop.exe` and execute it on first
+# run. That shape — one unsigned PE containing another unsigned PE, dropping and
+# launching it — is what generic packer/dropper heuristics score, and BitDefender
+# (also resold as ALYac/Arcibit/eScan/Emsisoft/GData/VIPRE) flagged the 1.0.92
+# Windows build as `Gen:Variant.Barys`. The host is now built and shipped
+# alongside the binary instead of inside it; enable this only for a build that
+# knowingly accepts the embedded-host trade-off.
+embedded-gui-host = []
 
 [target.'cfg(windows)'.dependencies]
 windows-sys = { version = "0.59", features = ["Win32_Foundation", "Win32_Globalization", "Win32_System_Threading", "Win32_System_Console", "Win32_System_SystemInformation", "Win32_System_ProcessStatus", "Win32_Security", "Win32_Security_Authorization", "Win32_System_Power", "Win32_UI", "Win32_UI_Input", "Win32_UI_Input_KeyboardAndMouse", "Win32_UI_WindowsAndMessaging"] }

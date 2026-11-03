@@ -654,23 +654,63 @@ pub(crate) fn effective_stream_idle_timeout(api_base: &str) -> std::time::Durati
     }
 }
 
-/// Rough token estimate for a chat-completions request body (`chars/4`).
-/// Used for pre-flight context guards and failure diagnostics only.
+/// Rough token estimate for context guards and diagnostics. Inline images are
+/// charged by image cost, rather than tokenizing their transport-only base64.
 pub(crate) fn estimate_chat_request_tokens(request: &serde_json::Value) -> usize {
-    serialized_request_len(request) / 4
+    estimated_prompt_bytes(request) / 4
+}
+
+fn estimated_prompt_bytes(value: &Value) -> usize {
+    match value {
+        Value::Object(fields)
+            if matches!(
+                fields.get("type").and_then(Value::as_str),
+                Some("image_url" | "input_image")
+            ) =>
+        {
+            crate::alphacode_compaction_core::IMAGE_TOKEN_COST * 4
+        }
+        Value::Object(fields) => fields
+            .iter()
+            .fold(2usize, |total, (key, value)| {
+                total
+                    .saturating_add(serialized_len(key))
+                    .saturating_add(estimated_prompt_bytes(value))
+                    .saturating_add(1) // colon
+            })
+            .saturating_add(fields.len().saturating_sub(1)),
+        Value::Array(values) => values
+            .iter()
+            .fold(2usize, |total, value| {
+                total.saturating_add(estimated_prompt_bytes(value))
+            })
+            .saturating_add(values.len().saturating_sub(1)),
+        _ => serialized_len(value),
+    }
+}
+
+/// Count JSON bytes without allocating a second serialized prompt.
+fn serialized_len(value: &impl serde::Serialize) -> usize {
+    struct Counter(usize);
+    impl std::io::Write for Counter {
+        fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+            self.0 = self.0.saturating_add(bytes.len());
+            Ok(bytes.len())
+        }
+
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+    let mut counter = Counter(0);
+    let _ = serde_json::to_writer(&mut counter, value);
+    counter.0
 }
 
 /// Byte length of the request exactly as it will go on the wire.
-///
-/// Serializing the whole body once and keeping the bytes lets the context
-/// pre-flight guard measure the real payload and the transport send those same
-/// bytes, instead of encoding the entire transcript twice (once to count
-/// characters, once for `req.json`). On a long session that double encode was
-/// hundreds of milliseconds of pure CPU per request.
+#[cfg(test)]
 pub(crate) fn serialized_request_len(request: &serde_json::Value) -> usize {
-    serde_json::to_vec(request)
-        .map(|bytes| bytes.len())
-        .unwrap_or(0)
+    serialized_len(request)
 }
 
 /// Roughly attribute the request estimate to its prompt components for
@@ -681,9 +721,7 @@ pub(crate) fn estimate_chat_request_breakdown(
     request: &serde_json::Value,
 ) -> (usize, usize, usize) {
     fn estimate(value: &serde_json::Value) -> usize {
-        serde_json::to_string(value)
-            .map(|serialized| serialized.len() / 4)
-            .unwrap_or(0)
+        estimate_chat_request_tokens(value)
     }
 
     let mut system_tokens = 0usize;
@@ -1259,17 +1297,18 @@ fn select_local_initial_model<'a>(models: &'a [ModelInfo], profile_id: &str) -> 
 
 fn parse_model_info_value(value: &Value) -> Option<ModelInfo> {
     let object = value.as_object()?;
-    let id = object
-        .get("id")
-        .and_then(Value::as_str)
-        .or_else(|| object.get("name").and_then(Value::as_str))?
+    let id = ["id", "name"]
+        .iter()
+        .filter_map(|key| object.get(*key).and_then(Value::as_str))
+        .map(str::trim)
+        .find(|id| !id.is_empty())?
         .to_string();
-    let name = object
-        .get("name")
-        .and_then(Value::as_str)
-        .or_else(|| object.get("display_name").and_then(Value::as_str))
-        .or_else(|| object.get("displayName").and_then(Value::as_str))
-        .unwrap_or("")
+    let name = ["display_name", "displayName", "name"]
+        .iter()
+        .filter_map(|key| object.get(*key).and_then(Value::as_str))
+        .map(str::trim)
+        .find(|name| !name.is_empty())
+        .unwrap_or(&id)
         .to_string();
 
     Some(ModelInfo {
@@ -1281,6 +1320,7 @@ fn parse_model_info_value(value: &Value) -> Option<ModelInfo> {
                 "context_length",
                 "contextLength",
                 "max_context_length",
+                "max_context_window",
                 "maxModelLength",
                 "max_model_len",
                 "trainingContextLength",
@@ -2567,7 +2607,9 @@ impl OpenRouterProvider {
 
         let static_context_limits = openai_compatible_profile_static_context_limits(profile);
         let static_models = openai_compatible_profile_static_models(profile);
-        let model = if matches!(profile.id, "lmstudio" | "ollama") {
+        let model = if matches!(profile.id, "lmstudio" | "ollama")
+            || openai_compat_base_is_local(&api_base)
+        {
             initial_model_for_runtime(
                 None,
                 resolved.default_model.clone(),
@@ -2664,8 +2706,22 @@ impl OpenRouterProvider {
         });
     }
 
+    fn model_catalog_refresh_intervals(&self) -> (u64, u64) {
+        if openai_compat_base_is_local(&self.api_base) {
+            // Loaded local models change during a session; hosted rate limits
+            // must not keep the local picker stale for an hour.
+            (15, 5)
+        } else {
+            (
+                MODEL_CATALOG_SOFT_REFRESH_SECS,
+                MODEL_CATALOG_REFRESH_RETRY_SECS,
+            )
+        }
+    }
+
     fn should_background_refresh_model_catalog(&self, cache_age_secs: u64) -> bool {
-        if cache_age_secs < MODEL_CATALOG_SOFT_REFRESH_SECS {
+        let (refresh_secs, retry_secs) = self.model_catalog_refresh_intervals();
+        if cache_age_secs < refresh_secs {
             return false;
         }
 
@@ -2683,7 +2739,7 @@ impl OpenRouterProvider {
 
         state
             .last_attempt_unix
-            .map(|last| now.saturating_sub(last) >= MODEL_CATALOG_REFRESH_RETRY_SECS)
+            .map(|last| now.saturating_sub(last) >= retry_secs)
             .unwrap_or(true)
     }
 
@@ -2737,7 +2793,7 @@ impl OpenRouterProvider {
         }
 
         if let Some(last) = state.last_attempt_unix
-            && now.saturating_sub(last) < MODEL_CATALOG_REFRESH_RETRY_SECS
+            && now.saturating_sub(last) < self.model_catalog_refresh_intervals().1
         {
             return false;
         }
@@ -3842,6 +3898,50 @@ mod llamacpp_compat_tests {
     use super::*;
     use crate::alphacode_provider_core::Provider;
 
+    #[tokio::test]
+    async fn dropping_response_stream_cancels_an_idle_http_request() {
+        use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let (ready_tx, ready_rx) = tokio::sync::oneshot::channel();
+        let server = tokio::spawn(async move {
+            let (socket, _) = listener.accept().await.unwrap();
+            let mut socket = BufReader::new(socket);
+            let mut content_length = 0;
+            loop {
+                let mut line = String::new();
+                socket.read_line(&mut line).await.unwrap();
+                if line == "\r\n" {
+                    break;
+                }
+                if let Some(length) = line.to_ascii_lowercase().strip_prefix("content-length:") {
+                    content_length = length.trim().parse::<usize>().unwrap();
+                }
+            }
+            socket
+                .read_exact(&mut vec![0; content_length])
+                .await
+                .unwrap();
+            socket.get_mut().write_all(b"HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nConnection: close\r\n\r\n").await.unwrap();
+            ready_tx.send(()).unwrap();
+            let mut byte = [0];
+            socket.read(&mut byte).await.unwrap()
+        });
+        let mut provider = local_no_auth_provider("test-model");
+        provider.api_base = format!("http://{address}/v1");
+        let stream = provider.complete(&[], &[], "test", None).await.unwrap();
+        tokio::time::timeout(std::time::Duration::from_secs(5), ready_rx)
+            .await
+            .unwrap()
+            .unwrap();
+        drop(stream);
+        let read = tokio::time::timeout(std::time::Duration::from_secs(5), server)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(read, 0, "cancel must close an idle provider connection");
+    }
+
     fn local_no_auth_provider(model: &str) -> OpenRouterProvider {
         OpenRouterProvider {
             client: crate::alphacode_provider_core::shared_http_client(),
@@ -4079,6 +4179,42 @@ mod llamacpp_compat_tests {
     }
 
     #[test]
+    fn local_catalog_refreshes_quickly_without_changing_hosted_policy() {
+        let mut provider = local_no_auth_provider("local-chat");
+        assert_eq!(provider.model_catalog_refresh_intervals(), (15, 5));
+        assert!(!provider.should_background_refresh_model_catalog(14));
+        assert!(provider.should_background_refresh_model_catalog(15));
+        assert!(provider.begin_background_model_catalog_refresh());
+        assert!(!provider.begin_background_model_catalog_refresh());
+        OpenRouterProvider::finish_background_model_catalog_refresh(
+            &provider.model_catalog_refresh,
+        );
+        assert!(!provider.should_background_refresh_model_catalog(60));
+        provider.api_base = DEFAULT_API_BASE.to_string();
+        assert_eq!(
+            provider.model_catalog_refresh_intervals(),
+            (
+                MODEL_CATALOG_SOFT_REFRESH_SECS,
+                MODEL_CATALOG_REFRESH_RETRY_SECS
+            )
+        );
+    }
+
+    #[test]
+    fn local_catalog_preserves_identity_and_prefers_display_names() {
+        let models = parse_openai_compatible_models_response(r#"{"data":[
+            {"id":"  qwen-local  ","name":"","display_name":"Qwen Coder","max_context_window":32768},
+            {"id":" ","name":"fallback-chat"},
+            {"id":" ","name":" "}
+        ]}"#).unwrap();
+        assert_eq!(models.len(), 2);
+        assert_eq!(models[0].id, "qwen-local");
+        assert_eq!(models[0].name, "Qwen Coder");
+        assert_eq!(models[0].context_length, Some(32768));
+        assert_eq!(models[1].id, "fallback-chat");
+    }
+
+    #[test]
     fn local_endpoint_context_hint_names_the_ollama_knob() {
         let ollama = local_endpoint_context_hint("http://localhost:11434/v1");
         assert!(
@@ -4106,6 +4242,33 @@ mod llamacpp_compat_tests {
         assert_eq!(
             estimate_chat_request_tokens(&small),
             small.to_string().len() / 4
+        );
+    }
+
+    #[test]
+    fn request_estimate_does_not_tokenize_base64_images() {
+        for kind in ["image_url", "input_image"] {
+            let mut request = serde_json::json!({
+                "messages": [{"role": "user", "content": [
+                    {"type": "text", "text": "inspect this image"},
+                    {"type": kind, "image_url": {"url": "data:image/png;base64,abc"}}
+                ]}]
+            });
+            let small = estimate_chat_request_tokens(&request);
+            request["messages"][0]["content"][1]["image_url"]["url"] =
+                serde_json::json!(format!("data:image/png;base64,{}", "A".repeat(1_000_000)));
+            assert_eq!(estimate_chat_request_tokens(&request), small);
+            assert!(small >= crate::alphacode_compaction_core::IMAGE_TOKEN_COST);
+            assert_eq!(serialized_request_len(&request), request.to_string().len());
+        }
+    }
+
+    #[test]
+    fn request_estimate_preserves_json_escaping_and_unicode_cost() {
+        let request = serde_json::json!({"messages": [{"content": "\"\\\n\t界🙂"}], "tools": [], "flag": true, "count": 123});
+        assert_eq!(
+            estimate_chat_request_tokens(&request),
+            request.to_string().len() / 4
         );
     }
 

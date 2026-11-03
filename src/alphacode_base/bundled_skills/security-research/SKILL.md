@@ -15,7 +15,31 @@ Optimize for reproducible, in-scope security impact. A clean negative result is 
 4. Select one falsifiable hypothesis and the cheapest discriminating test. State what would refute it before testing. Load only the class reference needed for that test.
 5. Capture a normal baseline, change one variable, observe the result, run a negative control, and reproduce the distinction. Keep original request/response artifacts, actor context, timestamps, and the actual target revision.
 6. Track validity, impact, scope, eligibility, and severity separately. Load `finding-validation` before calling a result confirmed or drafting a security report. Numeric confidence cannot replace evidence or establish program eligibility.
-7. Stop once sufficient proof establishes the claim, the hypothesis is refuted, the agreed budget is reached, or the next action crosses scope. Pivot when new evidence changes the hypothesis; do not repeat an unchanged failed test.
+7. Stop testing that hypothesis once sufficient proof establishes the claim or it is refuted; continue the next applicable coverage item. End the assessment only when planned coverage is resolved, all remaining work is genuinely blocked, the agreed budget is reached, or the user stops it. Skip and record out-of-scope actions without abandoning independent in-scope work. Pivot when new evidence changes the hypothesis; do not repeat an unchanged failed test.
+
+## Carry the requested assessment through
+
+For a full assessment, keep a coverage ledger alongside the hypothesis ledger:
+`surface | applicable tests | status | evidence/result | next action or blocker`.
+Use pending, tested, not-applicable (with reason), inconclusive, and blocked.
+Reconnaissance resolves discovery items; it does not resolve DOM/source review,
+authorization, validation or other applicable tests. Continue authorized work
+without asking for another "go" at each phase. A proven finding ends its proof,
+not the whole assessment. Report interim observations as progress, then continue.
+
+For an owned static website, inspect same-origin HTML and scripts, trace URL/hash,
+storage and message inputs to relevant sinks, identify API and third-party
+boundaries, and use bounded route checks selected from actual assets. Rule out
+soft-404s and client-side fallback. Test only reachable mechanisms. Third-party
+hosting is a boundary, not a reason to refuse site-level testing or scan shared
+infrastructure. Missing headers and public CORS belong in hardening observations
+unless an actual security consequence is demonstrated. Public CVE searches never
+substitute for reviewing the requested deployed surface.
+
+For long or broad investigations read bugbounty's `investigation-control`
+reference. Reconcile clues with no disposition, failed prerequisites, partial
+runs and interrupted operations before closing coverage. Use `chain-reasoning`
+for compatible, explicitly evidenced multi-step consequences.
 
 ## Evidence contract
 

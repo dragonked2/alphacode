@@ -17,9 +17,9 @@ pub use crate::alphacode_tui_mermaid::{
     inline_image_is_materialized, inline_image_placeholder_lines, inline_transcript_aspect_goal,
     inline_transcript_aspect_goal_with_font, invalidate_render_state, is_mermaid_lang,
     is_video_export_mode, materialize_inline_image, materialize_inline_image_by_id,
-    normalize_aspect_ratio, parse_image_placeholder, parse_inline_image_placeholder,
-    preferred_aspect_ratio_bucket, prewarm_inline_fit_state, protocol_type,
-    rediscover_external_image, rediscover_inline_image, register_active_diagram,
+    native_image_protocol_available, normalize_aspect_ratio, parse_image_placeholder,
+    parse_inline_image_placeholder, preferred_aspect_ratio_bucket, prewarm_inline_fit_state,
+    protocol_type, rediscover_external_image, rediscover_inline_image, register_active_diagram,
     register_external_image, register_inline_image, render_image_widget, render_image_widget_fit,
     render_image_widget_fit_stable, render_image_widget_scale, render_image_widget_viewport,
     render_image_widget_viewport_precise, render_mermaid, render_mermaid_deferred,
@@ -36,6 +36,13 @@ pub use crate::alphacode_tui_mermaid::{ImageScrollBenchmark, cache_stat_syscalls
 
 #[cfg(test)]
 pub use crate::alphacode_tui_mermaid::active_diagram_test_lock;
+/// Force a Kitty picker so tests that assert a rendered diagram have the
+/// native image protocol the markdown renderer requires. Without it the plan
+/// graph degrades to raw Mermaid source (see `plan_graph_diagram_renderable`).
+#[cfg(test)]
+pub use crate::alphacode_tui_mermaid::force_test_kitty_picker;
+#[cfg(test)]
+pub use crate::alphacode_tui_mermaid::pin_test_image_protocol;
 
 #[cfg(feature = "mmdr-size-api")]
 pub use crate::alphacode_tui_mermaid::terminal_theme;

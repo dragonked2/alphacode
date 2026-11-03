@@ -359,6 +359,11 @@ async fn handle_remote_key_internal(
         return Ok(());
     }
 
+    if input::is_clipboard_paste_shortcut(code, modifiers) {
+        app.paste_from_clipboard();
+        return Ok(());
+    }
+
     if input::is_next_prompt_new_session_hotkey(code, modifiers) {
         app.toggle_next_prompt_new_session_routing();
         return Ok(());
@@ -904,6 +909,9 @@ async fn handle_remote_key_internal(
             if !app.input.is_empty() {
                 let prepared = input::take_prepared_input(app);
                 let trimmed = prepared.expanded.trim();
+                if app_mod::commands_copy::handle_remote_copy_command(app, remote, trimmed).await {
+                    return Ok(());
+                }
 
                 if let Some(topic) = trimmed
                     .strip_prefix("/help ")

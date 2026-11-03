@@ -2,7 +2,7 @@
 //!
 //! This module extends the standard agent loop with bug bounty-specific
 //! capabilities: intelligent tool chaining, attack surface tracking,
-//! vulnerability correlation, and never-miss task management.
+//! vulnerability correlation, and explicit task tracking.
 
 use anyhow::Result;
 use serde::{Deserialize, Serialize};
@@ -321,31 +321,26 @@ impl BugBountyContext {
 
     /// Check if a target is in scope.
     pub async fn is_in_scope(&self, target: &str) -> bool {
+        use crate::alphacode_security_core::scope_gate::{ScopeDecision, ScopePolicy, decide};
+
         let scope = self.scope.read().await;
-
-        // Check explicit out-of-scope first
-        for pattern in &scope.out_of_scope {
-            if target.contains(pattern) {
-                return false;
-            }
-        }
-
-        // Check in-scope patterns
-        for pattern in &scope.in_scope {
-            if target.contains(pattern) {
-                return true;
-            }
-        }
-
-        // Check in-scope URL patterns
-        for pattern in &scope.in_scope_patterns {
-            if target.contains(pattern) {
-                return true;
-            }
-        }
-
-        // Default to out of scope if no match
-        false
+        let allowed: Vec<_> = scope
+            .in_scope
+            .iter()
+            .chain(&scope.in_scope_ips)
+            .chain(&scope.in_scope_patterns)
+            .cloned()
+            .collect();
+        let excluded: Vec<_> = scope
+            .out_of_scope
+            .iter()
+            .chain(&scope.out_of_scope_ips)
+            .chain(&scope.out_of_scope_patterns)
+            .cloned()
+            .collect();
+        let policy = ScopePolicy::from_lists(&allowed, &excluded, true, &[], 0, 0);
+        // Pending (including an empty allowlist) never authorizes this context.
+        matches!(decide(&policy, target), ScopeDecision::Allowed { .. })
     }
 
     /// Get all pending tasks sorted by priority.
@@ -481,5 +476,44 @@ mod tests {
         drop(scope);
         assert!(ctx.is_in_scope("https://example.com").await);
         assert!(!ctx.is_in_scope("https://evil.com").await);
+    }
+
+    #[tokio::test]
+    async fn scope_rejects_domain_text_outside_the_actual_host() {
+        let ctx = BugBountyContext::new("example.com");
+        assert!(!ctx.is_in_scope("https://example.com").await);
+        ctx.scope.write().await.in_scope.push("example.com".into());
+        assert!(ctx.is_in_scope("https://api.example.com").await);
+        for target in [
+            "https://example.com.evil.test/",
+            "https://evil.test/example.com",
+            "https://evil.test/?next=example.com",
+            "https://example.com@evil.test/",
+            r"https://evil.test\@example.com/",
+        ] {
+            assert!(!ctx.is_in_scope(target).await, "{target}");
+        }
+    }
+
+    #[tokio::test]
+    async fn scope_honors_ip_and_url_exclusions() {
+        let ctx = BugBountyContext::new("example.com");
+        {
+            let mut scope = ctx.scope.write().await;
+            scope
+                .in_scope_patterns
+                .push("https://example.com/api".into());
+            scope
+                .out_of_scope_patterns
+                .push("https://example.com/api/private".into());
+            scope.in_scope_ips.push("192.0.2.0/24".into());
+            scope.out_of_scope_ips.push("192.0.2.7".into());
+        }
+        assert!(ctx.is_in_scope("https://example.com/api/public").await);
+        assert!(!ctx.is_in_scope("https://example.com/api/private/1").await);
+        assert!(!ctx.is_in_scope("https://example.com/api-admin").await);
+        assert!(ctx.is_in_scope("https://192.0.2.8").await);
+        assert!(!ctx.is_in_scope("https://192.0.2.7").await);
+        assert!(!ctx.is_in_scope("https://192.0.3.8").await);
     }
 }

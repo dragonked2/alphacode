@@ -42,7 +42,7 @@ use crate::alphacode_tui::todo::TodoItem;
 use memory_render::{render_memory_expanded, render_memory_widget};
 use ratatui::{
     prelude::*,
-    widgets::{Block, BorderType, Borders, Paragraph},
+    widgets::{Block, Borders, Paragraph},
 };
 use std::collections::HashMap;
 use std::sync::Mutex;
@@ -1516,10 +1516,14 @@ fn render_single_widget(frame: &mut Frame, placement: &WidgetPlacement, data: &I
     // Unified border style using the refreshed palette for consistency
     // across all widget frames. Uses a subtle, professional border that
     // blends with the dark theme.
-    let border_color = rgb(48, 54, 76);
+    let border_color = if placement.kind == WidgetKind::Overview {
+        crate::alphacode_tui_style::theme::accent_color()
+    } else {
+        crate::alphacode_tui_style::theme::border_color()
+    };
     let mut block = Block::default()
         .borders(Borders::ALL)
-        .border_type(BorderType::Rounded)
+        .border_type(crate::alphacode_tui_style::Radius::Card.to_border_type())
         .border_style(Style::default().fg(border_color));
 
     // Widget titles unify on palette roles and single-width marks.
@@ -2184,7 +2188,9 @@ fn render_sections(
         }
         lines.push(Line::from(Span::styled(
             truncate_smart(&label, inner.width as usize),
-            Style::default().fg(rgb(150, 195, 255)).bold(),
+            Style::default()
+                .fg(crate::alphacode_tui_style::theme::accent_color())
+                .bold(),
         )));
     }
 

@@ -22,7 +22,7 @@ use tokio::io::{AsyncBufRead, AsyncBufReadExt};
 /// and file writes, which land in the low hundreds of KB. 8 MiB leaves a wide
 /// margin over any real client while still bounding a hostile or wedged client
 /// to a fixed allocation instead of an OOM.
-pub(crate) const MAX_CLIENT_FRAME_BYTES: usize = 8 * 1024 * 1024;
+pub(crate) const MAX_CLIENT_FRAME_BYTES: usize = crate::protocol::MAX_REQUEST_FRAME_BYTES;
 
 /// Outcome of a bounded frame read.
 #[derive(Debug)]

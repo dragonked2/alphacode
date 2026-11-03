@@ -53,6 +53,7 @@ pub(super) fn request_type_is_read_only(kind: &str) -> bool {
         "ping"
             | "state"
             | "get_history"
+            | "get_session_transcript"
             | "get_model_catalog"
             | "get_compacted_history"
             | "agent_capabilities"

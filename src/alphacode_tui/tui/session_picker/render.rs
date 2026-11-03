@@ -681,15 +681,17 @@ impl SessionPicker {
             " Esc cancel ".to_string()
         } else if self.search_active {
             " Type to filter · ↑↓ navigate · Esc close ".to_string()
+        } else if area.width < 36 {
+            " Enter open · / search · q close ".to_string()
         } else if area.width < 60 {
-            " ↑↓ select · Enter open · Tab preview · / search · q close ".to_string()
+            " Enter open · ↑↓ select · / search · Tab preview · q close ".to_string()
         } else {
             match crate::config::config().keybindings.session_picker_enter {
                 crate::config::SessionPickerResumeAction::CurrentTerminal => {
-                    " Space select · Enter in place · Ctrl+Enter new terminal · d debug · / search · h/l focus · ↑↓ · q ".to_string()
+                    " Enter in place · / search · Space select · Ctrl+Enter new terminal · d debug · h/l focus · ↑↓ · q ".to_string()
                 }
                 crate::config::SessionPickerResumeAction::NewTerminal => {
-                    " Space select · Enter new terminal · Ctrl+Enter in place · d debug · / search · h/l focus · ↑↓ · q ".to_string()
+                    " Enter new terminal · / search · Space select · Ctrl+Enter in place · d debug · h/l focus · ↑↓ · q ".to_string()
                 }
             }
         };
@@ -716,6 +718,8 @@ impl SessionPicker {
         let show_scrollbar =
             super::super::ui::native_scrollbar_visible(true, total_item_rows, inner_height);
 
+        // Keep the main selection action visible inside the rounded corners.
+        let help = truncate_picker_text(&help, usize::from(area.width.saturating_sub(4)), false);
         let list = List::new(items)
             .block(
                 Block::default()

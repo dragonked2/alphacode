@@ -45,11 +45,9 @@ fn onboarding_welcome_shows_telemetry_title_and_suggestions() {
     let state = onboarding_state();
     let text = render_onboarding(&state, 80, 30);
 
-    // The footer is deliberately one compact line: what the data is, and the
-    // one command that changes it. The verbose opt-out recipe moved to
-    // `/telemetry`, so the welcome screen does not teach an env var.
+    // The footer points to controls without assuming the active telemetry setting.
     assert!(
-        text.contains("Anonymous usage stats only · /telemetry to change"),
+        text.contains("Privacy controls - /telemetry to review or change"),
         "telemetry footer should be rendered:\n{text}"
     );
     assert!(

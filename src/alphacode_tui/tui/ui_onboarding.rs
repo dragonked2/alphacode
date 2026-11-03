@@ -20,8 +20,9 @@ use crate::alphacode_tui::tui::color_support::rgb;
 use crate::alphacode_tui::tui::ui_professional::section_banner;
 use ratatui::prelude::*;
 use ratatui::widgets::Paragraph;
+use unicode_width::UnicodeWidthStr;
 
-const DONUT_HEIGHT: u16 = 18;
+const DONUT_HEIGHT: u16 = 8;
 const GAP: u16 = 1;
 
 /// Accent color for the welcome title.
@@ -201,7 +202,7 @@ fn telemetry_settings_lines(
         (
             Choice::Nothing,
             "Send nothing",
-            "We stop seeing crashes and can't fix them",
+            "No usage stats, prompts, or crash reports",
         ),
     ];
     for (choice, label, caption) in options {
@@ -279,7 +280,7 @@ fn import_two_column_lines(
     let left_width = prompt
         .rows
         .iter()
-        .map(|r| 2 + r.provider_summary.chars().count() + 2 + r.source_name.chars().count() + 1)
+        .map(|r| 2 + r.provider_summary.width() + 2 + r.source_name.width() + 1)
         .max()
         .unwrap_or(0)
         .max(12);
@@ -290,7 +291,7 @@ fn import_two_column_lines(
     const COL_W: usize = 5;
     const GAP: &str = "  ";
     let center_cell = |s: &str| {
-        let len = s.chars().count();
+        let len = s.width();
         let total = COL_W.saturating_sub(len);
         let left = total / 2;
         let right = total - left;
@@ -334,7 +335,7 @@ fn import_two_column_lines(
             "{}{} ({})",
             cursor_marker, row.provider_summary, row.source_name
         );
-        let pad = left_width.saturating_sub(left_text.chars().count());
+        let pad = left_width.saturating_sub(left_text.width());
 
         // Filled circle marks the chosen column; the other is a hollow outline.
         let (yes_glyph, yes_style, no_glyph, no_style) = if row.checked {
@@ -366,7 +367,7 @@ fn import_two_column_lines(
 /// informing the user.
 fn telemetry_footer_line() -> Line<'static> {
     Line::from(Span::styled(
-        "Anonymous usage stats only · /telemetry to change",
+        "Privacy controls - /telemetry to review or change",
         Style::default()
             .fg(dim_color())
             .add_modifier(Modifier::ITALIC),
@@ -416,11 +417,15 @@ fn welcome_subtitle_line() -> Line<'static> {
 }
 
 /// Short keyboard hint rendered just below the donut on guided phases.
-fn keyboard_hint_line() -> Line<'static> {
+fn keyboard_hint_line(suggestions: bool) -> Line<'static> {
     Line::from(vec![
         Span::styled("\u{25b8} ", Style::default().fg(welcome_accent())),
         Span::styled(
-            "Type a message below or press a number for a quick start",
+            if suggestions {
+                "Type a message or choose a numbered quick start"
+            } else {
+                "Arrow keys to choose / Enter to continue / Esc to skip"
+            },
             Style::default()
                 .fg(rgb(120, 130, 150))
                 .add_modifier(Modifier::ITALIC),
@@ -749,11 +754,40 @@ pub(super) fn draw_onboarding_welcome(frame: &mut Frame, app: &dyn TuiState, are
         crate::alphacode_build_meta::version()
     };
 
-    if area.width < 4 || area.height < 6 {
+    let body = super::markdown::wrap_lines(welcome_body_lines(app), usize::from(area.width.max(1)));
+    let body_h = body.len().min(u16::MAX as usize) as u16;
+    if area.width < 60 || area.height < 18 || body_h.saturating_add(6) > area.height {
         // Too small for the full treatment: fall back to a minimal welcome.
         let mut lines = vec![welcome_title_line()];
-        lines.extend(welcome_body_lines(app));
-        frame.render_widget(Paragraph::new(lines), area);
+        lines.extend(body);
+        // Keep the escape hatch visible when the phase body overflows.
+        let hint_height = u16::from(area.height > 2);
+        let body_area = Rect {
+            height: area.height.saturating_sub(hint_height),
+            ..area
+        };
+        let lines = lines
+            .into_iter()
+            .filter(|line| line.width() > 0)
+            .collect::<Vec<_>>();
+        let lines = super::markdown::wrap_lines(lines, usize::from(area.width.max(1)));
+        frame.render_widget(Paragraph::new(lines), body_area);
+        if hint_height > 0 {
+            frame.render_widget(
+                Paragraph::new(
+                    if matches!(
+                        app.onboarding_welcome_kind(),
+                        crate::alphacode_tui::tui::OnboardingWelcomeKind::Suggestions
+                    ) {
+                        "F1: help | / commands"
+                    } else {
+                        "Esc: skip | /login later"
+                    },
+                )
+                .style(Style::default().fg(dim_color())),
+                Rect::new(area.x, area.bottom() - 1, area.width, 1),
+            );
+        }
         return;
     }
 
@@ -763,7 +797,7 @@ pub(super) fn draw_onboarding_welcome(frame: &mut Frame, app: &dyn TuiState, are
     // keeps the transcript-visible compact banner rather than clipping the
     // logo or pushing the body off-screen.
     let art = crate::alphacode_tui::tui::brand_ux::SplashScreen::wordmark_art(area.width as usize);
-    let (banner_lines, banner_h) = if art.len() >= 2 && area.height >= 26 {
+    let (banner_lines, banner_h) = if art.len() >= 2 && area.height >= body_h.saturating_add(20) {
         let height = art.len() as u16;
         (art, height)
     } else {
@@ -777,8 +811,6 @@ pub(super) fn draw_onboarding_welcome(frame: &mut Frame, app: &dyn TuiState, are
         )
     };
 
-    let body = welcome_body_lines(app);
-    let body_h = body.len() as u16;
     // Title above the donut, subtitle + keyboard hint below it.
     const TITLE_H: u16 = 1;
     const SUBTITLE_H: u16 = 1;
@@ -838,7 +870,11 @@ pub(super) fn draw_onboarding_welcome(frame: &mut Frame, app: &dyn TuiState, are
         animations::draw_idle_animation(frame, app, chunks[idx]);
         idx += 1; // donut -> hint
         frame.render_widget(
-            Paragraph::new(keyboard_hint_line()).alignment(Alignment::Center),
+            Paragraph::new(keyboard_hint_line(matches!(
+                app.onboarding_welcome_kind(),
+                crate::alphacode_tui::tui::OnboardingWelcomeKind::Suggestions
+            )))
+            .alignment(Alignment::Center),
             chunks[idx],
         );
         idx += 1; // hint -> gap

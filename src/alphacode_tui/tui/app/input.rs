@@ -202,11 +202,20 @@ fn input_exceeds_submit_limit(input: &str) -> Option<String> {
 }
 
 pub(super) fn paste_from_clipboard(app: &mut App) {
+    let session_id = active_clipboard_session_id(app);
+    if app
+        .clipboard_paste_draft
+        .as_ref()
+        .is_some_and(|(id, _, _)| *id == session_id)
+    {
+        return;
+    }
+    app.clipboard_paste_draft = Some((session_id, app.input.clone(), app.cursor_pos));
     app.set_status_notice("Reading clipboard...");
     spawn_clipboard_paste(app, ClipboardPasteKind::Smart);
 }
 
-fn is_clipboard_paste_shortcut(code: KeyCode, modifiers: KeyModifiers) -> bool {
+pub(super) fn is_clipboard_paste_shortcut(code: KeyCode, modifiers: KeyModifiers) -> bool {
     matches!(code, KeyCode::Char('v' | 'V'))
         && modifiers.intersects(
             KeyModifiers::CONTROL | KeyModifiers::ALT | KeyModifiers::SUPER | KeyModifiers::META,
@@ -829,31 +838,6 @@ pub(super) fn handle_text_paste(app: &mut App, text: String) {
         return;
     }
 
-    // Ctrl+V is claimed by alphacode *and* bound by some terminals (Windows
-    // Terminal among them). When both fire, the terminal streams the clipboard
-    // in as raw keystrokes — character by character, re-rendering the composer
-    // for each one, which is the "fuzzes the console" report — and then our own
-    // clipboard read completes and inserts `[pasted content]` on top of it. The
-    // user sees their text twice, once unformatted and once collapsed.
-    //
-    // Reconcile instead of double-inserting: if the draft already ends with the
-    // pasted text, the terminal delivered it and there is nothing left to do.
-    //
-    // Both sides are trimmed: terminal paste delivery commonly appends a
-    // newline, and that newline has *already been inserted into the draft*, so
-    // it sits at the end of the left-hand operand. Trimming only the clipboard
-    // text left the guard comparing `"...text\n"` against `"text"`, which never
-    // matches and re-inserted `[pasted content]` on top of the text the terminal
-    // had just delivered.
-    let delivered = crate::alphacode_tui::tui::core::ceil_char_boundary(&app.input, app.cursor_pos);
-    if app.input[..delivered].trim_end().ends_with(text.trim_end()) {
-        crate::logging::info(
-            "Paste already present in draft (terminal delivered it); skipping duplicate insert",
-        );
-        app.set_status_notice("Pasted");
-        return;
-    }
-
     // Keep text pastes compact and visually consistent in the composer. The
     // original text is restored on explicit submit; file and image drops are
     // handled separately.
@@ -871,6 +855,12 @@ impl App {
             return false;
         }
 
+        let draft = if matches!(result.kind, ClipboardPasteKind::Smart) {
+            self.clipboard_paste_draft.take()
+        } else {
+            None
+        };
+
         match result.content {
             ClipboardPasteContent::Image {
                 media_type,
@@ -880,6 +870,30 @@ impl App {
                 true
             }
             ClipboardPasteContent::Text(text) => {
+                paste_guard::note_paste();
+                paste_guard::count_paste_newlines(text.matches('\n').count());
+                // A terminal can deliver Ctrl+V itself while the explicit
+                // clipboard read is pending. Reconcile only text inserted
+                // since that request, never an unrelated matching draft tail.
+                if let Some((_, before, cursor)) = draft
+                    && before.is_char_boundary(cursor)
+                    && self.input.starts_with(&before[..cursor])
+                    && self.input.ends_with(&before[cursor..])
+                    && self.input.len() >= before.len()
+                {
+                    let end = self.input.len() - (before.len() - cursor);
+                    let inserted = &self.input[cursor..end];
+                    if inserted == PASTE_PLACEHOLDER && self.pasted_contents.last() == Some(&text) {
+                        return true;
+                    }
+                    if !inserted.is_empty()
+                        && inserted.replace("\r\n", "\n") == text.replace("\r\n", "\n")
+                    {
+                        self.remember_input_undo_state();
+                        self.input.replace_range(cursor..end, "");
+                        self.cursor_pos = cursor;
+                    }
+                }
                 handle_text_paste(self, text);
                 true
             }

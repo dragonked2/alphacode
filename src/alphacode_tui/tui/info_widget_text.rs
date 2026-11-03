@@ -7,6 +7,7 @@
 //! upholds is: the returned string's display width is never greater than the
 //! budget it was given.
 
+use unicode_segmentation::UnicodeSegmentation;
 use unicode_width::UnicodeWidthStr;
 
 #[cfg(test)]
@@ -23,12 +24,12 @@ pub(super) fn truncate_width(s: &str, max_width: usize) -> &str {
         return s;
     }
     let mut used = 0usize;
-    for (index, ch) in s.char_indices() {
-        let ch_width = ch.to_string().width();
-        if used + ch_width > max_width {
+    for (index, grapheme) in s.grapheme_indices(true) {
+        let cells = grapheme.width();
+        if used + cells > max_width {
             return &s[..index];
         }
-        used += ch_width;
+        used += cells;
     }
     s
 }

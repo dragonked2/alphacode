@@ -24,6 +24,50 @@ impl TodoTool {
     }
 }
 
+/// Validate identities and canonicalize provider status aliases before writes.
+fn validate_score(score: Option<u8>, label: &str) -> Result<()> {
+    if score.is_some_and(|score| score > 100) {
+        anyhow::bail!("{label} must be between 0 and 100");
+    }
+    Ok(())
+}
+
+fn validate_input_scores(input: &TodoInput) -> Result<()> {
+    if let Some(plan) = &input.plan {
+        validate_score(plan.understands_user_intent, "Plan understanding")?;
+    }
+    for goal in input.goals.iter().flatten() {
+        validate_score(goal.closed_feedback_loop, "Goal feedback-loop score")?;
+        validate_score(goal.end_to_end_ownership, "Goal ownership score")?;
+    }
+    Ok(())
+}
+
+fn validate_todo_items(todos: &mut [TodoItem]) -> Result<()> {
+    let mut ids = std::collections::HashSet::new();
+    for todo in todos.iter_mut() {
+        validate_score(todo.confidence, "Todo confidence")?;
+        validate_score(todo.completion_confidence, "Todo completion confidence")?;
+        todo.id = todo.id.trim().to_string();
+        if todo.id.is_empty() || !ids.insert(todo.id.clone()) {
+            anyhow::bail!("Todo ids must be nonempty and unique: '{}'", todo.id);
+        }
+        if todo.content.trim().is_empty() {
+            anyhow::bail!("Todo '{}' has no content", todo.id);
+        }
+        todo.status = match todo.status.trim().to_ascii_lowercase().as_str() {
+            "pending" | "queued" | "ready" | "todo" => "pending",
+            "in_progress" | "running" => "in_progress",
+            "completed" | "done" => "completed",
+            "cancelled" | "canceled" => "cancelled",
+            "blocked" => "blocked",
+            _ => anyhow::bail!("Invalid status for todo '{}': {}", todo.id, todo.status),
+        }
+        .to_string();
+    }
+    Ok(())
+}
+
 /// Fold each incoming todo's confidence into its tool-maintained history.
 ///
 /// The model reports `confidence` while working and `completion_confidence` at
@@ -601,6 +645,7 @@ fn normalize_todo_input(input: Value) -> Value {
 
         if let Value::Array(items) = entries {
             let mut normalized: Vec<Value> = Vec::with_capacity(items.len());
+            let mut generated_ids = std::collections::HashSet::new();
             for mut item in items.drain(..) {
                 // Individual item sent as a stringified JSON object.
                 if let Value::String(raw) = &item
@@ -616,6 +661,7 @@ fn normalize_todo_input(input: Value) -> Value {
                         continue;
                     }
                     if key == "todos" {
+                        generated_ids.insert(normalized.len());
                         normalized.push(minimal_todo_item(text));
                     }
                     // Goals need structured scores; a bare string carries
@@ -624,6 +670,9 @@ fn normalize_todo_input(input: Value) -> Value {
                 }
                 if let Value::Object(fields) = &mut item {
                     if key == "todos" {
+                        if !fields.contains_key("id") {
+                            generated_ids.insert(normalized.len());
+                        }
                         default_todo_item_fields(fields);
                     } else {
                         default_goal_fields(fields);
@@ -648,6 +697,31 @@ fn normalize_todo_input(input: Value) -> Value {
                     // Numbers, bools, nested arrays: keep for serde to
                     // report precisely.
                     normalized.push(item);
+                }
+            }
+            // Reserve explicit ids before assigning defaults. Repeated titles
+            // and non-ASCII titles must not overwrite each other's history.
+            if key == "todos" {
+                let mut used: std::collections::HashSet<String> = normalized
+                    .iter()
+                    .enumerate()
+                    .filter(|(index, _)| !generated_ids.contains(index))
+                    .filter_map(|(_, item)| {
+                        item.get("id").and_then(Value::as_str).map(str::to_string)
+                    })
+                    .collect();
+                for (index, item) in normalized.iter_mut().enumerate() {
+                    if !generated_ids.contains(&index) {
+                        continue;
+                    }
+                    let base = item["id"].as_str().unwrap_or("todo").to_string();
+                    let mut id = base.clone();
+                    let mut suffix = 2;
+                    while !used.insert(id.clone()) {
+                        id = format!("{base}-{suffix}");
+                        suffix += 1;
+                    }
+                    item["id"] = Value::String(id);
                 }
             }
             *entries = Value::Array(normalized);
@@ -805,12 +879,14 @@ impl Tool for TodoTool {
                  needs content/status/priority/id, and scores must be numbers 0-100."
                 )
             })?;
+        validate_input_scores(&params)?;
         let is_write = params.todos.is_some() || params.goals.is_some() || params.plan.is_some();
         let operation = if is_write { "write" } else { "read" };
         let result = if is_write {
             // Goals/plan-only writes keep the stored todo list.
             let previous = load_todos(&ctx.session_id).unwrap_or_default();
             let mut todos = params.todos.unwrap_or_else(|| previous.clone());
+            validate_todo_items(&mut todos)?;
             merge_confidence_history(&previous, &mut todos);
             (|| {
                 let stored_goals = load_goals(&ctx.session_id).unwrap_or_default();
@@ -1085,6 +1161,56 @@ mod tests {
 
     fn parse(input: Value) -> Result<TodoInput, serde_json::Error> {
         serde_json::from_value(normalize_todo_input(input))
+    }
+
+    #[test]
+    fn scores_above_one_hundred_cannot_bypass_quality_gates() {
+        for input in [
+            json!({"plan":{"understands_user_intent":101}}),
+            json!({"goals":[{"closed_feedback_loop":255}]}),
+            json!({"goals":[{"end_to_end_ownership":101}]}),
+        ] {
+            assert!(validate_input_scores(&parse(input).unwrap()).is_err());
+        }
+        let mut todos = parse(json!({"todos":[{"content":"task","confidence":101}]}))
+            .unwrap()
+            .todos
+            .unwrap();
+        assert!(validate_todo_items(&mut todos).is_err());
+        todos[0].confidence = Some(100);
+        validate_todo_items(&mut todos).unwrap();
+    }
+
+    #[test]
+    fn invalid_todo_identities_are_rejected_before_persistence() {
+        let mut todos =
+            parse(json!({"todos":[{"id":"same","content":"one"},{"id":" same ","content":"two"}]}))
+                .unwrap()
+                .todos
+                .unwrap();
+        assert!(validate_todo_items(&mut todos).is_err());
+        todos.truncate(1);
+        todos[0].status = " DONE ".to_string();
+        validate_todo_items(&mut todos).unwrap();
+        assert_eq!(todos[0].status, "completed");
+        todos[0].status = "made_up".to_string();
+        assert!(validate_todo_items(&mut todos).is_err());
+        todos[0].id.clear();
+        assert!(validate_todo_items(&mut todos).is_err());
+    }
+
+    #[test]
+    fn generated_ids_do_not_collide_with_titles_or_explicit_ids() {
+        let input = json!({"todos": [
+            {"content":"same"}, {"content":"same"},
+            {"content":"explicit", "id":"same-2"},
+            "مرحلة أولى", "مرحلة ثانية"
+        ]});
+        let todos = parse(input.clone()).unwrap().todos.unwrap();
+        let ids: std::collections::HashSet<_> = todos.iter().map(|todo| &todo.id).collect();
+        assert_eq!(ids.len(), todos.len());
+        assert_eq!(todos[2].id, "same-2");
+        assert_eq!(todos, parse(input).unwrap().todos.unwrap());
     }
 
     #[test]

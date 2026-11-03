@@ -284,6 +284,70 @@ pub(super) async fn handle_get_model_catalog(
     Ok(())
 }
 
+/// Snapshot the actual retained transcript rather than the bounded UI history.
+/// The attached session identity is checked before touching any session data.
+pub(super) async fn handle_get_session_transcript(
+    id: u64,
+    requested_session_id: &str,
+    client_session_id: &str,
+    agent: &Arc<Mutex<Agent>>,
+    writer: &Arc<Mutex<WriteHalf>>,
+) -> Result<()> {
+    if requested_session_id != client_session_id {
+        return write_event(
+            writer,
+            &ServerEvent::Error {
+                id,
+                message: "Session changed; run /copy again in the current session".to_string(),
+                retry_after_secs: None,
+            },
+        )
+        .await;
+    }
+    // Finish borrowing the live agent before any writer or disk await.
+    let live_snapshot = {
+        match agent.try_lock() {
+            Ok(agent) => Some(if agent.session_id() == client_session_id {
+                Ok(agent.session_clipboard_transcript())
+            } else {
+                Err("Session changed; run /copy again".to_string())
+            }),
+            Err(_) => None,
+        }
+    };
+    let snapshot = match live_snapshot {
+        Some(snapshot) => snapshot,
+        None => {
+            // Do not block the socket/render loop behind a long-running turn,
+            // or substitute a metadata-only startup stub for full history.
+            let session_id = client_session_id.to_string();
+            match tokio::task::spawn_blocking(move || {
+                Session::load_for_remote_startup(&session_id)
+                    .map(|session| session.clipboard_transcript())
+                    .map_err(|error| format!("Could not load the full session for /copy: {error}"))
+            })
+            .await
+            {
+                Ok(snapshot) => snapshot,
+                Err(error) => Err(format!("Could not prepare session copy: {error}")),
+            }
+        }
+    };
+    let event = match snapshot {
+        Ok(text) => ServerEvent::SessionTranscript {
+            id,
+            session_id: client_session_id.to_string(),
+            text,
+        },
+        Err(message) => ServerEvent::Error {
+            id,
+            message,
+            retry_after_secs: None,
+        },
+    };
+    write_event(writer, &event).await
+}
+
 pub(super) async fn handle_get_compacted_history(
     id: u64,
     session_id: &str,

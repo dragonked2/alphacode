@@ -75,6 +75,25 @@ search space. Pause paths with no information gain. Reopen a refuted path only
 when new evidence invalidates its decisive observation. Do not cycle payload
 spellings or tool names while keeping the same unsupported assumption.
 
+## Preserve clues and exploit constraints
+
+Keep an observation register in `challenge.md`: clue ID, exact source/offset,
+observed fact, interpretation, related hypothesis, disposition and reopen
+condition. Link new clues to a test or defer them explicitly. Check for orphan
+clues before abandoning a challenge or declaring it solved. Review raw artifacts
+when a tool summary drops structure, bytes, errors or relevant context.
+
+Use known-valid and known-invalid inputs to validate the oracle. Derive the
+constraint that makes a familiar technique applicable; do not select an exploit
+only because the challenge category resembles a past solve. Seek independent
+confirmation of the strongest competing explanation. Inspect the source or
+instrument a local harness when repeated remote probes stop adding information.
+
+Read this skill's `solver-engineering` reference for bounded category-specific
+analysis, reproducible solver construction, cache invalidation, local/remote
+differences and outcome-based evaluation. Reduce a search space using observed
+constraints before spending a larger compute or request budget.
+
 ## Turn evidence into a solver
 
 - Web: map actor, input, state transition, and observable output. Distinguish

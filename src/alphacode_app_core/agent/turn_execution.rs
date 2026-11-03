@@ -9,8 +9,38 @@ fn strip_schema_annotations(schema: &mut serde_json::Value) {
             object.remove("description");
             object.remove("title");
             object.remove("examples");
-            for value in object.values_mut() {
-                strip_schema_annotations(value);
+            // Walk schema locations only. Property names and literal values
+            // may themselves be named description/title/examples; deleting
+            // those changes the tool's contract rather than its annotations.
+            for (keyword, value) in object.iter_mut() {
+                match keyword.as_str() {
+                    "properties" | "patternProperties" | "$defs" | "definitions"
+                    | "dependentSchemas" => {
+                        if let Some(schemas) = value.as_object_mut() {
+                            for schema in schemas.values_mut() {
+                                strip_schema_annotations(schema);
+                            }
+                        }
+                    }
+                    "items"
+                    | "prefixItems"
+                    | "additionalItems"
+                    | "additionalProperties"
+                    | "unevaluatedProperties"
+                    | "unevaluatedItems"
+                    | "contains"
+                    | "propertyNames"
+                    | "allOf"
+                    | "anyOf"
+                    | "oneOf"
+                    | "not"
+                    | "if"
+                    | "then"
+                    | "else" => {
+                        strip_schema_annotations(value);
+                    }
+                    _ => {}
+                }
             }
         }
         serde_json::Value::Array(items) => {
@@ -1280,6 +1310,35 @@ impl Agent {
 mod local_context_tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn compact_schemas_preserve_named_properties_and_literal_data() {
+        let literal = json!({"description": "payload", "title": "value", "examples": [1]});
+        let mut schema = json!({
+            "type": "object", "description": "verbose annotation",
+            "properties": {
+                "description": {"type": "string", "description": "annotation"},
+                "title": {"type": "object", "const": literal, "default": literal},
+                "examples": {"type": "array", "items": {"type": "string", "title": "annotation"}}
+            },
+            "required": ["description", "title", "examples"],
+            "anyOf": [{"description": "annotation", "properties": {"title": {"const": "kept"}}}]
+        });
+        strip_schema_annotations(&mut schema);
+        assert!(schema.get("description").is_none());
+        assert_eq!(
+            schema["properties"]["description"],
+            json!({"type": "string"})
+        );
+        assert_eq!(schema["properties"]["title"]["const"], literal);
+        assert_eq!(schema["properties"]["title"]["default"], literal);
+        assert_eq!(
+            schema["properties"]["examples"]["items"],
+            json!({"type": "string"})
+        );
+        assert_eq!(schema["anyOf"][0]["properties"]["title"]["const"], "kept");
+        assert!(schema["anyOf"][0].get("description").is_none());
+    }
 
     fn definition(
         name: &str,

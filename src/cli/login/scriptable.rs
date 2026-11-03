@@ -9,6 +9,13 @@ pub(super) fn auto_scriptable_flow_reason(
         return None;
     }
 
+    // The desktop owns a bidirectional stdin pipe and displays sign-in prompts.
+    // Keep the regular browser/listener flow instead of ending after printing
+    // a scriptable auth URL merely because the child has no terminal.
+    if std::env::var("ALPHACODE_GUI_BROWSER_LOGIN").is_ok_and(|value| value == "1") {
+        return None;
+    }
+
     let supports_scriptable = matches!(
         provider.target,
         LoginProviderTarget::Claude

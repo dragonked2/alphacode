@@ -28,8 +28,8 @@ use std::sync::atomic::{AtomicBool, Ordering};
 
 /// A semantic color slot in the TUI.
 ///
-/// Every role has a built-in default equal to the historical hard-coded value,
-/// so adding a role never changes the default look.
+/// Built-in defaults share the desktop slate-and-gold visual language.
+/// Custom palettes and theme presets continue to override individual roles.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub enum Role {
     /// User message text accent.
@@ -231,58 +231,52 @@ impl Role {
     /// Info/system/model accents stay in the blue/green family — no pink.
     pub const fn default_rgb(self) -> (u8, u8, u8) {
         match self {
-            Role::User => (125, 195, 255),
-            Role::Ai => (138, 235, 188),
-            Role::Tool => (168, 178, 208),
-            Role::FileLink => (148, 215, 255),
-            Role::Dim => (78, 85, 108),
-            Role::Accent => (205, 168, 255),
-            // System / harness notices: soft mint green (was pink, which read
-            // as an error and clashed with info). Green family per UX; kept
-            // distinct from Accent violet and Success mint.
-            Role::System => (100, 200, 150),
-            Role::Queued => (255, 215, 78),
-            Role::Asap => (108, 225, 255),
-            Role::Pending => (138, 142, 165),
-            Role::UserText => (245, 248, 255),
-            Role::UserBg => (18, 22, 38),
-            Role::AiText => (235, 238, 248),
-            Role::HeaderIcon => (108, 215, 255),
-            Role::HeaderName => (188, 208, 248),
-            Role::HeaderSession => (245, 248, 255),
+            Role::User => (147, 197, 253),
+            Role::Ai => (122, 226, 194),
+            Role::Tool => (175, 191, 208),
+            Role::FileLink => (147, 197, 253),
+            Role::Dim => (120, 140, 160),
+            Role::Accent => crate::alphacode_brand::GOLD,
+            // Informational notices use blue; gold identifies actions; green identifies success.
+            Role::System => (147, 197, 253),
+            Role::Queued => (243, 199, 119),
+            Role::Asap => (147, 197, 253),
+            Role::Pending => (175, 191, 208),
+            Role::UserText => (237, 243, 249),
+            Role::UserBg => (22, 29, 38),
+            Role::AiText => (237, 243, 249),
+            Role::HeaderIcon => crate::alphacode_brand::GOLD,
+            Role::HeaderName => (237, 243, 249),
+            Role::HeaderSession => (175, 191, 208),
             // Model display name: sky blue (was pink). Keeps the model
             // prominent without the hot-pink glare.
-            Role::ModelName => (125, 195, 255),
-            Role::Success => (108, 230, 158),
-            Role::Warning => (255, 195, 88),
-            Role::Error => (255, 118, 118),
-            Role::Info => (148, 188, 255),
-            Role::Border => (48, 54, 76),
-            Role::SelectionBg => (32, 38, 62),
-            Role::CodeBg => (24, 28, 46),
-            Role::Heading => (125, 195, 255),
-            Role::Link => (148, 215, 255),
-            Role::Quote => (148, 188, 228),
-            Role::Spinner => (205, 168, 255),
-            Role::ProgressFill => (108, 230, 158),
-            Role::ProgressBg => (32, 38, 62),
-            Role::ToolBg => (18, 22, 38),
-            Role::DiffAdd => (108, 230, 158),
-            Role::DiffRemove => (255, 118, 118),
-            Role::DiffContext => (138, 142, 165),
-            Role::SwarmAgent => (108, 215, 255),
-            Role::SwarmTask => (255, 215, 78),
-            Role::Memory => (205, 168, 255),
-            Role::TodoDone => (108, 230, 158),
-            Role::TodoPending => (255, 195, 88),
-            // These three were reverse-engineered from off-palette literals
-            // that pre-existed in `login_picker.rs`, `session_picker.rs`,
-            // and `smart_model_picker.rs`. Values chosen to match the
-            // historical look byte-for-byte so widget migration is a no-op
-            // visual change for users without a custom palette.
-            Role::PanelBorder => (110, 175, 155),
-            Role::PanelBorderMuted => (75, 82, 100),
-            Role::MutedText => (130, 140, 160),
+            Role::ModelName => (147, 197, 253),
+            Role::Success => (140, 224, 189),
+            Role::Warning => (243, 199, 119),
+            Role::Error => (244, 164, 173),
+            Role::Info => (147, 197, 253),
+            Role::Border => (52, 71, 90),
+            Role::SelectionBg => crate::alphacode_brand::GOLD_SURFACE,
+            Role::CodeBg => (28, 38, 50),
+            Role::Heading => (237, 243, 249),
+            Role::Link => (147, 197, 253),
+            Role::Quote => (175, 191, 208),
+            Role::Spinner => crate::alphacode_brand::GOLD,
+            Role::ProgressFill => crate::alphacode_brand::GOLD,
+            Role::ProgressBg => (32, 44, 57),
+            Role::ToolBg => (22, 29, 38),
+            Role::DiffAdd => (140, 224, 189),
+            Role::DiffRemove => (244, 164, 173),
+            Role::DiffContext => (140, 159, 179),
+            Role::SwarmAgent => (147, 197, 253),
+            Role::SwarmTask => (243, 199, 119),
+            Role::Memory => (147, 197, 253),
+            Role::TodoDone => (140, 224, 189),
+            Role::TodoPending => (243, 199, 119),
+            // Focus owns the brand accent; inactive chrome stays neutral.
+            Role::PanelBorder => crate::alphacode_brand::GOLD,
+            Role::PanelBorderMuted => (44, 58, 74),
+            Role::MutedText => (175, 191, 208),
         }
     }
 
@@ -400,6 +394,11 @@ impl Palette {
 /// Parse `#rrggbb`, `#rgb`, or a bare `rrggbb` hex string.
 pub fn parse_hex(text: &str) -> Option<(u8, u8, u8)> {
     let hex = text.trim().trim_start_matches('#');
+    // Byte slicing below is valid only for ASCII. A malformed Unicode color
+    // entered in configuration must be rejected rather than panic mid-codepoint.
+    if !hex.is_ascii() {
+        return None;
+    }
     // `from_str_radix` failing here just means "not a hex color", which callers
     // surface to the user as an invalid-color message, so the error value itself
     // carries nothing extra.
@@ -713,17 +712,20 @@ mod tests {
         assert_eq!(parse_hex("#fff"), Some((255, 255, 255)));
         assert_eq!(parse_hex("#12345"), None);
         assert_eq!(parse_hex("nope"), None);
+        for invalid in ["€abc", "éabcd", "😀ab", "#€abc"] {
+            assert_eq!(parse_hex(invalid), None, "{invalid}");
+        }
     }
 
     #[test]
-    fn default_palette_matches_historical_values() {
+    fn default_palette_matches_slate_and_gold_defaults() {
         let palette = Palette::default();
-        assert_eq!(palette.rgb(Role::User), (125, 195, 255));
+        assert_eq!(palette.rgb(Role::User), (147, 197, 253));
         // Info/system/model accents must stay in the blue/green family —
         // pink info messages were removed from the default look.
-        assert_eq!(palette.rgb(Role::Info), (148, 188, 255));
-        assert_eq!(palette.rgb(Role::System), (100, 200, 150));
-        assert_eq!(palette.rgb(Role::ModelName), (125, 195, 255));
+        assert_eq!(palette.rgb(Role::Info), (147, 197, 253));
+        assert_eq!(palette.rgb(Role::System), (147, 197, 253));
+        assert_eq!(palette.rgb(Role::ModelName), (147, 197, 253));
         assert!(!palette.has_overrides());
     }
 
@@ -1097,48 +1099,48 @@ mod default_palette_is_frozen {
     /// `default_palette_matches_historical_values` were failing. The refreshed
     /// values are the intended look and are now recorded here.
     const HAND_TUNED: &[(Role, (u8, u8, u8))] = &[
-        (Role::User, (125, 195, 255)),
-        (Role::Ai, (138, 235, 188)),
-        (Role::Tool, (168, 178, 208)),
-        (Role::FileLink, (148, 215, 255)),
-        (Role::Dim, (78, 85, 108)),
-        (Role::Accent, (205, 168, 255)),
-        (Role::System, (100, 200, 150)),
-        (Role::Queued, (255, 215, 78)),
-        (Role::Asap, (108, 225, 255)),
-        (Role::Pending, (138, 142, 165)),
-        (Role::UserText, (245, 248, 255)),
-        (Role::UserBg, (18, 22, 38)),
-        (Role::AiText, (235, 238, 248)),
-        (Role::HeaderIcon, (108, 215, 255)),
-        (Role::HeaderName, (188, 208, 248)),
-        (Role::HeaderSession, (245, 248, 255)),
-        (Role::ModelName, (125, 195, 255)),
-        (Role::Success, (108, 230, 158)),
-        (Role::Warning, (255, 195, 88)),
-        (Role::Error, (255, 118, 118)),
-        (Role::Info, (148, 188, 255)),
-        (Role::Border, (48, 54, 76)),
-        (Role::SelectionBg, (32, 38, 62)),
-        (Role::CodeBg, (24, 28, 46)),
-        (Role::Heading, (125, 195, 255)),
-        (Role::Link, (148, 215, 255)),
-        (Role::Quote, (148, 188, 228)),
-        (Role::Spinner, (205, 168, 255)),
-        (Role::ProgressFill, (108, 230, 158)),
-        (Role::ProgressBg, (32, 38, 62)),
-        (Role::ToolBg, (18, 22, 38)),
-        (Role::DiffAdd, (108, 230, 158)),
-        (Role::DiffRemove, (255, 118, 118)),
-        (Role::DiffContext, (138, 142, 165)),
-        (Role::SwarmAgent, (108, 215, 255)),
-        (Role::SwarmTask, (255, 215, 78)),
-        (Role::Memory, (205, 168, 255)),
-        (Role::TodoDone, (108, 230, 158)),
-        (Role::TodoPending, (255, 195, 88)),
-        (Role::PanelBorder, (110, 175, 155)),
-        (Role::PanelBorderMuted, (75, 82, 100)),
-        (Role::MutedText, (130, 140, 160)),
+        (Role::User, (147, 197, 253)),
+        (Role::Ai, (122, 226, 194)),
+        (Role::Tool, (175, 191, 208)),
+        (Role::FileLink, (147, 197, 253)),
+        (Role::Dim, (120, 140, 160)),
+        (Role::Accent, (212, 175, 55)),
+        (Role::System, (147, 197, 253)),
+        (Role::Queued, (243, 199, 119)),
+        (Role::Asap, (147, 197, 253)),
+        (Role::Pending, (175, 191, 208)),
+        (Role::UserText, (237, 243, 249)),
+        (Role::UserBg, (22, 29, 38)),
+        (Role::AiText, (237, 243, 249)),
+        (Role::HeaderIcon, (212, 175, 55)),
+        (Role::HeaderName, (237, 243, 249)),
+        (Role::HeaderSession, (175, 191, 208)),
+        (Role::ModelName, (147, 197, 253)),
+        (Role::Success, (140, 224, 189)),
+        (Role::Warning, (243, 199, 119)),
+        (Role::Error, (244, 164, 173)),
+        (Role::Info, (147, 197, 253)),
+        (Role::Border, (52, 71, 90)),
+        (Role::SelectionBg, (59, 50, 30)),
+        (Role::CodeBg, (28, 38, 50)),
+        (Role::Heading, (237, 243, 249)),
+        (Role::Link, (147, 197, 253)),
+        (Role::Quote, (175, 191, 208)),
+        (Role::Spinner, (212, 175, 55)),
+        (Role::ProgressFill, (212, 175, 55)),
+        (Role::ProgressBg, (32, 44, 57)),
+        (Role::ToolBg, (22, 29, 38)),
+        (Role::DiffAdd, (140, 224, 189)),
+        (Role::DiffRemove, (244, 164, 173)),
+        (Role::DiffContext, (140, 159, 179)),
+        (Role::SwarmAgent, (147, 197, 253)),
+        (Role::SwarmTask, (243, 199, 119)),
+        (Role::Memory, (147, 197, 253)),
+        (Role::TodoDone, (140, 224, 189)),
+        (Role::TodoPending, (243, 199, 119)),
+        (Role::PanelBorder, (212, 175, 55)),
+        (Role::PanelBorderMuted, (44, 58, 74)),
+        (Role::MutedText, (175, 191, 208)),
     ];
 
     #[test]

@@ -123,6 +123,7 @@ const REGISTERED_COMMANDS: &[RegisteredCommand] = &[
     RegisteredCommand::hidden("/thinking", "Alias for /thinking-display"),
     RegisteredCommand::hidden("/reasoning", "Alias for /thinking-display"),
     RegisteredCommand::public("/cancel", "Cancel the current prompt or operation"),
+    RegisteredCommand::public("/copy", "Copy the entire session to clipboard"),
     RegisteredCommand::public("/clear", "Clear conversation history"),
     RegisteredCommand::public("/cls", "Clear the view only, keeping context (Ctrl+L)"),
     RegisteredCommand::hidden("/clear-view", "Alias for /cls"),

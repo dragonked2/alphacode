@@ -15,13 +15,28 @@ pub(in crate::alphacode_tui::tui::app) async fn begin_remote_send(
     auto_retry: bool,
     retry_attempts: u8,
 ) -> Result<u64> {
-    let msg_id = remote
+    let msg_id = match remote
         .send_message_with_images_and_reminder(
             content.clone(),
             images.clone(),
             system_reminder.clone(),
         )
-        .await?;
+        .await
+    {
+        Ok(id) => id,
+        Err(error) => {
+            // In particular, a locally rejected oversized queued prompt cannot
+            // become valid by retrying it on every redraw tick.
+            app.recovered_queue_held_for_user_submit = true;
+            app.submit_input_on_startup = false;
+            app.set_status_notice(if remote.request_delivery_uncertain() {
+                "Delivery uncertain; reconnect and inspect session history before resending"
+            } else {
+                "Message not sent; review the error and edit or submit again"
+            });
+            return Err(error);
+        }
+    };
     app.current_message_id = Some(msg_id);
     app.recovered_queue_held_for_user_submit = false;
     app.deferred_stream_done_id = None;

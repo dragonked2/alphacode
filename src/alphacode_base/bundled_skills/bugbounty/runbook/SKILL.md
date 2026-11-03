@@ -13,6 +13,17 @@ description: Structured security runbooks — Predefined workflows for common se
 
 ---
 
+## Assessment completion rule
+
+Time estimates below are planning hints, not permission to stop early. Adapt
+coverage to the observed surface and agreed budget. Keep pending items moving
+through discovery, testing, validation and reporting without repeated consent
+for work already authorized. Stop an individual proof when sufficient, then
+continue independent coverage. A header-only pass or missing public CVEs does
+not complete a website assessment. Record tested, inapplicable, inconclusive and
+blocked items separately; resolve pending work before a final report unless a
+real blocker, budget limit or user stop ends the assessment.
+
 ## 1. AVAILABLE RUNBOOKS
 
 ```

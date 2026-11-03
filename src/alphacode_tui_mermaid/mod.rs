@@ -242,6 +242,8 @@ pub use inline_image::{
     materialize_inline_image_by_id, rediscover_inline_image,
 };
 pub use runtime::force_test_kitty_picker;
+#[cfg(test)]
+pub use runtime::pin_test_image_protocol;
 pub use runtime::{
     error_lines_for, get_cached_png, get_font_size, image_protocol_available, init_picker,
     is_video_export_mode, native_image_protocol_available, protocol_type,

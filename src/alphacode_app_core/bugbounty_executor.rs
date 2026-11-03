@@ -26,7 +26,7 @@ use std::collections::{BTreeMap, BTreeSet, HashSet};
 use std::path::{Path, PathBuf};
 
 use crate::alphacode_app_core::bugbounty_orchestrator::{
-    BountyPhase, BountyTask, BugBountyOrchestrator,
+    BountyPhase, BountyTask, BugBountyOrchestrator, TaskCoverage,
 };
 use crate::alphacode_app_core::tool::bounty_bridge::run_task_tool;
 use crate::alphacode_tool_core::{ToolContext, ToolExecutionMode};
@@ -217,9 +217,9 @@ pub const PARAM_WORDLIST: &[&str] = &[
 /// This is the whole orchestrator state minus the evidence structures: the
 /// verified-finding gate (`record_verified_finding`) cross-checks proofs
 /// against exchanges recorded in the same process, so persisting half of that
-/// relationship would silently loosen the gate. Evidence is rebuilt by
-/// re-running the scanner tasks, which the task graph tracks via
-/// `completed`/`result` — exactly what this snapshot carries.
+/// relationship would silently loosen the gate. Resumed historical scanner
+/// output remains unverified; completed tasks are not automatically re-run to
+/// recreate proof. Fresh observations must pass the normal evidence gate.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct OrchestratorSnapshot {
     pub target: String,
@@ -230,6 +230,8 @@ pub struct OrchestratorSnapshot {
     pub ports: BTreeSet<u16>,
     pub services: BTreeMap<String, String>,
     pub vulnerabilities: BTreeMap<String, String>,
+    #[serde(default)]
+    pub execution_coverage: Vec<TaskCoverage>,
 }
 
 const STATE_FILE: &str = "state.json";
@@ -237,12 +239,24 @@ const STATE_FILE: &str = "state.json";
 /// Atomically write `bytes` to `path` (temp file + rename) so a crash cannot
 /// leave a truncated `state.json` behind.
 fn atomic_write(path: &Path, bytes: &[u8]) -> Result<()> {
-    let tmp = path.with_extension(format!("tmp-{}", std::process::id()));
-    std::fs::write(&tmp, bytes).map_err(|e| anyhow!("failed to write {}: {e}", tmp.display()))?;
-    if path.exists() {
-        let _ = std::fs::remove_file(path);
-    }
-    std::fs::rename(&tmp, path).map_err(|e| anyhow!("failed to replace {}: {e}", path.display()))
+    use std::io::Write;
+    let parent = path.parent().unwrap_or_else(|| Path::new("."));
+    let mut tmp = tempfile::NamedTempFile::new_in(parent).map_err(|e| {
+        anyhow!(
+            "failed to create temporary file in {}: {e}",
+            parent.display()
+        )
+    })?;
+    tmp.write_all(bytes)
+        .map_err(|e| anyhow!("failed to write {}: {e}", path.display()))?;
+    tmp.as_file()
+        .sync_all()
+        .map_err(|e| anyhow!("failed to sync {}: {e}", path.display()))?;
+    // Persist replaces the destination without deleting the previous snapshot
+    // first. Unique temporary names also avoid collisions between task writers.
+    tmp.persist(path)
+        .map_err(|e| anyhow!("failed to replace {}: {}", path.display(), e.error))?;
+    Ok(())
 }
 
 /// Serialize the orchestrator's accumulators and task graph to `dir/state.json`.
@@ -273,6 +287,7 @@ pub async fn save_state(orchestrator: &BugBountyOrchestrator, dir: &Path) -> Res
             .clone()
             .into_iter()
             .collect(),
+        execution_coverage: orchestrator.execution_coverage.read().await.clone(),
         vulnerabilities: orchestrator
             .vulnerabilities
             .read()
@@ -314,7 +329,44 @@ pub async fn load_state(orchestrator: &BugBountyOrchestrator, dir: &Path) -> Res
     *orchestrator.ports.write().await = snapshot.ports.into_iter().collect();
     *orchestrator.services.write().await = snapshot.services.into_iter().collect();
     *orchestrator.vulnerabilities.write().await = snapshot.vulnerabilities.into_iter().collect();
+    *orchestrator.execution_coverage.write().await = snapshot.execution_coverage;
     Ok(true)
+}
+
+/// Reconcile per-call crash journals with the last phase snapshot. Disk
+/// journals can be newer, and retain an in-flight call as indeterminate.
+async fn restore_execution_audits(orchestrator: &BugBountyOrchestrator, dir: &Path) -> Result<()> {
+    let audit_dir = dir.join("coverage");
+    if !audit_dir.exists() {
+        return Ok(());
+    }
+    let mut audits: BTreeMap<String, TaskCoverage> = orchestrator
+        .execution_coverage
+        .read()
+        .await
+        .iter()
+        .cloned()
+        .map(|entry| (entry.input_manifest.clone(), entry))
+        .collect();
+    for entry in std::fs::read_dir(&audit_dir)? {
+        let path = entry?.path();
+        let name = path
+            .file_name()
+            .and_then(|name| name.to_str())
+            .unwrap_or_default();
+        if path.extension().and_then(|ext| ext.to_str()) != Some("json")
+            || name.ends_with(".inputs.json")
+        {
+            continue;
+        }
+        let audit: TaskCoverage = serde_json::from_slice(&std::fs::read(&path)?)
+            .map_err(|err| anyhow!("invalid execution audit {}: {err}", path.display()))?;
+        if audit.target == orchestrator.target {
+            audits.insert(audit.input_manifest.clone(), audit);
+        }
+    }
+    *orchestrator.execution_coverage.write().await = audits.into_values().collect();
+    Ok(())
 }
 
 // --- target hydration ----------------------------------------------------------
@@ -359,57 +411,59 @@ struct Seeds {
 
 /// Build the seed set from completed task results and the URL accumulator.
 async fn collect_seeds(orchestrator: &BugBountyOrchestrator) -> Seeds {
-    let mut live: Vec<String> = Vec::new();
-    let mut with_params: Vec<String> = Vec::new();
-    let mut all_urls: Vec<String> = Vec::new();
-
-    // Task results are the primary source: this is where httpx confirmed
-    // liveness and the crawlers produced endpoint lists.
+    let mut live = Vec::new();
+    let mut with_params = Vec::new();
+    let mut all_urls = Vec::new();
+    let mut seen_live = HashSet::new();
+    let mut seen_params = HashSet::new();
+    let mut seen_all = HashSet::new();
     let tasks = orchestrator.tasks.read().await;
-    let mut results: Vec<(&str, &String)> = tasks
-        .iter()
-        .filter(|(_, t)| t.completed && t.result.is_some())
-        .map(|(_, t)| (t.tool.as_str(), t.result.as_ref().unwrap()))
+    let mut results: Vec<_> = tasks
+        .values()
+        .filter(|task| task.completed && task.result.is_some())
         .collect();
-
-    // http-family results first so `live` is ordered by confirmed liveness.
-    results.sort_by_key(|(tool, _)| usize::from(!URL_LINE_TOOLS.contains(tool)));
-    for (tool, result) in results.drain(..) {
-        let only_live = tool == "httpx" || tool == "httprobe";
-        for line in result.lines() {
+    // Stable priority and task identity determine capped selection, never the
+    // randomized iteration order of a HashMap.
+    results.sort_by(|a, b| {
+        let a_live = matches!(a.tool.as_str(), "httpx" | "httprobe");
+        let b_live = matches!(b.tool.as_str(), "httpx" | "httprobe");
+        b_live
+            .cmp(&a_live)
+            .then_with(|| a.priority.cmp(&b.priority))
+            .then_with(|| a.id.cmp(&b.id))
+    });
+    for task in results {
+        let only_live = matches!(task.tool.as_str(), "httpx" | "httprobe");
+        for line in task.result.as_deref().unwrap_or_default().lines() {
             if let Some(url) = clean_url_line(line) {
-                if url.contains('?') {
+                if url.contains('?') && seen_params.insert(url.clone()) {
                     with_params.push(url.clone());
                 }
-                if only_live {
+                if only_live && seen_live.insert(url.clone()) {
                     live.push(url.clone());
                 }
-                if !all_urls.contains(&url) {
+                if seen_all.insert(url.clone()) {
                     all_urls.push(url);
                 }
             }
         }
     }
     drop(tasks);
-
-    // Backfill from the URL accumulator, through the same cleaner.
-    for url in orchestrator.urls.read().await.iter() {
-        if let Some(url) = clean_url_line(url)
-            && !all_urls.contains(&url)
-        {
-            if url.contains('?') {
+    let mut discovered: Vec<_> = orchestrator.urls.read().await.iter().cloned().collect();
+    discovered.sort();
+    for item in discovered {
+        if let Some(url) = clean_url_line(&item) {
+            if url.contains('?') && seen_params.insert(url.clone()) {
                 with_params.push(url.clone());
             }
-            all_urls.push(url);
+            if seen_all.insert(url.clone()) {
+                all_urls.push(url);
+            }
         }
     }
-
     if all_urls.is_empty() {
-        // Nothing has run yet. Degrade to the target root rather than
-        // silently producing zero-width work.
         all_urls.push(target_root(&orchestrator.target));
     }
-
     Seeds {
         live,
         with_params,
@@ -815,25 +869,38 @@ async fn build_tool_inputs(
 
 /// Merge every URL source into one deduplicated candidate list.
 fn collect_all_urls(seeds: &Seeds) -> Vec<String> {
-    let mut out: Vec<String> = Vec::new();
-    for url in seeds.live.iter().chain(seeds.all_urls.iter()) {
-        if !out.contains(url) {
-            out.push(url.clone());
-        }
-    }
-    out
+    let mut seen = HashSet::new();
+    seeds
+        .live
+        .iter()
+        .chain(&seeds.all_urls)
+        .filter(|url| seen.insert(url.as_str()))
+        .cloned()
+        .collect()
 }
 
-/// Subdomain fallback for the http probe when no URL source has run yet.
+/// Deterministic fallback seed selection; discovery does not establish scope.
 async fn substrate_subdomains(orchestrator: &BugBountyOrchestrator) -> Vec<String> {
-    let mut out = vec![target_root(&orchestrator.target)];
-    let subs = orchestrator.subdomains.read().await;
-    for sub in subs.iter() {
+    let root = target_root(&orchestrator.target);
+    let mut out = vec![root.clone()];
+    let mut seen = HashSet::from([root]);
+    let mut subs: Vec<_> = orchestrator
+        .subdomains
+        .read()
+        .await
+        .iter()
+        .cloned()
+        .collect();
+    subs.sort();
+    for sub in subs {
         if out.len() >= HTTPX_TARGET_CAP {
             break;
         }
         if !sub.is_empty() {
-            out.push(format!("https://{sub}"));
+            let url = format!("https://{sub}");
+            if seen.insert(url.clone()) {
+                out.push(url);
+            }
         }
     }
     out
@@ -864,15 +931,38 @@ fn truncate_utf8_bytes(text: &mut String, max_bytes: usize) {
 /// return the text `complete_task` should ingest.
 ///
 /// The returned string is deliberately shaped for
-/// `ingest_tool_output` — the raw tool stdout is saved verbatim to
-/// `<task_id>.txt`, while URL-class tools' ingest text carries one clean URL
-/// per line so httpx decoration never leaks into the accumulators.
+/// `ingest_tool_output`: a bounded aggregate is saved to `<task_id>.txt`,
+/// per-call returned output is retained under `coverage/`, and URL-class
+/// ingest text carries one cleaned URL per line. Tool capture limits apply.
 async fn execute_task(
     task: &BountyTask,
     orchestrator: &BugBountyOrchestrator,
     ctx: &ToolContext,
     dir: &Path,
 ) -> Result<String> {
+    let interrupted = {
+        let coverage = orchestrator.execution_coverage.read().await;
+        coverage
+            .iter()
+            .find(|attempt| {
+                attempt.target == orchestrator.target
+                    && attempt.task_id == task.id
+                    && attempt.in_flight_input_index.is_some()
+            })
+            .map(|attempt| {
+                (
+                    attempt.in_flight_input_index,
+                    attempt.input_manifest.clone(),
+                )
+            })
+    };
+    if let Some((index, manifest)) = interrupted {
+        return Err(anyhow!(
+            "{}: prior input {:?} has an indeterminate outcome; inspect actual state and resolve its coverage journal before replay; manifest: {manifest}",
+            task.id,
+            index
+        ));
+    }
     let seeds = collect_seeds(orchestrator).await;
     let inputs = build_tool_inputs(task, orchestrator, dir, &seeds).await?;
     if inputs.is_empty() {
@@ -882,87 +972,140 @@ async fn execute_task(
         ));
     }
 
+    use sha2::{Digest, Sha256};
+    let stamp = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_nanos();
+    let identity = format!("{:x}", Sha256::digest(task.id.as_bytes()));
+    let prefix = format!("{}-{stamp}", &identity[..16]);
+    let audit_dir = dir.join("coverage");
+    std::fs::create_dir_all(&audit_dir)?;
+    let manifest_name = format!("coverage/{prefix}.inputs.json");
+    atomic_write(
+        &dir.join(&manifest_name),
+        &serde_json::to_vec_pretty(&inputs)?,
+    )?;
+    let audit_path = audit_dir.join(format!("{prefix}.json"));
+    let mut coverage = TaskCoverage {
+        target: orchestrator.target.clone(),
+        task_id: task.id.clone(),
+        tool: task.tool.clone(),
+        inputs_planned: inputs.len(),
+        inputs_attempted: 0,
+        successful_calls: 0,
+        in_flight_input_index: None,
+        failed_input_indices: Vec::new(),
+        deferred_input_indices: (0..inputs.len()).collect(),
+        omitted_observation_lines: 0,
+        aggregate_output_truncated: false,
+        stop_reason: "execution interrupted before completion".to_string(),
+        input_manifest: manifest_name,
+        raw_artifacts: Vec::new(),
+    };
+    // The audit exists before the first external call, so an interrupted run
+    // leaves an explicit unresolved attempt rather than silently losing it.
+    atomic_write(&audit_path, &serde_json::to_vec_pretty(&coverage)?)?;
     let is_url_tool = URL_LINE_TOOLS.contains(&task.tool.as_str());
     let mut raw_text = String::new();
-    let mut lines: Vec<String> = Vec::new();
+    let mut lines = Vec::new();
+    let mut seen_lines = HashSet::new();
     let mut consecutive_failures = 0u32;
-    let mut failures = 0usize;
-    let mut successes = 0usize;
-
+    let mut stop_reason = "all hydrated calls attempted".to_string();
     for (i, input) in inputs.iter().enumerate() {
+        coverage.inputs_attempted = i + 1;
+        coverage.in_flight_input_index = Some(i);
+        coverage.deferred_input_indices = (i + 1..inputs.len()).collect();
+        atomic_write(&audit_path, &serde_json::to_vec_pretty(&coverage)?)?;
         let call_ctx = ToolContext {
             session_id: ctx.session_id.clone(),
             message_id: ctx.message_id.clone(),
-            tool_call_id: format!("{}-{}", ctx.tool_call_id, i),
+            tool_call_id: format!("{}-{prefix}-{i}", ctx.tool_call_id),
             working_dir: ctx.working_dir.clone(),
             stdin_request_tx: None,
             graceful_shutdown_signal: None,
             execution_mode: ToolExecutionMode::Direct,
         };
-        match run_task_tool(&task.tool, input.clone(), call_ctx).await {
-            Ok(out) => {
-                successes += 1;
-                consecutive_failures = 0;
-                raw_text.push_str(&out.output);
-                raw_text.push('\n');
-                for line in out.output.lines() {
-                    let shaped: Option<String> = if is_url_tool {
-                        clean_url_line(line)
-                    } else {
-                        let trimmed = line.trim();
-                        if trimmed.is_empty() {
-                            None
-                        } else {
-                            Some(trimmed.to_string())
-                        }
-                    };
-                    if let Some(text) = shaped
-                        && !lines.contains(&text)
-                    {
+        let (output, failed) = match run_task_tool(&task.tool, input.clone(), call_ctx).await {
+            Ok(out) => (out.output, false),
+            Err(err) => (format!("[error] {err}"), true),
+        };
+        // Preserve the returned transcript separately before creating a bounded
+        // aggregate. Tool-internal output limits still apply.
+        let artifact = format!("coverage/{prefix}-{i}.txt");
+        atomic_write(&dir.join(&artifact), output.as_bytes())?;
+        coverage.raw_artifacts.push(artifact);
+        coverage.in_flight_input_index = None;
+        raw_text.push_str(&output);
+        raw_text.push('\n');
+        if failed {
+            coverage.failed_input_indices.push(i);
+            consecutive_failures += 1;
+        } else {
+            coverage.successful_calls += 1;
+            consecutive_failures = 0;
+            for line in output.lines() {
+                let text = if is_url_tool {
+                    clean_url_line(line)
+                } else {
+                    let line = line.trim();
+                    (!line.is_empty()).then(|| line.to_string())
+                };
+                if let Some(text) = text
+                    && !seen_lines.contains(&text)
+                {
+                    if lines.len() < 2_000 {
+                        seen_lines.insert(text.clone());
                         lines.push(text);
+                    } else {
+                        coverage.omitted_observation_lines += 1;
                     }
                 }
             }
-            Err(err) => {
-                failures += 1;
-                consecutive_failures += 1;
-                let msg = err.to_string();
-                raw_text.push_str(&format!("[error] {msg}\n"));
-                // A missing binary will not fix itself inside this loop — stop
-                // burning seeds on it and surface the install hint instead.
-                let binary_missing =
-                    msg.contains("failed to run ") || msg.contains("did not complete");
-                if binary_missing || consecutive_failures >= 2 {
-                    break;
-                }
-            }
+        }
+        if raw_text.len() > 256 * 1024 {
+            coverage.aggregate_output_truncated = true;
         }
         truncate_utf8_bytes(&mut raw_text, 256 * 1024);
-        if lines.len() >= 2_000 {
+        let binary_missing = failed && output.contains("failed to run ");
+        let should_stop = binary_missing || consecutive_failures >= 2 || lines.len() >= 2_000;
+        if should_stop {
+            stop_reason = if binary_missing {
+                "tool could not start"
+            } else if consecutive_failures >= 2 {
+                "consecutive tool failures"
+            } else {
+                "observation budget reached"
+            }
+            .to_string();
+            coverage.stop_reason = stop_reason.clone();
+        }
+        atomic_write(&audit_path, &serde_json::to_vec_pretty(&coverage)?)?;
+        if should_stop {
             break;
         }
     }
-
+    coverage.stop_reason = stop_reason;
+    atomic_write(&audit_path, &serde_json::to_vec_pretty(&coverage)?)?;
+    let partial = coverage.is_partial();
+    let successes = coverage.successful_calls;
+    let failures = coverage.failed_input_indices.len();
+    let deferred = coverage.deferred_input_indices.len();
+    orchestrator.execution_coverage.write().await.push(coverage);
     let raw_path = dir.join(format!("{}.txt", task.id));
     atomic_write(&raw_path, raw_text.as_bytes())?;
-
     if successes == 0 {
-        let last_error = raw_text
-            .lines()
-            .rfind(|l| l.starts_with("[error]"))
-            .unwrap_or("no output captured")
-            .to_string();
         return Err(anyhow!(
-            "{}: all executions failed; {last_error}",
-            task.tool
+            "{}: all attempted executions failed; {deferred} hydrated calls deferred; audit: {}",
+            task.tool,
+            audit_path.display()
         ));
     }
-
     let ingest_text = lines.join("\n");
-    let notice = if failures > 0 {
+    let notice = if partial {
         format!(
-            "\n({successes} call(s) succeeded, {failures} failed; raw output: {})",
-            raw_path.display()
+            "\n[coverage] PARTIAL: {successes} calls succeeded, {failures} failed, {deferred} deferred; audit: {}",
+            audit_path.display()
         )
     } else {
         String::new()
@@ -1000,6 +1143,7 @@ pub async fn run_workflow(
     } else {
         orchestrator.initialize().await?;
     };
+    restore_execution_audits(orchestrator, dir).await?;
     // Every later phase re-reads live state; a restored run simply sees most
     // tasks already completed and executes only what remains.
 
@@ -1100,6 +1244,33 @@ async fn write_report(
         );
     }
 
+    md.push_str("\n## Coverage and unresolved execution\n\n");
+    md.push_str("Task completion means usable tool output was returned. It does not establish complete asset, authorization, or vulnerability coverage. Hydration caps, tool-internal limits and untested business flows still apply. Full discovered inventories remain in `state.json`.\n\n");
+    let mut coverage = orchestrator.execution_coverage.read().await.clone();
+    coverage.sort_by(|a, b| {
+        a.task_id
+            .cmp(&b.task_id)
+            .then_with(|| a.input_manifest.cmp(&b.input_manifest))
+    });
+    for attempt in &coverage {
+        let state = if attempt.is_partial() {
+            "PARTIAL / requires disposition"
+        } else {
+            "hydrated calls finished"
+        };
+        md.push_str(&format!("- `{}`: {state}; {}/{} attempted, {} succeeded, {} failed, {} deferred, {} observation lines omitted; aggregate truncated: {}; reason: {}. Manifest: `{}`.\n", attempt.task_id, attempt.inputs_attempted, attempt.inputs_planned, attempt.successful_calls, attempt.failed_input_indices.len(), attempt.deferred_input_indices.len(), attempt.omitted_observation_lines, attempt.aggregate_output_truncated, attempt.stop_reason, attempt.input_manifest));
+        if let Some(index) = attempt.in_flight_input_index {
+            md.push_str(&format!("  - Input {index} has an indeterminate outcome after interruption. Inspect its state before repeating any write.\n"));
+        }
+    }
+    if coverage.is_empty() {
+        md.push_str("No per-call execution audit is available for these historical tasks; coverage is unknown.\n");
+    }
+    md.push_str("\nFailed and deferred inputs remain open work. A retry requires reviewing scope, budget and possible prior side effects; no automatic replay is authorized by this audit.\n");
+    atomic_write(
+        &dir.join("coverage.json"),
+        &serde_json::to_vec_pretty(&coverage)?,
+    )?;
     md.push_str("\n## Task outcomes\n\n");
     for outcome in outcomes {
         let mark = if outcome.ok { "ok" } else { "failed" };
@@ -1112,7 +1283,7 @@ async fn write_report(
     }
 
     md.push_str("\n## Raw output files\n\n");
-    md.push_str("One `<task_id>.txt` per task, plus `state.json` for `--resume`.\n");
+    md.push_str("One bounded `<task_id>.txt` per task, `state.json` for `--resume`, `coverage.json` for attempt coverage, and `coverage/` for input manifests, per-call returned output and interruption journals. Tool-internal output limits still apply. Manifests and raw transcripts may contain sensitive target data; handle them like the engagement evidence.\n");
     atomic_write(&dir.join("report.md"), md.as_bytes())
 }
 

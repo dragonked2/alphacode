@@ -44,6 +44,12 @@ pub use crate::alphacode_compaction_core::{
 const HARD_THRESHOLD_PENDING_WAIT_MS: u64 = 15_000;
 const HARD_THRESHOLD_PENDING_POLL_MS: u64 = 50;
 
+/// Compaction budget used when the provider reports the "unknown model"
+/// sentinel instead of a real context window. Large enough that it never causes
+/// needless compaction for models with genuinely big windows, small enough that
+/// the 85% proactive threshold is still reachable by a real transcript.
+pub const UNKNOWN_CONTEXT_BUDGET: usize = 128_000;
+
 /// Result from background compaction task
 struct CompactionResult {
     summary_text: String,
@@ -247,12 +253,32 @@ impl CompactionManager {
         self
     }
 
-    /// Update the token budget (e.g., when model changes)
+    /// Update the token budget (e.g., when model changes).
+    ///
+    /// Providers whose model is missing from the catalog report
+    /// [`DEFAULT_CONTEXT_LIMIT`](crate::provider::DEFAULT_CONTEXT_LIMIT) — a
+    /// deliberate 2-billion-token "unknown" sentinel so prompt sizing never
+    /// fails closed. Using that number as a compaction budget is safe for
+    /// estimate arithmetic but silently disables proactive compaction: 85% of
+    /// 2e9 can never be reached by a real transcript, so the agent waits for the
+    /// provider's own context-limit error instead of compacting ahead of it. Map
+    /// the sentinel to a conservative budget so automatic compaction still runs.
     pub fn set_budget(&mut self, budget: usize) {
+        let budget = Self::normalize_budget(budget);
         if self.token_budget != budget {
             self.prompt_overhead_tokens = None;
         }
         self.token_budget = budget;
+    }
+
+    /// Collapse the "unknown model" sentinel to a conservative real budget.
+    fn normalize_budget(budget: usize) -> usize {
+        const UNKNOWN_CONTEXT_SENTINEL: usize = crate::provider::DEFAULT_CONTEXT_LIMIT;
+        if budget >= UNKNOWN_CONTEXT_SENTINEL {
+            UNKNOWN_CONTEXT_BUDGET
+        } else {
+            budget
+        }
     }
 
     /// Update the measured prompt + tool overhead used by context estimates.
@@ -875,12 +901,14 @@ impl CompactionManager {
 
     /// Get current context usage as percentage (using caller's messages)
     pub fn context_usage_with(&self, all_messages: &[Message]) -> f32 {
-        self.effective_token_count_with(all_messages) as f32 / self.token_budget as f32
+        let budget = self.token_budget.max(1);
+        self.effective_token_count_with(all_messages) as f32 / budget as f32
     }
 
     /// Get current context usage (without messages, uses observed tokens only)
     pub fn context_usage(&self) -> f32 {
-        self.effective_token_count() as f32 / self.token_budget as f32
+        let budget = self.token_budget.max(1);
+        self.effective_token_count() as f32 / budget as f32
     }
 
     /// Check if we should start compaction

@@ -93,6 +93,47 @@ Reproduce the bug or missing behavior first. Fix the **root cause**, not the sym
 
 For authorized assessments, map inputs, trust boundaries, identities and privileged operations. Establish a baseline, test one hypothesis at a time within scope, preserve evidence, and distinguish a failed tool from a negative result. Use test-owned accounts and data where possible. Load `security-research` for the detailed workflow.
 
+## Assessment intent and completion
+
+Treat requests for a fixed number of Critical/High findings or "miss nothing" as
+requests for thorough authorized coverage, not an achievable quota or permission
+to expand scope. State the limit briefly, then proceed. Recheck the official
+program policy; if unavailable, resolve that gap before dependent active testing
+while continuing supplied-artifact analysis. Track asset and workflow coverage,
+not scanner counts. Severity follows demonstrated consequences. Report verified
+issues promptly, deduplicate shared causes, and continue independent coverage.
+Never claim superiority to a human or another agent without comparative evidence.
+
+Assess the requested target. A website vulnerability request calls for testing
+that web surface, not just CVE searches or a review of the product it advertises.
+Documentation describes controls; it does not verify their deployed behavior.
+
+The user's statement "this is my website" establishes standing authorization
+for ordinary bounded, non-disruptive assessment of the named site. Do not demand
+documentary proof or ask permission again for each phase. Shared hosting limits
+the boundary to that site; it does not prohibit site-level testing or authorize
+testing the hosting provider, shared IPs, adjacent domains or repositories.
+Resolve material gaps narrowly while continuing independent permitted work.
+
+For a full assessment maintain a coverage ledger: pending, tested, not applicable
+with evidence, inconclusive, or blocked with a reason. Continue applicable
+already-authorized discovery, testing and validation without "want me to go
+deeper?" or another "go". Reconnaissance is a phase, not completion. Stop proof
+for one finding when sufficient, then continue other coverage. Finish at resolved
+planned coverage, a blocker affecting all remaining work, the agreed budget,
+or the user's stop. Report actual limits; never label partial coverage "full".
+Load `security-research` for surface-specific planning and continuation.
+For broad or resumed investigations read bugbounty's `investigation-control`
+reference. Reconcile orphan clues, partial tool runs and failed prerequisites.
+Prioritize reachable protected operations, and require compatible, evidenced
+edges for any claimed impact chain. An interrupted write is indeterminate until
+its actual effect is checked; a completed scanner task is not full coverage.
+
+Missing headers/SRI, public wildcard CORS, robots exclusions and no known CVEs
+are observations, not proof of vulnerabilities or security. Require demonstrated
+impact before assigning severity; separate hardening advice. A few 404s do not
+prove no secrets exist. Verify platform-supported fixes before recommending them.
+
 # 9. Finding Validation Gate
 
 Keep source evidence, target reproduction, demonstrated impact, scope eligibility, severity and submission readiness separate. Never infer unobserved impact or claim a finding is confirmed without suitable evidence. Load `finding-validation` before calling a finding confirmed or submission-ready, assigning severity, or writing a security report; apply its gates and disclose uncertainty.

@@ -199,6 +199,11 @@ pub enum Request {
     #[serde(rename = "get_history")]
     GetHistory { id: u64 },
 
+    /// Explicit user-requested text export of the attached session's full
+    /// retained conversation. Does not change the viewport or model context.
+    #[serde(rename = "get_session_transcript")]
+    GetSessionTranscript { id: u64, session_id: String },
+
     /// Get only provider/model metadata and available models.
     #[serde(rename = "get_model_catalog")]
     GetModelCatalog { id: u64 },
@@ -1246,6 +1251,14 @@ pub enum ServerEvent {
         /// Session-scoped side panel pages and active focus state
         #[serde(default, skip_serializing_if = "snapshot_is_empty")]
         side_panel: SidePanelSnapshot,
+    },
+
+    /// Text snapshot returned only in response to GetSessionTranscript.
+    #[serde(rename = "session_transcript")]
+    SessionTranscript {
+        id: u64,
+        session_id: String,
+        text: Option<String>,
     },
 
     /// Expanded compacted-history window (response to GetCompactedHistory).

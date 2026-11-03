@@ -243,7 +243,7 @@ pub(super) async fn run_stream_with_retries(
             api_base.clone(),
             auth.clone(),
             send_openrouter_headers,
-            request.clone(),
+            &request,
             request_body.clone(),
             &responses_fallback,
             attempt_tx,
@@ -314,7 +314,7 @@ async fn stream_response(
     api_base: String,
     auth: ProviderAuth,
     send_openrouter_headers: bool,
-    request: Value,
+    request: &Value,
     request_body: bytes::Bytes,
     responses_fallback: &super::openrouter_responses_fallback::ResponsesFallbackContext,
     tx: mpsc::Sender<Result<StreamEvent>>,
@@ -341,7 +341,7 @@ async fn stream_response(
         && let Some(responses_request) =
             super::openrouter_responses_fallback::build_responses_request(
                 responses_fallback,
-                &request,
+                request,
             )
     {
         return stream_via_responses_endpoint(
@@ -393,7 +393,7 @@ async fn stream_response(
     // Diagnostics: estimated prompt size, timeout, and mode. Never includes secrets.
     // The caller already encoded the body; recounting by serializing the whole
     // request again doubled the per-request CPU on long sessions.
-    let request_estimate = request_body.len() / 4;
+    let request_estimate = super::estimate_chat_request_tokens(request);
     let suppress_upstream_error_details = is_alphax_free_gateway(&api_base);
     let response = crate::alphacode_provider_core::transport::send_with_initial_response_timeout(
         req.body(request_body),
@@ -457,7 +457,7 @@ async fn stream_response(
                 &api_base,
                 &model,
                 responses_fallback,
-                &request,
+                request,
             )
         {
             return stream_via_responses_endpoint(

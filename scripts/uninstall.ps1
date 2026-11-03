@@ -261,6 +261,36 @@ function Invoke-Uninstall {
         if (Remove-IfExists -Path $hotkeyLnk) { $foundAny = $true }
     }
 
+    # Remove the GUI shortcuts and the registered application identity the
+    # installer created (Start menu + Desktop). The Desktop may be redirected
+    # (OneDrive), so ask the shell for its real location rather than assuming
+    # %USERPROFILE%\Desktop.
+    if ($AppData) {
+        $guiLnk = Join-Path $AppData 'Microsoft\Windows\Start Menu\Programs\AlphaCode\AlphaCode.lnk'
+        if (Remove-IfExists -Path $guiLnk) { $foundAny = $true }
+        $guiFolder = Join-Path $AppData 'Microsoft\Windows\Start Menu\Programs\AlphaCode'
+        if ((Test-Path -LiteralPath $guiFolder) -and
+            -not (Get-ChildItem -LiteralPath $guiFolder -Force -ErrorAction SilentlyContinue)) {
+            [void](Remove-IfExists -Path $guiFolder)
+        }
+        $desktop = $null
+        try {
+            $desktop = [System.Environment]::ExpandEnvironmentVariables(
+                (Get-ItemProperty -Path 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Explorer\User Shell Folders' -Name 'Desktop' -ErrorAction Stop).Desktop)
+        } catch { }
+        if (-not $desktop) { $desktop = Join-Path $UserProfile 'Desktop' }
+        $desktopLnk = Join-Path $desktop 'AlphaCode.lnk'
+        if (Remove-IfExists -Path $desktopLnk) { $foundAny = $true }
+    }
+
+    # Drop the per-user application registration (AppUserModelID / "Open with").
+    foreach ($appName in @('AlphaCode.Desktop.exe', 'alphacode.exe')) {
+        $regKey = "HKCU:\Software\Classes\Applications\$appName"
+        try {
+            if (Test-Path -LiteralPath $regKey) { Remove-Item -LiteralPath $regKey -Recurse -Force -ErrorAction Stop }
+        } catch { Write-Host "Skipped registry cleanup for $appName" -ForegroundColor Yellow }
+    }
+
     # Purge: also remove ~/.local/bin leftover.
     if ($Purge -and $UserProfile) {
         $localBin = Join-Path $UserProfile '.local\bin\alphacode.exe'

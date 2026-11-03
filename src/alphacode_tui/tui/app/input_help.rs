@@ -22,6 +22,9 @@ impl App {
             "rewind" => {
                 "/rewind\nShow numbered conversation history.\n\n/rewind N\nRewind to message N (drops everything after it and resets provider session).\n\n/rewind undo\nUndo the most recent rewind and restore the removed messages."
             }
+            "copy" => {
+                "/copy\nCopy the entire current session to the system clipboard as readable Markdown.\n\nIncludes all retained conversation messages and tool calls/results, including history hidden by compaction, folded output, or /cls. Preserves original text without terminal borders or soft wrapping. Available in-progress text is labeled as a snapshot. Image attachments are represented by labels; binary payloads and opaque provider replay state are omitted.\n\nConnected clients request the full transcript from their attached server session. Clipboard work runs in the background. Native clipboard access or a terminal that supports clipboard forwarding is required; terminal forwarding limits may apply."
+            }
             "clear" => {
                 "/clear\nClear current conversation, queue, and display; starts a fresh session."
             }

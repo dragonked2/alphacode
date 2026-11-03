@@ -1,6 +1,6 @@
 use serde::{Deserialize, Serialize};
 use std::borrow::Cow;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use super::finding::{Confidence, Severity, VulnerabilityClass};
 
@@ -195,22 +195,42 @@ impl Hypothesis {
 
     /// Add evidence and auto-update confidence based on evidence balance.
     pub fn add_evidence(&mut self, evidence: HypothesisEvidence) {
-        self.evidence.push(evidence);
+        if let Some(existing) = self.evidence.iter_mut().find(|item| item.id == evidence.id) {
+            *existing = evidence;
+        } else {
+            self.evidence.push(evidence);
+        }
         self.recalculate_confidence();
     }
 
     /// Recalculate confidence based on the balance of supporting/refuting evidence.
     fn recalculate_confidence(&mut self) {
-        let supporting = self
+        // Re-importing an artifact (even with a fresh id) is not independent
+        // corroboration. Payload proposals and analysis are not observations.
+        let observations: HashSet<_> = self
             .evidence
             .iter()
-            .filter(|e| e.supports_hypothesis == Some(true))
+            .filter(|e| !e.data.trim().is_empty())
+            .filter(|e| {
+                !matches!(
+                    e.evidence_type,
+                    EvidenceType::Analysis | EvidenceType::Payload
+                )
+            })
+            .map(|e| (e.data.as_str(), e.supports_hypothesis))
+            .collect();
+        let supporting = observations
+            .iter()
+            .filter(|(_, supports)| *supports == Some(true))
             .count();
+        // Retain explicit contradictory analysis as a blocker until resolved.
         let refuting = self
             .evidence
             .iter()
             .filter(|e| e.supports_hypothesis == Some(false))
-            .count();
+            .map(|e| e.data.as_str())
+            .collect::<HashSet<_>>()
+            .len();
         let total = supporting + refuting;
 
         if total == 0 {
@@ -233,8 +253,7 @@ impl Hypothesis {
         self.confidence = match supporting {
             1 => Confidence::Low,
             2 => Confidence::Medium,
-            3..=4 => Confidence::High,
-            _ => Confidence::Certain,
+            _ => Confidence::High,
         };
     }
 
@@ -248,8 +267,26 @@ impl Hypothesis {
             && self
                 .result
                 .as_ref()
-                .map(|r| r.reproduction_possible)
+                .map(|r| r.reproduction_possible && r.outcome == HypothesisOutcome::Confirmed)
                 .unwrap_or(false)
+            && !self
+                .evidence
+                .iter()
+                .any(|e| e.supports_hypothesis == Some(false))
+            && self
+                .evidence
+                .iter()
+                .filter(|e| e.supports_hypothesis == Some(true) && !e.data.trim().is_empty())
+                .filter(|e| {
+                    !matches!(
+                        e.evidence_type,
+                        EvidenceType::Analysis | EvidenceType::Payload
+                    )
+                })
+                .map(|e| e.data.as_str())
+                .collect::<HashSet<_>>()
+                .len()
+                >= 2
     }
 }
 
@@ -271,7 +308,7 @@ mod tests {
         h.add_evidence(HypothesisEvidence {
             id: "e1".to_string(),
             description: "Payload executes".to_string(),
-            evidence_type: EvidenceType::Payload,
+            evidence_type: EvidenceType::Screenshot,
             data: "<script>alert(1)</script>".to_string(),
             supports_hypothesis: Some(true),
             collected_by: None,
@@ -325,6 +362,73 @@ mod tests {
             reproduction_possible: true,
             finding_id: None,
         });
+        assert!(
+            !h.should_promote(),
+            "a confidence label alone is not corroboration"
+        );
+        for (id, data) in [
+            ("baseline", "owned baseline observed"),
+            ("reproduction", "independent controlled reproduction"),
+        ] {
+            h.add_evidence(HypothesisEvidence {
+                id: id.into(),
+                description: "observed result".into(),
+                evidence_type: EvidenceType::Observation,
+                data: data.into(),
+                supports_hypothesis: Some(true),
+                collected_by: None,
+                timestamp: String::new(),
+            });
+        }
         assert!(h.should_promote());
+        h.result.as_mut().unwrap().outcome = HypothesisOutcome::Inconclusive;
+        assert!(!h.should_promote());
+        h.result.as_mut().unwrap().outcome = HypothesisOutcome::Confirmed;
+        h.add_evidence(HypothesisEvidence {
+            id: "negative".into(),
+            description: "Control contradicts the claim".into(),
+            evidence_type: EvidenceType::Observation,
+            data: "same behavior in negative control".into(),
+            supports_hypothesis: Some(false),
+            collected_by: None,
+            timestamp: String::new(),
+        });
+        h.confidence = Confidence::High;
+        assert!(!h.should_promote());
+    }
+
+    #[test]
+    fn repeated_and_proposed_evidence_cannot_manufacture_confidence() {
+        let mut h = Hypothesis::new(
+            "h".into(),
+            "test".into(),
+            VulnerabilityClass::Xss,
+            "/test".into(),
+            "clue".into(),
+        );
+        let mut evidence = HypothesisEvidence {
+            id: "e".into(),
+            description: "observation".into(),
+            evidence_type: EvidenceType::HttpResponse,
+            data: "one captured response".into(),
+            supports_hypothesis: Some(true),
+            collected_by: None,
+            timestamp: String::new(),
+        };
+        h.add_evidence(evidence.clone());
+        h.add_evidence(evidence.clone());
+        assert_eq!(h.evidence.len(), 1);
+        for index in 0..10 {
+            evidence.id = format!("copy-{index}");
+            h.add_evidence(evidence.clone());
+        }
+        assert_eq!(h.confidence, Confidence::Low);
+        evidence.evidence_type = EvidenceType::Analysis;
+        for index in 0..10 {
+            evidence.id = format!("idea-{index}");
+            evidence.data = format!("untested idea {index}");
+            h.add_evidence(evidence.clone());
+        }
+        assert_eq!(h.confidence, Confidence::Low);
     }
 }

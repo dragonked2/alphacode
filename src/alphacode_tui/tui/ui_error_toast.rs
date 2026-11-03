@@ -690,6 +690,7 @@ pub fn draw(frame: &mut ratatui::Frame, area: Rect) {
         };
         let block = Block::default()
             .borders(Borders::ALL)
+            .border_type(ratatui::widgets::BorderType::Rounded)
             .border_style(Style::default().fg(border_color))
             .title(Span::styled(
                 format!(

@@ -65,7 +65,15 @@ param(
   [switch]$PathDryRun,
   [switch]$FromSource,
   [switch]$SourceOnly,
-  [string]$SourceRef = $env:ALPHACODE_SOURCE_REF
+  [string]$SourceRef = $env:ALPHACODE_SOURCE_REF,
+  # Desktop / Start-menu shortcuts for the Windows GUI. On by default: a user
+  # who installs an app with a GUI expects to be able to find it the ordinary
+  # way, and having to discover `alphacode gui` in a terminal is a worse
+  # experience than a double-clickable icon.
+  [switch]$NoShortcuts,
+  # Create the Desktop shortcut. Skipped in quiet/scripted installs because it
+  # writes into the user's visible desktop.
+  [switch]$NoDesktopShortcut
 )
 
 # NOTE: $ErrorActionPreference and $ProgressPreference are set INSIDE
@@ -812,7 +820,15 @@ function Get-AlphacodeReleaseStage {
   # Release wrapper scripts may ship .bin payload files that must sit beside the exe.
   $payload = @(Get-ChildItem -Path $extract -Recurse -Filter '*.bin' -ErrorAction SilentlyContinue | ForEach-Object { $_.FullName })
 
-  return [pscustomobject]@{ Ok = $true; ExePath = $exe.FullName; Payload = $payload; Tag = $chosen.Tag; Source = 'release' }
+  # The Windows GUI host ships as a sibling file, not embedded in alphacode.exe.
+  # An embedded copy meant the main binary contained a second complete PE that it
+  # wrote to disk and launched, which generic AV heuristics score as a dropper
+  # (BitDefender `Gen:Variant.Barys`). Keep the two files together: the launcher
+  # looks for `AlphaCode.Desktop.exe` in its own directory first.
+  $host = Get-ChildItem -Path $extract -Recurse -Filter 'AlphaCode.Desktop.exe' -ErrorAction SilentlyContinue | Select-Object -First 1
+  $hostPath = if ($host) { $host.FullName } else { $null }
+
+  return [pscustomobject]@{ Ok = $true; ExePath = $exe.FullName; HostPath = $hostPath; Payload = $payload; Tag = $chosen.Tag; Source = 'release' }
 }
 
 # Fallback: clone the repo, build with cargo, and stage the resulting binary.
@@ -862,7 +878,10 @@ function Build-FromSource {
   if (-not (Test-Path -LiteralPath $built)) {
     Stop-AlphacodeInstall 'The build succeeded but target\release\alphacode.exe was not produced.'
   }
-  return [pscustomobject]@{ Ok = $true; ExePath = $built; Payload = @(); Tag = 'source'; Source = 'source' }
+  # `build.rs` stages the GUI host beside the binary in the same profile dir.
+  $builtHost = Join-Path $srcDir 'target\release\AlphaCode.Desktop.exe'
+  $builtHostPath = if (Test-Path -LiteralPath $builtHost) { $builtHost } else { $null }
+  return [pscustomobject]@{ Ok = $true; ExePath = $built; HostPath = $builtHostPath; Payload = @(); Tag = 'source'; Source = 'source' }
 }
 
 # =============================================================================
@@ -894,6 +913,142 @@ function Copy-AlphacodeFileReplacing {
   Copy-Item -LiteralPath $Source -Destination $Destination -Force -ErrorAction Stop
 }
 
+# =============================================================================
+# Windows GUI integration: shortcuts
+#
+# What is deliberately NOT attempted: pinning to the taskbar.
+# Microsoft removed programmatic taskbar pinning in Windows 10 (the
+# `Pin to Taskbar` verb was dropped from the shell's verb set) and actively
+# blocks the remaining scripting routes, so no installer can do it. Pretending
+# otherwise would mean shipping a verb that silently fails on current Windows.
+# What *is* supported, and what makes the app behave like a first-class
+# application, is:
+#   * a Start-menu shortcut (searchable, appears in "All apps"),
+#   * a Desktop shortcut (double-click to launch),
+#   * an explicit AppUserModelID so Windows groups the windows, shows the right
+#     icon, and lets the user pin it once with the normal "Pin to taskbar"
+#     context-menu entry that stays available to the user.
+# The Exe itself carries a VersionInfo resource, which is what Explorer and the
+# taskbar read for the hover title.
+
+# The AppUserModelID has to agree between the shortcut and the running process.
+# Keep it in one place: the GUI host reads `ALPHACODE_APP_USER_MODEL_ID` if it
+# is ever changed here.
+$script:AlphacodeAppId = 'AlphaCode.Terminal'
+
+# Folder that holds the per-user Start-menu programs tree.
+function Get-AlphacodeStartMenuPrograms {
+  Join-Path $env:APPDATA 'Microsoft\Windows\Start Menu\Programs'
+}
+
+function Get-AlphacodeDesktopDirectory {
+  # The user's real Desktop may be redirected into OneDrive. The shell knows;
+  # %USERPROFILE%\Desktop is only the default.
+  try {
+    $value = (Get-ItemProperty -Path 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Explorer\User Shell Folders' -Name 'Desktop' -ErrorAction Stop).Desktop
+    if ($value) { return [System.Environment]::ExpandEnvironmentVariables($value) }
+  } catch { }
+  Join-Path $env:USERPROFILE 'Desktop'
+}
+
+# Write one .lnk pointing at the GUI host. Returns the path, or $null on a
+# best-effort failure (a shortcut is never allowed to fail the install).
+function New-AlphacodeShortcut {
+  [CmdletBinding()]
+  param(
+    [Parameter(Mandatory)][string]$LinkPath,
+    [Parameter(Mandatory)][string]$HostPath,
+    [Parameter(Mandatory)][string]$CliExe,
+    [string]$Description = 'AlphaCode - terminal coding agent'
+  )
+
+  try {
+    $parent = Split-Path -Parent $LinkPath
+    if ($parent) { New-Item -ItemType Directory -Force -Path $parent | Out-Null }
+    $shell = New-Object -ComObject WScript.Shell
+    $link = $shell.CreateShortcut($LinkPath)
+    $link.TargetPath = $HostPath
+    # The host forwards `-Executable` to the CLI, which is how it finds the
+    # session/server it should drive. Passing it here means a double-click
+    # starts the same stack as `alphacode gui`.
+    $link.Arguments = '-Executable "' + $CliExe + '"'
+    $link.WorkingDirectory = Split-Path -Parent $CliExe
+    $link.Description = $Description
+    $link.IconLocation = "$CliExe,0"
+    $link.Save()
+    return $LinkPath
+  } catch {
+    Write-AlphacodeWarn "Could not create shortcut '$LinkPath': $($_.Exception.Message)"
+    return $null
+  }
+}
+
+# Record the AppUserModelID on the installed executables so Windows treats them
+# as one application (single taskbar group, correct jump list, user-pinnable).
+# A per-user registry value under AppUserModelId\... is the supported route and
+# needs no elevation.
+function Set-AlphacodeAppUserModelId {
+  [CmdletBinding()]
+  param([Parameter(Mandatory)][string]$ExePath)
+
+  try {
+    $key = "HKCU:\Software\Classes\Applications\$([System.IO.Path]::GetFileName($ExePath))\shell\open\command"
+    # Keep the shell's Applications entry pointing at the real binary so
+    # "Open with", jump lists and taskbar grouping resolve consistently.
+    $existing = Get-ItemProperty -Path $key -Name '(default)' -ErrorAction SilentlyContinue
+    if (-not $existing) {
+      New-Item -Path $key -Force | Out-Null
+      Set-ItemProperty -Path $key -Name '(default)' -Value ('"' + $ExePath + '" "%1"')
+    }
+    # The registered identity used for grouping.
+    $appKey = "HKCU:\Software\Classes\Applications\$([System.IO.Path]::GetFileName($ExePath))"
+    New-ItemProperty -Path $appKey -Name 'AppUserModelID' -Value $script:AlphacodeAppId -PropertyType String -Force | Out-Null
+  } catch { }
+}
+
+# Create the Start-menu and Desktop shortcuts. Best effort by design: the
+# binaries are already installed, and a shortcut failure must not turn a
+# successful install into a failed one.
+function Install-AlphacodeShortcuts {
+  [CmdletBinding()]
+  param(
+    [Parameter(Mandatory)][string]$BinDir,
+    [switch]$NoDesktop
+  )
+
+  if (-not (Test-AlphacodeWindows)) { return }
+
+  $cliExe = Join-Path $BinDir 'alphacode.exe'
+  $hostExe = Join-Path $BinDir 'AlphaCode.Desktop.exe'
+  if (-not (Test-Path -LiteralPath $hostExe)) {
+    # No host means no GUI to launch. Say so once instead of writing a shortcut
+    # that opens an error dialog.
+    Write-AlphacodeWarn "GUI host not found at $hostExe; skipping shortcuts."
+    return
+  }
+
+  Set-AlphacodeAppUserModelId -ExePath $hostExe
+  Set-AlphacodeAppUserModelId -ExePath $cliExe
+
+  $startMenu = Join-Path (Get-AlphacodeStartMenuPrograms) 'AlphaCode'
+  $made = @()
+  $lnk = New-AlphacodeShortcut -LinkPath (Join-Path $startMenu 'AlphaCode.lnk') -HostPath $hostExe -CliExe $cliExe
+  if ($lnk) { $made += $lnk }
+
+  if (-not $NoDesktop) {
+    $desktop = Get-AlphacodeDesktopDirectory
+    $lnk = New-AlphacodeShortcut -LinkPath (Join-Path $desktop 'AlphaCode.lnk') -HostPath $hostExe -CliExe $cliExe
+    if ($lnk) { $made += $lnk }
+  }
+
+  if ($made.Count -gt 0) {
+    Write-AlphacodeOk 'Created shortcuts:'
+    foreach ($path in $made) { Write-Host "    $path" -ForegroundColor DarkGray }
+    Write-Host '  Windows does not allow installers to pin to the taskbar; right-click the' -ForegroundColor DarkGray
+    Write-Host '  Start-menu entry and choose "Pin to taskbar" if you want it there.' -ForegroundColor DarkGray
+  }
+}
+
 function Install-AlphacodeFiles {
   [CmdletBinding()]
   param([Parameter(Mandatory)]$Stage, [Parameter(Mandatory)][string]$BinDir)
@@ -901,6 +1056,12 @@ function Install-AlphacodeFiles {
   New-Item -ItemType Directory -Force -Path $BinDir | Out-Null
   $installedExe = Join-Path $BinDir 'alphacode.exe'
   Copy-AlphacodeFileReplacing -Source $Stage.ExePath -Destination $installedExe
+
+  # Ship the GUI host next to the binary. `alphacode gui` resolves it as a
+  # sibling first, so no extracted copy is written at runtime.
+  if ($Stage.HostPath) {
+    Copy-AlphacodeFileReplacing -Source $Stage.HostPath -Destination (Join-Path $BinDir 'AlphaCode.Desktop.exe')
+  }
 
   foreach ($p in $Stage.Payload) {
     Copy-AlphacodeFileReplacing -Source $p -Destination (Join-Path $BinDir (Split-Path -Leaf $p))
@@ -1018,6 +1179,18 @@ function Invoke-AlphacodeInstall {
     catch { Write-AlphacodeWarn "Could not update this window's PATH: $($_.Exception.Message)" }
   }
 
+  # --- Windows GUI integration ---------------------------------------------------
+  # Shortcuts are a convenience, never a gate: a failure here must not fail an
+  # install whose binaries are already in place. `-NoShortcuts` opts out for
+  # scripted or headless installs (CI, containers, image baking).
+  if (-not $PathDryRun -and -not $NoShortcuts -and (Test-AlphacodeWindows)) {
+    try {
+      Install-AlphacodeShortcuts -BinDir $binDir -NoDesktop:$NoDesktopShortcut
+    } catch {
+      Write-AlphacodeWarn "Could not create shortcuts: $($_.Exception.Message)"
+    }
+  }
+
   # Prove a NEW terminal will resolve to this exact binary.
   $fresh = $null
   $pathReady = $pathResult -and ($pathResult.Status -eq 'added' -or $pathResult.Status -eq 'already-present')
@@ -1036,6 +1209,13 @@ function Invoke-AlphacodeInstall {
 
   # --- Summary -------------------------------------------------------------------
   Write-Host ''
+  Write-Host '  ALPHACODE' -ForegroundColor Cyan
+  if ($PathDryRun) {
+    Write-Host '  Installation complete - PATH dry run' -ForegroundColor Yellow
+  } else {
+    Write-Host '  Installation complete' -ForegroundColor Green
+  }
+  Write-Host ''
   if ($pathResult -and $pathResult.Status -eq 'failed') {
     Write-Host 'Could not update your PATH automatically.' -ForegroundColor Yellow
     Write-Host '  Add this folder by hand: Settings > System > About > Advanced system settings'
@@ -1045,21 +1225,36 @@ function Invoke-AlphacodeInstall {
   } elseif ($NoPath) {
     Write-Host "PATH was left alone (-NoPath). Run it by full path: $installedExe" -ForegroundColor Yellow
   } elseif ($sessionOk) {
-    Write-AlphacodeOk 'Ready: alphacode works in this window now.'
+    Write-Host '  Ready to launch in this terminal.' -ForegroundColor Green
     if ($pathReady) {
-      Write-Host '  New terminals pick it up automatically. If one still says "not recognized", fully close'
-      Write-Host '  and reopen that app (Windows Terminal, VS Code and other editors keep the old PATH until restarted).'
+      Write-Host '  If another terminal cannot find it, restart that terminal or editor.' -ForegroundColor DarkGray
     }
   }
 
   if (-not $PathDryRun) {
     Write-Host ''
-    Write-Host 'Next:'
-    Write-Host '  alphacode login    # connect a model provider'
-    Write-Host '  alphacode          # start the TUI'
-    Write-Host '  alphacode doctor   # check your setup'
+    Write-Host '  Get started' -ForegroundColor White
+    Write-Host ''
+    Write-Host '    alphacode' -ForegroundColor Cyan -NoNewline
+    Write-Host '          Launch the terminal app'
+    Write-Host ''
+
+    if ((Test-AlphacodeWindows) -and (Test-Path -LiteralPath (Join-Path $binDir 'AlphaCode.Desktop.exe'))) {
+      Write-Host '  Desktop app' -ForegroundColor White
+      Write-Host '    Open "AlphaCode" from the Start menu or the Desktop shortcut.' -ForegroundColor DarkGray
+      Write-Host '    Taskbar: right-click that entry and choose "Pin to taskbar"' -ForegroundColor DarkGray
+      Write-Host '    (Windows does not let installers pin automatically).' -ForegroundColor DarkGray
+      Write-Host ''
+    }
+
+    Write-Host '  Useful commands' -ForegroundColor White
+    Write-Host '    alphacode login' -ForegroundColor Cyan -NoNewline
+    Write-Host '    Connect a model provider'
+    Write-Host '    alphacode doctor' -ForegroundColor Cyan -NoNewline
+    Write-Host '   Check your setup'
+    Write-Host ''
   }
-  Write-AlphacodeInfo 'Done.'
+  if ($PathDryRun) { Write-AlphacodeInfo 'PATH dry run complete.' }
 }
 
 # Invoke the installer and report failure correctly for BOTH invocation styles:

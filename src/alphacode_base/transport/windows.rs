@@ -75,26 +75,31 @@ impl Stream {
         let pipe_name = path_to_pipe_name(path.as_ref());
         // Cap the ERROR_PIPE_BUSY retry loop so a broken/stale pipe cannot
         // spin forever and starve the higher-level reconnect logic.
-        const MAX_BUSY_RETRIES: u32 = 60;
-        for _ in 0..MAX_BUSY_RETRIES {
+        let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(3);
+        let mut delay_ms = 5u64;
+        loop {
             match ClientOptions::new().open(&pipe_name) {
                 Ok(client) => return Ok(Stream::Client(client)),
-                Err(e)
-                    if e.raw_os_error()
+                Err(error)
+                    if error.raw_os_error()
                         == Some(windows_sys::Win32::Foundation::ERROR_PIPE_BUSY as i32) =>
                 {
-                    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+                    let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
+                    if remaining.is_zero() {
+                        return Err(io::Error::new(
+                            io::ErrorKind::ConnectionRefused,
+                            format!(
+                                "named pipe {pipe_name} stayed busy for 3 seconds; reconnect required"
+                            ),
+                        ));
+                    }
+                    tokio::time::sleep(std::time::Duration::from_millis(delay_ms).min(remaining))
+                        .await;
+                    delay_ms = (delay_ms * 2).min(50);
                 }
-                Err(e) => return Err(e),
+                Err(error) => return Err(error),
             }
         }
-        Err(io::Error::new(
-            io::ErrorKind::ConnectionRefused,
-            format!(
-                "named pipe {} busy after {} retries; server may be dead or broken",
-                pipe_name, MAX_BUSY_RETRIES,
-            ),
-        ))
     }
 
     pub fn into_split(self) -> (ReadHalf, WriteHalf) {

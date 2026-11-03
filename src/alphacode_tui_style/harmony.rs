@@ -1025,7 +1025,7 @@ pub(crate) mod calibration {
 
     /// Every role a barely-different shade of mud: unreadable and indistinct.
     pub(super) fn all_mud() -> Palette {
-        build(&[
+        let mut palette = build(&[
             (Role::User, "#4a4438"),
             (Role::Ai, "#4b4536"),
             (Role::Accent, "#494339"),
@@ -1036,7 +1036,15 @@ pub(crate) mod calibration {
             (Role::Error, "#494338"),
             (Role::AiText, "#4a4438"),
             (Role::UserText, "#4a4539"),
-        ])
+        ]);
+        // Keep this fixture unreadable when new roles or defaults are added;
+        // inheriting bright defaults would only muddy a subset of the screen.
+        for role in ALL_ROLES.iter().copied() {
+            if !role.is_background() && !palette.is_overridden(role) {
+                palette.set(role, (74, 68, 56));
+            }
+        }
+        palette
     }
 
     /// Maximum-saturation colors at scattered hues: readable but jarring.

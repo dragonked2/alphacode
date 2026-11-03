@@ -1699,7 +1699,11 @@ async fn init_provider_with_options(
                 {
                     runtime_model_hint = Some(explicit_model.to_string());
                 }
-                if matches!(choice, ProviderChoice::Lmstudio | ProviderChoice::Ollama)
+                if (matches!(choice, ProviderChoice::Lmstudio | ProviderChoice::Ollama)
+                    || (*choice == ProviderChoice::OpenaiCompatible
+                        && crate::provider_catalog::openai_compat_base_is_local(
+                            &resolved.api_base,
+                        )))
                     && model.is_none_or(|model| model.trim().is_empty())
                 {
                     let api_key = crate::provider_catalog::load_api_key_from_env_or_config(

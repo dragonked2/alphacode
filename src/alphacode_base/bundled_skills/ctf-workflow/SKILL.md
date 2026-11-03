@@ -78,6 +78,10 @@ Avoid unnecessary damage to the host beyond what is needed to solve the challeng
 
 Alphacode exposes wrappers for a CTF arsenal (verify advertised schemas and installed dependencies first): `pwntools`, `radare2`, `ghidra`, `angr`, `binwalk`, `steghide`, `exiftool`, `volatility`, `tshark`, `z3`, `hashcat`, `john`, plus the `flag_scanner`, `challenge_classifier`, and `ctf_auto_solver` helpers. Reach for the matching tool instead of hand-assembling bash equivalents; `challenge_classifier` is useful for a fast first pass and then run targeted tools yourself.
 
+For artifact-driven category analysis and reproducible scripts, load this
+skill's `solver-engineering` reference with `skill_manage` (action=read).
+It covers local oracles, constrained search, remote adaptation and evaluation.
+
 ## CTF workflow for web challenges
 
 ### Phase 1 — Triage and vulnerability battery

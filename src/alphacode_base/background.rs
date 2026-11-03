@@ -929,10 +929,14 @@ impl BackgroundTaskManager {
                         });
                     }
                     if return_on_progress && task.progress != last_progress {
+                        // The bus is the primary path; this poll exists only so a
+                        // missed broadcast still returns the update. Recover the
+                        // concrete event when one was recorded, so a caller that
+                        // arrived here can still tell what happened.
                         let event_record = task.event_history.last().cloned();
                         return Some(BackgroundTaskWaitResult {
                             reason: progress_wait_reason(event_record.as_ref()),
-                            progress_event: None,
+                            progress_event: progress_event_from_record(event_record.as_ref(), &task),
                             task,
                             event_record,
                         });
@@ -942,7 +946,16 @@ impl BackgroundTaskManager {
                 event = bus_rx.recv() => {
                     match event {
                         Ok(BusEvent::BackgroundTaskCompleted(event)) if event.task_id == task_id => {
-                            let task = self.status(task_id).await?;
+                            // The completion event is published just *before* the
+                            // status file is written, and the task is only pruned
+                            // from the live map after that write — but a caller
+                            // that woke late can still observe the pruned state.
+                            // Return the terminal result the event proves instead
+                            // of `None`, which callers read as "task unknown".
+                            let task = self
+                                .status(task_id)
+                                .await
+                                .unwrap_or_else(|| terminal_snapshot_from_event(&event));
                             return Some(BackgroundTaskWaitResult {
                                 reason: BackgroundTaskWaitReason::Finished,
                                 task,
@@ -952,7 +965,20 @@ impl BackgroundTaskManager {
                         }
                         Ok(BusEvent::BackgroundTaskProgress(event)) if event.task_id == task_id => {
                             if return_on_progress {
-                                let task = self.status(task_id).await?;
+                                // A very short task can finish (and be pruned from
+                                // the live map) between this event being published
+                                // and the status read below. `self.status()` then
+                                // returns None and the `?` discarded the progress
+                                // event we already hold — under parallel test load
+                                // this surfaced as a spurious failure in
+                                // `wait_returns_on_progress_checkpoint`. The event
+                                // itself carries the progress and timestamp, so
+                                // reconstruct a terminal snapshot instead of
+                                // dropping the wakeup.
+                                let task = self
+                                    .status(task_id)
+                                    .await
+                                    .unwrap_or_else(|| completed_snapshot_from_progress(&event));
                                 let event_record = task.event_history.last().cloned();
                                 return Some(BackgroundTaskWaitResult {
                                     reason: progress_wait_reason(event_record.as_ref()),
@@ -1492,6 +1518,94 @@ static BACKGROUND_MANAGER: std::sync::OnceLock<BackgroundTaskManager> = std::syn
 /// Get the global background task manager
 pub fn global() -> &'static BackgroundTaskManager {
     BACKGROUND_MANAGER.get_or_init(BackgroundTaskManager::new)
+}
+
+/// Rebuild a progress event from a persisted event record.
+///
+/// `wait()` normally reports progress straight off the bus, but a missed
+/// broadcast falls back to comparing the status file. The record still carries
+/// the progress snapshot, so returning `None` there loses information the caller
+/// already had. This only reconstructs records that actually describe progress.
+fn progress_event_from_record(
+    record: Option<&BackgroundTaskEventRecord>,
+    status: &TaskStatusFile,
+) -> Option<BackgroundTaskProgressEvent> {
+    let record = record?;
+    if !matches!(
+        record.kind,
+        BackgroundTaskEventKind::Progress | BackgroundTaskEventKind::Checkpoint
+    ) {
+        return None;
+    }
+    Some(BackgroundTaskProgressEvent {
+        task_id: status.task_id.clone(),
+        tool_name: status.tool_name.clone(),
+        display_name: status.display_name.clone(),
+        session_id: status.session_id.clone(),
+        progress: record.progress.clone()?,
+    })
+}
+
+/// Minimal terminal snapshot for a task that was already pruned from the live
+/// map by the time `wait()` tried to read its status file.
+///
+/// Only the fields the caller can rely on are filled in: the process is still
+/// holding proof that the task existed (the bus event), and the progress payload
+/// carries the last observed state. Deliberately does not fabricate an exit code
+/// or duration.
+fn completed_snapshot_from_progress(event: &BackgroundTaskProgressEvent) -> TaskStatusFile {
+    TaskStatusFile {
+        task_id: event.task_id.clone(),
+        tool_name: event.tool_name.clone(),
+        display_name: None,
+        session_id: String::new(),
+        status: BackgroundTaskStatus::Completed,
+        exit_code: None,
+        error: None,
+        started_at: event.progress.updated_at.clone(),
+        completed_at: Some(event.progress.updated_at.clone()),
+        duration_secs: None,
+        pid: None,
+        owner_pid: None,
+        owner_instance: None,
+        detached: false,
+        notify: false,
+        wake: false,
+        progress: Some(event.progress.clone()),
+        event_history: Vec::new(),
+    }
+}
+
+/// Terminal snapshot rebuilt from a completion event, for a task whose status
+/// file is already gone.
+///
+/// The completion event is the authoritative record of how the task ended
+/// (`status`, `exit_code`, `duration_secs`, `error`), so unlike the progress
+/// variant this one can fill in the real outcome. It deliberately leaves
+/// `progress` empty rather than inventing one.
+fn terminal_snapshot_from_event(event: &BackgroundTaskCompleted) -> TaskStatusFile {
+    TaskStatusFile {
+        task_id: event.task_id.clone(),
+        tool_name: event.tool_name.clone(),
+        display_name: event.display_name.clone(),
+        session_id: event.session_id.clone(),
+        status: event.status.clone(),
+        exit_code: event.exit_code,
+        // The completion event carries output, not a separate error string;
+        // the status already distinguishes Completed from Failed.
+        error: None,
+        started_at: String::new(),
+        completed_at: None,
+        duration_secs: Some(event.duration_secs),
+        pid: None,
+        owner_pid: None,
+        owner_instance: None,
+        detached: false,
+        notify: event.notify,
+        wake: event.wake,
+        progress: None,
+        event_history: Vec::new(),
+    }
 }
 
 #[cfg(test)]

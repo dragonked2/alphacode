@@ -118,6 +118,26 @@ jobs:
           echo "ALPHACODE_BUILD_SEMVER=$VERSION" >> "$GITHUB_ENV"
           echo "Release version: $VERSION"
 
+      # The tag is what the binary reports and what the updater compares
+      # against; `Cargo.toml` is what crates.io and `cargo install` publish.
+      # They must agree, or a "v1.0.93" release ships a crate labelled 1.0.92
+      # and the Windows VERSIONINFO resource (which is built from the crate
+      # version) advertises the wrong number in Explorer's Properties dialog.
+      # Failing here is far cheaper than shipping the mismatch.
+      - name: Verify Cargo version matches the release tag
+        shell: bash
+        env:
+          TAG_VERSION: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          want="${TAG_VERSION#v}"
+          got="$(sed -n 's/^version = "\(.*\)"$/\1/p' Cargo.toml | head -1)"
+          if [ "$want" != "$got" ]; then
+            echo "::error::Cargo.toml version is '$got' but the release tag is '$TAG_VERSION'. Bump Cargo.toml (and Cargo.lock) before tagging."
+            exit 1
+          fi
+          echo "OK: Cargo.toml and the release tag both say $want"
+
       # Every target here now builds natively (the matrix pairs each triple
       # with a matching runner), so the action never reaches for `cross` —
       # macOS/Windows cross-arch targets are handled by cargo/the MSVC
@@ -143,7 +163,80 @@ jobs:
       # also auto-detects dirtiness via `git status --porcelain`, and we don't
       # want a stray untracked file in the build checkout to leak into the
       # version string even after the release flag is set.
+      # Windows: build a two-file archive instead of letting the generic action
+      # zip only `alphacode.exe`.
+      #
+      # Why this matters. The 1.0.92 Windows release shipped as a single
+      # unsigned 94 MB PE, and two things made generic engines score it:
+      #   * `alphacode.exe` carried the .NET/WPF GUI host as a *nested* PE
+      #     (`include_bytes!`) and unpacked + executed it on first run - the
+      #     packer/dropper shape BitDefender reports as `Gen:Variant.Barys`
+      #     (resold as ALYac/Arcibit/eScan/Emsisoft/GData/VIPRE). The host is
+      #     now a sibling file (see `resolve_desktop_host`), so the main binary
+      #     contains no second executable.
+      #   * a lone unattributed .exe looks like a dropped payload; a program
+      #     directory with a published checksum reads as a product.
+      # The generic action cannot express a two-file Windows payload, so the
+      # archive is assembled explicitly.
+      - name: Build Windows binary
+        if: runner.os == 'Windows'
+        uses: taiki-e/upload-rust-binary-action@v1
+        env:
+          ALPHACODE_RELEASE_BUILD: "1"
+          ALPHACODE_BUILD_GIT_DIRTY: "0"
+        with:
+          bin: alphacode
+          target: ${{ matrix.target }}
+          archive: none
+          checksum: none
+          locked: true
+          profile: release
+
+      - name: Package Windows archive (binary + GUI host)
+        if: runner.os == 'Windows'
+        shell: bash
+        env:
+          ARCHIVE_BASE: ${{ matrix.archive }}
+          TARGET: ${{ matrix.target }}
+        run: |
+          set -euo pipefail
+          BIN="target/$TARGET/release/alphacode.exe"
+          HOST="target/$TARGET/release/AlphaCode.Desktop.exe"
+          test -f "$BIN"  || { echo "::error::$BIN was not produced"; exit 1; }
+          test -f "$HOST" || { echo "::error::$HOST was not produced - the GUI host must ship beside the binary"; exit 1; }
+          zip -j -9 "${ARCHIVE_BASE}.zip" "$BIN" "$HOST"
+          unzip -l "${ARCHIVE_BASE}.zip"
+          sha256sum "${ARCHIVE_BASE}.zip" > "${ARCHIVE_BASE}.sha256"
+          cat "${ARCHIVE_BASE}.sha256"
+
+      # Structural AV guard. `alphacode.exe` must not carry a second executable
+      # in its data section; that shape (embed, drop, execute) is what generic
+      # engines grade as a dropper and what produced the 1.0.92
+      # `Gen:Variant.Barys` verdict. The GUI host must ship as a sibling file,
+      # and the archive must actually contain it.
+      - name: Reject nested-executable layouts
+        if: runner.os == 'Windows'
+        shell: bash
+        env:
+          ARCHIVE_BASE: ${{ matrix.archive }}
+          TARGET: ${{ matrix.target }}
+        run: |
+          set -euo pipefail
+          python scripts/verify-pe-single-image.py "target/$TARGET/release/alphacode.exe"
+          python scripts/verify-pe-single-image.py "target/$TARGET/release/AlphaCode.Desktop.exe"
+          # The archive must carry both files at its root as siblings.
+          listing="$(unzip -Z1 "${ARCHIVE_BASE}.zip")"
+          for required in alphacode.exe AlphaCode.Desktop.exe; do
+            if ! grep -qx "$required" <<<"$listing"; then
+              echo "::error::${ARCHIVE_BASE}.zip is missing $required at the archive root"
+              exit 1
+            fi
+          done
+          echo "OK: single-PE alphacode.exe with the GUI host shipped separately"
+
+      # Non-Windows targets keep using the generic action (a single tar.gz).
       - name: Build + archive + checksum + upload
+        if: runner.os != 'Windows'
         uses: taiki-e/upload-rust-binary-action@v1
         env:
           ALPHACODE_RELEASE_BUILD: "1"

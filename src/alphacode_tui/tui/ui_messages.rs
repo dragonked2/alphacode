@@ -885,7 +885,7 @@ pub(crate) fn render_overnight_message(
         ),
         "failed" => (
             "✗",
-            rgb(220, 100, 100),
+            crate::alphacode_tui_style::theme::error_color(),
             rgb(255, 150, 150),
             rgb(255, 225, 225),
         ),
@@ -2480,7 +2480,7 @@ pub(crate) fn render_background_task_message(
             } else {
                 format!("✗ bg {} failed · {}", task_label, parsed.task_id)
             },
-            rgb(220, 100, 100),
+            crate::alphacode_tui_style::theme::error_color(),
             rgb(255, 150, 150),
             rgb(255, 225, 225),
         )
@@ -3283,9 +3283,9 @@ fn render_gmail_draft_card(
     let metadata_style = Style::default().fg(dim_color());
     let body_style = Style::default();
     let border_style = if is_error {
-        Style::default().fg(rgb(220, 100, 100))
+        Style::default().fg(crate::alphacode_tui_style::theme::error_color())
     } else {
-        Style::default().fg(rgb(210, 105, 95))
+        Style::default().fg(crate::alphacode_tui_style::theme::warning_color())
     };
 
     let to = tool
@@ -4179,7 +4179,7 @@ pub(crate) fn render_tool_message(
                 })
             });
             let (sub_icon, sub_icon_color) = if sub_errored {
-                ("✗", rgb(220, 100, 100))
+                ("✗", crate::alphacode_tui_style::theme::error_color())
             } else {
                 ("✓", rgb(100, 180, 100))
             };

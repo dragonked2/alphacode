@@ -35,9 +35,9 @@ pub enum ScopePattern {
     /// IPv4 CIDR range, e.g. `203.0.113.0/24`. Network bits are stored
     /// pre-masked so matching is a single shift + compare.
     Ipv4Cidr { network: u32, prefix: u8 },
-    /// URL-path prefix, e.g. `https://example.com/api`. Restricts both the
-    /// host and the path prefix; useful for engagement scopes that allow only
-    /// an API prefix of a shared host.
+    /// URL-path prefix, e.g. `https://example.com/api`. Restricts the parsed
+    /// origin and normalized path at a segment boundary. An explicit query
+    /// also has to match; useful for API-only scopes on a shared host.
     UrlPrefix(String),
 }
 
@@ -173,31 +173,24 @@ impl ScopeDecision {
 /// bracketed IPv6 literal. Returns `None` for empty/ambiguous input.
 pub fn normalize_host(input: &str) -> Option<String> {
     let trimmed = input.trim();
-    if trimmed.is_empty() {
+    if trimmed.is_empty() || trimmed.chars().any(|c| c.is_whitespace() || c.is_control()) {
         return None;
     }
-    let after_scheme = match trimmed.find("://") {
-        Some(idx) => &trimmed[idx + 3..],
-        None => trimmed,
+    if let Ok(ip) = trimmed.parse::<IpAddr>() {
+        return Some(ip.to_string());
+    }
+    // Use the same authority parsing as network clients: hand-splitting '@',
+    // backslashes or IPv6 colons can authorize a different destination.
+    let url = if trimmed.contains("://") {
+        url::Url::parse(trimmed).ok()?
+    } else {
+        url::Url::parse(&format!("http://{trimmed}")).ok()?
     };
-    let authority = after_scheme
-        .split(['/', '?', '#'])
-        .next()
-        .unwrap_or(after_scheme);
-    let host = authority.rsplit('@').next().unwrap_or(authority);
-    let host = match host.rfind(':') {
-        // Strip a trailing port only when the remainder is one numeric run
-        // (a bare IPv6 like `::1` has colons that are not a port).
-        Some(idx) if host[idx + 1..].chars().all(|c| c.is_ascii_digit()) => &host[..idx],
-        _ => host,
-    };
-    let host = host.trim();
-    // Unbracket IPv6; then lowercase, trimming a trailing root dot.
-    let host = host
+    let host = url
+        .host_str()?
         .trim_start_matches('[')
-        .trim_end_matches(']')
-        .to_ascii_lowercase();
-    let host = host.strip_suffix('.').unwrap_or(&host).to_string();
+        .trim_end_matches(']');
+    let host = host.strip_suffix('.').unwrap_or(host).to_string();
     if host.is_empty() { None } else { Some(host) }
 }
 
@@ -271,8 +264,28 @@ fn pattern_matches(
                 Some(IpAddr::V4(v4)) if (u32::from(*v4) >> (32 - *prefix)) == (*network >> (32 - *prefix))
             )
         }
-        ScopePattern::UrlPrefix(prefix) => raw.starts_with(prefix.as_str()),
+        ScopePattern::UrlPrefix(prefix) => url_prefix_matches(prefix, raw),
     }
+}
+
+fn url_prefix_matches(prefix: &str, target: &str) -> bool {
+    let (Ok(prefix), Ok(target)) = (url::Url::parse(prefix), url::Url::parse(target)) else {
+        return false;
+    };
+    if prefix.origin() != target.origin()
+        || prefix.host_str().is_none()
+        || prefix.query().is_some_and(|q| target.query() != Some(q))
+    {
+        return false;
+    }
+    // Compare parsed origins before paths, and require a path-segment boundary:
+    // /api does not authorize /api-admin, nor example.com.evil or userinfo tricks.
+    let path = prefix.path();
+    target.path() == path
+        || target
+            .path()
+            .strip_prefix(path)
+            .is_some_and(|rest| path.ends_with('/') || rest.starts_with('/'))
 }
 
 pub fn parse_ipv4_cidr(input: &str) -> Option<ScopePattern> {
@@ -295,6 +308,78 @@ pub fn parse_ipv4_cidr(input: &str) -> Option<ScopePattern> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn url_scope_checks_origin_and_normalized_path_boundaries() {
+        let p = policy(&["https://example.com/api"], &[], true);
+        for target in [
+            "https://example.com/api",
+            "https://EXAMPLE.com:443/api/v1?x=1",
+        ] {
+            assert!(
+                matches!(decide(&p, target), ScopeDecision::Allowed { .. }),
+                "{target}"
+            );
+        }
+        for target in [
+            "https://example.com/api-admin",
+            "https://example.com/api/../admin",
+            "https://example.com/api/%2e%2e/admin",
+            "https://example.com.evil/api",
+            "https://example.com@evil.test/api",
+            "http://example.com/api",
+            "https://example.com:8443/api",
+        ] {
+            assert!(
+                matches!(decide(&p, target), ScopeDecision::Denied { .. }),
+                "{target}"
+            );
+        }
+        let root = policy(&["https://example.com"], &[], true);
+        assert!(matches!(
+            decide(&root, "https://example.com.evil/"),
+            ScopeDecision::Denied { .. }
+        ));
+        let trailing = policy(&["https://example.com/api//"], &[], true);
+        assert!(matches!(
+            decide(&trailing, "https://example.com/api//v1"),
+            ScopeDecision::Allowed { .. }
+        ));
+        assert!(matches!(
+            decide(&trailing, "https://example.com/api/v1"),
+            ScopeDecision::Denied { .. }
+        ));
+        let websocket = policy(&["wss://example.com/events"], &[], true);
+        assert!(matches!(
+            decide(&websocket, "wss://example.com/events/owned"),
+            ScopeDecision::Allowed { .. }
+        ));
+        assert!(matches!(
+            decide(&websocket, "https://example.com/events/owned"),
+            ScopeDecision::Denied { .. }
+        ));
+        let excluded = policy(&["example.com"], &["https://example.com/api"], true);
+        assert!(matches!(
+            decide(&excluded, "https://example.com/api/private"),
+            ScopeDecision::Denied { .. }
+        ));
+    }
+
+    #[test]
+    fn host_normalization_matches_client_authority_parsing() {
+        assert_eq!(normalize_host("::1").as_deref(), Some("::1"));
+        assert_eq!(normalize_host("[::1]:8443").as_deref(), Some("::1"));
+        assert_eq!(
+            normalize_host("https://[2001:db8::1]:443/a").as_deref(),
+            Some("2001:db8::1")
+        );
+        assert_eq!(
+            normalize_host(r"https://evil.test\@example.com/").as_deref(),
+            Some("evil.test")
+        );
+        assert_eq!(normalize_host("https://exam\nple.com/"), None);
+        assert_eq!(normalize_host("https://example.com:invalid/"), None);
+    }
 
     fn policy(in_scope: &[&str], out_of_scope: &[&str], enforce: bool) -> ScopePolicy {
         ScopePolicy::from_lists(

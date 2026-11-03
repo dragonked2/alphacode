@@ -330,8 +330,20 @@ impl Message {
     }
 }
 
-pub const TOOL_OUTPUT_MISSING_TEXT: &str =
-    "Tool output missing (session interrupted before tool execution completed)";
+/// Injected where a `ToolUse` has no matching `ToolResult`.
+///
+/// Deliberately does not claim "session interrupted": the repair pass that emits
+/// this has no evidence of *why* the result is absent. It fires after a genuine
+/// interruption, but equally when a result was never persisted, when a resume
+/// hit a mismatch, or when another pass stripped the block. A bug report cited
+/// this exact wording ("session interrupted before tool execution completed") as
+/// proof the bash tool had failed, and the investigation went to the shell
+/// runtime instead of the transcript. Name the observable fact and the action the
+/// caller can take, and leave causation to the logs that record it.
+pub const TOOL_OUTPUT_MISSING_TEXT: &str = "Tool result missing from the conversation history. The call did not record an output \
+     (it may have been interrupted, or the result was not persisted). Check the session log \
+     for this tool call id before assuming the command did not run — a side effect may still \
+     have been applied.";
 
 const STABLE_HASH_SEED: u64 = 0xcbf29ce484222325;
 const STABLE_HASH_PRIME: u64 = 0x100000001b3;

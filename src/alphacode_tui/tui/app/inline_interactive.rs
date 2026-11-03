@@ -992,7 +992,11 @@ impl App {
         let Some(cache) = self.model_picker_cache.as_ref() else {
             return false;
         };
-        if cache.signature != *signature {
+        // Periodically rebuild routes so provider catalog access can schedule
+        // refreshes even when no ModelsUpdated event has arrived yet.
+        if cache.signature != *signature
+            || cache.created_at.elapsed() >= std::time::Duration::from_secs(15)
+        {
             return false;
         }
 
@@ -1928,6 +1932,7 @@ impl App {
         if cache_entries && Self::should_cache_model_picker_entries(model_order.len(), routes.len())
         {
             self.model_picker_cache = Some(ModelPickerCache {
+                created_at: std::time::Instant::now(),
                 signature: cache_signature,
                 entries: entries.clone(),
                 route_count: routes.len(),

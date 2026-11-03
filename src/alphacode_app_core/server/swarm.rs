@@ -831,8 +831,11 @@ pub(super) async fn broadcast_swarm_status(
 
 /// Broadcast the authoritative swarm plan snapshot.
 ///
-/// Plan snapshots are sent to explicit plan participants. If a plan has no
-/// participants yet, fall back to all current swarm members.
+/// Plan snapshots are delivered to the plan's explicit participants only. The
+/// swarm is keyed by the workspace (git common dir), so a plan outlives the
+/// session that created it; widening delivery to every current member (the old
+/// fallback when participants were absent or dead) leaked a dead session's plan
+/// into unrelated later sessions opened in the same repository.
 pub(super) async fn broadcast_swarm_plan(
     swarm_id: &str,
     reason: Option<String>,
@@ -857,29 +860,17 @@ pub(super) async fn broadcast_swarm_plan_with_previous(
     previous_items: Option<&[PlanItem]>,
     swarm_plans: &Arc<RwLock<HashMap<String, VersionedPlan>>>,
     swarm_members: &Arc<RwLock<HashMap<String, SwarmMember>>>,
-    swarms_by_id: &Arc<RwLock<HashMap<String, HashSet<String>>>>,
+    _swarms_by_id: &Arc<RwLock<HashMap<String, HashSet<String>>>>,
 ) {
     // Resolve routing before taking the plan snapshot. Keep the plan read
     // guard through synchronous sends so an older snapshot cannot overtake
     // a newer version while waiting for a routing lock.
-    let fallback = {
-        let swarms = swarms_by_id.read().await;
-        swarms.get(swarm_id).cloned().unwrap_or_default()
-    };
     let plans = swarm_plans.read().await;
     let members = swarm_members.read().await;
     let Some(plan) = plans.get(swarm_id) else {
         return;
     };
     let mut participants: Vec<String> = plan.participants.iter().cloned().collect();
-    let is_live = |sid: &String| {
-        members.get(sid).is_some_and(|member| {
-            !member.event_tx.is_closed() || member.event_txs.values().any(|tx| !tx.is_closed())
-        })
-    };
-    if !participants.iter().any(is_live) {
-        participants.extend(fallback);
-    }
     participants.sort();
     participants.dedup();
     if participants.is_empty() {
@@ -927,9 +918,13 @@ pub(super) async fn broadcast_swarm_plan_with_previous(
 }
 
 /// Send the current swarm plan snapshot to ONE session (subscribe/resume
-/// refresh). Unlike [`broadcast_swarm_plan`] this does not fan out to all
-/// participants: reconnecting clients would otherwise show no plan graph
-/// until the next plan mutation happens to broadcast.
+/// refresh). This is how a reconnecting client renders the plan graph
+/// immediately instead of waiting for the next plan mutation to broadcast.
+///
+/// The plan is scoped to its explicit participants. Because the swarm is keyed
+/// by the workspace, a plan routinely outlives the session that created it, so
+/// without this check a brand-new session opened in the same repository would
+/// be handed a dead session's plan on subscribe (the stale plan/task widget).
 pub(super) async fn send_swarm_plan_to_session(
     session_id: &str,
     swarm_members: &Arc<RwLock<HashMap<String, SwarmMember>>>,
@@ -951,6 +946,12 @@ pub(super) async fn send_swarm_plan_to_session(
             return;
         };
         if vp.items.is_empty() {
+            return;
+        }
+        // Only re-send to sessions that actually participate in this plan.
+        // Mirrors `broadcast_swarm_plan`: a session that never took part in the
+        // plan must not inherit it just because it shares the workspace.
+        if !vp.participants.contains(session_id) {
             return;
         }
         // Don't send stale plans from a previous session. A plan whose items
@@ -1051,7 +1052,12 @@ pub(super) async fn remove_session_from_swarm(
         swarm_coordinators,
     )
     .await;
-    remove_plan_participant(swarm_id, session_id, swarm_plans).await;
+    // Keep the session in its plan's participants. Swarm membership and plan
+    // participation are different scopes: this session may reconnect (reload,
+    // crash recovery, resume) and must get its plan graph back via
+    // `send_swarm_plan_to_session`. Dropping participation here silently
+    // prevented that. Participation scopes plan DELIVERY only, so retaining a
+    // dead id is harmless: delivery still resolves live members by id.
 
     {
         let mut swarms = swarms_by_id.write().await;
@@ -1749,9 +1755,9 @@ mod tests {
         broadcast_swarm_plan, broadcast_swarm_plan_with_previous, broadcast_swarm_status,
         member_in_status_broadcast, member_status_is_dead, now_unix_ms, parse_swarm_tasks,
         refresh_swarm_task_staleness, remove_session_from_swarm,
-        salvage_assignments_of_dead_member, swarm_ancestors, swarm_is_self_or_ancestor,
-        swarm_spawn_depth, touch_swarm_task_progress, update_member_status,
-        update_member_status_with_report,
+        salvage_assignments_of_dead_member, send_swarm_plan_to_session, swarm_ancestors,
+        swarm_is_self_or_ancestor, swarm_spawn_depth, touch_swarm_task_progress,
+        update_member_status, update_member_status_with_report,
     };
     use crate::alphacode_app_core::plan::PlanItem;
     use crate::alphacode_app_core::protocol::{NotificationType, ServerEvent};
@@ -2121,9 +2127,7 @@ mod tests {
             VersionedPlan {
                 items: vec![plan_item("t1", "task one")],
                 version: 5,
-                // Empty participants: broadcast A takes the swarms_by_id
-                // fallback path, which is where we deterministically park it.
-                participants: HashSet::new(),
+                participants: HashSet::from(["worker".to_string()]),
                 task_progress: HashMap::new(),
                 mode: "light".to_string(),
                 node_meta: HashMap::new(),
@@ -2136,8 +2140,10 @@ mod tests {
             HashSet::from(["worker".to_string()]),
         )])));
 
-        // Park broadcast A before it reads the plan snapshot.
-        let gate = swarms_by_id.write().await;
+        // Park broadcast A before it reads the plan snapshot. The plan read is
+        // the first await on the broadcast path, so the plan write guard is the
+        // deterministic parking point.
+        let mut gate = swarm_plans.write().await;
 
         let a = tokio::spawn({
             let swarm_plans = Arc::clone(&swarm_plans);
@@ -2155,19 +2161,14 @@ mod tests {
             }
         });
         // Current-thread test runtime: yielding runs A until it parks on the
-        // contended swarms_by_id.read().await, before its snapshot.
+        // contended swarm_plans.read().await, before its snapshot.
         for _ in 0..16 {
             tokio::task::yield_now().await;
         }
 
-        // Advance the plan while A is waiting for routing.
-        {
-            let mut plans = swarm_plans.write().await;
-            let vp = plans.get_mut("swarm-1").expect("plan");
-            vp.version = 6;
-            vp.participants.insert("worker".to_string());
-        }
-        // Both broadcasts resolve routing before reading the latest plan.
+        // Advance the plan while A is waiting for the snapshot.
+        gate.get_mut("swarm-1").expect("plan").version = 6;
+        // Both broadcasts resolve the latest plan once the gate is released.
         drop(gate);
         broadcast_swarm_plan(
             "swarm-1",
@@ -2232,9 +2233,11 @@ mod tests {
         assert_eq!(statuses.last().map(String::as_str), Some("running"));
     }
 
-    /// Restored closed participant channels must not hide live swarm members.
+    /// A plan is scoped to its explicit participants. A restored plan whose
+    /// participants are all dead must not be fanned out to unrelated live
+    /// members of the same (workspace-keyed) swarm.
     #[tokio::test]
-    async fn stale_participants_do_not_starve_live_members_of_plan_broadcasts() {
+    async fn dead_participant_plan_is_not_broadcast_to_unrelated_members() {
         let swarm_plans = Arc::new(RwLock::new(HashMap::from([(
             "swarm-1".to_string(),
             VersionedPlan {
@@ -2271,10 +2274,159 @@ mod tests {
         )
         .await;
 
+        assert!(
+            live_rx.try_recv().is_err(),
+            "an unrelated live member must not inherit a dead participant's plan"
+        );
+    }
+
+    /// A live participant still receives the plan on broadcast.
+    #[tokio::test]
+    async fn live_participant_receives_plan_broadcast() {
+        let swarm_plans = Arc::new(RwLock::new(HashMap::from([(
+            "swarm-1".to_string(),
+            VersionedPlan {
+                items: vec![plan_item("t1", "task one")],
+                version: 7,
+                participants: HashSet::from(["worker".to_string()]),
+                task_progress: HashMap::new(),
+                mode: "light".to_string(),
+                node_meta: HashMap::new(),
+            },
+        )])));
+        let (worker, mut worker_rx) = swarm_member("worker", "agent", false);
+        let (bystander, mut bystander_rx) = swarm_member("bystander", "agent", false);
+        let swarm_members = Arc::new(RwLock::new(HashMap::from([
+            ("worker".to_string(), worker),
+            ("bystander".to_string(), bystander),
+        ])));
+        let swarms_by_id = Arc::new(RwLock::new(HashMap::from([(
+            "swarm-1".to_string(),
+            HashSet::from(["worker".to_string(), "bystander".to_string()]),
+        )])));
+
+        broadcast_swarm_plan(
+            "swarm-1",
+            Some("test".to_string()),
+            &swarm_plans,
+            &swarm_members,
+            &swarms_by_id,
+        )
+        .await;
+
         assert!(matches!(
-            live_rx.try_recv(),
+            worker_rx.try_recv(),
             Ok(ServerEvent::SwarmPlan { version: 7, .. })
         ));
+        assert!(
+            bystander_rx.try_recv().is_err(),
+            "a non-participant member must not receive the plan"
+        );
+    }
+
+    /// A brand-new session (never a participant) must not inherit a dormant
+    /// plan from a previous session in the same workspace on subscribe.
+    #[tokio::test]
+    async fn unavailable_plan_is_not_replayed_to_non_participant_session() {
+        let swarm_plans = Arc::new(RwLock::new(HashMap::from([(
+            "swarm-1".to_string(),
+            VersionedPlan {
+                items: vec![plan_item("t1", "task one")],
+                version: 4,
+                participants: HashSet::from(["old-session".to_string()]),
+                task_progress: HashMap::new(),
+                mode: "light".to_string(),
+                node_meta: HashMap::new(),
+            },
+        )])));
+        let (new_session, mut new_rx) = swarm_member("new-session", "agent", false);
+        let swarm_members = Arc::new(RwLock::new(HashMap::from([(
+            "new-session".to_string(),
+            new_session,
+        )])));
+
+        send_swarm_plan_to_session("new-session", &swarm_members, &swarm_plans).await;
+
+        assert!(
+            new_rx.try_recv().is_err(),
+            "a session that never participated must not be handed the plan on subscribe"
+        );
+    }
+
+    /// The plan owner still receives its own plan on subscribe/reconnect.
+    #[tokio::test]
+    async fn plan_is_replayed_to_participant_session() {
+        let swarm_plans = Arc::new(RwLock::new(HashMap::from([(
+            "swarm-1".to_string(),
+            VersionedPlan {
+                items: vec![plan_item("t1", "task one")],
+                version: 4,
+                participants: HashSet::from(["owner".to_string()]),
+                task_progress: HashMap::new(),
+                mode: "light".to_string(),
+                node_meta: HashMap::new(),
+            },
+        )])));
+        let (owner, mut owner_rx) = swarm_member("owner", "agent", false);
+        let swarm_members = Arc::new(RwLock::new(HashMap::from([("owner".to_string(), owner)])));
+
+        send_swarm_plan_to_session("owner", &swarm_members, &swarm_plans).await;
+
+        assert!(matches!(
+            owner_rx.try_recv(),
+            Ok(ServerEvent::SwarmPlan { version: 4, .. })
+        ));
+    }
+
+    /// Disconnect must not drop plan participation. Membership and
+    /// participation are different scopes: a session that reloads, crashes, or
+    /// resumes has to get its plan graph back on the next subscribe, and
+    /// `send_swarm_plan_to_session` only replays to participants.
+    #[tokio::test]
+    async fn remove_session_from_swarm_keeps_plan_participation_for_resume() {
+        let swarm_members = Arc::new(RwLock::new(HashMap::new()));
+        let swarms_by_id = Arc::new(RwLock::new(HashMap::from([(
+            "swarm-1".to_string(),
+            HashSet::from(["owner".to_string()]),
+        )])));
+        let swarm_coordinators = Arc::new(RwLock::new(HashMap::from([(
+            "swarm-1".to_string(),
+            "owner".to_string(),
+        )])));
+        let swarm_plans = Arc::new(RwLock::new(HashMap::from([(
+            "swarm-1".to_string(),
+            VersionedPlan {
+                items: vec![plan_item("t1", "task one")],
+                version: 3,
+                participants: HashSet::from(["owner".to_string()]),
+                task_progress: HashMap::new(),
+                mode: "light".to_string(),
+                node_meta: HashMap::new(),
+            },
+        )])));
+        let (owner, _owner_rx) = swarm_member("owner", "coordinator", false);
+        swarm_members
+            .write()
+            .await
+            .insert("owner".to_string(), owner);
+
+        remove_session_from_swarm(
+            "owner",
+            "swarm-1",
+            &swarm_members,
+            &swarms_by_id,
+            &swarm_coordinators,
+            &swarm_plans,
+        )
+        .await;
+
+        let plans = swarm_plans.read().await;
+        assert!(
+            plans
+                .get("swarm-1")
+                .is_some_and(|plan| plan.participants.contains("owner")),
+            "plan participation must survive disconnect so a resume gets the plan back"
+        );
     }
 
     #[tokio::test]

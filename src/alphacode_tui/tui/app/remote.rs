@@ -82,6 +82,7 @@ pub(super) async fn handle_tick(app: &mut App, remote: &mut RemoteConnection) ->
         },
     );
     let mut needs_redraw = crate::alphacode_tui::tui::periodic_redraw_required(app);
+    needs_redraw |= super::commands_copy::poll_session_copy(app);
     needs_redraw |= app.flush_pending_resize_redraw();
     app.maybe_capture_runtime_memory_heartbeat();
     app.maybe_release_idle_heap();
@@ -773,7 +774,13 @@ pub(super) async fn handle_remote_event<B: Backend>(
                 app.status = ProcessingStatus::Idle;
                 return Ok((RemoteEventOutcome::Quit, true));
             }
+            let uncertain_write = remote.request_delivery_uncertain();
             handle_disconnect(app, state, Some(reason));
+            if uncertain_write {
+                app.recovered_queue_held_for_user_submit = true;
+                app.submit_input_on_startup = false;
+                app.set_status_notice("Connection write interrupted; queued sends held until you inspect history and submit");
+            }
             Ok((RemoteEventOutcome::Reconnect, true))
         }
         RemoteRead::Event(ServerEvent::Reloading { new_socket }) => {
@@ -1172,7 +1179,7 @@ pub(super) async fn process_remote_followups(app: &mut App, remote: &mut RemoteC
     let _ = recover_stranded_soft_interrupts(app, remote).await;
 
     if app.recovered_queue_held_for_user_submit {
-        note_startup_submit_deferred(app, "recovered reload queue awaits explicit submit");
+        note_startup_submit_deferred(app, "recovered queue awaits explicit submit");
         return;
     }
 
@@ -1812,6 +1819,11 @@ fn handle_disconnected_key_internal(
     ctrl_bracket_fallback_to_esc(&mut code, &mut modifiers);
 
     if input::handle_navigation_shortcuts(app, code, modifiers) {
+        return Ok(());
+    }
+
+    if input::is_clipboard_paste_shortcut(code, modifiers) {
+        app.paste_from_clipboard();
         return Ok(());
     }
 

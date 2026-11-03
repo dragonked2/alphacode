@@ -151,10 +151,14 @@ mod tests {
         // Force a tiny cap by going through the env override: we set the env
         // to MIN - 1, which the helper must clamp back to DEFAULT. Verify
         // the public surface via the resolved cap.
-        // SAFETY: test-only env mutation; safe because we set/restore around
-        // the call.
-        // SAFETY: same as above.
-        // SAFETY: same as above.
+        //
+        // The env is process-global, so this must hold the crate-wide test-env
+        // lock: `env_override_above_min_is_honoured` mutates the same variable,
+        // and cargo runs tests in parallel. Without the lock the two raced —
+        // this test observed the other's `4096` and failed intermittently,
+        // which is exactly the kind of flake that erodes trust in a green run.
+        let _env = crate::storage::lock_test_env();
+        // SAFETY: test-only env mutation, serialized by the lock above.
         unsafe {
             std::env::set_var(
                 "ALPHACODE_TOOL_DESCRIPTION_MAX_CHARS",
@@ -172,6 +176,8 @@ mod tests {
 
     #[test]
     fn env_override_above_min_is_honoured() {
+        // Same process-global variable as the test above; same lock.
+        let _env = crate::storage::lock_test_env();
         unsafe {
             std::env::set_var("ALPHACODE_TOOL_DESCRIPTION_MAX_CHARS", "4096");
         }

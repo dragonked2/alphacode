@@ -22,7 +22,8 @@ use super::client_session::{
     handle_clear_session, handle_reload, handle_resume_session, handle_subscribe,
 };
 use super::client_state::{
-    handle_get_compacted_history, handle_get_history, handle_get_model_catalog, handle_get_state,
+    handle_get_compacted_history, handle_get_history, handle_get_model_catalog,
+    handle_get_session_transcript, handle_get_state,
 };
 use super::client_writer::write_direct_event;
 use super::comm_await::{CommAwaitMembersContext, handle_comm_await_members};
@@ -590,7 +591,16 @@ pub(super) async fn handle_client(
     let client_connections_for_events = Arc::clone(&client_connections);
     let event_handle = tokio::spawn(async move {
         while let Some(event) = client_event_rx.recv().await {
-            {
+            // Token deltas and usage updates do not mutate connection presence.
+            // Avoid contending on the global connection map for every token.
+            if matches!(
+                &event,
+                ServerEvent::ToolStart { .. }
+                    | ServerEvent::ToolDone { .. }
+                    | ServerEvent::Done { .. }
+                    | ServerEvent::Error { .. }
+                    | ServerEvent::Interrupted
+            ) {
                 let mut connections = client_connections_for_events.write().await;
                 if let Some(info) = connections.get_mut(&client_connection_id_for_events) {
                     match &event {
@@ -617,7 +627,11 @@ pub(super) async fn handle_client(
                 // A broken pipe here is routine (client reload/disconnect mid
                 // broadcast), so keep the line short: a full Debug dump of e.g.
                 // a SwarmStatus event prints every member and floods the log.
-                let event_desc = crate::logging::truncate_for_log(&format!("{:?}", event), 200);
+                let event_desc = format!(
+                    "{:?} ({} encoded bytes)",
+                    std::mem::discriminant(&event),
+                    json.len()
+                );
                 crate::logging::warn(&format!(
                     "event_forwarder write failed for connection {} while sending {}: {}",
                     client_connection_id_for_events, event_desc, error
@@ -625,7 +639,11 @@ pub(super) async fn handle_client(
                 break;
             }
             if let Err(error) = w.flush().await {
-                let event_desc = crate::logging::truncate_for_log(&format!("{:?}", event), 200);
+                let event_desc = format!(
+                    "{:?} ({} encoded bytes)",
+                    std::mem::discriminant(&event),
+                    json.len()
+                );
                 crate::logging::warn(&format!(
                     "event_forwarder flush failed for connection {} while sending {}: {}",
                     client_connection_id_for_events, event_desc, error
@@ -1607,6 +1625,21 @@ pub(super) async fn handle_client(
                 send_swarm_plan_to_session(&client_session_id, &swarm_members, &swarm_plans).await;
                 if let Some(snapshot) = try_available_models_snapshot(&agent) {
                     last_available_models_snapshot = Some(snapshot);
+                }
+            }
+
+            Request::GetSessionTranscript { id, session_id } => {
+                if handle_get_session_transcript(
+                    id,
+                    &session_id,
+                    &client_session_id,
+                    &agent,
+                    &writer,
+                )
+                .await
+                .is_err()
+                {
+                    break;
                 }
             }
 

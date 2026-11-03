@@ -7,7 +7,6 @@
 //! - Professional visual hierarchy
 
 use crate::alphacode_tui::tui::brand_ux::BrandTheme;
-use crate::alphacode_tui::tui::color_support::rgb;
 use crate::alphacode_tui_style::theme::muted_text_color;
 use ratatui::layout::Alignment;
 use ratatui::style::{Color, Modifier, Style};
@@ -65,14 +64,9 @@ impl HelpCategory {
 
     fn color(&self) -> Color {
         match self {
-            Self::Chat => BrandTheme::accent(),
-            Self::Navigation => BrandTheme::info(),
-            Self::Tools => BrandTheme::success(),
-            Self::Configuration => rgb(170, 140, 255),
-            Self::Providers => rgb(100, 225, 155),
-            Self::Session => rgb(255, 200, 115),
-            Self::Development => rgb(180, 120, 255),
-            Self::System => BrandTheme::warning(),
+            Self::Chat | Self::Configuration | Self::Providers => BrandTheme::accent(),
+            Self::Navigation | Self::Session => BrandTheme::info(),
+            Self::Tools | Self::Development | Self::System => BrandTheme::dim_bright(),
         }
     }
 }
@@ -108,7 +102,7 @@ pub fn help_reference() -> Vec<Line<'static>> {
                     .add_modifier(Modifier::BOLD),
             ),
             Span::styled(
-                "ALPHACODE COMMAND REFERENCE",
+                "Commands & shortcuts",
                 Style::default()
                     .fg(BrandTheme::accent())
                     .add_modifier(Modifier::BOLD),
@@ -118,6 +112,20 @@ pub fn help_reference() -> Vec<Line<'static>> {
     );
     lines.push(Line::from(""));
     lines.push(gradient_divider(56).alignment(Alignment::Center));
+    lines.push(Line::from(""));
+
+    lines.push(Line::from(vec![
+        Span::styled(
+            "  Start here  ",
+            Style::default()
+                .fg(BrandTheme::accent())
+                .add_modifier(Modifier::BOLD),
+        ),
+        Span::styled(
+            "/model  choose a model   /resume  open a chat   /theme  appearance",
+            Style::default().fg(muted_text_color()),
+        ),
+    ]));
     lines.push(Line::from(""));
 
     for category in [
@@ -145,7 +153,7 @@ pub fn help_reference() -> Vec<Line<'static>> {
                         .add_modifier(Modifier::BOLD),
                 ),
                 Span::styled(
-                    category.display_name().to_uppercase(),
+                    category.display_name().to_string(),
                     Style::default()
                         .fg(category.color())
                         .add_modifier(Modifier::BOLD),
@@ -169,14 +177,10 @@ pub fn help_reference() -> Vec<Line<'static>> {
             lines.push(
                 Line::from(vec![
                     Span::styled(
-                        format!("    /{:<14}", cmd.name),
+                        format!("    /{}", cmd.name),
                         Style::default()
                             .fg(BrandTheme::accent())
                             .add_modifier(Modifier::BOLD),
-                    ),
-                    Span::styled(
-                        format!("{:<24}", cmd.description),
-                        Style::default().fg(muted_text_color()),
                     ),
                     Span::styled(aliases_str, Style::default().fg(BrandTheme::dim())),
                     Span::styled(
@@ -188,6 +192,10 @@ pub fn help_reference() -> Vec<Line<'static>> {
                 ])
                 .alignment(Alignment::Left),
             );
+            lines.push(Line::from(Span::styled(
+                format!("      {}", cmd.description),
+                Style::default().fg(muted_text_color()),
+            )));
         }
         lines.push(Line::from(""));
     }
@@ -204,7 +212,7 @@ pub fn help_reference() -> Vec<Line<'static>> {
                     .add_modifier(Modifier::BOLD),
             ),
             Span::styled(
-                "KEYBOARD SHORTCUTS",
+                "Keyboard shortcuts",
                 Style::default()
                     .fg(BrandTheme::info())
                     .add_modifier(Modifier::BOLD),
@@ -455,6 +463,13 @@ fn build_command_list() -> Vec<HelpCommand> {
         },
         // Session
         HelpCommand {
+            name: "copy".to_string(),
+            aliases: vec![],
+            description: "Copy the entire session to clipboard".to_string(),
+            category: HelpCategory::Session,
+            shortcut: None,
+        },
+        HelpCommand {
             name: "compact".to_string(),
             aliases: vec!["/compress".to_string()],
             description: "Compact conversation context".to_string(),
@@ -527,9 +542,9 @@ mod tests {
             .map(|l| l.to_string())
             .collect::<Vec<_>>()
             .join("\n");
-        assert!(text.contains("CHAT"));
-        assert!(text.contains("TOOLS"));
-        assert!(text.contains("CONFIGURATION"));
+        assert!(text.contains("Chat"));
+        assert!(text.contains("Tools"));
+        assert!(text.contains("Configuration"));
     }
 
     #[test]
@@ -540,7 +555,7 @@ mod tests {
             .map(|l| l.to_string())
             .collect::<Vec<_>>()
             .join("\n");
-        assert!(text.contains("KEYBOARD SHORTCUTS"));
+        assert!(text.contains("Keyboard shortcuts"));
         assert!(text.contains("Enter"));
         assert!(text.contains("/model"));
         assert!(text.contains("Ctrl+B"));

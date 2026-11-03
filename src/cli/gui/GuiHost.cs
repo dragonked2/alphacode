@@ -3,12 +3,37 @@ using System.IO;
 using System.Management.Automation;
 using System.Management.Automation.Runspaces;
 using System.Reflection;
+using System.Runtime.InteropServices;
 
 internal static class GuiHost
 {
+    // Windows groups taskbar buttons, jump lists and notifications by
+    // AppUserModelID. A process without one is grouped by executable path, which
+    // means the shortcut, the CLI and the host can appear as three separate
+    // applications. This value must match the one the installer records under
+    // HKCU\Software\Classes\Applications\<exe>\AppUserModelID
+    // (scripts/install.ps1: $script:AlphacodeAppId).
+    private const string AppUserModelId = "AlphaCode.Terminal";
+
+    [DllImport("shell32.dll", CharSet = CharSet.Unicode, PreserveSig = false)]
+    private static extern void SetCurrentProcessExplicitAppUserModelID(
+        [MarshalAs(UnmanagedType.LPWStr)] string appId);
+
+    /// <summary>
+    /// Give the process a stable taskbar identity.
+    /// Best effort: an older Windows build, or a locked-down shell, must not stop
+    /// the GUI from starting just because grouping cannot be set.
+    /// </summary>
+    private static void ApplyAppUserModelId()
+    {
+        try { SetCurrentProcessExplicitAppUserModelID(AppUserModelId); }
+        catch { }
+    }
+
     [STAThread]
     private static int Main(string[] args)
     {
+        ApplyAppUserModelId();
         var executable = Environment.GetEnvironmentVariable("ALPHACODE_DESKTOP_EXECUTABLE") ?? "alphacode.exe";
         var preview = false;
         for (var i = 0; i < args.Length; i++)

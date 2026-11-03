@@ -381,6 +381,18 @@ thread_local! {
         const { std::cell::Cell::new(None) };
 }
 
+/// Pin image-protocol availability for the rest of this thread.
+///
+/// Test-only. `force_test_kitty_picker` is a no-op once the global `PICKER` has
+/// been initialized (any earlier test can do that through environment
+/// detection), so a test that needs a native protocol cannot rely on it.
+/// Each test runs on its own thread, so pinning here cannot leak into another
+/// test.
+#[cfg(test)]
+pub fn pin_test_image_protocol(enabled: bool) {
+    IMAGE_PROTOCOL_OVERRIDE.with(|cell| cell.set(Some(enabled)));
+}
+
 /// Run `f` with image-protocol availability forced on/off on the current
 /// thread (or `None` to restore the real detection).
 pub fn with_image_protocol_override<T>(enabled: Option<bool>, f: impl FnOnce() -> T) -> T {

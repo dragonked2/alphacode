@@ -141,6 +141,24 @@ fn package_version() -> String {
     env::var("CARGO_PKG_VERSION").unwrap_or_else(|_| "0.0.0".to_string())
 }
 
+/// `(major, minor, patch)` of the shipped crate version for the Windows
+/// VERSIONINFO resource. Numeric resource fields cannot carry a pre-release
+/// or build suffix, so the leading `x.y.z` is all that is used.
+fn release_version_triplet() -> (u64, u64, u64) {
+    let version = package_version();
+    let mut parts = version.split('.');
+    let mut next = || -> u64 {
+        parts
+            .next()
+            .and_then(|part| {
+                let digits: String = part.chars().take_while(char::is_ascii_digit).collect();
+                digits.parse().ok()
+            })
+            .unwrap_or(0)
+    };
+    (next(), next(), next())
+}
+
 fn resolve_build_version(base: Version, repo_root: &Path) -> String {
     if let Some(version) = explicit_build_version() {
         return version;
@@ -187,11 +205,17 @@ fn extract_version_from_release_tag(repo_root: &Path) -> Option<String> {
         }
     }
 
-    // Fallback: try `git describe --tags --abbrev=0` to find the nearest tag,
-    // then verify it points at HEAD.
+    // Fallback: `git describe --exact-match` returns a tag only when one points
+    // at HEAD. This used to be plain `--abbrev=0`, which returns the *nearest*
+    // tag — possibly hundreds of commits behind — and the result was accepted
+    // unconditionally despite the comment claiming otherwise. That shipped a
+    // release whose `--version` reported an older tag than the crate it was
+    // built from (observed: binary said v1.0.91 while Cargo.toml and the Windows
+    // VERSIONINFO resource said 1.0.93). Without an exact match, fall through to
+    // the caller's Cargo.toml-derived version, which is always correct.
     let describe = Command::new("git")
         .current_dir(repo_root)
-        .args(["describe", "--tags", "--abbrev=0"])
+        .args(["describe", "--tags", "--exact-match"])
         .output()
         .ok()?;
 
@@ -201,13 +225,10 @@ fn extract_version_from_release_tag(repo_root: &Path) -> Option<String> {
 
     let tag = String::from_utf8_lossy(&describe.stdout);
     let tag = tag.trim();
-    if let Some(version) = tag.strip_prefix('v')
-        && Version::parse(version).is_some()
-    {
-        return Some(version.to_string());
-    }
-
-    None
+    let version = tag.strip_prefix('v')?;
+    Version::parse(version)
+        .is_some()
+        .then(|| version.to_string())
 }
 
 fn explicit_build_version() -> Option<String> {
@@ -620,12 +641,79 @@ fn configure_windows_desktop(root: &Path) {
         "cargo:rustc-env=ALPHACODE_DESKTOP_HOST_BYTES={}",
         host.display()
     );
+    // The host is *built* either way; only the embedding is opt-in.
+    //
+    // Shipping it as a sibling file (and embedding nothing) removes the
+    // strongest generic-verdict signal from the main executable: an unsigned PE
+    // that carries a second, complete, unsigned PE in its data section and later
+    // writes it to disk and launches it is exactly the packer/dropper shape
+    // heuristic engines score. BitDefender's `Gen:Variant.Barys` (also surfaced
+    // as ALYac/Arcibit/eScan/Emsisoft/GData/VIPRE) flagged the 1.0.92 Windows
+    // release for this, not for anything the program does.
+    //
+    // The `embedded-gui-host` cargo feature selects the legacy behaviour:
+    //   enabled  -> `include_bytes!` embeds the host (single-file release)
+    //   disabled -> the host ships as a sibling `AlphaCode.Desktop.exe`
+    // `src/cli/gui.rs` reads the feature, so the env var is only a path hint.
+    let embed_host = env::var_os("CARGO_FEATURE_EMBEDDED_GUI_HOST").is_some();
+    if embed_host {
+        println!(
+            "cargo:warning=embedded-gui-host enabled: the release binary contains a nested PE"
+        );
+    }
+    // Publish the built host next to the binary so the release archive and a
+    // local `cargo build` both end up with the sibling the launcher expects.
+    // `OUT_DIR` is `<profile>/build/<pkg>-<hash>/out`, so the third ancestor is
+    // the profile directory that also holds `alphacode.exe`.
+    if cfg!(windows)
+        && let Some(profile_dir) = out.ancestors().nth(3)
+    {
+        let sibling = profile_dir.join("AlphaCode.Desktop.exe");
+        let current = std::fs::read(&sibling).ok();
+        let built = std::fs::read(&host).ok();
+        if current.as_deref() != built.as_deref()
+            && let Err(error) = std::fs::copy(&host, &sibling)
+        {
+            println!(
+                "cargo:warning=could not stage {}: {error}",
+                sibling.display()
+            );
+        }
+    }
     if target.contains("msvc") {
         let source = out.join("alphacode-icon.rc");
         let resource = out.join("alphacode-icon.res");
         let icon_path = icon.to_string_lossy().replace('\\', "\\\\");
-        fs::write(&source, format!("1 ICON \"{icon_path}\"\n"))
-            .expect("write icon resource source");
+        // Ship the version resource too, not just the icon. Without a
+        // VERSIONINFO block Windows reports FileVersion 0.0.0.0 and empty
+        // CompanyName/FileDescription for the executable, which is the
+        // shape of an "unattributed, version-less PE" heuristic AV engines
+        // score as suspicious, and it leaves Explorer's Properties dialog
+        // useless to anyone verifying a downloaded release.
+        //
+        // Numeric fields derive from the crate version so they cannot
+        // drift from the shipped build.
+        let (v_major, v_minor, v_patch) = release_version_triplet();
+        let version_csv = format!("{v_major},{v_minor},{v_patch},0");
+        let version_dotted = format!("{v_major}.{v_minor}.{v_patch}");
+        let mut rc = String::new();
+        rc.push_str(&format!("1 ICON \"{icon_path}\"\n"));
+        rc.push_str("1 VERSIONINFO\n");
+        rc.push_str(&format!("FILEVERSION {version_csv}\n"));
+        rc.push_str(&format!("PRODUCTVERSION {version_csv}\n"));
+        rc.push_str("FILEOS 0x40004\nFILETYPE 1\nBEGIN\n");
+        rc.push_str("BLOCK \"StringFileInfo\"\nBEGIN\nBLOCK \"040904b0\"\nBEGIN\n");
+        rc.push_str("VALUE \"FileDescription\", \"AlphaCode - Terminal coding agent\\0\"\n");
+        rc.push_str("VALUE \"ProductName\", \"AlphaCode\\0\"\n");
+        rc.push_str("VALUE \"CompanyName\", \"AlphaCode\\0\"\n");
+        rc.push_str("VALUE \"OriginalFilename\", \"alphacode.exe\\0\"\n");
+        rc.push_str(&format!("VALUE \"FileVersion\", \"{version_dotted}\\0\"\n"));
+        rc.push_str(&format!(
+            "VALUE \"ProductVersion\", \"{version_dotted}\\0\"\n"
+        ));
+        rc.push_str("END\nEND\nBLOCK \"VarFileInfo\"\nBEGIN\n");
+        rc.push_str("VALUE \"Translation\", 0x409, 1200\nEND\nEND\n");
+        fs::write(&source, rc).expect("write icon resource source");
         let result = Command::new(windows_resource_compiler())
             .arg("/nologo")
             .arg(format!("/fo{}", resource.display()))

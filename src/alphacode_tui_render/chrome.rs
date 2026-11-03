@@ -100,7 +100,12 @@ const RIGHT_RAIL_HEADER_HEIGHT: u16 = 1;
 
 pub fn right_rail_border_style(focused: bool, focus_color: Color, dim_color: Color) -> Style {
     let border_color = if focused { focus_color } else { dim_color };
-    Style::default().fg(border_color)
+    let style = Style::default().fg(border_color);
+    if focused {
+        style.add_modifier(Modifier::BOLD)
+    } else {
+        style
+    }
 }
 
 fn right_rail_inner(area: Rect) -> Rect {
@@ -135,7 +140,10 @@ pub fn draw_right_rail_chrome(
         .border_style(border_style);
     frame.render_widget(block, area);
     frame.render_widget(
-        Paragraph::new(title),
+        Paragraph::new(super::truncate_line_with_ellipsis_to_width(
+            &title,
+            usize::from(inner.width),
+        )),
         Rect {
             x: inner.x,
             y: inner.y,

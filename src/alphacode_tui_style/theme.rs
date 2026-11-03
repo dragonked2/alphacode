@@ -242,35 +242,9 @@ pub fn blend_color(from: Color, to: Color, t: f32) -> Color {
 }
 
 pub fn rainbow_prompt_color(distance: usize) -> Color {
-    // Smooth HSL-based rainbow using continuous hue rotation instead of
-    // discrete color stops. This produces a fluid gradient that looks
-    // premium and modern, cycling through the full spectrum naturally.
-    const SATURATION: f32 = 0.75;
-    const LIGHTNESS: f32 = 0.75;
-    const HUE_STEP: f32 = 30.0; // degrees per distance unit
-    const HUE_OFFSET: f32 = 0.0; // starting hue (red)
-
-    // Gray target (dim_color()) for fade-out
-    const GRAY: (u8, u8, u8) = (80, 80, 80);
-
-    // Exponential decay with a slightly slower rate so the rainbow
-    // stays vivid for the first few prompt entries before fading.
-    let decay = (-0.35 * distance as f32).exp();
-
-    // Continuous hue: rotates through the color wheel smoothly
-    let hue = (HUE_OFFSET + distance as f32 * HUE_STEP) % 360.0;
-    let (r, g, b) = hsl_to_rgb(hue, SATURATION, LIGHTNESS);
-
-    // Blend rainbow color with gray based on decay
-    let blend_val = |rainbow: u8, gray: u8| -> u8 {
-        (rainbow as f32 * decay + gray as f32 * (1.0 - decay)) as u8
-    };
-
-    rgb(
-        blend_val(r, GRAY.0),
-        blend_val(g, GRAY.1),
-        blend_val(b, GRAY.2),
-    )
+    // Recency is emphasis rather than a separate hue for every prompt.
+    let fade = 1.0 - (-0.3 * distance as f32).exp();
+    blend_color(accent_color(), muted_text_color(), fade)
 }
 
 /// Convert HSL to RGB. h in 0-360, s and l in 0-1.
@@ -302,7 +276,7 @@ pub fn hsl_to_rgb(h: f32, s: f32, l: f32) -> (u8, u8, u8) {
 }
 
 pub fn prompt_entry_color(base: Color, t: f32) -> Color {
-    let peak = rgb(255, 230, 120);
+    let peak = accent_color();
     // Smooth bell-curve pulse using a Gaussian-like envelope for a more
     // organic feel. The wider sigma (0.25) creates a gentle rise and
     // fade instead of a sharp triangular peak.
@@ -334,21 +308,13 @@ pub fn prompt_entry_shimmer_color(base: Color, pos: f32, t: f32) -> Color {
     blend_color(base, highlight, shimmer * pulse * 0.75)
 }
 
-/// Generate an animated color that smoothly cycles through the brand gradient.
-/// Uses continuous hue rotation for a premium, fluid feel instead of a simple
-/// two-color interpolation.
+/// Subtle activity emphasis within the active theme, keeping status hues semantic.
 pub fn animated_tool_color(elapsed: f32, enable_decorative_animations: bool) -> Color {
     if !enable_decorative_animations {
         return tool_color();
     }
-
-    // Smooth hue rotation through the brand colors at ~1.8 second period
-    let hue = (elapsed * 60.0) % 360.0; // ~6 degrees per frame at 60fps
-    let saturation = 0.65;
-    let lightness = 0.72;
-
-    let (r, g, b) = hsl_to_rgb(hue, saturation, lightness);
-    rgb(r, g, b)
+    let pulse = ((elapsed * 1.8).sin() + 1.0) * 0.5;
+    blend_color(tool_color(), accent_color(), pulse * 0.35)
 }
 
 /// Smoothly interpolate between two colors using perceptual blending.

@@ -36,6 +36,11 @@ const PARTIAL_BLOCKS: [char; 7] = ['▏', '▎', '▍', '▌', '▋', '▊', '�
 /// sort *after* completed work, so large plans hide all live activity behind
 /// the "+N more" footer.
 pub(crate) fn swarm_plan_todos(items: &[crate::plan::PlanItem]) -> Vec<crate::todo::TodoItem> {
+    let completed: std::collections::HashSet<&str> = items
+        .iter()
+        .filter(|item| crate::plan::is_completed_status(&item.status))
+        .map(|item| item.id.as_str())
+        .collect();
     items
         .iter()
         .map(|item| crate::todo::TodoItem {
@@ -44,7 +49,12 @@ pub(crate) fn swarm_plan_todos(items: &[crate::plan::PlanItem]) -> Vec<crate::to
             priority: item.priority.clone(),
             id: item.id.clone(),
             group: None,
-            blocked_by: item.blocked_by.clone(),
+            blocked_by: item
+                .blocked_by
+                .iter()
+                .filter(|id| !completed.contains(id.as_str()))
+                .cloned()
+                .collect(),
             assigned_to: item.assigned_to.clone(),
             confidence: None,
             completion_confidence: None,
@@ -64,7 +74,10 @@ fn normalize_plan_status_for_todo(status: &str) -> String {
         "running" | "running_stale" => "in_progress".to_string(),
         "done" => "completed".to_string(),
         "failed" | "stopped" | "crashed" => "cancelled".to_string(),
-        "queued" | "ready" | "todo" | "blocked" => "pending".to_string(),
+        "queued" | "ready" | "todo" => "pending".to_string(),
+        "pending" | "in_progress" | "completed" | "cancelled" | "blocked" => {
+            status.trim().to_ascii_lowercase()
+        }
         _ => status.to_string(),
     }
 }
@@ -564,7 +577,7 @@ fn grouped_todos(todos: &[crate::todo::TodoItem]) -> Option<Vec<TodoGroup<'_>>> 
 fn status_sort_rank(status: &str) -> u8 {
     match status {
         "in_progress" => 0,
-        "pending" => 1,
+        "pending" | "blocked" => 1,
         "completed" => 2,
         "cancelled" => 3,
         _ => 4,
@@ -574,7 +587,8 @@ fn status_sort_rank(status: &str) -> u8 {
 /// Blocked, not-yet-finished work. Shown with ⊳ and sorted behind runnable
 /// items of the same status.
 fn is_blocked(todo: &crate::todo::TodoItem) -> bool {
-    !todo.blocked_by.is_empty() && !matches!(todo.status.as_str(), "completed" | "cancelled")
+    (todo.status == "blocked" || !todo.blocked_by.is_empty())
+        && !matches!(todo.status.as_str(), "completed" | "cancelled")
 }
 
 /// Active work first, then runnable open items, then blocked ones, then
@@ -1432,6 +1446,35 @@ mod tests {
     /// is actually running must land on `in_progress`, or live plan activity
     /// sorts below finished work and disappears behind "+N more".
     #[test]
+    fn completed_plan_dependencies_do_not_keep_ready_work_blocked() {
+        let items = vec![
+            crate::plan::PlanItem {
+                id: "a".into(),
+                status: "completed".into(),
+                content: "Prerequisite".into(),
+                priority: "normal".into(),
+                subsystem: None,
+                file_scope: vec![],
+                blocked_by: vec![],
+                assigned_to: None,
+            },
+            crate::plan::PlanItem {
+                id: "b".into(),
+                status: "ready".into(),
+                content: "Follow-up".into(),
+                priority: "normal".into(),
+                subsystem: None,
+                file_scope: vec![],
+                blocked_by: vec!["a".into()],
+                assigned_to: None,
+            },
+        ];
+        let todos = swarm_plan_todos(&items);
+        assert!(todos[1].blocked_by.is_empty());
+        assert!(!is_blocked(&todos[1]));
+    }
+
+    #[test]
     fn running_plan_items_normalize_to_active_todos() {
         for status in ["running", "running_stale"] {
             assert_eq!(normalize_plan_status_for_todo(status), "in_progress");
@@ -1440,7 +1483,7 @@ mod tests {
         for status in ["failed", "stopped", "crashed"] {
             assert_eq!(normalize_plan_status_for_todo(status), "cancelled");
         }
-        for status in ["queued", "ready", "todo", "blocked"] {
+        for status in ["queued", "ready", "todo"] {
             assert_eq!(normalize_plan_status_for_todo(status), "pending");
         }
     }
@@ -1449,6 +1492,8 @@ mod tests {
     fn plan_status_matching_ignores_case_and_whitespace() {
         assert_eq!(normalize_plan_status_for_todo(" Running "), "in_progress");
         assert_eq!(normalize_plan_status_for_todo("DONE"), "completed");
+        assert_eq!(normalize_plan_status_for_todo(" BLOCKED "), "blocked");
+        assert!(is_blocked(&todo("blocked")));
         assert_eq!(normalize_plan_status_for_todo("whatever"), "whatever");
     }
 

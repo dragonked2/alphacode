@@ -80,7 +80,11 @@ impl Provider for OpenRouterProvider {
         let allow_image_input = self.supports_image_input();
 
         let mut effective_messages: Vec<Message> = messages.to_vec();
-        let cache_supported = self.model_supports_cache(&model).await;
+        // Cache annotations are an OpenRouter extension, not part of the
+        // direct Chat Completions contract. Avoid foreign metadata/disk lookups
+        // and unsupported cache_control fields on local and strict endpoints.
+        let cache_supported =
+            self.supports_provider_features && self.model_supports_cache(&model).await;
         let cache_control_added = if cache_supported {
             add_cache_breakpoint(&mut effective_messages)
         } else {
@@ -257,7 +261,7 @@ impl Provider for OpenRouterProvider {
         // shape — so measuring with a throwaway serialization and then letting
         // `req.json()` serialize the same tree a second time doubled the
         // per-request CPU on exactly the long sessions where it hurts most.
-        let request_body = serde_json::to_vec(&request).unwrap_or_default();
+        let request_body = serde_json::to_vec(&request).context("could not encode chat request")?;
 
         // Pre-flight context guard: never send a request whose estimated
         // prompt + reserved output exceeds the known server context. Without
@@ -266,7 +270,7 @@ impl Provider for OpenRouterProvider {
         // `exceed_context_size_error`. Fail fast with actionable diagnostics.
         {
             let context_window = self.context_window();
-            let estimated_prompt = request_body.len() / 4;
+            let estimated_prompt = super::estimate_chat_request_tokens(&request);
             let reserved_output = self.max_tokens.unwrap_or(2048) as usize;
             if estimated_prompt.saturating_add(reserved_output) > context_window {
                 let (system_tokens, conversation_tokens, tools_tokens) =
@@ -340,7 +344,11 @@ impl Provider for OpenRouterProvider {
         }
 
         // OpenRouter uses HTTPS/SSE transport only
-        crate::alphacode_base::logging::info("OpenRouter transport: HTTPS (SSE)");
+        crate::alphacode_base::logging::info(&format!(
+            "{} transport: HTTP/SSE; prompt sent as one JSON body ({} bytes); incremental events are response tokens",
+            self.runtime_display_name(),
+            request_body.len(),
+        ));
 
         let (tx, rx) = mpsc::channel::<Result<StreamEvent>>(100);
         let client = self.client.clone();
@@ -353,7 +361,7 @@ impl Provider for OpenRouterProvider {
         // "please use /v1/responses") can be retried on the Responses wire
         // without reverse-engineering the transformed chat JSON.
         let responses_fallback = super::openrouter_responses_fallback::ResponsesFallbackContext {
-            messages: effective_messages.clone(),
+            messages: effective_messages,
             system: system.to_string(),
             tools: tools.to_vec(),
         };
@@ -370,19 +378,23 @@ impl Provider for OpenRouterProvider {
             {
                 return;
             }
-            run_stream_with_retries(
-                client,
-                api_base,
-                auth,
-                send_openrouter_headers,
-                request_for_retries,
-                bytes::Bytes::from(request_body),
-                responses_fallback,
-                tx,
-                provider_pin,
-                model_for_stream,
-            )
-            .await;
+            let consumer_closed = tx.clone();
+            tokio::select! {
+                biased;
+                _ = consumer_closed.closed() => {},
+                _ = run_stream_with_retries(
+                    client,
+                    api_base,
+                    auth,
+                    send_openrouter_headers,
+                    request_for_retries,
+                    bytes::Bytes::from(request_body),
+                    responses_fallback,
+                    tx,
+                    provider_pin,
+                    model_for_stream,
+                ) => {},
+            }
         });
 
         Ok(Box::pin(ReceiverStream::new(rx)))
@@ -695,6 +707,23 @@ impl Provider for OpenRouterProvider {
                     String::new(),
                 )
             });
+        // Keep wire ids stable, while showing the server's human-readable
+        // names in route details (local servers may expose short aliases).
+        let model_names: HashMap<String, String> = self
+            .models_cache
+            .try_read()
+            .ok()
+            .filter(|cache| cache.fetched)
+            .map(|cache| cache.models.clone())
+            .or_else(|| {
+                self.load_usable_model_disk_cache_entry()
+                    .map(|cache| cache.models)
+            })
+            .unwrap_or_default()
+            .into_iter()
+            .filter(|info| !info.name.trim().is_empty() && info.name != info.id)
+            .map(|info| (info.id, info.name))
+            .collect();
         let live_model_ids = self.cached_live_model_ids_for_display();
         let static_model_ids: HashSet<String> = self.static_models.iter().cloned().collect();
         let is_direct_profile = self.profile_id.is_some();
@@ -716,6 +745,11 @@ impl Provider for OpenRouterProvider {
                     }
                 } else {
                     detail.clone()
+                };
+                let route_detail = if let Some(name) = model_names.get(&model) {
+                    format!("Model: {name}; {route_detail}")
+                } else {
+                    route_detail
                 };
                 crate::alphacode_provider_core::ModelRoute {
                     model,

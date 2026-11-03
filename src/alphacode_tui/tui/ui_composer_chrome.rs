@@ -2,6 +2,8 @@
 use super::{ComposerMode, TuiState};
 use crate::alphacode_tui::tui::brand_ux::BrandTheme;
 use ratatui::{prelude::*, widgets::Paragraph};
+use unicode_segmentation::UnicodeSegmentation;
+use unicode_width::UnicodeWidthStr;
 
 fn primary_action(
     mode: ComposerMode,
@@ -39,18 +41,36 @@ fn actions(mode: ComposerMode, app: &dyn TuiState) -> Vec<(&'static str, &'stati
     if app.is_processing() {
         actions.push(("Esc", "stop"));
     }
-    actions.push(("Alt+Enter", "newline"));
     actions.push(("F1", "help"));
+    actions.push(("Alt+Enter", "newline"));
+    if app.input().is_empty() && !mode.is_shell() {
+        actions.push(("/", "commands"));
+        actions.push(("@", "files"));
+    }
+    actions.push(("Ctrl+R", "history"));
+    actions.push(("Ctrl+F", "find"));
     actions
 }
 
 fn action_line(actions: &[(&str, &str)], width: usize) -> Line<'static> {
     let mut spans = Vec::new();
     let mut used = 0;
-    for (key, label) in actions {
-        let needed = key.len() + label.len() + 1 + usize::from(!spans.is_empty()) * 3;
+    for (index, (key, label)) in actions.iter().enumerate() {
+        let needed = key.width() + label.width() + 1 + usize::from(!spans.is_empty()) * 3;
         if used + needed > width {
-            continue;
+            // At very small widths keep the primary key discoverable instead
+            // of dropping it in favour of a shorter secondary shortcut.
+            if index == 0 && key.width() <= width {
+                spans.push(Span::styled(
+                    key.to_string(),
+                    Style::default()
+                        .fg(BrandTheme::accent())
+                        .add_modifier(Modifier::BOLD),
+                ));
+            }
+            // Preserve action priority across resizes. Do not replace a
+            // hidden primary action with an unrelated, shorter shortcut.
+            break;
         }
         if !spans.is_empty() {
             spans.push(Span::styled(" · ", Style::default().fg(BrandTheme::dim())));
@@ -58,7 +78,7 @@ fn action_line(actions: &[(&str, &str)], width: usize) -> Line<'static> {
         spans.push(Span::styled(
             key.to_string(),
             Style::default()
-                .fg(BrandTheme::dim_bright())
+                .fg(BrandTheme::accent())
                 .add_modifier(Modifier::BOLD),
         ));
         spans.push(Span::styled(
@@ -79,7 +99,9 @@ pub(super) fn draw_footer(
     visible_rows: usize,
     total_rows: usize,
 ) {
-    if area.height < 3 || area.width < 16 {
+    // Six gutter cells plus the primary key still fit at eleven columns.
+    // Keep Enter discoverable in narrow splits instead of hiding all guidance.
+    if area.height < 3 || area.width < 11 {
         return;
     }
     let width = usize::from(area.width.saturating_sub(6));
@@ -91,19 +113,34 @@ pub(super) fn draw_footer(
             total_rows
         )
     } else if total_rows > 1 {
-        format!(" {total_rows} lines ")
+        let before_cursor = app.input().get(..app.cursor_pos()).unwrap_or("");
+        let line = before_cursor.bytes().filter(|byte| *byte == b'\n').count() + 1;
+        let column = before_cursor
+            .rsplit('\n')
+            .next()
+            .unwrap_or("")
+            .graphemes(true)
+            .count()
+            + 1;
+        format!(" Ln {line}, Col {column} ")
     } else {
         String::new()
     };
-    let position_width = position.len();
-    // Keep the primary action visible before adding secondary draft metadata.
-    let show_position = !position.is_empty() && width >= position_width + 14;
+    let position_width = position.width();
+    // Reserve the actual primary shortcut plus the gutter. A fixed reserve
+    // could hide "Enter send now" behind line/column metadata on narrow frames.
+    let actions = actions(mode, app);
+    let primary_width = actions
+        .first()
+        .map(|(key, label)| key.width() + label.width() + 1)
+        .unwrap_or(0);
+    let show_position = !position.is_empty() && width >= position_width + primary_width + 2;
     let left_width = if show_position {
         width - position_width - 2
     } else {
         width
     };
-    let line = action_line(&actions(mode, app), left_width);
+    let line = action_line(&actions, left_width);
     let row = area.bottom().saturating_sub(1);
     frame.render_widget(
         Paragraph::new(line),
@@ -164,5 +201,22 @@ mod tests {
                 assert!(line.spans.iter().any(|span| span.content == "Enter"));
             }
         }
+    }
+
+    #[test]
+    fn narrow_footer_does_not_promote_secondary_actions_over_primary() {
+        let actions = [("Enter", "send now"), ("F1", "help"), ("/", "commands")];
+        assert_eq!(action_line(&actions, 4).width(), 0);
+        let line = action_line(&actions, 10);
+        assert_eq!(
+            line.spans
+                .iter()
+                .map(|span| span.content.as_ref())
+                .collect::<String>(),
+            "Enter"
+        );
+        let line = action_line(&actions, 24);
+        assert!(line.spans.iter().any(|span| span.content == "F1"));
+        assert!(!line.spans.iter().any(|span| span.content == "/"));
     }
 }

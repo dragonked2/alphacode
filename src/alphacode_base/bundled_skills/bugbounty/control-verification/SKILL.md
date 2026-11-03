@@ -5,20 +5,10 @@ description: Treats every security control as a falsifiable claim rather than a 
 
 # CONTROL VERIFICATION — TRUST NOTHING, INCLUDING THE CONTROLS
 
-**Core principle:** a control is a **claim**, not a fact. `401 Unauthorized` in a
-curl response is not proof of authorization — it is one data point. Authorization
-is a claim about *every* (actor, resource) pair, and a single unverified pair is
-a bug.
-
-This is the "assume breach" discipline done properly. It is **not** the belief
-that everything is exploitable — that is a bias that manufactures false
-positives. It is the *method* of refusing to accept an untested control.
-
-**Why this exists:** the majority of high-severity findings are not exotic bugs.
-They are ordinary features where one developer trusted another developer's check.
-The control looked right because it was right *in the path that was tested*.
-Authorization enforced in `GET /orders/:id` and missing in
-`GET /orders/:id/items` is the single most common real-world pattern.
+**Core principle:** a control is a falsifiable claim. Untested actor/resource
+pairs are coverage gaps, not bugs. Establish intended visibility and privileges
+from the feature contract before selecting a test. Status codes alone neither
+prove a boundary violation nor establish that every path is protected.
 
 ---
 
@@ -48,18 +38,21 @@ curl -s -o /dev/null -w "A/nonexistent=%{http_code}\n" -H "Authorization: Bearer
 
 **Interpreting the results correctly:**
 
-- `A/other` returning **200** → confirmed IDOR. Stop at read. See IMPACT BOUNDARY.
-- `A/other` returning **403 but with A's data in the body** → authZ leak, real
-  finding, often more interesting than the 200.
-- `A/nonexistent` returning **200 with a body** → enumeration oracle, real but
-  usually low severity on its own.
-- `anon/own` returning **200** → the resource was never private. Not a finding.
-  Check the scope file and the feature's intent before recording anything.
-- **Differing status across `GET`/`POST`/`PATCH`/`DELETE` on the same path** →
-  the control is per-handler. Report the specific missing method.
-
-> `403` vs `404` is not the finding. Both correctly deny. Chasing which one the
-> app prefers is a low-value hunt — note it, move on.
+- The matrix above is an example for private owner-only resources, not a universal
+  HTTP contract. Define expected results for public, shared, delegated and tenant
+  resources before testing. Use two owned accounts with separate cookie jars.
+- `A/other=200` is a candidate only. Confirm the body contains B's private fixture,
+  that A lacks a sharing/delegation grant, and that B's authorized read succeeds.
+- A `403` body leaking B's private fixture can demonstrate disclosure; returning
+  A's own data ordinarily does not demonstrate a cross-account violation.
+- A nonexistent ID returning `200` may be a soft-404 or SPA shell. Compare a known
+  resource, a random absent resource, and the actual data before alleging an oracle.
+- Anonymous access is valid for public data and potentially a bug for private
+  data. Determine intent; never infer privacy solely from the status code.
+- Different methods may legitimately have different policies. Confirm an
+  unauthorized effect, including persisted state or job output, for each claim.
+- Use disposable owned objects for mutations. Do not run the method loop below
+  against valuable objects: DELETE/PUT/PATCH can change data even without a body.
 
 ---
 
@@ -71,25 +64,25 @@ recorded as `UNTESTED`, never as `OK` — untested is the honest default.
 ```
 | Control              | Claim source          | Test           | Result   | Status |
 |----------------------|-----------------------|----------------|----------|--------|
-| Order read authZ     | 401 on GET /orders    | 3x3 matrix     | A/B=200  | BROKEN |
-| Order write authZ    | (none observed)       | DELETE as A/B  | A/B=204  | BROKEN |
-| Tenant isolation     | docs claim per-tenant | header swap    | cross-ok | BROKEN |
-| Promo single-use     | "one per customer"    | 2x replay      | 2x 200   | BROKEN |
-| Upload type filter   | "images only"         | .php named .png| accepted | BROKEN |
+| Order read authZ     | 401 on GET /orders    | 3x3 matrix     | B private fixture read by A | BROKEN |
+| Order write authZ    | (none observed)       | DELETE as A/B  | B fixture deleted by A | BROKEN |
+| Tenant isolation     | docs claim per-tenant | header swap    | owned tenant B canary read | BROKEN |
+| Promo single-use     | "one per customer"    | 2x replay      | 2x 200; no settled effect checked | INCONCLUSIVE |
+| Upload type filter   | "images only"         | .php named .png| accepted; no consequence shown | INCONCLUSIVE |
 ```
 
 Claim sources, in order of strength: **explicit documentation** > **API docs /
 OpenAPI schema** > **front-end code that hides the control** > **observed 401** >
-**assumed**. A control implemented only in the UI is a *documented* control —
-the API is the real surface, and the report is "the API does not enforce what
-the UI implies."
+**assumed**. A hidden UI element is a hypothesis source, not an authorization contract.
+Confirm the role policy and demonstrate unauthorized data or state at the API.
 
 ---
 
 ## PER-CLASS FALSIFICATION CATALOG
 
-Each row: what the control usually claims, and the single cheapest test that
-would prove it absent. One test per control. Record the result, then move on.
+Each row suggests a hypothesis and initial probe. A single anomalous response
+is insufficient: pair it with a valid baseline, a discriminating negative control,
+and an observed security consequence. Apply the program request budget.
 
 ### Authentication
 ```
@@ -130,13 +123,13 @@ Claim "CSP blocks script"        → inject a marker, read the CSP header
 
 ### Rate limiting / anti-automation
 ```
-Claim "rate limited"             → 20 rapid identical requests, count 429s
-Claim "per-account"              → 20 requests, varying the source IP
-Claim "per-IP"                   → one account, varying the source IP
+Claim "rate limited"             → bounded requests within program limits; inspect headers and effects
+Claim "per-account"              → compare owned account contexts only if permitted
+Claim "per-IP"                   → characterize documented behavior without bypassing anti-abuse
 ```
 Rate limits are in scope to *characterize*, not to *defeat*. Establish whether
-the limit exists and whether it is per-account or per-IP — that single fact is
-often the whole finding. Do not build an evasion ladder.
+the documented limit behaves as expected. Absence of 429 within a small sample
+is inconclusive; report only demonstrated security impact within scope. Do not build an evasion ladder.
 
 ### Session management
 ```
@@ -203,15 +196,11 @@ curl -s -X POST https://target.com/api/upload \
   --data-binary @body.bin
 ```
 
-**Test the filter with a valid image first.** If a real PNG is rejected
-as octet-stream, the filter is checking the part header, not the file
-content. If a real PNG is accepted, the filter is checking content —
-then test with a non-image named `.png`.
-
-**The lesson:** never trust a tool's file upload helper. If the first
-upload fails with a valid image, assume the tool is sending the wrong
-MIME type and construct the request manually before concluding the
-filter works.
+**Use a known valid image as a positive control.** Vary the part MIME,
+filename and actual content independently. Acceptance or rejection alone cannot
+identify which validation layer ran. Verify stored and served behavior using
+owned fixtures; acceptance of non-image content is not automatically a security
+issue. Preserve raw multipart bytes when diagnosing tool serialization.
 
 ### Error handling
 ```
@@ -241,7 +230,8 @@ object count and arity                ?ids=1,2,3 vs three single requests
 HEAD/OPTIONS responses                often leak metadata past the real handler
 ```
 
-Method enumeration is the cheapest way to find per-handler gaps:
+Only on disposable owned fixtures, with mutation testing authorized, adapt this
+method checklist to the documented interface:
 
 ```bash
 curl -s -o /dev/null -w "%{http_code} " -X GET    -H "Authorization: Bearer $TOKEN_A" "$P/$B_ID"
@@ -278,9 +268,10 @@ exactly one layer past any single boundary, and only when asked.
 
 ---
 
-## CLEAN IS A RESULT
+## BOUNDED COVERAGE IS A RESULT
 
-When every control in the ledger shows a passing test, that is a deliverable:
+Report passing tests as bounded observations, never proof that the application
+is clean. Separate untested, blocked and inconclusive coverage:
 
 ```
 ## Control Verification — <target>

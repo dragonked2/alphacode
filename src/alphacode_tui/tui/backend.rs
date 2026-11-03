@@ -14,6 +14,7 @@ use anyhow::Result;
 use serde::{Deserialize, Serialize};
 use std::collections::VecDeque;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::sync::Mutex;
@@ -236,6 +237,7 @@ pub struct BackendInfo {
 pub struct RemoteConnection {
     reader: BufReader<crate::transport::ReadHalf>,
     writer: Arc<Mutex<WriteHalf>>,
+    write_failed: Arc<AtomicBool>,
     _dummy_peer: Option<Stream>,
     session_id: Option<String>,
     client_instance_id: Option<String>,
@@ -263,6 +265,23 @@ pub struct RemoteConnection {
 }
 
 const DETACHED_REQUEST_TIMEOUT: Duration = Duration::from_secs(2);
+const REQUEST_WRITE_TIMEOUT: Duration = Duration::from_secs(5);
+
+/// A dropped write_all future may already have sent a JSON prefix. Retire
+/// that connection instead of letting the next request complete a torn frame.
+struct RequestWriteGuard {
+    failed: Arc<AtomicBool>,
+    completed: bool,
+}
+
+impl Drop for RequestWriteGuard {
+    fn drop(&mut self) {
+        if !self.completed {
+            self.failed.store(true, Ordering::Release);
+        }
+    }
+}
+
 /// Maximum time allowed for Subscribe + session identity + History. A raw
 /// transport write is not a successful reconnect; the protocol must attach.
 const REMOTE_BOOTSTRAP_TIMEOUT: Duration = Duration::from_secs(30);
@@ -336,6 +355,7 @@ impl RemoteConnection {
         let mut conn = Self {
             reader: BufReader::new(reader),
             writer: Arc::new(Mutex::new(writer)),
+            write_failed: Arc::new(AtomicBool::new(false)),
             _dummy_peer: None,
             session_id: None,
             client_instance_id: client_instance_id.map(str::to_string),
@@ -571,7 +591,19 @@ impl RemoteConnection {
         request: Request,
         interrupt_trigger: Option<&str>,
     ) -> Result<()> {
+        if self.write_failed.load(Ordering::Acquire) {
+            anyhow::bail!(
+                "connection write failed previously; reconnect before sending another request"
+            );
+        }
         let json = serde_json::to_string(&request)? + "\n";
+        if json.len() > crate::protocol::MAX_REQUEST_FRAME_BYTES {
+            anyhow::bail!(
+                "request is {} bytes; the server limit is {} bytes; reduce the prompt or attachments",
+                json.len(),
+                crate::protocol::MAX_REQUEST_FRAME_BYTES
+            );
+        }
         let interrupt_log = self.interrupt_request_log_fields(&request, interrupt_trigger);
         if let Some(fields) = &interrupt_log {
             crate::logging::info(&format!(
@@ -582,32 +614,72 @@ impl RemoteConnection {
         }
 
         let total_start = Instant::now();
-        let writer_wait_start = Instant::now();
-        let mut w = self.writer.lock().await;
-        let writer_wait_ms = writer_wait_start.elapsed().as_millis();
-        let write_start = Instant::now();
-        let result = match w.write_all(json.as_bytes()).await {
-            Ok(()) => w.flush().await,
-            Err(error) => Err(error),
+        let mut writer_wait_ms = 0;
+        let mut write_started = None;
+        let write_future = async {
+            let writer_wait_start = Instant::now();
+            let mut w = self.writer.lock().await;
+            writer_wait_ms = writer_wait_start.elapsed().as_millis();
+            if self.write_failed.load(Ordering::Acquire) {
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::BrokenPipe,
+                    "connection is no longer writable",
+                ));
+            }
+            let mut guard = RequestWriteGuard {
+                failed: Arc::clone(&self.write_failed),
+                completed: false,
+            };
+            write_started = Some(Instant::now());
+            w.write_all(json.as_bytes()).await?;
+            w.flush().await?;
+            guard.completed = true;
+            Ok(())
         };
+        let result = match tokio::time::timeout(REQUEST_WRITE_TIMEOUT, write_future).await {
+            Ok(result) => result,
+            Err(_) => {
+                self.write_failed.store(true, Ordering::Release);
+                Err(std::io::Error::new(
+                    std::io::ErrorKind::TimedOut,
+                    "request write timed out; delivery is uncertain, reconnect required",
+                ))
+            }
+        };
+        let write_ms = write_started
+            .map(|started| started.elapsed().as_millis())
+            .unwrap_or(0);
+        if write_started.is_none() {
+            writer_wait_ms = total_start.elapsed().as_millis();
+        }
         if let Some(fields) = &interrupt_log {
             match &result {
                 Ok(()) => crate::logging::info(&format!(
                     "REMOTE_INTERRUPT_SEND_OK {} writer_wait_ms={} write_ms={} total_ms={}",
                     fields,
                     writer_wait_ms,
-                    write_start.elapsed().as_millis(),
+                    write_ms,
                     total_start.elapsed().as_millis()
                 )),
                 Err(error) => crate::logging::warn(&format!(
                     "REMOTE_INTERRUPT_SEND_ERR {} writer_wait_ms={} write_ms={} total_ms={} error={}",
                     fields,
                     writer_wait_ms,
-                    write_start.elapsed().as_millis(),
+                    write_ms,
                     total_start.elapsed().as_millis(),
                     error
                 )),
             }
+        }
+        if total_start.elapsed() >= Duration::from_millis(250) {
+            crate::logging::info(&format!(
+                "REMOTE_WRITE_SLOW request_id={} bytes={} writer_wait_ms={} write_ms={} total_ms={}",
+                request.id(),
+                json.len(),
+                writer_wait_ms,
+                write_ms,
+                total_start.elapsed().as_millis()
+            ));
         }
         result?;
         Ok(())
@@ -620,6 +692,7 @@ impl RemoteConnection {
 
     fn send_request_detached(&self, request: Request, label: &'static str) {
         let writer = Arc::clone(&self.writer);
+        let write_failed = Arc::clone(&self.write_failed);
         tokio::spawn(async move {
             let json = match serde_json::to_string(&request) {
                 Ok(json) => json + "\n",
@@ -632,9 +705,30 @@ impl RemoteConnection {
                 }
             };
 
+            if write_failed.load(Ordering::Acquire)
+                || json.len() > crate::protocol::MAX_REQUEST_FRAME_BYTES
+            {
+                crate::logging::warn(&format!(
+                    "Detached remote request {label} skipped: unavailable connection or oversized frame"
+                ));
+                return;
+            }
             let write_future = async {
                 let mut w = writer.lock().await;
-                w.write_all(json.as_bytes()).await
+                if write_failed.load(Ordering::Acquire) {
+                    return Err(std::io::Error::new(
+                        std::io::ErrorKind::BrokenPipe,
+                        "connection is no longer writable",
+                    ));
+                }
+                let mut guard = RequestWriteGuard {
+                    failed: Arc::clone(&write_failed),
+                    completed: false,
+                };
+                w.write_all(json.as_bytes()).await?;
+                w.flush().await?;
+                guard.completed = true;
+                Ok(())
             };
 
             match tokio::time::timeout(DETACHED_REQUEST_TIMEOUT, write_future).await {
@@ -734,6 +828,18 @@ impl RemoteConnection {
         let id = self.next_request_id;
         self.next_request_id += 1;
         self.send_request(Request::GetHistory { id }).await?;
+        Ok(id)
+    }
+
+    /// Retrieve full retained conversation text for an explicit /copy request.
+    pub async fn request_session_transcript(&mut self, session_id: &str) -> Result<u64> {
+        let id = self.next_request_id;
+        self.next_request_id += 1;
+        self.send_request(Request::GetSessionTranscript {
+            id,
+            session_id: session_id.to_string(),
+        })
+        .await?;
         Ok(id)
     }
 
@@ -1163,6 +1269,12 @@ impl RemoteConnection {
             .await
     }
 
+    /// A failed/cancelled write may have delivered a request prefix. Callers
+    /// must synchronize history before deciding whether to submit it again.
+    pub fn request_delivery_uncertain(&self) -> bool {
+        self.write_failed.load(Ordering::Acquire)
+    }
+
     /// Read the next event from the server.
     ///
     /// This is **cancellation safe** and may be used directly as a branch in a
@@ -1180,6 +1292,9 @@ impl RemoteConnection {
     /// protocol line" warnings, the real `History` was discarded, and the
     /// session stayed stuck on "loading session…" until a manual `/restart`.
     pub async fn next_event(&mut self) -> RemoteRead {
+        if self.write_failed.load(Ordering::Acquire) {
+            return RemoteRead::Disconnected(RemoteDisconnectReason::Io("connection retired after a failed or interrupted request write; delivery may be uncertain".to_string()));
+        }
         if let Some(event) = self.pending_events.pop_front() {
             return RemoteRead::Event(event);
         }
@@ -1217,10 +1332,12 @@ impl RemoteConnection {
                         self.session_id, self.client_instance_id
                     ));
                 } else {
-                    let preview: String = String::from_utf8_lossy(&self.read_buffer)
-                        .chars()
-                        .take(240)
-                        .collect();
+                    let preview: String = String::from_utf8_lossy(
+                        &self.read_buffer[..self.read_buffer.len().min(1024)],
+                    )
+                    .chars()
+                    .take(240)
+                    .collect();
                     crate::logging::warn(&format!(
                         "RemoteConnection::next_event: peer closed mid-line, discarding {} buffered bytes preview={:?} (session_id={:?}, client_instance_id={:?})",
                         self.read_buffer.len(),
@@ -1233,7 +1350,10 @@ impl RemoteConnection {
                 }
                 return RemoteRead::Disconnected(RemoteDisconnectReason::PeerClosed);
             }
-            let len = chunk.len();
+            let len = chunk
+                .iter()
+                .position(|byte| *byte == b'\n')
+                .map_or(chunk.len(), |index| index + 1);
             if remote_protocol_frame_exceeds_limit(self.read_buffer.len(), len) {
                 self.reader.consume(len);
                 self.read_buffer.clear();
@@ -1243,7 +1363,7 @@ impl RemoteConnection {
                     MAX_REMOTE_PROTOCOL_FRAME_BYTES
                 )));
             }
-            self.read_buffer.extend_from_slice(chunk);
+            self.read_buffer.extend_from_slice(&chunk[..len]);
             self.reader.consume(len);
         }
     }
@@ -1267,7 +1387,17 @@ impl RemoteConnection {
             return None;
         };
         let newline = scan_start + relative_newline;
-        let mut line: Vec<u8> = self.read_buffer.drain(..=newline).collect();
+        // Transfer large frame storage to the JSON parser. Copy only the small
+        // following tail, instead of allocating/copying the whole history twice.
+        let mut line: Vec<u8> = if newline >= READ_BUFFER_SHRINK_THRESHOLD {
+            let tail = self.read_buffer.split_off(newline + 1);
+            let frame = std::mem::replace(&mut self.read_buffer, tail);
+            self.read_buffer
+                .reserve(READ_BUFFER_RETAIN_CAPACITY.saturating_sub(self.read_buffer.len()));
+            frame
+        } else {
+            self.read_buffer.drain(..=newline).collect()
+        };
         line.pop(); // drop trailing '\n'
         // `position` stopped at the first newline, so none of the remaining
         // bytes have been inspected yet.
@@ -1293,10 +1423,11 @@ impl RemoteConnection {
             Ok(text) => text,
             Err(error) => {
                 *stray_lines += 1;
-                let preview: String = String::from_utf8_lossy(error.as_bytes())
-                    .chars()
-                    .take(240)
-                    .collect();
+                let preview: String =
+                    String::from_utf8_lossy(&error.as_bytes()[..error.as_bytes().len().min(1024)])
+                        .chars()
+                        .take(240)
+                        .collect();
                 crate::logging::warn(&format!(
                     "RemoteConnection::next_event: skipping stray non-UTF-8 protocol line {}/{} preview={:?} (session_id={:?}, client_instance_id={:?})",
                     *stray_lines,
@@ -1390,6 +1521,7 @@ impl RemoteConnection {
         Self {
             reader: BufReader::new(reader),
             writer: Arc::new(Mutex::new(writer)),
+            write_failed: Arc::new(AtomicBool::new(false)),
             _dummy_peer: Some(b),
             session_id: None,
             client_instance_id: None,
@@ -2114,10 +2246,21 @@ mod tests {
             .take_buffered_line()
             .expect("first buffered line should be returned");
         assert_eq!(first.len(), line_len);
-        assert_eq!(
-            remote.read_buffer.capacity(),
-            capacity,
-            "capacity must be retained while a large backlog remains buffered"
+        // The intent is allocation *stability* while a backlog remains, not
+        // byte-identical capacity. `split_off` rebuilds the tail buffer, so a
+        // large-backlog drain legitimately reallocates from the original
+        // capacity to the retain floor; what must not happen is shrinking below
+        // that floor, which would force a reallocation on the next line.
+        assert!(
+            remote.read_buffer.capacity() >= READ_BUFFER_RETAIN_CAPACITY,
+            "capacity must stay at or above the retain floor while a backlog \
+             remains buffered, capacity={}",
+            remote.read_buffer.capacity()
+        );
+        assert!(
+            remote.read_buffer.capacity() <= capacity + READ_BUFFER_RETAIN_CAPACITY,
+            "a large-backlog drain must not regrow the buffer, capacity={}",
+            remote.read_buffer.capacity()
         );
 
         remote

@@ -49,6 +49,19 @@ pub(in crate::alphacode_tui::tui::app) struct ReloadReconnectHints {
     pub has_client_reload_marker: bool,
 }
 
+/// Keep clients from reconnecting in lockstep after a daemon restart. The
+/// bounded per-client variation preserves the existing retry budget and cap.
+fn jittered_reconnect_delay(base: Duration, client_id: &str, attempt: u32) -> Duration {
+    use std::hash::{Hash, Hasher};
+    let mut hash = std::collections::hash_map::DefaultHasher::new();
+    client_id.hash(&mut hash);
+    std::process::id().hash(&mut hash);
+    attempt.hash(&mut hash);
+    let percent = 80 + hash.finish() % 21;
+    let millis = (base.as_millis().min(u64::MAX as u128) as u64).saturating_mul(percent) / 100;
+    Duration::from_millis(millis.max(1))
+}
+
 fn connect_error_is_terminal(error: &anyhow::Error) -> bool {
     let message = error.to_string().to_ascii_lowercase();
     message.contains("requested session") && message.contains("does not exist")
@@ -663,6 +676,11 @@ pub(in crate::alphacode_tui::tui::app) async fn connect_with_retry(
                 }
                 Duration::from_secs((1u64 << (state.reconnect_attempts - 2).min(5)).min(30))
             };
+            let backoff = jittered_reconnect_delay(
+                backoff,
+                &app.remote_client_instance_id,
+                state.reconnect_attempts,
+            );
             let sleep = tokio::time::sleep(backoff);
             tokio::pin!(sleep);
             let mut redraw = disconnected_redraw_interval(false);

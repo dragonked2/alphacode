@@ -33,6 +33,9 @@ impl RemoteSwarmPlanSnapshot {
             if !summary.completed_ids.is_empty() {
                 segments.push(format!("{} done", summary.completed_ids.len()));
             }
+            if !summary.failed_ids.is_empty() {
+                segments.push(format!("{} failed", summary.failed_ids.len()));
+            }
             if !summary.active_ids.is_empty() {
                 segments.push(format!("{} running", summary.active_ids.len()));
             }
@@ -193,6 +196,17 @@ mod tests {
             .collect();
         let notice = snapshot(items, Some(summary)).status_notice();
         assert_eq!(notice, "Swarm plan synced (v5, 4 items) · graph: 4 done");
+    }
+
+    #[test]
+    fn swarm_plan_status_notice_reports_failures() {
+        let mut summary = summary_fixture();
+        summary.failed_ids = vec!["task-failed".to_string()];
+        assert!(
+            snapshot(fixture_items(), Some(summary))
+                .status_notice()
+                .contains("1 failed")
+        );
     }
 
     #[test]

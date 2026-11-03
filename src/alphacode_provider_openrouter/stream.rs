@@ -521,7 +521,19 @@ impl Stream for OpenRouterStream {
                             return Poll::Ready(Some(Ok(event)));
                         }
                     }
-                    // Stream ended - emit any pending tool call
+                    // EOF is not a completion signal. A disconnected provider
+                    // must not turn partial text or tool arguments into success.
+                    // Some compatible servers omit [DONE] but send a finish reason.
+                    if !self.message_end_emitted
+                        && (self.finish_reason.is_none() || self.partial_json.is_some())
+                    {
+                        self.message_end_emitted = true;
+                        self.tool_call_accumulators.clear();
+                        return Poll::Ready(Some(Err(anyhow::anyhow!(
+                            "Unexpected EOF: model stream ended before a completion marker"
+                        ))));
+                    }
+                    // Stream ended - emit any completed tool call
                     self.flush_tool_call_accumulators();
                     if let Some(event) = self.pending.pop_front() {
                         return Poll::Ready(Some(Ok(event)));
@@ -546,6 +558,45 @@ impl Stream for OpenRouterStream {
 mod tests {
     use super::*;
     use futures::StreamExt;
+
+    #[tokio::test]
+    async fn disconnected_stream_does_not_complete_or_execute_partial_tools() {
+        let body = concat!(
+            "data: {\"choices\":[{\"delta\":{\"content\":\"partial\"}}]}\n\n",
+            "data: {\"choices\":[{\"delta\":{\"tool_calls\":[{\"index\":0,\"id\":\"call_1\",\"function\":{\"name\":\"bash\",\"arguments\":\"{\"}}]}}]}\n\n"
+        );
+        let mut stream = OpenRouterStream::new(
+            futures::stream::iter([Ok(Bytes::from_static(body.as_bytes()))]),
+            "test-model".into(),
+            Arc::new(Mutex::new(None)),
+        );
+        assert!(matches!(
+            stream.next().await,
+            Some(Ok(StreamEvent::TextDelta(_)))
+        ));
+        let error = stream.next().await.unwrap().unwrap_err();
+        assert!(error.to_string().contains("Unexpected EOF"));
+        assert!(stream.next().await.is_none());
+    }
+
+    #[tokio::test]
+    async fn finish_reason_without_done_is_a_valid_completion() {
+        let body =
+            "data: {\"choices\":[{\"delta\":{\"content\":\"ok\"},\"finish_reason\":\"stop\"}]}";
+        let mut stream = OpenRouterStream::new(
+            futures::stream::iter([Ok(Bytes::from_static(body.as_bytes()))]),
+            "test-model".into(),
+            Arc::new(Mutex::new(None)),
+        );
+        assert!(matches!(
+            stream.next().await,
+            Some(Ok(StreamEvent::TextDelta(_)))
+        ));
+        assert!(
+            matches!(stream.next().await, Some(Ok(StreamEvent::MessageEnd { stop_reason })) if stop_reason.as_deref() == Some("stop"))
+        );
+        assert!(stream.next().await.is_none());
+    }
 
     fn drain_text(stream: &mut OpenRouterStream) -> String {
         let mut text = String::new();

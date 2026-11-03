@@ -306,27 +306,10 @@ fn wrap_tail(body: &[String], width: usize, height: usize) -> Vec<String> {
 }
 
 fn truncate_w(s: &str, max_width: usize) -> String {
-    if max_width == 0 {
-        return String::new();
-    }
-    let full = UnicodeWidthStr::width(s);
-    if full <= max_width {
-        return s.to_string();
-    }
-    let ellipsis = "…";
-    let target = max_width.saturating_sub(1);
-    let mut out = String::new();
-    let mut w = 0usize;
-    for ch in s.chars() {
-        let cw = unicode_width::UnicodeWidthChar::width(ch).unwrap_or(0);
-        if w + cw > target {
-            break;
-        }
-        out.push(ch);
-        w += cw;
-    }
-    out.push_str(ellipsis);
-    out
+    super::line_plain_text(&super::truncate_line_with_ellipsis_to_width(
+        &Line::from(s.to_owned()),
+        max_width,
+    ))
 }
 
 /// Render a single tile filling exactly `width` x `height` (including borders).
@@ -613,6 +596,14 @@ mod tests {
                 "max={max} out={out}"
             );
         }
+    }
+
+    #[test]
+    fn tile_labels_keep_emoji_and_combining_sequences_intact() {
+        assert_eq!(truncate_w("A👩‍💻XYZ", 4), "A👩‍💻…");
+        assert_eq!(truncate_w("e\u{301}XYZ", 2), "e\u{301}…");
+        assert_eq!(truncate_w("🇪🇬XYZ", 3), "🇪🇬…");
+        assert_eq!(truncate_w("مرحبا", 4), "مرح…");
     }
 
     fn plain(line: &Line<'static>) -> String {

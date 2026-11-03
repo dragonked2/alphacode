@@ -75,11 +75,7 @@ pub fn render_styled_box(
     );
     let title_text = line_plain_text(&truncated_title);
     let title_len = truncated_title.width();
-    let box_content_width = max_content_width.max(title_len.saturating_sub(2));
-
-    if box_content_width < 6 {
-        return Vec::new();
-    }
+    let box_content_width = max_content_width.max(title_len.saturating_sub(2)).max(2);
 
     let box_width = box_content_width + 4;
     let border_chars = box_width.saturating_sub(title_len + 2);
@@ -98,7 +94,7 @@ pub fn render_styled_box(
     ]));
 
     for line in content {
-        let truncated = truncate_line_to_width(&line, box_content_width);
+        let truncated = truncate_line_with_ellipsis_to_width(&line, box_content_width);
         let padding = box_content_width.saturating_sub(truncated.width());
         let mut spans: Vec<Span<'static>> = Vec::new();
         let border_with_bg = if let Some(bg) = content_bg {
@@ -107,7 +103,15 @@ pub fn render_styled_box(
             border_style
         };
         spans.push(Span::styled(format!("{} ", v), border_with_bg));
-        spans.extend(truncated.spans);
+        let content_style = if let Some(bg) = content_bg {
+            truncated.style.bg(bg)
+        } else {
+            truncated.style
+        };
+        spans.extend(truncated.spans.into_iter().map(|mut span| {
+            span.style = content_style.patch(span.style);
+            span
+        }));
         if padding > 0 {
             spans.push(Span::styled(" ".repeat(padding), border_with_bg));
         }
@@ -184,6 +188,7 @@ pub fn render_thick_box(
 pub fn truncate_line_to_width(line: &Line<'static>, width: usize) -> Line<'static> {
     let (spans, _) = truncate_spans_to_width(&line.spans, width);
     let mut truncated = Line::from(spans);
+    truncated.style = line.style;
     truncated.alignment = line.alignment;
     truncated
 }
@@ -191,6 +196,7 @@ pub fn truncate_line_to_width(line: &Line<'static>, width: usize) -> Line<'stati
 pub fn truncate_line_with_ellipsis_to_width(line: &Line<'static>, width: usize) -> Line<'static> {
     if width == 0 {
         let mut empty = Line::from("");
+        empty.style = line.style;
         empty.alignment = line.alignment;
         return empty;
     }
@@ -199,6 +205,7 @@ pub fn truncate_line_with_ellipsis_to_width(line: &Line<'static>, width: usize) 
     }
     if width == 1 {
         let mut ellipsis = Line::from(Span::raw("…"));
+        ellipsis.style = line.style;
         ellipsis.alignment = line.alignment;
         return ellipsis;
     }
@@ -206,6 +213,7 @@ pub fn truncate_line_with_ellipsis_to_width(line: &Line<'static>, width: usize) 
     let (mut spans, ellipsis_style) = truncate_spans_to_width(&line.spans, width.saturating_sub(1));
     spans.push(Span::styled("…", ellipsis_style.unwrap_or_default()));
     let mut truncated = Line::from(spans);
+    truncated.style = line.style;
     truncated.alignment = line.alignment;
     truncated
 }
@@ -264,6 +272,7 @@ pub fn truncate_line_preserving_suffix_to_width(
 ) -> Line<'static> {
     if width == 0 {
         let mut empty = Line::from("");
+        empty.style = prefix.style;
         empty.alignment = prefix.alignment;
         return empty;
     }
@@ -272,8 +281,18 @@ pub fn truncate_line_preserving_suffix_to_width(
         return truncate_line_with_ellipsis_to_width(prefix, width);
     }
 
-    let mut combined_spans = prefix.spans.clone();
-    combined_spans.extend(suffix.spans.clone());
+    let styled_spans = |line: &Line<'static>| {
+        line.spans
+            .iter()
+            .cloned()
+            .map(|mut span| {
+                span.style = line.style.patch(span.style);
+                span
+            })
+            .collect::<Vec<_>>()
+    };
+    let mut combined_spans = styled_spans(prefix);
+    combined_spans.extend(styled_spans(suffix));
     let mut combined = Line::from(combined_spans);
     combined.alignment = prefix.alignment;
     if combined.width() <= width {
@@ -289,7 +308,11 @@ pub fn truncate_line_preserving_suffix_to_width(
 
     let prefix_budget = width.saturating_sub(suffix_width);
     let mut prefix_part = truncate_line_with_ellipsis_to_width(prefix, prefix_budget);
-    prefix_part.spans.extend(suffix.spans.clone());
+    // Resolve each line's base style before joining: the suffix must not
+    // inherit the prefix's color or emphasis (e.g. a status badge).
+    prefix_part.spans = styled_spans(&prefix_part);
+    prefix_part.style = Style::default();
+    prefix_part.spans.extend(styled_spans(suffix));
     prefix_part.alignment = prefix.alignment;
     prefix_part
 }
@@ -305,6 +328,60 @@ pub fn line_plain_text(line: &Line<'_>) -> String {
 mod truncation_tests {
     use super::*;
     use ratatui::prelude::Alignment;
+
+    #[test]
+    fn compact_boxes_remain_visible_and_fit_the_available_width() {
+        for width in 6..40 {
+            for title in ["", "Info", "中文 status", "A very long notification title"] {
+                let lines =
+                    render_rounded_box(title, vec![Line::from("OK")], width, Style::default());
+                assert_eq!(lines.len(), 3, "width={width}, title={title}");
+                assert!(lines.iter().all(|line| line.width() <= width));
+                assert!(lines.iter().all(|line| line.width() == lines[0].width()));
+            }
+        }
+    }
+
+    #[test]
+    fn clipping_preserves_line_level_style_at_every_width() {
+        let style = Style::default().fg(Color::Cyan).bg(Color::Black);
+        let line = Line::from("Hello 中文 👩‍💻").style(style);
+        for width in 0..30 {
+            assert_eq!(truncate_line_to_width(&line, width).style, style);
+            assert_eq!(
+                truncate_line_with_ellipsis_to_width(&line, width).style,
+                style
+            );
+        }
+    }
+
+    #[test]
+    fn suffix_keeps_its_own_style_when_joined_to_a_clipped_prefix() {
+        let prefix = Line::from("A lengthy model name").style(Style::default().fg(Color::Cyan));
+        let suffix = Line::from(" ready").style(Style::default().fg(Color::Green));
+        for width in [12, 80] {
+            let combined = truncate_line_preserving_suffix_to_width(&prefix, &suffix, width);
+            assert!(combined.width() <= width);
+            assert!(line_plain_text(&combined).ends_with(" ready"));
+            assert_eq!(combined.spans.last().unwrap().style.fg, Some(Color::Green));
+            assert_eq!(combined.spans.first().unwrap().style.fg, Some(Color::Cyan));
+        }
+    }
+
+    #[test]
+    fn boxed_content_preserves_emphasis_and_signals_overflow() {
+        let lines = render_rounded_box(
+            "Status",
+            vec![
+                Line::from("long output that needs more space")
+                    .style(Style::default().fg(Color::Green)),
+            ],
+            16,
+            Style::default().fg(Color::Gray),
+        );
+        assert!(line_plain_text(&lines[1]).contains('…'));
+        assert_eq!(lines[1].spans[1].style.fg, Some(Color::Green));
+    }
 
     #[test]
     fn truncation_keeps_zwj_emoji_graphemes_intact() {

@@ -576,6 +576,8 @@ To pass installer parameters, load the script as a script block instead of pipin
 | `-PathDryRun` | Preview the PATH change without writing it |
 | `-NoPath` | Do not modify PATH |
 | `-Prefix <dir>` | Choose a custom installation prefix |
+| `-NoShortcuts` | Do not create Start-menu or Desktop shortcuts |
+| `-NoDesktopShortcut` | Create the Start-menu entry but not the Desktop one |
 
 <details>
 <summary><strong>Windows examples with parameters</strong></summary>
@@ -597,6 +599,9 @@ $installer = [scriptblock]::Create((irm https://raw.githubusercontent.com/dragon
 
 # Choose a custom installation prefix
 & $installer -Prefix "$env:LOCALAPPDATA\Programs\alphacode"
+
+# Skip the desktop/Start-menu shortcuts (headless or scripted installs)
+& $installer -NoShortcuts
 ```
 
 Run one parameter at a time, or combine them in a single call such as `& $installer -Version vX.Y.Z -NoPath`. Replace `vX.Y.Z` with a real tag from the [releases page](https://github.com/dragonked2/alphacode/releases).
@@ -737,6 +742,7 @@ See [`docs/configuration.md`](docs/configuration.md) for the full reference.
 | `/login` | Sign in to a provider from inside AlphaCode |
 | `/agents` | Manage agents |
 | `/swarm "<goal>"` | Split a large goal across multiple agents |
+| `/copy` | Copy the full current session, including retained compacted history and tool exchanges, to clipboard |
 | `/compact` | Compact context |
 | `/memory` | Manage or inspect project memory |
 | `/skills` | Browse skills |

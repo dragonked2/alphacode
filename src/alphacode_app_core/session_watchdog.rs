@@ -34,8 +34,11 @@ const MEMORY_WINDOW_SECS: u64 = 1800; // 30 minutes
 /// Connection keepalive timeout.
 const KEEPALIVE_TIMEOUT_SECS: u64 = 600; // 10 minutes
 
-/// Subsystem liveness timeout.
-const SUBSYSTEM_TIMEOUT_SECS: u64 = 120; // 2 minutes
+// There is deliberately no per-subsystem liveness timeout here. One quiet
+// subsystem is normal (a `serve` process has no TUI render, an attached client
+// drives `agent_loop`), and a value that marks the session `Degraded` for it
+// only produced log noise. `STALL_TIMEOUT_SECS` covers the real failure: every
+// subsystem silent at once.
 
 /// Recovery action types.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -190,19 +193,23 @@ fn check_subsystem_liveness(_now: Instant) -> Option<RecoveryAction> {
 
     let snap = health::snapshot();
 
-    // Check if any critical subsystem has been idle too long.
-    let critical_subsystems = ["agent_loop", "tui_render", "main"];
-    for idle in &snap.subsystems_idle_secs {
-        if critical_subsystems.contains(&idle.name.as_str())
-            && idle.idle_secs > SUBSYSTEM_TIMEOUT_SECS
-        {
-            crate::logging::warn(&format!(
-                "session_watchdog: subsystem '{}' idle for {}s (threshold: {}s)",
-                idle.name, idle.idle_secs, SUBSYSTEM_TIMEOUT_SECS
-            ));
-            return Some(RecoveryAction::Degraded);
-        }
-    }
+    // Idle is not stalled.
+    //
+    // This used to mark the whole session `Degraded` as soon as any one
+    // registered subsystem was quiet for two minutes. But a session whose UI has
+    // no attached client, or whose TUI is not the active surface, simply never
+    // touches those summarisers — a long-running `serve` process is idle by
+    // design. Observed consequence: a session logged
+    //
+    //   session_watchdog: subsystem 'main' idle for 14220s (threshold: 120s)
+    //   session_watchdog: recovery performed: Degraded
+    //
+    // roughly every minute for the life of the process, burying real warnings
+    // and sending a bug reporter looking for a crash that never happened.
+    //
+    // A genuine stall is *everybody* idle at once, which the process-wide check
+    // below already detects. Reporting one quiet subsystem only produces a
+    // verdict, never a recovery, so it is noise by construction.
 
     // Check for process-wide stall: all subsystems idle > STALL_TIMEOUT.
     if !snap.subsystems_idle_secs.is_empty() {

@@ -17,6 +17,9 @@ use crate::server::Client;
 #[path = "../alphacode_app_core/server/debug_sessions_index.rs"]
 mod session_index;
 
+#[path = "gui/provider_connections.rs"]
+mod provider_connections;
+
 const OWN_CHAT: &str = "__companion__";
 const MAX_PROMPT_BYTES: usize = 64 * 1024;
 const MAX_REPLY_BYTES: usize = 24 * 1024;
@@ -63,6 +66,14 @@ struct CommandInput {
 struct BridgeRequest {
     action: String,
     #[serde(default)]
+    provider: Option<String>,
+    #[serde(default)]
+    auth_method: Option<String>,
+    #[serde(default)]
+    api_key: Option<String>,
+    #[serde(default)]
+    api_base: Option<String>,
+    #[serde(default)]
     request_id: Option<String>,
     #[serde(default)]
     session_id: Option<String>,
@@ -84,6 +95,8 @@ struct BridgeRequest {
     /// Maximum rows for `sessions` (0 = server default).
     #[serde(default)]
     limit: Option<u32>,
+    #[serde(default)]
+    include_workflow: bool,
 }
 
 struct DesktopInput {
@@ -93,6 +106,7 @@ struct DesktopInput {
 
 #[derive(Default)]
 struct Bridge {
+    connections: provider_connections::ProviderConnections,
     owned: Arc<Mutex<OwnedChat>>,
     prompt_tx: Option<mpsc::Sender<DesktopInput>>,
     cancel_tx: Option<mpsc::Sender<()>>,
@@ -104,6 +118,7 @@ struct Bridge {
     provider: String,
     effort: String,
     runtime_for: Option<String>,
+    workflow_requested: bool,
 }
 
 fn display_text(text: &str, limit: usize) -> String {
@@ -698,6 +713,21 @@ impl Bridge {
             }))
             .await;
         let selected_reply = self.selected_reply(selected).await;
+        let workflow = if self.workflow_requested {
+            match tokio::time::timeout(
+                Duration::from_millis(1200),
+                self.desktop_output("workflow", selected, None),
+            )
+            .await
+            {
+                Ok(Ok(workflow)) => workflow,
+                _ => {
+                    json!({"available": false, "detail": "Work data is unavailable for this chat. It may be saved, disconnected, or still starting."})
+                }
+            }
+        } else {
+            Value::Null
+        };
         let previous = std::mem::take(&mut self.sessions);
         let mut connected = 0;
         let unavailable = results
@@ -781,7 +811,8 @@ impl Bridge {
             "owned_session_id": owned.session_id.as_deref(), "input_request": owned.input_request,
             "selected_session_id": selected, "selected_reply": selected_reply, "activity": self.activity,
             "model": self.model, "provider": self.provider, "effort": self.effort, "models": self.models,
-            "dictation_available": dictation_available })
+            "dictation_available": dictation_available, "workflow": workflow,
+            "provider_connection": self.connections.status() })
     }
 
     async fn submit_input(&mut self, request_id: &str, input: &str) -> Result<()> {
@@ -1077,7 +1108,34 @@ pub(crate) async fn run(once: bool, preview: bool, bridge: bool) -> Result<()> {
         let mut stdout = tokio::io::stdout();
         while let Some(line) = lines.next_line().await? {
             let response = match serde_json::from_str::<BridgeRequest>(&line) {
+                Ok(request) if request.action == "providers" => state.connections.providers(),
+                Ok(request) if request.action == "provider_connect" => {
+                    match state.connections.start(
+                        request.provider.as_deref().unwrap_or_default(),
+                        request.auth_method.as_deref().unwrap_or_default(),
+                        request.api_key.unwrap_or_default(),
+                        request.api_base.as_deref(),
+                    ) {
+                        Ok(()) => json!({"ok": true, "connection": state.connections.status()}),
+                        Err(error) => json!({"ok": false, "error": format!("{error:#}")}),
+                    }
+                }
+                Ok(request) if request.action == "provider_input" => {
+                    match state
+                        .connections
+                        .send_input(request.prompt.as_deref().unwrap_or_default())
+                        .await
+                    {
+                        Ok(()) => json!({"ok": true, "connection": state.connections.status()}),
+                        Err(error) => json!({"ok": false, "error": format!("{error:#}")}),
+                    }
+                }
+                Ok(request) if request.action == "provider_cancel" => {
+                    state.connections.cancel().await;
+                    json!({"ok": true, "connection": state.connections.status()})
+                }
                 Ok(request) if request.action == "status" => {
+                    state.workflow_requested = request.include_workflow;
                     state.snapshot(request.session_id.as_deref()).await
                 }
                 Ok(request) if request.action == "reconnect" => {
@@ -1217,25 +1275,7 @@ pub(crate) async fn run(once: bool, preview: bool, bridge: bool) -> Result<()> {
 #[cfg(windows)]
 fn launch(preview: bool) -> Result<()> {
     use std::os::windows::process::CommandExt;
-    let directory = crate::storage::alphacode_dir()?.join("gui");
-    std::fs::create_dir_all(&directory)?;
-    let host = directory.join("AlphaCode.Desktop.exe");
-    let bytes: &[u8] = include_bytes!(env!("ALPHACODE_DESKTOP_HOST_BYTES"));
-    if bytes.is_empty() {
-        bail!(
-            "The Windows GUI host is unavailable. Install the Windows Desktop Build Tools and rebuild AlphaCode."
-        );
-    }
-    if !std::fs::read(&host).is_ok_and(|installed| installed == bytes) {
-        let temporary = directory.join(format!("AlphaCode.Desktop.{}.tmp", std::process::id()));
-        std::fs::write(&temporary, bytes)?;
-        let installed = std::fs::rename(&temporary, &host)
-            .or_else(|_| std::fs::copy(&temporary, &host).map(|_| ()));
-        let _ = std::fs::remove_file(&temporary);
-        installed.context(
-            "Could not update the desktop host; close any open AlphaCode GUI and try again",
-        )?;
-    }
+    let host = resolve_desktop_host()?;
     let mut command = std::process::Command::new(&host);
     command
         .arg("-Executable")
@@ -1251,6 +1291,93 @@ fn launch(preview: bool) -> Result<()> {
         .spawn()
         .context("Could not open the AlphaCode GUI")?;
     Ok(())
+}
+
+/// File name of the Windows GUI host, shipped beside `alphacode.exe`.
+///
+/// Single source of truth for the sibling lookup. `build.rs` compiles
+/// `OUT_DIR/AlphaCode.Desktop.exe` and stages it into the cargo profile
+/// directory, `scripts/install.ps1` copies it into the bin directory, and the
+/// release archive uses `zip -j` so both land at the root together. Changing the
+/// name in any one of those places without the others makes `alphacode gui` fail
+/// to find its host; [`tests::desktop_host_filename_matches_release_packaging`]
+/// pins this value so the drift is caught here.
+#[cfg(windows)]
+const DESKTOP_HOST_FILENAME: &str = "AlphaCode.Desktop.exe";
+
+/// Locate the Windows GUI host (`AlphaCode.Desktop.exe`).
+///
+/// The host ships *alongside* `alphacode.exe`, not embedded inside it. A nested
+/// PE that is written to disk and launched at runtime is the exact shape generic
+/// packer/dropper heuristics score — BitDefender (`Gen:Variant.Barys`, resold as
+/// ALYac/Arcibit/eScan/Emsisoft/GData/VIPRE) flagged the embedded layout — so
+/// the default build carries no second executable in its data section.
+///
+/// Resolution order:
+/// 1. `ALPHACODE_DESKTOP_HOST` — explicit override for packaging/tests.
+/// 2. Beside the running executable — the release archive and `cargo build`
+///    layouts, and the directory the installer writes.
+/// 3. `~/.alphacode/gui/` — where older builds unpacked the embedded copy, so
+///    an install upgraded in place keeps finding its host.
+///
+/// Only the legacy `embedded-gui-host` feature still writes an extracted copy,
+/// into the directory from (3).
+#[cfg(windows)]
+fn resolve_desktop_host() -> Result<std::path::PathBuf> {
+    if let Some(explicit) = std::env::var_os("ALPHACODE_DESKTOP_HOST") {
+        let path = std::path::PathBuf::from(explicit);
+        if path.is_file() {
+            return Ok(path);
+        }
+        bail!(
+            "ALPHACODE_DESKTOP_HOST points at {}, which is not a file",
+            path.display()
+        );
+    }
+
+    if let Ok(exe) = std::env::current_exe()
+        && let Some(directory) = exe.parent()
+    {
+        let sibling = directory.join(DESKTOP_HOST_FILENAME);
+        if sibling.is_file() {
+            return Ok(sibling);
+        }
+    }
+
+    let legacy = crate::storage::alphacode_dir()?.join("gui");
+    let legacy_host = legacy.join(DESKTOP_HOST_FILENAME);
+    if legacy_host.is_file() {
+        return Ok(legacy_host);
+    }
+
+    // Only builds compiled with the opt-in feature can materialise a host.
+    // Everything else must ship the sibling file, and saying so plainly beats
+    // writing a PE to disk to produce the same error one step later.
+    #[cfg(feature = "embedded-gui-host")]
+    {
+        let bytes: &[u8] = include_bytes!(env!("ALPHACODE_DESKTOP_HOST_BYTES"));
+        if !bytes.is_empty() {
+            std::fs::create_dir_all(&legacy)?;
+            let temporary = legacy.join(format!("AlphaCode.Desktop.{}.tmp", std::process::id()));
+            std::fs::write(&temporary, bytes)?;
+            let installed = std::fs::rename(&temporary, &legacy_host)
+                .or_else(|_| std::fs::copy(&temporary, &legacy_host).map(|_| ()));
+            let _ = std::fs::remove_file(&temporary);
+            installed.context(
+                "Could not update the desktop host; close any open AlphaCode GUI and try again",
+            )?;
+            return Ok(legacy_host);
+        }
+    }
+
+    bail!(
+        "The Windows GUI host (AlphaCode.Desktop.exe) was not found next to {}. \
+         Reinstall AlphaCode, or run `alphacode gui --once` for status without the GUI. \
+         Builds from source need a native Windows build so the host is compiled.",
+        std::env::current_exe()
+            .map(|path| path.display().to_string())
+            .unwrap_or_else(|_| "alphacode.exe".to_string())
+    )
 }
 
 #[cfg(not(windows))]
@@ -1286,6 +1413,43 @@ fn hidden_pool_models_to_display_names(models: Vec<String>) -> Vec<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The resolver looks for `DESKTOP_HOST_FILENAME` beside `alphacode.exe`.
+    /// That name also appears in `build.rs` (what gets compiled and staged) and
+    /// in `scripts/install.ps1` (what gets copied). If the three drift apart,
+    /// `alphacode gui` reports "host not found" for every packaged user while
+    /// the build stays green — so this test reads the other two files and fails
+    /// on divergence instead of restating the constant.
+    #[cfg(windows)]
+    #[test]
+    fn desktop_host_filename_matches_build_and_installer() {
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+        let build_rs = std::fs::read_to_string(root.join("build.rs"))
+            .expect("build.rs is part of the source tree");
+        assert!(
+            build_rs.contains(DESKTOP_HOST_FILENAME),
+            "build.rs no longer produces {DESKTOP_HOST_FILENAME}; the GUI host \
+             would not be staged beside the binary"
+        );
+
+        let installer = std::fs::read_to_string(root.join("scripts").join("install.ps1"))
+            .expect("scripts/install.ps1 is part of the source tree");
+        assert!(
+            installer.contains(DESKTOP_HOST_FILENAME),
+            "scripts/install.ps1 no longer installs {DESKTOP_HOST_FILENAME}; \
+             an installed CLI would not find its GUI host"
+        );
+
+        // The release archive must include it too, or the packaged user hits the
+        // same missing-host path.
+        let workflow =
+            std::fs::read_to_string(root.join(".github").join("workflows").join("release.yml"))
+                .expect("release.yml is part of the source tree");
+        assert!(
+            workflow.contains(DESKTOP_HOST_FILENAME),
+            "release.yml does not package {DESKTOP_HOST_FILENAME}"
+        );
+    }
 
     /// Acceptance criterion from the GUI audit: no internal gateway name may
     /// reach the desktop surfaces.

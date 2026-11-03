@@ -29,7 +29,10 @@ pub(super) const BUNDLED_SKILLS: &[BundledSkill] = &[
     BundledSkill {
         name: "ctf-workflow",
         body: include_str!("bundled_skills/ctf-workflow/SKILL.md"),
-        references: &[],
+        references: &[(
+            "solver-engineering",
+            include_str!("bundled_skills/ctf-workflow/solver-engineering/SKILL.md"),
+        )],
     },
     BundledSkill {
         name: "playbook",
@@ -43,6 +46,22 @@ pub(super) const BUNDLED_SKILLS: &[BundledSkill] = &[
         name: "bugbounty",
         body: include_str!("bundled_skills/bugbounty/SKILL.md"),
         references: &[
+            (
+                "experiment-design",
+                include_str!("bundled_skills/bugbounty/experiment-design/SKILL.md"),
+            ),
+            (
+                "investigation-control",
+                include_str!("bundled_skills/bugbounty/investigation-control/SKILL.md"),
+            ),
+            (
+                "current-research",
+                include_str!("bundled_skills/bugbounty/current-research/SKILL.md"),
+            ),
+            (
+                "real-world-validation",
+                include_str!("bundled_skills/bugbounty/real-world-validation/SKILL.md"),
+            ),
             (
                 "orchestrate",
                 include_str!("bundled_skills/bugbounty/orchestrate/SKILL.md"),
@@ -432,6 +451,10 @@ pub(super) const BUNDLED_SKILLS: &[BundledSkill] = &[
         name: "ctf",
         body: include_str!("bundled_skills/ctf/SKILL.md"),
         references: &[
+            (
+                "solver-engineering",
+                include_str!("bundled_skills/ctf-workflow/solver-engineering/SKILL.md"),
+            ),
             (
                 "advanced-reasoning",
                 include_str!("bundled_skills/ctf/ctf/advanced-reasoning/SKILL.md"),

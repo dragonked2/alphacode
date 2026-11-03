@@ -61,6 +61,10 @@ Dockerfile text eol=lf
 *.psm1 text eol=lf
 *.psd1 text eol=lf
 
+# Python scripts (release guards under scripts/) — always LF so the shebang and
+# `python scripts/....py` invocations behave the same on every runner.
+*.py text eol=lf
+
 # Treat common binary assets as binary — never normalize
 *.exe binary
 *.dll binary

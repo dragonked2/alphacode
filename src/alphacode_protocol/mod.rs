@@ -9,6 +9,10 @@
 
 use serde::{Deserialize, Serialize};
 
+/// Shared newline-delimited request limit, including the terminating newline.
+/// Clients reject oversized payloads before writing any bytes to the transport.
+pub const MAX_REQUEST_FRAME_BYTES: usize = 8 * 1024 * 1024;
+
 mod comm_format;
 mod notifications;
 
@@ -578,6 +582,7 @@ impl Request {
             Request::ClientDebugResponse { id, .. } => *id,
             Request::Subscribe { id, .. } => *id,
             Request::GetHistory { id } => *id,
+            Request::GetSessionTranscript { id, .. } => *id,
             Request::GetModelCatalog { id } => *id,
             Request::GetCompactedHistory { id, .. } => *id,
             Request::Reload { id, .. } => *id,

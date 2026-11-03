@@ -39,20 +39,20 @@ survives compaction (see runbook checkpointing).
 
 Before each tool call against a new host, path prefix, or subdomain:
 
-1. Extract the host being tested.
-2. Match it against IN-SCOPE / OUT-OF-SCOPE.
-3. OUT-OF-SCOPE match → skip it, note the skip in one line, move on.
-4. Ambiguous (new subdomain not on either list) → treat as OUT-OF-SCOPE
-   until the user confirms.Akt never "just quickly check" an ambiguous host.
+1. Parse the actual destination host, scheme, port and normalized path. Domain
+   text inside a path, query or userinfo is not the destination.
+2. Match the policy's precise asset semantics: exact hosts, explicit wildcards,
+   IP/CIDR ranges and URL restrictions. Exclusions take precedence. A bare host
+   listed by a program does not imply permission for every subdomain.
+3. Excluded or unmatched destination -> skip it and record why. Resolve ambiguity
+   from the official policy or the user while continuing independent work.
+4. Recheck redirects and discovered destinations before following or testing them;
+   never forward credentials to another origin merely because it was linked.
 
-Subdomain enumeration routinely returns excluded hosts (docs, status,
-community, help). Filter enumeration output against the scope file
-BEFORE resolving or probing:
-
-```bash
-# Example: drop excluded hosts right after enumeration
-grep -v -E '^(help|explorer|community)\.' subs.txt > subs-in-scope.txt
-```
+Filter discovery output through the actual allowlist AND exclusions before DNS
+resolution or probing. Removing a few excluded names with grep is insufficient:
+it leaves every unknown destination eligible. Preserve skipped discoveries as
+inventory entries with a scope decision, not as targets to try later by default.
 
 ---
 

@@ -478,3 +478,21 @@ fn alt_f_still_moves_the_caret_a_word_forward() {
         "Alt+F must not open the search overlay"
     );
 }
+
+/// Editing a message without adding wrapped rows must invalidate cached hits.
+#[test]
+fn search_refreshes_after_same_size_transcript_edit() {
+    let mut app = app_with_transcript(&["alpha needle"]);
+    let mut terminal = ratatui::Terminal::new(ratatui::backend::TestBackend::new(100, 30)).unwrap();
+    app.handle_key(KeyCode::Char('f'), KeyModifiers::CONTROL).unwrap();
+    for ch in "needle".chars() {
+        app.handle_key(KeyCode::Char(ch), KeyModifiers::NONE).unwrap();
+    }
+    render_frame(&app, &mut terminal);
+    assert_eq!(app.transcript_search_view().unwrap().match_count, 1);
+
+    app.display_messages[0] = DisplayMessage::assistant("alpha absent".to_string());
+    app.bump_display_messages_version();
+    render_frame(&app, &mut terminal);
+    assert_eq!(app.transcript_search_view().unwrap().match_count, 0);
+}

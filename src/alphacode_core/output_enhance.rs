@@ -32,29 +32,29 @@ use crate::output_style::{emoji_enabled, terminal_text};
 /// for a dark default terminal and a light default terminal — the
 /// `pick_for_terminal_bg()` helper picks the right one.
 pub mod palette {
-    /// Royal gold for headings and prompts.
-    pub const ACCENT: (u8, u8, u8) = (232, 190, 96);
+    /// Mint accent shared with the desktop and interactive terminal.
+    pub const ACCENT: (u8, u8, u8) = (122, 226, 194);
     /// Alphacode success green.
-    pub const SUCCESS: (u8, u8, u8) = (90, 200, 130);
+    pub const SUCCESS: (u8, u8, u8) = (140, 224, 189);
     /// Alphacode warn amber.
-    pub const WARN: (u8, u8, u8) = (240, 180, 80);
+    pub const WARN: (u8, u8, u8) = (243, 199, 119);
     /// Alphacode error red.
-    pub const ERROR: (u8, u8, u8) = (240, 100, 100);
-    /// Warm gold for informational highlights.
-    pub const INFO: (u8, u8, u8) = (229, 193, 115);
+    pub const ERROR: (u8, u8, u8) = (244, 164, 173);
+    /// Blue for informational highlights.
+    pub const INFO: (u8, u8, u8) = (147, 197, 253);
     /// Alphacode neutral gray (used for hints, secondary text).
-    pub const MUTED: (u8, u8, u8) = (140, 150, 165);
-    /// Bright gold for selected items and active markers.
-    pub const HIGHLIGHT: (u8, u8, u8) = (245, 207, 111);
+    pub const MUTED: (u8, u8, u8) = (175, 191, 208);
+    /// Mint for selected items and active markers.
+    pub const HIGHLIGHT: (u8, u8, u8) = (122, 226, 194);
 
     /// Light-bg variants (slightly darker for contrast on white).
-    pub const ACCENT_LIGHT: (u8, u8, u8) = (126, 83, 14);
-    pub const SUCCESS_LIGHT: (u8, u8, u8) = (30, 140, 60);
-    pub const WARN_LIGHT: (u8, u8, u8) = (180, 120, 0);
-    pub const ERROR_LIGHT: (u8, u8, u8) = (200, 50, 50);
-    pub const INFO_LIGHT: (u8, u8, u8) = (123, 83, 19);
-    pub const MUTED_LIGHT: (u8, u8, u8) = (90, 100, 115);
-    pub const HIGHLIGHT_LIGHT: (u8, u8, u8) = (126, 83, 14);
+    pub const ACCENT_LIGHT: (u8, u8, u8) = (8, 111, 91);
+    pub const SUCCESS_LIGHT: (u8, u8, u8) = (23, 105, 79);
+    pub const WARN_LIGHT: (u8, u8, u8) = (133, 82, 20);
+    pub const ERROR_LIGHT: (u8, u8, u8) = (162, 47, 72);
+    pub const INFO_LIGHT: (u8, u8, u8) = (40, 94, 146);
+    pub const MUTED_LIGHT: (u8, u8, u8) = (67, 93, 115);
+    pub const HIGHLIGHT_LIGHT: (u8, u8, u8) = (8, 111, 91);
 }
 
 /// Detect whether the terminal background is light. We use
@@ -71,22 +71,58 @@ pub fn is_light_terminal() -> bool {
     use std::sync::OnceLock;
     static CACHE: OnceLock<bool> = OnceLock::new();
     *CACHE.get_or_init(|| {
-        // Linux/WSL convention: COLORFGBG is "fg;bg", bg is 0-15.
-        if let Ok(s) = std::env::var("COLORFGBG")
-            && let Some(bg) = s.split(';').next_back().and_then(|s| s.parse::<u16>().ok())
-        {
-            // Standard ANSI palette: 0..7 are dark, 8..15 are light.
-            return bg >= 8;
-        }
-        // An explicit user preference always wins over any heuristic.
-        if let Ok(v) = std::env::var("ALPHACODE_LIGHT_BG")
-            && let Some(bg) = parse_bool(&v)
-        {
-            return bg;
-        }
-        // Windows Terminal, conhost, and PowerShell all default to dark.
-        false
+        light_terminal_from_settings(
+            std::env::var("ALPHACODE_LIGHT_BG").ok().as_deref(),
+            std::env::var("COLORFGBG").ok().as_deref(),
+        )
     })
+}
+
+fn light_terminal_from_settings(preference: Option<&str>, colorfgbg: Option<&str>) -> bool {
+    if let Some(explicit) = preference.and_then(parse_bool) {
+        return explicit;
+    }
+    // ANSI 7 is light gray/white; ANSI 8 is bright black (dark gray).
+    // Do not interpret arbitrary extended palette indices as light colors.
+    colorfgbg
+        .and_then(|value| value.rsplit(';').next())
+        .and_then(|value| value.trim().parse::<u8>().ok())
+        .is_some_and(|background| background == 7 || (9..=15).contains(&background))
+}
+
+#[cfg(test)]
+mod terminal_background_tests {
+    use super::light_terminal_from_settings;
+
+    #[test]
+    fn wrapped_diagnostics_keep_indentation_on_every_row() {
+        let _guard = crate::alphacode_core::console::test_override_lock();
+        crate::alphacode_core::console::set_width_override(Some(20));
+        let wrapped = super::wrap_indented("one two three four five six seven", 4);
+        assert!(wrapped.lines().count() > 1);
+        for row in wrapped.lines() {
+            assert!(row.starts_with("    "));
+            assert!(super::display_width(row) <= 20);
+        }
+        let wrapped = super::wrap_indented("diagnostic", 100);
+        assert!(wrapped.lines().all(|row| super::display_width(row) <= 20));
+        crate::alphacode_core::console::set_width_override(None);
+    }
+
+    #[test]
+    fn explicit_background_preference_wins_over_detection() {
+        assert!(light_terminal_from_settings(Some("light"), Some("15;0")));
+        assert!(!light_terminal_from_settings(Some("dark"), Some("0;15")));
+    }
+
+    #[test]
+    fn background_detection_handles_white_and_bright_black() {
+        assert!(light_terminal_from_settings(None, Some("0;7")));
+        assert!(!light_terminal_from_settings(None, Some("15;8")));
+        assert!(!light_terminal_from_settings(None, Some("0;200")));
+        assert!(!light_terminal_from_settings(None, Some("invalid")));
+        assert!(light_terminal_from_settings(Some("invalid"), Some("0;15")));
+    }
 }
 
 fn parse_bool(value: &str) -> Option<bool> {
@@ -555,15 +591,22 @@ pub fn table_row(widths: &[usize], cells: &[&str], align_right: &[bool]) -> Stri
 /// any indentation the caller applied. Wrapping here keeps the block
 /// rectangular and the reading order intact.
 pub fn wrap_indented(text: &str, indent: usize) -> String {
-    let width = console::terminal_width().saturating_sub(indent).max(8);
+    let terminal_width = console::terminal_width();
+    let indent = indent.min(terminal_width.saturating_sub(2));
+    let width = terminal_width.saturating_sub(indent);
     let pad = " ".repeat(indent);
     let mut out = String::new();
     for (i, line) in terminal_text(text).lines().enumerate() {
         if i > 0 {
             out.push('\n');
         }
-        out.push_str(&pad);
-        out.push_str(&wrap_line(line, width));
+        for (row, wrapped) in wrap_line(line, width).split('\n').enumerate() {
+            if row > 0 {
+                out.push('\n');
+            }
+            out.push_str(&pad);
+            out.push_str(wrapped);
+        }
     }
     out
 }
@@ -628,19 +671,23 @@ fn split_keep_spaces(line: &str) -> Vec<String> {
 }
 
 fn break_to_width(text: &str, width: usize) -> Vec<String> {
+    use unicode_segmentation::UnicodeSegmentation;
     let mut chunks = Vec::new();
-    let mut offset = 0usize;
-    while display_width(&text[offset..]) > width {
-        let head = truncate_to_width(&text[offset..], width);
-        if head.is_empty() {
-            break;
+    let mut start = 0usize;
+    let mut used = 0usize;
+    // Scan once: repeatedly measuring the remaining suffix made long URLs
+    // and minified tool output quadratic in their length.
+    for (index, grapheme) in text.grapheme_indices(true) {
+        let cells = unicode_width::UnicodeWidthStr::width(grapheme);
+        if index > start && used + cells > width {
+            chunks.push(text[start..index].to_string());
+            start = index;
+            used = 0;
         }
-        chunks.push(head.clone());
-        offset += head.len();
+        used += cells;
     }
-    let tail = &text[offset..];
-    if !tail.is_empty() {
-        chunks.push(tail.to_string());
+    if start < text.len() {
+        chunks.push(text[start..].to_string());
     }
     chunks
 }

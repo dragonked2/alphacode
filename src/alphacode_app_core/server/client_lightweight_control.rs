@@ -144,6 +144,7 @@ pub(super) async fn handle_lightweight_control_request(
                 client_connections,
                 swarm_members,
                 swarms_by_id,
+                swarm_plans,
                 event_history,
                 event_counter,
                 swarm_event_tx,

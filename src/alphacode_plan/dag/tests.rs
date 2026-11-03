@@ -1475,3 +1475,13 @@ fn light_expansion_can_reach_the_node_cap_exactly() {
     .expect("light expansion adds no gate and fits the cap");
     assert_eq!(graph.len(), limit);
 }
+
+#[test]
+fn dispatch_rejects_missing_worker_without_starting_the_task() {
+    let mut graph = dag(Mode::Light, vec![spec("task", NodeKind::Explore)]);
+    assert!(!dispatch(&mut graph, "task", "  "));
+    assert_eq!(graph.get("task").unwrap().status, NodeStatus::Queued);
+    assert!(graph.get("task").unwrap().owner.is_none());
+    assert!(dispatch(&mut graph, "task", " worker "));
+    assert_eq!(graph.get("task").unwrap().owner.as_deref(), Some("worker"));
+}
