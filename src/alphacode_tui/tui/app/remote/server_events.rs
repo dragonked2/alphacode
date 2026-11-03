@@ -1570,6 +1570,19 @@ pub(in crate::alphacode_tui::tui::app) fn handle_server_event(
             app.update_terminal_title();
             false
         }
+        // Answer to the `/copy` request. This leg is what makes a remote
+        // `/copy` produce the full session instead of leaving the pending
+        // request to time out: `handle_remote_copy_command` records the request
+        // id, and `receive_session_transcript` matches it here, applies the
+        // live tail and starts the clipboard write.
+        ServerEvent::SessionTranscript {
+            id,
+            session_id,
+            text,
+        } => {
+            super::super::commands_copy::receive_session_transcript(app, id, session_id, text);
+            true
+        }
         ServerEvent::SessionCloseRequested { reason } => {
             app.push_display_message(DisplayMessage::system(format!(
                 "Session close requested by coordinator: {reason}"
