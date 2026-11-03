@@ -1,4 +1,4 @@
-﻿# Windows-only smoke test of the WPF shell and JSON-lines polling. The fake
+# Windows-only smoke test of the WPF shell and JSON-lines polling. The fake
 # bridge has no network access and the window uses an isolated settings folder.
 $ErrorActionPreference = 'Stop'
 $testRoot = Join-Path ([IO.Path]::GetTempPath()) ('alphacode-gui-smoke-' + [guid]::NewGuid().ToString('N'))
@@ -113,7 +113,7 @@ $testTimer.Add_Tick({
             if (-not $controls.ModelPicker.Items.Contains('test-b') -or $controls.ModelPicker.Items.Count -ne 2) { throw 'Model catalog did not recover after an empty snapshot' }
             Write-SmokePhase 'picker'
             Initialize-NativeWorkspacePicker
-            $pickerFolder = Join-Path $env:ALPHACODE_GUI_SMOKE_IMAGES 'picker-اختبار-工作'
+            $pickerFolder = Join-Path $env:ALPHACODE_GUI_SMOKE_IMAGES 'picker-' + [string][char]0x627 + [string][char]0x62e + [string][char]0x62a + [string][char]0x628 + [string][char]0x627 + [string][char]0x631 + '-' + [string][char]0x5de5 + [string][char]0x4f5c
             [IO.Directory]::CreateDirectory($pickerFolder) | Out-Null
             $pickerOptions = [AlphaCode.Desktop.WorkspacePicker]::Probe($pickerFolder)
             if (($pickerOptions -band 0x860) -ne 0x860 -or ($pickerOptions -band 0x200) -ne 0) { throw 'Native picker is not configured for one existing filesystem folder' }
@@ -139,7 +139,7 @@ $testTimer.Add_Tick({
             $window.UpdateLayout()
             if ($controls.ReplyScroll.VerticalOffset -lt ($controls.ReplyScroll.ScrollableHeight - 8)) { throw 'Jump to latest did not reach the end' }
             Write-SmokePhase 'rich renderer'
-            $sample = [string]::Join("`n", @('You','Can you review this change?','','AlphaCode','# Review summary','','The request uses **one JSON body** and preserves `model_id`.','','- [x] Validate request shape','- [ ] Benchmark the local model','','```rust','let model = "qwen-coder";','println!("{}", model);','```','','```plan','# Verification','1. Run the relevant checks','2. Inspect the model catalog','```','','  ⚙ tools: read, bash','','The remaining latency needs a live measurement.'))
+            $sample = [string]::Join("`n", @('You','Can you review this change?','','AlphaCode','# Review summary','','The request uses **one JSON body** and preserves `model_id`.','','- [x] Validate request shape','- [ ] Benchmark the local model','','```rust','let model = "qwen-coder";','println!("{}", model);','```','','```plan','# Verification','1. Run the relevant checks','2. Inspect the model catalog','```','','  ' + [string][char]0x2699 + ' tools: read, bash','','The remaining latency needs a live measurement.'))
             $controls.Reply.Text = $sample
             $controls.EmptyState.Visibility = 'Collapsed'; $controls.ReplyScroll.Visibility = 'Visible'; $controls.Copy.IsEnabled = $true; $controls.FindReply.IsEnabled = $true
             $window.UpdateLayout()
