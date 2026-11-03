@@ -663,18 +663,6 @@ pub(in crate::alphacode_tui::tui::app) fn handle_server_event(
     event: ServerEvent,
     remote: &mut impl RemoteEventState,
 ) -> bool {
-    // A clipboard control failure must not reset the live model turn's state
-    // or be mistaken for a failed prompt.
-    if let ServerEvent::Error { id, message, .. } = &event
-        && app
-            .pending_session_copy
-            .as_ref()
-            .is_some_and(|pending| pending.request_id == *id)
-    {
-        app.pending_session_copy = None;
-        app.set_status_notice(format!("Session copy failed: {message}"));
-        return true;
-    }
     let eager_stream_redraw = !crate::perf::tui_policy().enable_decorative_animations;
     if app.is_processing {
         app.last_stream_activity = Some(Instant::now());
@@ -2259,14 +2247,6 @@ pub(in crate::alphacode_tui::tui::app) fn handle_server_event(
             // History is the completion signal for a session attach/resume and
             // can replace the entire visible transcript. Request a frame now so
             // the new session does not appear stuck until another event arrives.
-            true
-        }
-        ServerEvent::SessionTranscript {
-            id,
-            session_id,
-            text,
-        } => {
-            app_mod::commands_copy::receive_session_transcript(app, id, session_id, text);
             true
         }
         ServerEvent::CompactedHistory {
