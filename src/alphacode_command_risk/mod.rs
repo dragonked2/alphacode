@@ -484,6 +484,16 @@ fn assess_segment(tokens: &[Token], ctx: &RiskContext, findings: &mut Vec<RiskFi
     // segment that begins with an assignment never got unwrapped and its
     // `program_name` became the assignment itself. `LANG=C rm -rf ~` therefore
     // classified as Safe.
+    // These reserved words introduce a separately tokenized command body;
+    // they are not the executable. Keep inspecting that body's real program.
+    let tokens = if tokens
+        .first()
+        .is_some_and(|token| matches!(token.text.as_str(), "do" | "then" | "else"))
+    {
+        &tokens[1..]
+    } else {
+        tokens
+    };
     let mut tokens = strip_leading_assignments(tokens);
 
     // Strip wrapper programs (`sudo`, `env`, `xargs`, ...) so the destructive
@@ -619,7 +629,53 @@ fn assess_segment(tokens: &[Token], ctx: &RiskContext, findings: &mut Vec<RiskFi
         && READ_ONLY_COMMANDS.contains(&program_name.as_str())
         && !is_shell_program(&program_name);
 
-    if !is_destructive && !is_shell_program(&program_name) && !program_is_inert {
+    // curl's URL, HTTP method and payload arguments are data, not nested
+    // shell programs. A URL ending in /format or a response pattern containing
+    // `sh` must not be classified as a local disk-format command. Inspect its
+    // actual file destinations separately, including redirects below.
+    let is_curl = matches!(program_name.as_str(), "curl" | "curl.exe");
+    if is_curl {
+        let mut args = tokens.iter().skip(1);
+        while let Some(arg) = args.next() {
+            let text = arg.text.as_str();
+            let destination = if matches!(
+                text,
+                "-o" | "--output"
+                    | "-D"
+                    | "--dump-header"
+                    | "--trace"
+                    | "--trace-ascii"
+                    | "--stderr"
+                    | "--cookie-jar"
+                    | "-c"
+            ) {
+                args.next().map(|value| value.text.as_str())
+            } else {
+                [
+                    "--output=",
+                    "--dump-header=",
+                    "--trace=",
+                    "--trace-ascii=",
+                    "--stderr=",
+                    "--cookie-jar=",
+                    "-o",
+                    "-D",
+                    "-c",
+                ]
+                .iter()
+                .find_map(|prefix| text.strip_prefix(prefix).filter(|v| !v.is_empty()))
+            };
+            if let Some(raw) = destination.filter(|value| *value != "-") {
+                if let Some(finding) =
+                    paths::classify_target(&paths::expand(raw, ctx), raw, false, ctx)
+                {
+                    findings.push(finding);
+                }
+            }
+        }
+    }
+
+    if !is_destructive && !is_shell_program(&program_name) && !program_is_inert && !is_curl {
         let hidden = tokens.iter().find_map(|t| {
             // A quoted argument can itself be a whole command string
             // (`su - root -c "rm -rf ~"`), so the scan has to look *inside*
@@ -705,7 +761,7 @@ fn assess_segment(tokens: &[Token], ctx: &RiskContext, findings: &mut Vec<RiskFi
     // *read* path in it was graded as a write target. The redirect target is
     // still graded (a redirect really does truncate), which is why this only
     // skips the non-redirect operands.
-    let read_only = is_read_only_name(&program_name) && !triggered;
+    let read_only = (is_read_only_name(&program_name) || is_curl) && !triggered;
 
     let mut targets: Vec<&Token> = if read_only {
         Vec::new()

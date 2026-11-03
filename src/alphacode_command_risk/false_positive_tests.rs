@@ -301,3 +301,22 @@ fn literal_loop_variable_named_source_is_not_a_shell_invocation() {
         RiskLevel::Catastrophic
     );
 }
+
+#[test]
+fn curl_method_and_endpoint_data_are_not_local_commands() {
+    for command in [
+        "curl -X OPTIONS https://example.test/format 2>/dev/null",
+        "for method in GET HEAD OPTIONS; do curl -X \"$method\" https://example.test/rm; done",
+        "curl -s https://example.test/sh -w '%{http_code}'",
+    ] {
+        assert_ne!(level_of(command), RiskLevel::Catastrophic, "{command}");
+    }
+    for command in [
+        "curl https://example.test -o ~/.ssh/id_rsa",
+        "curl --output=$HOME/.aws/credentials https://example.test",
+        "curl https://example.test > ~/.ssh/id_rsa",
+        "curl https://example.test; rm -rf ~",
+    ] {
+        assert_eq!(level_of(command), RiskLevel::Catastrophic, "{command}");
+    }
+}

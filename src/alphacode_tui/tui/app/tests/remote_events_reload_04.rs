@@ -2759,3 +2759,14 @@ fn effort_requests_survive_initial_history_but_not_a_session_switch() {
         assert!(app.remote_reasoning_effort.is_none());
     });
 }
+
+#[test]
+fn tool_policy_errors_do_not_offer_provider_fallback() {
+    let mut app = create_test_app();
+    app.is_remote = true;
+    app.remote_provider_name = Some("OpenAI".into());
+    app.remote_provider_model = Some("gpt-5.5".into());
+    app.remote_model_options = vec![openai_oauth_route("gpt-5.5"), claude_oauth_route("claude-sonnet-4")];
+    assert!(!app.offer_fallback_after_error("Tool 'write' is not allowed"));
+    assert!(app.pending_fallback_offer.is_none());
+}

@@ -1511,7 +1511,11 @@ impl Agent {
         tc.input = ToolCall::normalize_input_to_object(tc.input.clone());
         tc.refresh_intent_from_input();
 
-        if let Some(error_msg) = tc.validation_error() {
+        if let Some(error_msg) = tc.validation_error().or_else(|| {
+            self.validate_tool_allowed(&tc.name)
+                .err()
+                .map(|error| error.to_string())
+        }) {
             logging::warn(&error_msg);
             Bus::global().publish(BusEvent::ToolUpdated(ToolEvent {
                 session_id: self.session.id.clone(),
@@ -1536,8 +1540,6 @@ impl Agent {
             *tool_results_dirty = true;
             return Ok(false);
         }
-
-        self.validate_tool_allowed(&tc.name)?;
 
         let is_native_tool = ALPHACODE_NATIVE_TOOLS.contains(&tc.name.as_str());
 

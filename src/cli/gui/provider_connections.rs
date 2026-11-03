@@ -50,6 +50,41 @@ fn supports_browser(provider: LoginProviderDescriptor) -> bool {
     )
 }
 
+fn initial_answers(
+    provider: LoginProviderDescriptor,
+    method: &str,
+    key: &str,
+    base: Option<&str>,
+    setup: &str,
+) -> Result<String> {
+    if setup.len() > 1000
+        || setup.contains(['\r', '\n'])
+        || base.is_some_and(|v| v.contains(['\r', '\n']))
+    {
+        bail!("Enter single-line configuration values");
+    }
+    match provider.target {
+        LoginProviderTarget::Azure => {
+            let endpoint = base
+                .and_then(crate::alphacode_base::auth::azure::normalize_endpoint)
+                .context("Enter a valid Azure OpenAI endpoint")?;
+            if setup.trim().is_empty() {
+                bail!("Enter the Azure deployment/model name");
+            }
+            Ok(format!("{endpoint}\n{}\n2\n{key}\n", setup.trim()))
+        }
+        LoginProviderTarget::Bedrock => Ok(format!("{}\n{key}\n", setup.trim())),
+        LoginProviderTarget::OpenAiCompatible(profile)
+            if profile.id == crate::provider_catalog::OPENAI_COMPAT_PROFILE.id
+                && base.is_none_or(|v| v.trim().is_empty()) =>
+        {
+            bail!("Enter the API endpoint for this compatible provider")
+        }
+        _ if method == "oauth" => Ok(String::new()),
+        _ => Ok(format!("{key}\n")),
+    }
+}
+
 fn login_arguments(
     provider: LoginProviderDescriptor,
     method: &str,
@@ -82,7 +117,10 @@ fn login_arguments(
         name,
     ];
     if let Some(base) = base.filter(|base| !base.trim().is_empty()) {
-        if !matches!(provider.target, LoginProviderTarget::OpenAiCompatible(_)) {
+        if !matches!(
+            provider.target,
+            LoginProviderTarget::OpenAiCompatible(_) | LoginProviderTarget::Azure
+        ) {
             bail!("A custom endpoint is only supported by compatible providers");
         }
         let url = url::Url::parse(base.trim()).context("Enter a valid endpoint URL")?;
@@ -93,7 +131,9 @@ fn login_arguments(
         {
             bail!("Use an HTTP(S) endpoint without embedded credentials");
         }
-        args.extend(["--api-base".into(), url.to_string()]);
+        if !matches!(provider.target, LoginProviderTarget::Azure) {
+            args.extend(["--api-base".into(), url.to_string()]);
+        }
     }
     Ok(args)
 }
@@ -117,12 +157,20 @@ impl ProviderConnections {
                     "configured": assessment.is_configured(), "detail": assessment.health_summary(),
                     "oauth": supports_browser(provider), "api_key": supports_key(provider),
                     "local": provider.auth_kind == LoginProviderAuthKind::Local,
-                    "endpoint": matches!(provider.target, LoginProviderTarget::OpenAiCompatible(_))})
+                    "endpoint": matches!(provider.target, LoginProviderTarget::OpenAiCompatible(_) | LoginProviderTarget::Azure),
+                    "setup_label": match provider.target { LoginProviderTarget::Azure => "Deployment/model name (required)", LoginProviderTarget::Bedrock => "AWS region (default: us-east-2)", _ => "" }})
             }).collect();
         json!({"ok": true, "providers": providers, "connection": self.status()})
     }
 
-    pub fn start(&mut self, id: &str, method: &str, key: String, base: Option<&str>) -> Result<()> {
+    pub fn start(
+        &mut self,
+        id: &str,
+        method: &str,
+        key: String,
+        base: Option<&str>,
+        setup: &str,
+    ) -> Result<()> {
         if self.status().phase == "connecting" {
             bail!("Finish or cancel the current sign-in first");
         }
@@ -134,6 +182,7 @@ impl ProviderConnections {
         if method == "api_key" && key.trim().is_empty() {
             bail!("Enter an API key");
         }
+        let initial_input = initial_answers(provider, method, &key, base, setup)?;
         let mut command = tokio::process::Command::new(std::env::current_exe()?);
         command
             .args(args)
@@ -188,10 +237,10 @@ impl ProviderConnections {
         self.input = Some(input);
         self.cancel = Some(cancel);
         let status = self.status.clone();
-        let initial_input = (method != "oauth").then_some(key);
+
         tokio::spawn(async move {
-            if let Some(key) = initial_input {
-                let _ = stdin.write_all(format!("{key}\n").as_bytes()).await;
+            if !initial_input.is_empty() {
+                let _ = stdin.write_all(initial_input.as_bytes()).await;
                 let _ = stdin.flush().await;
             }
             let timeout = tokio::time::sleep(std::time::Duration::from_secs(600));
@@ -289,6 +338,27 @@ mod tests {
             assert!(login_arguments(provider, "unknown", None).is_err());
         }
     }
+    #[test]
+    fn complex_provider_configuration_precedes_the_secret() {
+        let bedrock = provider_for_id("bedrock").unwrap();
+        assert_eq!(
+            initial_answers(bedrock, "api_key", "secret", None, "eu-west-1").unwrap(),
+            "eu-west-1\nsecret\n"
+        );
+        let azure = provider_for_id("azure").unwrap();
+        let input = initial_answers(
+            azure,
+            "api_key",
+            "secret",
+            Some("https://example.openai.azure.com"),
+            "deployment",
+        )
+        .unwrap();
+        assert!(input.ends_with("\ndeployment\n2\nsecret\n"));
+        assert!(initial_answers(azure, "api_key", "secret", None, "deployment").is_err());
+        assert!(initial_answers(bedrock, "api_key", "secret", None, "region\nanswer").is_err());
+    }
+
     #[test]
     fn api_keys_use_the_cli_key_provider_without_a_secret_argument() {
         let provider = provider_for_id("openai").expect("OpenAI login exists");

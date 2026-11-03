@@ -1708,7 +1708,10 @@ impl Registry {
                 && !allowed.contains(resolved_name)
             {
                 repeat_guard::record_failure(&ctx.session_id, name, false, &input);
-                return Err(anyhow::anyhow!("Tool '{}' is not allowed", resolved_name));
+                return Err(anyhow::anyhow!(
+                    "Tool '{}' is not allowed by this session tool allowlist. Change the session tool configuration to enable it; switching models does not change permissions.",
+                    resolved_name
+                ));
             }
             if policy.disabled_tools.contains(resolved_name) {
                 repeat_guard::record_failure(&ctx.session_id, name, false, &input);

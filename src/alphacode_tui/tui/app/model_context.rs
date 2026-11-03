@@ -370,6 +370,13 @@ impl App {
         error: &str,
         remote_resend: Option<super::FallbackResendPayload>,
     ) -> bool {
+        // Session/tool policy failures survive a model switch; offering a
+        // provider fallback misidentifies the cause and invites a futile resend.
+        if error.starts_with("Tool '")
+            && (error.contains("is not allowed") || error.contains("is disabled"))
+        {
+            return false;
+        }
         // Never compete with the automatic countdown switcher.
         if self.pending_provider_failover.is_some() {
             return false;

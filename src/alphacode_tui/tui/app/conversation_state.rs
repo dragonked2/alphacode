@@ -830,6 +830,11 @@ impl App {
         self.set_side_panel_snapshot(
             crate::side_panel::snapshot_for_session(&self.session.id).unwrap_or_default(),
         );
+        // The recovery session is a different session id, so every cached
+        // todo/plan surface still holds the pre-recovery payload. Drop them all
+        // rather than let the Todo panel, inline card and pinned band keep
+        // drawing the old session's list and plan intention.
+        super::commands_review::reset_todo_view_caches_for_session_change(self);
 
         for msg in old_messages {
             let role = msg.role.clone();

@@ -1086,6 +1086,28 @@ mod utf8_truncation_tests {
     }
 
     #[tokio::test]
+    async fn reported_diagnostic_echo_returns_real_tool_output() {
+        let output = BashTool::new()
+            .execute(
+                json!({"command":"echo DIAGNOSTIC_TEST_OK", "timeout":10000}),
+                ToolContext {
+                    session_id: "bash-reported-diagnostic".into(),
+                    message_id: "message".into(),
+                    tool_call_id: "diagnostic".into(),
+                    working_dir: None,
+                    stdin_request_tx: None,
+                    graceful_shutdown_signal: None,
+                    execution_mode: super::super::ToolExecutionMode::Direct,
+                },
+            )
+            .await
+            .expect("diagnostic command completes");
+        let rendered = format!("{output:?}");
+        assert!(rendered.contains("DIAGNOSTIC_TEST_OK"), "{rendered}");
+        assert!(!rendered.contains("session interrupted"));
+    }
+
+    #[tokio::test]
     async fn empty_command_is_rejected_before_spawn() {
         let error = BashTool::new()
             .execute(

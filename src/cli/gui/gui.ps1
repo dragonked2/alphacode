@@ -55,6 +55,11 @@ $script:transcript = ''
 $script:transcriptFor = ''
 $script:lastTranscriptPoll = [DateTime]::MinValue
 $script:availableModels = @()
+$script:modelRows = @()
+$script:providerRows = @()
+$script:providerConnection = $null
+$script:providersRefreshRequested = $false
+$script:lastProviderPhase = ''
 $script:modelChooserSignature = $null
 $script:responseStarted = @{}
 $script:pendingResponseSession = ''
@@ -346,18 +351,18 @@ try {
       <Grid x:Name="ComposerContent" Margin="16,14">
        <Grid.RowDefinitions><RowDefinition Height="Auto"/><RowDefinition Height="Auto"/><RowDefinition Height="Auto"/></Grid.RowDefinitions>
        <Grid Grid.Row="0">
-        <TextBox x:Name="Prompt" Style="{DynamicResource ComposerInput}" MinHeight="64" MaxHeight="160" MaxLength="16000" AcceptsReturn="True" TextWrapping="Wrap" VerticalScrollBarVisibility="Auto" AutomationProperties.Name="Prompt"/>
-        <TextBox x:Name="CommandInput" Style="{DynamicResource ComposerInput}" MinHeight="64" MaxHeight="160" MaxLength="16000" Visibility="Collapsed" AcceptsReturn="True" TextWrapping="Wrap" VerticalScrollBarVisibility="Auto" AutomationProperties.Name="Command input"/>
-        <PasswordBox x:Name="SecretInput" MinHeight="64" MaxLength="16000" Visibility="Collapsed" Background="Transparent" Foreground="{DynamicResource Text}" CaretBrush="{DynamicResource Accent}" BorderThickness="0" FocusVisualStyle="{x:Null}" Padding="0" FontSize="15" AutomationProperties.Name="Password for running command"/>
+        <TextBox x:Name="Prompt" Style="{DynamicResource ComposerInput}" MinHeight="40" MaxHeight="160" MaxLength="16000" AcceptsReturn="True" TextWrapping="Wrap" VerticalScrollBarVisibility="Auto" AutomationProperties.Name="Prompt"/>
+        <TextBox x:Name="CommandInput" Style="{DynamicResource ComposerInput}" MinHeight="40" MaxHeight="160" MaxLength="16000" Visibility="Collapsed" AcceptsReturn="True" TextWrapping="Wrap" VerticalScrollBarVisibility="Auto" AutomationProperties.Name="Command input"/>
+        <PasswordBox x:Name="SecretInput" MinHeight="40" MaxLength="16000" Visibility="Collapsed" Background="Transparent" Foreground="{DynamicResource Text}" CaretBrush="{DynamicResource Accent}" BorderThickness="0" FocusVisualStyle="{x:Null}" Padding="0" FontSize="15" AutomationProperties.Name="Password for running command"/>
         <TextBlock x:Name="Placeholder" Text="Message AlphaCode…" Foreground="{DynamicResource Muted}" FontSize="15" TextWrapping="Wrap" Margin="1,1,0,0" IsHitTestVisible="False"/>
        </Grid>
-       <Grid Grid.Row="1" Margin="0,12,0,0">
+       <Grid Grid.Row="1" Margin="0,8,0,0">
         <Grid.ColumnDefinitions><ColumnDefinition/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
         <WrapPanel VerticalAlignment="Center" Margin="-4,0,12,0">
          <Grid Margin="0,0,4,0">
           <ComboBox x:Name="ModelPicker" Visibility="Collapsed" IsTextSearchEnabled="True" AutomationProperties.Name="Model"/>
           <Button x:Name="ModelChooser" Width="220" Height="32" HorizontalContentAlignment="Stretch" Background="Transparent" Foreground="{DynamicResource Text}" Padding="8,4" ToolTip="Models from connected providers (Ctrl+M)" AutomationProperties.Name="Choose model"><Grid><Grid.ColumnDefinitions><ColumnDefinition/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions><TextBlock x:Name="ModelChoiceLabel" Text="Choose model" TextTrimming="CharacterEllipsis" VerticalAlignment="Center" FontSize="12"/><TextBlock Grid.Column="1" Text="⌄" Margin="8,0,0,0" Foreground="{DynamicResource Muted}"/></Grid></Button>
-          <Popup x:Name="ModelPopup" PlacementTarget="{Binding ElementName=ModelChooser}" Placement="Top" StaysOpen="False" AllowsTransparency="True" PopupAnimation="Fade"><Border x:Name="ModelPopupSurface" Width="400" Background="{DynamicResource SurfaceElevated}" BorderBrush="{DynamicResource Border}" BorderThickness="1" CornerRadius="8" Padding="16" Margin="0,0,0,8"><StackPanel><TextBlock Text="Choose a model" Foreground="{DynamicResource Text}" FontSize="16" FontWeight="SemiBold"/><TextBlock Text="Models from your connected providers" Foreground="{DynamicResource Muted}" FontSize="11" Margin="0,4,0,12"/><Border Background="{DynamicResource Surface}" BorderBrush="{DynamicResource Border}" BorderThickness="1" CornerRadius="8" Padding="10,7"><TextBox x:Name="ModelSearch" Background="Transparent" Foreground="{DynamicResource Text}" BorderThickness="0" Padding="0" ToolTip="Search models" AutomationProperties.Name="Search models"/></Border><TextBlock x:Name="ModelResultCount" Foreground="{DynamicResource Muted}" FontSize="11" Margin="0,8,0,6"/><ListBox x:Name="ModelResults" MaxHeight="260" MinHeight="48" AutomationProperties.Name="Connected provider models"><ListBox.ItemTemplate><DataTemplate><TextBlock Text="{Binding}" TextTrimming="CharacterEllipsis" ToolTip="{Binding}"/></DataTemplate></ListBox.ItemTemplate></ListBox><TextBlock x:Name="ModelEmpty" Text="No matching models. Try another search." Foreground="{DynamicResource Muted}" TextWrapping="Wrap" Visibility="Collapsed" Margin="0,10"/><DockPanel LastChildFill="False" Margin="0,12,0,0"><TextBlock Text="↑ ↓ select · Enter apply · Esc close" Foreground="{DynamicResource Dim}" FontSize="10" VerticalAlignment="Center"/><Button x:Name="ApplyModelChoice" DockPanel.Dock="Right" Content="Use model" Background="{DynamicResource Accent}" Foreground="{DynamicResource AccentText}" Padding="12,6"/></DockPanel></StackPanel></Border></Popup>
+          <Popup x:Name="ModelPopup" PlacementTarget="{Binding ElementName=ModelChooser}" Placement="Top" StaysOpen="False" AllowsTransparency="True" PopupAnimation="Fade"><Border x:Name="ModelPopupSurface" Width="400" Background="{DynamicResource SurfaceElevated}" BorderBrush="{DynamicResource Border}" BorderThickness="1" CornerRadius="8" Padding="16" Margin="0,0,0,8"><StackPanel><TextBlock Text="Choose a model" Foreground="{DynamicResource Text}" FontSize="16" FontWeight="SemiBold"/><TextBlock Text="Connected providers only · search to narrow the list" Foreground="{DynamicResource Muted}" FontSize="11" Margin="0,4,0,12"/><Border Background="{DynamicResource Surface}" BorderBrush="{DynamicResource Border}" BorderThickness="1" CornerRadius="8" Padding="10,7"><TextBox x:Name="ModelSearch" Background="Transparent" Foreground="{DynamicResource Text}" BorderThickness="0" Padding="0" ToolTip="Search models" AutomationProperties.Name="Search models"/></Border><TextBlock x:Name="ModelResultCount" Foreground="{DynamicResource Muted}" FontSize="11" Margin="0,8,0,6"/><ListBox x:Name="ModelResults" SelectedValuePath="id" MaxHeight="252" MinHeight="48" ScrollViewer.CanContentScroll="True" VirtualizingPanel.IsVirtualizing="True" VirtualizingPanel.VirtualizationMode="Recycling" AutomationProperties.Name="Connected provider models"><ListBox.ItemTemplate><DataTemplate><Grid Margin="2,4"><Grid.ColumnDefinitions><ColumnDefinition/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions><StackPanel><TextBlock Text="{Binding name}" FontWeight="SemiBold" TextTrimming="CharacterEllipsis" ToolTip="{Binding id}"/><TextBlock Text="{Binding provider}" Foreground="{DynamicResource Muted}" FontSize="11" Margin="0,3,0,0" TextTrimming="CharacterEllipsis"/></StackPanel><TextBlock Grid.Column="1" Text="✓" Foreground="{DynamicResource Accent}" Margin="12,0,4,0" VerticalAlignment="Center"><TextBlock.Style><Style TargetType="TextBlock"><Setter Property="Visibility" Value="Collapsed"/><Style.Triggers><DataTrigger Binding="{Binding RelativeSource={RelativeSource AncestorType=ListBoxItem},Path=IsSelected}" Value="True"><Setter Property="Visibility" Value="Visible"/></DataTrigger></Style.Triggers></Style></TextBlock.Style></TextBlock></Grid></DataTemplate></ListBox.ItemTemplate></ListBox><TextBlock x:Name="ModelEmpty" Text="No matching models. Try another search." Foreground="{DynamicResource Muted}" TextWrapping="Wrap" Visibility="Collapsed" Margin="0,10"/><DockPanel LastChildFill="False" Margin="0,12,0,0"><TextBlock Text="↑ ↓ select · Enter apply · Esc close" Foreground="{DynamicResource Dim}" FontSize="10" VerticalAlignment="Center"/><Button x:Name="ApplyModelChoice" DockPanel.Dock="Right" Content="Use model" Background="{DynamicResource Accent}" Foreground="{DynamicResource AccentText}" Padding="12,6"/></DockPanel></StackPanel></Border></Popup>
          </Grid>
          <ComboBox x:Name="EffortPicker" Width="88" Height="32" Margin="0,0,8,0" SelectedValuePath="Tag" ToolTip="Reasoning effort" AutomationProperties.Name="Reasoning effort"><ComboBoxItem Content="Auto" Tag="none"/><ComboBoxItem Content="Low" Tag="low"/><ComboBoxItem Content="Medium" Tag="medium"/><ComboBoxItem Content="High" Tag="high"/><ComboBoxItem Content="Max" Tag="max"/></ComboBox>
          <Button x:Name="AddContext" Content="＋" Width="30" Height="32" Padding="0" FontSize="18" Foreground="{DynamicResource Muted}" ToolTip="Choose a workspace folder" AutomationProperties.Name="Choose workspace folder"/>
@@ -792,9 +797,9 @@ function Update-GuiLayout {
     $controls.ReplyScroll.Margin = [Windows.Thickness]::new($gutter + 4,20,$gutter + 4,16)
     $controls.ComposerContent.Margin = if ($compactChat) { [Windows.Thickness]::new(12,12,12,12) } else { [Windows.Thickness]::new(16,14,16,14) }
     $available = [Math]::Max(260, $controls.ChatSurface.ActualWidth - 80)
-    $controls.ModelChooser.Width = [Math]::Max(132, [Math]::Min(300, $available - 270))
+    $controls.ModelChooser.Width = [Math]::Max(132, [Math]::Min(210, $available - 270))
     $controls.ModelPopupSurface.Width = [Math]::Max(280, [Math]::Min(420, $window.ActualWidth - 48))
-    $controls.Prompt.MinHeight = if ($short) { 48 } else { 64 }
+    $controls.Prompt.MinHeight = 40
     $controls.Prompt.MaxHeight = if ($short) { 96 } else { 160 }
     $controls.WorkspacePath.MaxWidth = 120
     $controls.WorkspacePath.Visibility = if ($compactChat) { 'Collapsed' } else { 'Visible' }
@@ -837,26 +842,31 @@ function Update-Workflow {
     $controls.WorkflowSwarm.Text = if ($members.Count) { (@($members | ForEach-Object { "$($_.name) · $($_.status)`n$($_.role) $($_.detail)" }) -join "`n`n") } else { 'No swarm members.' }
 }
 
+function Get-ModelDisplayName([string]$id) {
+    if ($id.Contains('/')) { return $id.Substring($id.LastIndexOf('/') + 1) }
+    return $id
+}
+
 function Update-ModelChooser {
     $controls.ModelChooser.IsEnabled = $controls.ModelPicker.IsEnabled -and $script:availableModels.Count -gt 0
-    $controls.ModelChoiceLabel.Text = if ($script:modelRequestPending) { 'Switching model…' } elseif ($script:selectedModel) { $script:selectedModel } elseif ($script:availableModels.Count) { 'Choose model' } else { 'No connected models' }
-    $controls.ModelChooser.ToolTip = if ($script:selectedModel) { "$script:selectedModel · Ctrl+M to change" } elseif ($script:availableModels.Count) { 'Choose a model from your connected providers (Ctrl+M)' } else { 'Sign in to a provider or configure a local endpoint, then refresh' }
+    $controls.ModelChoiceLabel.Text = if ($script:modelRequestPending) { 'Switching model…' } elseif ($script:selectedModel) { Get-ModelDisplayName $script:selectedModel } elseif ($script:availableModels.Count) { 'Choose model' } else { 'Connect a provider' }
+    $controls.ModelChooser.ToolTip = if ($script:selectedModel) { "$script:selectedModel · Ctrl+M to change" } else { 'Settings → Providers to connect an account' }
     if (-not $controls.ModelPopup.IsOpen) { return }
     if (-not $controls.ModelChooser.IsEnabled) { $controls.ModelPopup.IsOpen = $false; return }
     $query = $controls.ModelSearch.Text.Trim()
-    $models = @($script:availableModels | Where-Object { -not $query -or $_.IndexOf($query,[StringComparison]::OrdinalIgnoreCase) -ge 0 })
-    $signature = $query + "`n" + ($models -join "`n")
+    $rows = @($script:modelRows | Where-Object { -not $query -or ($_.id + ' ' + $_.provider).IndexOf($query,[StringComparison]::OrdinalIgnoreCase) -ge 0 })
+    $signature = $query + "`n" + (@($rows | ForEach-Object { $_.id + '|' + $_.provider }) -join "`n")
     if ($signature -ne $script:modelChooserSignature) {
-        $chosen = [string]$controls.ModelResults.SelectedItem
+        $chosen = [string]$controls.ModelResults.SelectedValue
         $script:modelChooserSignature = $signature
-        $controls.ModelResults.ItemsSource = $models
-        if ($models -contains $chosen) { $controls.ModelResults.SelectedItem = $chosen }
-        elseif ($models -contains $script:selectedModel) { $controls.ModelResults.SelectedItem = $script:selectedModel }
-        elseif ($models.Count) { $controls.ModelResults.SelectedIndex = 0 }
+        $controls.ModelResults.ItemsSource = $rows
+        if (@($rows.id) -ccontains $chosen) { $controls.ModelResults.SelectedValue = $chosen }
+        elseif (@($rows.id) -ccontains $script:selectedModel) { $controls.ModelResults.SelectedValue = $script:selectedModel }
+        elseif ($rows.Count) { $controls.ModelResults.SelectedIndex = 0 }
     }
-    $controls.ModelResultCount.Text = if ($models.Count -eq 1) { '1 available model' } else { "$($models.Count) available models" }
-    $controls.ModelEmpty.Visibility = if ($models.Count) { 'Collapsed' } else { 'Visible' }
-    $controls.ApplyModelChoice.IsEnabled = $null -ne $controls.ModelResults.SelectedItem -and (Can-QueueAction)
+    $controls.ModelResultCount.Text = if ($rows.Count -eq 1) { '1 connected model' } else { "$($rows.Count) connected models" }
+    $controls.ModelEmpty.Visibility = if ($rows.Count) { 'Collapsed' } else { 'Visible' }
+    $controls.ApplyModelChoice.IsEnabled = $null -ne $controls.ModelResults.SelectedValue -and (Can-QueueAction)
 }
 
 function Open-ModelChooser {
@@ -870,7 +880,7 @@ function Open-ModelChooser {
 }
 
 function Apply-ModelChoice {
-    $model = [string]$controls.ModelResults.SelectedItem
+    $model = [string]$controls.ModelResults.SelectedValue
     if ($script:availableModels -notcontains $model -or -not $controls.ApplyModelChoice.IsEnabled) { return }
     $controls.ModelPopup.IsOpen = $false
     if ($model -ne $script:selectedModel) { Queue-ModelChange $model }
@@ -1034,9 +1044,110 @@ function Update-ProjectsList {
 }
 
 
+function Initialize-ProviderSettings($dialog) {
+    $nav = New-Object Windows.Controls.Button
+    $nav.Content = 'Providers'; $nav.Tag = 'Providers'
+    $nav.HorizontalContentAlignment = 'Left'; $nav.Padding = [Windows.Thickness]::new(12,10,12,10)
+    $nav.Margin = [Windows.Thickness]::new(0,0,0,4)
+    $script:settingsControls.ModelsNav.Parent.Children.Insert(2,$nav)
+    $script:settingsControls.ProvidersNav = $nav
+    [xml]$pageXaml = @'
+<StackPanel xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation" xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml" x:Name="ProvidersPage" Visibility="Collapsed">
+ <TextBlock Text="Provider connections" FontSize="21" FontWeight="SemiBold" Margin="0,0,0,6"/>
+ <TextBlock Text="Use the same accounts and credential storage as the CLI." Foreground="{DynamicResource Muted}" TextWrapping="Wrap" Margin="0,0,0,20"/>
+ <TextBlock Text="Provider" Foreground="{DynamicResource Muted}" FontSize="11" Margin="0,0,0,6"/>
+ <ComboBox x:Name="ProviderChoice" SelectedValuePath="id" Height="36" IsTextSearchEnabled="True" Margin="0,0,0,8" AutomationProperties.Name="Provider to connect"><ComboBox.ItemTemplate><DataTemplate><TextBlock Text="{Binding name}" TextTrimming="CharacterEllipsis"/></DataTemplate></ComboBox.ItemTemplate></ComboBox>
+ <TextBlock x:Name="ProviderState" Text="Loading connections…" Foreground="{DynamicResource Muted}" TextWrapping="Wrap" Margin="0,0,0,16"/>
+ <StackPanel x:Name="ProviderEndpointGroup" Visibility="Collapsed"><TextBlock Text="API endpoint (optional)" Foreground="{DynamicResource Muted}" FontSize="11" Margin="0,0,0,6"/><Border Background="{DynamicResource Surface}" BorderBrush="{DynamicResource Border}" BorderThickness="1" CornerRadius="8" Padding="12,10" Margin="0,0,0,12"><TextBox x:Name="ProviderEndpoint" Background="Transparent" Foreground="{DynamicResource Text}" BorderThickness="0" Padding="0" AutomationProperties.Name="Provider API endpoint"/></Border></StackPanel>
+ <StackPanel x:Name="ProviderSetupGroup" Visibility="Collapsed"><TextBlock x:Name="ProviderSetupLabel" Foreground="{DynamicResource Muted}" FontSize="11" Margin="0,0,0,6"/><TextBox x:Name="ProviderSetup" Background="{DynamicResource Surface}" Foreground="{DynamicResource Text}" BorderBrush="{DynamicResource Border}" Padding="12,10" Margin="0,0,0,12" AutomationProperties.Name="Provider configuration"/></StackPanel>
+ <Button x:Name="ProviderBrowser" Content="Sign in with browser" Background="{DynamicResource Accent}" Foreground="{DynamicResource AccentText}" HorizontalAlignment="Left" Padding="16,9" Margin="0,0,0,12"/>
+ <StackPanel x:Name="ProviderKeyGroup"><TextBlock Text="API key" Foreground="{DynamicResource Muted}" FontSize="11" Margin="0,0,0,6"/><Border Background="{DynamicResource Surface}" BorderBrush="{DynamicResource Border}" BorderThickness="1" CornerRadius="8" Padding="12,10"><PasswordBox x:Name="ProviderKey" Background="Transparent" Foreground="{DynamicResource Text}" CaretBrush="{DynamicResource Accent}" BorderThickness="0" MaxLength="16000" AutomationProperties.Name="Provider API key"/></Border><Button x:Name="ProviderConnectKey" Content="Connect API key" HorizontalAlignment="Left" Padding="16,9" Margin="0,8,0,14"/></StackPanel>
+ <Button x:Name="ProviderLocal" Content="Connect endpoint" HorizontalAlignment="Left" Padding="16,9" Margin="0,0,0,12" Visibility="Collapsed"/>
+ <Border x:Name="ProviderProgress" Background="{DynamicResource Surface}" BorderBrush="{DynamicResource Border}" BorderThickness="1" CornerRadius="8" Padding="12" Visibility="Collapsed" Margin="0,4,0,12"><StackPanel><TextBlock x:Name="ProviderProgressTitle" Foreground="{DynamicResource Accent}" FontWeight="SemiBold"/><TextBox x:Name="ProviderProgressText" IsReadOnly="True" AcceptsReturn="True" TextWrapping="Wrap" MaxHeight="150" VerticalScrollBarVisibility="Auto" Background="Transparent" Foreground="{DynamicResource Muted}" BorderThickness="0" Padding="0,8,0,0"/>
+ <StackPanel x:Name="ProviderInputGroup" Margin="0,12,0,0"><TextBlock Text="Verification code or additional setup input" Foreground="{DynamicResource Muted}" FontSize="11" TextWrapping="Wrap" Margin="0,0,0,6"/><PasswordBox x:Name="ProviderInput" Background="{DynamicResource SurfaceElevated}" Foreground="{DynamicResource Text}" BorderBrush="{DynamicResource Border}" MaxLength="16000" Padding="8" AutomationProperties.Name="Provider verification code"/><WrapPanel Margin="0,8,0,0"><Button x:Name="ProviderContinue" Content="Continue" Margin="0,0,8,0"/><Button x:Name="ProviderCancel" Content="Cancel sign-in" Foreground="{DynamicResource Danger}"/></WrapPanel></StackPanel></StackPanel></Border>
+ <Button x:Name="ProviderRefresh" Content="Refresh connections" HorizontalAlignment="Left" Foreground="{DynamicResource Muted}"/>
+</StackPanel>
+'@
+    $page = [Windows.Markup.XamlReader]::Load([Xml.XmlNodeReader]::new($pageXaml))
+    [void]$script:settingsControls.AppearancePage.Parent.Children.Add($page)
+    $script:settingsControls.ProvidersPage = $page
+    foreach ($name in @('ProviderChoice','ProviderState','ProviderEndpointGroup','ProviderEndpoint','ProviderSetupGroup','ProviderSetupLabel','ProviderSetup','ProviderBrowser','ProviderKeyGroup','ProviderKey','ProviderConnectKey','ProviderLocal','ProviderProgress','ProviderProgressTitle','ProviderProgressText','ProviderInputGroup','ProviderInput','ProviderContinue','ProviderCancel','ProviderRefresh')) { $script:settingsControls[$name] = $page.FindName($name) }
+    $script:settingsControls.ProviderChoice.Add_SelectionChanged({
+        $script:settingsControls.ProviderKey.Clear(); $script:settingsControls.ProviderEndpoint.Clear(); $script:settingsControls.ProviderSetup.Clear(); Update-ProviderSettings
+    })
+    $script:settingsControls.ProviderBrowser.Add_Click({ Start-ProviderConnection 'oauth' })
+    $script:settingsControls.ProviderConnectKey.Add_Click({ Start-ProviderConnection 'api_key' })
+    $script:settingsControls.ProviderLocal.Add_Click({ Start-ProviderConnection 'local' })
+    $script:settingsControls.ProviderRefresh.Add_Click({ $script:providersRefreshRequested = $true })
+    $script:settingsControls.ProviderContinue.Add_Click({
+        $code = $script:settingsControls.ProviderInput.Password
+        Queue-Action 'provider_input' '' @{prompt=$code}
+        $script:settingsControls.ProviderInput.Clear()
+    })
+    $script:settingsControls.ProviderCancel.Add_Click({ Queue-Action 'provider_cancel' '' })
+    if ($script:providerRows.Count) { Set-ProviderCatalog $script:providerRows }
+}
+
+function Set-ProviderCatalog($rows) {
+    $script:providerRows = @($rows)
+    if (-not $script:settingsWindow -or -not $script:settingsControls.ProviderChoice) { return }
+    $chosen = [string]$script:settingsControls.ProviderChoice.SelectedValue
+    $script:settingsControls.ProviderChoice.ItemsSource = $script:providerRows
+    if ($chosen -and @($script:providerRows.id) -contains $chosen) { $script:settingsControls.ProviderChoice.SelectedValue = $chosen }
+    else {
+        $first = $script:providerRows | Where-Object { $_.configured } | Select-Object -First 1
+        if (-not $first) { $first = $script:providerRows | Select-Object -First 1 }
+        if ($first) { $script:settingsControls.ProviderChoice.SelectedValue = $first.id }
+    }
+    Update-ProviderSettings
+}
+
+function Update-ProviderSettings {
+    if (-not $script:settingsWindow -or -not $script:settingsControls.ProviderChoice) { return }
+    $form = $script:settingsControls
+    $row = $form.ProviderChoice.SelectedItem
+    $busy = $script:providerConnection -and $script:providerConnection.phase -eq 'connecting'
+    $form.ProviderState.Text = if ($row) { $(if ($row.configured) { 'Configured' } else { 'Not connected' }) + ' · ' + [string]$row.detail } else { 'Select a provider to connect' }
+    $form.ProviderState.Foreground = Get-GuiBrush $(if ($row.configured) { 'Success' } else { 'Muted' })
+    $form.ProviderBrowser.Visibility = if ($row.oauth) { 'Visible' } else { 'Collapsed' }
+    $form.ProviderKeyGroup.Visibility = if ($row.api_key) { 'Visible' } else { 'Collapsed' }
+    $form.ProviderEndpointGroup.Visibility = if ($row.endpoint) { 'Visible' } else { 'Collapsed' }
+    $form.ProviderSetupGroup.Visibility = if ($row.setup_label) { 'Visible' } else { 'Collapsed' }
+    $form.ProviderSetupLabel.Text = [string]$row.setup_label
+    $form.ProviderLocal.Visibility = if ($row.local) { 'Visible' } else { 'Collapsed' }
+    foreach ($control in @($form.ProviderChoice,$form.ProviderBrowser,$form.ProviderConnectKey,$form.ProviderLocal)) { $control.IsEnabled = -not $busy -and $null -ne $row }
+    $form.ProviderProgress.Visibility = if ($script:providerConnection -and $script:providerConnection.phase) { 'Visible' } else { 'Collapsed' }
+    $form.ProviderProgressTitle.Text = if ($busy) { 'Sign-in in progress' } elseif ($script:providerConnection.phase -eq 'completed') { 'Sign-in finished' } elseif ($script:providerConnection.phase -eq 'failed') { 'Connection needs attention' } else { 'Connection status' }
+    $form.ProviderProgressText.Text = [string]$script:providerConnection.detail
+    $form.ProviderInputGroup.Visibility = if ($busy) { 'Visible' } else { 'Collapsed' }
+}
+
+function Start-ProviderConnection([string]$method) {
+    if (-not (Can-QueueAction)) { return }
+    $form = $script:settingsControls
+    $row = $form.ProviderChoice.SelectedItem
+    if (-not $row) { return }
+    $key = if ($method -eq 'api_key') { $form.ProviderKey.Password } else { '' }
+    if ($method -eq 'api_key' -and [string]::IsNullOrWhiteSpace($key)) { $form.ProviderState.Text = 'Enter an API key first.'; return }
+    Queue-Action 'provider_connect' '' @{provider=[string]$row.id; auth_method=$method; api_key=$key; api_base=$form.ProviderEndpoint.Text; setup_value=$form.ProviderSetup.Text}
+    $form.ProviderKey.Clear()
+    $script:providerConnection = [pscustomobject]@{provider=$row.id; phase='connecting'; detail='Starting sign-in…'}
+    Update-ProviderSettings
+}
+
+function Set-ProviderProgress($connection) {
+    $script:providerConnection = $connection
+    if ($connection.phase -ne $script:lastProviderPhase) {
+        $script:lastProviderPhase = [string]$connection.phase
+        if ($connection.phase -in @('completed','failed','cancelled')) { $script:providersRefreshRequested = $true; $script:lastPoll = [DateTime]::MinValue }
+    }
+    Update-ProviderSettings
+}
+
 function Select-SettingsSection([string]$section) {
+    if ($section -eq 'Providers' -and $script:settingsSection -ne 'Providers') { $script:providersRefreshRequested = $true }
     $script:settingsSection = $section
-    foreach ($name in @('Appearance','Models','Workspace','Keyboard')) {
+    foreach ($name in @('Appearance','Models','Providers','Workspace','Keyboard')) {
         $script:settingsControls[$name + 'Page'].Visibility = if ($name -eq $section) { 'Visible' } else { 'Collapsed' }
         $button = $script:settingsControls[$name + 'Nav']
         $button.Background = if ($name -eq $section) { Get-GuiBrush 'AccentSoft' } else { [Windows.Media.Brushes]::Transparent }
@@ -1138,7 +1249,8 @@ function New-SettingsWindow {
     $script:settingsWindow = $dialog; $script:settingsControls = @{}
     foreach ($name in @('TitleBar','Close','Done','AppearanceNav','ModelsNav','WorkspaceNav','KeyboardNav','AppearancePage','ModelsPage','WorkspacePage','KeyboardPage','DarkTheme','LightTheme','TextSize','TextSizeLabel','TypePreview','ResetSize','ActiveModel','ModelSearch','ModelMatches','ModelList','UseModel','Efforts','WorkspacePath','ChooseFolder','OpenFolder','ShowSidebar','ShowWork','Topmost','Feedback')) { $script:settingsControls[$name] = $dialog.FindName($name) }
     $script:settingsModelsSignature = $null; $script:settingsEffortsSignature = $null; $script:settingsSection = 'Appearance'
-    foreach ($name in @('Appearance','Models','Workspace','Keyboard')) { $script:settingsControls[$name+'Nav'].Add_Click({ param($sender) Select-SettingsSection ([string]$sender.Tag) }) }
+    Initialize-ProviderSettings $dialog
+    foreach ($name in @('Appearance','Models','Providers','Workspace','Keyboard')) { $script:settingsControls[$name+'Nav'].Add_Click({ param($sender) Select-SettingsSection ([string]$sender.Tag) }) }
     $script:settingsControls.DarkTheme.Add_Click({ Set-GuiTheme 'dark'; Update-SettingsForm })
     $script:settingsControls.LightTheme.Add_Click({ Set-GuiTheme 'light'; Update-SettingsForm })
     $script:settingsControls.TextSize.Add_ValueChanged({ param($sender) if (-not $script:settingsUpdating) { Set-ReadingSize ([Math]::Round($sender.Value)); Update-SettingsForm } })
@@ -1377,6 +1489,7 @@ function Reset-EffortOptions {
 }
 
 function Set-Snapshot($snapshot) {
+    if ($snapshot.provider_connection) { Set-ProviderProgress $snapshot.provider_connection }
     $firstConnection = -not $script:hasLiveSnapshot
     $script:hasLiveSnapshot = $true
     $script:ownedBusy = [bool]$snapshot.owned_busy
@@ -1409,8 +1522,16 @@ function Set-Snapshot($snapshot) {
     } else {
         $controls.SessionCount.Text = "$liveCount live"
     }
-    $models = @($snapshot.models | Where-Object { -not [string]::IsNullOrWhiteSpace([string]$_) } | ForEach-Object { [string]$_ })
-    $script:availableModels = @($models | Select-Object -Unique)
+    $allowedModels = @($snapshot.models | Where-Object { -not [string]::IsNullOrWhiteSpace([string]$_) } | ForEach-Object { [string]$_ })
+    $options = if ($null -ne $snapshot.model_options) { @($snapshot.model_options) } elseif ($snapshot.provider -and $snapshot.model -and $allowedModels -ccontains [string]$snapshot.model) { @([pscustomobject]@{id=[string]$snapshot.model; provider=[string]$snapshot.provider}) } else { @() }
+    $seenModels = New-Object 'System.Collections.Generic.HashSet[string]' ([StringComparer]::Ordinal)
+    $script:modelRows = @(foreach ($option in $options) {
+        $id = [string]$option.id
+        if ($allowedModels -ccontains $id -and $seenModels.Add($id)) {
+            [pscustomobject]@{id=$id; name=(Get-ModelDisplayName $id); provider=[string]$option.provider}
+        }
+    })
+    $script:availableModels = @($script:modelRows | ForEach-Object { $_.id })
     $models = $script:availableModels
     if ($models.Count -gt 0) {
         $script:suppressSelectionEvents = $true
@@ -1532,7 +1653,8 @@ function Update-SelectedSession([string]$sessionId = '') {
     $controls.CommandInput.Visibility = if ($script:inputMode -and -not $script:passwordMode) { 'Visible' } else { 'Collapsed' }
     $controls.SecretInput.Visibility = if ($script:passwordMode) { 'Visible' } else { 'Collapsed' }
     $controls.Placeholder.Visibility = if ($script:inputMode -or $controls.Prompt.Text.Length) { 'Collapsed' } else { 'Visible' }
-    $controls.Send.Content = if ($script:inputMode) { 'Send input' } else { 'Send ↑' }
+    $controls.Send.Content = '↑'
+    $controls.Send.ToolTip = if ($script:inputMode) { 'Send command input (Enter)' } else { 'Send message (Enter)' }
     if ($script:inputMode) { $controls.Activity.Text = 'A command needs your input'; $controls.Detail.Text = $inputRequest.prompt }
     if ($script:deliveryNotice -and [DateTime]::UtcNow -lt $script:noticeUntil) {
         $controls.Detail.Text = $script:deliveryNotice
@@ -2136,7 +2258,7 @@ $controls.SessionSearch.Add_PreviewKeyDown({ param($sender,$event)
 $controls.Sessions.Add_PreviewKeyDown({ param($sender,$event) if ($event.Key -eq 'Return') { Focus-SelectedChat; $event.Handled = $true } })
 $controls.ModelChooser.Add_Click({ Open-ModelChooser })
 $controls.ModelSearch.Add_TextChanged({ Update-ModelChooser })
-$controls.ModelResults.Add_SelectionChanged({ $controls.ApplyModelChoice.IsEnabled = $null -ne $controls.ModelResults.SelectedItem -and (Can-QueueAction) })
+$controls.ModelResults.Add_SelectionChanged({ $controls.ApplyModelChoice.IsEnabled = $null -ne $controls.ModelResults.SelectedValue -and (Can-QueueAction) })
 $controls.ModelResults.Add_MouseDoubleClick({ Apply-ModelChoice })
 $controls.ApplyModelChoice.Add_Click({ Apply-ModelChoice })
 $controls.ModelPopup.Add_PreviewKeyDown({ param($sender,$event)
@@ -2339,12 +2461,21 @@ $timer.Add_Tick({
     try {
         $timer.Interval = [TimeSpan]::FromMilliseconds($(if ($script:working -gt 0) { 100 } else { 400 }))
         if ($Preview) { return }
+        if ($script:providersRefreshRequested -and -not $script:pending -and $script:queue.Count -eq 0) {
+            $script:providersRefreshRequested = $false
+            $script:queue.Enqueue(@{action='providers'})
+        }
         if ($script:pending) {
             if ($script:pending.IsCompleted) {
                 $line = $script:pending.GetAwaiter().GetResult()
                 if ($null -eq $line) { throw 'The local GUI connection closed.' }
                 $response = $line | ConvertFrom-Json
-                if ($response.sessions) {
+                if ($null -ne $response.providers) {
+                    Set-ProviderCatalog $response.providers
+                    if ($response.connection) { Set-ProviderProgress $response.connection }
+                }
+                elseif ($response.ok -and $response.connection) { Set-ProviderProgress $response.connection }
+                elseif ($response.sessions) {
                     Set-Snapshot $response
                 }
                 elseif ($response.stored) {
@@ -2434,6 +2565,7 @@ $timer.Add_Tick({
                     $script:noticeUntil = [DateTime]::UtcNow.AddSeconds(3)
                     $script:lastPoll = [DateTime]::MinValue
                 } elseif (-not $response.ok) {
+                    if ($script:pendingKind -in @('provider_connect','provider_input','provider_cancel')) { Set-ProviderProgress ([pscustomobject]@{phase='failed'; detail=[string]$response.error}) }
                     if ($script:pendingKind -eq 'model') { $script:modelRequestPending = $false; $script:preferredModel = ''; $script:lastPoll = [DateTime]::MinValue }
                     if ($script:pendingKind -eq 'effort') { $script:effortRequestPending = $false; $script:preferredEffort = ''; $script:lastPoll = [DateTime]::MinValue }
                     if ($script:pendingKind -eq 'capabilities') { $script:capabilitiesRequestPending = $false }

@@ -730,7 +730,7 @@ Load with `skill_manage` (action=load, name=<skill>) when the task matches. PROA
                     .split_whitespace()
                     .collect::<Vec<_>>()
                     .join(" ");
-                let hint: String = description.chars().take(160).collect();
+                let hint: String = description.chars().take(96).collect();
                 skills_section.push_str(&format!("\n- `{}`: {}", skill.name, hint));
             }
             info.skills_chars = skills_section.len();

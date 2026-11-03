@@ -1746,7 +1746,11 @@ impl Agent {
                 }
                 let tc = &tool_calls[tool_index];
 
-                if let Some(error_msg) = tc.validation_error() {
+                if let Some(error_msg) = tc.validation_error().or_else(|| {
+                    self.validate_tool_allowed(&tc.name)
+                        .err()
+                        .map(|error| error.to_string())
+                }) {
                     logging::warn(&error_msg);
                     let _ = event_tx.send(ServerEvent::ToolDone {
                         id: tc.id.clone(),
@@ -1765,8 +1769,6 @@ impl Agent {
                     tool_results_dirty = true;
                     continue;
                 }
-
-                self.validate_tool_allowed(&tc.name)?;
 
                 let is_native_tool = ALPHACODE_NATIVE_TOOLS.contains(&tc.name.as_str());
 

@@ -74,6 +74,8 @@ struct BridgeRequest {
     #[serde(default)]
     api_base: Option<String>,
     #[serde(default)]
+    setup_value: Option<String>,
+    #[serde(default)]
     request_id: Option<String>,
     #[serde(default)]
     session_id: Option<String>,
@@ -114,6 +116,7 @@ struct Bridge {
     stored_ids: HashSet<String>,
     activity: Vec<String>,
     models: Vec<String>,
+    model_options: Vec<Value>,
     model: String,
     provider: String,
     effort: String,
@@ -316,9 +319,13 @@ impl Bridge {
             self.model.clear();
             self.provider.clear();
             self.models.clear();
+            self.model_options.clear();
             self.effort.clear();
             self.runtime_for = Some(selected.to_string());
         }
+        // Do not keep offering a stale catalog after disconnect/auth changes.
+        self.models.clear();
+        self.model_options.clear();
         if let Some(value) = tokio::time::timeout(
             Duration::from_millis(1200),
             self.desktop_output("state", Some(selected), None),
@@ -361,6 +368,18 @@ impl Bridge {
                         .collect()
                 })
                 .unwrap_or_default();
+            self.model_options = value.get("model_options").and_then(Value::as_array)
+                .map(|choices| choices.iter().filter_map(|choice| {
+                    let id = choice.get("id")?.as_str()?;
+                    if !self.models.iter().any(|model| model == id) { return None; }
+                    let id = hidden_pool_models_to_display_names(vec![id.into()]).into_iter().next()?;
+                    Some(json!({"id": id, "provider": choice.get("provider").and_then(Value::as_str).unwrap_or(&self.provider)}))
+                }).collect()).unwrap_or_else(|| {
+                    // An older daemon supplies no connection provenance for
+                    // its full catalog. Offer only its active provider/model.
+                    self.models.retain(|model| model == &self.model && !self.provider.is_empty());
+                    self.models.iter().map(|id| json!({"id": id, "provider": self.provider})).collect()
+                });
         }
         // The list and the *selected* model must use the same mapping. Mapping
         // only the list left the selected row showing the raw internal id the
@@ -372,6 +391,11 @@ impl Bridge {
             .next()
             .unwrap_or_default();
         self.models = hidden_pool_models_to_display_names(self.models.clone());
+        self.models.retain(|model| {
+            self.model_options
+                .iter()
+                .any(|choice| choice["id"].as_str() == Some(model.as_str()))
+        });
     }
 
     async fn submit_model(&mut self, selected: Option<&str>, model: &str) -> Result<()> {
@@ -811,6 +835,7 @@ impl Bridge {
             "owned_session_id": owned.session_id.as_deref(), "input_request": owned.input_request,
             "selected_session_id": selected, "selected_reply": selected_reply, "activity": self.activity,
             "model": self.model, "provider": self.provider, "effort": self.effort, "models": self.models,
+            "model_options": self.model_options,
             "dictation_available": dictation_available, "workflow": workflow,
             "provider_connection": self.connections.status() })
     }
@@ -1115,6 +1140,7 @@ pub(crate) async fn run(once: bool, preview: bool, bridge: bool) -> Result<()> {
                         request.auth_method.as_deref().unwrap_or_default(),
                         request.api_key.unwrap_or_default(),
                         request.api_base.as_deref(),
+                        request.setup_value.as_deref().unwrap_or_default(),
                     ) {
                         Ok(()) => json!({"ok": true, "connection": state.connections.status()}),
                         Err(error) => json!({"ok": false, "error": format!("{error:#}")}),

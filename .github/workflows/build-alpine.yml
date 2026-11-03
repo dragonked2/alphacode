@@ -20,8 +20,7 @@ name: build-alpine
 # collide with release.yml's alphacode-linux-{arm64,x86_64}.tar.gz.
 
 on:
-  push:
-    tags: ["v*.*.*"]
+  workflow_call:
   workflow_dispatch:
 
 permissions:

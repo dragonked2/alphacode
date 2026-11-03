@@ -907,7 +907,10 @@ impl Agent {
         if let Some(allowed) = self.allowed_tools.as_ref()
             && !allowed.contains(name)
         {
-            return Err(anyhow::anyhow!("Tool '{}' is not allowed", name));
+            return Err(anyhow::anyhow!(
+                "Tool '{}' is not allowed by this session tool allowlist. Change the session tool configuration to enable it; switching models does not change permissions.",
+                name
+            ));
         }
         if self.disabled_tools.contains(name) {
             return Err(anyhow::anyhow!("Tool '{}' is disabled", name));

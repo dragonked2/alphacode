@@ -1153,6 +1153,12 @@ async fn run_auto_browser_setup() -> String {
     }
 }
 
+fn ensure_open_target(action: &str, params: &mut Value) {
+    if action == "open" && params.get("tabId").and_then(Value::as_i64).is_none() {
+        params["newTab"] = json!(true);
+    }
+}
+
 async fn execute_firefox_action(
     _provider: &FirefoxBridgeProvider,
     action: &str,
@@ -1182,6 +1188,11 @@ async fn execute_firefox_action(
     } else {
         apply_session_tab_pin(&mut bridge_params, &ctx.session_id)
     };
+
+    // Opening a URL is safe in a fresh tab when no session/explicit target
+    // exists, even if the model requested in-place navigation. Never redirect
+    // the user's active tab, and preserve reuse when a target is known.
+    ensure_open_target(action, &mut bridge_params);
 
     // Isolation guard: a mutating action with no explicit target and no
     // session pin would land on the user's currently active tab. Refuse and
@@ -4324,6 +4335,19 @@ awaitAll(items)
     /// `resolveTabId({})` branch and navigates the user's active tab, so the
     /// guard in `execute_firefox_action` has to cover that case even though
     /// `open` is not in the list above.
+    #[test]
+    fn untargeted_open_recovers_in_own_tab_and_preserves_explicit_target() {
+        let mut params = json!({"url":"https://example.test", "newTab":false});
+        super::ensure_open_target("open", &mut params);
+        assert_eq!(params["newTab"], true);
+        let mut targeted = json!({"tabId":3,"newTab":false});
+        super::ensure_open_target("open", &mut targeted);
+        assert_eq!(targeted["newTab"], false);
+        let mut click = json!({});
+        super::ensure_open_target("click", &mut click);
+        assert_eq!(click, json!({}));
+    }
+
     #[test]
     fn in_place_open_is_detected_as_tab_scoped() {
         let input = browser_input(json!({

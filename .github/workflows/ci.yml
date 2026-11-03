@@ -17,7 +17,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, macos-latest, windows-latest]
+        os: [ubuntu-latest, macos-15-intel, windows-latest]
         profile: [release]
     runs-on: ${{ matrix.os }}
     steps:
@@ -59,10 +59,16 @@ jobs:
 
   test:
     name: test (${{ matrix.os }})
+    env:
+      # Deterministic color-enabled rendering baseline; production NO_COLOR
+      # behavior is unchanged. Performance gates below still use release mode.
+      NO_COLOR: ""
+      COLORTERM: truecolor
+      CARGO_PROFILE_TEST_OPT_LEVEL: "0"
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, macos-latest, windows-latest]
+        os: [ubuntu-latest, macos-15-intel, windows-latest]
     runs-on: ${{ matrix.os }}
     needs: build
     timeout-minutes: 30
@@ -84,8 +90,8 @@ jobs:
             ~/.cargo/registry
             ~/.cargo/git
             target
-          key: cargo-test-${{ matrix.os }}-${{ hashFiles('Cargo.lock') }}
-      - run: cargo test --lib --locked
+          key: cargo-test-opt0-${{ matrix.os }}-${{ hashFiles('Cargo.lock') }}
+      - run: cargo test --lib --locked -- --test-threads=4
       - run: cargo test --test llamacpp_compat --locked
       # `alphagrep` is its own workspace member, so root-package commands
       # never run its tests; gate them here.
@@ -187,7 +193,7 @@ jobs:
           }
           Write-Host "parsed $($files.Count) PowerShell script(s)"
 
-      - name: PowerShell scripts are ASCII-only
+      - name: PowerShell scripts have Windows-compatible encoding
         shell: pwsh
         run: |
           # install.ps1 is distributed as `iwr ... | iex` and is routinely run by
@@ -201,6 +207,13 @@ jobs:
           $bad = @()
           foreach ($f in Get-ChildItem -Path scripts -Recurse -Filter '*.ps1') {
             $bytes = [System.IO.File]::ReadAllBytes($f.FullName)
+            # Rich GUI smoke fixtures explicitly use UTF-8 with BOM, which
+            # Windows PowerShell 5.1 decodes correctly. BOM-less distributed
+            # installers must remain ASCII.
+            if ($bytes.Length -ge 3 -and $bytes[0] -eq 0xEF -and $bytes[1] -eq 0xBB -and $bytes[2] -eq 0xBF) {
+              $null = [Text.UTF8Encoding]::new($false, $true).GetString($bytes,3,$bytes.Length-3)
+              continue
+            }
             for ($i = 0; $i -lt $bytes.Length; $i++) {
               if ($bytes[$i] -gt 127) {
                 $bad += "$($f.Name) at byte offset $i"
@@ -212,7 +225,7 @@ jobs:
             foreach ($b in $bad) { Write-Host "::error::$b contains non-ASCII bytes" }
             throw 'PowerShell scripts must be ASCII-only (or given a UTF-8 BOM)'
           }
-          Write-Host 'all PowerShell scripts are ASCII-only'
+          Write-Host 'all PowerShell scripts are ASCII or valid UTF-8 with BOM'
 
       - name: installer PATH logic tests
         shell: pwsh

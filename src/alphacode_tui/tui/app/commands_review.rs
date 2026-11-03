@@ -279,6 +279,35 @@ pub(crate) fn clear_side_panel_for_new_session(app: &mut App) {
     app.diff_pane_scroll_x = 0;
 }
 
+/// Drop every todo/plan view cache that was rendered for the previous session.
+///
+/// `active_client_session_id()` follows the live session, but three render
+/// surfaces cache the payload they last built and only rebuild when the
+/// payload *hash* changes:
+///
+///   * the Todo side-panel page (`todos_view_markdown` + `_rendered_hash`),
+///   * the inline transcript todo card (`todo_card_rendered_hash`), and
+///   * the pinned todo band (`pinned_todos_payload` + `_rendered_hash`).
+///
+/// The hash includes the session id, so a following tick would eventually
+/// notice the change — but the cached markdown/payload is read by the renderer
+/// *before* that tick, so a brand-new session briefly draws the previous
+/// session's todos, plan (user intention) and goal scores. On a `/clear` the
+/// reads that follow are empty, which is exactly the "new session shows old
+/// todo and plan data" report.
+///
+/// `todo_card_dismissed` is reset too: the dismissal belonged to the old
+/// session's card, and carrying it over would suppress the new session's card
+/// entirely.
+///
+/// Call this from every path that swaps the active session, after the new
+/// session is installed so the caches cannot be repopulated by the swap.
+pub(crate) fn reset_todo_view_caches_for_session_change(app: &mut App) {
+    app.clear_todos_view_for_session_change();
+    app.reset_todo_card_for_session_change();
+    app.reset_pinned_todos_for_session_change();
+}
+
 pub(super) fn reset_current_session(app: &mut App) {
     let old_session_id = app.session.id.clone();
     app.session.mark_closed();
@@ -319,6 +348,7 @@ pub(super) fn reset_current_session(app: &mut App) {
     session.ensure_initial_session_context_message();
     app.session = session;
     clear_side_panel_for_new_session(app);
+    reset_todo_view_caches_for_session_change(app);
     app.provider_session_id = None;
 }
 

@@ -27,6 +27,49 @@
 /// by the subskill directory name (e.g. `hunt-sqli`).
 pub(super) const BUNDLED_SKILLS: &[BundledSkill] = &[
     BundledSkill {
+        name: "bug-bounty-methodology",
+        body: include_str!("bundled_skills/bug-bounty-methodology/SKILL.md"),
+        references: &[],
+    },
+    BundledSkill {
+        name: "engineering-workflow",
+        body: include_str!("bundled_skills/engineering-workflow/SKILL.md"),
+        references: &[],
+    },
+    BundledSkill {
+        name: "finding-validation",
+        body: include_str!("bundled_skills/finding-validation/SKILL.md"),
+        references: &[],
+    },
+    BundledSkill {
+        name: "recon-ops",
+        body: include_str!("bundled_skills/recon-ops/SKILL.md"),
+        references: &[],
+    },
+    BundledSkill {
+        name: "security-audit",
+        body: include_str!("bundled_skills/security-audit/SKILL.md"),
+        references: &[],
+    },
+    BundledSkill {
+        name: "security-research",
+        body: include_str!("bundled_skills/security-research/SKILL.md"),
+        references: &[(
+            "handbook",
+            include_str!("bundled_skills/security-research/handbook/SKILL.md"),
+        )],
+    },
+    BundledSkill {
+        name: "vuln-hunter",
+        body: include_str!("bundled_skills/vuln-hunter/SKILL.md"),
+        references: &[],
+    },
+    BundledSkill {
+        name: "web-app-testing",
+        body: include_str!("bundled_skills/web-app-testing/SKILL.md"),
+        references: &[],
+    },
+    BundledSkill {
         name: "ctf-workflow",
         body: include_str!("bundled_skills/ctf-workflow/SKILL.md"),
         references: &[(
@@ -1180,6 +1223,23 @@ mod tests {
                     "bundled skill '{}' reference '{}' is empty",
                     skill.name,
                     ref_name
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn every_source_skill_is_registered() {
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("src/alphacode_base/bundled_skills");
+        let names = bundled_skill_names();
+        for entry in std::fs::read_dir(root).unwrap() {
+            let entry = entry.unwrap();
+            if entry.path().join("SKILL.md").is_file() {
+                assert!(
+                    names.contains(&entry.file_name().to_str().unwrap()),
+                    "unregistered bundled skill: {:?}",
+                    entry.file_name()
                 );
             }
         }

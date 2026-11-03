@@ -427,3 +427,91 @@ fn dismissed_todo_card_does_not_reopen_on_the_next_write() {
         }
     });
 }
+
+/// A newly created session must not draw the previous session's todo list,
+/// plan intention, or goal scores.
+///
+/// `/clear` (local) and the remote clear both replace the active session, but
+/// `active_client_session_id()` follows the *live* session immediately while
+/// three render surfaces (`todos_view_markdown`, the inline card's rendered
+/// payload, and `pinned_todos_payload`) only rebuild when their payload hash
+/// changes. The renderer can therefore draw the previous session's cached
+/// payload before the next tick notices the session id changed — which is the
+/// reported "new session shows old todo and plan data".
+#[test]
+fn new_session_does_not_show_the_previous_sessions_todos_or_plan() {
+    with_temp_alphacode_home(|| {
+        let mut app = create_test_app();
+        app.todos_view_enabled = true;
+        let old_session_id = app.session.id.clone();
+
+        crate::todo::save_todos(
+            &old_session_id,
+            &[crate::todo::TodoItem {
+                id: "old-1".to_string(),
+                content: "stale item from the previous session".to_string(),
+                status: "in_progress".to_string(),
+                priority: "high".to_string(),
+                confidence: Some(70),
+                ..Default::default()
+            }],
+        )
+        .expect("seed old session todos");
+        crate::todo::save_plan(
+            &old_session_id,
+            &crate::todo::TodoPlan {
+                user_intention: Some("stale intention from the previous session".to_string()),
+                ..Default::default()
+            },
+        )
+        .expect("seed old session plan");
+
+        // Render every surface for the old session so each cache is populated.
+        app.refresh_todos_view_now();
+        assert!(
+            app.todos_view_markdown
+                .contains("stale item from the previous session"),
+            "precondition: the Todo panel cached the old session's list"
+        );
+        app.show_todo_card();
+        app.refresh_pinned_todos_now();
+        assert!(
+            app.pinned_todos_payload
+                .as_deref()
+                .is_some_and(|p| p.contains("stale item from the previous session")),
+            "precondition: the pinned band cached the old session's list"
+        );
+        app.todo_card_dismissed = true;
+
+        // Same path `/clear` uses to start a fresh session.
+        commands::reset_current_session(&mut app);
+        assert_ne!(app.session.id, old_session_id, "a new session was created");
+
+        // Nothing about the old session may survive into the new one.
+        assert!(
+            !app.todos_view_markdown.contains("stale item from the previous session"),
+            "the Todo panel still shows the previous session's list:\n{}",
+            app.todos_view_markdown
+        );
+        assert!(
+            !app.todos_view_markdown.contains("stale intention from the previous session"),
+            "the Todo panel still shows the previous session's plan intention:\n{}",
+            app.todos_view_markdown
+        );
+        assert!(
+            app.pinned_todos_payload.is_none(),
+            "the pinned band still carries the previous session's payload"
+        );
+        assert!(
+            !app.todo_card_dismissed,
+            "the previous session's card dismissal must not suppress the new session's card"
+        );
+
+        // The refreshers must agree: a new session with no todos renders empty.
+        app.refresh_todos_view_now();
+        assert!(
+            !app.todos_view_markdown.contains("stale item"),
+            "post-refresh the Todo panel must stay empty for a fresh session"
+        );
+    });
+}

@@ -247,6 +247,34 @@ impl App {
         self.todos_view_rendered_hash = 0;
     }
 
+    /// Drop the render cache for the Todo side-panel page when the active
+    /// session changes. Unlike [`Self::clear_todos_view_cache`] this keeps the
+    /// page enabled; the next tick rebuilds it from the new session (empty for
+    /// a fresh one) instead of serving the previous session's markdown, which
+    /// still carries that session's items, plan intention and goal scores.
+    pub(super) fn clear_todos_view_for_session_change(&mut self) {
+        self.clear_todos_view_cache();
+    }
+
+    /// Drop the inline todo card's render cache when the active session
+    /// changes. The card itself lives in the discarded transcript, so only the
+    /// bookkeeping has to go; resetting `todo_card_dismissed` lets the new
+    /// session auto-open its own card.
+    pub(super) fn reset_todo_card_for_session_change(&mut self) {
+        self.todo_card_rendered_hash = 0;
+        self.todo_card_dismissed = false;
+        self.todo_card_probed_at = None;
+    }
+
+    /// Drop the pinned todo band's cached payload when the active session
+    /// changes, so the band cannot keep drawing the previous session's list
+    /// until the next (throttled) refresh notices.
+    pub(super) fn reset_pinned_todos_for_session_change(&mut self) {
+        self.pinned_todos_payload = None;
+        self.pinned_todos_rendered_hash = 0;
+        self.pinned_todos_checked_at = None;
+    }
+
     fn refresh_todos_view_page(&mut self) {
         if !self.todos_view_enabled {
             return;

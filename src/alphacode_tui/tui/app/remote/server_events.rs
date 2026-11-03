@@ -2371,6 +2371,17 @@ pub(in crate::alphacode_tui::tui::app) fn handle_server_event(
             summary,
             ..
         } => {
+            // Older daemons replayed a workspace's persisted plan to every new
+            // session. Sharing a repository is not participation in that plan.
+            // Reject it before touching widget state or persisting replay data.
+            if app.is_remote
+                && !app.is_replay_runtime()
+                && !participants.iter().any(|participant| {
+                    app.remote_session_id.as_deref() == Some(participant.as_str())
+                })
+            {
+                return false;
+            }
             // Drop stale out-of-order broadcasts. Server-side plan mutations
             // snapshot under the lock but send after releasing it, so two
             // racing mutations can deliver an older version after a newer

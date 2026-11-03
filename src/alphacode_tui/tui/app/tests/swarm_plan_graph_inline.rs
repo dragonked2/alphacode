@@ -2016,3 +2016,29 @@ fn test_commit_with_emptied_stream_buffer_clears_streaming_preview_diagram() {
     crate::alphacode_tui::tui::mermaid::clear_active_diagrams();
 }
 
+
+
+#[test]
+fn fresh_remote_session_rejects_another_sessions_workspace_plan() {
+    let mut app = create_test_app();
+    app.is_remote = true;
+    app.remote_session_id = Some("fresh-session".into());
+    let rt = tokio::runtime::Runtime::new().unwrap();
+    let _guard = rt.enter();
+    let mut remote = crate::alphacode_tui::tui::backend::RemoteConnection::dummy();
+    remote.mark_history_loaded();
+    let event = |participant: &str| crate::protocol::ServerEvent::SwarmPlan {
+        swarm_id: "shared-workspace".into(),
+        version: 4,
+        items: vec![swarm_plan_graph_item("old-task", "Old session work")],
+        participants: vec![participant.into()],
+        reason: Some("reconnect".into()),
+        summary: None,
+    };
+    app.handle_server_event(event("old-session"), &mut remote);
+    assert!(app.swarm_plan_items.is_empty());
+    assert!(app.swarm_plan_version.is_none());
+    app.handle_server_event(event("fresh-session"), &mut remote);
+    assert_eq!(app.swarm_plan_items.len(), 1);
+    assert_eq!(app.swarm_plan_version, Some(4));
+}

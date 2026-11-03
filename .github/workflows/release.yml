@@ -55,7 +55,7 @@ jobs:
             os: ubuntu-22.04-arm
             archive: alphacode-linux-arm64
           - target: x86_64-apple-darwin
-            os: macos-latest
+            os: macos-15-intel
             archive: alphacode-macos-x86_64
           - target: aarch64-apple-darwin
             os: macos-latest
@@ -206,9 +206,33 @@ jobs:
           HOST="target/$TARGET/release/AlphaCode.Desktop.exe"
           test -f "$BIN"  || { echo "::error::$BIN was not produced"; exit 1; }
           test -f "$HOST" || { echo "::error::$HOST was not produced - the GUI host must ship beside the binary"; exit 1; }
-          zip -j -9 "${ARCHIVE_BASE}.zip" "$BIN" "$HOST"
+          # Do not shell out to `zip`/`sha256sum` here. This step runs under the
+          # bash that ships with Git for Windows, which has no `zip` binary at
+          # all, and whose `sha256sum ... > file` intermittently fails with
+          # "failed to set file descriptor text/binary mode: Bad file
+          # descriptor" and then leaves a zero-byte .sha256 beside a valid
+          # archive - a silent release defect. scripts/release-build.sh
+          # packages the Windows archive in Python for exactly these reasons;
+          # keep the two paths identical. Writing with arcname=basename keeps
+          # `zip -j` semantics, so both files land at the archive root and
+          # `resolve_desktop_host()` still finds the host as a sibling.
+          python - "$BIN" "$HOST" "${ARCHIVE_BASE}.zip" <<'PY'
+          import os, sys, zipfile
+
+          bin_path, host_path, out = sys.argv[1:4]
+          with zipfile.ZipFile(out, "w", zipfile.ZIP_DEFLATED, compresslevel=9) as zf:
+              for path in (bin_path, host_path):
+                  zf.write(path, arcname=os.path.basename(path))
+          PY
           unzip -l "${ARCHIVE_BASE}.zip"
-          sha256sum "${ARCHIVE_BASE}.zip" > "${ARCHIVE_BASE}.sha256"
+          python - "${ARCHIVE_BASE}.zip" "${ARCHIVE_BASE}.sha256" <<'PY'
+          import hashlib, os, sys
+
+          archive, out = sys.argv[1], sys.argv[2]
+          digest = hashlib.sha256(open(archive, "rb").read()).hexdigest()
+          with open(out, "w", encoding="ascii", newline="\n") as fh:
+              fh.write(f"{digest}  {os.path.basename(archive)}\n")
+          PY
           cat "${ARCHIVE_BASE}.sha256"
 
       # Structural AV guard. `alphacode.exe` must not carry a second executable
@@ -369,9 +393,15 @@ jobs:
           fail_on_unmatched_files: true
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+  alpine:
+    name: Alpine release builds
+    needs: create-release
+    uses: ./.github/workflows/build-alpine.yml
+    secrets: inherit
+
   release:
     name: publish release
-    needs: build
+    needs: [build, alpine]
     runs-on: ubuntu-latest
     # The build job already uploaded the archive assets directly to the
     # release. Here we only need to merge the per-asset .sha256 files into
@@ -391,8 +421,12 @@ jobs:
             cat "$f" >> SHA256SUMS
           done
           sort -u -o SHA256SUMS SHA256SUMS
+          test "$(wc -l < SHA256SUMS)" -eq 8 || { echo "::error::Expected checksums for all eight platform archives"; exit 1; }
       - name: Upload combined SHA256SUMS
         uses: softprops/action-gh-release@v2
         with:
+          tag_name: ${{ github.ref_name }}
+          draft: false
+          make_latest: true
           files: SHA256SUMS
           fail_on_unmatched_files: false

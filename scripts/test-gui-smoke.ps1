@@ -1,4 +1,4 @@
-# Windows-only smoke test of the WPF shell and JSON-lines polling. The fake
+﻿# Windows-only smoke test of the WPF shell and JSON-lines polling. The fake
 # bridge has no network access and the window uses an isolated settings folder.
 $ErrorActionPreference = 'Stop'
 $testRoot = Join-Path ([IO.Path]::GetTempPath()) ('alphacode-gui-smoke-' + [guid]::NewGuid().ToString('N'))
@@ -67,7 +67,7 @@ $testTimer.Add_Tick({
     if ($script:testStep -eq 6 -and ($script:modelRequestPending -or @($seen -split "`n" | Where-Object { $_ -match '"action":"model"' }).Count -lt 2)) { return }
     $script:testStep++
     switch ($script:testStep) {
-        1 { Open-ModelChooser; $controls.ModelSearch.Text = 'test-b'; $controls.ModelResults.SelectedItem = 'test-b'; Apply-ModelChoice }
+        1 { Open-ModelChooser; $controls.ModelSearch.Text = 'test-b'; $controls.ModelResults.SelectedValue = 'test-b'; Apply-ModelChoice }
         2 { $controls.EffortPicker.SelectedValue = 'high' }
         3 { $controls.Prompt.Text = 'Smoke test prompt'; $controls.Send.RaiseEvent([Windows.RoutedEventArgs]::new([Windows.Controls.Primitives.ButtonBase]::ClickEvent)); if ($controls.ResponseActivity.Visibility -ne 'Visible' -or $controls.ResponseStage.Text -ne 'Sending your prompt') { throw 'Sending a prompt did not immediately show loading feedback' } }
         4 {
@@ -95,7 +95,7 @@ $testTimer.Add_Tick({
             Open-ModelChooser
             if (-not $controls.ModelPopup.IsOpen -or $controls.ModelResults.Items.Count -ne 2) { throw 'Searchable model chooser did not show the available models' }
             $controls.ModelSearch.Text = 'TEST-B'
-            if ($controls.ModelResults.Items.Count -ne 1 -or [string]$controls.ModelResults.Items[0] -ne 'test-b') { throw 'Model search is not case-insensitive' }
+            if ($controls.ModelResults.Items.Count -ne 1 -or [string]$controls.ModelResults.Items[0].id -ne 'test-b') { throw 'Model search is not case-insensitive' }
             $window.UpdateLayout(); $controls.ModelPopupSurface.UpdateLayout(); Save-SmokeImage 'model-chooser.png' $controls.ModelPopupSurface
             $controls.ModelSearch.Text = 'missing-model'
             if ($controls.ModelEmpty.Visibility -ne 'Visible' -or $controls.ApplyModelChoice.IsEnabled) { throw 'Model search has no useful empty state' }
@@ -109,11 +109,19 @@ $testTimer.Add_Tick({
             if ($controls.ModelChooser.IsEnabled -or $script:availableModels.Count) { throw 'Empty provider catalogs still offer model selection' }
             $form = New-SettingsWindow; $form.Show(); Select-SettingsSection 'Models'
             if ($script:settingsControls.ModelList.Items.Count -ne 0 -or $script:settingsControls.UseModel.IsEnabled) { throw 'Settings offered a placeholder as a real model' }
+            Select-SettingsSection 'Providers'
+            Set-ProviderCatalog @([pscustomobject]@{id='openai'; name='OpenAI'; configured=$false; detail='No credentials saved'; oauth=$true; api_key=$true; endpoint=$false; local=$false; setup_label=''})
+            if ($script:settingsControls.ProviderBrowser.Visibility -ne 'Visible' -or $script:settingsControls.ProviderKey -isnot [Windows.Controls.PasswordBox]) { throw 'Settings lost browser sign-in or masked API-key input' }
+            $script:settingsControls.ProviderKey.Password = 'fixture-secret-not-a-real-key'
+            Save-GuiSettings
+            if ([IO.File]::ReadAllText((Join-Path $env:LOCALAPPDATA 'AlphaCode/gui.json')).Contains('fixture-secret')) { throw 'Provider credential leaked into GUI preferences' }
+            $script:settingsControls.ProviderKey.Clear()
+            $form.UpdateLayout(); Save-SmokeImage 'settings-providers.png' $form
             $form.Close(); Set-Snapshot $originalSnapshot
             if (-not $controls.ModelPicker.Items.Contains('test-b') -or $controls.ModelPicker.Items.Count -ne 2) { throw 'Model catalog did not recover after an empty snapshot' }
             Write-SmokePhase 'picker'
             Initialize-NativeWorkspacePicker
-            $pickerFolder = Join-Path $env:ALPHACODE_GUI_SMOKE_IMAGES 'picker-' + [string][char]0x627 + [string][char]0x62e + [string][char]0x62a + [string][char]0x628 + [string][char]0x627 + [string][char]0x631 + '-' + [string][char]0x5de5 + [string][char]0x4f5c
+            $pickerFolder = Join-Path $env:ALPHACODE_GUI_SMOKE_IMAGES ('picker-' + [string][char]0x627 + [string][char]0x62e + [string][char]0x62a + [string][char]0x628 + [string][char]0x627 + [string][char]0x631 + '-' + [string][char]0x5de5 + [string][char]0x4f5c)
             [IO.Directory]::CreateDirectory($pickerFolder) | Out-Null
             $pickerOptions = [AlphaCode.Desktop.WorkspacePicker]::Probe($pickerFolder)
             if (($pickerOptions -band 0x860) -ne 0x860 -or ($pickerOptions -band 0x200) -ne 0) { throw 'Native picker is not configured for one existing filesystem folder' }
@@ -320,7 +328,7 @@ class FakeBridge {
    else if (line.Contains("\"model\"")) Console.WriteLine("{\"ok\":true,\"model\":\"test-b\"}");
    else if (line.Contains("\"effort\"")) Console.WriteLine("{\"ok\":true,\"effort\":\"high\"}");
    else if (line.Contains("\"prompt\"")) Console.WriteLine("{\"ok\":true,\"sent\":true}");
-   else Console.WriteLine("{\"ok\":true,\"sessions\":[{\"id\":\"__companion__\",\"title\":\"AlphaCode chat\",\"state\":\"ready\",\"detail\":\"Ready\"},{\"id\":\"project-1\",\"working_dir\":\"C:/workspace/sample\",\"title\":\"Sample project\",\"state\":\"ready\",\"detail\":\"Ready\"}],\"working\":0,\"attention\":0,\"offline\":0,\"connected_servers\":1,\"owned_busy\":false,\"model\":\"test-a\",\"effort\":\"none\",\"models\":[\"test-a\",\"test-b\"],\"reply\":\"\"}");
+   else Console.WriteLine("{\"ok\":true,\"sessions\":[{\"id\":\"__companion__\",\"title\":\"AlphaCode chat\",\"state\":\"ready\",\"detail\":\"Ready\"},{\"id\":\"project-1\",\"working_dir\":\"C:/workspace/sample\",\"title\":\"Sample project\",\"state\":\"ready\",\"detail\":\"Ready\"}],\"working\":0,\"attention\":0,\"offline\":0,\"connected_servers\":1,\"owned_busy\":false,\"model\":\"test-a\",\"effort\":\"none\",\"models\":[\"test-a\",\"test-b\"],\"model_options\":[{\"id\":\"test-a\",\"provider\":\"Connected test provider\"},{\"id\":\"test-b\",\"provider\":\"Connected test provider\"}],\"reply\":\"\"}");
   }
  }
 }
@@ -344,7 +352,7 @@ try {
     $env:ALPHACODE_GUI_SMOKE_PID = Join-Path $testRoot 'bridge.pid'
     $env:ALPHACODE_GUI_SMOKE_DONE = Join-Path $testRoot 'done'
     $gui = Start-Process powershell.exe -ArgumentList @('-NoProfile','-ExecutionPolicy','Bypass','-STA','-File', ('"' + $testScript + '"'), '-Executable', ('"' + $fakeExe + '"')) -WindowStyle Hidden -PassThru
-    for ($attempt = 0; $attempt -lt 45 -and -not (Test-Path -LiteralPath $env:ALPHACODE_GUI_SMOKE_DONE); $attempt++) {
+    for ($attempt = 0; $attempt -lt 120 -and -not (Test-Path -LiteralPath $env:ALPHACODE_GUI_SMOKE_DONE); $attempt++) {
         Start-Sleep -Seconds 1
         $gui.Refresh()
         if ($gui.HasExited) { break }

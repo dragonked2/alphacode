@@ -27,6 +27,7 @@ mod tests {
     #[derive(Default, Clone)]
     struct RecordingProvider {
         requests: Arc<Mutex<Vec<Request>>>,
+        tool_once: Arc<std::sync::atomic::AtomicBool>,
     }
 
     #[async_trait::async_trait]
@@ -38,6 +39,22 @@ mod tests {
             _system: &str,
             _resume: Option<&str>,
         ) -> anyhow::Result<EventStream> {
+            if self
+                .tool_once
+                .swap(false, std::sync::atomic::Ordering::SeqCst)
+            {
+                return Ok(Box::pin(tokio_stream::iter([
+                    Ok(StreamEvent::ToolUseStart {
+                        id: "denied-write".into(),
+                        name: "write".into(),
+                    }),
+                    Ok(StreamEvent::ToolInputDelta(
+                        r#"{"file_path":"must-not-exist","content":"denied"}"#.into(),
+                    )),
+                    Ok(StreamEvent::ToolUseEnd),
+                    Ok(StreamEvent::MessageEnd { stop_reason: None }),
+                ])));
+            }
             Ok(Box::pin(tokio_stream::iter([
                 Ok(StreamEvent::TextDelta("Inventory checked.".into())),
                 Ok(StreamEvent::MessageEnd { stop_reason: None }),
@@ -62,6 +79,32 @@ mod tests {
         }
         fn fork(&self) -> Arc<dyn Provider> {
             Arc::new(self.clone())
+        }
+    }
+
+    #[tokio::test]
+    async fn denied_tool_records_policy_result_in_both_turn_paths() {
+        let _guard = crate::storage::lock_test_env();
+        for streaming in [false, true] {
+            let provider = Arc::new(RecordingProvider::default());
+            provider
+                .tool_once
+                .store(true, std::sync::atomic::Ordering::SeqCst);
+            let mut agent = Agent::new(provider, crate::tool::Registry::empty());
+            agent.allowed_tools = Some(["read".into()].into_iter().collect());
+            if streaming {
+                let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+                agent
+                    .run_once_streaming_mpsc("Try writing", Vec::new(), None, tx)
+                    .await
+                    .unwrap();
+            } else {
+                agent.run_once_capture("Try writing").await.unwrap();
+            }
+            assert!(agent.session.messages.iter().flat_map(|m| &m.content).any(|block| matches!(block,
+                crate::message::ContentBlock::ToolResult { tool_use_id, content, is_error: Some(true) }
+                if tool_use_id == "denied-write" && content.contains("session tool allowlist") && !content.contains("session interrupted")
+            )));
         }
     }
 

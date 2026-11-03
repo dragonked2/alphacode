@@ -32,6 +32,32 @@ fn desktop_model_options(
         .collect()
 }
 
+fn desktop_model_choices(
+    catalog: &crate::alphacode_provider_core::ModelCatalogSnapshot,
+) -> Vec<Value> {
+    desktop_model_options(catalog.clone())
+        .into_iter()
+        .map(|model| {
+            let providers: std::collections::BTreeSet<_> = catalog
+                .model_routes
+                .iter()
+                .filter(|route| route.available && route.model == model)
+                .map(|route| route.provider.as_str())
+                .collect();
+            let provider = if providers.is_empty() {
+                catalog
+                    .provider_name
+                    .as_deref()
+                    .unwrap_or("Connected provider")
+                    .to_string()
+            } else {
+                providers.into_iter().collect::<Vec<_>>().join(" · ")
+            };
+            json!({"id": model, "provider": provider})
+        })
+        .collect()
+}
+
 #[expect(
     clippy::too_many_arguments,
     reason = "desktop control shares existing server state"
@@ -250,8 +276,10 @@ pub(super) async fn execute(
                 }
                 "state" => {
                     let (saved, label) = agent.session_bookmark();
+                    let catalog = agent.model_catalog_snapshot();
+                    let choices = desktop_model_choices(&catalog);
                     Ok(
-                        json!({"model": agent.provider_model(), "provider": agent.provider_name(), "models": desktop_model_options(agent.model_catalog_snapshot()), "effort": agent.current_reasoning_effort(), "title": agent.session_display_title(), "saved": saved, "save_label": label}),
+                        json!({"model": agent.provider_model(), "provider": agent.provider_name(), "models": desktop_model_options(catalog), "model_options": choices, "effort": agent.current_reasoning_effort(), "title": agent.session_display_title(), "saved": saved, "save_label": label}),
                     )
                 }
                 "tools" => Ok(json!(agent.tool_names().await)),
@@ -320,7 +348,7 @@ pub(super) async fn execute(
 
 #[cfg(test)]
 mod tests {
-    use super::desktop_model_options;
+    use super::{desktop_model_choices, desktop_model_options};
     use crate::alphacode_provider_core::{ModelCatalogSnapshot, ModelRoute};
 
     #[test]
@@ -354,6 +382,10 @@ mod tests {
                 route("local-model", true),
             ],
         );
+        let choices = desktop_model_choices(&catalog);
+        assert_eq!(choices.len(), 2);
+        assert_eq!(choices[0]["id"], "shared");
+        assert_eq!(choices[0]["provider"], "test");
         assert_eq!(desktop_model_options(catalog), ["shared", "local-model"]);
     }
 
