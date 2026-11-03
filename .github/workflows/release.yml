@@ -180,17 +180,19 @@ jobs:
       # archive is assembled explicitly.
       - name: Build Windows binary
         if: runner.os == 'Windows'
-        uses: taiki-e/upload-rust-binary-action@v1
+        shell: bash
         env:
           ALPHACODE_RELEASE_BUILD: "1"
           ALPHACODE_BUILD_GIT_DIRTY: "0"
-        with:
-          bin: alphacode
-          target: ${{ matrix.target }}
-          archive: none
-          checksum: none
-          locked: true
-          profile: release
+          TARGET: ${{ matrix.target }}
+        # Plain cargo rather than the release action: that action exists to
+        # archive and upload one binary, whereas Windows needs a two-file
+        # archive plus a structural check before anything is published.
+        # `checksum: none` is not a valid value for it, and `archive: none`
+        # would still try to upload the bare exe.
+        run: |
+          set -euo pipefail
+          cargo build --release --locked --target "$TARGET" --bin alphacode
 
       - name: Package Windows archive (binary + GUI host)
         if: runner.os == 'Windows'
@@ -233,6 +235,7 @@ jobs:
             fi
           done
           echo "OK: single-PE alphacode.exe with the GUI host shipped separately"
+
 
       # Non-Windows targets keep using the generic action (a single tar.gz).
       - name: Build + archive + checksum + upload
@@ -352,6 +355,20 @@ jobs:
             echo "OK: binary version v${BIN_VERSION} matches release tag ${RELEASE_TAG}"
           fi
 
+
+      # Publish the verified archive. This replaces the upload the release
+      # action used to perform for Windows; it runs only after the structural
+      # guard, so an artifact with a nested executable can never be attached.
+      - name: Upload Windows release assets
+        if: runner.os == 'Windows'
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            ${{ matrix.archive }}.zip
+            ${{ matrix.archive }}.sha256
+          fail_on_unmatched_files: true
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
   release:
     name: publish release
     needs: build
