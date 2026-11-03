@@ -57,7 +57,7 @@ fn summarize_command(command: &str) -> String {
     if command.len() <= MAX_LOG_LEN {
         command.to_owned()
     } else {
-        format!("{}…", &command[..MAX_LOG_LEN])
+        format!("{}…", crate::util::truncate_str(command, MAX_LOG_LEN))
     }
 }
 
@@ -123,4 +123,15 @@ Never mix shell syntaxes."
             }
         }
     })
+}
+
+#[cfg(test)]
+mod log_tests {
+    #[test]
+    fn command_log_clipping_preserves_utf8_boundaries() {
+        let command = format!("{}{}", "a".repeat(511), "界".repeat(20));
+        let summary = super::summarize_command(&command);
+        assert!(summary.ends_with('…'));
+        assert!(summary.len() <= 515);
+    }
 }
