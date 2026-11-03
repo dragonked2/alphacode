@@ -61,3 +61,28 @@ fn test_ctrl_c_in_copy_mode_without_selection_still_falls_through() {
         "Ctrl+C without a selection keeps interrupt/quit behavior"
     );
 }
+
+#[test]
+fn copy_export_error_is_consumed_without_interrupting_the_turn() {
+    let mut app = create_test_app();
+    let session_id = app.session.id.clone();
+    app.pending_session_copy = Some(crate::alphacode_tui::tui::app::commands_copy::PendingSessionCopy {
+        request_id: 77, session_id, started: std::time::Instant::now(), live_text:String::new(),
+    });
+    assert!(!crate::alphacode_tui::tui::app::commands_copy::handle_session_copy_error(&mut app, 78, "unrelated error"));
+    assert!(app.pending_session_copy.is_some());
+    assert!(crate::alphacode_tui::tui::app::commands_copy::handle_session_copy_error(&mut app, 77, "Session changed; run /copy again"));
+    assert!(app.pending_session_copy.is_none());
+}
+
+#[test]
+fn old_daemon_copy_variant_error_starts_saved_snapshot_recovery() {
+    let mut app = create_test_app();
+    let session_id = app.session.id.clone();
+    app.pending_session_copy = Some(crate::alphacode_tui::tui::app::commands_copy::PendingSessionCopy {
+        request_id: 77, session_id, started: std::time::Instant::now(), live_text:"live tail".into(),
+    });
+    assert!(crate::alphacode_tui::tui::app::commands_copy::handle_session_copy_error(&mut app, 0, "Invalid request: unknown variant `get_session_transcript`"));
+    assert!(app.pending_session_copy.is_none());
+    assert!(app.clipboard_copy_job.is_some());
+}

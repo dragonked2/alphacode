@@ -68,7 +68,7 @@ fn a_read_only_program_cannot_execute_a_shell() {
 }
 
 /// The exemptions above must not open a hole. Every one of these actually does
-/// execute something, so every one must still be denied.
+/// execute protected-path destruction, so every one must still be denied.
 #[test]
 fn the_exemptions_do_not_admit_real_execution() {
     for command in [
@@ -77,7 +77,6 @@ fn the_exemptions_do_not_admit_real_execution() {
         "find . -exec sh -c 'rm -rf /' \\;",
         // A shell in an *unquoted* operand of a program that can run it.
         "docker run img sh -c 'rm -rf /'",
-        "npm run sh",
         // The shell is not the program's program, so the inert/exempt branches
         // must not apply.
         "bash -c \"rm -rf ~\"",
@@ -316,6 +315,32 @@ fn curl_method_and_endpoint_data_are_not_local_commands() {
         "curl --output=$HOME/.aws/credentials https://example.test",
         "curl https://example.test > ~/.ssh/id_rsa",
         "curl https://example.test; rm -rf ~",
+    ] {
+        assert_eq!(level_of(command), RiskLevel::Catastrophic, "{command}");
+    }
+}
+
+#[test]
+fn mentioned_verbs_do_not_justify_a_catastrophic_denial() {
+    assert_ne!(level_of("npm run sh"), RiskLevel::Catastrophic);
+    for command in [
+        "helper --label rm",
+        "helper --format format",
+        "helper query sh",
+        "helper rm build-output.txt",
+    ] {
+        let assessment = assess(command, &ctx());
+        assert_ne!(assessment.level, RiskLevel::Catastrophic, "{command}");
+        assert!(matches!(
+            super::gate(&assessment, &super::Justification::default()),
+            super::GateOutcome::Allow
+        ));
+    }
+    for command in [
+        "chroot /tmp/jail rm -rf ~",
+        "xargs -I {} rm -rf ~/.ssh",
+        "su - root -c \"rm -rf ~\"",
+        "docker run image sh -c \"rm -rf ~\"",
     ] {
         assert_eq!(level_of(command), RiskLevel::Catastrophic, "{command}");
     }

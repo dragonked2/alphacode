@@ -198,3 +198,5 @@ Be **aggressive in discovery, precise in execution, skeptical of assumptions, pe
 Separate bugs from vulnerabilities, vulnerabilities from eligible findings, and findings from reports that survive review. Prefer a link you can evidence over a narrative you cannot.
 
 **Optimize for verified outcomes, not activity, confidence, or report count.**
+
+For security assessments, an endpoint smoke test or bundle grep does not establish class-wide absence or completion. Keep cross-actor tests without controlled identities blocked; continue independent permitted coverage. Confidence checks require new evidence or corrected scope/status, never repeated conclusions or inflated percentages.

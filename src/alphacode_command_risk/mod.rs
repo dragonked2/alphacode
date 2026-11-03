@@ -665,12 +665,11 @@ fn assess_segment(tokens: &[Token], ctx: &RiskContext, findings: &mut Vec<RiskFi
                 .iter()
                 .find_map(|prefix| text.strip_prefix(prefix).filter(|v| !v.is_empty()))
             };
-            if let Some(raw) = destination.filter(|value| *value != "-") {
-                if let Some(finding) =
+            if let Some(raw) = destination.filter(|value| *value != "-")
+                && let Some(finding) =
                     paths::classify_target(&paths::expand(raw, ctx), raw, false, ctx)
-                {
-                    findings.push(finding);
-                }
+            {
+                findings.push(finding);
             }
         }
     }
@@ -696,8 +695,24 @@ fn assess_segment(tokens: &[Token], ctx: &RiskContext, findings: &mut Vec<RiskFi
             None
         });
         if let Some(name) = hidden {
+            // A mentioned verb is not evidence of a protected-path write.
+            // Inspect resolvable nested commands; retain an advisory assessment
+            // for opaque arguments instead of denying every occurrence.
+            for (index, token) in tokens.iter().enumerate().skip(1) {
+                let nested = token.basename();
+                if !token.was_quoted && (is_destructive_name(&nested) || is_shell_program(&nested))
+                {
+                    assess_segment(&tokens[index..], ctx, findings);
+                    break;
+                }
+                if token.was_quoted && wrapped_by.is_some() {
+                    for segment in tokenize::split_segments(&token.text) {
+                        assess_segment(&segment, ctx, findings);
+                    }
+                }
+            }
             findings.push(RiskFinding {
-                level: RiskLevel::Catastrophic,
+                level: RiskLevel::Confirm,
                 reason: format!(
                     "`{name}` appears inside a `{program_name}` invocation whose \
                      real command line could not be resolved statically"

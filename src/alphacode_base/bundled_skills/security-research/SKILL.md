@@ -85,3 +85,13 @@ For white-box work trace entry point, transformations, guards, sink, and callers
 Read this skill's `handbook` reference for detailed authorization, credential/session handling, authenticated testing, source-first analysis, chaining, evidence ledgers, and research-memory procedures when those mechanics are needed. It preserves the extended manual without loading it on every hunt.
 
 Methodology reference: [OWASP Web Security Testing Guide](https://owasp.org/www-project-web-security-testing-guide/). Verify current target policy and technology-specific behavior during the engagement; a generic checklist cannot establish either.
+
+## Do not mistake a smoke test for an assessment
+
+A few `/me` requests, UUID-shaped paths and a bundle keyword search are a reconnaissance checkpoint, not a completed IDOR/BAC/RCE hunt. Invented paths that return a SPA document do not test ownership. A missing second controlled identity blocks cross-account comparisons; it does not refute IDOR, and it does not block independent authorized lifecycle, session, source/DOM, API-version or workflow questions. Inspect observed functionality and requests before declaring a class inapplicable. Missing upload/SSRF strings in three bundles means only that those searches found no candidate; never convert that into “no RCE surface exists.” Keep other actors and server-only/dynamic behavior explicitly untested.
+
+Do not silently replace the program's rules with a self-invented read-only assessment. Resolve official scope and permitted actions first; within them, choose minimal reversible owned-data experiments appropriate to the user's request. Do not infer permission for unrelated hosts or real-user resources. Keep cookies/tokens out of conversational output; select only target-scoped credentials needed for an experiment and redact artifacts.
+
+Before closing, reconcile every observed feature and promising clue with the ledger. Continue the next independent, permitted experiment while one prerequisite is blocked. A final negative report must identify exact checks, artifacts, untested cells and actual budget/blocking conditions; say “no issue observed in these checks,” never “all boundaries verified” or “class refuted” without corresponding coverage. A failed skill load is not proof its contents exist in a different skill.
+
+A confidence follow-up must produce a new discriminating experiment, inspect previously unreviewed evidence, or correct a task's status/scope. Repeating the same report, increasing percentages, and re-grepping identical artifacts is not validation. Keep blocked work blocked, and checkpoint an actionable next step rather than certifying an incomplete campaign as complete. Do not promise findings or manufacture endless equivalent tests.

@@ -359,6 +359,7 @@ pub fn build_todo_completion_continuation_message(todos: &[TodoItem]) -> String 
         .collect();
 
     let mut message = String::from(TODO_COMPLETION_CONTINUATION_MESSAGE);
+    message.push_str("\nDo not restate the final report or inflate confidence. Produce new evidence, correct an overbroad claim, or restore an untested/blocked task to its honest status and continue independent work. A bounded negative result does not establish universal absence.");
     if missing.is_empty() && weak.is_empty() {
         message.push_str(
             "\n- Taken together the completed work is not validated strongly enough yet: re-verify the finished todos with concrete evidence.",

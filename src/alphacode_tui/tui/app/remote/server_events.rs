@@ -1355,6 +1355,9 @@ pub(in crate::alphacode_tui::tui::app) fn handle_server_event(
             message,
             retry_after_secs,
         } => {
+            if super::super::commands_copy::handle_session_copy_error(app, id, &message) {
+                return true;
+            }
             // The server rejects a Message request with this error while its
             // previous turn is still running. This typically happens when a
             // reload/reconnect raced the turn-end dispatch: the history

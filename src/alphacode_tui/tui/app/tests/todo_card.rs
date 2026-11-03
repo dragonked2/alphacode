@@ -441,6 +441,7 @@ fn dismissed_todo_card_does_not_reopen_on_the_next_write() {
 #[test]
 fn new_session_does_not_show_the_previous_sessions_todos_or_plan() {
     with_temp_alphacode_home(|| {
+        let _pin = PinTodosEnvGuard::enable();
         let mut app = create_test_app();
         app.todos_view_enabled = true;
         let old_session_id = app.session.id.clone();
@@ -474,6 +475,9 @@ fn new_session_does_not_show_the_previous_sessions_todos_or_plan() {
             "precondition: the Todo panel cached the old session's list"
         );
         app.show_todo_card();
+        // The pinned band is a config-gated surface (off by default); enable it
+        // through the same env override the other pinned-band tests use.
+        let _pin = PinTodosEnvGuard::enable();
         app.refresh_pinned_todos_now();
         assert!(
             app.pinned_todos_payload
@@ -484,7 +488,7 @@ fn new_session_does_not_show_the_previous_sessions_todos_or_plan() {
         app.todo_card_dismissed = true;
 
         // Same path `/clear` uses to start a fresh session.
-        commands::reset_current_session(&mut app);
+        crate::alphacode_tui::tui::app::commands_review::reset_current_session(&mut app);
         assert_ne!(app.session.id, old_session_id, "a new session was created");
 
         // Nothing about the old session may survive into the new one.

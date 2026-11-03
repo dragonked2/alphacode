@@ -61,6 +61,8 @@ pub enum ClaimType {
     HttpStatus(u16),
     /// "vulnerability X was confirmed"
     VulnerabilityConfirmed(String),
+    /// Class-wide absence cannot be established by a finite endpoint sample.
+    SecurityAbsence,
     /// Generic claim that can't be mechanically verified.
     Generic,
 }
@@ -287,6 +289,24 @@ pub fn extract_claims(report: &str) -> Vec<Claim> {
             continue;
         }
 
+        let lower = line.to_ascii_lowercase();
+        if [
+            "no rce surface exists",
+            "rce surface is absent",
+            "all access controls verified intact",
+            "idor and bac are refuted",
+            "clean across every boundary",
+        ]
+        .iter()
+        .any(|claim| lower.contains(claim))
+        {
+            claims.push(Claim {
+                text: line.to_string(),
+                claim_type: ClaimType::SecurityAbsence,
+            });
+            continue;
+        }
+
         // File modification claims
         if let Some(file_path) = extract_file_claim(line) {
             claims.push(Claim {
@@ -426,6 +446,11 @@ pub fn check_claim(
         ClaimType::HttpStatus(status) => check_http_status_claim(claim, *status, evidence),
 
         ClaimType::VulnerabilityConfirmed(vuln) => check_vulnerability_claim(claim, vuln, evidence),
+
+        ClaimType::SecurityAbsence => ClaimCheckResult::unverified(
+            claim,
+            "Endpoint samples and source keyword searches do not establish class-wide absence. State the exact tested conditions, missing actors, unresolved coverage and next authorized experiment.",
+        ),
 
         ClaimType::Generic => ClaimCheckResult::unverified(
             claim,
@@ -1537,5 +1562,32 @@ mod tests {
             results.iter().all(|r| !r.verified),
             "an empty transcript must not verify anything"
         );
+    }
+}
+
+#[cfg(test)]
+mod absence_claim_tests {
+    use super::*;
+    #[test]
+    fn sampled_negative_results_do_not_certify_universal_absence() {
+        for text in [
+            "No RCE surface exists.",
+            "RCE surface is absent.",
+            "All access controls verified intact under the tested conditions.",
+            "IDOR and BAC are refuted on this surface.",
+        ] {
+            let claims = extract_claims(text);
+            assert!(
+                claims
+                    .iter()
+                    .any(|c| c.claim_type == ClaimType::SecurityAbsence)
+            );
+            assert!(
+                claims
+                    .iter()
+                    .all(|c| !check_claim(c, Path::new("."), &SessionEvidence::default()).verified)
+            );
+        }
+        assert!(extract_claims("No vulnerability confirmed. No issue observed in the tested requests; cross-account coverage is blocked.").is_empty());
     }
 }

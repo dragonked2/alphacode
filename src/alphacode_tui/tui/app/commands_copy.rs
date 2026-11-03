@@ -13,9 +13,12 @@ pub(super) struct PendingSessionCopy {
     pub live_text: String,
 }
 
+type ClipboardCopyResult = Result<(ClipboardWriteResult, usize), String>;
+
 pub(super) struct ClipboardCopyJob {
     session_id: String,
-    result: Receiver<(ClipboardWriteResult, usize)>,
+    result: Receiver<ClipboardCopyResult>,
+    saved_snapshot: bool,
 }
 
 fn current_session_id(app: &App) -> &str {
@@ -135,25 +138,67 @@ pub(super) fn receive_session_transcript(
 }
 
 fn start_clipboard_copy(app: &mut App, session_id: String, text: Option<String>) {
-    let Some(text) = text.filter(|text| !text.is_empty()) else {
+    start_clipboard_job(app, session_id, text, None);
+}
+
+fn unsupported_transcript_request(message: &str) -> bool {
+    message.contains("unknown variant `get_session_transcript`")
+}
+
+pub(super) fn handle_session_copy_error(app: &mut App, id: u64, message: &str) -> bool {
+    let Some(pending) = app.pending_session_copy.as_ref() else {
+        return false;
+    };
+    let legacy = unsupported_transcript_request(message);
+    // Older servers report JSON decode failures with id=0 because the request
+    // could not be decoded. Do not consume unrelated errors on the connection.
+    if id != pending.request_id && !(id == 0 && legacy) {
+        return false;
+    }
+    let pending = app
+        .pending_session_copy
+        .take()
+        .expect("checked pending copy");
+    if current_session_id(app) != pending.session_id {
+        return true;
+    }
+    if legacy {
+        start_clipboard_job(app, pending.session_id, None, Some(pending.live_text));
+    } else {
+        app.set_status_notice(format!("Could not copy this session: {message}"));
+    }
+    true
+}
+
+fn start_clipboard_job(
+    app: &mut App,
+    session_id: String,
+    text: Option<String>,
+    saved_live: Option<String>,
+) {
+    if saved_live.is_none() && text.as_ref().is_none_or(|text| text.is_empty()) {
         app.set_status_notice("Nothing in this session to copy");
         return;
-    };
+    }
+    let saved_snapshot = saved_live.is_some();
+    let worker_session = session_id.clone();
     let (tx, rx) = std::sync::mpsc::channel();
-    // Native clipboard/helper I/O can block. Keep it off the event/render loop.
-    match std::thread::Builder::new()
-        .name("session-clipboard".to_string())
-        .spawn(move || {
-            let lines = text.lines().count();
-            let copied = super::helpers::copy_to_clipboard_status(&text);
-            let _ = tx.send((copied, lines));
-        }) {
+    // Disk recovery and native clipboard I/O stay off the socket/render loop.
+    match std::thread::Builder::new().name("session-clipboard".into()).spawn(move || {
+        let result = (|| {
+            let text = if let Some(live) = saved_live {
+                let session = crate::session::Session::load_for_remote_startup(&worker_session)
+                    .map_err(|_| "This older server cannot export a live transcript and no saved session is available locally. Restart the daemon after upgrading, then run /copy.".to_string())?;
+                with_live_text(session.clipboard_transcript(), &live)
+            } else { text };
+            let text = text.filter(|text| !text.is_empty()).ok_or_else(|| "Nothing saved in this session to copy".to_string())?;
+            Ok((super::helpers::copy_to_clipboard_status(&text), text.lines().count()))
+        })();
+        let _ = tx.send(result);
+    }) {
         Ok(_) => {
-            app.clipboard_copy_job = Some(ClipboardCopyJob {
-                session_id,
-                result: rx,
-            });
-            app.set_status_notice("Copying the full session...");
+            app.clipboard_copy_job = Some(ClipboardCopyJob { session_id, result: rx, saved_snapshot });
+            app.set_status_notice(if saved_snapshot { "Older daemon: preparing the saved session snapshot..." } else { "Copying the full session..." });
         }
         Err(error) => app.set_status_notice(format!("Could not start session copy: {error}")),
     }
@@ -184,10 +229,12 @@ pub(super) fn poll_session_copy(app: &mut App) -> bool {
             };
             if current_session_id(app) == job.session_id {
                 match result {
-                    Ok((ClipboardWriteResult::Copied, lines)) => app.set_status_notice(format!(
+                    Ok(Ok((ClipboardWriteResult::Copied | ClipboardWriteResult::Forwarded, lines))) if job.saved_snapshot => app.set_status_notice(format!("Copied saved session snapshot · {lines} lines; restart the older daemon for live full export")),
+                    Ok(Err(error)) => app.set_status_notice(error),
+                    Ok(Ok((ClipboardWriteResult::Copied, lines))) => app.set_status_notice(format!(
                         "Copied entire session to clipboard · {lines} lines"
                     )),
-                    Ok((ClipboardWriteResult::Forwarded, lines)) => app.set_status_notice(format!("Full session sent to terminal clipboard · {lines} lines; terminal confirmation unavailable")),
+                    Ok(Ok((ClipboardWriteResult::Forwarded, lines))) => app.set_status_notice(format!("Full session sent to terminal clipboard · {lines} lines; terminal confirmation unavailable")),
                     _ => app.set_status_notice(
                         "Could not copy the session; clipboard unavailable — run /copy to retry",
                     ),
@@ -195,5 +242,21 @@ pub(super) fn poll_session_copy(app: &mut App) -> bool {
             }
             true
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn only_the_legacy_export_variant_triggers_saved_snapshot_recovery() {
+        assert!(super::unsupported_transcript_request(
+            "Invalid request: unknown variant `get_session_transcript`, expected `message`"
+        ));
+        assert!(!super::unsupported_transcript_request(
+            "Session changed; run /copy again"
+        ));
+        assert!(!super::unsupported_transcript_request(
+            "unknown variant `message`"
+        ));
     }
 }
