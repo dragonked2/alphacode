@@ -4,6 +4,18 @@ on:
   push:
     tags: ["v*.*.*"]
   workflow_dispatch:
+# Only one release build may publish a given ref at a time. Without this, two
+# runs for the same tag race: moving the tag to a newer commit while the
+# previous run is still uploading starts a second run, and the two then attach
+# assets for the same tag from *different* commits - leaving a release whose
+# platforms disagree on which commit they were built from (and, if the older
+# run is cancelled mid-publish, a release with missing assets).
+#
+# `cancel-in-progress` is deliberate: the newest run for a ref is the only one
+# whose commit is still tagged, so the superseded run must not publish.
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: true
 
 permissions:
   contents: write
