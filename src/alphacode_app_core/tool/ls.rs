@@ -80,7 +80,7 @@ impl Tool for LsTool {
         let params: LsInput = serde_json::from_value(input)?;
 
         let base_path = params.path.clone().unwrap_or_else(|| ".".to_string());
-        let base = ctx.resolve_path_guarded(Path::new(&base_path))?;
+        let base = ctx.resolve_path_for_read(Path::new(&base_path));
         let ignore_extra = params.ignore.clone();
 
         if !base.exists() {

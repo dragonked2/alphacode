@@ -72,6 +72,10 @@ $testTimer.Add_Tick({
         3 { $controls.Prompt.Text = 'Smoke test prompt'; $controls.Send.RaiseEvent([Windows.RoutedEventArgs]::new([Windows.Controls.Primitives.ButtonBase]::ClickEvent)); if ($controls.ResponseActivity.Visibility -ne 'Visible' -or $controls.ResponseStage.Text -ne 'Sending your prompt') { throw 'Sending a prompt did not immediately show loading feedback' } }
         4 {
             $controls.Sessions.SelectedValue = '__companion__'
+            $controls.Prompt.Text = 'before selected after'
+            $controls.Prompt.Select(7,8)
+            Insert-ComposerNewline $controls.Prompt
+            if ($controls.Prompt.Text -ne ("before " + [Environment]::NewLine + " after") -or $controls.Prompt.CaretIndex -ne 9 -or $controls.Prompt.SelectionLength -ne 0) { throw 'Composer newline lost surrounding text or misplaced the caret' }
             $controls.Prompt.Text = 'Draft for first chat'
             $controls.Sessions.SelectedValue = 'project-1'
             if ($controls.Prompt.Text) { throw 'A draft leaked into another chat' }
@@ -264,6 +268,8 @@ $testTimer.Add_Tick({
             $window.Width = 640; $window.Height = 540; $window.UpdateLayout(); Update-GuiLayout; $window.UpdateLayout()
             $sendPoint = $controls.Send.TranslatePoint([Windows.Point]::new(0,0), $window)
             if ($sendPoint.X + $controls.Send.ActualWidth -gt $window.ActualWidth -or $sendPoint.Y + $controls.Send.ActualHeight -gt $window.ActualHeight) { throw 'Minimum-size window clipped Send' }
+            $titlePoint = $controls.WorkspaceTitle.TranslatePoint([Windows.Point]::new(0,0), $controls.ChatSurface)
+            if ($titlePoint.Y -lt 0 -or ($titlePoint.Y + $controls.WorkspaceTitle.ActualHeight) -gt $controls.ChatSurface.RowDefinitions[0].ActualHeight) { throw 'Wrapped header actions clipped the workspace title' }
             if ($controls.ExamplesPanel.Visibility -ne 'Collapsed' -or $controls.EmptyState.ActualHeight -gt $controls.ChatSurface.RowDefinitions[2].ActualHeight) { throw 'Short-window empty state overlapped the composer' }
             $row = Get-SelectedSessionRow; $previousState = $row.state; $row.state = 'working'
             Update-ResponseActivity; $window.UpdateLayout()

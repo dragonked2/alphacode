@@ -1769,6 +1769,8 @@ fn test_model_picker_effort_variant_selection_stages_effort_in_remote_mode() {
         Some("high"),
         "the picked effort variant must be staged so it reaches the server (issue #427)"
     );
+    assert!(!app.display_messages().iter().any(|message| message.content.contains("could not be applied")),
+        "remote model selection must not apply effort to the local stand-in");
 }
 
 #[test]
@@ -1996,3 +1998,31 @@ fn test_catalog_update_rebuilds_open_model_picker_with_real_routes() {
     });
 }
 
+
+#[test]
+fn alphax_automatic_picker_and_selection_hide_cached_router_endpoints() {
+    let mut app = create_test_app();
+    let model = crate::alphacode_provider_metadata::route_cloak::free_route_default_model();
+    let endpoint = "https://router.example.test/v1";
+    app.is_remote = true;
+    app.remote_provider_model = Some(model.clone());
+    app.remote_provider_name = Some("Alphax Free".to_string());
+    app.remote_available_entries = vec![model.clone()];
+    app.remote_model_options = vec![crate::provider::ModelRoute {
+        model,
+        provider: "Alphax Free".to_string(),
+        api_method: "openai-compatible:alphax-free".to_string(),
+        available: true,
+        detail: endpoint.to_string(),
+        cheapness: None,
+    }];
+    app.open_model_picker();
+    let picker = app.inline_interactive_state.as_ref().unwrap();
+    assert!(!picker.entries.is_empty());
+    for route in picker.entries.iter().flat_map(|entry| &entry.options) {
+        assert!(!route.detail.contains(endpoint));
+        assert!(!route.detail.contains("https://"));
+    }
+    app.handle_key(KeyCode::Enter, KeyModifiers::empty()).unwrap();
+    assert!(!app.display_messages().iter().any(|message| message.content.contains(endpoint)));
+}

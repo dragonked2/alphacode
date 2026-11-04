@@ -3,7 +3,7 @@
 use super::{Tool, ToolContext, ToolOutput};
 use crate::alphacode_app_core::bus::{Bus, BusEvent, FileOp, FileTouch};
 use crate::alphacode_terminal_image::{ImageDisplayParams, ImageProtocol, display_image};
-use anyhow::Result;
+use anyhow::{Context, Result};
 use async_trait::async_trait;
 use serde_json::{Value, json};
 use std::path::Path;
@@ -163,7 +163,7 @@ impl Tool for ReadTool {
     }
 
     fn description(&self) -> &str {
-        "Read file contents (text, images, PDFs). Use offset/limit for large files. Always read before editing."
+        "Read files (text, images, PDFs) or list local directories. Use offset/limit for large files. Always read before editing."
     }
 
     fn parameters_schema(&self) -> Value {
@@ -174,15 +174,23 @@ impl Tool for ReadTool {
                 "intent": super::intent_schema_property(),
                 "file_path": {
                     "type": "string",
-                    "description": "Path to a file."
+                    "description": "Path to a file or directory on the host filesystem."
                 },
                 "start_line": {
                     "type": "integer",
                     "description": "1-based start line for text files."
                 },
+                "offset": {
+                    "type": "integer",
+                    "description": "0-based text line or directory entry offset. Do not combine with start_line/end_line."
+                },
+                "end_line": {
+                    "type": "integer",
+                    "description": "Inclusive 1-based end line for text files."
+                },
                 "limit": {
                     "type": "integer",
-                    "description": "Max text lines to read. Default 5000."
+                    "description": "Max text lines (default 5000) or directory entries (capped at 1000)."
                 }
             }
         })
@@ -201,10 +209,17 @@ impl Tool for ReadTool {
         let params = ReadInput::from_value(&input)?;
         let range = normalize_read_range(&params)?;
 
-        let path = ctx.resolve_path_guarded(Path::new(&params.file_path))?;
+        let path = ctx.resolve_path_for_read(Path::new(&params.file_path));
 
         // Check if file exists
-        if !path.exists() {
+        let metadata = match tokio::fs::metadata(&path).await {
+            Ok(metadata) => Some(metadata),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
+            Err(error) => {
+                return Err(error).with_context(|| format!("Cannot access {}", path.display()));
+            }
+        };
+        if metadata.is_none() {
             // Try to find similar files
             let suggestions = find_similar_files(&path);
             if suggestions.is_empty() {
@@ -216,6 +231,10 @@ impl Tool for ReadTool {
                     suggestions.join(", ")
                 ));
             }
+        }
+
+        if metadata.is_some_and(|metadata| metadata.is_dir()) {
+            return read_directory(&path, &params.file_path, range).await;
         }
 
         // Check for image files and display in terminal if supported
@@ -326,6 +345,82 @@ impl Tool for ReadTool {
                 })))
         }
     }
+}
+
+/// Enumerate only this directory, including hidden entries, without opening
+/// children or following directory links. Bound output and retain pagination.
+async fn read_directory(
+    path: &Path,
+    display_path: &str,
+    range: NormalizedReadRange,
+) -> Result<ToolOutput> {
+    const MAX_DIRECTORY_ENTRIES: usize = 1000;
+    let limit = range.limit.min(MAX_DIRECTORY_ENTRIES);
+    anyhow::ensure!(limit > 0, "Directory limit must be greater than zero.");
+    let mut directory = tokio::fs::read_dir(path)
+        .await
+        .with_context(|| format!("Cannot list directory {}", path.display()))?;
+    let mut skipped = 0;
+    let mut entries = Vec::new();
+    let mut more = false;
+    while let Some(entry) = directory
+        .next_entry()
+        .await
+        .with_context(|| format!("Cannot enumerate directory {}", path.display()))?
+    {
+        if skipped < range.offset {
+            skipped += 1;
+            continue;
+        }
+        if entries.len() == limit {
+            more = true;
+            break;
+        }
+        let kind = entry.file_type().await?;
+        // Escape controls in filenames so listing an untrusted folder cannot
+        // inject terminal escapes or forge output rows.
+        let name: String = entry
+            .file_name()
+            .to_string_lossy()
+            .chars()
+            .flat_map(|ch| {
+                if ch.is_control() {
+                    ch.escape_default().collect::<Vec<_>>()
+                } else {
+                    vec![ch]
+                }
+            })
+            .collect();
+        let suffix = if kind.is_symlink() {
+            "@"
+        } else if kind.is_dir() {
+            "/"
+        } else {
+            ""
+        };
+        entries.push((!kind.is_dir(), name, suffix));
+    }
+    entries.sort();
+    let mut output = format!("Directory: {display_path}\n");
+    for (_, name, suffix) in &entries {
+        output.push_str(&format!("{name}{suffix}\n"));
+    }
+    if entries.is_empty() && !more {
+        output.push_str(if range.offset == 0 {
+            "(empty directory)\n"
+        } else {
+            "(no entries in the requested range)\n"
+        });
+    }
+    if more {
+        output.push_str(&format!("\n[More entries remain. Use offset={} and limit={} to continue; directory order may change if contents change.]", range.offset.saturating_add(entries.len()), MAX_DIRECTORY_ENTRIES));
+    }
+    Ok(ToolOutput::new(output)
+        .with_title(display_path)
+        .with_metadata(json!({
+            "tool": "read", "path": display_path, "type": "directory",
+            "entries": entries.len(), "offset": range.offset, "has_more": more,
+        })))
 }
 
 /// The outcome of a bounded range read.

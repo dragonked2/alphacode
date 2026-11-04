@@ -2,7 +2,7 @@
 
 On Windows, run `alphacode --gui` (or `alphacode gui`) to open the desktop workspace. The desktop connects to a local AlphaCode server and starts one if needed. The desktop host and its icon are embedded in the Windows executable at build time.
 
-Enter sends a prompt; Shift+Enter adds a new line. Use **Hide sidebar** / **Show sidebar** or Ctrl+B to toggle the sidebar, and Ctrl+K to search chats. The sidebar preference is saved. The desktop uses standard Windows window controls. `alphacode gui --preview` opens the interface without connecting to a server, and `alphacode gui --once` prints a status snapshot.
+Enter sends a prompt; Shift+Enter or Alt+Enter adds a new line. Use **Hide sidebar** / **Show sidebar** or Ctrl+B to toggle the sidebar, and Ctrl+K to search chats. The sidebar preference is saved. The desktop uses standard Windows window controls. `alphacode gui --preview` opens the interface without connecting to a server, and `alphacode gui --once` prints a status snapshot.
 
 The desktop connects through the local AlphaCode server. It supports its own chat, live-session prompts, model selection, saved chats, and workspace selection. The Terminal button opens the terminal interface for commands and workflows that the desktop does not yet support. Native saved sessions that are not live show their recent history read-only; resume them in the terminal to continue. Imported sessions still need the terminal for history and resumption. GUI availability is currently limited to Windows; the terminal interface remains available on all supported platforms.
 

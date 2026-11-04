@@ -518,7 +518,10 @@ fn named_provider_profile_routes(
     let detail = if profile_config.base_url.trim().is_empty() {
         "configured provider profile".to_string()
     } else {
-        profile_config.base_url.trim().to_string()
+        crate::alphacode_provider_metadata::route_cloak::display_endpoint_for(
+            profile_name,
+            profile_config.base_url.trim(),
+        )
     };
 
     let mut routes: Vec<ModelRoute> = Vec::new();

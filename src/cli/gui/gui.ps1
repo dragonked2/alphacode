@@ -290,9 +290,9 @@ try {
    </Border>
    <Border Grid.Column="3" Background="{DynamicResource Border}"/>
    <Grid x:Name="ChatSurface" Grid.Column="4" Background="{DynamicResource WindowBg}">
-    <Grid.RowDefinitions><RowDefinition Height="100"/><RowDefinition Height="Auto"/><RowDefinition Height="*" MinHeight="80"/><RowDefinition Height="Auto"/><RowDefinition Height="Auto"/><RowDefinition Height="28"/></Grid.RowDefinitions>
+    <Grid.RowDefinitions><RowDefinition Height="Auto" MinHeight="100"/><RowDefinition Height="Auto"/><RowDefinition Height="*" MinHeight="80"/><RowDefinition Height="Auto"/><RowDefinition Height="Auto"/><RowDefinition Height="28"/></Grid.RowDefinitions>
     <Grid Grid.Row="0" Margin="24,12,24,8">
-     <Grid.RowDefinitions><RowDefinition Height="*"/><RowDefinition Height="Auto"/></Grid.RowDefinitions>
+     <Grid.RowDefinitions><RowDefinition Height="Auto"/><RowDefinition Height="Auto"/></Grid.RowDefinitions>
      <Grid><Grid.ColumnDefinitions><ColumnDefinition/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
       <StackPanel VerticalAlignment="Center" Margin="0,0,16,0"><TextBlock x:Name="WorkspaceTitle" Text="New chat" Foreground="{DynamicResource Text}" FontSize="17" FontWeight="SemiBold" TextTrimming="CharacterEllipsis"/><TextBlock x:Name="WorkspaceSubtitle" Text="Your workspace, in focus" Foreground="{DynamicResource Muted}" FontSize="11" Margin="0,3,0,0" TextTrimming="CharacterEllipsis"/></StackPanel>
       <Border Grid.Column="1" x:Name="StatePill" Background="{DynamicResource SuccessSoft}" CornerRadius="8" Padding="10,5" VerticalAlignment="Center"><TextBlock x:Name="StateText" AutomationProperties.LiveSetting="Polite" Text="Connecting" Foreground="{DynamicResource Success}" FontSize="11"/></Border>
@@ -372,18 +372,18 @@ try {
         <StackPanel Grid.Column="1" Orientation="Horizontal" VerticalAlignment="Bottom">
          <Button x:Name="Voice" Content="&#x266B;" Width="30" Padding="0" Visibility="Collapsed" IsEnabled="False" ToolTip="Voice input" AutomationProperties.Name="Voice input"/>
          <Button x:Name="Copy" Content="Copy" Padding="8,4" Foreground="{DynamicResource Muted}" Margin="0,0,8,0" ToolTip="Copy response (Ctrl+Shift+C)" AutomationProperties.Name="Copy response" IsEnabled="False"/>
-         <Button x:Name="Send" Content="↑" Width="36" Height="36" Padding="0" FontSize="21" Background="{DynamicResource Accent}" Foreground="{DynamicResource AccentText}" FontWeight="SemiBold" ToolTip="Send prompt (Enter; Shift+Enter for a new line)" AutomationProperties.Name="Send prompt" IsEnabled="False"/>
+         <Button x:Name="Send" Content="↑" Width="36" Height="36" Padding="0" FontSize="21" Background="{DynamicResource Accent}" Foreground="{DynamicResource AccentText}" FontWeight="SemiBold" ToolTip="Send prompt (Enter; Shift+Enter or Alt+Enter for a new line)" AutomationProperties.Name="Send prompt" IsEnabled="False"/>
         </StackPanel>
        </Grid>
        <Grid Grid.Row="2" Margin="0,8,0,0"><Grid.ColumnDefinitions><ColumnDefinition/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
-        <TextBlock x:Name="ComposerHint" Foreground="{DynamicResource Dim}" FontSize="10" Text="Enter to send · Shift+Enter for a new line" TextTrimming="CharacterEllipsis"/>
+        <TextBlock x:Name="ComposerHint" Foreground="{DynamicResource Dim}" FontSize="10" Text="Enter to send · Shift+Enter or Alt+Enter for a new line" TextTrimming="CharacterEllipsis"/>
         <TextBlock x:Name="PromptCount" Grid.Column="1" Foreground="{DynamicResource Dim}" FontSize="10" Text="0 / 16,000" Visibility="Collapsed"/>
        </Grid>
       </Grid>
       <Border x:Name="ComposerFocusRing" BorderBrush="{DynamicResource Accent}" BorderThickness="1" CornerRadius="12" Opacity="0" IsHitTestVisible="False"/>
      </Grid>
     </Border>
-    <TextBlock x:Name="FooterStatus" Grid.Row="5" Text="Ready  ·  Enter to send  ·  Shift+Enter for a new line" Foreground="{DynamicResource Muted}" FontSize="11" Margin="30,0,30,0" VerticalAlignment="Center"/>
+    <TextBlock x:Name="FooterStatus" Grid.Row="5" Text="Ready  ·  Enter to send  ·  Shift+Enter or Alt+Enter for a new line" Foreground="{DynamicResource Muted}" FontSize="11" Margin="30,0,30,0" VerticalAlignment="Center"/>
    </Grid>
   </Grid>
   <Grid x:Name="CommandOverlay" Grid.RowSpan="2" Panel.ZIndex="100" Visibility="Collapsed" Background="#99000000" KeyboardNavigation.TabNavigation="Cycle">
@@ -1695,7 +1695,7 @@ function Update-SelectedSession([string]$sessionId = '') {
     $controls.WorkspacePath.ToolTip = if ($workspace) { $workspace } else { 'Choose a folder with the + button' }
     $controls.Archive.Content = if ([bool]$session.saved) { [char]0x2605 } else { [char]0x2606 }
     $controls.Archive.Foreground = Get-GuiBrush $(if ([bool]$session.saved) { 'Warning' } else { 'Muted' })
-    $controls.Send.ToolTip = if ($storedOnly) { 'Resume this chat from the terminal to continue it' } else { 'Send prompt (Enter; Shift+Enter for a new line)' }
+    $controls.Send.ToolTip = if ($storedOnly) { 'Resume this chat from the terminal to continue it' } else { 'Send prompt (Enter; Shift+Enter or Alt+Enter for a new line)' }
     $notice = if ($script:inputMode) { [string]$inputRequest.prompt } elseif ($script:deliveryNotice -and [DateTime]::UtcNow -lt $script:noticeUntil) { $script:deliveryNotice } else { '' }
     $noticeRole = if (-not $script:inputMode -and $notice -eq 'Prompt delivered') { 'Success' } else { 'Warning' }
     $controls.NoticeText.Foreground = Get-GuiBrush $noticeRole
@@ -1888,9 +1888,21 @@ function Set-ReadingSize([double]$size, [bool]$persist = $true) {
         Show-GuiNotice "Reading size: $size pt · Ctrl+plus / Ctrl+minus · Ctrl+0 to reset"
     }
 }
+function Insert-ComposerNewline($textBox) {
+    $start = $textBox.SelectionStart
+    $textBox.SelectedText = [Environment]::NewLine
+    $textBox.CaretIndex = $start + [Environment]::NewLine.Length
+    $textBox.SelectionLength = 0
+}
 $controls.Prompt.Add_PreviewKeyDown({
     param($sender,$event)
-    if ($event.Key -eq 'Return' -and -not ([Windows.Input.Keyboard]::Modifiers -band [Windows.Input.ModifierKeys]::Shift)) {
+    $modifiers = [Windows.Input.Keyboard]::Modifiers
+    # Alt+Enter is a newline in the terminal composer too. WPF reports Alt
+    # combinations as System keys; consume it before it can activate a menu.
+    if (($event.Key -eq 'Return' -or $event.SystemKey -eq 'Return') -and ($modifiers -band [Windows.Input.ModifierKeys]::Alt)) {
+        Insert-ComposerNewline $sender
+        $event.Handled = $true
+    } elseif ($event.Key -eq 'Return' -and -not ($modifiers -band [Windows.Input.ModifierKeys]::Shift)) {
         Send-Prompt; $event.Handled = $true
     }
 })

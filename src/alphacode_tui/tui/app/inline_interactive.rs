@@ -1512,6 +1512,21 @@ impl App {
         } else {
             routes
         };
+        // Old server/catalog snapshots may contain an upstream URL. Sanitize
+        // at the picker boundary as well as when generating fresh routes.
+        let mut routes = routes;
+        for route in &mut routes {
+            if crate::alphacode_provider_metadata::internal_model_display_name(&route.model)
+                .is_some()
+                || route.api_method
+                    == format!(
+                        "openai-compatible:{}",
+                        crate::alphacode_provider_metadata::ALPHAX_FREE_PROFILE_ID
+                    )
+            {
+                route.detail = "Alphax Free gateway".to_string();
+            }
+        }
         let routes = crate::provider::dedupe_model_routes(routes);
         let routes = filter_routes_by_provider_allowlist(
             routes,
@@ -3757,7 +3772,11 @@ impl App {
                                 }
                             }
                         }
-                        if let Some(effort) = effort {
+                        // Remote effort is staged above for the server. The local
+                        // stand-in may not implement reasoning controls at all.
+                        if !self.is_remote
+                            && let Some(effort) = effort
+                        {
                             match self.provider.set_reasoning_effort(&effort) {
                                 Ok(()) => self.persist_local_reasoning_effort(),
                                 Err(error) => {

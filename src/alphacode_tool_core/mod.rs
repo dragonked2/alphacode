@@ -114,29 +114,9 @@ impl ToolContext {
         }
     }
 
-    /// Resolve `path` and prove it stays inside a protected location.
-    ///
-    /// [`Self::resolve_path`] is a *purely lexical* join: it does not collapse
-    /// `..`, does not resolve symlinks, and does not check containment. Handing
-    /// its output straight to `fs::write` meant
-    /// `write("..\\..\\..\\..\\.ssh\\authorized_keys")` reached
-    /// `C:\Users\<user>\.ssh\authorized_keys`. Only the two patch tools consulted
-    /// `is_catastrophic_target`; `write` / `edit` / `multiedit` / `read` / `ls`
-    /// had no path check at all, and the sole mitigation was prose in the tool
-    /// description asking the model to behave.
-    ///
-    /// The check here is mechanical, and there are two independent parts
-    /// because either alone is insufficient:
-    ///
-    /// 1. **Catastrophic targets are refused outright** — the same policy the
-    ///    patch tools already apply, now applied consistently.
-    /// 2. **Symlinks are resolved before the check.** Canonicalizing only the
-    ///    deepest *existing* ancestor and re-appending the not-yet-created tail
-    ///    means a symlink inside the working directory that points at
-    ///    `~/.ssh` or `C:\Windows` is caught; a purely lexical check cannot see
-    ///    it. This is why canonicalization cannot simply be skipped for paths
-    ///    that do not exist yet, which is the normal case for `write`.
-    pub fn resolve_path_guarded(&self, path: &Path) -> anyhow::Result<PathBuf> {
+    /// Resolve host filesystem paths for read-only access. Destructive-target
+    /// policy belongs to writes: it must not prevent listing a drive or home.
+    pub fn resolve_path_for_read(&self, path: &Path) -> PathBuf {
         let joined = self.resolve_path(path);
 
         // Resolve the deepest existing ancestor so a symlinked parent is
@@ -161,6 +141,34 @@ impl ToolContext {
         for segment in tail.into_iter().rev() {
             resolved.push(segment);
         }
+
+        resolved
+    }
+
+    /// Resolve `path` and reject destructive access to protected locations.
+    ///
+    /// [`Self::resolve_path`] is a *purely lexical* join: it does not collapse
+    /// `..`, does not resolve symlinks, and does not check containment. Handing
+    /// its output straight to `fs::write` meant
+    /// `write("..\\..\\..\\..\\.ssh\\authorized_keys")` reached
+    /// `C:\Users\<user>\.ssh\authorized_keys`. Only the two patch tools consulted
+    /// `is_catastrophic_target`; `write` / `edit` / `multiedit` / `read` / `ls`
+    /// had no path check at all, and the sole mitigation was prose in the tool
+    /// description asking the model to behave.
+    ///
+    /// The check here is mechanical, and there are two independent parts
+    /// because either alone is insufficient:
+    ///
+    /// 1. **Catastrophic targets are refused outright** — the same policy the
+    ///    patch tools already apply, now applied consistently.
+    /// 2. **Symlinks are resolved before the check.** Canonicalizing only the
+    ///    deepest *existing* ancestor and re-appending the not-yet-created tail
+    ///    means a symlink inside the working directory that points at
+    ///    `~/.ssh` or `C:\Windows` is caught; a purely lexical check cannot see
+    ///    it. This is why canonicalization cannot simply be skipped for paths
+    ///    that do not exist yet, which is the normal case for `write`.
+    pub fn resolve_path_guarded(&self, path: &Path) -> anyhow::Result<PathBuf> {
+        let resolved = self.resolve_path_for_read(path);
 
         let risk_ctx =
             crate::alphacode_command_risk::RiskContext::from_env(self.working_dir.clone());

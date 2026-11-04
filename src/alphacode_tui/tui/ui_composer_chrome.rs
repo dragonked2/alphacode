@@ -55,13 +55,17 @@ fn action_line(actions: &[(&str, &str)], width: usize) -> Line<'static> {
         if used + needed > width {
             // At very small widths keep the primary key discoverable instead
             // of dropping it in favour of a shorter secondary shortcut.
-            if index == 0 && key.width() <= width {
+            if index == 0 {
                 let compact_key = if *key == "Enter" { "↵" } else { key };
                 let compact = format!("{compact_key} {label}");
                 let text = if compact.width() <= width {
                     compact
-                } else {
+                } else if key.width() <= width {
                     key.to_string()
+                } else if compact_key.width() <= width {
+                    compact_key.to_string()
+                } else {
+                    String::new()
                 };
                 spans.push(Span::styled(
                     text,
@@ -192,7 +196,7 @@ mod tests {
     #[test]
     fn narrow_footer_does_not_promote_secondary_actions_over_primary() {
         let actions = [("Enter", "send now"), ("F1", "help"), ("/", "commands")];
-        assert_eq!(action_line(&actions, 4).width(), 0);
+        assert_eq!(action_line(&actions, 4).width(), 1);
         let line = action_line(&actions, 10);
         assert_eq!(
             line.spans

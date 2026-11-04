@@ -206,15 +206,16 @@ fn direct_openai_compatible_profile_routes(
 
     let provider = resolved.display_name.clone();
     let api_method = format!("openai-compatible:{}", resolved.id);
+    let display_base = crate::alphacode_provider_metadata::route_cloak::display_endpoint_for(
+        &resolved.id,
+        &resolved.api_base,
+    );
     let detail = if from_live_catalog {
-        resolved.api_base.clone()
+        display_base.clone()
     } else if resolved.api_base.trim().is_empty() {
         "fallback: static provider model list".to_string()
     } else {
-        format!(
-            "{}; fallback: static provider model list",
-            resolved.api_base
-        )
+        format!("{}; fallback: static provider model list", display_base)
     };
 
     let mut routes = Vec::new();

@@ -185,11 +185,11 @@ fn browse_items(path: &Path) -> Result<Vec<AccountPickerItem>> {
         let kind = entry.file_type()?;
         let folder = kind.is_dir();
         let child = entry.path();
-        if !folder
-            && !(kind.is_file()
+        if !(folder
+            || (kind.is_file()
                 && child.extension().is_some_and(|ext| {
                     ext.eq_ignore_ascii_case("md") || ext.eq_ignore_ascii_case("txt")
-                }))
+                })))
         {
             continue;
         }

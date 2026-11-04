@@ -57,7 +57,9 @@ fn validate_todo_items(todos: &mut [TodoItem]) -> Result<()> {
         }
         todo.status = match todo.status.trim().to_ascii_lowercase().as_str() {
             "pending" | "queued" | "ready" | "todo" => "pending",
-            "in_progress" | "running" => "in_progress",
+            "in_progress" | "in-progress" | "in progress" | "running" | "active" | "started" => {
+                "in_progress"
+            }
             "completed" | "done" => "completed",
             "cancelled" | "canceled" => "cancelled",
             "blocked" => "blocked",
@@ -1179,6 +1181,26 @@ mod tests {
         assert!(validate_todo_items(&mut todos).is_err());
         todos[0].confidence = Some(100);
         validate_todo_items(&mut todos).unwrap();
+    }
+
+    #[test]
+    fn provider_active_status_aliases_are_canonicalized() {
+        for status in [
+            "active",
+            " ACTIVE ",
+            "in-progress",
+            "in progress",
+            "running",
+            "started",
+        ] {
+            let mut todos =
+                parse(json!({"todos":[{"id":"H1","content":"Investigate","status":status}]}))
+                    .unwrap()
+                    .todos
+                    .unwrap();
+            validate_todo_items(&mut todos).unwrap();
+            assert_eq!(todos[0].status, "in_progress");
+        }
     }
 
     #[test]

@@ -455,3 +455,86 @@ fn binary_detection_accepts_utf8_text_in_non_latin_scripts() {
         "valid UTF-8 text should not be classified as binary"
     );
 }
+
+#[tokio::test]
+async fn read_lists_directories_including_hidden_entries() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::create_dir(dir.path().join(".venv")).unwrap();
+    std::fs::write(dir.path().join("notes.txt"), "hello").unwrap();
+    let output = ReadTool::new()
+        .execute(
+            json!({"file_path": dir.path()}),
+            make_ctx(dir.path().to_path_buf()),
+        )
+        .await
+        .unwrap();
+    assert!(output.output.contains(".venv/"));
+    assert!(output.output.contains("notes.txt"));
+    assert_eq!(output.metadata.unwrap()["type"], "directory");
+}
+
+#[tokio::test]
+async fn read_directory_paginates_without_losing_entries() {
+    let dir = tempfile::tempdir().unwrap();
+    for name in ["a", "b", "c"] {
+        std::fs::write(dir.path().join(name), "").unwrap();
+    }
+    let mut names = std::collections::BTreeSet::new();
+    for offset in 0..3 {
+        let output = ReadTool::new()
+            .execute(
+                json!({"file_path": dir.path(), "offset": offset, "limit": 1}),
+                make_ctx(dir.path().to_path_buf()),
+            )
+            .await
+            .unwrap();
+        names.insert(output.output.lines().nth(1).unwrap().to_string());
+        assert_eq!(output.metadata.unwrap()["has_more"], offset < 2);
+    }
+    assert_eq!(names.len(), 3);
+}
+
+#[tokio::test]
+async fn read_empty_directory_and_reject_zero_directory_limit() {
+    let dir = tempfile::tempdir().unwrap();
+    let tool = ReadTool::new();
+    let output = tool
+        .execute(
+            json!({"file_path": dir.path()}),
+            make_ctx(dir.path().to_path_buf()),
+        )
+        .await
+        .unwrap();
+    assert!(output.output.contains("(empty directory)"));
+    assert!(
+        tool.execute(
+            json!({"file_path": dir.path(), "limit": 0}),
+            make_ctx(dir.path().to_path_buf())
+        )
+        .await
+        .is_err()
+    );
+}
+
+#[cfg(windows)]
+#[tokio::test]
+async fn read_windows_drive_root_uses_host_filesystem() {
+    let cwd = std::env::current_dir().unwrap();
+    let root: std::path::PathBuf = cwd.components().take(2).collect();
+    let ctx = make_ctx(cwd);
+    assert!(ctx.resolve_path_for_read(&root).is_dir());
+    let output = ReadTool::new()
+        .execute(json!({"file_path": root, "limit": 3}), ctx)
+        .await
+        .unwrap();
+    assert_eq!(output.metadata.unwrap()["type"], "directory");
+}
+
+#[test]
+fn readonly_resolution_does_not_weaken_write_protection() {
+    let dir = tempfile::tempdir().unwrap();
+    let ctx = make_ctx(dir.path().to_path_buf());
+    let home = dirs::home_dir().unwrap();
+    assert!(ctx.resolve_path_for_read(&home).is_dir());
+    assert!(ctx.resolve_path_guarded(&home).is_err());
+}
