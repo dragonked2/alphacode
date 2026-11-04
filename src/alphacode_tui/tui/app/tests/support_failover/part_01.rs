@@ -190,7 +190,6 @@ pub(crate) fn create_test_app() -> App {
     let rt = tokio::runtime::Runtime::new().unwrap();
     let registry = rt.block_on(crate::tool::Registry::new(provider.clone()));
     let mut app = App::new_for_test_harness(provider, registry);
-    app.queue_mode = false;
     app.diff_mode = crate::config::DiffDisplayMode::Inline;
     app
 }
@@ -204,7 +203,6 @@ fn create_named_provider_test_app(name: &'static str, model: &'static str) -> Ap
     let rt = tokio::runtime::Runtime::new().unwrap();
     let registry = rt.block_on(crate::tool::Registry::new(provider.clone()));
     let mut app = App::new_for_test_harness(provider, registry);
-    app.queue_mode = false;
     app.diff_mode = crate::config::DiffDisplayMode::Inline;
     app
 }
@@ -230,7 +228,6 @@ fn create_refresh_summary_test_app(summary: crate::provider::ModelCatalogRefresh
     let rt = tokio::runtime::Runtime::new().unwrap();
     let registry = rt.block_on(crate::tool::Registry::new(provider.clone()));
     let mut app = App::new_for_test_harness(provider, registry);
-    app.queue_mode = false;
     app.diff_mode = crate::config::DiffDisplayMode::Inline;
     app
 }
@@ -247,7 +244,6 @@ fn create_openrouter_spec_capture_test_app() -> (App, StdArc<StdMutex<Vec<String
     let rt = tokio::runtime::Runtime::new().unwrap();
     let registry = rt.block_on(crate::tool::Registry::new(provider.clone()));
     let mut app = App::new_for_test_harness(provider, registry);
-    app.queue_mode = false;
     app.diff_mode = crate::config::DiffDisplayMode::Inline;
     (app, set_model_calls)
 }

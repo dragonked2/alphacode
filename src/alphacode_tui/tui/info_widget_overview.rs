@@ -139,10 +139,6 @@ pub(crate) fn compute_page_layout(
     }
 }
 
-fn compact_queue_height(data: &InfoWidgetData) -> u16 {
-    u16::from(data.queue_mode.is_some())
-}
-
 fn compact_todos_height(data: &InfoWidgetData, inner_width: u16) -> u16 {
     if data.todos.is_empty() {
         return 0;
@@ -171,7 +167,18 @@ fn todos_progress_bar_renders(todos: &[crate::todo::TodoItem], inner_width: u16)
 }
 
 fn compact_model_height(data: &InfoWidgetData) -> u16 {
-    u16::from(data.model.is_some())
+    u16::from(data.model.is_some()) + u16::from(has_session_identity(data))
+}
+
+/// Whether the Session card renders an identity line under the model row.
+///
+/// The card shows the user's goal when there is one, falling back to the
+/// working directory; the raw session name is intentionally never rendered.
+pub(super) fn has_session_identity(data: &InfoWidgetData) -> bool {
+    [data.goal.as_deref(), data.working_dir.as_deref()]
+        .into_iter()
+        .flatten()
+        .any(|value| !value.trim().is_empty())
 }
 
 fn compact_telemetry_height(data: &InfoWidgetData, include_memory: bool) -> u16 {
@@ -201,10 +208,6 @@ fn compact_background_height(data: &InfoWidgetData) -> u16 {
     0
 }
 
-fn compact_kv_cache_height(data: &InfoWidgetData) -> u16 {
-    if data.cache_hit_info.is_some() { 1 } else { 0 }
-}
-
 fn compact_compaction_height(data: &InfoWidgetData) -> u16 {
     if data.compaction_info.is_some() { 2 } else { 0 }
 }
@@ -220,11 +223,9 @@ fn compact_git_height(data: &InfoWidgetData) -> u16 {
 
 fn compact_overview_height(data: &InfoWidgetData, todos_width: u16) -> u16 {
     compact_model_height(data)
-        + compact_queue_height(data)
         + compact_telemetry_height(data, true)
         + compact_todos_height(data, todos_width)
         + compact_background_height(data)
-        + compact_kv_cache_height(data)
         + compact_compaction_height(data)
         + compact_git_height(data)
 }
@@ -286,7 +287,6 @@ mod tests {
     fn compute_page_layout_falls_back_to_compact_page() {
         let data = InfoWidgetData {
             model: Some("gpt-test".to_string()),
-            queue_mode: Some(true),
             ..Default::default()
         };
 
@@ -374,7 +374,6 @@ mod tests {
                 total_chars: 1_200,
                 ..Default::default()
             }),
-            queue_mode: Some(true),
             memory_info: Some(MemoryInfo {
                 total_count: 3,
                 project_count: 2,

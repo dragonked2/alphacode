@@ -44,7 +44,14 @@ Alphacode ships with several layers designed to limit blast radius:
   asks for human justification on ambiguous commands.
 - **Risk assessment** (`alphacode_command_risk`): tokenizes shell commands to
   classify risk before they execute.
-- **Permission prompts**: the TUI surfaces every risky action for confirmation.
+- **Permission prompts**: interactive tool approvals follow the configured permission policy.
+- **Project MCP isolation**: repository-provided MCP definitions are discoverable
+  but cannot start processes, including during startup, reload, on-demand
+  connections, pooled connections, or headless runs. To enable a server, review
+  its command, arguments and environment, install it yourself in the user-level
+  `~/.alphacode/mcp.json`, and remove the project entry of the same name.
+  User-level MCP servers execute with your account and inherited environment;
+  install only servers you trust. No repository setting can grant this trust.
 - **Network URL safety**: outbound HTTP fetches are classified against SSRF
   and credential-leak heuristics.
 - **Session crash recovery**: a panic or signal labels the session as

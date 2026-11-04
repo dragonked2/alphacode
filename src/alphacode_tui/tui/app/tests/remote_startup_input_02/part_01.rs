@@ -1213,48 +1213,37 @@ fn test_submit_input_commits_pending_streaming_assistant_text_before_user_messag
 }
 
 #[test]
-fn test_queue_message_while_processing() {
+fn test_message_while_processing_interleaves() {
     let mut app = create_test_app();
-    app.queue_mode = true;
 
     // Simulate processing state
     app.is_processing = true;
 
-    // Type a message
-    app.handle_key(KeyCode::Char('t'), KeyModifiers::empty())
-        .unwrap();
-    app.handle_key(KeyCode::Char('e'), KeyModifiers::empty())
-        .unwrap();
-    app.handle_key(KeyCode::Char('s'), KeyModifiers::empty())
-        .unwrap();
-    app.handle_key(KeyCode::Char('t'), KeyModifiers::empty())
-        .unwrap();
+    for c in "test".chars() {
+        app.handle_key(KeyCode::Char(c), KeyModifiers::empty())
+            .unwrap();
+    }
 
-    // Press Enter should queue, not submit
+    // Queue mode is gone: a mid-turn Enter interleaves into the running turn
+    // instead of being parked in a queue.
     app.handle_key(KeyCode::Enter, KeyModifiers::empty())
         .unwrap();
 
-    assert_eq!(app.queued_count(), 1);
+    assert_eq!(app.queued_count(), 0);
     assert!(app.input().is_empty());
-
-    // Queued messages are stored in queued_messages, not display_messages
-    assert_eq!(app.queued_messages()[0], "test");
+    assert_eq!(app.interleave_message.as_deref(), Some("test"));
     assert!(app.display_messages().is_empty());
 }
 
 #[test]
-fn test_ctrl_tab_toggles_queue_mode() {
+fn test_ctrl_tab_is_inert_after_queue_mode_removal() {
     let mut app = create_test_app();
-
-    assert!(!app.queue_mode);
-
+    let before = app.status_notice();
+    // Queue mode is gone, so Ctrl+Tab no longer toggles anything or posts a
+    // status notice.
     app.handle_key(KeyCode::Char('t'), KeyModifiers::CONTROL)
         .unwrap();
-    assert!(app.queue_mode);
-
-    app.handle_key(KeyCode::Char('t'), KeyModifiers::CONTROL)
-        .unwrap();
-    assert!(!app.queue_mode);
+    assert_eq!(app.status_notice(), before);
 }
 
 #[test]
@@ -1399,11 +1388,10 @@ fn test_alt_enter_inserts_newline() {
     assert_eq!(app.interleave_message.as_deref(), None);
 }
 #[test]
-fn test_ctrl_enter_opposite_send_mode() {
+fn test_ctrl_enter_interleaves_while_processing() {
     let mut app = create_test_app();
     app.is_processing = true;
 
-    // Default immediate mode: Ctrl+Enter should queue
     app.handle_key(KeyCode::Char('h'), KeyModifiers::empty())
         .unwrap();
     app.handle_key(KeyCode::Char('i'), KeyModifiers::empty())
@@ -1411,50 +1399,26 @@ fn test_ctrl_enter_opposite_send_mode() {
     app.handle_key(KeyCode::Enter, KeyModifiers::CONTROL)
         .unwrap();
 
-    assert_eq!(app.queued_count(), 1);
-    assert_eq!(app.interleave_message.as_deref(), None);
+    // Ctrl+Enter mid-turn interleaves; nothing is queued.
+    assert_eq!(app.queued_count(), 0);
+    assert_eq!(app.interleave_message.as_deref(), Some("hi"));
     assert!(app.input().is_empty());
-
-    // Queue mode: Ctrl+Enter should interleave (sets interleave_message, not queued)
-    app.queue_mode = true;
-    app.handle_key(KeyCode::Char('y'), KeyModifiers::empty())
-        .unwrap();
-    app.handle_key(KeyCode::Char('o'), KeyModifiers::empty())
-        .unwrap();
-    app.handle_key(KeyCode::Enter, KeyModifiers::CONTROL)
-        .unwrap();
-
-    // Interleave now sets interleave_message instead of adding to queue
-    assert_eq!(app.queued_count(), 1); // Still just "hi" in queue
-    assert_eq!(app.interleave_message.as_deref(), Some("yo")); // "yo" is for interleave
 }
 
 #[test]
-fn test_cmd_enter_opposite_send_mode() {
+fn test_cmd_enter_interleaves_while_processing() {
     let mut app = create_test_app();
     app.is_processing = true;
 
-    // Default immediate mode: Cmd+Enter should queue, matching Ctrl+Enter
     app.handle_key(KeyCode::Char('h'), KeyModifiers::empty())
         .unwrap();
     app.handle_key(KeyCode::Char('i'), KeyModifiers::empty())
         .unwrap();
     app.handle_key(KeyCode::Enter, KeyModifiers::SUPER).unwrap();
 
-    assert_eq!(app.queued_count(), 1);
-    assert_eq!(app.interleave_message.as_deref(), None);
+    assert_eq!(app.queued_count(), 0);
+    assert_eq!(app.interleave_message.as_deref(), Some("hi"));
     assert!(app.input().is_empty());
-
-    // Queue mode: Cmd+Enter should interleave (sets interleave_message, not queued)
-    app.queue_mode = true;
-    app.handle_key(KeyCode::Char('y'), KeyModifiers::empty())
-        .unwrap();
-    app.handle_key(KeyCode::Char('o'), KeyModifiers::empty())
-        .unwrap();
-    app.handle_key(KeyCode::Enter, KeyModifiers::SUPER).unwrap();
-
-    assert_eq!(app.queued_count(), 1); // Still just "hi" in queue
-    assert_eq!(app.interleave_message.as_deref(), Some("yo")); // "yo" is for interleave
 }
 
 #[test]
@@ -1592,48 +1556,39 @@ fn test_ctrl_a_keeps_home_behavior_when_input_present() {
     assert_eq!(app.input(), "hello world");
     assert_eq!(app.cursor_pos(), 0);
 }
-
 #[test]
-fn test_retrieve_pending_message_edits_queued_message() {
+fn test_retrieve_pending_message_edits_interleaved_message() {
     let mut app = create_test_app();
-    app.queue_mode = true;
     app.is_processing = true;
 
-    // Type and queue a message
-    app.handle_key(KeyCode::Char('h'), KeyModifiers::empty())
-        .unwrap();
-    app.handle_key(KeyCode::Char('e'), KeyModifiers::empty())
-        .unwrap();
-    app.handle_key(KeyCode::Char('l'), KeyModifiers::empty())
-        .unwrap();
-    app.handle_key(KeyCode::Char('l'), KeyModifiers::empty())
-        .unwrap();
-    app.handle_key(KeyCode::Char('o'), KeyModifiers::empty())
-        .unwrap();
+    for c in "hello".chars() {
+        app.handle_key(KeyCode::Char(c), KeyModifiers::empty())
+            .unwrap();
+    }
     app.handle_key(KeyCode::Enter, KeyModifiers::empty())
         .unwrap();
 
-    assert_eq!(app.queued_count(), 1);
+    assert_eq!(app.interleave_message.as_deref(), Some("hello"));
     assert!(app.input().is_empty());
 
     app.handle_key(KeyCode::Up, KeyModifiers::CONTROL).unwrap();
 
-    assert_eq!(app.queued_count(), 0);
+    assert_eq!(app.interleave_message.as_deref(), None);
     assert_eq!(app.input(), "hello");
     assert_eq!(app.cursor_pos(), 5); // Cursor at end
 }
 
 #[test]
 fn test_retrieve_pending_message_with_alt_and_super_up() {
-    // Ctrl+Up, Alt(Option)+Up and Cmd(Super)+Up must all recall a queued message
-    // so the gesture works regardless of which modifier the terminal forwards.
+    // Ctrl+Up, Alt(Option)+Up and Cmd(Super)+Up must all recall the interleaved
+    // message so the gesture works regardless of which modifier the terminal
+    // forwards.
     for modifier in [
         KeyModifiers::CONTROL,
         KeyModifiers::ALT,
         KeyModifiers::SUPER,
     ] {
         let mut app = create_test_app();
-        app.queue_mode = true;
         app.is_processing = true;
 
         for c in "hello".chars() {
@@ -1643,22 +1598,29 @@ fn test_retrieve_pending_message_with_alt_and_super_up() {
         app.handle_key(KeyCode::Enter, KeyModifiers::empty())
             .unwrap();
 
-        assert_eq!(app.queued_count(), 1, "modifier {modifier:?}");
+        assert_eq!(
+            app.interleave_message.as_deref(),
+            Some("hello"),
+            "modifier {modifier:?}"
+        );
         assert!(app.input().is_empty(), "modifier {modifier:?}");
 
         app.handle_key(KeyCode::Up, modifier).unwrap();
 
-        assert_eq!(app.queued_count(), 0, "modifier {modifier:?}");
+        assert_eq!(
+            app.interleave_message.as_deref(),
+            None,
+            "modifier {modifier:?}"
+        );
         assert_eq!(app.input(), "hello", "modifier {modifier:?}");
         assert_eq!(app.cursor_pos(), 5, "modifier {modifier:?}");
     }
 }
 
 #[test]
-fn test_retrieve_pending_message_prefers_pending_interleave_for_editing() {
+fn test_retrieve_pending_message_recalls_the_interleave() {
     let mut app = create_test_app();
     app.is_processing = true;
-    app.queue_mode = false; // Enter=interleave, Ctrl+Enter=queue
 
     for c in "urgent".chars() {
         app.handle_key(KeyCode::Char(c), KeyModifiers::empty())
@@ -1674,12 +1636,13 @@ fn test_retrieve_pending_message_prefers_pending_interleave_for_editing() {
     app.handle_key(KeyCode::Enter, KeyModifiers::CONTROL)
         .unwrap();
 
-    assert_eq!(app.interleave_message.as_deref(), Some("urgent"));
-    assert_eq!(app.queued_count(), 1);
+    // The latest interleave wins; nothing is queued.
+    assert_eq!(app.interleave_message.as_deref(), Some("later"));
+    assert_eq!(app.queued_count(), 0);
 
     app.retrieve_pending_message_for_edit();
 
-    assert_eq!(app.input(), "urgent\n\nlater");
+    assert_eq!(app.input(), "later");
     assert_eq!(app.interleave_message.as_deref(), None);
     assert_eq!(app.queued_count(), 0);
 }
@@ -1687,25 +1650,26 @@ fn test_retrieve_pending_message_prefers_pending_interleave_for_editing() {
 #[test]
 fn test_send_action_modes() {
     let mut app = create_test_app();
+
+    // Mid-turn, every Enter variant interleaves (queue mode is gone).
     app.is_processing = true;
-    app.queue_mode = false;
-
     assert_eq!(app.send_action(false), SendAction::Interleave);
-    assert_eq!(app.send_action(true), SendAction::Queue);
-
-    app.queue_mode = true;
-    assert_eq!(app.send_action(false), SendAction::Queue);
     assert_eq!(app.send_action(true), SendAction::Interleave);
 
+    // Slash commands still submit directly even mid-turn.
+    app.input = "/help".to_string();
+    assert_eq!(app.send_action(false), SendAction::Submit);
+
+    app.input = "hello".to_string();
     app.is_processing = false;
     assert_eq!(app.send_action(false), SendAction::Submit);
 }
+
 
 #[test]
 fn test_interleave_submission_preserves_pending_images() {
     let mut app = create_test_app();
     app.is_processing = true;
-    app.queue_mode = false;
     app.input = "[image 1] describe this".to_string();
     app.cursor_pos = app.input.len();
     let images = vec![("image/png".to_string(), "ZmFrZQ==".to_string())];

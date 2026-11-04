@@ -2141,14 +2141,14 @@ impl Registry {
                 .config()
                 .servers
                 .values()
-                .filter(|cfg| cfg.is_enabled())
+                .filter(|cfg| cfg.can_auto_connect())
                 .count();
             (enabled, manager.config().servers.len() - enabled)
         };
 
         if disabled_count > 0 {
             crate::logging::info(&format!(
-                "MCP: {} disabled server(s) in config (kept, not spawned)",
+                "MCP: {} disabled or project-blocked server(s) in config (kept, not spawned)",
                 disabled_count
             ));
         }
@@ -2165,7 +2165,7 @@ impl Registry {
                         .config()
                         .servers
                         .iter()
-                        .filter(|(_, cfg)| cfg.is_enabled())
+                        .filter(|(_, cfg)| cfg.can_auto_connect())
                         .map(|(name, _)| format!("{}:0", name))
                         .collect()
                 };
@@ -2191,7 +2191,7 @@ impl Registry {
                         .config()
                         .servers
                         .iter()
-                        .filter(|(_, cfg)| cfg.is_enabled())
+                        .filter(|(_, cfg)| cfg.can_auto_connect())
                         .map(|(name, cfg)| (name.clone(), cfg.clone()))
                         .collect()
                 };

@@ -1952,7 +1952,7 @@ fn test_info_widget_local_gemini_shows_oauth_auth_method() {
 }
 
 #[test]
-fn test_debug_command_message_respects_queue_mode() {
+fn test_debug_command_message_submits_and_interleaves() {
     let mut app = create_test_app();
 
     // Test 1: When not processing, should submit directly
@@ -1985,21 +1985,9 @@ fn test_debug_command_message_respects_queue_mode() {
     app.display_messages.clear();
     app.session.messages.clear();
 
-    // Test 2: When processing with queue_mode=true, should queue
+    // Test 2: When processing, an injected message interleaves into the
+    // running turn (queue mode is gone).
     app.is_processing = true;
-    app.queue_mode = true;
-    let result = app.handle_debug_command("message:queued_msg");
-    assert!(
-        result.contains("queued"),
-        "Expected queued, got: {}",
-        result
-    );
-    assert_eq!(app.queued_count(), 1);
-    assert_eq!(app.queued_messages()[0], "queued_msg");
-
-    // Test 3: When processing with queue_mode=false, should interleave
-    app.queued_messages.clear();
-    app.queue_mode = false;
     let result = app.handle_debug_command("message:interleave_msg");
     assert!(
         result.contains("interleave"),

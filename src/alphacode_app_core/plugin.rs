@@ -29,7 +29,7 @@ use std::path::{Path, PathBuf};
 /// directory.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PluginManifest {
-    /// Unique plugin identifier (e.g. "my-company/my-plugin").
+    /// Unique local plugin identifier (e.g. "my-company-plugin").
     pub name: String,
 
     /// Human-readable version string (semver recommended).
@@ -178,6 +178,38 @@ pub fn get_plugin(name: &str) -> Result<PluginInfo> {
 }
 
 /// Install a plugin from a local directory.
+/// Unlike upgrades, this entry point never replaces an installed package.
+pub fn install_new_plugin(source_dir: &Path) -> Result<InstallResult> {
+    install_new_plugin_into(source_dir, &plugins_dir()?)
+}
+
+fn install_new_plugin_into(source_dir: &Path, root: &Path) -> Result<InstallResult> {
+    let manifest = load_manifest(&source_dir.join("plugin.json"))?;
+    fs::create_dir_all(root)?;
+    let target_dir = root.join(&manifest.name);
+    if target_dir.try_exists()? {
+        anyhow::bail!("Plugin '{}' is already installed", manifest.name);
+    }
+    let staging = tempfile::tempdir_in(root)?;
+    copy_dir_recursive(source_dir, staging.path())?;
+    // Claim the destination exclusively; a racing import cannot trigger upgrade.
+    fs::create_dir(&target_dir)?;
+    if let Err(error) = copy_dir_recursive(staging.path(), &target_dir) {
+        let _ = fs::remove_dir_all(&target_dir);
+        return Err(error);
+    }
+    let skills_added = discover_skill_names(&target_dir, &manifest);
+    Ok(InstallResult {
+        plugin: PluginInfo {
+            manifest,
+            path: target_dir,
+            skill_count: skills_added.len(),
+        },
+        skills_added,
+    })
+}
+
+/// Install or upgrade a plugin from a local directory.
 pub fn install_plugin(source_dir: &Path) -> Result<InstallResult> {
     let manifest_path = source_dir.join("plugin.json");
     if !manifest_path.exists() {
@@ -385,8 +417,13 @@ fn load_manifest(path: &Path) -> Result<PluginManifest> {
         .with_context(|| format!("Failed to parse manifest: {}", path.display()))?;
 
     // Validate required fields
-    if manifest.name.is_empty() {
-        anyhow::bail!("Plugin manifest has empty name");
+    if manifest.name.is_empty()
+        || !manifest
+            .name
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_')
+    {
+        anyhow::bail!("Plugin name must use letters, digits, hyphens or underscores");
     }
     if manifest.version.is_empty() {
         anyhow::bail!("Plugin manifest has empty version");
@@ -456,6 +493,16 @@ fn discover_skill_names(plugin_dir: &Path, manifest: &PluginManifest) -> Vec<Str
 
 /// Recursively copy a directory.
 fn copy_dir_recursive(src: &Path, dst: &Path) -> Result<()> {
+    copy_dir_bounded(src, dst, 0)
+}
+
+fn copy_dir_bounded(src: &Path, dst: &Path, depth: usize) -> Result<()> {
+    if depth > 32 || fs::symlink_metadata(src)?.file_type().is_symlink() {
+        anyhow::bail!(
+            "Unsupported linked or deeply nested plugin resource: {}",
+            src.display()
+        );
+    }
     fs::create_dir_all(dst)?;
 
     for entry in fs::read_dir(src)? {
@@ -463,8 +510,15 @@ fn copy_dir_recursive(src: &Path, dst: &Path) -> Result<()> {
         let src_path = entry.path();
         let dst_path = dst.join(entry.file_name());
 
-        if src_path.is_dir() {
-            copy_dir_recursive(&src_path, &dst_path)?;
+        let metadata = fs::symlink_metadata(&src_path)?;
+        if metadata.file_type().is_symlink() {
+            anyhow::bail!(
+                "Linked plugin resources are unsupported: {}",
+                src_path.display()
+            );
+        }
+        if metadata.is_dir() {
+            copy_dir_bounded(&src_path, &dst_path, depth + 1)?;
         } else {
             fs::copy(&src_path, &dst_path)?;
         }
@@ -476,6 +530,66 @@ fn copy_dir_recursive(src: &Path, dst: &Path) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn new_plugin_import_preserves_existing_version() {
+        let temp = tempfile::tempdir().unwrap();
+        let source = temp.path().join("source");
+        fs::create_dir_all(source.join("skills/custom")).unwrap();
+        fs::write(
+            source.join("plugin.json"),
+            r#"{"name":"local-plugin","version":"1.0"}"#,
+        )
+        .unwrap();
+        fs::write(source.join("skills/custom/SKILL.md"), "original").unwrap();
+        let root = temp.path().join("installed");
+        let result = install_new_plugin_into(&source, &root).unwrap();
+        assert_eq!(result.skills_added, vec!["custom"]);
+        fs::write(
+            source.join("plugin.json"),
+            r#"{"name":"local-plugin","version":"2.0"}"#,
+        )
+        .unwrap();
+        fs::write(source.join("skills/custom/SKILL.md"), "replacement").unwrap();
+        assert!(install_new_plugin_into(&source, &root).is_err());
+        assert_eq!(
+            fs::read_to_string(root.join("local-plugin/skills/custom/SKILL.md")).unwrap(),
+            "original"
+        );
+    }
+
+    #[test]
+    fn local_manifest_cannot_escape_plugin_directory() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("plugin.json");
+        for name in ["../outside", "C:\\outside", "a/b", "a\\b", "..", ""] {
+            fs::write(
+                &path,
+                serde_json::json!({ "name": name, "version": "1.0" }).to_string(),
+            )
+            .unwrap();
+            assert!(load_manifest(&path).is_err(), "accepted {name}");
+        }
+    }
+
+    #[test]
+    fn local_plugin_copy_preserves_nested_resources() {
+        let temp = tempfile::tempdir().unwrap();
+        let source = temp.path().join("source");
+        fs::create_dir_all(source.join("skills/custom/references")).unwrap();
+        fs::write(source.join("skills/custom/SKILL.md"), "instructions").unwrap();
+        fs::write(
+            source.join("skills/custom/references/control.md"),
+            "control",
+        )
+        .unwrap();
+        let destination = temp.path().join("destination");
+        copy_dir_recursive(&source, &destination).unwrap();
+        assert_eq!(
+            fs::read_to_string(destination.join("skills/custom/references/control.md")).unwrap(),
+            "control"
+        );
+    }
 
     #[test]
     fn plugin_manifest_roundtrip() {

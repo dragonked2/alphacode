@@ -62,7 +62,7 @@ impl SessionPicker {
             Span::styled("     ", Style::default()),
             Span::styled(
                 format!("reason: {}", reason_display),
-                Style::default().fg(rgb(220, 120, 120)),
+                Style::default().fg(role_color(Role::Error)),
             ),
         ]))
     }
@@ -171,7 +171,9 @@ impl SessionPicker {
             return vec![Span::styled(text.to_string(), base)];
         }
 
-        let highlight = base.fg(rgb(255, 214, 90)).add_modifier(Modifier::BOLD);
+        let highlight = base
+            .fg(role_color(Role::Accent))
+            .add_modifier(Modifier::BOLD);
         let mut spans: Vec<Span<'static>> = Vec::new();
         let mut idx = 0;
         while idx < chars.len() {
@@ -298,7 +300,7 @@ impl SessionPicker {
             Span::styled(selection_marker, selection_style),
             Span::styled(
                 format!("{} ", session.icon),
-                Style::default().fg(rgb(110, 210, 255)),
+                Style::default().fg(role_color(Role::Accent)),
             ),
         ];
         line1_spans.extend(Self::highlight_spans(
@@ -307,8 +309,14 @@ impl SessionPicker {
             name_style,
         ));
         line1_spans.extend([
-            Span::styled(canary_marker, Style::default().fg(rgb(255, 193, 7))),
-            Span::styled(debug_marker, Style::default().fg(rgb(180, 180, 180))),
+            Span::styled(
+                canary_marker,
+                Style::default().fg(role_color(Role::Warning)),
+            ),
+            Span::styled(
+                debug_marker,
+                Style::default().fg(role_color(Role::MutedText)),
+            ),
             Span::styled(saved_marker, Style::default().fg(role_color(Role::Accent))),
             Span::styled(
                 format!(" {}", status_icon),
@@ -326,7 +334,7 @@ impl SessionPicker {
             line1_spans.push(Span::styled(
                 format!("  {}", source_badge),
                 Style::default()
-                    .fg(rgb(120, 210, 255))
+                    .fg(role_color(Role::Accent))
                     .add_modifier(Modifier::BOLD),
             ));
         }
@@ -342,7 +350,7 @@ impl SessionPicker {
             line1_spans.push(Span::styled(
                 "  ◀ current",
                 Style::default()
-                    .fg(rgb(110, 210, 255))
+                    .fg(role_color(Role::Accent))
                     .add_modifier(Modifier::BOLD),
             ));
         }
@@ -382,7 +390,7 @@ impl SessionPicker {
                 Span::styled(" · ", Style::default().fg(dimmer)),
                 Span::styled(
                     format!("{}", session.assistant_message_count),
-                    Style::default().fg(rgb(129, 199, 132)),
+                    Style::default().fg(role_color(Role::Success)),
                 ),
                 Span::styled(" assistant", Style::default().fg(dimmer)),
                 Span::styled(" · ", Style::default().fg(dimmer)),
@@ -426,7 +434,7 @@ impl SessionPicker {
             prompt_spans.extend(Self::highlight_spans(
                 &prompt_display,
                 &highlight_tokens,
-                Style::default().fg(rgb(180, 180, 220)),
+                Style::default().fg(role_color(Role::AiText)),
             ));
             rows.push(Line::from(prompt_spans));
         }
@@ -445,7 +453,7 @@ impl SessionPicker {
         is_selected: bool,
         spinner_frame: usize,
     ) -> ListItem<'static> {
-        let batch_row_bg: Color = rgb(36, 18, 18);
+        let batch_row_bg: Color = role_color(Role::SelectionBg);
         let in_batch_restore = self.crashed_session_ids.contains(&session.id);
         let rows = self.render_session_item_lines_at_frame(session, is_selected, spinner_frame);
         let mut item = ListItem::new(rows);
@@ -465,11 +473,11 @@ impl SessionPicker {
         let items: Vec<ListItem> = if let Some(message) = self.loading_message.as_deref() {
             vec![
                 ListItem::new(Line::from(vec![
-                    Span::styled("  ⏳ ", Style::default().fg(rgb(255, 200, 100))),
+                    Span::styled("  ⏳ ", Style::default().fg(role_color(Role::Warning))),
                     Span::styled(
                         message.to_string(),
                         Style::default()
-                            .fg(rgb(220, 220, 220))
+                            .fg(role_color(Role::AiText))
                             .add_modifier(Modifier::BOLD),
                     ),
                 ])),
@@ -485,7 +493,7 @@ impl SessionPicker {
                 ListItem::new(Line::from(vec![Span::styled(
                     "  No other active sessions",
                     Style::default()
-                        .fg(rgb(220, 220, 220))
+                        .fg(role_color(Role::AiText))
                         .add_modifier(Modifier::BOLD),
                 )])),
                 ListItem::new(Line::from(vec![Span::styled(
@@ -561,7 +569,7 @@ impl SessionPicker {
                             ListItem::new(vec![line1])
                         }
                         PickerItem::SavedHeader { session_count } => {
-                            let saved_color: Color = rgb(255, 180, 100);
+                            let saved_color: Color = role_color(Role::Warning);
                             let line1 = Line::from(vec![
                                 Span::styled("📌 ", Style::default().fg(saved_color)),
                                 Span::styled(
@@ -599,7 +607,7 @@ impl SessionPicker {
             title_parts.push(Span::styled(
                 " loading sessions ",
                 Style::default()
-                    .fg(rgb(255, 200, 100))
+                    .fg(role_color(Role::Warning))
                     .add_modifier(Modifier::BOLD),
             ));
         } else if self.filter_mode == crate::alphacode_tui_session_picker::SessionFilterMode::Active
@@ -619,59 +627,62 @@ impl SessionPicker {
             title_parts.push(Span::styled(
                 format!(" {} active ", working + ready),
                 Style::default()
-                    .fg(rgb(200, 200, 200))
+                    .fg(role_color(Role::MutedText))
                     .add_modifier(Modifier::BOLD),
             ));
             title_parts.push(Span::styled(
                 format!("{}{} working", spinner, working),
-                Style::default().fg(rgb(255, 193, 7)),
+                Style::default().fg(role_color(Role::Warning)),
             ));
-            title_parts.push(Span::styled(" · ", Style::default().fg(rgb(80, 80, 80))));
+            title_parts.push(Span::styled(
+                " · ",
+                Style::default().fg(role_color(Role::Dim)),
+            ));
             title_parts.push(Span::styled(
                 format!("●{} ready", ready),
-                Style::default().fg(rgb(100, 220, 130)),
+                Style::default().fg(role_color(Role::Success)),
             ));
         } else {
             title_parts.push(Span::styled(
                 format!(" {} ", self.visible_sessions.len()),
                 Style::default()
-                    .fg(rgb(200, 200, 200))
+                    .fg(role_color(Role::MutedText))
                     .add_modifier(Modifier::BOLD),
             ));
             title_parts.push(Span::styled(
                 "sessions",
-                Style::default().fg(rgb(120, 120, 120)),
+                Style::default().fg(role_color(Role::MutedText)),
             ));
         }
 
         let filter_label = self.filter_mode.label().unwrap_or("all");
         title_parts.push(Span::styled(
             format!("  {}", filter_label),
-            Style::default().fg(rgb(255, 180, 100)),
+            Style::default().fg(role_color(Role::Warning)),
         ));
         title_parts.push(Span::styled(
             " (s/S filter)",
-            Style::default().fg(rgb(80, 80, 80)),
+            Style::default().fg(role_color(Role::Dim)),
         ));
 
         if self.hidden_test_count > 0 {
             title_parts.push(Span::styled(
                 format!(" (+{} hidden)", self.hidden_test_count),
-                Style::default().fg(rgb(80, 80, 80)),
+                Style::default().fg(role_color(Role::Dim)),
             ));
         }
 
         if !self.search_query.is_empty() {
             title_parts.push(Span::styled(
                 format!("  🔍 \"{}\"", self.search_query),
-                Style::default().fg(rgb(186, 139, 255)),
+                Style::default().fg(role_color(Role::Info)),
             ));
         }
 
         if self.selection_count() > 0 {
             title_parts.push(Span::styled(
                 format!("  ✓ {} selected", self.selection_count()),
-                Style::default().fg(rgb(140, 220, 160)),
+                Style::default().fg(role_color(Role::Success)),
             ));
         }
 
@@ -787,32 +798,32 @@ impl SessionPicker {
         let names = info.display_names.join(", ");
         let body = vec![
             Line::from(vec![
-                Span::styled("💥 ", Style::default().fg(rgb(255, 140, 140))),
+                Span::styled("💥 ", Style::default().fg(role_color(Role::Error))),
                 Span::styled(
                     names,
                     Style::default()
-                        .fg(rgb(220, 220, 230))
+                        .fg(role_color(Role::AiText))
                         .add_modifier(Modifier::BOLD),
                 ),
             ]),
             Line::from(vec![
-                Span::styled("Press ", Style::default().fg(rgb(150, 155, 170))),
+                Span::styled("Press ", Style::default().fg(role_color(Role::MutedText))),
                 Span::styled(
                     "R",
                     Style::default()
-                        .fg(rgb(130, 224, 215))
+                        .fg(role_color(Role::Accent))
                         .add_modifier(Modifier::BOLD),
                 ),
-                Span::styled(" (or ", Style::default().fg(rgb(150, 155, 170))),
+                Span::styled(" (or ", Style::default().fg(role_color(Role::MutedText))),
                 Span::styled(
                     "B",
                     Style::default()
-                        .fg(rgb(130, 224, 215))
+                        .fg(role_color(Role::Accent))
                         .add_modifier(Modifier::BOLD),
                 ),
                 Span::styled(
                     ") to restore only this guessed recent group.",
-                    Style::default().fg(rgb(140, 145, 160)),
+                    Style::default().fg(role_color(Role::MutedText)),
                 ),
             ]),
         ];
@@ -823,12 +834,12 @@ impl SessionPicker {
                     .title(Span::styled(
                         title,
                         Style::default()
-                            .fg(rgb(255, 140, 140))
+                            .fg(role_color(Role::Error))
                             .add_modifier(Modifier::BOLD),
                     ))
                     .borders(Borders::ALL)
                     .border_type(BorderType::Rounded)
-                    .border_style(Style::default().fg(rgb(255, 140, 140))),
+                    .border_style(Style::default().fg(role_color(Role::Error))),
             )
             .wrap(Wrap { trim: false });
         frame.render_widget(block, area);

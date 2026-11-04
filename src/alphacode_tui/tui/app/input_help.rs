@@ -253,6 +253,9 @@ impl App {
             "skills" => {
                 "/skills\nList loaded skills and alphacode-endorsed recommendations.\n\nActivate a skill by typing its slash command (for example /optimization)."
             }
+            "add" => {
+                "/add [path]\nBrowse the current directory or a supplied directory; select a skill file of any name. Files need YAML name and description plus instructions. Use quotes around paths with spaces. A directory containing plugin.json installs a local plugin. Existing installations are preserved. Standard references, scripts, assets and agents folders are copied with skills."
+            }
             "productivity" | "wrapped" => {
                 "/productivity\nGenerate your productivity report from session transcripts.\n\nAlias: /wrapped."
             }

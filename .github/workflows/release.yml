@@ -19,6 +19,7 @@ concurrency:
 
 permissions:
   contents: write
+  actions: read
 
 jobs:
   create-release:
@@ -117,6 +118,8 @@ jobs:
               ~/.cargo/git
               target
           key: release-${{ matrix.target }}-${{ hashFiles('Cargo.lock') }}
+          restore-keys: |
+            release-${{ matrix.target }}-
 
       # Extract the release version from the git tag and expose it as
       # ALPHACODE_BUILD_SEMVER so the build script embeds the *exact* tag
@@ -434,6 +437,29 @@ jobs:
           done
           sort -u -o SHA256SUMS SHA256SUMS
           test "$(wc -l < SHA256SUMS)" -eq 8 || { echo "::error::Expected checksums for all eight platform archives"; exit 1; }
+      # Platform builds may run alongside main-branch CI, but publishing must
+      # wait for the exact source revision to pass every CI check.
+      - name: Require green CI for this source revision
+        timeout-minutes: 65
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
+          RELEASE_SHA: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          ci_run=""
+          for attempt in $(seq 1 20); do
+            ci_run="$(gh run list --workflow ci.yml --commit "$RELEASE_SHA" --branch main --event push --limit 1 --json databaseId --jq '.[0].databaseId // empty')"
+            [ -n "$ci_run" ] && break
+            sleep 10
+          done
+          if [ -z "$ci_run" ]; then
+            echo "::error::No main-branch CI run exists for release source $RELEASE_SHA"
+            exit 1
+          fi
+          gh run watch "$ci_run" --exit-status --interval 30
+
       - name: Upload combined SHA256SUMS
         uses: softprops/action-gh-release@v2
         with:

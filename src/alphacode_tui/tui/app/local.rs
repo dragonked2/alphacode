@@ -8,8 +8,9 @@ use crate::alphacode_tui::message::{
     format_background_task_notification_markdown, format_background_task_progress_markdown,
 };
 use crate::alphacode_tui::session::StoredDisplayRole;
+use crate::alphacode_tui::tui::terminal_events::TerminalEventStream as EventStream;
 use anyhow::Result;
-use crossterm::event::{Event, EventStream, KeyEventKind};
+use crossterm::event::{Event, KeyEventKind};
 use ratatui::DefaultTerminal;
 use std::time::{Duration, Instant};
 use tokio::sync::broadcast::Receiver;
@@ -134,17 +135,7 @@ pub(super) fn handle_terminal_event(
     event: Option<std::result::Result<Event, std::io::Error>>,
 ) -> Result<bool> {
     crate::logging::watchdog::beat("tui.terminal_event");
-    let mut needs_redraw = apply_terminal_event(app, terminal, event)?;
-    const MAX_DRAINED_EVENTS_PER_WAKE: usize = 32;
-    for _ in 0..MAX_DRAINED_EVENTS_PER_WAKE {
-        if !crossterm::event::poll(std::time::Duration::ZERO).unwrap_or(false) {
-            break;
-        }
-        if let Ok(event) = crossterm::event::read() {
-            needs_redraw |= apply_terminal_event(app, terminal, Some(Ok(event)))?;
-        }
-    }
-    Ok(needs_redraw)
+    apply_terminal_event(app, terminal, event)
 }
 
 pub(super) fn handle_bus_event(

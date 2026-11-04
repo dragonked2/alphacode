@@ -454,7 +454,6 @@ fn test_model_picker_reuses_cached_entries_until_invalidated() {
         let rt = tokio::runtime::Runtime::new().unwrap();
         let registry = rt.block_on(crate::tool::Registry::new(provider.clone()));
         let mut app = App::new_for_test_harness(provider, registry);
-        app.queue_mode = false;
         app.diff_mode = crate::config::DiffDisplayMode::Inline;
 
         app.open_model_picker();
@@ -496,7 +495,6 @@ fn test_shift_tab_model_favorite_hotkey_preserves_input_line() {
     let rt = tokio::runtime::Runtime::new().unwrap();
     let registry = rt.block_on(crate::tool::Registry::new(provider.clone()));
     let mut app = App::new_for_test_harness(provider, registry);
-    app.queue_mode = false;
     app.diff_mode = crate::config::DiffDisplayMode::Inline;
 
     app.set_input_for_test("do not drop this draft");
@@ -536,7 +534,6 @@ fn test_tui_api_key_auth_refreshes_catalog_shows_diff_without_opening_picker() {
     let rt = tokio::runtime::Runtime::new().unwrap();
     let registry = rt.block_on(crate::tool::Registry::new(provider.clone()));
     let mut app = App::new_for_test_harness(provider, registry);
-    app.queue_mode = false;
     app.diff_mode = crate::config::DiffDisplayMode::Inline;
 
     let mut bus_rx = crate::bus::Bus::global().subscribe();
@@ -646,7 +643,6 @@ fn test_tui_cerebras_paste_key_lifecycle_has_no_degraded_success_messages() {
     let rt = tokio::runtime::Runtime::new().unwrap();
     let registry = rt.block_on(crate::tool::Registry::new(provider.clone()));
     let mut app = App::new_for_test_harness(provider, registry);
-    app.queue_mode = false;
     app.diff_mode = crate::config::DiffDisplayMode::Inline;
 
     let mut bus_rx = crate::bus::Bus::global().subscribe();
@@ -970,7 +966,6 @@ fn test_tui_openai_compatible_empty_catalog_does_not_switch_to_profile_default()
     let rt = tokio::runtime::Runtime::new().unwrap();
     let registry = rt.block_on(crate::tool::Registry::new(provider.clone()));
     let mut app = App::new_for_test_harness(provider, registry);
-    app.queue_mode = false;
     app.diff_mode = crate::config::DiffDisplayMode::Inline;
 
     let mut bus_rx = crate::bus::Bus::global().subscribe();
@@ -1034,7 +1029,6 @@ fn test_tui_openai_compatible_local_refresh_failure_is_pending_not_final_failure
     let rt = tokio::runtime::Runtime::new().unwrap();
     let registry = rt.block_on(crate::tool::Registry::new(provider.clone()));
     let mut app = App::new_for_test_harness(provider, registry);
-    app.queue_mode = false;
     app.diff_mode = crate::config::DiffDisplayMode::Inline;
 
     let mut bus_rx = crate::bus::Bus::global().subscribe();
@@ -1101,7 +1095,6 @@ fn test_model_picker_opens_simplified_state_before_async_routes_complete() {
     let rt = tokio::runtime::Runtime::new().unwrap();
     let registry = rt.block_on(crate::tool::Registry::new(provider.clone()));
     let mut app = App::new_for_test_harness(provider, registry);
-    app.queue_mode = false;
     app.diff_mode = crate::config::DiffDisplayMode::Inline;
 
     app.open_model_picker();
@@ -1140,7 +1133,6 @@ fn test_model_picker_state_space_preserves_provider_labels_after_route_hydration
     let rt = tokio::runtime::Runtime::new().unwrap();
     let registry = rt.block_on(crate::tool::Registry::new(provider.clone()));
     let mut app = App::new_for_test_harness(provider, registry);
-    app.queue_mode = false;
     app.diff_mode = crate::config::DiffDisplayMode::Inline;
     app.recent_authenticated_provider = Some(("chutes".to_string(), Instant::now()));
 
@@ -1232,7 +1224,6 @@ fn test_model_picker_does_not_cache_single_model_fallback() {
     let rt = tokio::runtime::Runtime::new().unwrap();
     let registry = rt.block_on(crate::tool::Registry::new(provider.clone()));
     let mut app = App::new_for_test_harness(provider, registry);
-    app.queue_mode = false;
     app.diff_mode = crate::config::DiffDisplayMode::Inline;
 
     app.open_model_picker();
@@ -1296,7 +1287,6 @@ fn test_login_completed_spawns_auth_refresh_when_runtime_is_available() {
     let rt = tokio::runtime::Runtime::new().unwrap();
     let registry = rt.block_on(crate::tool::Registry::new(provider.clone()));
     let mut app = App::new_for_test_harness(provider, registry);
-    app.queue_mode = false;
     app.diff_mode = crate::config::DiffDisplayMode::Inline;
 
     let _guard = rt.enter();
@@ -1607,7 +1597,6 @@ fn test_azure_login_completion_switches_local_model_without_completion() {
             phase: crate::alphacode_tui::tui::app::onboarding_flow::OnboardingPhase::Done,
         },
     );
-    app.queue_mode = false;
     app.diff_mode = crate::config::DiffDisplayMode::Inline;
     app.provider_session_id = Some("stale-upstream".to_string());
     app.session.provider_session_id = Some("stale-upstream".to_string());

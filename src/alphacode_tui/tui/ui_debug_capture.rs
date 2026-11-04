@@ -52,7 +52,6 @@ pub(super) fn build_info_widget_summary(data: &info_widget::InfoWidgetData) -> I
         todos_done,
         context_total_chars,
         context_limit,
-        queue_mode: data.queue_mode,
         model: data.model.clone(),
         reasoning_effort: data.reasoning_effort.clone(),
         session_count: data.session_count,

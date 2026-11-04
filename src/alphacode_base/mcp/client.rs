@@ -137,6 +137,7 @@ impl McpClient {
         config: &McpServerConfig,
         working_dir: Option<&std::path::Path>,
     ) -> Result<Self> {
+        config.ensure_connection_allowed()?;
         let working_dir = working_dir.filter(|dir| dir.is_dir());
         crate::logging::info(&format!(
             "MCP: Connecting to '{}' ({} {:?}) cwd={:?}",
@@ -391,6 +392,7 @@ while IFS= read -r line; do
 done
 "#;
         McpServerConfig {
+            project_source: None,
             command: "/bin/sh".to_string(),
             args: vec!["-c".to_string(), script.to_string()],
             env: Default::default(),

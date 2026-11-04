@@ -858,6 +858,23 @@ pub(crate) fn get_tool_summary(tool: &ToolCall) -> String {
     get_tool_summary_with_budget(tool, 50, None)
 }
 
+/// The skill name a `skill_manage`/`skill` call targets, if any.
+///
+/// `skill_manage` rows read as `skill_manage (tui_design)`, so the target skill
+/// is visible inline instead of only on the dimmed detail line. Accepts both
+/// `name` (current schema) and `skill` (legacy alias).
+pub(crate) fn skill_name_for_tool(tool: &ToolCall) -> Option<&str> {
+    if !matches!(canonical_tool_name(&tool.name), "skill" | "skill_manage") {
+        return None;
+    }
+    tool.input
+        .get("name")
+        .or_else(|| tool.input.get("skill"))
+        .and_then(|value| value.as_str())
+        .map(str::trim)
+        .filter(|name| !name.is_empty())
+}
+
 /// Detail text for the live activity line while a tool is running. Prefers the
 /// model-provided `intent` (display-only description of why the call is being
 /// made) and appends the technical summary when it adds information.
@@ -1236,15 +1253,10 @@ pub(super) fn get_tool_summary_with_budget(
                 .get("action")
                 .and_then(|v| v.as_str())
                 .unwrap_or("list");
-            let name = tool
-                .input
-                .get("name")
-                .or_else(|| tool.input.get("skill"))
-                .and_then(|v| v.as_str());
-            match name {
-                Some(name) => format!("{} /{}", action, name),
-                None => action.to_string(),
-            }
+            // The target skill is rendered inline next to the tool name as
+            // `skill_manage (tui_design)`, so the summary only carries the
+            // action to avoid repeating the name on the same row.
+            action.to_string()
         }
         "schedule" => {
             let action = tool
@@ -1683,5 +1695,67 @@ pub(super) fn summarize_batch_running_tools_compact(running: &[ToolCall]) -> Opt
         Some(label)
     } else {
         Some(format!("{} +{}", label, extra))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn tool(name: &str, input: serde_json::Value) -> ToolCall {
+        ToolCall {
+            id: String::new(),
+            name: name.to_string(),
+            input,
+            intent: None,
+            thought_signature: None,
+        }
+    }
+
+    #[test]
+    fn skill_name_is_surfaced_for_skill_calls() {
+        let load = tool(
+            "skill_manage",
+            serde_json::json!({"action": "load", "name": "tui_design"}),
+        );
+        assert_eq!(skill_name_for_tool(&load), Some("tui_design"));
+
+        // Legacy `skill` spelling and `skill` input alias.
+        let legacy = tool(
+            "skill",
+            serde_json::json!({"action": "load", "skill": "ctf"}),
+        );
+        assert_eq!(skill_name_for_tool(&legacy), Some("ctf"));
+
+        // Non-skill tools never produce a skill suffix.
+        assert_eq!(
+            skill_name_for_tool(&tool("read", serde_json::json!({"file_path": "a"}))),
+            None
+        );
+
+        // Missing or blank names produce no suffix (never `( )`).
+        assert_eq!(
+            skill_name_for_tool(&tool("skill_manage", serde_json::json!({"action": "list"}))),
+            None
+        );
+        assert_eq!(
+            skill_name_for_tool(&tool("skill_manage", serde_json::json!({"name": "   "}))),
+            None
+        );
+    }
+
+    #[test]
+    fn skill_summary_carries_only_the_action() {
+        // The skill name renders inline next to the tool name, so the summary
+        // must not repeat it.
+        let load = tool(
+            "skill_manage",
+            serde_json::json!({"action": "load", "name": "tui_design"}),
+        );
+        assert_eq!(get_tool_summary_with_budget(&load, 50, None), "load");
+
+        // Defaults to `list` when no action is supplied.
+        let bare = tool("skill_manage", serde_json::json!({"name": "tui_design"}));
+        assert_eq!(get_tool_summary_with_budget(&bare, 50, None), "list");
     }
 }

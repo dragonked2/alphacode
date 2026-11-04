@@ -1175,10 +1175,6 @@ impl crate::alphacode_tui::tui::TuiState for App {
         })
     }
 
-    fn queue_mode(&self) -> bool {
-        self.queue_mode
-    }
-
     fn next_prompt_new_session_armed(&self) -> bool {
         self.route_next_prompt_to_new_session
     }
@@ -1689,37 +1685,9 @@ impl crate::alphacode_tui::tui::TuiState for App {
             None
         };
 
-        let cache_hit_info =
-            (self.token_accounting.total_cache_reported_input_tokens > 0).then(|| {
-                crate::alphacode_tui::tui::info_widget::CacheHitInfo {
-                    reported_input_tokens: self.token_accounting.total_cache_reported_input_tokens,
-                    read_tokens: self.token_accounting.total_cache_read_tokens,
-                    creation_tokens: self.token_accounting.total_cache_creation_tokens,
-                    optimal_input_tokens: self.token_accounting.total_cache_optimal_input_tokens,
-                    last_reported_input_tokens: self
-                        .token_accounting
-                        .last_cache_reported_input_tokens,
-                    last_read_tokens: self.token_accounting.last_cache_read_tokens,
-                    last_creation_tokens: self.token_accounting.last_cache_creation_tokens,
-                    last_optimal_input_tokens: self
-                        .token_accounting
-                        .last_cache_optimal_input_tokens,
-                    miss_attributions: self
-                        .kv_cache
-                        .kv_cache_miss_samples
-                        .iter()
-                        .rev()
-                        .map(|sample| {
-                            crate::alphacode_tui::tui::info_widget::CacheMissAttribution {
-                                turn_number: sample.turn_number,
-                                call_index: sample.call_index,
-                                missed_tokens: sample.missed_tokens,
-                                reason: sample.reason.label().to_string(),
-                            }
-                        })
-                        .collect(),
-                }
-            });
+        // The KV-cache widget is no longer surfaced (its hit ratios read as
+        // opaque noise), so this per-frame telemetry snapshot — which cloned every
+        // miss-attribution sample on each frame — is not built at all.
 
         // Get active mermaid diagrams - only for margin mode (pinned mode uses dedicated pane)
         let diagrams = if self.diagram_mode == crate::config::DiagramDisplayMode::Margin {
@@ -1768,7 +1736,6 @@ impl crate::alphacode_tui::tui::TuiState for App {
             todos_are_swarm_plan,
             context_info,
             context_info_stale: !context_snapshot.fresh,
-            queue_mode: Some(self.queue_mode),
             context_limit: Some(self.context_limit as usize),
             model,
             reasoning_effort,
@@ -1777,6 +1744,13 @@ impl crate::alphacode_tui::tui::TuiState for App {
             native_compaction_threshold_tokens,
             session_count,
             session_name,
+            goal: super::helpers::gather_session_goal(
+                session_id,
+                self.session
+                    .working_dir
+                    .as_deref()
+                    .map(std::path::Path::new),
+            ),
             working_dir: self.session.working_dir.clone(),
             client_count,
             memory_info,
@@ -1799,7 +1773,7 @@ impl crate::alphacode_tui::tui::TuiState for App {
             workspace_animation_tick,
             ambient_info: gather_ambient_info(crate::config::config().ambient.enabled),
             observed_context_tokens: self.current_stream_context_tokens(),
-            cache_hit_info,
+            cache_hit_info: None,
             compaction_info,
             is_compacting: if !self.is_remote && self.provider.uses_alphacode_compaction() {
                 let compaction = self.registry.compaction();

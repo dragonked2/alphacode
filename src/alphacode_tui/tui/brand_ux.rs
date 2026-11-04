@@ -114,6 +114,27 @@ impl BrandTheme {
         })
     }
 
+    /// Render the shared cyan wordmark without embedding ANSI in widget text.
+    pub fn wordmark_lines(art: &[&str]) -> Vec<Line<'static>> {
+        art.iter()
+            .enumerate()
+            .map(|(row_index, row)| {
+                let mut spans: Vec<Span<'static>> = Vec::new();
+                for glyph in row.chars() {
+                    let (r, g, b) =
+                        crate::alphacode_brand::wordmark_ink(glyph, row_index, art.len());
+                    let style = Style::default().fg(rgb(r, g, b));
+                    if let Some(last) = spans.last_mut().filter(|span| span.style == style) {
+                        last.content.to_mut().push(glyph);
+                    } else {
+                        spans.push(Span::styled(glyph.to_string(), style));
+                    }
+                }
+                Line::from(spans).alignment(Alignment::Center)
+            })
+            .collect()
+    }
+
     /// A smooth ramp of `count` colours across the brand gradient.
     ///
     /// Multi-row wordmark art used to take `gradient()[row % 16]`, which —
@@ -801,17 +822,7 @@ impl SplashScreen {
         let Some(art) = crate::alphacode_brand::wordmark_for(max_width.saturating_sub(4)) else {
             return Vec::new();
         };
-        art.iter()
-            .map(|row| {
-                Line::from(Span::styled(
-                    (*row).to_string(),
-                    Style::default()
-                        .fg(BrandTheme::accent())
-                        .add_modifier(Modifier::BOLD),
-                ))
-                .alignment(Alignment::Center)
-            })
-            .collect()
+        BrandTheme::wordmark_lines(art)
     }
 
     /// Build the banner with optional feature row. Disabling the feature
@@ -1061,16 +1072,19 @@ mod tests {
     }
 
     #[test]
-    fn resized_block_banners_keep_one_brand_color() {
+    fn resized_banners_keep_the_cyan_glow_family() {
         for width in [39, 57, 80, 160] {
             let lines = SplashScreen::wordmark_art(width);
-            assert_eq!(lines.len(), 6, "width {width}");
-            for line in lines {
-                assert!(line.width() <= width);
-                for span in line.spans {
-                    assert_eq!(span.style.fg, Some(BrandTheme::accent()));
-                }
-            }
+            assert!(lines.len() >= 6, "width {width}");
+            assert!(lines.iter().all(|line| line.width() <= width));
+            let colors: std::collections::HashSet<_> = lines
+                .iter()
+                .flat_map(|line| line.spans.iter().filter_map(|span| span.style.fg))
+                .collect();
+            assert!(
+                colors.len() >= 3,
+                "cyan glow must remain visible across letter rows"
+            );
         }
     }
 

@@ -309,7 +309,7 @@ fn test_remote_ctrl_h_does_not_insert_text() {
 }
 
 #[test]
-fn test_remote_ctrl_enter_queues_while_processing() {
+fn test_remote_ctrl_enter_does_not_queue_while_processing() {
     let rt = tokio::runtime::Runtime::new().unwrap();
     let _guard = rt.enter();
     let mut app = create_test_app();
@@ -323,13 +323,13 @@ fn test_remote_ctrl_enter_queues_while_processing() {
     rt.block_on(app.handle_remote_key(KeyCode::Enter, KeyModifiers::CONTROL, &mut remote))
         .unwrap();
 
+    // Queue mode is gone: a mid-turn prompt never lands in the queue.
     assert!(app.input().is_empty());
-    assert_eq!(app.queued_messages().len(), 1);
-    assert_eq!(app.queued_messages()[0], "hi");
+    assert_eq!(app.queued_messages().len(), 0);
 }
 
 #[test]
-fn test_remote_cmd_enter_queues_while_processing() {
+fn test_remote_cmd_enter_does_not_queue_while_processing() {
     let rt = tokio::runtime::Runtime::new().unwrap();
     let _guard = rt.enter();
     let mut app = create_test_app();
@@ -344,8 +344,7 @@ fn test_remote_cmd_enter_queues_while_processing() {
         .unwrap();
 
     assert!(app.input().is_empty());
-    assert_eq!(app.queued_messages().len(), 1);
-    assert_eq!(app.queued_messages()[0], "hi");
+    assert_eq!(app.queued_messages().len(), 0);
 }
 
 

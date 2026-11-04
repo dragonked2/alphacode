@@ -32,8 +32,8 @@ use crate::output_style::{emoji_enabled, terminal_text};
 /// for a dark default terminal and a light default terminal — the
 /// `pick_for_terminal_bg()` helper picks the right one.
 pub mod palette {
-    /// Mint accent shared with the desktop and interactive terminal.
-    pub const ACCENT: (u8, u8, u8) = (122, 226, 194);
+    /// Brand accent shared with the interactive terminal.
+    pub const ACCENT: (u8, u8, u8) = crate::alphacode_tui_style::Role::Accent.default_rgb();
     /// Alphacode success green.
     pub const SUCCESS: (u8, u8, u8) = (140, 224, 189);
     /// Alphacode warn amber.
@@ -44,17 +44,17 @@ pub mod palette {
     pub const INFO: (u8, u8, u8) = (147, 197, 253);
     /// Alphacode neutral gray (used for hints, secondary text).
     pub const MUTED: (u8, u8, u8) = (175, 191, 208);
-    /// Mint for selected items and active markers.
-    pub const HIGHLIGHT: (u8, u8, u8) = (122, 226, 194);
+    /// Selected items and active markers share the brand accent.
+    pub const HIGHLIGHT: (u8, u8, u8) = ACCENT;
 
     /// Light-bg variants (slightly darker for contrast on white).
-    pub const ACCENT_LIGHT: (u8, u8, u8) = (8, 111, 91);
+    pub const ACCENT_LIGHT: (u8, u8, u8) = (135, 103, 17);
     pub const SUCCESS_LIGHT: (u8, u8, u8) = (23, 105, 79);
     pub const WARN_LIGHT: (u8, u8, u8) = (133, 82, 20);
     pub const ERROR_LIGHT: (u8, u8, u8) = (162, 47, 72);
     pub const INFO_LIGHT: (u8, u8, u8) = (40, 94, 146);
     pub const MUTED_LIGHT: (u8, u8, u8) = (67, 93, 115);
-    pub const HIGHLIGHT_LIGHT: (u8, u8, u8) = (8, 111, 91);
+    pub const HIGHLIGHT_LIGHT: (u8, u8, u8) = ACCENT_LIGHT;
 }
 
 /// Detect whether the terminal background is light. We use
@@ -135,6 +135,19 @@ fn parse_bool(value: &str) -> Option<bool> {
 
 /// Pick a color from the palette appropriate for the terminal bg.
 pub fn pick_for_terminal_bg(token: PaletteToken) -> (u8, u8, u8) {
+    use crate::alphacode_tui_style::Role;
+    let role = match token {
+        PaletteToken::Accent | PaletteToken::Highlight => Role::Accent,
+        PaletteToken::Success => Role::Success,
+        PaletteToken::Warn => Role::Warning,
+        PaletteToken::Error => Role::Error,
+        PaletteToken::Info => Role::Info,
+        PaletteToken::Muted => Role::MutedText,
+    };
+    let active = crate::alphacode_tui_style::palette();
+    if active.is_overridden(role) {
+        return active.rgb(role);
+    }
     if is_light_terminal() {
         match token {
             PaletteToken::Accent => palette::ACCENT_LIGHT,
@@ -628,24 +641,43 @@ pub fn wrap_line(line: &str, width: usize) -> String {
     let mut current = String::new();
     let mut current_width = 0usize;
 
-    for word in split_keep_spaces(line) {
-        let word_width = display_width(&word);
-        if current_width > 0 && current_width + word_width > width {
+    for word in line.split_inclusive(char::is_whitespace) {
+        let word = if current.is_empty() && !out.is_empty() {
+            word.trim_start()
+        } else {
+            word
+        };
+        // Whitespace after a word can be dropped at a wrap boundary. Counting
+        // it as content made exact-width words produce empty continuation rows.
+        let content = word.trim_end();
+        let content_width = display_width(content);
+        if current_width > 0 && current_width + content_width > width {
             out.push_str(current.trim_end());
             out.push('\n');
             current.clear();
             current_width = 0;
         }
-        // A word longer than the whole line: hard-break it by cells.
-        if word_width > width {
-            for chunk in break_to_width(&word, width) {
-                out.push_str(&chunk);
-                out.push('\n');
+        if content_width > width {
+            let mut chunks = break_to_width(content, width).into_iter().peekable();
+            while let Some(chunk) = chunks.next() {
+                if chunks.peek().is_some() {
+                    out.push_str(&chunk);
+                    out.push('\n');
+                } else {
+                    current_width = display_width(&chunk);
+                    current = chunk;
+                }
             }
-            continue;
+        } else {
+            current.push_str(content);
+            current_width += content_width;
         }
-        current.push_str(&word);
-        current_width += word_width;
+        let trailing = &word[content.len()..];
+        let trailing_width = display_width(trailing);
+        if current_width + trailing_width <= width {
+            current.push_str(trailing);
+            current_width += trailing_width;
+        }
     }
 
     let tail = current.trim_end();
@@ -653,21 +685,6 @@ pub fn wrap_line(line: &str, width: usize) -> String {
         out.push_str(tail);
     }
     out
-}
-
-fn split_keep_spaces(line: &str) -> Vec<String> {
-    let mut words = Vec::new();
-    let mut current = String::new();
-    for ch in line.chars() {
-        current.push(ch);
-        if ch.is_whitespace() {
-            words.push(std::mem::take(&mut current));
-        }
-    }
-    if !current.is_empty() {
-        words.push(current);
-    }
-    words
 }
 
 fn break_to_width(text: &str, width: usize) -> Vec<String> {
@@ -1070,6 +1087,21 @@ mod tests {
         for line in wrap_line(&long, 10).lines() {
             assert_eq!(display_width(line), 10);
         }
+    }
+
+    #[test]
+    fn wrapping_long_tokens_keeps_the_tail_and_avoids_blank_rows() {
+        assert_eq!(wrap_line("abcdefghijk lm", 8), "abcdefgh\nijk lm");
+        assert_eq!(wrap_line("abcde fghij", 5), "abcde\nfghij");
+        assert_eq!(wrap_line("abcdefghij", 5), "abcde\nfghij");
+        let text = "e\u{301}👩\u{200d}💻世界abcde";
+        let wrapped = wrap_line(text, 4);
+        assert_eq!(wrapped.replace('\n', ""), text);
+        assert!(
+            wrapped
+                .lines()
+                .all(|line| !line.is_empty() && display_width(line) <= 4)
+        );
     }
 
     #[test]

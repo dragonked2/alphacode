@@ -2838,7 +2838,10 @@ pub(crate) fn debug_chat_image_regions_json() -> String {
 const CHUNK_BANNER: usize = 0;
 const CHUNK_MESSAGES: usize = 1;
 const CHUNK_TRANSCRIPT_GAP: usize = 2;
-const CHUNK_QUEUED: usize = 3;
+// Pending-turn feedback (soft interrupts the user queued while a turn is
+// running, plus the interleave): queued prompts themselves are no longer
+// surfaced, but this row still shows the messages that will act on the turn.
+const CHUNK_PENDING: usize = 3;
 const CHUNK_SWARM_STRIP: usize = 4;
 const CHUNK_STATUS: usize = 5;
 const CHUNK_NOTIFICATION: usize = 6;
@@ -3270,9 +3273,10 @@ fn draw_inner(frame: &mut Frame, app: &dyn TuiState) {
     };
     let requested_swarm_height = swarm_strip_lines.len().min(u16::MAX as usize) as u16;
 
-    // Calculate pending messages (queued + interleave) for numbering and layout
+    // Count the messages that will act on the running turn (soft interrupts and
+    // the interleave) for numbering, status and the pending-feedback row.
     let pending_count = input_ui::pending_prompt_count(app);
-    let requested_queued_height = pending_count.min(3) as u16;
+    let requested_pending_height = pending_count.min(3) as u16;
 
     // Count user messages to show next prompt number
     let user_count = app.display_user_message_count();
@@ -3319,8 +3323,8 @@ fn draw_inner(frame: &mut Frame, app: &dyn TuiState) {
     remaining -= inline_block_height;
     let notification_height = u16::from(app.has_notification()).min(remaining);
     remaining -= notification_height;
-    let queued_height = requested_queued_height.min(remaining);
-    remaining -= queued_height;
+    let pending_height = requested_pending_height.min(remaining);
+    remaining -= pending_height;
     let swarm_strip_height = requested_swarm_height.min(remaining);
     remaining -= swarm_strip_height;
     let inline_ui_gap_height = u16::from(inline_block_height > 0).min(remaining);
@@ -3406,14 +3410,14 @@ fn draw_inner(frame: &mut Frame, app: &dyn TuiState) {
     // Elastic overscroll status line revealed when the user scrolls past the
     // bottom of the transcript. Rendered directly below the input line.
     let fixed_height = 1
-        + queued_height
+        + pending_height
         + swarm_strip_height
         + notification_height
         + inline_block_height
         + inline_ui_gap_height
         + input_height
         + overscroll_height
-        + donut_height; // status + queued + swarm strip + notification + inline UI + gap + input + overscroll + donut
+        + donut_height; // status + pending + swarm strip + notification + inline UI + gap + input + overscroll + donut
     let available_height = chat_area.height;
     // The pinned banner band consumes rows above the transcript, so the
     // transcript itself only has `available_height - banner_height` rows to work
@@ -3545,7 +3549,7 @@ fn draw_inner(frame: &mut Frame, app: &dyn TuiState) {
                         .saturating_add(transcript_gap),
                 ), // CHUNK_MESSAGES
                 Constraint::Length(0),             // CHUNK_TRANSCRIPT_GAP
-                Constraint::Length(queued_height), // CHUNK_QUEUED
+                Constraint::Length(pending_height), // CHUNK_PENDING
                 Constraint::Length(swarm_strip_height), // CHUNK_SWARM_STRIP
                 Constraint::Length(1),             // CHUNK_STATUS
                 Constraint::Length(notification_height), // CHUNK_NOTIFICATION
@@ -3560,7 +3564,7 @@ fn draw_inner(frame: &mut Frame, app: &dyn TuiState) {
                 Constraint::Length(banner_height),        // CHUNK_BANNER
                 Constraint::Min(transcript_reserve),      // CHUNK_MESSAGES (scrollable)
                 Constraint::Length(transcript_gap),       // CHUNK_TRANSCRIPT_GAP (always 0 here)
-                Constraint::Length(queued_height),        // CHUNK_QUEUED
+                Constraint::Length(pending_height),       // CHUNK_PENDING
                 Constraint::Length(swarm_strip_height),   // CHUNK_SWARM_STRIP
                 Constraint::Length(1),                    // CHUNK_STATUS
                 Constraint::Length(notification_height),  // CHUNK_NOTIFICATION
@@ -3595,8 +3599,8 @@ fn draw_inner(frame: &mut Frame, app: &dyn TuiState) {
         capture.layout.use_packed = use_packed;
         capture.layout.estimated_content_height = content_height;
         capture.layout.messages_area = Some(chunks[CHUNK_MESSAGES].into());
-        if queued_height > 0 {
-            capture.layout.queued_area = Some(chunks[CHUNK_QUEUED].into());
+        if pending_height > 0 {
+            capture.layout.queued_area = Some(chunks[CHUNK_PENDING].into());
         }
         capture.layout.status_area = Some(chunks[CHUNK_STATUS].into());
         capture.layout.input_area = Some(chunks[CHUNK_INPUT].into());
@@ -3798,11 +3802,11 @@ fn draw_inner(frame: &mut Frame, app: &dyn TuiState) {
         });
     }
     let chrome_start = Instant::now();
-    if queued_height > 0 {
+    if pending_height > 0 {
         if let Some(ref mut capture) = debug_capture {
-            capture.render_order.push("draw_queued".to_string());
+            capture.render_order.push("draw_pending".to_string());
         }
-        input_ui::draw_queued(frame, app, chunks[CHUNK_QUEUED], user_count + 1);
+        input_ui::draw_pending_feedback(frame, app, chunks[CHUNK_PENDING]);
     }
     if let Some(ref mut capture) = debug_capture {
         capture.render_order.push("draw_status".to_string());

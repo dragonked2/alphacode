@@ -858,7 +858,7 @@ fn gradient_text_spans(text: &str) -> Vec<Span<'static>> {
 /// `‹ alphacode ›` while the canonical wordmark is `‹ AlphaCode ›`).
 ///
 /// This deliberately reads the **full** ladder, not a text-only subset. The
-/// six-row block art *is* the logo, and the header has always drawn it on
+/// cyan block art *is* the logo, and the header has always drawn it on
 /// terminals wide enough to hold it (73 cells). Routing the header through a
 /// compact-only selector silently downgraded every wide terminal to the
 /// one-row `A L P H A C O D E` mark, so the art stopped appearing anywhere it
@@ -876,14 +876,7 @@ fn build_alpha_banner(width: usize) -> Vec<Line<'static>> {
         return Vec::new();
     };
 
-    let accent = BrandTheme::accent();
-    let mut lines: Vec<Line<'static>> = art
-        .iter()
-        .map(|row| {
-            let style = Style::default().fg(accent).bold();
-            Line::from(Span::styled(row.to_string(), style)).alignment(Alignment::Center)
-        })
-        .collect();
+    let mut lines = BrandTheme::wordmark_lines(art);
     // Separate the wordmark from the status rows below it.
     lines.push(Line::from("").alignment(Alignment::Center));
     lines
@@ -1453,22 +1446,19 @@ pub(super) fn build_updates_box_lines(width: u16, max_lines: usize) -> Vec<Line<
 /// Rows the always-visible banner band occupies above the transcript.
 ///
 /// The banner is pinned to the top of the chat column (it no longer scrolls
-/// away with the transcript), and reserves a fixed slice of the available
-/// height: one sixth, clamped so a tiny terminal still has transcript room and
-/// a huge one is not swallowed by chrome. The wordmark art itself is variable
-/// height (six rows on wide terminals, fewer as the terminal narrows). Select
-/// an entire tier that fits the height budget rather than clipping the art.
+/// away with the transcript). A normal 80x24 terminal shows the full cyan
+/// logo, with fourteen rows reserved for the working interface. Short terminals
+/// select a complete smaller tier rather than clipping letters.
 pub(super) fn banner_band_height(width: u16, available_height: u16) -> u16 {
     if width < 12 || available_height < 12 {
         return 0;
     }
-    // Reserve the top sixth, bounded so the transcript keeps the majority of
-    // the screen. Minimum 1 keeps the brand line visible on short terminals.
-    let sixth = available_height / 6;
-    let budget = sixth.clamp(1, 12);
+    // Keep a full logo on ordinary 80x24 terminals while reserving fourteen
+    // rows for status, transcript, and composer. Short terminals use text.
+    let budget = available_height.saturating_sub(14).clamp(2, 10);
     // Build only the banner (not the model/auth lines) to learn its real
     // height. `build_alpha_banner` is a pure width→art lookup.
-    banner_wordmark(width, budget).map_or(1, |art| art.len() as u16)
+    banner_wordmark(width, budget - 1).map_or(2, |art| art.len() as u16 + 1)
 }
 
 /// Keep the same responsive wordmark before, during, and after a conversation.
@@ -1503,15 +1493,17 @@ pub(super) fn build_banner_band_lines(
         return Vec::new();
     }
     let _ = app;
-    let accent = BrandTheme::accent();
-    banner_wordmark(width, height)
-        .unwrap_or(&[crate::alphacode_brand::DISPLAY_NAME])
-        .iter()
-        .map(|row| {
-            Line::from(Span::styled(*row, Style::default().fg(accent).bold()))
-                .alignment(Alignment::Center)
-        })
-        .collect()
+    let art_height = height.saturating_sub(1).max(1);
+    let art = banner_wordmark(width, art_height).unwrap_or(&[crate::alphacode_brand::DISPLAY_NAME]);
+    let mut lines = BrandTheme::wordmark_lines(art);
+    if height > 1 {
+        lines.resize(usize::from(height - 1), Line::default());
+        lines.push(Line::from(Span::styled(
+            "─".repeat(usize::from(width)),
+            Style::default().fg(crate::alphacode_tui_style::theme::border_color()),
+        )));
+    }
+    lines
 }
 
 /// Build both header sections from one authentication snapshot. Credential
@@ -1551,18 +1543,17 @@ mod tests {
     use async_trait::async_trait;
     use std::sync::Arc;
 
-    /// The pinned banner band is sized to the top ~sixth of the chat column,
+    /// The pinned banner band shows full art when there is enough working space,
     /// never vanishes on a usable terminal, and never exceeds the wordmark art
     /// height (so it cannot leave a blank gap).
     #[test]
-    fn banner_band_reserves_the_top_sixth_bounded_by_the_art() {
-        // One sixth of a tall terminal, clamped to the art height.
+    fn banner_band_shows_full_art_on_a_normal_terminal_and_preserves_work_space() {
+        // Tall and normal terminals keep complete art without an empty band.
         let tall = banner_band_height(100, 48);
         assert!(tall >= 1, "a tall terminal must reserve a banner row");
-        assert!(
-            tall <= 48 / 6 + 1,
-            "banner must not exceed ~1/6: got {tall}"
-        );
+        assert_eq!(tall, 7);
+        assert_eq!(banner_band_height(100, 24), 7);
+        assert!(banner_band_height(80, 24) <= 24 - 14);
         assert!(tall <= build_alpha_banner(100).len() as u16);
 
         // Very short terminals get no band (nothing to pin without starving
@@ -1576,12 +1567,13 @@ mod tests {
     fn banner_selects_complete_art_for_the_available_height() {
         for height in 12..=60 {
             let band = banner_band_height(100, height);
-            let art = banner_wordmark(100, band).expect("wordmark fits");
-            assert_eq!(art.len(), usize::from(band));
-            assert!(band <= height / 6);
+            let art = banner_wordmark(100, band - 1).expect("wordmark fits");
+            assert_eq!(art.len() + 1, usize::from(band));
+            assert!(band <= height.saturating_sub(14).max(2));
             assert!(
                 art == crate::alphacode_brand::WORDMARK_BLOCK
                     || art == crate::alphacode_brand::WORDMARK_COMPACT
+                    || art == crate::alphacode_brand::WORDMARK_NARROW
                     || art == crate::alphacode_brand::WORDMARK_MONOSPACE_ROWS
                     || art == crate::alphacode_brand::WORDMARK_MINIMAL_ROWS
             );
@@ -2447,13 +2439,15 @@ mod tests {
 
     #[test]
     fn alpha_banners_are_row_width_consistent_and_fit_in_priority_order() {
-        let accent = BrandTheme::accent();
         for width in [40, 80, 120, 200] {
-            for line in build_alpha_banner(width) {
-                for span in line.spans.iter().filter(|span| !span.content.is_empty()) {
-                    assert_eq!(span.style.fg, Some(accent));
-                }
-            }
+            let lines = build_alpha_banner(width);
+            assert!(lines.iter().all(|line| line.width() <= width));
+            // The soft edge strokes and luminous cyan face remain distinct.
+            let colors: std::collections::HashSet<_> = lines
+                .iter()
+                .flat_map(|line| line.spans.iter().filter_map(|span| span.style.fg))
+                .collect();
+            assert!(colors.len() >= 3);
         }
         // The header draws the shared ladder, and every tier must stay
         // internally aligned so it cannot shear the header layout.
@@ -2469,7 +2463,7 @@ mod tests {
             );
         }
 
-        // A wide terminal gets the real logo: the six-row block art, not a
+        // A wide terminal gets the real logo: the cyan block art, not a
         // single-row text substitute. This is the regression that made the
         // banner look absent -- the header had been routed through the
         // compact-only selector, so the art never rendered anywhere.
@@ -2483,7 +2477,7 @@ mod tests {
             "wide banner should be the block art plus a separator row: {wide_text}"
         );
         assert!(
-            wide_text.contains("██╔══██╗"),
+            wide_text.contains(crate::alphacode_brand::WORDMARK_BLOCK[2].trim()),
             "wide banner should be the block-letter wordmark: {wide_text}"
         );
 

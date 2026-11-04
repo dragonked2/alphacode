@@ -376,15 +376,10 @@ fn test_chat_native_scrollbar_hidden_when_content_fits() {
     let text = render_and_snap(&app, &mut terminal);
 
     assert_eq!(crate::alphacode_tui::tui::ui::last_max_scroll(), 0);
-    for glyph in ["╷", "╵", "╎", "|", "█"] {
-        // "█" is the new solid scroll thumb; none of the old mixed glyphs nor
-        // the new thumb may appear when content fits. ("│" is intentionally
-        // absent here: the composer border wall draws one regardless.)
-        assert!(
-            !text.contains(glyph),
-            "did not expect scrollbar glyph {glyph:?} when content fits:\n{text}"
-        );
-    }
+    assert!(crate::alphacode_tui::tui::ui::last_chat_scrollbar_geometry().is_none());
+    // The banner uses solid blocks too; check scrollbar geometry and the
+    // visible response rather than rejecting every block in the whole frame.
+    assert!(text.contains("short response"));
 }
 
 #[test]

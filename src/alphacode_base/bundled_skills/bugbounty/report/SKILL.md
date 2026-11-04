@@ -18,13 +18,31 @@ FINDING STATE: VALIDATED (passed all 7 gates)
   Gate 1 (Scope): ✓ Asset in program scope
   Gate 2 (Boundary): ✓ Security boundary violation identified
   Gate 3 (Attacker): ✓ Realistic attacker capability
-  Gate 4 (Reproducible): ✓ Deterministic reproduction
+  Gate 4 (Reproducible): ✓ Repeatable evidence; measured conditions for timing-dependent issues
   Gate 5 (Impact): ✓ Concrete security impact
-  Gate 6 (FP): ✓ False positive eliminated
-  Gate 7 (Program): ✓ Program accepts this finding
+  Gate 6 (FP): ✓ Relevant benign explanations tested; remaining uncertainty disclosed
+  Gate 7 (Program): ✓ Checked against available program eligibility rules
 
 IF ANY GATE FAILED → DO NOT WRITE REPORT
 ```
+
+These gates govern submission-ready vulnerability claims. A failed or unknown
+gate still belongs in internal candidate notes or the assessment's limitations;
+do not hide unresolved work or claim that the program has accepted a report.
+For intermittent behavior, include controlled trials, successes/attempts, timing,
+settled state and negative controls rather than inventing deterministic results.
+
+Attach a compact evidence index: finding ID -> original artifact -> actor/tenant
+and fixture -> baseline/treatment -> observed invariant violation. Redact secrets
+from the report while preserving reproducible request structure. Separate observed
+impact from conditional chain extensions. Group variants by demonstrated root
+cause, and keep independent authorization failures separate when the fix differs.
+
+Close the assessment with completed coverage under exact tested conditions,
+failed/skipped/inconclusive work and its retry prerequisites, cleanup status and
+remaining high-value questions. Tool completion and request volume are not proof
+of exhaustive coverage. Never infer severity solely from the vulnerability label
+in a template table below; explain attacker prerequisites and demonstrated effect.
 
 ---
 

@@ -158,12 +158,12 @@ impl McpManagementTool {
         let all_tools = manager.all_tools().await;
         // Configured-but-not-connected servers, including disabled ones
         // (issue #436), so the full config state is visible.
-        let mut configured: Vec<(String, bool)> = manager
+        let mut configured: Vec<(String, bool, bool)> = manager
             .config()
             .servers
             .iter()
             .filter(|(name, _)| !servers.contains(name))
-            .map(|(name, cfg)| (name.clone(), cfg.is_enabled()))
+            .map(|(name, cfg)| (name.clone(), cfg.is_enabled(), cfg.is_project_local()))
             .collect();
         configured.sort();
 
@@ -172,8 +172,8 @@ impl McpManagementTool {
                 "No MCP servers connected.\n\n\
                 To connect a server, use:\n\
                 {\"action\": \"connect\", \"server\": \"name\", \"command\": \"/path/to/server\", \"args\": []}\n\n\
-                Or add servers to ~/.alphacode/mcp.json or .alphacode/mcp.json and use {\"action\": \"reload\"}.\n\
-                .claude/mcp.json is also supported for compatibility."
+                After reviewing the command, add trusted servers to ~/.alphacode/mcp.json and use {\"action\": \"reload\"}.\n\
+                Repository MCP definitions are listed but blocked from execution."
             ).with_title("MCP: No servers"));
         }
 
@@ -201,8 +201,13 @@ impl McpManagementTool {
 
         if !configured.is_empty() {
             output.push_str("Configured but not connected:\n");
-            for (name, enabled) in &configured {
-                if *enabled {
+            for (name, enabled, project_local) in &configured {
+                if *project_local {
+                    output.push_str(&format!(
+                        "  - {} (blocked: project configuration; review and install in ~/.alphacode/mcp.json, then remove the project entry)\n",
+                        name
+                    ));
+                } else if *enabled {
                     output.push_str(&format!(
                         "  - {} (enabled; connect with {{\"action\": \"connect\", \"server\": \"{}\"}})\n",
                         name, name
@@ -230,6 +235,7 @@ impl McpManagementTool {
         // rewriting config (issue #436).
         let config = if let Some(command) = params.command {
             McpServerConfig {
+                project_source: None,
                 command,
                 args: params.args.unwrap_or_default(),
                 env: params.env.unwrap_or_default(),
@@ -376,9 +382,9 @@ impl McpManagementTool {
             }
             return Ok(ToolOutput::new(
                 "No servers found in config.\n\n\
-                Add servers to ~/.alphacode/mcp.json (global) or .alphacode/mcp.json (project):\n\
+                Install reviewed, trusted servers in ~/.alphacode/mcp.json (user-level):\n\
                 {\n  \"servers\": {\n    \"server-name\": {\n      \"command\": \"/path/to/server\",\n      \"args\": [],\n      \"env\": {},\n      \"shared\": true\n    }\n  }\n}\n\n\
-                .claude/mcp.json is also supported for compatibility."
+                Repository MCP definitions are listed but blocked from execution."
             ).with_title("MCP: Empty config"));
         }
 
@@ -405,7 +411,7 @@ impl McpManagementTool {
         let enabled_count = config
             .servers
             .values()
-            .filter(|cfg| cfg.is_enabled())
+            .filter(|cfg| cfg.can_auto_connect())
             .count();
         let disabled_count = config.servers.len() - enabled_count;
         let mut output = format!(
@@ -414,7 +420,7 @@ impl McpManagementTool {
         );
         if disabled_count > 0 {
             output.push_str(&format!(
-                "{} server(s) disabled in config (kept, not spawned).\n\n",
+                "{} server(s) disabled or project-blocked in config (kept, not spawned).\n\n",
                 disabled_count
             ));
         }
@@ -571,6 +577,40 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn project_server_is_listed_as_blocked_and_cannot_connect_by_name() {
+        let mut config = crate::mcp::McpConfig::default();
+        let mut server: McpServerConfig = serde_json::from_value(json!({
+            "command": "must-never-be-spawned", "shared": false
+        }))
+        .unwrap();
+        server.project_source = Some(PathBuf::from("repo/.mcp.json"));
+        config.servers.insert("project-docs".into(), server);
+        let tool = McpManagementTool::new(Arc::new(RwLock::new(McpManager::with_config(config))));
+        let listed = tool
+            .execute(json!({"action": "list"}), create_test_context())
+            .await
+            .unwrap();
+        assert!(listed.output.contains("blocked: project configuration"));
+        assert!(listed.output.contains("~/.alphacode/mcp.json"));
+        let result = tool
+            .execute(
+                json!({"action": "connect", "server": "project-docs"}),
+                create_test_context(),
+            )
+            .await
+            .unwrap();
+        assert!(result.output.contains("Project MCP server blocked"));
+        assert!(
+            tool.manager
+                .read()
+                .await
+                .connected_servers()
+                .await
+                .is_empty()
+        );
+    }
+
+    #[tokio::test]
     async fn test_list_shows_disabled_configured_server() {
         // Issue #436: disabled servers stay visible in the list with their
         // state, so users can see and enable them on demand.
@@ -578,6 +618,7 @@ mod tests {
         config.servers.insert(
             "off-server".to_string(),
             McpServerConfig {
+                project_source: None,
                 command: "some-bin".to_string(),
                 args: vec![],
                 env: HashMap::new(),

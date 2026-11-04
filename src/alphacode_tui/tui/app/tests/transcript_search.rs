@@ -42,7 +42,6 @@ fn app_with_transcript(messages: &[&str]) -> App {
     let rt = tokio::runtime::Runtime::new().unwrap();
     let registry = rt.block_on(crate::tool::Registry::new(provider.clone()));
     let mut app = App::new_for_test_harness(provider, registry);
-    app.queue_mode = false;
     app.diff_mode = crate::config::DiffDisplayMode::Inline;
 
     for message in messages {

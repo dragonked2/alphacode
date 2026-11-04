@@ -169,6 +169,9 @@ pub struct ResourceContent {
 /// MCP server configuration
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct McpServerConfig {
+    /// Loader-assigned provenance. Repository JSON cannot claim user trust.
+    #[serde(skip)]
+    pub(crate) project_source: Option<std::path::PathBuf>,
     /// Command for stdio servers. Empty for HTTP/SSE servers, which alphacode does
     /// not yet support (such entries are skipped at load time).
     #[serde(default)]
@@ -201,6 +204,28 @@ pub struct McpServerConfig {
 }
 
 impl McpServerConfig {
+    pub fn is_project_local(&self) -> bool {
+        self.project_source.is_some()
+    }
+
+    /// Project definitions are discoverable, but never executable. Users must
+    /// review and install a server in their user-level config themselves.
+    pub fn can_auto_connect(&self) -> bool {
+        self.is_enabled() && !self.is_project_local()
+    }
+
+    pub(crate) fn ensure_connection_allowed(&self) -> anyhow::Result<()> {
+        if let Some(source) = &self.project_source {
+            anyhow::bail!(
+                "Project MCP server blocked (source: {}). Review its command, arguments and environment, \
+                 then install a trusted definition in ~/.alphacode/mcp.json and remove the project entry. \
+                 Project configuration cannot authorize process execution.",
+                source.display()
+            );
+        }
+        Ok(())
+    }
+
     /// alphacode currently only supports stdio (command-based) MCP servers. A config
     /// entry is stdio when it has a command and is not explicitly an http/sse
     /// transport.
@@ -379,6 +404,7 @@ impl McpConfig {
                     config.servers.insert(
                         name.clone(),
                         McpServerConfig {
+                            project_source: None,
                             command,
                             args,
                             env,
@@ -430,6 +456,10 @@ impl McpConfig {
                     std::collections::HashMap<String, McpServerConfig>,
                 >(map.clone())
             {
+                let mut servers = servers;
+                for server in servers.values_mut() {
+                    server.project_source = Some(path.to_path_buf());
+                }
                 Self::merge_servers_preferring_runnable(&mut config.servers, servers);
             }
         }
@@ -446,8 +476,11 @@ impl McpConfig {
         for relative in [".alphacode/mcp.json", ".mcp.json", ".claude/mcp.json"] {
             let path = project_root.join(relative);
             if path.exists()
-                && let Ok(config) = Self::load_from_file(&path)
+                && let Ok(mut config) = Self::load_from_file(&path)
             {
+                for server in config.servers.values_mut() {
+                    server.project_source = Some(path.clone());
+                }
                 Self::merge_servers_preferring_runnable(&mut merged.servers, config.servers);
             }
         }
@@ -548,5 +581,31 @@ impl McpConfig {
             }
             existing.insert(name, cfg);
         }
+    }
+}
+
+#[cfg(test)]
+mod provenance_tests {
+    use super::*;
+
+    #[test]
+    fn claude_project_overrides_cannot_inherit_global_trust() {
+        let temp = tempfile::tempdir().unwrap();
+        let project = temp.path().join("repo");
+        let file = temp.path().join("claude.json");
+        let key = project.to_string_lossy().into_owned();
+        let value = serde_json::json!({
+            "mcpServers": {"docs": {"command": "trusted-global"}},
+            "projects": {key: {"mcpServers": {"docs": {
+                "command": "repository-command", "shared": true,
+                "project_source": null, "enabled": true
+            }}}}
+        });
+        std::fs::write(&file, serde_json::to_vec(&value).unwrap()).unwrap();
+        assert!(McpConfig::load_claude_json(&file, None).servers["docs"].can_auto_connect());
+        let loaded = McpConfig::load_claude_json(&file, Some(&project));
+        assert!(loaded.servers["docs"].is_project_local());
+        assert!(!loaded.servers["docs"].can_auto_connect());
+        assert!(loaded.servers["docs"].ensure_connection_allowed().is_err());
     }
 }

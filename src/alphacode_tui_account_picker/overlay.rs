@@ -18,13 +18,27 @@ use render_support::{
     metric_span, provider_header_line, provider_style, truncate_with_ellipsis,
 };
 
-const PANEL_BG: Color = Color::Rgb(24, 28, 40);
-const PANEL_BORDER: Color = Color::Rgb(90, 95, 110);
-const PANEL_BORDER_ACTIVE: Color = Color::Rgb(120, 140, 190);
-const SECTION_BORDER: Color = Color::Rgb(70, 78, 94);
-const SELECTED_BG: Color = Color::Rgb(38, 42, 56);
-const MUTED: Color = Color::Rgb(140, 146, 163);
-const MUTED_DARK: Color = Color::Rgb(100, 106, 122);
+fn panel_bg() -> Color {
+    crate::alphacode_tui_style::role_color(crate::alphacode_tui_style::Role::CodeBg)
+}
+fn panel_border() -> Color {
+    crate::alphacode_tui_style::role_color(crate::alphacode_tui_style::Role::Border)
+}
+fn panel_border_active() -> Color {
+    crate::alphacode_tui_style::role_color(crate::alphacode_tui_style::Role::Accent)
+}
+fn section_border() -> Color {
+    crate::alphacode_tui_style::role_color(crate::alphacode_tui_style::Role::PanelBorderMuted)
+}
+fn selected_bg() -> Color {
+    crate::alphacode_tui_style::role_color(crate::alphacode_tui_style::Role::SelectionBg)
+}
+fn muted() -> Color {
+    crate::alphacode_tui_style::role_color(crate::alphacode_tui_style::Role::MutedText)
+}
+fn muted_dark() -> Color {
+    crate::alphacode_tui_style::role_color(crate::alphacode_tui_style::Role::Dim)
+}
 const OVERLAY_PERCENT_X: u16 = 88;
 const OVERLAY_PERCENT_Y: u16 = 74;
 
@@ -46,6 +60,12 @@ pub enum OverlayAction {
 }
 
 impl AccountPicker {
+    /// Keyboard, filtering and layout for non-account action lists.
+    pub fn action_list(title: impl Into<String>, items: Vec<AccountPickerItem>) -> Self {
+        let mut picker = Self::new(title, items);
+        picker.summary = None;
+        picker
+    }
     pub fn new(title: impl Into<String>, items: Vec<AccountPickerItem>) -> Self {
         Self::with_summary(title, items, AccountPickerSummary::default())
     }
@@ -253,6 +273,9 @@ impl AccountPicker {
     }
 
     fn provider_overview_line(&self) -> Line<'static> {
+        if self.summary.is_none() {
+            return Line::from("Any filename is supported; contents must define a skill.");
+        }
         let mut seen = Vec::new();
         let mut stats: HashMap<String, (String, usize, usize)> = HashMap::new();
 
@@ -276,14 +299,17 @@ impl AccountPicker {
             }
         }
 
-        let mut spans = vec![Span::styled("Providers ", Style::default().fg(MUTED_DARK))];
+        let mut spans = vec![Span::styled(
+            "Providers ",
+            Style::default().fg(muted_dark()),
+        )];
         let mut first = true;
         for provider_id in seen {
             let Some((label, accounts, actions)) = stats.get(&provider_id) else {
                 continue;
             };
             if !first {
-                spans.push(Span::styled(" | ", Style::default().fg(MUTED_DARK)));
+                spans.push(Span::styled(" | ", Style::default().fg(muted_dark())));
             }
             first = false;
             let summary = if *accounts > 0 {
@@ -301,7 +327,7 @@ impl AccountPicker {
         if first {
             spans.push(Span::styled(
                 "No providers available",
-                Style::default().fg(MUTED),
+                Style::default().fg(muted()),
             ));
         }
         Line::from(spans)
@@ -415,19 +441,19 @@ impl AccountPicker {
             .title(format!(" {} ", self.title))
             .title_bottom(Line::from(vec![
                 hotkey(" Enter "),
-                Span::styled(" run  ", Style::default().fg(MUTED_DARK)),
+                Span::styled(" run  ", Style::default().fg(muted_dark())),
                 hotkey(" Up/Down "),
-                Span::styled(" navigate  ", Style::default().fg(MUTED_DARK)),
+                Span::styled(" navigate  ", Style::default().fg(muted_dark())),
                 hotkey(" Click "),
-                Span::styled(" select  ", Style::default().fg(MUTED_DARK)),
+                Span::styled(" select  ", Style::default().fg(muted_dark())),
                 hotkey(" type "),
-                Span::styled(" filter  ", Style::default().fg(MUTED_DARK)),
+                Span::styled(" filter  ", Style::default().fg(muted_dark())),
                 hotkey(" Esc "),
-                Span::styled(" clear / close ", Style::default().fg(MUTED_DARK)),
+                Span::styled(" clear / close ", Style::default().fg(muted_dark())),
             ]))
             .borders(Borders::ALL)
             .border_type(ratatui::widgets::BorderType::Rounded)
-            .border_style(Style::default().fg(PANEL_BORDER));
+            .border_style(Style::default().fg(panel_border()));
         frame.render_widget(block, area);
 
         let inner = Rect {
@@ -466,10 +492,14 @@ impl AccountPicker {
         self.render_detail_pane(frame, body[1]);
 
         let footer = Paragraph::new(Line::from(vec![
-            Span::styled("Focus ", Style::default().fg(MUTED_DARK)),
+            Span::styled("Focus ", Style::default().fg(muted_dark())),
             Span::styled(
-                "saved accounts stay surfaced here; click actions to focus them, use Left/Right to jump provider groups, or use `/account <provider> settings` for the full text view.",
-                Style::default().fg(MUTED),
+                if self.summary.is_none() {
+                    "Select a file to import or a folder to browse. Esc closes without importing."
+                } else {
+                    "saved accounts stay surfaced here; click actions to focus them, use Left/Right to jump provider groups, or use `/account <provider> settings` for the full text view."
+                },
+                Style::default().fg(muted()),
             ),
         ]));
         frame.render_widget(footer, rows[2]);
@@ -479,32 +509,47 @@ impl AccountPicker {
         let block = Block::default()
             .title(Span::styled(
                 " Overview ",
-                Style::default().fg(Color::White).bold(),
+                Style::default()
+                    .fg(crate::alphacode_tui_style::role_color(
+                        crate::alphacode_tui_style::Role::AiText,
+                    ))
+                    .bold(),
             ))
             .borders(Borders::ALL)
-            .style(Style::default().bg(PANEL_BG))
-            .border_style(Style::default().fg(SECTION_BORDER));
+            .style(Style::default().bg(panel_bg()))
+            .border_style(Style::default().fg(section_border()));
         let inner = block.inner(area);
         frame.render_widget(block, area);
 
         let lines = vec![
             Line::from(vec![
-                Span::styled("Filter ", Style::default().fg(MUTED_DARK)),
+                Span::styled("Filter ", Style::default().fg(muted_dark())),
                 Span::styled(
                     if self.filter.is_empty() {
-                        "type provider or account name".to_string()
+                        if self.summary.is_none() {
+                            "type to filter files"
+                        } else {
+                            "type provider or account name"
+                        }
+                        .to_string()
                     } else {
                         self.filter.clone()
                     },
                     if self.filter.is_empty() {
-                        Style::default().fg(Color::Gray).italic()
+                        Style::default()
+                            .fg(crate::alphacode_tui_style::role_color(
+                                crate::alphacode_tui_style::Role::MutedText,
+                            ))
+                            .italic()
                     } else {
-                        Style::default().fg(Color::White)
+                        Style::default().fg(crate::alphacode_tui_style::role_color(
+                            crate::alphacode_tui_style::Role::AiText,
+                        ))
                     },
                 ),
                 Span::styled(
                     format!("  -  {} results", self.filtered.len()),
-                    Style::default().fg(MUTED_DARK),
+                    Style::default().fg(muted_dark()),
                 ),
             ]),
             self.provider_overview_line(),
@@ -517,22 +562,27 @@ impl AccountPicker {
 
     fn render_action_list(&mut self, frame: &mut Frame, area: Rect) {
         let title = if self.filtered.is_empty() {
-            " Providers & Quick Actions ".to_string()
+            if self.summary.is_none() {
+                " Files & Folders "
+            } else {
+                " Providers & Quick Actions "
+            }
+            .to_string()
         } else {
-            format!(
-                " Providers & Quick Actions ({}/{}) ",
-                self.selected + 1,
-                self.filtered.len()
-            )
+            format!(" Actions ({}/{}) ", self.selected + 1, self.filtered.len())
         };
         let block = Block::default()
             .title(Span::styled(
                 title,
-                Style::default().fg(Color::White).bold(),
+                Style::default()
+                    .fg(crate::alphacode_tui_style::role_color(
+                        crate::alphacode_tui_style::Role::AiText,
+                    ))
+                    .bold(),
             ))
             .borders(Borders::ALL)
-            .style(Style::default().bg(PANEL_BG))
-            .border_style(Style::default().fg(PANEL_BORDER_ACTIVE));
+            .style(Style::default().bg(panel_bg()))
+            .border_style(Style::default().fg(panel_border_active()));
         let list_inner = block.inner(area);
         frame.render_widget(block, area);
         self.last_action_list_area = Some(list_inner);
@@ -544,12 +594,24 @@ impl AccountPicker {
         let mut lines = Vec::new();
         if self.filtered.is_empty() {
             lines.push(Line::from(Span::styled(
-                "No matching account or provider actions.",
-                Style::default().fg(Color::Gray).italic(),
+                if self.summary.is_none() {
+                    "No matching files or folders."
+                } else {
+                    "No matching account or provider actions."
+                },
+                Style::default()
+                    .fg(crate::alphacode_tui_style::role_color(
+                        crate::alphacode_tui_style::Role::MutedText,
+                    ))
+                    .italic(),
             )));
             lines.push(Line::from(Span::styled(
-                "Try `openai`, `claude`, an account label, `login`, or `default`.",
-                Style::default().fg(MUTED),
+                if self.summary.is_none() {
+                    "Clear the filter or browse another directory."
+                } else {
+                    "Try `openai`, `claude`, an account label, `login`, or `default`."
+                },
+                Style::default().fg(muted()),
             )));
         } else {
             let mut current_provider: Option<&str> = None;
@@ -569,7 +631,7 @@ impl AccountPicker {
                 }
 
                 let row_style = if selected {
-                    Style::default().bg(SELECTED_BG)
+                    Style::default().bg(selected_bg())
                 } else {
                     Style::default()
                 };
@@ -580,15 +642,19 @@ impl AccountPicker {
                 lines.push(Line::from(vec![
                     Span::styled(
                         if selected { "> " } else { "  " },
-                        row_style.fg(Color::White),
+                        row_style.fg(crate::alphacode_tui_style::role_color(
+                            crate::alphacode_tui_style::Role::AiText,
+                        )),
                     ),
                     Span::styled(format!("{} ", icon), row_style.fg(icon_color).bold()),
                     Span::styled(
                         truncate_with_ellipsis(&title, 22),
-                        row_style.fg(Color::White),
+                        row_style.fg(crate::alphacode_tui_style::role_color(
+                            crate::alphacode_tui_style::Role::AiText,
+                        )),
                     ),
-                    Span::styled(" - ", row_style.fg(MUTED_DARK)),
-                    Span::styled(meta, row_style.fg(MUTED)),
+                    Span::styled(" - ", row_style.fg(muted_dark())),
+                    Span::styled(meta, row_style.fg(muted())),
                 ]));
             }
         }
@@ -604,21 +670,43 @@ impl AccountPicker {
         let block = Block::default()
             .title(Span::styled(
                 title,
-                Style::default().fg(Color::White).bold(),
+                Style::default()
+                    .fg(crate::alphacode_tui_style::role_color(
+                        crate::alphacode_tui_style::Role::AiText,
+                    ))
+                    .bold(),
             ))
             .borders(Borders::ALL)
-            .style(Style::default().bg(PANEL_BG))
-            .border_style(Style::default().fg(SECTION_BORDER));
+            .style(Style::default().bg(panel_bg()))
+            .border_style(Style::default().fg(section_border()));
         let inner = block.inner(area);
         frame.render_widget(block, area);
 
         let Some(item) = self.selected_item() else {
             frame.render_widget(
-                Paragraph::new("No action selected").style(Style::default().fg(Color::DarkGray)),
+                Paragraph::new("No action selected").style(Style::default().fg(
+                    crate::alphacode_tui_style::role_color(crate::alphacode_tui_style::Role::Dim),
+                )),
                 inner,
             );
             return;
         };
+
+        if self.summary.is_none() {
+            frame.render_widget(
+                Paragraph::new(vec![
+                    Line::from(item.title.clone()),
+                    Line::from(""),
+                    Line::from(item.subtitle.clone()),
+                    Line::from(""),
+                    Line::from("Enter opens a folder or imports the selected file."),
+                    Line::from("Existing installations are preserved."),
+                ])
+                .wrap(Wrap { trim: false }),
+                inner,
+            );
+            return;
+        }
 
         let provider_items: Vec<&AccountPickerItem> = self
             .items
@@ -651,30 +739,34 @@ impl AccountPicker {
 
         let mut lines = vec![
             Line::from(vec![
-                Span::styled("Provider ", Style::default().fg(MUTED_DARK)),
+                Span::styled("Provider ", Style::default().fg(muted_dark())),
                 Span::styled(
                     item.provider_label.clone(),
                     provider_style(&item.provider_id),
                 ),
             ]),
             Line::from(vec![
-                Span::styled("Saved accounts ", Style::default().fg(MUTED_DARK)),
+                Span::styled("Saved accounts ", Style::default().fg(muted_dark())),
                 Span::styled(
                     account_count_summary(account_items.len()),
-                    Style::default().fg(Color::White).bold(),
+                    Style::default()
+                        .fg(crate::alphacode_tui_style::role_color(
+                            crate::alphacode_tui_style::Role::AiText,
+                        ))
+                        .bold(),
                 ),
             ]),
             Line::from(""),
             Line::from(vec![Span::styled(
                 "Quick switch",
-                Style::default().fg(MUTED_DARK).bold(),
+                Style::default().fg(muted_dark()).bold(),
             )]),
         ];
 
         if account_items.is_empty() {
             lines.push(Line::from(vec![Span::styled(
                 "No saved accounts for this provider yet.",
-                Style::default().fg(MUTED),
+                Style::default().fg(muted()),
             )]));
         } else {
             for account in &account_items {
@@ -685,18 +777,26 @@ impl AccountPicker {
                     Span::styled(
                         format!("{} ", bullet),
                         Style::default().fg(if account_is_active(account) {
-                            Color::Rgb(110, 214, 158)
+                            crate::alphacode_tui_style::role_color(
+                                crate::alphacode_tui_style::Role::Success,
+                            )
                         } else {
-                            MUTED_DARK
+                            muted_dark()
                         }),
                     ),
                     Span::styled(
                         compact_item_title(account),
-                        Style::default().fg(Color::White).bold(),
+                        Style::default()
+                            .fg(crate::alphacode_tui_style::role_color(
+                                crate::alphacode_tui_style::Role::AiText,
+                            ))
+                            .bold(),
                     ),
                     Span::styled(
                         note.to_string(),
-                        Style::default().fg(Color::Rgb(170, 210, 255)),
+                        Style::default().fg(crate::alphacode_tui_style::role_color(
+                            crate::alphacode_tui_style::Role::Accent,
+                        )),
                     ),
                 ]));
                 lines.push(Line::from(vec![Span::styled(
@@ -707,7 +807,7 @@ impl AccountPicker {
                             inner.width.saturating_sub(3) as usize,
                         )
                     ),
-                    Style::default().fg(MUTED),
+                    Style::default().fg(muted()),
                 )]));
             }
         }
@@ -715,43 +815,54 @@ impl AccountPicker {
         lines.push(Line::from(""));
         lines.push(Line::from(vec![Span::styled(
             "Selected action",
-            Style::default().fg(MUTED_DARK).bold(),
+            Style::default().fg(muted_dark()).bold(),
         )]));
         lines.push(Line::from(vec![
             Span::styled(kind_label, Style::default().fg(kind_color).bold()),
-            Span::styled(" - ", Style::default().fg(MUTED_DARK)),
-            Span::styled(item.title.clone(), Style::default().fg(Color::White).bold()),
+            Span::styled(" - ", Style::default().fg(muted_dark())),
+            Span::styled(
+                item.title.clone(),
+                Style::default()
+                    .fg(crate::alphacode_tui_style::role_color(
+                        crate::alphacode_tui_style::Role::AiText,
+                    ))
+                    .bold(),
+            ),
         ]));
         lines.push(Line::from(vec![Span::styled(
             item.subtitle.clone(),
-            Style::default().fg(MUTED),
+            Style::default().fg(muted()),
         )]));
         lines.push(Line::from(""));
         lines.push(Line::from(vec![Span::styled(
             "Runs",
-            Style::default().fg(MUTED_DARK).bold(),
+            Style::default().fg(muted_dark()).bold(),
         )]));
         lines.push(Line::from(vec![Span::styled(
             command_preview(&item.command),
-            Style::default().fg(Color::White),
+            Style::default().fg(crate::alphacode_tui_style::role_color(
+                crate::alphacode_tui_style::Role::AiText,
+            )),
         )]));
         lines.push(Line::from(vec![Span::styled(
             action_kind_help(&item.command),
-            Style::default().fg(MUTED),
+            Style::default().fg(muted()),
         )]));
 
         if !secondary_items.is_empty() {
             lines.push(Line::from(""));
             lines.push(Line::from(vec![Span::styled(
                 "Other controls",
-                Style::default().fg(MUTED_DARK).bold(),
+                Style::default().fg(muted_dark()).bold(),
             )]));
             for related in secondary_items {
                 lines.push(Line::from(vec![
-                    Span::styled("- ", Style::default().fg(MUTED_DARK)),
+                    Span::styled("- ", Style::default().fg(muted_dark())),
                     Span::styled(
                         compact_item_title(related),
-                        Style::default().fg(Color::White),
+                        Style::default().fg(crate::alphacode_tui_style::role_color(
+                            crate::alphacode_tui_style::Role::AiText,
+                        )),
                     ),
                 ]));
             }
@@ -760,7 +871,9 @@ impl AccountPicker {
         lines.push(Line::from(""));
         lines.push(Line::from(vec![Span::styled(
             "Press Enter to run this action.",
-            Style::default().fg(Color::Rgb(170, 210, 255)),
+            Style::default().fg(crate::alphacode_tui_style::role_color(
+                crate::alphacode_tui_style::Role::Accent,
+            )),
         )]));
 
         frame.render_widget(Paragraph::new(lines).wrap(Wrap { trim: false }), inner);
@@ -769,7 +882,13 @@ impl AccountPicker {
     fn summary_line(&self) -> Line<'static> {
         if let Some(summary) = &self.summary {
             let mut spans = vec![
-                metric_span("ready", summary.ready_count, Color::Rgb(110, 214, 158)),
+                metric_span(
+                    "ready",
+                    summary.ready_count,
+                    crate::alphacode_tui_style::role_color(
+                        crate::alphacode_tui_style::Role::Success,
+                    ),
+                ),
                 Span::raw("  "),
                 metric_span(
                     "attention",
@@ -777,12 +896,18 @@ impl AccountPicker {
                     Color::Rgb(255, 192, 120),
                 ),
                 Span::raw("  "),
-                metric_span("setup", summary.setup_count, Color::Rgb(160, 168, 188)),
+                metric_span(
+                    "setup",
+                    summary.setup_count,
+                    crate::alphacode_tui_style::role_color(
+                        crate::alphacode_tui_style::Role::MutedText,
+                    ),
+                ),
                 Span::raw("  "),
                 metric_span(
                     "providers",
                     summary.provider_count,
-                    Color::Rgb(140, 176, 255),
+                    crate::alphacode_tui_style::role_color(crate::alphacode_tui_style::Role::Info),
                 ),
             ];
             if summary.named_account_count > 0 {
@@ -790,7 +915,9 @@ impl AccountPicker {
                 spans.push(metric_span(
                     "accounts",
                     summary.named_account_count,
-                    Color::Rgb(196, 170, 255),
+                    crate::alphacode_tui_style::role_color(
+                        crate::alphacode_tui_style::Role::Accent,
+                    ),
                 ));
             }
             return Line::from(spans);
@@ -798,15 +925,15 @@ impl AccountPicker {
 
         Line::from(vec![Span::styled(
             format!("{} actions available", self.filtered.len()),
-            Style::default().fg(MUTED),
+            Style::default().fg(muted()),
         )])
     }
 
     fn defaults_line(&self) -> Line<'static> {
         let Some(summary) = &self.summary else {
             return Line::from(vec![Span::styled(
-                "Type to narrow actions by provider, account label, or setting.",
-                Style::default().fg(MUTED),
+                "Type to filter; Up/Down selects; Enter opens; Esc closes.",
+                Style::default().fg(muted()),
             )]);
         };
 
@@ -817,11 +944,21 @@ impl AccountPicker {
             .unwrap_or("provider default");
 
         Line::from(vec![
-            Span::styled("Defaults ", Style::default().fg(MUTED_DARK)),
-            Span::styled("provider ", Style::default().fg(MUTED_DARK)),
-            Span::styled(provider.to_string(), Style::default().fg(Color::White)),
-            Span::styled("  -  model ", Style::default().fg(MUTED_DARK)),
-            Span::styled(model.to_string(), Style::default().fg(Color::White)),
+            Span::styled("Defaults ", Style::default().fg(muted_dark())),
+            Span::styled("provider ", Style::default().fg(muted_dark())),
+            Span::styled(
+                provider.to_string(),
+                Style::default().fg(crate::alphacode_tui_style::role_color(
+                    crate::alphacode_tui_style::Role::AiText,
+                )),
+            ),
+            Span::styled("  -  model ", Style::default().fg(muted_dark())),
+            Span::styled(
+                model.to_string(),
+                Style::default().fg(crate::alphacode_tui_style::role_color(
+                    crate::alphacode_tui_style::Role::AiText,
+                )),
+            ),
         ])
     }
 }
@@ -871,6 +1008,49 @@ fn estimate_summary_bytes(summary: &AccountPickerSummary) -> usize {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn file_action_list_renders_filters_and_selects_without_account_copy() {
+        for (width, height) in [(120, 40), (60, 22)] {
+            let mut picker = AccountPicker::action_list(
+                "Add skill",
+                vec![AccountPickerItem::action(
+                    "Files",
+                    "Files",
+                    "my notes.txt",
+                    "C:/skills/my notes.txt",
+                    AccountPickerCommand::SubmitInput("/add C:/skills/my notes.txt".into()),
+                )],
+            );
+            let mut terminal =
+                ratatui::Terminal::new(ratatui::backend::TestBackend::new(width, height)).unwrap();
+            terminal.draw(|frame| picker.render(frame)).unwrap();
+            let text: String = terminal
+                .backend()
+                .buffer()
+                .content
+                .iter()
+                .map(|cell| cell.symbol())
+                .collect();
+            assert!(text.contains("my notes.txt"));
+            assert!(!text.contains("Saved accounts"));
+            picker
+                .handle_overlay_key(KeyCode::Char('n'), KeyModifiers::empty())
+                .unwrap();
+            assert!(
+                matches!(picker.handle_overlay_key(KeyCode::Enter, KeyModifiers::empty()).unwrap(), OverlayAction::Execute(AccountPickerCommand::SubmitInput(command)) if command == "/add C:/skills/my notes.txt")
+            );
+            picker
+                .handle_overlay_key(KeyCode::Esc, KeyModifiers::empty())
+                .unwrap();
+            assert!(matches!(
+                picker
+                    .handle_overlay_key(KeyCode::Esc, KeyModifiers::empty())
+                    .unwrap(),
+                OverlayAction::Close
+            ));
+        }
+    }
     use ratatui::{Terminal, backend::TestBackend, widgets::Paragraph};
 
     #[test]

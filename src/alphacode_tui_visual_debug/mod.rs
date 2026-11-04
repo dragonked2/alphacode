@@ -134,7 +134,6 @@ pub struct InfoWidgetSummary {
     pub todos_done: usize,
     pub context_total_chars: Option<usize>,
     pub context_limit: Option<usize>,
-    pub queue_mode: Option<bool>,
     pub model: Option<String>,
     pub reasoning_effort: Option<String>,
     pub session_count: Option<usize>,

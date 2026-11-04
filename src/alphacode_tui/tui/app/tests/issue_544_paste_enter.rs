@@ -183,3 +183,120 @@ fn repeated_continuations_build_a_multi_line_draft() {
 
     assert_eq!(app.input, "one\ntwo\nthree");
 }
+
+#[test]
+fn native_control_v_is_one_draft_in_local_remote_and_streaming_modes() {
+    use crate::alphacode_tui::tui::terminal_events::CoalescedEvents;
+    use crossterm::event::{Event, KeyEvent};
+    use futures::StreamExt;
+    let text = "x\n".to_owned() + &"next line 世界 👩‍💻\n".repeat(200);
+    for remote_mode in [false, true] {
+        for processing in [false, true] {
+            let mut app = create_test_app();
+            app.is_remote = remote_mode;
+            app.is_processing = processing;
+            app.status = if processing {
+                ProcessingStatus::Streaming
+            } else {
+                ProcessingStatus::Idle
+            };
+            let runtime = tokio::runtime::Runtime::new().unwrap();
+            let _entered = runtime.enter();
+            let mut connection = crate::alphacode_tui::tui::backend::RemoteConnection::dummy();
+            runtime.block_on(async {
+                let events = text.chars().map(|c| {
+                    Ok::<_, std::io::Error>(Event::Key(KeyEvent::new(
+                        if c == '\n' {
+                            KeyCode::Enter
+                        } else {
+                            KeyCode::Char(c)
+                        },
+                        KeyModifiers::NONE,
+                    )))
+                });
+                let mut source = CoalescedEvents::from_source(futures::stream::iter(events));
+                while let Some(event) = source.next().await {
+                    match event.unwrap() {
+                        Event::Paste(text) => app.handle_paste(text),
+                        Event::Key(key) if remote_mode => {
+                            app.handle_remote_key(key.code, key.modifiers, &mut connection)
+                                .await
+                                .unwrap();
+                        }
+                        Event::Key(key) => {
+                            app.handle_key_press_event(key).unwrap();
+                        }
+                        _ => panic!("unexpected input event"),
+                    }
+                }
+                assert_eq!(app.input, "[pasted content]");
+                assert_eq!(app.pasted_contents, vec![text.clone()]);
+                assert_eq!(app.expand_paste_placeholders(&app.input.clone()), text);
+                assert!(app.interleave_message.is_none());
+                assert!(app.pending_soft_interrupt_requests.is_empty());
+                if remote_mode {
+                    app.handle_remote_key(KeyCode::Enter, KeyModifiers::NONE, &mut connection)
+                        .await
+                        .unwrap();
+                } else {
+                    app.handle_key_press_event(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE))
+                        .unwrap();
+                }
+                assert_eq!(
+                    app.input, "[pasted content]",
+                    "trailing paste Enter submitted the draft"
+                );
+            });
+        }
+    }
+}
+
+#[test]
+fn control_v_clipboard_and_native_chunks_reconcile_in_either_order() {
+    use crate::alphacode_tui::bus::{
+        ClipboardPasteCompleted, ClipboardPasteContent, ClipboardPasteKind,
+    };
+    let chunks = ["first\n", "second 世界\n", "third\n"];
+    let text = chunks.concat();
+    for native_before in 0..=chunks.len() {
+        let mut app = create_test_app();
+        let id = app.active_client_session_id().unwrap().to_string();
+        app.clipboard_paste_draft = Some((id.clone(), String::new(), 0));
+        app.clipboard_paste_native_echo_expected = true;
+        for chunk in &chunks[..native_before] {
+            app.handle_paste((*chunk).into());
+        }
+        assert!(
+            app.handle_clipboard_paste_completed(ClipboardPasteCompleted {
+                session_id: id,
+                kind: ClipboardPasteKind::Smart,
+                content: ClipboardPasteContent::Text(text.clone()),
+            })
+        );
+        for chunk in &chunks[native_before..] {
+            app.handle_paste((*chunk).into());
+        }
+        assert_eq!(
+            app.input, "[pasted content]",
+            "delivery order {native_before}"
+        );
+        assert_eq!(app.pasted_contents, vec![text.clone()]);
+        // A later intentional paste of identical text must still be accepted.
+        app.handle_paste(text.clone());
+        assert_eq!(app.pasted_contents.len(), 2);
+    }
+}
+
+#[test]
+fn pasted_placeholder_literals_are_never_expanded_recursively() {
+    let mut app = create_test_app();
+    app.pasted_contents = vec![
+        "first [pasted content] literal 世界".into(),
+        "second [pasted content] literal 👩‍💻".into(),
+    ];
+    let draft = "before [pasted content] between [pasted content] after";
+    assert_eq!(
+        app.expand_paste_placeholders(draft),
+        "before first [pasted content] literal 世界 between second [pasted content] literal 👩‍💻 after"
+    );
+}

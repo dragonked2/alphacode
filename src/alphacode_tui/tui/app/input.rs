@@ -9,10 +9,11 @@ use crate::alphacode_tui::bus::{
     Bus, BusEvent, ClipboardPasteCompleted, ClipboardPasteContent, ClipboardPasteKind,
     InputShellCompleted,
 };
+use crate::alphacode_tui::tui::terminal_events::TerminalEventStream as EventStream;
 use crate::alphacode_tui::util::truncate_str;
 use anyhow::Result;
 use base64::Engine;
-use crossterm::event::{EventStream, KeyCode, KeyEvent, KeyModifiers};
+use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use ratatui::DefaultTerminal;
 use std::path::PathBuf;
 use std::process::Stdio;
@@ -201,7 +202,23 @@ fn input_exceeds_submit_limit(input: &str) -> Option<String> {
     (size > MAX_SUBMITTED_TEXT_BYTES).then(|| oversized_message_notice(size))
 }
 
+pub(super) struct ClipboardPasteEcho {
+    at: Instant,
+    text: String,
+    consumed: usize,
+    cursor: usize,
+    session_id: String,
+}
+
 pub(super) fn paste_from_clipboard(app: &mut App) {
+    request_clipboard_paste(app, false);
+}
+
+pub(super) fn paste_from_clipboard_shortcut(app: &mut App, modifiers: KeyModifiers) {
+    request_clipboard_paste(app, modifiers.contains(KeyModifiers::CONTROL));
+}
+
+fn request_clipboard_paste(app: &mut App, native_echo_expected: bool) {
     let session_id = active_clipboard_session_id(app);
     if app
         .clipboard_paste_draft
@@ -210,6 +227,8 @@ pub(super) fn paste_from_clipboard(app: &mut App) {
     {
         return;
     }
+    app.clipboard_paste_echo = None;
+    app.clipboard_paste_native_echo_expected = native_echo_expected;
     app.clipboard_paste_draft = Some((session_id, app.input.clone(), app.cursor_pos));
     app.set_status_notice("Reading clipboard...");
     spawn_clipboard_paste(app, ClipboardPasteKind::Smart);
@@ -640,7 +659,32 @@ use paste_buffer::{
 pub(in crate::alphacode_tui::tui::app) use paste_guard::expire_trailing_window_for_test as paste_guard_expire_trailing_window_for_test;
 use paste_guard::image_media_type;
 
+pub(super) fn consume_paste_trailing_enter() -> bool {
+    paste_guard::consume_paste_trailing_enter()
+}
+
 pub(super) fn handle_paste(app: &mut App, text: String) {
+    // Some Windows terminals deliver both Ctrl+V and the clipboard text. The
+    // explicit clipboard read can finish before a coalesced native echo. Match
+    // that echo once (including chunked delivery), never an unrelated draft.
+    if let Some(mut echo) = app.clipboard_paste_echo.take() {
+        let normalized = text.replace("\r\n", "\n").replace('\r', "\n");
+        if echo.at.elapsed() < Duration::from_millis(500)
+            && echo.session_id == active_clipboard_session_id(app)
+            && echo.cursor == app.cursor_pos
+            && echo
+                .text
+                .get(echo.consumed..)
+                .is_some_and(|remaining| remaining.starts_with(&normalized))
+        {
+            echo.consumed += normalized.len();
+            if echo.consumed < echo.text.len() {
+                app.clipboard_paste_echo = Some(echo);
+            }
+            paste_guard::note_paste();
+            return;
+        }
+    }
     paste_guard::note_paste();
     // Count newlines so the paste guard can scale its suppression window for
     // very long pastes that arrive slowly over SSH.
@@ -855,6 +899,8 @@ impl App {
             return false;
         }
 
+        let native_echo_expected = matches!(result.kind, ClipboardPasteKind::Smart)
+            && std::mem::take(&mut self.clipboard_paste_native_echo_expected);
         let draft = if matches!(result.kind, ClipboardPasteKind::Smart) {
             self.clipboard_paste_draft.take()
         } else {
@@ -872,9 +918,10 @@ impl App {
             ClipboardPasteContent::Text(text) => {
                 paste_guard::note_paste();
                 paste_guard::count_paste_newlines(text.matches('\n').count());
-                // A terminal can deliver Ctrl+V itself while the explicit
-                // clipboard read is pending. Reconcile only text inserted
-                // since that request, never an unrelated matching draft tail.
+                let normalized = text.replace("\r\n", "\n").replace('\r', "\n");
+                let mut echoed_prefix = 0;
+                // Reconcile terminal delivery regardless of whether the OS
+                // clipboard read wins the race or native text arrives first.
                 if let Some((_, before, cursor)) = draft
                     && before.is_char_boundary(cursor)
                     && self.input.starts_with(&before[..cursor])
@@ -882,19 +929,44 @@ impl App {
                     && self.input.len() >= before.len()
                 {
                     let end = self.input.len() - (before.len() - cursor);
-                    let inserted = &self.input[cursor..end];
-                    if inserted == PASTE_PLACEHOLDER && self.pasted_contents.last() == Some(&text) {
-                        return true;
-                    }
-                    if !inserted.is_empty()
-                        && inserted.replace("\r\n", "\n") == text.replace("\r\n", "\n")
+                    let inserted = self.input[cursor..end].to_string();
+                    let tokens = inserted.matches(PASTE_PLACEHOLDER).count();
+                    let token_delivery = tokens > 0
+                        && inserted == PASTE_PLACEHOLDER.repeat(tokens)
+                        && tokens <= self.pasted_contents.len();
+                    let native = if token_delivery {
+                        self.pasted_contents[self.pasted_contents.len() - tokens..].concat()
+                    } else {
+                        inserted.clone()
+                    };
+                    let native = native.replace("\r\n", "\n").replace('\r', "\n");
+                    if !native.is_empty()
+                        && (native == normalized
+                            || (token_delivery && normalized.starts_with(&native)))
                     {
+                        if tokens == 1 && token_delivery && native == normalized {
+                            return true;
+                        }
                         self.remember_input_undo_state();
                         self.input.replace_range(cursor..end, "");
                         self.cursor_pos = cursor;
+                        if token_delivery {
+                            self.pasted_contents
+                                .truncate(self.pasted_contents.len() - tokens);
+                        }
+                        echoed_prefix = native.len();
                     }
                 }
                 handle_text_paste(self, text);
+                self.clipboard_paste_echo = (native_echo_expected
+                    && echoed_prefix < normalized.len())
+                .then(|| ClipboardPasteEcho {
+                    at: Instant::now(),
+                    text: normalized,
+                    consumed: echoed_prefix,
+                    cursor: self.cursor_pos,
+                    session_id: active_clipboard_session_id(self),
+                });
                 true
             }
             ClipboardPasteContent::Empty => {
@@ -1481,16 +1553,25 @@ pub(super) fn expand_paste_placeholders(app: &mut App, input: &str) -> String {
         return input.to_string();
     }
 
-    // Expand from the inside out so multiple pasted blocks remain distinct.
-    let mut result = input.to_string();
-    for content in app.pasted_contents.iter().rev() {
-        // Replace exactly one rightmost occurrence per recorded paste. All
-        // text pastes share the same concise display token, so replacing every
-        // occurrence would map them to whichever content was visited first.
-        if let Some(abs) = result.rfind(PASTE_PLACEHOLDER) {
-            result.replace_range(abs..abs + PASTE_PLACEHOLDER.len(), content);
+    // Match only tokens in the original draft. Searching the growing result
+    // recursively replaced literal "[pasted content]" text inside payloads
+    // and corrupted multi-block/native chunked pastes.
+    let token_count = input.matches(PASTE_PLACEHOLDER).count();
+    let mapped = token_count.min(app.pasted_contents.len());
+    let literal_tokens = token_count - mapped;
+    let first_payload = app.pasted_contents.len() - mapped;
+    let mut result = String::with_capacity(input.len());
+    let mut cursor = 0;
+    for (index, (start, _)) in input.match_indices(PASTE_PLACEHOLDER).enumerate() {
+        result.push_str(&input[cursor..start]);
+        if index < literal_tokens {
+            result.push_str(PASTE_PLACEHOLDER);
+        } else {
+            result.push_str(&app.pasted_contents[first_payload + index - literal_tokens]);
         }
+        cursor = start + PASTE_PLACEHOLDER.len();
     }
+    result.push_str(&input[cursor..]);
     result
 }
 
@@ -1551,17 +1632,10 @@ pub(super) fn send_action(app: &App, alternate_shortcut: bool) -> SendAction {
     if app.input.trim().starts_with('/') || app.input.trim().starts_with('!') {
         return SendAction::Submit;
     }
-    if alternate_shortcut {
-        if app.queue_mode {
-            SendAction::Interleave
-        } else {
-            SendAction::Queue
-        }
-    } else if app.queue_mode {
-        SendAction::Queue
-    } else {
-        SendAction::Interleave
-    }
+    // Queue mode is gone: a prompt sent mid-turn always interleaves into the
+    // running turn instead of being parked behind it.
+    let _ = alternate_shortcut;
+    SendAction::Interleave
 }
 
 impl App {
@@ -1977,7 +2051,6 @@ pub(super) fn handle_alternate_enter(app: &mut App) {
 
     match send_action(app, true) {
         SendAction::Submit => app.submit_input(),
-        SendAction::Queue => queue_message(app),
         SendAction::Interleave => {
             let prepared = take_prepared_input(app);
             stage_local_interleave(app, prepared.expanded, prepared.images);
@@ -2046,13 +2119,7 @@ pub(super) fn handle_control_key(app: &mut App, code: KeyCode) -> bool {
             true
         }
         KeyCode::Tab | KeyCode::Char('t') => {
-            app.queue_mode = !app.queue_mode;
-            let mode_str = if app.queue_mode {
-                "Queue mode: messages wait until response completes"
-            } else {
-                "Immediate mode: messages send next (no interrupt)"
-            };
-            app.set_status_notice(mode_str);
+            // Queue mode was removed: mid-turn prompts now always interleave.
             true
         }
         KeyCode::Left => {
@@ -2337,7 +2404,7 @@ pub(super) fn handle_pre_control_shortcuts(
     }
 
     if is_clipboard_paste_shortcut(code, modifiers) {
-        paste_from_clipboard(app);
+        paste_from_clipboard_shortcut(app, modifiers);
         return true;
     }
 
@@ -2786,7 +2853,6 @@ pub(super) fn handle_enter(app: &mut App) -> bool {
         }
         match send_action(app, false) {
             SendAction::Submit => app.submit_input(),
-            SendAction::Queue => queue_message(app),
             SendAction::Interleave => {
                 let prepared = take_prepared_input(app);
                 stage_local_interleave(app, prepared.expanded, prepared.images);
@@ -3344,7 +3410,7 @@ impl App {
             return Ok(());
         }
 
-        // Ctrl+Enter / Cmd+Enter: does opposite of queue_mode during processing
+        // Ctrl+Enter / Cmd+Enter: alternate send during processing
         if code == KeyCode::Enter
             && modifiers.intersects(KeyModifiers::CONTROL | KeyModifiers::SUPER)
         {
@@ -3602,10 +3668,6 @@ impl App {
     /// Expand paste placeholders in input with actual content
     pub(super) fn expand_paste_placeholders(&mut self, input: &str) -> String {
         expand_paste_placeholders(self, input)
-    }
-
-    pub(super) fn queue_message(&mut self) {
-        queue_message(self);
     }
 
     /// Send an interleave message immediately to the server as a soft interrupt.

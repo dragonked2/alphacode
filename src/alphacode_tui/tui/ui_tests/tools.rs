@@ -503,7 +503,9 @@ fn test_tool_summary_covers_action_shaped_tools_and_fallback() {
         (
             "skill_manage",
             serde_json::json!({ "action": "load", "name": "frontend-design" }),
-            "load /frontend-design",
+            // The target skill renders inline next to the tool name
+            // (`skill_manage (frontend-design)`), so the summary is just the action.
+            "load",
         ),
         (
             "invalid",
@@ -1180,6 +1182,38 @@ fn test_render_tool_message_with_intent_never_adds_second_command_line() {
             .iter()
             .all(|line| !line.trim_start().starts_with('$')),
         "rendered={rendered:?}"
+    );
+}
+
+#[test]
+fn test_render_tool_message_shows_skill_name_inline() {
+    // The skill target must appear on the plain tool row itself, not only on
+    // the dimmed detail line: `skill_manage (tui_design)`.
+    let msg = DisplayMessage {
+        role: "tool".to_string(),
+        content: "".to_string(),
+        tool_calls: vec![],
+        duration_secs: None,
+        title: None,
+        tool_data: Some(ToolCall {
+            id: "call_skill".to_string(),
+            name: "skill_manage".to_string(),
+            input: serde_json::json!({ "action": "load", "name": "tui_design" }),
+            intent: None,
+            thought_signature: None,
+        }),
+    };
+
+    let lines = render_tool_message(&msg, 80, crate::config::DiffDisplayMode::Off);
+    let rendered: Vec<String> = lines.iter().map(extract_line_text).collect();
+    let row = rendered.first().cloned().unwrap_or_default();
+    assert!(
+        row.contains("skill_manage"),
+        "tool row should name the tool: {rendered:?}"
+    );
+    assert!(
+        row.contains("(tui_design)"),
+        "tool row should show the skill name inline: {rendered:?}"
     );
 }
 

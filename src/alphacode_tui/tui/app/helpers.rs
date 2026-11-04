@@ -1119,6 +1119,99 @@ pub(super) fn gather_todos_and_goals_for_session(
     (Vec::new(), Vec::new())
 }
 
+/// The user's active goal for a session, resolved for the Session card.
+///
+/// Prefers the goal explicitly attached to this session; otherwise falls back
+/// to the most relevant active goal for the working directory. Stale-while-
+/// revalidate cached so the per-frame widget build never blocks on disk I/O.
+/// This replaces the raw session identity the Session card used to show, which
+/// carried no meaning for the user.
+pub(super) fn gather_session_goal(
+    session_id: Option<&str>,
+    working_dir: Option<&Path>,
+) -> Option<String> {
+    use std::time::Instant;
+
+    const TTL: Duration = Duration::from_secs(2);
+
+    fn fetch(session_id: &str, working_dir: Option<&Path>) -> Option<String> {
+        let attached = crate::goal::load_attached_goal(session_id, working_dir)
+            .ok()
+            .flatten();
+        attached
+            .or_else(|| {
+                crate::goal::list_relevant_goals(working_dir)
+                    .ok()
+                    .and_then(|goals| {
+                        goals
+                            .into_iter()
+                            .find(|goal| goal.status.as_str() == "active")
+                    })
+            })
+            .map(|goal| goal.title)
+            .filter(|title| !title.trim().is_empty())
+    }
+
+    type GoalCacheEntry = (Instant, Option<String>, bool);
+    type GoalCache = std::collections::HashMap<String, GoalCacheEntry>;
+    static CACHE: std::sync::LazyLock<Mutex<GoalCache>> =
+        std::sync::LazyLock::new(|| Mutex::new(std::collections::HashMap::new()));
+
+    let session_id = session_id?;
+    let key = format!(
+        "{session_id}\0{}",
+        working_dir.unwrap_or_else(|| Path::new("")).display()
+    );
+    let (stale, generation) = {
+        let mut cache = CACHE.lock().ok()?;
+        if let Some((at, cached, refreshing)) = cache.get(&key)
+            && (at.elapsed() < TTL || *refreshing)
+        {
+            return cached.clone();
+        }
+        let stale = cache.get(&key).and_then(|(_, goal, _)| goal.clone());
+        // A long-lived client may visit many sessions. Retain only a bounded
+        // set of widget entries; an evicted worker cannot replace a newer one.
+        if !cache.contains_key(&key)
+            && cache.len() >= 128
+            && let Some(oldest) = cache
+                .iter()
+                .min_by_key(|(_, (at, _, _))| *at)
+                .map(|(key, _)| key.clone())
+        {
+            cache.remove(&oldest);
+        }
+        let generation = Instant::now();
+        cache.insert(key.clone(), (generation, stale.clone(), true));
+        (stale, generation)
+    };
+    let worker_key = key.clone();
+    let session_id = session_id.to_string();
+    let working_dir = working_dir.map(Path::to_path_buf);
+    // Even a cold lookup runs away from the event loop. Never hold the cache
+    // lock while reading the goal store (which may live on a slow volume).
+    if std::thread::Builder::new()
+        .name("alphacode-goal-widget".into())
+        .spawn(move || {
+            let goal = fetch(&session_id, working_dir.as_deref());
+            if let Ok(mut cache) = CACHE.lock()
+                && cache
+                    .get(&worker_key)
+                    .is_some_and(|(at, _, refreshing)| *at == generation && *refreshing)
+            {
+                cache.insert(worker_key, (Instant::now(), goal, false));
+            }
+        })
+        .is_err()
+        && let Ok(mut cache) = CACHE.lock()
+        && let Some((at, _, refreshing)) = cache.get_mut(&key)
+        && *at == generation
+    {
+        *refreshing = false;
+    }
+    stale
+}
+
 pub(super) fn gather_memory_info(
     memory_enabled: bool,
     working_dir: Option<String>,

@@ -235,7 +235,7 @@ fn render_plan_card(body: &str, width: u16) -> Vec<Line<'static>> {
             inner_width,
         );
     }
-    let border_style = Style::default().fg(rgb(165, 140, 252));
+    let border_style = Style::default().fg(crate::alphacode_tui_style::theme::border_color());
     let max_box_width = (width.saturating_sub(4) as usize).clamp(28, 100);
     let inner_width = max_box_width.saturating_sub(4).max(8);
 
@@ -816,7 +816,7 @@ pub(crate) fn render_usage_message(
     width: u16,
     _diff_mode: crate::config::DiffDisplayMode,
 ) -> Vec<Line<'static>> {
-    let border_style = Style::default().fg(rgb(120, 140, 190));
+    let border_style = Style::default().fg(crate::alphacode_tui_style::theme::border_color());
     let title = msg.title.as_deref().unwrap_or("Usage");
     let inner_width = width.saturating_sub(8).max(24) as usize;
     let content_width = inner_width.min(96);
@@ -3886,7 +3886,17 @@ pub(crate) fn render_tool_message(
     };
     let row_width = block_width.saturating_sub(1);
     let display_name = tools_ui::resolve_display_tool_name(&tc.name).to_string();
-    let base_prefix = format!("  {} {} ", icon, display_name);
+    // `skill_manage` calls read as `skill_manage (tui_design)`: the target skill
+    // is surfaced inline right after the tool name instead of only on the
+    // dimmed detail line, so at a glance the row says which skill ran.
+    let skill_suffix = tools_ui::skill_name_for_tool(tc)
+        .map(|name| {
+            let label =
+                super::truncate_line_with_ellipsis_to_width(&Line::from(name.to_string()), 32);
+            format!(" ({})", super::line_plain_text(&label))
+        })
+        .unwrap_or_default();
+    let base_prefix = format!("  {} {}{} ", icon, display_name, skill_suffix);
     let token_suffix_width =
         UnicodeWidthStr::width(format!(" · {}", token_badge.label.as_str()).as_str());
     let edit_suffix_width = if is_edit_tool && has_diff_changes {
@@ -3956,6 +3966,12 @@ pub(crate) fn render_tool_message(
                 .add_modifier(Modifier::BOLD),
         ),
     ];
+    if !skill_suffix.is_empty() {
+        tool_line.push(Span::styled(
+            skill_suffix.clone(),
+            Style::default().fg(crate::alphacode_tui_style::theme::accent_color()),
+        ));
+    }
     if let Some(intent) = intent {
         tool_line.push(Span::styled(" · ", Style::default().fg(dim_color())));
         tool_line.push(Span::styled(

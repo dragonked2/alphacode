@@ -144,7 +144,31 @@ impl App {
         images: Vec<(String, String)>,
         is_system: bool,
     ) -> Result<u64> {
-        remote::begin_remote_send(self, remote, content, images, is_system, None, false, 0).await
+        let skill_reminder = if is_system {
+            None
+        } else {
+            self.remote_active_skill_prompt()
+        };
+        remote::begin_remote_send(
+            self,
+            remote,
+            content,
+            images,
+            is_system,
+            skill_reminder,
+            false,
+            0,
+        )
+        .await
+    }
+
+    /// The server cannot infer a client-side slash selection. Carry its actual
+    /// instructions with the user turn, including locally imported skills.
+    pub(super) fn remote_active_skill_prompt(&self) -> Option<String> {
+        let name = self.active_skill.as_deref()?;
+        self.current_skills_snapshot()
+            .get(name)
+            .map(|skill| skill.get_prompt())
     }
 
     pub(super) fn schedule_pending_remote_retry(&mut self, reason: &str) -> bool {
@@ -519,6 +543,8 @@ impl App {
             restart_requested: None,
             pasted_contents: Vec::new(),
             clipboard_paste_draft: None,
+            clipboard_paste_native_echo_expected: false,
+            clipboard_paste_echo: None,
             pending_images: Vec::new(),
             route_next_prompt_to_new_session: false,
             submit_input_on_startup: false,
@@ -733,7 +759,6 @@ impl App {
             pending_split_request: false,
             pending_transfer_request: false,
             pending_local_transfer: None,
-            queue_mode: display.queue_mode,
             auto_server_reload: display.auto_server_reload,
             pending_queued_dispatch: false,
             recovered_queue_held_for_user_submit: false,
@@ -989,6 +1014,8 @@ impl App {
             restart_requested: None,
             pasted_contents: Vec::new(),
             clipboard_paste_draft: None,
+            clipboard_paste_native_echo_expected: false,
+            clipboard_paste_echo: None,
             pending_images: Vec::new(),
             route_next_prompt_to_new_session: false,
             submit_input_on_startup: false,
@@ -1203,7 +1230,6 @@ impl App {
             pending_split_request: false,
             pending_transfer_request: false,
             pending_local_transfer: None,
-            queue_mode: display.queue_mode,
             auto_server_reload: display.auto_server_reload,
             pending_queued_dispatch: false,
             recovered_queue_held_for_user_submit: false,

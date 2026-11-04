@@ -206,6 +206,9 @@ impl App {
                 provider_filter,
             } => self.open_account_add_replace_flow(provider_filter.as_deref()),
             crate::alphacode_tui::tui::account_picker::AccountPickerCommand::SubmitInput(input) => {
+                if super::super::commands_add::handle_add_command(self, input.trim()) {
+                    return Ok(());
+                }
                 crate::alphacode_tui::tui::app::auth::handle_account_command_remote(self, &input, remote).await?;
             }
             crate::alphacode_tui::tui::account_picker::AccountPickerCommand::PromptValue {
@@ -360,7 +363,7 @@ async fn handle_remote_key_internal(
     }
 
     if input::is_clipboard_paste_shortcut(code, modifiers) {
-        app.paste_from_clipboard();
+        input::paste_from_clipboard_shortcut(app, modifiers);
         return Ok(());
     }
 
@@ -760,13 +763,7 @@ async fn handle_remote_key_internal(
                 return Ok(());
             }
             KeyCode::Tab | KeyCode::Char('t') => {
-                app.queue_mode = !app.queue_mode;
-                let mode_str = if app.queue_mode {
-                    "Queue mode: messages wait until response completes"
-                } else {
-                    "Immediate mode: messages send next (no interrupt)"
-                };
-                app.set_status_notice(mode_str);
+                // Queue mode was removed: mid-turn prompts now always interleave.
                 return Ok(());
             }
             KeyCode::Up => {
@@ -804,9 +801,6 @@ async fn handle_remote_key_internal(
 
             match app.send_action(true) {
                 SendAction::Submit => submit_prepared_remote_input(app, remote, prepared).await?,
-                SendAction::Queue => {
-                    app.queued_messages.push(prepared.expanded);
-                }
                 SendAction::Interleave => {
                     app.send_interleave_now(prepared.expanded, prepared.images, remote)
                         .await;
@@ -903,6 +897,9 @@ async fn handle_remote_key_internal(
             app.autocomplete();
         }
         KeyCode::Enter => {
+            if input::consume_paste_trailing_enter() {
+                return Ok(());
+            }
             if app.activate_picker_from_preview() {
                 return Ok(());
             }
@@ -2619,9 +2616,6 @@ async fn handle_remote_key_internal(
                 match app.send_action(false) {
                     SendAction::Submit => {
                         submit_prepared_remote_input(app, remote, prepared).await?
-                    }
-                    SendAction::Queue => {
-                        app.queued_messages.push(prepared.expanded);
                     }
                     SendAction::Interleave => {
                         app.send_interleave_now(prepared.expanded, prepared.images, remote)

@@ -37,6 +37,10 @@ impl RegisteredCommand {
 }
 
 const REGISTERED_COMMANDS: &[RegisteredCommand] = &[
+    RegisteredCommand::public(
+        "/add",
+        "Import a skill file or local plugin; browse the current directory",
+    ),
     RegisteredCommand::public("/help", "Show help and keyboard shortcuts"),
     RegisteredCommand::public("/?", "Show help and keyboard shortcuts"),
     RegisteredCommand::public("/commands", "Alias for /help"),

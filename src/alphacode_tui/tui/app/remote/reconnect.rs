@@ -5,8 +5,9 @@ use super::{
 use crate::alphacode_tui::tool::selfdev::ReloadContext;
 use crate::alphacode_tui::tui::app::PendingReloadReconnectStatus;
 use crate::alphacode_tui::tui::backend::{RemoteConnection, RemoteDisconnectReason};
+use crate::alphacode_tui::tui::terminal_events::TerminalEventStream as EventStream;
 use anyhow::Result;
-use crossterm::event::EventStream;
+
 use futures::StreamExt;
 use ratatui::DefaultTerminal;
 use std::time::{Duration, Instant};

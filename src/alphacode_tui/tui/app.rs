@@ -18,12 +18,12 @@ use crate::alphacode_tui::session::{Session, StoredMessage};
 use crate::alphacode_tui::skill::SkillRegistry;
 use crate::alphacode_tui::tool::selfdev::ReloadContext;
 use crate::alphacode_tui::tool::{Registry, ToolContext};
+use crate::alphacode_tui::tui::terminal_events::TerminalEventStream as EventStream;
 use crate::alphacode_tui_messages::DisplayMessage;
 use anyhow::Result;
 use auth::PendingLogin;
 use crossterm::event::{
-    Event, EventStream, KeyCode, KeyEventKind, KeyModifiers, MouseButton, MouseEvent,
-    MouseEventKind,
+    Event, KeyCode, KeyEventKind, KeyModifiers, MouseButton, MouseEvent, MouseEventKind,
 };
 use debug::DebugTrace;
 use futures::StreamExt;
@@ -53,6 +53,7 @@ mod auth;
 mod auth_account_picker_saved_accounts;
 mod catchup;
 mod commands;
+mod commands_add;
 mod commands_colors;
 mod commands_copy;
 mod commands_dispatch;
@@ -560,7 +561,6 @@ pub struct RunResult {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum SendAction {
     Submit,
-    Queue,
     Interleave,
 }
 
@@ -1255,6 +1255,8 @@ pub struct App {
     // Pasted content storage (displayed as placeholders, expanded on submit)
     pasted_contents: Vec<String>,
     clipboard_paste_draft: Option<(String, String, usize)>,
+    clipboard_paste_native_echo_expected: bool,
+    clipboard_paste_echo: Option<input::ClipboardPasteEcho>,
     // Pending pasted images (media_type, base64_data) attached to next message
     pending_images: Vec<(String, String)>,
     // One-shot flag: the next submitted prompt is routed to a new headed session.
@@ -1744,9 +1746,6 @@ pub struct App {
     pending_transfer_request: bool,
     // Local transfer preparation currently running in the background.
     pending_local_transfer: Option<PendingLocalTransfer>,
-    // Queue mode: if true, Enter during processing queues; if false, Enter queues to send next
-    // Toggle with Ctrl+Tab or Ctrl+T
-    queue_mode: bool,
     // Automatically reload the remote server when a newer server binary is detected.
     auto_server_reload: bool,
     // After an interrupt, wait one redraw before auto-dispatching queued followups so

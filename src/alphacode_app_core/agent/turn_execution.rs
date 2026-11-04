@@ -1112,7 +1112,7 @@ impl Agent {
         // Use the shared banner art when the terminal can render it, and fall
         // back to the plain heading so narrow or ASCII-only terminals still
         // get an unambiguous greeting instead of a wrapped logo.
-        let banner = crate::alphacode_core::output_style::startup_banner(
+        let banner = crate::alphacode_core::output_style::styled_startup_banner(
             crate::alphacode_core::console::terminal_width(),
         );
         if banner.is_empty() {

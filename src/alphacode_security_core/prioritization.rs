@@ -22,7 +22,7 @@
 //!   a documented example, never as a hardcoded default.
 
 use serde::{Deserialize, Serialize};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 /// A risk factor that raises a component's review priority, with the
 /// evidence that attached it.
@@ -206,7 +206,12 @@ impl PrioritizedPlan {
     }
 
     pub fn is_in_scope(&self, id: &str) -> bool {
-        !self.do_not_test.iter().any(|x| x == id)
+        self.order.iter().any(|c| c.target.id == id)
+            && !self
+                .order
+                .iter()
+                .any(|c| c.target.id == id && !c.target.in_scope)
+            && !self.do_not_test.iter().any(|x| x == id)
     }
 }
 
@@ -224,9 +229,17 @@ pub fn prioritize(
         .map(|target| {
             let mut rationale: Vec<(f64, String)> = Vec::new();
             let mut score = 0.0;
+            let mut seen = BTreeSet::new();
             for factor in &target.factors {
+                // Repeated labels and empty evidence must not manufacture risk.
+                if factor.evidence.trim().is_empty() || !seen.insert(&factor.factor) {
+                    continue;
+                }
                 let weight = config.weights.get(&factor.factor).copied().unwrap_or(1.0);
-                score += weight;
+                if !weight.is_finite() || weight < 0.0 {
+                    continue;
+                }
+                score = (score + weight).min(f64::MAX);
                 rationale.push((
                     weight,
                     format!(
@@ -236,32 +249,29 @@ pub fn prioritize(
                     ),
                 ));
             }
-            if !target.in_scope {
-                // Out-of-scope components are ranked below everything in
-                // scope but kept in the plan.
-                score -= 1_000.0;
-            }
             rationale.sort_by(|a, b| b.0.partial_cmp(&a.0).unwrap_or(std::cmp::Ordering::Equal));
-            let depth = config
-                .depth_overrides
-                .get(&target.id)
-                .and_then(|d| match d.as_str() {
-                    "shallow" => Some(ReviewDepthHint::Shallow),
-                    "deep" => Some(ReviewDepthHint::Deep),
-                    "standard" => Some(ReviewDepthHint::Standard),
-                    _ => None,
-                })
-                .unwrap_or({
-                    if !target.in_scope {
-                        ReviewDepthHint::Shallow
-                    } else if score >= 15.0 {
-                        ReviewDepthHint::Deep
-                    } else if score >= 6.0 {
-                        ReviewDepthHint::Standard
-                    } else {
-                        ReviewDepthHint::Shallow
-                    }
-                });
+            let depth = if !target.in_scope {
+                ReviewDepthHint::Shallow
+            } else {
+                config
+                    .depth_overrides
+                    .get(&target.id)
+                    .and_then(|d| match d.as_str() {
+                        "shallow" => Some(ReviewDepthHint::Shallow),
+                        "deep" => Some(ReviewDepthHint::Deep),
+                        "standard" => Some(ReviewDepthHint::Standard),
+                        _ => None,
+                    })
+                    .unwrap_or({
+                        if score >= 15.0 {
+                            ReviewDepthHint::Deep
+                        } else if score >= 6.0 {
+                            ReviewDepthHint::Standard
+                        } else {
+                            ReviewDepthHint::Shallow
+                        }
+                    })
+            };
             let ordering_reason = if !target.in_scope {
                 "out of scope: ranked last and excluded from active testing".to_string()
             } else {
@@ -281,9 +291,14 @@ pub fn prioritize(
     // pulling named components to the front, preserving the user's exact
     // relative order.
     scored.sort_by(|a, b| {
-        b.score
-            .partial_cmp(&a.score)
-            .unwrap_or(std::cmp::Ordering::Equal)
+        b.target
+            .in_scope
+            .cmp(&a.target.in_scope)
+            .then_with(|| {
+                b.score
+                    .partial_cmp(&a.score)
+                    .unwrap_or(std::cmp::Ordering::Equal)
+            })
             .then_with(|| a.target.id.cmp(&b.target.id))
     });
 
@@ -296,7 +311,7 @@ pub fn prioritize(
                 .iter()
                 .position(|id| *id == component.target.id);
             match position {
-                Some(idx) => {
+                Some(idx) if component.target.in_scope => {
                     let mut component = component;
                     component.ordering_reason = format!(
                         "user override: explicitly ordered #{} (weighted score was {:.1})",
@@ -305,7 +320,7 @@ pub fn prioritize(
                     );
                     front.push((idx, component));
                 }
-                None => rest.push(component),
+                _ => rest.push(component),
             }
         }
         front.sort_by_key(|(idx, _)| *idx);
@@ -327,6 +342,62 @@ pub fn prioritize(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn scope_precedes_overrides_and_unbounded_scores() {
+        let config = PrioritizerConfig {
+            user_order: vec!["excluded".into()],
+            weights: [(RiskFactor::KeyCustody, 1_000_000.0)].into(),
+            depth_overrides: [("excluded".into(), "deep".into())].into(),
+        };
+        let plan = prioritize(
+            vec![
+                target("excluded", "r", &[RiskFactor::KeyCustody], false),
+                target("allowed", "r", &[], true),
+            ],
+            &config,
+        );
+        assert_eq!(plan.order[0].target.id, "allowed");
+        assert_eq!(plan.order[1].depth, ReviewDepthHint::Shallow);
+        assert!(plan.order[1].ordering_reason.contains("out of scope"));
+        assert!(!plan.is_in_scope("unknown"));
+        assert!(!plan.is_in_scope("excluded"));
+    }
+
+    #[test]
+    fn duplicated_or_empty_evidence_cannot_inflate_priority() {
+        let mut candidate = target(
+            "candidate",
+            "r",
+            &[RiskFactor::KeyCustody, RiskFactor::KeyCustody],
+            true,
+        );
+        candidate.factors.push(RiskFactorEvidence {
+            factor: RiskFactor::SigningOperations,
+            evidence: "  ".into(),
+        });
+        let plan = prioritize(vec![candidate], &PrioritizerConfig::default());
+        assert_eq!(plan.order[0].score, 10.0);
+        assert_eq!(plan.order[0].rationale.len(), 1);
+    }
+
+    #[test]
+    fn invalid_weights_do_not_poison_ranking() {
+        for weight in [f64::NAN, f64::INFINITY, f64::NEG_INFINITY, -5.0] {
+            let mut config = PrioritizerConfig::default();
+            config.weights.insert(RiskFactor::KeyCustody, weight);
+            let plan = prioritize(
+                vec![target(
+                    "x",
+                    "r",
+                    &[RiskFactor::KeyCustody, RiskFactor::RecentChanges],
+                    true,
+                )],
+                &config,
+            );
+            assert_eq!(plan.order[0].score, 2.0);
+        }
+    }
 
     fn target(
         id: &str,

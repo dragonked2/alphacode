@@ -128,7 +128,7 @@ impl McpManager {
             .config
             .servers
             .iter()
-            .filter(|(_, config)| config.is_enabled())
+            .filter(|(_, config)| config.can_auto_connect())
             .partition(|(_, config)| config.shared && self.pool.is_some());
 
         // Connect shared servers via pool
@@ -204,6 +204,7 @@ impl McpManager {
         reason = "MCP connect flow keeps shared-pool and owned-server paths explicit"
     )]
     pub async fn connect(&self, name: &str, config: &McpServerConfig) -> Result<()> {
+        config.ensure_connection_allowed()?;
         // Partner-discovery provenance: if this server's command matches a
         // setup the agent saw in a discover_tools listing, tag it so calls to
         // it are metered coarsely (counts only; see sponsors::provenance).
@@ -549,6 +550,7 @@ mod tests {
         config.servers.insert(
             "off".to_string(),
             McpServerConfig {
+                project_source: None,
                 command: "true".to_string(),
                 args: vec![],
                 env: HashMap::new(),
@@ -580,6 +582,7 @@ mod tests {
         config.servers.insert(
             "broken".to_string(),
             McpServerConfig {
+                project_source: None,
                 // `true` exits 0 immediately: the stdio handshake gets EOF, so
                 // connect fails fast instead of waiting on the initialize bound.
                 command: "true".to_string(),
@@ -688,6 +691,7 @@ done
         config.servers.insert(
             "agentcard".to_string(),
             McpServerConfig {
+                project_source: None,
                 command: command.clone(),
                 args: vec![],
                 env: HashMap::new(),

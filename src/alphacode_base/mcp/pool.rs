@@ -71,7 +71,7 @@ impl SharedMcpPool {
         for (name, server_config) in &config.servers {
             // Disabled servers stay configured but are never auto-spawned
             // (issue #436); they can still be connected on demand by name.
-            if !server_config.is_enabled() {
+            if !server_config.can_auto_connect() {
                 continue;
             }
             // Non-shared servers are owned per-session (with the session cwd)
@@ -333,6 +333,9 @@ impl SharedMcpPool {
         name: String,
         config: McpServerConfig,
     ) -> std::result::Result<bool, String> {
+        config
+            .ensure_connection_allowed()
+            .map_err(|error| error.to_string())?;
         if let Some(record) = self.recent_failure(&name).await {
             let retry_after = FAILED_CONNECT_RETRY_COOLDOWN
                 .saturating_sub(record.failed_at.elapsed())
@@ -446,6 +449,7 @@ mod tests {
         config.servers.insert(
             "owned-only".to_string(),
             crate::mcp::protocol::McpServerConfig {
+                project_source: None,
                 command: "/nonexistent/alphacode-test-mcp-557".to_string(),
                 args: vec![],
                 env: Default::default(),

@@ -115,18 +115,16 @@ fn emoji_ascii_fallback(grapheme: &str) -> &'static str {
 }
 
 const COLOR_RESET: &str = "\u{1b}[0m";
-const COLOR_BOLD: &str = "\u{1b}[1m";
+use super::output_enhance::PaletteToken;
 
-// Truecolor ANSI sequences for rich gradients and premium formatting
-const TC_GOLD_LIGHT: &str = "\u{1b}[38;2;238;211;150m";
-const TC_GOLD: &str = "\u{1b}[38;2;232;190;96m";
-const TC_GOLD_DEEP: &str = "\u{1b}[38;2;218;177;94m";
-const TC_GREEN: &str = "\u{1b}[38;2;120;210;120m";
-const TC_YELLOW: &str = "\u{1b}[38;2;240;220;100m";
-const TC_RED: &str = "\u{1b}[38;2;240;80;80m";
-const TC_GRAY: &str = "\u{1b}[38;2;160;165;175m";
-const TC_GRAY_DIM: &str = "\u{1b}[38;2;100;105;115m";
-const TC_WHITE: &str = "\u{1b}[38;2;230;235;245m";
+fn tone(text: &str, token: PaletteToken, bold: bool) -> String {
+    let (r, g, b) = super::output_enhance::pick_for_terminal_bg(token);
+    if bold {
+        truecolor_bold(text, r, g, b)
+    } else {
+        truecolor(text, r, g, b)
+    }
+}
 
 /// Format with a color. Returns a new String (not a Cow) so callers can chain formatting.
 ///
@@ -183,40 +181,48 @@ pub fn status_loading() -> &'static str {
 
 /// Colorized status indicators for richer terminal output.
 pub fn status_success_colored() -> String {
-    colorized("\u{2714}", "\u{1b}[38;5;10m")
+    tone("+", PaletteToken::Success, true)
 }
 pub fn status_warning_colored() -> String {
-    colorized("\u{26a0}", "\u{1b}[38;5;226m")
+    tone("!", PaletteToken::Warn, true)
 }
 pub fn status_failure_colored() -> String {
-    colorized("\u{2718}", "\u{1b}[38;5;196m")
+    tone("x", PaletteToken::Error, true)
 }
 pub fn status_info_colored() -> String {
-    colorized("\u{2139}", "\u{1b}[38;5;45m")
+    tone("i", PaletteToken::Info, true)
 }
 
 /// Premium status badges with truecolor and box-drawing decorations.
 pub fn badge_success(text: &str) -> String {
-    format!("{TC_GREEN}{COLOR_BOLD} \u{2713} {text}{COLOR_RESET}")
+    tone(&format!(" + {text}"), PaletteToken::Success, true)
 }
 pub fn badge_warning(text: &str) -> String {
-    format!("{TC_YELLOW}{COLOR_BOLD} \u{26a0} {text}{COLOR_RESET}")
+    tone(&format!(" ! {text}"), PaletteToken::Warn, true)
 }
 pub fn badge_error(text: &str) -> String {
-    format!("{TC_RED}{COLOR_BOLD} \u{2717} {text}{COLOR_RESET}")
+    tone(&format!(" x {text}"), PaletteToken::Error, true)
 }
 pub fn badge_info(text: &str) -> String {
-    format!("{TC_GOLD_LIGHT}{COLOR_BOLD} \u{2139} {text}{COLOR_RESET}")
+    tone(&format!(" i {text}"), PaletteToken::Info, true)
 }
 
 /// Styled label-value pairs for structured output.
 pub fn label_value(label: &str, value: &str) -> String {
-    format!("{TC_GRAY}{label}:{COLOR_RESET} {TC_WHITE}{value}{COLOR_RESET}")
+    format!(
+        "{} {value}",
+        tone(&format!("{label}:"), PaletteToken::Muted, false)
+    )
 }
 
 /// A horizontal separator line.
 pub fn separator(width: usize) -> String {
-    format!("{TC_GRAY_DIM}{}{COLOR_RESET}", "\u{2500}".repeat(width))
+    let glyph = if super::console::unicode_supported() {
+        "─"
+    } else {
+        "-"
+    };
+    tone(&glyph.repeat(width), PaletteToken::Muted, false)
 }
 
 /// Center the shared brand wordmark for a human-facing terminal.
@@ -245,6 +251,12 @@ pub fn startup_banner_with_unicode(width: usize, unicode: bool) -> String {
 
     let rows: Option<&[&str]> = if unicode {
         crate::alphacode_brand::wordmark_for(width)
+    } else if width >= crate::alphacode_brand::WORDMARK_ASCII_BLOCK_WIDTH {
+        // Big pure-ASCII block art: keeps the banner Claude-Code-style and big
+        // on terminals that cannot render Unicode box-drawing characters
+        // (legacy consoles, dumb terminals, `TERM` without UTF-8), instead of
+        // degrading to the tiny monospace tier.
+        Some(crate::alphacode_brand::WORDMARK_ASCII_BLOCK)
     } else if width >= crate::alphacode_brand::WORDMARK_MONOSPACE.len() {
         Some(crate::alphacode_brand::WORDMARK_MONOSPACE_ROWS)
     } else if width >= crate::alphacode_brand::DISPLAY_NAME.len() {
@@ -255,10 +267,46 @@ pub fn startup_banner_with_unicode(width: usize, unicode: bool) -> String {
     let Some(rows) = rows else {
         return String::new();
     };
-    rows.iter()
+    let mut lines = rows
+        .iter()
         .map(|row| {
             let padding = width.saturating_sub(UnicodeWidthStr::width(*row)) / 2;
             format!("{}{row}", " ".repeat(padding))
+        })
+        .collect::<Vec<_>>();
+    lines.push(if unicode { "─" } else { "-" }.repeat(width));
+    lines.join("\n")
+}
+
+/// Render the shared cyan banner with styling when the terminal supports it.
+pub fn styled_startup_banner(width: usize) -> String {
+    use crate::alphacode_core::console;
+    let banner = startup_banner(width);
+    if !console::ansi_enabled() || banner.is_empty() {
+        return banner;
+    }
+    let lines: Vec<&str> = banner.lines().collect();
+    let art_height = lines.len().saturating_sub(1);
+    lines
+        .iter()
+        .enumerate()
+        .map(|(row_index, row)| {
+            if row_index == art_height {
+                return console::styled_line(row);
+            }
+            let mut styled = String::new();
+            let mut previous = None;
+            for glyph in row.chars() {
+                let color = crate::alphacode_brand::wordmark_ink(glyph, row_index, art_height);
+                if previous != Some(color) {
+                    let (r, g, b) = color;
+                    styled.push_str(&format!("\u{1b}[38;2;{r};{g};{b}m"));
+                    previous = Some(color);
+                }
+                styled.push(glyph);
+            }
+            styled.push_str("\u{1b}[0m");
+            styled
         })
         .collect::<Vec<_>>()
         .join("\n")
@@ -268,44 +316,53 @@ pub fn startup_banner_with_unicode(width: usize, unicode: bool) -> String {
 pub fn copyright_notice(version: &str) -> String {
     let year = 2026;
     format!(
-        "{TC_GOLD_LIGHT}AlphaCode{COLOR_RESET} {TC_GRAY_DIM}v{version}{COLOR_RESET}  \
-         {TC_GRAY_DIM}\u{00a9} {year} AlphaCode. All rights reserved.{COLOR_RESET}",
-        version = version,
-        year = year,
+        "{} {}",
+        tone(
+            crate::alphacode_brand::DISPLAY_NAME,
+            PaletteToken::Accent,
+            true
+        ),
+        tone(
+            &format!("v{version}  © {year} AlphaCode. All rights reserved."),
+            PaletteToken::Muted,
+            false
+        )
     )
 }
 
 /// Aligned header labels -- no visual clutter.
 pub fn aligned_header(label: &str, value: &str) -> String {
-    let pad = 10_usize.saturating_sub(label.len());
-    format!(
-        "{TC_GRAY}{label}{label_padding}{COLOR_RESET} {TC_WHITE}{value}{COLOR_RESET}",
-        label_padding = " ".repeat(pad)
-    )
+    let label = super::output_enhance::pad_end_to(label, 10);
+    format!("{} {value}", tone(&label, PaletteToken::Muted, false))
 }
 
 /// Clean prompt formatting.
 pub fn prompt_header(title: &str) -> String {
-    format!("{COLOR_BOLD}{TC_GOLD_LIGHT}{title}{COLOR_RESET}\n")
+    format!("{}\n", tone(title, PaletteToken::Accent, true))
 }
 pub fn prompt_field(label: &str, value: &str) -> String {
-    format!("{TC_GRAY}{label}{COLOR_RESET}\n{TC_WHITE}{value}{COLOR_RESET}\n")
+    format!("{}\n{value}\n", tone(label, PaletteToken::Muted, false))
 }
 pub fn prompt_subtle(text: &str) -> String {
-    format!("{TC_GRAY_DIM}{text}{COLOR_RESET}")
+    tone(text, PaletteToken::Muted, false)
 }
 pub fn prompt_action(text: &str) -> String {
-    format!("{TC_YELLOW}{text}{COLOR_RESET}")
+    tone(text, PaletteToken::Accent, false)
 }
 
 /// Concise progress messages.
 pub fn progress(text: &str) -> String {
-    format!("{TC_GOLD}{text}{COLOR_RESET}")
+    tone(text, PaletteToken::Accent, false)
 }
 
 /// Formatted progress with a spinner-style indicator.
 pub fn progress_spinner(text: &str) -> String {
-    format!("{TC_GOLD_DEEP}{COLOR_BOLD}\u{27f3}{COLOR_RESET} {TC_GOLD}{text}{COLOR_RESET}")
+    let marker = if super::console::unicode_supported() {
+        "⟳"
+    } else {
+        "..."
+    };
+    tone(&format!("{marker} {text}"), PaletteToken::Accent, false)
 }
 
 /// Rewrite errors to be short, actionable, and readable.
@@ -318,30 +375,40 @@ pub fn error_reason(reason: &str) -> String {
         .join(" ")
 }
 pub fn error_message(reason: &str) -> String {
-    format!(
-        "{TC_RED}{COLOR_BOLD} \u{2717} {error}{COLOR_RESET}",
-        error = error_reason(reason)
+    tone(
+        &format!(" x {}", error_reason(reason)),
+        PaletteToken::Error,
+        true,
     )
 }
 pub fn error_action(reason: &str) -> String {
     let reason = reason.lines().next().unwrap_or(reason);
-    format!("{TC_YELLOW}{reason}{COLOR_RESET}")
+    tone(reason, PaletteToken::Warn, false)
 }
 
 /// Collapse multiple success messages.
 pub fn success_message(text: &str) -> String {
-    format!("{TC_GREEN}{text}{COLOR_RESET}")
+    tone(text, PaletteToken::Success, false)
 }
 
 /// Multi-line info block with a colored left border.
 pub fn info_block(title: &str, body: &str) -> String {
     let mut out = String::new();
-    out.push_str(&format!(
-        "{TC_GOLD_LIGHT}{COLOR_BOLD}  \u{2503} {title}{COLOR_RESET}\n"
+    let rule = if super::console::unicode_supported() {
+        "│"
+    } else {
+        "|"
+    };
+    out.push_str(&tone(
+        &format!("  {rule} {title}"),
+        PaletteToken::Accent,
+        true,
     ));
+    out.push('\n');
     for line in body.lines() {
         out.push_str(&format!(
-            "{TC_GOLD_LIGHT}  \u{2503}{COLOR_RESET} {TC_GRAY}{line}{COLOR_RESET}\n"
+            "{} {line}\n",
+            tone(&format!("  {rule}"), PaletteToken::Muted, false)
         ));
     }
     out

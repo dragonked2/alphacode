@@ -6,6 +6,10 @@ use std::collections::{HashMap, HashSet};
 pub struct CoverageTracker {
     /// Test results keyed by (endpoint, method, vuln_class).
     pub test_results: HashMap<String, TestRecord>,
+    /// Earlier positive observations awaiting a completed retest. An error or
+    /// skip cannot refute evidence, even though the latest attempt is uncovered.
+    #[serde(default)]
+    pub retained_signals: HashMap<String, TestRecord>,
     /// Endpoint coverage: which endpoints have been tested for which vuln classes.
     pub endpoint_coverage: HashMap<String, EndpointCoverage>,
     /// Technology coverage: which tech-specific attack classes have been attempted.
@@ -56,6 +60,15 @@ impl TestResult {
             Self::PotentialVulnerability | Self::ConfirmedVulnerability
         )
     }
+
+    /// The target was actually exercised and produced an interpretable result.
+    /// This says nothing about other actors, fixtures, or target revisions.
+    pub fn is_completed(&self) -> bool {
+        matches!(
+            self,
+            Self::NoVulnerability | Self::PotentialVulnerability | Self::ConfirmedVulnerability
+        )
+    }
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -99,92 +112,121 @@ impl CoverageTracker {
             "{}:{}:{}",
             record.endpoint, record.method, record.vuln_class
         );
-        let previous = self.test_results.insert(key, record.clone());
+        let previous = self.test_results.insert(key.clone(), record.clone());
+        if record.result.is_completed() {
+            self.retained_signals.remove(&key);
+        } else if let Some(prior) = previous.as_ref().filter(|r| r.result.is_positive()) {
+            self.retained_signals.insert(key, prior.clone());
+        }
 
-        // Decrement stats for the overwritten result so re-tests don't inflate counts.
+        // Attempt counters describe the latest retained result for each test.
         if let Some(prev) = previous {
-            match prev.result {
-                TestResult::ConfirmedVulnerability => {
-                    self.stats.confirmed_findings = self.stats.confirmed_findings.saturating_sub(1)
-                }
-                TestResult::PotentialVulnerability => {
-                    self.stats.potential_findings = self.stats.potential_findings.saturating_sub(1)
-                }
-                TestResult::Error => self.stats.errors = self.stats.errors.saturating_sub(1),
-                _ => {}
+            if prev.result == TestResult::Error {
+                self.stats.errors = self.stats.errors.saturating_sub(1);
             }
         } else {
             self.stats.total_tests_run += 1;
         }
 
-        let TestRecord {
-            endpoint,
-            method,
-            vuln_class,
-            result,
-            timestamp,
-            ..
-        } = record;
-        let is_positive = result.is_positive();
+        let endpoint = &record.endpoint;
         let ep_cov = self
             .endpoint_coverage
             .entry(endpoint.clone())
             .or_insert_with(|| EndpointCoverage {
-                endpoint,
+                endpoint: endpoint.clone(),
                 methods_tested: HashSet::new(),
                 vuln_classes_tested: HashSet::new(),
                 vuln_classes_with_signal: HashSet::new(),
                 highest_severity: None,
                 last_tested: None,
             });
-        ep_cov.methods_tested.insert(method);
-        ep_cov.vuln_classes_tested.insert(vuln_class.clone());
-        ep_cov.last_tested = Some(timestamp);
-
-        if is_positive {
-            ep_cov.vuln_classes_with_signal.insert(vuln_class.clone());
-        } else {
-            // A re-test that comes back negative must clear the signal. The
-            // counters above are correctly decremented, but this set was only
-            // ever inserted into, so a re-test that refuted a finding left the
-            // endpoint permanently flagged as "has signal" — and both
-            // `shallow_coverage` and `high_value_endpoints` kept recommending
-            // it as a top candidate for deeper testing.
-            let still_positive = self
-                .test_results
-                .values()
-                .any(|r| r.vuln_class == vuln_class && r.result.is_positive());
-            if !still_positive {
-                ep_cov.vuln_classes_with_signal.remove(&vuln_class);
+        // Rebuild from current results for THIS endpoint. A sibling method's
+        // signal survives a negative retest; another endpoint's signal cannot
+        // keep a refuted candidate alive here. Errors/skips remain coverage gaps.
+        ep_cov.methods_tested.clear();
+        ep_cov.vuln_classes_tested.clear();
+        ep_cov.vuln_classes_with_signal.clear();
+        ep_cov.last_tested = None;
+        for retained in self
+            .test_results
+            .values()
+            .filter(|r| &r.endpoint == endpoint)
+        {
+            if retained.result.is_completed() {
+                ep_cov.methods_tested.insert(retained.method.clone());
+                ep_cov
+                    .vuln_classes_tested
+                    .insert(retained.vuln_class.clone());
+                if ep_cov
+                    .last_tested
+                    .as_ref()
+                    .is_none_or(|last| retained.timestamp > *last)
+                {
+                    ep_cov.last_tested = Some(retained.timestamp.clone());
+                }
+            }
+            if retained.result.is_positive() {
+                ep_cov
+                    .vuln_classes_with_signal
+                    .insert(retained.vuln_class.clone());
             }
         }
 
-        // Update stats
-        match result {
-            TestResult::ConfirmedVulnerability => self.stats.confirmed_findings += 1,
-            TestResult::PotentialVulnerability => self.stats.potential_findings += 1,
-            TestResult::Error => self.stats.errors += 1,
-            _ => {}
+        for retained in self
+            .retained_signals
+            .values()
+            .filter(|r| &r.endpoint == endpoint)
+        {
+            ep_cov
+                .vuln_classes_with_signal
+                .insert(retained.vuln_class.clone());
         }
-        self.stats.endpoints_tested = self.endpoint_coverage.len();
+
+        // Update stats
+        if record.result == TestResult::Error {
+            self.stats.errors += 1;
+        }
+        self.stats.confirmed_findings = 0;
+        self.stats.potential_findings = 0;
+        for signal in self
+            .test_results
+            .values()
+            .chain(self.retained_signals.values())
+        {
+            match signal.result {
+                TestResult::ConfirmedVulnerability => self.stats.confirmed_findings += 1,
+                TestResult::PotentialVulnerability => self.stats.potential_findings += 1,
+                _ => {}
+            }
+        }
+        self.stats.endpoints_tested = self
+            .endpoint_coverage
+            .values()
+            .filter(|c| !c.methods_tested.is_empty())
+            .count();
         self.stats.vuln_classes_tested = self
             .test_results
             .values()
+            .filter(|r| r.result.is_completed())
             .map(|r| r.vuln_class.to_lowercase())
             .collect::<HashSet<_>>()
             .len();
     }
 
-    /// Check if a specific test has already been performed.
+    /// Whether a specific test produced an interpretable result. Failed,
+    /// skipped and merely planned work must remain eligible for investigation.
     pub fn has_tested(&self, endpoint: &str, method: &str, vuln_class: &str) -> bool {
         let key = format!("{endpoint}:{method}:{vuln_class}");
-        self.test_results.contains_key(&key)
+        self.test_results
+            .get(&key)
+            .is_some_and(|r| r.result.is_completed())
     }
 
     /// Get all endpoints with confirmed vulnerabilities.
     pub fn confirmed_vulns(&self) -> Vec<&TestRecord> {
         self.test_results
             .values()
+            .chain(self.retained_signals.values())
             .filter(|r| r.result == TestResult::ConfirmedVulnerability)
             .collect()
     }
@@ -193,6 +235,7 @@ impl CoverageTracker {
     pub fn potential_vulns(&self) -> Vec<&TestRecord> {
         self.test_results
             .values()
+            .chain(self.retained_signals.values())
             .filter(|r| r.result == TestResult::PotentialVulnerability)
             .collect()
     }
@@ -205,11 +248,13 @@ impl CoverageTracker {
             .collect()
     }
 
-    /// Identify which vuln classes have NOT been tested across all endpoints.
+    /// Classes with no completed test anywhere. This is not per-endpoint or
+    /// per-actor coverage and must not be interpreted as exhaustive assessment.
     pub fn untested_vuln_classes(&self, all_classes: &[String]) -> Vec<String> {
         let tested: HashSet<String> = self
             .test_results
             .values()
+            .filter(|r| r.result.is_completed())
             .map(|r| r.vuln_class.to_lowercase())
             .collect();
         all_classes
@@ -219,19 +264,18 @@ impl CoverageTracker {
             .collect()
     }
 
-    /// Identify high-value endpoints that deserve deeper investigation:
-    /// endpoints with signal, or with broad untested surface.
+    /// Endpoints with unresolved signals, regardless of how many classes have
+    /// already been tested. Test count cannot dismiss a live candidate.
     pub fn high_value_endpoints(&self) -> Vec<&EndpointCoverage> {
         self.endpoint_coverage
             .values()
-            .filter(|c| !c.vuln_classes_with_signal.is_empty() && c.vuln_classes_tested.len() < 5)
+            .filter(|c| !c.vuln_classes_with_signal.is_empty())
             .collect()
     }
 
     /// Update discovered endpoint count.
     pub fn set_discovered_endpoints(&mut self, count: usize) {
         self.stats.total_endpoints_discovered = count;
-        self.stats.endpoints_tested = self.endpoint_coverage.len();
     }
 
     /// Update available vuln class count.
@@ -243,6 +287,127 @@ impl CoverageTracker {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn record(endpoint: &str, method: &str, class: &str, result: TestResult) -> TestRecord {
+        TestRecord {
+            endpoint: endpoint.into(),
+            method: method.into(),
+            vuln_class: class.into(),
+            result,
+            confidence: 0.8,
+            agent: None,
+            skill_used: None,
+            timestamp: "2026-11-04T10:00:00Z".into(),
+            notes: None,
+        }
+    }
+
+    #[test]
+    fn failed_and_skipped_work_remains_uncovered() {
+        for result in [
+            TestResult::Error,
+            TestResult::Skipped,
+            TestResult::NotTested,
+        ] {
+            let mut tracker = CoverageTracker::new();
+            tracker.record_test(record("/api", "GET", "idor", result));
+            assert!(!tracker.has_tested("/api", "GET", "idor"));
+            assert_eq!(tracker.stats.endpoints_tested, 0);
+            assert_eq!(tracker.stats.vuln_classes_tested, 0);
+            assert_eq!(
+                tracker.untested_vuln_classes(&["idor".into()]),
+                vec!["idor"]
+            );
+            tracker.set_discovered_endpoints(10);
+            assert_eq!(tracker.stats.endpoints_tested, 0);
+            tracker.record_test(record("/api", "GET", "idor", TestResult::NoVulnerability));
+            assert!(tracker.has_tested("/api", "GET", "idor"));
+            assert_eq!(tracker.stats.endpoints_tested, 1);
+            assert_eq!(tracker.stats.errors, 0);
+        }
+    }
+
+    #[test]
+    fn signals_are_local_and_survive_sibling_method_retests() {
+        let mut tracker = CoverageTracker::new();
+        tracker.record_test(record(
+            "/a",
+            "GET",
+            "idor",
+            TestResult::PotentialVulnerability,
+        ));
+        tracker.record_test(record(
+            "/b",
+            "GET",
+            "idor",
+            TestResult::PotentialVulnerability,
+        ));
+        tracker.record_test(record(
+            "/a",
+            "POST",
+            "idor",
+            TestResult::ConfirmedVulnerability,
+        ));
+        tracker.record_test(record("/a", "GET", "idor", TestResult::NoVulnerability));
+        assert!(
+            tracker.endpoint_coverage["/a"]
+                .vuln_classes_with_signal
+                .contains("idor")
+        );
+        tracker.record_test(record("/a", "POST", "idor", TestResult::NoVulnerability));
+        assert!(
+            tracker.endpoint_coverage["/a"]
+                .vuln_classes_with_signal
+                .is_empty()
+        );
+        assert!(
+            tracker.endpoint_coverage["/b"]
+                .vuln_classes_with_signal
+                .contains("idor")
+        );
+        assert_eq!(tracker.stats.confirmed_findings, 0);
+        assert_eq!(tracker.stats.potential_findings, 1);
+    }
+
+    #[test]
+    fn broad_testing_does_not_discard_live_signal() {
+        let mut tracker = CoverageTracker::new();
+        for class in ["idor", "xss", "sqli", "ssrf", "csrf", "ssti"] {
+            tracker.record_test(record(
+                "/api",
+                "GET",
+                class,
+                TestResult::PotentialVulnerability,
+            ));
+        }
+        assert_eq!(tracker.high_value_endpoints().len(), 1);
+        tracker.record_test(record("/api", "GET", "idor", TestResult::Error));
+        assert!(!tracker.has_tested("/api", "GET", "idor"));
+        assert_eq!(tracker.stats.errors, 1);
+        assert!(
+            !tracker.endpoint_coverage["/api"]
+                .vuln_classes_tested
+                .contains("idor")
+        );
+        assert_eq!(tracker.potential_vulns().len(), 6);
+        assert!(
+            tracker.endpoint_coverage["/api"]
+                .vuln_classes_with_signal
+                .contains("idor")
+        );
+        tracker.record_test(record("/api", "GET", "idor", TestResult::Skipped));
+        assert_eq!(tracker.potential_vulns().len(), 6);
+        let serialized = serde_json::to_string(&tracker).unwrap();
+        let mut tracker: CoverageTracker = serde_json::from_str(&serialized).unwrap();
+        assert_eq!(tracker.potential_vulns().len(), 6);
+        tracker.record_test(record("/api", "GET", "idor", TestResult::NoVulnerability));
+        assert_eq!(tracker.potential_vulns().len(), 5);
+        assert!(
+            !tracker.endpoint_coverage["/api"]
+                .vuln_classes_with_signal
+                .contains("idor")
+        );
+    }
 
     #[test]
     fn coverage_tracker_records_tests() {

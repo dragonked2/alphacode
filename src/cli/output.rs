@@ -64,33 +64,10 @@ pub fn terminal_title(title: impl AsRef<str>) -> String {
 /// Re-exported from core, which is the only implementation: the `run` banner,
 /// the interactive REPL and the TUI all resolve the same shared wordmark ladder.
 /// A second copy here is exactly how those surfaces drifted apart before.
-pub use crate::alphacode_core::output_style::{startup_banner, startup_banner_with_unicode};
+#[cfg(test)]
+use crate::alphacode_core::output_style::startup_banner_with_unicode;
 
-pub fn styled_startup_banner(width: usize) -> String {
-    let banner = startup_banner(width);
-    if !console::ansi_enabled() || banner.is_empty() {
-        return banner;
-    }
-    let lines: Vec<&str> = banner.lines().collect();
-    let colors = std::iter::repeat_n(
-        crate::alphacode_tui::tui::brand_ux::BrandTheme::accent(),
-        lines.len(),
-    );
-    lines
-        .into_iter()
-        .zip(colors)
-        .map(|(line, color)| match color {
-            ratatui::style::Color::Rgb(r, g, b) => {
-                format!("\u{1b}[1;38;2;{r};{g};{b}m{line}\u{1b}[0m")
-            }
-            ratatui::style::Color::Indexed(index) => {
-                format!("\u{1b}[1;38;5;{index}m{line}\u{1b}[0m")
-            }
-            _ => line.to_string(),
-        })
-        .collect::<Vec<_>>()
-        .join("\n")
-}
+pub use crate::alphacode_core::output_style::styled_startup_banner;
 
 pub fn stderr_blank_line() {
     if !quiet_enabled() {
@@ -546,7 +523,10 @@ mod tests {
                 assert!(banner.is_empty());
             }
         }
-        assert_eq!(startup_banner_with_unicode(9, false), "AlphaCode");
+        assert_eq!(
+            startup_banner_with_unicode(9, false),
+            "AlphaCode\n---------"
+        );
         assert!(startup_banner_with_unicode(80, false).is_ascii());
     }
 

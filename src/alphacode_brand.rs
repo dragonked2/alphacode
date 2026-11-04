@@ -59,7 +59,7 @@ pub const WORDMARK_MINIMAL: &str = "‹ AlphaCode ›";
 /// copies cannot drift if there is only one.
 pub const WORDMARK_MONOSPACE: &str = "A L P H A C O D E";
 
-/// Full block-letter wordmark -- the widest art tier (6 rows, 73 cells).
+/// Cyan block-letter wordmark with clean edges (6 rows, 73 cells).
 ///
 /// This art previously lived in three hand-maintained copies: the CLI
 /// startup banner, the TUI header, and the TUI splash. They drifted. The CLI
@@ -77,33 +77,57 @@ pub const WORDMARK_MONOSPACE: &str = "A L P H A C O D E";
 /// text as literal cells -- painted the escape sequences instead of applying
 /// them. Keep this array free of `\u{1b}`.
 pub const WORDMARK_BLOCK: &[&str] = &[
-    r" █████╗ ██╗     ██████╗ ██╗  ██╗ █████╗  ██████╗ ██████╗ ██████╗ ███████╗",
-    r"██╔══██╗██║     ██╔══██╗██║  ██║██╔══██╗██╔════╝██╔═══██╗██╔══██╗██╔════╝",
-    r"███████║██║     ██████╔╝███████║███████║██║     ██║   ██║██║  ██║█████╗  ",
-    r"██╔══██║██║     ██╔═══╝ ██╔══██║██╔══██║██║     ██║   ██║██║  ██║██╔══╝  ",
-    r"██║  ██║███████╗██║     ██║  ██║██║  ██║╚██████╗╚██████╔╝██████╔╝███████╗",
-    r"╚═╝  ╚═╝╚══════╝╚═╝     ╚═╝  ╚═╝╚═╝  ╚═╝ ╚═════╝ ╚═════╝ ╚═════╝ ╚══════╝",
+    " █████╗ ██╗     ██████╗ ██╗  ██╗ █████╗  ██████╗ ██████╗ ██████╗ ███████╗",
+    "██╔══██╗██║     ██╔══██╗██║  ██║██╔══██╗██╔════╝██╔═══██╗██╔══██╗██╔════╝",
+    "███████║██║     ██████╔╝███████║███████║██║     ██║   ██║██║  ██║█████╗  ",
+    "██╔══██║██║     ██╔═══╝ ██╔══██║██╔══██║██║     ██║   ██║██║  ██║██╔══╝  ",
+    "██║  ██║███████╗██║     ██║  ██║██║  ██║╚██████╗╚██████╔╝██████╔╝███████╗",
+    "╚═╝  ╚═╝╚══════╝╚═╝     ╚═╝  ╚═╝╚═╝  ╚═╝ ╚═════╝ ╚═════╝ ╚═════╝ ╚══════╝",
 ];
 
-/// Condensed block letters retain the full banner's six-row silhouette at 53 cells.
+/// Condensed block letters retain the same silhouette at 53 cells.
 pub const WORDMARK_COMPACT: &[&str] = &[
-    r" ███╗ ██    ████╗ ██ ██  ███╗  ███╗  ███╗ ████╗ █████",
-    r"██ ██ ██    ██ ██ ██ ██ ██ ██ ██    ██ ██ ██ ██ ██   ",
-    r"█████ ██    ████╝ █████ █████ ██    ██ ██ ██ ██ ████ ",
-    r"██ ██ ██    ██    ██ ██ ██ ██ ██    ██ ██ ██ ██ ██   ",
-    r"██ ██ █████ ██    ██ ██ ██ ██  ███╝  ███╝ ████╝ █████",
-    r"╚╝ ╚╝ ╚═══╝ ╚╝    ╚╝ ╚╝ ╚╝ ╚╝  ╚══╝  ╚══╝ ╚═══╝ ╚═══╝",
+    " ███╗ ██    ████╗ ██ ██  ███╗  ███╗  ███╗ ████╗ █████",
+    "██ ██ ██    ██ ██ ██ ██ ██ ██ ██    ██ ██ ██ ██ ██   ",
+    "█████ ██    ████╝ █████ █████ ██    ██ ██ ██ ██ ████ ",
+    "██ ██ ██    ██    ██ ██ ██ ██ ██    ██ ██ ██ ██ ██   ",
+    "██ ██ █████ ██    ██ ██ ██ ██  ███╝  ███╝ ████╝ █████",
+    "╚╝ ╚╝ ╚═══╝ ╚╝    ╚╝ ╚╝ ╚╝ ╚╝  ╚══╝  ╚══╝ ╚═══╝ ╚═══╝",
 ];
 
-/// Narrow block letters keep the same family and height at 35 cells.
+/// Narrow block letters keep the same family at 35 cells.
 pub const WORDMARK_NARROW: &[&str] = &[
-    r"▄█▄ █   ██▄ █ █ ▄█▄ ▄██ ▄█▄ ██▄ ███",
-    r"█ █ █   █ █ █ █ █ █ █   █ █ █ █ █  ",
-    r"███ █   ██▀ ███ ███ █   █ █ █ █ ██ ",
-    r"█ █ █   █   █ █ █ █ █   █ █ █ █ █  ",
-    r"█ █ ███ █   █ █ █ █ ▀██ ▀█▀ ██▀ ███",
-    r"▀ ▀ ▀▀▀ ▀   ▀ ▀ ▀ ▀  ▀▀  ▀  ▀▀  ▀▀▀",
+    "▄█▄ █   ██▄ █ █ ▄█▄ ▄██ ▄█▄ ██▄ ███",
+    "█ █ █   █ █ █ █ █ █ █   █ █ █ █ █  ",
+    "███ █   ██▀ ███ ███ █   █ █ █ █ ██ ",
+    "█ █ █   █   █ █ █ █ █   █ █ █ █ █  ",
+    "█ █ ███ █   █ █ █ █ ▀██ ▀█▀ ██▀ ███",
+    "▀ ▀ ▀▀▀ ▀   ▀ ▀ ▀ ▀  ▀▀  ▀  ▀▀  ▀▀▀",
 ];
+
+/// Big pure-ASCII block-letter wordmark, 7 rows tall and 53 cells wide.
+///
+/// This is the tier the CLI/REPL banner falls back to on terminals that cannot
+/// render Unicode box-drawing characters (legacy Windows consoles, piped or
+/// dumb terminals, `TERM` without UTF-8). It keeps the banner big and modern
+/// instead of degrading to the tiny `A L P H A C O D E` monospace tier. Every
+/// row is plain ASCII with no embedded escapes, so the width-based tier
+/// selector measures it correctly and every terminal renders it identically.
+pub const WORDMARK_ASCII_BLOCK: &[&str] = &[
+    " ###  #     ####  #   #  ###   ###   ###  ####  #####",
+    "#   # #     #   # #   # #   # #   # #   # #   # #    ",
+    "#   # #     #   # #   # #   # #     #   # #   # #    ",
+    "##### #     ####  ##### ##### #     #   # #   # #### ",
+    "#   # #     #     #   # #   # #     #   # #   # #    ",
+    "#   # #     #     #   # #   # #   # #   # #   # #    ",
+    "#   # ##### #     #   # #   #  ###   ###  ####  #####",
+];
+
+/// Width of each row of [`WORDMARK_ASCII_BLOCK`] in terminal cells.
+///
+/// All rows share one width (asserted by tests), so a single measurement is
+/// enough for the banner's tier-selection math.
+pub const WORDMARK_ASCII_BLOCK_WIDTH: usize = 53;
 
 /// One-row tiers, materialized as slices so they can sit in
 /// [`WORDMARK_LADDER`] alongside the multi-row art.
@@ -158,6 +182,20 @@ pub fn compact_wordmark_for(width: usize) -> Option<&'static [&'static str]> {
     [WORDMARK_MONOSPACE_ROWS, WORDMARK_MINIMAL_ROWS]
         .into_iter()
         .find(|tier| tier.iter().all(|row| row_width(row) <= width))
+}
+
+/// A static cyan glow: luminous letter faces with softer cyan edge strokes.
+/// Shared by CLI and TUI; no animation, dithering or embedded escape sequences.
+pub fn wordmark_ink(glyph: char, row: usize, height: usize) -> (u8, u8, u8) {
+    if "╔╗╚╝═║╣╠╦╩╬".contains(glyph) {
+        return (40, 160, 175);
+    }
+    let phase = row as f32 / height.saturating_sub(1).max(1) as f32;
+    (
+        (120.0 - 100.0 * phase) as u8,
+        (240.0 - 55.0 * phase) as u8,
+        (250.0 - 45.0 * phase) as u8,
+    )
 }
 
 /// Display width of one wordmark row, measured in terminal cells rather than
@@ -301,9 +339,21 @@ mod tests {
         // cannot be checked by substring, so pin their row counts instead to
         // catch an accidental truncation.
         assert_eq!(WORDMARK_LADDER.len(), 5, "the response ladder has 5 tiers");
-        assert_eq!(WORDMARK_BLOCK.len(), 6, "block art is six rows");
-        assert_eq!(WORDMARK_COMPACT.len(), 6, "compact art is six rows");
-        assert_eq!(WORDMARK_NARROW.len(), 6, "narrow art is six rows");
+        assert_eq!(
+            WORDMARK_BLOCK.len(),
+            6,
+            "block art includes clean letterforms"
+        );
+        assert_eq!(
+            WORDMARK_COMPACT.len(),
+            6,
+            "compact art includes clean letterforms"
+        );
+        assert_eq!(
+            WORDMARK_NARROW.len(),
+            6,
+            "narrow art includes clean letterforms"
+        );
         assert_eq!(WORDMARK_LADDER[3], WORDMARK_MONOSPACE_ROWS);
         assert_eq!(WORDMARK_LADDER[4], WORDMARK_MINIMAL_ROWS);
 
@@ -374,7 +424,7 @@ mod tests {
     fn normal_terminal_widths_keep_the_block_letter_family() {
         for width in [35, 40, 53, 60, 73, 100, 200] {
             let art = wordmark_for(width).expect("block banner fits");
-            assert_eq!(art.len(), 6, "width {width} must retain six-row block art");
+            assert!(art.len() >= 6, "width {width} must retain the block art");
             assert!(art.iter().any(|row| row.contains('█')));
         }
     }
@@ -469,6 +519,66 @@ mod tests {
         assert_eq!(compact_wordmark_for(17), Some(WORDMARK_MONOSPACE_ROWS));
         assert_eq!(compact_wordmark_for(16), Some(WORDMARK_MINIMAL_ROWS));
         assert_eq!(compact_wordmark_for(12), None);
+    }
+
+    /// The ASCII block wordmark must be well-formed: every row plain ASCII, all
+    /// rows one uniform width, and the letter run spelling `ALPHACODE`.
+    #[test]
+    fn ascii_block_wordmark_is_uniform_and_spells_alphacode() {
+        assert_eq!(
+            unicode_width::UnicodeWidthStr::width(WORDMARK_ASCII_BLOCK[0]),
+            WORDMARK_ASCII_BLOCK_WIDTH,
+            "ascii block rows must be {WORDMARK_ASCII_BLOCK_WIDTH} cells wide"
+        );
+        for row in WORDMARK_ASCII_BLOCK {
+            assert!(
+                row.is_ascii(),
+                "ascii block row must be plain ASCII: {row:?}"
+            );
+            assert_eq!(
+                unicode_width::UnicodeWidthStr::width(*row),
+                WORDMARK_ASCII_BLOCK_WIDTH,
+                "ascii block rows must share one width: {row:?}"
+            );
+        }
+        // Nine letters each occupying its own 5-cell column block, spaced by one
+        // column. The first row reads letter-by-letter: A's top is " ### " then
+        // L's is "#    " ... down to E's "#####".
+        let top = WORDMARK_ASCII_BLOCK[0];
+        assert_eq!(top, " ###  #     ####  #   #  ###   ###   ###  ####  #####");
+    }
+
+    /// The CLI/REPL banner keeps the big ASCII block art on non-Unicode terminals
+    // that are wide enough for it, instead of degrading to the tiny monospace tier.
+    #[test]
+    fn startup_banner_keeps_big_ascii_art_on_non_unicode_terminals() {
+        for width in [53, 60, 80, 200] {
+            let banner =
+                crate::alphacode_core::output_style::startup_banner_with_unicode(width, false);
+            assert!(
+                !banner.is_empty(),
+                "width {width} must render the big ASCII banner"
+            );
+            for row in WORDMARK_ASCII_BLOCK {
+                assert!(
+                    banner.contains(row),
+                    "banner at width {width} must contain row {row:?}"
+                );
+            }
+            // The banner line width must not exceed the requested width.
+            for line in banner.lines() {
+                assert!(
+                    unicode_width::UnicodeWidthStr::width(line) <= width,
+                    "banner line overflows width {width}: {line:?}"
+                );
+            }
+        }
+        // Narrower than the block art falls to the monospace tier or below.
+        let narrow = crate::alphacode_core::output_style::startup_banner_with_unicode(40, false);
+        assert!(
+            narrow.contains("A L P H A C O D E"),
+            "narrow terminal degrades: {narrow:?}"
+        );
     }
 
     #[test]

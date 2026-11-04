@@ -306,7 +306,8 @@ fn pinned_todo_band_renders_at_top_when_scrolled() {
     let mut terminal = ratatui::Terminal::new(backend).expect("failed to create test terminal");
     let text = render_and_snap(&app, &mut terminal);
 
-    let first_rows = text.lines().take(4).collect::<Vec<_>>().join(" ");
+    let viewport = crate::alphacode_tui::tui::ui::last_layout_snapshot().unwrap().messages_area;
+    let first_rows = text.lines().skip(usize::from(viewport.y)).take(4).collect::<Vec<_>>().join(" ");
     assert!(
         first_rows.contains("pinned band item"),
         "pinned todo band should render at the top of the scrolled viewport, got:\n{}",

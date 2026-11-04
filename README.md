@@ -442,9 +442,15 @@ AlphaCode includes **40+ tools**. Names and availability can vary with the build
 
 Skills add reusable, specialized workflows without changing the core agent. Browse them with `/skills`. Examples from the project include `/bugbounty`, `/meme-coin-audit`, and `/frontend-design`.
 
+Use `/add` to browse files and folders in the current directory, or `/add "path/to/my instructions.txt"` to import a skill directly. The file can have any name or extension; its contents need YAML frontmatter with `name` and `description`, followed by the instructions. Imports are saved under `~/.alphacode/skills/` and appear immediately in `/skills`. Standard `references/`, `scripts/`, `assets/`, and `agents/` folders beside the file are included; unrelated neighboring files are left behind. Existing installations are preserved.
+
+Use `/add "path/to/plugin-folder"` (or its `plugin.json`) for local Alphacode plugins. Plugin skills use the existing `skills/<name>/SKILL.md` layout. Importing does not run bundled scripts; executable plugin tools remain unsupported. Paths and installations belong to the machine running the terminal client. Activated skill instructions accompany the next connected user prompt; resource files and packages are not uploaded to separate remote servers.
+
 ### Model Context Protocol (MCP)
 
-MCP support lets you connect external tools, services, and custom integrations. See the project documentation for the configuration each server requires.
+MCP support lets you connect external tools, services, and custom integrations. Install reviewed, trusted server definitions in your user-level `~/.alphacode/mcp.json`.
+
+Repository definitions in `.alphacode/mcp.json`, `.mcp.json`, `.claude/mcp.json`, and Claude per-project settings are listed but blocked from execution in both interactive and headless sessions. To enable one, review its command, arguments, and environment, install the trusted definition in your user-level config, and remove the project entry of the same name. Reload MCP or restart the session after updating the configuration.
 
 ## Security testing and bug bounty workflows
 
@@ -746,6 +752,7 @@ See [`docs/configuration.md`](docs/configuration.md) for the full reference.
 | `/compact` | Compact context |
 | `/memory` | Manage or inspect project memory |
 | `/skills` | Browse skills |
+| `/add [path]` | Browse and import a skill file of any name or a local plugin |
 | `/diff` | Review changes |
 | `/poke` | Trigger an automatic follow-up |
 | `/screenshot-mode` | Configure screenshot capture |

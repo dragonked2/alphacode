@@ -88,6 +88,18 @@ never add severity points merely because the graph contains multiple nodes.
 
 ## Persist with a reason
 
+Distinguish mechanism failure from experiment failure. If a token expired, the
+fixture was missing, a scanner exited early, or the oracle could not distinguish
+the predicted outcomes, mark the experiment blocked/inconclusive and retain the
+unanswered question. Record the smallest repair and a retry condition. A skipped
+or failed attempt does not close a coverage row. One completed test for a class
+does not cover other endpoints, methods, actors, states or revisions.
+
+When ranking work, count each observed risk factor once. Repeated scanner alerts,
+paraphrases and tool summaries of the same underlying observation do not increase
+its evidentiary weight. Keep live signals visible even after broad testing;
+resolve them through a decisive control, a specific blocker or an explicit deferral.
+
 After each experiment: update facts, competing explanations, coverage and the next
 action. Continue promising permitted work without repeated approvals. A blocked
 account, missing scope or unreliable oracle needs a prerequisite, not more retries.

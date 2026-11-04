@@ -1060,10 +1060,13 @@ fn test_pinned_top_diagram_layout_allocates_top_pane() {
     );
     let diagram_bottom = diagram.y + diagram.height;
     assert!(messages.y >= diagram_bottom, "transcript overlaps diagram");
-    assert!(
-        messages.y - diagram_bottom <= 1,
-        "unexpected gap after diagram separator"
-    );
+    let expected_banner_rows = crate::alphacode_brand::WORDMARK_BLOCK.len() as u16 + 1;
+    assert_eq!(messages.y - diagram_bottom, expected_banner_rows,
+        "only the pinned wordmark should separate the diagram and transcript");
+    let rendered = buffer_to_text(&terminal);
+    let banner = rendered.lines().skip(usize::from(diagram_bottom))
+        .take(usize::from(expected_banner_rows)).collect::<Vec<_>>().join("\n");
+    assert!(banner.contains(crate::alphacode_brand::WORDMARK_BLOCK[1].trim()));
     assert!(
         frame
             .render_order

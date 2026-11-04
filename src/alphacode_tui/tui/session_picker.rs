@@ -3,7 +3,6 @@
 //! Shows a list of sessions on the left, with a preview of the selected session's
 //! conversation on the right. Sessions are grouped by server for multi-server support.
 
-use super::color_support::rgb;
 use crate::alphacode_session_types::SessionStatus;
 use crate::alphacode_tui::session::{CrashedSessionsInfo, Session};
 use crate::alphacode_tui::tui::{DisplayMessage, markdown};
@@ -1305,18 +1304,18 @@ impl SessionPicker {
                 .border_style(Style::default().fg(empty_border_color));
             let body = vec![
                 Line::from(vec![
-                    Span::styled("⏳ ", Style::default().fg(rgb(255, 200, 100))),
+                    Span::styled("⏳ ", Style::default().fg(role_color(Role::Warning))),
                     Span::styled(
                         message.to_string(),
                         Style::default()
-                            .fg(rgb(210, 220, 230))
+                            .fg(role_color(Role::AiText))
                             .add_modifier(Modifier::BOLD),
                     ),
                 ]),
                 Line::from(""),
                 Line::from(vec![Span::styled(
                     "The picker will update as soon as the session index is ready.",
-                    Style::default().fg(rgb(100, 110, 130)),
+                    Style::default().fg(role_color(Role::MutedText)),
                 )]),
             ];
             let paragraph = Paragraph::new(body).block(block);
@@ -1336,7 +1335,7 @@ impl SessionPicker {
                 .border_style(Style::default().fg(empty_border_color));
             let paragraph = Paragraph::new("No session selected")
                 .block(block)
-                .style(Style::default().fg(rgb(100, 110, 130)));
+                .style(Style::default().fg(role_color(Role::MutedText)));
             frame.render_widget(paragraph, area);
             return;
         };
@@ -1600,7 +1599,7 @@ impl SessionPicker {
             lines.push(
                 Line::from(vec![Span::styled(
                     saved_label,
-                    Style::default().fg(rgb(255, 180, 100)),
+                    Style::default().fg(role_color(Role::Warning)),
                 )])
                 .alignment(align),
             );
@@ -1662,7 +1661,7 @@ impl SessionPicker {
                 Line::from(vec![Span::styled(
                     "Included in batch restore",
                     Style::default()
-                        .fg(rgb(255, 140, 140))
+                        .fg(role_color(Role::Error))
                         .add_modifier(Modifier::BOLD),
                 )])
                 .alignment(align),
@@ -1674,7 +1673,7 @@ impl SessionPicker {
                 Line::from(vec![Span::styled(
                     "✓ Selected for multi-resume",
                     Style::default()
-                        .fg(rgb(140, 220, 160))
+                        .fg(role_color(Role::Success))
                         .add_modifier(Modifier::BOLD),
                 )])
                 .alignment(align),
@@ -1827,7 +1826,7 @@ impl SessionPicker {
                             Span::styled("💾 ", Style::default()),
                             Span::styled(
                                 msg.content.clone(),
-                                Style::default().fg(rgb(140, 210, 255)),
+                                Style::default().fg(role_color(Role::Accent)),
                             ),
                         ])
                         .alignment(align),
@@ -2021,14 +2020,16 @@ impl SessionPicker {
                 (
                     Style::default().fg(accent),
                     Style::default()
-                        .fg(rgb(18, 22, 30))
+                        .fg(role_color(Role::CodeBg))
                         .bg(accent)
                         .add_modifier(Modifier::BOLD),
                 )
             } else {
                 (
-                    Style::default().fg(rgb(55, 60, 75)),
-                    Style::default().fg(rgb(160, 165, 180)).bg(rgb(55, 60, 75)),
+                    Style::default().fg(role_color(Role::SelectionBg)),
+                    Style::default()
+                        .fg(role_color(Role::MutedText))
+                        .bg(role_color(Role::SelectionBg)),
                 )
             };
             Line::from(vec![
@@ -2215,12 +2216,12 @@ impl SessionPicker {
             Line::from(""),
             Line::from(Span::styled(
                 "Alphacode will prepare the transcript first, then ask Claude to exit.",
-                Style::default().fg(rgb(190, 190, 200)),
+                Style::default().fg(role_color(Role::AiText)),
             )),
             Line::from(Span::styled(
                 "Enter/Y confirm · Esc/N cancel",
                 Style::default()
-                    .fg(rgb(255, 193, 7))
+                    .fg(role_color(Role::Warning))
                     .add_modifier(Modifier::BOLD),
             )),
         ];
@@ -2230,7 +2231,7 @@ impl SessionPicker {
                     .title(" Explicit Claude takeover ")
                     .borders(Borders::ALL)
                     .border_type(BorderType::Rounded)
-                    .border_style(Style::default().fg(rgb(255, 193, 7))),
+                    .border_style(Style::default().fg(role_color(Role::Warning))),
             )
             .wrap(ratatui::widgets::Wrap { trim: false });
         frame.render_widget(modal, area);

@@ -360,11 +360,6 @@ pub(super) fn build_registry(inputs: &RegistryInputs<'_>) -> Vec<KnownHotkey> {
         "auto_poke_toggle",
         "toggle auto-poke",
     ));
-    out.push(KnownHotkey::new(
-        ctrl('t'),
-        "queue_mode_toggle",
-        "toggle queue mode",
-    ));
     out.push(KnownHotkey::quiet(
         ctrl('v'),
         "paste",

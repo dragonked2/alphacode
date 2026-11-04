@@ -153,7 +153,7 @@ impl App {
         }
         if cmd.starts_with("message:") {
             let msg = cmd.strip_prefix("message:").unwrap_or("");
-            // Inject the message respecting queue mode (like keyboard Enter)
+            // Inject the message like a keyboard Enter.
             self.input = msg.to_string();
             match self.send_action(false) {
                 SendAction::Submit => {
@@ -161,15 +161,6 @@ impl App {
                     self.debug_trace
                         .record("message", format!("submitted:{}", msg));
                     format!("OK: submitted message '{}'", msg)
-                }
-                SendAction::Queue => {
-                    self.queue_message();
-                    self.debug_trace
-                        .record("message", format!("queued:{}", msg));
-                    format!(
-                        "OK: queued message '{}' (will send after current turn)",
-                        msg
-                    )
                 }
                 SendAction::Interleave => {
                     let prepared = input::take_prepared_input(self);

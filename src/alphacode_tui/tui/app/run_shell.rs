@@ -770,6 +770,13 @@ impl App {
                     event = event_stream.next() => {
                         if event.is_some() {
                             needs_redraw |= local::handle_terminal_event(&mut self, &mut terminal, event)?;
+                            // Drain only normalized events from the same reader.
+                            for _ in 0..32 {
+                                if self.should_quit { break; }
+                                let Some(Some(event)) = futures::FutureExt::now_or_never(event_stream.next()) else { break; };
+                                needs_redraw |= local::handle_terminal_event(&mut self, &mut terminal, Some(event))?;
+                                if self.should_quit { break; }
+                            }
                         } else if super::terminal_liveness::terminal_abandoned() {
                             // Input EOF and the controlling terminal is gone:
                             // this client is an orphan (window died without a
@@ -987,6 +994,12 @@ impl App {
                     event = event_stream.next() => {
                         if event.is_some() {
                             needs_redraw |= remote::handle_terminal_event(&mut self, &mut terminal, &mut remote_conn, event).await?;
+                            for _ in 0..32 {
+                                if self.should_quit { break; }
+                                let Some(Some(event)) = futures::FutureExt::now_or_never(event_stream.next()) else { break; };
+                                needs_redraw |= remote::handle_terminal_event(&mut self, &mut terminal, &mut remote_conn, Some(event)).await?;
+                                if self.should_quit { break; }
+                            }
                         } else if super::terminal_liveness::terminal_abandoned() {
                             // Input EOF with the controlling terminal gone:
                             // orphaned client (see local loop). Exit; the

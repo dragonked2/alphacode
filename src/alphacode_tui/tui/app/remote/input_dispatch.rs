@@ -175,6 +175,11 @@ pub(in crate::alphacode_tui::tui::app) async fn submit_remote_slash_input(
 ) -> Result<()> {
     let raw_input = prepared.raw_input.clone();
 
+    // File selection is a client-side action, including in connected mode.
+    if super::super::commands_add::handle_add_command(app, raw_input.trim()) {
+        return Ok(());
+    }
+
     // Text that merely starts with `/` is not necessarily a command. A terminal
     // file drop (`/tmp/shot.png`) or a bare path (`/home/me/notes`) is ordinary
     // user input. Routing those through `App::submit_input` stages a *local*
@@ -385,20 +390,9 @@ fn transcript_send_text(text: &str) -> String {
     format!("{} {}", TRANSCRIPTION_PREFIX, trimmed_start)
 }
 
-fn queue_transcript_input(app: &mut App) {
-    input::queue_message(app);
-    let count = app.queued_messages.len();
-    app.set_status_notice(format!(
-        "Transcript queued ({} message{})",
-        count,
-        if count == 1 { "" } else { "s" }
-    ));
-}
-
 fn submit_transcript_input(app: &mut App) {
     match app.send_action(false) {
         SendAction::Submit => app.submit_input(),
-        SendAction::Queue => queue_transcript_input(app),
         SendAction::Interleave => {
             let prepared = input::take_prepared_input(app);
             input::stage_local_interleave(app, prepared.expanded, prepared.images);
@@ -445,7 +439,6 @@ async fn submit_remote_transcript_input(
             app.begin_remote_send(remote, prepared.expanded, prepared.images, false)
                 .await?;
         }
-        SendAction::Queue => queue_transcript_input(app),
         SendAction::Interleave => {
             let prepared = input::take_prepared_input(app);
             app.send_interleave_now(prepared.expanded, prepared.images, remote)
@@ -571,7 +564,8 @@ pub(in crate::alphacode_tui::tui::app) fn stage_turn_for_remote_tick_loop(
     if !app.is_remote {
         return false;
     }
-    if app.is_processing && !app.queue_mode {
+    // Queue mode is gone: a mid-turn prompt always interleaves locally.
+    if app.is_processing {
         let images = std::mem::take(&mut app.pending_images);
         input::stage_local_interleave(app, input.to_string(), images);
         return true;

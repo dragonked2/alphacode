@@ -104,7 +104,7 @@ fn composer_brand_reserved_width(area: Rect) -> usize {
 /// running so the composer's state is readable from the frame alone, and the
 /// subtle neutral colour otherwise so it stays out of the way.
 fn composer_frame_block(busy: bool, focused: bool) -> ratatui::widgets::Block<'static> {
-    use ratatui::widgets::{Block, BorderType};
+    use ratatui::widgets::Block;
 
     let border = if focused {
         BrandTheme::accent()
@@ -115,7 +115,7 @@ fn composer_frame_block(busy: bool, focused: bool) -> ratatui::widgets::Block<'s
     };
     Block::default()
         .borders(ratatui::widgets::Borders::ALL)
-        .border_type(BorderType::Rounded)
+        .border_type(crate::alphacode_tui_style::Radius::Card.to_border_type())
         .border_style(Style::default().fg(border))
 }
 
@@ -664,7 +664,7 @@ pub(super) fn input_prompt(app: &dyn TuiState) -> (String, Color) {
         // right and read like leftover slash-command text stuck in the input.
         // The active skill is already reported by the system message, the
         // header, and `clear_skill`, so the composer stays uncluttered.
-        ("> ".to_string(), BrandTheme::model())
+        ("> ".to_string(), BrandTheme::accent())
     }
 }
 
@@ -705,7 +705,9 @@ pub(super) fn pending_prompt_count(app: &dyn TuiState) -> usize {
             .interleave_message()
             .map(|msg| !msg.is_empty())
             .unwrap_or(false);
-    app.queued_messages().len() + pending_count + if interleave { 1 } else { 0 }
+    // Queued prompts are no longer surfaced; only the messages that will act on
+    // the running turn (soft interrupts and the interleave) are counted.
+    pending_count + if interleave { 1 } else { 0 }
 }
 
 pub(super) fn pending_queue_preview(app: &dyn TuiState) -> Vec<String> {
@@ -723,10 +725,6 @@ pub(super) fn pending_queue_preview(app: &dyn TuiState) -> Vec<String> {
             let normalized = normalize_repaint_sensitive_notice_text(msg);
             previews.push(format!("⚡ {}", truncate_preview(&normalized, 120)));
         }
-    }
-    for msg in app.queued_messages() {
-        let normalized = normalize_repaint_sensitive_notice_text(msg);
-        previews.push(format!("⏳ {}", truncate_preview(&normalized, 120)));
     }
     previews
 }
@@ -762,22 +760,23 @@ fn truncate_preview(text: &str, max_width: usize) -> String {
     }
 }
 
-pub(super) fn draw_queued(frame: &mut Frame, app: &dyn TuiState, area: Rect, start_num: usize) {
-    let mut items: Vec<(QueuedMsgType, &str)> = Vec::new();
+/// Render the pending-turn feedback row: soft interrupts the user queued while
+/// a turn is running, plus the interleave. Queued prompts themselves are no
+/// longer surfaced (queue mode was removed), so this only ever shows messages
+/// that will act on the running turn.
+pub(super) fn draw_pending_feedback(frame: &mut Frame, app: &dyn TuiState, area: Rect) {
+    let mut items: Vec<(PendingFeedbackKind, &str)> = Vec::new();
     if app.is_processing() {
         for msg in app.pending_soft_interrupts() {
             if !msg.is_empty() {
-                items.push((QueuedMsgType::Pending, msg.as_str()));
+                items.push((PendingFeedbackKind::Pending, msg.as_str()));
             }
         }
         if let Some(msg) = app.interleave_message()
             && !msg.is_empty()
         {
-            items.push((QueuedMsgType::Interleave, msg));
+            items.push((PendingFeedbackKind::Interleave, msg));
         }
-    }
-    for msg in app.queued_messages() {
-        items.push((QueuedMsgType::Queued, msg.as_str()));
     }
 
     let pending_count = items.len();
@@ -785,50 +784,32 @@ pub(super) fn draw_queued(frame: &mut Frame, app: &dyn TuiState, area: Rect, sta
         .iter()
         .take(3)
         .enumerate()
-        .map(|(i, (msg_type, msg))| {
-            let normalized_msg = normalize_repaint_sensitive_notice_text(msg);
-            let distance = pending_count.saturating_sub(i);
-            let num_color = rainbow_prompt_color(distance);
-            let (indicator, indicator_color, msg_color, dim) = match msg_type {
-                QueuedMsgType::Pending => {
-                    ("↻", BrandTheme::warning(), BrandTheme::warning(), false)
-                }
-                QueuedMsgType::Interleave => {
-                    ("⚡", BrandTheme::accent(), BrandTheme::accent(), false)
-                }
-                QueuedMsgType::Queued => ("⏳", BrandTheme::info(), BrandTheme::info(), true),
+        .map(|(i, (kind, msg))| {
+            let normalized = normalize_repaint_sensitive_notice_text(msg);
+            let (indicator, indicator_color) = match kind {
+                PendingFeedbackKind::Pending => ("↻", BrandTheme::warning()),
+                PendingFeedbackKind::Interleave => ("⚡", BrandTheme::accent()),
             };
-            let number = (start_num + i).to_string();
             let more_suffix = if i == 2 && pending_count > 3 {
                 format!("  +{} more", pending_count - 3)
             } else {
                 String::new()
             };
-            let prefix_width = unicode_width::UnicodeWidthStr::width(number.as_str())
-                + 2
-                + unicode_width::UnicodeWidthStr::width(indicator);
+            let prefix_width = unicode_width::UnicodeWidthStr::width(indicator) + 1;
             let suffix_width = unicode_width::UnicodeWidthStr::width(more_suffix.as_str());
             let preview_width = (area.width as usize)
                 .saturating_sub(prefix_width)
                 .saturating_sub(suffix_width);
-            let truncated = truncate_preview(&normalized_msg, preview_width);
-            let mut msg_style = Style::default().fg(msg_color);
-            if dim {
-                msg_style = msg_style.dim();
-            }
+            let truncated = truncate_preview(&normalized, preview_width);
             let mut spans = vec![
-                Span::styled(number, Style::default().fg(num_color)),
-                Span::raw(" "),
                 Span::styled(indicator, Style::default().fg(indicator_color)),
                 Span::raw(" "),
-                Span::styled(truncated, msg_style),
+                Span::styled(truncated, Style::default().fg(indicator_color)),
             ];
             if !more_suffix.is_empty() {
                 spans.push(Span::styled(more_suffix, Style::default().fg(dim_color())));
             }
             let mut line = Line::from(spans);
-            // Protect rows on very narrow terminals when the prompt number and
-            // mode marker use more columns than a normal short prefix.
             super::viewport::truncate_line_in_place_to_width(&mut line, area.width as usize);
             line
         })
@@ -845,6 +826,12 @@ pub(super) fn draw_queued(frame: &mut Frame, app: &dyn TuiState, area: Rect, sta
         Paragraph::new(lines)
     };
     frame.render_widget(paragraph, area);
+}
+
+#[derive(Clone, Copy)]
+enum PendingFeedbackKind {
+    Pending,
+    Interleave,
 }
 
 fn format_stream_tokens(tokens: u64) -> String {
@@ -4027,11 +4014,7 @@ pub(super) fn draw_input(
         )));
     } else if area.height > 1 && app.is_processing() && !input_text.is_empty() {
         hint_shown = true;
-        let hint = if app.queue_mode() {
-            "  Ctrl/Cmd+Enter sends now \u{00b7} Enter queues"
-        } else {
-            "  Ctrl/Cmd+Enter queues \u{00b7} Enter interleaves"
-        };
+        let hint = "  Enter interleaves into the running turn \u{00b7} Esc stops";
         hint_line = Some(hint.trim().to_string());
         lines.push(Line::from(Span::styled(
             hint,
@@ -4751,8 +4734,6 @@ fn send_mode_indicator(app: &dyn TuiState) -> (&'static str, Color) {
         ("$", shell_mode_color())
     } else if app.next_prompt_new_session_armed() {
         ("↗", info_color())
-    } else if app.queue_mode() {
-        ("queue", queued_color())
     } else if let Some(ref conn) = app.connection_type() {
         let lower = conn.to_lowercase();
         // ASCII tags, not Nerd-Font icons: 󰌘/󰆍/󰖟 render as a lone "?" on
@@ -4787,11 +4768,4 @@ fn draw_send_mode_indicator(frame: &mut Frame, app: &dyn TuiState, area: Rect) {
         let paragraph = Paragraph::new(line).alignment(Alignment::Right);
         frame.render_widget(paragraph, indicator_area);
     }
-}
-
-#[derive(Clone, Copy)]
-enum QueuedMsgType {
-    Pending,
-    Interleave,
-    Queued,
 }

@@ -10,6 +10,7 @@ use std::sync::Arc;
 use std::sync::OnceLock;
 use tokio::sync::RwLock;
 
+mod install;
 mod invocation;
 pub use invocation::SkillInvocation;
 

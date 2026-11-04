@@ -1,7 +1,13 @@
 use super::*;
+use crate::alphacode_tui_style::{Role, role_color};
 
 pub(super) fn hotkey(text: &'static str) -> Span<'static> {
-    Span::styled(text, Style::default().fg(Color::White).bg(Color::DarkGray))
+    Span::styled(
+        text,
+        Style::default()
+            .fg(role_color(Role::AiText))
+            .bg(role_color(Role::CodeBg)),
+    )
 }
 
 pub(super) fn provider_header_line(
@@ -26,7 +32,7 @@ pub(super) fn provider_header_line(
     Line::from(vec![
         Span::styled(" ", Style::default()),
         Span::styled(provider_label.to_string(), provider_style(provider_id)),
-        Span::styled(summary, Style::default().fg(MUTED_DARK)),
+        Span::styled(summary, Style::default().fg(muted_dark())),
     ])
 }
 
@@ -107,17 +113,17 @@ pub(super) fn action_icon(item: &AccountPickerItem) -> (&'static str, Color) {
         ActionSection::Switch => (
             if account_is_active(item) { "*" } else { "o" },
             if account_is_active(item) {
-                Color::Rgb(110, 214, 158)
+                role_color(Role::Success)
             } else {
-                Color::Rgb(160, 168, 188)
+                role_color(Role::MutedText)
             },
         ),
-        ActionSection::Add => ("+", Color::Rgb(140, 176, 255)),
-        ActionSection::Login => ("R", Color::Rgb(229, 187, 111)),
-        ActionSection::Overview => ("S", Color::Rgb(140, 176, 255)),
-        ActionSection::Setting => (".", Color::Rgb(189, 200, 255)),
-        ActionSection::Remove => ("x", Color::Rgb(255, 140, 140)),
-        ActionSection::Other => ("-", Color::Rgb(180, 190, 220)),
+        ActionSection::Add => ("+", role_color(Role::Accent)),
+        ActionSection::Login => ("R", role_color(Role::Accent)),
+        ActionSection::Overview => ("S", role_color(Role::Accent)),
+        ActionSection::Setting => (".", role_color(Role::Accent)),
+        ActionSection::Remove => ("x", role_color(Role::Error)),
+        ActionSection::Other => ("-", role_color(Role::MutedText)),
     }
 }
 
@@ -135,12 +141,12 @@ pub(super) fn action_kind_label(command: &AccountPickerCommand) -> &'static str 
 
 pub(super) fn action_kind_badge(command: &AccountPickerCommand) -> (&'static str, Color) {
     match action_kind_label(command) {
-        "overview" => ("overview", Color::Rgb(129, 184, 255)),
-        "login" => ("login", Color::Rgb(111, 214, 181)),
-        "setting" => ("setting", Color::Rgb(229, 187, 111)),
-        "danger" => ("remove", Color::Rgb(255, 140, 140)),
-        "account" => ("account", Color::Rgb(182, 154, 255)),
-        _ => ("action", Color::Rgb(180, 190, 220)),
+        "overview" => ("overview", role_color(Role::Info)),
+        "login" => ("login", role_color(Role::Success)),
+        "setting" => ("setting", role_color(Role::Accent)),
+        "danger" => ("remove", role_color(Role::Error)),
+        "account" => ("account", role_color(Role::Accent)),
+        _ => ("action", role_color(Role::MutedText)),
     }
 }
 
@@ -233,27 +239,8 @@ pub(super) fn metric_span(label: &'static str, value: usize, color: Color) -> Sp
     )
 }
 
-pub(super) fn provider_style(provider_id: &str) -> Style {
-    let color = match provider_id {
-        "claude" => Color::Rgb(229, 187, 111),
-        "openai" => Color::Rgb(111, 214, 181),
-        "gemini" | "google" => Color::Rgb(129, 184, 255),
-        "copilot" => Color::Rgb(182, 154, 255),
-        "cursor" => Color::Rgb(131, 215, 255),
-        "account-flow" => Color::Rgb(196, 170, 255),
-        "openrouter"
-        | "openai-compatible"
-        | "opencode"
-        | "opencode-go"
-        | "zai"
-        | "chutes"
-        | "cerebras"
-        | "alibaba-coding-plan"
-        | "alphacode"
-        | "defaults" => Color::Rgb(189, 200, 255),
-        _ => Color::Rgb(180, 190, 220),
-    };
-    Style::default().fg(color).bold()
+pub(super) fn provider_style(_provider_id: &str) -> Style {
+    Style::default().fg(role_color(Role::Accent)).bold()
 }
 
 pub(super) fn truncate_with_ellipsis(input: &str, width: usize) -> String {

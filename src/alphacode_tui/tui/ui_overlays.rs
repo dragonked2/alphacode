@@ -898,7 +898,6 @@ pub(super) fn draw_debug_overlay(
         return;
     }
     render_overlay_box(frame, chunks[super::CHUNK_MESSAGES], "messages", Color::Red);
-    render_overlay_box(frame, chunks[super::CHUNK_QUEUED], "queued", Color::Yellow);
     render_overlay_box(frame, chunks[super::CHUNK_STATUS], "status", Color::Cyan);
     render_overlay_box(
         frame,

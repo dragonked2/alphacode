@@ -98,7 +98,6 @@ pub mod tests {
         let rt = tokio::runtime::Runtime::new().unwrap();
         let registry = rt.block_on(crate::tool::Registry::new(provider.clone()));
         let mut app = App::new_for_test_harness(provider, registry);
-        app.queue_mode = false;
         app.diff_mode = crate::config::DiffDisplayMode::Inline;
         app
     }
@@ -148,7 +147,6 @@ pub mod tests {
         let rt = tokio::runtime::Runtime::new().unwrap();
         let registry = rt.block_on(crate::tool::Registry::new(provider.clone()));
         let mut app = App::new_for_test_harness(provider, registry);
-        app.queue_mode = false;
         app.diff_mode = crate::config::DiffDisplayMode::Inline;
         (app, active)
     }
@@ -189,7 +187,6 @@ pub mod tests {
         let rt = tokio::runtime::Runtime::new().unwrap();
         let registry = rt.block_on(crate::tool::Registry::new(provider.clone()));
         let mut app = App::new_for_test_harness(provider, registry);
-        app.queue_mode = false;
         app.diff_mode = crate::config::DiffDisplayMode::Inline;
         app
     }
@@ -254,7 +251,6 @@ pub mod tests {
         let rt = tokio::runtime::Runtime::new().unwrap();
         let registry = rt.block_on(crate::tool::Registry::new(provider.clone()));
         let mut app = App::new_for_test_harness(provider, registry);
-        app.queue_mode = false;
         app.diff_mode = crate::config::DiffDisplayMode::Inline;
         app
     }
@@ -309,7 +305,6 @@ pub mod tests {
         let rt = tokio::runtime::Runtime::new().unwrap();
         let registry = rt.block_on(crate::tool::Registry::new(provider.clone()));
         let mut app = App::new_for_test_harness(provider, registry);
-        app.queue_mode = false;
         app.diff_mode = crate::config::DiffDisplayMode::Inline;
         app
     }
@@ -380,7 +375,6 @@ pub mod tests {
         let rt = tokio::runtime::Runtime::new().unwrap();
         let registry = rt.block_on(crate::tool::Registry::new(provider.clone()));
         let mut app = App::new_for_test_harness(provider, registry);
-        app.queue_mode = false;
         app.diff_mode = crate::config::DiffDisplayMode::Inline;
         app
     }
@@ -462,7 +456,6 @@ pub mod tests {
         let rt = tokio::runtime::Runtime::new().unwrap();
         let registry = rt.block_on(crate::tool::Registry::new(provider.clone()));
         let mut app = App::new_for_test_harness(provider, registry);
-        app.queue_mode = false;
         app.diff_mode = crate::config::DiffDisplayMode::Inline;
         app
     }
@@ -623,6 +616,7 @@ pub mod tests {
     include!("remote_startup_input_04.rs");
     include!("scroll_copy_03.rs");
     include!("skill_invocation_multi_word.rs");
+    include!("add_command.rs");
     include!("smoothness_benchmark.rs");
     include!("spinner_slash_commands.rs");
     include!("state_model_poke_03.rs");

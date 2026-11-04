@@ -1035,7 +1035,6 @@ fn test_context_command_reports_session_context_snapshot() {
         let mut app = create_test_app();
         app.memory_enabled = true;
         app.swarm_enabled = true;
-        app.queue_mode = true;
         app.active_skill = Some("debug".to_string());
         app.queued_messages.push("queued follow-up".to_string());
         app.pending_images
@@ -1086,7 +1085,7 @@ fn test_context_command_reports_session_context_snapshot() {
         assert!(msg.content.contains("Inspect context summary"));
         assert!(msg.content.contains("[pending|high|confidence 77%]"));
         assert!(msg.content.contains("active skill: debug"));
-        assert!(msg.content.contains("queue mode: on"));
+        assert!(msg.content.contains("queued followups:"));
     });
 }
 

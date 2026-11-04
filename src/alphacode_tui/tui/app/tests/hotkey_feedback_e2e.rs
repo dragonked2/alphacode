@@ -33,35 +33,35 @@ fn unknown_ctrl_chord_sets_hotkey_feedback_with_suggestion() {
         assert_eq!(visible, message);
     }
 }
-
 #[test]
 fn rare_known_hotkey_sets_feedback_and_repeats_stop_once_familiar() {
     let mut app = create_test_app();
 
-    // Ctrl+T toggles queue mode; a fresh ALPHACODE_HOME has no usage history, so
+    // Ctrl+P toggles auto-poke; a fresh ALPHACODE_HOME has no usage history, so
     // the first press is "rare" and should explain itself.
-    app.handle_key(KeyCode::Char('t'), KeyModifiers::CONTROL)
+    app.handle_key(KeyCode::Char('p'), KeyModifiers::CONTROL)
         .unwrap();
     let (message, _) = app
         .hotkey_feedback
         .clone()
         .expect("first use of a known hotkey should set feedback");
-    assert!(message.contains("Ctrl+T"), "{message}");
-    assert!(message.contains("queue mode"), "{message}");
+    assert!(message.contains("Ctrl+P"), "{message}");
+    assert!(message.to_lowercase().contains("poke"), "{message}");
 
     // After enough uses the action becomes familiar and the note stops.
     for _ in 0..8 {
-        app.handle_key(KeyCode::Char('t'), KeyModifiers::CONTROL)
+        app.handle_key(KeyCode::Char('p'), KeyModifiers::CONTROL)
             .unwrap();
     }
     app.hotkey_feedback = None;
-    app.handle_key(KeyCode::Char('t'), KeyModifiers::CONTROL)
+    app.handle_key(KeyCode::Char('p'), KeyModifiers::CONTROL)
         .unwrap();
     assert!(
         app.hotkey_feedback.is_none(),
         "familiar hotkeys should not re-announce"
     );
 }
+
 
 #[test]
 fn plain_typing_never_sets_hotkey_feedback() {

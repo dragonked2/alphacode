@@ -48,6 +48,7 @@ jobs:
             target
           key: release-${{ matrix.os }}-${{ matrix.profile }}-${{ hashFiles('Cargo.lock') }}
           restore-keys: |
+            release-${{ matrix.os }}-${{ matrix.profile }}-
             cargo-${{ matrix.os }}-${{ matrix.profile }}-
             cargo-${{ matrix.os }}-
 
@@ -90,6 +91,8 @@ jobs:
             ~/.cargo/git
             target
           key: cargo-test-opt0-${{ matrix.os }}-${{ hashFiles('Cargo.lock') }}
+          restore-keys: |
+            cargo-test-opt0-${{ matrix.os }}-
       - run: cargo test --lib --locked -- --test-threads=4
       - run: cargo test --test llamacpp_compat --locked
       # `alphagrep` is its own workspace member, so root-package commands

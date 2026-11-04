@@ -5,12 +5,7 @@ use ratatui::{prelude::*, widgets::Paragraph};
 use unicode_segmentation::UnicodeSegmentation;
 use unicode_width::UnicodeWidthStr;
 
-fn primary_action(
-    mode: ComposerMode,
-    new_session: bool,
-    processing: bool,
-    queue: bool,
-) -> &'static str {
+fn primary_action(mode: ComposerMode, new_session: bool, processing: bool) -> &'static str {
     // Explicit command/shell modes consume Enter before normal chat routing.
     if mode.is_shell() {
         "run"
@@ -18,9 +13,9 @@ fn primary_action(
         "choose"
     } else if new_session {
         "new chat"
-    } else if processing && queue {
-        "queue"
     } else if processing {
+        // Mid-turn prompts interleave into the running turn now that queue
+        // mode is gone.
         "send now"
     } else {
         "send"
@@ -35,7 +30,6 @@ fn actions(mode: ComposerMode, app: &dyn TuiState) -> Vec<(&'static str, &'stati
         mode,
         app.next_prompt_new_session_armed(),
         app.is_processing(),
-        app.queue_mode(),
     );
     let mut actions = vec![("Enter", primary)];
     if app.is_processing() {
@@ -47,6 +41,7 @@ fn actions(mode: ComposerMode, app: &dyn TuiState) -> Vec<(&'static str, &'stati
         actions.push(("/", "commands"));
         actions.push(("@", "files"));
     }
+    actions.push(("\\+Enter", "newline"));
     actions.push(("Ctrl+R", "history"));
     actions.push(("Ctrl+F", "find"));
     actions
@@ -61,8 +56,15 @@ fn action_line(actions: &[(&str, &str)], width: usize) -> Line<'static> {
             // At very small widths keep the primary key discoverable instead
             // of dropping it in favour of a shorter secondary shortcut.
             if index == 0 && key.width() <= width {
+                let compact_key = if *key == "Enter" { "↵" } else { key };
+                let compact = format!("{compact_key} {label}");
+                let text = if compact.width() <= width {
+                    compact
+                } else {
+                    key.to_string()
+                };
                 spans.push(Span::styled(
-                    key.to_string(),
+                    text,
                     Style::default()
                         .fg(BrandTheme::accent())
                         .add_modifier(Modifier::BOLD),
@@ -165,30 +167,14 @@ mod tests {
 
     #[test]
     fn composer_action_labels_follow_enter_routing_priority() {
+        assert_eq!(primary_action(ComposerMode::Chat, false, false), "send");
+        assert_eq!(primary_action(ComposerMode::Chat, false, true), "send now");
+        assert_eq!(primary_action(ComposerMode::Chat, true, true), "new chat");
         assert_eq!(
-            primary_action(ComposerMode::Chat, false, false, true),
-            "send"
-        );
-        assert_eq!(
-            primary_action(ComposerMode::Chat, false, true, true),
-            "queue"
-        );
-        assert_eq!(
-            primary_action(ComposerMode::Chat, false, true, false),
-            "send now"
-        );
-        assert_eq!(
-            primary_action(ComposerMode::Chat, true, true, true),
-            "new chat"
-        );
-        assert_eq!(
-            primary_action(ComposerMode::SlashCommand, true, true, true),
+            primary_action(ComposerMode::SlashCommand, true, true),
             "choose"
         );
-        assert_eq!(
-            primary_action(ComposerMode::ShellRemote, true, true, true),
-            "run"
-        );
+        assert_eq!(primary_action(ComposerMode::ShellRemote, true, true), "run");
     }
 
     #[test]
@@ -213,7 +199,7 @@ mod tests {
                 .iter()
                 .map(|span| span.content.as_ref())
                 .collect::<String>(),
-            "Enter"
+            "↵ send now"
         );
         let line = action_line(&actions, 24);
         assert!(line.spans.iter().any(|span| span.content == "F1"));

@@ -238,7 +238,6 @@ struct TestState {
     pending_soft_interrupts: Vec<String>,
     interleave_message: Option<String>,
     status: ProcessingStatus,
-    queue_mode: bool,
     active_skill: Option<String>,
     centered_mode: bool,
     anim_elapsed: f32,
@@ -462,9 +461,6 @@ impl crate::alphacode_tui::tui::TuiState for TestState {
     }
     fn rate_limit_remaining(&self) -> Option<Duration> {
         None
-    }
-    fn queue_mode(&self) -> bool {
-        self.queue_mode
     }
     fn next_prompt_new_session_armed(&self) -> bool {
         false

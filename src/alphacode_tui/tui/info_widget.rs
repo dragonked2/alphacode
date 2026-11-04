@@ -42,7 +42,7 @@ use crate::alphacode_tui::todo::TodoItem;
 use memory_render::{render_memory_expanded, render_memory_widget};
 use ratatui::{
     prelude::*,
-    widgets::{Block, Borders, Paragraph},
+    widgets::{Block, Borders, Padding, Paragraph},
 };
 use std::collections::HashMap;
 use std::sync::Mutex;
@@ -642,7 +642,6 @@ pub struct InfoWidgetData {
     pub context_info: Option<ContextInfo>,
     /// True when context state is being updated and no authoritative snapshot is available.
     pub context_info_stale: bool,
-    pub queue_mode: Option<bool>,
     pub context_limit: Option<usize>,
     pub model: Option<String>,
     pub reasoning_effort: Option<String>,
@@ -651,6 +650,9 @@ pub struct InfoWidgetData {
     pub native_compaction_threshold_tokens: Option<usize>,
     pub session_count: Option<usize>,
     pub session_name: Option<String>,
+    /// The user's active goal for this session, shown in the Session card in
+    /// place of the raw session identity.
+    pub goal: Option<String>,
     /// Current working directory for this session.
     pub working_dir: Option<String>,
     pub client_count: Option<usize>,
@@ -710,7 +712,6 @@ impl InfoWidgetData {
     pub fn is_empty(&self) -> bool {
         self.todos.is_empty()
             && self.context_info.is_none()
-            && self.queue_mode.is_none()
             && self.model.is_none()
             && self.memory_info.is_none()
             && self.swarm_info.is_none()
@@ -753,9 +754,6 @@ impl InfoWidgetData {
                 {
                     sections += 1;
                 }
-                if self.queue_mode.is_some() {
-                    sections += 1;
-                }
                 if self
                     .usage_info
                     .as_ref()
@@ -770,9 +768,6 @@ impl InfoWidgetData {
                     .map(MemoryInfo::should_render)
                     .unwrap_or(false)
                 {
-                    sections += 1;
-                }
-                if self.cache_hit_info.is_some() {
                     sections += 1;
                 }
                 if self.compaction_info.is_some() {
@@ -827,7 +822,9 @@ impl InfoWidgetData {
                 .as_ref()
                 .map(|u| u.available)
                 .unwrap_or(false),
-            WidgetKind::KvCache => self.cache_hit_info.is_some(),
+            // KV-cache hit ratios read as opaque noise to users, so the widget
+            // never surfaces; the telemetry still drives internal decisions.
+            WidgetKind::KvCache => false,
             WidgetKind::ModelInfo => self.model.is_some(),
             WidgetKind::Tips => false,
             WidgetKind::GitStatus => self
@@ -1280,7 +1277,7 @@ pub(crate) fn calculate_widget_height(
         WidgetKind::Overview => {
             let overview = data.clone();
             let inner_h = max_height.saturating_sub(border_height);
-            let layout = compute_page_layout(&overview, inner_width, inner_h);
+            let layout = compute_page_layout(&overview, inner_width.saturating_sub(2), inner_h);
             if layout.max_page_height == 0 {
                 return 0;
             }
@@ -1516,11 +1513,7 @@ fn render_single_widget(frame: &mut Frame, placement: &WidgetPlacement, data: &I
     // Unified border style using the refreshed palette for consistency
     // across all widget frames. Uses a subtle, professional border that
     // blends with the dark theme.
-    let border_color = if placement.kind == WidgetKind::Overview {
-        crate::alphacode_tui_style::theme::accent_color()
-    } else {
-        crate::alphacode_tui_style::theme::border_color()
-    };
+    let border_color = crate::alphacode_tui_style::theme::border_color();
     let mut block = Block::default()
         .borders(Borders::ALL)
         .border_type(crate::alphacode_tui_style::Radius::Card.to_border_type())
@@ -1536,10 +1529,11 @@ fn render_single_widget(frame: &mut Frame, placement: &WidgetPlacement, data: &I
     // and can invalidate ratatui's cell-width cache mid-frame; the geometric
     // marks below are all one cell and one colour role.
     use crate::alphacode_tui_style::{Role, role_color};
-    let title_style = |role: Role| Style::default().fg(role_color(role));
+    let title_style = |_role: Role| Style::default().fg(role_color(Role::Accent)).bold();
 
     match placement.kind {
         WidgetKind::Overview => {
+            block = block.padding(Padding::horizontal(1));
             // The session widget anchors the panel, so it carries the product
             // mark: " ◆ AlphaCode · Session ".
             block = block.title(Span::styled(
@@ -1718,9 +1712,15 @@ fn render_overview_widget(frame: &mut Frame, inner: Rect, data: &InfoWidgetData)
         let mut dots: Vec<Span<'static>> = Vec::new();
         for i in 0..layout.pages.len() {
             if i == page_index {
-                dots.push(Span::styled("● ", Style::default().fg(rgb(170, 170, 180))));
+                dots.push(Span::styled(
+                    "● ",
+                    Style::default().fg(crate::alphacode_tui_style::theme::accent_color()),
+                ));
             } else {
-                dots.push(Span::styled("○ ", Style::default().fg(rgb(100, 100, 110))));
+                dots.push(Span::styled(
+                    "○ ",
+                    Style::default().fg(crate::alphacode_tui_style::theme::dim_color()),
+                ));
             }
         }
         if !dots.is_empty() {
@@ -2173,10 +2173,7 @@ fn render_sections(
     // Keep the compact dashboard predictable: one model row, one combined
     // context/usage/memory row, then optional details below it.
     if let Some(model) = &data.model {
-        let mut label = format!(
-            "✎ {}",
-            crate::alphacode_tui::tui::session_facts::pretty_model(model)
-        );
+        let mut label = crate::alphacode_tui::tui::session_facts::pretty_model(model);
         if let Some(provider) = data
             .provider_name
             .as_deref()
@@ -2189,7 +2186,7 @@ fn render_sections(
         lines.push(Line::from(Span::styled(
             truncate_smart(&label, inner.width as usize),
             Style::default()
-                .fg(crate::alphacode_tui_style::theme::accent_color())
+                .fg(crate::alphacode_tui_style::theme::header_name_color())
                 .bold(),
         )));
     }
@@ -2202,28 +2199,46 @@ fn render_sections(
         lines.push(telemetry);
     }
 
+    // The Session card leads with the user's goal (what this session is here
+    // to achieve) instead of the opaque session identity, which carried no
+    // meaning for the user. The working directory still anchors the card when
+    // it is the only identity we have.
+    let goal = data
+        .goal
+        .as_deref()
+        .map(str::trim)
+        .filter(|goal| !goal.is_empty());
+    if let Some(goal) = goal {
+        lines.push(Line::from(vec![
+            Span::styled(
+                "Goal ",
+                Style::default().fg(crate::alphacode_tui_style::theme::muted_text_color()),
+            ),
+            Span::styled(
+                truncate_smart(goal, usize::from(inner.width).saturating_sub(5)),
+                Style::default()
+                    .fg(crate::alphacode_tui_style::theme::accent_color())
+                    .bold(),
+            ),
+        ]));
+    } else if let Some(dir) = data
+        .working_dir
+        .as_deref()
+        .map(str::trim)
+        .filter(|dir| !dir.is_empty())
+    {
+        lines.push(Line::from(Span::styled(
+            truncate_smart(dir, usize::from(inner.width)),
+            Style::default().fg(crate::alphacode_tui_style::theme::muted_text_color()),
+        )));
+    }
+
     if !data.todos.is_empty() {
         if matches!(focus, Some(InfoPageKind::TodosExpanded)) {
             lines.extend(render_todos_expanded(data, inner));
         } else {
             lines.extend(render_todos_compact(data, inner));
         }
-    }
-
-    if let Some(queue_mode) = data.queue_mode {
-        lines.push(Line::from(vec![
-            Span::styled("Queue ", Style::default().fg(rgb(140, 140, 150))),
-            Span::styled(
-                if queue_mode { "on" } else { "off" },
-                Style::default()
-                    .fg(if queue_mode {
-                        rgb(110, 210, 140)
-                    } else {
-                        rgb(140, 140, 150)
-                    })
-                    .bold(),
-            ),
-        ]));
     }
 
     if matches!(focus, Some(InfoPageKind::MemoryExpanded))
@@ -2237,10 +2252,6 @@ fn render_sections(
         && info.running_count > 0
     {
         lines.extend(render_background_compact(info));
-    }
-
-    if let Some(cache) = &data.cache_hit_info {
-        lines.push(render_kv_cache_summary_line(cache));
     }
 
     if data.compaction_info.is_some() {
@@ -2262,10 +2273,12 @@ mod session_todo_visibility_tests {
     use super::*;
 
     #[test]
-    fn session_overview_keeps_todos_ahead_of_queue_in_small_spaces() {
+    fn session_overview_shows_the_user_goal_instead_of_the_session_identity() {
         let data = InfoWidgetData {
             model: Some("example".into()),
-            queue_mode: Some(true),
+            session_name: Some("session_fox_1705012345678".into()),
+            goal: Some("Ship the billing refactor".into()),
+            working_dir: Some("/home/dev/alphacode".into()),
             todos: vec![crate::todo::TodoItem {
                 id: "one".into(),
                 content: "test task".into(),
@@ -2284,15 +2297,39 @@ mod session_todo_visibility_tests {
                     .collect()
             })
             .collect();
-        let todos = text
+        assert!(
+            text.iter()
+                .any(|line| line.contains("Goal") && line.contains("billing")),
+            "goal line missing: {text:?}"
+        );
+        assert!(
+            !text.iter().any(|line| line.contains("Queue")),
+            "queue line must be gone: {text:?}"
+        );
+        assert!(
+            !text.iter().any(|line| line.contains("session_fox")),
+            "session identity must not render: {text:?}"
+        );
+    }
+
+    #[test]
+    fn session_overview_falls_back_to_working_dir_without_a_goal() {
+        let data = InfoWidgetData {
+            model: Some("example".into()),
+            working_dir: Some("/home/dev/alphacode".into()),
+            ..Default::default()
+        };
+        let lines = render_sections(&data, Rect::new(0, 0, 40, 3), None);
+        let text: Vec<String> = lines
             .iter()
-            .position(|line| line.contains("Todos"))
-            .expect("todo section");
-        let queue = text
-            .iter()
-            .position(|line| line.contains("Queue"))
-            .expect("queue section");
-        assert!(todos < queue);
+            .map(|line| {
+                line.spans
+                    .iter()
+                    .map(|span| span.content.as_ref())
+                    .collect()
+            })
+            .collect();
+        assert!(text.iter().any(|line| line.contains("/home/dev/alphacode")));
     }
 }
 
@@ -2446,9 +2483,9 @@ fn render_overview_telemetry(
     Some(Line::from(Span::styled(
         label,
         Style::default().fg(if alert {
-            rgb(255, 190, 100)
+            crate::alphacode_tui_style::theme::warning_color()
         } else {
-            rgb(175, 180, 195)
+            crate::alphacode_tui_style::theme::muted_text_color()
         }),
     )))
 }

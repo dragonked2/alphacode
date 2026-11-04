@@ -60,29 +60,27 @@ fn test_skill_invocation_not_queued() {
     assert_eq!(app.display_messages().len(), 1);
     assert_eq!(app.display_messages()[0].role, "error");
 }
-
 #[test]
-fn test_multiple_queued_messages() {
+fn test_multiple_mid_turn_messages_replace_the_interleave() {
     let mut app = create_test_app();
     app.is_processing = true;
 
-    // Queue first message
     for c in "first".chars() {
         app.handle_key(KeyCode::Char(c), KeyModifiers::empty())
             .unwrap();
     }
     app.handle_key(KeyCode::Enter, KeyModifiers::CONTROL)
         .unwrap();
+    assert_eq!(app.interleave_message.as_deref(), Some("first"));
 
-    // Queue second message
     for c in "second".chars() {
         app.handle_key(KeyCode::Char(c), KeyModifiers::empty())
             .unwrap();
     }
     app.handle_key(KeyCode::Enter, KeyModifiers::CONTROL)
         .unwrap();
+    assert_eq!(app.interleave_message.as_deref(), Some("second"));
 
-    // Queue third message
     for c in "third".chars() {
         app.handle_key(KeyCode::Char(c), KeyModifiers::empty())
             .unwrap();
@@ -90,12 +88,12 @@ fn test_multiple_queued_messages() {
     app.handle_key(KeyCode::Enter, KeyModifiers::CONTROL)
         .unwrap();
 
-    assert_eq!(app.queued_count(), 3);
-    assert_eq!(app.queued_messages()[0], "first");
-    assert_eq!(app.queued_messages()[1], "second");
-    assert_eq!(app.queued_messages()[2], "third");
+    // Mid-turn prompts interleave (latest wins) instead of queuing.
+    assert_eq!(app.queued_count(), 0);
+    assert_eq!(app.interleave_message.as_deref(), Some("third"));
     assert!(app.input().is_empty());
 }
+
 
 #[test]
 fn test_queue_message_combines_on_send() {
@@ -111,14 +109,12 @@ fn test_queue_message_combines_on_send() {
     assert_eq!(combined, "message one\n\nmessage two");
     assert!(app.queued_messages.is_empty());
 }
-
 #[test]
-fn test_interleave_message_separate_from_queue() {
+fn test_interleave_is_not_queued() {
     let mut app = create_test_app();
     app.is_processing = true;
-    app.queue_mode = false; // Default mode: Enter=interleave, Ctrl+Enter=queue
 
-    // Type and submit via Enter (should interleave, not queue)
+    // Enter mid-turn interleaves; nothing is queued.
     for c in "urgent".chars() {
         app.handle_key(KeyCode::Char(c), KeyModifiers::empty())
             .unwrap();
@@ -126,11 +122,10 @@ fn test_interleave_message_separate_from_queue() {
     app.handle_key(KeyCode::Enter, KeyModifiers::empty())
         .unwrap();
 
-    // Should be in interleave_message, not queued
     assert_eq!(app.interleave_message.as_deref(), Some("urgent"));
     assert_eq!(app.queued_count(), 0);
 
-    // Now queue one
+    // A later interleave replaces the first; still nothing queued.
     for c in "later".chars() {
         app.handle_key(KeyCode::Char(c), KeyModifiers::empty())
             .unwrap();
@@ -138,11 +133,10 @@ fn test_interleave_message_separate_from_queue() {
     app.handle_key(KeyCode::Enter, KeyModifiers::CONTROL)
         .unwrap();
 
-    // Interleave unchanged, one message queued
-    assert_eq!(app.interleave_message.as_deref(), Some("urgent"));
-    assert_eq!(app.queued_count(), 1);
-    assert_eq!(app.queued_messages()[0], "later");
+    assert_eq!(app.interleave_message.as_deref(), Some("later"));
+    assert_eq!(app.queued_count(), 0);
 }
+
 
 #[test]
 fn test_handle_paste_single_line() {
