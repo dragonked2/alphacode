@@ -31,78 +31,201 @@ fn resolve_path(rest: &str, working_dir: &Path) -> Result<PathBuf> {
         .with_context(|| format!("Cannot open {}", path.display()))
 }
 
+pub(super) struct PendingAdd {
+    request: u64,
+    session_id: String,
+    result: std::sync::mpsc::Receiver<Result<AddOutcome, String>>,
+}
+
+enum AddOutcome {
+    Browse(PathBuf, Vec<AccountPickerItem>),
+    Imported(String, Box<crate::skill::SkillRegistry>),
+}
+
 pub(super) fn handle_add_command(app: &mut App, input: &str) -> bool {
     let Some(rest) = command_path(input) else {
         return false;
     };
-    let result = (|| -> Result<()> {
-        let cwd = std::env::current_dir()?;
-        let working = app
-            .session
-            .working_dir
-            .as_deref()
-            .map(Path::new)
-            .filter(|p| p.is_dir())
-            .unwrap_or(&cwd);
-        let path = resolve_path(rest, working)?;
-        if path.is_dir() && !path.join("plugin.json").is_file() {
-            let items = browse_items(&path)?;
-            app.account_picker_overlay = Some(std::cell::RefCell::new(AccountPicker::action_list(
-                format!("Add skill / plugin — {}", path.display()),
-                items,
-            )));
-            app.set_status_notice("Select a skill file or browse a folder; Esc cancels");
-        } else {
-            let message = import_path(&path)?;
-            app.refresh_skills_snapshot();
-            app.push_display_message(DisplayMessage::system(message).with_title("Added"));
-            app.set_status_notice("Imported; use /skills to view available skills");
+    if app.pending_add.is_some() {
+        // A directory scan is usually complete before the next key. Poll it
+        // first, but never launch overlapping imports or lose their result.
+        poll_add(app);
+        if app.pending_add.is_some() {
+            app.set_status_notice("Still opening the selection; Esc closes the browser");
+            return true;
         }
-        Ok(())
-    })();
-    if let Err(error) = result {
-        app.push_display_message(DisplayMessage::error(format!(
-            "Could not add: {error:#}\nUse /add [path] to select a skill file or plugin folder."
-        )));
-        app.set_status_notice("Import failed");
+    }
+    let (browse_only, rest) = rest
+        .strip_prefix("--browse ")
+        .map_or((false, rest), |path| (true, path));
+    let rest = rest.to_owned();
+    let working = app
+        .session
+        .working_dir
+        .as_deref()
+        .map(PathBuf::from)
+        .or_else(|| std::env::current_dir().ok())
+        .unwrap_or_default();
+    static NEXT_REQUEST: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+    let request = NEXT_REQUEST.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let session_id = app
+        .active_client_session_id()
+        .unwrap_or(&app.session.id)
+        .to_owned();
+    let (tx, result) = std::sync::mpsc::channel();
+    app.account_picker_overlay = Some(std::cell::RefCell::new(AccountPicker::file_browser(
+        request,
+        if rest.is_empty() {
+            working.display().to_string()
+        } else {
+            rest.clone()
+        },
+    )));
+    app.set_status_notice("Opening selection…");
+    let wake_session = session_id.clone();
+    match std::thread::Builder::new()
+        .name("skill-file-picker".into())
+        .spawn(move || {
+            let outcome = (|| -> Result<AddOutcome> {
+                let path = resolve_path(&rest, &working)?;
+                if path.is_dir() && (browse_only || !path.join("plugin.json").is_file()) {
+                    let items = browse_items(&path)?;
+                    Ok(AddOutcome::Browse(path, items))
+                } else {
+                    let message = import_path(&path)?;
+                    let skills = crate::skill::SkillRegistry::load_global()?;
+                    Ok(AddOutcome::Imported(message, Box::new(skills)))
+                }
+            })()
+            .map_err(|error| format!("{error:#}"));
+            if tx.send(outcome).is_ok() {
+                // Wake either idle loop without adding a transcript entry.
+                crate::bus::Bus::global().publish(crate::bus::BusEvent::UiActivity(
+                    crate::bus::UiActivity::catalog(Some(wake_session), "", None::<String>),
+                ));
+            }
+        }) {
+        Ok(_) => {
+            app.pending_add = Some(PendingAdd {
+                request,
+                session_id,
+                result,
+            })
+        }
+        Err(error) => {
+            app.account_picker_overlay = None;
+            app.push_display_message(DisplayMessage::error(format!(
+                "Could not open selection: {error}"
+            )));
+        }
+    }
+    true
+}
+
+pub(super) fn poll_add(app: &mut App) -> bool {
+    use std::sync::mpsc::TryRecvError;
+    let Some(pending) = app.pending_add.as_ref() else {
+        return false;
+    };
+    let result = match pending.result.try_recv() {
+        Ok(result) => result,
+        Err(TryRecvError::Empty) => return false,
+        Err(TryRecvError::Disconnected) => Err("File selection worker stopped unexpectedly".into()),
+    };
+    let pending = app.pending_add.take().expect("pending selection");
+    let same_session =
+        app.active_client_session_id().unwrap_or(&app.session.id) == pending.session_id;
+    let visible = same_session
+        && app
+            .account_picker_overlay
+            .as_ref()
+            .is_some_and(|picker| picker.borrow().is_file_browser_request(pending.request));
+    match result {
+        Ok(AddOutcome::Browse(path, items)) if visible => {
+            if let Some(picker) = &app.account_picker_overlay {
+                picker
+                    .borrow_mut()
+                    .set_file_browser_items(path.display().to_string(), items);
+            }
+            app.set_status_notice("Choose a .md / .txt skill file or open a folder");
+        }
+        Ok(AddOutcome::Imported(message, skills)) => {
+            app.skills = std::sync::Arc::new((*skills).clone());
+            if let Ok(mut shared) = app.registry.skills().try_write() {
+                *shared = *skills;
+            }
+            app.invalidate_command_candidates_cache();
+            crate::alphacode_tui::tui::ui::prepare::invalidate_header_prep_cache();
+            if visible {
+                app.account_picker_overlay = None;
+            }
+            if same_session {
+                app.push_display_message(DisplayMessage::system(message).with_title("Added"));
+                app.set_status_notice("Imported; use /skills to view available skills");
+            }
+        }
+        Err(error) if visible => {
+            app.account_picker_overlay = None;
+            app.push_display_message(DisplayMessage::error(format!(
+                "Could not add: {error}\nUse /add [path] to select a .md / .txt skill file or plugin folder."
+            )));
+            app.set_status_notice("Import failed");
+        }
+        _ => {} // Closing/replacing the browser must never reopen it.
     }
     true
 }
 
 fn browse_items(path: &Path) -> Result<Vec<AccountPickerItem>> {
-    let mut paths = std::fs::read_dir(path)?
-        .map(|entry| entry.map(|e| e.path()))
-        .collect::<std::io::Result<Vec<_>>>()?;
-    paths.sort_by(|a, b| {
-        b.is_dir()
-            .cmp(&a.is_dir())
-            .then_with(|| a.file_name().cmp(&b.file_name()))
-    });
-    if let Some(parent) = path.parent() {
-        paths.insert(0, parent.to_path_buf());
+    // Cache classification and case-folded sort keys once per entry. Repeated
+    // Path::is_dir in a sort comparator is especially slow on cloud folders.
+    let mut entries = Vec::new();
+    for entry in std::fs::read_dir(path)? {
+        let entry = entry?;
+        let kind = entry.file_type()?;
+        let folder = kind.is_dir();
+        let child = entry.path();
+        if !folder
+            && !(kind.is_file()
+                && child.extension().is_some_and(|ext| {
+                    ext.eq_ignore_ascii_case("md") || ext.eq_ignore_ascii_case("txt")
+                }))
+        {
+            continue;
+        }
+        let name = entry.file_name().to_string_lossy().into_owned();
+        entries.push((!folder, name.to_lowercase(), name, child));
     }
-    Ok(paths
-        .into_iter()
-        .filter(|p| p.is_dir() || p.is_file())
-        .map(|p| {
-            let title = if Some(p.as_path()) == path.parent() {
-                "..".to_string()
-            } else {
-                p.file_name()
-                    .unwrap_or_default()
-                    .to_string_lossy()
-                    .into_owned()
-            };
-            let kind = if p.is_dir() { "Folders" } else { "Files" };
-            AccountPickerItem::action(
-                kind,
-                kind,
-                title,
-                p.display().to_string(),
-                AccountPickerCommand::SubmitInput(format!("/add {}", p.display())),
-            )
-        })
-        .collect())
+    entries.sort_by(|a, b| (&a.0, &a.1, &a.2).cmp(&(&b.0, &b.1, &b.2)));
+    let mut items = Vec::with_capacity(entries.len() + 1);
+    if let Some(parent) = path.parent() {
+        items.push(browser_item(parent, "..".into(), true));
+    }
+    items.extend(
+        entries
+            .into_iter()
+            .map(|(file, _, name, child)| browser_item(&child, name, !file)),
+    );
+    Ok(items)
+}
+
+fn browser_item(path: &Path, title: String, folder: bool) -> AccountPickerItem {
+    let kind = if folder { "Folders" } else { "Files" };
+    AccountPickerItem::action(
+        kind,
+        kind,
+        title,
+        if folder {
+            "Open folder"
+        } else {
+            "Import skill"
+        },
+        AccountPickerCommand::SubmitInput(format!(
+            "/add {}\"{}\"",
+            if folder { "--browse " } else { "" },
+            path.display()
+        )),
+    )
 }
 
 fn import_path(path: &Path) -> Result<String> {
@@ -179,12 +302,18 @@ mod tests {
     }
 
     #[test]
-    fn browser_includes_arbitrary_filenames_and_folders() {
+    fn browser_only_lists_immediate_markdown_text_files_and_folders() {
         let temp = tempfile::tempdir().unwrap();
         std::fs::write(temp.path().join("instructions.custom"), "text").unwrap();
         std::fs::create_dir(temp.path().join("nested")).unwrap();
+        std::fs::write(temp.path().join("skill.MD"), "text").unwrap();
+        std::fs::write(temp.path().join("notes.txt"), "text").unwrap();
+        std::fs::write(temp.path().join("nested/hidden.md"), "text").unwrap();
         let items = browse_items(temp.path()).unwrap();
-        assert!(items.iter().any(|i| i.title == "instructions.custom"));
+        assert!(items.iter().any(|i| i.title == "skill.MD"));
+        assert!(items.iter().any(|i| i.title == "notes.txt"));
+        assert!(!items.iter().any(|i| i.title == "hidden.md"));
+        assert!(!items.iter().any(|i| i.title == "instructions.custom"));
         assert!(items.iter().any(|i| i.title == "nested"));
         assert!(items.iter().any(|i| i.title == ".."));
     }

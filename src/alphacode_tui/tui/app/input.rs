@@ -646,15 +646,7 @@ where
 }
 
 pub(in crate::alphacode_tui::tui::app) mod newline;
-mod paste_buffer;
 mod paste_guard;
-#[cfg(test)]
-#[allow(unused_imports)]
-pub(in crate::alphacode_tui::tui::app) use paste_buffer::expire_for_test as paste_buffer_expire_for_test;
-use paste_buffer::{
-    PasteBurstState, check_enter_burst, insert_paste_newline, note_text_inserted, placeholder_for,
-    rapid_insertion_active, reset_burst,
-};
 #[cfg(test)]
 pub(in crate::alphacode_tui::tui::app) use paste_guard::expire_trailing_window_for_test as paste_guard_expire_trailing_window_for_test;
 use paste_guard::image_media_type;
@@ -1241,12 +1233,6 @@ pub(super) fn insert_input_text(app: &mut App, text: &str) {
     app.input.insert_str(app.cursor_pos, text);
     app.cursor_pos += text.len();
 
-    // Feed the rapid-insertion detector so the *first* Enter of a
-    // multi-line paste (whose bracketed-paste markers were stripped
-    // by the terminal) gets classified as a paste-newline instead
-    // of submitting "line1" as a queued message.
-    note_text_inserted(text.len());
-
     // Typing the final command character immediately arms picker filtering.
     // Without this, users can keep typing the command token or press Enter
     // without realizing the visible picker is ready to filter.
@@ -1534,9 +1520,6 @@ pub(super) fn clear_input_for_escape(app: &mut App) {
     app.clear_input_selection();
     app.reset_tab_completion();
     app.sync_model_picker_preview_from_input();
-    // Escape always resets the paste-burst detector; the user has
-    // committed to a non-paste action.
-    reset_burst();
     if had_input {
         app.set_status_notice("Input cleared - Ctrl+Z to restore");
     }
@@ -2808,42 +2791,6 @@ pub(super) fn handle_global_control_shortcuts(
 pub(super) fn handle_enter(app: &mut App) -> bool {
     promote_dropped_images(app);
 
-    // Line-burst detector: if the user is mid-paste (rapid Enters
-    // with content between them), buffer this Enter as a newline
-    // in the input rather than submitting. When the burst ends, the
-    // buffered content collapses into a single
-    // [pasted content] placeholder.
-    let input_len = app.input.len();
-    // Rapid-insertion override: if a lot of text arrived in the last
-    // ~500ms, the user is almost certainly in the middle of a paste,
-    // and any Enter that fires now is a paste-newline, not a submit.
-    // This catches the *first* Enter of a non-bracketed paste, which
-    // the line-burst detector below cannot (no prior Enter exists).
-    if rapid_insertion_active() {
-        // Treat as a fresh burst-start: line count = 1 (this Enter),
-        // but we're already "in flight" so collapse at end.
-        app.remember_input_undo_state();
-        insert_paste_newline(&mut app.input, &mut app.cursor_pos);
-        app.follow_chat_bottom_for_typing();
-        return true;
-    }
-    match check_enter_burst(input_len) {
-        PasteBurstState::InBurst => {
-            app.remember_input_undo_state();
-            insert_paste_newline(&mut app.input, &mut app.cursor_pos);
-            app.follow_chat_bottom_for_typing();
-            return true;
-        }
-        PasteBurstState::JustEnded => {
-            let lines = paste_buffer::burst_line_count();
-            collapse_recent_burst_into_placeholder(app, lines);
-            return true;
-        }
-        PasteBurstState::NotBurst => {
-            reset_burst();
-        }
-    }
-
     if app.activate_picker_from_preview() {
         return true;
     }
@@ -2860,68 +2807,6 @@ pub(super) fn handle_enter(app: &mut App) -> bool {
         }
     }
     true
-}
-
-/// Find the most recent `lines` newlines in the input and replace
-/// that range with a single `[pasted content]`
-/// placeholder. The real content is stashed in
-/// `app.pasted_contents` for later expansion on submit.
-fn collapse_recent_burst_into_placeholder(app: &mut App, lines: usize) {
-    if lines < 2 {
-        return;
-    }
-    let input = app.input.clone();
-    let mut seen = 0usize;
-    let mut start = input.len();
-    for (idx, _ch) in input.char_indices().rev() {
-        if input.as_bytes()[idx] == b'\n' {
-            seen += 1;
-            if seen >= lines {
-                start = idx;
-                break;
-            }
-            start = idx;
-        }
-    }
-    if seen < lines {
-        reset_burst();
-        return;
-    }
-    let content = app.input[start..].to_string();
-    let line_count = content.lines().count().max(1);
-    let placeholder = placeholder_for();
-    app.remember_input_undo_state();
-    app.input.truncate(start);
-    app.input.push_str(&placeholder);
-    app.cursor_pos = app.input.len();
-    app.pasted_contents.push(content.clone());
-    app.reset_tab_completion();
-    app.sync_model_picker_preview_from_input();
-    app.follow_chat_bottom_for_typing();
-    // Surface the paste to the user so they know what just happened.
-    // Keep useful size details in the transient notice while the draft itself
-    // stays focused on the compact `[pasted content]` token.
-    //
-    // This text is *plain*. A status notice is rendered as a ratatui `Span`,
-    // and ratatui writes cell symbols verbatim — it does not parse SGR. The
-    // previous version embedded `\u{1b}[38;2;…m` here, so the status line
-    // displayed a literal `ESC[38;2;90;200;130mPasted 12 lines …` string
-    // instead of the message. Colour for notices comes from the renderer's
-    // own style (`accent_color()` in `ui_input`), not from the payload.
-    let byte_count = content.len();
-    let line_label = if line_count == 1 { "line" } else { "lines" };
-    // Shared formatter so a 2 MB paste reads `2.0 MB` here and in every CLI
-    // status line, instead of this site's old two-decimal `2.00 MB`.
-    let size_label = crate::alphacode_core::output_enhance::format_bytes(byte_count as u64);
-    app.set_status_notice(format!(
-        "Pasted {line_count} {line_label} ({size_label}) collapsed into {placeholder}",
-    ));
-    reset_burst();
-    // Suppress the unused-mut warning on `app` if the borrow checker
-    // would otherwise complain about the unused `app` reference above
-    // (the status notice call is a `&mut self` borrow that consumes
-    // the app ref before reset_burst()).
-    let _ = &content;
 }
 
 /// End of the word to the right of `pos`, for word-wise selection.

@@ -1106,6 +1106,9 @@ impl App {
                 provider_filter,
             } => self.open_account_add_replace_flow(provider_filter.as_deref()),
             crate::alphacode_tui::tui::account_picker::AccountPickerCommand::SubmitInput(input) => {
+                if super::commands_add::handle_add_command(self, input.trim()) {
+                    return;
+                }
                 self.input = input;
                 self.cursor_pos = self.input.len();
                 self.submit_input();

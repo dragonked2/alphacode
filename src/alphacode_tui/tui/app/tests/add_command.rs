@@ -14,6 +14,8 @@ fn add_opens_a_browser_and_cancel_preserves_the_session() {
     app.handle_key(KeyCode::Esc, KeyModifiers::empty()).unwrap();
     assert!(app.account_picker_overlay.is_none());
     assert!(app.active_skill.is_none());
+    wait_for_add_job(&mut app);
+    assert!(app.account_picker_overlay.is_none(), "a cancelled scan must not reopen the browser");
 }
 
 #[test]
@@ -25,8 +27,18 @@ fn add_invalid_arbitrary_file_reports_error_without_starting_a_turn() {
     app.input = "/add \"custom name.txt\"".into();
     app.cursor_pos = app.input.len();
     app.submit_input();
+    wait_for_add_job(&mut app);
     assert!(!app.pending_turn);
     assert!(app.display_messages().iter().any(|message| message.content.contains("Invalid skill file")));
+}
+
+fn wait_for_add_job(app: &mut App) {
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    while app.pending_add.is_some() {
+        crate::alphacode_tui::tui::app::commands_add::poll_add(app);
+        assert!(std::time::Instant::now() < deadline, "file selection worker did not complete");
+        std::thread::sleep(std::time::Duration::from_millis(5));
+    }
 }
 
 #[test]

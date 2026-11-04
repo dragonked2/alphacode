@@ -1,5 +1,27 @@
 // Issue #544: stray Enter after a bracketed paste must not submit.
 #[test]
+fn normal_questions_submit_without_becoming_pasted_content() {
+    for question in ["How are you?", "Can you explain why this ordinary question should submit normally even when it is longer than sixty four bytes?"] {
+        for processing in [false, true] {
+            let mut app = create_test_app();
+            app.is_processing = processing;
+            app.status = if processing { ProcessingStatus::Streaming } else { ProcessingStatus::Idle };
+            input::paste_guard_expire_trailing_window_for_test();
+            for c in question.chars() {
+                app.handle_key(KeyCode::Char(c), if c == '?' { KeyModifiers::SHIFT } else { KeyModifiers::NONE }).unwrap();
+            }
+            assert_eq!(app.input, question);
+            app.handle_key(KeyCode::Enter, KeyModifiers::NONE).unwrap();
+            assert!(app.input.is_empty());
+            assert!(app.pasted_contents.is_empty());
+            if processing {
+                assert_eq!(app.interleave_message.as_deref(), Some(question));
+            }
+        }
+    }
+}
+
+#[test]
 fn control_v_terminal_delivery_collapses_like_alt_v() {
     use crate::alphacode_tui::bus::{
         ClipboardPasteCompleted, ClipboardPasteContent, ClipboardPasteKind,

@@ -10,6 +10,8 @@ use crate::alphacode_tui_account_picker::{
     AccountPickerCommand, AccountPickerItem, AccountPickerSummary, AccountProviderKind,
 };
 
+#[path = "file_browser.rs"]
+mod file_browser;
 #[path = "overlay_render.rs"]
 mod render_support;
 use render_support::{
@@ -47,6 +49,9 @@ pub struct AccountPicker {
     title: String,
     items: Vec<AccountPickerItem>,
     filtered: Vec<usize>,
+    ordered: Vec<usize>,
+    search_text: Vec<String>,
+    file_browser: Option<file_browser::FileBrowser>,
     selected: usize,
     filter: String,
     summary: Option<AccountPickerSummary>,
@@ -108,11 +113,15 @@ impl AccountPicker {
             title: title.into(),
             items,
             filtered: Vec::new(),
+            ordered: Vec::new(),
+            search_text: Vec::new(),
+            file_browser: None,
             selected: 0,
             filter: String::new(),
             summary: Some(summary),
             last_action_list_area: None,
         };
+        picker.build_search_index();
         picker.apply_filter();
         picker
     }
@@ -134,6 +143,10 @@ impl AccountPicker {
         }
 
         let available_items = (list_height as usize).max(1);
+        if self.file_browser.is_some() {
+            let index = self.visible_window_start(available_items) + row as usize;
+            return (index < self.filtered.len()).then_some(index);
+        }
         let start = self.visible_window_start(available_items);
         let end = (start + available_items).min(self.filtered.len());
         let mut current_provider: Option<&str> = None;
@@ -164,28 +177,58 @@ impl AccountPicker {
         None
     }
 
-    fn apply_filter(&mut self) {
-        self.filtered = self
+    fn build_search_index(&mut self) {
+        if self.file_browser.is_some() {
+            // Directory entries already arrive in folder/name order. Search
+            // filenames only; generic labels such as "Import skill" must not
+            // make every file match an otherwise unrelated query.
+            self.search_text = self
+                .items
+                .iter()
+                .map(|item| item.title.to_lowercase())
+                .collect();
+            self.ordered = (0..self.items.len()).collect();
+            return;
+        }
+        self.search_text = self
             .items
             .iter()
-            .enumerate()
-            .filter_map(|(idx, item)| {
-                crate::alphacode_tui_account_picker::item_matches_filter(item, &self.filter)
-                    .then_some(idx)
+            .map(|item| {
+                format!(
+                    "{} {} {} {} {}",
+                    item.provider_id,
+                    item.provider_label,
+                    item.title,
+                    item.subtitle,
+                    crate::alphacode_tui_account_picker::action_kind_label(&item.command)
+                )
+                .to_lowercase()
             })
             .collect();
+        self.ordered = (0..self.items.len()).collect();
         let provider_order = self.provider_order();
-        self.filtered.sort_by(|left, right| {
-            let left_item = &self.items[*left];
-            let right_item = &self.items[*right];
-
+        self.ordered.sort_by(|left, right| {
+            let a = &self.items[*left];
+            let b = &self.items[*right];
             provider_order
-                .get(&left_item.provider_id)
-                .cmp(&provider_order.get(&right_item.provider_id))
-                .then_with(|| action_section(left_item).cmp(&action_section(right_item)))
-                .then_with(|| left_item.title.cmp(&right_item.title))
+                .get(&a.provider_id)
+                .cmp(&provider_order.get(&b.provider_id))
+                .then_with(|| action_section(a).cmp(&action_section(b)))
+                .then_with(|| a.title.cmp(&b.title))
                 .then_with(|| left.cmp(right))
         });
+    }
+
+    fn apply_filter(&mut self) {
+        let filter = self.filter.to_lowercase();
+        let needles: Vec<_> = filter.split_whitespace().collect();
+        self.filtered.clear();
+        self.filtered
+            .extend(self.ordered.iter().copied().filter(|idx| {
+                needles
+                    .iter()
+                    .all(|needle| self.search_text[*idx].contains(needle))
+            }));
         if self.selected >= self.filtered.len() {
             self.selected = self.filtered.len().saturating_sub(1);
         }
@@ -435,6 +478,10 @@ impl AccountPicker {
     }
 
     pub fn render(&mut self, frame: &mut Frame) {
+        if self.file_browser.is_some() {
+            self.render_file_browser(frame);
+            return;
+        }
         let area = centered_rect(OVERLAY_PERCENT_X, OVERLAY_PERCENT_Y, frame.area());
 
         let block = Block::default()

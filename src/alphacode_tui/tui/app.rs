@@ -1407,6 +1407,7 @@ pub struct App {
     // Remote rewind/undo request waiting for the server's replacement History payload.
     pending_remote_rewind_notice: Option<PendingRemoteRewindNotice>,
     pending_session_copy: Option<commands_copy::PendingSessionCopy>,
+    pending_add: Option<commands_add::PendingAdd>,
     clipboard_copy_job: Option<commands_copy::ClipboardCopyJob>,
     // History-recovery watchdog for the "stuck on loading session…" bug. When a
     // remote (re)connect never receives the bootstrap `History` event, every

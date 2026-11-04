@@ -13,10 +13,8 @@ use std::{
 };
 use tokio::time::{Instant, Sleep};
 
-const TYPE_SETTLE: Duration = Duration::from_millis(8);
 const ENTER_SETTLE: Duration = Duration::from_millis(35);
 const PASTE_SETTLE: Duration = Duration::from_millis(40);
-const PASTE_BYTES: usize = 64;
 const MAX_CHUNK_BYTES: usize = 64 * 1024;
 const MAX_EVENTS_PER_POLL: usize = 4096;
 
@@ -106,10 +104,10 @@ impl<S> CoalescedEvents<S> {
             }
             // A short first line is sufficient: never let its Enter escape
             // merely because it did not meet a byte-count heuristic.
-            if self.saw_enter
-                || (character == '\n' && !self.text.is_empty())
-                || self.text.len() + character.len_utf8() >= PASTE_BYTES
-            {
+            // Text followed by Enter is ordinary submission, regardless of
+            // length or typing speed. Only input *after* that Enter provides
+            // evidence of an unframed multiline paste.
+            if self.saw_enter {
                 self.paste = true;
                 self.original.clear();
             }
@@ -118,18 +116,18 @@ impl<S> CoalescedEvents<S> {
             if !self.paste {
                 self.original.push(event);
             }
-            let settle = if self.paste {
-                PASTE_SETTLE
-            } else if self.saw_enter {
-                ENTER_SETTLE
-            } else {
-                TYPE_SETTLE
-            };
-            let deadline = Instant::now() + settle;
-            if let Some(timer) = &mut self.timer {
-                timer.as_mut().reset(deadline);
-            } else {
-                self.timer = Some(Box::pin(tokio::time::sleep_until(deadline)));
+            if self.paste || self.saw_enter {
+                let settle = if self.paste {
+                    PASTE_SETTLE
+                } else {
+                    ENTER_SETTLE
+                };
+                let deadline = Instant::now() + settle;
+                if let Some(timer) = &mut self.timer {
+                    timer.as_mut().reset(deadline);
+                } else {
+                    self.timer = Some(Box::pin(tokio::time::sleep_until(deadline)));
+                }
             }
             if self.text.len() >= MAX_CHUNK_BYTES {
                 self.flush();
@@ -166,7 +164,11 @@ impl<S: Stream<Item = io::Result<Event>> + Unpin> Stream for CoalescedEvents<S> 
                     this.flush();
                 }
                 Poll::Pending => {
-                    if this
+                    if !this.paste && !this.saw_enter {
+                        // Deliver normal keystrokes immediately; never impose
+                        // a debounce delay on typing or depend on its speed.
+                        this.flush();
+                    } else if this
                         .timer
                         .as_mut()
                         .is_some_and(|timer| timer.as_mut().poll(cx).is_ready())
@@ -181,6 +183,12 @@ impl<S: Stream<Item = io::Result<Event>> + Unpin> Stream for CoalescedEvents<S> 
                         .map_or(Poll::Pending, |event| Poll::Ready(Some(event)));
                 }
             }
+            if let Some(event) = this.ready.pop_front() {
+                return Poll::Ready(Some(event));
+            }
+        }
+        if !this.paste && !this.saw_enter {
+            this.flush();
             if let Some(event) = this.ready.pop_front() {
                 return Poll::Ready(Some(event));
             }
@@ -232,12 +240,19 @@ mod tests {
         }
     }
     #[tokio::test]
-    async fn a_single_pasted_line_with_a_trailing_enter_does_not_submit() {
-        let mut stream = CoalescedEvents::from_source(futures::stream::iter(keys("hello\n")));
-        assert_eq!(
-            stream.next().await.unwrap().unwrap(),
-            Event::Paste("hello\n".into())
-        );
+    async fn buffered_questions_of_any_length_remain_normal_keys() {
+        for text in [
+            "hello?\n".to_string(),
+            "Why is this a normal question with more than sixty four bytes of ordinary text?\n"
+                .into(),
+            "世界? ".repeat(10_000) + "\n",
+        ] {
+            let mut stream = CoalescedEvents::from_source(futures::stream::iter(keys(&text)));
+            for expected in keys(&text) {
+                assert_eq!(stream.next().await.unwrap().unwrap(), expected.unwrap());
+            }
+            assert!(stream.next().await.is_none());
+        }
     }
     #[tokio::test]
     async fn large_native_paste_is_bounded_and_preserves_every_byte() {

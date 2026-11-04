@@ -80,6 +80,7 @@ pub(super) fn handle_tick(app: &mut App) -> bool {
     // happen to trigger (~4fps in practice).
     let mut needs_redraw = crate::alphacode_tui::tui::periodic_redraw_required(app);
     needs_redraw |= super::commands_copy::poll_session_copy(app);
+    needs_redraw |= super::commands_add::poll_add(app);
     needs_redraw |= app.flush_pending_resize_redraw();
     app.maybe_capture_runtime_memory_heartbeat();
     app.maybe_release_idle_heap();
@@ -293,6 +294,7 @@ pub(super) fn handle_bus_event(
 }
 
 pub(super) fn handle_ui_activity(app: &mut App, activity: UiActivity) -> bool {
+    super::commands_add::poll_add(app);
     let Some(session_id) = app.active_client_session_id() else {
         return false;
     };
