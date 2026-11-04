@@ -189,6 +189,11 @@ pub enum ErrorCategory {
     ToolError,
     McpError,
     RateLimited,
+    ToolTimeout,          // a tool call exceeded its per-call timeout
+    CompactionFailed,     // hard or background compaction could not complete
+    ContextLimitExceeded, // provider rejected request due to context length
+    PayloadTooLarge,      // HTTP 413 / request body too large (oversized images)
+    WatchdogStall,        // watchdog detected a process-wide stall
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -565,6 +570,11 @@ pub struct ErrorCounts {
     pub tool_error: u32,
     pub mcp_error: u32,
     pub rate_limited: u32,
+    pub tool_timeout: u32,
+    pub compaction_failed: u32,
+    pub context_limit_exceeded: u32,
+    pub payload_too_large: u32,
+    pub watchdog_stall: u32,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

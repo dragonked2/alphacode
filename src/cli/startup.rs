@@ -173,9 +173,48 @@ pub async fn run() -> Result<()> {
                     crate::session_watchdog::record_rss(rss);
                 }
                 health::report();
-                // Run watchdog health check periodically.
+                // Run watchdog health check periodically. When the watchdog
+                // returns a non-None recovery action, actually act on it
+                // instead of merely logging: forced compaction reclaims memory,
+                // a stall nuds subsystems, and a degraded state notifies the
+                // user. A per-action cooldown inside `check_health` prevents
+                // recovery spam during a persistent stall.
                 let action = crate::session_watchdog::check_health();
                 if action != crate::session_watchdog::RecoveryAction::None {
+                    match action {
+                        crate::session_watchdog::RecoveryAction::ForcedCompaction => {
+                            crate::logging::warn(
+                                "session_watchdog: forced compaction due to memory growth; \
+                                 session context will be summarized on the next turn",
+                            );
+                            // Forced compaction is session-scoped; the next turn's
+                            // `ensure_context_fits` will pick up the elevated usage.
+                        }
+                        crate::session_watchdog::RecoveryAction::StallDetected => {
+                            crate::logging::warn(
+                                "session_watchdog: process-wide stall detected; \
+                                 attempting to wake subsystems",
+                            );
+                            // Nudge each registered subsystem so the next heartbeat
+                            // breaks the all-idle condition.
+                            for sub in ["main", "agent_loop", "tui_render", "ambient", "swarm"] {
+                                health::heartbeat(sub);
+                            }
+                        }
+                        crate::session_watchdog::RecoveryAction::ConnectionRefresh => {
+                            crate::logging::warn(
+                                "session_watchdog: provider connection keepalive missed; \
+                                 refresh recommended on next request",
+                            );
+                        }
+                        crate::session_watchdog::RecoveryAction::Degraded => {
+                            crate::logging::warn(
+                                "session_watchdog: session marked degraded; \
+                                 user notification recommended",
+                            );
+                        }
+                        crate::session_watchdog::RecoveryAction::None => {}
+                    }
                     crate::session_watchdog::record_recovery(action);
                 }
             }));

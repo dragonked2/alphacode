@@ -123,6 +123,50 @@ pub(crate) fn fallback_request_from_chat_rejection(
     Some(built)
 }
 
+/// Gateways can select a different upstream resource on every request. Native
+/// Responses item IDs and encrypted state are bound to their issuing resource;
+/// replaying them can fail even for a two-message conversation. Keep visible
+/// summaries and tool call/result pairs, but never send opaque history through
+/// this fallback. The native OpenAI builder and saved transcript stay unchanged.
+fn portable_responses_input(messages: &[Message]) -> Vec<Value> {
+    crate::alphacode_base::provider::openai_request::build_responses_input(messages)
+        .into_iter()
+        .filter_map(|mut item| match item["type"].as_str() {
+            Some("reasoning") => {
+                let summary = item["summary"]
+                    .as_array()?
+                    .iter()
+                    .filter_map(|part| part["text"].as_str())
+                    .filter(|text| !text.trim().is_empty())
+                    .collect::<Vec<_>>()
+                    .join("\n");
+                if summary.is_empty() {
+                    return None;
+                }
+                Some(serde_json::json!({
+                    "type": "message",
+                    "role": "assistant",
+                    "content": [{"type": "output_text", "text": summary}],
+                }))
+            }
+            Some("compaction") => Some(serde_json::json!({
+                "type": "message",
+                "role": "user",
+                "content": [{
+                    "type": "input_text",
+                    "text": "[Provider-native compaction state cannot be replayed across gateway resources. Earlier compacted details may be unavailable; use the visible conversation and session search to recover exact prior details.]",
+                }],
+            })),
+            _ => {
+                if let Some(object) = item.as_object_mut() {
+                    object.remove("id");
+                }
+                Some(item)
+            }
+        })
+        .collect()
+}
+
 /// Convert the chat-completions body into an OpenAI Responses API body.
 ///
 /// Mirrors the native OpenAI runtime's `build_response_request` payload shape
@@ -135,8 +179,7 @@ pub(crate) fn build_responses_request(
 ) -> Option<Value> {
     let model = chat_request.get("model")?.as_str()?.to_string();
 
-    let input =
-        crate::alphacode_base::provider::openai_request::build_responses_input(&fallback.messages);
+    let input = portable_responses_input(&fallback.messages);
     let api_tools = crate::alphacode_base::provider::openai_request::build_tools(&fallback.tools);
 
     let mut request = serde_json::json!({
@@ -148,10 +191,6 @@ pub(crate) fn build_responses_request(
         "parallel_tool_calls": false,
         "stream": true,
         "store": false,
-        // Replay reasoning state across turns the same way the native OpenAI
-        // runtime does; `build_responses_input` emits reasoning items with
-        // `encrypted_content` when the conversation carries them.
-        "include": ["reasoning.encrypted_content"],
     });
 
     // Carry the reasoning effort the chat request was built with
@@ -239,6 +278,117 @@ mod tests {
             reqwest::StatusCode::BAD_REQUEST,
             "{\"error\":{\"message\":\"/v1/chat/completions and /v1/responses both require keys\"}}"
         ));
+    }
+
+    #[test]
+    fn regression_1094_gateway_history_is_portable_without_losing_tool_results() {
+        let fallback = ctx(vec![
+            Message::user("hi"),
+            Message {
+                role: Role::Assistant,
+                content: vec![
+                    ContentBlock::OpenAIReasoning {
+                        id: "rs_other_resource".into(),
+                        summary: vec!["Inspect the release state first.".into()],
+                        encrypted_content: Some("opaque-resource-bound-state".into()),
+                        status: Some("completed".into()),
+                    },
+                    ContentBlock::Text {
+                        text: "I will inspect the release.".into(),
+                        cache_control: None,
+                    },
+                    ContentBlock::ToolUse {
+                        id: "call_1".into(),
+                        name: "ls".into(),
+                        input: serde_json::json!({"path": "."}),
+                        thought_signature: None,
+                    },
+                ],
+                timestamp: None,
+                tool_duration_ms: None,
+            },
+            Message {
+                role: Role::User,
+                content: vec![ContentBlock::ToolResult {
+                    tool_use_id: "call_1".into(),
+                    content: "Cargo.toml".into(),
+                    is_error: None,
+                }],
+                timestamp: None,
+                tool_duration_ms: None,
+            },
+        ]);
+        let built = build_responses_request(&fallback, &chat_request(Some("high"))).unwrap();
+        let input = built["input"].as_array().unwrap();
+        assert!(input.iter().all(|item| item["type"] != "reasoning"));
+        assert!(input.iter().all(|item| item.get("id").is_none()));
+        assert!(built.get("include").is_none());
+        let body = built.to_string();
+        assert!(!body.contains("opaque-resource-bound-state"));
+        assert!(!body.contains("rs_other_resource"));
+        assert!(body.contains("Inspect the release state first."));
+        assert!(body.contains("I will inspect the release."));
+        assert!(
+            input
+                .iter()
+                .any(|item| item["type"] == "function_call" && item["call_id"] == "call_1")
+        );
+        assert!(
+            input
+                .iter()
+                .any(|item| item["type"] == "function_call_output"
+                    && item["call_id"] == "call_1"
+                    && item["output"] == "Cargo.toml")
+        );
+        assert!(
+            matches!(
+                &fallback.messages[1].content[0],
+                ContentBlock::OpenAIReasoning {
+                    encrypted_content: Some(_),
+                    ..
+                }
+            ),
+            "serialization must not mutate the saved transcript"
+        );
+        let native = crate::alphacode_base::provider::openai_request::build_responses_input(
+            &fallback.messages,
+        );
+        assert!(native.iter().any(|item| item["type"] == "reasoning"
+            && item["id"] == "rs_other_resource"
+            && item["encrypted_content"] == "opaque-resource-bound-state"));
+    }
+
+    #[test]
+    fn regression_1094_gateway_opaque_only_history_has_explicit_compaction_fallback() {
+        let fallback = ctx(vec![
+            Message {
+                role: Role::User,
+                content: vec![ContentBlock::OpenAICompaction {
+                    encrypted_content: "opaque-compaction-state".into(),
+                }],
+                timestamp: None,
+                tool_duration_ms: None,
+            },
+            Message {
+                role: Role::Assistant,
+                content: vec![ContentBlock::OpenAIReasoning {
+                    id: "rs_hidden".into(),
+                    summary: vec![],
+                    encrypted_content: Some("opaque-reasoning-state".into()),
+                    status: None,
+                }],
+                timestamp: None,
+                tool_duration_ms: None,
+            },
+            Message::user("Continue the release."),
+        ]);
+        let built = build_responses_request(&fallback, &chat_request(None)).unwrap();
+        let body = built.to_string();
+        assert!(!body.contains("encrypted_content"));
+        assert!(!body.contains("opaque-compaction-state"));
+        assert!(!body.contains("rs_hidden"));
+        assert!(body.contains("Earlier compacted details may be unavailable"));
+        assert!(body.contains("Continue the release."));
     }
 
     #[test]

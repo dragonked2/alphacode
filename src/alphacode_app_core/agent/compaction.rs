@@ -88,23 +88,7 @@ impl Agent {
     }
 
     fn is_context_limit_error(error: &str) -> bool {
-        let lower = error.to_lowercase();
-        lower.contains("context length")
-            || lower.contains("context_length")
-            || lower.contains("context_window")
-            || lower.contains("context window")
-            || lower.contains("maximum context")
-            || lower.contains("max context")
-            || lower.contains("request exceeds context")
-            || lower.contains("context_estimate")
-            || lower.contains("token limit")
-            || lower.contains("too many tokens")
-            || lower.contains("prompt is too long")
-            || lower.contains("input is too long")
-            || lower.contains("request too large")
-            || lower.contains("length limit")
-            || lower.contains("maximum tokens")
-            || (lower.contains("exceeded") && lower.contains("tokens"))
+        crate::alphacode_provider_core::error_classification::is_context_limit_error(error)
     }
 
     /// Best-effort emergency recovery after a context-limit error.
@@ -402,6 +386,18 @@ impl Agent {
 #[cfg(test)]
 mod tests {
     use super::Agent;
+
+    #[test]
+    fn regression_1094_provider_diagnostics_do_not_trigger_compaction() {
+        let error = "OpenAI Responses request failed\n  endpoint: https://agentrouter.org/v1/responses\n  model: gpt-6-astra\n  context_estimate: ~11780 tokens\n  status: 400 Bad Request\n  response: {\"error\":{\"message\":\"The requested item was created under a different OpenAI resource. Use the same resource that created the item to access it.\",\"type\":\"invalid_request_error\"}}\nHint: The prompt may exceed this model's context window — try /compact.";
+        assert!(!Agent::is_context_limit_error(error));
+        assert!(!Agent::is_context_limit_error(
+            "Failed to send request\n  context_estimate: ~3000 tokens\nconnection refused"
+        ));
+        assert!(!Agent::is_context_limit_error(
+            "max_output_tokens exceeds the output token limit"
+        ));
+    }
 
     #[test]
     fn recognizes_openai_compatible_preflight_context_errors() {

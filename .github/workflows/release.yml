@@ -358,7 +358,7 @@ jobs:
           tar -xzf "${ARCHIVE_BASE}.tar.gz" -C "$TMP_DIR"
           BIN="$(find "$TMP_DIR" -maxdepth 3 -type f -name alphacode -print -quit)"
           test -n "$BIN"
-          lipo -verify_arch arm64 "$BIN"
+          lipo "$BIN" -verify_arch arm64
           file "$BIN"
           # An Intel host cannot execute ARM64. Check the actual packaged
           # binary's embedded version and revision without claiming a launch.

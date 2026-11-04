@@ -2681,4 +2681,45 @@ mod tests {
         }
         assert_eq!(parsed.reference_files.len(), expected_refs.len());
     }
+
+    #[test]
+    fn bundled_modern_2026_surfaces_skill_parses_and_registers() {
+        use crate::alphacode_base::bundled_skills::BUNDLED_SKILLS;
+
+        let modern = BUNDLED_SKILLS
+            .iter()
+            .find(|s| s.name == "bugbounty")
+            .expect("`bugbounty` must be in BUNDLED_SKILLS");
+        assert!(
+            modern
+                .references
+                .iter()
+                .any(|(name, _)| *name == "modern-2026-surfaces"),
+            "`modern-2026-surfaces` must be embedded as a bugbounty reference"
+        );
+        let modern_ref = modern
+            .references
+            .iter()
+            .find(|(name, _)| *name == "modern-2026-surfaces")
+            .expect("modern-2026-surfaces reference must exist");
+        assert!(
+            !modern_ref.1.trim().is_empty(),
+            "modern-2026-surfaces body must not be empty"
+        );
+        assert!(
+            modern_ref.1.contains("real-world-validation"),
+            "modern-2026-surfaces must reference the mandatory validation contract"
+        );
+        assert!(
+            modern_ref.1.contains("MCP")
+                && modern_ref.1.contains("OAuth")
+                && modern_ref.1.contains("false-positive"),
+            "modern-2026-surfaces body must carry the modern-surface methodology text"
+        );
+
+        let parsed = SkillRegistry::parse_embedded_skill("modern-2026-surfaces", modern_ref.1, &[])
+            .expect("modern-2026-surfaces SKILL.md must parse cleanly");
+        assert_eq!(parsed.name, "modern-2026-surfaces");
+        assert!(!parsed.description.is_empty());
+    }
 }

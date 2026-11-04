@@ -247,63 +247,12 @@ pub(super) fn debug_response_path() -> PathBuf {
     crate::storage::runtime_dir().join("alphacode_debug_response")
 }
 
-/// Whether `error` is a provider rejection of the request's **output**
-/// length, rather than an overflow of the input/context window.
-///
-/// These must be told apart. Compaction shrinks the *input*; it cannot raise
-/// the cap on how many tokens the model is allowed to *emit*. Treating an
-/// output-cap error as a context overflow makes the app compact and retry the
-/// identical request, which fails the same way, while silently discarding a
-/// message — the user sees "Context compacted (emergency) — older messages
-/// dropped" for a problem that has nothing to do with context size.
-///
-/// Matched on purpose before the input-side phrases, because provider wording
-/// overlaps: OpenAI's `max_tokens` error reads
-/// "This model's maximum context length is ..." in some deployments and
-/// "max_tokens is greater than the maximum number of tokens allowed" in
-/// others, so the output signal has to win.
-pub(super) fn is_output_token_limit_error(error: &str) -> bool {
-    let lower = error.to_lowercase();
-    // An explicit `max_tokens` / `max_completion_tokens` parameter name is an
-    // output cap, never an input overflow.
-    lower.contains("max_tokens")
-        || lower.contains("max_completion_tokens")
-        || lower.contains("max output tokens")
-        || lower.contains("output token limit")
-        || lower.contains("output length")
-        || lower.contains("too many output tokens")
-        || lower.contains("response too long")
-        || lower.contains("finish_reason")
-        // Provider phrasings for an output-length cap that do not name
-        // `max_tokens` directly (e.g. "This model's maximum tokens for
-        // completion is 16384").
-        || lower.contains("tokens for completion")
-        || lower.contains("completion is")
-        || lower.contains("tokens allowed")
-}
-
 /// Whether `error` says the input/context window overflowed.
 pub(super) fn is_context_limit_error(error: &str) -> bool {
     if crate::provider::openai_request::is_openai_encrypted_content_too_large_error(error) {
         return true;
     }
-    // An output cap is not a context overflow; see the doc comment above.
-    if is_output_token_limit_error(error) {
-        return false;
-    }
-    let lower = error.to_lowercase();
-    lower.contains("context length")
-        || lower.contains("context window")
-        || lower.contains("maximum context")
-        || lower.contains("max context")
-        || lower.contains("token limit")
-        || lower.contains("too many tokens")
-        || lower.contains("prompt is too long")
-        || lower.contains("input is too long")
-        || lower.contains("request too large")
-        || lower.contains("length limit")
-        || lower.contains("maximum tokens")
-        || (lower.contains("exceeded") && lower.contains("tokens"))
+    crate::alphacode_provider_core::error_classification::is_context_limit_error(error)
 }
 
 /// Whether `error` is a provider HTTP 413 "request too large" / payload-size

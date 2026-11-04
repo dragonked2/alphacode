@@ -741,18 +741,10 @@ pub(crate) fn estimate_chat_request_breakdown(
     (system_tokens, conversation_tokens, tools_tokens)
 }
 
-/// True when an error body looks like a context-window overflow
-/// (llama.cpp `exceed_context_size_error`, OpenAI `context_length_exceeded`,
-/// or explicit `n_ctx` mentions). Capability-based string match, no secrets.
+/// Require an input-overflow signal before learning a smaller context window.
+/// An ordinary HTTP 400 or diagnostic `n_ctx` field is not such a signal.
 pub(crate) fn response_body_reports_context_overflow(body: &str) -> bool {
-    let lower = body.to_ascii_lowercase();
-    lower.contains("exceed_context_size")
-        || lower.contains("exceeds the available context")
-        || lower.contains("context_length_exceeded")
-        || lower.contains("context length")
-        || lower.contains("n_ctx")
-        || lower.contains("maximum context")
-        || (lower.contains("400") && lower.contains("context"))
+    crate::alphacode_provider_core::error_classification::is_context_limit_error(body)
 }
 
 /// Process-wide map of server-reported context windows, keyed by

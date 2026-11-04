@@ -234,6 +234,10 @@ pub(super) const BUNDLED_SKILLS: &[BundledSkill] = &[
                 include_str!("bundled_skills/bugbounty/llm-injection/SKILL.md"),
             ),
             (
+                "modern-2026-surfaces",
+                include_str!("bundled_skills/bugbounty/modern-2026-surfaces/SKILL.md"),
+            ),
+            (
                 "hunt-subdomain-takeover",
                 include_str!("bundled_skills/bugbounty/hunt-subdomain-takeover/SKILL.md"),
             ),

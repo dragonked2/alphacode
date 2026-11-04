@@ -1,4 +1,11 @@
 #[test]
+fn regression_1094_tui_ignores_context_diagnostics_on_provider_errors() {
+    assert!(!is_context_limit_error(
+        "OpenAI Responses request failed\n  context_estimate: ~11780 tokens\n  status: 400 Bad Request\n  response: The requested item was created under a different OpenAI resource. Use the same resource that created the item to access it.\nHint: The prompt may exceed this model's context window — try /compact."
+    ));
+}
+
+#[test]
 fn test_context_limit_error_detection() {
     assert!(is_context_limit_error(
         "OpenAI API error 400: This model's maximum context length is 200000 tokens"
@@ -1061,11 +1068,18 @@ fn test_pinned_top_diagram_layout_allocates_top_pane() {
     let diagram_bottom = diagram.y + diagram.height;
     assert!(messages.y >= diagram_bottom, "transcript overlaps diagram");
     let expected_banner_rows = crate::alphacode_brand::WORDMARK_BLOCK.len() as u16 + 1;
-    assert_eq!(messages.y - diagram_bottom, expected_banner_rows,
-        "only the pinned wordmark should separate the diagram and transcript");
+    assert_eq!(
+        messages.y - diagram_bottom,
+        expected_banner_rows,
+        "only the pinned wordmark should separate the diagram and transcript"
+    );
     let rendered = buffer_to_text(&terminal);
-    let banner = rendered.lines().skip(usize::from(diagram_bottom))
-        .take(usize::from(expected_banner_rows)).collect::<Vec<_>>().join("\n");
+    let banner = rendered
+        .lines()
+        .skip(usize::from(diagram_bottom))
+        .take(usize::from(expected_banner_rows))
+        .collect::<Vec<_>>()
+        .join("\n");
     assert!(banner.contains(crate::alphacode_brand::WORDMARK_BLOCK[1].trim()));
     assert!(
         frame

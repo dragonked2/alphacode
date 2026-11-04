@@ -96,7 +96,7 @@ fn alphax_free_http_error(status: reqwest::StatusCode, context_overflow: bool) -
             "The prompt is too long for this model's context window. Compact the session with /compact, then retry."
         }
         400 => {
-            "Alphax Free could not accept this request. Try /compact or switch model with /model."
+            "Alphax Free could not accept this request. Check the provider setup with /doctor or switch model with /model."
         }
         404 => {
             "Alphax Free could not find an available route. Try again shortly or switch model with /model."
@@ -146,10 +146,7 @@ fn http_status_troubleshooting_hint(
         return local_endpoint_troubleshooting_hint(api_base, model).to_string();
     }
     match status.as_u16() {
-        400 => format!(
-            "Hint: the provider rejected the request (HTTP 400). The prompt (~{} tokens) may exceed this model's context window, or a request field is unsupported — try /compact to shrink context, or switch model (/model). The provider's exact reason is in the response body above.",
-            request_estimate
-        ),
+        400 => "Hint: the provider rejected the request payload (HTTP 400). See the provider's exact reason above; check endpoint/model configuration with /doctor or /model. Retrying an unchanged payload will not repair an invalid request.".to_string(),
         401 | 403 => format!(
             "Hint: authentication failed (HTTP {}). Run /login or check the API key for this provider.",
             status.as_u16()
@@ -487,7 +484,13 @@ async fn stream_response(
             redact_alphax_gateway_brand(&api_base, &upstream_body)
         };
         let mut hint =
-            http_status_troubleshooting_hint(status, &api_base, &model, request_estimate);
+            if crate::alphacode_provider_core::error_classification::is_responses_resource_mismatch(
+                &upstream_body,
+            ) {
+                "Hint: Responses history was rejected because it belongs to a different upstream resource. Gateway requests use portable history; if this persists, use a stable upstream route or switch endpoint/model (/model). Compacting does not repair a resource mismatch.".to_string()
+            } else {
+                http_status_troubleshooting_hint(status, &api_base, &model, request_estimate)
+            };
         if context_overflow {
             // The server just told us its real context window. Persist it
             // so the pre-flight guard and the compaction budget stop
@@ -738,7 +741,13 @@ async fn stream_via_responses_endpoint(
             redact_alphax_gateway_brand(&api_base, &upstream_body)
         };
         let mut hint =
-            http_status_troubleshooting_hint(status, &api_base, &model, request_estimate);
+            if crate::alphacode_provider_core::error_classification::is_responses_resource_mismatch(
+                &upstream_body,
+            ) {
+                "Hint: Responses history was rejected because it belongs to a different upstream resource. Gateway requests use portable history; if this persists, use a stable upstream route or switch endpoint/model (/model). Compacting does not repair a resource mismatch.".to_string()
+            } else {
+                http_status_troubleshooting_hint(status, &api_base, &model, request_estimate)
+            };
         if context_overflow {
             let learned = super::parse_reported_context_tokens(&upstream_body);
             if let Some(limit) = learned {
@@ -995,7 +1004,11 @@ mod tests {
             "HTTP 400 must not suggest a network fault, got: {hint}"
         );
         assert!(hint.contains("HTTP 400"), "hint names the status: {hint}");
-        assert!(hint.contains("/compact"), "hint suggests shrinking context");
+        assert!(
+            !hint.contains("/compact"),
+            "a generic 400 must not recommend dropping context"
+        );
+        assert!(!super::super::response_body_reports_context_overflow(&hint));
 
         let auth = http_status_troubleshooting_hint(StatusCode::UNAUTHORIZED, &remote, "m", 10);
         assert!(auth.contains("/login"), "401 points at /login: {auth}");

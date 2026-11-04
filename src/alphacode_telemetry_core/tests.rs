@@ -446,6 +446,11 @@ fn test_session_end_event_serialization() {
             tool_error: 1,
             mcp_error: 0,
             rate_limited: 0,
+            tool_timeout: 0,
+            compaction_failed: 0,
+            context_limit_exceeded: 0,
+            payload_too_large: 0,
+            watchdog_stall: 0,
         },
     };
     let json = serde_json::to_value(&event).unwrap();

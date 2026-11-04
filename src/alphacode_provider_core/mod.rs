@@ -3,6 +3,7 @@ pub mod attempt_tracker;
 pub mod auth_mode;
 pub mod capability_validation;
 pub mod catalog_refresh;
+pub mod error_classification;
 pub mod failover;
 pub mod fallback_pick;
 pub mod fingerprint;

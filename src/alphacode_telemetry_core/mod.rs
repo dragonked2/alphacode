@@ -232,6 +232,11 @@ pub(crate) struct SessionTelemetry {
     error_tool_error: u32,
     error_mcp_error: u32,
     error_rate_limited: u32,
+    error_tool_timeout: u32,
+    error_compaction_failed: u32,
+    error_context_limit_exceeded: u32,
+    error_payload_too_large: u32,
+    error_watchdog_stall: u32,
     provider_switches: u32,
     model_switches: u32,
 }
@@ -1151,6 +1156,11 @@ fn current_error_counts(state: &SessionTelemetry) -> ErrorCounts {
         tool_error: state.error_tool_error,
         mcp_error: state.error_mcp_error,
         rate_limited: state.error_rate_limited,
+        tool_timeout: state.error_tool_timeout,
+        compaction_failed: state.error_compaction_failed,
+        context_limit_exceeded: state.error_context_limit_exceeded,
+        payload_too_large: state.error_payload_too_large,
+        watchdog_stall: state.error_watchdog_stall,
     }
 }
 
@@ -1160,6 +1170,11 @@ fn has_any_errors(errors: &ErrorCounts) -> bool {
         || errors.tool_error > 0
         || errors.mcp_error > 0
         || errors.rate_limited > 0
+        || errors.tool_timeout > 0
+        || errors.compaction_failed > 0
+        || errors.context_limit_exceeded > 0
+        || errors.payload_too_large > 0
+        || errors.watchdog_stall > 0
 }
 
 fn session_has_meaningful_activity(state: &SessionTelemetry, errors: &ErrorCounts) -> bool {
@@ -1746,6 +1761,11 @@ fn begin_session_with_mode(
         error_tool_error: 0,
         error_mcp_error: 0,
         error_rate_limited: 0,
+        error_tool_timeout: 0,
+        error_compaction_failed: 0,
+        error_context_limit_exceeded: 0,
+        error_payload_too_large: 0,
+        error_watchdog_stall: 0,
         provider_switches: 0,
         model_switches: 0,
     };
@@ -1969,6 +1989,21 @@ pub(crate) fn record_error_in_state(state: &mut SessionTelemetry, category: Erro
         }
         ErrorCategory::RateLimited => {
             capped_error_increment(&mut state.error_rate_limited);
+        }
+        ErrorCategory::ToolTimeout => {
+            capped_error_increment(&mut state.error_tool_timeout);
+        }
+        ErrorCategory::CompactionFailed => {
+            capped_error_increment(&mut state.error_compaction_failed);
+        }
+        ErrorCategory::ContextLimitExceeded => {
+            capped_error_increment(&mut state.error_context_limit_exceeded);
+        }
+        ErrorCategory::PayloadTooLarge => {
+            capped_error_increment(&mut state.error_payload_too_large);
+        }
+        ErrorCategory::WatchdogStall => {
+            capped_error_increment(&mut state.error_watchdog_stall);
         }
     }
 }

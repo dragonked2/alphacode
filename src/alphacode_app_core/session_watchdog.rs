@@ -27,6 +27,11 @@ use std::time::{Duration, Instant};
 /// the session stalled.
 const STALL_TIMEOUT_SECS: u64 = 300; // 5 minutes
 
+/// Minimum wall-clock interval between watchdog recovery actions. Prevents
+/// the watchdog from firing recovery every health-report interval (1 min)
+/// when a stall persists.
+const WATCHDOG_RECOVERY_COOLDOWN_SECS: u64 = 300; // 5 minutes
+
 /// Memory growth monitoring window.
 const MEMORY_WINDOW_SECS: u64 = 1800; // 30 minutes
 
@@ -102,9 +107,21 @@ pub fn record_rss(rss_bytes: u64) {
 ///
 /// This is the main watchdog check. It is called by the health reporter thread
 /// once per [`crate::alphacode_app_core::health::REPORT_INTERVAL`].
+///
+/// A per-action cooldown ([`WATCHDOG_RECOVERY_COOLDOWN_SECS`]) prevents the
+/// watchdog from firing recovery every report interval when a stall persists;
+/// the caller (`cli/startup.rs`) is responsible for acting on the returned
+/// action, not just logging it.
 pub fn check_health() -> RecoveryAction {
     let s = state();
     let now = Instant::now();
+
+    // Respect recovery cooldown: if we just performed a recovery, don't
+    // escalate again until the cooldown elapses.
+    let last_recovery = *s.last_recovery.lock().unwrap_or_else(|p| p.into_inner());
+    if now.duration_since(last_recovery) < Duration::from_secs(WATCHDOG_RECOVERY_COOLDOWN_SECS) {
+        return RecoveryAction::None;
+    }
 
     // Check for memory leak (monotonic RSS growth).
     if let Some(action) = check_memory_trend(s, now) {

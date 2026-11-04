@@ -44,6 +44,13 @@ pub use crate::alphacode_compaction_core::{
 const HARD_THRESHOLD_PENDING_WAIT_MS: u64 = 15_000;
 const HARD_THRESHOLD_PENDING_POLL_MS: u64 = 50;
 
+/// Minimum wall-clock interval between two compaction attempts.
+///
+/// Prevents back-to-back ("triple") emergency compactions that waste context
+/// and tokens without meaningfully reducing usage. The hard-threshold (>=95%)
+/// emergency path bypasses this cooldown.
+const COMPACTION_COOLDOWN_MS: u64 = 30_000;
+
 /// Compaction budget used when the provider reports the "unknown model"
 /// sentinel instead of a real context window. Large enough that it never causes
 /// needless compaction for models with genuinely big windows, small enough that
@@ -185,6 +192,9 @@ pub struct CompactionManager {
     /// Last compaction event (if any)
     last_compaction: Option<CompactionEvent>,
 
+    /// Wall-clock time of the last completed compaction (for cooldown gating).
+    last_compaction_at: Option<Instant>,
+
     // ── Mode & strategy ────────────────────────────────────────────────────
     /// Active compaction mode (set from config at construction)
     mode: crate::config::CompactionMode,
@@ -233,6 +243,7 @@ impl CompactionManager {
             prompt_overhead_tokens: None,
             observed_input_tokens: None,
             last_compaction: None,
+            last_compaction_at: None,
             mode,
             compaction_config: cfg,
             token_history: VecDeque::with_capacity(TOKEN_HISTORY_WINDOW + 1),
@@ -878,14 +889,26 @@ impl CompactionManager {
     }
 
     /// Best-effort current token count using the caller's messages.
+    ///
+    /// Uses `min(estimate, observed)` rather than `max(estimate, observed)`.
+    /// `max` made a stale/high provider-reported value act as a floor that kept
+    /// reported usage near 100% even after compaction reduced the real
+    /// char-based estimate, driving repeated back-to-back compactions.
+    /// `min` trusts the smaller number: if the provider genuinely reports fewer
+    /// tokens than our estimate we trust the provider; after compaction the
+    /// estimate drops and usage falls below threshold so compaction does not
+    /// re-fire immediately.
     pub fn effective_token_count_with(&self, all_messages: &[Message]) -> usize {
         let estimate = self.token_estimate_with(all_messages);
         let observed = self
             .observed_input_tokens
             .and_then(|tokens| usize::try_from(tokens).ok())
-            .filter(|&tokens| tokens <= self.token_budget)
-            .unwrap_or(0);
-        estimate.max(observed)
+            .filter(|&tokens| tokens <= self.token_budget);
+        match (observed, estimate == 0) {
+            (Some(o), true) => o,                // no estimate, trust provider
+            (Some(o), false) => estimate.min(o), // trust the smaller of the two
+            (None, _) => estimate,
+        }
     }
 
     /// Best-effort token count without message data (uses only observed tokens)
@@ -894,9 +917,12 @@ impl CompactionManager {
         let observed = self
             .observed_input_tokens
             .and_then(|tokens| usize::try_from(tokens).ok())
-            .filter(|&tokens| tokens <= self.token_budget)
-            .unwrap_or(0);
-        estimate.max(observed)
+            .filter(|&tokens| tokens <= self.token_budget);
+        match (observed, estimate == 0) {
+            (Some(o), true) => o,
+            (Some(o), false) => estimate.min(o),
+            (None, _) => estimate,
+        }
     }
 
     /// Get current context usage as percentage (using caller's messages)
@@ -1090,6 +1116,19 @@ impl CompactionManager {
         }
 
         let was_compacting = self.is_compacting();
+
+        // Cooldown gate: don't start a new background compaction if one just
+        // completed, unless we are at the hard threshold (emergency).
+        let usage = self.context_usage_with(all_messages);
+        if usage < CRITICAL_THRESHOLD && self.is_in_compaction_cooldown() {
+            crate::logging::info(&format!(
+                "[compaction] Skipping new compaction — in cooldown (last completed {:?} ago, threshold {}ms)",
+                self.last_compaction_at.map(|at| at.elapsed()),
+                COMPACTION_COOLDOWN_MS,
+            ));
+            return CompactionAction::None;
+        }
+
         self.maybe_start_compaction_with(all_messages, provider);
         let bg_started = !was_compacting && self.is_compacting();
 
@@ -1349,6 +1388,7 @@ impl CompactionManager {
                 // Reset cooldown counter so proactive/semantic modes don't
                 // fire again immediately after a successful compaction.
                 self.turns_since_last_compact = 0;
+                self.note_compaction_completed();
 
                 self.pending_cutoff = 0;
                 self.pending_trigger = None;
@@ -1419,6 +1459,23 @@ impl CompactionManager {
     /// Check if compaction is in progress
     pub fn is_compacting(&self) -> bool {
         self.pending_task.is_some()
+    }
+
+    /// Whether the cooldown since the last completed compaction has elapsed.
+    ///
+    /// Returns `false` (i.e. still cooling down) when a compaction finished
+    /// within [`COMPACTION_COOLDOWN_MS`]. Used to prevent back-to-back
+    /// emergency compactions. The hard-threshold emergency path bypasses this.
+    pub fn is_in_compaction_cooldown(&self) -> bool {
+        match self.last_compaction_at {
+            None => false,
+            Some(at) => at.elapsed() < std::time::Duration::from_millis(COMPACTION_COOLDOWN_MS),
+        }
+    }
+
+    /// Record that a compaction just completed, starting the cooldown window.
+    pub(super) fn note_compaction_completed(&mut self) {
+        self.last_compaction_at = Some(Instant::now());
     }
 
     /// Get the active compaction mode
@@ -1682,6 +1739,7 @@ impl CompactionManager {
                 .map(|summary| summary.text.len()),
             active_messages: Some(self.active_messages_count()),
         });
+        self.note_compaction_completed();
         self.log_compaction_outcome(CompactionOutcomeLog {
             trigger: "hard_compact",
             pre_tokens,
