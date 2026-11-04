@@ -271,6 +271,22 @@ pub fn expand(raw: &str, ctx: &RiskContext) -> PathBuf {
 /// check. Note this is intentionally *not* symlink-aware; see the crate docs on
 /// defense in depth.
 fn normalize(path: &Path) -> PathBuf {
+    // Windows canonicalize returns extended-length paths. Compare those with
+    // ordinary drive/UNC spellings under the same protected-target policy.
+    let text = path.to_string_lossy();
+    let ordinary;
+    let path = if let Some(unc) = text.strip_prefix(r"\\?\UNC\") {
+        ordinary = PathBuf::from(format!(r"\\{unc}"));
+        ordinary.as_path()
+    } else if let Some(local) = text
+        .strip_prefix(r"\\?\")
+        .or_else(|| text.strip_prefix("//?/"))
+    {
+        ordinary = PathBuf::from(local);
+        ordinary.as_path()
+    } else {
+        path
+    };
     let path_text = path.to_string_lossy();
     let windows_path;
     let path = if has_windows_drive_prefix(&path_text) {

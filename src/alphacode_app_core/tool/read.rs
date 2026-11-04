@@ -184,10 +184,6 @@ impl Tool for ReadTool {
                     "type": "integer",
                     "description": "0-based text line or directory entry offset. Do not combine with start_line/end_line."
                 },
-                "end_line": {
-                    "type": "integer",
-                    "description": "Inclusive 1-based end line for text files."
-                },
                 "limit": {
                     "type": "integer",
                     "description": "Max text lines (default 5000) or directory entries (capped at 1000)."

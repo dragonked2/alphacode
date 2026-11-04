@@ -493,3 +493,27 @@ fn catastrophic_tier_is_never_downgraded() {
         );
     }
 }
+
+#[test]
+fn extended_windows_paths_retain_destructive_target_protection() {
+    let context = RiskContext {
+        working_dir: Some(std::path::PathBuf::from(r"C:\work\project")),
+        home_dir: Some(std::path::PathBuf::from(r"C:\Users\tester")),
+    };
+    for path in [
+        r"\\?\C:\",
+        r"\\?\C:\Windows\System32",
+        r"\\?\C:\Users\tester",
+        r"\\?\C:\Users\tester\.ssh\id_ed25519",
+        "//?/C:/Windows",
+    ] {
+        assert!(
+            super::is_catastrophic_target(std::path::Path::new(path), &context),
+            "{path}"
+        );
+    }
+    assert!(!super::is_catastrophic_target(
+        std::path::Path::new(r"\\?\C:\work\project\src\lib.rs"),
+        &context
+    ));
+}

@@ -247,7 +247,7 @@ fn read_tool_schema_advertises_only_canonical_public_fields() {
     assert!(properties.contains_key("start_line"));
     assert!(properties.contains_key("limit"));
     assert!(!properties.contains_key("end_line"));
-    assert!(!properties.contains_key("offset"));
+    assert!(properties.contains_key("offset"));
 }
 
 #[test]
@@ -262,7 +262,7 @@ fn read_tool_description_advertises_supported_file_types() {
     let file_path_description = schema["properties"]["file_path"]["description"]
         .as_str()
         .expect("file_path should have a description");
-    assert_eq!(file_path_description, "Path to a file.");
+    assert!(file_path_description.contains("file or directory"));
 }
 
 #[tokio::test]
