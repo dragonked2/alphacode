@@ -70,8 +70,11 @@ jobs:
           - target: x86_64-apple-darwin
             os: macos-15-intel
             archive: alphacode-macos-x86_64
+          # ARM hosted runners can exhaust their queue-acquisition window.
+          # Apple's Intel SDK can cross-compile ARM64 with ordinary Cargo;
+          # verify the Mach-O architecture and embedded build identity below.
           - target: aarch64-apple-darwin
-            os: macos-latest
+            os: macos-15-intel
             archive: alphacode-macos-arm64
           # install.ps1 expects: alphacode-windows-{x86_64,arm64}.zip
           - target: x86_64-pc-windows-msvc
@@ -342,14 +345,35 @@ jobs:
           done
           echo "OK: bundled /bugbounty skill is present in the release binary ($BIN)"
 
+      - name: Verify cross-compiled macOS ARM64 identity
+        if: matrix.target == 'aarch64-apple-darwin' && runner.arch == 'X64'
+        shell: bash
+        env:
+          ARCHIVE_BASE: ${{ matrix.archive }}
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          TMP_DIR="$(mktemp -d)"
+          trap 'rm -rf "$TMP_DIR"' EXIT
+          tar -xzf "${ARCHIVE_BASE}.tar.gz" -C "$TMP_DIR"
+          BIN="$(find "$TMP_DIR" -maxdepth 3 -type f -name alphacode -print -quit)"
+          test -n "$BIN"
+          lipo -verify_arch arm64 "$BIN"
+          file "$BIN"
+          # An Intel host cannot execute ARM64. Check the actual packaged
+          # binary's embedded version and revision without claiming a launch.
+          strings -a "$BIN" > "$TMP_DIR/binary-strings.txt"
+          grep -F -- "${RELEASE_TAG#v}" "$TMP_DIR/binary-strings.txt" > /dev/null
+          grep -F -- "${GITHUB_SHA:0:7}" "$TMP_DIR/binary-strings.txt" > /dev/null
+
       # Verify the binary version matches the release tag. The build script
       # derives the version from the git tag (via ALPHACODE_BUILD_SEMVER or
       # `git tag --points-at HEAD`), but this guard catches mismatches early.
       #
-      # Skipped for Windows ARM64: the runner is x86_64 and cannot execute
-      # an aarch64 PE binary (Git Bash reports "Exec format error").
+      # Cross-compiled Windows and macOS ARM64 cannot run on an Intel host.
+      # macOS ARM64 gets the architecture/build-identity gate above.
       - name: Verify binary version matches release tag
-        if: matrix.target != 'aarch64-pc-windows-msvc'
+        if: matrix.target != 'aarch64-pc-windows-msvc' && !(matrix.target == 'aarch64-apple-darwin' && runner.arch == 'X64')
         shell: bash
         env:
           ARCHIVE_BASE: ${{ matrix.archive }}
