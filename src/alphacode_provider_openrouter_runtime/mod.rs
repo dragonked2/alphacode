@@ -3917,7 +3917,7 @@ mod llamacpp_compat_tests {
             socket.get_mut().write_all(b"HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nConnection: close\r\n\r\n").await.unwrap();
             ready_tx.send(()).unwrap();
             let mut byte = [0];
-            socket.read(&mut byte).await.unwrap()
+            socket.read(&mut byte).await
         });
         let mut provider = local_no_auth_provider("test-model");
         provider.api_base = format!("http://{address}/v1");
@@ -3931,7 +3931,14 @@ mod llamacpp_compat_tests {
             .await
             .unwrap()
             .unwrap();
-        assert_eq!(read, 0, "cancel must close an idle provider connection");
+        // Dropping the HTTP body may close TCP gracefully or reset it (macOS
+        // commonly reports ECONNRESET). Both prove cancellation; data, other
+        // errors and a timeout still fail this test.
+        assert!(
+            matches!(read, Ok(0))
+                || matches!(&read, Err(error) if error.kind() == std::io::ErrorKind::ConnectionReset),
+            "cancel must close an idle provider connection: {read:?}"
+        );
     }
 
     fn local_no_auth_provider(model: &str) -> OpenRouterProvider {

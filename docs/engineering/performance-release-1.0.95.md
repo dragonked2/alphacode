@@ -25,6 +25,8 @@ work are included in the release snapshot.
   dependencies remain shared, and performance gates still run in release mode.
 - ZIP extraction reuses the existing flate2 Rust backend rather than enabling
   Zopfli and an additional zlib-rs backend.
+- HTTP stream-cancellation tests accept both EOF and connection reset, the
+  two valid TCP close outcomes, while retaining their timeout/error checks.
 - Catalog refresh-expiry tests use an explicit future clock instead of
   subtracting beyond a fresh Windows runner's clock origin.
 - The Windows Go reproduction test compiles separately with a 120-second build
