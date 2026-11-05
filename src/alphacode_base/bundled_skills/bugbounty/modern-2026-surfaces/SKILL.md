@@ -1,6 +1,6 @@
 ---
 name: modern-2026-surfaces
-description: Evidence-driven hunting guidance for modern 2026 attack surfaces: AI/LLM agents, MCP servers, OAuth/OIDC flows, Next.js and middleware authorization, HTTP parser/cache disagreements, GraphQL, deserialization, cloud metadata SSRF, and false-positive controls for authorized assessments. Do not treat publication date, framework fingerprints, or vulnerability names as proof of a finding.
+description: "Evidence-driven hunting guidance for modern 2026 attack surfaces: AI/LLM agents, MCP servers, OAuth/OIDC flows, Next.js and middleware authorization, HTTP parser/cache disagreements, GraphQL, deserialization, cloud metadata SSRF, and false-positive controls for authorized assessments. Do not treat publication date, framework fingerprints, or vulnerability names as proof of a finding."
 ---
 
 # Modern 2026 hunting surfaces

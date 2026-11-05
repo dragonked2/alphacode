@@ -911,18 +911,17 @@ impl CompactionManager {
         }
     }
 
-    /// Best-effort token count without message data (uses only observed tokens)
+    /// Best-effort token count without message data.
+    ///
+    /// Prefer valid provider usage here: `token_estimate()` omits active
+    /// messages, so it cannot cap observed usage without making the tool-output
+    /// guard miss a genuinely full context. History-aware compaction uses
+    /// `effective_token_count_with`, and compaction clears stale observations.
     pub fn effective_token_count(&self) -> usize {
-        let estimate = self.token_estimate();
-        let observed = self
-            .observed_input_tokens
+        self.observed_input_tokens
             .and_then(|tokens| usize::try_from(tokens).ok())
-            .filter(|&tokens| tokens <= self.token_budget);
-        match (observed, estimate == 0) {
-            (Some(o), true) => o,
-            (Some(o), false) => estimate.min(o),
-            (None, _) => estimate,
-        }
+            .filter(|&tokens| tokens <= self.token_budget)
+            .unwrap_or_else(|| self.token_estimate())
     }
 
     /// Get current context usage as percentage (using caller's messages)
