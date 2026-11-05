@@ -247,6 +247,10 @@ impl ModelCatalogService {
     }
 
     pub(crate) fn should_refresh(&self, scope: &str) -> bool {
+        self.should_refresh_at(scope, Instant::now())
+    }
+
+    fn should_refresh_at(&self, scope: &str, now: Instant) -> bool {
         if self.is_fresh(scope) || self.refresh_throttled(scope) {
             return false;
         }
@@ -255,14 +259,20 @@ impl ModelCatalogService {
             .map(|in_flight| {
                 in_flight
                     .get(scope)
-                    .map(|started_at| started_at.elapsed() > IN_FLIGHT_REFRESH_EXPIRY)
+                    .map(|started_at| {
+                        now.saturating_duration_since(*started_at) > IN_FLIGHT_REFRESH_EXPIRY
+                    })
                     .unwrap_or(true)
             })
             .unwrap_or(true)
     }
 
     pub(crate) fn begin_refresh(&self, scope: &str) -> bool {
-        if !self.should_refresh(scope) {
+        self.begin_refresh_at(scope, Instant::now())
+    }
+
+    fn begin_refresh_at(&self, scope: &str, now: Instant) -> bool {
+        if !self.should_refresh_at(scope, now) {
             return false;
         }
         let Ok(mut in_flight) = self.in_flight.write() else {
@@ -270,11 +280,15 @@ impl ModelCatalogService {
         };
         match in_flight.get(scope) {
             // Another refresh is genuinely running; back off.
-            Some(started_at) if started_at.elapsed() <= IN_FLIGHT_REFRESH_EXPIRY => return false,
+            Some(started_at)
+                if now.saturating_duration_since(*started_at) <= IN_FLIGHT_REFRESH_EXPIRY =>
+            {
+                return false;
+            }
             // Stale marker from a hung/abandoned refresh: reclaim the slot so
             // the catalog can self-heal instead of staying frozen.
             Some(_) | None => {
-                in_flight.insert(scope.to_string(), Instant::now());
+                in_flight.insert(scope.to_string(), now);
             }
         }
         self.note_attempt(scope);
@@ -290,17 +304,6 @@ impl ModelCatalogService {
     #[cfg(test)]
     pub(crate) fn revision(&self) -> u64 {
         self.revision.read().map(|revision| *revision).unwrap_or(0)
-    }
-
-    /// Test-only: backdate an in-flight refresh marker to simulate a hung or
-    /// abandoned refresh task.
-    #[cfg(test)]
-    pub(crate) fn backdate_in_flight_for_tests(&self, scope: &str, age: Duration) {
-        if let Ok(mut in_flight) = self.in_flight.write()
-            && let Some(started_at) = Instant::now().checked_sub(age)
-        {
-            in_flight.insert(scope.to_string(), started_at);
-        }
     }
 
     /// Test-only: drop all cached scopes and bookkeeping. The catalog services
@@ -381,12 +384,13 @@ mod tests {
         // A live in-flight refresh still blocks a duplicate.
         assert!(!service.begin_refresh("default"));
 
-        // Simulate the refresh task hanging/dying without finish_refresh.
-        service.backdate_in_flight_for_tests("default", IN_FLIGHT_REFRESH_EXPIRY * 2);
+        // Advance the check's clock instead of subtracting from Instant's
+        // origin: Windows runners may have less than ten minutes of uptime.
+        let expired_at = Instant::now() + IN_FLIGHT_REFRESH_EXPIRY * 2;
 
         // The stale marker must not freeze the scope forever: refresh resumes.
-        assert!(service.should_refresh("default"));
-        assert!(service.begin_refresh("default"));
+        assert!(service.should_refresh_at("default", expired_at));
+        assert!(service.begin_refresh_at("default", expired_at));
         // And the reclaimed slot blocks duplicates again.
         assert!(!service.begin_refresh("default"));
     }
