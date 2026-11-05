@@ -78,7 +78,6 @@ jobs:
       # behavior is unchanged. Performance gates below still use release mode.
       NO_COLOR: ""
       COLORTERM: truecolor
-      CARGO_PROFILE_TEST_OPT_LEVEL: "0"
     strategy:
       fail-fast: false
       matrix:

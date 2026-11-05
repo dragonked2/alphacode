@@ -16,10 +16,13 @@ work are included in the release snapshot.
   Missing parents and cycles terminate without granting unrelated ownership.
 - Swarm detail summaries normalize only the needed prefix rather than splitting,
   allocating and joining the entire worker output.
-- Named GLM/Alpha endpoints retain effort selection. Remote OpenAI Pro model
+- Named DragonMeta GLM/Alpha endpoints retain effort selection without
+  inventing variants for unrelated GLM routes. Remote OpenAI Pro model
   ladders match the restricted ladders in the direct provider runtime.
 - The model widget shows low/none effort explicitly. Swarm card clipping uses
   grapheme clusters and terminal-cell widths, preserving joined emoji.
+- Default test harness optimization matches CI (level 0); optimized
+  dependencies remain shared, and performance gates still run in release mode.
 - ZIP extraction reuses the existing flate2 Rust backend rather than enabling
   Zopfli and an additional zlib-rs backend.
 - The Windows Go reproduction test compiles separately with a 120-second build

@@ -115,8 +115,7 @@ pub fn inferred_reasoning_efforts(
     if provider.starts_with("openai-compatible:") {
         if provider.contains("deepseek")
             || model.contains("deepseek")
-            || model.contains("glm")
-            || model == "alpha"
+            || provider == "openai-compatible:dragonmeta"
         {
             return DEEPSEEK_SELECTABLE_EFFORTS.to_vec();
         }
@@ -274,14 +273,18 @@ mod tests {
     }
 
     #[test]
-    fn named_glm_routes_keep_effort_selection() {
+    fn named_dragonmeta_routes_keep_effort_without_inventing_other_glm_variants() {
         assert_eq!(
-            inferred_reasoning_efforts(Some("openai-compatible:local"), Some("z-ai/glm-5.2")),
+            inferred_reasoning_efforts(Some("openai-compatible:dragonmeta"), Some("z-ai/glm-5.2")),
             DEEPSEEK_SELECTABLE_EFFORTS
         );
         assert_eq!(
-            inferred_reasoning_efforts(Some("openai-compatible:local"), Some("alpha")),
+            inferred_reasoning_efforts(Some("openai-compatible:dragonmeta"), Some("alpha")),
             DEEPSEEK_SELECTABLE_EFFORTS
+        );
+        assert!(
+            inferred_reasoning_efforts(Some("openai-compatible:comtegra"), Some("glm-51-nvfp4"))
+                .is_empty()
         );
     }
 

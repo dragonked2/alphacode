@@ -337,7 +337,10 @@ opt-level = 2
 inherits = "dev"
 
 [profile.test]
-opt-level = 1
+# Match CI: optimizing the monolithic test harness takes minutes and gigabytes
+# without benefiting shipped code. Keep dependencies optimized below; measure
+# performance with the dedicated release-profile gates.
+opt-level = 0
 codegen-units = 32
 debug = "line-tables-only"
 # Windows MSVC incremental linker produces LNK2019 unresolved externals
