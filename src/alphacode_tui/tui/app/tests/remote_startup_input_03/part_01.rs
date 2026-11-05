@@ -302,6 +302,10 @@ fn test_incremental_terminal_drop_promotes_immediately_when_path_completes() {
     for ch in image.display().to_string().chars() {
         crate::alphacode_tui::tui::app::input::handle_text_input(&mut app, &ch.to_string());
     }
+    // Image-path promotion no longer runs per-keystroke; it happens on
+    // Enter/submit before command/skill routing. Trigger it explicitly here
+    // to assert the path-completes promotion still works.
+    crate::alphacode_tui::tui::app::input::promote_dropped_images(&mut app);
 
     assert_eq!(app.input(), "[image 1]");
     assert_eq!(app.pending_images.len(), 1);

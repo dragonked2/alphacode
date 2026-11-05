@@ -341,7 +341,7 @@ fn slash_provider_test_coverage_overlay_scrolls_with_mouse_wheel() {
 
     assert_eq!(app.model_status_scroll, Some(0));
 
-    let scroll_only = app.handle_mouse_event(crossterm::event::MouseEvent::new(
+    let scroll_only = app.handle_mouse_event(crate::alphacode_tui::tui::mouse_event(
         crossterm::event::MouseEventKind::ScrollDown,
         10,
         10,
@@ -351,7 +351,7 @@ fn slash_provider_test_coverage_overlay_scrolls_with_mouse_wheel() {
     assert!(app.model_status_scroll.unwrap_or(0) > 0);
 
     let before = app.model_status_scroll.unwrap_or(0);
-    let scroll_only = app.handle_mouse_event(crossterm::event::MouseEvent::new(
+    let scroll_only = app.handle_mouse_event(crate::alphacode_tui::tui::mouse_event(
         crossterm::event::MouseEventKind::ScrollUp,
         10,
         10,
@@ -444,7 +444,7 @@ fn session_picker_preview_wheel_uses_shared_scroll_momentum() {
     // A wheel up over the preview pane (right ~60% of width) routes through the
     // shared mouse-scroll momentum (enqueue + drain) instead of an instant jump,
     // and actually moves the preview offset.
-    let scroll_only = app.handle_mouse_event(crossterm::event::MouseEvent::new(
+    let scroll_only = app.handle_mouse_event(crate::alphacode_tui::tui::mouse_event(
         crossterm::event::MouseEventKind::ScrollUp,
         90,
         10,

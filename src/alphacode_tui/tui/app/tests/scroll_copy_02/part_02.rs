@@ -591,7 +591,7 @@ fn test_mouse_click_in_input_moves_cursor_to_clicked_position() {
 
     // The framed composer reserves a border row/column; the editable text
     // starts one cell in.
-    let handled = app.handle_mouse_event(MouseEvent::new(
+    let handled = app.handle_mouse_event(crate::alphacode_tui::tui::mouse_event(
         MouseEventKind::Down(MouseButton::Left),
         input_area.x + 1 + prompt_len + 2,
         input_area.y + 1,
@@ -628,7 +628,7 @@ fn test_mouse_click_in_main_chat_switches_focus_from_side_panel() {
     let layout = crate::alphacode_tui::tui::ui::last_layout_snapshot().expect("layout snapshot");
     let messages_area = layout.messages_area;
 
-    let handled = app.handle_mouse_event(MouseEvent::new(
+    let handled = app.handle_mouse_event(crate::alphacode_tui::tui::mouse_event(
         MouseEventKind::Down(MouseButton::Left),
         messages_area.x + messages_area.width / 2,
         messages_area.y + messages_area.height / 2,
@@ -682,7 +682,7 @@ fn test_mouse_click_in_input_switches_focus_from_side_panel() {
 
     // The framed composer reserves a border row/column; the editable text
     // starts one cell in.
-    let handled = app.handle_mouse_event(MouseEvent::new(
+    let handled = app.handle_mouse_event(crate::alphacode_tui::tui::mouse_event(
         MouseEventKind::Down(MouseButton::Left),
         input_area.x + 1 + prompt_len + 2,
         input_area.y + 1,
@@ -720,7 +720,7 @@ fn test_mouse_click_in_wrapped_input_moves_cursor_to_second_visual_line() {
 
     // The framed composer reserves a border row/column: the editable text
     // starts one cell in, so the second visual row is `y + 2`.
-    app.handle_mouse_event(MouseEvent::new(
+    app.handle_mouse_event(crate::alphacode_tui::tui::mouse_event(
         MouseEventKind::Down(MouseButton::Left),
         input_area.x + 6,
         input_area.y + 2,
@@ -804,7 +804,7 @@ fn test_click_on_inline_image_label_line_cycles_level() {
     );
 
     // Click the label line (button up is what fires the cycle).
-    let handled = app.handle_mouse_event(MouseEvent::new(
+    let handled = app.handle_mouse_event(crate::alphacode_tui::tui::mouse_event(
         MouseEventKind::Up(MouseButton::Left),
         content_area.x + 2,
         content_area.y + label_line as u16,
@@ -820,7 +820,7 @@ fn test_click_on_inline_image_label_line_cycles_level() {
 
     // Further label clicks continue the cycle: Large -> Full -> Fit.
     let click_label = |app: &mut App| {
-        app.handle_mouse_event(MouseEvent::new(
+        app.handle_mouse_event(crate::alphacode_tui::tui::mouse_event(
             MouseEventKind::Up(MouseButton::Left),
             content_area.x + 2,
             content_area.y + label_line as u16,
@@ -892,7 +892,7 @@ fn test_kitty_jitter_click_on_image_label_still_cycles_level() {
         content_area.y + label_line as u16,
     );
     let inject = |app: &mut App, kind: MouseEventKind| {
-        app.handle_mouse_event(MouseEvent::new(kind, col, row, KeyModifiers::empty()));
+        app.handle_mouse_event(crate::alphacode_tui::tui::mouse_event(kind, col, row, KeyModifiers::empty()));
     };
 
     // Down, same-cell Drag (kitty pixel jitter), Up: must count as a click.
@@ -908,7 +908,7 @@ fn test_kitty_jitter_click_on_image_label_still_cycles_level() {
 
     // A real drag to a DIFFERENT cell must still start a selection, not click.
     inject(&mut app, MouseEventKind::Down(MouseButton::Left));
-    app.handle_mouse_event(MouseEvent::new(
+    app.handle_mouse_event(crate::alphacode_tui::tui::mouse_event(
         MouseEventKind::Drag(MouseButton::Left),
         col.saturating_sub(4),
         row,
@@ -1065,13 +1065,13 @@ fn test_real_draw_click_on_body_anchored_image_label_cycles_level() {
     // events for one physical click: `Down` then `Up`. We must replay both, just
     // like the live event loop, or we silently skip the copy-selection state the
     // `Down` arms (which is exactly what the user's click goes through).
-    app.handle_mouse_event(MouseEvent::new(
+    app.handle_mouse_event(crate::alphacode_tui::tui::mouse_event(
         MouseEventKind::Down(MouseButton::Left),
         badge_col,
         badge_row,
         KeyModifiers::empty(),
     ));
-    app.handle_mouse_event(MouseEvent::new(
+    app.handle_mouse_event(crate::alphacode_tui::tui::mouse_event(
         MouseEventKind::Up(MouseButton::Left),
         badge_col,
         badge_row,
@@ -1232,13 +1232,13 @@ fn test_click_on_inline_image_body_cycles_level() {
     let body_row = content_area.y + region.abs_line_idx as u16 + 1;
     let body_col = content_area.x + region.width / 2;
     let click = |app: &mut App, col: u16, row: u16| {
-        app.handle_mouse_event(MouseEvent::new(
+        app.handle_mouse_event(crate::alphacode_tui::tui::mouse_event(
             MouseEventKind::Down(MouseButton::Left),
             col,
             row,
             KeyModifiers::empty(),
         ));
-        app.handle_mouse_event(MouseEvent::new(
+        app.handle_mouse_event(crate::alphacode_tui::tui::mouse_event(
             MouseEventKind::Up(MouseButton::Left),
             col,
             row,

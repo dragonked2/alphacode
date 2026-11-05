@@ -16,6 +16,7 @@ use crate::harness::HarnessContext;
 use crate::smart_dsl::SmartQuery;
 use crate::structure::{self, StructureItem};
 use globset::Glob;
+use rayon::prelude::{IntoParallelRefIterator, ParallelIterator};
 use serde::Serialize;
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
@@ -401,23 +402,33 @@ pub fn run_smart(root: &Path, query: &SmartQuery, args: &SmartArgs) -> Result<Sm
     let plan = Plan::build(query, args, &scope, context.is_some());
     let want_regions = !args.paths_only;
 
-    let mut scanned = 0usize;
-    let mut candidates: Vec<Candidate> = Vec::new();
-    for file in fsutil::collect_files(&scope) {
-        if !plan.path_ok(&file.relative) {
-            continue;
-        }
-        let Some(text) = fsutil::read_text(&file.absolute) else {
-            continue;
-        };
-        scanned += 1;
-        if plan.excluded(&file.relative, &text) {
-            continue;
-        }
-        if let Some(candidate) = scan_file(&file, &text, &plan, context.as_ref(), args) {
-            candidates.push(candidate);
-        }
-    }
+    // Reading and scoring each file is independent work, so it runs on rayon's
+    // thread pool instead of one core. Trace reads the *contents* of every file
+    // in scope (unlike `find`, which only ranks paths), which made it the
+    // slowest mode in the tool: on a 1,474-file tree it spent ~0.86 s wall on
+    // one core while `grep` -- already parallel here -- finished the same tree
+    // in ~0.11 s. `collect` preserves the walked file order, so the candidate
+    // list, and therefore every ranking tie-break, is identical to the serial
+    // pass.
+    let files = fsutil::collect_files(&scope);
+    let scans: Vec<(usize, Option<Candidate>)> = files
+        .par_iter()
+        .filter(|file| plan.path_ok(&file.relative))
+        .map(|file| {
+            let Some(text) = fsutil::read_text(&file.absolute) else {
+                return (0, None);
+            };
+            if plan.excluded(&file.relative, &text) {
+                return (1, None);
+            }
+            (1, scan_file(file, &text, &plan, context.as_ref(), args))
+        })
+        .collect();
+    let scanned = scans.iter().map(|(read, _)| *read).sum::<usize>();
+    let mut candidates: Vec<Candidate> = scans
+        .into_iter()
+        .filter_map(|(_, candidate)| candidate)
+        .collect();
 
     candidates.sort_by(|left, right| {
         right
@@ -519,8 +530,13 @@ fn scan_file(
     context: Option<&HarnessContext>,
     args: &SmartArgs,
 ) -> Option<Candidate> {
-    let lines: Vec<&str> = text.lines().collect();
-    let lowered: Vec<String> = lines.iter().map(|line| line.to_ascii_lowercase()).collect();
+    // Lowercase the whole file once and split it, instead of allocating a
+    // `String` per line. `to_ascii_lowercase` only rewrites ASCII bytes, so it
+    // preserves both byte length and line boundaries: the lowered lines are
+    // index-aligned with `text.lines()`. On a 360k-line repository the old
+    // shape made one heap allocation per source line in every scanned file.
+    let lowered_text = text.to_ascii_lowercase();
+    let lowered: Vec<&str> = lowered_text.lines().collect();
 
     let name = file
         .relative
@@ -548,34 +564,11 @@ fn scan_file(
         ));
     }
 
-    // Structure signal: a declaration named after the subject is strong
-    // evidence that the file answers the question.
-    let items = structure::extract_structure(text, Path::new(&file.relative));
-    let mut structural_hits: Vec<(&StructureItem, String)> = Vec::new();
-    for item in &items {
-        if !plan.kind_ok(item.kind) {
-            continue;
-        }
-        let lowered_label = item.label.to_ascii_lowercase();
-        if let Some(term) = plan.longest_term_in(&lowered_label) {
-            structural_hits.push((item, term.to_string()));
-        }
-    }
-    if !structural_hits.is_empty() {
-        let points = (structural_hits.len() as f32 * 30.0).min(60.0);
-        score.structure += points;
-        let labels: Vec<&str> = structural_hits
-            .iter()
-            .take(3)
-            .map(|(item, _)| item.label.as_str())
-            .collect();
-        score.reasons.push(format!(
-            "symbols match: {} (+{points:.0})",
-            labels.join(", ")
-        ));
-    }
-
     // Content signal: how much of the file is about the subject.
+    //
+    // This runs before structure extraction (the two are independent) because
+    // its result decides whether extracting structure can pay off at all; the
+    // score reasons are still pushed in their original order below.
     let mut matched_lines: Vec<usize> = Vec::new();
     let mut hit_terms: BTreeSet<String> = BTreeSet::new();
     let mut usage_evidence = false;
@@ -603,9 +596,54 @@ fn scan_file(
                 .is_some_and(|line| line.contains('"') || line.contains('\'') || line.contains('`'))
         })
     });
-    if !matched_lines.is_empty() {
+    let content_points = if matched_lines.is_empty() {
+        None
+    } else {
         let density = (matched_lines.len() as f32 * 0.6).min(18.0);
-        let points = hit_terms.len() as f32 * 10.0 + density;
+        Some(hit_terms.len() as f32 * 10.0 + density)
+    };
+
+    // Structure signal: a declaration named after the subject is strong
+    // evidence that the file answers the question.
+    //
+    // Parsing a file's structure is the single most expensive thing the scan
+    // does — roughly half of trace's per-file cost over a 1,474-file tree. A
+    // structural hit requires a declaration label that contains a subject term,
+    // and that label sits on a source line that contains the same term, so a
+    // file with no content hit cannot produce a structural one. (`items` also
+    // feeds the session-context symbol boost, which is why a context makes the
+    // parse unconditional.) Skipping it elsewhere removes the parse from the
+    // overwhelming majority of scanned files without changing any score.
+    let items = if matched_lines.is_empty() && context.is_none() {
+        Vec::new()
+    } else {
+        structure::extract_structure(text, Path::new(&file.relative))
+    };
+    let mut structural_hits: Vec<(&StructureItem, String)> = Vec::new();
+    for item in &items {
+        if !plan.kind_ok(item.kind) {
+            continue;
+        }
+        let lowered_label = item.label.to_ascii_lowercase();
+        if let Some(term) = plan.longest_term_in(&lowered_label) {
+            structural_hits.push((item, term.to_string()));
+        }
+    }
+    if !structural_hits.is_empty() {
+        let points = (structural_hits.len() as f32 * 30.0).min(60.0);
+        score.structure += points;
+        let labels: Vec<&str> = structural_hits
+            .iter()
+            .take(3)
+            .map(|(item, _)| item.label.as_str())
+            .collect();
+        score.reasons.push(format!(
+            "symbols match: {} (+{points:.0})",
+            labels.join(", ")
+        ));
+    }
+
+    if let Some(points) = content_points {
         score.content += points;
         score.reasons.push(format!(
             "{} subject term(s) on {} line(s) (+{points:.0})",
@@ -702,6 +740,8 @@ fn scan_file(
     let regions = if args.paths_only {
         Vec::new()
     } else {
+        // Only a surviving candidate pays for collecting its original lines.
+        let lines: Vec<&str> = text.lines().collect();
         build_regions(&lines, &items, &matched_lines, plan, args.full_region)
     };
     let structure_items = select_structure(&items, plan);

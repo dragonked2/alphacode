@@ -1262,7 +1262,7 @@ fn test_mouse_scroll_over_diff_pane_scrolls_side_panel_without_changing_focus() 
         None,
     );
 
-    app.handle_mouse_event(MouseEvent::new(
+    app.handle_mouse_event(crate::alphacode_tui::tui::mouse_event(
         MouseEventKind::ScrollDown,
         45,
         5,
@@ -1289,7 +1289,7 @@ fn test_mouse_scroll_animation_preserves_side_pane_scroll_sensitivity() {
         None,
     );
 
-    app.handle_mouse_event(MouseEvent::new(
+    app.handle_mouse_event(crate::alphacode_tui::tui::mouse_event(
         MouseEventKind::ScrollDown,
         45,
         5,
@@ -1339,7 +1339,7 @@ fn test_mouse_scroll_over_tool_side_panel_scrolls_shared_right_pane_without_chan
         None,
     );
 
-    let scroll_only = app.handle_mouse_event(MouseEvent::new(
+    let scroll_only = app.handle_mouse_event(crate::alphacode_tui::tui::mouse_event(
         MouseEventKind::ScrollDown,
         45,
         5,

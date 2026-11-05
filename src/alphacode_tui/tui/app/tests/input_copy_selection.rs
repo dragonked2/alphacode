@@ -25,7 +25,7 @@ fn drag_copy(app: &mut App, start: (u16, u16), end: (u16, u16)) -> String {
     let copied = std::sync::Arc::new(std::sync::Mutex::new(String::new()));
     let copied_for_closure = copied.clone();
     app.handle_copy_selection_mouse_with(
-        MouseEvent::new(
+        crate::alphacode_tui::tui::mouse_event(
             MouseEventKind::Down(MouseButton::Left),
             start.0,
             start.1,
@@ -34,7 +34,7 @@ fn drag_copy(app: &mut App, start: (u16, u16), end: (u16, u16)) -> String {
         |_| true,
     );
     app.handle_copy_selection_mouse_with(
-        MouseEvent::new(
+        crate::alphacode_tui::tui::mouse_event(
             MouseEventKind::Drag(MouseButton::Left),
             end.0,
             end.1,
@@ -43,7 +43,7 @@ fn drag_copy(app: &mut App, start: (u16, u16), end: (u16, u16)) -> String {
         |_| true,
     );
     app.handle_copy_selection_mouse_with(
-        MouseEvent::new(
+        crate::alphacode_tui::tui::mouse_event(
             MouseEventKind::Up(MouseButton::Left),
             end.0,
             end.1,
@@ -279,7 +279,7 @@ fn test_chat_drag_into_composer_clamps_to_chat_pane() {
     let copied = std::sync::Arc::new(std::sync::Mutex::new(String::new()));
     let copied_for_closure = copied.clone();
     app.handle_copy_selection_mouse_with(
-        MouseEvent::new(
+        crate::alphacode_tui::tui::mouse_event(
             MouseEventKind::Down(MouseButton::Left),
             chat_col,
             chat_row,
@@ -290,7 +290,7 @@ fn test_chat_drag_into_composer_clamps_to_chat_pane() {
     // Move within the chat pane first (real drags pass through cells), then
     // into the composer.
     app.handle_copy_selection_mouse_with(
-        MouseEvent::new(
+        crate::alphacode_tui::tui::mouse_event(
             MouseEventKind::Drag(MouseButton::Left),
             chat_col2,
             chat_row2,
@@ -299,7 +299,7 @@ fn test_chat_drag_into_composer_clamps_to_chat_pane() {
         |_| true,
     );
     app.handle_copy_selection_mouse_with(
-        MouseEvent::new(
+        crate::alphacode_tui::tui::mouse_event(
             MouseEventKind::Drag(MouseButton::Left),
             input_col,
             input_row,
@@ -313,7 +313,7 @@ fn test_chat_drag_into_composer_clamps_to_chat_pane() {
         Some(crate::alphacode_tui::tui::CopySelectionPane::Chat)
     );
     app.handle_copy_selection_mouse_with(
-        MouseEvent::new(
+        crate::alphacode_tui::tui::mouse_event(
             MouseEventKind::Up(MouseButton::Left),
             input_col,
             input_row,
@@ -351,13 +351,13 @@ fn test_input_composer_click_still_moves_caret() {
         .copied()
         .expect("screen cell inside the typed text");
 
-    app.handle_mouse_event(MouseEvent::new(
+    app.handle_mouse_event(crate::alphacode_tui::tui::mouse_event(
         MouseEventKind::Down(MouseButton::Left),
         col,
         row,
         KeyModifiers::empty(),
     ));
-    app.handle_mouse_event(MouseEvent::new(
+    app.handle_mouse_event(crate::alphacode_tui::tui::mouse_event(
         MouseEventKind::Up(MouseButton::Left),
         col,
         row,
@@ -400,19 +400,19 @@ fn test_input_composer_drag_then_release_copies_via_full_mouse_path() {
     // Full handle_mouse_event path: press, drag, release. The release attempts
     // a real clipboard copy, which may fail in CI, but the selection path must
     // have run and reported one of the copy outcomes.
-    app.handle_mouse_event(MouseEvent::new(
+    app.handle_mouse_event(crate::alphacode_tui::tui::mouse_event(
         MouseEventKind::Down(MouseButton::Left),
         start.0,
         start.1,
         KeyModifiers::empty(),
     ));
-    app.handle_mouse_event(MouseEvent::new(
+    app.handle_mouse_event(crate::alphacode_tui::tui::mouse_event(
         MouseEventKind::Drag(MouseButton::Left),
         end.0,
         end.1,
         KeyModifiers::empty(),
     ));
-    app.handle_mouse_event(MouseEvent::new(
+    app.handle_mouse_event(crate::alphacode_tui::tui::mouse_event(
         MouseEventKind::Up(MouseButton::Left),
         end.0,
         end.1,

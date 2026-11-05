@@ -1200,7 +1200,7 @@ mod tests {
             .expect("render should record action list area");
 
         let initially_selected = picker.selected;
-        picker.handle_overlay_mouse(MouseEvent::new(
+        picker.handle_overlay_mouse(crate::alphacode_tui::tui::mouse_event(
             MouseEventKind::Down(MouseButton::Left),
             list_area.x + 1,
             list_area.y,
@@ -1213,7 +1213,7 @@ mod tests {
 
         let expected_first_action = picker.items[picker.filtered[0]].title.clone();
         // Row 0 is the provider group header; row 1 is the first sorted action.
-        picker.handle_overlay_mouse(MouseEvent::new(
+        picker.handle_overlay_mouse(crate::alphacode_tui::tui::mouse_event(
             MouseEventKind::Down(MouseButton::Left),
             list_area.x + 1,
             list_area.y + 1,

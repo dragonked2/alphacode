@@ -1186,7 +1186,7 @@ mod tests {
         let list_area = picker
             .last_provider_list_area
             .expect("render should record provider list area");
-        picker.handle_overlay_mouse(MouseEvent::new(
+        picker.handle_overlay_mouse(crate::alphacode_tui::tui::mouse_event(
             MouseEventKind::Down(MouseButton::Left),
             list_area.x + 1,
             list_area.y + 1,

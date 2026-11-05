@@ -25,7 +25,7 @@ fn test_mouse_scroll_over_tool_side_panel_keeps_typing_in_chat() {
         None,
     );
 
-    let scroll_only = app.handle_mouse_event(MouseEvent::new(
+    let scroll_only = app.handle_mouse_event(crate::alphacode_tui::tui::mouse_event(
         MouseEventKind::ScrollDown,
         45,
         5,
@@ -78,7 +78,7 @@ fn test_mouse_scroll_over_tool_side_panel_updates_visible_render() {
         .expect("expected side panel area after render");
     assert!(before.contains("side-scroll-01"));
 
-    let _scroll_only = app.handle_mouse_event(MouseEvent::new(
+    let _scroll_only = app.handle_mouse_event(crate::alphacode_tui::tui::mouse_event(
         MouseEventKind::ScrollDown,
         diff_area.x + diff_area.width / 2,
         diff_area.y + diff_area.height.saturating_sub(2).min(3),

@@ -44,6 +44,35 @@ adheres to [Semantic Versioning](https://semver.org/).
   `FileDescription`. File/product versions are derived from the crate version so
   they cannot drift from the build.
 
+## [1.0.96] - 2026-11-05
+
+### Fixed
+
+- **Restore input responsiveness on Windows.** 1.0.95 pinned the
+  `eitsupi/crossterm` `feature/windows-vt-input` fork (upstream PR #1030) via
+  `[patch.crates-io]` so Windows Terminal's native Ctrl+V paste would arrive as
+  one `Event::Paste`. That fork replaces the entire crossterm event reader: once
+  bracketed paste is enabled (alphacode keeps it enabled for the whole
+  session), Windows delivers *every* key record through a new VT/ANSI parser
+  instead of the long-stable Win32 `ReadConsoleInput` path. On Windows that
+  affected all input at once - ordinary typing, `Ctrl+Backspace`, and the
+  model/provider pickers all felt laggy, exactly the regression users reported
+  after 1.0.92. The `[patch.crates-io]` override is removed, so the TUI links
+  stock crates.io crossterm 0.29 again. Ctrl+V/Alt+V paste never depended on the
+  fork's `Event::Paste`: it is served by alphacode's own asynchronous `arboard`
+  clipboard read. The debug-only call sites that used the fork's
+  `MouseEvent::new` constructor now build the stock public-field struct through
+  `tui::mouse_event`.
+- Console typing no longer runs image-path promotion on every keystroke.
+  `promote_dropped_images` was invoked from `handle_text_input` for each
+  printable character, allocating a trimmed copy of the full draft and calling
+  `path.is_file()` on path-like input each time. Promotion already happens on
+  `Enter` (`handle_enter`) and submit (`submit_input`), where it matters before
+  command/skill routing, so the per-keystroke call is removed. Typing is now
+  allocation-free and avoids repeated filesystem stat calls.
+
+### Added
+
 ## [Unreleased]
 
 ## [1.0.95] - 2026-11-05

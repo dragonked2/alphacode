@@ -1039,7 +1039,7 @@ fn repro_wheel_up_from_bottom_always_moves_viewport() {
                 }
 
                 // One wheel-up notch, drained as the tick would, then re-render.
-                app.handle_mouse_event(MouseEvent::new(
+                app.handle_mouse_event(crate::alphacode_tui::tui::mouse_event(
                     MouseEventKind::ScrollUp,
                     10,
                     height / 2,
@@ -1093,7 +1093,7 @@ fn repro_wheel_down_after_up_burst_moves_viewport() {
 
                 // Flick up several notches.
                 for _ in 0..4 {
-                    app.handle_mouse_event(MouseEvent::new(
+                    app.handle_mouse_event(crate::alphacode_tui::tui::mouse_event(
                         MouseEventKind::ScrollUp,
                         10,
                         height / 2,
@@ -1106,7 +1106,7 @@ fn repro_wheel_down_after_up_burst_moves_viewport() {
                 let scrolled = render_and_snap(&app, &mut terminal);
 
                 // One wheel-down notch must move the viewport back toward bottom.
-                app.handle_mouse_event(MouseEvent::new(
+                app.handle_mouse_event(crate::alphacode_tui::tui::mouse_event(
                     MouseEventKind::ScrollDown,
                     10,
                     height / 2,
@@ -1336,7 +1336,7 @@ fn repro_mouse_wheel_during_token_by_token_reasoning() {
         }
 
         // Wheel up one notch (momentum-queue path).
-        app.handle_mouse_event(MouseEvent::new(
+        app.handle_mouse_event(crate::alphacode_tui::tui::mouse_event(
             MouseEventKind::ScrollUp,
             10,
             height / 2,
@@ -1428,7 +1428,7 @@ fn repro_scroll_held_across_reasoning_close_and_answer() {
             render_and_snap(&app, &mut terminal);
 
             // User scrolls up to read earlier history while it thinks.
-            app.handle_mouse_event(MouseEvent::new(
+            app.handle_mouse_event(crate::alphacode_tui::tui::mouse_event(
                 MouseEventKind::ScrollUp,
                 10,
                 height / 2,
@@ -1478,7 +1478,7 @@ fn repro_scroll_held_across_reasoning_close_and_answer() {
 
             // Verify scrolling still responds after the reflow.
             let before_more = render_and_snap(&app, &mut terminal);
-            app.handle_mouse_event(MouseEvent::new(
+            app.handle_mouse_event(crate::alphacode_tui::tui::mouse_event(
                 MouseEventKind::ScrollUp,
                 10,
                 height / 2,
@@ -1539,7 +1539,7 @@ fn overscroll_reveal_does_not_relayout_transcript() {
 
         // Wheel-down while pinned at the bottom: registers an overscroll tick
         // and reveals the status line for the dwell window.
-        app.handle_mouse_event(MouseEvent::new(
+        app.handle_mouse_event(crate::alphacode_tui::tui::mouse_event(
             MouseEventKind::ScrollDown,
             10,
             5,
@@ -1698,13 +1698,13 @@ fn test_click_on_swarm_expand_badge_toggles_tldr_collapse() {
     let (badge_col, badge_row) = badge.expect("expand badge must be visible in the frame");
 
     let click = |app: &mut App, col: u16, row: u16| {
-        app.handle_mouse_event(MouseEvent::new(
+        app.handle_mouse_event(crate::alphacode_tui::tui::mouse_event(
             MouseEventKind::Down(MouseButton::Left),
             col,
             row,
             KeyModifiers::empty(),
         ));
-        app.handle_mouse_event(MouseEvent::new(
+        app.handle_mouse_event(crate::alphacode_tui::tui::mouse_event(
             MouseEventKind::Up(MouseButton::Left),
             col,
             row,

@@ -117,6 +117,26 @@ fn keyboard_enhancement_flags() -> crossterm::event::KeyboardEnhancementFlags {
         | KeyboardEnhancementFlags::REPORT_EVENT_TYPES
 }
 
+/// Construct a crossterm `MouseEvent` from its parts.
+///
+/// Stock crossterm 0.29 exposes `MouseEvent` as a plain struct with public
+/// fields and no `new` constructor; only the temporary Windows VT-input fork
+/// added one. Keeping this helper binds the TUI to the public struct fields
+/// while preserving the terse four-argument call shape used across the app.
+pub fn mouse_event(
+    kind: crossterm::event::MouseEventKind,
+    column: u16,
+    row: u16,
+    modifiers: crossterm::event::KeyModifiers,
+) -> crossterm::event::MouseEvent {
+    crossterm::event::MouseEvent {
+        kind,
+        column,
+        row,
+        modifiers,
+    }
+}
+
 /// Enable Kitty keyboard protocol for unambiguous key reporting.
 ///
 /// Intentionally avoid REPORT_ALL_KEYS_AS_ESCAPE_CODES for now. When that flag is enabled,

@@ -123,7 +123,7 @@ fn test_mouse_horizontal_scroll_over_tool_side_panel_pans_without_focus_change()
         None,
     );
 
-    let scroll_only = app.handle_mouse_event(MouseEvent::new(
+    let scroll_only = app.handle_mouse_event(crate::alphacode_tui::tui::mouse_event(
         MouseEventKind::ScrollRight,
         45,
         5,
@@ -164,7 +164,7 @@ fn test_ctrl_mouse_scroll_over_tool_side_panel_zooms_images() {
         None,
     );
 
-    let scroll_only = app.handle_mouse_event(MouseEvent::new(
+    let scroll_only = app.handle_mouse_event(crate::alphacode_tui::tui::mouse_event(
         MouseEventKind::ScrollUp,
         45,
         5,
@@ -191,7 +191,7 @@ fn test_mouse_scroll_events_are_classified_as_scroll_only() {
         None,
     );
 
-    let scroll_only = app.handle_mouse_event(MouseEvent::new(
+    let scroll_only = app.handle_mouse_event(crate::alphacode_tui::tui::mouse_event(
         MouseEventKind::ScrollDown,
         45,
         5,
@@ -203,7 +203,7 @@ fn test_mouse_scroll_events_are_classified_as_scroll_only() {
         "scroll wheel events should be deferrable during streaming"
     );
 
-    let non_scroll = app.handle_mouse_event(MouseEvent::new(
+    let non_scroll = app.handle_mouse_event(crate::alphacode_tui::tui::mouse_event(
         MouseEventKind::Down(MouseButton::Left),
         10,
         5,
@@ -338,7 +338,7 @@ fn test_mouse_scroll_help_overlay_updates_help_scroll() {
     let mut app = create_test_app();
     app.help_scroll = Some(5);
 
-    let scroll_only = app.handle_mouse_event(MouseEvent::new(
+    let scroll_only = app.handle_mouse_event(crate::alphacode_tui::tui::mouse_event(
         MouseEventKind::ScrollDown,
         10,
         5,
@@ -351,7 +351,7 @@ fn test_mouse_scroll_help_overlay_updates_help_scroll() {
     );
     assert_eq!(app.help_scroll, Some(8));
 
-    let scroll_only = app.handle_mouse_event(MouseEvent::new(
+    let scroll_only = app.handle_mouse_event(crate::alphacode_tui::tui::mouse_event(
         MouseEventKind::ScrollUp,
         10,
         5,
@@ -367,7 +367,7 @@ fn test_mouse_scroll_changelog_overlay_updates_changelog_scroll() {
     let mut app = create_test_app();
     app.changelog_scroll = Some(2);
 
-    let scroll_only = app.handle_mouse_event(MouseEvent::new(
+    let scroll_only = app.handle_mouse_event(crate::alphacode_tui::tui::mouse_event(
         MouseEventKind::ScrollUp,
         10,
         5,
@@ -380,7 +380,7 @@ fn test_mouse_scroll_changelog_overlay_updates_changelog_scroll() {
     );
     assert_eq!(app.changelog_scroll, Some(0));
 
-    let scroll_only = app.handle_mouse_event(MouseEvent::new(
+    let scroll_only = app.handle_mouse_event(crate::alphacode_tui::tui::mouse_event(
         MouseEventKind::ScrollDown,
         10,
         5,
@@ -424,7 +424,7 @@ fn test_mouse_scroll_over_unfocused_diagram_scrolls_chat_without_resizing_pane()
         app.mouse_scroll_target = None;
         app.diagram_focus = false;
 
-        let scroll_only = app.handle_mouse_event(MouseEvent::new(
+        let scroll_only = app.handle_mouse_event(crate::alphacode_tui::tui::mouse_event(
             MouseEventKind::ScrollUp,
             column,
             row,
@@ -474,7 +474,7 @@ fn test_mouse_scroll_over_focused_diagram_can_noop_at_top() {
     );
 
     let before = app.diagram_scroll_y;
-    let scroll_only = app.handle_mouse_event(MouseEvent::new(
+    let scroll_only = app.handle_mouse_event(crate::alphacode_tui::tui::mouse_event(
         MouseEventKind::ScrollUp,
         90,
         10,
@@ -516,7 +516,7 @@ fn test_dragging_diagram_border_resizes_immediately_without_animation() {
         None,
     );
 
-    app.handle_mouse_event(MouseEvent::new(
+    app.handle_mouse_event(crate::alphacode_tui::tui::mouse_event(
         MouseEventKind::Down(MouseButton::Left),
         80,
         10,
@@ -524,7 +524,7 @@ fn test_dragging_diagram_border_resizes_immediately_without_animation() {
     ));
     assert!(app.diagram_pane_dragging);
 
-    app.handle_mouse_event(MouseEvent::new(
+    app.handle_mouse_event(crate::alphacode_tui::tui::mouse_event(
         MouseEventKind::Drag(MouseButton::Left),
         72,
         10,

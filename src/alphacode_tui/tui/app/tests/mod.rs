@@ -34,7 +34,6 @@ pub mod tests {
     // MouseEvent is available via super::* from app.rs (crossterm::event::MouseEvent)
 
     use anyhow::Result;
-    use crossterm::event::MouseEvent;
     use crossterm::event::{KeyCode, KeyModifiers, MouseButton, MouseEventKind};
     use std::sync::Arc;
     use std::sync::atomic::{AtomicBool, Ordering};

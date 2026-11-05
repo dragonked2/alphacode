@@ -1,6 +1,6 @@
 [package]
 name = "alphacode"
-version = "1.0.95"
+version = "1.0.96"
 authors = ["Ali Essam <tlbbeg313@gmail.com>"]
 description = "Terminal-native coding agent with multi-model orchestration, swarm coordination, and 40+ tools — built to make the smallest change that solves the problem."
 homepage = "https://alphacli.github.io/"
@@ -249,12 +249,15 @@ objc2-app-kit = { version = "0.3", features = [
     "NSRunningApplication",
 ] }
 
-# Crossterm 0.29's Windows reader drops native paste framing. Pin the reviewed
-# VT-input fix so Windows Terminal Ctrl+V emits one Paste event without changing
-# the user's terminal-wide shortcut or guessing from typing speed.
-# Upstream: https://github.com/crossterm-rs/crossterm/pull/1030
-[patch.crates-io]
-crossterm = { git = "https://github.com/eitsupi/crossterm", rev = "e2bc49e52a0f5813f5c15ceaa37b673b6b8414a7" }
+# NOTE: do NOT re-add a `[patch.crates-io] crossterm = { git = ... }` override
+# here. alphacode 1.0.95 briefly pinned the eitsupi `feature/windows-vt-input`
+# fork (upstream PR #1030) to decode native Windows Terminal paste framing, but
+# that fork routes *every* Windows key record through a new VT/ANSI parser for
+# the whole session (alphacode keeps bracketed paste enabled for its lifetime,
+# which is what turns VT input on). On Windows that made all input - typing,
+# Ctrl+Backspace, and the model/provider pickers - visibly laggy compared with
+# 1.0.92. Ctrl+V/Alt+V paste is handled by alphacode's own asynchronous
+# clipboard read, so the stock crossterm reader is sufficient.
 
 [profile.release]
 # opt-level 3 keeps peak runtime performance; thin LTO + 16 codegen units cut

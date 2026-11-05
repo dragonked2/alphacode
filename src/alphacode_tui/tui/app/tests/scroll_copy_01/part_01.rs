@@ -463,7 +463,7 @@ fn test_chat_mouse_scroll_requests_immediate_redraw_during_streaming() {
         "expected scrollable chat content"
     );
 
-    let scroll_only = app.handle_mouse_event(MouseEvent::new(
+    let scroll_only = app.handle_mouse_event(crate::alphacode_tui::tui::mouse_event(
         MouseEventKind::ScrollUp,
         10,
         5,
@@ -499,7 +499,7 @@ fn test_chat_mouse_wheel_scroll_does_not_recall_prompt_history() {
         "expected scrollable chat content"
     );
 
-    app.handle_mouse_event(MouseEvent::new(
+    app.handle_mouse_event(crate::alphacode_tui::tui::mouse_event(
         MouseEventKind::ScrollUp,
         10,
         5,
@@ -527,7 +527,7 @@ fn test_chat_mouse_scroll_down_reaches_bottom_without_dead_zone() {
         "expected scrollable chat content"
     );
 
-    app.handle_mouse_event(MouseEvent::new(
+    app.handle_mouse_event(crate::alphacode_tui::tui::mouse_event(
         MouseEventKind::ScrollUp,
         10,
         5,
@@ -541,7 +541,7 @@ fn test_chat_mouse_scroll_down_reaches_bottom_without_dead_zone() {
     );
     assert!(app.auto_scroll_paused);
 
-    app.handle_mouse_event(MouseEvent::new(
+    app.handle_mouse_event(crate::alphacode_tui::tui::mouse_event(
         MouseEventKind::ScrollDown,
         10,
         5,
@@ -1171,7 +1171,7 @@ fn test_chat_overscroll_reveals_status_line_then_rebounds() {
     );
 
     // Scroll down at the bottom => overscroll registered, line revealed.
-    app.handle_mouse_event(MouseEvent::new(
+    app.handle_mouse_event(crate::alphacode_tui::tui::mouse_event(
         MouseEventKind::ScrollDown,
         10,
         5,
@@ -1188,7 +1188,7 @@ fn test_chat_overscroll_reveals_status_line_then_rebounds() {
     );
 
     // Scrolling up cancels the overscroll line immediately.
-    app.handle_mouse_event(MouseEvent::new(
+    app.handle_mouse_event(crate::alphacode_tui::tui::mouse_event(
         MouseEventKind::ScrollUp,
         10,
         5,
