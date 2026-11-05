@@ -35,6 +35,18 @@ work are included in the release snapshot.
 
 ## Model selection and paste responsiveness follow-up
 
+The pinned Crossterm Windows VT-input patch (upstream PR #1030, commit
+`e2bc49e52a0f5813f5c15ceaa37b673b6b8414a7`) decodes Windows Terminal's native
+paste framing into `Event::Paste`. Windows Terminal's own Ctrl+V paste binding
+is preserved; no terminal-wide keyboard configuration changes are made. The
+patch coordinates VT input, bracketed paste and mouse capture, and restores
+console-mode bits on cleanup. Dependency tests cover the Windows parser and
+mode transformations. Source builds must honor the root Cargo patch/lockfile;
+this release is published as GitHub binaries, not a crates.io upload.
+
+Reference: https://github.com/crossterm-rs/crossterm/pull/1030
+
+
 - Ordinary terminal keys now pass through immediately. The old stream read ahead
   across key bursts and used 35/40 ms settling windows to infer multiline paste.
   That inference is removed: explicit Ctrl+V/Alt+V use the shared asynchronous
@@ -85,9 +97,9 @@ deduplicated by package/version (not build units or lockfile entries):
 
 | Target | Before | After |
 | --- | ---: | ---: |
-| Windows x64 MSVC | 408 | 405 |
-| Linux x64 GNU | 450 | 447 |
-| macOS ARM64 | 414 | 411 |
+| Windows x64 MSVC | 408 | 398 |
+| Linux x64 GNU | 450 | 440 |
+| macOS ARM64 | 414 | 404 |
 
 Platform counts legitimately differ: Linux uses Wayland/X11/accessibility stacks;
 macOS uses Objective-C/CoreGraphics; Windows uses Windows bindings. Optional AWS,

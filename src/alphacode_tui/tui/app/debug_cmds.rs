@@ -216,12 +216,12 @@ impl App {
             };
             use crossterm::event::{MouseButton, MouseEvent, MouseEventKind};
             let mut inject = |kind: MouseEventKind| {
-                self.handle_mouse_event(MouseEvent {
+                self.handle_mouse_event(MouseEvent::new(
                     kind,
-                    column: col,
+                    col,
                     row,
-                    modifiers: crossterm::event::KeyModifiers::empty(),
-                })
+                    crossterm::event::KeyModifiers::empty(),
+                ))
             };
             match kind {
                 "down" => {

@@ -8,7 +8,12 @@ fn test_side_diagram_uses_left_splitter_instead_of_rounded_box() {
 
     let _diagram_lock = crate::alphacode_tui::tui::mermaid::active_diagram_test_lock();
     crate::alphacode_tui::tui::mermaid::clear_active_diagrams();
-    crate::alphacode_tui::tui::mermaid::register_active_diagram(0x444, 900, 450, Some("side".to_string()));
+    crate::alphacode_tui::tui::mermaid::register_active_diagram(
+        0x444,
+        900,
+        450,
+        Some("side".to_string()),
+    );
 
     let backend = ratatui::backend::TestBackend::new(120, 40);
     let mut terminal = ratatui::Terminal::new(backend).expect("failed to create terminal");
@@ -118,12 +123,12 @@ fn test_mouse_horizontal_scroll_over_tool_side_panel_pans_without_focus_change()
         None,
     );
 
-    let scroll_only = app.handle_mouse_event(MouseEvent {
-        kind: MouseEventKind::ScrollRight,
-        column: 45,
-        row: 5,
-        modifiers: KeyModifiers::empty(),
-    });
+    let scroll_only = app.handle_mouse_event(MouseEvent::new(
+        MouseEventKind::ScrollRight,
+        45,
+        5,
+        KeyModifiers::empty(),
+    ));
 
     assert!(
         !scroll_only,
@@ -159,12 +164,12 @@ fn test_ctrl_mouse_scroll_over_tool_side_panel_zooms_images() {
         None,
     );
 
-    let scroll_only = app.handle_mouse_event(MouseEvent {
-        kind: MouseEventKind::ScrollUp,
-        column: 45,
-        row: 5,
-        modifiers: KeyModifiers::CONTROL,
-    });
+    let scroll_only = app.handle_mouse_event(MouseEvent::new(
+        MouseEventKind::ScrollUp,
+        45,
+        5,
+        KeyModifiers::CONTROL,
+    ));
 
     assert!(
         !scroll_only,
@@ -186,24 +191,24 @@ fn test_mouse_scroll_events_are_classified_as_scroll_only() {
         None,
     );
 
-    let scroll_only = app.handle_mouse_event(MouseEvent {
-        kind: MouseEventKind::ScrollDown,
-        column: 45,
-        row: 5,
-        modifiers: KeyModifiers::empty(),
-    });
+    let scroll_only = app.handle_mouse_event(MouseEvent::new(
+        MouseEventKind::ScrollDown,
+        45,
+        5,
+        KeyModifiers::empty(),
+    ));
 
     assert!(
         scroll_only,
         "scroll wheel events should be deferrable during streaming"
     );
 
-    let non_scroll = app.handle_mouse_event(MouseEvent {
-        kind: MouseEventKind::Down(MouseButton::Left),
-        column: 10,
-        row: 5,
-        modifiers: KeyModifiers::empty(),
-    });
+    let non_scroll = app.handle_mouse_event(MouseEvent::new(
+        MouseEventKind::Down(MouseButton::Left),
+        10,
+        5,
+        KeyModifiers::empty(),
+    ));
 
     assert!(!non_scroll, "clicks should still redraw immediately");
 }
@@ -220,7 +225,12 @@ fn test_handterm_native_scroll_command_updates_chat_offset() {
     terminal
         .draw(|f| crate::alphacode_tui::tui::ui::draw(f, &app))
         .expect("draw failed");
-    crate::alphacode_tui::tui::ui::record_layout_snapshot(Rect::new(0, 0, 50, 12), None, None, None);
+    crate::alphacode_tui::tui::ui::record_layout_snapshot(
+        Rect::new(0, 0, 50, 12),
+        None,
+        None,
+        None,
+    );
     assert!(
         crate::alphacode_tui::tui::ui::last_max_scroll() > 7,
         "scroll test content should exceed the viewport"
@@ -230,8 +240,14 @@ fn test_handterm_native_scroll_command_updates_chat_offset() {
         pane: handterm_native_scroll::PaneKind::Chat,
         delta: -2,
     });
-    assert_eq!(app.scroll_offset, 5, "the first row should render immediately");
-    assert_eq!(app.mouse_scroll_queue, -1, "the second row should remain queued");
+    assert_eq!(
+        app.scroll_offset, 5,
+        "the first row should render immediately"
+    );
+    assert_eq!(
+        app.mouse_scroll_queue, -1,
+        "the second row should remain queued"
+    );
     app.progress_mouse_scroll_animation();
     assert_eq!(app.scroll_offset, 4);
 
@@ -239,10 +255,19 @@ fn test_handterm_native_scroll_command_updates_chat_offset() {
         pane: handterm_native_scroll::PaneKind::Chat,
         delta: 3,
     });
-    assert_eq!(app.scroll_offset, 5, "the first row should render immediately");
-    assert_eq!(app.mouse_scroll_queue, 2, "later rows should animate on ticks");
+    assert_eq!(
+        app.scroll_offset, 5,
+        "the first row should render immediately"
+    );
+    assert_eq!(
+        app.mouse_scroll_queue, 2,
+        "later rows should animate on ticks"
+    );
     app.progress_mouse_scroll_animation();
-    assert_eq!(app.scroll_offset, 6, "the queued rows should be revealed separately");
+    assert_eq!(
+        app.scroll_offset, 6,
+        "the queued rows should be revealed separately"
+    );
     assert_eq!(app.mouse_scroll_queue, 1);
     app.progress_mouse_scroll_animation();
     assert_eq!(app.scroll_offset, 7);
@@ -313,12 +338,12 @@ fn test_mouse_scroll_help_overlay_updates_help_scroll() {
     let mut app = create_test_app();
     app.help_scroll = Some(5);
 
-    let scroll_only = app.handle_mouse_event(MouseEvent {
-        kind: MouseEventKind::ScrollDown,
-        column: 10,
-        row: 5,
-        modifiers: KeyModifiers::empty(),
-    });
+    let scroll_only = app.handle_mouse_event(MouseEvent::new(
+        MouseEventKind::ScrollDown,
+        10,
+        5,
+        KeyModifiers::empty(),
+    ));
 
     assert!(
         scroll_only,
@@ -326,12 +351,12 @@ fn test_mouse_scroll_help_overlay_updates_help_scroll() {
     );
     assert_eq!(app.help_scroll, Some(8));
 
-    let scroll_only = app.handle_mouse_event(MouseEvent {
-        kind: MouseEventKind::ScrollUp,
-        column: 10,
-        row: 5,
-        modifiers: KeyModifiers::empty(),
-    });
+    let scroll_only = app.handle_mouse_event(MouseEvent::new(
+        MouseEventKind::ScrollUp,
+        10,
+        5,
+        KeyModifiers::empty(),
+    ));
 
     assert!(scroll_only);
     assert_eq!(app.help_scroll, Some(5));
@@ -342,12 +367,12 @@ fn test_mouse_scroll_changelog_overlay_updates_changelog_scroll() {
     let mut app = create_test_app();
     app.changelog_scroll = Some(2);
 
-    let scroll_only = app.handle_mouse_event(MouseEvent {
-        kind: MouseEventKind::ScrollUp,
-        column: 10,
-        row: 5,
-        modifiers: KeyModifiers::empty(),
-    });
+    let scroll_only = app.handle_mouse_event(MouseEvent::new(
+        MouseEventKind::ScrollUp,
+        10,
+        5,
+        KeyModifiers::empty(),
+    ));
 
     assert!(
         scroll_only,
@@ -355,12 +380,12 @@ fn test_mouse_scroll_changelog_overlay_updates_changelog_scroll() {
     );
     assert_eq!(app.changelog_scroll, Some(0));
 
-    let scroll_only = app.handle_mouse_event(MouseEvent {
-        kind: MouseEventKind::ScrollDown,
-        column: 10,
-        row: 5,
-        modifiers: KeyModifiers::empty(),
-    });
+    let scroll_only = app.handle_mouse_event(MouseEvent::new(
+        MouseEventKind::ScrollDown,
+        10,
+        5,
+        KeyModifiers::empty(),
+    ));
 
     assert!(scroll_only);
     assert_eq!(app.changelog_scroll, Some(3));
@@ -399,12 +424,12 @@ fn test_mouse_scroll_over_unfocused_diagram_scrolls_chat_without_resizing_pane()
         app.mouse_scroll_target = None;
         app.diagram_focus = false;
 
-        let scroll_only = app.handle_mouse_event(MouseEvent {
-            kind: MouseEventKind::ScrollUp,
+        let scroll_only = app.handle_mouse_event(MouseEvent::new(
+            MouseEventKind::ScrollUp,
             column,
             row,
-            modifiers: KeyModifiers::empty(),
-        });
+            KeyModifiers::empty(),
+        ));
 
         assert!(
             !scroll_only,
@@ -449,12 +474,12 @@ fn test_mouse_scroll_over_focused_diagram_can_noop_at_top() {
     );
 
     let before = app.diagram_scroll_y;
-    let scroll_only = app.handle_mouse_event(MouseEvent {
-        kind: MouseEventKind::ScrollUp,
-        column: 90,
-        row: 10,
-        modifiers: KeyModifiers::empty(),
-    });
+    let scroll_only = app.handle_mouse_event(MouseEvent::new(
+        MouseEventKind::ScrollUp,
+        90,
+        10,
+        KeyModifiers::empty(),
+    ));
 
     assert!(
         scroll_only,
@@ -491,20 +516,20 @@ fn test_dragging_diagram_border_resizes_immediately_without_animation() {
         None,
     );
 
-    app.handle_mouse_event(MouseEvent {
-        kind: MouseEventKind::Down(MouseButton::Left),
-        column: 80,
-        row: 10,
-        modifiers: KeyModifiers::empty(),
-    });
+    app.handle_mouse_event(MouseEvent::new(
+        MouseEventKind::Down(MouseButton::Left),
+        80,
+        10,
+        KeyModifiers::empty(),
+    ));
     assert!(app.diagram_pane_dragging);
 
-    app.handle_mouse_event(MouseEvent {
-        kind: MouseEventKind::Drag(MouseButton::Left),
-        column: 72,
-        row: 10,
-        modifiers: KeyModifiers::empty(),
-    });
+    app.handle_mouse_event(MouseEvent::new(
+        MouseEventKind::Drag(MouseButton::Left),
+        72,
+        10,
+        KeyModifiers::empty(),
+    ));
 
     assert_eq!(app.diagram_pane_ratio, 40);
     assert_eq!(app.diagram_pane_ratio_from, 40);
@@ -973,15 +998,17 @@ fn test_top_level_command_suggestions_include_all_non_hidden_commands() {
 fn test_logout_clear_anthropic_accounts_removes_all_accounts_once() {
     with_temp_alphacode_home(|| {
         for index in 1..=3 {
-            crate::alphacode_base::auth::claude::upsert_account(crate::alphacode_base::auth::claude::AnthropicAccount {
-                label: format!("requested-{index}"),
-                access: format!("access-{index}"),
-                refresh: format!("refresh-{index}"),
-                expires: 100 + index,
-                email: None,
-                subscription_type: None,
-                scopes: Vec::new(),
-            })
+            crate::alphacode_base::auth::claude::upsert_account(
+                crate::alphacode_base::auth::claude::AnthropicAccount {
+                    label: format!("requested-{index}"),
+                    access: format!("access-{index}"),
+                    refresh: format!("refresh-{index}"),
+                    expires: 100 + index,
+                    email: None,
+                    subscription_type: None,
+                    scopes: Vec::new(),
+                },
+            )
             .unwrap();
         }
         crate::alphacode_base::auth::claude::set_active_account("claude-3").unwrap();
@@ -993,8 +1020,15 @@ fn test_logout_clear_anthropic_accounts_removes_all_accounts_once() {
             .collect();
         assert_eq!(labels, vec!["claude-1", "claude-2", "claude-3"]);
 
-        assert_eq!(crate::alphacode_base::auth::claude::clear_accounts().unwrap(), 3);
-        assert!(crate::alphacode_base::auth::claude::list_accounts().unwrap().is_empty());
+        assert_eq!(
+            crate::alphacode_base::auth::claude::clear_accounts().unwrap(),
+            3
+        );
+        assert!(
+            crate::alphacode_base::auth::claude::list_accounts()
+                .unwrap()
+                .is_empty()
+        );
         assert!(crate::alphacode_base::auth::claude::active_account_label().is_none());
     });
 }
@@ -1310,7 +1344,9 @@ fn test_agents_command_opens_agent_picker() {
     );
     assert!(picker.entries.iter().any(|entry| matches!(
         entry.action,
-        crate::alphacode_tui::tui::PickerAction::AgentTarget(crate::alphacode_tui::tui::AgentModelTarget::Swarm)
+        crate::alphacode_tui::tui::PickerAction::AgentTarget(
+            crate::alphacode_tui::tui::AgentModelTarget::Swarm
+        )
     )));
     let swarm_entry = picker
         .entries
@@ -1318,7 +1354,9 @@ fn test_agents_command_opens_agent_picker() {
         .find(|entry| {
             matches!(
                 entry.action,
-                crate::alphacode_tui::tui::PickerAction::AgentTarget(crate::alphacode_tui::tui::AgentModelTarget::Swarm)
+                crate::alphacode_tui::tui::PickerAction::AgentTarget(
+                    crate::alphacode_tui::tui::AgentModelTarget::Swarm
+                )
             )
         })
         .expect("swarm entry");
@@ -1366,7 +1404,9 @@ fn test_agents_picker_uses_provider_default_when_inherited_model_is_unknown() {
             .find(|entry| {
                 matches!(
                     entry.action,
-                    crate::alphacode_tui::tui::PickerAction::AgentTarget(crate::alphacode_tui::tui::AgentModelTarget::Swarm)
+                    crate::alphacode_tui::tui::PickerAction::AgentTarget(
+                        crate::alphacode_tui::tui::AgentModelTarget::Swarm
+                    )
                 )
             })
             .expect("swarm entry should exist");
@@ -1398,4 +1438,3 @@ fn test_agent_model_picker_inherit_row_uses_provider_default_when_inherited_mode
         ));
     });
 }
-

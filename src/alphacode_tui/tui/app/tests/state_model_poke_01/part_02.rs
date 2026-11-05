@@ -25,12 +25,12 @@ fn test_mouse_scroll_over_tool_side_panel_keeps_typing_in_chat() {
         None,
     );
 
-    let scroll_only = app.handle_mouse_event(MouseEvent {
-        kind: MouseEventKind::ScrollDown,
-        column: 45,
-        row: 5,
-        modifiers: KeyModifiers::empty(),
-    });
+    let scroll_only = app.handle_mouse_event(MouseEvent::new(
+        MouseEventKind::ScrollDown,
+        45,
+        5,
+        KeyModifiers::empty(),
+    ));
     assert!(
         !scroll_only,
         "side-panel wheel scroll should still keep chat focus while redrawing immediately"
@@ -78,16 +78,19 @@ fn test_mouse_scroll_over_tool_side_panel_updates_visible_render() {
         .expect("expected side panel area after render");
     assert!(before.contains("side-scroll-01"));
 
-    let _scroll_only = app.handle_mouse_event(MouseEvent {
-        kind: MouseEventKind::ScrollDown,
-        column: diff_area.x + diff_area.width / 2,
-        row: diff_area.y + diff_area.height.saturating_sub(2).min(3),
-        modifiers: KeyModifiers::empty(),
-    });
+    let _scroll_only = app.handle_mouse_event(MouseEvent::new(
+        MouseEventKind::ScrollDown,
+        diff_area.x + diff_area.width / 2,
+        diff_area.y + diff_area.height.saturating_sub(2).min(3),
+        KeyModifiers::empty(),
+    ));
     assert_eq!(app.diff_pane_scroll, 3);
 
     let after = render_and_snap(&app, &mut terminal);
-    assert_eq!(crate::alphacode_tui::tui::ui::last_diff_pane_effective_scroll(), 3);
+    assert_eq!(
+        crate::alphacode_tui::tui::ui::last_diff_pane_effective_scroll(),
+        3
+    );
     assert_ne!(
         before, after,
         "hover scrolling should repaint the side panel"
@@ -183,7 +186,9 @@ fn test_pinned_content_uses_left_splitter_instead_of_rounded_box() {
                 "file_path": "src/demo.rs",
                 "content": "fn demo() {}\n"
             }),
-            intent: None, thought_signature: None, }),
+            intent: None,
+            thought_signature: None,
+        }),
     }];
     app.bump_display_messages_version();
 
@@ -226,7 +231,9 @@ fn test_file_diff_uses_left_splitter_instead_of_rounded_box() {
                 "file_path": file_path.display().to_string(),
                 "content": "fn demo() {\n    println!(\"hi\");\n}\n"
             }),
-            intent: None, thought_signature: None, }),
+            intent: None,
+            thought_signature: None,
+        }),
     }];
     app.bump_display_messages_version();
 
@@ -243,4 +250,3 @@ fn test_file_diff_uses_left_splitter_instead_of_rounded_box() {
     assert_eq!(buf[(diff_area.x, diff_area.y + 1)].symbol(), "│");
     assert!(text.contains("demo.rs"), "rendered text: {text}");
 }
-

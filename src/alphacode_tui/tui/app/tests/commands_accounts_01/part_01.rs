@@ -32,9 +32,10 @@ fn session_picker_resume_action_keeps_overlay_open() {
                 server_name: None,
                 server_icon: None,
                 source: crate::alphacode_tui::tui::session_picker::SessionSource::Alphacode,
-                resume_target: crate::alphacode_tui::tui::session_picker::ResumeTarget::AlphacodeSession {
-                    session_id: "session_keep_open".to_string(),
-                },
+                resume_target:
+                    crate::alphacode_tui::tui::session_picker::ResumeTarget::AlphacodeSession {
+                        session_id: "session_keep_open".to_string(),
+                    },
                 external_path: None,
             },
         ]),
@@ -83,9 +84,10 @@ fn session_picker_enter_queues_current_terminal_resume_and_closes_overlay() {
                 server_name: None,
                 server_icon: None,
                 source: crate::alphacode_tui::tui::session_picker::SessionSource::Alphacode,
-                resume_target: crate::alphacode_tui::tui::session_picker::ResumeTarget::AlphacodeSession {
-                    session_id: "session_here_123".to_string(),
-                },
+                resume_target:
+                    crate::alphacode_tui::tui::session_picker::ResumeTarget::AlphacodeSession {
+                        session_id: "session_here_123".to_string(),
+                    },
                 external_path: None,
             },
         ]),
@@ -99,7 +101,9 @@ fn session_picker_enter_queues_current_terminal_resume_and_closes_overlay() {
 
     assert!(app.session_picker_overlay.is_none());
     assert_eq!(
-        app.workspace_client.take_pending_resume_session().as_deref(),
+        app.workspace_client
+            .take_pending_resume_session()
+            .as_deref(),
         Some("session_here_123")
     );
 }
@@ -326,10 +330,7 @@ fn slash_provider_test_coverage_with_args_shows_provider_detail() {
             .starts_with("# Provider test coverage")
     );
     assert!(app.model_status_content.contains("Provider: fpt"));
-    assert!(
-        app.model_status_content
-            .contains("Model: FPT.AI-KIE-v1.7")
-    );
+    assert!(app.model_status_content.contains("Model: FPT.AI-KIE-v1.7"));
 }
 
 #[test]
@@ -340,22 +341,22 @@ fn slash_provider_test_coverage_overlay_scrolls_with_mouse_wheel() {
 
     assert_eq!(app.model_status_scroll, Some(0));
 
-    let scroll_only = app.handle_mouse_event(crossterm::event::MouseEvent {
-        kind: crossterm::event::MouseEventKind::ScrollDown,
-        column: 10,
-        row: 10,
-        modifiers: crossterm::event::KeyModifiers::empty(),
-    });
+    let scroll_only = app.handle_mouse_event(crossterm::event::MouseEvent::new(
+        crossterm::event::MouseEventKind::ScrollDown,
+        10,
+        10,
+        crossterm::event::KeyModifiers::empty(),
+    ));
     assert!(scroll_only);
     assert!(app.model_status_scroll.unwrap_or(0) > 0);
 
     let before = app.model_status_scroll.unwrap_or(0);
-    let scroll_only = app.handle_mouse_event(crossterm::event::MouseEvent {
-        kind: crossterm::event::MouseEventKind::ScrollUp,
-        column: 10,
-        row: 10,
-        modifiers: crossterm::event::KeyModifiers::empty(),
-    });
+    let scroll_only = app.handle_mouse_event(crossterm::event::MouseEvent::new(
+        crossterm::event::MouseEventKind::ScrollUp,
+        10,
+        10,
+        crossterm::event::KeyModifiers::empty(),
+    ));
     assert!(scroll_only);
     assert!(app.model_status_scroll.unwrap_or(usize::MAX) < before);
 }
@@ -443,12 +444,12 @@ fn session_picker_preview_wheel_uses_shared_scroll_momentum() {
     // A wheel up over the preview pane (right ~60% of width) routes through the
     // shared mouse-scroll momentum (enqueue + drain) instead of an instant jump,
     // and actually moves the preview offset.
-    let scroll_only = app.handle_mouse_event(crossterm::event::MouseEvent {
-        kind: crossterm::event::MouseEventKind::ScrollUp,
-        column: 90,
-        row: 10,
-        modifiers: crossterm::event::KeyModifiers::empty(),
-    });
+    let scroll_only = app.handle_mouse_event(crossterm::event::MouseEvent::new(
+        crossterm::event::MouseEventKind::ScrollUp,
+        90,
+        10,
+        crossterm::event::KeyModifiers::empty(),
+    ));
     assert!(
         scroll_only,
         "preview wheel should be classified as scroll-only"
@@ -595,9 +596,11 @@ fn test_fast_release_command_starts_synthetic_user_turn() {
         .last()
         .expect("missing launch notice");
     assert_eq!(notice.role, "system");
-    assert!(notice
-        .content
-        .contains("Starting logical commits + push + fast local release"));
+    assert!(
+        notice
+            .content
+            .contains("Starting logical commits + push + fast local release")
+    );
 }
 
 #[test]
@@ -618,7 +621,8 @@ fn test_triage_command_starts_synthetic_user_turn() {
 
 #[test]
 fn test_triage_command_includes_focus_in_prompt() {
-    let prompt = crate::alphacode_tui::tui::app::commands::build_triage_prompt(" only crash reports");
+    let prompt =
+        crate::alphacode_tui::tui::app::commands::build_triage_prompt(" only crash reports");
     assert!(prompt.contains("Triage the open GitHub issues"));
     assert!(prompt.contains("Additional focus from the user: only crash reports"));
 }
@@ -663,9 +667,11 @@ fn test_remote_release_command_uses_tag_only_ci_path() {
         .last()
         .expect("missing launch notice");
     assert_eq!(notice.role, "system");
-    assert!(notice
-        .content
-        .contains("Starting logical commits + push + remote release"));
+    assert!(
+        notice
+            .content
+            .contains("Starting logical commits + push + remote release")
+    );
 
     let prompt = commands::build_remote_release_prompt();
     assert!(prompt.contains("quick-release.sh --remote"));
@@ -686,9 +692,11 @@ fn test_commit_push_release_alias_starts_synthetic_user_turn() {
         .last()
         .expect("missing launch notice");
     assert_eq!(notice.role, "system");
-    assert!(notice
-        .content
-        .contains("Starting logical commits + push + fast local release"));
+    assert!(
+        notice
+            .content
+            .contains("Starting logical commits + push + fast local release")
+    );
 }
 
 #[test]
@@ -1155,10 +1163,7 @@ fn test_fork_command_with_prompt_forks_session() {
     app.input = "/fork try the other approach".to_string();
     app.submit_input();
 
-    let msg = app
-        .display_messages()
-        .last()
-        .expect("missing fork message");
+    let msg = app.display_messages().last().expect("missing fork message");
     assert_eq!(msg.role, "system");
     assert!(msg.content.contains("created for the next prompt"));
     let session_id = msg
@@ -1191,10 +1196,7 @@ fn test_fork_command_without_prompt_forks_idle_session() {
     app.input = "/fork".to_string();
     app.submit_input();
 
-    let msg = app
-        .display_messages()
-        .last()
-        .expect("missing fork message");
+    let msg = app.display_messages().last().expect("missing fork message");
     assert_eq!(msg.role, "system");
     assert!(msg.content.contains("✂ Fork →"));
     let session_id = msg
@@ -1476,7 +1478,9 @@ fn test_observe_updates_latest_tool_context_only() {
         id: "tool_1".to_string(),
         name: "read".to_string(),
         input: serde_json::json!({"file_path": "src/main.rs", "start_line": 1, "end_line": 10}),
-        intent: None, thought_signature: None, };
+        intent: None,
+        thought_signature: None,
+    };
     app.observe_tool_call(&tool_call);
 
     let page = app.side_panel.focused_page().expect("missing observe page");
@@ -1515,7 +1519,9 @@ fn test_observe_ignores_noise_tools_and_preserves_latest_useful_context() {
         id: "tool_read".to_string(),
         name: "read".to_string(),
         input: serde_json::json!({"file_path": "src/main.rs"}),
-        intent: None, thought_signature: None, };
+        intent: None,
+        thought_signature: None,
+    };
     app.observe_tool_result(&read_tool, "fn main() {}", false, Some("read"));
     let before = app
         .side_panel
@@ -1528,7 +1534,9 @@ fn test_observe_ignores_noise_tools_and_preserves_latest_useful_context() {
         id: "tool_side_panel".to_string(),
         name: "side_panel".to_string(),
         input: serde_json::json!({"action": "write", "page_id": "plan"}),
-        intent: None, thought_signature: None, };
+        intent: None,
+        thought_signature: None,
+    };
     app.observe_tool_call(&noise_tool);
     app.observe_tool_result(&noise_tool, "ok", false, Some("side_panel"));
 
@@ -1634,4 +1642,3 @@ fn test_fast_on_while_processing_mentions_next_request_locally() {
         Some("Fast: on (next request)".to_string())
     );
 }
-

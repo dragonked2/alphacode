@@ -1200,12 +1200,12 @@ mod tests {
             .expect("render should record action list area");
 
         let initially_selected = picker.selected;
-        picker.handle_overlay_mouse(MouseEvent {
-            kind: MouseEventKind::Down(MouseButton::Left),
-            column: list_area.x + 1,
-            row: list_area.y,
-            modifiers: KeyModifiers::empty(),
-        });
+        picker.handle_overlay_mouse(MouseEvent::new(
+            MouseEventKind::Down(MouseButton::Left),
+            list_area.x + 1,
+            list_area.y,
+            KeyModifiers::empty(),
+        ));
         assert_eq!(
             picker.selected, initially_selected,
             "provider group header rows should not be selectable"
@@ -1213,12 +1213,12 @@ mod tests {
 
         let expected_first_action = picker.items[picker.filtered[0]].title.clone();
         // Row 0 is the provider group header; row 1 is the first sorted action.
-        picker.handle_overlay_mouse(MouseEvent {
-            kind: MouseEventKind::Down(MouseButton::Left),
-            column: list_area.x + 1,
-            row: list_area.y + 1,
-            modifiers: KeyModifiers::empty(),
-        });
+        picker.handle_overlay_mouse(MouseEvent::new(
+            MouseEventKind::Down(MouseButton::Left),
+            list_area.x + 1,
+            list_area.y + 1,
+            KeyModifiers::empty(),
+        ));
 
         assert_eq!(
             picker.selected_item().map(|item| item.title.as_str()),

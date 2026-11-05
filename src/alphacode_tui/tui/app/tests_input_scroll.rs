@@ -346,5 +346,3 @@ fn test_remote_cmd_enter_does_not_queue_while_processing() {
     assert!(app.input().is_empty());
     assert_eq!(app.queued_messages().len(), 0);
 }
-
-

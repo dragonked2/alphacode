@@ -47,7 +47,9 @@ fn test_local_tool_error_copy_badge_shortcut_supported() {
         .unwrap();
 
     assert_eq!(app.status_notice(), Some("Copied error".to_string()));
-    let copied = clipboard.text().expect("tool error should reach the clipboard");
+    let copied = clipboard
+        .text()
+        .expect("tool error should reach the clipboard");
     assert!(
         copied.contains("permission denied"),
         "clipboard should carry the tool error: {copied:?}"
@@ -111,7 +113,9 @@ fn test_local_blockquote_copy_badge_shortcut_supported() {
         .unwrap();
 
     assert_eq!(app.status_notice(), Some("Copied quote".to_string()));
-    let copied = clipboard.text().expect("blockquote should reach the clipboard");
+    let copied = clipboard
+        .text()
+        .expect("blockquote should reach the clipboard");
     assert!(
         copied.contains("the quick brown fox") && copied.contains("jumps over the lazy dog"),
         "clipboard should carry the quoted lines: {copied:?}"
@@ -435,7 +439,8 @@ fn test_copy_selection_mouse_drag_extracts_expected_multiline_range() {
     let mut fn_line = None;
     let mut print_line = None;
     for abs_line in visible_start..visible_end {
-        let text = crate::alphacode_tui::tui::ui::copy_viewport_line_text(abs_line).unwrap_or_default();
+        let text =
+            crate::alphacode_tui::tui::ui::copy_viewport_line_text(abs_line).unwrap_or_default();
         if text.contains("fn main() {") {
             fn_line = Some((abs_line, text.clone()));
         }
@@ -472,18 +477,18 @@ fn test_copy_selection_mouse_drag_extracts_expected_multiline_range() {
         .map(|(column, _)| column)
         .expect("screen x for selection end");
 
-    app.handle_mouse_event(MouseEvent {
-        kind: MouseEventKind::Down(MouseButton::Left),
-        column: start_x,
-        row: start_row,
-        modifiers: KeyModifiers::empty(),
-    });
-    app.handle_mouse_event(MouseEvent {
-        kind: MouseEventKind::Drag(MouseButton::Left),
-        column: end_x,
-        row: end_row,
-        modifiers: KeyModifiers::empty(),
-    });
+    app.handle_mouse_event(MouseEvent::new(
+        MouseEventKind::Down(MouseButton::Left),
+        start_x,
+        start_row,
+        KeyModifiers::empty(),
+    ));
+    app.handle_mouse_event(MouseEvent::new(
+        MouseEventKind::Drag(MouseButton::Left),
+        end_x,
+        end_row,
+        KeyModifiers::empty(),
+    ));
 
     let selected = app
         .current_copy_selection_text()
@@ -499,12 +504,12 @@ fn test_copy_selection_mouse_drag_extracts_expected_multiline_range() {
         selected.contains("println!(\"hello\");"),
         "selection missing println line: {selected}"
     );
-    app.handle_mouse_event(MouseEvent {
-        kind: MouseEventKind::Up(MouseButton::Left),
-        column: end_x,
-        row: end_row,
-        modifiers: KeyModifiers::empty(),
-    });
+    app.handle_mouse_event(MouseEvent::new(
+        MouseEventKind::Up(MouseButton::Left),
+        end_x,
+        end_row,
+        KeyModifiers::empty(),
+    ));
     assert!(app.copy_selection_mode);
     assert!(!app.copy_selection_dragging);
 }
@@ -538,18 +543,18 @@ fn test_copy_selection_mouse_click_does_not_enter_mode() {
         })
         .expect("screen x for println");
 
-    app.handle_mouse_event(MouseEvent {
-        kind: MouseEventKind::Down(MouseButton::Left),
-        column: col,
+    app.handle_mouse_event(MouseEvent::new(
+        MouseEventKind::Down(MouseButton::Left),
+        col,
         row,
-        modifiers: KeyModifiers::empty(),
-    });
-    app.handle_mouse_event(MouseEvent {
-        kind: MouseEventKind::Up(MouseButton::Left),
-        column: col,
+        KeyModifiers::empty(),
+    ));
+    app.handle_mouse_event(MouseEvent::new(
+        MouseEventKind::Up(MouseButton::Left),
+        col,
         row,
-        modifiers: KeyModifiers::empty(),
-    });
+        KeyModifiers::empty(),
+    ));
 
     assert!(!app.copy_selection_mode);
     assert!(app.copy_selection_anchor.is_none());
@@ -572,7 +577,8 @@ fn test_copy_selection_mouse_drag_auto_copies_and_exits_mode() {
     let mut fn_line = None;
     let mut print_line = None;
     for abs_line in visible_start..visible_end {
-        let text = crate::alphacode_tui::tui::ui::copy_viewport_line_text(abs_line).unwrap_or_default();
+        let text =
+            crate::alphacode_tui::tui::ui::copy_viewport_line_text(abs_line).unwrap_or_default();
         if text.contains("fn main() {") {
             fn_line = Some((abs_line, text.clone()));
         }
@@ -609,30 +615,30 @@ fn test_copy_selection_mouse_drag_auto_copies_and_exits_mode() {
         .expect("screen x for selection end");
 
     app.handle_copy_selection_mouse_with(
-        MouseEvent {
-            kind: MouseEventKind::Down(MouseButton::Left),
-            column: start_x,
-            row: start_row,
-            modifiers: KeyModifiers::empty(),
-        },
+        MouseEvent::new(
+            MouseEventKind::Down(MouseButton::Left),
+            start_x,
+            start_row,
+            KeyModifiers::empty(),
+        ),
         |_| true,
     );
     app.handle_copy_selection_mouse_with(
-        MouseEvent {
-            kind: MouseEventKind::Drag(MouseButton::Left),
-            column: end_x,
-            row: end_row,
-            modifiers: KeyModifiers::empty(),
-        },
+        MouseEvent::new(
+            MouseEventKind::Drag(MouseButton::Left),
+            end_x,
+            end_row,
+            KeyModifiers::empty(),
+        ),
         |_| true,
     );
     app.handle_copy_selection_mouse_with(
-        MouseEvent {
-            kind: MouseEventKind::Up(MouseButton::Left),
-            column: end_x,
-            row: end_row,
-            modifiers: KeyModifiers::empty(),
-        },
+        MouseEvent::new(
+            MouseEventKind::Up(MouseButton::Left),
+            end_x,
+            end_row,
+            KeyModifiers::empty(),
+        ),
         |text| {
             *copied_for_closure.lock().unwrap() = text.to_string();
             true
@@ -703,21 +709,21 @@ fn test_side_panel_mouse_drag_extracts_expected_text() {
         .expect("screen x for side selection end");
 
     app.handle_copy_selection_mouse_with(
-        MouseEvent {
-            kind: MouseEventKind::Down(MouseButton::Left),
+        MouseEvent::new(
+            MouseEventKind::Down(MouseButton::Left),
             column,
             row,
-            modifiers: KeyModifiers::empty(),
-        },
+            KeyModifiers::empty(),
+        ),
         |_| true,
     );
     app.handle_copy_selection_mouse_with(
-        MouseEvent {
-            kind: MouseEventKind::Drag(MouseButton::Left),
-            column: end_column,
+        MouseEvent::new(
+            MouseEventKind::Drag(MouseButton::Left),
+            end_column,
             row,
-            modifiers: KeyModifiers::empty(),
-        },
+            KeyModifiers::empty(),
+        ),
         |_| true,
     );
 
@@ -734,12 +740,12 @@ fn test_side_panel_mouse_drag_extracts_expected_text() {
     );
 
     app.handle_copy_selection_mouse_with(
-        MouseEvent {
-            kind: MouseEventKind::Up(MouseButton::Left),
-            column: end_column,
+        MouseEvent::new(
+            MouseEventKind::Up(MouseButton::Left),
+            end_column,
             row,
-            modifiers: KeyModifiers::empty(),
-        },
+            KeyModifiers::empty(),
+        ),
         |text| {
             *copied_for_closure.lock().unwrap() = text.to_string();
             true
@@ -814,8 +820,14 @@ fn test_ctrl_a_copies_chat_viewport_with_context_when_input_empty() {
     let range = app
         .normalized_copy_selection()
         .expect("expected viewport context range");
-    assert_eq!(range.start.pane, crate::alphacode_tui::tui::CopySelectionPane::Chat);
-    assert_eq!(range.end.pane, crate::alphacode_tui::tui::CopySelectionPane::Chat);
+    assert_eq!(
+        range.start.pane,
+        crate::alphacode_tui::tui::CopySelectionPane::Chat
+    );
+    assert_eq!(
+        range.end.pane,
+        crate::alphacode_tui::tui::CopySelectionPane::Chat
+    );
     assert_eq!(range.start.abs_line, expected_start);
     assert_eq!(range.end.abs_line, expected_end);
     let preselected_text = app
@@ -882,22 +894,22 @@ fn test_copy_selection_drag_to_top_edge_auto_scrolls_chat() {
     let col = area.x + 1;
 
     // Anchor in the middle of the viewport.
-    app.handle_mouse_event(MouseEvent {
-        kind: MouseEventKind::Down(MouseButton::Left),
-        column: col,
-        row: lower_row,
-        modifiers: KeyModifiers::empty(),
-    });
+    app.handle_mouse_event(MouseEvent::new(
+        MouseEventKind::Down(MouseButton::Left),
+        col,
+        lower_row,
+        KeyModifiers::empty(),
+    ));
 
     let before = app.scroll_offset();
     // Dragging to the top boundary row should pull more transcript into view,
     // just like selecting past the top edge of a browser window.
-    app.handle_mouse_event(MouseEvent {
-        kind: MouseEventKind::Drag(MouseButton::Left),
-        column: col,
-        row: top_row,
-        modifiers: KeyModifiers::empty(),
-    });
+    app.handle_mouse_event(MouseEvent::new(
+        MouseEventKind::Drag(MouseButton::Left),
+        col,
+        top_row,
+        KeyModifiers::empty(),
+    ));
 
     assert!(
         app.scroll_offset() < before,
@@ -950,16 +962,14 @@ fn test_copy_selection_drag_to_top_edge_auto_scrolls_chat() {
     }
 
     // Releasing the mouse stops the continuous autoscroll.
-    app.handle_mouse_event(MouseEvent {
-        kind: MouseEventKind::Up(MouseButton::Left),
-        column: col,
-        row: top_row,
-        modifiers: KeyModifiers::empty(),
-    });
-    assert!(!app.progress_copy_selection_edge_autoscroll());
-    assert!(!crate::alphacode_tui::tui::TuiState::copy_selection_edge_autoscroll_active(
-        &app
+    app.handle_mouse_event(MouseEvent::new(
+        MouseEventKind::Up(MouseButton::Left),
+        col,
+        top_row,
+        KeyModifiers::empty(),
     ));
+    assert!(!app.progress_copy_selection_edge_autoscroll());
+    assert!(!crate::alphacode_tui::tui::TuiState::copy_selection_edge_autoscroll_active(&app));
 }
 
 #[test]
@@ -1010,20 +1020,20 @@ fn test_copy_selection_drag_near_top_edge_keeps_auto_scrolling() {
         "test must drag strictly inside the top boundary row"
     );
 
-    app.handle_mouse_event(MouseEvent {
-        kind: MouseEventKind::Down(MouseButton::Left),
-        column: col,
-        row: lower_row,
-        modifiers: KeyModifiers::empty(),
-    });
+    app.handle_mouse_event(MouseEvent::new(
+        MouseEventKind::Down(MouseButton::Left),
+        col,
+        lower_row,
+        KeyModifiers::empty(),
+    ));
 
     let before = app.scroll_offset();
-    app.handle_mouse_event(MouseEvent {
-        kind: MouseEventKind::Drag(MouseButton::Left),
-        column: col,
-        row: near_top_row,
-        modifiers: KeyModifiers::empty(),
-    });
+    app.handle_mouse_event(MouseEvent::new(
+        MouseEventKind::Drag(MouseButton::Left),
+        col,
+        near_top_row,
+        KeyModifiers::empty(),
+    ));
     assert!(
         app.scroll_offset() < before,
         "drag near (not on) the top edge should auto-scroll up (before={before}, after={})",
@@ -1052,15 +1062,13 @@ fn test_copy_selection_drag_near_top_edge_keeps_auto_scrolling() {
     }
 
     // Releasing the mouse stops the continuous autoscroll.
-    app.handle_mouse_event(MouseEvent {
-        kind: MouseEventKind::Up(MouseButton::Left),
-        column: col,
-        row: near_top_row,
-        modifiers: KeyModifiers::empty(),
-    });
-    assert!(!crate::alphacode_tui::tui::TuiState::copy_selection_edge_autoscroll_active(
-        &app
+    app.handle_mouse_event(MouseEvent::new(
+        MouseEventKind::Up(MouseButton::Left),
+        col,
+        near_top_row,
+        KeyModifiers::empty(),
     ));
+    assert!(!crate::alphacode_tui::tui::TuiState::copy_selection_edge_autoscroll_active(&app));
 }
 
 #[test]
@@ -1133,20 +1141,20 @@ fn test_copy_selection_drag_to_bottom_edge_when_pinned_does_not_snap_or_autoscro
 
     // Anchor higher up in the viewport.
     let anchor_row = area.y + 1;
-    app.handle_mouse_event(MouseEvent {
-        kind: MouseEventKind::Down(MouseButton::Left),
-        column: col,
-        row: anchor_row,
-        modifiers: KeyModifiers::empty(),
-    });
+    app.handle_mouse_event(MouseEvent::new(
+        MouseEventKind::Down(MouseButton::Left),
+        col,
+        anchor_row,
+        KeyModifiers::empty(),
+    ));
     let before_scroll = app.scroll_offset();
 
-    app.handle_mouse_event(MouseEvent {
-        kind: MouseEventKind::Drag(MouseButton::Left),
-        column: col,
-        row: target_row,
-        modifiers: KeyModifiers::empty(),
-    });
+    app.handle_mouse_event(MouseEvent::new(
+        MouseEventKind::Drag(MouseButton::Left),
+        col,
+        target_row,
+        KeyModifiers::empty(),
+    ));
 
     // No autoscroll should be armed: there is nothing below to pull in.
     assert!(
@@ -1167,12 +1175,12 @@ fn test_copy_selection_drag_to_bottom_edge_when_pinned_does_not_snap_or_autoscro
         "selection should extend to the line under the cursor, not snap to the last line"
     );
 
-    app.handle_mouse_event(MouseEvent {
-        kind: MouseEventKind::Up(MouseButton::Left),
-        column: col,
-        row: target_row,
-        modifiers: KeyModifiers::empty(),
-    });
+    app.handle_mouse_event(MouseEvent::new(
+        MouseEventKind::Up(MouseButton::Left),
+        col,
+        target_row,
+        KeyModifiers::empty(),
+    ));
 }
 
 #[test]
@@ -1227,7 +1235,8 @@ fn test_copy_selection_drag_below_last_line_fully_selects_last_line() {
                 .unwrap_or(false)
         })
         .expect("a non-empty visible content line");
-    let last_text = crate::alphacode_tui::tui::ui::copy_viewport_line_text(last_line).unwrap_or_default();
+    let last_text =
+        crate::alphacode_tui::tui::ui::copy_viewport_line_text(last_line).unwrap_or_default();
     let last_width = unicode_width::UnicodeWidthStr::width(last_text.as_str());
 
     let layout = crate::alphacode_tui::tui::ui::last_layout_snapshot().expect("layout snapshot");
@@ -1242,12 +1251,12 @@ fn test_copy_selection_drag_below_last_line_fully_selects_last_line() {
                 .unwrap_or(false)
         })
         .expect("a screen column mapping to the last content line");
-    app.handle_mouse_event(MouseEvent {
-        kind: MouseEventKind::Down(MouseButton::Left),
-        column: anchor_x,
-        row: last_content_row,
-        modifiers: KeyModifiers::empty(),
-    });
+    app.handle_mouse_event(MouseEvent::new(
+        MouseEventKind::Down(MouseButton::Left),
+        anchor_x,
+        last_content_row,
+        KeyModifiers::empty(),
+    ));
 
     // Drag straight down, past the bottom of the pane, with the cursor x landing
     // partway through (not at the end of) the last line. Even so the whole last
@@ -1259,12 +1268,12 @@ fn test_copy_selection_drag_below_last_line_fully_selects_last_line() {
         "test must drag strictly below the last content row"
     );
     let before_scroll = app.scroll_offset();
-    app.handle_mouse_event(MouseEvent {
-        kind: MouseEventKind::Drag(MouseButton::Left),
-        column: mid_x,
-        row: below_row,
-        modifiers: KeyModifiers::empty(),
-    });
+    app.handle_mouse_event(MouseEvent::new(
+        MouseEventKind::Drag(MouseButton::Left),
+        mid_x,
+        below_row,
+        KeyModifiers::empty(),
+    ));
 
     // No autoscroll (nothing below), and no scroll movement.
     assert!(
@@ -1291,12 +1300,12 @@ fn test_copy_selection_drag_below_last_line_fully_selects_last_line() {
         "selection should include the full last line text: got {selected:?}"
     );
 
-    app.handle_mouse_event(MouseEvent {
-        kind: MouseEventKind::Up(MouseButton::Left),
-        column: mid_x,
-        row: below_row,
-        modifiers: KeyModifiers::empty(),
-    });
+    app.handle_mouse_event(MouseEvent::new(
+        MouseEventKind::Up(MouseButton::Left),
+        mid_x,
+        below_row,
+        KeyModifiers::empty(),
+    ));
 }
 
 #[test]
@@ -1413,24 +1422,24 @@ fn test_changelog_overlay_mouse_drag_release_copies_text() {
     let row = found_row.expect("expected a screen row mapping to the changelog line");
 
     // Press, drag across the line, and release: this should select and attempt a copy.
-    app.handle_mouse_event(MouseEvent {
-        kind: MouseEventKind::Down(MouseButton::Left),
-        column: 2,
+    app.handle_mouse_event(MouseEvent::new(
+        MouseEventKind::Down(MouseButton::Left),
+        2,
         row,
-        modifiers: KeyModifiers::empty(),
-    });
-    app.handle_mouse_event(MouseEvent {
-        kind: MouseEventKind::Drag(MouseButton::Left),
-        column: 40,
+        KeyModifiers::empty(),
+    ));
+    app.handle_mouse_event(MouseEvent::new(
+        MouseEventKind::Drag(MouseButton::Left),
+        40,
         row,
-        modifiers: KeyModifiers::empty(),
-    });
-    app.handle_mouse_event(MouseEvent {
-        kind: MouseEventKind::Up(MouseButton::Left),
-        column: 40,
+        KeyModifiers::empty(),
+    ));
+    app.handle_mouse_event(MouseEvent::new(
+        MouseEventKind::Up(MouseButton::Left),
+        40,
         row,
-        modifiers: KeyModifiers::empty(),
-    });
+        KeyModifiers::empty(),
+    ));
 
     // A copy was attempted (success/failure depends on clipboard availability
     // in the test environment, but the selection path must have run).
@@ -1439,5 +1448,3 @@ fn test_changelog_overlay_mouse_drag_release_copies_text() {
         Some("Copied selection") | Some("Failed to copy selection") | Some("Selection is empty")
     ));
 }
-
-

@@ -1186,12 +1186,12 @@ mod tests {
         let list_area = picker
             .last_provider_list_area
             .expect("render should record provider list area");
-        picker.handle_overlay_mouse(MouseEvent {
-            kind: MouseEventKind::Down(MouseButton::Left),
-            column: list_area.x + 1,
-            row: list_area.y + 1,
-            modifiers: KeyModifiers::empty(),
-        });
+        picker.handle_overlay_mouse(MouseEvent::new(
+            MouseEventKind::Down(MouseButton::Left),
+            list_area.x + 1,
+            list_area.y + 1,
+            KeyModifiers::empty(),
+        ));
 
         assert_eq!(
             picker.selected_item().map(|item| item.provider.id),

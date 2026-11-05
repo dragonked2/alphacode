@@ -25,30 +25,30 @@ fn drag_copy(app: &mut App, start: (u16, u16), end: (u16, u16)) -> String {
     let copied = std::sync::Arc::new(std::sync::Mutex::new(String::new()));
     let copied_for_closure = copied.clone();
     app.handle_copy_selection_mouse_with(
-        MouseEvent {
-            kind: MouseEventKind::Down(MouseButton::Left),
-            column: start.0,
-            row: start.1,
-            modifiers: KeyModifiers::empty(),
-        },
+        MouseEvent::new(
+            MouseEventKind::Down(MouseButton::Left),
+            start.0,
+            start.1,
+            KeyModifiers::empty(),
+        ),
         |_| true,
     );
     app.handle_copy_selection_mouse_with(
-        MouseEvent {
-            kind: MouseEventKind::Drag(MouseButton::Left),
-            column: end.0,
-            row: end.1,
-            modifiers: KeyModifiers::empty(),
-        },
+        MouseEvent::new(
+            MouseEventKind::Drag(MouseButton::Left),
+            end.0,
+            end.1,
+            KeyModifiers::empty(),
+        ),
         |_| true,
     );
     app.handle_copy_selection_mouse_with(
-        MouseEvent {
-            kind: MouseEventKind::Up(MouseButton::Left),
-            column: end.0,
-            row: end.1,
-            modifiers: KeyModifiers::empty(),
-        },
+        MouseEvent::new(
+            MouseEventKind::Up(MouseButton::Left),
+            end.0,
+            end.1,
+            KeyModifiers::empty(),
+        ),
         |text| {
             *copied_for_closure.lock().unwrap() = text.to_string();
             true
@@ -279,32 +279,32 @@ fn test_chat_drag_into_composer_clamps_to_chat_pane() {
     let copied = std::sync::Arc::new(std::sync::Mutex::new(String::new()));
     let copied_for_closure = copied.clone();
     app.handle_copy_selection_mouse_with(
-        MouseEvent {
-            kind: MouseEventKind::Down(MouseButton::Left),
-            column: chat_col,
-            row: chat_row,
-            modifiers: KeyModifiers::empty(),
-        },
+        MouseEvent::new(
+            MouseEventKind::Down(MouseButton::Left),
+            chat_col,
+            chat_row,
+            KeyModifiers::empty(),
+        ),
         |_| true,
     );
     // Move within the chat pane first (real drags pass through cells), then
     // into the composer.
     app.handle_copy_selection_mouse_with(
-        MouseEvent {
-            kind: MouseEventKind::Drag(MouseButton::Left),
-            column: chat_col2,
-            row: chat_row2,
-            modifiers: KeyModifiers::empty(),
-        },
+        MouseEvent::new(
+            MouseEventKind::Drag(MouseButton::Left),
+            chat_col2,
+            chat_row2,
+            KeyModifiers::empty(),
+        ),
         |_| true,
     );
     app.handle_copy_selection_mouse_with(
-        MouseEvent {
-            kind: MouseEventKind::Drag(MouseButton::Left),
-            column: input_col,
-            row: input_row,
-            modifiers: KeyModifiers::empty(),
-        },
+        MouseEvent::new(
+            MouseEventKind::Drag(MouseButton::Left),
+            input_col,
+            input_row,
+            KeyModifiers::empty(),
+        ),
         |_| true,
     );
     // The selection must stay clamped to the chat pane.
@@ -313,12 +313,12 @@ fn test_chat_drag_into_composer_clamps_to_chat_pane() {
         Some(crate::alphacode_tui::tui::CopySelectionPane::Chat)
     );
     app.handle_copy_selection_mouse_with(
-        MouseEvent {
-            kind: MouseEventKind::Up(MouseButton::Left),
-            column: input_col,
-            row: input_row,
-            modifiers: KeyModifiers::empty(),
-        },
+        MouseEvent::new(
+            MouseEventKind::Up(MouseButton::Left),
+            input_col,
+            input_row,
+            KeyModifiers::empty(),
+        ),
         |text| {
             *copied_for_closure.lock().unwrap() = text.to_string();
             true
@@ -351,18 +351,18 @@ fn test_input_composer_click_still_moves_caret() {
         .copied()
         .expect("screen cell inside the typed text");
 
-    app.handle_mouse_event(MouseEvent {
-        kind: MouseEventKind::Down(MouseButton::Left),
-        column: col,
+    app.handle_mouse_event(MouseEvent::new(
+        MouseEventKind::Down(MouseButton::Left),
+        col,
         row,
-        modifiers: KeyModifiers::empty(),
-    });
-    app.handle_mouse_event(MouseEvent {
-        kind: MouseEventKind::Up(MouseButton::Left),
-        column: col,
+        KeyModifiers::empty(),
+    ));
+    app.handle_mouse_event(MouseEvent::new(
+        MouseEventKind::Up(MouseButton::Left),
+        col,
         row,
-        modifiers: KeyModifiers::empty(),
-    });
+        KeyModifiers::empty(),
+    ));
 
     assert_eq!(
         app.cursor_pos, point.column,
@@ -400,24 +400,24 @@ fn test_input_composer_drag_then_release_copies_via_full_mouse_path() {
     // Full handle_mouse_event path: press, drag, release. The release attempts
     // a real clipboard copy, which may fail in CI, but the selection path must
     // have run and reported one of the copy outcomes.
-    app.handle_mouse_event(MouseEvent {
-        kind: MouseEventKind::Down(MouseButton::Left),
-        column: start.0,
-        row: start.1,
-        modifiers: KeyModifiers::empty(),
-    });
-    app.handle_mouse_event(MouseEvent {
-        kind: MouseEventKind::Drag(MouseButton::Left),
-        column: end.0,
-        row: end.1,
-        modifiers: KeyModifiers::empty(),
-    });
-    app.handle_mouse_event(MouseEvent {
-        kind: MouseEventKind::Up(MouseButton::Left),
-        column: end.0,
-        row: end.1,
-        modifiers: KeyModifiers::empty(),
-    });
+    app.handle_mouse_event(MouseEvent::new(
+        MouseEventKind::Down(MouseButton::Left),
+        start.0,
+        start.1,
+        KeyModifiers::empty(),
+    ));
+    app.handle_mouse_event(MouseEvent::new(
+        MouseEventKind::Drag(MouseButton::Left),
+        end.0,
+        end.1,
+        KeyModifiers::empty(),
+    ));
+    app.handle_mouse_event(MouseEvent::new(
+        MouseEventKind::Up(MouseButton::Left),
+        end.0,
+        end.1,
+        KeyModifiers::empty(),
+    ));
 
     assert!(
         matches!(

@@ -212,12 +212,12 @@ impl App {
                     self.diff_pane_scroll
                 };
                 let started = Instant::now();
-                let scroll_only = self.handle_mouse_event(MouseEvent {
+                let scroll_only = self.handle_mouse_event(MouseEvent::new(
                     kind,
-                    column: center_x,
-                    row: center_y,
-                    modifiers: KeyModifiers::empty(),
-                });
+                    center_x,
+                    center_y,
+                    KeyModifiers::empty(),
+                ));
                 if scroll_only {
                     scroll_only_count += 1;
                     std::thread::sleep(crate::alphacode_tui::tui::redraw_interval(self));
