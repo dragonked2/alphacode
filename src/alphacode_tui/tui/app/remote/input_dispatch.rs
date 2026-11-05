@@ -81,8 +81,13 @@ pub(in crate::alphacode_tui::tui::app) fn restore_prepared_remote_input(
     prepared: input::PreparedInput,
 ) {
     app.input = prepared.raw_input;
+    app.pasted_contents = prepared.pastes;
     app.cursor_pos = app.input.len();
     app.pending_images = prepared.images;
+    app.clear_input_undo_history();
+    app.clear_input_selection();
+    app.reset_tab_completion();
+    app.sync_model_picker_preview_from_input();
 }
 
 pub(in crate::alphacode_tui::tui::app) fn history_matches_pending_startup_prompt(
@@ -148,6 +153,7 @@ pub(in crate::alphacode_tui::tui::app) async fn submit_prepared_remote_input(
     // Remember the typed prompt so we can restore it to the input box if this turn
     // fails (e.g. "token refresh needed"), instead of dropping it.
     app.last_submitted_input = Some(prepared.raw_input.clone());
+    app.last_submitted_pastes = prepared.pastes;
     app.push_display_message(DisplayMessage {
         role: "user".to_string(),
         content: prepared.raw_input,
@@ -212,6 +218,7 @@ pub(in crate::alphacode_tui::tui::app) async fn submit_remote_slash_input(
 
     let Some(invocation) = snapshot.resolve_invocation(&raw_input) else {
         app.input = raw_input;
+        app.pasted_contents = prepared.pastes;
         app.cursor_pos = app.input.len();
         app.submit_input();
         return Ok(());
@@ -219,6 +226,7 @@ pub(in crate::alphacode_tui::tui::app) async fn submit_remote_slash_input(
 
     let Some(trailing_prompt) = invocation.prompt else {
         app.input = raw_input;
+        app.pasted_contents = prepared.pastes;
         app.cursor_pos = app.input.len();
         app.submit_input();
         return Ok(());
@@ -234,6 +242,7 @@ pub(in crate::alphacode_tui::tui::app) async fn submit_remote_slash_input(
         // Preserve the existing unknown-skill and built-in slash-command
         // handling, including the helpful endorsed-skill installation hint.
         app.input = raw_input;
+        app.pasted_contents = prepared.pastes;
         app.cursor_pos = app.input.len();
         app.submit_input();
         return Ok(());
@@ -244,6 +253,7 @@ pub(in crate::alphacode_tui::tui::app) async fn submit_remote_slash_input(
     // remote request. This avoids duplicating slash-command presentation and
     // keeps pasted images attached to the same user turn.
     app.input = format!("/{}", skill_name);
+    app.pasted_contents.clear();
     app.cursor_pos = app.input.len();
     app.pending_images.clear();
     app.submit_input();
@@ -261,6 +271,7 @@ pub(in crate::alphacode_tui::tui::app) async fn submit_remote_slash_input(
             raw_input: prepared.raw_input,
             expanded: expanded_prompt,
             images: prepared.images,
+            pastes: prepared.pastes,
         },
     )
     .await
@@ -293,6 +304,7 @@ pub(in crate::alphacode_tui::tui::app) async fn route_prepared_input_to_new_remo
                     raw_input: prepared.raw_input,
                     expanded: prompt.content,
                     images: prompt.images,
+                    pastes: prepared.pastes,
                 });
             app.pending_split_model_override = None;
             app.pending_split_provider_key_override = None;
@@ -315,6 +327,7 @@ pub(in crate::alphacode_tui::tui::app) async fn route_prepared_input_to_new_remo
                 raw_input: prepared.raw_input,
                 expanded: prompt.content,
                 images: prompt.images,
+                pastes: prepared.pastes,
             });
         app.pending_split_model_override = None;
         app.pending_split_provider_key_override = None;
@@ -369,7 +382,10 @@ fn set_transcript_input(app: &mut App, text: String) {
     // Append/Replace through the same sanitizer so the composer never fills
     // with control-sequence noise (#540).
     let sanitized = input::strip_terminal_control_sequences(&text);
+    app.remember_input_undo_state();
     app.input = sanitized.into_owned();
+    app.pasted_contents.clear();
+    app.clear_input_selection();
     app.cursor_pos = app.input.len();
     app.reset_tab_completion();
     app.sync_model_picker_preview_from_input();
@@ -506,9 +522,9 @@ pub(in crate::alphacode_tui::tui::app) fn apply_transcript_event(
             app.set_status_notice("Transcript inserted");
         }
         TranscriptMode::Append => {
-            let mut combined = app.input.clone();
-            combined.push_str(&text);
-            set_transcript_input(app, combined);
+            app.clear_input_selection();
+            app.cursor_pos = app.input.len();
+            input::insert_input_text(app, &text);
             app.set_status_notice("Transcript appended");
         }
         TranscriptMode::Replace => {

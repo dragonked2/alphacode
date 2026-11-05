@@ -46,6 +46,24 @@ adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [1.0.95] - 2026-11-05
+
+### Fixed
+
+- Ordinary typing no longer probes the filesystem for image drops on every
+  character. A syntax-only image-path check keeps text and compact paste tokens
+  off that disk-I/O path while retaining native terminal image drops.
+- Compact pasted text is owned by its token position, not token count or paste
+  order. Inserting, replacing, deleting, copying and cutting text cannot assign
+  one paste's payload to a different token or expand literal lookalikes.
+- Undo and stashed drafts retain shared paste payloads without copying large
+  clipboard contents per keystroke. Clear, history recall/search, dictation,
+  deferred remote prompts and failed-turn restoration preserve the correct draft
+  ownership. Existing native-paste coalescing and trailing-Enter guards remain.
+- Browser arguments accept the `navigate_and_wait` compatibility action and
+  strictly validated numeric-string IDs, preserving safe tab targeting and
+  repeated-action protection.
+
 ## [1.0.93] - 2026-11-03
 
 ### Security

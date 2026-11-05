@@ -471,21 +471,27 @@ impl App {
     }
 
     pub(super) fn toggle_input_stash(&mut self) {
-        if let Some((stashed, stashed_cursor)) = self.stashed_input.take() {
+        if let Some((stashed, stashed_cursor, stashed_pastes)) = self.stashed_input.take() {
             let current_input = std::mem::replace(&mut self.input, stashed);
             let current_cursor = std::mem::replace(&mut self.cursor_pos, stashed_cursor);
+            let current_pastes = std::mem::replace(&mut self.pasted_contents, stashed_pastes);
             if current_input.is_empty() {
                 self.set_status_notice("📋 Input restored from stash");
             } else {
-                self.stashed_input = Some((current_input, current_cursor));
+                self.stashed_input = Some((current_input, current_cursor, current_pastes));
                 self.set_status_notice("📋 Swapped input with stash");
             }
         } else if !self.input.is_empty() {
             let input = std::mem::take(&mut self.input);
             let cursor = std::mem::replace(&mut self.cursor_pos, 0);
-            self.stashed_input = Some((input, cursor));
+            let pastes = std::mem::take(&mut self.pasted_contents);
+            self.stashed_input = Some((input, cursor, pastes));
             self.set_status_notice("📋 Input stashed");
         }
+        self.clear_input_undo_history();
+        self.clear_input_selection();
+        self.reset_tab_completion();
+        self.sync_model_picker_preview_from_input();
     }
 }
 

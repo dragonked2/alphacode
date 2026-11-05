@@ -519,7 +519,7 @@ async fn handle_remote_key_internal(
                 if app.cursor_pos < end {
                     app.remember_input_undo_state();
                 }
-                app.input.drain(app.cursor_pos..end);
+                app.replace_input_range(app.cursor_pos..end, "");
                 return Ok(());
             }
             KeyCode::Backspace | KeyCode::Delete | KeyCode::Char('\u{7f}') => {
@@ -858,7 +858,7 @@ async fn handle_remote_key_internal(
             if app.cursor_pos > 0 {
                 let prev = core::prev_grapheme_boundary(&app.input, app.cursor_pos);
                 app.remember_input_undo_state();
-                app.input.drain(prev..app.cursor_pos);
+                app.replace_input_range(prev..app.cursor_pos, "");
                 app.cursor_pos = prev;
                 app.reset_tab_completion();
                 app.sync_model_picker_preview_from_input();
@@ -868,7 +868,7 @@ async fn handle_remote_key_internal(
             if app.cursor_pos < app.input.len() {
                 let next = core::next_grapheme_boundary(&app.input, app.cursor_pos);
                 app.remember_input_undo_state();
-                app.input.drain(app.cursor_pos..next);
+                app.replace_input_range(app.cursor_pos..next, "");
                 app.reset_tab_completion();
                 app.sync_model_picker_preview_from_input();
             }
@@ -1741,6 +1741,7 @@ async fn handle_remote_key_internal(
                         raw_input: prompt.to_string(),
                         expanded: prompt.to_string(),
                         images: vec![],
+                        pastes: input::PasteBuffer::default(),
                     };
                     route_prepared_input_to_new_remote_session(app, remote, prepared).await?;
                     return Ok(());

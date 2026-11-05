@@ -45,6 +45,7 @@ pub(crate) struct PromptHistorySearchState {
     pub(crate) original_input: String,
     /// Cursor position matching `original_input`.
     pub(crate) original_cursor: usize,
+    pub(super) original_pastes: super::input::PasteBuffer,
 }
 
 fn contains_paste_placeholder(text: &str) -> bool {
@@ -256,6 +257,8 @@ impl App {
         };
         self.remember_input_undo_state();
         self.input = completion;
+        self.pasted_contents.clear();
+        self.clear_input_selection();
         self.cursor_pos = self.input.len();
         self.reset_tab_completion();
         self.sync_model_picker_preview_from_input();
@@ -354,6 +357,7 @@ impl App {
         self.prompt_history_search = Some(PromptHistorySearchState {
             original_input: self.input.clone(),
             original_cursor: self.cursor_pos,
+            original_pastes: self.pasted_contents.clone(),
             ..PromptHistorySearchState::default()
         });
     }
@@ -399,10 +403,12 @@ impl App {
         match state.matches.get(state.selected) {
             Some(prompt) => {
                 self.input = prompt.clone();
+                self.pasted_contents.clear();
                 self.cursor_pos = self.input.len();
             }
             None => {
                 self.input = state.original_input.clone();
+                self.pasted_contents = state.original_pastes.clone();
                 self.cursor_pos = state.original_cursor;
             }
         }
@@ -413,6 +419,7 @@ impl App {
     fn cancel_prompt_history_search(&mut self) {
         if let Some(state) = self.prompt_history_search.take() {
             self.input = state.original_input;
+            self.pasted_contents = state.original_pastes;
             self.cursor_pos = state.original_cursor;
         }
     }
@@ -440,6 +447,8 @@ impl App {
                 self.prompt_history_search = None;
                 if let Some(prompt) = selected {
                     self.input = prompt;
+                    self.pasted_contents.clear();
+                    self.clear_input_selection();
                     self.cursor_pos = self.input.len();
                     self.reset_tab_completion();
                     self.sync_model_picker_preview_from_input();

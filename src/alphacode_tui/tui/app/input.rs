@@ -184,6 +184,7 @@ pub(super) struct PreparedInput {
     pub raw_input: String,
     pub expanded: String,
     pub images: Vec<(String, String)>,
+    pub pastes: PasteBuffer,
 }
 
 // Roughly 500k English words at ~6 bytes/word including spaces. This is still
@@ -410,7 +411,7 @@ where
 #[cfg(test)]
 mod tests {
     use super::{
-        ClipboardPasteContent, ClipboardPasteKind, dropped_image_files,
+        ClipboardPasteContent, ClipboardPasteKind, dropped_image_files, dropped_image_paths_with,
         is_clipboard_paste_shortcut, parse_dropped_paths, preferred_wayland_text_type,
         read_clipboard_for_paste_with, shifted_printable_fallback, text_input_for_key,
     };
@@ -449,6 +450,52 @@ mod tests {
             ("image/jpeg".to_string(), b"jpeg bytes".to_vec())
         );
         assert!(dropped_image_files("ordinary pasted text").is_none());
+    }
+
+    #[test]
+    fn regression_plain_typing_never_probes_the_filesystem() {
+        for text in [
+            "hello",
+            "please inspect this code",
+            "[pasted content] explain it",
+            "[image 1] describe it",
+            "/model",
+            "https://example.test/photo.png",
+        ] {
+            let mut probes = 0;
+            for end in text.char_indices().map(|(offset, c)| offset + c.len_utf8()) {
+                assert!(
+                    dropped_image_paths_with(&text[..end], |_| {
+                        probes += 1;
+                        false
+                    })
+                    .is_none()
+                );
+            }
+            assert_eq!(probes, 0, "ordinary draft {text:?} touched disk");
+        }
+    }
+
+    #[test]
+    #[ignore = "manual before/after input-path timing measurement"]
+    fn measure_typing_path_probes() {
+        let text = "[pasted content] please inspect the implementation and explain the next step";
+        let mut probes = 0;
+        let start = std::time::Instant::now();
+        let rounds = 100;
+        for _ in 0..rounds {
+            for end in 1..=text.len() {
+                let _ = dropped_image_paths_with(&text[..end], |path| {
+                    probes += 1;
+                    path.is_file()
+                });
+            }
+        }
+        eprintln!(
+            "TYPING_PATH keys={} filesystem_probes={probes} elapsed_ms={:.3}",
+            rounds * text.len(),
+            start.elapsed().as_secs_f64() * 1000.0
+        );
     }
 
     #[test]
@@ -631,14 +678,16 @@ where
         return false;
     }
 
-    if !copy_text(&app.input) {
+    if !copy_text(&app.pasted_contents.expand(&app.input)) {
         app.set_status_notice("Failed to copy input line");
         return false;
     }
 
     app.remember_input_undo_state();
     app.input.clear();
+    app.pasted_contents.clear();
     app.cursor_pos = 0;
+    app.clear_input_selection();
     app.reset_tab_completion();
     app.sync_model_picker_preview_from_input();
     app.set_status_notice("✂ Cut input line");
@@ -646,7 +695,9 @@ where
 }
 
 pub(in crate::alphacode_tui::tui::app) mod newline;
+mod paste_buffer;
 mod paste_guard;
+pub(super) use paste_buffer::PasteBuffer;
 #[cfg(test)]
 pub(in crate::alphacode_tui::tui::app) use paste_guard::expire_trailing_window_for_test as paste_guard_expire_trailing_window_for_test;
 use paste_guard::image_media_type;
@@ -755,7 +806,7 @@ fn format_dropped_path(path: &std::path::Path, quote_whitespace: bool) -> String
 }
 
 fn dropped_image_files(text: &str) -> Option<Vec<(String, Vec<u8>)>> {
-    let paths = parse_dropped_paths(text)?;
+    let paths = dropped_image_paths_with(text, |path| path.is_file())?;
     paths
         .into_iter()
         .map(|path| {
@@ -764,6 +815,31 @@ fn dropped_image_files(text: &str) -> Option<Vec<(String, Vec<u8>)>> {
             Some((media_type.to_string(), data))
         })
         .collect()
+}
+
+fn dropped_image_paths_with(
+    text: &str,
+    is_file: impl FnMut(&std::path::Path) -> bool,
+) -> Option<Vec<PathBuf>> {
+    // This runs after EVERY printable key. Ordinary drafts (especially compact
+    // paste/image tokens) must never reach filesystem metadata calls. An image
+    // can only be complete once its extension is present. Keep immediate native
+    // terminal drops, but defer arbitrary path detection to paste/submit.
+    let candidate = text.trim().trim_matches(['\'', '"']);
+    if candidate.is_empty()
+        || candidate.contains(['\r', '\n'])
+        || candidate.contains(PASTE_PLACEHOLDER)
+        || candidate.contains("[image ")
+        || candidate.contains("://") && !candidate.starts_with("file://")
+        || image_media_type(std::path::Path::new(candidate)).is_none()
+        || candidate.chars().any(char::is_whitespace)
+            && !(candidate.starts_with(['/', '\\', '.'])
+                || candidate.as_bytes().get(1) == Some(&b':')
+                || text.trim().starts_with(['\'', '"']))
+    {
+        return None;
+    }
+    parse_dropped_paths_with(text, is_file)
 }
 
 /// Terminal emulators normally send file drops as bracketed paste, but some send
@@ -792,9 +868,16 @@ pub(super) fn promote_dropped_images(app: &mut App) -> bool {
 }
 
 pub(super) fn parse_dropped_paths(text: &str) -> Option<Vec<PathBuf>> {
+    parse_dropped_paths_with(text, |path| path.is_file())
+}
+
+fn parse_dropped_paths_with(
+    text: &str,
+    mut is_file: impl FnMut(&std::path::Path) -> bool,
+) -> Option<Vec<PathBuf>> {
     let trimmed = text.trim();
     let literal_path = PathBuf::from(trimmed);
-    if literal_path.is_file() {
+    if is_file(&literal_path) {
         return Some(vec![literal_path]);
     }
 
@@ -854,7 +937,7 @@ pub(super) fn parse_dropped_paths(text: &str) -> Option<Vec<PathBuf>> {
             } else {
                 PathBuf::from(token)
             };
-            path.is_file().then_some(path)
+            is_file(&path).then_some(path)
         })
         .collect()
 }
@@ -877,8 +960,9 @@ pub(super) fn handle_text_paste(app: &mut App, text: String) {
     // Keep text pastes compact and visually consistent in the composer. The
     // original text is restored on explicit submit; file and image drops are
     // handled separately.
-    app.pasted_contents.push(text);
     insert_input_text(app, PASTE_PLACEHOLDER);
+    app.pasted_contents
+        .insert(app.cursor_pos - PASTE_PLACEHOLDER.len(), text);
     app.set_status_notice("Pasted text as [pasted content] · expanded on submit");
 }
 
@@ -923,14 +1007,11 @@ impl App {
                     let end = self.input.len() - (before.len() - cursor);
                     let inserted = self.input[cursor..end].to_string();
                     let tokens = inserted.matches(PASTE_PLACEHOLDER).count();
-                    let token_delivery = tokens > 0
-                        && inserted == PASTE_PLACEHOLDER.repeat(tokens)
-                        && tokens <= self.pasted_contents.len();
-                    let native = if token_delivery {
-                        self.pasted_contents[self.pasted_contents.len() - tokens..].concat()
-                    } else {
-                        inserted.clone()
-                    };
+                    let token_text = self
+                        .pasted_contents
+                        .text_in_token_range(&self.input, cursor..end);
+                    let token_delivery = token_text.is_some();
+                    let native = token_text.unwrap_or_else(|| inserted.clone());
                     let native = native.replace("\r\n", "\n").replace('\r', "\n");
                     if !native.is_empty()
                         && (native == normalized
@@ -940,12 +1021,8 @@ impl App {
                             return true;
                         }
                         self.remember_input_undo_state();
-                        self.input.replace_range(cursor..end, "");
+                        self.replace_input_range(cursor..end, "");
                         self.cursor_pos = cursor;
-                        if token_delivery {
-                            self.pasted_contents
-                                .truncate(self.pasted_contents.len() - tokens);
-                        }
                         echoed_prefix = native.len();
                     }
                 }
@@ -1230,7 +1307,7 @@ pub(super) fn insert_input_text(app: &mut App, text: &str) {
         app.cursor_pos = app.input.len();
     }
 
-    app.input.insert_str(app.cursor_pos, text);
+    app.replace_input_range(app.cursor_pos..app.cursor_pos, text);
     app.cursor_pos += text.len();
 
     // Typing the final command character immediately arms picker filtering.
@@ -1419,7 +1496,10 @@ pub(super) fn handle_prompt_history_navigation(
                 return history
                     .last()
                     .map(|prompt| {
+                        app.remember_input_undo_state();
                         app.input = prompt.clone();
+                        app.pasted_contents.clear();
+                        app.clear_input_selection();
                         app.cursor_pos = app.input.len();
                         app.reset_tab_completion();
                         app.sync_model_picker_preview_from_input();
@@ -1433,6 +1513,7 @@ pub(super) fn handle_prompt_history_navigation(
             KeyCode::Down if current_index + 1 < history.len() => Some(current_index + 1),
             KeyCode::Down => {
                 app.input.clear();
+                app.pasted_contents.clear();
                 app.cursor_pos = 0;
                 app.reset_tab_completion();
                 app.sync_model_picker_preview_from_input();
@@ -1448,7 +1529,10 @@ pub(super) fn handle_prompt_history_navigation(
     let Some(prompt) = history.get(target) else {
         return false;
     };
+    app.remember_input_undo_state();
     app.input = prompt.clone();
+    app.pasted_contents.clear();
+    app.clear_input_selection();
     app.cursor_pos = app.input.len();
     app.reset_tab_completion();
     app.sync_model_picker_preview_from_input();
@@ -1516,6 +1600,7 @@ pub(super) fn clear_input_for_escape(app: &mut App) {
         app.remember_input_undo_state();
     }
     app.input.clear();
+    app.pasted_contents.clear();
     app.cursor_pos = 0;
     app.clear_input_selection();
     app.reset_tab_completion();
@@ -1536,26 +1621,7 @@ pub(super) fn expand_paste_placeholders(app: &mut App, input: &str) -> String {
         return input.to_string();
     }
 
-    // Match only tokens in the original draft. Searching the growing result
-    // recursively replaced literal "[pasted content]" text inside payloads
-    // and corrupted multi-block/native chunked pastes.
-    let token_count = input.matches(PASTE_PLACEHOLDER).count();
-    let mapped = token_count.min(app.pasted_contents.len());
-    let literal_tokens = token_count - mapped;
-    let first_payload = app.pasted_contents.len() - mapped;
-    let mut result = String::with_capacity(input.len());
-    let mut cursor = 0;
-    for (index, (start, _)) in input.match_indices(PASTE_PLACEHOLDER).enumerate() {
-        result.push_str(&input[cursor..start]);
-        if index < literal_tokens {
-            result.push_str(PASTE_PLACEHOLDER);
-        } else {
-            result.push_str(&app.pasted_contents[first_payload + index - literal_tokens]);
-        }
-        cursor = start + PASTE_PLACEHOLDER.len();
-    }
-    result.push_str(&input[cursor..]);
-    result
+    app.pasted_contents.expand(input)
 }
 
 pub(super) fn queue_message(app: &mut App) {
@@ -1596,6 +1662,7 @@ pub(super) fn retrieve_pending_message_for_edit(app: &mut App) -> bool {
 
     if !parts.is_empty() {
         app.input = parts.join("\n\n");
+        app.pasted_contents.clear();
         app.cursor_pos = app.input.len();
         let count = parts.len();
         app.set_status_notice(format!(
@@ -2007,6 +2074,7 @@ fn route_prompt_to_new_session_local(app: &mut App) -> bool {
         Ok(_) => true,
         Err(error) => {
             app.input = restored_raw;
+            app.pasted_contents = prepared.pastes;
             app.cursor_pos = app.input.len();
             app.pending_images = restored_images;
             app.set_status_notice("Prompt launch failed");
@@ -2129,7 +2197,7 @@ pub(super) fn delete_input_to_start(app: &mut App) {
     if app.cursor_pos > 0 {
         app.remember_input_undo_state();
     }
-    app.input.drain(..app.cursor_pos);
+    app.replace_input_range(0..app.cursor_pos, "");
     app.cursor_pos = 0;
     app.sync_model_picker_preview_from_input();
 }
@@ -2138,7 +2206,7 @@ pub(super) fn delete_input_to_end(app: &mut App) {
     if app.cursor_pos < app.input.len() {
         app.remember_input_undo_state();
     }
-    app.input.truncate(app.cursor_pos);
+    app.replace_input_range(app.cursor_pos..app.input.len(), "");
     app.sync_model_picker_preview_from_input();
 }
 
@@ -2192,7 +2260,7 @@ pub(super) fn delete_input_word_back(app: &mut App) {
     if start < app.cursor_pos {
         app.remember_input_undo_state();
     }
-    app.input.drain(start..app.cursor_pos);
+    app.replace_input_range(start..app.cursor_pos, "");
     app.cursor_pos = start;
     app.sync_model_picker_preview_from_input();
 }
@@ -2213,7 +2281,7 @@ pub(super) fn handle_alt_key(app: &mut App, code: KeyCode) -> bool {
             if app.cursor_pos < end {
                 app.remember_input_undo_state();
             }
-            app.input.drain(app.cursor_pos..end);
+            app.replace_input_range(app.cursor_pos..end, "");
             app.sync_model_picker_preview_from_input();
             true
         }
@@ -2905,7 +2973,7 @@ pub(super) fn handle_basic_key(app: &mut App, code: KeyCode) -> bool {
                 };
                 let prev = crate::alphacode_tui::tui::core::prev_grapheme_boundary(&app.input, pos);
                 app.remember_input_undo_state();
-                app.input.drain(prev..pos);
+                app.replace_input_range(prev..pos, "");
                 app.cursor_pos = prev;
                 app.reset_tab_completion();
                 app.sync_model_picker_preview_from_input();
@@ -2930,7 +2998,7 @@ pub(super) fn handle_basic_key(app: &mut App, code: KeyCode) -> bool {
                 let next = crate::alphacode_tui::tui::core::next_grapheme_boundary(&app.input, pos);
                 if next > pos {
                     app.remember_input_undo_state();
-                    app.input.drain(pos..next);
+                    app.replace_input_range(pos..next, "");
                     app.reset_tab_completion();
                     app.sync_model_picker_preview_from_input();
                 }
@@ -3048,14 +3116,16 @@ pub(super) fn take_prepared_input(app: &mut App) -> PreparedInput {
     let raw_input = std::mem::take(&mut app.input);
     let expanded = expand_paste_placeholders(app, &raw_input);
     app.record_prompt_history(&raw_input);
-    app.pasted_contents.clear();
+    let pastes = std::mem::take(&mut app.pasted_contents);
     let images = std::mem::take(&mut app.pending_images);
     app.cursor_pos = 0;
     app.clear_input_undo_history();
+    app.clear_input_selection();
     PreparedInput {
         raw_input,
         expanded,
         images,
+        pastes,
     }
 }
 
@@ -3074,7 +3144,7 @@ fn attach_image(app: &mut App, media_type: String, base64_data: String) {
     app.pending_images.push((media_type.clone(), base64_data));
     let placeholder = format!("[image {}]", app.pending_images.len());
     app.remember_input_undo_state();
-    app.input.insert_str(app.cursor_pos, &placeholder);
+    app.replace_input_range(app.cursor_pos..app.cursor_pos, &placeholder);
     app.cursor_pos += placeholder.len();
     app.sync_model_picker_preview_from_input();
     app.set_status_notice(format!("Pasted {} ({} KB)", media_type, size_kb));
@@ -3943,9 +4013,10 @@ impl App {
             self.push_display_message(DisplayMessage::system(notice));
             return;
         }
-        self.pasted_contents.clear();
+        let submitted_pastes = std::mem::take(&mut self.pasted_contents);
         self.cursor_pos = 0;
         self.clear_input_undo_history();
+        self.clear_input_selection();
         self.follow_chat_bottom(); // Reset to bottom and resume auto-scroll on new input
 
         // If the previous assistant turn still has visible streamed text that has not yet been
@@ -4105,6 +4176,7 @@ impl App {
         // Remember the typed prompt so we can restore it to the input box if this
         // turn fails (e.g. "token refresh needed"), instead of dropping it.
         self.last_submitted_input = Some(raw_input.clone());
+        self.last_submitted_pastes = submitted_pastes;
 
         // See `stage_turn_for_remote_tick_loop`: a remote client must never
         // park on the local-only `pending_turn` flag.
@@ -4276,6 +4348,7 @@ impl App {
                 Ok(()) => {
                     self.last_stream_error = None;
                     self.last_submitted_input = None;
+                    self.last_submitted_pastes.clear();
                 }
                 Err(e) => {
                     let err_str = crate::util::format_error_chain(&e);

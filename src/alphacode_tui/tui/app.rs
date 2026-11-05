@@ -371,6 +371,7 @@ struct FallbackResendPayload {
     /// The raw prompt the user typed, when known. Used to de-duplicate the
     /// input box (the error path restores the prompt there) on accept.
     raw_input: Option<String>,
+    pastes: input::PasteBuffer,
 }
 
 /// An interactive "let a alphacode agent merge the diverged update for you" offer.
@@ -1253,7 +1254,7 @@ pub struct App {
     // Restart: if set, exec into current binary with this session ID (no build)
     restart_requested: Option<String>,
     // Pasted content storage (displayed as placeholders, expanded on submit)
-    pasted_contents: Vec<String>,
+    pasted_contents: input::PasteBuffer,
     clipboard_paste_draft: Option<(String, String, usize)>,
     clipboard_paste_native_echo_expected: bool,
     clipboard_paste_echo: Option<input::ClipboardPasteEcho>,
@@ -1673,14 +1674,14 @@ pub struct App {
     // Scroll bookmark: stashed scroll position for quick teleport back
     scroll_bookmark: Option<usize>,
     // Stashed input: saved via Ctrl+S for later retrieval
-    stashed_input: Option<(String, usize)>,
+    stashed_input: Option<(String, usize, input::PasteBuffer)>,
     // Undo history for in-progress input editing (Ctrl+Z)
     //
     // Oldest-first ring: `Vec` with `remove(0)` shifted all remaining entries
     // on every keystroke once the stack was full, which is exactly the case
     // that happens constantly during sustained typing. `VecDeque::pop_front`
     // is O(1) and leaves the remaining snapshots where they are.
-    input_undo_stack: std::collections::VecDeque<(String, usize)>,
+    input_undo_stack: std::collections::VecDeque<(String, usize, input::PasteBuffer)>,
     // Running total of `input_undo_stack` text capacity, kept incrementally so
     // eviction does not need a full re-summation on every keystroke and so
     // `debug_profile` can report it in O(1).
@@ -1804,6 +1805,7 @@ pub struct App {
     // input box if the turn fails (e.g. "token refresh needed") so the user does not
     // lose what they typed and can resend after recovering.
     last_submitted_input: Option<String>,
+    last_submitted_pastes: input::PasteBuffer,
     // Store reload info to pass to agent after reconnection (remote mode)
     reload_info: Vec<String>,
     // Debug trace for scripted testing

@@ -352,9 +352,9 @@ struct BrowserInput {
     params: Option<Value>,
     #[serde(default)]
     url: Option<String>,
-    #[serde(default)]
+    #[serde(default, alias = "tabId", deserialize_with = "optional_browser_id")]
     tab_id: Option<i64>,
-    #[serde(default)]
+    #[serde(default, alias = "windowId", deserialize_with = "optional_browser_id")]
     window_id: Option<i64>,
     /// Firefox container (contextual identity) cookie store, e.g.
     /// `firefox-container-3`. pwnfox isolates its tabs by container, so this is
@@ -367,7 +367,7 @@ struct BrowserInput {
         alias = "containerId"
     )]
     cookie_store_id: Option<String>,
-    #[serde(default)]
+    #[serde(default, alias = "frameId", deserialize_with = "optional_browser_id")]
     frame_id: Option<i64>,
     #[serde(default)]
     all_frames: Option<bool>,
@@ -444,6 +444,32 @@ struct BrowserInput {
     cookie_path: Option<String>,
     #[serde(default)]
     cookies: Option<Vec<CookieInput>>,
+}
+
+/// Models sometimes copy the bridge's IDs as strings. Accept only an exact
+/// non-negative integer representation; never coerce a float, boolean, invalid
+/// target or overflow into an omitted ID (which could select the user's tab).
+fn optional_browser_id<'de, D>(deserializer: D) -> std::result::Result<Option<i64>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    use serde::de::Error;
+    let value = Option::<Value>::deserialize(deserializer)?;
+    let Some(value) = value else {
+        return Ok(None);
+    };
+    let id = match value {
+        Value::Number(number) => number.as_i64(),
+        Value::String(text) if !text.is_empty() && text.bytes().all(|b| b.is_ascii_digit()) => {
+            text.parse::<i64>().ok()
+        }
+        _ => None,
+    };
+    id.filter(|id| *id >= 0).map(Some).ok_or_else(|| {
+        D::Error::custom(
+            "browser target ID must be a non-negative integer or decimal integer string",
+        )
+    })
 }
 
 #[derive(Debug, Deserialize)]
@@ -942,7 +968,7 @@ fn invalid_input_error(input: &Value, error: &serde_json::Error) -> anyhow::Erro
 /// rejecting a correct intent over vocabulary.
 fn normalize_action(action: &str) -> &str {
     match action {
-        "navigate" | "goto" | "visit" => "open",
+        "navigate" | "navigate_and_wait" | "goto" | "visit" => "open",
         "back" => "go_back",
         "forward" => "go_forward",
         "close" => "close_tab",
@@ -3205,6 +3231,86 @@ mod tests {
 
     fn browser_input(value: Value) -> BrowserInput {
         serde_json::from_value(value).expect("valid BrowserInput")
+    }
+
+    #[test]
+    fn regression_browser_navigation_and_wait_uses_safe_open() {
+        let input = browser_input(json!({
+            "action": "navigate_and_wait",
+            "url": "https://example.test",
+        }));
+        let action = normalize_action(&input.action);
+        assert_eq!(action, "open");
+        let (bridge_action, params, _) = bridge_request(action, &input).unwrap();
+        assert_eq!(bridge_action, "navigate");
+        assert_eq!(params["wait"], true);
+        assert_eq!(params["newTab"], true);
+    }
+
+    #[test]
+    fn regression_browser_string_ids_are_forwarded_as_integers() {
+        let input = browser_input(json!({
+            "action": "get_content",
+            "tab_id": "11",
+            "window_id": "7",
+            "frame_id": "0",
+        }));
+        let (_, params, _) = bridge_request("get_content", &input).unwrap();
+        assert_eq!(params["tabId"], 11);
+        assert_eq!(params["windowId"], 7);
+        assert_eq!(params["frameId"], 0);
+    }
+
+    #[test]
+    fn browser_target_ids_reject_lossy_or_invalid_coercion() {
+        for field in ["tab_id", "window_id", "frame_id"] {
+            for value in [
+                json!(""),
+                json!(" 11"),
+                json!("11 "),
+                json!("+11"),
+                json!("-1"),
+                json!("11.0"),
+                json!("1e1"),
+                json!("9223372036854775808"),
+                json!(11.5),
+                json!(11.0),
+                json!(-1),
+                json!(true),
+                json!([]),
+                json!({}),
+            ] {
+                let mut request = json!({"action": "get_content"});
+                request[field] = value.clone();
+                assert!(
+                    serde_json::from_value::<BrowserInput>(request).is_err(),
+                    "invalid {field}={value} must not silently lose targeting"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn browser_target_ids_preserve_native_values_null_and_camelcase_aliases() {
+        let input = browser_input(json!({
+            "action": "open", "url": "https://example.test", "tabId": "11",
+            "windowId": 7, "frameId": 0,
+        }));
+        let (_, params, _) = bridge_request("open", &input).unwrap();
+        assert_eq!(params["tabId"], 11);
+        assert_eq!(params["windowId"], 7);
+        assert_eq!(params["frameId"], 0);
+        assert_eq!(params["newTab"], false);
+        assert!(
+            browser_input(json!({"action": "get_content", "tab_id": null}))
+                .tab_id
+                .is_none()
+        );
+        assert!(
+            browser_input(json!({"action": "get_content"}))
+                .tab_id
+                .is_none()
+        );
     }
 
     #[test]

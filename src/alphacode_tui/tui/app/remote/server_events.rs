@@ -1310,6 +1310,7 @@ pub(in crate::alphacode_tui::tui::app) fn handle_server_event(
                 // Turn completed successfully; drop the saved prompt so a later
                 // unrelated failure cannot restore stale text into the input box.
                 app.last_submitted_input = None;
+                app.last_submitted_pastes.clear();
                 app.processing_started = None;
                 app.replay_processing_started_ms = None;
                 app.replay_elapsed_override = None;
@@ -1399,6 +1400,7 @@ pub(in crate::alphacode_tui::tui::app) fn handle_server_event(
                     auto_retry: pending.auto_retry,
                     system_reminder: pending.system_reminder.clone(),
                     raw_input: app.last_submitted_input.clone(),
+                    pastes: app.last_submitted_pastes.clone(),
                 }
             });
             if app.current_message_id == Some(id) {
@@ -2489,7 +2491,12 @@ pub(in crate::alphacode_tui::tui::app) fn handle_server_event(
                     && app.input.is_empty()
                 {
                     app.input = raw_input;
+                    app.pasted_contents = payload.pastes;
                     app.cursor_pos = app.input.len();
+                    app.clear_input_undo_history();
+                    app.clear_input_selection();
+                    app.reset_tab_completion();
+                    app.sync_model_picker_preview_from_input();
                 }
                 app.push_display_message(DisplayMessage::error(
                     crate::alphacode_tui::tui::app::model_context::model_switch_failure_message(

@@ -355,6 +355,7 @@ impl App {
                     auto_retry: pending.auto_retry,
                     system_reminder: pending.system_reminder.clone(),
                     raw_input: self.last_submitted_input.clone(),
+                    pastes: self.last_submitted_pastes.clone(),
                 })
         } else {
             None
@@ -510,6 +511,7 @@ impl App {
                     auto_retry: pending.auto_retry,
                     system_reminder: pending.system_reminder.clone(),
                     raw_input: self.last_submitted_input.clone(),
+                    pastes: self.last_submitted_pastes.clone(),
                 })
         } else {
             None
@@ -884,6 +886,7 @@ impl App {
     /// "token refresh needed" / auth error). Only restores when the input box is
     /// empty, so we never clobber text the user has already started typing.
     pub(super) fn restore_failed_input_to_box(&mut self) {
+        let pastes = std::mem::take(&mut self.last_submitted_pastes);
         let Some(prompt) = self.last_submitted_input.take() else {
             return;
         };
@@ -895,7 +898,10 @@ impl App {
             return;
         }
         self.input = prompt;
+        self.pasted_contents = pastes;
         self.cursor_pos = self.input.len();
+        self.clear_input_undo_history();
+        self.clear_input_selection();
         self.reset_tab_completion();
         self.sync_model_picker_preview_from_input();
         self.set_status_notice("Prompt restored to input after error");

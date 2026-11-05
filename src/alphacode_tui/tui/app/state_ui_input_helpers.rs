@@ -1497,6 +1497,8 @@ impl App {
 
         self.remember_input_undo_state();
         self.input = cmd;
+        self.pasted_contents.clear();
+        self.clear_input_selection();
         self.cursor_pos = self.input.len();
         self.tab_completion_state = None;
         self.command_suggestion_selected = 0;
@@ -1521,11 +1523,8 @@ impl App {
             return false;
         }
         self.remember_input_undo_state();
-        let mut next = String::with_capacity(self.input.len() + replacement.len());
-        next.push_str(&self.input[..start]);
-        next.push_str(replacement);
-        next.push_str(&self.input[end..]);
-        self.input = next;
+        self.replace_input_range(start..end, replacement);
+        self.clear_input_selection();
         self.cursor_pos = start + replacement.len();
         self.reset_tab_completion();
         self.sync_model_picker_preview_from_input();
@@ -1717,6 +1716,8 @@ impl App {
                 let (cmd, _) = &base_suggestions[next_index];
                 self.remember_input_undo_state();
                 self.input = cmd.clone();
+                self.pasted_contents.clear();
+                self.clear_input_selection();
                 self.cursor_pos = self.input.len();
                 self.tab_completion_state = Some((base.clone(), next_index));
                 return true;
@@ -1751,6 +1752,8 @@ impl App {
         let base = self.input.clone();
         self.remember_input_undo_state();
         self.input = cmd.clone();
+        self.pasted_contents.clear();
+        self.clear_input_selection();
         // If unique match, add trailing space for arg-accepting commands
         if current_suggestions.len() == 1 && Self::command_accepts_args(&self.input) {
             self.input.push(' ');
@@ -1825,7 +1828,7 @@ impl App {
     /// The selected text, if any.
     pub fn selected_input_text(&self) -> Option<String> {
         let (start, end) = self.input_selection_range()?;
-        Some(self.input[start..end].to_string())
+        Some(self.pasted_contents.expand_range(&self.input, start..end))
     }
 
     /// Extend (or start) the selection so that it ends at `pos`.
@@ -1864,7 +1867,7 @@ impl App {
     /// replace-the-selection operation.
     fn take_input_selection(&mut self) -> Option<(usize, usize)> {
         let (start, end) = self.input_selection_range()?;
-        self.input.replace_range(start..end, "");
+        self.replace_input_range(start..end, "");
         self.cursor_pos = start;
         self.input_selection_anchor = None;
         Some((start, end))
@@ -1894,7 +1897,7 @@ impl App {
             return false;
         };
         self.remember_input_undo_state();
-        self.input.replace_range(start..end, text);
+        self.replace_input_range(start..end, text);
         self.cursor_pos = start + text.len();
         self.input_selection_anchor = None;
         self.reset_tab_completion();
@@ -1951,7 +1954,7 @@ impl App {
         let Some((start, end)) = self.input_selection_range() else {
             return false;
         };
-        self.input.replace_range(start..end, "");
+        self.replace_input_range(start..end, "");
         self.cursor_pos = start;
         self.input_selection_anchor = None;
         self.reset_tab_completion();
@@ -1960,12 +1963,26 @@ impl App {
         true
     }
 
+    /// The single range-edit boundary keeps compact paste tokens attached to
+    /// their payloads without rescanning or expanding the draft on each key.
+    pub(super) fn replace_input_range(&mut self, range: std::ops::Range<usize>, text: &str) {
+        self.pasted_contents.rebase(range.clone(), text.len());
+        self.input.replace_range(range, text);
+    }
+
     pub(super) fn remember_input_undo_state(&mut self) {
-        let snapshot = (self.input.clone(), self.cursor_pos.min(self.input.len()));
-        if self.input_undo_stack.back() == Some(&snapshot) {
+        let cursor = self.cursor_pos.min(self.input.len());
+        if self
+            .input_undo_stack
+            .back()
+            .is_some_and(|(text, pos, pastes)| {
+                text == &self.input && *pos == cursor && pastes == &self.pasted_contents
+            })
+        {
             return;
         }
-        let snapshot_bytes = snapshot.0.capacity();
+        let snapshot = (self.input.clone(), cursor, self.pasted_contents.clone());
+        let snapshot_bytes = snapshot.0.capacity() + snapshot.2.retained_bytes();
         // Evict oldest-first until the new snapshot fits both budgets. A single
         // snapshot larger than the byte budget is still recorded (otherwise the
         // most recent edit becomes un-undoable), and is evicted on the next
@@ -1983,10 +2000,11 @@ impl App {
 
     /// Remove the oldest undo snapshot and keep the byte accounting in step.
     fn drop_oldest_undo_state(&mut self) {
-        if let Some((text, _)) = self.input_undo_stack.pop_front() {
+        if let Some((text, _, pastes)) = self.input_undo_stack.pop_front() {
             // `capacity()` is what was added on push, but shrink the released
             // amount to the actual removal so a mismatch can never underflow.
-            let released = text.capacity().min(self.input_undo_stack_bytes);
+            let released =
+                (text.capacity() + pastes.retained_bytes()).min(self.input_undo_stack_bytes);
             self.input_undo_stack_bytes -= released;
         }
     }
@@ -1997,11 +2015,14 @@ impl App {
     }
 
     pub(super) fn undo_input_change(&mut self) {
-        if let Some((input, cursor_pos)) = self.input_undo_stack.pop_back() {
-            let released = input.capacity().min(self.input_undo_stack_bytes);
+        if let Some((input, cursor_pos, pastes)) = self.input_undo_stack.pop_back() {
+            let released =
+                (input.capacity() + pastes.retained_bytes()).min(self.input_undo_stack_bytes);
             self.input_undo_stack_bytes -= released;
             self.input = input;
+            self.pasted_contents = pastes;
             self.cursor_pos = cursor_pos.min(self.input.len());
+            self.clear_input_selection();
             self.reset_tab_completion();
             self.sync_model_picker_preview_from_input();
             self.set_status_notice("↶ Input restored");

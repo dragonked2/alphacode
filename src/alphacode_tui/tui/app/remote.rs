@@ -54,8 +54,8 @@ use workspace::{handle_workspace_command, handle_workspace_navigation_key};
 pub(super) use input_dispatch::{
     apply_remote_transcript_event, apply_transcript_event, begin_remote_send,
     begin_remote_split_launch, finish_remote_split_launch, history_matches_pending_startup_prompt,
-    route_prepared_input_to_new_remote_session, stage_turn_for_remote_tick_loop,
-    submit_prepared_remote_input, submit_remote_slash_input,
+    restore_prepared_remote_input, route_prepared_input_to_new_remote_session,
+    stage_turn_for_remote_tick_loop, submit_prepared_remote_input, submit_remote_slash_input,
 };
 pub(super) use key_handling::{
     handle_remote_char_input, handle_remote_key, handle_remote_key_event, send_interleave_now,
@@ -1185,11 +1185,16 @@ pub(super) async fn process_remote_followups(app: &mut App, remote: &mut RemoteC
         // error path restored the prompt there.
         if let Some(raw_input) = payload.raw_input.as_deref()
             && app.input == raw_input
+            && app.pasted_contents == payload.pastes
         {
             app.input.clear();
+            app.pasted_contents.clear();
             app.cursor_pos = 0;
+            app.clear_input_undo_history();
+            app.clear_input_selection();
         }
         app.last_submitted_input = payload.raw_input.clone();
+        app.last_submitted_pastes = payload.pastes;
         crate::logging::info("Resending failed turn after accepted fallback route switch");
         if let Err(error) = begin_remote_send(
             app,
@@ -1908,7 +1913,7 @@ fn handle_disconnected_key_internal(
             if app.cursor_pos > 0 {
                 let prev = super::super::core::prev_grapheme_boundary(&app.input, app.cursor_pos);
                 app.remember_input_undo_state();
-                app.input.drain(prev..app.cursor_pos);
+                app.replace_input_range(prev..app.cursor_pos, "");
                 app.cursor_pos = prev;
                 app.reset_tab_completion();
                 app.sync_model_picker_preview_from_input();
@@ -1918,7 +1923,7 @@ fn handle_disconnected_key_internal(
             if app.cursor_pos < app.input.len() {
                 let next = super::super::core::next_grapheme_boundary(&app.input, app.cursor_pos);
                 app.remember_input_undo_state();
-                app.input.drain(app.cursor_pos..next);
+                app.replace_input_range(app.cursor_pos..next, "");
                 app.reset_tab_completion();
                 app.sync_model_picker_preview_from_input();
             }

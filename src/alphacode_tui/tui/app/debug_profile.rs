@@ -135,7 +135,7 @@ impl App {
                 },
                 "clipboard_and_input_media": {
                     "pasted_contents_count": self.pasted_contents.len(),
-                    "pasted_contents_bytes": estimate_string_vec_bytes(&self.pasted_contents),
+                    "pasted_contents_bytes": self.pasted_contents.payload_bytes(),
                     "pending_images_count": self.pending_images.len(),
                     "pending_images_bytes": estimate_pending_images_bytes(&self.pending_images),
                 },
@@ -212,7 +212,7 @@ impl App {
         let stashed_input_bytes = self
             .stashed_input
             .as_ref()
-            .map(|(text, _)| text.capacity())
+            .map(|(text, _, pastes)| text.capacity() + pastes.retained_bytes())
             .unwrap_or(0);
         let pending_soft_interrupts_bytes: usize = self
             .pending_soft_interrupts
