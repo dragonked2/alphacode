@@ -38,6 +38,7 @@
 //! the user's choice; automatic rotation stays hidden.)
 
 use std::collections::HashMap;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
@@ -71,6 +72,7 @@ pub(crate) fn lock_pool_state_for_tests() -> std::sync::MutexGuard<'static, ()> 
     }
     if let Ok(mut pool) = refreshed_pool().lock() {
         pool.clear();
+        FREE_POOL_REVISION.fetch_add(1, Ordering::Release);
     }
     guard
 }
@@ -187,6 +189,12 @@ fn quarantine_map() -> &'static Mutex<HashMap<String, Quarantine>> {
 
 /// Models discovered as free by the background catalog refresh, beyond the
 /// curated floor.
+static FREE_POOL_REVISION: AtomicU64 = AtomicU64::new(0);
+
+pub(crate) fn free_pool_revision() -> u64 {
+    FREE_POOL_REVISION.load(Ordering::Acquire)
+}
+
 fn refreshed_pool() -> &'static Mutex<Vec<String>> {
     static POOL: OnceLock<Mutex<Vec<String>>> = OnceLock::new();
     POOL.get_or_init(|| Mutex::new(Vec::new()))
@@ -207,6 +215,7 @@ pub fn absorb_discovered_free_models(ids: Vec<String>) {
     for id in ids {
         if is_free_tier_model_id(&id) && !pool.contains(&id) {
             pool.push(id);
+            FREE_POOL_REVISION.fetch_add(1, Ordering::Release);
         }
     }
 }
@@ -238,10 +247,14 @@ pub fn free_pool_display_name(model: &str) -> Option<&'static str> {
     if model.is_empty() {
         return None;
     }
-    effective_free_pool()
-        .iter()
-        .any(|candidate| candidate == model)
-        .then_some(ALPHAX_FREE_DISPLAY_NAME)
+    // Rendering and filtering call this for every model. Do not clone and
+    // deduplicate the entire pool to answer one membership query.
+    let is_member = crate::alphacode_provider_metadata::free_pool::curated_free_models()
+        .contains(&model)
+        || refreshed_pool()
+            .lock()
+            .is_ok_and(|pool| pool.iter().any(|id| id == model));
+    is_member.then_some(ALPHAX_FREE_DISPLAY_NAME)
 }
 
 /// Inverse of [`free_pool_display_name`]: turn the product label a user-facing
@@ -293,9 +306,7 @@ pub fn free_pool_picker_model_part(model: &str) -> Option<String> {
     if model.is_empty() || model == route_cloak::free_route_default_model() {
         return None;
     }
-    let is_member = effective_free_pool()
-        .iter()
-        .any(|candidate| candidate == model);
+    let is_member = free_pool_display_name(model).is_some();
     if !is_member {
         return None;
     }
@@ -509,6 +520,7 @@ mod tests {
         }
         if let Ok(mut pool) = refreshed_pool().lock() {
             pool.clear();
+            FREE_POOL_REVISION.fetch_add(1, Ordering::Release);
         }
     }
 

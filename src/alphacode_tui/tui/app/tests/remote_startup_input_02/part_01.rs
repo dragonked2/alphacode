@@ -2026,3 +2026,53 @@ fn alphax_automatic_picker_and_selection_hide_cached_router_endpoints() {
     app.handle_key(KeyCode::Enter, KeyModifiers::empty()).unwrap();
     assert!(!app.display_messages().iter().any(|message| message.content.contains(endpoint)));
 }
+
+#[test]
+fn alphax_automatic_old_openrouter_route_is_repaired_before_effort_expansion() {
+    let mut app = create_test_app();
+    let alias = crate::alphacode_provider_metadata::route_cloak::free_route_default_model();
+    app.is_remote = true;
+    app.remote_provider_name = Some("OpenRouter".to_string());
+    app.remote_available_entries = vec![alias.clone()];
+    app.remote_model_options = vec![crate::provider::ModelRoute {
+        model: alias.clone(), provider: "auto".to_string(),
+        api_method: "openrouter".to_string(), available: true,
+        detail: "cached old router".to_string(), cheapness: None,
+    }];
+    app.open_model_picker();
+    let picker = app.inline_interactive_state.as_mut().expect("picker");
+    let index = picker.entries.iter().position(|entry| entry.name == alias).expect("plain Alphax row");
+    let entry = &picker.entries[index];
+    assert!(entry.effort.is_none());
+    assert!(entry.options.iter().all(|route| route.provider == "Alphax Free"
+        && route.api_method == "openai-compatible:alphax-free"));
+    assert!(!picker.entries.iter().any(|entry| entry.name.starts_with(&format!("{alias} ("))));
+    picker.selected = picker.filtered.iter().position(|&i| i == index).unwrap();
+    app.handle_inline_interactive_key(KeyCode::Enter, KeyModifiers::empty()).unwrap();
+    let selection = app.pending_route_selection.as_ref().expect("route selection");
+    assert_eq!(selection.api_method, "openai-compatible:alphax-free");
+    assert_eq!(selection.model, alias);
+    assert!(app.pending_reasoning_effort.is_none());
+    assert_eq!(app.status_notice.as_ref().unwrap().0, "Model → Alphax Free");
+}
+
+#[test]
+fn dismissing_model_picker_cancels_its_pending_load_and_plain_typing_stays_plain() {
+    let mut app = create_test_app();
+    app.is_remote = true;
+    app.remote_model_options = vec![crate::provider::ModelRoute {
+        model: "gpt-5.5".to_string(), provider: "OpenAI".to_string(),
+        api_method: "openai-api-key".to_string(), available: true,
+        detail: String::new(), cheapness: None,
+    }];
+    app.open_model_picker();
+    let request_id = app.model_picker_load_request_id;
+    app.handle_inline_interactive_key(KeyCode::Esc, KeyModifiers::empty()).unwrap();
+    assert!(app.inline_interactive_state.is_none());
+    assert!(app.pending_model_picker_load.is_none());
+    assert_ne!(app.model_picker_load_request_id, request_id);
+    super::super::input::handle_text_input(&mut app, "a normal prompt after closing the model picker");
+    assert_eq!(app.input, "a normal prompt after closing the model picker");
+    assert!(app.inline_interactive_state.is_none());
+    assert!(!app.poll_model_picker_load());
+}

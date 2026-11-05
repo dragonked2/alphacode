@@ -29,6 +29,22 @@ pub fn simplified_model_routes_for_picker(
     let mut routes = Vec::new();
 
     for model in display_models {
+        if crate::alphacode_provider_metadata::is_alphax_free_builtin_model(&model) {
+            routes.push(ModelRoute {
+                model,
+                provider: crate::alphacode_provider_metadata::ALPHAX_FREE_PROFILE
+                    .display_name
+                    .to_string(),
+                api_method: format!(
+                    "openai-compatible:{}",
+                    crate::alphacode_provider_metadata::ALPHAX_FREE_PROFILE_ID
+                ),
+                available: true,
+                detail: "Alphax Free gateway".to_string(),
+                cheapness: None,
+            });
+            continue;
+        }
         if model == CHATGPT_WEB_MODEL {
             routes.push(build_chatgpt_web_route());
             continue;
@@ -1222,6 +1238,18 @@ pub fn remote_model_is_server_copilot_only(model: &str) -> bool {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn simplified_alphax_alias_keeps_its_direct_profile() {
+        let alias = crate::alphacode_provider_metadata::route_cloak::free_route_default_model();
+        let routes =
+            super::simplified_model_routes_for_picker("OpenRouter", &alias, vec![alias.clone()]);
+        assert_eq!(routes.len(), 1);
+        assert_eq!(routes[0].model, alias);
+        assert_eq!(routes[0].provider, "Alphax Free");
+        assert_eq!(routes[0].api_method, "openai-compatible:alphax-free");
+        assert!(routes[0].available);
+    }
+
     use super::*;
     use crate::alphacode_base::auth::{AuthState, ProviderAuth};
 

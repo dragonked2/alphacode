@@ -1515,15 +1515,22 @@ impl App {
         // Old server/catalog snapshots may contain an upstream URL. Sanitize
         // at the picker boundary as well as when generating fresh routes.
         let mut routes = routes;
+        let alphax_method = format!(
+            "openai-compatible:{}",
+            crate::alphacode_provider_metadata::ALPHAX_FREE_PROFILE_ID
+        );
         for route in &mut routes {
-            if crate::alphacode_provider_metadata::internal_model_display_name(&route.model)
-                .is_some()
-                || route.api_method
-                    == format!(
-                        "openai-compatible:{}",
-                        crate::alphacode_provider_metadata::ALPHAX_FREE_PROFILE_ID
-                    )
-            {
+            if crate::alphacode_provider_metadata::is_alphax_free_builtin_model(&route.model) {
+                // Names-only/old catalogs classify every namespaced id as
+                // OpenRouter. This virtual alias belongs to the direct profile.
+                route.provider = crate::alphacode_provider_metadata::ALPHAX_FREE_PROFILE
+                    .display_name
+                    .to_string();
+                route.api_method.clone_from(&alphax_method);
+                route.available = true; // anonymous bundled profile
+                route.cheapness = None;
+            }
+            if route.api_method == alphax_method {
                 route.detail = "Alphax Free gateway".to_string();
             }
         }
@@ -2274,6 +2281,9 @@ impl App {
                 Ok(true)
             }
             KeyCode::Esc => {
+                self.pending_model_picker_load = None;
+                self.model_picker_load_request_id =
+                    self.model_picker_load_request_id.wrapping_add(1);
                 self.inline_interactive_state = None;
                 self.input.clear();
                 self.cursor_pos = 0;
@@ -3299,6 +3309,9 @@ impl App {
                     Self::apply_inline_interactive_filter(picker);
                     return Ok(());
                 }
+                self.pending_model_picker_load = None;
+                self.model_picker_load_request_id =
+                    self.model_picker_load_request_id.wrapping_add(1);
                 self.inline_interactive_state = None;
             }
             KeyCode::Up | KeyCode::Char('k') => {
@@ -3641,7 +3654,16 @@ impl App {
                         };
                         let route_selection = picker_route_selection(&entry, route);
 
-                        let effort = entry.effort.clone();
+                        let is_alphax = route.api_method
+                            == format!(
+                                "openai-compatible:{}",
+                                crate::alphacode_provider_metadata::ALPHAX_FREE_PROFILE_ID
+                            );
+                        let effort = if is_alphax {
+                            None
+                        } else {
+                            entry.effort.clone()
+                        };
                         record_model_picker_selection(&bare_name, route, effort.as_deref());
                         let method_label =
                             crate::provider::ModelRouteApiMethod::parse(&route.api_method)
@@ -3654,13 +3676,18 @@ impl App {
                         // confirmation. Show just the model in that case.
                         let placeholder_route =
                             placeholder_routes::is_placeholder_route_method(&route.api_method);
-                        let pretty_entry_name =
+                        let pretty_entry_name = if is_alphax {
+                            crate::alphacode_provider_metadata::ALPHAX_FREE_PROFILE
+                                .display_name
+                                .to_string()
+                        } else {
                             crate::alphacode_provider_metadata::internal_model_display_name(
-                                &entry.name,
+                                &bare_name,
                             )
                             .unwrap_or(&entry.name)
-                            .to_string();
-                        let notice = if placeholder_route {
+                            .to_string()
+                        };
+                        let notice = if placeholder_route || is_alphax {
                             format!("Model → {}", pretty_entry_name)
                         } else {
                             format!(
@@ -3668,7 +3695,7 @@ impl App {
                                 pretty_entry_name, route.provider, method_label
                             )
                         };
-                        let route_detail = if placeholder_route {
+                        let route_detail = if placeholder_route || is_alphax {
                             String::new()
                         } else {
                             route.detail.trim().to_string()

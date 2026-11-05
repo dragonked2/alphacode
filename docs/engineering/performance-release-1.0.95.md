@@ -33,6 +33,28 @@ work are included in the release snapshot.
   budget and retains a 30-second execution budget. A cold toolchain compilation
   no longer gets mistaken for runtime blocking.
 
+## Model selection and paste responsiveness follow-up
+
+- Ordinary terminal keys now pass through immediately. The old stream read ahead
+  across key bursts and used 35/40 ms settling windows to infer multiline paste.
+  That inference is removed: explicit Ctrl+V/Alt+V use the shared asynchronous
+  clipboard action, and terminal bracketed pastes remain atomic Event::Paste
+  payloads. Typing speed no longer changes the meaning of input.
+- A deterministic stream regression fails if delivering the first character or
+  Enter polls for a second event. Large bracketed-paste and shortcut tests cover
+  atomic payloads without depending on wall-clock thresholds. Integration
+  coverage preserves one compact paste draft in local, remote and streaming modes.
+- Simplified and stale remote catalogs now classify the bundled automatic alias
+  as the direct Alphax Free profile before effort expansion. It no longer becomes
+  an OpenRouter/auto row with invented effort variants. Selection feedback uses
+  the product name instead of a decorated internal route id.
+- Closing a picker discards pending catalog results. Normal typing after dismissal
+  does not reopen the picker or adopt a late load.
+- Free-pool display lookups inspect borrowed membership rather than cloning and
+  deduplicating the full pool. The model widget caches pool usage totals until
+  usage or pool membership changes, avoiding a sorted lifetime ledger rebuild on
+  every redraw. Regression coverage checks both invalidation paths.
+
 ## Build investigation
 
 GitHub release run 41940302966 (v1.0.94): Windows x64 build step 10m15s,

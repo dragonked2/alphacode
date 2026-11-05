@@ -222,8 +222,8 @@ fn repeated_continuations_build_a_multi_line_draft() {
 }
 
 #[test]
-fn native_control_v_is_one_draft_in_local_remote_and_streaming_modes() {
-    use crate::alphacode_tui::tui::terminal_events::CoalescedEvents;
+fn bracketed_paste_is_one_draft_in_local_remote_and_streaming_modes() {
+    use crate::alphacode_tui::tui::terminal_events::ImmediateEvents;
     use crossterm::event::{Event, KeyEvent};
     use futures::StreamExt;
     let text = "x\n".to_owned() + &"next line 世界 👩‍💻\n".repeat(200);
@@ -241,17 +241,8 @@ fn native_control_v_is_one_draft_in_local_remote_and_streaming_modes() {
             let _entered = runtime.enter();
             let mut connection = crate::alphacode_tui::tui::backend::RemoteConnection::dummy();
             runtime.block_on(async {
-                let events = text.chars().map(|c| {
-                    Ok::<_, std::io::Error>(Event::Key(KeyEvent::new(
-                        if c == '\n' {
-                            KeyCode::Enter
-                        } else {
-                            KeyCode::Char(c)
-                        },
-                        KeyModifiers::NONE,
-                    )))
-                });
-                let mut source = CoalescedEvents::from_source(futures::stream::iter(events));
+                let events = vec![Ok::<_, std::io::Error>(Event::Paste(text.clone()))];
+                let mut source = ImmediateEvents::from_source(futures::stream::iter(events));
                 while let Some(event) = source.next().await {
                     match event.unwrap() {
                         Event::Paste(text) => app.handle_paste(text),

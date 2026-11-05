@@ -113,6 +113,20 @@ struct LedgerState {
     days: BTreeMap<String, BTreeMap<String, ModelUsage>>,
     dirty: bool,
     last_flush: Option<Instant>,
+    alphax_totals: Option<(u64, u64, f64)>,
+}
+
+impl LedgerState {
+    fn record_usage(&mut self, day: String, model: &str, usage: &ModelUsage) {
+        self.days
+            .entry(day)
+            .or_default()
+            .entry(model.to_string())
+            .or_default()
+            .merge(usage);
+        self.dirty = true;
+        self.alphax_totals = None;
+    }
 }
 
 fn ledger() -> &'static Mutex<Option<LedgerState>> {
@@ -142,6 +156,7 @@ fn with_state<T>(f: impl FnOnce(&mut LedgerState) -> T) -> Option<T> {
             days: persisted.days,
             dirty: false,
             last_flush: None,
+            alphax_totals: None,
         });
     }
     let state = guard.as_mut()?;
@@ -209,14 +224,7 @@ pub fn record_response(
         cache_write_tokens,
     };
     with_state(|state| {
-        state
-            .days
-            .entry(today_key())
-            .or_default()
-            .entry(model.to_string())
-            .or_default()
-            .merge(&entry);
-        state.dirty = true;
+        state.record_usage(today_key(), model, &entry);
         let overdue = state
             .last_flush
             .map(|last| last.elapsed() >= FLUSH_MIN_INTERVAL)
@@ -518,23 +526,73 @@ pub fn format_count(n: u64) -> String {
 /// Tokens and USD cost for models that belong to the Alphax Free pool.
 /// Other providers are excluded so no rate is applied to them.
 pub fn alphax_pool_totals() -> (u64, f64) {
-    snapshot()
-        .iter()
-        .filter(|(model, _)| {
-            crate::alphacode_app_core::agent::free_pool_rotation::free_pool_display_name(model)
-                .is_some()
-        })
-        .fold((0u64, 0.0f64), |(tokens, cost), (_, u)| {
+    with_state(cached_alphax_pool_totals).unwrap_or_default()
+}
+
+fn cached_alphax_pool_totals(state: &mut LedgerState) -> (u64, f64) {
+    use crate::alphacode_app_core::agent::free_pool_rotation::{
+        effective_free_pool, free_pool_revision,
+    };
+    let revision = free_pool_revision();
+    if let Some((cached_revision, tokens, cost)) = state.alphax_totals
+        && cached_revision == revision
+    {
+        return (tokens, cost);
+    }
+    // No sorted lifetime snapshot or repeated pool copies on every frame.
+    // Recompute only when usage or the discovered free pool changes.
+    let pool: std::collections::HashSet<_> = effective_free_pool().into_iter().collect();
+    let (tokens, cost) = state
+        .days
+        .values()
+        .flat_map(|day| day.iter())
+        .filter(|(model, _)| pool.contains(model.as_str()))
+        .fold((0u64, 0.0f64), |(tokens, cost), (_, usage)| {
             (
-                tokens.saturating_add(u.total_tokens()),
-                cost + u.cost_usd_at(ALPHAX_FREE_USD_PER_MTOK),
+                tokens.saturating_add(usage.total_tokens()),
+                cost + usage.cost_usd_at(ALPHAX_FREE_USD_PER_MTOK),
             )
-        })
+        });
+    state.alphax_totals = Some((revision, tokens, cost));
+    (tokens, cost)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn cached_pool_cost_updates_on_usage_and_new_pool_members() {
+        use crate::alphacode_app_core::agent::free_pool_rotation::{
+            absorb_discovered_free_models, lock_pool_state_for_tests,
+        };
+        let _pool = lock_pool_state_for_tests();
+        let alias = crate::alphacode_provider_metadata::route_cloak::free_route_default_model();
+        let mut state = LedgerState {
+            path: PathBuf::new(),
+            days: BTreeMap::new(),
+            dirty: false,
+            last_flush: None,
+            alphax_totals: None,
+        };
+        let usage = ModelUsage {
+            input_tokens: 10,
+            ..Default::default()
+        };
+        state.record_usage("day".to_string(), &alias, &usage);
+        assert_eq!(cached_alphax_pool_totals(&mut state).0, 10);
+        let cached = state.alphax_totals;
+        assert_eq!(cached_alphax_pool_totals(&mut state).0, 10);
+        assert_eq!(state.alphax_totals, cached);
+        state.record_usage("day".to_string(), &alias, &usage);
+        assert!(state.alphax_totals.is_none());
+        assert_eq!(cached_alphax_pool_totals(&mut state).0, 20);
+        let discovered = "synthetic/cost-cache:free";
+        state.record_usage("day".to_string(), discovered, &usage);
+        assert_eq!(cached_alphax_pool_totals(&mut state).0, 20);
+        absorb_discovered_free_models(vec![discovered.to_string()]);
+        assert_eq!(cached_alphax_pool_totals(&mut state).0, 30);
+    }
 
     #[test]
     fn one_million_tokens_costs_ten_dollars() {
