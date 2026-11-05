@@ -1363,7 +1363,11 @@ pub(super) fn handle_text_input(app: &mut App, text: &str) -> bool {
     }
 
     insert_input_text(app, text);
-    promote_dropped_images(app);
+    // promote_dropped_images is deliberately NOT called here: it runs on every
+    // keystroke (this path) and on Enter/submit (handle_enter, submit_input).
+    // Dropping it from typing keeps the per-key path allocation-free and avoids
+    // repeated path.is_file() stat() calls. Image-path promotion still happens
+    // at submit time before command/skill routing.
     true
 }
 
