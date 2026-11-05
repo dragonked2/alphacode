@@ -2598,6 +2598,7 @@ mod tests {
             "evidence-locker",
             "tool-doctor",
             "runbook",
+            "hunting-intelligence",
             "network-cloud-triage",
             "redteam-ops",
             "advanced-techniques",
@@ -2721,5 +2722,39 @@ mod tests {
             .expect("modern-2026-surfaces SKILL.md must parse cleanly");
         assert_eq!(parsed.name, "modern-2026-surfaces");
         assert!(!parsed.description.is_empty());
+    }
+
+    #[test]
+    fn bundled_hunting_intelligence_skill_parses_and_carries_discovery_method() {
+        use crate::alphacode_base::bundled_skills::BUNDLED_SKILLS;
+
+        let bugbounty = BUNDLED_SKILLS
+            .iter()
+            .find(|s| s.name == "bugbounty")
+            .expect("`bugbounty` must be in BUNDLED_SKILLS");
+        let hunting_ref = bugbounty
+            .references
+            .iter()
+            .find(|(name, _)| *name == "hunting-intelligence")
+            .expect("hunting-intelligence reference must be embedded");
+
+        let parsed =
+            SkillRegistry::parse_embedded_skill("hunting-intelligence", hunting_ref.1, &[])
+                .expect("hunting-intelligence SKILL.md must parse cleanly");
+        assert_eq!(parsed.name, "hunting-intelligence");
+        assert!(!parsed.description.is_empty());
+        for marker in [
+            "Trust-decision graph",
+            "Mine security invariants",
+            "Exploit-graph frontier",
+            "Semantic differential testing",
+            "Source-assisted hunting",
+            "Research ingestion without CVE roulette",
+        ] {
+            assert!(
+                parsed.content.contains(marker),
+                "hunting-intelligence must retain discovery method marker: {marker}"
+            );
+        }
     }
 }

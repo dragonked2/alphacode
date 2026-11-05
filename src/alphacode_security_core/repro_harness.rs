@@ -787,25 +787,42 @@ mod tests {
             return;
         }
         let ws = ReproWorkspace::create("go-rwmutex").expect("temp dir");
-        let timeout = Duration::from_secs(30);
-
-        let leak = ws.run(
-            "leak",
-            ReproLanguage::Go,
-            &go_rwlock_leak_template(),
-            timeout,
-        );
+        // A cold Windows Go toolchain may need more than 30 seconds to build
+        // the standard library. Keep compilation separate from the watchdog
+        // being tested so build latency cannot masquerade as a blocked program.
+        let compile_and_run = |name: &str, source: &str| {
+            let source_path = ws.write_source(ReproLanguage::Go, source).expect("source");
+            let binary = ws
+                .path()
+                .join(format!("{name}{}", std::env::consts::EXE_SUFFIX));
+            let build = run_bounded(
+                format!("build-{name}"),
+                "go",
+                &[
+                    "build".to_string(),
+                    "-o".to_string(),
+                    binary.to_string_lossy().into_owned(),
+                    source_path.to_string_lossy().into_owned(),
+                ],
+                Some(ws.path()),
+                Duration::from_secs(120),
+            );
+            assert_eq!(build.outcome, ReproOutcome::Passed, "{build:?}");
+            run_bounded(
+                name,
+                &binary.to_string_lossy(),
+                &[],
+                Some(ws.path()),
+                Duration::from_secs(30),
+            )
+        };
+        let leak = compile_and_run("leak", &go_rwlock_leak_template());
         assert!(
             leak.stdout.contains("leaked RLock reproduced"),
             "leak template should reproduce blocking: {leak:?}"
         );
 
-        let fixed = ws.run(
-            "fixed",
-            ReproLanguage::Go,
-            &go_rwlock_fixed_template(),
-            timeout,
-        );
+        let fixed = compile_and_run("fixed", &go_rwlock_fixed_template());
         assert_eq!(fixed.outcome, ReproOutcome::Passed, "{fixed:?}");
         assert!(
             fixed.stdout.contains("writer proceeded"),

@@ -108,6 +108,9 @@ impl AdaptiveConcurrency {
                 // Attempt to restore: increase by 25% (gradual, not sudden).
                 let restored = (self.effective_max * 5 / 4).max(self.effective_max + 1);
                 self.effective_max = restored.min(self.configured_max);
+                if self.effective_max < self.configured_max {
+                    self.recovery_loops_remaining = RATE_LIMIT_RECOVERY_LOOPS;
+                }
                 // Reset failure counter so a new burst doesn't immediately
                 // re-trigger backoff at the old threshold.
                 self.consecutive_rate_limit_failures = 0;
@@ -153,6 +156,26 @@ impl AdaptiveConcurrency {
             ));
         }
         parts.join(" | ")
+    }
+}
+
+#[cfg(test)]
+mod adaptive_concurrency_tests {
+    use super::*;
+
+    #[test]
+    fn recovers_full_capacity_after_rate_limit_burst() {
+        let mut controller = AdaptiveConcurrency::new(16);
+        for _ in 0..RATE_LIMIT_BACKOFF_THRESHOLD {
+            controller.record_rate_limit_hit();
+        }
+        assert_eq!(controller.max_concurrent(), 8);
+        for _ in 0..(RATE_LIMIT_RECOVERY_LOOPS * 16) {
+            controller.tick_recovery();
+            assert!(controller.max_concurrent() <= 16);
+        }
+        assert_eq!(controller.max_concurrent(), 16);
+        assert_eq!(controller.recovery_loops_remaining, 0);
     }
 }
 

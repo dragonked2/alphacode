@@ -436,13 +436,15 @@ fn clamp_line_to_width(line: &mut Line<'static>, width: usize) {
             continue;
         }
         let mut text = String::new();
-        for ch in span.content.chars() {
-            let char_width = unicode_width::UnicodeWidthChar::width(ch).unwrap_or(0);
+        for grapheme in
+            unicode_segmentation::UnicodeSegmentation::graphemes(span.content.as_ref(), true)
+        {
+            let char_width = unicode_width::UnicodeWidthStr::width(grapheme);
             if char_width > remaining {
                 break;
             }
             remaining -= char_width;
-            text.push(ch);
+            text.push_str(grapheme);
         }
         if !text.is_empty() {
             spans.push(Span::styled(text, span.style));
@@ -655,6 +657,17 @@ mod tests {
             todo_items: Vec::new(),
             runtime: crate::protocol::SwarmMemberRuntime::default(),
         }
+    }
+
+    #[test]
+    fn clipping_preserves_emoji_graphemes_and_cell_width() {
+        let mut line = Line::from("a👩‍💻bc");
+        clamp_line_to_width(&mut line, 3);
+        assert_eq!(line.to_string(), "a👩‍💻");
+        assert_eq!(line.width(), 3);
+        let mut line = Line::from("a👩‍💻bc");
+        clamp_line_to_width(&mut line, 2);
+        assert_eq!(line.to_string(), "a");
     }
 
     #[test]

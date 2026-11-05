@@ -33,9 +33,9 @@ git config --global --add safe.directory /src
 
 curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs |
   sh -s -- -y --default-toolchain 1.94.1 --profile minimal
-. "$HOME/.cargo/env"
+. "${CARGO_HOME:-$HOME/.cargo}/env"
 
-cargo build --release --locked
+cargo build --release --locked --bin alphacode
 
 # Hard gate: must actually start inside the container.
 ./target/release/alphacode --version

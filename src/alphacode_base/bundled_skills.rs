@@ -102,6 +102,10 @@ pub(super) const BUNDLED_SKILLS: &[BundledSkill] = &[
                 include_str!("bundled_skills/bugbounty/current-research/SKILL.md"),
             ),
             (
+                "hunting-intelligence",
+                include_str!("bundled_skills/bugbounty/hunting-intelligence/SKILL.md"),
+            ),
+            (
                 "real-world-validation",
                 include_str!("bundled_skills/bugbounty/real-world-validation/SKILL.md"),
             ),

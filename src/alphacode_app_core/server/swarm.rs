@@ -78,10 +78,22 @@ pub(super) fn swarm_is_self_or_ancestor(
     ancestor: &str,
     session_id: &str,
 ) -> bool {
-    ancestor == session_id
-        || swarm_ancestors(members, session_id)
-            .iter()
-            .any(|candidate| candidate == ancestor)
+    let mut current = session_id;
+    // A valid parent chain visits at most members.len() edges. The bound also
+    // terminates corrupt cycles without allocating a visited set or cloning ids.
+    for _ in 0..=members.len() {
+        if current == ancestor {
+            return true;
+        }
+        let Some(parent) = members
+            .get(current)
+            .and_then(|member| member.report_back_to_session_id.as_deref())
+        else {
+            return false;
+        };
+        current = parent;
+    }
+    false
 }
 
 const DEFAULT_SWARM_STATUS_DEBOUNCE_MEMBER_THRESHOLD: usize = 2;
@@ -2030,6 +2042,9 @@ mod tests {
         members.insert("y".to_string(), member_with_parent("y", Some("x")));
         assert_eq!(swarm_spawn_depth(&members, "x"), 1);
         assert_eq!(swarm_ancestors(&members, "x"), vec!["y"]);
+        assert!(swarm_is_self_or_ancestor(&members, "y", "x"));
+        assert!(!swarm_is_self_or_ancestor(&members, "unrelated", "x"));
+        assert!(!swarm_is_self_or_ancestor(&members, "root", "missing"));
     }
 
     #[tokio::test]

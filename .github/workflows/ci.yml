@@ -20,8 +20,16 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, macos-15-intel, windows-latest]
-        profile: [release]
+        include:
+          - os: ubuntu-22.04
+            target: x86_64-unknown-linux-gnu
+            profile: release
+          - os: macos-15-intel
+            target: x86_64-apple-darwin
+            profile: release
+          - os: windows-latest
+            target: x86_64-pc-windows-msvc
+            profile: release
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
@@ -41,6 +49,7 @@ jobs:
         with:
           toolchain: 1.94.1
           components: clippy, rustfmt
+          targets: ${{ matrix.target }}
 
       - name: Cache cargo registry & target
         uses: actions/cache@v4
@@ -49,17 +58,18 @@ jobs:
             ~/.cargo/registry
             ~/.cargo/git
             target
-          key: release-${{ matrix.os }}-${{ matrix.profile }}-${{ hashFiles('Cargo.lock') }}
+          # Save on main so tagged releases can restore this cache. GitHub
+          # cannot restore a cache saved only under an earlier release tag.
+          key: release-v2-${{ runner.os }}-${{ matrix.target }}-1.94.1-${{ hashFiles('Cargo.lock', 'Cargo.toml', 'rust-toolchain.toml') }}-${{ github.sha }}
           restore-keys: |
-            release-${{ matrix.os }}-${{ matrix.profile }}-
-            cargo-${{ matrix.os }}-${{ matrix.profile }}-
-            cargo-${{ matrix.os }}-
+            release-v2-${{ runner.os }}-${{ matrix.target }}-1.94.1-${{ hashFiles('Cargo.lock', 'Cargo.toml', 'rust-toolchain.toml') }}-
+            release-v2-${{ runner.os }}-${{ matrix.target }}-1.94.1-
 
       - name: cargo fmt --check
         run: cargo fmt --all -- --check
 
       - name: cargo build --release
-        run: cargo build --release --locked
+        run: cargo build --release --locked --target ${{ matrix.target }} --bin alphacode
 
   test:
     name: test (${{ matrix.os }})

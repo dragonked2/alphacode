@@ -622,22 +622,35 @@ pub fn completion_notification_message(name: &str, status: &str, report: Option<
 
 pub fn truncate_detail(text: &str, max_len: usize) -> String {
     let max_len = max_len.max(1);
-    // Fast path: already fits
-    if text.len() <= max_len && text.chars().count() <= max_len {
-        // Still need to collapse whitespace
-        return text.split_whitespace().collect::<Vec<_>>().join(" ");
+    // Normalize only the prefix needed for the summary, without allocating
+    // tokens or a complete copy of potentially megabyte-sized worker output.
+    let mut out = String::new();
+    let mut count = 0;
+    let mut pending_space = false;
+    let mut truncated = false;
+    for ch in text.chars() {
+        if ch.is_whitespace() {
+            pending_space = count != 0;
+            continue;
+        }
+        if pending_space && count < max_len {
+            out.push(' ');
+            count += 1;
+            pending_space = false;
+        }
+        if count == max_len {
+            truncated = true;
+            break;
+        }
+        out.push(ch);
+        count += 1;
     }
-    // Collapse whitespace first, then truncate
-    let collapsed = text.split_whitespace().collect::<Vec<_>>().join(" ");
-    let trimmed = collapsed.trim();
-    if trimmed.chars().count() <= max_len {
-        return trimmed.to_string();
+    if truncated && max_len > 3 {
+        for _ in 0..3 {
+            out.pop();
+        }
+        out.push_str("...");
     }
-    if max_len <= 3 {
-        return trimmed.chars().take(max_len).collect();
-    }
-    let mut out: String = trimmed.chars().take(max_len - 3).collect();
-    out.push_str("...");
     out
 }
 
@@ -678,6 +691,20 @@ mod tests {
     #[test]
     fn truncate_detail_collapses_whitespace_and_ellipsizes() {
         assert_eq!(truncate_detail("hello   there\nworld", 11), "hello th...");
+    }
+
+    #[test]
+    fn truncate_detail_preserves_unicode_and_limit_boundaries() {
+        for (text, limit, expected) in [
+            ("  a \n b  ", 3, "a b"),
+            ("abcdef", 0, "a"),
+            ("abcdef", 3, "abc"),
+            ("abcdef", 4, "a..."),
+            ("你好 世界 extra", 5, "你好..."),
+            ("", 12, ""),
+        ] {
+            assert_eq!(truncate_detail(text, limit), expected);
+        }
     }
 
     #[test]

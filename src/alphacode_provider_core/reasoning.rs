@@ -113,7 +113,11 @@ pub fn inferred_reasoning_efforts(
     // row is only emitted for an effort-less route, the model id then vanished
     // from `/model` entirely.
     if provider.starts_with("openai-compatible:") {
-        if provider.contains("deepseek") || model.contains("deepseek") {
+        if provider.contains("deepseek")
+            || model.contains("deepseek")
+            || model.contains("glm")
+            || model == "alpha"
+        {
             return DEEPSEEK_SELECTABLE_EFFORTS.to_vec();
         }
         return if is_openai_model || model.starts_with("claude-") {
@@ -159,6 +163,17 @@ pub fn inferred_reasoning_efforts(
 
     let is_openai = provider.contains("openai") || provider.contains("codex") || is_openai_model;
     if is_openai {
+        // Match the direct runtime: API-only Pro models do not accept every
+        // effort in the generic ladder. Remote cycling must not offer rungs
+        // that the server immediately rejects.
+        let canonical = crate::alphacode_provider_core::model_id::canonical(&model);
+        if crate::alphacode_provider_core::is_openai_api_only_pro_model(&canonical) {
+            return if canonical.starts_with("gpt-5-pro") {
+                vec!["high", "swarm", "swarm-deep"]
+            } else {
+                vec!["medium", "high", "xhigh", "swarm", "swarm-deep"]
+            };
+        }
         return OPENAI_SELECTABLE_EFFORTS.to_vec();
     }
 
@@ -243,6 +258,30 @@ mod tests {
                 "swarm",
                 "swarm-deep"
             ]
+        );
+    }
+
+    #[test]
+    fn remote_pro_ladders_match_the_direct_runtime() {
+        assert_eq!(
+            inferred_reasoning_efforts(Some("openai"), Some("gpt-5-pro")),
+            vec!["high", "swarm", "swarm-deep"]
+        );
+        assert_eq!(
+            inferred_reasoning_efforts(Some("openai"), Some("gpt-5.4-pro")),
+            vec!["medium", "high", "xhigh", "swarm", "swarm-deep"]
+        );
+    }
+
+    #[test]
+    fn named_glm_routes_keep_effort_selection() {
+        assert_eq!(
+            inferred_reasoning_efforts(Some("openai-compatible:local"), Some("z-ai/glm-5.2")),
+            DEEPSEEK_SELECTABLE_EFFORTS
+        );
+        assert_eq!(
+            inferred_reasoning_efforts(Some("openai-compatible:local"), Some("alpha")),
+            DEEPSEEK_SELECTABLE_EFFORTS
         );
     }
 

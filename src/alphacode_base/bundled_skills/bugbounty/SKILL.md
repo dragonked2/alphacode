@@ -73,6 +73,12 @@ vulnerability here" is a successful outcome.
 
 ## Investigation continuity
 
+Load `hunting-intelligence` at the start of a broad assessment, when many
+surfaces compete, after generic automation is quiet, or whenever the next best
+test is unclear. It is the discovery layer: reconstruct the product and trust
+graph, mine security invariants, rank exploit-graph frontiers, maintain a
+diversified hypothesis portfolio, and make each result improve the next test.
+
 Load `experiment-design` when an observation needs a decisive test, a lead stalls,
 or several plausible paths compete. It provides invariant-driven experiments,
 bounded creative pivots and capability-compatible chain planning. Keep this
@@ -145,6 +151,7 @@ the requested consequence; record compatible prerequisites and stop at sufficien
 
 | Surface | Skill |
 |---------|-------|
+| Broad program, product modeling, deciding the next best test | `hunting-intelligence` |
 | Any resource endpoint, authZ, tenant boundary | `control-verification` |
 | Manual, no-source, high-stakes, scanner came back clean | `manual-blackbox` |
 | Pricing, coupons, payments, entitlements, refunds, limits | `hunt-business-logic` |
@@ -213,8 +220,11 @@ independent authorized coverage. Severity follows evidence, never a quota.
 
 ## HUNT DISCIPLINE (session-level rules — read before the first request)
 
-These rules exist because the most expensive hunt failure is not a missed
-vuln — it is hours of unattributed probes and half-finished programs.
+These rules prevent both costly failure modes: missing a vulnerability because a
+surface silently fell out of the plan, and wasting hours on unattributed probes
+and half-finished programs. Shortest-path reasoning prioritizes the next test and
+the minimum safe proof; it never narrows the coverage inventory. A finding closes
+its proof, not independent applicable coverage.
 
 **Before the first active request, in this order:**
 1. Load the relevant class skill(s) (`skill_manage load`) — including this one.
@@ -285,12 +295,17 @@ each decision, which actor can reach it, and what protected data, authority or
 value crosses the boundary. Missing tools should trigger a useful fallback,
 not an unsupported conclusion about the target.
 
-### PHASE 1: MAP (5 min)
+### PHASE 1: MAP (initial pass, then update continuously)
 ```
 PRIORITY 1: Payment, admin, auth, file upload, webhooks, tenant boundaries
 PRIORITY 2: API endpoints with IDs, data export, GraphQL
 PRIORITY 3: Static assets, docs, health checks
 ```
+
+These are starting heuristics, not a fixed ordering. Use `hunting-intelligence`
+to map value, actors, object states, decision points, alternate consumers and
+exploit-graph frontiers. Re-rank when target evidence changes the expected
+information gain or reachable consequence.
 
 ### PHASE 2: ASSESS — DIFFERENTIAL TESTING
 Core: Compare **baseline** (expected) vs **test** (attack) request. The
@@ -374,8 +389,11 @@ requires a discriminating observation; paused and blocked paths stay unresolved.
 
 ## OPERATING RULES (see runbook section 10)
 
-Priority order: auth/authZ → backend-reaching input → business logic →
-info disclosure → UI-only last. Checkpoint notes every ~5 min.
+Derive priority from the observed value and trust-decision maps. A common
+starting order is auth/authZ → backend-reaching input → business logic →
+info disclosure → UI-only, but reachable high-value transitions, alternate
+consumers, or a decisive architectural seam may move ahead. Checkpoint when a
+test block stops adding information.
 Differential testing (authed vs unauthed) for everything auth-adjacent.
 Bound time and output while preserving original evidence on disk. Status-only
 checks are discovery signals, not validation. Reconcile coverage and limits

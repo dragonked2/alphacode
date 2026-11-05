@@ -1,18 +1,21 @@
 use crate::alphacode_app_core::protocol::{Request, ServerEvent};
 use anyhow::Result;
-use serde_json::Value;
+use serde::Deserialize;
+use std::borrow::Cow;
+
+#[derive(Deserialize)]
+struct EventHeader<'a> {
+    #[serde(rename = "type", default, borrow)]
+    kind: Cow<'a, str>,
+    #[serde(default)]
+    id: Option<u64>,
+}
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 
 fn request_type_from_json(json: &str) -> String {
-    serde_json::from_str::<Value>(json)
-        .ok()
-        .and_then(|value| {
-            value
-                .get("type")
-                .and_then(|v| v.as_str())
-                .map(str::to_string)
-        })
-        .unwrap_or_else(|| "unknown".to_string())
+    serde_json::from_str::<EventHeader<'_>>(json)
+        .map(|header| header.kind.into_owned())
+        .unwrap_or_else(|_| "unknown".to_string())
 }
 
 pub(super) async fn send_request(request: Request) -> Result<ServerEvent> {
@@ -67,7 +70,10 @@ pub(super) async fn send_request_with_timeout(
             ));
         }
 
-        let value: Value = serde_json::from_str(line.trim()).map_err(|err| {
+        // Borrow only routing fields. Broadcasts can contain large transcripts or
+        // swarm snapshots; constructing a Value tree for discarded events wastes
+        // allocations on every coordination request.
+        let header: EventHeader<'_> = serde_json::from_str(line.trim()).map_err(|err| {
             crate::logging::warn(&format!(
                 "[tool:communicate] failed to parse response type={} id={} socket={} error={} payload={}",
                 request_type,
@@ -79,8 +85,8 @@ pub(super) async fn send_request_with_timeout(
             err
         })?;
 
-        let event_type = value.get("type").and_then(|t| t.as_str()).unwrap_or("");
-        let event_id = value.get("id").and_then(|v| v.as_u64());
+        let event_type = header.kind.as_ref();
+        let event_id = header.id;
 
         if event_type != "ack" && event_id != Some(request_id) {
             continue;
@@ -113,7 +119,26 @@ pub(super) async fn send_request_with_timeout(
             | "transcript"
             | "interrupted" => continue,
             // Terminal responses and typed request responses with matching ids.
-            _ => return Ok(serde_json::from_value(value)?),
+            _ => return Ok(serde_json::from_str(line.trim())?),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn routing_header_ignores_broadcast_payload_and_accepts_escaped_types() {
+        let header: EventHeader<'_> =
+            serde_json::from_str(r#"{"type":"swarm_status","members":[{"nested":{"id":42}}]}"#)
+                .unwrap();
+        assert_eq!(header.kind, "swarm_status");
+        assert_eq!(header.id, None);
+        assert!(matches!(header.kind, Cow::Borrowed(_)));
+        let header: EventHeader<'_> =
+            serde_json::from_str(r#"{"type":"do\u006ee","id":7,"message":"ok"}"#).unwrap();
+        assert_eq!(header.kind, "done");
+        assert_eq!(header.id, Some(7));
     }
 }

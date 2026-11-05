@@ -379,7 +379,7 @@ fn append_model_runtime_metadata(spans: &mut Vec<Span<'static>>, data: &InfoWidg
 
 fn short_reasoning_effort(effort: &str) -> Option<&str> {
     let effort = effort.trim();
-    if effort.is_empty() || effort == "low" || effort == "none" {
+    if effort.is_empty() {
         return None;
     }
     Some(match effort {
@@ -463,6 +463,13 @@ mod tests {
             .into_iter()
             .map(|span| span.content.into_owned())
             .collect::<String>()
+    }
+
+    #[test]
+    fn low_and_disabled_effort_remain_visible() {
+        assert_eq!(short_reasoning_effort("low"), Some("low"));
+        assert_eq!(short_reasoning_effort("none"), Some("none"));
+        assert_eq!(short_reasoning_effort("  "), None);
     }
 
     #[test]

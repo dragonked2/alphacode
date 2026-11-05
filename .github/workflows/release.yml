@@ -17,6 +17,10 @@ concurrency:
   group: release-${{ github.ref }}
   cancel-in-progress: true
 
+env:
+  # Match main-branch release builds so Cargo fingerprints are reusable.
+  RUSTFLAGS: "-D warnings"
+
 permissions:
   contents: write
   actions: read
@@ -120,9 +124,10 @@ jobs:
               ~/.cargo/registry
               ~/.cargo/git
               target
-          key: release-${{ matrix.target }}-${{ hashFiles('Cargo.lock') }}
+          key: release-v2-${{ runner.os }}-${{ matrix.target }}-1.94.1-${{ hashFiles('Cargo.lock', 'Cargo.toml', 'rust-toolchain.toml') }}-${{ github.sha }}
           restore-keys: |
-            release-${{ matrix.target }}-
+            release-v2-${{ runner.os }}-${{ matrix.target }}-1.94.1-${{ hashFiles('Cargo.lock', 'Cargo.toml', 'rust-toolchain.toml') }}-
+            release-v2-${{ runner.os }}-${{ matrix.target }}-1.94.1-
 
       # Extract the release version from the git tag and expose it as
       # ALPHACODE_BUILD_SEMVER so the build script embeds the *exact* tag

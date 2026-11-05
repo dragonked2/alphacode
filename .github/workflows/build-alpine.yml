@@ -20,6 +20,16 @@ name: build-alpine
 # collide with release.yml's alphacode-linux-{arm64,x86_64}.tar.gz.
 
 on:
+  # Prime default-branch caches when the dependency/build configuration changes;
+  # later tags cannot restore caches scoped only to older tags.
+  push:
+    branches: [main]
+    paths:
+      - Cargo.toml
+      - Cargo.lock
+      - rust-toolchain.toml
+      - scripts/build-alpine.sh
+      - .github/workflows/build-alpine.yml
   workflow_call:
   workflow_dispatch:
 
@@ -82,9 +92,23 @@ jobs:
       # the exact combination an AlpineTerm host has, so the produced binary
       # links and runs there. Only the toolchain the release.yml build needs
       # on top: build-base, pkgconf, libxkbcommon-dev.
+      - name: Cache Alpine Cargo dependencies and artifacts
+        uses: actions/cache@v4
+        with:
+          path: |
+            .alpine-cargo/registry
+            .alpine-cargo/git
+            target
+          key: alpine-3.22-${{ matrix.triple }}-1.94.1-${{ hashFiles('Cargo.lock', 'Cargo.toml') }}-${{ github.sha }}
+          restore-keys: |
+            alpine-3.22-${{ matrix.triple }}-1.94.1-${{ hashFiles('Cargo.lock', 'Cargo.toml') }}-
+            alpine-3.22-${{ matrix.triple }}-1.94.1-
+
       - name: Build in Alpine 3.22 container
         run: |
+          mkdir -p "$GITHUB_WORKSPACE/.alpine-cargo"
           docker run --rm \
+            -e CARGO_HOME=/src/.alpine-cargo \
             -e ALPHACODE_BUILD_SEMVER="$VERSION" \
             -e ALPHACODE_RELEASE_BUILD=1 \
             -e ALPHACODE_BUILD_GIT_DIRTY=0 \
