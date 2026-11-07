@@ -233,6 +233,7 @@ fn short_terminals_keep_composer_and_picker_visible() {
             selected: 0,
             column: 0,
             filter: String::new(),
+            last_scored_filter: String::new(),
             preview: false,
         }),
         ..Default::default()

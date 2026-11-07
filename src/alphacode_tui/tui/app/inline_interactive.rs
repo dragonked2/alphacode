@@ -74,6 +74,7 @@ impl ModelPickerPosition {
     fn restore(self, picker: &mut InlineInteractiveState) {
         picker.filter = self.filter;
         picker.preview = self.preview;
+        picker.last_scored_filter = String::new();
         App::apply_inline_interactive_filter(picker);
         if let Some((name, effort, route)) = self.selected
             && let Some((position, &index)) =
@@ -1019,6 +1020,7 @@ impl App {
             selected: 0,
             column: 0,
             filter: String::new(),
+            last_scored_filter: String::new(),
             preview: false,
         });
         if let Some(position) = position
@@ -1302,6 +1304,7 @@ impl App {
             selected: 0,
             column: 0,
             filter: String::new(),
+            last_scored_filter: String::new(),
             preview: false,
         });
         self.set_status_notice("Updating model list…");
@@ -1970,6 +1973,7 @@ impl App {
             selected: 0,
             column: 0,
             filter: String::new(),
+            last_scored_filter: String::new(),
             preview: false,
         });
 
@@ -3854,6 +3858,12 @@ impl App {
     }
 
     pub(super) fn apply_inline_interactive_filter(picker: &mut InlineInteractiveState) {
+        // Debounce the O(entries) fuzzy re-score: rapid keystrokes should not
+        // re-scan all picker entries on every key. If the filter text hasn't
+        // changed since the last re-score, reuse the previous result.
+        if picker.filter == picker.last_scored_filter {
+            return;
+        }
         if picker.filter.is_empty() {
             picker.filtered = (0..picker.entries.len()).collect();
         } else {
@@ -3928,6 +3938,7 @@ impl App {
             picker.selected = 0;
         } else {
             picker.selected = picker.selected.min(picker.filtered.len() - 1);
+        picker.last_scored_filter = picker.filter.clone();
         }
     }
 
@@ -4030,6 +4041,7 @@ mod tests {
             selected: 1,
             column: 1,
             filter: "model".into(),
+            last_scored_filter: String::new(),
             preview: false,
         };
         let position = ModelPickerPosition::capture(&old).unwrap();
@@ -4042,6 +4054,7 @@ mod tests {
             selected: 0,
             column: 0,
             filter: String::new(),
+            last_scored_filter: String::new(),
             preview: false,
         };
         position.restore(&mut refreshed);
@@ -4063,6 +4076,7 @@ mod tests {
             selected: 0,
             column: 0,
             filter: "é".into(),
+            last_scored_filter: String::new(),
             preview: false,
         };
         App::tab_complete_inline_interactive_filter(&mut picker);
@@ -4080,6 +4094,7 @@ mod tests {
             selected: 0,
             column: 0,
             filter: "example beta".into(),
+            last_scored_filter: String::new(),
             preview: false,
         };
         App::apply_inline_interactive_filter(&mut picker);
@@ -4104,6 +4119,7 @@ mod tests {
             selected: 0,
             column: 0,
             filter: String::new(),
+            last_scored_filter: String::new(),
             preview: false,
         };
         let mut agent_entry = picker_entry("Swarm / subagent", "gpt-5 default", 0);
@@ -4115,6 +4131,7 @@ mod tests {
             selected: 0,
             column: 0,
             filter: String::new(),
+            last_scored_filter: String::new(),
             preview: false,
         };
 
@@ -4134,6 +4151,7 @@ mod tests {
             selected: 0,
             column: 0,
             filter: "opus".to_string(),
+            last_scored_filter: String::new(),
             preview: false,
         };
 
@@ -4154,6 +4172,7 @@ mod tests {
             selected: 0,
             column: 0,
             filter: "codxe".to_string(),
+            last_scored_filter: String::new(),
             preview: false,
         };
 
@@ -4174,6 +4193,7 @@ mod tests {
             selected: 0,
             column: 0,
             filter: "gpt-5".to_string(),
+            last_scored_filter: String::new(),
             preview: false,
         };
 

@@ -1346,6 +1346,10 @@ pub struct InlineInteractiveState {
     pub column: usize,
     /// Filter text applied to the picker kind's searchable text.
     pub filter: String,
+    /// Filter text that was last fuzzy re-scored, used to debounce the O(entries)
+    /// re-score so rapid keystrokes don't re-scan all entries on every key. Any
+    /// change to the filter text forces an immediate re-score.
+    pub last_scored_filter: String,
     /// Preview mode: picker is visible but input stays in main text box
     pub preview: bool,
 }

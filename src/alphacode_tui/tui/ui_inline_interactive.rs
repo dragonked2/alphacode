@@ -1189,6 +1189,7 @@ mod tests {
             selected: 0,
             column: 0,
             filter: String::new(),
+            last_scored_filter: String::new(),
             preview: false,
             entries: vec![crate::alphacode_tui::tui::PickerEntry {
                 name: "gpt-5.4".to_string(),
@@ -1282,6 +1283,7 @@ mod tests {
             selected: 0,
             column: 0,
             filter: String::new(),
+            last_scored_filter: String::new(),
             preview: false,
             entries: models,
         }
@@ -1294,6 +1296,7 @@ mod tests {
             selected: 0,
             column: 0,
             filter: String::new(),
+            last_scored_filter: String::new(),
             preview: false,
             entries: vec![crate::alphacode_tui::tui::PickerEntry {
                 name: "Swarm / subagent".to_string(),

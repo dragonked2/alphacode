@@ -60,6 +60,7 @@ impl App {
             selected: 0,
             column: 0,
             filter: String::new(),
+            last_scored_filter: String::new(),
             preview: false,
         });
         self.input.clear();
@@ -171,6 +172,7 @@ impl App {
             selected: 0,
             column: 0,
             filter: String::new(),
+            last_scored_filter: String::new(),
             preview: false,
         });
         self.input.clear();

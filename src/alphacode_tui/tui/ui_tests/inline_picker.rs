@@ -61,6 +61,7 @@ fn model_picker_state() -> TestState {
             selected: 0,
             column: 0,
             filter: String::new(),
+            last_scored_filter: String::new(),
             preview: false,
             entries: vec![model_picker_entry()],
         }),

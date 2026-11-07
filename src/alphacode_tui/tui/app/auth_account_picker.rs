@@ -436,6 +436,7 @@ impl App {
             selected,
             column: 0,
             filter: String::new(),
+            last_scored_filter: String::new(),
             preview: false,
         });
         self.input.clear();
