@@ -170,6 +170,13 @@ impl App {
         {
             return false;
         }
+        // Ensure any deferred filter (from typing debounce) is applied before commit.
+        if let Some(picker) = self.inline_interactive_state.as_mut()
+            && picker.filter != picker.last_scored_filter
+        {
+            picker.filter_score_at = None;
+            Self::apply_inline_interactive_filter(picker);
+        }
 
         if let Some(ref mut picker) = self.inline_interactive_state {
             picker.preview = false;

@@ -3881,26 +3881,8 @@ impl App {
 
     /// Apply filter if the debounce window has elapsed (for tick/refresh paths).
     pub(super) fn apply_inline_interactive_filter(picker: &mut InlineInteractiveState) {
-        // Debounce the O(entries) fuzzy re-score: rapid keystrokes must not
-        // re-scan all picker entries on every key. Time-based debounce coalesces
-        // bursts of typing; the filter text comparison is insufficient alone
-        // because every keystroke changes the filter. We still re-score
-        // immediately when the filter is cleared or when a forced re-score is
-        // requested (filter_score_at == None).
-        const FILTER_RESCORE_DEBOUNCE: std::time::Duration = std::time::Duration::from_millis(80);
-        let now = std::time::Instant::now();
+        // Skip only when filter text is unchanged (correctness-preserving).
         if picker.filter == picker.last_scored_filter {
-            return;
-        }
-        let force_rescore = picker.filter.is_empty() || picker.filter_score_at.is_none();
-        if !force_rescore
-            && picker
-                .filter_score_at
-                .is_some_and(|at| now.duration_since(at) < FILTER_RESCORE_DEBOUNCE)
-        {
-            // Defer: keep showing the previous scored results while the user is
-            // still typing rapidly. The next render/tick after the debounce
-            // window (or a forced re-score) will apply the latest filter.
             return;
         }
         if picker.filter.is_empty() {

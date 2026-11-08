@@ -825,8 +825,8 @@ function Get-AlphacodeReleaseStage {
   # wrote to disk and launched, which generic AV heuristics score as a dropper
   # (BitDefender `Gen:Variant.Barys`). Keep the two files together: the launcher
   # looks for `AlphaCode.Desktop.exe` in its own directory first.
-  $host = Get-ChildItem -Path $extract -Recurse -Filter 'AlphaCode.Desktop.exe' -ErrorAction SilentlyContinue | Select-Object -First 1
-  $hostPath = if ($host) { $host.FullName } else { $null }
+  $desktopHost = Get-ChildItem -Path $extract -Recurse -Filter 'AlphaCode.Desktop.exe' -ErrorAction SilentlyContinue | Select-Object -First 1
+  $hostPath = if ($desktopHost) { $desktopHost.FullName } else { $null }
 
   return [pscustomobject]@{ Ok = $true; ExePath = $exe.FullName; HostPath = $hostPath; Payload = $payload; Tag = $chosen.Tag; Source = 'release' }
 }
