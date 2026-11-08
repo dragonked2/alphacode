@@ -111,6 +111,17 @@ pub(super) fn handle_tick(app: &mut App) -> bool {
     needs_redraw |= app.refresh_pinned_todos_if_needed();
     needs_redraw |= app.refresh_side_panel_linked_content_if_due();
     needs_redraw |= app.poll_model_picker_load();
+    if let Some(picker) = app.inline_interactive_state.as_mut() {
+        let before = (
+            picker.filter.clone(),
+            picker.last_scored_filter.clone(),
+            picker.filtered.len(),
+        );
+        super::inline_interactive::refresh_inline_interactive_filter_if_due(picker);
+        if picker.last_scored_filter != before.1 || picker.filtered.len() != before.2 {
+            needs_redraw = true;
+        }
+    }
     needs_redraw |= app.poll_session_picker_load();
     needs_redraw |= app.poll_session_picker_presence();
     needs_redraw |= app.onboarding_tick();

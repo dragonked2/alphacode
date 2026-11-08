@@ -1,5 +1,33 @@
-﻿param([Parameter(Mandatory=$true)][string]$Executable, [switch]$Preview)
+param([Parameter(Mandatory=$true)][string]$Executable, [switch]$Preview)
 $ErrorActionPreference = 'Stop'
+
+# Keep the desktop alive on recoverable UI/bridge errors instead of crashing.
+# Fatal CLR corruption still terminates, but most event-handler exceptions
+# (COM picker errors, bridge parse issues, clipboard access) can be reported.
+try {
+    [AppDomain]::CurrentDomain.add_UnhandledException({
+        param($sender, $args)
+        try {
+            $ex = $args.ExceptionObject
+            $msg = if ($ex -is [Exception]) { $ex.ToString() } else { [string]$ex }
+            $log = Join-Path $env:LOCALAPPDATA 'AlphaCode\gui-unhandled.log'
+            New-Item -ItemType Directory -Force -Path (Split-Path $log) | Out-Null
+            Add-Content -Path $log -Value ("[{0}] Unhandled: {1}" -f (Get-Date -Format o), $msg)
+        } catch {}
+    })
+} catch {}
+
+trap {
+    try {
+        $log = Join-Path $env:LOCALAPPDATA 'AlphaCode\gui-trap.log'
+        New-Item -ItemType Directory -Force -Path (Split-Path $log) | Out-Null
+        Add-Content -Path $log -Value ("[{0}] Trap: {1}`n{2}" -f (Get-Date -Format o), $_.Exception.Message, $_.ScriptStackTrace)
+        if ($script:controls -and $script:controls.FooterStatus) {
+            $script:controls.FooterStatus.Text = "Recovered from an error: $($_.Exception.Message)"
+        }
+    } catch {}
+    continue
+}
 Add-Type -AssemblyName PresentationFramework, PresentationCore, WindowsBase, System.Windows.Forms
 
 $identity = [System.Security.Principal.WindowsIdentity]::GetCurrent().User.Value
@@ -446,6 +474,22 @@ function Load-GuiWindow([xml]$document) {
 }
 
 $window = Load-GuiWindow $xaml
+
+try {
+    $window.Dispatcher.add_UnhandledException({
+        param($sender, $args)
+        try {
+            $log = Join-Path $env:LOCALAPPDATA 'AlphaCode\gui-dispatcher.log'
+            New-Item -ItemType Directory -Force -Path (Split-Path $log) | Out-Null
+            Add-Content -Path $log -Value ("[{0}] Dispatcher: {1}`n{2}" -f (Get-Date -Format o), $args.Exception.Message, $args.Exception.StackTrace)
+            if ($script:controls -and $script:controls.FooterStatus) {
+                $script:controls.FooterStatus.Text = "Recovered: $($args.Exception.Message)"
+            }
+            $args.Handled = $true
+        } catch { $args.Handled = $true }
+    })
+} catch {}
+
 $controls = @{}
 foreach ($name in @('CommandOverlay','CommandPaletteSurface','CommandSearch','CommandResults','CommandEmpty','CloseCommands','FocusMode','CommandMenu','ResponseActivity','ResponseStage','ResponseDetail','ResponseElapsed','ResponseStop','LoadingDot1','LoadingDot2','LoadingDot3','ModelChooser','ModelChoiceLabel','ModelPopup','ModelPopupSurface','ModelSearch','ModelResults','ModelResultCount','ModelEmpty','ApplyModelChoice','ClearChatSearch','FilterAll','FilterLive','FilterSaved','ChatsHeading','ReplySearchBar','ReplySearch','ReplySearchCount','CloseReplySearch','FindReply','ConversationCards','WorkflowResize','WorkDividerColumn','WorkflowScroll','WorkToggle','WorkColumn','ConversationColumn','WorkflowSurface','WorkflowSummary','WorkflowTodos','WorkflowPlan','WorkflowSwarm','ExamplesPanel','NoticeBanner','NoticeText','ChatSurface','ComposerSurface','ComposerContent','ComposerFocusRing','ComposerHint','PromptCount','ThemeToggle','JumpLatest','Panel','TitleBar','Back','Forward','SidebarToggle','SidebarColumn','SidebarDivider','SidebarSurface','Minimize','Maximize','Close','Cancel','Rename','Archive','Sessions','SessionsEmpty','ProjectsList','SessionSearch','SearchPlaceholder','ModelPicker','EffortPicker','WorkspacePath','OpenTerminal','ExampleExplore','ExampleReview','ExampleTest','Activity','Detail','Timeline','Reply','ReplyScroll','Prompt','CommandInput','SecretInput','Placeholder','EmptyState','Send','Copy','Refresh','AddContext','Voice','NewChat','NavHome','NavRecents','NavProjects','NavArchive','NavCompanion','More','Search','ComposerSettings','SidebarHint','SidebarStatus','SessionCount','StatePill','StateText','FooterStatus','WorkspaceTitle','WorkspaceSubtitle')) {
     $controls[$name] = $window.FindName($name)
@@ -2061,12 +2105,25 @@ function Select-AlphacodeWorkspace([string]$Description) {
 }
 
 $controls.AddContext.Add_Click({
-    if ($script:ownedBusy) { Show-GuiNotice 'Finish or cancel the current GUI turn first'; return }
-    $selectedPath = Select-AlphacodeWorkspace 'Choose a workspace for a new AlphaCode chat'
-    if ($selectedPath) {
-        $controls.Sessions.SelectedValue = '__companion__'
-        Queue-Action 'new_chat' '__companion__' @{ working_dir = $selectedPath }
-        Show-GuiNotice "Opening workspace: $selectedPath"
+    try {
+        if ($script:ownedBusy) { Show-GuiNotice 'Finish or cancel the current GUI turn first'; return }
+        $selectedPath = $null
+        try {
+            $selectedPath = Select-AlphacodeWorkspace 'Choose a workspace for a new AlphaCode chat'
+        } catch {
+            Show-GuiNotice ("Could not open the workspace picker: " + $_.Exception.Message) 12
+            return
+        }
+        if ($selectedPath) {
+            try { $controls.Sessions.SelectedValue = '__companion__' } catch {}
+            try { Queue-Action 'new_chat' '__companion__' @{ working_dir = $selectedPath } } catch {
+                Show-GuiNotice ("Could not start the workspace chat: " + $_.Exception.Message) 12
+                return
+            }
+            Show-GuiNotice "Opening workspace: $selectedPath"
+        }
+    } catch {
+        try { Show-GuiNotice ("Workspace picker error: " + $_.Exception.Message) 12 } catch {}
     }
 })
 $controls.OpenTerminal.Add_Click({

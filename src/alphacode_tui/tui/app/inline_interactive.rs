@@ -75,6 +75,7 @@ impl ModelPickerPosition {
         picker.filter = self.filter;
         picker.preview = self.preview;
         picker.last_scored_filter = String::new();
+        picker.filter_score_at = None;
         App::apply_inline_interactive_filter(picker);
         if let Some((name, effort, route)) = self.selected
             && let Some((position, &index)) =
@@ -582,6 +583,24 @@ fn model_picker_route_is_default(
     default_model == model_name
 }
 
+/// Apply filter if the debounce window has elapsed (for tick/refresh paths).
+pub(crate) fn refresh_inline_interactive_filter_if_due(picker: &mut InlineInteractiveState) {
+    if picker.filter == picker.last_scored_filter {
+        return;
+    }
+    let due = picker
+        .filter_score_at
+        .is_none_or(|at| at.elapsed() >= std::time::Duration::from_millis(80));
+    if due {
+        picker.filter_score_at = None;
+        // App::apply_inline_interactive_filter is pub(super) on App impl in this module's context?
+        // It's defined as `pub(super) fn apply_inline_interactive_filter` in an impl App block.
+        // We can call it via the inherent impl - but from module scope we need the type.
+        // `App` is in scope via `use super::*;`
+        App::apply_inline_interactive_filter(picker);
+    }
+}
+
 impl App {
     pub(super) fn remote_model_catalog_snapshot(
         &self,
@@ -1021,6 +1040,7 @@ impl App {
             column: 0,
             filter: String::new(),
             last_scored_filter: String::new(),
+            filter_score_at: None,
             preview: false,
         });
         if let Some(position) = position
@@ -1305,6 +1325,7 @@ impl App {
             column: 0,
             filter: String::new(),
             last_scored_filter: String::new(),
+            filter_score_at: None,
             preview: false,
         });
         self.set_status_notice("Updating model list…");
@@ -1974,6 +1995,7 @@ impl App {
             column: 0,
             filter: String::new(),
             last_scored_filter: String::new(),
+            filter_score_at: None,
             preview: false,
         });
 
@@ -3857,11 +3879,28 @@ impl App {
         crate::alphacode_fuzzy::fuzzy_score_tokens(pattern, text)
     }
 
+    /// Apply filter if the debounce window has elapsed (for tick/refresh paths).
     pub(super) fn apply_inline_interactive_filter(picker: &mut InlineInteractiveState) {
-        // Debounce the O(entries) fuzzy re-score: rapid keystrokes should not
-        // re-scan all picker entries on every key. If the filter text hasn't
-        // changed since the last re-score, reuse the previous result.
+        // Debounce the O(entries) fuzzy re-score: rapid keystrokes must not
+        // re-scan all picker entries on every key. Time-based debounce coalesces
+        // bursts of typing; the filter text comparison is insufficient alone
+        // because every keystroke changes the filter. We still re-score
+        // immediately when the filter is cleared or when a forced re-score is
+        // requested (filter_score_at == None).
+        const FILTER_RESCORE_DEBOUNCE: std::time::Duration = std::time::Duration::from_millis(80);
+        let now = std::time::Instant::now();
         if picker.filter == picker.last_scored_filter {
+            return;
+        }
+        let force_rescore = picker.filter.is_empty() || picker.filter_score_at.is_none();
+        if !force_rescore
+            && picker
+                .filter_score_at
+                .is_some_and(|at| now.duration_since(at) < FILTER_RESCORE_DEBOUNCE)
+        {
+            // Defer: keep showing the previous scored results while the user is
+            // still typing rapidly. The next render/tick after the debounce
+            // window (or a forced re-score) will apply the latest filter.
             return;
         }
         if picker.filter.is_empty() {
@@ -3938,7 +3977,8 @@ impl App {
             picker.selected = 0;
         } else {
             picker.selected = picker.selected.min(picker.filtered.len() - 1);
-        picker.last_scored_filter = picker.filter.clone();
+            picker.last_scored_filter = picker.filter.clone();
+            picker.filter_score_at = Some(std::time::Instant::now());
         }
     }
 
@@ -4042,6 +4082,7 @@ mod tests {
             column: 1,
             filter: "model".into(),
             last_scored_filter: String::new(),
+            filter_score_at: None,
             preview: false,
         };
         let position = ModelPickerPosition::capture(&old).unwrap();
@@ -4055,6 +4096,7 @@ mod tests {
             column: 0,
             filter: String::new(),
             last_scored_filter: String::new(),
+            filter_score_at: None,
             preview: false,
         };
         position.restore(&mut refreshed);
@@ -4077,6 +4119,7 @@ mod tests {
             column: 0,
             filter: "é".into(),
             last_scored_filter: String::new(),
+            filter_score_at: None,
             preview: false,
         };
         App::tab_complete_inline_interactive_filter(&mut picker);
@@ -4095,6 +4138,7 @@ mod tests {
             column: 0,
             filter: "example beta".into(),
             last_scored_filter: String::new(),
+            filter_score_at: None,
             preview: false,
         };
         App::apply_inline_interactive_filter(&mut picker);
@@ -4120,6 +4164,7 @@ mod tests {
             column: 0,
             filter: String::new(),
             last_scored_filter: String::new(),
+            filter_score_at: None,
             preview: false,
         };
         let mut agent_entry = picker_entry("Swarm / subagent", "gpt-5 default", 0);
@@ -4132,6 +4177,7 @@ mod tests {
             column: 0,
             filter: String::new(),
             last_scored_filter: String::new(),
+            filter_score_at: None,
             preview: false,
         };
 
@@ -4152,6 +4198,7 @@ mod tests {
             column: 0,
             filter: "opus".to_string(),
             last_scored_filter: String::new(),
+            filter_score_at: None,
             preview: false,
         };
 
@@ -4173,6 +4220,7 @@ mod tests {
             column: 0,
             filter: "codxe".to_string(),
             last_scored_filter: String::new(),
+            filter_score_at: None,
             preview: false,
         };
 
@@ -4194,6 +4242,7 @@ mod tests {
             column: 0,
             filter: "gpt-5".to_string(),
             last_scored_filter: String::new(),
+            filter_score_at: None,
             preview: false,
         };
 

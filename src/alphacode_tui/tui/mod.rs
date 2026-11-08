@@ -86,7 +86,7 @@ pub use app::{App, CopyBadgeUiState, ProcessingStatus, RunResult};
 use crate::alphacode_tui::message::ToolCall;
 use ratatui::prelude::Frame;
 use ratatui::text::Line;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 pub(crate) fn scheduled_notification_text(
     info: Option<&info_widget::AmbientWidgetData>,
@@ -1346,10 +1346,12 @@ pub struct InlineInteractiveState {
     pub column: usize,
     /// Filter text applied to the picker kind's searchable text.
     pub filter: String,
-    /// Filter text that was last fuzzy re-scored, used to debounce the O(entries)
-    /// re-score so rapid keystrokes don't re-scan all entries on every key. Any
-    /// change to the filter text forces an immediate re-score.
+    /// Filter text that was last fuzzy re-scored.
     pub last_scored_filter: String,
+    /// When the filter was last fuzzy re-scored. Time-based debounce prevents
+    /// O(entries) rescoring on every rapid keystroke while the user is typing.
+    /// `None` forces an immediate re-score (e.g. on open/restore).
+    pub filter_score_at: Option<Instant>,
     /// Preview mode: picker is visible but input stays in main text box
     pub preview: bool,
 }

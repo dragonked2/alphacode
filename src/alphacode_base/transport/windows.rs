@@ -29,6 +29,58 @@ fn path_to_pipe_name(path: &Path) -> String {
     format!(r"\\.\pipe\{}-{}", stem, &hash[..16])
 }
 
+/// Create a named pipe server restricted to the current user (owner-only DACL).
+///
+/// Uses SDDL `D:P(A;;GA;;;SY)(A;;GA;;;BA)(A;;GA;;;OW)` which grants Generic All
+/// to SYSTEM, Built-in Administrators, and the object Owner. Local-only via
+/// `reject_remote_clients(true)`. Falls back to tokio defaults with remote
+/// clients rejected if security descriptor creation fails.
+fn create_owner_only_server(pipe_name: &str, first: bool) -> io::Result<NamedPipeServer> {
+    let mut opts = ServerOptions::new();
+    opts.first_pipe_instance(first);
+    opts.reject_remote_clients(true);
+
+    const SDDL: &str = "D:P(A;;GA;;;SY)(A;;GA;;;BA)(A;;GA;;;CO)\0";
+    let wide: Vec<u16> = SDDL.encode_utf16().collect();
+
+    unsafe {
+        use windows_sys::Win32::Foundation::{HLOCAL, LocalFree};
+        use windows_sys::Win32::Security::Authorization::{
+            ConvertStringSecurityDescriptorToSecurityDescriptorW, SDDL_REVISION_1,
+        };
+        use windows_sys::Win32::Security::{PSECURITY_DESCRIPTOR, SECURITY_ATTRIBUTES};
+
+        let mut sd: PSECURITY_DESCRIPTOR = std::ptr::null_mut();
+        let mut sd_len: u32 = 0;
+        let ok = ConvertStringSecurityDescriptorToSecurityDescriptorW(
+            wide.as_ptr(),
+            SDDL_REVISION_1,
+            &mut sd,
+            &mut sd_len,
+        );
+        if ok == 0 {
+            eprintln!(
+                "[windows] Failed to create owner-only security descriptor for pipe {}; using restrictive defaults",
+                pipe_name
+            );
+            return opts.create(pipe_name);
+        }
+
+        let mut sa = SECURITY_ATTRIBUTES {
+            nLength: std::mem::size_of::<SECURITY_ATTRIBUTES>() as u32,
+            lpSecurityDescriptor: sd as *mut _,
+            bInheritHandle: 0,
+        };
+
+        let result =
+            opts.create_with_security_attributes_raw(pipe_name, &mut sa as *mut _ as *mut _);
+        if !sd.is_null() {
+            let _ = LocalFree(sd as HLOCAL);
+        }
+        result
+    }
+}
+
 /// Listener wraps a Windows named pipe server, providing an accept loop
 /// that matches the UnixListener interface.
 pub struct Listener {
@@ -39,9 +91,7 @@ pub struct Listener {
 impl Listener {
     pub fn bind(path: &Path) -> io::Result<Self> {
         let pipe_name = path_to_pipe_name(path);
-        let current_server = ServerOptions::new()
-            .first_pipe_instance(true)
-            .create(&pipe_name)?;
+        let current_server = create_owner_only_server(&pipe_name, true)?;
         Ok(Self {
             pipe_name,
             current_server,
@@ -53,7 +103,7 @@ impl Listener {
 
         let connected = std::mem::replace(
             &mut self.current_server,
-            ServerOptions::new().create(&self.pipe_name)?,
+            create_owner_only_server(&self.pipe_name, false)?,
         );
 
         Ok((Stream::Server(connected), PipeAddr))
@@ -121,9 +171,7 @@ impl Stream {
             std::process::id(),
             counter
         );
-        let server = ServerOptions::new()
-            .first_pipe_instance(true)
-            .create(&pipe_name)?;
+        let server = create_owner_only_server(&pipe_name, true)?;
         let client = ClientOptions::new().open(&pipe_name)?;
 
         // The client connected when we opened it above, but the server must

@@ -33,6 +33,7 @@ fn remote_model_picker_preview_state() -> crate::alphacode_tui::tui::InlineInter
         column: 0,
         filter: String::new(),
         last_scored_filter: String::new(),
+            filter_score_at: None,
         preview: true,
     }
 }

@@ -316,6 +316,7 @@ fn test_inline_ui_gap_height_only_when_inline_ui_visible() {
         column: 0,
         filter: String::new(),
         last_scored_filter: String::new(),
+            filter_score_at: None,
         preview: false,
     };
     let state_with_picker = TestState {

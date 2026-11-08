@@ -4,6 +4,33 @@ All notable changes to Alphacode are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project
 adheres to [Semantic Versioning](https://semver.org/).
 
+## [1.0.98] - 2026-11-08
+
+### Fixed
+
+- TUI typing lag: the inline model-picker fuzzy re-score ran O(entries) on every
+  keystroke because the previous debounce compared only the filter string (which
+  changes on every key). Added a time-based debounce (80ms) with a tick refresh
+  so rapid typing coalesces rescoring without leaving stale filtered results.
+- Windows IPC hardening: named pipe servers (`bind`/`accept`/`pair`) now use an
+  owner-restricted security descriptor (SDDL grants Generic All to SYSTEM,
+  Administrators, and Creator Owner) and reject remote clients, reducing
+  exposure of the local control channel to other local users.
+- Desktop GUI stability: added WPF dispatcher and global trap/exception handlers
+  to log and recover from recoverable UI errors instead of terminating the
+  process. Hardened the "Choose workspace folder" click path with layered error
+  handling around the native COM folder picker and `new_chat` queueing.
+
+### Known limitations (not fully addressed in this release)
+
+- The report's broader Execution Enforcer / centralized permission-architecture
+  items (complete path binding, audit-ledger persistence, TOCTOU hardening,
+  process-authorization binding, and full bypass elimination) require
+  architectural integration and dedicated adversarial testing; this release does
+  not claim those are production-complete.
+- GUI approval-channel/overlay features described in external reports are not
+  present in this source tree and were not implemented here.
+
 ## [1.0.97] - 2026-11-07
 
 ### Added
