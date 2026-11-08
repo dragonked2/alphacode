@@ -71,7 +71,11 @@ mod tests {
 
     #[test]
     fn helper_that_exits_successfully_counts_as_a_copy() {
-        assert!(copy_via_clipboard_helper("cat", &[], "hello"));
+        assert!(copy_via_clipboard_helper(
+            "sh",
+            &["-c", "cat >/dev/null; exit 0"],
+            "hello"
+        ));
     }
 
     #[test]
@@ -93,7 +97,11 @@ mod tests {
     #[test]
     fn long_lived_helper_counts_as_a_copy_without_blocking() {
         let start = std::time::Instant::now();
-        assert!(copy_via_clipboard_helper("sleep", &["30"], "hello"));
+        assert!(copy_via_clipboard_helper(
+            "sh",
+            &["-c", "sleep 30"],
+            "hello"
+        ));
         assert!(
             start.elapsed() < std::time::Duration::from_secs(5),
             "spawn path blocked for {:?}",
