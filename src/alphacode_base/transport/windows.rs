@@ -29,19 +29,86 @@ fn path_to_pipe_name(path: &Path) -> String {
     format!(r"\\.\pipe\{}-{}", stem, &hash[..16])
 }
 
+/// SDDL for every named-pipe server instance: Generic All for SYSTEM,
+/// Built-in Administrators, the object owner, and the process user's own SID.
+///
+/// The explicit user SID is essential. A DACL that only lists `CO` (CREATOR
+/// OWNER) puts that ACE on the *inheritable* path for child objects, so the
+/// pipe object itself carried no ACE for the user who created it. Windows then
+/// answered every client open on a non-elevated account with
+/// `ERROR_ACCESS_DENIED` (5) while the server sat happily in its accept loop,
+/// which surfaced to users as `Timed out waiting for server to become ready`
+/// after the full client budget. `OW` (OWNER RIGHTS) fixes the common case;
+/// naming the user's SID as well keeps the pipe reachable when the server was
+/// started from an elevated terminal, where the object owner is the
+/// Administrators group rather than the (deny-only) user.
+fn pipe_sddl() -> &'static str {
+    static SDDL: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+    SDDL.get_or_init(|| match current_user_sid_string() {
+        Some(sid) => format!("D:P(A;;GA;;;SY)(A;;GA;;;BA)(A;;GA;;;OW)(A;;GA;;;{sid})\0"),
+        None => "D:P(A;;GA;;;SY)(A;;GA;;;BA)(A;;GA;;;OW)\0".to_string(),
+    })
+}
+
+/// String SID (e.g. `S-1-5-21-...-1001`) of the process token's user.
+fn current_user_sid_string() -> Option<String> {
+    use windows_sys::Win32::Foundation::{CloseHandle, HLOCAL, LocalFree};
+    use windows_sys::Win32::Security::Authorization::ConvertSidToStringSidW;
+    use windows_sys::Win32::Security::{GetTokenInformation, TOKEN_QUERY, TOKEN_USER, TokenUser};
+    use windows_sys::Win32::System::Threading::{GetCurrentProcess, OpenProcessToken};
+
+    unsafe {
+        let mut token = std::ptr::null_mut();
+        if OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &mut token) == 0 {
+            return None;
+        }
+
+        let mut needed = 0u32;
+        GetTokenInformation(token, TokenUser, std::ptr::null_mut(), 0, &mut needed);
+        if needed == 0 {
+            CloseHandle(token);
+            return None;
+        }
+
+        // `TOKEN_USER` holds pointers, so the buffer must be pointer-aligned;
+        // a `Vec<u8>` would only guarantee alignment of 1.
+        let words = (needed as usize).div_ceil(std::mem::size_of::<usize>());
+        let mut buffer = vec![0usize; words];
+        let ok = GetTokenInformation(
+            token,
+            TokenUser,
+            buffer.as_mut_ptr().cast(),
+            needed,
+            &mut needed,
+        );
+        CloseHandle(token);
+        if ok == 0 {
+            return None;
+        }
+
+        let token_user = &*buffer.as_ptr().cast::<TOKEN_USER>();
+        let mut raw: *mut u16 = std::ptr::null_mut();
+        if ConvertSidToStringSidW(token_user.User.Sid, &mut raw) == 0 {
+            return None;
+        }
+        let len = (0..).take_while(|&i| *raw.add(i) != 0).count();
+        let sid = String::from_utf16_lossy(std::slice::from_raw_parts(raw, len));
+        LocalFree(raw as HLOCAL);
+        Some(sid)
+    }
+}
+
 /// Create a named pipe server restricted to the current user (owner-only DACL).
 ///
-/// Uses SDDL `D:P(A;;GA;;;SY)(A;;GA;;;BA)(A;;GA;;;OW)` which grants Generic All
-/// to SYSTEM, Built-in Administrators, and the object Owner. Local-only via
-/// `reject_remote_clients(true)`. Falls back to tokio defaults with remote
-/// clients rejected if security descriptor creation fails.
+/// Local-only via `reject_remote_clients(true)`. Falls back to tokio defaults
+/// with remote clients rejected if security descriptor creation fails.
 fn create_owner_only_server(pipe_name: &str, first: bool) -> io::Result<NamedPipeServer> {
     let mut opts = ServerOptions::new();
     opts.first_pipe_instance(first);
     opts.reject_remote_clients(true);
 
-    const SDDL: &str = "D:P(A;;GA;;;SY)(A;;GA;;;BA)(A;;GA;;;CO)\0";
-    let wide: Vec<u16> = SDDL.encode_utf16().collect();
+    let sddl = pipe_sddl();
+    let wide: Vec<u16> = sddl.encode_utf16().collect();
 
     unsafe {
         use windows_sys::Win32::Foundation::{HLOCAL, LocalFree};
@@ -479,6 +546,25 @@ mod tests {
             .await
             .expect("split stream exchange should not stall");
         peer.await.expect("peer task");
+    }
+
+    /// Regression: the pipe's DACL must let the creating user connect to it.
+    /// With the `CO`-only DACL shipped in 1.0.98 this failed with
+    /// `ERROR_ACCESS_DENIED` for any non-elevated account, so the client never
+    /// saw the server it had just spawned and timed out after 120s.
+    #[tokio::test]
+    async fn owning_user_can_open_a_bound_pipe() {
+        let path = std::env::temp_dir().join(format!(
+            "alphacode-owner-open-probe-{}-{}.sock",
+            std::process::id(),
+            BUSY_PIPE_TEST_COUNTER.fetch_add(1, Ordering::Relaxed)
+        ));
+        let _listener = Listener::bind(&path).expect("bind named pipe");
+
+        assert!(
+            is_socket_path(&path),
+            "the user that bound the pipe must be able to open it"
+        );
     }
 
     #[tokio::test]

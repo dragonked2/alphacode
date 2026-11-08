@@ -4,6 +4,21 @@ All notable changes to Alphacode are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project
 adheres to [Semantic Versioning](https://semver.org/).
 
+## [1.0.99] - 2026-11-08
+
+### Fixed
+
+- Windows startup no longer hangs with `Timed out waiting for server to become
+  ready ... after 120000ms`. The 1.0.98 named-pipe hardening built its DACL from
+  `D:P(A;;GA;;;SY)(A;;GA;;;BA)(A;;GA;;;CO)`: `CO` (CREATOR OWNER) only applies to
+  child objects, so the pipe object itself had no ACE for the user who created
+  it. The server bound successfully and stayed alive, while every client open on
+  a non-elevated account failed with `ERROR_ACCESS_DENIED` (5) and the client
+  polled a socket it could never open until its budget ran out. Pipe instances
+  now grant Generic All to SYSTEM, Built-in Administrators, the object owner
+  (`OW`), and the process user's own SID, so the daemon is reachable from both
+  normal and elevated terminals while still excluding other local users.
+
 ## [1.0.98] - 2026-11-08
 
 ### Fixed
