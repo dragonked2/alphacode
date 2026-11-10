@@ -141,11 +141,15 @@ static PENDING_KEY_AT: Mutex<Option<std::time::Instant>> = Mutex::new(None);
 
 /// Record that a key event was just read from the terminal.
 pub(crate) fn note_key_event_read() {
+    note_key_event_read_at(std::time::Instant::now());
+}
+
+pub(crate) fn note_key_event_read_at(read_at: std::time::Instant) {
     let mut slot = PENDING_KEY_AT
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
     if slot.is_none() {
-        *slot = Some(std::time::Instant::now());
+        *slot = Some(read_at);
     }
 }
 

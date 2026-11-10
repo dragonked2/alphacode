@@ -596,6 +596,9 @@ pub trait TuiState {
     }
     /// Whether centered mode is enabled
     fn centered_mode(&self) -> bool;
+    fn composer_at_top(&self) -> bool {
+        false
+    }
     /// Authentication status for all supported providers
     fn auth_status(&self) -> crate::alphacode_base::auth::AuthStatus;
     /// Update cost calculation based on token usage (for API-key providers)

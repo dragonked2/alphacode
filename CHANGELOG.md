@@ -8,6 +8,10 @@ adheres to [Semantic Versioning](https://semver.org/).
 
 ### Fixed
 
+- Windows reads console input on a dedicated worker so typing can queue while
+  the UI draws. Key-to-paint timing now includes the wait in that queue.
+- Modifier releases clear held shortcut hints. The composer stays below the
+  transcript by default, with an optional top position in display settings.
 - Typing after a paste allows immediate submission. A stray Enter immediately
   after a paste still leaves the draft intact.
 - Large text pastes skip file drop parsing. Remote key releases skip input

@@ -1558,6 +1558,8 @@ pub(crate) fn last_status_area() -> Option<Rect> {
     }
 }
 
+#[cfg(windows)]
+pub(crate) use frame_metrics::note_key_event_read_at;
 use frame_metrics::{
     ChatLayoutMetrics, FLICKER_NOTICE_COPY_KEY, FullPrepPhaseMetrics, ViewportMetrics,
     begin_frame_resource_sample, finalize_frame_metrics, note_body_built, note_body_cache_hit,
@@ -3034,8 +3036,7 @@ fn draw_inner(frame: &mut Frame, app: &dyn TuiState) {
     // Check diagram display mode and get active diagrams early so we can
     // determine the horizontal split before computing input width etc.
     let diagram_mode = app.diagram_mode();
-    let diagrams = super::mermaid::get_active_diagrams();
-    let diagram_count = diagrams.len();
+    let diagram_count = crate::alphacode_tui_mermaid::visible_diagram_count();
     let selected_index = if diagram_count > 0 {
         app.diagram_index().min(diagram_count - 1)
     } else {
@@ -3069,7 +3070,9 @@ fn draw_inner(frame: &mut Frame, app: &dyn TuiState) {
         && pane_enabled
         && !suppress_side_diagram
     {
-        diagrams.get(selected_index).cloned()
+        super::mermaid::get_active_diagrams()
+            .into_iter()
+            .nth(selected_index)
     } else {
         None
     };
@@ -3538,44 +3541,54 @@ fn draw_inner(frame: &mut Frame, app: &dyn TuiState) {
     } else {
         Vec::new()
     };
-    let chunks = Layout::default()
-        .direction(Direction::Vertical)
-        .constraints(if use_packed {
-            vec![
-                Constraint::Length(banner_height), // CHUNK_BANNER
-                Constraint::Length(
-                    u16::try_from(content_height)
-                        .unwrap_or(u16::MAX)
-                        .saturating_add(transcript_gap),
-                ), // CHUNK_MESSAGES
-                Constraint::Length(0),             // CHUNK_TRANSCRIPT_GAP
-                Constraint::Length(pending_height), // CHUNK_PENDING
-                Constraint::Length(swarm_strip_height), // CHUNK_SWARM_STRIP
-                Constraint::Length(1),             // CHUNK_STATUS
-                Constraint::Length(notification_height), // CHUNK_NOTIFICATION
-                Constraint::Length(inline_block_height), // CHUNK_INLINE_UI
-                Constraint::Length(inline_ui_gap_height), // CHUNK_INLINE_GAP
-                Constraint::Length(input_height),  // CHUNK_INPUT
-                Constraint::Length(overscroll_height), // CHUNK_OVERSCROLL
-                Constraint::Length(donut_height),  // CHUNK_DONUT
-            ]
-        } else {
-            vec![
-                Constraint::Length(banner_height),        // CHUNK_BANNER
-                Constraint::Min(transcript_reserve),      // CHUNK_MESSAGES (scrollable)
-                Constraint::Length(transcript_gap),       // CHUNK_TRANSCRIPT_GAP (always 0 here)
-                Constraint::Length(pending_height),       // CHUNK_PENDING
-                Constraint::Length(swarm_strip_height),   // CHUNK_SWARM_STRIP
-                Constraint::Length(1),                    // CHUNK_STATUS
-                Constraint::Length(notification_height),  // CHUNK_NOTIFICATION
-                Constraint::Length(inline_block_height),  // CHUNK_INLINE_UI
-                Constraint::Length(inline_ui_gap_height), // CHUNK_INLINE_GAP
-                Constraint::Length(input_height),         // CHUNK_INPUT
-                Constraint::Length(overscroll_height),    // CHUNK_OVERSCROLL
-                Constraint::Length(donut_height),         // CHUNK_DONUT
-            ]
-        })
-        .split(chat_area);
+    let transcript = if use_packed {
+        Constraint::Length(
+            u16::try_from(content_height)
+                .unwrap_or(u16::MAX)
+                .saturating_add(transcript_gap),
+        )
+    } else {
+        Constraint::Min(transcript_reserve)
+    };
+    let constraints = [
+        Constraint::Length(banner_height),
+        transcript,
+        Constraint::Length(if use_packed { 0 } else { transcript_gap }),
+        Constraint::Length(pending_height),
+        Constraint::Length(swarm_strip_height),
+        Constraint::Length(1),
+        Constraint::Length(notification_height),
+        Constraint::Length(inline_block_height),
+        Constraint::Length(inline_ui_gap_height),
+        Constraint::Length(input_height),
+        Constraint::Length(overscroll_height),
+        Constraint::Length(donut_height),
+    ];
+    // Keep semantic chunk indices independent of their visual order so hit
+    // testing, overlays and partial redraws all use the same rectangles.
+    let order = if app.composer_at_top() {
+        [
+            CHUNK_INPUT,
+            8,
+            CHUNK_INLINE_UI,
+            CHUNK_BANNER,
+            CHUNK_MESSAGES,
+            CHUNK_TRANSCRIPT_GAP,
+            CHUNK_PENDING,
+            CHUNK_SWARM_STRIP,
+            CHUNK_STATUS,
+            CHUNK_NOTIFICATION,
+            CHUNK_OVERSCROLL,
+            CHUNK_DONUT,
+        ]
+    } else {
+        std::array::from_fn(|index| index)
+    };
+    let areas = Layout::vertical(order.map(|index| constraints[index])).split(chat_area);
+    let mut chunks = [Rect::default(); 12];
+    for (index, area) in order.into_iter().zip(areas.iter().copied()) {
+        chunks[index] = area;
+    }
     record_status_area(chunks[CHUNK_STATUS]);
 
     // Pinned banner band: the brand wordmark stays at the top of the chat

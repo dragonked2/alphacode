@@ -480,7 +480,6 @@ impl StatusSpinnerRenderer {
         app.force_full_redraw = false;
         app.force_full_repaint = false;
 
-        let previous_frame = self.last_frame.as_ref();
         let draw_start = Instant::now();
         let mut render_elapsed = Duration::ZERO;
         let completed = terminal.draw(|frame| {
@@ -493,30 +492,25 @@ impl StatusSpinnerRenderer {
         // user asked for while the index was still one frame behind can be
         // applied now.
         app.apply_pending_transcript_search_step();
-        let changed_cells = previous_frame
-            .filter(|previous| previous.area == completed.buffer.area)
-            .map(|previous| {
-                previous
-                    .content
-                    .iter()
-                    .zip(completed.buffer.content.iter())
-                    .filter(|(left, right)| left != right)
-                    .count()
-            });
         let total_cells = Some(completed.buffer.content.len());
-        // PERF: wasted full frames (0 cells changed, e.g. 63/sec on a static
-        // picker) previously cloned the entire buffer (7680 cells) just to
-        // replace `last_frame` with an identical copy. Skip the clone when
-        // nothing changed and no forced invalidation is active.
-        let zero_change_wasted = changed_cells == Some(0) && !force_full_redraw;
-        let completed_buffer = if zero_change_wasted {
-            // Keep the previous buffer; it is already identical.
-            match self.last_frame.take() {
-                Some(prev) => prev,
-                None => completed.buffer.clone(),
+        let changed_cells = if let Some(previous) = self
+            .last_frame
+            .as_mut()
+            .filter(|previous| previous.area == completed.buffer.area)
+        {
+            // Ratatui owns the live frame. Keep the snapshot for partial
+            // redraws up to date without cloning every cell on each key.
+            let mut changed = 0;
+            for (old, new) in previous.content.iter_mut().zip(&completed.buffer.content) {
+                if old != new {
+                    old.clone_from(new);
+                    changed += 1;
+                }
             }
+            Some(changed)
         } else {
-            completed.buffer.clone()
+            self.last_frame = Some(completed.buffer.clone());
+            None
         };
         // `completed` borrows the terminal; it is unused past this point, so the
         // borrow ends here (NLL) before we touch the backend again below.
@@ -539,7 +533,6 @@ impl StatusSpinnerRenderer {
         if crate::alphacode_tui::tui::ui::last_idle_animation_area().is_some() {
             crate::alphacode_tui::tui::ui::note_idle_animation_full_repaint();
         }
-        self.last_frame = Some(completed_buffer);
         self.last_full_frame_at = Some(Instant::now());
         // A full frame rewrote the whole surface, so ratatui's working buffer no
         // longer matches `last_frame` outside the animated rows. Force the next

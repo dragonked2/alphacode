@@ -3779,7 +3779,11 @@ pub(super) fn draw_right_fact_stack(
     } else {
         RIGHT_FACT_TRANSCRIPT_ROWS.min(messages_area.height)
     };
-    let top = messages_area.bottom().saturating_sub(transcript_rows);
+    let top = if app.composer_at_top() {
+        input_area.y
+    } else {
+        messages_area.bottom().saturating_sub(transcript_rows)
+    };
     let bottom = input_area.bottom();
     if top >= bottom {
         return;

@@ -240,6 +240,7 @@ struct TestState {
     status: ProcessingStatus,
     active_skill: Option<String>,
     centered_mode: bool,
+    composer_at_top: bool,
     anim_elapsed: f32,
     time_since_activity: Option<Duration>,
     remote_startup_phase_active: bool,
@@ -489,6 +490,10 @@ impl crate::alphacode_tui::tui::TuiState for TestState {
     fn render_streaming_markdown(&self, _width: usize) -> Vec<Line<'static>> {
         markdown::render_markdown_with_width(&self.streaming_text, Some(_width))
     }
+    fn composer_at_top(&self) -> bool {
+        self.composer_at_top
+    }
+
     fn centered_mode(&self) -> bool {
         self.centered_mode
     }

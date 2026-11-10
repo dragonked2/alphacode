@@ -333,6 +333,9 @@ async fn apply_terminal_event(
         Some(Ok(Event::Key(key))) => {
             // Releases do not edit the composer or contribute a key-to-paint sample.
             if !super::local::key_event_needs_redraw(key.kind) {
+                if matches!(key.code, KeyCode::Modifier(_)) {
+                    app.update_copy_badge_key_event(key);
+                }
                 return Ok(false);
             }
             // Start the key-to-paint clock at the moment the key is read, which is

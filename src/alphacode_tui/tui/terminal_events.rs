@@ -3,7 +3,9 @@
 //! Ctrl+V/Alt+V are handled by the shared asynchronous clipboard action. Native
 //! bracketed paste arrives as one Event::Paste. Ordinary keys, including Enter,
 //! must never wait for another character or a paste-settling timer.
-use crossterm::event::{Event, EventStream, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
+#[cfg(not(windows))]
+use crossterm::event::EventStream;
+use crossterm::event::{Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 use futures::{FutureExt, Stream, StreamExt};
 use std::{
     io,
@@ -11,7 +13,10 @@ use std::{
     task::{Context, Poll},
 };
 
+#[cfg(not(windows))]
 pub(super) type TerminalEventStream = ImmediateEvents<EventStream>;
+#[cfg(windows)]
+pub(super) type TerminalEventStream = ImmediateEvents<WindowsInput>;
 
 pub(super) struct ImmediateEvents<S> {
     source: S,
@@ -20,7 +25,79 @@ pub(super) struct ImmediateEvents<S> {
 
 impl TerminalEventStream {
     pub(super) fn new() -> Self {
-        Self::from_source(EventStream::new())
+        #[cfg(windows)]
+        let source = WindowsInput::new();
+        #[cfg(not(windows))]
+        let source = EventStream::new();
+        Self::from_source(source)
+    }
+}
+
+#[cfg(windows)]
+pub(super) struct WindowsInput {
+    events: tokio::sync::mpsc::Receiver<(std::time::Instant, io::Result<Event>)>,
+    reader: Option<std::thread::JoinHandle<()>>,
+}
+
+#[cfg(windows)]
+impl WindowsInput {
+    fn new() -> Self {
+        use crossterm::event;
+        use std::time::{Duration, Instant};
+
+        // Keep reading while the UI paints or handles a daemon event. A
+        // bounded queue preserves ordering and caps memory during key bursts.
+        let (sender, events) = tokio::sync::mpsc::channel(128);
+        let reader = std::thread::spawn(move || {
+            while !sender.is_closed() {
+                let event = match event::poll(Duration::from_millis(25)) {
+                    Ok(false) => continue,
+                    Ok(true) if !sender.is_closed() => event::read(),
+                    Ok(true) => break,
+                    Err(error) => Err(error),
+                };
+                let failed = event.is_err();
+                if sender.blocking_send((Instant::now(), event)).is_err() {
+                    break;
+                }
+                if failed {
+                    std::thread::sleep(Duration::from_millis(25));
+                }
+            }
+        });
+        Self {
+            events,
+            reader: Some(reader),
+        }
+    }
+}
+
+#[cfg(windows)]
+impl Stream for WindowsInput {
+    type Item = io::Result<Event>;
+
+    fn poll_next(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
+        match self.events.poll_recv(cx) {
+            Poll::Ready(Some((read_at, event))) => {
+                if matches!(&event, Ok(Event::Key(key)) if matches!(key.kind, KeyEventKind::Press | KeyEventKind::Repeat))
+                {
+                    super::ui::note_key_event_read_at(read_at);
+                }
+                Poll::Ready(Some(event))
+            }
+            Poll::Ready(None) => Poll::Ready(None),
+            Poll::Pending => Poll::Pending,
+        }
+    }
+}
+
+#[cfg(windows)]
+impl Drop for WindowsInput {
+    fn drop(&mut self) {
+        self.events.close();
+        if let Some(reader) = self.reader.take() {
+            let _ = reader.join();
+        }
     }
 }
 

@@ -713,6 +713,8 @@ A health monitor records memory use, slow operations, error rates, and subsystem
 
 Royal Gold is the default terminal look, with a matching palette for light terminal backgrounds. Use `/theme` to browse other themes, `/theme royal-gold` to select it, or `/theme off` to return to the default. Your saved theme and individual `/colors` overrides are preserved.
 
+The composer sits below the transcript by default. To pin it above the scrolling conversation, set `composer_at_top = true` in `[display]`.
+
 See [`docs/configuration.md`](docs/configuration.md) for the full reference.
 
 <div align="right"><a href="#top">Back to top</a></div>

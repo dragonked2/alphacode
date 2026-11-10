@@ -29,6 +29,8 @@ pub struct DisplayConfig {
     pub emoji: bool,
     /// Center all content (default: false)
     pub centered: bool,
+    /// Pin the message composer above the transcript.
+    pub composer_at_top: bool,
     /// Show thinking/reasoning content by default (default: false)
     pub show_thinking: bool,
     /// How to display reasoning/thinking content (off/full/current).
@@ -172,6 +174,7 @@ impl Default for DisplayConfig {
             debug_socket: false,
             emoji: true,
             centered: false,
+            composer_at_top: false,
             show_thinking: false,
             reasoning_display: Some(ReasoningDisplayMode::Off),
             diagram_mode: DiagramDisplayMode::default(),

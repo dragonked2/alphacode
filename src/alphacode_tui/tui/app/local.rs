@@ -10,7 +10,7 @@ use crate::alphacode_tui::message::{
 use crate::alphacode_tui::session::StoredDisplayRole;
 use crate::alphacode_tui::tui::terminal_events::TerminalEventStream as EventStream;
 use anyhow::Result;
-use crossterm::event::{Event, KeyEventKind};
+use crossterm::event::{Event, KeyCode, KeyEventKind};
 use ratatui::DefaultTerminal;
 use std::time::{Duration, Instant};
 use tokio::sync::broadcast::Receiver;
@@ -416,6 +416,9 @@ fn apply_terminal_event(
         Some(Ok(Event::Key(key))) => {
             // A release cannot change a cell; see `key_event_needs_redraw`.
             if !key_event_needs_redraw(key.kind) {
+                if matches!(key.code, KeyCode::Modifier(_)) {
+                    app.update_copy_badge_key_event(key);
+                }
                 return Ok(false);
             }
             crate::alphacode_tui::tui::ui::note_key_event_read();

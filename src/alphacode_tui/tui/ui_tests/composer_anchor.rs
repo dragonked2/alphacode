@@ -97,6 +97,29 @@ fn composer_is_pinned_to_the_bottom_of_the_chat_column() {
 }
 
 #[test]
+fn top_composer_stays_above_the_live_transcript() {
+    let _lock = viewport_snapshot_test_lock();
+    for (width, height) in [(100, 40), (60, 20), (36, 12)] {
+        for answer in ["partial answer", "partial answer\n".repeat(35).as_str()] {
+            clear_flicker_frame_history_for_tests();
+            let mut state = working_state(vec![DisplayMessage::user("question")], Some(answer));
+            state.composer_at_top = true;
+            state.input = "draft".to_string();
+            let (rows, layout) = draw_frame(&state, width, height);
+            let input = layout.input_area.expect("input area");
+            assert_eq!(input.y, 0);
+            assert!(input.height > 0);
+            assert!(input.bottom() <= layout.messages_area.y);
+            assert!(
+                rows[..input.bottom() as usize]
+                    .iter()
+                    .any(|row| row.contains("draft"))
+            );
+        }
+    }
+}
+
+#[test]
 fn bottom_chrome_stays_put_while_the_transcript_grows() {
     let _lock = viewport_snapshot_test_lock();
     clear_flicker_frame_history_for_tests();

@@ -1829,6 +1829,10 @@ impl crate::alphacode_tui::tui::TuiState for App {
         renderer.update_shared(&self.streaming.streaming_text)
     }
 
+    fn composer_at_top(&self) -> bool {
+        crate::config::config().display.composer_at_top
+    }
+
     fn centered_mode(&self) -> bool {
         self.centered
     }
