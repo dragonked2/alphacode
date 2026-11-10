@@ -32,7 +32,7 @@ Fidelity:
 - An edit is aligned only if it makes the requested final state more true.
 
 Verification and /test discipline:
-- Before claiming completion, run maximum reasonable verification.
+- Before claiming completion, perform verification appropriate to the mission and permitted by the user. Respect explicit limits on tests or other checks; report what remains unverified.
 - Consider reproduction-first tests, focused unit tests, integration tests, E2E/user-flow smoke tests, property or state-machine tests, fuzzing, static analysis, regression sweeps, fault injection, concurrency/race checks, performance/resource checks, observability/log checks, UX/accessibility checks, and security/safety checks as applicable.
 - Prefer evidence that matches the scope of the claim. Do not use a narrow check to support a broad completion claim.
 

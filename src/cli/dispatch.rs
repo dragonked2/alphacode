@@ -125,7 +125,13 @@ pub(crate) async fn run_main(mut args: Args) -> Result<()> {
     }
 
     if args.gui {
-        return super::gui::run(false, false, false).await;
+        return super::gui::run(
+            false,
+            false,
+            false,
+            args.no_update || args.quiet || !args.auto_update,
+        )
+        .await;
     }
 
     match args.command {
@@ -134,7 +140,13 @@ pub(crate) async fn run_main(mut args: Args) -> Result<()> {
             preview,
             bridge,
         }) => {
-            super::gui::run(once, preview, bridge).await?;
+            super::gui::run(
+                once,
+                preview,
+                bridge,
+                args.no_update || args.quiet || !args.auto_update,
+            )
+            .await?;
         }
         Some(Command::Serve {
             temporary_server,

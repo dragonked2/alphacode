@@ -98,6 +98,10 @@ pub(super) const BUNDLED_SKILLS: &[BundledSkill] = &[
                 include_str!("bundled_skills/bugbounty/investigation-control/SKILL.md"),
             ),
             (
+                "cross-feature-workflows",
+                include_str!("bundled_skills/bugbounty/cross-feature-workflows/SKILL.md"),
+            ),
+            (
                 "current-research",
                 include_str!("bundled_skills/bugbounty/current-research/SKILL.md"),
             ),

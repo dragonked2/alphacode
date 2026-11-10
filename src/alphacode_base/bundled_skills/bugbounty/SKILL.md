@@ -73,6 +73,37 @@ vulnerability here" is a successful outcome.
 
 ## Investigation continuity
 
+### Choose capabilities for the question
+
+Before a new workstream, state the next decision and the observation that would
+change it. Inspect the live session inventory: use `tool_help` search with short
+task terms, then enable exact relevant tools and read their advertised schemas.
+Search again with synonyms if a query has no matches. Registration is not proof
+that a binary, credential, network service or integration works; check the
+specific prerequisite when needed. Use `tool-doctor` for a missing or degraded
+binary and record the failure separately from a negative test. Do not assume
+the static tool list below describes the current session.
+
+Choose tools by their actual input, output and limits:
+
+| Decision | Candidate capability | What the result establishes |
+| --- | --- | --- |
+| Which names exist? | `subfinder`, `assetfinder`, `amass`; `dnsx` for DNS | Candidates or DNS observations, not authorization or ownership |
+| Which in-scope HTTP services respond? | `httpx` or `httprobe` | Reachability under the probe conditions, not complete inventory |
+| Which routes might exist? | `katana`, `gau`, `waybackurls`; targeted `ffuf` | Current or historical leads; recheck scope and current behavior |
+| What request and response differ? | `httpflow`, browser, `jwt` for token inspection | Exact traffic or token structure; verify server-side effect separately |
+| Where does a source-level decision occur? | `read`, `alphagrep`, `bash` | Code paths and hypotheses; deployed behavior may differ |
+| Does a known pattern merit investigation? | `nuclei` or a focused scanner | A lead requiring independent controlled validation |
+| What did we already learn? | `memory`, `session_search`, engagement artifacts | Prior context to verify against current scope and state |
+
+Select the smallest useful set, pass only validated in-scope inputs, and keep
+request and concurrency limits shared across tools. Preserve raw output and
+provenance; distinguish partial results, errors and empty results. Prefer a
+matched manual comparison when a scanner cannot express the actor, tenant,
+workflow state or success oracle. When a tool fails, inspect the actual error
+and inputs, try an appropriate available alternative, and retain any coverage
+gap. Do not install or execute every tool merely because it is listed.
+
 Load `hunting-intelligence` at the start of a broad assessment, when many
 surfaces compete, after generic automation is quiet, or whenever the next best
 test is unclear. It is the discovery layer: reconstruct the product and trust
@@ -154,6 +185,7 @@ the requested consequence; record compatible prerequisites and stop at sufficien
 | Broad program, product modeling, deciding the next best test | `hunting-intelligence` |
 | Any resource endpoint, authZ, tenant boundary | `control-verification` |
 | Manual, no-source, high-stakes, scanner came back clean | `manual-blackbox` |
+| Product workflows, delayed consumers and integration boundaries | `cross-feature-workflows` |
 | Pricing, coupons, payments, entitlements, refunds, limits | `hunt-business-logic` |
 | WebSocket, gRPC, SSE, GraphQL subscriptions | `hunt-realtime` |
 | Upload, object storage, presigned URLs, bucket ACLs | `hunt-storage` |

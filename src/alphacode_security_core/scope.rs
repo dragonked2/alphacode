@@ -450,23 +450,32 @@ impl LiveScope {
     /// in-scope would stay blocked forever and the two structures would
     /// permanently disagree.
     pub fn set_verdict(&mut self, hostname: String, verdict: ScopeVerdict) {
+        // DNS names are case-insensitive and a trailing root dot does not
+        // change the host. Remove equivalent old entries before setting the
+        // new verdict so a differently spelled update cannot leave a stale
+        // exclusion behind.
+        self.out_of_scope
+            .retain(|host| !same_hostname(host, &hostname));
+        self.scope_verdicts
+            .retain(|host, _| !same_hostname(host, &hostname));
         if matches!(verdict, ScopeVerdict::OutOfScope { .. }) {
             self.out_of_scope.insert(hostname.clone());
-        } else {
-            self.out_of_scope.remove(&hostname);
         }
         self.scope_verdicts.insert(hostname, verdict);
     }
 
     /// Check if a hostname has been marked out of scope.
     pub fn is_out_of_scope(&self, hostname: &str) -> bool {
-        if self.out_of_scope.contains(hostname) {
+        if self
+            .out_of_scope
+            .iter()
+            .any(|host| same_hostname(host, hostname))
+        {
             return true;
         }
-        matches!(
-            self.scope_verdicts.get(hostname),
-            Some(ScopeVerdict::OutOfScope { .. })
-        )
+        self.scope_verdicts.iter().any(|(host, verdict)| {
+            same_hostname(host, hostname) && matches!(verdict, ScopeVerdict::OutOfScope { .. })
+        })
     }
 
     /// Check if a vulnerability class is excluded.
@@ -523,6 +532,11 @@ impl LiveScope {
     }
 }
 
+fn same_hostname(left: &str, right: &str) -> bool {
+    left.trim_end_matches('.')
+        .eq_ignore_ascii_case(right.trim_end_matches('.'))
+}
+
 /// Summary statistics of the discovered attack surface.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct AttackSurfaceSummary {
@@ -569,6 +583,23 @@ mod tests {
         );
         assert!(scope.is_out_of_scope("admin.example.com"));
         assert!(!scope.is_out_of_scope("api.example.com"));
+    }
+
+    #[test]
+    fn scope_verdicts_normalize_hostname_case_and_root_dot() {
+        let mut scope = LiveScope::new(EngagementMode::BugBounty, "example.com".into());
+        scope.add_out_of_scope("Admin.Example.com.".into(), "excluded".into());
+        assert!(scope.is_out_of_scope("admin.example.com"));
+        assert!(!scope.is_out_of_scope("otheradmin.example.com"));
+        scope.set_verdict("ADMIN.EXAMPLE.COM".into(), ScopeVerdict::InScope);
+        assert!(!scope.is_out_of_scope("admin.example.com."));
+        scope.set_verdict(
+            "admin.example.com".into(),
+            ScopeVerdict::OutOfScope {
+                reason: "excluded".into(),
+            },
+        );
+        assert!(scope.is_out_of_scope("ADMIN.EXAMPLE.COM."));
     }
 
     #[test]

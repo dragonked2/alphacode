@@ -501,18 +501,12 @@ impl Agent {
                     "Alphax Free automatic recovery budget exhausted after {} failed requests",
                     attempt
                 ));
-                // Last resort before ending the turn: an upstream the pool has
-                // not tried yet is a better bet than dead-ending a long
-                // security/testing request mid-work. This stays bounded by the
-                // pool itself — every member already tried is quarantined, so
-                // rotation returns `None` after at most one full sweep and the
-                // guardrail notice surfaces as before.
-                if let Some(delay) = self.maybe_rotate_free_pool_model(error) {
-                    logging::warn(
-                        "Recovery budget exhausted, but an untried free-pool route remains; switching to it",
-                    );
-                    return Ok(Some(delay));
-                }
+                // Remember the last failed route without sending another full
+                // request. The recovery limit must remain a real per-turn cap.
+                super::free_pool_rotation::quarantine_model(
+                    &self.provider.model(),
+                    classify_rotation_trigger(error),
+                );
                 return Ok(None);
             }
         }

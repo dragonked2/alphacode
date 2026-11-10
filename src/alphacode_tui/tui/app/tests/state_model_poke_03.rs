@@ -2997,3 +2997,32 @@ fn test_auto_poke_stops_after_consecutive_no_progress_pokes() {
         );
     });
 }
+
+#[test]
+fn auto_poke_waits_for_requested_user_input_and_resumes_after_reply() {
+    with_temp_alphacode_home(|| {
+        let mut app = create_test_app();
+        crate::todo::save_todos(
+            &app.session.id,
+            &[crate::todo::TodoItem {
+                id: "scope".into(),
+                content: "Resolve policy scope".into(),
+                status: "pending".into(),
+                ..Default::default()
+            }],
+        )
+        .unwrap();
+        app.auto_poke_incomplete_todos = true;
+        let mut answer = DisplayMessage::system("What’s your website URL and scope?");
+        answer.role = "assistant".into();
+        app.display_messages.push(answer);
+        assert!(!app.schedule_auto_poke_followup_if_needed());
+        assert!(app.queued_messages.is_empty());
+        assert!(app.auto_poke_incomplete_todos);
+
+        let mut reply = DisplayMessage::system("Here is the policy text.");
+        reply.role = "user".into();
+        app.display_messages.push(reply);
+        assert!(app.schedule_auto_poke_followup_if_needed());
+    });
+}

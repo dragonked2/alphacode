@@ -126,7 +126,7 @@ fn main() {
 
     emit_build_environment(&info);
     configure_mmdr();
-    configure_windows_desktop(&repo_root);
+    configure_windows_desktop(&repo_root, &info);
 }
 
 fn default_build_version(base: Version) -> String {
@@ -578,7 +578,7 @@ fn parse_bool(value: &str) -> bool {
 
 /// Embed the application icon and compile the Windows desktop host. The host
 /// embeds its WPF script so an installed binary needs no adjacent source files.
-fn configure_windows_desktop(root: &Path) {
+fn configure_windows_desktop(root: &Path, info: &BuildInfo) {
     let target = env::var("TARGET").unwrap_or_default();
     if !target.contains("windows") {
         return;
@@ -590,8 +590,13 @@ fn configure_windows_desktop(root: &Path) {
         .join("app-icons")
         .join("alphacode.manifest");
     let host_source = root.join("src").join("cli").join("gui").join("GuiHost.cs");
+    let diagnostics = root
+        .join("src")
+        .join("cli")
+        .join("gui")
+        .join("GuiDiagnostics.cs");
     let ui = root.join("src").join("cli").join("gui").join("gui.ps1");
-    for path in [&icon, &manifest, &host_source, &ui] {
+    for path in [&icon, &manifest, &host_source, &diagnostics, &ui] {
         println!("cargo:rerun-if-changed={}", path.display());
     }
     let host = out.join("AlphaCode.Desktop.exe");
@@ -620,14 +625,37 @@ fn configure_windows_desktop(root: &Path) {
             "could not find Windows PowerShell assembly"
         );
         let assembly = String::from_utf8(automation.stdout).expect("PowerShell assembly path");
+        let metadata_source = out.join("GuiBuildInfo.cs");
+        let identity = format!(
+            "{} ({}{})",
+            info.build_version,
+            info.git_hash,
+            if info.git_dirty { ", dirty" } else { "" }
+        );
+        let literal = |value: &str| value.replace('"', "\"\"");
+        let (major, minor, patch) = release_version_triplet();
+        fs::write(
+            &metadata_source,
+            format!(
+                "[assembly: System.Reflection.AssemblyTitle(\"AlphaCode Desktop\")]\n\
+                 [assembly: System.Reflection.AssemblyFileVersion(\"{major}.{minor}.{patch}.0\")]\n\
+                 [assembly: System.Reflection.AssemblyInformationalVersion(@\"{}\")]\n",
+                literal(&identity)
+            ),
+        )
+        .expect("write GUI build identity");
         let result = Command::new(compiler)
             .args(["/nologo", "/target:winexe"])
             .arg(format!("/out:{}", host.display()))
             .arg(format!("/reference:{}", assembly.trim()))
+            .arg("/reference:System.Web.Extensions.dll")
+            .arg("/reference:System.Core.dll")
             .arg(format!("/resource:{},AlphaCode.UI", ui.display()))
             .arg(format!("/win32icon:{}", icon.display()))
             .arg(format!("/win32manifest:{}", manifest.display()))
             .arg(host_source)
+            .arg(diagnostics)
+            .arg(metadata_source)
             .output()
             .expect("start desktop host compiler");
         assert!(

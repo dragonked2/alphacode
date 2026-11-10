@@ -142,7 +142,7 @@ pub(crate) fn status_uses_primary_spinner(status: &ProcessingStatus) -> bool {
 /// How the next full frame should invalidate ratatui's diff state, if at all.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum FullFrameInvalidation {
-    /// `Terminal::clear()`: an ED2 Clear-All escape plus a full re-emit.
+    /// Clear the backend and re-emit the full frame without querying the cursor.
     /// Needed when the real screen diverged from ratatui's model in cells the
     /// next diff may not repaint (native terminal scroll, external commands).
     HardClear,
@@ -201,6 +201,14 @@ pub(crate) fn invalidate_previous_terminal_buffer<B: ratatui::backend::Backend>(
         *cell = sentinel.clone();
     }
     terminal.swap_buffers();
+}
+
+pub(crate) fn clear_fullscreen_terminal<B: ratatui::backend::Backend>(
+    terminal: &mut ratatui::Terminal<B>,
+) -> std::result::Result<(), B::Error> {
+    terminal.backend_mut().clear()?;
+    invalidate_previous_terminal_buffer(terminal);
+    Ok(())
 }
 
 /// State the animation-only fast path consults before it may run, snapshotted
@@ -468,7 +476,7 @@ impl StatusSpinnerRenderer {
         let sync = crossterm::queue!(terminal.backend_mut(), BeginSynchronizedUpdate).is_ok();
         match invalidation {
             FullFrameInvalidation::HardClear => {
-                terminal.clear()?;
+                clear_fullscreen_terminal(terminal)?;
                 self.invalidate();
             }
             FullFrameInvalidation::SoftRepaint => {

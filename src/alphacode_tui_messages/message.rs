@@ -249,8 +249,8 @@ impl DisplayMessage {
     /// This walks the full message body and the whole tool-input JSON tree, so
     /// it is O(payload). The message cache consults it on **every** lookup,
     /// including hits, so the key cost can dominate the render it is meant to
-    /// avoid. Prefer [`DisplayMessage::stable_cache_hash_memoized`], which
-    /// reuses a previously computed value when the message has not changed.
+    /// avoid. Public fields may change in place, so cache keys must be
+    /// recomputed from the current contents.
     pub fn stable_cache_hash(&self) -> u64 {
         let mut hasher = DefaultHasher::new();
         self.role.hash(&mut hasher);
@@ -265,13 +265,10 @@ impl DisplayMessage {
         hasher.finish()
     }
 
-    /// Cheap revalidation token for the memoized cache key.
+    /// Approximate identity of the message buffers.
     ///
-    /// Address + length detects every realistic mutation: replacing a `String`
-    /// reallocates or moves the buffer (different address), and editing it in
-    /// place changes the length. The only undetectable case is an in-place
-    /// same-length overwrite, which is documented on
-    /// [`DisplayMessage::stable_cache_hash_memoized`].
+    /// This is not sufficient to validate a cache key: public fields may be
+    /// modified in place without changing their addresses or lengths.
     pub fn cache_shape(&self) -> MessageShape {
         MessageShape {
             role_ptr: self.role.as_ptr() as usize,
@@ -299,26 +296,13 @@ impl DisplayMessage {
         }
     }
 
-    /// Stable cache key, memoized in the caller-supplied slot.
+    /// Stable cache key for callers retaining a memo slot.
     ///
-    /// The memo is validated against a cheap *shape token* (buffer addresses
-    /// and lengths) rather than trusted blindly: `DisplayMessage` exposes
-    /// public fields, so a caller can mutate `content`/`title`/... in place.
-    /// When the shape token changes, the memo is discarded and the hash is
-    /// recomputed.
-    ///
-    /// A mutation that keeps every buffer address *and* length identical
-    /// (overwriting a string in place with same-length bytes) is the one case
-    /// the token cannot see. The message cache is a render cache, so a stale
-    /// hit there costs a re-render of identical-looking text, not incorrect
-    /// transcript content.
+    /// Message fields are public and can change without changing their buffer
+    /// addresses or lengths. Recompute the hash to avoid returning stale text.
     pub fn stable_cache_hash_memoized(&self, memo: &mut MessageHashMemo) -> u64 {
-        let shape = self.cache_shape();
-        if let Some(value) = memo.get(&shape) {
-            return value;
-        }
         let value = self.stable_cache_hash();
-        memo.set(&shape, value);
+        memo.set(&self.cache_shape(), value);
         value
     }
 }
@@ -330,12 +314,7 @@ pub struct MessageShape {
     pub(crate) role_len: usize,
     pub(crate) content_ptr: usize,
     pub(crate) content_len: usize,
-    /// O(1) fingerprint of the content bytes.
-    ///
-    /// Addresses are reused by the allocator, so they alone cannot identify a
-    /// message across lifetimes. The fingerprint makes an accidental
-    /// address-and-length collision between two *different* messages
-    /// vanishingly unlikely.
+    /// Sampled fingerprint of the content bytes; not a full content hash.
     pub(crate) content_fingerprint: u64,
     pub(crate) tool_calls_ptr: usize,
     pub(crate) tool_calls_len: usize,
@@ -656,6 +635,17 @@ mod tests {
         let after = message.stable_cache_hash_memoized(&mut memo);
 
         assert_ne!(before, after, "a mutated message must not reuse the memo");
+        assert_eq!(after, message.stable_cache_hash());
+    }
+
+    #[test]
+    fn memoized_cache_hash_detects_same_length_in_place_edits() {
+        let mut message = message_with_input(json!({ "file_path": "a.rs" }));
+        let mut memo = MessageHashMemo::default();
+        let before = message.stable_cache_hash_memoized(&mut memo);
+        message.title.as_mut().unwrap().replace_range(.., "File");
+        let after = message.stable_cache_hash_memoized(&mut memo);
+        assert_ne!(before, after);
         assert_eq!(after, message.stable_cache_hash());
     }
 

@@ -891,3 +891,43 @@ fn repair_never_downgrades_when_stable_is_older() {
         );
     });
 }
+#[cfg(windows)]
+#[test]
+fn copied_channel_keeps_the_matching_desktop_host() {
+    let temp = tempfile::tempdir().expect("temporary directory");
+    let version = temp.path().join("version");
+    let channel = temp.path().join("channel");
+    std::fs::create_dir_all(&version).unwrap();
+    std::fs::create_dir_all(&channel).unwrap();
+    std::fs::write(version.join("AlphaCode.Desktop.exe"), b"new host").unwrap();
+    std::fs::write(channel.join("AlphaCode.Desktop.exe"), b"old host").unwrap();
+    super::sync_desktop_host(
+        &version.join("alphacode.exe"),
+        &channel.join("alphacode.exe"),
+    )
+    .expect("copy companion host");
+    assert_eq!(
+        std::fs::read(channel.join("AlphaCode.Desktop.exe")).unwrap(),
+        b"new host"
+    );
+}
+
+#[cfg(windows)]
+#[test]
+fn updating_current_and_launcher_copies_release_desktop_host() {
+    with_temp_alphacode_home(|| {
+        let version_binary = version_binary_path("1.1.0").unwrap();
+        let version_dir = version_binary.parent().unwrap();
+        std::fs::create_dir_all(version_dir).unwrap();
+        std::fs::write(&version_binary, b"fixture binary").unwrap();
+        std::fs::write(version_dir.join("AlphaCode.Desktop.exe"), b"fixture host").unwrap();
+        let current = update_current_symlink("1.1.0").unwrap();
+        let launcher = update_launcher_symlink_to_current().unwrap();
+        for binary in [current, launcher] {
+            assert_eq!(
+                std::fs::read(binary.parent().unwrap().join("AlphaCode.Desktop.exe")).unwrap(),
+                b"fixture host"
+            );
+        }
+    });
+}

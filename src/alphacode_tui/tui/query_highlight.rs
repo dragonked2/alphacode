@@ -21,6 +21,8 @@
 //! slice the original text.
 
 use ratatui::prelude::*;
+use unicode_segmentation::UnicodeSegmentation;
+use unicode_width::UnicodeWidthStr;
 
 /// Character indices of `text` that match `query`, or `None` when the query is
 /// blank or does not match at all.
@@ -97,9 +99,9 @@ fn match_term(hay: &[char], term: &[char]) -> Option<Vec<usize>> {
 /// Returns a single span when there is no query or no match, so callers can use
 /// this unconditionally.
 pub fn highlight(text: &str, query: &str, base: Style, hit: Style) -> Vec<Span<'static>> {
-    let char_count = text.chars().count();
-    let matched = matched_char_indices(text, query);
-    spans_for_range(text, matched.as_deref(), 0, char_count, base, hit)
+    let grapheme_count = text.graphemes(true).count();
+    let matched = matched_grapheme_indices(text, query);
+    spans_for_range(text, matched.as_deref(), 0, grapheme_count, base, hit)
 }
 
 /// Like [`highlight`], but never returns more than `budget` display columns.
@@ -121,20 +123,17 @@ pub fn highlight_within(
         return Vec::new();
     }
 
-    let chars: Vec<char> = text.chars().collect();
-    if chars.is_empty() {
+    let graphemes: Vec<&str> = text.graphemes(true).collect();
+    if graphemes.is_empty() {
         return Vec::new();
     }
 
-    let widths: Vec<usize> = chars
-        .iter()
-        .map(|c| unicode_width::UnicodeWidthChar::width(*c).unwrap_or(0))
-        .collect();
+    let widths: Vec<usize> = graphemes.iter().map(|g| g.width()).collect();
     let total: usize = widths.iter().sum();
-    let matched = matched_char_indices(text, query);
+    let matched = matched_grapheme_indices(text, query);
 
     if total <= budget {
-        return spans_for_range(text, matched.as_deref(), 0, chars.len(), base, hit);
+        return spans_for_range(text, matched.as_deref(), 0, graphemes.len(), base, hit);
     } // Something has to be clipped, so one column per ellipsis is reserved.
     // Keep the first matched character visible when the column can fit it.
     let anchor = matched
@@ -159,19 +158,19 @@ pub fn highlight_within(
     // Walk forwards to fill the rest of content_budget.
     let mut end = start;
     let mut used = 0usize;
-    while end < chars.len() && used + widths[end] <= content_budget {
+    while end < graphemes.len() && used + widths[end] <= content_budget {
         used += widths[end];
         end += 1;
     }
 
     // A single wide character plus the clipping markers may not fit in a very
     // narrow column. Never force it past the available width.
-    if anchor >= end && anchor < chars.len() {
+    if anchor >= end && anchor < graphemes.len() {
         return vec![Span::styled("…", base)];
     }
 
     let lead_ellipsis = start > 0;
-    let tail_ellipsis = end < chars.len();
+    let tail_ellipsis = end < graphemes.len();
 
     let mut spans = Vec::new();
     if lead_ellipsis {
@@ -191,8 +190,26 @@ pub fn highlight_within(
     spans
 }
 
-/// Render characters `start..end` of `text` as spans, styling every character
-/// whose index is in `matched`.
+/// Map character matches to whole graphemes so combining marks and emoji
+/// sequences remain intact, even when only part of a grapheme matched.
+fn matched_grapheme_indices(text: &str, query: &str) -> Option<Vec<usize>> {
+    let matches = matched_char_indices(text, query)?;
+    let mut char_start = 0;
+    let mut result = Vec::new();
+    for (index, grapheme) in text.graphemes(true).enumerate() {
+        let char_end = char_start + grapheme.chars().count();
+        if matches
+            .iter()
+            .any(|&matched| matched >= char_start && matched < char_end)
+        {
+            result.push(index);
+        }
+        char_start = char_end;
+    }
+    Some(result)
+}
+
+/// Render whole graphemes in `start..end` as styled runs.
 fn spans_for_range(
     text: &str,
     matched: Option<&[usize]>,
@@ -201,25 +218,21 @@ fn spans_for_range(
     base: Style,
     hit: Style,
 ) -> Vec<Span<'static>> {
-    let end = end.min(text.chars().count());
+    let mut offsets: Vec<usize> = text.grapheme_indices(true).map(|(i, _)| i).collect();
+    offsets.push(text.len());
+    let end = end.min(offsets.len() - 1);
     if start >= end {
         return Vec::new();
     }
 
-    // Byte offsets let us slice the original text without allocating per char,
-    // which keeps multi-byte characters intact.
-    let mut byte_offsets: Vec<usize> = text.char_indices().map(|(i, _)| i).collect();
-    byte_offsets.push(text.len());
-
-    let mut spans: Vec<Span<'static>> = Vec::new();
+    let mut spans = Vec::new();
     let mut run_start = start;
     let mut run_matched = is_matched(matched, start);
-
     for idx in start + 1..end {
         let current = is_matched(matched, idx);
         if current != run_matched {
             spans.push(Span::styled(
-                text[byte_offsets[run_start]..byte_offsets[idx]].to_string(),
+                text[offsets[run_start]..offsets[idx]].to_string(),
                 if run_matched { hit } else { base },
             ));
             run_start = idx;
@@ -227,7 +240,7 @@ fn spans_for_range(
         }
     }
     spans.push(Span::styled(
-        text[byte_offsets[run_start]..byte_offsets[end]].to_string(),
+        text[offsets[run_start]..offsets[end]].to_string(),
         if run_matched { hit } else { base },
     ));
     spans
@@ -259,6 +272,15 @@ mod tests {
 
     fn hit() -> Style {
         Style::default().add_modifier(Modifier::BOLD)
+    }
+
+    #[test]
+    fn highlighting_preserves_combining_graphemes() {
+        let spans = highlight("cafe\u{301}", "e", base(), hit());
+        assert_eq!(highlighted_text(&spans), "e\u{301}");
+        let clipped = highlight_within("xxe\u{301}yyy", "e", 4, base(), hit());
+        assert!(plain(&clipped).contains("e\u{301}"));
+        assert!(clipped.iter().map(|span| span.width()).sum::<usize>() <= 4);
     }
 
     #[test]

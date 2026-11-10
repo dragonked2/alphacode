@@ -576,7 +576,9 @@ fn init_tui_terminal_resume() -> Result<ratatui::DefaultTerminal> {
         }
     };
 
-    if let Err(error) = terminal.clear() {
+    // A fullscreen terminal starts with empty buffers; clearing the backend is
+    // sufficient and avoids a cursor-position query competing with input reads.
+    if let Err(error) = ratatui::backend::Backend::clear(terminal.backend_mut()) {
         let _ = crossterm::terminal::disable_raw_mode();
         return Err(anyhow!("failed to clear terminal on resume: {error}"));
     }

@@ -174,14 +174,14 @@ fn prefilter(pat: &[char], hay: &[char], max_err: u8) -> bool {
     // Stage 2: multiplicity-aware counting for candidates that passed.
     // Non-ASCII path uses a small hashmap instead of Vec + position +
     // swap_remove (O(n^2) on long CJK haystacks).
-    let mut ascii = [0u16; 128];
-    let mut other: std::collections::HashMap<char, u16> = std::collections::HashMap::new();
+    let mut ascii = [0usize; 128];
+    let mut other: std::collections::HashMap<char, usize> = std::collections::HashMap::new();
     for &c in hay {
         let idx = c as usize;
         if idx < 128 {
-            ascii[idx] = ascii[idx].saturating_add(1);
+            ascii[idx] += 1;
         } else {
-            *other.entry(c).or_insert(0) = other.get(&c).copied().unwrap_or(0).saturating_add(1);
+            *other.entry(c).or_insert(0) += 1;
         }
     }
     let mut missing = 0u8;
@@ -729,6 +729,12 @@ pub fn command_fuzzy_match_positions(needle: &str, haystack: &str) -> Vec<usize>
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn prefilter_counts_large_repeated_inputs_without_saturation() {
+        let chars = vec!['a'; 65_536];
+        assert!(prefilter(&chars, &chars, 0));
+    }
 
     #[test]
     fn free_form_matching_tolerates_common_typos() {

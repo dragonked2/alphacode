@@ -206,7 +206,17 @@ pub(super) fn layout(area: Rect, len: usize, has_notice: bool) -> OverlayLayout 
 }
 
 /// Title line for the overlay's border.
-pub(super) const TITLE: &str = " Settings  ·  ↑/↓ move  ·  Space or Enter toggle  ·  Esc/q close ";
+pub(super) fn title(width: u16) -> &'static str {
+    if width >= 68 {
+        " Settings  ·  ↑/↓ move  ·  Space or Enter toggle  ·  Esc/q close "
+    } else if width >= 42 {
+        " Settings · ↑↓ move · Enter toggle · Esc "
+    } else if width >= 30 {
+        " Settings · Enter toggle · Esc "
+    } else {
+        " Settings "
+    }
+}
 
 /// Where the overlay was painted on the most recent frame.
 ///

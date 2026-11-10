@@ -64,10 +64,35 @@ pub(crate) fn matches_query(name: &str, description: &str, query: &str) -> bool 
         "Security and reconnaissance" => "recon vulnerability http network",
         "Connected integrations" => "mcp plugin connector integration",
         "Commands and parallel execution" => "shell background batch terminal",
-        "Web research and browser" => "browser automation browsing tabs",
         _ => "",
     };
-    let haystack = format!("{name} {description} {} {hints}", family(name)).to_lowercase();
+    // Search task vocabulary as well as tool names. Keep these hints specific:
+    // broad family synonyms can otherwise suggest an unrelated tool as a match.
+    let task_hints = match name {
+        "subfinder" | "assetfinder" | "amass" => "subdomain discovery enumeration dns",
+        "dnsx" => "dns resolution records subdomain",
+        "httpx" | "httprobe" => "http service probing live hosts",
+        "gau" | "waybackurls" => "historical archived urls endpoints",
+        "katana" => "crawl spider endpoints javascript",
+        "ffuf" | "feroxbuster" | "gobuster" => "content discovery fuzz paths directories",
+        "httpflow" => "http request response replay headers cookies",
+        "jwt" => "json web token inspect decode",
+        "nuclei" => "template vulnerability scanner",
+        "sqlmap" => "sql injection database testing",
+        "dalfox" => "cross site scripting xss scanner",
+        "nmap" | "naabu" => "network port scanning service discovery",
+        "alphagrep" => "source code search patterns",
+        "memory" | "session_search" => "prior findings investigation notes",
+        "read" => "open inspect file contents",
+        "edit" | "apply_patch" | "patch" | "multiedit" => "modify change update file code",
+        "websearch" => "search internet online research sources",
+        "webfetch" => "fetch retrieve web page url",
+        "browser" => "browser automation browsing tabs",
+        "skill_manage" => "discover search load skills instructions",
+        _ => "",
+    };
+    let haystack =
+        format!("{name} {description} {} {hints} {task_hints}", family(name)).to_lowercase();
     // Natural requests such as "use my browser" should find the capability,
     // while a query made entirely of filler must not match the whole catalog.
     let terms: Vec<_> = query
@@ -90,6 +115,10 @@ pub(crate) fn matches_query(name: &str, description: &str, query: &str) -> bool 
                         | "you"
                         | "i"
                         | "want"
+                        | "find"
+                        | "help"
+                        | "how"
+                        | "do"
                 )
         })
         .collect();
@@ -187,10 +216,24 @@ mod tests {
         assert!(matches_query("subfinder", "", "recon"));
         assert!(!matches_query("read", "Read a file", "binary analysis"));
         assert!(!matches_query("read", "Read a file", "   "));
+        assert!(matches_query("gau", "", "historical endpoints"));
+        assert!(matches_query("httpflow", "", "request replay"));
+        assert!(matches_query("dalfox", "", "cross site scripting"));
+        assert!(!matches_query("dnsx", "", "historical endpoints"));
         assert!(matches_query("browser", "", "use my browser!"));
         assert!(matches_query("browser", "", "please use the browser"));
         assert!(!matches_query("dnsx", "", "use my browser"));
         assert!(!matches_query("browser", "", "please use my"));
+        assert!(matches_query("websearch", "", "find online sources"));
+        assert!(matches_query("skill_manage", "", "find skills"));
+        assert!(matches_query("edit", "", "modify code"));
+        assert!(!matches_query("dnsx", "", "find skills"));
+        assert!(!matches_query(
+            "websearch",
+            "search the web",
+            "browser automation"
+        ));
+        assert!(matches_query("browser", "", "browser automation"));
     }
 
     #[test]

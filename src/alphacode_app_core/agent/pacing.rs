@@ -31,8 +31,9 @@ use crate::alphacode_provider_metadata::free_pool::is_free_tier_model_id;
 
 /// The delay applied between provider requests on a rate-limited provider.
 ///
-/// 500ms keeps a 10-RPM free model under its cap with headroom, matching the
-/// delay this module replaces. It is now applied *only* where it is needed.
+/// A short spacing between tool-driven requests. This is not a per-minute
+/// limiter: it does not coordinate separate turns or agents, and 500ms alone
+/// cannot enforce a 10-RPM quota.
 pub const FREE_TIER_INTER_CALL_DELAY: Duration = Duration::from_millis(500);
 
 /// How long to wait before the next provider request in this turn.

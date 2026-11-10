@@ -915,7 +915,9 @@ pub(super) fn draw_messages(
             for (start_col, end_col) in hits {
                 *line = highlight_line_range(line, start_col, end_col, |style| {
                     if is_current {
-                        style.bg(search_current_hit_bg_for(style.bg))
+                        style
+                            .bg(search_current_hit_bg_for(style.bg))
+                            .add_modifier(Modifier::UNDERLINED)
                     } else {
                         style.bg(search_hit_bg_for(style.bg))
                     }

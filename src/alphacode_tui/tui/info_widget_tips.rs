@@ -9,7 +9,7 @@ struct Tip {
     text: String,
 }
 
-fn all_tips() -> Vec<Tip> {
+fn all_tips(mermaid: bool) -> Vec<Tip> {
     let mut tips = vec![
         "Ctrl+J / Ctrl+K to jump between user prompts (Cmd+J / Cmd+K on macOS terminals that forward Command)",
         "Ctrl+Shift+J / Ctrl+Shift+K to scroll the chat down and up one line",
@@ -33,7 +33,7 @@ fn all_tips() -> Vec<Tip> {
         "/set model <name> is a quick way to switch models, e.g. /set model qwen/qwen3.8-max-free",
         "TokenRouter offers free model access - use `alphacode --provider tokenrouter` to get started",
     ];
-    if crate::config::config().features.mermaid {
+    if mermaid {
         tips.insert(3, "```mermaid code blocks render as diagrams");
     }
     // Mac keyboards label this modifier ⌥, not Alt, so rewrite hints there.
@@ -46,9 +46,15 @@ fn all_tips() -> Vec<Tip> {
 }
 
 static TIP_STATE: Mutex<Option<(usize, Instant)>> = Mutex::new(None);
+static TIPS: std::sync::OnceLock<Vec<Tip>> = std::sync::OnceLock::new();
+static TIPS_WITH_MERMAID: std::sync::OnceLock<Vec<Tip>> = std::sync::OnceLock::new();
 
 fn current_tip(_max_width: usize) -> Tip {
-    let tips = all_tips();
+    let tips = if crate::config::config().features.mermaid {
+        TIPS_WITH_MERMAID.get_or_init(|| all_tips(true))
+    } else {
+        TIPS.get_or_init(|| all_tips(false))
+    };
     let mut guard = TIP_STATE.lock().unwrap_or_else(|e| e.into_inner());
     let now = Instant::now();
     let (idx, last) = guard.get_or_insert_with(|| (0, now));
@@ -78,7 +84,7 @@ pub(crate) fn occasional_status_tip(max_width: usize, elapsed_secs: u64) -> Opti
     }
 
     let prefix = "💡 ";
-    let available = max_width.saturating_sub(prefix.chars().count());
+    let available = max_width.saturating_sub(UnicodeWidthStr::width(prefix));
     if available < 12 {
         return None;
     }
@@ -92,24 +98,43 @@ pub(crate) fn occasional_status_tip(max_width: usize, elapsed_secs: u64) -> Opti
 }
 
 fn wrap_tip_text(text: &str, width: usize) -> Vec<String> {
+    use unicode_segmentation::UnicodeSegmentation;
+
     if width == 0 {
-        return vec![text.to_string()];
+        return Vec::new();
     }
     let mut lines = Vec::new();
-    let mut remaining = text;
+    let mut remaining = text.trim_start();
     while !remaining.is_empty() {
-        if remaining.len() <= width {
-            lines.push(remaining.to_string());
+        let mut end = 0;
+        let mut used = 0;
+        let mut last_space = None;
+        for (index, grapheme) in remaining.grapheme_indices(true) {
+            let cells = UnicodeWidthStr::width(grapheme);
+            if used + cells > width {
+                break;
+            }
+            used += cells;
+            end = index + grapheme.len();
+            if grapheme.chars().all(char::is_whitespace) {
+                last_space = Some(index);
+            }
+        }
+        if end == remaining.len() {
+            lines.push(remaining.trim_end().to_string());
             break;
         }
-        let mut boundary = width.min(remaining.len());
-        while boundary > 0 && !remaining.is_char_boundary(boundary) {
-            boundary -= 1;
+        if end == 0 {
+            // A wide grapheme cannot fit in a one-cell column. Consume it so
+            // narrow terminals cannot trap the renderer in an infinite loop.
+            let grapheme = remaining.graphemes(true).next().unwrap();
+            lines.push("�".to_string());
+            remaining = remaining[grapheme.len()..].trim_start();
+            continue;
         }
-        let split = remaining[..boundary].rfind(' ').unwrap_or(boundary);
-        let (line, rest) = remaining.split_at(split);
-        lines.push(line.to_string());
-        remaining = rest.trim_start();
+        let split = last_space.filter(|&index| index > 0).unwrap_or(end);
+        lines.push(remaining[..split].trim_end().to_string());
+        remaining = remaining[split..].trim_start();
     }
     lines
 }
@@ -149,4 +174,17 @@ pub(super) fn render_tips_widget(inner: Rect) -> Vec<Line<'static>> {
     }
 
     lines
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn tips_wrap_on_terminal_cells_and_make_progress() {
+        assert_eq!(wrap_tip_text("ab 界 cd", 4), vec!["ab", "界", "cd"]);
+        assert_eq!(wrap_tip_text("界a", 1), vec!["�", "a"]);
+        assert_eq!(wrap_tip_text("e\u{301}x", 1), vec!["e\u{301}", "x"]);
+        assert!(wrap_tip_text("anything", 0).is_empty());
+    }
 }

@@ -246,7 +246,8 @@ fn test_full_redraw_clears_out_of_band_backend_artifacts_after_native_scroll_lik
 
     app.request_full_redraw();
     assert!(app.force_full_redraw, "full redraw flag should be armed");
-    terminal.clear().expect("test backend clear should succeed");
+    crate::alphacode_tui::tui::app::run_shell::clear_fullscreen_terminal(&mut terminal)
+        .expect("test backend clear should succeed");
     app.force_full_redraw = false;
     terminal
         .draw(|f| crate::alphacode_tui::tui::ui::draw(f, &app))
