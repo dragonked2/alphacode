@@ -50,14 +50,21 @@ fn runtime_user_discriminator() -> String {
     // a pipe name collision would route one session's API traffic to the
     // other session's daemon. `SESSIONNAME` distinguishes console/RDP/RDS
     // sessions; `ALPHACODE_SESSION_TAG` covers exotic service hosts.
-    let raw = std::env::var("SESSIONNAME")
+    let session = std::env::var("SESSIONNAME")
         .or_else(|_| std::env::var("ALPHACODE_SESSION_TAG"))
-        .map(|value| format!("{}-", sanitize(value)))
-        .unwrap_or_default();
+        .ok();
     let user = std::env::var("USERNAME")
         .or_else(|_| std::env::var("USER"))
-        .map(sanitize)
-        .unwrap_or_else(|_| "user".to_string());
+        .ok();
+    windows_discriminator(user, session)
+}
+
+#[cfg(not(unix))]
+fn windows_discriminator(user: Option<String>, session: Option<String>) -> String {
+    let raw = session
+        .map(|value| format!("{}-", sanitize(value)))
+        .unwrap_or_default();
+    let user = user.map(sanitize).unwrap_or_else(|| "user".to_string());
     format!("{user}-{raw}main")
 }
 
@@ -129,34 +136,18 @@ mod tests {
     fn windows_discriminator_includes_session_name() {
         // Keep in sync with `alphacode_storage::runtime_user_discriminator`:
         // console + RDP sessions of the same user must resolve different dirs.
-        let prev_session = std::env::var("SESSIONNAME");
-        let prev_tag = std::env::var("ALPHACODE_SESSION_TAG");
-        let prev_user = std::env::var("USERNAME");
-        unsafe {
-            std::env::set_var("USERNAME", "tlbbe");
-            std::env::remove_var("ALPHACODE_SESSION_TAG");
-            std::env::set_var("SESSIONNAME", "Console");
-            let console = super::runtime_user_discriminator();
-            std::env::set_var("SESSIONNAME", "RDP-Tcp#0");
-            let rdp = super::runtime_user_discriminator();
-            std::env::remove_var("SESSIONNAME");
-            std::env::set_var("ALPHACODE_SESSION_TAG", "svc-1");
-            let tagged = super::runtime_user_discriminator();
-            match prev_session {
-                Ok(v) => std::env::set_var("SESSIONNAME", v),
-                Err(_) => std::env::remove_var("SESSIONNAME"),
-            }
-            match prev_tag {
-                Ok(v) => std::env::set_var("ALPHACODE_SESSION_TAG", v),
-                Err(_) => std::env::remove_var("ALPHACODE_SESSION_TAG"),
-            }
-            match prev_user {
-                Ok(v) => std::env::set_var("USERNAME", v),
-                Err(_) => std::env::remove_var("USERNAME"),
-            }
-            assert_eq!(console, "tlbbe-Console-main");
-            assert_eq!(rdp, "tlbbe-RDP-Tcp0-main");
-            assert_eq!(tagged, "tlbbe-svc-1-main");
-        }
+        let user = || Some("tlbbe".to_string());
+        assert_eq!(
+            windows_discriminator(user(), Some("Console".into())),
+            "tlbbe-Console-main"
+        );
+        assert_eq!(
+            windows_discriminator(user(), Some("RDP-Tcp#0".into())),
+            "tlbbe-RDP-Tcp0-main"
+        );
+        assert_eq!(
+            windows_discriminator(user(), Some("svc-1".into())),
+            "tlbbe-svc-1-main"
+        );
     }
 }
