@@ -902,7 +902,9 @@ impl App {
             snapshot,
             observed_at_unix_secs: remote_model_catalog_observed_at_unix_secs(),
         };
-        if let Err(error) = crate::storage::write_json(&path, &cache) {
+        // This cache is rebuilt from the daemon. Atomic replacement is enough;
+        // a durable disk flush here would stall the input loop on catalog updates.
+        if let Err(error) = crate::storage::write_json_fast(&path, &cache) {
             crate::logging::warn(&format!(
                 "Failed to persist remote model catalog cache {}: {}",
                 path.display(),
@@ -3789,11 +3791,6 @@ impl App {
                                     self.session.model = Some(active_model.clone());
                                     self.session.route_api_method =
                                         Some(route_selection.api_method.clone());
-                                    if let Err(e) = self.session.save() {
-                                        crate::logging::warn(&format!(
-                                            "Failed to save session: {e}"
-                                        ));
-                                    }
                                     crate::logging::event_info(
                                         "model_picker_select_applied",
                                         vec![
@@ -3827,16 +3824,27 @@ impl App {
                         }
                         // Remote effort is staged above for the server. The local
                         // stand-in may not implement reasoning controls at all.
-                        if !self.is_remote
-                            && let Some(effort) = effort
-                        {
-                            match self.provider.set_reasoning_effort(&effort) {
-                                Ok(()) => self.persist_local_reasoning_effort(),
-                                Err(error) => {
-                                    self.push_display_message(DisplayMessage::error(format!("Model switched, but effort '{}' could not be applied: {error}", effort)));
-                                    self.set_status_notice("Model switched; effort change failed");
-                                    return Ok(());
+                        if !self.is_remote {
+                            let effort_error = effort.as_deref().and_then(|effort| {
+                                match self.provider.set_reasoning_effort(effort) {
+                                    Ok(()) => {
+                                        self.record_local_reasoning_effort();
+                                        None
+                                    }
+                                    Err(error) => Some(format!(
+                                        "Model switched, but effort '{effort}' could not be applied: {error}"
+                                    )),
                                 }
+                            });
+                            // Persist the model and effort together. A second save
+                            // can checkpoint the same transcript on the input thread.
+                            if let Err(error) = self.session.save() {
+                                crate::logging::warn(&format!("Failed to save session: {error}"));
+                            }
+                            if let Some(error) = effort_error {
+                                self.push_display_message(DisplayMessage::error(error));
+                                self.set_status_notice("Model switched; effort change failed");
+                                return Ok(());
                             }
                         }
                         if !route_detail.is_empty() {

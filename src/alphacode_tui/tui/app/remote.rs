@@ -331,6 +331,10 @@ async fn apply_terminal_event(
             app.set_client_focused(false);
         }
         Some(Ok(Event::Key(key))) => {
+            // Releases do not edit the composer or contribute a key-to-paint sample.
+            if !super::local::key_event_needs_redraw(key.kind) {
+                return Ok(false);
+            }
             // Start the key-to-paint clock at the moment the key is read, which is
             // the only point that corresponds to the user's press.
             crate::alphacode_tui::tui::ui::note_key_event_read();
@@ -338,104 +342,99 @@ async fn apply_terminal_event(
             input_attribution.scroll_delta = key_scroll_delta(&key);
             app.note_client_interaction();
             app.update_copy_badge_key_event(key);
-            if matches!(key.kind, KeyEventKind::Press | KeyEventKind::Repeat) {
-                handle_remote_key_event(app, key, remote).await?;
-                if let Some(selection) = app.pending_route_selection.take() {
-                    app.pending_model_switch = None;
-                    match remote.set_route_selection(selection).await {
-                        Ok(_) => {
-                            app.remote_model_switch_in_flight = true;
-                            forward_pending_reasoning_effort(app, remote).await;
-                        }
-                        Err(error) => {
-                            app.pending_reasoning_effort = None;
-                            // A fallback-offer resend must not fire without its
-                            // route switch; drop it with the failed request.
-                            app.pending_fallback_resend = None;
-                            app.push_display_message(DisplayMessage::error(format!(
-                                "Failed to request model switch: {}",
-                                error
-                            )));
-                            app.set_status_notice("Model switch failed");
-                        }
+            handle_remote_key_event(app, key, remote).await?;
+            if let Some(selection) = app.pending_route_selection.take() {
+                app.pending_model_switch = None;
+                match remote.set_route_selection(selection).await {
+                    Ok(_) => {
+                        app.remote_model_switch_in_flight = true;
+                        forward_pending_reasoning_effort(app, remote).await;
                     }
-                } else if let Some(spec) = app.pending_model_switch.take() {
-                    match remote.set_model(&spec).await {
-                        Ok(_) => {
-                            app.remote_model_switch_in_flight = true;
-                            forward_pending_reasoning_effort(app, remote).await;
-                        }
-                        Err(error) => {
-                            app.pending_reasoning_effort = None;
-                            app.push_display_message(DisplayMessage::error(format!(
-                                "Failed to request model switch: {}",
-                                error
-                            )));
-                            app.set_status_notice("Model switch failed");
-                        }
+                    Err(error) => {
+                        app.pending_reasoning_effort = None;
+                        // A fallback-offer resend must not fire without its
+                        // route switch; drop it with the failed request.
+                        app.pending_fallback_resend = None;
+                        app.push_display_message(DisplayMessage::error(format!(
+                            "Failed to request model switch: {}",
+                            error
+                        )));
+                        app.set_status_notice("Model switch failed");
                     }
                 }
-                if let Some(selection) = app.pending_account_picker_action.take() {
-                    match selection {
-                        crate::alphacode_tui::tui::AccountPickerAction::Switch {
-                            provider_id,
-                            label,
-                        } => match provider_id.as_str() {
-                            "claude" => {
-                                if let Err(e) =
-                                    crate::alphacode_base::auth::claude::set_active_account(&label)
-                                {
-                                    app.push_display_message(DisplayMessage::error(format!(
-                                        "Failed to switch account: {}",
-                                        e
-                                    )));
-                                } else {
-                                    crate::alphacode_base::auth::AuthStatus::invalidate_cache();
-                                    app.context_limit = app.provider.context_window() as u64;
-                                    app.context_warning_shown = false;
-                                    let _ = remote.switch_anthropic_account(&label).await;
-                                    app.push_display_message(DisplayMessage::system(format!(
-                                        "Switched to Anthropic account `{}`.",
-                                        label
-                                    )));
-                                    app.set_status_notice(format!(
-                                        "Account: switched to {}",
-                                        label
-                                    ));
-                                }
-                            }
-                            "openai" => {
-                                if let Err(e) =
-                                    crate::alphacode_base::auth::codex::set_active_account(&label)
-                                {
-                                    app.push_display_message(DisplayMessage::error(format!(
-                                        "Failed to switch OpenAI account: {}",
-                                        e
-                                    )));
-                                } else {
-                                    crate::alphacode_base::auth::AuthStatus::invalidate_cache();
-                                    app.context_limit = app.provider.context_window() as u64;
-                                    app.context_warning_shown = false;
-                                    let _ = remote.switch_openai_account(&label).await;
-                                    app.push_display_message(DisplayMessage::system(format!(
-                                        "Switched to OpenAI account `{}`.",
-                                        label
-                                    )));
-                                    app.set_status_notice(format!(
-                                        "OpenAI account: switched to {}",
-                                        label
-                                    ));
-                                }
-                            }
-                            _ => app.push_display_message(DisplayMessage::error(format!(
-                                "Provider `{}` does not support account switching.",
-                                provider_id
-                            ))),
-                        },
-                        crate::alphacode_tui::tui::AccountPickerAction::Add { .. }
-                        | crate::alphacode_tui::tui::AccountPickerAction::Replace { .. }
-                        | crate::alphacode_tui::tui::AccountPickerAction::OpenCenter { .. } => {}
+            } else if let Some(spec) = app.pending_model_switch.take() {
+                match remote.set_model(&spec).await {
+                    Ok(_) => {
+                        app.remote_model_switch_in_flight = true;
+                        forward_pending_reasoning_effort(app, remote).await;
                     }
+                    Err(error) => {
+                        app.pending_reasoning_effort = None;
+                        app.push_display_message(DisplayMessage::error(format!(
+                            "Failed to request model switch: {}",
+                            error
+                        )));
+                        app.set_status_notice("Model switch failed");
+                    }
+                }
+            }
+            if let Some(selection) = app.pending_account_picker_action.take() {
+                match selection {
+                    crate::alphacode_tui::tui::AccountPickerAction::Switch {
+                        provider_id,
+                        label,
+                    } => match provider_id.as_str() {
+                        "claude" => {
+                            if let Err(e) =
+                                crate::alphacode_base::auth::claude::set_active_account(&label)
+                            {
+                                app.push_display_message(DisplayMessage::error(format!(
+                                    "Failed to switch account: {}",
+                                    e
+                                )));
+                            } else {
+                                crate::alphacode_base::auth::AuthStatus::invalidate_cache();
+                                app.context_limit = app.provider.context_window() as u64;
+                                app.context_warning_shown = false;
+                                let _ = remote.switch_anthropic_account(&label).await;
+                                app.push_display_message(DisplayMessage::system(format!(
+                                    "Switched to Anthropic account `{}`.",
+                                    label
+                                )));
+                                app.set_status_notice(format!("Account: switched to {}", label));
+                            }
+                        }
+                        "openai" => {
+                            if let Err(e) =
+                                crate::alphacode_base::auth::codex::set_active_account(&label)
+                            {
+                                app.push_display_message(DisplayMessage::error(format!(
+                                    "Failed to switch OpenAI account: {}",
+                                    e
+                                )));
+                            } else {
+                                crate::alphacode_base::auth::AuthStatus::invalidate_cache();
+                                app.context_limit = app.provider.context_window() as u64;
+                                app.context_warning_shown = false;
+                                let _ = remote.switch_openai_account(&label).await;
+                                app.push_display_message(DisplayMessage::system(format!(
+                                    "Switched to OpenAI account `{}`.",
+                                    label
+                                )));
+                                app.set_status_notice(format!(
+                                    "OpenAI account: switched to {}",
+                                    label
+                                ));
+                            }
+                        }
+                        _ => app.push_display_message(DisplayMessage::error(format!(
+                            "Provider `{}` does not support account switching.",
+                            provider_id
+                        ))),
+                    },
+                    crate::alphacode_tui::tui::AccountPickerAction::Add { .. }
+                    | crate::alphacode_tui::tui::AccountPickerAction::Replace { .. }
+                    | crate::alphacode_tui::tui::AccountPickerAction::OpenCenter { .. } => {}
                 }
             }
             needs_redraw = true;

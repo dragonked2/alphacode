@@ -142,6 +142,17 @@ pub(super) fn handle_tick(app: &mut App) -> bool {
     needs_redraw
 }
 
+/// Whether a terminal key event can change what is on screen.
+///
+/// Crossterm's keyboard enhancement reports Press *and* Release for every key.
+/// Only a press (or an auto-repeat) mutates state; a release cannot change a
+/// single cell. Both run loops turn this into their "needs redraw" flag, so a
+/// release used to queue a second full frame (prepare, diff, flush) per
+/// keystroke and made the next key wait behind it.
+pub(super) fn key_event_needs_redraw(kind: KeyEventKind) -> bool {
+    matches!(kind, KeyEventKind::Press | KeyEventKind::Repeat)
+}
+
 pub(super) fn handle_terminal_event(
     app: &mut App,
     terminal: &mut DefaultTerminal,
@@ -403,12 +414,14 @@ fn apply_terminal_event(
             Ok(false)
         }
         Some(Ok(Event::Key(key))) => {
+            // A release cannot change a cell; see `key_event_needs_redraw`.
+            if !key_event_needs_redraw(key.kind) {
+                return Ok(false);
+            }
             crate::alphacode_tui::tui::ui::note_key_event_read();
             app.note_client_interaction();
             app.update_copy_badge_key_event(key);
-            if matches!(key.kind, KeyEventKind::Press | KeyEventKind::Repeat) {
-                app.handle_key_press_event(key)?;
-            }
+            app.handle_key_press_event(key)?;
             Ok(true)
         }
         Some(Ok(Event::Paste(text))) => {

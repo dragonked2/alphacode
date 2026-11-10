@@ -132,6 +132,19 @@ fn bare_enter_immediately_after_paste_does_not_submit() {
     assert!(app.input.is_empty(), "later Enter should submit normally");
 }
 
+#[test]
+fn typing_after_paste_allows_immediate_submit() {
+    let mut app = create_test_app();
+    app.handle_paste("line\n".repeat(5_000));
+    app.handle_key(KeyCode::Char('x'), KeyModifiers::NONE)
+        .unwrap();
+    app.handle_key(KeyCode::Enter, KeyModifiers::NONE).unwrap();
+    assert!(
+        app.input.is_empty(),
+        "typing after a paste must disarm the trailing Enter guard"
+    );
+}
+
 // Keymap-independent multi-line input: a trailing backslash makes Enter insert
 // a newline instead of submitting.
 //

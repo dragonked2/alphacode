@@ -1894,6 +1894,8 @@ pub struct App {
     /// Lazily-loaded persisted cross-session prompt history (oldest first,
     /// deduped). None until first use; see `prompt_history.rs`.
     persisted_prompt_history: Option<Vec<String>>,
+    /// Transcript positions used by the composer's history completion.
+    prompt_completion_index: RefCell<Option<prompt_history::PromptCompletionIndex>>,
 }
 
 /// Inert provider used by runtime modes whose output is supplied by another source.

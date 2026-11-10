@@ -107,6 +107,23 @@ fn test_prompt_history_completion_requires_one_unique_prefix_match() {
 }
 
 #[test]
+fn test_input_history_completion_refreshes_after_same_length_transcript_edit() {
+    let mut app = create_test_app();
+    app.input = "sum".to_string();
+    app.cursor_pos = app.input.len();
+    app.push_display_message(DisplayMessage::system("summarize this file"));
+    assert!(app.input_history_completion_suffix(40).is_none());
+
+    let message = app.display_messages.last_mut().unwrap();
+    message.role = "user".to_string();
+    app.bump_display_messages_version();
+    assert_eq!(
+        app.input_history_completion_suffix(40).as_deref(),
+        Some("marize this file")
+    );
+}
+
+#[test]
 fn test_prompt_history_completion_skips_ambiguous_commands_and_midline_cursor() {
     let mut app = create_test_app();
     app.persisted_prompt_history = Some(vec![
@@ -124,6 +141,41 @@ fn test_prompt_history_completion_skips_ambiguous_commands_and_midline_cursor() 
     app.input = "/sum".to_string();
     app.cursor_pos = app.input.len();
     assert!(app.input_history_completion_suffix(20).is_none());
+}
+
+#[test]
+fn test_prompt_history_completion_rejects_line_breaks_in_drafts_and_candidates() {
+    let mut app = create_test_app();
+    for line_break in ["\n", "\r", "\r\n"] {
+        app.input = format!("sum{line_break}marize");
+        app.cursor_pos = app.input.len();
+        app.persisted_prompt_history = Some(vec![format!("{} the changes", app.input)]);
+        assert!(app.input_history_completion_suffix(20).is_none());
+
+        app.input = "sum".to_string();
+        app.cursor_pos = app.input.len();
+        app.persisted_prompt_history = Some(vec![format!("summarize{line_break}the changes")]);
+        assert!(app.input_history_completion_suffix(20).is_none());
+    }
+}
+
+#[test]
+fn test_prompt_history_completion_minimum_length_counts_graphemes_not_bytes() {
+    let mut app = create_test_app();
+    for (draft, eligible) in [
+        ("a\u{301}", false),
+        ("👩‍💻🇺🇸", false),
+        ("a\u{301}👩‍💻🇺🇸", true),
+    ] {
+        app.input = draft.to_string();
+        app.cursor_pos = app.input.len();
+        app.persisted_prompt_history = Some(vec![format!("{draft} tail")]);
+        assert_eq!(
+            app.input_history_completion_suffix(20).as_deref(),
+            eligible.then_some(" tail"),
+            "draft {draft:?}"
+        );
+    }
 }
 
 #[test]
@@ -333,4 +385,3 @@ fn test_history_search_overlay_renders_matches_in_frame() {
         "non-matching prompt should be filtered out:\n{rendered}"
     );
 }
-

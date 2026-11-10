@@ -29,6 +29,11 @@ const COMPACT_THRESHOLD_LINES: usize = MAX_PERSISTED_PROMPTS * 2;
 /// Cap on search matches kept in the overlay state.
 const MAX_SEARCH_MATCHES: usize = 50;
 
+pub(super) struct PromptCompletionIndex {
+    revision: (u64, usize),
+    positions: Vec<usize>,
+}
+
 /// State for the Ctrl+R reverse history search overlay.
 #[derive(Debug, Clone, Default)]
 pub(crate) struct PromptHistorySearchState {
@@ -186,8 +191,11 @@ impl App {
         if self.cursor_pos != self.input.len()
             || self.input.starts_with('/')
             || self.input.starts_with('!')
-            || self.input.contains(['\n', '\r'])
-            || self.input.graphemes(true).count() < 3
+            // Single-character searches use the byte-search fast path. The
+            // array Pattern scans Unicode scalars across the entire draft.
+            || self.input.contains('\n')
+            || self.input.contains('\r')
+            || self.input.graphemes(true).take(3).count() < 3
             || self.pending_login.is_some()
             || self.pending_account_input.is_some()
             || self.pending_ssh_remote_name.is_some()
@@ -202,17 +210,36 @@ impl App {
             .unwrap_or_default()
             .iter()
             .map(String::as_str);
-        let current_session = self
-            .display_messages
-            .iter()
-            .filter(|message| message.role == "user")
-            .map(|message| message.content.trim());
+        // Reuse prompt positions while the transcript is stable. Tool output
+        // and assistant messages do not need to be visited on each keypress.
+        let mut index = self.prompt_completion_index.borrow_mut();
+        let revision = (self.display_messages_version, self.display_messages.len());
+        if index
+            .as_ref()
+            .is_none_or(|index| index.revision != revision)
+        {
+            *index = Some(PromptCompletionIndex {
+                revision,
+                positions: self
+                    .display_messages
+                    .iter()
+                    .enumerate()
+                    .filter_map(|(position, message)| (message.role == "user").then_some(position))
+                    .collect(),
+            });
+        }
+        let current_session = index
+            .as_ref()
+            .into_iter()
+            .flat_map(|index| &index.positions)
+            .map(|&position| self.display_messages[position].content.trim());
 
         let mut unique: Option<&str> = None;
         for prompt in persisted.chain(current_session) {
             if prompt == input
                 || !prompt.starts_with(input)
-                || prompt.contains(['\n', '\r'])
+                || prompt.contains('\n')
+                || prompt.contains('\r')
                 || contains_paste_placeholder(prompt)
                 || prompt.starts_with('/')
                 || prompt.starts_with('!')

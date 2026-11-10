@@ -734,17 +734,21 @@ impl App {
     }
 
     pub(super) fn persist_local_reasoning_effort(&mut self) {
-        self.session.reasoning_effort = self.provider.reasoning_effort();
-        crate::alphacode_app_core::session_effort::record_session_effort(
-            &self.session.id,
-            self.session.reasoning_effort.as_deref(),
-        );
+        self.record_local_reasoning_effort();
         self.invalidate_model_picker_cache();
         if let Err(error) = self.session.save() {
             self.push_display_message(DisplayMessage::error(format!(
                 "Effort changed, but the session could not be saved: {error}"
             )));
         }
+    }
+
+    pub(super) fn record_local_reasoning_effort(&mut self) {
+        self.session.reasoning_effort = self.provider.reasoning_effort();
+        crate::alphacode_app_core::session_effort::record_session_effort(
+            &self.session.id,
+            self.session.reasoning_effort.as_deref(),
+        );
     }
 
     pub(super) fn note_remote_effort_request(&mut self, id: u64, effort: String) {
@@ -759,7 +763,7 @@ impl App {
                 model,
                 self.remote_provider_name.as_deref(),
             )
-            .unwrap_or(self.provider.context_window())
+            .unwrap_or_else(|| self.provider.context_window())
         } else {
             self.provider.context_window()
         };

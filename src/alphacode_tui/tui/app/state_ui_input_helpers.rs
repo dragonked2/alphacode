@@ -1275,6 +1275,12 @@ impl App {
 
     /// Get command suggestions based on current input
     pub fn command_suggestions(&self) -> Vec<(String, &'static str)> {
+        // Plain chat cannot open either palette. Avoid copying the draft into
+        // the per-frame memo and comparing that copy on every layout pass.
+        if !self.input.trim_start().starts_with('/') && !self.input.contains('@') {
+            self.command_suggestions_mention.borrow_mut().take();
+            return Vec::new();
+        }
         // Read up to eight times per frame; recomputing each time re-ranks
         // every registered command and skill (and can touch disk for some
         // prefixes). Memoize on the exact input plus the guard state the

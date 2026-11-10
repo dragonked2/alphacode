@@ -354,7 +354,7 @@ impl App {
     pub(super) fn diagram_available(&self) -> bool {
         self.diagram_mode == crate::config::DiagramDisplayMode::Pinned
             && self.diagram_pane_enabled
-            && !crate::alphacode_tui::tui::mermaid::get_active_diagrams().is_empty()
+            && crate::alphacode_tui_mermaid::visible_diagram_count() != 0
     }
 
     pub(super) fn normalize_diagram_state(&mut self) {
@@ -370,7 +370,7 @@ impl App {
             self.diagram_focus = false;
         }
 
-        let diagram_count = crate::alphacode_tui::tui::mermaid::get_active_diagrams().len();
+        let diagram_count = crate::alphacode_tui_mermaid::visible_diagram_count();
         if diagram_count == 0 {
             self.diagram_focus = false;
             self.diagram_index = 0;

@@ -463,7 +463,9 @@ impl StatusSpinnerRenderer {
         // terminal applies every cell change atomically. Without this, ratatui's crossterm
         // backend streams cells one-by-one and eagerly-repainting terminals (and slow/remote or
         // multiplexed sessions) show visible flicker. See issue #282.
-        let sync = crossterm::execute!(terminal.backend_mut(), BeginSynchronizedUpdate).is_ok();
+        // Let the normal draw flush carry the opening marker. Flushing it
+        // separately adds a console round trip to every keystroke.
+        let sync = crossterm::queue!(terminal.backend_mut(), BeginSynchronizedUpdate).is_ok();
         match invalidation {
             FullFrameInvalidation::HardClear => {
                 terminal.clear()?;

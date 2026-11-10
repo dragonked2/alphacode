@@ -308,20 +308,16 @@ pub(super) fn draw_prompt_history_search_overlay(
 
     let mut lines: Vec<Line<'static>> = Vec::new();
     lines.push(Line::from(vec![
-        Span::styled("(history search) ", dim),
+        Span::styled("History search  ", dim),
         Span::styled(view.query.clone(), accent),
         Span::styled("█", accent),
-        Span::styled(
-            "  ↑↓ select · ↵ insert · Esc cancel",
-            Style::default().fg(BrandTheme::dim()),
-        ),
     ]));
 
     if view.matches.is_empty() {
         if view.query.trim().is_empty() {
-            lines.push(Line::from(Span::styled("  type to search history", dim)));
+            lines.push(Line::from(Span::styled("  Type to search prompts", dim)));
         } else {
-            lines.push(Line::from(Span::styled("  no matches", dim)));
+            lines.push(Line::from(Span::styled("  No matching prompts", dim)));
         }
     } else {
         // Keep the selected row inside the visible window.
@@ -362,15 +358,27 @@ pub(super) fn draw_prompt_history_search_overlay(
         }
     }
 
+    lines.push(Line::from(Span::styled(
+        "  Enter insert · ↑↓ select · Esc close",
+        dim,
+    )));
     let Some(rect) = command_suggestions_overlay_rect(area, lines.len() as u16, frame.area())
     else {
         return;
     };
+    let height = usize::from(rect.height);
+    if lines.len() > height {
+        let header = lines.remove(0);
+        let show_header = height > 1;
+        lines = fit_command_suggestion_lines_to_height(lines, height - usize::from(show_header));
+        if show_header {
+            lines.insert(0, header);
+        }
+    }
     lines = lines
         .into_iter()
         .map(|line| truncate_line_with_ellipsis(line, area.width as usize))
         .collect();
-    lines.truncate(rect.height as usize);
     frame.render_widget(ratatui::widgets::Clear, rect);
     frame.render_widget(Paragraph::new(lines), rect);
 }
@@ -520,10 +528,10 @@ fn command_suggestion_lines(
         let enter_action = if is_complete_command {
             "Enter run"
         } else {
-            "Enter fill"
+            "Enter complete"
         };
         let navigation_hint = if suggestions.len() > 1 {
-            "↑↓ move · Tab complete"
+            "↑↓ select · Tab complete"
         } else {
             "Tab complete"
         };
@@ -536,7 +544,7 @@ fn command_suggestion_lines(
             String::new()
         };
         lines.push(Line::from(Span::styled(
-            format!("  {} · {}{}", enter_action, navigation_hint, position_hint),
+            format!("  {enter_action} · {navigation_hint} · Esc close{position_hint}"),
             Style::default().fg(BrandTheme::dim()),
         )));
     }
@@ -648,29 +656,23 @@ pub(super) fn send_mode_reserved_width(app: &dyn TuiState) -> usize {
     }
 }
 
-pub(super) fn input_prompt(app: &dyn TuiState) -> (String, Color) {
+pub(super) fn input_prompt(app: &dyn TuiState) -> (&'static str, Color) {
     let mode = composer_mode(app.input(), app.is_remote_mode());
     if mode.is_shell() {
-        ("$ ".to_string(), BrandTheme::success())
-    } else if app.is_processing() {
-        // The prompt glyph must keep its identity while a turn runs: swapping
-        // it for the ellipsis made the composer read as a status line instead
-        // of an editor. Busy stays visible from the accent prompt color, the
-        // queue hint line, and the task ribbon on the frame border.
-        ("> ".to_string(), BrandTheme::accent())
+        ("$ ", BrandTheme::success())
     } else {
         // An active skill deliberately does NOT get a mode prefix. Echoing the
         // skill name inside the composer ("> bugbounty") pushed the typed text
         // right and read like leftover slash-command text stuck in the input.
         // The active skill is already reported by the system message, the
         // header, and `clear_skill`, so the composer stays uncluttered.
-        ("> ".to_string(), BrandTheme::accent())
+        ("> ", BrandTheme::accent())
     }
 }
 
 pub(crate) fn input_prompt_len(app: &dyn TuiState, _next_prompt: usize) -> usize {
     let (prompt_char, _) = input_prompt(app);
-    unicode_width::UnicodeWidthStr::width(prompt_char.as_str())
+    unicode_width::UnicodeWidthStr::width(prompt_char)
 }
 
 pub(crate) fn next_input_prompt_number(app: &dyn TuiState) -> usize {
@@ -818,8 +820,8 @@ pub(super) fn draw_pending_feedback(frame: &mut Frame, app: &dyn TuiState, area:
     let paragraph = if app.centered_mode() {
         Paragraph::new(
             lines
-                .iter()
-                .map(|line| line.clone().alignment(Alignment::Center))
+                .into_iter()
+                .map(|line| line.alignment(Alignment::Center))
                 .collect::<Vec<_>>(),
         )
     } else {
@@ -1970,6 +1972,75 @@ mod tests {
     use super::*;
     use ratatui::style::Modifier;
 
+    /// Isolates CPU work behind the headless key-to-paint benchmark. Kept out
+    /// of normal test runs: timings are observations, not correctness budgets.
+    #[test]
+    #[ignore = "explicit composer phase measurement"]
+    fn input_latency_phase_benchmark() {
+        use std::hint::black_box;
+        use std::time::Instant;
+
+        fn median_ms(mut run: impl FnMut()) -> f64 {
+            let mut samples = Vec::new();
+            for _ in 0..12 {
+                let started = Instant::now();
+                run();
+                samples.push(started.elapsed().as_secs_f64() * 1000.0);
+            }
+            samples.sort_by(f64::total_cmp);
+            samples[samples.len() / 2]
+        }
+
+        for draft_bytes in [128, 64 * 1024, 512 * 1024] {
+            let input = "A draft line to edit with unicode support. ".repeat(draft_bytes / 42 + 1);
+            let segments = wrap_input_segments(&input, 116);
+            let geometry_cold = median_ms(|| {
+                black_box(compute_input_segments(&input, 116));
+            });
+            let geometry_repeat = median_ms(|| {
+                black_box(wrap_input_segments(&input, 116));
+            });
+            let styled_rows = median_ms(|| {
+                black_box(wrap_input_text_with_segments(
+                    &input,
+                    input.len(),
+                    &segments,
+                    116,
+                    "",
+                    "> ",
+                    user_color(),
+                    2,
+                ));
+            });
+            let copy_snapshot = median_ms(|| {
+                black_box(input_copy_snapshot_parts(&input, &segments));
+            });
+            let cursor_index = median_ms(|| {
+                black_box(
+                    crate::alphacode_tui::tui::core::byte_offset_to_grapheme_index(
+                        &input,
+                        input.len(),
+                    ),
+                );
+            });
+            let backspace_boundary = median_ms(|| {
+                black_box(crate::alphacode_tui::tui::core::prev_grapheme_boundary(
+                    &input,
+                    input.len(),
+                ));
+            });
+            eprintln!(
+                "TUI_INPUT_CPU_PHASES {}",
+                serde_json::json!({
+                    "draft_bytes": input.len(), "rows": segments.len(), "width": 116,
+                    "median_ms": { "geometry_cold": geometry_cold, "geometry_repeat": geometry_repeat,
+                        "styled_rows": styled_rows, "copy_snapshot": copy_snapshot,
+                        "cursor_index": cursor_index, "backspace_boundary": backspace_boundary },
+                })
+            );
+        }
+    }
+
     #[test]
     fn input_layout_cache_reuses_geometry_and_invalidates_content_and_width() {
         let input = "a\u{754c}e\u{301}\u{1f469}\u{200d}\u{1f4bb}\nsecond line";
@@ -1982,11 +2053,182 @@ mod tests {
         assert_eq!(*resized, compute_input_segments(input, 12));
         let edited = wrap_input_segments("different draft", 12);
         assert_eq!(*edited, compute_input_segments("different draft", 12));
+        let long_draft = "x".repeat(512 * 1024);
+        let large = wrap_input_segments(&long_draft, 80);
+        let large_again = wrap_input_segments(&long_draft, 80);
+        assert!(std::rc::Rc::ptr_eq(&large, &large_again));
         let oversized = "x".repeat(INPUT_LAYOUT_CACHE_BYTES + 1);
         let large = wrap_input_segments(&oversized, 80);
         let large_again = wrap_input_segments(&oversized, 80);
         assert!(!std::rc::Rc::ptr_eq(&large, &large_again));
         INPUT_LAYOUT_CACHE.with(|slot| assert!(slot.borrow().is_none()));
+    }
+
+    /// Independent full-layout oracle, retaining the old grapheme-vector
+    /// wrapping rules so an incremental cache cannot validate itself.
+    fn reference_input_segments(input: &str, width: usize) -> Vec<WrappedInputSegment> {
+        let graphemes: Vec<_> = input.grapheme_indices(true).collect();
+        let mut rows = Vec::new();
+        let mut pos = 0;
+        let mut raw_line = 0;
+        let mut col = 0;
+        loop {
+            let newline = graphemes[pos..]
+                .iter()
+                .position(|(_, text)| text.ends_with('\n'));
+            let line_end = newline.map_or(graphemes.len(), |relative| pos + relative);
+            let mut row_start = pos;
+            loop {
+                let mut row_end = row_start;
+                let mut display_width = 0;
+                while row_end < line_end {
+                    let next_width = unicode_width::UnicodeWidthStr::width(graphemes[row_end].1);
+                    if display_width + next_width > width {
+                        break;
+                    }
+                    display_width += next_width;
+                    row_end += 1;
+                }
+                if row_end == row_start && row_start < line_end {
+                    row_end += 1;
+                    display_width = unicode_width::UnicodeWidthStr::width(graphemes[row_start].1);
+                }
+                let start_byte = graphemes
+                    .get(row_start)
+                    .map_or(input.len(), |(start, _)| *start);
+                let end_byte = graphemes
+                    .get(row_end)
+                    .map_or(input.len(), |(start, _)| *start);
+                rows.push(WrappedInputSegment {
+                    text: graphemes[row_start..row_end]
+                        .iter()
+                        .map(|(_, text)| *text)
+                        .collect(),
+                    start_byte,
+                    end_byte,
+                    start_grapheme: row_start,
+                    end_grapheme: row_end,
+                    display_width,
+                    raw_line,
+                    start_col: col,
+                });
+                col += display_width;
+                if row_end == line_end {
+                    break;
+                }
+                row_start = row_end;
+            }
+            if newline.is_none() {
+                break;
+            }
+            pos = line_end + 1;
+            raw_line += 1;
+            col = 0;
+        }
+        rows
+    }
+
+    #[test]
+    fn input_incremental_layout_matches_full_oracle_for_unicode_and_edits() {
+        let inputs = [
+            "",
+            "abcdef\n\nxyz\n",
+            "a\r\nb\rc\n",
+            "a\u{754c}e\u{301}z",
+            "ab👩🏽‍💻👨‍👩‍👧‍👦xy",
+            "🇦🇧🇨🇩🇪🇫🇬",
+            "\u{600}ab\u{600}cd",
+            "\u{915}\u{94d}\u{915}\u{94d}\u{937}abcdef",
+            "\u{301}\u{308}abcdef\u{200d}ghi",
+        ];
+        for input in inputs {
+            for width in [0, 1, 2, 4, 8, 80] {
+                let original = compute_input_segments(input, width);
+                assert_eq!(
+                    original,
+                    reference_input_segments(input, width),
+                    "{input:?} width {width}"
+                );
+                for start in input
+                    .char_indices()
+                    .map(|(start, _)| start)
+                    .chain(std::iter::once(input.len()))
+                {
+                    for insertion in ["x", "\u{301}", "\u{200d}💻", "🇭", "\r\n", "\n", ""] {
+                        let mut edited = input.to_owned();
+                        edited.insert_str(start, insertion);
+                        let incremental = update_input_segments(input, &edited, width, &original);
+                        assert_eq!(
+                            incremental,
+                            reference_input_segments(&edited, width),
+                            "insert {insertion:?} at {start} in {input:?}, width {width}"
+                        );
+                        assert_eq!(
+                            update_input_segments(&edited, input, width, &incremental),
+                            original,
+                            "delete inserted text"
+                        );
+                    }
+                    if start < input.len() {
+                        let end = start + input[start..].chars().next().unwrap().len_utf8();
+                        let mut edited = input.to_owned();
+                        edited.replace_range(start..end, "");
+                        assert_eq!(
+                            update_input_segments(input, &edited, width, &original),
+                            reference_input_segments(&edited, width),
+                            "delete at {start} in {input:?}, width {width}"
+                        );
+                    }
+                }
+                for cursor in 0..=input.len() + 1 {
+                    let index = crate::alphacode_tui::tui::core::byte_offset_to_grapheme_index(
+                        input, cursor,
+                    );
+                    let row = original
+                        .iter()
+                        .position(|row| index >= row.start_grapheme && index <= row.end_grapheme)
+                        .unwrap();
+                    let expected = (row, cursor_col_for_segment(&original[row], index));
+                    assert_eq!(
+                        input_cursor_location(input, cursor, &original),
+                        expected,
+                        "cursor {cursor} in {input:?}, width {width}"
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn input_copy_geometry_matches_full_grapheme_boundary_mapping() {
+        let input = "a\u{754c}e\u{301}👩🏽‍💻\r\n🇦🇧🇨x\n\nlast\n";
+        for width in [0, 1, 2, 4, 80] {
+            let segments = compute_input_segments(input, width);
+            let (wrapped, raw, maps) = input_copy_snapshot_parts(input, &segments);
+            assert_eq!(
+                raw,
+                input.split('\n').map(str::to_owned).collect::<Vec<_>>()
+            );
+            let mut boundaries = vec![(0, 0)];
+            let (mut line, mut col) = (0, 0);
+            for cluster in input.graphemes(true) {
+                if cluster.ends_with('\n') {
+                    line += 1;
+                    col = 0;
+                } else {
+                    col += unicode_width::UnicodeWidthStr::width(cluster);
+                }
+                boundaries.push((line, col));
+            }
+            for ((segment, text), map) in segments.iter().zip(wrapped).zip(maps) {
+                let (line, col) = boundaries[segment.start_grapheme];
+                assert_eq!(text, segment.text);
+                assert_eq!(
+                    (map.raw_line, map.start_col, map.end_col),
+                    (line, col, col + segment.display_width)
+                );
+            }
+        }
     }
 
     #[test]
@@ -3963,7 +4205,6 @@ pub(super) fn draw_input(
     // Match `wrapped_input_line_count` and mouse hit-testing: all three use the
     // same display-column width for the mode prefix, with no prompt counter in
     // the edit line.
-    let num_str = String::new();
     let prompt_len = input_prompt_len(app, next_prompt);
     let reserved_width = send_mode_reserved_width(app);
     let line_width = (area.width as usize).saturating_sub(prompt_len + reserved_width);
@@ -3976,16 +4217,8 @@ pub(super) fn draw_input(
     // and for the copy-selection snapshot — so they are computed once here.
     let wrapped_segments = wrap_input_segments(input_text, line_width);
 
-    let (all_lines, cursor_line, cursor_col) = wrap_input_text_with_segments(
-        input_text,
-        cursor_pos,
-        &wrapped_segments,
-        line_width,
-        &num_str,
-        &prompt_char,
-        caret_color,
-        prompt_len,
-    );
+    let (cursor_line, cursor_col) =
+        input_cursor_location(input_text, cursor_pos, &wrapped_segments);
 
     let mut lines: Vec<Line> = Vec::new();
     let mut hint_shown = false;
@@ -4038,7 +4271,7 @@ pub(super) fn draw_input(
     }
 
     let suggestions_offset = lines.len();
-    let total_input_lines = all_lines.len();
+    let total_input_lines = wrapped_segments.len();
     let visible_height = area.height as usize;
 
     // Scroll offset for the input. We do NOT render an internal
@@ -4055,11 +4288,24 @@ pub(super) fn draw_input(
         cursor_line,
     );
 
-    for line in all_lines.into_iter().skip(scroll_offset) {
-        lines.push(line);
-        if lines.len() >= visible_height {
-            break;
-        }
+    let empty_placeholder = input_text
+        .is_empty()
+        .then(|| empty_composer_placeholder(line_width, prompt_char));
+    for (idx, segment) in wrapped_segments
+        .iter()
+        .enumerate()
+        .skip(scroll_offset)
+        .take(visible_height.saturating_sub(suggestions_offset))
+    {
+        lines.push(input_segment_line(
+            segment,
+            idx,
+            "",
+            prompt_char,
+            caret_color,
+            prompt_len,
+            empty_placeholder.as_deref(),
+        ));
     }
     let visible_input_rows = lines.len().saturating_sub(suggestions_offset);
 
@@ -4152,20 +4398,22 @@ pub(super) fn draw_input(
                 && range.end.pane == crate::alphacode_tui::tui::CopySelectionPane::Input
         });
         if !mouse_selection_active {
-            let start_grapheme = crate::alphacode_tui::tui::core::byte_offset_to_grapheme_index(
-                input_text, sel_start,
-            );
-            let end_grapheme =
-                crate::alphacode_tui::tui::core::byte_offset_to_grapheme_index(input_text, sel_end);
             for rel in 0..visible_input_rows {
                 let abs = scroll_offset + rel;
                 let Some(segment) = wrapped_segments.get(abs) else {
                     continue;
                 };
-                // The selection covers `[start_grapheme, end_grapheme)` in draft
-                // grapheme space. Clip it to this row's span.
-                let row_start = start_grapheme.max(segment.start_grapheme);
-                let row_end = end_grapheme.min(segment.end_grapheme);
+                // Resolve only the visible row using its cached byte offset.
+                let row_start = segment.start_grapheme
+                    + crate::alphacode_tui::tui::core::byte_offset_to_grapheme_index(
+                        &segment.text,
+                        sel_start.saturating_sub(segment.start_byte),
+                    );
+                let row_end = segment.start_grapheme
+                    + crate::alphacode_tui::tui::core::byte_offset_to_grapheme_index(
+                        &segment.text,
+                        sel_end.saturating_sub(segment.start_byte),
+                    );
                 if row_start >= row_end {
                     continue;
                 }
@@ -4297,9 +4545,35 @@ pub(super) fn draw_input(
 #[derive(Clone, Debug, PartialEq, Eq)]
 struct WrappedInputSegment {
     text: String,
+    start_byte: usize,
+    end_byte: usize,
     start_grapheme: usize,
     end_grapheme: usize,
     display_width: usize,
+    raw_line: usize,
+    start_col: usize,
+}
+
+impl WrappedInputSegment {
+    fn new(start_byte: usize, start_grapheme: usize, raw_line: usize, start_col: usize) -> Self {
+        Self {
+            text: String::new(),
+            start_byte,
+            end_byte: start_byte,
+            start_grapheme,
+            end_grapheme: start_grapheme,
+            display_width: 0,
+            raw_line,
+            start_col,
+        }
+    }
+
+    fn finish(mut self, input: &str, end_byte: usize, end_grapheme: usize) -> Self {
+        self.text = input[self.start_byte..end_byte].to_owned();
+        self.end_byte = end_byte;
+        self.end_grapheme = end_grapheme;
+        self
+    }
 }
 
 /// Shared by cursor painting and click mapping; never assume the tail of a
@@ -4327,40 +4601,23 @@ fn input_copy_snapshot_parts(
 ) -> (Vec<String>, Vec<String>, Vec<super::WrappedLineMap>) {
     let raw_lines: Vec<String> = input.split('\n').map(str::to_owned).collect();
 
-    // (raw_line, display_col) at each grapheme boundary of the input.
-    let mut boundaries = Vec::with_capacity(input.graphemes(true).count() + 1);
-    let mut raw_line = 0usize;
-    let mut col = 0usize;
-    boundaries.push((raw_line, col));
-    for grapheme in input.graphemes(true) {
-        if grapheme.ends_with('\n') {
-            raw_line += 1;
-            col = 0;
-        } else {
-            col += unicode_width::UnicodeWidthStr::width(grapheme);
-        }
-        boundaries.push((raw_line, col));
-    }
-
     let mut wrapped_plain = Vec::with_capacity(segments.len());
     let mut line_map = Vec::with_capacity(segments.len());
     for segment in segments {
-        let (raw_line, start_col) = boundaries
-            .get(segment.start_grapheme)
-            .copied()
-            .unwrap_or((0, 0));
         line_map.push(super::WrappedLineMap {
-            raw_line,
-            start_col,
-            end_col: start_col + segment.display_width,
+            raw_line: segment.raw_line,
+            start_col: segment.start_col,
+            end_col: segment.start_col + segment.display_width,
         });
         wrapped_plain.push(segment.text.clone());
     }
     (wrapped_plain, raw_lines, line_map)
 }
 
-const INPUT_LAYOUT_CACHE_BYTES: usize = 256 * 1024;
-const INPUT_LAYOUT_CACHE_ROWS: usize = 4096;
+// Retain one bounded large draft. Falling out of this cache used to repeat
+// full grapheme layout during both height measurement and drawing each key.
+const INPUT_LAYOUT_CACHE_BYTES: usize = 4 * 1024 * 1024;
+const INPUT_LAYOUT_CACHE_ROWS: usize = 64 * 1024;
 
 struct InputLayoutCache {
     input: String,
@@ -4383,7 +4640,12 @@ fn wrap_input_segments(input: &str, line_width: usize) -> std::rc::Rc<Vec<Wrappe
         {
             return std::rc::Rc::clone(&cached.segments);
         }
-        let segments = std::rc::Rc::new(compute_input_segments(input, line_width));
+        let segments = std::rc::Rc::new(match slot.as_ref() {
+            Some(cached) if cached.width == line_width => {
+                update_input_segments(&cached.input, input, line_width, &cached.segments)
+            }
+            _ => compute_input_segments(input, line_width),
+        });
         *slot = if input.len() <= INPUT_LAYOUT_CACHE_BYTES
             && segments.len() <= INPUT_LAYOUT_CACHE_ROWS
         {
@@ -4400,73 +4662,134 @@ fn wrap_input_segments(input: &str, line_width: usize) -> std::rc::Rc<Vec<Wrappe
 }
 
 fn compute_input_segments(input: &str, line_width: usize) -> Vec<WrappedInputSegment> {
-    let graphemes: Vec<&str> = input.graphemes(true).collect();
-    if graphemes.is_empty() {
-        return vec![WrappedInputSegment {
-            text: String::new(),
-            start_grapheme: 0,
-            end_grapheme: 0,
-            display_width: 0,
-        }];
-    }
+    compute_input_segments_from(input, line_width, WrappedInputSegment::new(0, 0, 0, 0))
+}
 
+/// Continue at a known boundary while retaining the full string as Unicode
+/// context. Segmenting an isolated suffix would break regional-indicator
+/// parity and other clusters that depend on preceding code points.
+fn compute_input_segments_from(
+    input: &str,
+    line_width: usize,
+    mut row: WrappedInputSegment,
+) -> Vec<WrappedInputSegment> {
     let mut segments = Vec::new();
-    let mut pos = 0;
-    let mut grapheme_count = 0;
-
-    while pos <= graphemes.len() {
-        let newline_pos = graphemes[pos..]
-            .iter()
-            .position(|grapheme| grapheme.ends_with('\n'));
-        let segment_end = match newline_pos {
-            Some(rel_pos) => pos + rel_pos,
-            None => graphemes.len(),
-        };
-
-        let segment = &graphemes[pos..segment_end];
-        let mut seg_pos = 0;
-        loop {
-            let mut display_width = 0;
-            let mut end = seg_pos;
-            while end < segment.len() {
-                let cw = unicode_width::UnicodeWidthStr::width(segment[end]);
-                if display_width + cw > line_width {
-                    break;
-                }
-                display_width += cw;
-                end += 1;
-            }
-            if end == seg_pos && seg_pos < segment.len() {
-                end = seg_pos + 1;
-                display_width = unicode_width::UnicodeWidthStr::width(segment[seg_pos]);
-            }
-
-            let text = segment[seg_pos..end].concat();
-            let start_grapheme = grapheme_count;
-            let end_grapheme = grapheme_count + (end - seg_pos);
-            segments.push(WrappedInputSegment {
-                text,
-                start_grapheme,
-                end_grapheme,
-                display_width,
-            });
-            grapheme_count = end_grapheme;
-
-            if end >= segment.len() {
-                break;
-            }
-            seg_pos = end;
-        }
-
-        if newline_pos.is_some() {
+    let mut pos = row.start_byte;
+    let mut grapheme_count = row.start_grapheme;
+    let mut raw_line = row.raw_line;
+    let mut col = row.start_col;
+    let mut cursor = unicode_segmentation::GraphemeCursor::new(pos, input.len(), true);
+    while let Some(end) = cursor
+        .next_boundary(input, 0)
+        .expect("the complete draft supplies all grapheme context")
+    {
+        let grapheme = &input[pos..end];
+        if grapheme.ends_with('\n') {
+            segments.push(row.finish(input, pos, grapheme_count));
             grapheme_count += 1;
-            pos = segment_end + 1;
+            raw_line += 1;
+            col = 0;
+            row = WrappedInputSegment::new(end, grapheme_count, raw_line, col);
         } else {
-            break;
+            let width = unicode_width::UnicodeWidthStr::width(grapheme);
+            if row.start_grapheme < grapheme_count && row.display_width + width > line_width {
+                segments.push(row.finish(input, pos, grapheme_count));
+                row = WrappedInputSegment::new(pos, grapheme_count, raw_line, col);
+            }
+            row.display_width += width;
+            col += width;
+            grapheme_count += 1;
         }
+        pos = end;
     }
-
+    segments.push(row.finish(input, input.len(), grapheme_count));
     segments
+}
+
+fn common_input_prefix_bytes(previous: &str, input: &str) -> usize {
+    // Slice equality uses fast byte comparisons even in debug builds. Avoid
+    // walking every byte through an iterator for a one-character tail edit.
+    let shared_len = previous.len().min(input.len());
+    let mut pos = 0;
+    while pos + 64 <= shared_len
+        && previous.as_bytes()[pos..pos + 64] == input.as_bytes()[pos..pos + 64]
+    {
+        pos += 64;
+    }
+    pos + previous.as_bytes()[pos..shared_len]
+        .iter()
+        .zip(&input.as_bytes()[pos..shared_len])
+        .position(|(before, after)| before != after)
+        .unwrap_or(shared_len - pos)
+}
+
+fn update_input_segments(
+    previous: &str,
+    input: &str,
+    line_width: usize,
+    segments: &[WrappedInputSegment],
+) -> Vec<WrappedInputSegment> {
+    let prefix = common_input_prefix_bytes(previous, input);
+    // Reflow at least the row before the changed one: an inserted combining
+    // mark, ZWJ or newline can join the previous cluster or change its wrapping.
+    let mut restart = segments
+        .partition_point(|row| row.end_byte < prefix)
+        .min(segments.len().saturating_sub(1))
+        .saturating_sub(1);
+    while restart > 0
+        && !unicode_segmentation::GraphemeCursor::new(
+            segments[restart].start_byte,
+            input.len(),
+            true,
+        )
+        .is_boundary(input, 0)
+        .expect("the complete draft supplies all grapheme context")
+    {
+        restart -= 1;
+    }
+    let base = &segments[restart];
+    let mut updated = Vec::with_capacity(segments.len());
+    updated.extend_from_slice(&segments[..restart]);
+    updated.extend(compute_input_segments_from(
+        input,
+        line_width,
+        WrappedInputSegment::new(
+            base.start_byte,
+            base.start_grapheme,
+            base.raw_line,
+            base.start_col,
+        ),
+    ));
+    updated
+}
+
+fn input_cursor_location(
+    input: &str,
+    cursor_pos: usize,
+    segments: &[WrappedInputSegment],
+) -> (usize, usize) {
+    let cursor_pos = cursor_pos.min(input.len());
+    let mut line = segments
+        .partition_point(|row| row.end_byte < cursor_pos)
+        .min(segments.len().saturating_sub(1));
+    // A stale byte cursor inside CRLF still belongs to the preceding row.
+    if line > 0 && cursor_pos < segments[line].start_byte {
+        line -= 1;
+    }
+    let segment = &segments[line];
+    let local = crate::alphacode_tui::tui::core::byte_offset_to_grapheme_index(
+        &segment.text,
+        cursor_pos.saturating_sub(segment.start_byte),
+    );
+    // Shared soft-wrap boundaries belong to the preceding row. A stale byte
+    // offset inside this row's first cluster also rounds down to that boundary.
+    if line > 0 && local == 0 && segments[line - 1].end_grapheme == segment.start_grapheme {
+        return (line - 1, segments[line - 1].display_width);
+    }
+    (
+        line,
+        cursor_col_for_segment(segment, segment.start_grapheme + local),
+    )
 }
 
 fn cursor_col_for_segment(segment: &WrappedInputSegment, cursor_grapheme_pos: usize) -> usize {
@@ -4550,16 +4873,7 @@ pub(crate) fn input_cursor_pos_from_screen(
     let visible_height = area.height as usize;
     let total_input_lines = wrapped_lines.len().max(1);
 
-    let cursor_grapheme = crate::alphacode_tui::tui::core::byte_offset_to_grapheme_index(
-        input_text,
-        app.cursor_pos(),
-    );
-    let cursor_line = wrapped_lines
-        .iter()
-        .position(|segment| {
-            cursor_grapheme >= segment.start_grapheme && cursor_grapheme <= segment.end_grapheme
-        })
-        .unwrap_or(total_input_lines.saturating_sub(1));
+    let (cursor_line, _) = input_cursor_location(input_text, app.cursor_pos(), &wrapped_lines);
     let scroll_offset =
         input_scroll_offset(total_input_lines, hint_lines, visible_height, cursor_line);
 
@@ -4585,9 +4899,13 @@ pub(crate) fn input_cursor_pos_from_screen(
     let target_col = column.saturating_sub(text_start_x as u16) as usize;
     let grapheme_offset =
         grapheme_offset_for_clicked_column(&segment.text, target_col, segment.display_width);
-    let grapheme_index = segment.start_grapheme + grapheme_offset;
-
-    Some(crate::alphacode_tui::tui::core::grapheme_index_to_byte_offset(input_text, grapheme_index))
+    Some(
+        segment.start_byte
+            + crate::alphacode_tui::tui::core::grapheme_index_to_byte_offset(
+                &segment.text,
+                grapheme_offset,
+            ),
+    )
 }
 
 #[cfg(test)]
@@ -4613,12 +4931,8 @@ pub(crate) fn wrap_input_text(
     )
 }
 
-/// Lay out the composer rows from an already-computed segment list.
-///
-/// The segment list is the expensive part of laying out the composer (it
-/// splits the input into graphemes and measures every one), and the frame
-/// needs it twice: once for the rendered rows and once for the copy-selection
-/// snapshot. Computing it once and passing it in halves that work.
+/// Full-row test adapter. Production styling is bounded to visible rows.
+#[cfg(test)]
 #[expect(
     clippy::too_many_arguments,
     reason = "Composer layout carries explicit render state to avoid hidden coupling"
@@ -4633,17 +4947,7 @@ fn wrap_input_text_with_segments(
     caret_color: Color,
     prompt_len: usize,
 ) -> (Vec<Line<'static>>, usize, usize) {
-    // Every span built below is owned (`to_string()` / `segment.text.clone()`),
-    // so the returned Lines never borrow `prompt_char`. Dropping the lifetime
-    // lets callers build the prefix at runtime — it now embeds the active
-    // skill name — without borrowing a local binding that dies before the
-    // frame is drawn.
-    let cursor_grapheme_pos =
-        crate::alphacode_tui::tui::core::byte_offset_to_grapheme_index(input, cursor_pos);
-    let mut lines: Vec<Line> = Vec::new();
-    let mut cursor_line = 0;
-    let mut cursor_col = 0;
-    let mut found_cursor = false;
+    let (cursor_line, cursor_col) = input_cursor_location(input, cursor_pos, wrapped_segments);
 
     // Keep the composer actionable without adding vertical chrome. On wide
     // terminals the placeholder teaches the slash palette and F1 help; on
@@ -4655,52 +4959,59 @@ fn wrap_input_text_with_segments(
         None
     };
 
-    for (idx, segment) in wrapped_segments.iter().enumerate() {
-        if !found_cursor
-            && cursor_grapheme_pos >= segment.start_grapheme
-            && cursor_grapheme_pos <= segment.end_grapheme
-        {
-            cursor_line = idx;
-            cursor_col = cursor_col_for_segment(segment, cursor_grapheme_pos);
-            found_cursor = true;
-        }
-
-        if idx == 0 {
-            let num_color = rainbow_prompt_color(0);
-            let mut first_row_spans: Vec<Span<'static>> = vec![
-                Span::styled(num_str.to_string(), Style::default().fg(num_color)),
-                Span::styled(prompt_char.to_string(), Style::default().fg(caret_color)),
-            ];
-            if let Some(placeholder) = &empty_placeholder {
-                // Select by terminal display width so wide glyphs can never
-                // push the hint into the send-mode indicator column.
-                first_row_spans.push(Span::styled(
-                    placeholder.clone(),
-                    Style::default()
-                        .fg(dim_color())
-                        .add_modifier(Modifier::ITALIC),
-                ));
-            } else {
-                first_row_spans.push(Span::raw(segment.text.clone()));
-            }
-            lines.push(Line::from(first_row_spans));
-        } else {
-            lines.push(Line::from(vec![
-                Span::raw(" ".repeat(prompt_len)),
-                Span::raw(segment.text.clone()),
-            ]));
-        }
-    }
-
-    if !found_cursor {
-        cursor_line = wrapped_segments.len().saturating_sub(1);
-        cursor_col = wrapped_segments
-            .last()
-            .map(|segment| segment.display_width)
-            .unwrap_or(0);
-    }
+    let lines = wrapped_segments
+        .iter()
+        .enumerate()
+        .map(|(idx, segment)| {
+            input_segment_line(
+                segment,
+                idx,
+                num_str,
+                prompt_char,
+                caret_color,
+                prompt_len,
+                empty_placeholder.as_deref(),
+            )
+        })
+        .collect();
 
     (lines, cursor_line, cursor_col)
+}
+
+fn input_segment_line(
+    segment: &WrappedInputSegment,
+    idx: usize,
+    num_str: &str,
+    prompt_char: &str,
+    caret_color: Color,
+    prompt_len: usize,
+    empty_placeholder: Option<&str>,
+) -> Line<'static> {
+    if idx == 0 {
+        let mut spans = vec![
+            Span::styled(
+                num_str.to_string(),
+                Style::default().fg(rainbow_prompt_color(0)),
+            ),
+            Span::styled(prompt_char.to_string(), Style::default().fg(caret_color)),
+        ];
+        if let Some(placeholder) = empty_placeholder {
+            spans.push(Span::styled(
+                placeholder.to_owned(),
+                Style::default()
+                    .fg(dim_color())
+                    .add_modifier(Modifier::ITALIC),
+            ));
+        } else {
+            spans.push(Span::raw(segment.text.clone()));
+        }
+        Line::from(spans)
+    } else {
+        Line::from(vec![
+            Span::raw(" ".repeat(prompt_len)),
+            Span::raw(segment.text.clone()),
+        ])
+    }
 }
 
 /// Return the most useful empty-composer prompt that fits the available text

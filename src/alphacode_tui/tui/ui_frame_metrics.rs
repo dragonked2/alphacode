@@ -228,20 +228,19 @@ pub(crate) fn frame_input_attribution_snapshot() -> FrameInputAttribution {
 }
 
 pub(crate) fn record_draw_call_attribution(sample: DrawCallAttribution) {
-    {
-        let mut history = draw_call_history()
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
-        history.push_back(sample.clone());
-        while history.len() > DRAW_CALL_HISTORY_MAX_SAMPLES {
-            history.pop_front();
-        }
+    if sample.total_ms >= SLOW_DRAW_ATTRIBUTION_THRESHOLD_MS {
+        // Keep every sample in memory, but avoid formatting and writing a
+        // warning for every frame while the terminal is already struggling.
+        crate::logging::warn_throttled_with("tui_draw_call", || {
+            format!("TUI_DRAW_CALL {}", serde_json::json!(sample))
+        });
     }
-    if sample.total_ms < SLOW_DRAW_ATTRIBUTION_THRESHOLD_MS {
-        return;
-    }
-    if let Ok(payload) = serde_json::to_string(&sample) {
-        crate::logging::warn(&format!("TUI_DRAW_CALL {}", payload));
+    let mut history = draw_call_history()
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    history.push_back(sample);
+    while history.len() > DRAW_CALL_HISTORY_MAX_SAMPLES {
+        history.pop_front();
     }
 }
 

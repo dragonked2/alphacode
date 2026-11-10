@@ -537,6 +537,13 @@ pub fn warn(message: &str) {
     }
 }
 
+/// Emit a recurring warning at most once per throttle interval.
+pub fn warn_throttled_with(key: &'static str, message: impl FnOnce() -> String) {
+    if should_emit_throttled(key) {
+        warn(&message());
+    }
+}
+
 /// Truncate a value for inclusion in a log line, appending an ellipsis marker
 /// with the original length when cut. Char-boundary safe. Use this for
 /// payload-bearing values (event debug dumps, request bodies) so a routine

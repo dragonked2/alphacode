@@ -875,10 +875,19 @@ fn parse_dropped_paths_with(
     text: &str,
     mut is_file: impl FnMut(&std::path::Path) -> bool,
 ) -> Option<Vec<PathBuf>> {
+    // A paste may contain megabytes of source or logs. Keep path parsing
+    // and filesystem probes bounded before treating it as ordinary text.
+    const MAX_DROP_BYTES: usize = 128 * 1024;
+    if text.len() > MAX_DROP_BYTES {
+        return None;
+    }
     let trimmed = text.trim();
-    let literal_path = PathBuf::from(trimmed);
-    if is_file(&literal_path) {
-        return Some(vec![literal_path]);
+    if trimmed.is_empty() {
+        return None;
+    }
+    let literal_path = std::path::Path::new(trimmed);
+    if is_file(literal_path) {
+        return Some(vec![literal_path.to_path_buf()]);
     }
 
     let mut tokens = Vec::new();
@@ -947,12 +956,6 @@ fn parse_dropped_paths_with(
 pub(super) const PASTE_PLACEHOLDER: &str = "[pasted content]";
 
 pub(super) fn handle_text_paste(app: &mut App, text: String) {
-    crate::logging::info(&format!(
-        "Text paste: {} chars, {} lines",
-        text.len(),
-        text.lines().count()
-    ));
-
     if text.is_empty() {
         return;
     }
@@ -1329,6 +1332,8 @@ pub(super) fn handle_text_input(app: &mut App, text: &str) -> bool {
     if text.is_empty() {
         return false;
     }
+
+    paste_guard::note_text_edit();
 
     let onboarding_suggestions = matches!(
         app.onboarding_phase(),

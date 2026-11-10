@@ -2505,12 +2505,12 @@ pub(in crate::alphacode_tui::tui::app) fn handle_server_event(
                 ));
                 app.set_status_notice("Model switch failed");
             } else {
-                app.update_context_limit_for_model(&model);
                 app.remote_provider_model = Some(model.clone());
                 app.clear_remote_startup_phase();
                 if let Some(ref pname) = provider_name {
                     app.remote_provider_name = Some(pname.clone());
                 }
+                app.update_context_limit_for_model(&model);
                 app.invalidate_model_picker_cache();
                 let pretty_model =
                     crate::alphacode_provider_metadata::internal_model_display_name(&model)

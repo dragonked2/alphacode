@@ -4,10 +4,40 @@ All notable changes to Alphacode are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project
 adheres to [Semantic Versioning](https://semver.org/).
 
+## [1.0.100] - 2026-11-10
+
+### Fixed
+
+- Typing after a paste allows immediate submission. A stray Enter immediately
+  after a paste still leaves the draft intact.
+- Large text pastes skip file drop parsing. Remote key releases skip input
+  bookkeeping and no longer overwrite the key-to-paint timing sample.
+- Local turns apply already queued printable keys before repainting. Ordinary
+  drafts skip suggestion-cache copies, and history completion reuses prompt
+  positions in long transcripts.
+- Model selection saves the local model and effort together. Remote catalog
+  updates avoid a forced disk flush for the rebuildable cache.
+- History search keeps the selected result visible in short terminals and
+  shares keyboard hint wording with the command palette.
+
 ## [1.0.99] - 2026-11-08
 
 ### Fixed
 
+- **Input lag after 1.0.92.** Two independent causes, both fixed. (1) The 1.0.95
+  release pinned the `eitsupi/crossterm` `feature/windows-vt-input` fork via
+  `[patch.crates-io]`; that fork replaces the whole crossterm event reader, so
+  once bracketed paste is enabled (alphacode enables it for the session) Windows
+  delivered *every* key record through a new VT/ANSI parser instead of the
+  long-stable Win32 `ReadConsoleInput` path, making all typing and every picker
+  feel laggy. The override was removed in 1.0.96; the TUI links stock crossterm
+  0.29 again, and Ctrl+V/Alt+V paste keeps working through alphacode's own
+  asynchronous `arboard` clipboard read. (2) With keyboard enhancement enabled
+  crossterm reports `Press` *and* `Release` for each key, and both run loops
+  returned "needs redraw" for the release too. A release cannot change a cell, so
+  this queued a second full frame (preparation + diff + flush) for every
+  keystroke and made the next key wait behind a frame that painted nothing.
+  Releases now skip the redraw entirely; a regression test pins the rule.
 - Windows startup no longer hangs with `Timed out waiting for server to become
   ready ... after 120000ms`. The 1.0.98 named-pipe hardening built its DACL from
   `D:P(A;;GA;;;SY)(A;;GA;;;BA)(A;;GA;;;CO)`: `CO` (CREATOR OWNER) only applies to

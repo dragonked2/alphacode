@@ -820,6 +820,7 @@ impl App {
             prompt_history_search: None,
             transcript_search: None,
             persisted_prompt_history: None,
+            prompt_completion_index: RefCell::new(None),
         };
 
         for notice in app.provider.drain_startup_notices() {
@@ -1293,6 +1294,7 @@ impl App {
             prompt_history_search: None,
             transcript_search: None,
             persisted_prompt_history: None,
+            prompt_completion_index: RefCell::new(None),
         };
 
         for notice in app.provider.drain_startup_notices() {

@@ -3,7 +3,7 @@
 //! This module contains the common display state, input handling,
 //! and helper methods used by both local and remote TUI modes.
 use super::DisplayMessage;
-use unicode_segmentation::UnicodeSegmentation;
+use unicode_segmentation::{GraphemeCursor, UnicodeSegmentation};
 
 /// Find the smallest UTF-8 character boundary greater than or equal to `pos`
 /// (clamped to the string length).
@@ -25,22 +25,25 @@ pub fn ceil_char_boundary(s: &str, pos: usize) -> usize {
 /// `pos`. This keeps editing operations atomic for combining marks, emoji
 /// modifiers, and joined emoji sequences.
 pub fn prev_grapheme_boundary(s: &str, pos: usize) -> usize {
-    let pos = pos.min(s.len());
-    s.grapheme_indices(true)
-        .take_while(|(start, _)| *start < pos)
-        .map(|(start, _)| start)
-        .last()
+    // Seek from the caret, not from byte zero. Providing the complete string
+    // preserves context for regional indicators, Indic and ZWJ sequences.
+    let pos = ceil_char_boundary(s, pos);
+    GraphemeCursor::new(pos, s.len(), true)
+        .prev_boundary(s, 0)
+        .expect("the complete string supplies all grapheme context")
         .unwrap_or(0)
 }
 
 /// Find the byte offset of the next extended grapheme boundary after `pos`.
 /// Returns `s.len()` if already at or past the end.
 pub fn next_grapheme_boundary(s: &str, pos: usize) -> usize {
-    let pos = pos.min(s.len());
-    s.grapheme_indices(true)
-        .find_map(|(start, grapheme)| {
-            (start >= pos || start + grapheme.len() > pos).then_some(start + grapheme.len())
-        })
+    let mut pos = pos.min(s.len());
+    while !s.is_char_boundary(pos) {
+        pos -= 1;
+    }
+    GraphemeCursor::new(pos, s.len(), true)
+        .next_boundary(s, 0)
+        .expect("the complete string supplies all grapheme context")
         .unwrap_or(s.len())
 }
 
@@ -199,6 +202,47 @@ mod tests {
         for (index, offset) in offsets.iter().copied().enumerate() {
             assert_eq!(byte_offset_to_grapheme_index(text, offset), index);
             assert_eq!(grapheme_index_to_byte_offset(text, index), offset);
+        }
+    }
+
+    #[test]
+    fn seeking_grapheme_boundaries_matches_forward_segmentation_at_every_byte() {
+        for text in [
+            "",
+            "plain ascii\r\nnext",
+            "a\u{754c}e\u{301}z",
+            "\u{600}a\u{600}b",
+            "a👨‍👩‍👧‍👦👩🏽‍💻z",
+            "🇦🇧🇨🇩🇪🇫🇬",
+            "\u{915}\u{94d}\u{915}\u{94d}\u{937}",
+            "\u{1100}\u{1161}\u{11a8}x",
+            "a\u{301}\u{308}\u{200d}z",
+        ] {
+            for pos in 0..=text.len() + 2 {
+                let clamped = pos.min(text.len());
+                let expected_prev = text
+                    .grapheme_indices(true)
+                    .take_while(|(start, _)| *start < clamped)
+                    .map(|(start, _)| start)
+                    .last()
+                    .unwrap_or(0);
+                let expected_next = text
+                    .grapheme_indices(true)
+                    .find_map(|(start, cluster)| {
+                        (start + cluster.len() > clamped).then_some(start + cluster.len())
+                    })
+                    .unwrap_or(text.len());
+                assert_eq!(
+                    prev_grapheme_boundary(text, pos),
+                    expected_prev,
+                    "previous {text:?} at {pos}"
+                );
+                assert_eq!(
+                    next_grapheme_boundary(text, pos),
+                    expected_next,
+                    "next {text:?} at {pos}"
+                );
+            }
         }
     }
 

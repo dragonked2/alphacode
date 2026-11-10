@@ -153,6 +153,12 @@ pub(super) fn consume_paste_trailing_enter() -> bool {
     })
 }
 
+/// A subsequent text edit means the next Enter is an intentional action, not
+/// the trailing Enter associated with the completed paste.
+pub(super) fn note_text_edit() {
+    LAST_PASTE.with(|cell| cell.set(None));
+}
+
 /// Test hook: expire only the timestamp-based trailing window.  Keeping the
 /// in-flight flag untouched lets tests prove that a regular `Event::Paste`
 /// never leaves the guard active indefinitely.

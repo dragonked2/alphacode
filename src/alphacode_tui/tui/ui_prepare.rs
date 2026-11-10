@@ -1,6 +1,42 @@
 use super::*;
 use crate::alphacode_tui::tui::ui::{self, WrappedLineMap};
 
+#[cfg(test)]
+thread_local! {
+    static TEST_USE_PREPARATION_CACHES: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+/// Unit tests normally rebuild to isolate mutable fixtures. Explicit latency
+/// measurements must instead exercise the same caches as a running client.
+#[cfg(test)]
+pub(crate) fn with_preparation_caches_for_test<T>(run: impl FnOnce() -> T) -> T {
+    struct Reset(bool);
+    impl Drop for Reset {
+        fn drop(&mut self) {
+            TEST_USE_PREPARATION_CACHES.with(|enabled| enabled.set(self.0));
+        }
+    }
+    let _reset = Reset(TEST_USE_PREPARATION_CACHES.with(|enabled| enabled.replace(true)));
+    *body_cache()
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner()) = BodyCacheState::default();
+    *full_prep_cache()
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner()) = FullPrepCacheState::default();
+    run()
+}
+
+fn bypass_preparation_caches() -> bool {
+    #[cfg(test)]
+    {
+        !TEST_USE_PREPARATION_CACHES.with(std::cell::Cell::get)
+    }
+    #[cfg(not(test))]
+    {
+        false
+    }
+}
+
 /// Auxiliary render data for an assistant message that is otherwise recomputed
 /// by re-parsing markdown on every body rebuild. Building the body misses its
 /// cache whenever `display_messages_version` changes (e.g. an in-place edit to
@@ -75,7 +111,7 @@ fn assistant_aux_data(
         }
     };
 
-    if cfg!(test) {
+    if bypass_preparation_caches() {
         return std::sync::Arc::new(build());
     }
 
@@ -676,7 +712,7 @@ pub(super) fn prepare_messages_with(
     let restage_start = Instant::now();
     super::inline_image_ui::restage_requested_payloads(app);
     super::note_prep_restage(restage_start.elapsed());
-    if cfg!(test) {
+    if bypass_preparation_caches() {
         return Arc::new(prepare_messages_inner(app, width, height, include_header));
     }
 
@@ -1179,7 +1215,7 @@ fn prepare_header_cached(
         Arc::new(wrap_lines(all_header_lines, &[], &[], &[], width))
     };
 
-    if cfg!(test) {
+    if bypass_preparation_caches() {
         return build();
     }
 
@@ -1205,7 +1241,7 @@ fn prepare_header_cached(
 }
 
 fn prepare_body_cached(app: &dyn TuiState, width: u16) -> Arc<PreparedMessages> {
-    if cfg!(test) {
+    if bypass_preparation_caches() {
         return Arc::new(prepare_body(app, width, false));
     }
 

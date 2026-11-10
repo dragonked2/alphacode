@@ -82,6 +82,21 @@ pub fn clear_streaming_preview_diagram() {
     }
 }
 
+/// Count visible diagrams without cloning their render data.
+pub fn visible_diagram_count() -> usize {
+    let preview_hash = STREAMING_PREVIEW_DIAGRAM
+        .lock()
+        .ok()
+        .and_then(|preview| preview.as_ref().map(|diagram| diagram.hash));
+    let active = ACTIVE_DIAGRAMS.lock().ok().map_or(0, |diagrams| {
+        diagrams
+            .iter()
+            .filter(|diagram| Some(diagram.hash) != preview_hash)
+            .count()
+    });
+    active + usize::from(preview_hash.is_some())
+}
+
 /// Get active diagrams for info widget display
 pub fn get_active_diagrams() -> Vec<DiagramInfo> {
     let preview = STREAMING_PREVIEW_DIAGRAM

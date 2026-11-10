@@ -1,8 +1,31 @@
 use super::misc_ui::BilledUsageSnapshot;
 use super::*;
 use crate::alphacode_tui::message::ToolDefinition;
+use crate::alphacode_tui::tui::terminal_events::is_plain_text_key;
+use crossterm::event::KeyEvent;
 
 impl App {
+    fn handle_turn_key_burst(&mut self, key: KeyEvent, events: &mut EventStream) {
+        let _ = self.handle_key_press_event(key);
+        if !is_plain_text_key(key) {
+            return;
+        }
+        // The first key is handled immediately. Only coalesce keys the
+        // terminal already has ready, so there is no typing or paste timer.
+        for _ in 0..32 {
+            if self.cancel_requested || self.should_quit {
+                break;
+            }
+            let Some(key) = events.next_ready_text_key() else {
+                break;
+            };
+            self.update_copy_badge_key_event(key);
+            if key.kind != KeyEventKind::Release {
+                let _ = self.handle_key_press_event(key);
+            }
+        }
+    }
+
     pub(super) fn append_current_turn_system_reminder(
         &self,
         split: &mut crate::prompt::SplitSystemPrompt,
@@ -132,8 +155,7 @@ impl App {
                             Some(Ok(Event::Key(key))) => {
                                 self.update_copy_badge_key_event(key);
                                 if matches!(key.kind, KeyEventKind::Press | KeyEventKind::Repeat) {
-                                    let _scroll_only = super::input::is_scroll_only_key(self, key.code, key.modifiers);
-                                    let _ = self.handle_key_press_event(key);
+                                    self.handle_turn_key_burst(key, event_stream);
                                     if self.cancel_requested {
                                         self.cancel_requested = false;
                                         self.interleave_message = None;
@@ -313,8 +335,7 @@ impl App {
                             Some(Ok(Event::Key(key))) => {
                                 self.update_copy_badge_key_event(key);
                                 if matches!(key.kind, KeyEventKind::Press | KeyEventKind::Repeat) {
-                                    let _scroll_only = super::input::is_scroll_only_key(self, key.code, key.modifiers);
-                                    let _ = self.handle_key_press_event(key);
+                                    self.handle_turn_key_burst(key, event_stream);
                                     // Check for cancel request
                                     if self.cancel_requested {
                                         self.cancel_requested = false;
@@ -1342,8 +1363,7 @@ impl App {
                                 Some(Ok(Event::Key(key))) => {
                                     self.update_copy_badge_key_event(key);
                                     if matches!(key.kind, KeyEventKind::Press | KeyEventKind::Repeat) {
-                                        let _scroll_only = super::input::is_scroll_only_key(self, key.code, key.modifiers);
-                                        let _ = self.handle_key_press_event(key);
+                                        self.handle_turn_key_burst(key, event_stream);
                                         if self.cancel_requested {
                                             self.cancel_requested = false;
                                             self.interleave_message = None;

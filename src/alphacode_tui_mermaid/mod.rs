@@ -196,7 +196,7 @@ pub use active::active_diagram_test_lock;
 pub use active::{
     active_diagram_count, clear_active_diagrams, clear_streaming_preview_diagram,
     get_active_diagrams, register_active_diagram, restore_active_diagrams,
-    set_streaming_preview_diagram, snapshot_active_diagrams,
+    set_streaming_preview_diagram, snapshot_active_diagrams, visible_diagram_count,
 };
 
 #[path = "mermaid_model.rs"]

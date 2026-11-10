@@ -329,3 +329,103 @@ fn smoothness_benchmark_mid_transcript_growth_settles_quickly() {
     );
 }
 
+/// Reproducible key-handler -> offscreen-paint timings. Run explicitly with
+/// `cargo test --lib input_latency_benchmark -- --ignored --nocapture --test-threads=1`.
+/// This excludes the terminal emulator and does not impose flaky wall-clock
+/// assertions on ordinary unit-test runs.
+#[test]
+#[ignore = "explicit input latency measurement"]
+fn input_latency_benchmark() {
+    crate::alphacode_tui::tui::ui::prepare::with_preparation_caches_for_test(
+        input_latency_benchmark_cached,
+    );
+}
+
+fn input_latency_benchmark_cached() {
+    use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+    use ratatui::backend::TestBackend;
+    use std::time::Instant;
+
+    fn percentiles(mut samples: Vec<f64>) -> serde_json::Value {
+        samples.sort_by(f64::total_cmp);
+        let at = |fraction: f64| samples[((samples.len() - 1) as f64 * fraction).ceil() as usize];
+        serde_json::json!({
+            "p50": at(0.50), "p95": at(0.95), "p99": at(0.99),
+            "max": samples.last(),
+        })
+    }
+
+    let _render_lock = scroll_render_test_lock();
+    let rt = tokio::runtime::Runtime::new().expect("runtime");
+    let _guard = rt.enter();
+    let mut app = create_test_app();
+    app.session.short_name = Some("input-latency".to_string());
+    for (name, messages, draft_bytes, mention) in [
+        ("short", 20, 128, false),
+        ("long_transcript", 1000, 128, false),
+        ("large_draft", 20, 64 * 1024, false),
+        ("very_large_draft", 20, 512 * 1024, false),
+        ("path_mention", 20, 0, true),
+    ] {
+        app.display_messages.clear();
+        app.clear_input_undo_history();
+        for index in 0..messages {
+            app.display_messages.push(DisplayMessage::assistant(format!(
+                "Message {index}\n{}\n{}",
+                "A stable transcript line with enough text to exercise wrapping. ".repeat(8),
+                "Another stable transcript line. ".repeat(8),
+            )));
+        }
+        app.bump_display_messages_version();
+        let draft = if mention {
+            "@s".to_string()
+        } else {
+            "A draft line to edit with unicode support. ".repeat(draft_bytes / 42 + 1)
+        };
+        app.set_input_for_test(draft.clone());
+        let mut terminal = ratatui::Terminal::new(TestBackend::new(120, 40)).expect("terminal");
+        let cold = Instant::now();
+        terminal.draw(|frame| crate::alphacode_tui::tui::ui::draw(frame, &app)).expect("cold draw");
+        let cold_draw_ms = cold.elapsed().as_secs_f64() * 1000.0;
+        let mut handlers = Vec::new();
+        let mut draws = Vec::new();
+        let mut totals = Vec::new();
+        for iteration in 0..48 {
+            let started = Instant::now();
+            let code = if iteration % 2 == 0 { KeyCode::Char('x') } else { KeyCode::Backspace };
+            app.handle_key_event(KeyEvent::new(code, KeyModifiers::NONE));
+            let handled = started.elapsed();
+            let draw_started = Instant::now();
+            terminal.draw(|frame| crate::alphacode_tui::tui::ui::draw(frame, &app)).expect("draw");
+            let draw_elapsed = draw_started.elapsed();
+            let total = started.elapsed();
+            if iteration >= 8 {
+                handlers.push(handled.as_secs_f64() * 1000.0);
+                draws.push(draw_elapsed.as_secs_f64() * 1000.0);
+                totals.push(total.as_secs_f64() * 1000.0);
+            }
+        }
+        assert_eq!(app.cursor_pos, app.input().len(), "caret must stay at the tail");
+        assert_eq!(app.input(), draft, "insert/backspace must restore the original draft");
+        assert!(terminal.get_cursor_position().is_ok(), "frame must paint its cursor");
+        let phases = crate::alphacode_tui::tui::ui::debug_slow_frame_history(1);
+        let final_draft_bytes = app.input().len();
+        if mention {
+            // A tall completion overlay can cover the transcript's title. Check
+            // cache identity on a separate, unmeasured frame without the popup.
+            app.set_input_for_test("ordinary draft".to_string());
+            terminal.draw(|frame| crate::alphacode_tui::tui::ui::draw(frame, &app)).expect("validation draw");
+        }
+        let rendered = terminal.backend().buffer().content().iter().map(|cell| cell.symbol()).collect::<String>();
+        assert!(rendered.contains(&format!("Message {}", messages - 1)), "{name} must paint its own transcript tail");
+        eprintln!("TUI_INPUT_LATENCY {}", serde_json::json!({
+            "scenario": name, "messages": messages, "draft_bytes": final_draft_bytes,
+            "preparation_caches": true,
+            "width": 120, "height": 40, "samples": totals.len(),
+            "cold_draw_ms": cold_draw_ms,
+            "handler_ms": percentiles(handlers), "draw_ms": percentiles(draws),
+            "key_to_offscreen_paint_ms": percentiles(totals),
+        }));
+        eprintln!("TUI_INPUT_PHASES {}", phases);
+    }
+}

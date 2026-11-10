@@ -892,7 +892,12 @@ fn test_kitty_jitter_click_on_image_label_still_cycles_level() {
         content_area.y + label_line as u16,
     );
     let inject = |app: &mut App, kind: MouseEventKind| {
-        app.handle_mouse_event(crate::alphacode_tui::tui::mouse_event(kind, col, row, KeyModifiers::empty()));
+        app.handle_mouse_event(crate::alphacode_tui::tui::mouse_event(
+            kind,
+            col,
+            row,
+            KeyModifiers::empty(),
+        ));
     };
 
     // Down, same-cell Drag (kitty pixel jitter), Up: must count as a click.
@@ -1275,4 +1280,19 @@ fn test_click_on_inline_image_body_cycles_level() {
         ImageExpandLevel::Fit,
         "clicking blank space beside the image must not cycle it"
     );
+}
+
+/// Every key press forces a full redraw because the composer changed; the
+/// matching Release event must not. With keyboard enhancement enabled crossterm
+/// reports Press *and* Release for each key, so treating a release as
+/// "needs redraw" made every keystroke queue two full frames (prepare, diff,
+/// flush) and delayed the next key behind a frame that could not change a cell.
+#[test]
+fn test_key_release_never_requests_a_redraw() {
+    use crate::alphacode_tui::tui::app::local::key_event_needs_redraw;
+    use crossterm::event::KeyEventKind;
+
+    assert!(key_event_needs_redraw(KeyEventKind::Press));
+    assert!(key_event_needs_redraw(KeyEventKind::Repeat));
+    assert!(!key_event_needs_redraw(KeyEventKind::Release));
 }

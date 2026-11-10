@@ -3,8 +3,8 @@
 //! Ctrl+V/Alt+V are handled by the shared asynchronous clipboard action. Native
 //! bracketed paste arrives as one Event::Paste. Ordinary keys, including Enter,
 //! must never wait for another character or a paste-settling timer.
-use crossterm::event::{Event, EventStream};
-use futures::Stream;
+use crossterm::event::{Event, EventStream, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
+use futures::{FutureExt, Stream, StreamExt};
 use std::{
     io,
     pin::Pin,
@@ -15,6 +15,7 @@ pub(super) type TerminalEventStream = ImmediateEvents<EventStream>;
 
 pub(super) struct ImmediateEvents<S> {
     source: S,
+    buffered: Option<io::Result<Event>>,
 }
 
 impl TerminalEventStream {
@@ -31,22 +32,68 @@ impl Default for TerminalEventStream {
 
 impl<S> ImmediateEvents<S> {
     pub(super) fn from_source(source: S) -> Self {
-        Self { source }
+        Self {
+            source,
+            buffered: None,
+        }
+    }
+}
+
+pub(super) fn is_plain_text_key(key: KeyEvent) -> bool {
+    matches!(key.kind, KeyEventKind::Press | KeyEventKind::Repeat)
+        && matches!(key.code, KeyCode::Char(c) if !c.is_control())
+        && (key.modifiers - KeyModifiers::SHIFT).is_empty()
+}
+
+impl<S: Stream<Item = io::Result<Event>> + Unpin> ImmediateEvents<S> {
+    /// Read only an already-ready printable key or character release. Leave
+    /// other events in order for the caller's regular dispatch path.
+    pub(super) fn next_ready_text_key(&mut self) -> Option<KeyEvent> {
+        match self.next().now_or_never()?? {
+            Ok(Event::Key(key))
+                if is_plain_text_key(key)
+                    || (key.kind == KeyEventKind::Release
+                        && matches!(key.code, KeyCode::Char(_))) =>
+            {
+                Some(key)
+            }
+            other => {
+                self.buffered = Some(other);
+                None
+            }
+        }
     }
 }
 
 impl<S: Stream<Item = io::Result<Event>> + Unpin> Stream for ImmediateEvents<S> {
     type Item = io::Result<Event>;
     fn poll_next(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
-        Pin::new(&mut self.get_mut().source).poll_next(cx)
+        let stream = self.get_mut();
+        if let Some(event) = stream.buffered.take() {
+            return Poll::Ready(Some(event));
+        }
+        Pin::new(&mut stream.source).poll_next(cx)
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
-    use futures::StreamExt;
+
+    #[tokio::test]
+    async fn text_burst_leaves_submit_and_following_text_in_order() {
+        let text = KeyEvent::new(KeyCode::Char('x'), KeyModifiers::NONE);
+        let enter = Event::Key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+        let mut stream = ImmediateEvents::from_source(futures::stream::iter([
+            Ok(Event::Key(text)),
+            Ok(enter.clone()),
+            Ok(Event::Key(text)),
+        ]));
+        assert_eq!(stream.next_ready_text_key(), Some(text));
+        assert_eq!(stream.next_ready_text_key(), None);
+        assert_eq!(stream.next().await.unwrap().unwrap(), enter);
+        assert_eq!(stream.next_ready_text_key(), Some(text));
+    }
 
     #[tokio::test]
     async fn first_key_never_waits_or_reads_ahead_for_paste_detection() {
