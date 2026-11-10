@@ -55,7 +55,7 @@ description: Finding lifecycle management — Track security findings through st
 - **What:** An evidence-backed signal. You have proof something exists.
 - **Evidence:** HTTP requests, responses, screenshots, tool output.
 - **Action:** Verify exploitation. Build proof. Check for false positive.
-- **Example:** "IDOR confirmed — accessing /api/users/123 with attacker token returns victim's email."
+- **Example:** "A second owned account receives an email field; its privacy and ownership need controls before calling this IDOR."
 
 ### Verified
 - **What:** Promoted with proof semantics. The vulnerability is real and exploitable.
@@ -70,14 +70,14 @@ proven finding to raise its severity — see the impact-sufficiency rule in the
 ### Reportable
 - **What:** Ready for submission. Has evidence + replay/exemption.
 - **Evidence:** Complete PoC, reproduction steps, impact, severity, remediation.
-- **Action:** Submit to the program or hand to the client.
+- **Action:** Prepare the report for the user; submit only when explicitly authorized.
 - **Example:** Report written with severity, CVSS, and fix recommendation.
 
 ### Rejected
 - **What:** Ruled out. Investigation showed this is not a vulnerability.
 - **Evidence:** May have evidence showing it's a false positive.
 - **Action:** Document why it was rejected. Don't delete — it prevents re-investigation.
-- **Example:** "CORS reflects origin but Access-Control-Allow-Credentials is false → no impact."
+- **Example:** "The supposedly private fixture is documented and verified as public; the tested read does not violate that boundary."
 
 ### Stale
 - **What:** Was once trusted but no longer. Target changed, fix applied, or context changed.
@@ -187,16 +187,21 @@ VERIFIED → REPORTABLE:
 
 ```
 CANDIDATE → REJECTED:
-  - False positive confirmed
+  - False positive confirmed with a discriminating control
   - Intended behavior
   - No impact
-  - Cannot reproduce
+  - A discriminating control rules out the specific claim under tested conditions
 
 OBSERVED → REJECTED:
   - Evidence doesn't support the claim
-  - Target deployed fix
-  - Context changed
+  - A discriminating control shows the observed behavior does not support the claim
 ```
+
+Failure to reproduce, missing access, tool errors, ambiguous policy, or an
+unreliable oracle are inconclusive; record the blocker and retry condition.
+A verified target change makes older evidence stale rather than retroactively
+proving the historical observation false. Rejection applies only to the
+specific tested claim, not every possible impact or related route.
 
 ### Staling a Finding
 
@@ -237,19 +242,17 @@ to reflect a chain you did not execute.
 
 ## 6. FALSE POSITIVE RULES
 
-### Always Reject If:
+### Signals that need context, not automatic rejection:
 
 ```
-- Endpoint returns empty/null data (not real user data)
-- Behavior is documented as intended
-- No sensitive data is exposed
-- Impact cannot be demonstrated
-- Finding is "missing header" without exploitation chain
-- Finding is "version disclosure" without known CVE
-- Finding is "self-XSS" (only you can trigger it)
-- Finding is "clickjacking on non-sensitive page"
-- Finding is "CORS reflects origin" without credentials
-- Finding is "GraphQL introspection works" without data access
+- Empty data, public behavior, missing headers, version disclosure and
+  introspection alone do not establish impact; check the actual invariant.
+- A missing credential or a failed test may prevent verification; it does not
+  prove no impact exists. Record the limitation and avoid unsupported claims.
+- Origin reflection without credentials does not prove credentialed browser
+  data exposure; assess the actual data, browser behavior and trust boundary.
+- Documented behavior and program exclusions affect eligibility, but distinguish
+  those from the technical question of whether an unintended boundary failed.
 ```
 
 ### Always Verify If:

@@ -149,12 +149,18 @@ impl SkillRouter {
         }
 
         let has_api_endpoints = scope.discovered_endpoints.iter().any(|e| {
-            let p = e.path.to_lowercase();
-            p.contains("/api")
-                || p.contains("/graphql")
-                || p.contains("/rest")
-                || p.contains("/v1/")
-                || p.contains("/v2/")
+            e.path
+                .split(['?', '#'])
+                .next()
+                .unwrap_or_default()
+                .split('/')
+                .any(|segment| {
+                    let segment = segment.to_ascii_lowercase();
+                    matches!(segment.as_str(), "api" | "graphql" | "rest")
+                        || segment.strip_prefix('v').is_some_and(|version| {
+                            !version.is_empty() && version.bytes().all(|b| b.is_ascii_digit())
+                        })
+                })
         });
         if has_api_endpoints && !selected.contains(&"api-discovery".to_string()) {
             selected.push("api-discovery".to_string());
@@ -228,7 +234,11 @@ impl SkillRouter {
             skills.push("websocket".to_string());
             skills.push("websocket-hijacking".to_string());
         }
-        if lower.contains("rest") || lower.contains("api") {
+        if has_token("rest")
+            || has_token("api")
+            || lower.contains("restful")
+            || lower.contains("fastapi")
+        {
             skills.push("api-security".to_string());
             skills.push("api-abuse".to_string());
             skills.push("rate-limit-bypass".to_string());
@@ -307,7 +317,11 @@ impl SkillRouter {
             skills.push("java-security".to_string());
             skills.push("java-deserialization".to_string());
         }
-        if lower.contains("dotnet") || lower.contains("csharp") || lower.contains("asp") {
+        if lower.contains("dotnet")
+            || lower.contains("csharp")
+            || has_token("asp")
+            || lower.contains("aspnet")
+        {
             skills.push("dotnet-security".to_string());
         }
         if lower.contains("golang") || lower.contains("go-") {
@@ -330,7 +344,11 @@ impl SkillRouter {
             skills.push("saml-analysis".to_string());
             skills.push("saml-injection".to_string());
         }
-        if lower.contains("ldap") || lower.contains("ad") || lower.contains("active-directory") {
+        if lower.contains("ldap")
+            || has_token("ad")
+            || lower.contains("active directory")
+            || lower.contains("active-directory")
+        {
             skills.push("ldap-security".to_string());
             skills.push("ldap-injection".to_string());
         }
@@ -700,6 +718,62 @@ mod tests {
     fn skills_for_technology_covers_graphql() {
         let skills = SkillRouter::skills_for_technology("graphql");
         assert!(skills.contains(&"graphql".to_string()));
+    }
+
+    #[test]
+    fn technology_routes_match_words_instead_of_unrelated_substrings() {
+        for tech in [
+            "Cloudflare",
+            "Headless Chrome",
+            "Elasticsearch",
+            "Raspberry Pi",
+        ] {
+            let skills = SkillRouter::skills_for_technology(tech);
+            assert!(!skills.contains(&"ldap-security".to_string()), "{tech}");
+            assert!(!skills.contains(&"api-security".to_string()), "{tech}");
+            assert!(!skills.contains(&"dotnet-security".to_string()), "{tech}");
+        }
+        for (tech, expected) in [
+            ("Active Directory", "ldap-security"),
+            ("AD", "ldap-security"),
+            ("FastAPI", "api-security"),
+            ("ASP.NET", "dotnet-security"),
+        ] {
+            assert!(
+                SkillRouter::skills_for_technology(tech).contains(&expected.to_string()),
+                "{tech}"
+            );
+        }
+    }
+
+    #[test]
+    fn api_detection_uses_path_segments() {
+        for (path, expected) in [
+            ("/v3", true),
+            ("/api/users", true),
+            ("/graphql?x=1", true),
+            ("/apiculture", false),
+            ("/restaurant", false),
+            ("/v3beta", false),
+        ] {
+            let mut scope = LiveScope::new(
+                super::super::scope::EngagementMode::BugBounty,
+                "target".into(),
+            );
+            scope
+                .discovered_endpoints
+                .push(super::super::scope::DiscoveredEndpoint {
+                    path: path.into(),
+                    ..Default::default()
+                });
+            assert_eq!(
+                SkillRouter::route(&scope, None)
+                    .skills
+                    .contains(&"api-discovery".to_string()),
+                expected,
+                "{path}"
+            );
+        }
     }
 
     #[test]
