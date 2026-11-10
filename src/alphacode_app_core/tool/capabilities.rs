@@ -68,7 +68,32 @@ pub(crate) fn matches_query(name: &str, description: &str, query: &str) -> bool 
         _ => "",
     };
     let haystack = format!("{name} {description} {} {hints}", family(name)).to_lowercase();
-    query.split_whitespace().all(|word| haystack.contains(word))
+    // Natural requests such as "use my browser" should find the capability,
+    // while a query made entirely of filler must not match the whole catalog.
+    let terms: Vec<_> = query
+        .split_whitespace()
+        .map(|word| word.trim_matches(|c: char| !c.is_alphanumeric() && c != '_' && c != '-'))
+        .filter(|word| {
+            !word.is_empty()
+                && !matches!(
+                    *word,
+                    "a" | "an"
+                        | "the"
+                        | "my"
+                        | "me"
+                        | "use"
+                        | "to"
+                        | "for"
+                        | "with"
+                        | "please"
+                        | "can"
+                        | "you"
+                        | "i"
+                        | "want"
+                )
+        })
+        .collect();
+    !terms.is_empty() && terms.iter().all(|word| haystack.contains(word))
 }
 
 pub(crate) fn eligible_names(
@@ -162,6 +187,10 @@ mod tests {
         assert!(matches_query("subfinder", "", "recon"));
         assert!(!matches_query("read", "Read a file", "binary analysis"));
         assert!(!matches_query("read", "Read a file", "   "));
+        assert!(matches_query("browser", "", "use my browser!"));
+        assert!(matches_query("browser", "", "please use the browser"));
+        assert!(!matches_query("dnsx", "", "use my browser"));
+        assert!(!matches_query("browser", "", "please use my"));
     }
 
     #[test]
