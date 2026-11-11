@@ -360,6 +360,9 @@ pub trait TuiState {
     fn streaming_cache_tokens(&self) -> (Option<u64>, Option<u64>);
     /// Output tokens per second during streaming (for status bar)
     fn output_tps(&self) -> Option<f32>;
+    fn output_tps_is_estimated(&self) -> bool {
+        false
+    }
     fn streaming_tool_calls(&self) -> Vec<ToolCall>;
     fn elapsed(&self) -> Option<Duration>;
     /// Time since the current connection phase (authenticating/connecting/

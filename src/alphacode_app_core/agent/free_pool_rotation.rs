@@ -134,6 +134,8 @@ pub(crate) enum RotationTrigger {
     Transient,
     /// The model responded but produced nothing usable.
     EmptyResponse,
+    /// Opaque HTTP 400 from the Alphax Free gateway.
+    RejectedRequest,
     /// The model served the request but stopped it with a guardrail/refusal
     /// stop (e.g. Anthropic `stop_reason: "refusal"`).
     ///
@@ -157,7 +159,7 @@ impl RotationTrigger {
         match self {
             Self::RateLimited => RATE_LIMIT_QUARANTINE,
             Self::Transient => TRANSIENT_QUARANTINE,
-            Self::EmptyResponse => EMPTY_RESPONSE_QUARANTINE,
+            Self::EmptyResponse | Self::RejectedRequest => EMPTY_RESPONSE_QUARANTINE,
             Self::Refusal => REFUSAL_QUARANTINE,
             Self::Unroutable => UNROUTABLE_QUARANTINE,
         }
@@ -428,6 +430,7 @@ impl RotationNotice {
             RotationTrigger::RateLimited => "rate limited",
             RotationTrigger::Transient => "temporarily unavailable",
             RotationTrigger::EmptyResponse => "returned no output",
+            RotationTrigger::RejectedRequest => "recovering from a rejected request",
             // A refusal is the model's content policy, not an outage. Phrase it
             // as a hold so "switching to another free model" is the fix.
             RotationTrigger::Refusal => "on hold after a refusal",

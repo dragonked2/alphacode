@@ -16,7 +16,7 @@ fn test_build_turn_footer_combines_compact_duration_with_streaming_stats() {
         footer.starts_with("5m 16s · "),
         "unexpected footer: {footer}"
     );
-    assert!(footer.contains(" tps"), "unexpected footer: {footer}");
+    assert!(footer.contains("avg 2.0 tok/s"), "unexpected footer: {footer}");
     assert!(
         footer.ends_with("↑210k ↓440"),
         "unexpected footer: {footer}"

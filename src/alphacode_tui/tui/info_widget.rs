@@ -666,6 +666,7 @@ pub struct InfoWidgetData {
     pub usage_info: Option<UsageInfo>,
     /// Streaming output tokens per second (approximate)
     pub tokens_per_second: Option<f32>,
+    pub tokens_per_second_estimated: bool,
     /// Active provider name (openrouter/openai/anthropic/...)
     pub provider_name: Option<String>,
     /// Authentication method used to access the model

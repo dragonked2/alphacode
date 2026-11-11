@@ -4034,8 +4034,12 @@ impl App {
             output_tokens
         };
         if self.streaming.streaming_tps_collect_output {
-            self.streaming.streaming_total_output_tokens += delta;
+            self.streaming.streaming_total_output_tokens = self
+                .streaming
+                .streaming_total_output_tokens
+                .saturating_add(delta);
             if delta > 0 {
+                self.streaming.streaming_tps_pending_bytes = 0;
                 self.snapshot_streaming_tps();
             }
         }
@@ -4308,12 +4312,7 @@ impl App {
         self.kv_cache.current_api_usage_recorded = false;
         self.upstream_provider = None;
         self.status_detail = None;
-        self.streaming.streaming_tps_start = None;
-        self.streaming.streaming_tps_elapsed = Duration::ZERO;
-        self.streaming.streaming_tps_collect_output = false;
-        self.streaming.streaming_total_output_tokens = 0;
-        self.streaming.streaming_tps_observed_output_tokens = 0;
-        self.streaming.streaming_tps_observed_elapsed = Duration::ZERO;
+        self.reset_streaming_tps();
         self.processing_started = Some(Instant::now());
         self.visible_turn_started = Some(Instant::now());
         self.pending_turn = true;
@@ -4376,12 +4375,7 @@ impl App {
             self.kv_cache.current_api_usage_recorded = false;
             self.upstream_provider = None;
             self.status_detail = None;
-            self.streaming.streaming_tps_start = None;
-            self.streaming.streaming_tps_elapsed = Duration::ZERO;
-            self.streaming.streaming_tps_collect_output = false;
-            self.streaming.streaming_total_output_tokens = 0;
-            self.streaming.streaming_tps_observed_output_tokens = 0;
-            self.streaming.streaming_tps_observed_elapsed = Duration::ZERO;
+            self.reset_streaming_tps();
             self.processing_started = Some(Instant::now());
             if has_combined {
                 if preserve_visible_turn {

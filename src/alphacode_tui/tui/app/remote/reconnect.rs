@@ -26,6 +26,7 @@ pub(in crate::alphacode_tui::tui::app) struct RemoteRunState {
     pub server_reload_in_progress: bool,
     pub reload_recovery_attempts: u32,
     pub reload_recovery_next_attempt: Option<Instant>,
+    pub reload_recovery_in_flight: Option<tokio::task::JoinHandle<anyhow::Result<()>>>,
     pub last_reload_pid: Option<u32>,
 }
 
@@ -111,7 +112,11 @@ pub(in crate::alphacode_tui::tui::app) fn should_allow_reconnect_takeover(
         .unwrap_or(false)
 }
 
-pub(super) fn reconnect_status_message(app: &App, state: &RemoteRunState, detail: &str) -> String {
+pub(in crate::alphacode_tui::tui::app) fn reconnect_status_message(
+    app: &App,
+    state: &RemoteRunState,
+    detail: &str,
+) -> String {
     let elapsed = state
         .disconnect_start
         .map(|start| start.elapsed())
@@ -351,6 +356,36 @@ async fn recover_reloading_server(
     state: &mut RemoteRunState,
     detail: &str,
 ) -> Result<bool> {
+    if let Some(task) = state.reload_recovery_in_flight.as_ref() {
+        if !task.is_finished() {
+            return Ok(false);
+        }
+        let result = state
+            .reload_recovery_in_flight
+            .take()
+            .expect("checked above")
+            .await;
+        match result {
+            Ok(Ok(())) => {
+                state.initial_server_start = true;
+                state.reload_recovery_next_attempt =
+                    Instant::now().checked_add(Duration::from_secs(1));
+                state.last_disconnect_reason =
+                    Some("replacement server started; reconnecting".to_string());
+                return Ok(true);
+            }
+            Ok(Err(error)) => {
+                state.last_disconnect_reason =
+                    Some(format!("recovery failed while starting server: {error}"));
+                crate::logging::error(&format!("Failed to start replacement server: {error}"));
+            }
+            Err(error) => {
+                state.last_disconnect_reason =
+                    Some(format!("server recovery task failed: {error}"));
+                crate::logging::error(&format!("Server recovery task failed: {error}"));
+            }
+        }
+    }
     if crate::server_spawn::is_running().await {
         return Ok(false);
     }
@@ -385,30 +420,12 @@ async fn recover_reloading_server(
         detail
     ));
 
-    match crate::server_spawn::spawn_default_server().await {
-        Ok(()) => {
-            state.initial_server_start = true;
-            // Keep a short guard after a successful spawn. The child can be
-            // registered before its listener is ready; immediately spawning a
-            // second replacement during that window risks split-brain daemons.
-            state.reload_recovery_next_attempt = Instant::now().checked_add(Duration::from_secs(1));
-            state.last_disconnect_reason =
-                Some("replacement server started; reconnecting".to_string());
-            crate::logging::info("Replacement shared server started after stalled reload");
-            Ok(true)
-        }
-        Err(error) => {
-            state.last_disconnect_reason = Some(format!(
-                "reload recovery failed while starting server: {}",
-                error
-            ));
-            crate::logging::error(&format!(
-                "Failed to start replacement server after reload failure: {}",
-                error
-            ));
-            Ok(false)
-        }
-    }
+    // Starting a server can take two minutes on Windows. Keep the console
+    // reader and redraw loop responsive while the spawn is in flight.
+    state.reload_recovery_in_flight = Some(tokio::spawn(async {
+        crate::server_spawn::spawn_default_server().await
+    }));
+    Ok(true)
 }
 
 pub(in crate::alphacode_tui::tui::app) async fn connect_with_retry(
@@ -474,6 +491,7 @@ pub(in crate::alphacode_tui::tui::app) async fn connect_with_retry(
             state.last_disconnect_reason = None;
             state.reload_recovery_attempts = 0;
             state.reload_recovery_next_attempt = None;
+            drop(state.reload_recovery_in_flight.take());
             state.last_reload_pid = None;
             Ok(ConnectOutcome::Connected(remote))
         }
@@ -629,6 +647,22 @@ pub(in crate::alphacode_tui::tui::app) async fn connect_with_retry(
                 }
             }
 
+            // A daemon can disappear without a reload marker (for example,
+            // when the terminal that launched it closes). Recover it for
+            // ordinary reconnects too, subject to the same retry backoff.
+            if state.reconnect_attempts >= 2
+                && !reload_handoff_active(state)
+                && recover_reloading_server(
+                    app,
+                    terminal,
+                    state,
+                    "server unavailable; starting a replacement server",
+                )
+                .await?
+            {
+                return Ok(ConnectOutcome::Retry);
+            }
+
             // Fail-safe: after 10 silent retries the server is almost
             // certainly gone (crash during reload, killed daemon). Stop the
             // tight reconnect loop and surface a clear resume hint instead of
@@ -637,8 +671,10 @@ pub(in crate::alphacode_tui::tui::app) async fn connect_with_retry(
             const MAX_RELOAD_RECOVERY_ATTEMPTS: u32 = 8;
             let reload_recovery_exhausted =
                 state.reload_recovery_attempts >= MAX_RELOAD_RECOVERY_ATTEMPTS;
-            if (state.reconnect_attempts >= MAX_SILENT_RECONNECTS && !reload_handoff_active(state))
-                || reload_recovery_exhausted
+            if (state.reconnect_attempts >= MAX_SILENT_RECONNECTS
+                && !reload_handoff_active(state)
+                && state.reload_recovery_in_flight.is_none())
+                || (reload_recovery_exhausted && state.reload_recovery_in_flight.is_none())
             {
                 let detail = state
                     .last_disconnect_reason

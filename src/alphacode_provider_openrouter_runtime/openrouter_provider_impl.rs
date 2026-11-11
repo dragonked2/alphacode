@@ -467,6 +467,15 @@ impl Provider for OpenRouterProvider {
         // id here, while leaving built-in routing prefixes (claude:, openai:, ...)
         // untouched so cross-provider switches from a saved session still work.
         let trimmed = self.strip_session_profile_prefix(trimmed);
+        let replacement = (trimmed == "alpha")
+            .then(|| {
+                Self::lmstudio_replacement_for_legacy_default(
+                    self.profile_id.as_deref(),
+                    &self.api_base,
+                )
+            })
+            .flatten();
+        let trimmed = replacement.as_deref().unwrap_or(trimmed);
 
         let (model_id, provider) = if self.supports_provider_features {
             let (model_id, provider) = parse_model_spec(trimmed);
@@ -619,6 +628,12 @@ impl Provider for OpenRouterProvider {
 
         let should_merge_static_models = self.should_merge_static_models_with_live_catalog();
         let merge_static_models = |mut models: Vec<String>| {
+            // A live LM Studio catalog is authoritative for selectable IDs.
+            // Older sessions can still carry the generic profile's alpha
+            // default until a model is selected again.
+            if crate::provider_catalog::is_lmstudio_api_base(&self.api_base) {
+                return models;
+            }
             if !should_merge_static_models {
                 return with_current_model(models);
             }
@@ -984,9 +999,7 @@ impl OpenRouterProvider {
     /// Standard/direct OpenRouter and built-in profiles keep the existing
     /// env-var-driven `cache_path()` semantics.
     pub(crate) fn foreground_cache_namespace(&self) -> Option<String> {
-        self.is_user_named_profile()
-            .then(|| self.profile_id.clone())
-            .flatten()
+        self.profile_id.clone()
     }
 
     /// Alphax Free builds its picker list from the automatic route plus every
@@ -1015,10 +1028,19 @@ impl OpenRouterProvider {
     ) -> Option<crate::alphacode_provider_openrouter::DiskCache> {
         self.load_disk_cache_entry_for_this_profile()
             .filter(|entry| self.model_disk_cache_source_matches(entry))
+            .or_else(|| {
+                if !crate::provider_catalog::is_lmstudio_api_base(&self.api_base) {
+                    return None;
+                }
+                let profile = openai_compatible_profile_by_id(self.profile_id.as_deref()?)?;
+                let mut resolved = resolve_openai_compatible_profile(profile);
+                resolved.api_base = self.api_base.clone();
+                crate::provider_catalog::cached_catalog_for_resolved_compatible_profile(&resolved)
+            })
     }
 
     /// Load this provider's own model disk cache, ignoring the process-global
-    /// namespace env var for user-named profiles (#607).
+    /// namespace env var when the instance already has a profile.
     pub(crate) fn load_disk_cache_entry_for_this_profile(
         &self,
     ) -> Option<crate::alphacode_provider_openrouter::DiskCache> {

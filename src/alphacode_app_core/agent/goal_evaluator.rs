@@ -68,7 +68,7 @@ impl GoalEvaluator {
                 .success_criteria
                 .iter()
                 .enumerate()
-                .max_by_key(|(_, c)| c.tier)
+                .min_by_key(|(_, c)| c.tier)
                 .map(|(i, c)| (i, c.clone()));
 
             if let Some((idx, criterion)) = highest {
@@ -92,40 +92,31 @@ impl GoalEvaluator {
         tool_output: &str,
         threshold: f64,
     ) -> Option<TerminalEvidence> {
-        if contract.success_criteria.is_empty() {
+        let total = contract.success_criteria.len();
+        if total == 0 || !(0.0..=1.0).contains(&threshold) {
             return None;
         }
-
-        let satisfied = contract
+        let mut satisfied = 0;
+        let highest = contract
             .success_criteria
             .iter()
-            .filter(|c| Self::criterion_satisfied(c, tool_output))
-            .count();
-
-        let ratio = satisfied as f64 / contract.success_criteria.len() as f64;
-        if ratio >= threshold {
-            let highest = contract
-                .success_criteria
-                .iter()
-                .enumerate()
-                .max_by_key(|(_, c)| c.tier)
-                .map(|(i, c)| (i, c.clone()));
-
-            if let Some((idx, criterion)) = highest {
-                return Some(TerminalEvidence {
-                    criterion_index: idx,
-                    tier: criterion.tier,
-                    description: format!(
-                        "{}/{} criteria satisfied (threshold: {:.0}%)",
-                        satisfied,
-                        contract.success_criteria.len(),
-                        threshold * 100.0
-                    ),
-                    observed_at: chrono::Utc::now(),
-                });
-            }
+            .enumerate()
+            .filter(|(_, criterion)| Self::criterion_satisfied(criterion, tool_output))
+            .inspect(|_| satisfied += 1)
+            .min_by_key(|(_, criterion)| criterion.tier);
+        let (criterion_index, criterion) = highest?;
+        if (satisfied as f64 / total as f64) < threshold {
+            return None;
         }
-        None
+        Some(TerminalEvidence {
+            criterion_index,
+            tier: criterion.tier,
+            description: format!(
+                "{satisfied}/{total} criteria satisfied (threshold: {:.0}%)",
+                threshold * 100.0
+            ),
+            observed_at: chrono::Utc::now(),
+        })
     }
 
     /// Check if a single criterion is satisfied by tool output.
@@ -136,11 +127,11 @@ impl GoalEvaluator {
         match &criterion.check {
             CriterionCheck::ModelAsserted => false, // can't auto-verify
             CriterionCheck::RuntimeDetectable(predicate) => {
-                tool_output.contains(predicate.as_str())
+                !predicate.is_empty() && tool_output.contains(predicate.as_str())
             }
             CriterionCheck::ExternalArtifact { pattern, .. } => {
                 if let Some(pattern) = pattern {
-                    tool_output.contains(pattern.as_str())
+                    !pattern.is_empty() && tool_output.contains(pattern.as_str())
                 } else {
                     false // file existence needs filesystem check
                 }
@@ -200,6 +191,27 @@ mod tests {
             created_at: chrono::Utc::now(),
             terminal_evidence: None,
         }
+    }
+
+    #[test]
+    fn threshold_reports_evidence_from_a_satisfied_criterion() {
+        let mut contract = make_contract(vec![
+            (
+                "unverified",
+                CriterionCheck::RuntimeDetectable(String::new()),
+                EvidenceTier::Authoritative,
+            ),
+            (
+                "verified",
+                CriterionCheck::RuntimeDetectable("verified output".into()),
+                EvidenceTier::FirstParty,
+            ),
+        ]);
+        contract.stop_policy = StopPolicy::MostCriteriaSatisfied { threshold: 0.5 };
+        assert!(GoalEvaluator::evaluate(&contract, "bash", "unrelated output").is_none());
+        let evidence = GoalEvaluator::evaluate(&contract, "bash", "verified output").unwrap();
+        assert_eq!(evidence.criterion_index, 1);
+        assert_eq!(evidence.tier, EvidenceTier::FirstParty);
     }
 
     #[test]

@@ -2096,6 +2096,12 @@ impl OpenRouterProvider {
                 .to_string();
         }
 
+        if self.profile_id.as_deref() == Some(OPENAI_COMPAT_PROFILE.id)
+            && crate::provider_catalog::is_lmstudio_api_base(&self.api_base)
+        {
+            return "LM Studio".to_string();
+        }
+
         // Direct OpenAI-compatible profile (NVIDIA NIM, DeepSeek, Z.AI, ...).
         if let Some(profile_id) = self.profile_id.as_deref() {
             if let Some(profile) = openai_compatible_profile_by_id(profile_id) {
@@ -2151,15 +2157,13 @@ impl OpenRouterProvider {
             ));
         }
 
-        let provider_label = self
-            .profile_id
-            .as_deref()
-            .map(|profile_id| {
-                openai_compatible_profile_by_id(profile_id)
-                    .map(|profile| profile.display_name.to_string())
-                    .unwrap_or_else(|| profile_id.to_string())
-            })
-            .unwrap_or_else(|| "OpenAI-compatible".to_string());
+        let provider_label = if self.profile_id.is_some()
+            || crate::provider_catalog::is_lmstudio_api_base(&self.api_base)
+        {
+            self.runtime_display_name()
+        } else {
+            "OpenAI-compatible".to_string()
+        };
         let api_method = self
             .profile_id
             .as_deref()
@@ -2424,6 +2428,27 @@ impl OpenRouterProvider {
         api_base.to_ascii_lowercase().contains("mistral.ai")
     }
 
+    fn lmstudio_replacement_for_legacy_default(
+        profile_id: Option<&str>,
+        api_base: &str,
+    ) -> Option<String> {
+        let profile_id = profile_id?;
+        if !matches!(profile_id, "openai-compatible" | "lmstudio")
+            || !crate::provider_catalog::is_lmstudio_api_base(api_base)
+        {
+            return None;
+        }
+        let mut profile =
+            resolve_openai_compatible_profile(openai_compatible_profile_by_id(profile_id)?);
+        profile.api_base = api_base.to_owned();
+        let catalog =
+            crate::provider_catalog::cached_catalog_for_resolved_compatible_profile(&profile)?;
+        if catalog.models.iter().any(|model| model.id == "alpha") {
+            return None;
+        }
+        select_local_initial_model(&catalog.models, "lmstudio").map(str::to_owned)
+    }
+
     pub fn new() -> Result<Self> {
         let autodetected_profile = autodetected_openai_compatible_profile();
         let api_base = configured_api_base();
@@ -2475,8 +2500,14 @@ impl OpenRouterProvider {
             );
         }
 
+        let env_model = std::env::var("ALPHACODE_OPENROUTER_MODEL").ok();
+        let lmstudio_default = if env_model.as_deref().is_none_or(|model| model == "alpha") {
+            Self::lmstudio_replacement_for_legacy_default(profile_id.as_deref(), &api_base)
+        } else {
+            None
+        };
         let model = initial_model_for_runtime(
-            std::env::var("ALPHACODE_OPENROUTER_MODEL").ok(),
+            lmstudio_default.or(env_model),
             autodetected_profile
                 .as_ref()
                 .and_then(|profile| profile.default_model.clone()),
@@ -2768,7 +2799,10 @@ impl OpenRouterProvider {
             return self.supports_provider_features;
         };
 
-        source_api_base == self.api_base
+        crate::provider_catalog::compatible_catalog_endpoints_match(
+            &source_api_base,
+            &self.api_base,
+        )
     }
 
     fn begin_background_model_catalog_refresh(&self) -> bool {
@@ -3975,6 +4009,69 @@ mod llamacpp_compat_tests {
                 EndpointRefreshTracker::default(),
             )),
         }
+    }
+
+    #[test]
+    fn lmstudio_generic_runtime_keeps_endpoint_catalog_and_recovers_old_model() {
+        let _guard = crate::storage::lock_test_env();
+        let home = tempfile::tempdir().unwrap();
+        struct RestoreHome(Option<std::ffi::OsString>);
+        impl Drop for RestoreHome {
+            fn drop(&mut self) {
+                match self.0.take() {
+                    Some(value) => crate::alphacode_core::env::set_var("ALPHACODE_HOME", value),
+                    None => crate::alphacode_core::env::remove_var("ALPHACODE_HOME"),
+                }
+            }
+        }
+        let _home = RestoreHome(std::env::var_os("ALPHACODE_HOME"));
+        crate::alphacode_core::env::set_var("ALPHACODE_HOME", home.path());
+        let model = |id: &str| ModelInfo {
+            id: id.to_owned(),
+            name: id.to_owned(),
+            context_length: None,
+            pricing: Default::default(),
+            created: None,
+            supported_endpoint_types: Vec::new(),
+            endpoint_capabilities: Vec::new(),
+            input_modalities: Vec::new(),
+        };
+        save_disk_cache_with_source_for_namespace(
+            "openai-compatible",
+            &[model("qwen3.8-9b-heretic-uncensored")],
+            Some("http://localhost:1234/v1"),
+        );
+        save_disk_cache_with_source_for_namespace(
+            "lmstudio",
+            &[model("unrelated-model")],
+            Some("http://127.0.0.1:1235/v1"),
+        );
+        let provider = OpenRouterProvider {
+            api_base: "http://127.0.0.1:1234/v1".to_owned(),
+            profile_id: Some("openai-compatible".to_owned()),
+            supports_model_catalog: true,
+            ..local_no_auth_provider("alpha")
+        };
+        assert_eq!(provider.runtime_display_name(), "LM Studio");
+        let routes = Provider::model_routes(&provider);
+        assert_eq!(routes.len(), 1);
+        assert_eq!(routes[0].model, "qwen3.8-9b-heretic-uncensored");
+        assert_eq!(routes[0].provider, "LM Studio");
+        assert_eq!(routes[0].api_method, "openai-compatible:openai-compatible");
+        Provider::set_model(&provider, "alpha").unwrap();
+        assert_eq!(Provider::model(&provider), "qwen3.8-9b-heretic-uncensored");
+        let native = OpenRouterProvider {
+            profile_id: Some("lmstudio".to_owned()),
+            ..provider
+        };
+        assert_eq!(
+            native.foreground_cache_namespace().as_deref(),
+            Some("lmstudio")
+        );
+        assert_eq!(
+            Provider::model_routes(&native)[0].model,
+            "qwen3.8-9b-heretic-uncensored"
+        );
     }
 
     #[test]

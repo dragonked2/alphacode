@@ -96,6 +96,14 @@ Choose tools by their actual input, output and limits:
 | Does a known pattern merit investigation? | `nuclei` or a focused scanner | A lead requiring independent controlled validation |
 | What did we already learn? | `memory`, `session_search`, engagement artifacts | Prior context to verify against current scope and state |
 
+For a permitted read-only object comparison, first establish two distinct
+controlled cookie sessions in `httpflow`. Its `compare_actors` action accepts
+`url`, a same-origin `missing_url`, `actor_a` (test actor), `actor_b` (owner),
+and an optional owned `marker`. It gathers A/object, B/object and A/missing
+sequentially without following redirects. Verify identities, ownership and
+intended sharing: response differences alone are not a vulnerability. Use
+separate controlled requests for header-token authentication or state changes.
+
 Select the smallest useful set, pass only validated in-scope inputs, and keep
 request and concurrency limits shared across tools. Preserve raw output and
 provenance; distinguish partial results, errors and empty results. Prefer a

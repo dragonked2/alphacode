@@ -1508,7 +1508,7 @@ pub(super) fn draw_status(frame: &mut Frame, app: &dyn TuiState, area: Rect, pen
                 let mut spans = vec![
                     Span::styled(spinner, Style::default().fg(ai_color())),
                     Span::styled(
-                        format!(" Working/thinking… {}", format_elapsed(elapsed)),
+                        format!(" Sending… {}", format_elapsed(elapsed)),
                         Style::default().fg(dim_color()),
                     ),
                 ];
@@ -1549,14 +1549,26 @@ pub(super) fn draw_status(frame: &mut Frame, app: &dyn TuiState, area: Rect, pen
                 Line::from(spans)
             }
             ProcessingStatus::Thinking(_start) => {
-                let mut label = format!(" thinking… {}", format_elapsed(elapsed));
-                append_transport_context(&mut label, app);
-                let mut spans = vec![
-                    Span::styled(spinner, Style::default().fg(ai_color())),
-                    Span::styled(label, Style::default().fg(dim_color())),
+                let mut segments = vec![
+                    StatusSegment::new(
+                        2,
+                        format!("Thinking · {}", format_elapsed(elapsed)),
+                        muted_text_color(),
+                    )
+                    .short("Thinking"),
                 ];
-                push_queued_suffix(&mut spans, &queued_suffix);
-                Line::from(spans)
+                if let Some(tps) = app.output_tps() {
+                    segments.push(generation_rate_segment(tps, app.output_tps_is_estimated()));
+                }
+                for label in transport_context_labels(app) {
+                    segments.push(StatusSegment::new(6, label, dim_color()));
+                }
+                Line::from(streaming_status_spans(
+                    spinner,
+                    segments,
+                    queued_suffix_for_segment(&queued_suffix),
+                    area.width as usize,
+                ))
             }
             ProcessingStatus::Streaming => {
                 let time_str = format_elapsed(elapsed);
@@ -1576,17 +1588,21 @@ pub(super) fn draw_status(frame: &mut Frame, app: &dyn TuiState, area: Rect, pen
                         super::accent_color(),
                     ));
                 }
-                segments.push(StatusSegment::new(
-                    2,
-                    streaming_liveness_label(time_str, stale_secs, stream_message_ended),
-                    muted_text_color(),
-                ));
+                let liveness =
+                    streaming_liveness_label(time_str.clone(), stale_secs, stream_message_ended);
+                let label = if liveness == time_str {
+                    let state = if stream_message_ended {
+                        "Finishing"
+                    } else {
+                        "Generating"
+                    };
+                    format!("{state} · {time_str}")
+                } else {
+                    liveness
+                };
+                segments.push(StatusSegment::new(2, label, muted_text_color()).short(time_str));
                 if let Some(tps) = app.output_tps() {
-                    segments.push(StatusSegment::new(
-                        3,
-                        format!("{:.1} tok/s", tps),
-                        muted_text_color(),
-                    ));
+                    segments.push(generation_rate_segment(tps, app.output_tps_is_estimated()));
                 }
                 if let Some(used) = app.current_context_tokens().filter(|used| *used > 0) {
                     let ctx = format!("ctx={}", idle_context_fragment(app, used));
@@ -1939,6 +1955,12 @@ fn cache_miss_label(problem: crate::alphacode_tui::tui::KvCacheProblem) -> Strin
         "kv".to_string()
     };
     format!("{} cache miss", miss_str)
+}
+
+fn generation_rate_segment(tps: f32, estimated: bool) -> StatusSegment {
+    let marker = if estimated { "~" } else { "" };
+    StatusSegment::new(1, format!("avg {marker}{tps:.1} tok/s"), muted_text_color())
+        .short(format!("{marker}{tps:.1} t/s"))
 }
 
 /// Assemble the streaming status row: activity spinner, then as many

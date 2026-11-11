@@ -8,7 +8,7 @@ use crate::alphacode_tui::overnight::{
 use crate::alphacode_tui::provider::Provider;
 use chrono::Utc;
 use std::sync::Arc;
-use std::time::{Duration, Instant};
+use std::time::Instant;
 
 const OVERNIGHT_STALL_LIMIT: u8 = 3;
 const OVERNIGHT_ERROR_LIMIT: u8 = 2;
@@ -106,12 +106,7 @@ fn start_visible_overnight_turn(app: &mut App, content: String) {
     app.kv_cache.current_api_usage_recorded = false;
     app.upstream_provider = None;
     app.status_detail = None;
-    app.streaming.streaming_tps_start = None;
-    app.streaming.streaming_tps_elapsed = Duration::ZERO;
-    app.streaming.streaming_tps_collect_output = false;
-    app.streaming.streaming_total_output_tokens = 0;
-    app.streaming.streaming_tps_observed_output_tokens = 0;
-    app.streaming.streaming_tps_observed_elapsed = Duration::ZERO;
+    app.reset_streaming_tps();
     app.processing_started = Some(Instant::now());
     app.visible_turn_started = Some(Instant::now());
     app.pending_turn = true;

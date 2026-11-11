@@ -47,13 +47,12 @@ into unbounded password loops: use only credentials supported by challenge
 artifacts or hints, unless a finite search space is explicitly the challenge's
 intended task. Record its bound, scope, stop condition, and time budget first.
 
-When `challenge.md` exists, the agent tool dispatcher stops further recognized
-network-probing calls after twelve calls without a ledger change. This counts
-varied commands, not only identical retries. Local analysis and checkpoint
-writes remain available. This is a tool-call budget, not a count of requests
-inside a script and not proof that a checkpoint represents new evidence.
+The checkpoint reminder prompts a ledger update and a change of hypothesis
+when the evidence warrants it. Continue with the next authorized experiment
+until the objective is verified or a concrete blocker prevents progress.
+A per-pass timeout leaves partial observations available for the next pass.
 
-Browser work starts in a new background tab owned by this session. After tab
+Browser work uses a background tab owned by this session. After tab
 death or a timeout, inspect state before repeating an action. Never retarget
 the user's active tab, and never blindly replay eval, clicks, or submissions.
 

@@ -172,17 +172,15 @@ pub(super) fn render_model_widget(data: &InfoWidgetData, inner: Rect) -> Vec<Lin
         && tps.is_finite()
         && tps > 0.1
     {
-        let tps_color = if tps >= 100.0 {
-            rgb(110, 210, 130) // green for fast
-        } else if tps >= 30.0 {
-            rgb(180, 200, 130) // yellow for medium
+        let marker = if data.tokens_per_second_estimated {
+            "~"
         } else {
-            rgb(200, 160, 130) // orange for slow
+            ""
         };
-        lines.push(Line::from(vec![
-            Span::styled("⚡ ", Style::default().fg(rgb(140, 180, 255))),
-            Span::styled(format!("{:.1} t/s", tps), Style::default().fg(tps_color)),
-        ]));
+        lines.push(Line::from(Span::styled(
+            format!("avg {marker}{tps:.1} tok/s"),
+            Style::default().fg(rgb(140, 140, 150)),
+        )));
     }
 
     lines
@@ -438,6 +436,7 @@ mod tests {
             background_info: None,
             usage_info: None,
             tokens_per_second: None,
+            tokens_per_second_estimated: false,
             provider_name: None,
             auth_method: crate::alphacode_tui::tui::info_widget::AuthMethod::Unknown,
             upstream_provider: None,

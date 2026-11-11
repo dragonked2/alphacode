@@ -879,6 +879,10 @@ struct StreamingProgress {
     streaming_tps_observed_output_tokens: u64,
     /// Streaming-only elapsed time corresponding to streaming_tps_observed_output_tokens.
     streaming_tps_observed_elapsed: Duration,
+    /// Bytes received after the latest provider usage sample in this request.
+    streaming_tps_pending_bytes: usize,
+    /// Estimates for earlier requests that sent no final usage.
+    streaming_tps_prior_estimate: f32,
     /// Repetition detection: number of consecutive times the most recent n-gram
     /// has appeared at the end of the streaming buffer. Resets when new unique
     /// content arrives.

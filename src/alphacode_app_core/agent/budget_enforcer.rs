@@ -3,13 +3,14 @@ use std::time::Instant;
 
 use crate::alphacode_task_types::goal_contract::{ContractPhase, GoalContract};
 
-/// Tracks per-phase call counts and wall-clock time, and enforces budgets.
+/// Tracks per-phase call counts and wall-clock time for checkpoint reminders.
 /// Also tracks consecutive failures per tool for the auxiliary-tool stop-loss.
 pub struct BudgetEnforcer {
     /// Start time of the current phase.
     phase_start: Instant,
     /// Call count in the current phase.
     phase_calls: u32,
+    checkpoint_reported: bool,
     /// Current phase being tracked.
     current_phase: ContractPhase,
     /// Per-tool consecutive failure counts.
@@ -34,6 +35,7 @@ impl BudgetEnforcer {
         Self {
             phase_start: Instant::now(),
             phase_calls: 0,
+            checkpoint_reported: false,
             current_phase: ContractPhase::Recon,
             consecutive_failures: HashMap::new(),
             degraded_tools: HashMap::new(),
@@ -42,11 +44,11 @@ impl BudgetEnforcer {
         }
     }
 
-    /// Record a tool call. Returns `true` if the call is allowed, `false` if
-    /// it should be rejected (budget overrun or degraded tool).
+    /// Record a tool call and flag checkpoints or degraded report-phase tools.
     pub fn record_call(&mut self, tool_name: &str, contract: &GoalContract) -> BudgetVerdict {
-        self.total_calls += 1;
-        self.phase_calls += 1;
+        self.transition_phase(contract.phase);
+        self.total_calls = self.total_calls.saturating_add(1);
+        self.phase_calls = self.phase_calls.saturating_add(1);
 
         // Check if the tool is degraded.
         //
@@ -64,11 +66,14 @@ impl BudgetEnforcer {
             }
         }
 
-        // Check phase budget
+        if self.checkpoint_reported {
+            return BudgetVerdict::Allowed;
+        }
         let budget = self.budget_for_phase(contract);
         let elapsed = self.phase_start.elapsed();
 
         if self.phase_calls > budget.max_calls {
+            self.checkpoint_reported = true;
             return BudgetVerdict::OverBudget(format!(
                 "Phase '{}' exceeded budget: {} calls (max {})",
                 contract.phase.as_str(),
@@ -78,6 +83,7 @@ impl BudgetEnforcer {
         }
 
         if elapsed.as_secs() > budget.max_seconds {
+            self.checkpoint_reported = true;
             return BudgetVerdict::OverBudget(format!(
                 "Phase '{}' exceeded time budget: {}s (max {}s)",
                 contract.phase.as_str(),
@@ -131,6 +137,7 @@ impl BudgetEnforcer {
         if new_phase != self.current_phase {
             self.current_phase = new_phase;
             self.phase_calls = 0;
+            self.checkpoint_reported = false;
             self.phase_start = Instant::now();
         }
     }
@@ -148,6 +155,7 @@ impl BudgetEnforcer {
             self.current_phase = phase;
         }
         self.phase_calls = 0;
+        self.checkpoint_reported = false;
         self.phase_start = Instant::now();
     }
 
@@ -230,7 +238,7 @@ impl BudgetEnforcer {
 pub enum BudgetVerdict {
     /// Call is allowed.
     Allowed,
-    /// Call is rejected due to budget overrun.
+    /// Call is allowed and a phase checkpoint is due.
     OverBudget(String),
     /// Call is rejected due to degraded tool.
     Rejected(String),
@@ -239,7 +247,7 @@ pub enum BudgetVerdict {
 impl BudgetVerdict {
     #[allow(dead_code)]
     pub fn is_allowed(&self) -> bool {
-        matches!(self, Self::Allowed)
+        !matches!(self, Self::Rejected(_))
     }
 }
 
@@ -329,7 +337,7 @@ mod tests {
 
     /// The contract's own budgets must be enforced, not the hardcoded defaults.
     #[test]
-    fn contract_budgets_are_enforced_rather_than_defaults() {
+    fn configured_budget_is_an_advisory_checkpoint() {
         let mut enforcer = BudgetEnforcer::new();
         let mut contract = make_contract(ContractPhase::Execute);
         // Default `execute` budget is 20 calls; make this contract much tighter.
@@ -337,15 +345,17 @@ mod tests {
 
         assert!(enforcer.record_call("read", &contract).is_allowed());
         assert!(enforcer.record_call("read", &contract).is_allowed());
-        match enforcer.record_call("read", &contract) {
-            BudgetVerdict::OverBudget(_) => {}
-            other => panic!("expected the contract's 2-call budget to trip, got {other:?}"),
-        }
+        let checkpoint = enforcer.record_call("read", &contract);
+        assert!(matches!(checkpoint, BudgetVerdict::OverBudget(_)));
+        assert!(checkpoint.is_allowed());
+        assert!(matches!(
+            enforcer.record_call("read", &contract),
+            BudgetVerdict::Allowed
+        ));
     }
 
     /// `begin_turn` must reset the per-phase counters, otherwise a long session
-    /// accumulates `phase_calls` across turns until it is permanently forced
-    /// into `Report`.
+    /// carries one turn's progress counters into the next.
     #[test]
     fn begin_turn_resets_phase_counters() {
         let mut enforcer = BudgetEnforcer::new();

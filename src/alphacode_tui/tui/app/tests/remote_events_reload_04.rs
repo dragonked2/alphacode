@@ -258,6 +258,52 @@ fn test_remote_non_retryable_error_stops_auto_poke_after_short_retry_budget() {
 }
 
 #[test]
+fn alphax_free_400_restores_input_without_model_mismatch_or_resend() {
+    let mut app = create_test_app();
+    let rt = tokio::runtime::Runtime::new().unwrap();
+    let _guard = rt.enter();
+    let mut remote = crate::alphacode_tui::tui::backend::RemoteConnection::dummy();
+    app.is_remote = true;
+    app.auto_poke_incomplete_todos = true;
+    app.last_submitted_input = Some("Keep working on this task".to_string());
+    app.rate_limit_pending_message = Some(PendingRemoteMessage {
+        content: "Keep working on this task".to_string(),
+        images: vec![],
+        is_system: false,
+        system_reminder: None,
+        auto_retry: true,
+        retry_attempts: 0,
+        retry_at: None,
+    });
+    app.is_processing = true;
+    app.status = ProcessingStatus::Streaming;
+
+    let message = "HTTP 400 (bad request): the provider rejected the request payload.\nCommon causes: unsupported model/parameter for this endpoint.\n\nUpstream says: Alphax Free request failed (status: 400 Bad Request).";
+    app.handle_server_event(
+        crate::protocol::ServerEvent::Error {
+            id: 21,
+            message: message.to_owned(),
+            retry_after_secs: Some(5),
+        },
+        &mut remote,
+    );
+
+    assert!(app.rate_limit_pending_message.is_none());
+    assert!(app.rate_limit_reset.is_none());
+    assert!(!app.auto_poke_incomplete_todos);
+    let mut terminal = ratatui::Terminal::new(ratatui::backend::TestBackend::new(140, 35)).unwrap();
+    terminal.draw(|frame| crate::alphacode_tui::tui::ui::draw(frame, &app)).unwrap();
+    let buffer = terminal.backend().buffer();
+    let rendered = (0..35)
+        .map(|y| (0..140).map(|x| buffer[(x, y)].symbol()).collect::<String>())
+        .collect::<Vec<_>>()
+        .join("\n");
+    assert!(rendered.contains("Keep working on this task"), "{rendered}");
+    assert!(!rendered.contains("model/endpoint mismatch"), "{rendered}");
+    assert!(!rendered.contains("Ark coding-plan"), "{rendered}");
+}
+
+#[test]
 fn test_remote_fatal_model_endpoint_error_fails_fast_without_retry_budget() {
     // Volcengine Ark coding-plan endpoint returning 404 UnsupportedModel can
     // never succeed on resend, so the recovery/reconnect continuation must NOT
@@ -312,6 +358,53 @@ fn test_remote_fatal_model_endpoint_error_fails_fast_without_retry_budget() {
             .iter()
             .any(|m| m.content.contains("attempt 1/"))
     );
+}
+
+#[test]
+fn replacement_server_status_renders_in_the_terminal_buffer() {
+    let mut app = create_test_app();
+    let state = remote::RemoteRunState { reconnect_attempts: 2, ..Default::default() };
+    let message = remote::reconnect_status_message(&app, &state, "server unavailable; starting a replacement server");
+    app.push_display_message(DisplayMessage::system(message));
+    let backend = ratatui::backend::TestBackend::new(140, 35);
+    let mut terminal = ratatui::Terminal::new(backend).unwrap();
+    terminal.draw(|frame| crate::alphacode_tui::tui::ui::draw(frame, &app)).unwrap();
+    let buffer = terminal.backend().buffer();
+    let rendered = (0..35).map(|y| (0..140).map(|x| buffer[(x, y)].symbol()).collect::<String>()).collect::<Vec<_>>().join("\n");
+    assert!(rendered.contains("starting a replacement server"), "{rendered}");
+}
+
+#[test]
+fn provider_busy_does_not_restart_retry_cycle_or_claim_network_is_offline() {
+    let mut app = create_test_app();
+    let rt = tokio::runtime::Runtime::new().unwrap();
+    let _guard = rt.enter();
+    let mut remote = crate::alphacode_tui::tui::backend::RemoteConnection::dummy();
+    app.rate_limit_pending_message = Some(PendingRemoteMessage {
+        content: "continue".to_string(), images: vec![], is_system: false,
+        system_reminder: None, auto_retry: true, retry_attempts: 0, retry_at: None,
+    });
+    app.is_processing = true;
+    app.status = ProcessingStatus::Streaming;
+    app.handle_server_event(crate::protocol::ServerEvent::Error {
+        id: 15,
+        message: "OpenAI-compatible chat request failed\n  timeout: 180s\n  status: 429 Too Many Requests\n  response: server_busy".into(),
+        retry_after_secs: None,
+    }, &mut remote);
+    assert!(!matches!(app.status, ProcessingStatus::WaitingForNetwork { .. }));
+    assert!(app.rate_limit_pending_message.is_none());
+    let text = app.display_messages().iter().map(|m| m.content.as_str()).collect::<Vec<_>>().join("\n");
+    assert!(text.contains("Provider is busy or rate-limited"), "{text}");
+    assert!(!text.contains("Network appears offline"));
+    assert!(!text.contains("timeout: 180s"));
+    let backend = ratatui::backend::TestBackend::new(120, 35);
+    let mut terminal = ratatui::Terminal::new(backend).unwrap();
+    terminal.draw(|frame| crate::alphacode_tui::tui::ui::draw(frame, &app)).unwrap();
+    let buffer = terminal.backend().buffer();
+    let rendered = (0..35).map(|y| (0..120).map(|x| buffer[(x, y)].symbol()).collect::<String>()).collect::<Vec<_>>().join("\n");
+    assert!(rendered.contains("Provider is busy or rate-limited"), "{rendered}");
+    assert!(!rendered.contains("Network appears offline"));
+    assert!(!rendered.contains("Waiting 59s before retry"));
 }
 
 #[test]

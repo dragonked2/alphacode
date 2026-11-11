@@ -197,6 +197,34 @@ pub(crate) fn set_session_tool_policy(
     );
 }
 
+/// Research files are scoped to a conversation, even when sessions share a
+/// working directory. Encoding the ID keeps arbitrary IDs inside this root.
+pub(crate) fn research_ledger_relative_dir(session_id: &str) -> std::path::PathBuf {
+    use std::fmt::Write as _;
+    let mut encoded = String::with_capacity(session_id.len() * 2 + 1);
+    encoded.push('s');
+    for byte in session_id.as_bytes() {
+        let _ = write!(encoded, "{byte:02x}");
+    }
+    std::path::Path::new(".alphacode")
+        .join("research-sessions")
+        .join(encoded)
+}
+
+pub(crate) fn bind_research_ledger_paths(text: &str, session_id: &str) -> String {
+    let directory = research_ledger_relative_dir(session_id);
+    let challenge = directory
+        .join("challenge.md")
+        .to_string_lossy()
+        .replace('\\', "/");
+    let hunt = directory
+        .join("hunt.md")
+        .to_string_lossy()
+        .replace('\\', "/");
+    text.replace("challenge.md", &challenge)
+        .replace("hunt.md", &hunt)
+}
+
 pub(crate) fn clear_session_tool_policy(session_id: &str) {
     let mut policies = SESSION_TOOL_POLICIES
         .write()
@@ -1848,18 +1876,15 @@ impl Registry {
             );
             return Err(anyhow::anyhow!("{reason}"));
         }
-        if matches!(
+        let checkpoint_due = matches!(
             ctx.execution_mode,
             crate::alphacode_tool_core::ToolExecutionMode::AgentTurn
-        ) {
-            ctf_progress_guard::check(
-                &ctx.session_id,
-                ctx.working_dir.as_deref(),
-                resolved_name,
-                &input,
-            )
-            .map_err(anyhow::Error::msg)?;
-        }
+        ) && ctf_progress_guard::check(
+            &ctx.session_id,
+            ctx.working_dir.as_deref(),
+            resolved_name,
+            &input,
+        );
 
         // Rate/concurrency budget for network work. Held across the call so the
         // permit covers the tool's actual runtime and is returned on drop,
@@ -1965,6 +1990,12 @@ impl Registry {
                 return Err(error);
             }
         };
+
+        if checkpoint_due {
+            crate::logging::info(
+                "CTF evidence checkpoint due; authorized probing remains available",
+            );
+        }
 
         // Keep a hard ceiling even when a provider advertises a very large
         // context window, then apply the tighter session-specific budget.

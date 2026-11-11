@@ -119,7 +119,12 @@ impl App {
             parts.push(Message::format_duration(duration_ms));
         }
         if let Some(tps) = self.compute_streaming_tps() {
-            parts.push(format!("{:.1} tps", tps));
+            let marker = if self.streaming_tps_is_estimated() {
+                "~"
+            } else {
+                ""
+            };
+            parts.push(format!("avg {marker}{tps:.1} tok/s"));
         }
         if self.streaming.streaming_input_tokens > 0 || self.streaming.streaming_output_tokens > 0 {
             parts.push(format!(

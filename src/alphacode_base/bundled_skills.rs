@@ -1241,6 +1241,20 @@ mod tests {
     }
 
     #[test]
+    fn vulnerability_hunting_skill_does_not_confirm_a_finding_from_missing_validation_alone() {
+        let hunter = BUNDLED_SKILLS
+            .iter()
+            .find(|skill| skill.name == "vuln-hunter")
+            .expect("bundled vulnerability hunter");
+        assert!(
+            !hunter
+                .body
+                .contains("If no validation → vulnerability confirmed")
+        );
+        assert!(hunter.body.contains("Treat a missing check as a lead"));
+    }
+
+    #[test]
     fn every_source_skill_is_registered() {
         let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
             .join("src/alphacode_base/bundled_skills");

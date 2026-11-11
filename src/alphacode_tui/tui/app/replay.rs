@@ -419,12 +419,7 @@ pub(super) fn apply_replay_event(
             app.is_processing = true;
             app.processing_started = Some(Instant::now());
             app.status = ProcessingStatus::Thinking(Instant::now());
-            app.streaming.streaming_tps_start = None;
-            app.streaming.streaming_tps_elapsed = Duration::ZERO;
-            app.streaming.streaming_tps_collect_output = false;
-            app.streaming.streaming_total_output_tokens = 0;
-            app.streaming.streaming_tps_observed_output_tokens = 0;
-            app.streaming.streaming_tps_observed_elapsed = Duration::ZERO;
+            app.reset_streaming_tps();
             app.replay_processing_started_ms = replay_processing_started_ms;
         }
         ReplayEvent::MemoryInjection {

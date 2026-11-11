@@ -307,6 +307,43 @@ fn test_accumulate_streaming_output_tokens_ignores_hidden_output_phase() {
 }
 
 #[test]
+fn live_generation_average_reconciles_estimates_and_fits_the_composer_status() {
+    let mut app = create_test_app();
+    app.is_processing = true;
+    app.status = ProcessingStatus::Streaming;
+    app.processing_started = Some(Instant::now() - Duration::from_secs(4));
+    app.streaming.streaming_tps_start = Some(Instant::now() - Duration::from_secs(4));
+    app.note_streaming_tps_bytes(160);
+    assert!(app.streaming_tps_is_estimated());
+    assert_eq!(app.streaming.streaming_total_output_tokens, 0);
+    let tps = app.compute_streaming_tps().unwrap();
+    assert!((tps - 10.0).abs() < 0.2, "{tps}");
+
+    let render = |app: &App, width| {
+        let mut terminal = ratatui::Terminal::new(ratatui::backend::TestBackend::new(width, 24)).unwrap();
+        terminal.draw(|frame| crate::alphacode_tui::tui::ui::draw(frame, app)).unwrap();
+        let buffer = terminal.backend().buffer();
+        (0..24).map(|y| {
+            (0..width).map(|x| buffer[(x, y)].symbol()).collect::<String>()
+        }).collect::<Vec<_>>().join("\n")
+    };
+    let wide = render(&app, 120);
+    assert!(wide.contains("Generating") && wide.contains("avg ~10.0 tok/s"), "{wide}");
+    let narrow = render(&app, 40);
+    assert!(narrow.contains("~10.0"), "{narrow}");
+
+    app.streaming.streaming_tps_start = Some(Instant::now() - Duration::from_secs(4));
+    let mut seen = 0;
+    app.accumulate_streaming_output_tokens(48, &mut seen);
+    assert!(!app.streaming_tps_is_estimated());
+    assert_eq!(app.streaming.streaming_total_output_tokens, 48);
+    let exact = render(&app, 120);
+    assert!(exact.contains("avg 12.0 tok/s"), "{exact}");
+    app.reset_streaming_tps();
+    assert!(app.compute_streaming_tps().is_none());
+}
+
+#[test]
 fn test_compute_streaming_tps_uses_latest_observed_snapshot_instead_of_current_repaint_time() {
     let mut app = create_test_app();
     app.streaming.streaming_tps_start = Some(Instant::now() - Duration::from_secs(20));

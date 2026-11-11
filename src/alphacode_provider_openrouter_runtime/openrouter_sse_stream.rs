@@ -95,9 +95,7 @@ fn alphax_free_http_error(status: reqwest::StatusCode, context_overflow: bool) -
         400 if context_overflow => {
             "The prompt is too long for this model's context window. Compact the session with /compact, then retry."
         }
-        400 => {
-            "Alphax Free could not accept this request. Check the provider setup with /doctor or switch model with /model."
-        }
+        400 => "Alphax Free rejected this request. Switch routes with /model to try again.",
         404 => {
             "Alphax Free could not find an available route. Try again shortly or switch model with /model."
         }

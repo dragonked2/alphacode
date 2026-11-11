@@ -81,10 +81,7 @@ impl Agent {
         event_tx: mpsc::UnboundedSender<ServerEvent>,
     ) -> Result<()> {
         self.set_log_context();
-        // Reset the per-turn budget counters. `BudgetEnforcer` is a per-`Agent`
-        // field that outlives a single turn, so without this `phase_calls`
-        // accumulated across the whole session and a long conversation would
-        // eventually trip the phase budget and be forced into `Report`.
+        // Reset the advisory checkpoint counters for this turn.
         self.budget_enforcer
             .begin_turn(self.goal_contract.as_ref().map(|c| c.phase));
         // Mark this session as actively streaming for presence UIs (e.g. the
@@ -126,6 +123,8 @@ impl Agent {
             crate::prompt::PromptTier,
         )> = None;
         let mut cached_tools: Option<Vec<ToolDefinition>> = None;
+        let ctf_goal_active = self.ctf_goal_active();
+        let mut ctf_continuations = std::collections::HashSet::new();
         let mut iteration_count: u32 = 0;
         let mut last_save_time = Instant::now();
         'turn: loop {
@@ -193,7 +192,7 @@ impl Agent {
             }
             if cached_tools.is_none() {
                 let definitions = self.tool_definitions().await;
-                cached_tools = Some(if self.uses_compact_local_context() {
+                cached_tools = Some(if self.uses_compact_context() {
                     let query = self.latest_user_text().unwrap_or_default();
                     super::turn_execution::context_adaptive_tools_with_promotions(
                         &definitions,
@@ -237,7 +236,7 @@ impl Agent {
             let capability_brief = crate::tool::capabilities::request_brief(
                 &capability_names,
                 tools,
-                self.uses_compact_local_context(),
+                self.uses_compact_context(),
                 self.provider.handles_tools_internally(),
             );
             let request_dynamic_prompt =
@@ -384,14 +383,7 @@ impl Agent {
                                         &mut provider_error_continuations,
                                     )? {
                                         if delay > 0 {
-                                            let _ = event_tx.send(ServerEvent::StatusDetail {
-                                                detail: format!(
-                                                    "Waiting {}s before retry (attempt {}/{})...",
-                                                    delay,
-                                                    provider_error_continuations,
-                                                    Self::MAX_PROVIDER_ERROR_CONTINUATION_ATTEMPTS
-                                                ),
-                                            });
+                                            logging::info(&format!("Provider retry scheduled in {delay}s (attempt {provider_error_continuations}/{})", Self::MAX_PROVIDER_ERROR_CONTINUATION_ATTEMPTS));
                                             tokio::time::sleep(tokio::time::Duration::from_secs(delay)).await;
                                         }
                                         // A zero delay means free-pool rotation
@@ -667,14 +659,10 @@ impl Agent {
                             )?
                         {
                             if delay > 0 {
-                                let _ = event_tx.send(ServerEvent::StatusDetail {
-                                    detail: format!(
-                                        "Waiting {}s before retry (attempt {}/{}).",
-                                        delay,
-                                        provider_error_continuations,
-                                        Self::MAX_PROVIDER_ERROR_CONTINUATION_ATTEMPTS
-                                    ),
-                                });
+                                logging::info(&format!(
+                                    "Provider retry scheduled in {delay}s (attempt {provider_error_continuations}/{})",
+                                    Self::MAX_PROVIDER_ERROR_CONTINUATION_ATTEMPTS
+                                ));
                                 tokio::time::sleep(tokio::time::Duration::from_secs(delay)).await;
                             } else if let Some(detail) = self.last_status_detail.clone() {
                                 let _ = event_tx.send(ServerEvent::StatusDetail { detail });
@@ -1167,14 +1155,10 @@ impl Agent {
                             )?
                         {
                             if delay > 0 {
-                                let _ = event_tx.send(ServerEvent::StatusDetail {
-                                    detail: format!(
-                                        "Waiting {}s before retry (attempt {}/{}).",
-                                        delay,
-                                        provider_error_continuations,
-                                        Self::MAX_PROVIDER_ERROR_CONTINUATION_ATTEMPTS
-                                    ),
-                                });
+                                logging::info(&format!(
+                                    "Provider retry scheduled in {delay}s (attempt {provider_error_continuations}/{})",
+                                    Self::MAX_PROVIDER_ERROR_CONTINUATION_ATTEMPTS
+                                ));
                                 tokio::time::sleep(tokio::time::Duration::from_secs(delay)).await;
                             } else if let Some(detail) = self.last_status_detail.clone() {
                                 let _ = event_tx.send(ServerEvent::StatusDetail { detail });
@@ -1583,6 +1567,14 @@ impl Agent {
                     &mut incomplete_continuations,
                 )? {
                     NoToolCallOutcome::Break => {
+                        if ctf_goal_active
+                            && saw_message_end
+                            && !text_content.trim().is_empty()
+                            && !Self::is_guardrail_stop_reason(stop_reason.as_deref())
+                            && self.continue_ctf_goal(&mut ctf_continuations)?
+                        {
+                            continue;
+                        }
                         // Surface silent guardrail/refusal stops: the provider
                         // ended the turn with no visible output (e.g. Anthropic
                         // stop_reason "refusal", or a reasoning-only response).
@@ -2498,6 +2490,131 @@ mod tests {
         );
     }
 
+    #[test]
+    fn ordinary_provider_rate_limit_stops_after_three_recoveries() {
+        let provider = Arc::new(FailOnceProvider {
+            calls: Arc::new(AtomicUsize::new(0)),
+        });
+        let mut agent = Agent::new(provider, crate::alphacode_app_core::tool::Registry::empty());
+        let mut attempts = 3;
+        assert_eq!(
+            agent
+                .maybe_continue_after_provider_error("status: 429 Too Many Requests", &mut attempts)
+                .unwrap(),
+            None
+        );
+    }
+
+    #[test]
+    fn long_provider_retry_after_is_not_retried_early() {
+        let provider = Arc::new(FailOnceProvider {
+            calls: Arc::new(AtomicUsize::new(0)),
+        });
+        let mut agent = Agent::new(provider, crate::alphacode_app_core::tool::Registry::empty());
+        let mut attempts = 0;
+        assert_eq!(
+            agent
+                .maybe_continue_after_provider_error(
+                    "status: 429 Too Many Requests \"retry_after_seconds\":300",
+                    &mut attempts
+                )
+                .unwrap(),
+            None
+        );
+    }
+
+    #[derive(Clone)]
+    struct RejectedFreeProvider {
+        model: Arc<std::sync::Mutex<String>>,
+        requests: Arc<std::sync::Mutex<Vec<String>>>,
+        reject_alternate: bool,
+    }
+
+    #[async_trait::async_trait]
+    impl crate::alphacode_app_core::provider::Provider for RejectedFreeProvider {
+        async fn complete(
+            &self,
+            _messages: &[Message],
+            _tools: &[ToolDefinition],
+            _system: &str,
+            _resume_session_id: Option<&str>,
+        ) -> anyhow::Result<crate::alphacode_app_core::provider::EventStream> {
+            let model = self.model();
+            let mut requests = self.requests.lock().unwrap();
+            requests.push(model);
+            if requests.len() == 1 || self.reject_alternate {
+                anyhow::bail!(
+                    "Alphax Free request failed (status: 400 Bad Request).\nAlphax Free rejected this request."
+                );
+            }
+            Ok(Box::pin(tokio_stream::iter([
+                Ok(StreamEvent::TextDelta(
+                    "Recovered on the alternate route.".into(),
+                )),
+                Ok(StreamEvent::MessageEnd {
+                    stop_reason: Some("stop".into()),
+                }),
+            ])))
+        }
+
+        fn name(&self) -> &str {
+            "Alphax Free"
+        }
+
+        fn model(&self) -> String {
+            self.model.lock().unwrap().clone()
+        }
+
+        fn set_model(&self, model: &str) -> anyhow::Result<()> {
+            let bare = model
+                .strip_prefix("alphax-free:")
+                .ok_or_else(|| anyhow::anyhow!("recovery left the free profile"))?;
+            anyhow::ensure!(super::super::free_pool_rotation::should_rotate_for_model(
+                bare
+            ));
+            *self.model.lock().unwrap() = bare.to_string();
+            Ok(())
+        }
+
+        fn fork(&self) -> Arc<dyn crate::alphacode_app_core::provider::Provider> {
+            Arc::new(self.clone())
+        }
+    }
+
+    #[tokio::test]
+    async fn alphax_free_400_tries_one_alternate_route_then_stops() {
+        for reject_alternate in [false, true] {
+            let _pool_lock = super::super::free_pool_rotation::lock_pool_state_for_tests();
+            let _env_lock = crate::storage::lock_test_env();
+            let temp_home = tempfile::tempdir().unwrap();
+            let previous_home = std::env::var_os("ALPHACODE_HOME");
+            crate::alphacode_core::env::set_var("ALPHACODE_HOME", temp_home.path());
+            let _restore_home = RestoreAlphacodeHome(previous_home);
+            super::super::free_pool_rotation::absorb_discovered_free_models(vec![
+                "synthetic/alternate:free".to_string(),
+            ]);
+            let provider = Arc::new(RejectedFreeProvider {
+                model: Arc::new(std::sync::Mutex::new(
+                    crate::alphacode_provider_metadata::route_cloak::free_route_default_model(),
+                )),
+                requests: Arc::default(),
+                reject_alternate,
+            });
+            let mut agent = Agent::new(
+                provider.clone(),
+                crate::alphacode_app_core::tool::Registry::empty(),
+            );
+            let (event_tx, _event_rx) = tokio::sync::mpsc::unbounded_channel();
+            let result = agent
+                .run_once_streaming_mpsc("hello", Vec::new(), None, event_tx)
+                .await;
+            assert_eq!(result.is_err(), reject_alternate, "{result:?}");
+            let requests = provider.requests.lock().unwrap();
+            assert_eq!(requests.len(), 2);
+            assert_ne!(requests[0], requests[1]);
+        }
+    }
+
     struct RestoreAlphacodeHome(Option<std::ffi::OsString>);
 
     impl Drop for RestoreAlphacodeHome {
@@ -2532,6 +2649,43 @@ mod tests {
             .await
             .expect("provider retry should recover the turn");
 
+        assert_eq!(provider.calls.load(Ordering::SeqCst), 2);
+    }
+
+    #[tokio::test]
+    async fn ctf_completion_retries_actionable_work_without_looping_on_unchanged_state() {
+        let _env_lock = crate::storage::lock_test_env();
+        let temp_home = tempfile::tempdir().unwrap();
+        let previous_home = std::env::var_os("ALPHACODE_HOME");
+        crate::alphacode_core::env::set_var("ALPHACODE_HOME", temp_home.path());
+        let _restore_home = RestoreAlphacodeHome(previous_home);
+        let provider = Arc::new(GreetingProvider {
+            calls: Arc::new(AtomicUsize::new(0)),
+        });
+        let mut agent = Agent::new(
+            provider.clone(),
+            crate::alphacode_app_core::tool::Registry::empty(),
+        );
+        crate::todo::save_todos(
+            &agent.session.id,
+            &[crate::alphacode_task_types::TodoItem {
+                id: "verify".into(),
+                content: "Verify the challenge objective from local evidence".into(),
+                status: "pending".into(),
+                ..Default::default()
+            }],
+        )
+        .unwrap();
+        let (event_tx, _event_rx) = tokio::sync::mpsc::unbounded_channel();
+        agent
+            .run_once_streaming_mpsc(
+                "Continue the authorized CTF challenge",
+                Vec::new(),
+                None,
+                event_tx,
+            )
+            .await
+            .unwrap();
         assert_eq!(provider.calls.load(Ordering::SeqCst), 2);
     }
 

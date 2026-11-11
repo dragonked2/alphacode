@@ -122,6 +122,8 @@ impl Agent {
             crate::prompt::PromptTier,
         )> = None;
         let mut cached_tools: Option<Vec<ToolDefinition>> = None;
+        let ctf_goal_active = self.ctf_goal_active();
+        let mut ctf_continuations = std::collections::HashSet::new();
         let mut iteration_count: u32 = 0;
         let mut last_save_time = Instant::now();
         loop {
@@ -181,7 +183,7 @@ impl Agent {
             }
             if cached_tools.is_none() {
                 let definitions = self.tool_definitions().await;
-                cached_tools = Some(if self.uses_compact_local_context() {
+                cached_tools = Some(if self.uses_compact_context() {
                     let query = self.latest_user_text().unwrap_or_default();
                     super::turn_execution::context_adaptive_tools_with_promotions(
                         &definitions,
@@ -219,7 +221,7 @@ impl Agent {
             let capability_brief = crate::tool::capabilities::request_brief(
                 &capability_names,
                 tools,
-                self.uses_compact_local_context(),
+                self.uses_compact_context(),
                 self.provider.handles_tools_internally(),
             );
             let request_dynamic_prompt =
@@ -310,12 +312,10 @@ impl Agent {
                         &mut provider_error_continuations,
                     )? {
                         if delay > 0 {
-                            crate::terminal_println!(
-                                "\nWaiting {}s before retry (attempt {}/{})...",
-                                delay,
-                                provider_error_continuations,
+                            logging::info(&format!(
+                                "Provider retry scheduled in {delay}s (attempt {provider_error_continuations}/{})",
                                 Self::MAX_PROVIDER_ERROR_CONTINUATION_ATTEMPTS
-                            );
+                            ));
                             tokio::time::sleep(tokio::time::Duration::from_secs(delay)).await;
                         }
                         continue;
@@ -510,12 +510,10 @@ impl Agent {
                             )?
                         {
                             if delay > 0 {
-                                crate::terminal_println!(
-                                    "\nWaiting {}s before retry (attempt {}/{}).",
-                                    delay,
-                                    provider_error_continuations,
+                                logging::info(&format!(
+                                    "Provider retry scheduled in {delay}s (attempt {provider_error_continuations}/{})",
                                     Self::MAX_PROVIDER_ERROR_CONTINUATION_ATTEMPTS
-                                );
+                                ));
                                 tokio::time::sleep(tokio::time::Duration::from_secs(delay)).await;
                             }
                             retry_after_provider_error = true;
@@ -976,12 +974,10 @@ impl Agent {
                             )?
                         {
                             if delay > 0 {
-                                crate::terminal_println!(
-                                    "\nWaiting {}s before retry (attempt {}/{}).",
-                                    delay,
-                                    provider_error_continuations,
+                                logging::info(&format!(
+                                    "Provider retry scheduled in {delay}s (attempt {provider_error_continuations}/{})",
                                     Self::MAX_PROVIDER_ERROR_CONTINUATION_ATTEMPTS
-                                );
+                                ));
                                 tokio::time::sleep(tokio::time::Duration::from_secs(delay)).await;
                             }
                             retry_after_provider_error = true;
@@ -1222,6 +1218,13 @@ impl Agent {
                 {
                     refusal_rotations += 1;
                     logging::warn("Refusal stop: rotated to an alternate free route for this turn");
+                    continue;
+                }
+                if ctf_goal_active
+                    && !visible_text_is_empty
+                    && !Self::is_guardrail_stop_reason(stop_reason.as_deref())
+                    && self.continue_ctf_goal(&mut ctf_continuations)?
+                {
                     continue;
                 }
                 // Surface silent guardrail/refusal stops instead of returning
@@ -1639,37 +1642,7 @@ impl Agent {
         if let Some(ref contract) = self.goal_contract {
             let verdict = self.budget_enforcer.record_call(&tc.name, contract);
             if let super::budget_enforcer::BudgetVerdict::OverBudget(msg) = verdict {
-                logging::info(&format!("Budget overrun: {}", msg));
-                // Force transition to report phase
-                if let Some(ref mut c) = self.goal_contract {
-                    c.phase = crate::alphacode_task_types::goal_contract::ContractPhase::Report;
-                }
-                self.budget_enforcer.transition_phase(
-                    crate::alphacode_task_types::goal_contract::ContractPhase::Report,
-                );
-                let budget_msg = format!(
-                    "Budget overrun: {}. Transitioning to report phase. Produce the final report now.",
-                    msg
-                );
-                Bus::global().publish(BusEvent::ToolUpdated(ToolEvent {
-                    session_id: self.session.id.clone(),
-                    message_id: message_id.to_string(),
-                    tool_call_id: tc.id.clone(),
-                    tool_name: tc.name.clone(),
-                    status: ToolStatus::Error,
-                    intent: tc.intent.clone(),
-                    title: None,
-                }));
-                self.add_message(
-                    Role::User,
-                    vec![ContentBlock::ToolResult {
-                        tool_use_id: tc.id.clone(),
-                        content: budget_msg,
-                        is_error: Some(true),
-                    }],
-                );
-                *tool_results_dirty = true;
-                return Ok(false);
+                logging::info(&format!("Goal checkpoint due: {msg}"));
             } else if let super::budget_enforcer::BudgetVerdict::Rejected(msg) = verdict {
                 logging::info(&format!("Tool rejected: {}", msg));
                 let rejection_msg =

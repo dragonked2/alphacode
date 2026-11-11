@@ -574,7 +574,13 @@ fn borrowed_generic_default_is_replaced_by_what_the_endpoint_advertises() {
             model("qwen3.8-9b-heretic-uncensored"),
             model("text-embedding-nomic-embed-text-v1.5"),
         ],
-        Some("http://localhost:1234/v1"),
+        Some("http://127.0.0.1:1234/v1"),
+    );
+
+    crate::alphacode_provider_openrouter::save_disk_cache_with_source_for_namespace(
+        "lmstudio",
+        &[model("unrelated-model")],
+        Some("http://127.0.0.1:1235/v1"),
     );
 
     let resolved =
@@ -584,6 +590,17 @@ fn borrowed_generic_default_is_replaced_by_what_the_endpoint_advertises() {
         Some("qwen3.8-9b-heretic-uncensored"),
         "the session must pin a model this endpoint actually serves, not the \
          Dragonmeta `alpha` default"
+    );
+
+    assert_eq!(resolved.display_name, "LM Studio");
+    assert_eq!(
+        crate::provider_catalog::openai_compatible_profile_id_for_api_base("http://127.0.0.1:1234"),
+        Some("lmstudio")
+    );
+    let native = resolve_openai_compatible_profile(crate::provider_catalog::LMSTUDIO_PROFILE);
+    assert_eq!(
+        native.default_model.as_deref(),
+        Some("qwen3.8-9b-heretic-uncensored")
     );
 
     match previous {

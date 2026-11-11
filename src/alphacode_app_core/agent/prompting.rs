@@ -352,9 +352,15 @@ impl Agent {
             || self
                 .latest_user_text()
                 .is_some_and(|text| super::challenge_context::is_ctf_request(&text));
-        let ledger = self.session.working_dir.as_deref().and_then(|directory| {
-            super::challenge_context::ledger_context(std::path::Path::new(directory))
-        });
+        let research_dir = crate::tool::research_ledger_relative_dir(&self.session.id);
+        let ledger_dir = self
+            .session
+            .working_dir
+            .as_deref()
+            .map(|directory| std::path::Path::new(directory).join(&research_dir));
+        let ledger = ledger_dir
+            .as_deref()
+            .and_then(super::challenge_context::ledger_context);
         if (ctf_requested || ledger.is_some())
             && self.active_skill.as_deref() != Some("ctf-workflow")
             && let Some(workflow) = skills.get("ctf-workflow")
@@ -362,6 +368,18 @@ impl Agent {
             skill_prompt
                 .get_or_insert_with(String::new)
                 .push_str(&format!("\n\n{}", workflow.get_prompt()));
+        }
+
+        // Bundled workflows refer to the legacy project-wide filenames. Bind
+        // those references to this session without rewriting users' files.
+        if (ctf_requested
+            || self
+                .active_skill
+                .as_deref()
+                .is_some_and(|name| matches!(name, "bugbounty" | "vuln-hunter")))
+            && let Some(prompt) = skill_prompt.as_mut()
+        {
+            *prompt = crate::tool::bind_research_ledger_paths(prompt, &self.session.id);
         }
 
         let available_skills: Vec<crate::prompt::SkillInfo> = skills
@@ -395,9 +413,10 @@ impl Agent {
         if let Some(ledger) = ledger {
             split.dynamic_part.push_str(&ledger);
         }
-        if let Some(ledger) = self.session.working_dir.as_deref().and_then(|directory| {
-            super::challenge_context::hunt_ledger_context(std::path::Path::new(directory))
-        }) {
+        if let Some(ledger) = ledger_dir
+            .as_deref()
+            .and_then(super::challenge_context::hunt_ledger_context)
+        {
             split.dynamic_part.push_str(&ledger);
         }
         self.detect_verification_loop(&mut split);
@@ -496,7 +515,7 @@ impl Agent {
             Some(text) if crate::prompt::looks_like_trivial_chat(&text) => {
                 crate::prompt::PromptTier::Minimal
             }
-            Some(_) if self.uses_compact_local_context() => crate::prompt::PromptTier::Compact,
+            Some(_) if self.uses_compact_context() => crate::prompt::PromptTier::Compact,
             _ => crate::prompt::PromptTier::Standard,
         }
     }

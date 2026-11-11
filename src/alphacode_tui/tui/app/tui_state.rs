@@ -809,10 +809,18 @@ impl crate::alphacode_tui::tui::TuiState for App {
     }
 
     fn output_tps(&self) -> Option<f32> {
-        if !self.is_processing || !matches!(self.status, ProcessingStatus::Streaming) {
+        if !self.is_processing
+            || !(matches!(self.status, ProcessingStatus::Streaming)
+                || (matches!(self.status, ProcessingStatus::Thinking(_))
+                    && self.streaming.streaming_tps_start.is_some()))
+        {
             return None;
         }
         self.compute_streaming_tps()
+    }
+
+    fn output_tps_is_estimated(&self) -> bool {
+        self.streaming_tps_is_estimated()
     }
 
     fn streaming_tool_calls(&self) -> Vec<ToolCall> {
@@ -1679,11 +1687,7 @@ impl crate::alphacode_tui::tui::TuiState for App {
         let auth_method = self.widget_auth_method(route);
         let usage_info = self.widget_usage_info(route, auth_method);
 
-        let tokens_per_second = if matches!(self.status, ProcessingStatus::Streaming) {
-            self.compute_streaming_tps()
-        } else {
-            None
-        };
+        let tokens_per_second = self.output_tps();
 
         // The KV-cache widget is no longer surfaced (its hit ratios read as
         // opaque noise), so this per-frame telemetry snapshot — which cloned every
@@ -1758,6 +1762,7 @@ impl crate::alphacode_tui::tui::TuiState for App {
             background_info,
             usage_info,
             tokens_per_second,
+            tokens_per_second_estimated: self.streaming_tps_is_estimated(),
             provider_name: if uses_remote_widget_metadata {
                 self.remote_provider_name
                     .clone()

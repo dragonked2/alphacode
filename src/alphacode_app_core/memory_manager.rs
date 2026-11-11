@@ -110,6 +110,19 @@ pub struct SymbolMeta {
     pub line: u32,
 }
 
+// Write a complete replacement alongside the destination before publishing it.
+// A failed write leaves the previous version available for recovery.
+pub(super) fn atomic_write(path: &Path, content: &[u8]) -> Result<()> {
+    let parent = path
+        .parent()
+        .context("memory file has no parent directory")?;
+    let mut temp = tempfile::NamedTempFile::new_in(parent)?;
+    temp.write_all(content)?;
+    temp.as_file().sync_all()?;
+    temp.persist(path).map_err(|err| err.error)?;
+    Ok(())
+}
+
 // ── MemoryManager ────────────────────────────────────────────────────────
 
 /// MemoryManager provides persistent memory management: state files,
@@ -148,6 +161,7 @@ impl MemoryManager {
     /// Create a new MemoryManager with the given root directory.
     pub fn new(root: impl AsRef<Path>) -> Result<Self> {
         let root = root.as_ref().to_path_buf();
+        fs::create_dir_all(&root).map_err(io::Error::other)?;
         let root = root.canonicalize().map_err(io::Error::other)?;
 
         // Define file paths relative to root.
@@ -275,21 +289,30 @@ impl MemoryManager {
 
     /// Load the project state from `STATE.json`.
     pub fn load_state(&self) -> Result<ProjectState> {
-        if !self.state_path.exists() {
-            return Ok(ProjectState::default());
-        }
-        let data = fs::read_to_string(&self.state_path)
-            .with_context(|| format!("reading {}", self.state_path.display()))?;
+        Ok(self.load_state_snapshot()?.unwrap_or_default())
+    }
+
+    pub(super) fn load_state_snapshot(&self) -> Result<Option<ProjectState>> {
+        let data = match fs::read_to_string(&self.state_path) {
+            Ok(data) => data,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+            Err(error) => {
+                return Err(error)
+                    .with_context(|| format!("reading {}", self.state_path.display()));
+            }
+        };
         if data.trim().is_empty() || data.trim() == "{}" {
-            return Ok(ProjectState::default());
+            return Ok(None);
         }
-        serde_json::from_str(&data).with_context(|| "parsing STATE.json")
+        serde_json::from_str(&data)
+            .map(Some)
+            .context("parsing STATE.json")
     }
 
     /// Save the project state to `STATE.json`.
     pub fn save_state(&self, state: &ProjectState) -> Result<()> {
         let json = serde_json::to_string_pretty(state)?;
-        fs::write(&self.state_path, json)
+        atomic_write(&self.state_path, json.as_bytes())
             .with_context(|| format!("writing {}", self.state_path.display()))?;
         Ok(())
     }
@@ -324,7 +347,7 @@ impl MemoryManager {
     /// Save the project index to `INDEX.json`.
     pub fn save_index(&self, index: &ProjectIndex) -> Result<()> {
         let json = serde_json::to_string_pretty(index)?;
-        fs::write(&self.index_path, json)
+        atomic_write(&self.index_path, json.as_bytes())
             .with_context(|| format!("writing {}", self.index_path.display()))?;
         Ok(())
     }
@@ -341,9 +364,7 @@ impl MemoryManager {
 
     /// Write markdown content to a file.
     fn write_md(&self, path: &Path, content: &str) -> Result<()> {
-        let mut file = fs::File::create(path)?;
-        file.write_all(content.as_bytes())?;
-        Ok(())
+        atomic_write(path, content.as_bytes())
     }
 
     /// Append a line (with trailing newline) to a markdown file.
@@ -476,6 +497,13 @@ mod tests {
         let dir = TempDir::new().unwrap();
         let mgr = MemoryManager::new(dir.path()).unwrap();
         (dir, mgr)
+    }
+
+    #[test]
+    fn creates_missing_memory_root() {
+        let dir = TempDir::new().unwrap();
+        let mgr = MemoryManager::new(dir.path().join("nested").join("memory")).unwrap();
+        assert!(mgr.root().join("STATE.json").exists());
     }
 
     #[test]

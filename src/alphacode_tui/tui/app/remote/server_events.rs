@@ -752,7 +752,7 @@ pub(in crate::alphacode_tui::tui::app) fn handle_server_event(
                 app.status = ProcessingStatus::Streaming;
                 needs_redraw = true;
             }
-            app.resume_streaming_tps();
+            app.note_streaming_tps_bytes(text.len());
             let ops = app.stream_buffer.push_text(&text);
             if app.apply_stream_ops(ops) {
                 needs_redraw = true;
@@ -783,7 +783,7 @@ pub(in crate::alphacode_tui::tui::app) fn handle_server_event(
                     app.status = ProcessingStatus::Thinking(thinking_start);
                 }
             }
-            app.resume_streaming_tps();
+            app.note_streaming_tps_bytes(text.len());
             // The server always streams reasoning; whether to *render* it is
             // this client's choice (mirroring the local-turn path, which gates
             // on the same config). Hidden reasoning still drives the status
@@ -838,6 +838,7 @@ pub(in crate::alphacode_tui::tui::app) fn handle_server_event(
             eager_stream_redraw
         }
         ServerEvent::ToolInput { delta } => {
+            app.note_streaming_tps_bytes(delta.len());
             remote.handle_tool_input(&delta);
             false
         }
@@ -1046,6 +1047,7 @@ pub(in crate::alphacode_tui::tui::app) fn handle_server_event(
             ephemeral_message_count,
         } => {
             remote.reset_call_output_tokens_seen();
+            app.begin_streaming_tps_request();
             app.begin_remote_kv_cache_request(app_mod::KvCacheRequestSignature {
                 system_static_hash,
                 tools_hash,
@@ -1406,9 +1408,20 @@ pub(in crate::alphacode_tui::tui::app) fn handle_server_event(
             if app.current_message_id == Some(id) {
                 app.current_message_id = None;
             }
+            let provider_busy =
+                crate::alphacode_provider_core::retry::embedded_http_status(&message) == Some(429)
+                    && !crate::alphacode_app_core::agent::is_content_policy_rejection(&message);
+            if provider_busy {
+                crate::logging::warn(&format!("Provider rate limit: {message}"));
+            }
             app.push_display_message(DisplayMessage {
                 role: "error".to_string(),
-                content: message.clone(),
+                content: if provider_busy {
+                    "Provider is busy or rate-limited. Try again later or switch model (/model)."
+                        .to_string()
+                } else {
+                    message.clone()
+                },
                 tool_calls: vec![],
                 duration_secs: None,
                 title: None,
@@ -1430,6 +1443,26 @@ pub(in crate::alphacode_tui::tui::app) fn handle_server_event(
             }
             remote.clear_pending();
             remote.reset_call_output_tokens_seen();
+            if provider_busy {
+                // The agent already used its bounded retry budget. Resending
+                // the whole turn here would multiply requests on the same account.
+                app.clear_pending_remote_retry();
+                app.restore_failed_input_to_box();
+                return false;
+            }
+            if crate::alphacode_provider_core::error_classification::is_alphax_free_bad_request(
+                &message,
+            ) {
+                app.clear_pending_remote_retry();
+                crate::alphacode_tui::tui::app::commands::stop_auto_poke_for_non_retryable_error(
+                    app, &message,
+                );
+                app.stop_overnight_auto_poke_for_non_retryable_error(&message);
+                app.set_status_notice("Alphax Free rejected the request");
+                app.restore_failed_input_to_box();
+                app.offer_fallback_after_error_with_payload(&message, failed_fallback_payload);
+                return false;
+            }
             if let Some(seconds) = retry_after_secs
                 && let Some(pending) = app.rate_limit_pending_message.as_mut()
             {

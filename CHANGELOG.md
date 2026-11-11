@@ -4,12 +4,29 @@ All notable changes to Alphacode are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project
 adheres to [Semantic Versioning](https://semver.org/).
 
-## [Unreleased]
+## [1.1.2]
 
 ### Added
 
 - Configure a Bing-compatible search API with `websearch.bing_api_url` or
-  `ALPHACODE_BING_API_URL`. Microsoft retired its original Bing Search API.
+  `ALPHACODE_BING_API_URL`.
+- Compare authorized actor responses in `httpflow` using owner and missing
+  resource controls.
+- Show the active generation rate in the terminal composer. Estimates use
+  `~` until provider usage arrives.
+
+### Fixed
+
+- Firefox opens reuse a session-owned background tab by default. Navigation
+  timeouts preserve the allocated tab ID, and closed tabs free capacity.
+- Project checkpoints survive interrupted index writes and can restore saved
+  project state when `STATE.json` is missing or corrupt.
+- LM Studio catalogs follow the configured endpoint and preserve model IDs
+  advertised by the server. Alphax Free tries one alternate free route after
+  an opaque request rejection.
+- Terminal sessions recover a stopped local daemon in the background and
+  preserve the draft during recoverable provider failures.
+- CTF turns continue actionable tasks after premature model replies.
 
 ## [1.0.100] - 2026-11-10
 

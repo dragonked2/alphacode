@@ -438,6 +438,65 @@ async fn desktop_control_discovers_and_sends_to_a_real_local_session() -> Result
     Ok(())
 }
 
+#[tokio::test]
+async fn closing_one_client_keeps_another_session_operational() -> Result<()> {
+    let _storage_guard = crate::storage::lock_test_env();
+    let temp = tempfile::TempDir::new()?;
+    let _env = configure_test_env(&temp);
+    let provider = Arc::new(StreamingMockProvider::default());
+    provider.queue_response(vec![
+        StreamEvent::TextDelta("second client survived".to_string()),
+        StreamEvent::MessageEnd { stop_reason: None },
+    ]);
+    let socket = temp.path().join("two-clients.sock");
+    let debug = temp.path().join("two-clients-debug.sock");
+    let server = Server::new_with_paths(provider, socket.clone(), debug.clone());
+    let main_listener = crate::transport::Listener::bind(&socket)?;
+    let debug_listener = crate::transport::Listener::bind(&debug)?;
+    let (runtime, main_handle, debug_handle) = server
+        .finish_startup_after_bind(main_listener, debug_listener, Instant::now())
+        .await;
+    let mut first = super::Client::connect_with_path(socket.clone()).await?;
+    let mut second = super::Client::connect_with_path(socket).await?;
+    first.subscribe().await?;
+    second.subscribe().await?;
+    for client in [&mut first, &mut second] {
+        timeout(Duration::from_secs(20), async {
+            loop {
+                match client.read_event().await? {
+                    ServerEvent::SessionId { .. } | ServerEvent::History { .. } => {
+                        return Ok::<(), anyhow::Error>(());
+                    }
+                    ServerEvent::Error { message, .. } => anyhow::bail!(message),
+                    _ => {}
+                }
+            }
+        })
+        .await??;
+    }
+    drop(first);
+    second.send_message("hello from the other terminal").await?;
+    timeout(Duration::from_secs(20), async {
+        let mut saw_reply = false;
+        loop {
+            match second.read_event().await? {
+                ServerEvent::TextDelta { text } => {
+                    saw_reply |= text.contains("second client survived")
+                }
+                ServerEvent::Done { .. } if saw_reply => return Ok::<(), anyhow::Error>(()),
+                ServerEvent::Error { message, .. } => anyhow::bail!(message),
+                _ => {}
+            }
+        }
+    })
+    .await??;
+    drop(second);
+    runtime.shutdown().await;
+    let _ = main_handle.await;
+    let _ = debug_handle.await;
+    Ok(())
+}
+
 #[allow(clippy::type_complexity)]
 fn empty_swarm_status_state() -> (
     Arc<RwLock<HashMap<String, std::collections::HashSet<String>>>>,

@@ -13,7 +13,7 @@ use std::fs;
 use std::path::PathBuf;
 
 use super::Checkpoint;
-use crate::alphacode_app_core::memory_manager::{MemoryManager, ProjectState};
+use crate::alphacode_app_core::memory_manager::{MemoryManager, ProjectState, atomic_write};
 
 /// Triggers for creating a checkpoint.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -30,6 +30,10 @@ pub enum CheckpointTrigger {
 pub struct CheckpointMeta {
     pub checkpoint: Checkpoint,
     pub trigger: String,
+    #[serde(default)]
+    version: u32,
+    #[serde(default)]
+    state: Option<ProjectState>,
 }
 
 /// CheckpointManager owns the checkpoints directory and provides create,
@@ -47,10 +51,14 @@ impl CheckpointManager {
         let checkpoints_dir = memory.root().join("checkpoints");
         fs::create_dir_all(&checkpoints_dir)
             .with_context(|| format!("creating checkpoints dir {}", checkpoints_dir.display()))?;
-        Ok(Self {
+        let manager = Self {
             memory,
             checkpoints_dir,
-        })
+        };
+        if let Ok(Some(state)) = manager.memory.load_state_snapshot() {
+            manager.reconcile_index(state)?;
+        }
+        Ok(manager)
     }
 
     /// Create a new checkpoint and persist it.
@@ -64,7 +72,10 @@ impl CheckpointManager {
         summary: &str,
         trigger: CheckpointTrigger,
     ) -> Result<Checkpoint> {
-        let state = self.memory.load_state().unwrap_or_default();
+        let state = self
+            .memory
+            .load_state()
+            .context("loading state for checkpoint")?;
         let checkpoint = Checkpoint {
             id: super::new_id(),
             phase: phase.to_string(),
@@ -80,17 +91,29 @@ impl CheckpointManager {
         let meta = CheckpointMeta {
             checkpoint: checkpoint.clone(),
             trigger: trigger_label(trigger).to_string(),
+            version: 1,
+            state: Some(state),
         };
 
         let path = self.checkpoint_path(&checkpoint.id);
-        let json = serde_json::to_string_pretty(&meta)?;
-        fs::write(&path, json).with_context(|| format!("writing checkpoint {}", path.display()))?;
+        let json = serde_json::to_vec_pretty(&meta)?;
+        atomic_write(&path, &json)
+            .with_context(|| format!("writing checkpoint {}", path.display()))?;
 
-        // Update state's checkpoint list.
-        self.memory.update_state(|s| {
-            s.checkpoints.push(checkpoint.id.clone());
-            s.statistics.checkpoints_created += 1;
-        })?;
+        // The checkpoint file is the commit record. The index is rebuilt from
+        // committed generations on startup if this secondary write fails.
+        if let Err(error) = self.memory.update_state(|state| {
+            if !state.checkpoints.contains(&checkpoint.id) {
+                state.checkpoints.push(checkpoint.id.clone());
+                state.statistics.checkpoints_created =
+                    state.statistics.checkpoints_created.saturating_add(1);
+            }
+        }) {
+            crate::alphacode_base::logging::warn(&format!(
+                "Checkpoint {} committed, but its index update failed: {error:#}",
+                checkpoint.id
+            ));
+        }
 
         Ok(checkpoint)
     }
@@ -100,14 +123,19 @@ impl CheckpointManager {
     /// This updates the in-memory project state.  File restoration uses
     /// the stored git commit hash.
     pub fn restore(&self, checkpoint_id: &str) -> Result<Checkpoint> {
-        let path = self.checkpoint_path(checkpoint_id);
-        let data = fs::read_to_string(&path)
-            .with_context(|| format!("reading checkpoint {}", path.display()))?;
-        let meta: CheckpointMeta = serde_json::from_str(&data).context("parsing checkpoint")?;
-
-        self.memory.update_state(|s| {
-            s.active_phase = Some(meta.checkpoint.phase.clone());
-        })?;
+        let path = self.checked_checkpoint_path(checkpoint_id)?;
+        let meta = Self::read_generation(&path)?;
+        let mut state = match self.memory.load_state_snapshot() {
+            Ok(Some(state)) => state,
+            Ok(None) => meta.state.clone().unwrap_or_default(),
+            Err(error) => meta.state.clone().with_context(|| {
+                format!("Project state is unreadable and the checkpoint has no state snapshot: {error:#}")
+            })?,
+        };
+        state.active_phase = Some(meta.checkpoint.phase.clone());
+        state.updated_at = Utc::now();
+        self.refresh_index(&mut state)?;
+        self.memory.save_state(&state)?;
 
         Ok(meta.checkpoint)
     }
@@ -141,15 +169,19 @@ impl CheckpointManager {
 
     /// Delete a checkpoint file.
     pub fn delete(&self, checkpoint_id: &str) -> Result<bool> {
-        let path = self.checkpoint_path(checkpoint_id);
-        if !path.exists() {
-            return Ok(false);
+        let path = self.checked_checkpoint_path(checkpoint_id)?;
+        match fs::remove_file(&path) {
+            Ok(()) => {
+                self.memory
+                    .update_state(|state| state.checkpoints.retain(|id| id != checkpoint_id))?;
+                Ok(true)
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(false),
+            Err(error) => Err(error.into()),
         }
-        fs::remove_file(&path)?;
-        Ok(true)
     }
 
-    /// List all checkpoints, ordered oldest first.
+    /// List valid, committed checkpoint generations.
     pub fn list(&self) -> Result<HashMap<String, CheckpointMeta>> {
         let mut result = HashMap::new();
         if !self.checkpoints_dir.exists() {
@@ -161,14 +193,8 @@ impl CheckpointManager {
             if path.extension().is_none_or(|e| e != "json") {
                 continue;
             }
-            match fs::read_to_string(&path) {
-                Ok(data) => {
-                    if let Ok(meta) = serde_json::from_str::<CheckpointMeta>(&data) {
-                        let id = meta.checkpoint.id.clone();
-                        result.insert(id, meta);
-                    }
-                }
-                Err(_) => continue,
+            if let Ok(meta) = Self::read_generation(&path) {
+                result.insert(meta.checkpoint.id.clone(), meta);
             }
         }
         Ok(result)
@@ -199,6 +225,61 @@ impl CheckpointManager {
         // Prefer one with a git commit for full rollback.
         let with_commit = checkpoints.iter().find(|c| c.git_commit.is_some()).cloned();
         Ok(with_commit.or_else(|| checkpoints.into_iter().next()))
+    }
+
+    fn read_generation(path: &std::path::Path) -> Result<CheckpointMeta> {
+        let bytes =
+            fs::read(path).with_context(|| format!("reading checkpoint {}", path.display()))?;
+        let meta: CheckpointMeta = serde_json::from_slice(&bytes).context("parsing checkpoint")?;
+        anyhow::ensure!(
+            path.file_stem().and_then(|id| id.to_str()) == Some(&meta.checkpoint.id),
+            "Checkpoint ID does not match its filename"
+        );
+        anyhow::ensure!(
+            meta.version == 0 || (meta.version == 1 && meta.state.is_some()),
+            "Unsupported or incomplete checkpoint generation"
+        );
+        Ok(meta)
+    }
+
+    fn reconcile_index(&self, mut state: ProjectState) -> Result<()> {
+        if self.refresh_index(&mut state)? {
+            state.updated_at = Utc::now();
+            self.memory.save_state(&state)?;
+        }
+        Ok(())
+    }
+
+    fn refresh_index(&self, state: &mut ProjectState) -> Result<bool> {
+        let mut generations: Vec<_> = self
+            .list()?
+            .into_values()
+            .map(|meta| meta.checkpoint)
+            .collect();
+        generations.sort_by(|a, b| (a.created_at, &a.id).cmp(&(b.created_at, &b.id)));
+        let ids: Vec<_> = generations
+            .into_iter()
+            .map(|checkpoint| checkpoint.id)
+            .collect();
+        if ids == state.checkpoints {
+            return Ok(false);
+        }
+        let previous: std::collections::HashSet<_> = state.checkpoints.iter().collect();
+        let recovered = ids.iter().filter(|id| !previous.contains(id)).count();
+        state.statistics.checkpoints_created = state
+            .statistics
+            .checkpoints_created
+            .saturating_add(u32::try_from(recovered).unwrap_or(u32::MAX));
+        state.checkpoints = ids;
+        Ok(true)
+    }
+
+    fn checked_checkpoint_path(&self, id: &str) -> Result<PathBuf> {
+        anyhow::ensure!(
+            !id.is_empty() && id.bytes().all(|byte| byte.is_ascii_hexdigit()),
+            "Invalid checkpoint ID"
+        );
+        Ok(self.checkpoint_path(id))
     }
 
     fn checkpoint_path(&self, id: &str) -> PathBuf {
@@ -254,6 +335,63 @@ mod tests {
         let memory = MemoryManager::new(dir.path()).unwrap();
         let mgr = CheckpointManager::new(memory).unwrap();
         (dir, mgr)
+    }
+
+    #[test]
+    fn checkpoint_rejects_corrupt_state() {
+        let (dir, mgr) = make_mgr();
+        fs::write(dir.path().join("STATE.json"), "{invalid").unwrap();
+        assert!(
+            mgr.create("phase", "summary", CheckpointTrigger::TimeInterval)
+                .is_err()
+        );
+        assert!(mgr.list().unwrap().is_empty());
+    }
+
+    #[test]
+    fn recovers_committed_generation_after_index_write_is_interrupted() {
+        let (dir, mgr) = make_mgr();
+        let mut state = mgr.memory.load_state().unwrap();
+        state.objective = "Preserve the original objective".into();
+        mgr.memory.save_state(&state).unwrap();
+        let checkpoint = mgr
+            .create("phase", "summary", CheckpointTrigger::TimeInterval)
+            .unwrap();
+
+        // Simulate a crash after committing the generation but before replacing STATE.json.
+        mgr.memory.save_state(&state).unwrap();
+        // Simulate an unrelated damaged generation and an interrupted temporary write.
+        fs::write(mgr.checkpoint_path("deadbeef"), b"{").unwrap();
+        fs::write(mgr.checkpoints_dir.join(".tmp-checkpoint"), b"{").unwrap();
+        let reopened = CheckpointManager::new(MemoryManager::new(dir.path()).unwrap()).unwrap();
+        let indexed = reopened.memory.load_state().unwrap();
+        assert_eq!(indexed.checkpoints, [checkpoint.id.clone()]);
+        assert_eq!(indexed.statistics.checkpoints_created, 1);
+        assert_eq!(reopened.latest().unwrap().unwrap().id, checkpoint.id);
+
+        fs::write(dir.path().join("STATE.json"), b"{").unwrap();
+        reopened.restore(&checkpoint.id).unwrap();
+        let recovered = reopened.memory.load_state().unwrap();
+        assert_eq!(recovered.objective, state.objective);
+        assert_eq!(recovered.checkpoints, [checkpoint.id]);
+    }
+
+    #[test]
+    fn restores_objective_after_state_file_is_missing_on_restart() {
+        let (dir, mgr) = make_mgr();
+        mgr.memory
+            .update_state(|state| state.objective = "Recover the exact objective".into())
+            .unwrap();
+        let checkpoint = mgr
+            .create("phase", "summary", CheckpointTrigger::TimeInterval)
+            .unwrap();
+        fs::remove_file(dir.path().join("STATE.json")).unwrap();
+
+        let reopened = CheckpointManager::new(MemoryManager::new(dir.path()).unwrap()).unwrap();
+        reopened.restore(&checkpoint.id).unwrap();
+        let state = reopened.memory.load_state().unwrap();
+        assert_eq!(state.objective, "Recover the exact objective");
+        assert_eq!(state.checkpoints, [checkpoint.id]);
     }
 
     #[test]

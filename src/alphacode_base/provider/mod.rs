@@ -155,19 +155,10 @@ fn openai_compatible_profile_catalog_cache_is_stale(cached_at: u64, now: u64) ->
 pub(crate) fn cached_live_models_for_openai_compatible_profile(
     resolved: &crate::provider_catalog::ResolvedOpenAiCompatibleProfile,
 ) -> Option<(Vec<String>, bool)> {
-    let cache =
-        crate::alphacode_provider_openrouter::load_disk_cache_entry_for_namespace(&resolved.id)?;
+    let cache = crate::provider_catalog::cached_catalog_for_resolved_compatible_profile(resolved)?;
     let cache_is_stale = crate::alphacode_provider_openrouter::current_unix_secs()
         .map(|now| openai_compatible_profile_catalog_cache_is_stale(cache.cached_at, now))
         .unwrap_or(false);
-    let source_api_base = cache
-        .source_api_base
-        .as_deref()
-        .and_then(crate::provider_catalog::normalize_api_base)?;
-    let expected_api_base = crate::provider_catalog::normalize_api_base(&resolved.api_base)?;
-    if source_api_base != expected_api_base {
-        return None;
-    }
 
     let models = cache
         .models

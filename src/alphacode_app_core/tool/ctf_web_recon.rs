@@ -135,6 +135,7 @@ impl Tool for CtfWebReconTool {
             .timeout(Duration::from_secs(6))
             .user_agent("AlphaCode-CTF-Recon/1.0")
             .build()?;
+        let total_requests = targets.len();
         let mut rows = Vec::new();
         let max_rps = super::scope::session_scope_policy(&ctx.session_id)
             .map(|policy| policy.max_rate_rps)
@@ -160,7 +161,8 @@ impl Tool for CtfWebReconTool {
         }).await;
         Ok(ToolOutput::new(serde_json::to_string_pretty(
             &json!({"requests":rows,
-                "budget_exhausted":report.is_err(),
+                "timed_out":report.is_err(),
+                "remaining_requests":total_requests.saturating_sub(rows.len()),
                 "interpretation":"The second request is a missing-page control. Compare status, sampled body hash and size for wildcard routing. A 403 does not prove route existence. Headers are claims, not conclusive stack identification. No challenge solve is implied."}),
         )?))
     }

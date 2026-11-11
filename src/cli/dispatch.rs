@@ -1363,7 +1363,8 @@ pub(crate) async fn spawn_server(
     {
         use std::io::Read;
 
-        let mut child = cmd.spawn()?;
+        cmd.stdin(Stdio::null());
+        let mut child = crate::platform::spawn_detached_process(&mut cmd)?;
         let start = std::time::Instant::now();
         // Windows server bootstrap can legitimately take tens of seconds on
         // slow hosts (auth preflights + provider init were observed at 15-60s

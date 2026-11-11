@@ -17,6 +17,7 @@ mod playbook_match;
 mod prompting;
 mod provider;
 mod response_recovery;
+pub(crate) use response_recovery::is_content_policy_rejection;
 mod status;
 mod streamed_tool_results;
 mod streaming;

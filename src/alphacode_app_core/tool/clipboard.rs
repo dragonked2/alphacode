@@ -185,7 +185,7 @@ fn paste_from_clipboard() -> Result<(String, bool)> {
             }
             Err(error) => return Err(error.into()),
         };
-        let mut bytes = Vec::with_capacity(MAX_CLIPBOARD_BYTES + 1);
+        let mut bytes = Vec::new();
         file.take((MAX_CLIPBOARD_BYTES + 1) as u64)
             .read_to_end(&mut bytes)?;
         let truncated = bytes.len() > MAX_CLIPBOARD_BYTES;
@@ -222,7 +222,7 @@ fn run_clipboard_reader(program: &str, args: &[&str]) -> Result<(String, bool)> 
         .take()
         .ok_or_else(|| anyhow::anyhow!("failed to capture {program} output"))?;
     let reader = std::thread::spawn(move || {
-        let mut bytes = Vec::with_capacity(MAX_CLIPBOARD_BYTES + 1);
+        let mut bytes = Vec::new();
         let mut buffer = [0u8; 16 * 1024];
         let mut truncated = false;
         loop {
