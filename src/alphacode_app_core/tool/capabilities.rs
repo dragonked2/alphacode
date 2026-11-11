@@ -64,11 +64,72 @@ pub(crate) fn matches_query(name: &str, description: &str, query: &str) -> bool 
         "Security and reconnaissance" => "recon vulnerability http network",
         "Connected integrations" => "mcp plugin connector integration",
         "Commands and parallel execution" => "shell background batch terminal",
-        "Web research and browser" => "browser automation browsing tabs",
         _ => "",
     };
-    let haystack = format!("{name} {description} {} {hints}", family(name)).to_lowercase();
-    query.split_whitespace().all(|word| haystack.contains(word))
+    // Search task vocabulary as well as tool names. Keep these hints specific:
+    // broad family synonyms can otherwise suggest an unrelated tool as a match.
+    let task_hints = match name {
+        "subfinder" | "assetfinder" | "amass" => "subdomain discovery enumeration dns",
+        "dnsx" => "dns resolution records subdomain",
+        "httpx" | "httprobe" => "http service probing live hosts",
+        "gau" | "waybackurls" => "historical archived urls endpoints",
+        "katana" => "crawl spider endpoints javascript",
+        "ffuf" | "feroxbuster" | "gobuster" => "content discovery fuzz paths directories",
+        "httpflow" => "http request response replay headers cookies",
+        "jwt" => "json web token inspect decode",
+        "nuclei" => "template vulnerability scanner",
+        "sqlmap" => "sql injection database testing",
+        "dalfox" => "cross site scripting xss scanner",
+        "nmap" | "naabu" => "network port scanning service discovery",
+        "alphagrep" => {
+            "source code search patterns symbols definitions references callers outline files"
+        }
+        "memory" | "session_search" => "prior findings investigation notes",
+        "read" => "open inspect file contents",
+        "edit" | "apply_patch" | "patch" | "multiedit" => "modify change update file code",
+        "websearch" => "search internet online research sources",
+        "webfetch" => "fetch retrieve web page url",
+        "browser" => {
+            "browser automation browsing tabs javascript interactive website inspect frontend"
+        }
+        "scrapling" => {
+            "web page scraping extraction css selectors javascript rendering structured content"
+        }
+        "skill_manage" => "discover search load skills instructions",
+        _ => "",
+    };
+    let haystack =
+        format!("{name} {description} {} {hints} {task_hints}", family(name)).to_lowercase();
+    // Natural requests such as "use my browser" should find the capability,
+    // while a query made entirely of filler must not match the whole catalog.
+    let terms: Vec<_> = query
+        .split_whitespace()
+        .map(|word| word.trim_matches(|c: char| !c.is_alphanumeric() && c != '_' && c != '-'))
+        .filter(|word| {
+            !word.is_empty()
+                && !matches!(
+                    *word,
+                    "a" | "an"
+                        | "the"
+                        | "my"
+                        | "me"
+                        | "use"
+                        | "to"
+                        | "for"
+                        | "with"
+                        | "please"
+                        | "can"
+                        | "you"
+                        | "i"
+                        | "want"
+                        | "find"
+                        | "help"
+                        | "how"
+                        | "do"
+                )
+        })
+        .collect();
+    !terms.is_empty() && terms.iter().all(|word| haystack.contains(word))
 }
 
 pub(crate) fn eligible_names(
@@ -99,11 +160,29 @@ pub(crate) fn brief(names: &[String], advertised: &[ToolDefinition], compact: bo
     );
     let help = names.iter().any(|name| name == "tool_help");
     if help {
-        out.push_str("For a missing capability, use tool_help with action=search and a task query; then enable only the exact tools needed. Do not claim access is unavailable before discovery. Discovery cannot override session restrictions.\n");
+        out.push_str("For an unfamiliar task or a capability without an advertised schema, use tool_help with action=search and a short task query; enable only the exact tools needed. Check discovery before assuming shell is the only option or claiming a capability is unavailable. Discovery cannot override session restrictions.\n");
     } else {
         out.push_str("Use only the advertised call schemas; tool discovery is not enabled in this session.\n");
     }
     out.push_str("Choose the smallest useful first action: inspect relevant evidence, use a matching native tool, verify its prerequisite, then act. Reuse permitted memory/skills when relevant; parallelize independent work within authorization. On failure, diagnose once or change route instead of repeating unchanged calls.\n");
+    // Surface commonly overlooked tools before the bounded family samples.
+    // Include only names actually permitted in this session; schemas for
+    // deferred tools still have to be enabled via discovery.
+    for (name, hint) in [
+        ("alphagrep", "code search, symbols, outlines and traces"),
+        ("webfetch", "retrieve and inspect a specific web page"),
+        ("browser", "interactive pages and browser state"),
+        ("scrapling", "page extraction and JavaScript rendering"),
+        ("httpflow", "stateful HTTP comparisons"),
+        ("bg", "inspect, wait for and manage background work"),
+    ] {
+        if names.iter().any(|allowed| allowed == name) {
+            let line = format!("- {name}: {hint}\n");
+            if out.len() + line.len() <= budget {
+                out.push_str(&line);
+            }
+        }
+    }
     let mut groups: BTreeMap<&str, Vec<&str>> = BTreeMap::new();
     for name in names {
         groups.entry(family(name)).or_default().push(name);
@@ -162,6 +241,47 @@ mod tests {
         assert!(matches_query("subfinder", "", "recon"));
         assert!(!matches_query("read", "Read a file", "binary analysis"));
         assert!(!matches_query("read", "Read a file", "   "));
+        assert!(matches_query("gau", "", "historical endpoints"));
+        assert!(matches_query("httpflow", "", "request replay"));
+        assert!(matches_query("dalfox", "", "cross site scripting"));
+        assert!(!matches_query("dnsx", "", "historical endpoints"));
+        assert!(matches_query("browser", "", "use my browser!"));
+        assert!(matches_query("browser", "", "please use the browser"));
+        assert!(!matches_query("dnsx", "", "use my browser"));
+        assert!(!matches_query("browser", "", "please use my"));
+        assert!(matches_query("websearch", "", "find online sources"));
+        assert!(matches_query("skill_manage", "", "find skills"));
+        assert!(matches_query("edit", "", "modify code"));
+        assert!(!matches_query("dnsx", "", "find skills"));
+        assert!(!matches_query(
+            "websearch",
+            "search the web",
+            "browser automation"
+        ));
+        assert!(matches_query("browser", "", "browser automation"));
+        assert!(matches_query("scrapling", "", "javascript rendering"));
+        assert!(matches_query("scrapling", "", "css extraction"));
+        assert!(matches_query("alphagrep", "", "code symbols"));
+    }
+
+    #[test]
+    fn brief_highlights_only_permitted_specialized_tools() {
+        let names = eligible_names(
+            vec![
+                "alphagrep".into(),
+                "browser".into(),
+                "scrapling".into(),
+                "tool_help".into(),
+            ],
+            None,
+            &["browser".into()].into_iter().collect(),
+        );
+        let prompt = brief(&names, &[], true);
+        assert!(prompt.contains("alphagrep: code search"));
+        assert!(prompt.contains("scrapling: page extraction"));
+        assert!(!prompt.contains("browser:"));
+        assert!(prompt.contains("Check discovery before assuming shell"));
+        assert!(prompt.len() <= 1400);
     }
 
     #[test]

@@ -122,6 +122,14 @@ mod tests {
                     )),
                 )
                 .await;
+            for name in ["browser", "scrapling"] {
+                registry
+                    .register(
+                        name.into(),
+                        Arc::new(crate::tool::tool_help::ToolHelpTool::new()),
+                    )
+                    .await;
+            }
             let mut agent = Agent::new(provider.clone(), registry.clone());
             for step in 0..3 {
                 if step == 1 {
@@ -160,6 +168,8 @@ mod tests {
                     .next()
                     .unwrap();
                 assert_eq!(inventory.contains("ghidra"), step == 1);
+                assert!(inventory.contains("browser: interactive pages"));
+                assert!(inventory.contains("scrapling: page extraction"));
                 assert!(!request.tools.iter().any(|name| name == "ghidra"));
                 assert!(request.tools.iter().any(|name| name == "tool_help"));
             }

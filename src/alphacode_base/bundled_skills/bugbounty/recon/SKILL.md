@@ -75,6 +75,12 @@ grep -v -E '^(help|explorer|community)\.' subs.txt > subs-in-scope.txt
 
 (Replace the exclusion pattern with the assessment's OUT-OF-SCOPE list.)
 
+Certificate transparency and other passive sources are incomplete, time-bound
+observations, not a complete host list. Record sources, query time, errors,
+scope filters and the number of names observed. Do not call the discovered set
+the entire wildcard or claim full coverage. Preserve unresponsive and blocked
+hosts as unknown, with the conditions and a useful retry prerequisite.
+
 Windows notes: prefer `nslookup` or PowerShell `Resolve-DnsName`
 when dnsx is missing; check tools with `Get-Command <tool>`
 (PowerShell) instead of `command -v`.
@@ -85,13 +91,20 @@ when dnsx is missing; check tools with `Get-Command <tool>`
 
 ```bash
 dnsx -l subs-in-scope.txt -a -aaaa -cname -resp -o resolved.txt
-httpx -l resolved.txt -sc -title -tech-detect -cdn -follow-redirects -o alive.txt
+httpx -l resolved.txt -sc -title -tech-detect -cdn -o alive.txt
 ```
 
 Fallbacks: `nslookup`/`Resolve-DnsName` for DNS; `curl -s -o
 /dev/null -w "%{http_code} %{url_effective}\n"` for probing.
 Cap output (`head -100`), filter at fetch time (`--max-time 20`).
 A 170KB response teaches nothing — re-fetch narrowly.
+
+Check every redirect destination against scope before following it; automatic
+redirect following can send requests to an unrelated or excluded host. A status
+code alone does not establish an endpoint: compare a random nonexistent path
+with the candidate's status, content type, body and relevant headers to detect
+SPA shells, soft 404s and WAF responses. Liveness and fingerprinting are not
+authorization or business-logic coverage.
 
 ---
 

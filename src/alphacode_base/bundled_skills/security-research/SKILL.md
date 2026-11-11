@@ -10,6 +10,16 @@ Optimize for reproducible, in-scope security impact. A clean negative result is 
 ## Start or resume
 
 1. Read the supplied scope, program rules, accounts, and previous evidence. Preserve existing authorization; resolve only material gaps before dependent actions. Discovery does not grant scope.
+
+For a request to hunt a named bug bounty program, treat that program as the
+engagement. Check its current official scope, rules and participation conditions;
+program permission can authorize testing listed assets without personal ownership
+or separate written permission. An optional user-owned site is auxiliary, not a
+substitute target. If a policy page is a JavaScript shell, try the available
+rendered browser and official platform interfaces before declaring it unreadable.
+If the policy or required access remains unavailable, identify the specific gap,
+continue independent permitted work, and request policy text or access only if
+needed. Never invent eligible assets from a snippet or a related domain.
 2. Record a compact engagement card: target/revision, allowed assets and methods, exclusions, actor/tenant roles, rate budget, objective, and evidence directory. Keep credentials out of notes and reports.
 3. Model the system: entry points, sensitive objects, roles, trust boundaries, state transitions, and expected invariants. Prioritize reachable boundaries with useful impact over large payload lists.
 4. Select one falsifiable hypothesis and the cheapest discriminating test. State what would refute it before testing. Load only the class reference needed for that test.
@@ -58,6 +68,7 @@ Load other skills with `skill_manage` (`action=load`, `name=...`). Read a bundle
 | Question | Guidance | Required distinction |
 |---|---|---|
 | What is reachable and permitted? | `recon-ops`; bugbounty `scope`, `recon`, `recon-js` | Discovered asset versus authorized asset |
+| How do product features pass objects across trust boundaries? | bugbounty `cross-feature-workflows` | Observed handoffs and controlled actor comparisons versus hypothetical chains |
 | Who can read or change which object? | `hunt-idor`, `hunt-api`, `hunt-graphql` | Two controlled users/tenants, own/other/nonexistent object, actual data or side effect |
 | Can identity or session state be confused? | `hunt-auth-bypass`, `hunt-oauth`, `hunt-jwt`, `hunt-otp` | Token claims versus server-enforced identity and privileges |
 | Does a multi-step workflow preserve its invariant? | `hunt-business-logic`, `hunt-race` | State before/after, idempotency, duplicates, ordering, actual durable result |

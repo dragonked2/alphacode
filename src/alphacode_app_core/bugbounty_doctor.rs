@@ -267,6 +267,14 @@ pub fn probe() -> Vec<ToolReport> {
 /// on Windows (e.g. `subfinder.exe`) and to looking in `$PATH` directly
 /// if `which` is unavailable.
 pub fn which(binary: &str) -> ToolStatus {
+    // The recon runner prefers Go's binary over PATH for this colliding name.
+    // Report that same executable rather than Python's unrelated httpx CLI.
+    if binary == "httpx" {
+        let resolved = super::tool::recon_common::resolve_program(binary);
+        if resolved != binary && std::path::Path::new(&resolved).is_file() {
+            return ToolStatus::Present { path: resolved };
+        }
+    }
     // Try `which` first (POSIX + Git Bash + most CI).
     let candidates: &[&str] = if cfg!(windows) {
         &["where.exe", "which.exe", "which"]

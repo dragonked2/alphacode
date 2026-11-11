@@ -3,7 +3,8 @@
 //!
 //! "Never claim success without evidence" becomes a runtime check, not a hope.
 //! The claim checker parses the final report for factual claims (files changed,
-//! tests run, vulns confirmed) and mechanically verifies each one.
+//! tests run, vulns confirmed) and checks what can be mechanically established.
+//! Matching HTTP evidence alone cannot confirm a security vulnerability.
 //!
 //! # Fail-closed
 //!
@@ -521,12 +522,13 @@ fn check_http_status_claim(
     )
 }
 
-/// Step 1: a vulnerability claim verifies only against a structured proof.
+/// Check a vulnerability claim's structured proof against the transcript.
 ///
 /// The proof objects declared anywhere in the report are matched to this claim,
 /// and the matched proof is then cross-checked against the exchanges the
 /// session actually observed. A claim with no matching proof is unverified,
-/// with the missing requirements named.
+/// with the missing requirements named. Even a matching proof needs independent
+/// review of the boundary, causality, and demonstrated impact.
 fn check_vulnerability_claim(
     claim: &Claim,
     vuln: &str,
@@ -545,15 +547,17 @@ fn check_vulnerability_claim(
     };
 
     let verdict = proof.verify_against(&evidence.exchanges);
-    let mut result = ClaimCheckResult::with_proof(
-        claim,
-        verdict.verified,
-        String::new(),
-        Some(verdict.clone()),
-    );
+    // Transcript matching and response differences establish evidence
+    // consistency, not the application's intended boundary, causality, or
+    // security impact. Do not promote a vulnerability claim on a mechanical
+    // heuristic alone, even when the structured evidence check passes.
+    let mut result =
+        ClaimCheckResult::with_proof(claim, false, String::new(), Some(verdict.clone()));
 
     if verdict.verified {
-        result.evidence = format!("Vulnerability '{vuln}' verified against observed evidence");
+        result.evidence = format!(
+            "Vulnerability '{vuln}' has matching structured evidence; independent review of the security boundary, causality, and impact is required"
+        );
     } else {
         let reasons: Vec<&str> = verdict.defects.iter().map(|d| d.as_str()).collect();
         result.evidence = format!(
@@ -1289,7 +1293,7 @@ mod tests {
     }
 
     #[test]
-    fn a_vulnerability_claim_with_a_full_proof_verifies_against_observed_history() {
+    fn matching_proof_does_not_mechanically_confirm_a_vulnerability() {
         let mut messages = transcript(
             "https://example.com/api/search?q=%27%20OR%201=1--",
             "GET",
@@ -1311,7 +1315,9 @@ mod tests {
             .iter()
             .find(|r| matches!(r.claim.claim_type, ClaimType::VulnerabilityConfirmed(_)))
             .expect("a vulnerability claim should be extracted");
-        assert!(vuln.verified, "{}", vuln.evidence);
+        assert!(!vuln.verified, "{}", vuln.evidence);
+        assert!(vuln.proof.as_ref().is_some_and(|proof| proof.verified));
+        assert!(vuln.evidence.contains("independent review"));
     }
 
     /// A complete-looking proof for a request that was never sent.

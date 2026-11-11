@@ -174,14 +174,34 @@ impl SkillTool {
         // `bugbounty`, not standalone skills — but the model may try to load
         // them directly. Return the reference content with a note about the
         // parent skill.
-        for skill in registry.list() {
-            if let Some(reference_content) = skill.reference_files.get(&name) {
-                return Ok(ToolOutput::new(format!(
-                    "## Reference: {}\n\n**Parent skill**: /{}\n\n{}",
-                    name, skill.name, reference_content
-                ))
-                .with_title(format!("skill: {} (reference of {})", name, skill.name)));
-            }
+        let matches: Vec<_> = registry
+            .list()
+            .into_iter()
+            .filter_map(|skill| {
+                skill
+                    .reference_files
+                    .get(&name)
+                    .map(|content| (skill, content))
+            })
+            .collect();
+        if let [(skill, reference_content)] = matches.as_slice() {
+            return Ok(ToolOutput::new(format!(
+                "## Reference: {}\n\n**Parent skill**: /{}\n\n{}",
+                name, skill.name, reference_content
+            ))
+            .with_title(format!("skill: {} (reference of {})", name, skill.name)));
+        }
+        if matches.len() > 1 {
+            let parents = matches
+                .iter()
+                .map(|(skill, _)| skill.name.as_str())
+                .collect::<Vec<_>>()
+                .join(", ");
+            anyhow::bail!(
+                "Reference '{}' exists in multiple skills: {}. Use action=read with the intended parent name and reference.",
+                name,
+                parents
+            );
         }
 
         // Not found anywhere — build an actionable error.
@@ -700,6 +720,63 @@ mod tests {
         let result = tool.execute(input, ctx).await.unwrap();
         assert!(result.output.contains("## Skill: optimization"));
         assert_eq!(result.title.as_deref(), Some("skill: optimization"));
+    }
+
+    #[tokio::test]
+    async fn distinct_skill_loads_return_the_requested_content() {
+        let (tool, _temp_dir) = create_test_tool_with_skill("tui-desgin");
+        let (tui, recon) = tokio::join!(
+            tool.execute(
+                json!({"action": "load", "name": "tui-desgin"}),
+                create_test_context(),
+            ),
+            tool.execute(
+                json!({"action": "load", "name": "recon-ops"}),
+                create_test_context(),
+            ),
+        );
+        let tui = tui.unwrap();
+        let recon = recon.unwrap();
+        assert!(tui.output.contains("## Skill: tui-desgin"));
+        assert!(tui.output.contains("# Test Skill"));
+        assert!(!tui.output.contains("# Reconnaissance and Tool Selection"));
+        assert!(recon.output.contains("## Skill: recon-ops"));
+        assert!(recon.output.contains("# Reconnaissance and Tool Selection"));
+        assert!(!recon.output.contains("# Test Skill"));
+    }
+
+    #[tokio::test]
+    async fn ambiguous_reference_requires_a_parent_skill() {
+        let temp = tempfile::tempdir().unwrap();
+        for name in ["alpha", "beta"] {
+            let dir = temp.path().join(".alphacode").join("skills").join(name);
+            std::fs::create_dir_all(&dir).unwrap();
+            std::fs::write(
+                dir.join("SKILL.md"),
+                format!("---\nname: {name}\ndescription: Test\n---\n\n# {name}"),
+            )
+            .unwrap();
+            std::fs::write(dir.join("shared.md"), format!("{name} content")).unwrap();
+        }
+        let registry = SkillRegistry::load_for_working_dir(Some(temp.path())).unwrap();
+        let tool = SkillTool::new(Arc::new(RwLock::new(registry)));
+        let error = tool
+            .execute(
+                json!({"action": "load", "name": "shared.md"}),
+                create_test_context(),
+            )
+            .await
+            .unwrap_err();
+        assert!(error.to_string().contains("multiple skills"));
+        let output = tool
+            .execute(
+                json!({"action": "read", "name": "beta", "reference": "shared.md"}),
+                create_test_context(),
+            )
+            .await
+            .unwrap();
+        assert!(output.output.contains("beta content"));
+        assert!(!output.output.contains("alpha content"));
     }
 
     #[tokio::test]

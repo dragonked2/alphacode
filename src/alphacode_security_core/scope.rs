@@ -450,23 +450,32 @@ impl LiveScope {
     /// in-scope would stay blocked forever and the two structures would
     /// permanently disagree.
     pub fn set_verdict(&mut self, hostname: String, verdict: ScopeVerdict) {
+        // DNS names are case-insensitive and a trailing root dot does not
+        // change the host. Remove equivalent old entries before setting the
+        // new verdict so a differently spelled update cannot leave a stale
+        // exclusion behind.
+        self.out_of_scope
+            .retain(|host| !same_hostname(host, &hostname));
+        self.scope_verdicts
+            .retain(|host, _| !same_hostname(host, &hostname));
         if matches!(verdict, ScopeVerdict::OutOfScope { .. }) {
             self.out_of_scope.insert(hostname.clone());
-        } else {
-            self.out_of_scope.remove(&hostname);
         }
         self.scope_verdicts.insert(hostname, verdict);
     }
 
     /// Check if a hostname has been marked out of scope.
     pub fn is_out_of_scope(&self, hostname: &str) -> bool {
-        if self.out_of_scope.contains(hostname) {
+        if self
+            .out_of_scope
+            .iter()
+            .any(|host| same_hostname(host, hostname))
+        {
             return true;
         }
-        matches!(
-            self.scope_verdicts.get(hostname),
-            Some(ScopeVerdict::OutOfScope { .. })
-        )
+        self.scope_verdicts.iter().any(|(host, verdict)| {
+            same_hostname(host, hostname) && matches!(verdict, ScopeVerdict::OutOfScope { .. })
+        })
     }
 
     /// Check if a vulnerability class is excluded.
@@ -486,28 +495,21 @@ impl LiveScope {
 
     /// Get all unique technologies across top-level, hosts, and subdomains.
     pub fn all_technologies(&self) -> Vec<&TechnologyFingerprint> {
-        let mut all: Vec<&TechnologyFingerprint> = self.technologies.iter().collect();
-        for host in &self.discovered_hosts {
-            for tech in &host.technologies {
-                if !all
+        let mut seen = HashSet::new();
+        self.technologies
+            .iter()
+            .chain(
+                self.discovered_hosts
                     .iter()
-                    .any(|t| t.name == tech.name && t.version == tech.version)
-                {
-                    all.push(tech);
-                }
-            }
-        }
-        for sub in &self.discovered_subdomains {
-            for tech in &sub.technologies {
-                if !all
+                    .flat_map(|host| &host.technologies),
+            )
+            .chain(
+                self.discovered_subdomains
                     .iter()
-                    .any(|t| t.name == tech.name && t.version == tech.version)
-                {
-                    all.push(tech);
-                }
-            }
-        }
-        all
+                    .flat_map(|sub| &sub.technologies),
+            )
+            .filter(|tech| seen.insert((tech.name.as_str(), tech.version.as_deref())))
+            .collect()
     }
 
     /// Generate a summary of discovered attack surface.
@@ -516,11 +518,16 @@ impl LiveScope {
             subdomains: self.discovered_subdomains.len(),
             hosts: self.discovered_hosts.len(),
             endpoints: self.discovered_endpoints.len(),
-            technologies: self.technologies.len(),
+            technologies: self.all_technologies().len(),
             observations: self.observations.len(),
             out_of_scope: self.out_of_scope.len(),
         }
     }
+}
+
+fn same_hostname(left: &str, right: &str) -> bool {
+    left.trim_end_matches('.')
+        .eq_ignore_ascii_case(right.trim_end_matches('.'))
 }
 
 /// Summary statistics of the discovered attack surface.
@@ -547,6 +554,37 @@ mod tests {
     }
 
     #[test]
+    fn summary_counts_unique_technologies_across_all_observations() {
+        let mut scope = LiveScope::new(EngagementMode::BugBounty, "example.test".into());
+        let tech = TechnologyFingerprint {
+            name: "nginx".into(),
+            version: Some("1".into()),
+            category: TechCategory::Server,
+            confidence: 0.8,
+            evidence: "header".into(),
+        };
+        scope.technologies.push(tech.clone());
+        scope.discovered_hosts.push(DiscoveredHost {
+            hostname: "api.example.test".into(),
+            ip_addresses: vec![],
+            ports: vec![],
+            technologies: vec![tech.clone()],
+            services: vec![],
+        });
+        let mut other_version = tech;
+        other_version.version = Some("2".into());
+        scope.discovered_subdomains.push(DiscoveredSubdomain {
+            subdomain: "www.example.test".into(),
+            ip_addresses: vec![],
+            technologies: vec![other_version],
+            alive: true,
+        });
+        assert_eq!(scope.surface_summary().technologies, 2);
+        assert_eq!(scope.all_technologies()[0].version.as_deref(), Some("1"));
+        assert_eq!(scope.all_technologies()[1].version.as_deref(), Some("2"));
+    }
+
+    #[test]
     fn add_subdomain_deduplicates() {
         let mut scope = LiveScope::new(EngagementMode::BugBounty, "example.com".to_string());
         let sub = DiscoveredSubdomain {
@@ -569,6 +607,23 @@ mod tests {
         );
         assert!(scope.is_out_of_scope("admin.example.com"));
         assert!(!scope.is_out_of_scope("api.example.com"));
+    }
+
+    #[test]
+    fn scope_verdicts_normalize_hostname_case_and_root_dot() {
+        let mut scope = LiveScope::new(EngagementMode::BugBounty, "example.com".into());
+        scope.add_out_of_scope("Admin.Example.com.".into(), "excluded".into());
+        assert!(scope.is_out_of_scope("admin.example.com"));
+        assert!(!scope.is_out_of_scope("otheradmin.example.com"));
+        scope.set_verdict("ADMIN.EXAMPLE.COM".into(), ScopeVerdict::InScope);
+        assert!(!scope.is_out_of_scope("admin.example.com."));
+        scope.set_verdict(
+            "admin.example.com".into(),
+            ScopeVerdict::OutOfScope {
+                reason: "excluded".into(),
+            },
+        );
+        assert!(scope.is_out_of_scope("ADMIN.EXAMPLE.COM."));
     }
 
     #[test]

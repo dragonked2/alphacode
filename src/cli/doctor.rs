@@ -164,36 +164,12 @@ fn collect_checks() -> Vec<Check> {
         crate::alphacode_app_core::update::UpdateMetadata::load().unwrap_or_default();
     checks.push(Check::info(
         "last update check",
-        match update_metadata.last_check.elapsed() {
-            Ok(elapsed) if update_metadata.should_check() => {
-                format!("{} ago (check is due now)", describe_age(elapsed.as_secs()))
-            }
-            Ok(elapsed) => format!(
-                "{} ago (next automatic check in {})",
-                describe_age(elapsed.as_secs()),
-                describe_age(30 * 60 - elapsed.as_secs().min(30 * 60))
-            ),
-            Err(_) => "never".to_string(),
-        },
+        update_check_description(update_metadata.last_check, std::time::SystemTime::now()),
     ));
 
-    match crate::update::auto_update_skip_reason_now(!update_metadata.should_check()) {
-        Some(reason) => checks.push(Check::fail(
-            "auto-update",
-            format!("not running — {reason}"),
-        )),
-        None => {
-            let installs = default_auto_update_flag();
-            checks.push(Check::pass(
-                "auto-update",
-                if installs {
-                    "enabled; installs automatically when a release is found"
-                } else {
-                    "enabled; notifies only (--auto-update is off)"
-                },
-            ));
-        }
-    }
+    checks.push(auto_update_check(
+        crate::update::auto_update_skip_reason_now(!update_metadata.should_check()),
+    ));
 
     // ── Leftover processes ───────────────────────────────────────────────
     // A previous update/reload can leave an alphacode process attached to this
@@ -223,6 +199,27 @@ fn collect_checks() -> Vec<Check> {
     checks
 }
 
+fn auto_update_check(reason: Option<crate::update::AutoUpdateSkipReason>) -> Check {
+    match reason {
+        Some(crate::update::AutoUpdateSkipReason::Throttled) => Check::pass(
+            "auto-update",
+            "enabled; checked recently, next automatic check is scheduled",
+        ),
+        Some(reason) => Check::fail("auto-update", format!("not running — {reason}")),
+        None => {
+            let installs = default_auto_update_flag();
+            Check::pass(
+                "auto-update",
+                if installs {
+                    "enabled; installs automatically when a release is found"
+                } else {
+                    "enabled; notifies only (--auto-update is off)"
+                },
+            )
+        }
+    }
+}
+
 /// Render the leading status marker for a check row.
 ///
 /// Deliberately not built from [`enhance::status_line`]: that helper emits
@@ -250,6 +247,29 @@ fn describe_age(secs: u64) -> String {
         60..=3599 => format!("{}m", secs / 60),
         3600..=86399 => format!("{}h", secs / 3600),
         _ => format!("{}d", secs / 86400),
+    }
+}
+
+fn update_check_description(
+    last_check: std::time::SystemTime,
+    now: std::time::SystemTime,
+) -> String {
+    use std::time::{Duration, SystemTime};
+    if last_check == SystemTime::UNIX_EPOCH {
+        return "never (check is due now)".to_string();
+    }
+    let Ok(elapsed) = now.duration_since(last_check) else {
+        return "timestamp is in the future (check is due now)".to_string();
+    };
+    let interval = Duration::from_secs(30 * 60);
+    if elapsed > interval {
+        format!("{} ago (check is due now)", describe_age(elapsed.as_secs()))
+    } else {
+        format!(
+            "{} ago (next automatic check in {})",
+            describe_age(elapsed.as_secs()),
+            describe_age(interval.saturating_sub(elapsed).as_secs())
+        )
     }
 }
 
@@ -380,4 +400,44 @@ fn render_json(
     });
     println!("{}", serde_json::to_string_pretty(&payload)?);
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{auto_update_check, update_check_description};
+    use std::time::{Duration, SystemTime};
+
+    #[test]
+    fn update_check_reports_never_recent_due_and_future() {
+        let now = SystemTime::UNIX_EPOCH + Duration::from_secs(100_000);
+        assert_eq!(
+            update_check_description(SystemTime::UNIX_EPOCH, now),
+            "never (check is due now)"
+        );
+        assert_eq!(
+            update_check_description(now - Duration::from_secs(60), now),
+            "1m ago (next automatic check in 29m)"
+        );
+        assert_eq!(
+            update_check_description(now - Duration::from_secs(1801), now),
+            "30m ago (check is due now)"
+        );
+        assert_eq!(
+            update_check_description(now + Duration::from_secs(1), now),
+            "timestamp is in the future (check is due now)"
+        );
+    }
+
+    #[test]
+    fn scheduled_update_check_is_healthy() {
+        use crate::update::AutoUpdateSkipReason;
+        assert_eq!(
+            auto_update_check(Some(AutoUpdateSkipReason::Throttled)).ok,
+            Some(true)
+        );
+        assert_eq!(
+            auto_update_check(Some(AutoUpdateSkipReason::DisabledByEnv)).ok,
+            Some(false)
+        );
+    }
 }

@@ -40,13 +40,11 @@ pub(super) fn draw_config_overlay(
     clear_area(frame, area);
 
     // The footer row is reserved unconditionally here rather than only when a
-    // notice exists, because the row is also used to show the `config.toml` key
-    // for the highlighted setting — which is the thing a user opening this
-    // overlay most often wants to know.
+    // notice exists, because the row also shows details for the selected setting.
     let layout = config_overlay::layout(area, settings.len(), true);
     let block = Block::default()
         .title(Span::styled(
-            config_overlay::TITLE,
+            config_overlay::title(layout.frame.width.saturating_sub(2)),
             Style::default()
                 .fg(accent_color())
                 .add_modifier(Modifier::BOLD),
@@ -85,8 +83,22 @@ pub(super) fn draw_config_overlay(
                         Style::default().fg(accent_color()),
                     ),
                     Span::styled(format!(" {marker:>3}  "), marker_style),
-                    Span::styled(format!("{:<22}", setting.label), base.fg(user_text())),
-                    Span::styled(setting.description.to_string(), base.fg(dim_color())),
+                    Span::styled(
+                        if layout.list.width >= 52 {
+                            format!("{:<22}", setting.label)
+                        } else {
+                            setting.label.to_string()
+                        },
+                        base.fg(user_text()),
+                    ),
+                    Span::styled(
+                        if layout.list.width >= 52 {
+                            setting.description
+                        } else {
+                            ""
+                        },
+                        base.fg(dim_color()),
+                    ),
                 ]))
             })
             .collect();
@@ -94,14 +106,19 @@ pub(super) fn draw_config_overlay(
     }
 
     if layout.footer.height > 0 {
-        // Show the config.toml path for the highlighted row even when there is
-        // no recent change: it is where the value actually lives, which is what
-        // a user came to `/config ui` to find out.
+        // On narrow screens the description cannot fit beside the label, so
+        // show it here; wider screens can show the configuration path instead.
         let footer = match notice {
             Some(notice) => notice.to_string(),
             None => settings
                 .get(selected)
-                .map(|setting| format!("config.toml: {}", setting.key))
+                .map(|setting| {
+                    if layout.list.width < 52 {
+                        setting.description.to_string()
+                    } else {
+                        format!("config.toml: {}", setting.key)
+                    }
+                })
                 .unwrap_or_default(),
         };
         frame.render_widget(
@@ -954,5 +971,40 @@ fn color_to_rgb(color: Color) -> Option<[u8; 3]> {
             Some([r, g, b])
         }
         _ => None,
+    }
+}
+
+#[cfg(test)]
+mod config_overlay_render_tests {
+    use super::*;
+    use ratatui::{Terminal, backend::TestBackend};
+
+    #[test]
+    fn narrow_settings_show_actions_and_selected_description() {
+        let settings = [ConfigSetting {
+            key: "display.example",
+            label: "Example setting",
+            description: "A helpful explanation",
+            current: true,
+            on_toggle: |_| {},
+        }];
+        let mut terminal = Terminal::new(TestBackend::new(38, 10)).unwrap();
+        terminal
+            .draw(|frame| {
+                draw_config_overlay(frame, frame.area(), &settings, 0, None);
+            })
+            .unwrap();
+        let buffer = terminal.backend().buffer();
+        let text: String = (0..buffer.area.height)
+            .map(|y| {
+                (0..buffer.area.width)
+                    .map(|x| buffer[(x, y)].symbol())
+                    .collect::<String>()
+            })
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(text.contains("Enter toggle"));
+        assert!(text.contains("Example setting"));
+        assert!(text.contains("A helpful explanation"));
     }
 }

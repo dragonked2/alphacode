@@ -25,6 +25,35 @@ mod reasoning_region;
 
 const INPUT_SHELL_MAX_OUTPUT_LEN: usize = 30_000;
 
+// A narrow fallback for providers that cannot emit a structured user-input
+// request. Do not treat every question as a blocker: reports can contain
+// rhetorical questions while independent work remains.
+fn explicitly_waits_for_user(text: &str) -> bool {
+    let lower = text.to_lowercase().replace('’', "'");
+    let direct_question = lower.lines().any(|line| {
+        let line = line.trim().trim_start_matches(['#', '-', '*', ' ']);
+        line.ends_with('?')
+            && [
+                "what's your ",
+                "what is your ",
+                "please provide ",
+                "can you provide ",
+            ]
+            .iter()
+            .any(|prefix| line.starts_with(prefix))
+    });
+    direct_question
+        || ((lower.contains("blocked") || lower.contains("waiting"))
+            && [
+                "need from you",
+                "need the target from you",
+                "waiting for your",
+                "waiting for you",
+            ]
+            .iter()
+            .any(|phrase| lower.contains(phrase)))
+}
+
 /// Largest UTF-8 character boundary at or below `index` (clamped to the string
 /// length). Equivalent to the still-unstable `str::floor_char_boundary`,
 /// reimplemented so slicing/truncation can never panic on multi-byte text.
@@ -1818,6 +1847,20 @@ impl App {
             .filter(|todo| super::commands::is_incomplete_poke_todo(todo))
             .cloned()
             .collect();
+        if !incomplete.is_empty()
+            && self
+                .display_messages
+                .iter()
+                .rev()
+                .find(|message| message.role == "assistant" || message.role == "user")
+                .is_some_and(|message| {
+                    message.role == "assistant" && explicitly_waits_for_user(&message.content)
+                })
+        {
+            // Keep poke armed for the next user turn, but never send another
+            // continuation while the latest answer explicitly requests input.
+            return false;
+        }
         if incomplete.is_empty() {
             if todos.is_empty() {
                 crate::logging::info(

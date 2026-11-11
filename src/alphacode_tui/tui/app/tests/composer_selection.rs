@@ -4,6 +4,26 @@
 // mainstream text field: it could only be edited with the mouse, and the
 // slash palette could not be dismissed without losing the draft.
 
+#[test]
+fn remote_selection_deletes_grapheme_and_undo_restores_it() {
+    let mut app = create_test_app();
+    let rt = tokio::runtime::Runtime::new().unwrap();
+    let _guard = rt.enter();
+    let mut remote = crate::alphacode_tui::tui::backend::RemoteConnection::dummy();
+    app.is_remote = true;
+    app.input = "ab👩‍💻".to_string();
+    app.cursor_pos = app.input.len();
+
+    rt.block_on(app.handle_remote_key(KeyCode::Left, KeyModifiers::SHIFT, &mut remote)).unwrap();
+    assert_eq!(app.selected_input_text().as_deref(), Some("👩‍💻"));
+    rt.block_on(app.handle_remote_key(KeyCode::Backspace, KeyModifiers::NONE, &mut remote)).unwrap();
+    assert_eq!(app.input, "ab");
+    rt.block_on(app.handle_remote_key(KeyCode::Char('z'), KeyModifiers::CONTROL, &mut remote)).unwrap();
+    assert_eq!(app.input, "ab👩‍💻");
+    rt.block_on(app.handle_remote_key(KeyCode::Left, KeyModifiers::CONTROL | KeyModifiers::SHIFT, &mut remote)).unwrap();
+    assert!(app.has_input_selection());
+}
+
 /// `Shift+Right` must select the character under the caret.
 #[test]
 fn shift_right_selects_the_character_under_the_caret() {

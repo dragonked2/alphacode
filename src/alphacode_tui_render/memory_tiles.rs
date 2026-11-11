@@ -145,7 +145,8 @@ pub fn split_by_display_width(s: &str, max_width: usize) -> Vec<String> {
 }
 
 fn truncate_to_display_width(s: &str, max_width: usize) -> String {
-    use unicode_width::UnicodeWidthChar;
+    use unicode_segmentation::UnicodeSegmentation;
+    use unicode_width::UnicodeWidthStr;
 
     if max_width == 0 {
         return String::new();
@@ -165,13 +166,13 @@ fn truncate_to_display_width(s: &str, max_width: usize) -> String {
     let target_width = max_width - ellipsis_width;
     let mut truncated = String::new();
     let mut width = 0usize;
-    for ch in s.chars() {
-        let ch_width = UnicodeWidthChar::width(ch).unwrap_or(0);
-        if width + ch_width > target_width {
+    for grapheme in s.graphemes(true) {
+        let cells = grapheme.width();
+        if width + cells > target_width {
             break;
         }
-        truncated.push(ch);
-        width += ch_width;
+        truncated.push_str(grapheme);
+        width += cells;
     }
     truncated.push('…');
     truncated

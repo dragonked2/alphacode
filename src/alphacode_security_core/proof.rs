@@ -578,7 +578,9 @@ fn normalise(text: &str) -> String {
 pub fn describe_verdict(subject: &str, verdict: &ProofVerdict) -> String {
     let mut out = String::new();
     if verdict.verified {
-        out.push_str(&format!("VERIFIED: {subject}\n"));
+        out.push_str(&format!(
+            "EVIDENCE CHECK PASSED: {subject} (security impact requires independent review)\n"
+        ));
     } else {
         out.push_str(&format!("UNVERIFIED: {subject}\n"));
     }
@@ -827,6 +829,9 @@ mod tests {
                 .iter()
                 .any(|o| o.contains("returned 500"))
         );
+        let rendered = describe_verdict("SQL injection", &verdict);
+        assert!(rendered.contains("EVIDENCE CHECK PASSED"));
+        assert!(rendered.contains("security impact requires independent review"));
     }
 
     /// One (label, expected defect, mutation) triple for the fail-closed table.

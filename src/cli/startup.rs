@@ -418,6 +418,18 @@ fn remote_working_dir_is_absolute(path: &str) -> bool {
 }
 
 fn spawn_background_update_check(args: &Args) {
+    if should_check_desktop_bridge_updates(args, update::should_auto_update()) {
+        // The launcher exits as soon as the window opens; the bridge lives as
+        // long as the desktop and can therefore check again while it stays open.
+        // The shared update metadata still enforces the normal check throttle.
+        std::thread::spawn(|| {
+            loop {
+                let _ = update::check_and_maybe_update(true);
+                std::thread::sleep(std::time::Duration::from_secs(30 * 60));
+            }
+        });
+        return;
+    }
     let check_updates = should_spawn_background_update_check(args);
     let auto_update = should_auto_install_update(args);
 
@@ -543,6 +555,13 @@ fn spawn_background_update_check(args: &Args) {
             ));
         });
     }
+}
+
+fn should_check_desktop_bridge_updates(args: &Args, update_allowed: bool) -> bool {
+    matches!(args.command, Some(Command::Gui { bridge: true, .. }))
+        && !args.no_update
+        && args.auto_update
+        && update_allowed
 }
 
 /// Why the background update check will not run for this invocation.
@@ -754,6 +773,17 @@ mod tests {
             Some(Command::Gui { preview: true, .. })
         ));
         assert!(validate_gui_args(&parse_args(&["alphacode", "--gui", "run", "hello"])).is_err());
+    }
+
+    #[test]
+    fn desktop_bridge_checks_updates_only_when_allowed() {
+        let bridge = parse_args(&["alphacode", "--quiet", "gui", "--bridge"]);
+        assert!(should_check_desktop_bridge_updates(&bridge, true));
+        assert!(!should_check_desktop_bridge_updates(&bridge, false));
+        let disabled = parse_args(&["alphacode", "--no-update", "gui", "--bridge"]);
+        assert!(!should_check_desktop_bridge_updates(&disabled, true));
+        let preview = parse_args(&["alphacode", "gui", "--preview"]);
+        assert!(!should_check_desktop_bridge_updates(&preview, true));
     }
 
     #[test]

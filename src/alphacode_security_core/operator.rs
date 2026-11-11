@@ -2,7 +2,7 @@ use serde::{Deserialize, Serialize};
 
 use super::context::SecurityContext;
 use super::finding::{Finding, Severity};
-use super::skill_router::{SkillRoute, SkillRouter};
+use super::skill_router::SkillRouter;
 
 /// Actions the operator can take.
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -104,6 +104,19 @@ impl SecurityOperator {
         );
         let route = SkillRouter::route(&scope, None);
 
+        if scope.mode.requires_scope_enforcement() {
+            return OperatorDecision {
+                action: "start_engagement".to_string(),
+                details: format!("Preparing engagement for target: {target}; target name alone does not establish scope"),
+                next_actions: vec![
+                    "Read the current authorization, program policy, permitted assets and methods, exclusions, and rate limits".to_string(),
+                    "Record controlled accounts and evidence locations; resolve material scope gaps before dependent testing".to_string(),
+                ],
+                skills_to_load: route.skills,
+                agents_to_spawn: vec![],
+            };
+        }
+
         OperatorDecision {
             action: "start_engagement".to_string(),
             details: format!("Engagement started for target: {target}"),
@@ -138,10 +151,13 @@ impl SecurityOperator {
             next_actions.push("Enumerate subdomains".to_string());
         }
         if context.scope.discovered_hosts.is_empty() {
-            next_actions.push("Resolve and scan hosts".to_string());
+            next_actions.push("Resolve discovered hosts and assess authorized services only after confirming scope and permitted methods".to_string());
         }
         if context.scope.discovered_endpoints.is_empty() {
-            next_actions.push("Discover endpoints via crawling/fuzzing".to_string());
+            next_actions.push(
+                "Discover endpoints using crawling or fuzzing only where the policy permits it"
+                    .to_string(),
+            );
         }
         if context.scope.technologies.is_empty() {
             next_actions.push("Fingerprint technology stack".to_string());
@@ -157,7 +173,10 @@ impl SecurityOperator {
             skills_to_load: route.skills.clone(),
             agents_to_spawn: vec![AgentAssignment {
                 agent_type: "recon".to_string(),
-                task: format!("Execute recon techniques: {:?}", techniques),
+                task: format!(
+                    "Apply only scope- and policy-permitted recon techniques, respecting rate limits: {:?}",
+                    techniques
+                ),
                 skills: route.skills,
                 priority: 1,
             }],
@@ -171,7 +190,7 @@ impl SecurityOperator {
 
         // Generate hypotheses based on discovered surface
         if !context.scope.discovered_endpoints.is_empty() {
-            hypotheses.push("Test all endpoints for IDOR/BOLA".to_string());
+            hypotheses.push("Prioritize object and action boundaries for authorization tests using permitted accounts and controls".to_string());
             agents.push(AgentAssignment {
                 agent_type: "analysis".to_string(),
                 task: "Authorization boundary testing".to_string(),
@@ -233,15 +252,16 @@ impl SecurityOperator {
         hypothesis_id: &str,
         agent_type: &str,
     ) -> OperatorDecision {
-        let hypothesis = context.hypotheses.iter().find(|h| h.id == hypothesis_id);
-        let route = match hypothesis {
-            Some(h) => SkillRouter::route(&context.scope, Some(h)),
-            None => SkillRoute {
-                skills: vec![],
-                rationale: "Hypothesis not found".to_string(),
-                confidence: 0.0,
-            },
+        let Some(hypothesis) = context.hypotheses.iter().find(|h| h.id == hypothesis_id) else {
+            return OperatorDecision {
+                action: "dispatch".to_string(),
+                details: format!("Hypothesis {hypothesis_id} not found"),
+                next_actions: vec!["Select an existing hypothesis".to_string()],
+                skills_to_load: vec![],
+                agents_to_spawn: vec![],
+            };
         };
+        let route = SkillRouter::route(&context.scope, Some(hypothesis));
 
         OperatorDecision {
             action: "dispatch".to_string(),
@@ -261,10 +281,16 @@ impl SecurityOperator {
     }
 
     fn handle_validate(context: &SecurityContext, finding_id: &str) -> OperatorDecision {
-        let finding = context.findings.iter().find(|f| f.id == finding_id);
-        let status = finding
-            .map(|f| f.stage.as_str().to_string())
-            .unwrap_or_else(|| "not found".to_string());
+        let Some(finding) = context.findings.iter().find(|f| f.id == finding_id) else {
+            return OperatorDecision {
+                action: "validate".to_string(),
+                details: format!("Finding {finding_id} not found"),
+                next_actions: vec!["Select an existing finding".to_string()],
+                skills_to_load: vec![],
+                agents_to_spawn: vec![],
+            };
+        };
+        let status = finding.stage.as_str();
 
         OperatorDecision {
             action: "validate".to_string(),
@@ -302,12 +328,16 @@ impl SecurityOperator {
                 vec!["Need more confirmed findings for chain analysis".to_string()]
             },
             skills_to_load: vec!["chain-analysis".to_string()],
-            agents_to_spawn: vec![AgentAssignment {
-                agent_type: "chain_analyst".to_string(),
-                task: "Analyze confirmed findings for exploit chains".to_string(),
-                skills: vec!["chain-analysis".to_string()],
-                priority: 1,
-            }],
+            agents_to_spawn: if chain_candidates.len() >= 2 {
+                vec![AgentAssignment {
+                    agent_type: "chain_analyst".to_string(),
+                    task: "Analyze confirmed findings for exploit chains".to_string(),
+                    skills: vec!["chain-analysis".to_string()],
+                    priority: 1,
+                }]
+            } else {
+                vec![]
+            },
         }
     }
 
@@ -369,7 +399,8 @@ mod tests {
             },
         );
         assert_eq!(decision.action, "start_engagement");
-        assert!(!decision.agents_to_spawn.is_empty());
+        assert!(decision.agents_to_spawn.is_empty());
+        assert!(decision.next_actions.iter().any(|a| a.contains("policy")));
     }
 
     #[test]
@@ -403,6 +434,33 @@ mod tests {
     }
 
     #[test]
+    fn operator_considers_technologies_discovered_on_a_host() {
+        use super::super::scope::{DiscoveredHost, TechCategory, TechnologyFingerprint};
+        let mut ctx = test_context();
+        ctx.scope.add_host(DiscoveredHost {
+            hostname: "api.example.test".into(),
+            ip_addresses: vec![],
+            ports: vec![],
+            technologies: vec![TechnologyFingerprint {
+                name: "nginx".into(),
+                version: None,
+                category: TechCategory::Server,
+                confidence: 0.8,
+                evidence: "response header".into(),
+            }],
+            services: vec![],
+        });
+        let decision = SecurityOperator::decide(&ctx, OperatorAction::AnalyzeAndHypothesize);
+        assert!(decision.details.contains("1 technologies"));
+        assert!(
+            decision
+                .agents_to_spawn
+                .iter()
+                .any(|a| a.task.contains("Technology-specific"))
+        );
+    }
+
+    #[test]
     fn operator_chain_analysis_needs_findings() {
         let ctx = test_context();
         let decision = SecurityOperator::decide(&ctx, OperatorAction::AnalyzeChains);
@@ -412,5 +470,25 @@ mod tests {
                 .iter()
                 .any(|a| a.contains("Need more"))
         );
+        assert!(decision.agents_to_spawn.is_empty());
+    }
+
+    #[test]
+    fn operator_does_not_assign_missing_records() {
+        let ctx = test_context();
+        for action in [
+            OperatorAction::DispatchHypothesis {
+                hypothesis_id: "missing".into(),
+                agent_type: "analysis".into(),
+            },
+            OperatorAction::ValidateFinding {
+                finding_id: "missing".into(),
+            },
+        ] {
+            let decision = SecurityOperator::decide(&ctx, action);
+            assert!(decision.details.contains("not found"));
+            assert!(decision.agents_to_spawn.is_empty());
+            assert!(decision.skills_to_load.is_empty());
+        }
     }
 }

@@ -837,7 +837,7 @@ pub fn render_swarm_strip(
                     .cloned()
                     .unwrap_or_else(|| format!("[{}]", m.status));
                 let prefix = format!("   {} ", status_glyph(&m.status, spinner_frame));
-                let prefix_w = prefix.chars().count();
+                let prefix_w = unicode_width::UnicodeWidthStr::width(prefix.as_str());
                 let body = truncate_label(&detail, width.saturating_sub(prefix_w));
                 out.push(Line::from(vec![
                     Span::styled(prefix, Style::default().fg(status_accent(&m.status))),
@@ -866,7 +866,7 @@ pub fn render_swarm_strip(
             let mut total = 0usize;
             let mut trimmed: Vec<Span<'static>> = Vec::new();
             for s in hint_spans {
-                let w = s.content.chars().count();
+                let w = unicode_width::UnicodeWidthStr::width(s.content.as_ref());
                 if total + w > width {
                     break;
                 }
@@ -1923,23 +1923,24 @@ fn list_row(member: &GalleryMember, selected: bool, focused: bool, width: usize)
 /// Truncate `s` to at most `max` display columns (wide glyphs count as 2),
 /// appending an ellipsis when truncated.
 fn truncate_label(s: &str, max: usize) -> String {
-    use unicode_width::UnicodeWidthChar;
+    use unicode_segmentation::UnicodeSegmentation;
+    use unicode_width::UnicodeWidthStr;
     if disp_w(s) <= max {
         return s.to_string();
     }
-    if max <= 1 {
-        return "…".to_string();
+    if max == 0 {
+        return String::new();
     }
     let target = max - 1;
     let mut out = String::new();
     let mut used = 0usize;
-    for ch in s.chars() {
-        let cw = ch.width().unwrap_or(0);
-        if used + cw > target {
+    for grapheme in s.graphemes(true) {
+        let cells = grapheme.width();
+        if used + cells > target {
             break;
         }
-        used += cw;
-        out.push(ch);
+        used += cells;
+        out.push_str(grapheme);
     }
     out.push('…');
     out
@@ -1965,6 +1966,13 @@ fn count_digits(n: usize) -> usize {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn label_truncation_respects_cells_and_graphemes() {
+        assert_eq!(truncate_label("hello", 0), "");
+        assert_eq!(truncate_label("界abc", 2), "…");
+        assert_eq!(truncate_label("e\u{301}abc", 2), "e\u{301}…");
+    }
 
     fn member(id: &str, status: &str, role: Option<&str>, body: &[&str]) -> GalleryMember {
         GalleryMember {

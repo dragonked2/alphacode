@@ -12,12 +12,28 @@ use url::Url;
 const MAX_RESPONSE_SIZE: usize = 5 * 1024 * 1024; // 5MB
 const MAX_REDIRECTS: usize = 10;
 
+async fn read_response_body(mut response: reqwest::Response) -> Result<String> {
+    let mut body = Vec::new();
+    while let Some(chunk) = response
+        .chunk()
+        .await
+        .context("Failed to read response body")?
+    {
+        if chunk.len() > MAX_RESPONSE_SIZE.saturating_sub(body.len()) {
+            anyhow::bail!("Response exceeds the {} byte limit", MAX_RESPONSE_SIZE);
+        }
+        body.extend_from_slice(&chunk);
+    }
+    Ok(String::from_utf8_lossy(&body).into_owned())
+}
+
 /// Shared cookie jar across requests in a session.
 type CookieJar = Arc<RwLock<HashMap<String, String>>>;
+type CookieSessions = HashMap<(String, String, String), CookieJar>;
 
 pub struct HttpFlowTool {
     client: reqwest::Client,
-    sessions: Arc<RwLock<HashMap<String, CookieJar>>>,
+    sessions: Arc<RwLock<CookieSessions>>,
 }
 
 impl HttpFlowTool {
@@ -29,10 +45,16 @@ impl HttpFlowTool {
         let client = reqwest::Client::builder()
             .user_agent(crate::alphacode_provider_core::ALPHACODE_USER_AGENT)
             .connect_timeout(std::time::Duration::from_secs(20))
+            .redirect(reqwest::redirect::Policy::none())
             .build()
-            .unwrap_or_else(|err| {
-                eprintln!("alphacode: failed to build httpflow client: {err}");
-                crate::provider::shared_http_client()
+            .unwrap_or_else(|error| {
+                crate::logging::warn(&format!(
+                    "httpflow client setup failed: {error}; retrying without optional settings"
+                ));
+                reqwest::Client::builder()
+                    .redirect(reqwest::redirect::Policy::none())
+                    .build()
+                    .expect("httpflow requires a client with automatic redirects disabled")
             });
 
         Self {
@@ -190,9 +212,12 @@ impl Tool for HttpFlowTool {
 
         match action {
             "request" => self.send_request(&params, session_name, &ctx).await,
-            "get_csrf" => self.get_csrf_token(&params, session_name).await,
-            "clear_session" => self.clear_session(session_name).await,
-            "show_cookies" => self.show_cookies(session_name).await,
+            "get_csrf" => {
+                self.get_csrf_token(&params, session_name, &ctx.session_id)
+                    .await
+            }
+            "clear_session" => self.clear_session(session_name, &ctx.session_id).await,
+            "show_cookies" => self.show_cookies(session_name, &ctx.session_id).await,
             _ => Err(anyhow::anyhow!(
                 "Unknown action: {}. Use request, get_csrf, clear_session, or show_cookies.",
                 action
@@ -252,12 +277,26 @@ fn normalize_httpflow_input(input: Value) -> Value {
 }
 
 impl HttpFlowTool {
-    async fn get_session_cookies(&self, session_name: &str) -> CookieJar {
+    async fn get_session_cookies(
+        &self,
+        owner: &str,
+        session_name: &str,
+        url: &str,
+    ) -> Result<CookieJar> {
+        let parsed = Url::parse(url)?;
+        anyhow::ensure!(
+            matches!(parsed.scheme(), "http" | "https")
+                && parsed.host_str().is_some()
+                && parsed.username().is_empty()
+                && parsed.password().is_none(),
+            "httpflow requires an HTTP(S) URL without embedded credentials"
+        );
+        let origin = parsed.origin().ascii_serialization();
         let mut sessions = self.sessions.write().await;
-        sessions
-            .entry(session_name.to_string())
+        Ok(sessions
+            .entry((owner.to_string(), session_name.to_string(), origin))
             .or_insert_with(|| Arc::new(RwLock::new(HashMap::new())))
-            .clone()
+            .clone())
     }
 
     fn parse_cookies_from_headers(headers: &reqwest::header::HeaderMap) -> HashMap<String, String> {
@@ -288,7 +327,7 @@ impl HttpFlowTool {
 
         let method = params.method.as_deref().unwrap_or("GET").to_uppercase();
         let follow = params.follow_redirects.unwrap_or(true);
-        let cookies = self.get_session_cookies(session_name).await;
+        let initial_origin = Url::parse(url)?.origin();
 
         let mut redirect_chain = Vec::new();
         let mut current_url = url.to_string();
@@ -298,8 +337,11 @@ impl HttpFlowTool {
 
         for _ in 0..MAX_REDIRECTS {
             // Build request
-            let _parsed_url =
+            let parsed_url =
                 Url::parse(&current_url).context(format!("Invalid URL: {}", current_url))?;
+            let cookies = self
+                .get_session_cookies(&ctx.session_id, session_name, &current_url)
+                .await?;
 
             let mut request_builder = match current_method.as_str() {
                 "GET" => self.client.get(&current_url),
@@ -336,7 +378,9 @@ impl HttpFlowTool {
             }
 
             // Add custom headers
-            if let Some(headers) = &params.headers {
+            if let Some(headers) = &params.headers
+                && parsed_url.origin() == initial_origin
+            {
                 // If Host header is overridden, we need to ensure cookies still
                 // transmit correctly. The reqwest client may not attach cookies
                 // when the Host header differs from the URL's host.
@@ -375,10 +419,6 @@ impl HttpFlowTool {
             }
 
             // Set referer
-            if redirect_chain.last().is_some() {
-                request_builder = request_builder.header("referer", &current_url);
-            }
-
             let response = request_builder
                 .send()
                 .await
@@ -403,19 +443,7 @@ impl HttpFlowTool {
             }
 
             // Read response body
-            let body_bytes = response
-                .bytes()
-                .await
-                .context("Failed to read response body")?;
-
-            if body_bytes.len() > MAX_RESPONSE_SIZE {
-                return Err(anyhow::anyhow!(
-                    "Response too large: {} bytes",
-                    body_bytes.len()
-                ));
-            }
-
-            let body = String::from_utf8_lossy(&body_bytes).into_owned();
+            let body = read_response_body(response).await?;
 
             // Detect bot protection (Datadome, Cloudflare, etc.)
             if Self::detect_bot_protection(status, &body, &response_headers) {
@@ -534,6 +562,7 @@ impl HttpFlowTool {
         &self,
         params: &HttpFlowInput,
         session_name: &str,
+        owner: &str,
     ) -> Result<ToolOutput> {
         let url = params
             .url
@@ -541,8 +570,18 @@ impl HttpFlowTool {
             .ok_or_else(|| anyhow::anyhow!("URL is required"))?;
 
         // First fetch the page
-        let cookies = self.get_session_cookies(session_name).await;
+        let cookies = self.get_session_cookies(owner, session_name, url).await?;
         let mut request_builder = self.client.get(url);
+        let timeout_secs = match params.timeout {
+            Some(0) | None => 60,
+            Some(n) => n.min(120),
+        };
+        request_builder = request_builder.timeout(std::time::Duration::from_secs(timeout_secs));
+        if let Some(headers) = &params.headers {
+            for (key, value) in headers {
+                request_builder = request_builder.header(key.as_str(), value.as_str());
+            }
+        }
 
         // Attach cookies from jar
         {
@@ -558,6 +597,11 @@ impl HttpFlowTool {
             .send()
             .await
             .context(format!("Failed to fetch {}", url))?;
+        if response.status().is_redirection() {
+            return Err(anyhow::anyhow!(
+                "CSRF page redirected; use the request action to follow only permitted redirects before extracting a token"
+            ));
+        }
 
         // Store cookies
         let new_cookies = Self::parse_cookies_from_headers(response.headers());
@@ -568,10 +612,7 @@ impl HttpFlowTool {
             }
         }
 
-        let body = response
-            .text()
-            .await
-            .context("Failed to read response body")?;
+        let body = read_response_body(response).await?;
 
         // Extract CSRF token
         let selector = params.csrf_selector.as_deref().unwrap_or(
@@ -616,39 +657,39 @@ impl HttpFlowTool {
         None
     }
 
-    async fn clear_session(&self, session_name: &str) -> Result<ToolOutput> {
+    async fn clear_session(&self, session_name: &str, owner: &str) -> Result<ToolOutput> {
         let mut sessions = self.sessions.write().await;
-        sessions.remove(session_name);
+        sessions
+            .retain(|(session_owner, name, _), _| session_owner != owner || name != session_name);
         Ok(ToolOutput::new(format!(
             "Session '{}' cleared. Cookies deleted.",
             session_name
         )))
     }
 
-    async fn show_cookies(&self, session_name: &str) -> Result<ToolOutput> {
+    async fn show_cookies(&self, session_name: &str, owner: &str) -> Result<ToolOutput> {
         let sessions = self.sessions.read().await;
-        match sessions.get(session_name) {
-            Some(jar) => {
-                let jar = jar.read().await;
-                if jar.is_empty() {
-                    Ok(ToolOutput::new(format!(
-                        "Session '{}': no cookies stored.",
-                        session_name
-                    )))
-                } else {
-                    let mut output =
-                        format!("Session '{}': {} cookies\n\n", session_name, jar.len());
-                    for (k, v) in jar.iter() {
-                        output.push_str(&format!("  {}={}\n", k, v));
-                    }
-                    Ok(ToolOutput::new(output))
-                }
-            }
-            None => Ok(ToolOutput::new(format!(
+        let matching: Vec<_> = sessions
+            .iter()
+            .filter(|((session_owner, name, _), _)| session_owner == owner && name == session_name)
+            .map(|((_, _, origin), jar)| (origin.clone(), Arc::clone(jar)))
+            .collect();
+        drop(sessions);
+        if matching.is_empty() {
+            return Ok(ToolOutput::new(format!(
                 "Session '{}': not found (no requests made yet).",
                 session_name
-            ))),
+            )));
         }
+        let mut output = format!("Session '{}': cookies by origin\n", session_name);
+        for (origin, jar) in matching {
+            let jar = jar.read().await;
+            output.push_str(&format!("\n{}: {} cookies\n", origin, jar.len()));
+            for (k, v) in jar.iter() {
+                output.push_str(&format!("  {}={}\n", k, v));
+            }
+        }
+        Ok(ToolOutput::new(output))
     }
 
     /// Detect bot protection (Datadome, Cloudflare, etc.)
@@ -747,6 +788,223 @@ fn truncate_body(body: &str, max_chars: usize) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn cookie_jars_are_isolated_by_agent_session_and_origin() {
+        let tool = HttpFlowTool::new();
+        let first = tool
+            .get_session_cookies("agent-a", "default", "https://one.example/path")
+            .await
+            .unwrap();
+        first
+            .write()
+            .await
+            .insert("session".into(), "owned-a".into());
+        let same = tool
+            .get_session_cookies("agent-a", "default", "https://one.example/other")
+            .await
+            .unwrap();
+        let other_agent = tool
+            .get_session_cookies("agent-b", "default", "https://one.example/path")
+            .await
+            .unwrap();
+        let other_origin = tool
+            .get_session_cookies("agent-a", "default", "https://two.example/path")
+            .await
+            .unwrap();
+        assert_eq!(
+            same.read().await.get("session").map(String::as_str),
+            Some("owned-a")
+        );
+        assert!(other_agent.read().await.is_empty());
+        assert!(other_origin.read().await.is_empty());
+        tool.clear_session("default", "agent-a").await.unwrap();
+        assert!(
+            tool.get_session_cookies("agent-a", "default", "https://one.example")
+                .await
+                .unwrap()
+                .read()
+                .await
+                .is_empty()
+        );
+    }
+
+    #[tokio::test]
+    async fn oversized_response_is_rejected_while_reading() {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let url = format!("http://{}/large", listener.local_addr().unwrap());
+        let server = tokio::spawn(async move {
+            let (mut socket, _) = listener.accept().await.unwrap();
+            let mut request = [0; 2048];
+            let _n = socket.read(&mut request).await.unwrap();
+            let headers = format!(
+                "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                MAX_RESPONSE_SIZE + 1
+            );
+            socket.write_all(headers.as_bytes()).await.unwrap();
+            let _ = socket.write_all(&vec![b'x'; MAX_RESPONSE_SIZE + 1]).await;
+        });
+        let tool = HttpFlowTool::new();
+        let ctx = ToolContext {
+            session_id: "httpflow-size-fixture".into(),
+            message_id: "m".into(),
+            tool_call_id: "c".into(),
+            working_dir: None,
+            stdin_request_tx: None,
+            graceful_shutdown_signal: None,
+            execution_mode: super::super::ToolExecutionMode::Direct,
+        };
+        let error = tool.execute(json!({"url": url}), ctx).await.unwrap_err();
+        assert!(error.to_string().contains("exceeds"));
+        server.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn csrf_fetch_uses_the_supplied_authentication_header() {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let url = format!("http://{}/form", listener.local_addr().unwrap());
+        let server = tokio::spawn(async move {
+            let (mut socket, _) = listener.accept().await.unwrap();
+            let mut request = [0; 4096];
+            let n = socket.read(&mut request).await.unwrap();
+            let body = "<input name=\"_token\" value=\"fixture-token\">";
+            let response = format!(
+                "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                body.len(),
+                body
+            );
+            socket.write_all(response.as_bytes()).await.unwrap();
+            String::from_utf8_lossy(&request[..n]).to_ascii_lowercase()
+        });
+        let tool = HttpFlowTool::new();
+        let ctx = ToolContext {
+            session_id: "csrf-header-fixture".into(),
+            message_id: "m".into(),
+            tool_call_id: "c".into(),
+            working_dir: None,
+            stdin_request_tx: None,
+            graceful_shutdown_signal: None,
+            execution_mode: super::super::ToolExecutionMode::Direct,
+        };
+        let output = tool.execute(json!({"action":"get_csrf", "url":url, "headers":{"Authorization":"Bearer fixture"}}), ctx).await.unwrap();
+        assert!(output.output.contains("fixture-token"));
+        assert!(
+            server
+                .await
+                .unwrap()
+                .contains("authorization: bearer fixture")
+        );
+    }
+
+    #[tokio::test]
+    async fn redirects_are_processed_by_the_tool_not_reqwest() {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let base = format!("http://{}", listener.local_addr().unwrap());
+        let server = tokio::spawn(async move {
+            let mut requests = Vec::new();
+            for _ in 0..3 {
+                let (mut socket, _) = listener.accept().await.unwrap();
+                let mut data = vec![0; 4096];
+                let size = socket.read(&mut data).await.unwrap();
+                let request = String::from_utf8_lossy(&data[..size]).into_owned();
+                let end = request.starts_with("GET /end ");
+                requests.push(request);
+                let response = if end {
+                    "HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\nok"
+                } else {
+                    "HTTP/1.1 302 Found\r\nLocation: /end\r\nSet-Cookie: sid=owned; Path=/\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
+                };
+                socket.write_all(response.as_bytes()).await.unwrap();
+            }
+            requests
+        });
+        let tool = HttpFlowTool::new();
+        let context = || ToolContext {
+            session_id: "httpflow-redirect-fixture".into(),
+            message_id: "m".into(),
+            tool_call_id: "c".into(),
+            working_dir: None,
+            stdin_request_tx: None,
+            graceful_shutdown_signal: None,
+            execution_mode: super::super::ToolExecutionMode::Direct,
+        };
+        let no_follow = tool
+            .execute(
+                json!({"url": format!("{base}/start"), "follow_redirects": false}),
+                context(),
+            )
+            .await
+            .unwrap();
+        assert!(no_follow.output.starts_with("HTTP 302"));
+        let followed = tool
+            .execute(
+                json!({"url": format!("{base}/start"), "follow_redirects": true}),
+                context(),
+            )
+            .await
+            .unwrap();
+        assert!(followed.output.starts_with("HTTP 200"));
+        let requests = tokio::time::timeout(std::time::Duration::from_secs(5), server)
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(requests[0].starts_with("GET /start "));
+        assert!(requests[1].starts_with("GET /start "));
+        assert!(requests[2].starts_with("GET /end "));
+        assert!(
+            requests[2]
+                .to_ascii_lowercase()
+                .contains("cookie: sid=owned")
+        );
+    }
+
+    #[tokio::test]
+    async fn cross_origin_redirect_does_not_forward_session_credentials() {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let destination = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let destination_url = format!("http://{}/end", destination.local_addr().unwrap());
+        let source = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let source_url = format!("http://{}/start", source.local_addr().unwrap());
+        let source_task = tokio::spawn(async move {
+            let (mut socket, _) = source.accept().await.unwrap();
+            let mut bytes = [0; 4096];
+            let _n = socket.read(&mut bytes).await.unwrap();
+            let response = format!(
+                "HTTP/1.1 302 Found\r\nLocation: {destination_url}\r\nSet-Cookie: sid=private; Path=/\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
+            );
+            socket.write_all(response.as_bytes()).await.unwrap();
+        });
+        let destination_task = tokio::spawn(async move {
+            let (mut socket, _) = destination.accept().await.unwrap();
+            let mut bytes = [0; 4096];
+            let n = socket.read(&mut bytes).await.unwrap();
+            socket
+                .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\nok")
+                .await
+                .unwrap();
+            String::from_utf8_lossy(&bytes[..n]).to_ascii_lowercase()
+        });
+        let tool = HttpFlowTool::new();
+        let ctx = ToolContext {
+            session_id: "httpflow-cross-origin-fixture".into(),
+            message_id: "m".into(),
+            tool_call_id: "c".into(),
+            working_dir: None,
+            stdin_request_tx: None,
+            graceful_shutdown_signal: None,
+            execution_mode: super::super::ToolExecutionMode::Direct,
+        };
+        let output = tool.execute(json!({"url":source_url, "headers":{"Authorization":"Bearer controlled-test", "X-Api-Key":"controlled-key"}}), ctx).await.unwrap();
+        assert!(output.output.starts_with("HTTP 200"));
+        source_task.await.unwrap();
+        let request = destination_task.await.unwrap();
+        assert!(!request.contains("authorization:"));
+        assert!(!request.contains("x-api-key:"));
+        assert!(!request.contains("cookie:"));
+    }
 
     #[test]
     fn test_is_redirect() {

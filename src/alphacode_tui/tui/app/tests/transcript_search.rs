@@ -292,6 +292,21 @@ fn a_query_without_hits_reports_no_matches() {
     assert!(screen_text(&terminal).contains("no matches"));
 }
 
+#[test]
+fn narrow_search_keeps_no_match_feedback_visible() {
+    let mut app = app_with_transcript(&["hello world"]);
+    let mut terminal = ratatui::Terminal::new(ratatui::backend::TestBackend::new(30, 20))
+        .expect("terminal");
+    app.handle_key(KeyCode::Char('f'), KeyModifiers::CONTROL)
+        .expect("handle key");
+    for ch in "a long missing search query".chars() {
+        app.handle_key(KeyCode::Char(ch), KeyModifiers::NONE)
+            .expect("handle key");
+    }
+    render_frame(&app, &mut terminal);
+    assert!(screen_text(&terminal).contains("no matches"));
+}
+
 /// The matched text is painted with the find-in-page background, so the user
 /// can see *what* matched and not only *where*.
 #[test]

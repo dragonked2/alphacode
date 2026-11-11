@@ -1121,7 +1121,7 @@ async fn run_owned_chat(
     Ok(())
 }
 
-pub(crate) async fn run(once: bool, preview: bool, bridge: bool) -> Result<()> {
+pub(crate) async fn run(once: bool, preview: bool, bridge: bool, no_update: bool) -> Result<()> {
     if once {
         println!("{}", Bridge::default().snapshot(None).await);
         return Ok(());
@@ -1295,11 +1295,11 @@ pub(crate) async fn run(once: bool, preview: bool, bridge: bool) -> Result<()> {
         }
         return Ok(());
     }
-    launch(preview)
+    launch(preview, no_update)
 }
 
 #[cfg(windows)]
-fn launch(preview: bool) -> Result<()> {
+fn launch(preview: bool, no_update: bool) -> Result<()> {
     use std::os::windows::process::CommandExt;
     let host = resolve_desktop_host()?;
     let mut command = std::process::Command::new(&host);
@@ -1312,6 +1312,9 @@ fn launch(preview: bool) -> Result<()> {
         .stderr(std::process::Stdio::null());
     if preview {
         command.arg("-Preview");
+    }
+    if no_update {
+        command.env("ALPHACODE_NO_AUTO_UPDATE", "1");
     }
     command
         .spawn()
@@ -1341,13 +1344,14 @@ const DESKTOP_HOST_FILENAME: &str = "AlphaCode.Desktop.exe";
 ///
 /// Resolution order:
 /// 1. `ALPHACODE_DESKTOP_HOST` — explicit override for packaging/tests.
-/// 2. Beside the running executable — the release archive and `cargo build`
+/// 2. The versioned release host, when its CLI exactly matches the running CLI.
+/// 3. Beside the running executable — the release archive and `cargo build`
 ///    layouts, and the directory the installer writes.
-/// 3. `~/.alphacode/gui/` — where older builds unpacked the embedded copy, so
+/// 4. `~/.alphacode/gui/` — where older builds unpacked the embedded copy, so
 ///    an install upgraded in place keeps finding its host.
 ///
 /// Only the legacy `embedded-gui-host` feature still writes an extracted copy,
-/// into the directory from (3).
+/// into the directory from (4).
 #[cfg(windows)]
 fn resolve_desktop_host() -> Result<std::path::PathBuf> {
     if let Some(explicit) = std::env::var_os("ALPHACODE_DESKTOP_HOST") {
@@ -1359,6 +1363,17 @@ fn resolve_desktop_host() -> Result<std::path::PathBuf> {
             "ALPHACODE_DESKTOP_HOST points at {}, which is not a file",
             path.display()
         );
+    }
+
+    // Older updaters copied only the new CLI to the launcher, leaving the
+    // previous GUI beside it. Prefer the release's companion host when the
+    // versioned CLI is byte-for-byte identical to the running executable.
+    if let (Ok(exe), Ok(versioned)) = (
+        std::env::current_exe(),
+        crate::alphacode_build_support::version_binary_path(crate::alphacode_build_meta::semver()),
+    ) && let Some(host) = matching_versioned_desktop_host(&exe, &versioned)
+    {
+        return Ok(host);
     }
 
     if let Ok(exe) = std::env::current_exe()
@@ -1406,8 +1421,37 @@ fn resolve_desktop_host() -> Result<std::path::PathBuf> {
     )
 }
 
+#[cfg(windows)]
+fn matching_versioned_desktop_host(
+    exe: &std::path::Path,
+    versioned: &std::path::Path,
+) -> Option<PathBuf> {
+    use std::io::Read;
+    let host = versioned.parent()?.join(DESKTOP_HOST_FILENAME);
+    if !host.is_file() {
+        return None;
+    }
+    let mut left = std::fs::File::open(exe).ok()?;
+    let mut right = std::fs::File::open(versioned).ok()?;
+    if left.metadata().ok()?.len() != right.metadata().ok()?.len() {
+        return None;
+    }
+    let mut a = [0_u8; 64 * 1024];
+    let mut b = [0_u8; 64 * 1024];
+    loop {
+        let count = left.read(&mut a).ok()?;
+        right.read_exact(&mut b[..count]).ok()?;
+        if a[..count] != b[..count] {
+            return None;
+        }
+        if count == 0 {
+            return Some(host);
+        }
+    }
+}
+
 #[cfg(not(windows))]
-fn launch(_preview: bool) -> Result<()> {
+fn launch(_preview: bool, _no_update: bool) -> Result<()> {
     bail!(
         "The AlphaCode GUI currently supports Windows. Use `alphacode gui --once` for status on this platform"
     )
@@ -1439,6 +1483,26 @@ fn hidden_pool_models_to_display_names(models: Vec<String>) -> Vec<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(windows)]
+    #[test]
+    fn versioned_host_is_used_only_for_identical_cli() {
+        let temp = tempfile::tempdir().unwrap();
+        let launcher = temp.path().join("launcher.exe");
+        let version_dir = temp.path().join("version");
+        std::fs::create_dir_all(&version_dir).unwrap();
+        let versioned = version_dir.join("alphacode.exe");
+        let host = version_dir.join(DESKTOP_HOST_FILENAME);
+        std::fs::write(&launcher, b"same binary").unwrap();
+        std::fs::write(&versioned, b"same binary").unwrap();
+        std::fs::write(&host, b"matching host").unwrap();
+        assert_eq!(
+            matching_versioned_desktop_host(&launcher, &versioned),
+            Some(host)
+        );
+        std::fs::write(&versioned, b"different!!").unwrap();
+        assert_eq!(matching_versioned_desktop_host(&launcher, &versioned), None);
+    }
 
     /// The resolver looks for `DESKTOP_HOST_FILENAME` beside `alphacode.exe`.
     /// That name also appears in `build.rs` (what gets compiled and staged) and

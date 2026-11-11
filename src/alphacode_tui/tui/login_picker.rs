@@ -256,15 +256,16 @@ impl LoginPicker {
     }
 
     fn apply_filter(&mut self) {
+        let selected_item = self.filtered.get(self.selected).copied();
         self.filtered = self
             .items
             .iter()
             .enumerate()
             .filter_map(|(idx, item)| item.matches_filter(&self.filter).then_some(idx))
             .collect();
-        if self.selected >= self.filtered.len() {
-            self.selected = self.filtered.len().saturating_sub(1);
-        }
+        self.selected = selected_item
+            .and_then(|item| self.filtered.iter().position(|&index| index == item))
+            .unwrap_or(0);
     }
 
     pub fn handle_overlay_key(
@@ -550,7 +551,7 @@ impl LoginPicker {
                 let hint = item.match_source_hint(query);
                 let hint_width = hint
                     .as_ref()
-                    .map(|text| text.chars().count() + 4)
+                    .map(|text| unicode_width::UnicodeWidthStr::width(text.as_str()) + 4)
                     .unwrap_or(0);
                 // Only spend columns on the hint when a readable name still
                 // fits; on a narrow terminal the highlighted name wins.
@@ -1004,17 +1005,28 @@ fn mask_email(email: &str) -> String {
 }
 
 fn truncate_with_ellipsis(input: &str, width: usize) -> String {
+    use unicode_segmentation::UnicodeSegmentation;
+    use unicode_width::UnicodeWidthStr;
+
+    if input.width() <= width {
+        return input.to_string();
+    }
     if width == 0 {
         return String::new();
-    }
-    let chars: Vec<char> = input.chars().collect();
-    if chars.len() <= width {
-        return input.to_string();
     }
     if width <= 3 {
         return ".".repeat(width);
     }
-    let mut out: String = chars.into_iter().take(width - 3).collect();
+    let mut out = String::new();
+    let mut used = 0;
+    for grapheme in input.graphemes(true) {
+        let cells = grapheme.width();
+        if used + cells > width - 3 {
+            break;
+        }
+        out.push_str(grapheme);
+        used += cells;
+    }
     out.push_str("...");
     out
 }
@@ -1040,8 +1052,42 @@ fn centered_rect(percent_x: u16, percent_y: u16, area: Rect) -> Rect {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn hint_truncation_respects_display_cells() {
+        assert_eq!(super::truncate_with_ellipsis("界界界", 5), "界...");
+        assert_eq!(
+            super::truncate_with_ellipsis("e\u{301}abcd", 4),
+            "e\u{301}..."
+        );
+        assert_eq!(super::truncate_with_ellipsis("界", 0), "");
+    }
+
     use super::*;
     use ratatui::{Terminal, backend::TestBackend, widgets::Paragraph};
+
+    #[test]
+    fn filtering_keeps_the_selected_provider_when_it_still_matches() {
+        let items = ["alpha", "beta", "gamma"]
+            .into_iter()
+            .enumerate()
+            .map(|(index, detail)| {
+                LoginPickerItem::new(
+                    index,
+                    crate::provider_catalog::OPENAI_LOGIN_PROVIDER,
+                    AuthState::Available,
+                    detail,
+                )
+            })
+            .collect();
+        let mut picker = LoginPicker::with_summary("Login", items, LoginPickerSummary::default());
+        picker.selected = 1;
+        picker.filter = "beta".to_string();
+        picker.apply_filter();
+        assert_eq!(picker.selected_item().unwrap().method_detail, "beta");
+        picker.filter = "gamma".to_string();
+        picker.apply_filter();
+        assert_eq!(picker.selected_item().unwrap().method_detail, "gamma");
+    }
 
     #[test]
     fn narrow_login_keeps_the_provider_list_readable() {

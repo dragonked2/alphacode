@@ -1,12 +1,15 @@
-﻿# Windows-only smoke test of the WPF shell and JSON-lines polling. The fake
+# Windows-only smoke test of the WPF shell and JSON-lines polling. The fake
 # bridge has no network access and the window uses an isolated settings folder.
+param([switch]$CompiledHost)
 $ErrorActionPreference = 'Stop'
-$testRoot = Join-Path ([IO.Path]::GetTempPath()) ('alphacode-gui-smoke-' + [guid]::NewGuid().ToString('N'))
+$artifactRoot = if ($env:ALPHACODE_SCRATCH_DIR) { $env:ALPHACODE_SCRATCH_DIR } else { [IO.Path]::GetTempPath() }
+$testRoot = Join-Path $artifactRoot ('alphacode-gui-smoke-' + [guid]::NewGuid().ToString('N'))
 [IO.Directory]::CreateDirectory($testRoot) | Out-Null
 $fakeSource = Join-Path $testRoot 'Bridge.cs'
 $fakeExe = Join-Path $testRoot 'Bridge.exe'
 $bridgeLog = Join-Path $testRoot 'requests.log'
 $testScript = Join-Path $testRoot 'gui.ps1'
+[IO.File]::Copy([IO.Path]::GetFullPath((Join-Path $PSScriptRoot '../src/cli/gui/GuiDiagnostics.cs')),(Join-Path $testRoot 'GuiDiagnostics.cs'))
 $source = [IO.File]::ReadAllText([IO.Path]::GetFullPath((Join-Path $PSScriptRoot '../src/cli/gui/gui.ps1')))
 # Keep the smoke test independent of any already-running desktop window.
 $source = $source.Replace("if (`$Preview) { `$mutexName += '.Preview' }", "`$mutexName += '.Smoke.' + `$PID")
@@ -86,10 +89,10 @@ $testTimer.Add_Tick({
             if ($controls.Prompt.Text -ne 'Draft for project') { throw 'Project draft was lost' }
             if ($script:theme -ne 'light' -or $controls.Reply.FontSize -ne 16) { throw 'Startup overwrote saved preferences before reading them' }
             $controls.ThemeToggle.RaiseEvent([Windows.RoutedEventArgs]::new([Windows.Controls.Primitives.ButtonBase]::ClickEvent))
-            if ($script:theme -ne 'dark' -or $controls.ComposerSurface.Background.Color.ToString() -ne '#FF202C39') { throw 'Dark theme did not propagate to the composer' }
-            if ($window.Resources['Accent'].Color.ToString() -ne '#FFD4AF37') { throw 'Dark theme lost the shared gold accent' }
+            if ($script:theme -ne 'dark' -or $controls.ComposerSurface.Background.Color.ToString() -ne '#FF252B37') { throw 'Dark theme did not propagate to the composer' }
+            if ($window.Resources['Accent'].Color.ToString() -ne '#FFF1C86A') { throw 'Dark theme lost the shared gold accent' }
             Set-GuiTheme 'light'
-            if ($window.Resources['Accent'].Color.ToString() -ne '#FF806515') { throw 'Light theme lost the contrast-safe gold accent' }
+            if ($window.Resources['Accent'].Color.ToString() -ne '#FF806116') { throw 'Light theme lost the contrast-safe gold accent' }
             if ($controls.ComposerSurface.Background.Color.ToString() -ne '#FFFFFFFF') { throw 'Light theme did not propagate to the composer' }
             $controls.Prompt.Clear()
             if ($controls.Send.IsEnabled) { throw 'Blank prompts must not enable Send' }
@@ -200,6 +203,13 @@ $testTimer.Add_Tick({
             Save-SmokeImage 'light-code-and-plan.png'
             if ($controls.Voice.Visibility -ne 'Collapsed') { throw 'Unavailable voice control should be hidden' }
             Write-SmokePhase 'home toggle'
+            $tip = New-Object Windows.Controls.ToolTip
+            $tip.Content = 'A long tooltip must wrap without failing when the desktop applies its template.'
+            $tip.Style = $window.FindResource([Windows.Controls.ToolTip])
+            $tip.ApplyTemplate() | Out-Null
+            $tip.Measure([Windows.Size]::new(360,200))
+            $tip.Arrange([Windows.Rect]::new(0,0,360,100))
+            $tip.UpdateLayout()
             Set-SidebarVisibility $true $false
             $homeSelection = Get-SelectedSessionId
             Set-Navigation 'Live'
@@ -317,7 +327,7 @@ $testTimer.Add_Tick({
 })
 $testTimer.Start()
 '@
-$source = $source.Replace('[Windows.MessageBox]::Show($_.Exception.Message, ''Could not open AlphaCode GUI'', ''OK'', ''Error'') | Out-Null', 'throw $details')
+$source = $source.Replace("    [Windows.MessageBox]::Show('The desktop could not continue. Diagnostics were saved in LocalAppData/AlphaCode.', 'Could not open AlphaCode GUI', 'OK', 'Error') | Out-Null",'')
 $source = $source.Replace('$timer.Start()', ('$timer.Start()' + "`r`n" + $interaction))
 [IO.File]::WriteAllText($testScript, $source, [Text.UTF8Encoding]::new($true))
 [IO.File]::WriteAllText($fakeSource, @'
@@ -342,6 +352,13 @@ class FakeBridge {
 $compiler = Join-Path $env:WINDIR 'Microsoft.NET\Framework64\v4.0.30319\csc.exe'
 & $compiler /nologo /target:exe "/out:$fakeExe" $fakeSource
 if ($LASTEXITCODE -ne 0) { throw 'Could not compile the fake GUI bridge' }
+$hostExe = Join-Path $testRoot 'AlphaCode.Desktop.exe'
+if ($CompiledHost) {
+    $automation = [Management.Automation.PSObject].Assembly.Location
+    $guiDir = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot '../src/cli/gui'))
+    & $compiler /nologo /target:winexe "/out:$hostExe" "/reference:$automation" /reference:System.Web.Extensions.dll /reference:System.Core.dll "/resource:$testScript,AlphaCode.UI" (Join-Path $guiDir 'GuiHost.cs') (Join-Path $guiDir 'GuiDiagnostics.cs')
+    if ($LASTEXITCODE -ne 0) { throw 'Could not compile the GUI host interaction fixture' }
+}
 [IO.File]::WriteAllText($bridgeLog, '')
 $oldLocalApp = $env:LOCALAPPDATA
 $oldLog = $env:ALPHACODE_GUI_SMOKE_LOG
@@ -357,7 +374,11 @@ try {
     $env:ALPHACODE_GUI_SMOKE_LOG = $bridgeLog
     $env:ALPHACODE_GUI_SMOKE_PID = Join-Path $testRoot 'bridge.pid'
     $env:ALPHACODE_GUI_SMOKE_DONE = Join-Path $testRoot 'done'
-    $gui = Start-Process powershell.exe -ArgumentList @('-NoProfile','-ExecutionPolicy','Bypass','-STA','-File', ('"' + $testScript + '"'), '-Executable', ('"' + $fakeExe + '"')) -WindowStyle Hidden -PassThru
+    if ($CompiledHost) {
+        $gui = Start-Process $hostExe -ArgumentList @('-Executable', ('"' + $fakeExe + '"')) -PassThru
+    } else {
+        $gui = Start-Process powershell.exe -ArgumentList @('-NoProfile','-ExecutionPolicy','Bypass','-STA','-File', ('"' + $testScript + '"'), '-Executable', ('"' + $fakeExe + '"')) -WindowStyle Hidden -PassThru
+    }
     for ($attempt = 0; $attempt -lt 120 -and -not (Test-Path -LiteralPath $env:ALPHACODE_GUI_SMOKE_DONE); $attempt++) {
         Start-Sleep -Seconds 1
         $gui.Refresh()
@@ -373,7 +394,11 @@ try {
     if (-not $requests.Contains('"model"') -or -not $requests.Contains('test-b')) { throw 'The model control did not send its selection' }
     if (-not $requests.Contains('"effort"') -or -not $requests.Contains('high')) { throw 'The effort control did not send its selection' }
     if (-not $requests.Contains('Smoke test prompt')) { throw 'The send control did not submit the prompt' }
+    $unexpectedLogs = @(Get-ChildItem -LiteralPath (Join-Path $testRoot 'AlphaCode') -Filter 'gui-*.log' | Where-Object { $_.Length -gt 0 })
+    if ($unexpectedLogs.Count) { throw ('GUI smoke raised unexpected exceptions: ' + ($unexpectedLogs.Name -join ', ')) }
+    if (-not $gui.CloseMainWindow() -or -not $gui.WaitForExit(10000) -or $gui.ExitCode -ne 0) { throw 'GUI did not close cleanly' }
     Write-Output 'GUI smoke passed: connected model options, searchable model chooser, immediate and animated response activity, modern settings form, home/sidebar toggle, stable chat selection, filters, keyboard search, native Explorer picker, rich conversation, code/plan cards, safe rendering, streaming reuse, search, resizable work panel, themes, drafts and bridge actions.'
+    Write-Output $(if ($CompiledHost) { 'Host path verified: compiled STA/ReuseThread runspace with interaction-instrumented GUI resource.' } else { 'Host path verified: direct Windows PowerShell script.' })
     Write-Output ("GUI images: " + $testRoot)
 } finally {
     if ($gui -and -not $gui.HasExited) { Stop-Process -Id $gui.Id -ErrorAction SilentlyContinue }
@@ -385,4 +410,3 @@ try {
     $env:ALPHACODE_GUI_SMOKE_DONE = $oldDone
     $env:ALPHACODE_GUI_SMOKE_IMAGES = $oldImages
 }
-

@@ -5,6 +5,36 @@ use tempfile::tempdir;
 use tokio::time::{Duration, sleep};
 
 #[tokio::test]
+async fn adopted_process_failure_preserves_exit_code_and_output() -> Result<()> {
+    let tmp = tempdir()?;
+    let manager = BackgroundTaskManager::with_output_dir(tmp.path().to_path_buf());
+    let handle = tokio::spawn(async {
+        Ok(
+            crate::alphacode_tool_types::ToolOutput::new("failed output")
+                .with_metadata(serde_json::json!({"process_exit_code": 7})),
+        )
+    });
+    let info = manager.adopt("bash", "test-adopted-failure", handle).await;
+    for _ in 0..100 {
+        let status = manager
+            .status(&info.task_id)
+            .await
+            .ok_or_else(|| anyhow!("missing status"))?;
+        if status.status != BackgroundTaskStatus::Running {
+            assert_eq!(status.status, BackgroundTaskStatus::Failed);
+            assert_eq!(status.exit_code, Some(7));
+            assert_eq!(
+                tokio::fs::read_to_string(&info.output_file).await?,
+                "failed output"
+            );
+            return Ok(());
+        }
+        sleep(Duration::from_millis(10)).await;
+    }
+    Err(anyhow!("adopted task did not finish"))
+}
+
+#[tokio::test]
 async fn spawn_with_notify_emits_started_ui_activity() -> Result<()> {
     let tmp = tempdir()?;
     let manager = BackgroundTaskManager::with_output_dir(tmp.path().to_path_buf());

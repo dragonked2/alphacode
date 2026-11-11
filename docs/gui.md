@@ -14,7 +14,7 @@ Windows builds require the .NET Framework C# compiler, Windows PowerShell, and t
 
 ## Appearance and layout
 
-The desktop uses a consistent slate and mint palette with dark and light themes. Switch themes using the half-circle button at the bottom of the navigation rail. The theme, window dimensions, reading size, sidebar preference, and window position are restored on the next launch. Initial layout no longer saves over preferences before they are read.
+The desktop uses a consistent graphite and gold palette with dark and light themes. Switch themes using the half-circle button at the bottom of the navigation rail. Selected rows have a marker as well as a tinted background, and dropdowns show a checkmark for the chosen option. Text selection and keyboard focus use the shared accent. The theme, window dimensions, reading size, sidebar preference, and window position are restored on the next launch. Initial layout no longer saves over preferences before they are read.
 
 Chat actions sit below the title rather than competing with it for horizontal space. The composer gives workspace context its own row, keeps the Send action separate from model selection, wraps selectors when needed, and shows the prompt character limit. Blank prompts cannot be sent. Connection failures and command-input requests appear above the conversation, including when history is visible. Reading-size controls apply to normal and secure command inputs as well as replies and prompts.
 

@@ -318,6 +318,25 @@ pub fn replace_file_with(source: &Path, dest: &Path) -> Result<()> {
     }
 }
 
+/// Keep the Windows GUI beside each copied channel/launcher binary. Release
+/// archives carry the host as a sibling; copying only the CLI causes GUI
+/// launches to fall back to a potentially much older cached host.
+#[cfg(windows)]
+fn sync_desktop_host(source_binary: &Path, destination_binary: &Path) -> Result<()> {
+    let Some(source_dir) = source_binary.parent() else {
+        return Ok(());
+    };
+    let Some(destination_dir) = destination_binary.parent() else {
+        return Ok(());
+    };
+    let source = source_dir.join("AlphaCode.Desktop.exe");
+    if source.is_file() {
+        let destination = destination_dir.join("AlphaCode.Desktop.exe");
+        replace_file_with(&source, &destination)?;
+    }
+    Ok(())
+}
+
 fn binary_source_metadata_path(binary: &Path) -> PathBuf {
     let file_name = binary
         .file_name()
@@ -731,6 +750,9 @@ fn update_channel_symlink(channel: &str, version: &str) -> Result<PathBuf> {
     if !target.exists() {
         anyhow::bail!("Version binary not found at {:?}", target);
     }
+
+    #[cfg(windows)]
+    sync_desktop_host(&target, &link_path)?;
 
     let temp = channel_dir.join(format!(
         ".{}-{}-{}",

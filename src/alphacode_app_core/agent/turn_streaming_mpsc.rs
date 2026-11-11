@@ -2440,6 +2440,64 @@ mod tests {
         }
     }
 
+    #[derive(Clone)]
+    struct RateLimitedFreeProvider;
+
+    #[async_trait::async_trait]
+    impl crate::alphacode_app_core::provider::Provider for RateLimitedFreeProvider {
+        async fn complete(
+            &self,
+            _messages: &[Message],
+            _tools: &[ToolDefinition],
+            _system: &str,
+            _resume_session_id: Option<&str>,
+        ) -> anyhow::Result<crate::alphacode_app_core::provider::EventStream> {
+            anyhow::bail!("status: 429 Too Many Requests")
+        }
+
+        fn name(&self) -> &str {
+            "Alphax Free"
+        }
+
+        fn model(&self) -> String {
+            crate::alphacode_provider_metadata::route_cloak::free_route_default_model()
+        }
+
+        fn fork(&self) -> Arc<dyn crate::alphacode_app_core::provider::Provider> {
+            Arc::new(self.clone())
+        }
+    }
+
+    #[test]
+    fn free_rate_limit_recovery_stops_after_one_alternate() {
+        let _pool_lock = super::super::free_pool_rotation::lock_pool_state_for_tests();
+        let _env_lock = crate::storage::lock_test_env();
+        let temp_home = tempfile::tempdir().expect("temporary AlphaCode home");
+        let previous_home = std::env::var_os("ALPHACODE_HOME");
+        crate::alphacode_core::env::set_var("ALPHACODE_HOME", temp_home.path());
+        let _restore_home = RestoreAlphacodeHome(previous_home);
+        super::super::free_pool_rotation::absorb_discovered_free_models(vec![
+            "synthetic/unused:free".into(),
+        ]);
+        let mut agent = Agent::new(
+            Arc::new(RateLimitedFreeProvider),
+            crate::alphacode_app_core::tool::Registry::empty(),
+        );
+        let mut attempts = Agent::MAX_FREE_POOL_RATE_LIMIT_RECOVERIES_PER_TURN;
+        assert_eq!(
+            agent
+                .maybe_continue_after_provider_error("status: 429 Too Many Requests", &mut attempts)
+                .expect("recovery decision"),
+            None
+        );
+        assert_eq!(attempts, 2);
+        assert_eq!(
+            super::super::free_pool_rotation::next_free_model("synthetic/unused:free"),
+            None,
+            "the failed alias must remain quarantined"
+        );
+    }
+
     struct RestoreAlphacodeHome(Option<std::ffi::OsString>);
 
     impl Drop for RestoreAlphacodeHome {

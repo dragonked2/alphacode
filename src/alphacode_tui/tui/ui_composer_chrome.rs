@@ -41,9 +41,9 @@ fn actions(mode: ComposerMode, app: &dyn TuiState) -> Vec<(&'static str, &'stati
         actions.push(("/", "commands"));
         actions.push(("@", "files"));
     }
-    actions.push(("\\+Enter", "newline"));
     actions.push(("Ctrl+R", "history"));
     actions.push(("Ctrl+F", "find"));
+    actions.push(("\\+Enter", "newline"));
     actions
 }
 

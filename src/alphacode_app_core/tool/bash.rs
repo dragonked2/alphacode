@@ -20,7 +20,7 @@ use std::process::Command as StdCommand;
 use std::process::Stdio;
 use std::sync::Arc;
 use std::sync::LazyLock;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::time::Duration;
 use std::time::Instant;
 use tokio::io::{AsyncBufReadExt, AsyncRead, AsyncReadExt, AsyncWriteExt, BufReader};
@@ -187,9 +187,8 @@ fn truncate_middle(text: &str, head: usize, tail: usize) -> String {
 // quiet long enough that a human would have reached for Alt+B is detached.
 
 /// Default staleness (no stdout/stderr activity) before a foreground command is
-/// auto-detached. Set well above a slow compiler's silent crate-compile phase so
-/// ordinary work is never interrupted.
-const DEFAULT_AUTO_BACKGROUND_IDLE_MS: u64 = 120_000;
+/// auto-detached. The process continues and its result remains available.
+const DEFAULT_AUTO_BACKGROUND_IDLE_MS: u64 = 30_000;
 /// Floor for the configurable idle window. Below this the heuristic fires often
 /// enough to be disruptive, and a command that prints once a minute would flap.
 const MIN_AUTO_BACKGROUND_IDLE_MS: u64 = 10_000;
@@ -237,6 +236,17 @@ fn command_is_server_lifetime(command: &str) -> bool {
 /// Whether the per-invocation opt-out was supplied.
 fn auto_background_disabled(params: &BashInput) -> bool {
     params.auto_background == Some(false)
+}
+
+fn automatic_background_wake(
+    explicit_wake: Option<bool>,
+    mode: crate::tool::ToolExecutionMode,
+) -> bool {
+    explicit_wake.unwrap_or(matches!(mode, crate::tool::ToolExecutionMode::AgentTurn))
+}
+
+fn idle_handoff_due(idle: Duration, limit: Duration, awaiting_input: bool) -> bool {
+    !limit.is_zero() && !awaiting_input && idle >= limit
 }
 
 /// Tracks output activity so a supervisor (or an inline loop) can tell whether a
@@ -311,9 +321,10 @@ fn auto_background_output(
     output_file: &str,
     status_file: &str,
     elapsed: Duration,
+    wake: bool,
 ) -> String {
     format!(
-        "Command produced no output for {:.0}s, so it was automatically moved to the background \
+        "Command became inactive and was automatically moved to the background \
          (not killed) to keep this session responsive.\n\n\
          Task ID: {}\n\
          Name: {}\n\
@@ -321,16 +332,21 @@ fn auto_background_output(
          Output file: {}\n\
          Status file: {}\n\n\
          The command is still running; do not rerun it unless you intentionally want a second copy.\n\
-         It will wake this session when it completes. Use `bg` with action=\"status\" and \
+         {} Use `bg` with action=\"status\" and \
          task_id=\"{}\" to check progress, or action=\"wait\" to block on completion.\n\
+         Continue only independent work; wait for the result before any dependent action or final claim.\n\
          If it was silent because it is genuinely interactive, rerun it in the foreground with \
          \"auto_background\": false.",
-        elapsed.as_secs_f64(),
         task_id,
         display_name,
         elapsed.as_secs_f64(),
         output_file,
         status_file,
+        if wake {
+            "It will wake this session when it completes."
+        } else {
+            "Completion wake is disabled; wait for or inspect this task explicitly."
+        },
         task_id,
     )
 }
@@ -1047,15 +1063,97 @@ mod utf8_truncation_tests {
     #[test]
     fn background_runs_wake_the_agent_by_default() {
         assert!(
-            super::wake_for_background_run(false, Some(true)),
+            super::wake_for_background_run(None, Some(true)),
             "run_in_background must imply wake so completion resumes the agent"
         );
         // An explicit wake still opts in on its own.
-        assert!(super::wake_for_background_run(true, None));
-        assert!(super::wake_for_background_run(true, Some(false)));
+        assert!(super::wake_for_background_run(Some(true), None));
+        assert!(super::wake_for_background_run(Some(true), Some(false)));
         // Foreground runs never wake, and neither does an explicit opt-out.
-        assert!(!super::wake_for_background_run(false, None));
-        assert!(!super::wake_for_background_run(false, Some(false)));
+        assert!(!super::wake_for_background_run(None, None));
+        assert!(!super::wake_for_background_run(Some(false), Some(true)));
+        assert!(super::automatic_background_wake(
+            None,
+            super::super::ToolExecutionMode::AgentTurn
+        ));
+        assert!(!super::automatic_background_wake(
+            Some(false),
+            super::super::ToolExecutionMode::AgentTurn
+        ));
+        assert!(!super::automatic_background_wake(
+            None,
+            super::super::ToolExecutionMode::Direct
+        ));
+        let limit = Duration::from_secs(30);
+        assert!(!super::idle_handoff_due(limit, limit, true));
+        assert!(super::idle_handoff_due(limit, limit, false));
+        assert!(!super::idle_handoff_due(limit, Duration::ZERO, false));
+    }
+
+    #[tokio::test]
+    async fn timed_handoff_keeps_result_and_wakes_agent() {
+        #[cfg(windows)]
+        let command = "powershell -NoProfile -Command \"Start-Sleep -Milliseconds 800; Write-Output BACKGROUND_TEST_OK\"";
+        #[cfg(not(windows))]
+        let command = "sleep 1; printf BACKGROUND_TEST_OK";
+        let output = BashTool::new()
+            .execute(
+                json!({"command": command, "timeout": 50}),
+                ToolContext {
+                    session_id: "bash-handoff-regression".into(),
+                    message_id: "message".into(),
+                    tool_call_id: "handoff".into(),
+                    working_dir: None,
+                    stdin_request_tx: None,
+                    graceful_shutdown_signal: None,
+                    execution_mode: super::super::ToolExecutionMode::AgentTurn,
+                },
+            )
+            .await
+            .expect("handoff succeeds");
+        let task_id = output
+            .metadata
+            .as_ref()
+            .and_then(|m| m.get("task_id"))
+            .and_then(|id| id.as_str())
+            .expect("background task id");
+        let manager = crate::background::global();
+        let status = manager.status(task_id).await.expect("registered task");
+        assert!(
+            status.wake,
+            "automatic handoff must wake the originating agent"
+        );
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(15);
+        loop {
+            let status = manager
+                .status(task_id)
+                .await
+                .expect("task remains available");
+            if !matches!(
+                status.status,
+                crate::alphacode_app_core::bus::BackgroundTaskStatus::Running
+            ) {
+                assert!(matches!(
+                    status.status,
+                    crate::alphacode_app_core::bus::BackgroundTaskStatus::Completed
+                ));
+                let path = output.metadata.as_ref().unwrap()["output_file"]
+                    .as_str()
+                    .unwrap();
+                assert!(
+                    tokio::fs::read_to_string(path)
+                        .await
+                        .unwrap()
+                        .contains("BACKGROUND_TEST_OK")
+                );
+                break;
+            }
+            assert!(
+                tokio::time::Instant::now() < deadline,
+                "background task did not finish"
+            );
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
     }
 
     #[cfg(windows)]
@@ -1520,7 +1618,7 @@ struct BashInput {
     #[serde(default = "default_true")]
     notify: bool,
     #[serde(default)]
-    wake: bool,
+    wake: Option<bool>,
     /// Set only when re-issuing a call the gate refused (#604).
     #[serde(default)]
     justification: Option<String>,
@@ -1539,8 +1637,8 @@ fn default_true() -> bool {
 /// already launched in the background had no way to report back to the agent
 /// that requested it. An explicit `wake` still wins, so callers that prefer to
 /// poll with `bg wait` can opt out.
-fn wake_for_background_run(explicit_wake: bool, run_in_background: Option<bool>) -> bool {
-    explicit_wake || run_in_background.unwrap_or(false)
+fn wake_for_background_run(explicit_wake: Option<bool>, run_in_background: Option<bool>) -> bool {
+    explicit_wake.unwrap_or(run_in_background.unwrap_or(false))
 }
 
 /// Repair the common Windows invocation `python3 ...` when Python is
@@ -1719,18 +1817,15 @@ impl BashTool {
             .min(MAX_TIMEOUT_MS);
         let timeout_duration = Duration::from_millis(timeout_ms);
 
-        // A command legitimately waiting for human input is *expected* to go
-        // silent; auto-detaching it would strand the prompt. Same for
-        // server-lifetime tooling, which is deliberately long-running.
+        // Interactive commands can opt out. Server-lifetime tooling is
+        // deliberately long-running and retains its existing handling.
         let has_stdin_channel = ctx.stdin_request_tx.is_some();
-        let auto_idle = if auto_background_disabled(params)
-            || !has_stdin_channel
-            || command_is_server_lifetime(&params.command)
-        {
-            Duration::ZERO
-        } else {
-            auto_background_idle()
-        };
+        let auto_idle =
+            if auto_background_disabled(params) || command_is_server_lifetime(&params.command) {
+                Duration::ZERO
+            } else {
+                auto_background_idle()
+            };
 
         let mut command = build_shell_command(&params.command);
         command
@@ -1765,6 +1860,9 @@ impl BashTool {
         let activity = ActivityTracker::new();
         let activity_for_stdout = activity.clone();
         let activity_for_stderr = activity.clone();
+        let awaiting_input = Arc::new(AtomicBool::new(false));
+        let awaiting_input_for_work = Arc::clone(&awaiting_input);
+        let activity_for_input = activity.clone();
 
         // Run the command (read stdout/stderr, service stdin, wait for exit) in a
         // dedicated task so that, if it exceeds the foreground timeout, we can hand
@@ -1823,11 +1921,16 @@ impl BashTool {
                                         response_tx,
                                     };
 
+                                    awaiting_input_for_work.store(true, Ordering::Relaxed);
                                     if stdin_tx.send(request).is_err() {
+                                        awaiting_input_for_work.store(false, Ordering::Relaxed);
                                         break;
                                     }
 
-                                    match response_rx.await {
+                                    let response = response_rx.await;
+                                    activity_for_input.record();
+                                    awaiting_input_for_work.store(false, Ordering::Relaxed);
+                                    match response {
                                         Ok(input) => {
                                             let line = if input.ends_with('\n') {
                                                 input
@@ -1886,7 +1989,9 @@ impl BashTool {
                     output.push_str(&stderr);
                 }
                 let output = format_command_output(output, status.code());
-                Ok(ToolOutput::new(output).with_title(title_for_work))
+                Ok(ToolOutput::new(output)
+                    .with_title(title_for_work)
+                    .with_metadata(json!({"process_exit_code": status.code()})))
             });
 
         let started = Instant::now();
@@ -1922,7 +2027,11 @@ impl BashTool {
                         if Instant::now() >= deadline {
                             break false;
                         }
-                        if !auto_idle.is_zero() && activity.idle() >= auto_idle {
+                        if idle_handoff_due(
+                            activity.idle(),
+                            auto_idle,
+                            awaiting_input.load(Ordering::Relaxed),
+                        ) {
                             break true;
                         }
                     }
@@ -1940,7 +2049,7 @@ impl BashTool {
                 Some(display_name.clone()),
                 &ctx.session_id,
                 params.notify,
-                params.wake,
+                automatic_background_wake(params.wake, ctx.execution_mode),
                 work_handle,
             )
             .await;
@@ -1953,6 +2062,7 @@ impl BashTool {
                 &info.output_file.to_string_lossy(),
                 &info.status_file.to_string_lossy(),
                 elapsed,
+                automatic_background_wake(params.wake, ctx.execution_mode),
             );
             return Ok(ToolOutput::new(output)
                 .with_title(title)
@@ -2065,12 +2175,14 @@ impl BashTool {
                 let _ = tokio::fs::remove_file(&info.output_file).await;
                 let _ = tokio::fs::remove_file(&info.status_file).await;
                 return Ok(
-                    ToolOutput::new(format_command_output(output, status.code())).with_title(
-                        params
-                            .intent
-                            .clone()
-                            .unwrap_or_else(|| params.command.clone()),
-                    ),
+                    ToolOutput::new(format_command_output(output, status.code()))
+                        .with_title(
+                            params
+                                .intent
+                                .clone()
+                                .unwrap_or_else(|| params.command.clone()),
+                        )
+                        .with_metadata(json!({"process_exit_code": status.code()})),
                 );
             }
 
@@ -2092,7 +2204,7 @@ impl BashTool {
                             pid,
                             &started_at,
                             params.notify,
-                            params.wake,
+                            automatic_background_wake(params.wake, ctx.execution_mode),
                         )
                         .await;
                     let output = auto_background_output(
@@ -2101,6 +2213,7 @@ impl BashTool {
                         &info.output_file.to_string_lossy(),
                         &info.status_file.to_string_lossy(),
                         elapsed,
+                        automatic_background_wake(params.wake, ctx.execution_mode),
                     );
                     return Ok(ToolOutput::new(output)
                         .with_title(
@@ -2133,7 +2246,7 @@ impl BashTool {
                         pid,
                         &started_at,
                         params.notify,
-                        params.wake,
+                        automatic_background_wake(params.wake, ctx.execution_mode),
                     )
                     .await;
 
@@ -2190,7 +2303,7 @@ impl BashTool {
                         pid,
                         &started_at,
                         params.notify,
-                        params.wake,
+                        automatic_background_wake(params.wake, ctx.execution_mode),
                     )
                     .await;
                 let output = format!(

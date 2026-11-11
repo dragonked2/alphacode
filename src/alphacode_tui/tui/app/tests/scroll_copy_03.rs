@@ -246,7 +246,8 @@ fn test_full_redraw_clears_out_of_band_backend_artifacts_after_native_scroll_lik
 
     app.request_full_redraw();
     assert!(app.force_full_redraw, "full redraw flag should be armed");
-    terminal.clear().expect("test backend clear should succeed");
+    crate::alphacode_tui::tui::app::run_shell::clear_fullscreen_terminal(&mut terminal)
+        .expect("test backend clear should succeed");
     app.force_full_redraw = false;
     terminal
         .draw(|f| crate::alphacode_tui::tui::ui::draw(f, &app))
@@ -1847,4 +1848,43 @@ fn command_palette_open_does_not_move_existing_rows() {
         checked >= 3,
         "expected transcript rows to sample:\n{before}"
     );
+}
+
+#[test]
+fn fullscreen_clear_does_not_query_cursor_and_repaints() {
+    use ratatui::backend::{Backend, ClearType, TestBackend, WindowSize};
+    use ratatui::buffer::Cell;
+    use ratatui::layout::{Position, Size};
+    use std::io;
+
+    struct CursorTimeoutBackend(TestBackend);
+    impl Backend for CursorTimeoutBackend {
+        type Error = io::Error;
+        fn draw<'a, I>(&mut self, content: I) -> io::Result<()>
+        where I: Iterator<Item = (u16, u16, &'a Cell)> { self.0.draw(content).map_err(|never| match never {}) }
+        fn hide_cursor(&mut self) -> io::Result<()> { self.0.hide_cursor().map_err(|never| match never {}) }
+        fn show_cursor(&mut self) -> io::Result<()> { self.0.show_cursor().map_err(|never| match never {}) }
+        fn get_cursor_position(&mut self) -> io::Result<Position> {
+            Err(io::Error::new(io::ErrorKind::TimedOut, "cursor position timed out"))
+        }
+        fn set_cursor_position<P: Into<Position>>(&mut self, position: P) -> io::Result<()> {
+            self.0.set_cursor_position(position).map_err(|never| match never {})
+        }
+        fn clear(&mut self) -> io::Result<()> { self.0.clear().map_err(|never| match never {}) }
+        fn clear_region(&mut self, kind: ClearType) -> io::Result<()> { self.0.clear_region(kind).map_err(|never| match never {}) }
+        fn size(&self) -> io::Result<Size> { self.0.size().map_err(|never| match never {}) }
+        fn window_size(&mut self) -> io::Result<WindowSize> { self.0.window_size().map_err(|never| match never {}) }
+        fn flush(&mut self) -> io::Result<()> { self.0.flush().map_err(|never| match never {}) }
+    }
+
+    let mut terminal = ratatui::Terminal::new(CursorTimeoutBackend(TestBackend::new(20, 3)))
+        .expect("create fullscreen terminal");
+    let render = |frame: &mut ratatui::Frame| {
+        frame.render_widget(ratatui::widgets::Paragraph::new("connection restored"), frame.area());
+    };
+    terminal.draw(render).expect("initial frame");
+    crate::alphacode_tui::tui::app::run_shell::clear_fullscreen_terminal(&mut terminal)
+        .expect("clear must not query cursor position");
+    terminal.draw(render).expect("repaint after clear");
+    assert_eq!(terminal.backend().0.buffer().cell((0, 0)).unwrap().symbol(), "c");
 }

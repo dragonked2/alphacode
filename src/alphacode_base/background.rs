@@ -691,12 +691,44 @@ impl BackgroundTaskManager {
             let duration_secs = started_at.elapsed().as_secs_f64();
 
             let (status, exit_code, error, output_text) = match tool_result {
-                Ok(Ok(output)) => (
-                    BackgroundTaskStatus::Completed,
-                    Some(0),
-                    None,
-                    output.output,
-                ),
+                Ok(Ok(output)) => {
+                    // A shell tool can return a successful ToolOutput while
+                    // reporting a failed child process. Preserve that status
+                    // when an in-flight command is adopted via Alt+B or an
+                    // automatic foreground handoff.
+                    match output
+                        .metadata
+                        .as_ref()
+                        .and_then(|m| m.get("process_exit_code"))
+                    {
+                        Some(code) => match code.as_i64().and_then(|n| i32::try_from(n).ok()) {
+                            Some(0) => (
+                                BackgroundTaskStatus::Completed,
+                                Some(0),
+                                None,
+                                output.output,
+                            ),
+                            Some(code) => (
+                                BackgroundTaskStatus::Failed,
+                                Some(code),
+                                Some(format!("Command exited with code {code}")),
+                                output.output,
+                            ),
+                            None => (
+                                BackgroundTaskStatus::Failed,
+                                None,
+                                Some("Command terminated without an exit code".to_string()),
+                                output.output,
+                            ),
+                        },
+                        None => (
+                            BackgroundTaskStatus::Completed,
+                            Some(0),
+                            None,
+                            output.output,
+                        ),
+                    }
+                }
                 Ok(Err(e)) => (
                     BackgroundTaskStatus::Failed,
                     None,

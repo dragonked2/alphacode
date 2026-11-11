@@ -1,7 +1,6 @@
 use super::*;
 use crate::alphacode_tui::tui::app as app_mod;
 use crate::alphacode_tui::tui::app::PendingRemoteRewindNotice;
-use crate::alphacode_tui::tui::core;
 
 pub(in crate::alphacode_tui::tui::app) fn handle_remote_char_input(app: &mut App, c: char) {
     input::handle_text_input(app, &c.to_string());
@@ -493,6 +492,15 @@ async fn handle_remote_key_internal(
         return Ok(());
     }
 
+    if input::handle_input_selection_key(app, code, modifiers) {
+        return Ok(());
+    }
+    if modifiers == KeyModifiers::CONTROL && code == KeyCode::Char('c') && app.has_input_selection()
+    {
+        app.copy_input_selection_to_clipboard();
+        return Ok(());
+    }
+
     if modifiers.contains(KeyModifiers::ALT) || macos_option_shortcut.is_some() {
         let alt_code = macos_option_shortcut.map(KeyCode::Char).unwrap_or(code);
         match alt_code {
@@ -553,7 +561,11 @@ async fn handle_remote_key_internal(
                 return Ok(());
             }
             KeyCode::Char('x') => {
-                input::cut_input_line_to_clipboard(app);
+                if app.has_input_selection() {
+                    app.cut_input_selection_to_clipboard();
+                } else {
+                    input::cut_input_line_to_clipboard(app);
+                }
                 return Ok(());
             }
             KeyCode::Char('v') => {
@@ -677,7 +689,11 @@ async fn handle_remote_key_internal(
                 return Ok(());
             }
             KeyCode::Char('x') => {
-                input::cut_input_line_to_clipboard(app);
+                if app.has_input_selection() {
+                    app.cut_input_selection_to_clipboard();
+                } else {
+                    input::cut_input_line_to_clipboard(app);
+                }
                 return Ok(());
             }
             KeyCode::Char('a') => {
@@ -854,44 +870,13 @@ async fn handle_remote_key_internal(
         KeyCode::Char(c) => {
             handle_remote_char_input(app, c);
         }
-        KeyCode::Backspace => {
-            if app.cursor_pos > 0 {
-                let prev = core::prev_grapheme_boundary(&app.input, app.cursor_pos);
-                app.remember_input_undo_state();
-                app.replace_input_range(prev..app.cursor_pos, "");
-                app.cursor_pos = prev;
-                app.reset_tab_completion();
-                app.sync_model_picker_preview_from_input();
-            }
-        }
-        KeyCode::Delete => {
-            if app.cursor_pos < app.input.len() {
-                let next = core::next_grapheme_boundary(&app.input, app.cursor_pos);
-                app.remember_input_undo_state();
-                app.replace_input_range(app.cursor_pos..next, "");
-                app.reset_tab_completion();
-                app.sync_model_picker_preview_from_input();
-            }
-        }
-        KeyCode::Left => {
-            if app.cursor_pos > 0 {
-                app.cursor_pos = core::prev_grapheme_boundary(&app.input, app.cursor_pos);
-            } else {
-                // Opt-in: Left on an empty input opens the active sessions
-                // manager (no-op unless display.active_sessions_manager).
-                app.maybe_open_active_sessions_on_left();
-            }
-        }
-        KeyCode::Right => {
-            if app.cursor_pos < app.input.len() {
-                app.cursor_pos = core::next_grapheme_boundary(&app.input, app.cursor_pos);
-            }
-        }
-        KeyCode::Home => {
-            app.cursor_pos = 0;
-        }
-        KeyCode::End => {
-            app.cursor_pos = app.input.len();
+        KeyCode::Backspace
+        | KeyCode::Delete
+        | KeyCode::Left
+        | KeyCode::Right
+        | KeyCode::Home
+        | KeyCode::End => {
+            input::handle_basic_key(app, code);
         }
         KeyCode::Tab => {
             app.autocomplete();

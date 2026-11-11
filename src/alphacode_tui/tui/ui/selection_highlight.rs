@@ -5,18 +5,19 @@
 //! full-screen overlays, and the prompt composer) and the find-in-page
 //! matches — so the highlight style stays visually consistent across the UI.
 
-use super::{accent_color, blend_color, rgb};
+use super::{accent_color, blend_color};
+use crate::alphacode_tui_style::palette::{Role, role_color};
 use ratatui::prelude::*;
 use unicode_segmentation::UnicodeSegmentation;
 use unicode_width::UnicodeWidthStr;
 
 pub(crate) fn selection_bg_for(base_bg: Option<Color>) -> Color {
-    let fallback = rgb(32, 38, 48);
+    let fallback = role_color(Role::UserBg);
     blend_color(base_bg.unwrap_or(fallback), accent_color(), 0.34)
 }
 
 pub(crate) fn selection_fg_for(base_fg: Option<Color>) -> Option<Color> {
-    base_fg.map(|fg| blend_color(fg, Color::White, 0.15))
+    base_fg
 }
 
 /// Background of a find-in-page hit that is not the currently selected one.
@@ -24,7 +25,7 @@ pub(crate) fn selection_fg_for(base_fg: Option<Color>) -> Option<Color> {
 /// Deliberately softer than the selection background: a page can hold many
 /// hits, and a loud background on all of them drowns the transcript.
 pub(crate) fn search_hit_bg_for(base_bg: Option<Color>) -> Color {
-    let fallback = rgb(32, 38, 48);
+    let fallback = role_color(Role::UserBg);
     blend_color(base_bg.unwrap_or(fallback), accent_color(), 0.30)
 }
 
@@ -33,7 +34,7 @@ pub(crate) fn search_hit_bg_for(base_bg: Option<Color>) -> Color {
 /// Stronger than [`search_hit_bg_for`] so "where am I" is answerable at a
 /// glance even when the hit is off the centre of the viewport.
 pub(crate) fn search_current_hit_bg_for(base_bg: Option<Color>) -> Color {
-    let fallback = rgb(32, 38, 48);
+    let fallback = role_color(Role::UserBg);
     blend_color(base_bg.unwrap_or(fallback), accent_color(), 0.62)
 }
 
@@ -129,6 +130,13 @@ mod tests {
 
     fn line_of(text: &str) -> Line<'static> {
         Line::from(Span::raw(text.to_string()))
+    }
+
+    #[test]
+    fn selection_preserves_dark_text_on_light_themes() {
+        let dark = Color::Rgb(32, 38, 48);
+        assert_eq!(selection_fg_for(Some(dark)), Some(dark));
+        assert_eq!(selection_fg_for(None), None);
     }
 
     #[test]

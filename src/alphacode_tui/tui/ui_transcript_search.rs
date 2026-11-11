@@ -62,41 +62,50 @@ pub(super) fn draw_transcript_search_overlay(
         dim
     };
 
-    // Keep the match count visible when a long query fills the bar. Preserve
-    // whole graphemes and show an ellipsis when the beginning is hidden.
-    let counter_width = counter.width();
-    let fixed_width = 5 + usize::from(view.case_sensitive) * 3 + 1 + 2 + counter_width;
-    let query_width = (rect.width as usize).saturating_sub(fixed_width);
-    let mut query_spans: Vec<Span<'static>> = vec![
-        Span::styled("Find ", accent),
+    // Reserve space for the result count first; narrow terminals should still
+    // explain whether the search found anything, even for a long query.
+    let width = rect.width as usize;
+    let label = if width >= counter.width() + 7 {
+        "Find "
+    } else {
+        ""
+    };
+    let case_marker = if view.case_sensitive && width >= counter.width() + label.len() + 6 {
+        " Aa"
+    } else {
+        ""
+    };
+    let separator = if width >= counter.width() + label.len() + case_marker.len() + 3 {
+        "  "
+    } else {
+        ""
+    };
+    let reserved = label.len() + case_marker.len() + 1 + separator.len() + counter.width();
+    let query_width = width.saturating_sub(reserved);
+    let mut query_line = Line::from(vec![
+        Span::styled(label, accent),
         Span::styled(fit_query_end(&view.query, query_width), Style::default()),
-    ];
-    if view.case_sensitive {
-        query_spans.push(Span::styled(
-            " Aa",
-            Style::default().fg(BrandTheme::warning()),
-        ));
-    }
-    query_spans.push(Span::styled("█", accent));
-
-    let mut query_line = Line::from(query_spans);
+        Span::styled(case_marker, Style::default().fg(BrandTheme::warning())),
+        Span::styled("█", accent),
+    ]);
     let centered = app.centered_mode();
     let used = query_line.width();
-    if !centered && used + counter_width + 2 <= rect.width as usize {
-        // Right-align the counter at the edge of the bar.
-        let pad = rect.width as usize - used - counter_width;
+    if !centered && used + counter.width() + separator.len() <= width {
+        let pad = width - used - counter.width();
         query_line.spans.push(Span::raw(" ".repeat(pad)));
-        query_line.spans.push(Span::styled(counter, counter_style));
     } else {
-        // Centred layout (or a bar too narrow to right-align): the counter
-        // follows the query and the whole line is centred.
-        query_line.spans.push(Span::styled("  ", dim));
-        query_line.spans.push(Span::styled(counter, counter_style));
+        query_line.spans.push(Span::styled(separator, dim));
     }
+    query_line.spans.push(Span::styled(counter, counter_style));
     lines.push(query_line);
 
     // Row 2: the keys that drive the overlay.
-    lines.push(if rect.width < 55 {
+    lines.push(if rect.width < 24 {
+        Line::from(vec![
+            Span::styled("Esc", muted),
+            Span::styled(" close", dim),
+        ])
+    } else if rect.width < 55 {
         Line::from(vec![
             Span::styled("↑↓", muted),
             Span::styled(" navigate  ", dim),

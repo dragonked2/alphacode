@@ -19,25 +19,14 @@ a single false positive.
 
 ---
 
-## THE MINIMUM SETUP (non-negotiable)
+## SETUP BY HYPOTHESIS
 
-Manual blackbox with one account is a fiction. You cannot test authorization
-with one identity, and authorization is where the severity is.
-
-```
-2 registered accounts          A and B, distinct org/role if possible
-1 low-privilege identity       the actual attacker's position
-1 elevated identity            only if the program provides one, or via the
-                               signup flow's own self-service role assignment
-your own browser session        devtools open, network tab recording
-a text file, always open       the hypothesis ledger
-```
-
-**Never test authorization using two accounts you both control if the app
-issues them into the same org and the feature is org-scoped.** Check the org
-membership before you trust a 403 as a *security* control — it may be an
-accident of your setup, which is exactly the kind of thing that becomes an
-embarrassing false positive.
+Use authorized test accounts, controlled data, and a hypothesis ledger. Two
+separate identities are needed for a cross-user comparison; separate tenants or
+roles are needed when testing those specific boundaries. Record their actual
+membership before interpreting a result. A missing second identity blocks that
+comparison, not independent single-account, source, workflow or session tests.
+Use elevated roles only when available under the program rules.
 
 ---
 

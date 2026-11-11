@@ -94,7 +94,7 @@ Never mix shell syntaxes."
 
             "timeout": {
                 "type": "integer",
-                "description": "Timeout in MILLISECONDS (not seconds), e.g. 1500000 = 25min; kills with exit 124. Omit for the default timeout."
+                "description": "Foreground wait in milliseconds. If exceeded, the command continues in the background; check its final status and output."
             },
 
             "run_in_background": {
@@ -104,7 +104,7 @@ Never mix shell syntaxes."
 
             "auto_background": {
                 "type": "boolean",
-                "description": "Foreground only. A command that stays silent for a long time is automatically moved to the background (it keeps running and wakes the agent) so the session is not blocked. Defaults to true. Set false for an interactive command that legitimately reads input or waits without printing."
+                "description": "Move silent foreground commands to the background; agent turns wake on completion unless wake is false. Defaults true; set false for interactive commands."
             },
 
             "notify": {

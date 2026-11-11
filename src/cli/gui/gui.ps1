@@ -1,34 +1,86 @@
 param([Parameter(Mandatory=$true)][string]$Executable, [switch]$Preview)
 $ErrorActionPreference = 'Stop'
 
-# Keep the desktop alive on recoverable UI/bridge errors instead of crashing.
-# Fatal CLR corruption still terminates, but most event-handler exceptions
-# (COM picker errors, bridge parse issues, clipboard access) can be reported.
-try {
-    [AppDomain]::CurrentDomain.add_UnhandledException({
-        param($sender, $args)
-        try {
-            $ex = $args.ExceptionObject
-            $msg = if ($ex -is [Exception]) { $ex.ToString() } else { [string]$ex }
-            $log = Join-Path $env:LOCALAPPDATA 'AlphaCode\gui-unhandled.log'
-            New-Item -ItemType Directory -Force -Path (Split-Path $log) | Out-Null
-            Add-Content -Path $log -Value ("[{0}] Unhandled: {1}" -f (Get-Date -Format o), $msg)
-        } catch {}
-    })
-} catch {}
-
-trap {
-    try {
-        $log = Join-Path $env:LOCALAPPDATA 'AlphaCode\gui-trap.log'
-        New-Item -ItemType Directory -Force -Path (Split-Path $log) | Out-Null
-        Add-Content -Path $log -Value ("[{0}] Trap: {1}`n{2}" -f (Get-Date -Format o), $_.Exception.Message, $_.ScriptStackTrace)
-        if ($script:controls -and $script:controls.FooterStatus) {
-            $script:controls.FooterStatus.Text = "Recovered from an error: $($_.Exception.Message)"
-        }
-    } catch {}
-    continue
+# The compiled host already contains this type. Direct script launches (tests
+# and development) load the same implementation, not a separate logging path.
+if (-not ('AlphaCode.Desktop.GuiDiagnostics' -as [type])) {
+    Add-Type -Path (Join-Path $PSScriptRoot 'GuiDiagnostics.cs') -ReferencedAssemblies @([Management.Automation.PSObject].Assembly.Location,'System.Web.Extensions','System.Core')
+    [AlphaCode.Desktop.GuiDiagnostics]::Initialize([AlphaCode.Desktop.GuiDiagnostics].Assembly,[IO.File]::ReadAllText($PSCommandPath))
 }
+[AlphaCode.Desktop.GuiDiagnostics]::InstallProcessHandlers()
 Add-Type -AssemblyName PresentationFramework, PresentationCore, WindowsBase, System.Windows.Forms
+
+function Get-GuiDiagnosticState {
+    $bridgeRunning = $false
+    try { $bridgeRunning = $script:process -and -not $script:process.HasExited } catch { }
+    return @{
+        preview=[bool]$Preview; closed=[bool]$script:closed; navigation=[string]$script:navigation
+        pending_kind=[string]$script:pendingKind; queue_count=$(if ($script:queue) { $script:queue.Count } else { 0 })
+        session_count=@($script:allSessions).Count; working_count=[int]$script:working
+        input_mode=[bool]$script:inputMode; response_active=[bool]$script:responseSession; bridge_running=[bool]$bridgeRunning
+        main_timer_enabled=[bool]($timer -and $timer.IsEnabled); main_timer_ms=$(if ($timer) { $timer.Interval.TotalMilliseconds } else { 0 })
+        response_timer_enabled=[bool]($responseTimer -and $responseTimer.IsEnabled); response_timer_ms=$(if ($responseTimer) { $responseTimer.Interval.TotalMilliseconds } else { 0 })
+        search_timer_enabled=[bool]($searchTimer -and $searchTimer.IsEnabled); search_timer_ms=$(if ($searchTimer) { $searchTimer.Interval.TotalMilliseconds } else { 0 })
+    }
+}
+
+function Write-GuiFailure([string]$category, [string]$callback, $failure) {
+    # State is allowlisted in C#. Never serialize snapshots, requests, session
+    # titles, composer/search text or credentials. Redact UI values if an
+    # exception embeds them in its message.
+    try {
+        $privateValues = New-Object 'System.Collections.Generic.List[string]'
+        if ($controls) {
+            foreach ($name in @('Prompt','CommandInput','SecretInput','Reply','ReplySearch','SessionSearch','WorkspacePath')) {
+                $control = $controls[$name]
+                if ($control -is [Windows.Controls.PasswordBox]) { $privateValues.Add($control.Password) }
+                elseif ($control -and $control.Text) { $privateValues.Add([string]$control.Text) }
+            }
+        }
+        if ($script:settingsControls -and $script:settingsControls.ProviderKey) { $privateValues.Add($script:settingsControls.ProviderKey.Password) }
+        [AlphaCode.Desktop.GuiDiagnostics]::Write($category,$callback,$failure,(Get-GuiDiagnosticState),$privateValues.ToArray())
+    } catch {
+        # The native writer cannot throw. Preserve the logging failure rather
+        # than fall back to an unredacted original exception/UI payload.
+        [AlphaCode.Desktop.GuiDiagnostics]::Write('host','Write-GuiFailure', $_, $null, $null)
+    }
+}
+
+function Show-GuiFailureNotice {
+    # Do not render raw exception messages (which may contain private data).
+    try {
+        if ($controls.FooterStatus) { $controls.FooterStatus.Text = 'An operation failed · diagnostics saved in LocalAppData/AlphaCode' }
+    } catch { }
+}
+
+function Invoke-GuiCallback([string]$name, [scriptblock]$callback, [Windows.Threading.DispatcherTimer]$failureTimer = $null) {
+    if ($script:closed) { return }
+    try { & $callback }
+    catch {
+        $failure = $_
+        Write-GuiFailure 'callback' $name $failure
+        if ([AlphaCode.Desktop.GuiDiagnostics]::IsFatal($failure.Exception)) { throw }
+        if ($failureTimer) { $failureTimer.Stop() }
+        Show-GuiFailureNotice
+    }
+}
+
+function Stop-GuiResources {
+    $script:closed = $true
+    foreach ($activeTimer in @($timer,$searchTimer,$responseTimer)) {
+        if ($activeTimer) { $activeTimer.Stop() }
+    }
+    if ($script:inputWriter) {
+        try { $script:inputWriter.Dispose() }
+        catch { Write-GuiFailure 'callback' 'Window.Close.InputWriter' $_ }
+        finally { $script:inputWriter = $null }
+    }
+    if ($script:process) {
+        try { if (-not $script:process.HasExited) { $script:process.Kill() } }
+        catch { Write-GuiFailure 'callback' 'Window.Close.Bridge' $_ }
+        finally { $script:process.Dispose(); $script:process = $null }
+    }
+}
 
 $identity = [System.Security.Principal.WindowsIdentity]::GetCurrent().User.Value
 $mutexName = 'Local\AlphaCode.Desktop.' + $identity
@@ -37,6 +89,7 @@ $mutex = New-Object System.Threading.Mutex($false, $mutexName)
 if (-not $mutex.WaitOne(0)) { $mutex.Dispose(); return }
 
 $script:process = $null
+$script:closed = $false
 $script:inputWriter = $null
 $script:pending = $null
 $script:pendingKind = ''
@@ -67,7 +120,7 @@ $script:navigation = 'Home'
 $script:navigationBack = New-Object System.Collections.Stack
 $script:navigationForward = New-Object System.Collections.Stack
 $script:sidebarVisible = $true
-$script:sidebarWidth = 300
+$script:sidebarWidth = 272
 $script:allSessions = @()
 $script:liveSessions = @()
 $script:storedSessions = @()
@@ -110,7 +163,7 @@ $script:theme = 'dark'
 $script:sidebarAutoHidden = $false
 $script:compactLayout = $false
 $script:workflowVisible = $false
-$script:workflowWidth = 300
+$script:workflowWidth = 340
 $script:renderedBlocks = @()
 $script:searchHits = @()
 $script:searchHitIndex = -1
@@ -136,46 +189,63 @@ try {
   <WindowChrome CaptionHeight="0" ResizeBorderThickness="6" CornerRadius="0" GlassFrameThickness="0" UseAeroCaptionButtons="False"/>
  </WindowChrome.WindowChrome>
  <Window.Resources>
-  <Style TargetType="TextBox"><Setter Property="SelectionBrush" Value="{DynamicResource AccentSoft}"/><Setter Property="SelectionOpacity" Value="0.8"/><Setter Property="CaretBrush" Value="{DynamicResource Accent}"/></Style>
-  <Style TargetType="ToolTip"><Setter Property="Background" Value="{DynamicResource SurfaceElevated}"/><Setter Property="Foreground" Value="{DynamicResource Text}"/><Setter Property="BorderBrush" Value="{DynamicResource Border}"/><Setter Property="Padding" Value="12,8"/><Setter Property="MaxWidth" Value="360"/><Setter Property="Template"><Setter.Value><ControlTemplate TargetType="ToolTip"><Border Background="{TemplateBinding Background}" BorderBrush="{TemplateBinding BorderBrush}" BorderThickness="1" CornerRadius="8" Padding="{TemplateBinding Padding}"><ContentPresenter TextBlock.TextWrapping="Wrap"/></Border></ControlTemplate></Setter.Value></Setter></Style>
+  <Style TargetType="TextBox"><Setter Property="SelectionBrush" Value="{DynamicResource Accent}"/><Setter Property="SelectionOpacity" Value="0.35"/><Setter Property="CaretBrush" Value="{DynamicResource Accent}"/></Style>
+  <Style TargetType="ToolTip"><Setter Property="Background" Value="{DynamicResource SurfaceElevated}"/><Setter Property="Foreground" Value="{DynamicResource Text}"/><Setter Property="BorderBrush" Value="{DynamicResource Border}"/><Setter Property="Padding" Value="12,8"/><Setter Property="MaxWidth" Value="360"/><Setter Property="Template"><Setter.Value><ControlTemplate TargetType="ToolTip"><Border Background="{TemplateBinding Background}" BorderBrush="{TemplateBinding BorderBrush}" BorderThickness="1" CornerRadius="8" Padding="{TemplateBinding Padding}"><ContentPresenter><ContentPresenter.Resources><Style TargetType="TextBlock"><Setter Property="TextWrapping" Value="Wrap"/></Style></ContentPresenter.Resources></ContentPresenter></Border></ControlTemplate></Setter.Value></Setter></Style>
   <Style x:Key="ComposerInput" TargetType="TextBox">
    <Setter Property="Background" Value="Transparent"/><Setter Property="Foreground" Value="{DynamicResource Text}"/>
-   <Setter Property="CaretBrush" Value="{DynamicResource Accent}"/><Setter Property="SelectionBrush" Value="{DynamicResource AccentSoft}"/>
+   <Setter Property="CaretBrush" Value="{DynamicResource Accent}"/><Setter Property="SelectionBrush" Value="{DynamicResource Accent}"/><Setter Property="SelectionOpacity" Value="0.35"/>
    <Setter Property="BorderThickness" Value="0"/><Setter Property="Padding" Value="0"/><Setter Property="FontSize" Value="15"/>
    <Setter Property="FocusVisualStyle" Value="{x:Null}"/><Setter Property="VerticalContentAlignment" Value="Top"/>
    <Setter Property="Template"><Setter.Value><ControlTemplate TargetType="TextBox"><ScrollViewer x:Name="PART_ContentHost" Background="Transparent" BorderThickness="0" Padding="0" Focusable="False" CanContentScroll="False" HorizontalScrollBarVisibility="Disabled" VerticalScrollBarVisibility="Auto"/></ControlTemplate></Setter.Value></Setter>
   </Style>
-  <SolidColorBrush x:Key="WindowBg" Color="#11161D"/>
-  <SolidColorBrush x:Key="RailBg" Color="#0D1218"/>
-  <SolidColorBrush x:Key="SidebarBg" Color="#161D26"/>
-  <SolidColorBrush x:Key="Surface" Color="#1C2632"/>
-  <SolidColorBrush x:Key="SurfaceElevated" Color="#202C39"/>
-  <SolidColorBrush x:Key="SurfaceHover" Color="#2A3A4B"/>
-  <SolidColorBrush x:Key="Border" Color="#34475A"/>
-  <SolidColorBrush x:Key="Text" Color="#EDF3F9"/>
-  <SolidColorBrush x:Key="Muted" Color="#AFBFD0"/>
-  <SolidColorBrush x:Key="Dim" Color="#8C9FB3"/>
-  <SolidColorBrush x:Key="Accent" Color="#D4AF37"/>
-  <SolidColorBrush x:Key="AccentSoft" Color="#3B321E"/>
-  <SolidColorBrush x:Key="AccentText" Color="#1B160B"/>
-  <SolidColorBrush x:Key="Success" Color="#8CE0BD"/>
-  <SolidColorBrush x:Key="SuccessSoft" Color="#183D34"/>
-  <SolidColorBrush x:Key="Warning" Color="#F3C777"/>
-  <SolidColorBrush x:Key="WarningSoft" Color="#49371F"/>
-  <SolidColorBrush x:Key="Danger" Color="#F4A4AD"/>
-  <SolidColorBrush x:Key="DangerSoft" Color="#482B35"/>
+  <!-- Design brief: a calm, keyboard-first workspace for developers moving
+       between chat, project context and agent work. Conversation and composing
+       take priority over chrome. Native WPF, vector icons and incremental
+       rendering keep input responsive; gold remains the AlphaCode accent.
+       Semantic tokens below are shared by the shell, overlays and settings.
+       No provider/user content is interpreted as XAML. -->
+  <SolidColorBrush x:Key="WindowBg" Color="#0C0E14"/>
+  <SolidColorBrush x:Key="RailBg" Color="#0C0E14"/>
+  <SolidColorBrush x:Key="SidebarBg" Color="#12151D"/>
+  <SolidColorBrush x:Key="Canvas" Color="#181B24"/>
+  <SolidColorBrush x:Key="Surface" Color="#202530"/>
+  <SolidColorBrush x:Key="SurfaceElevated" Color="#252B37"/>
+  <SolidColorBrush x:Key="SurfaceHover" Color="#303747"/>
+  <SolidColorBrush x:Key="CodeSurface" Color="#10131B"/>
+  <SolidColorBrush x:Key="UserMessage" Color="#232A38"/>
+  <SolidColorBrush x:Key="Border" Color="#3B4455"/>
+  <SolidColorBrush x:Key="Text" Color="#F3F4F7"/>
+  <SolidColorBrush x:Key="Muted" Color="#BEC5D2"/>
+  <SolidColorBrush x:Key="Dim" Color="#98A4B7"/>
+  <SolidColorBrush x:Key="Accent" Color="#F1C86A"/>
+  <SolidColorBrush x:Key="AccentSoft" Color="#393124"/>
+  <SolidColorBrush x:Key="AccentText" Color="#211909"/>
+  <SolidColorBrush x:Key="Success" Color="#7EE2B8"/>
+  <SolidColorBrush x:Key="SuccessSoft" Color="#183B31"/>
+  <SolidColorBrush x:Key="Warning" Color="#F5CC84"/>
+  <SolidColorBrush x:Key="WarningSoft" Color="#443522"/>
+  <SolidColorBrush x:Key="Danger" Color="#FFACB7"/>
+  <SolidColorBrush x:Key="DangerSoft" Color="#44252E"/>
+  <Style x:Key="Icon" TargetType="Path">
+   <Setter Property="Width" Value="18"/><Setter Property="Height" Value="18"/><Setter Property="Stretch" Value="Uniform"/>
+   <Setter Property="Stroke" Value="{Binding Foreground, RelativeSource={RelativeSource AncestorType={x:Type Button}}}"/>
+   <Setter Property="StrokeThickness" Value="1.7"/><Setter Property="StrokeLineJoin" Value="Round"/>
+   <Setter Property="StrokeStartLineCap" Value="Round"/><Setter Property="StrokeEndLineCap" Value="Round"/>
+   <Setter Property="HorizontalAlignment" Value="Center"/><Setter Property="VerticalAlignment" Value="Center"/>
+  </Style>
   <Style TargetType="Button">
    <Setter Property="Foreground" Value="{DynamicResource Text}"/>
    <Setter Property="Background" Value="Transparent"/>
    <Setter Property="BorderThickness" Value="0"/>
    <Setter Property="Padding" Value="12,8"/>
    <Setter Property="FontSize" Value="13"/>
-   <Setter Property="MinHeight" Value="32"/>
+   <Setter Property="MinHeight" Value="36"/>
+   <Setter Property="FocusVisualStyle" Value="{x:Null}"/>
    <Setter Property="BorderBrush" Value="Transparent"/>
    <Setter Property="BorderThickness" Value="1"/>
    <Setter Property="Cursor" Value="Hand"/>
    <Setter Property="Template"><Setter.Value><ControlTemplate TargetType="Button">
-    <Border x:Name="ButtonSurface" Background="{TemplateBinding Background}" BorderBrush="{TemplateBinding BorderBrush}" BorderThickness="{TemplateBinding BorderThickness}" CornerRadius="8" Padding="{TemplateBinding Padding}">
+    <Border x:Name="ButtonSurface" Background="{TemplateBinding Background}" BorderBrush="{TemplateBinding BorderBrush}" BorderThickness="{TemplateBinding BorderThickness}" CornerRadius="10" Padding="{TemplateBinding Padding}">
      <ContentPresenter HorizontalAlignment="{TemplateBinding HorizontalContentAlignment}" VerticalAlignment="Center"/>
     </Border>
     <ControlTemplate.Triggers>
@@ -186,9 +256,19 @@ try {
     </ControlTemplate.Triggers>
    </ControlTemplate></Setter.Value></Setter>
   </Style>
+  <Style x:Key="PrimaryButton" TargetType="Button" BasedOn="{StaticResource {x:Type Button}}">
+   <Setter Property="Background" Value="{DynamicResource Accent}"/><Setter Property="Foreground" Value="{DynamicResource AccentText}"/>
+   <Setter Property="FontWeight" Value="SemiBold"/><Setter Property="MinHeight" Value="40"/>
+   <Setter Property="Template"><Setter.Value><ControlTemplate TargetType="Button">
+    <Border x:Name="PrimarySurface" Background="{TemplateBinding Background}" BorderBrush="{TemplateBinding BorderBrush}" BorderThickness="1" CornerRadius="10" Padding="{TemplateBinding Padding}"><ContentPresenter HorizontalAlignment="{TemplateBinding HorizontalContentAlignment}" VerticalAlignment="Center"/></Border>
+    <ControlTemplate.Triggers><Trigger Property="IsMouseOver" Value="True"><Setter TargetName="PrimarySurface" Property="Opacity" Value="0.88"/></Trigger><Trigger Property="IsPressed" Value="True"><Setter TargetName="PrimarySurface" Property="Opacity" Value="0.7"/></Trigger><Trigger Property="IsKeyboardFocused" Value="True"><Setter TargetName="PrimarySurface" Property="BorderBrush" Value="{DynamicResource Text}"/></Trigger><Trigger Property="IsEnabled" Value="False"><Setter TargetName="PrimarySurface" Property="Opacity" Value="0.4"/></Trigger></ControlTemplate.Triggers>
+   </ControlTemplate></Setter.Value></Setter>
+  </Style>
+  <Style x:Key="SecondaryButton" TargetType="Button" BasedOn="{StaticResource {x:Type Button}}"><Setter Property="Background" Value="{DynamicResource Surface}"/><Setter Property="BorderBrush" Value="{DynamicResource Border}"/></Style>
+  <Style x:Key="IconButton" TargetType="Button" BasedOn="{StaticResource {x:Type Button}}"><Setter Property="Width" Value="36"/><Setter Property="Height" Value="36"/><Setter Property="Padding" Value="8"/><Setter Property="Foreground" Value="{DynamicResource Muted}"/></Style>
   <Style x:Key="RailButton" TargetType="Button" BasedOn="{StaticResource {x:Type Button}}">
-   <Setter Property="Width" Value="58"/><Setter Property="Height" Value="54"/><Setter Property="Padding" Value="0"/>
-   <Setter Property="FontSize" Value="19"/><Setter Property="Foreground" Value="{DynamicResource Muted}"/>
+   <Setter Property="Width" Value="44"/><Setter Property="Height" Value="44"/><Setter Property="Padding" Value="12"/><Setter Property="Margin" Value="0,3"/>
+   <Setter Property="Foreground" Value="{DynamicResource Muted}"/>
   </Style>
   <Style x:Key="NavButton" TargetType="Button" BasedOn="{StaticResource {x:Type Button}}">
    <Setter Property="HorizontalContentAlignment" Value="Left"/><Setter Property="Padding" Value="12,8"/>
@@ -203,15 +283,15 @@ try {
    <Setter Property="Foreground" Value="{DynamicResource Text}"/>
   </Style>
   <Style TargetType="ListBoxItem">
-   <Setter Property="Foreground" Value="{DynamicResource Text}"/><Setter Property="Padding" Value="11,9"/>
-   <Setter Property="Margin" Value="0,2,0,2"/><Setter Property="HorizontalContentAlignment" Value="Stretch"/>
+   <Setter Property="Foreground" Value="{DynamicResource Text}"/><Setter Property="Padding" Value="12,12"/>
+   <Setter Property="Margin" Value="0,3,0,3"/><Setter Property="HorizontalContentAlignment" Value="Stretch"/>
    <Setter Property="Template"><Setter.Value><ControlTemplate TargetType="ListBoxItem">
-    <Border x:Name="ItemSurface" Background="Transparent" BorderBrush="Transparent" BorderThickness="2,0,0,0" CornerRadius="8" Padding="{TemplateBinding Padding}">
-     <ContentPresenter/>
+    <Border x:Name="ItemSurface" Background="Transparent" BorderBrush="Transparent" BorderThickness="1" CornerRadius="10" Padding="{TemplateBinding Padding}">
+     <Grid><Grid.ColumnDefinitions><ColumnDefinition Width="4"/><ColumnDefinition/></Grid.ColumnDefinitions><Border x:Name="SelectionMarker" Background="{DynamicResource Accent}" CornerRadius="2" Visibility="Collapsed" Margin="0,0,3,0"/><ContentPresenter Grid.Column="1"/></Grid>
     </Border>
     <ControlTemplate.Triggers>
-     <Trigger Property="IsMouseOver" Value="True"><Setter TargetName="ItemSurface" Property="Background" Value="{DynamicResource Border}"/></Trigger>
-     <Trigger Property="IsSelected" Value="True"><Setter TargetName="ItemSurface" Property="Background" Value="{DynamicResource AccentSoft}"/><Setter TargetName="ItemSurface" Property="BorderBrush" Value="{DynamicResource Accent}"/><Setter Property="Foreground" Value="{DynamicResource Text}"/></Trigger>
+     <Trigger Property="IsMouseOver" Value="True"><Setter TargetName="ItemSurface" Property="Background" Value="{DynamicResource SurfaceHover}"/></Trigger>
+     <Trigger Property="IsSelected" Value="True"><Setter TargetName="ItemSurface" Property="Background" Value="{DynamicResource AccentSoft}"/><Setter TargetName="ItemSurface" Property="BorderBrush" Value="{DynamicResource Accent}"/><Setter TargetName="SelectionMarker" Property="Visibility" Value="Visible"/><Setter Property="Foreground" Value="{DynamicResource Text}"/></Trigger>
      <Trigger Property="IsKeyboardFocused" Value="True"><Setter TargetName="ItemSurface" Property="BorderBrush" Value="{DynamicResource Accent}"/></Trigger>
     </ControlTemplate.Triggers>
    </ControlTemplate></Setter.Value></Setter>
@@ -219,10 +299,10 @@ try {
   <Style TargetType="ComboBoxItem">
    <Setter Property="Foreground" Value="{DynamicResource Text}"/><Setter Property="Padding" Value="10,7"/>
    <Setter Property="Template"><Setter.Value><ControlTemplate TargetType="ComboBoxItem">
-    <Border x:Name="OptionSurface" Background="Transparent" Padding="{TemplateBinding Padding}" CornerRadius="8"><ContentPresenter/></Border>
+    <Border x:Name="OptionSurface" Background="Transparent" Padding="{TemplateBinding Padding}" CornerRadius="8"><Grid><Grid.ColumnDefinitions><ColumnDefinition Width="20"/><ColumnDefinition/></Grid.ColumnDefinitions><TextBlock x:Name="OptionCheck" Text="✓" Visibility="Hidden" Foreground="{DynamicResource Accent}"/><ContentPresenter Grid.Column="1"/></Grid></Border>
     <ControlTemplate.Triggers>
      <Trigger Property="IsHighlighted" Value="True"><Setter TargetName="OptionSurface" Property="Background" Value="{DynamicResource SurfaceHover}"/></Trigger>
-     <Trigger Property="IsSelected" Value="True"><Setter TargetName="OptionSurface" Property="Background" Value="{DynamicResource AccentSoft}"/></Trigger>
+     <Trigger Property="IsSelected" Value="True"><Setter TargetName="OptionSurface" Property="Background" Value="{DynamicResource AccentSoft}"/><Setter TargetName="OptionCheck" Property="Visibility" Value="Visible"/></Trigger>
     </ControlTemplate.Triggers>
    </ControlTemplate></Setter.Value></Setter>
   </Style>
@@ -256,16 +336,17 @@ try {
  </Window.Resources>
  <Border x:Name="WindowFrame" Background="{DynamicResource WindowBg}" BorderBrush="{DynamicResource Border}" BorderThickness="1">
   <Grid Background="{DynamicResource WindowBg}">
-   <Grid.RowDefinitions><RowDefinition Height="42"/><RowDefinition Height="*"/></Grid.RowDefinitions>
-  <Border x:Name="TitleBar" Grid.Row="0" Background="{DynamicResource WindowBg}" BorderBrush="{DynamicResource WindowBg}" BorderThickness="0,0,0,1">
+   <Grid.RowDefinitions><RowDefinition Height="52"/><RowDefinition Height="*"/></Grid.RowDefinitions>
+  <Border x:Name="TitleBar" Grid.Row="0" Background="{DynamicResource WindowBg}">
    <Grid>
-    <Grid.ColumnDefinitions><ColumnDefinition Width="150"/><ColumnDefinition/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
-    <StackPanel Grid.Column="0" Orientation="Horizontal" Margin="12,0,0,0" WindowChrome.IsHitTestVisibleInChrome="True">
-     <Button x:Name="Back" Content="&#x2190;" FontSize="17" Foreground="{DynamicResource Dim}" Padding="6,2" ToolTip="Back"/>
-     <Button x:Name="Forward" Content="&#x2192;" FontSize="17" Foreground="{DynamicResource Dim}" Padding="6,2" ToolTip="Forward"/>
-     
+    <Grid.ColumnDefinitions><ColumnDefinition Width="250"/><ColumnDefinition/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
+    <StackPanel Grid.Column="0" Orientation="Horizontal" Margin="16,0,0,0" VerticalAlignment="Center" WindowChrome.IsHitTestVisibleInChrome="True">
+     <Border Width="28" Height="28" CornerRadius="8" Background="{DynamicResource AccentSoft}" Margin="0,0,10,0"><Path Data="M 2 18 L 10 2 L 18 18 M 6 12 L 14 12" Width="16" Height="16" Stretch="Uniform" Stroke="{DynamicResource Accent}" StrokeThickness="2" StrokeLineJoin="Round" VerticalAlignment="Center" HorizontalAlignment="Center"/></Border>
+     <TextBlock Text="AlphaCode" Foreground="{DynamicResource Text}" FontSize="14" FontWeight="SemiBold" VerticalAlignment="Center" Margin="0,0,18,0"/>
+     <Button x:Name="Back" Style="{StaticResource IconButton}" Width="30" Height="30" MinHeight="30" ToolTip="Back" AutomationProperties.Name="Back"><Path Style="{StaticResource Icon}" Width="14" Data="M 16 10 L 2 10 M 7 4 L 1 10 L 7 16"/></Button>
+     <Button x:Name="Forward" Style="{StaticResource IconButton}" Width="30" Height="30" MinHeight="30" ToolTip="Forward" AutomationProperties.Name="Forward"><Path Style="{StaticResource Icon}" Width="14" Data="M 2 10 L 16 10 M 11 4 L 17 10 L 11 16"/></Button>
     </StackPanel>
-    <StackPanel Grid.Column="1" Orientation="Horizontal" HorizontalAlignment="Center" VerticalAlignment="Center"><Ellipse Width="7" Height="7" Fill="{DynamicResource Accent}" Margin="0,0,7,0"/><TextBlock Text="AlphaCode" Foreground="{DynamicResource Text}" FontSize="12" FontWeight="SemiBold"/><TextBlock Text="  ·  Workspace" Foreground="{DynamicResource Dim}" FontSize="11"/></StackPanel>
+    <Button x:Name="CommandMenu" Grid.Column="1" MaxWidth="420" Height="34" MinHeight="34" Margin="16,0" Padding="12,0" HorizontalContentAlignment="Stretch" Background="{DynamicResource SidebarBg}" BorderBrush="{DynamicResource Border}" Foreground="{DynamicResource Muted}" ToolTip="Search all actions (Ctrl+Shift+P)" AutomationProperties.Name="Open command palette"><Grid><Grid.ColumnDefinitions><ColumnDefinition Width="Auto"/><ColumnDefinition/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions><Path Style="{StaticResource Icon}" Width="14" Height="14" Data="M 14 14 L 20 20 M 16 9 A 7 7 0 1 1 2 9 A 7 7 0 1 1 16 9" Margin="0,0,10,0"/><TextBlock Grid.Column="1" Text="Search commands…" FontSize="12" VerticalAlignment="Center" TextTrimming="CharacterEllipsis"/><Border Grid.Column="2" Background="{DynamicResource Surface}" CornerRadius="4" Padding="6,3" Margin="10,0,0,0"><TextBlock Text="Ctrl ⇧ P" Foreground="{DynamicResource Dim}" FontSize="10"/></Border></Grid></Button>
     <StackPanel Grid.Column="2" Orientation="Horizontal" Margin="0,0,8,0" WindowChrome.IsHitTestVisibleInChrome="True">
      <Button x:Name="Minimize" Content="&#x2014;" Padding="11,3" Foreground="{DynamicResource Muted}" ToolTip="Minimize"/>
      <Button x:Name="Maximize" Content="&#x25A1;" Padding="11,3" Foreground="{DynamicResource Muted}" ToolTip="Maximize"/>
@@ -274,34 +355,38 @@ try {
    </Grid>
   </Border>
   <Grid x:Name="Panel" Grid.Row="1" Visibility="Visible">
-   <Grid.ColumnDefinitions><ColumnDefinition Width="76"/><ColumnDefinition Width="1"/><ColumnDefinition x:Name="SidebarColumn" Width="300"/><ColumnDefinition Width="1"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions>
+   <Grid.ColumnDefinitions><ColumnDefinition Width="68"/><ColumnDefinition Width="1"/><ColumnDefinition x:Name="SidebarColumn" Width="272"/><ColumnDefinition Width="1"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions>
    <Border Grid.Column="0" Background="{DynamicResource RailBg}">
     <Grid>
      <Grid.RowDefinitions><RowDefinition Height="*"/><RowDefinition Height="Auto"/></Grid.RowDefinitions>
-     <Button x:Name="ThemeToggle" Grid.Row="1" Style="{DynamicResource RailButton}" Content="&#x25D0;" Margin="8,12" ToolTip="Switch to light theme" AutomationProperties.Name="Switch color theme"/>
-     <StackPanel Grid.Row="0" VerticalAlignment="Top" Margin="8,13,8,0">
-      <Button x:Name="NavHome" Style="{DynamicResource RailButton}" ToolTip="Hide sidebar (Ctrl+B)" AutomationProperties.Name="Hide sidebar"><StackPanel><TextBlock Text="&#x2302;" FontSize="18" HorizontalAlignment="Center"/><TextBlock Text="Sidebar" FontSize="10" HorizontalAlignment="Center" Margin="0,4,0,0"/></StackPanel></Button>
-      <Button x:Name="NavRecents" Style="{DynamicResource RailButton}" ToolTip="Live chats" AutomationProperties.Name="Live chats"><StackPanel><TextBlock Text="&#x25F7;" FontSize="18" HorizontalAlignment="Center"/><TextBlock Text="Live" FontSize="10" HorizontalAlignment="Center" Margin="0,4,0,0"/></StackPanel></Button>
-      <Button x:Name="NavProjects" Style="{DynamicResource RailButton}" ToolTip="Workspace chats" AutomationProperties.Name="Workspace chats"><StackPanel><TextBlock Text="&#x25C7;" FontSize="18" HorizontalAlignment="Center"/><TextBlock Text="Projects" FontSize="10" HorizontalAlignment="Center" Margin="0,4,0,0"/></StackPanel></Button>
-      <Button x:Name="NavArchive" Style="{DynamicResource RailButton}" ToolTip="Saved chats" AutomationProperties.Name="Saved chats"><StackPanel><TextBlock Text="&#x25A4;" FontSize="18" HorizontalAlignment="Center"/><TextBlock Text="Saved" FontSize="10" HorizontalAlignment="Center" Margin="0,4,0,0"/></StackPanel></Button>
-      <Button x:Name="NavCompanion" Style="{DynamicResource RailButton}" ToolTip="AlphaCode GUI" AutomationProperties.Name="Open AlphaCode chat"><StackPanel><TextBlock Text="&#x25CE;" FontSize="18" HorizontalAlignment="Center"/><TextBlock Text="Chat" FontSize="10" HorizontalAlignment="Center" Margin="0,4,0,0"/></StackPanel></Button>
-      <Button x:Name="More" Style="{DynamicResource RailButton}" FontSize="12" ToolTip="More" AutomationProperties.Name="More options"><StackPanel><TextBlock Text="&#x2022;&#x2022;&#x2022;" FontSize="18" HorizontalAlignment="Center"/><TextBlock Text="More" FontSize="10" HorizontalAlignment="Center" Margin="0,4,0,0"/></StackPanel></Button>
+     <StackPanel Grid.Row="1" HorizontalAlignment="Center" Margin="0,0,0,14">
+      <Button x:Name="More" Style="{StaticResource RailButton}" ToolTip="More options" AutomationProperties.Name="More options"><Path Style="{StaticResource Icon}" Data="M 3 10 L 3.1 10 M 10 10 L 10.1 10 M 17 10 L 17.1 10" StrokeThickness="3"/></Button>
+      <Button x:Name="OpenSettings" Style="{StaticResource RailButton}" ToolTip="Settings" AutomationProperties.Name="Open settings"><Path Style="{StaticResource Icon}" Data="M 3 5 L 17 5 M 3 15 L 17 15 M 7 2 L 7 8 M 13 12 L 13 18"/></Button>
+      <Button x:Name="ThemeToggle" Style="{StaticResource RailButton}" ToolTip="Switch to light theme" AutomationProperties.Name="Switch color theme"><Path Style="{StaticResource Icon}" Data="M 16 13 A 8 8 0 1 1 7 3 A 6 6 0 0 0 16 13 Z"/></Button>
+     </StackPanel>
+     <StackPanel Grid.Row="0" VerticalAlignment="Top" HorizontalAlignment="Center" Margin="0,14,0,0">
+      <Button x:Name="NavHome" Style="{StaticResource RailButton}" ToolTip="Hide sidebar (Ctrl+B)" AutomationProperties.Name="Hide sidebar"><Path Style="{StaticResource Icon}" Data="M 2 2 L 18 2 L 18 18 L 2 18 Z M 7 2 L 7 18"/></Button>
+      <Border Height="1" Background="{DynamicResource Border}" Margin="8,12"/>
+      <Button x:Name="NavRecents" Style="{StaticResource RailButton}" ToolTip="Live chats" AutomationProperties.Name="Live chats"><Path Style="{StaticResource Icon}" Data="M 3 2 L 17 2 Q 19 2 19 4 L 19 13 Q 19 15 17 15 L 8 15 L 3 19 L 3 15 Q 1 15 1 13 L 1 4 Q 1 2 3 2 Z M 5 7 L 15 7 M 5 11 L 11 11"/></Button>
+      <Button x:Name="NavProjects" Style="{StaticResource RailButton}" ToolTip="Workspace chats" AutomationProperties.Name="Workspace chats"><Path Style="{StaticResource Icon}" Data="M 1 5 L 8 5 L 10 8 L 19 8 L 19 18 L 1 18 Z M 1 8 L 1 3 L 7 3 L 9 5 L 17 5 L 17 8"/></Button>
+      <Button x:Name="NavArchive" Style="{StaticResource RailButton}" ToolTip="Saved chats" AutomationProperties.Name="Saved chats"><Path Style="{StaticResource Icon}" Data="M 4 2 L 16 2 L 16 19 L 10 15 L 4 19 Z"/></Button>
+      <Button x:Name="NavCompanion" Style="{StaticResource RailButton}" ToolTip="Open AlphaCode chat" AutomationProperties.Name="Open AlphaCode chat"><Path Style="{StaticResource Icon}" Data="M 10 1 L 12.5 7.5 L 19 10 L 12.5 12.5 L 10 19 L 7.5 12.5 L 1 10 L 7.5 7.5 Z"/></Button>
      </StackPanel>
     </Grid>
    </Border>
    <Border Grid.Column="1" x:Name="SidebarDivider" Background="{DynamicResource Border}"/>
-   <Border Grid.Column="2" x:Name="SidebarSurface" Background="{DynamicResource SidebarBg}" Padding="20,18,14,14">
+   <Border Grid.Column="2" x:Name="SidebarSurface" Background="{DynamicResource SidebarBg}" Padding="16,20,16,14" CornerRadius="14,0,0,0">
     <Grid>
      <Grid.RowDefinitions><RowDefinition Height="Auto"/><RowDefinition Height="Auto"/><RowDefinition Height="Auto"/><RowDefinition Height="*"/><RowDefinition Height="Auto"/></Grid.RowDefinitions>
      <Grid Grid.Row="0" Margin="0,0,0,16">
       <Grid.ColumnDefinitions><ColumnDefinition/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
-      <TextBlock Text="Chats" Foreground="{DynamicResource Text}" FontSize="19" FontWeight="SemiBold"/>
-      <Button x:Name="Search" Grid.Column="1" Content="Ctrl K" Padding="7,3" Foreground="{DynamicResource Muted}" ToolTip="Search chats (Ctrl+K)" AutomationProperties.Name="Search chats"/>
+      <StackPanel><TextBlock Text="Your workspace" Foreground="{DynamicResource Dim}" FontSize="11" Margin="0,0,0,5"/><TextBlock Text="Conversations" Foreground="{DynamicResource Text}" FontSize="19" FontWeight="SemiBold"/></StackPanel>
+      <Button x:Name="Search" Grid.Column="1" Content="Ctrl K" MinHeight="28" VerticalAlignment="Bottom" Padding="6,3" Foreground="{DynamicResource Dim}" FontSize="10" ToolTip="Search chats (Ctrl+K)" AutomationProperties.Name="Search chats"/>
      </Grid>
-     <Button x:Name="NewChat" Grid.Row="1" Content="＋  New chat" HorizontalContentAlignment="Left" FontSize="14" FontWeight="SemiBold" Background="{DynamicResource AccentSoft}" Foreground="{DynamicResource Text}" Padding="9,10" Margin="0,0,0,12"/>
+     <Button x:Name="NewChat" Grid.Row="1" Style="{StaticResource PrimaryButton}" HorizontalContentAlignment="Stretch" Padding="12,10" Margin="0,0,0,16" ToolTip="Start a new chat" AutomationProperties.Name="New chat"><Grid><Grid.ColumnDefinitions><ColumnDefinition Width="Auto"/><ColumnDefinition/></Grid.ColumnDefinitions><Path Style="{StaticResource Icon}" Width="16" Height="16" Data="M 10 2 L 10 18 M 2 10 L 18 10" Margin="0,0,10,0"/><TextBlock Grid.Column="1" Text="New conversation" VerticalAlignment="Center"/></Grid></Button>
      <StackPanel Grid.Row="2" Margin="0,0,0,9">
       <Border Background="{DynamicResource WindowBg}" BorderBrush="{DynamicResource Border}" BorderThickness="1" CornerRadius="8" Padding="10,0" Margin="0,0,0,10"><Grid><Grid.ColumnDefinitions><ColumnDefinition Width="Auto"/><ColumnDefinition/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions><TextBlock Text="⌕" Foreground="{DynamicResource Muted}" FontSize="19" VerticalAlignment="Center" Margin="0,0,7,0"/><TextBox x:Name="SessionSearch" Grid.Column="1" Height="34" Background="Transparent" BorderThickness="0" Foreground="{DynamicResource Text}" Padding="0" VerticalContentAlignment="Center" ToolTip="Find a chat · Enter to open · Down to select" AutomationProperties.Name="Search chats"/><TextBlock x:Name="SearchPlaceholder" Grid.Column="1" Text="Find a chat…" Foreground="{DynamicResource Muted}" VerticalAlignment="Center" IsHitTestVisible="False"/><Button x:Name="ClearChatSearch" Grid.Column="2" Content="×" Padding="4,0" Visibility="Collapsed" ToolTip="Clear chat search" AutomationProperties.Name="Clear chat search"/></Grid></Border>
-      <UniformGrid Rows="1" Columns="3" Margin="0,0,0,16"><Button x:Name="FilterAll" Content="All" Padding="7,4" MinHeight="28" Margin="0,0,4,0" ToolTip="All chats"/><Button x:Name="FilterLive" Content="Live" Padding="7,4" MinHeight="28" Margin="0,0,4,0" ToolTip="Connected chats"/><Button x:Name="FilterSaved" Content="Saved" Padding="7,4" MinHeight="28" ToolTip="Saved chats"/></UniformGrid>
+      <Border Background="{DynamicResource Surface}" CornerRadius="10" Padding="3" Margin="0,0,0,20"><UniformGrid Rows="1" Columns="3"><Button x:Name="FilterAll" Content="All" Padding="6,4" MinHeight="28" FontSize="12" Margin="0,0,3,0" ToolTip="All chats"/><Button x:Name="FilterLive" Content="Live" Padding="6,4" MinHeight="28" FontSize="12" Margin="0,0,3,0" ToolTip="Connected chats"/><Button x:Name="FilterSaved" Content="Saved" Padding="6,4" MinHeight="28" FontSize="12" ToolTip="Saved chats"/></UniformGrid></Border>
       <TextBlock Text="Workspaces" Foreground="{DynamicResource Muted}" FontWeight="SemiBold" FontSize="11" Margin="0,0,0,7"/>
       <StackPanel x:Name="ProjectsList"/>
       <TextBlock x:Name="ChatsHeading" Text="Chats" Foreground="{DynamicResource Dim}" FontWeight="SemiBold" FontSize="11" Margin="0,17,0,7"/>
@@ -317,27 +402,25 @@ try {
     </Grid>
    </Border>
    <Border Grid.Column="3" Background="{DynamicResource Border}"/>
-   <Grid x:Name="ChatSurface" Grid.Column="4" Background="{DynamicResource WindowBg}">
-    <Grid.RowDefinitions><RowDefinition Height="Auto" MinHeight="100"/><RowDefinition Height="Auto"/><RowDefinition Height="*" MinHeight="80"/><RowDefinition Height="Auto"/><RowDefinition Height="Auto"/><RowDefinition Height="28"/></Grid.RowDefinitions>
-    <Grid Grid.Row="0" Margin="24,12,24,8">
+   <Grid x:Name="ChatSurface" Grid.Column="4" Background="{DynamicResource Canvas}">
+    <Grid.RowDefinitions><RowDefinition Height="Auto" MinHeight="104"/><RowDefinition Height="Auto"/><RowDefinition Height="*" MinHeight="80"/><RowDefinition Height="Auto"/><RowDefinition Height="Auto"/><RowDefinition Height="28"/></Grid.RowDefinitions>
+    <Grid x:Name="ChatHeader" Grid.Row="0" Margin="28,20,28,12">
      <Grid.RowDefinitions><RowDefinition Height="Auto"/><RowDefinition Height="Auto"/></Grid.RowDefinitions>
      <Grid><Grid.ColumnDefinitions><ColumnDefinition/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
-      <StackPanel VerticalAlignment="Center" Margin="0,0,16,0"><TextBlock x:Name="WorkspaceTitle" Text="New chat" Foreground="{DynamicResource Text}" FontSize="17" FontWeight="SemiBold" TextTrimming="CharacterEllipsis"/><TextBlock x:Name="WorkspaceSubtitle" Text="Your workspace, in focus" Foreground="{DynamicResource Muted}" FontSize="11" Margin="0,3,0,0" TextTrimming="CharacterEllipsis"/></StackPanel>
-      <Border Grid.Column="1" x:Name="StatePill" Background="{DynamicResource SuccessSoft}" CornerRadius="8" Padding="10,5" VerticalAlignment="Center"><TextBlock x:Name="StateText" AutomationProperties.LiveSetting="Polite" Text="Connecting" Foreground="{DynamicResource Success}" FontSize="11"/></Border>
+      <StackPanel VerticalAlignment="Center" Margin="0,0,16,0"><TextBlock x:Name="WorkspaceTitle" Text="New conversation" Foreground="{DynamicResource Text}" FontSize="20" FontWeight="SemiBold" TextTrimming="CharacterEllipsis"/><TextBlock x:Name="WorkspaceSubtitle" Text="Your workspace, in focus" Foreground="{DynamicResource Muted}" FontSize="12" Margin="0,5,0,0" TextTrimming="CharacterEllipsis"/></StackPanel>
+      <Border Grid.Column="1" x:Name="StatePill" Background="{DynamicResource SuccessSoft}" CornerRadius="12" Padding="12,6" VerticalAlignment="Center"><TextBlock x:Name="StateText" AutomationProperties.LiveSetting="Polite" Text="Connecting" Foreground="{DynamicResource Success}" FontSize="11" FontWeight="SemiBold"/></Border>
      </Grid>
-     <WrapPanel Grid.Row="1" Margin="0,8,0,0" KeyboardNavigation.TabNavigation="Continue">
-      <Button x:Name="CommandMenu" Content="⌘ Commands" Padding="8,3" Foreground="{DynamicResource Accent}" ToolTip="Search all actions (Ctrl+Shift+P)" AutomationProperties.Name="Open command palette"/>
-      <Button x:Name="SidebarToggle" DockPanel.Dock="Left" Content="Hide sidebar" Foreground="{DynamicResource Muted}" Padding="8,3" ToolTip="Show or hide the sidebar (Ctrl+B)" AutomationProperties.Name="Show or hide sidebar"/>
-      <Button x:Name="WorkToggle" DockPanel.Dock="Left" Content="Show work" Padding="8,3" Foreground="{DynamicResource Accent}" ToolTip="Show todos, plan and swarm status (Ctrl+J)" AutomationProperties.Name="Show or hide work panel"/>
-      <Button x:Name="FocusMode" Content="Focus" Padding="8,3" Foreground="{DynamicResource Muted}" ToolTip="Focus on the conversation (Ctrl+Shift+F)" AutomationProperties.Name="Toggle focus mode"/>
-      <Button x:Name="FindReply" DockPanel.Dock="Left" Content="Find" Padding="8,3" Foreground="{DynamicResource Muted}" ToolTip="Find in conversation (Ctrl+F)" AutomationProperties.Name="Find in conversation"/>
-      <WrapPanel>
-       <Button x:Name="OpenTerminal" Content="Terminal ↗" Padding="10,3" Foreground="{DynamicResource Accent}" ToolTip="Continue with the full terminal interface" AutomationProperties.Name="Open terminal interface"/>
-       <Button x:Name="Cancel" Content="Stop" Padding="10,3" Foreground="{DynamicResource Danger}" ToolTip="Cancel the running turn" AutomationProperties.Name="Cancel running turn" IsEnabled="False"/>
-       <Button x:Name="Rename" Content="&#x270E;" Padding="9,3" Foreground="{DynamicResource Muted}" ToolTip="Rename chat" AutomationProperties.Name="Rename chat" IsEnabled="False"/>
-       <Button x:Name="Archive" Content="&#x2606;" Padding="9,3" Foreground="{DynamicResource Muted}" ToolTip="Save chat" AutomationProperties.Name="Save chat" IsEnabled="False"/>
-       <Button x:Name="Refresh" Content="&#x21BB;" Padding="9,3" Foreground="{DynamicResource Muted}" ToolTip="Refresh connection and chats" AutomationProperties.Name="Refresh connection and chats"/>
-      </WrapPanel>
+     <WrapPanel Grid.Row="1" Margin="-6,12,0,0" KeyboardNavigation.TabNavigation="Continue">
+      <Button x:Name="SidebarToggle" Content="Hide sidebar" Foreground="{DynamicResource Muted}" Padding="8,4" FontSize="12" ToolTip="Show or hide the sidebar (Ctrl+B)" AutomationProperties.Name="Show or hide sidebar"/>
+      <Button x:Name="WorkToggle" Content="Show work" Padding="8,4" FontSize="12" Foreground="{DynamicResource Muted}" ToolTip="Show todos, plan and swarm status (Ctrl+J)" AutomationProperties.Name="Show or hide work panel"/>
+      <Button x:Name="FocusMode" Content="Focus" Padding="8,4" FontSize="12" Foreground="{DynamicResource Muted}" ToolTip="Focus on the conversation (Ctrl+Shift+F)" AutomationProperties.Name="Toggle focus mode"/>
+      <Border Width="1" Height="18" Background="{DynamicResource Border}" Margin="8,0" VerticalAlignment="Center"/>
+      <Button x:Name="FindReply" Style="{StaticResource IconButton}" ToolTip="Find in conversation (Ctrl+F)" AutomationProperties.Name="Find in conversation"><Path Style="{StaticResource Icon}" Width="16" Height="16" Data="M 14 14 L 20 20 M 16 9 A 7 7 0 1 1 2 9 A 7 7 0 1 1 16 9"/></Button>
+      <Button x:Name="OpenTerminal" Padding="10,4" FontSize="12" Foreground="{DynamicResource Muted}" ToolTip="Continue with the full terminal interface" AutomationProperties.Name="Open terminal interface"><StackPanel Orientation="Horizontal"><Path Style="{StaticResource Icon}" Width="16" Height="14" Data="M 2 2 L 7 7 L 2 12 M 10 12 L 18 12" Margin="0,0,8,0"/><TextBlock Text="Terminal" VerticalAlignment="Center"/></StackPanel></Button>
+      <Button x:Name="Cancel" Content="Stop" Padding="10,4" FontSize="12" Foreground="{DynamicResource Danger}" ToolTip="Cancel the running turn" AutomationProperties.Name="Cancel running turn" IsEnabled="False"/>
+      <Button x:Name="Rename" Style="{StaticResource IconButton}" ToolTip="Rename chat" AutomationProperties.Name="Rename chat" IsEnabled="False"><Path Style="{StaticResource Icon}" Width="16" Height="16" Data="M 3 13 L 13 3 L 17 7 L 7 17 L 2 18 Z M 11 5 L 15 9"/></Button>
+      <Button x:Name="Archive" Style="{StaticResource IconButton}" Content="&#x2606;" FontSize="20" ToolTip="Save chat" AutomationProperties.Name="Save chat" IsEnabled="False"/>
+      <Button x:Name="Refresh" Style="{StaticResource IconButton}" ToolTip="Refresh connection and chats" AutomationProperties.Name="Refresh connection and chats"><Path Style="{StaticResource Icon}" Width="16" Height="16" Data="M 17 8 A 8 8 0 1 0 18 13 M 17 2 L 17 8 L 11 8"/></Button>
      </WrapPanel>
     </Grid>
     <Border x:Name="NoticeBanner" Grid.Row="1" Margin="24,4,24,0" Padding="12,9" CornerRadius="8" Background="{DynamicResource WarningSoft}" Visibility="Collapsed"><TextBlock x:Name="NoticeText" Foreground="{DynamicResource Warning}" TextWrapping="Wrap" FontSize="12" AutomationProperties.LiveSetting="Polite"/></Border>
@@ -345,14 +428,15 @@ try {
      <Grid.RowDefinitions><RowDefinition Height="Auto"/><RowDefinition Height="*"/></Grid.RowDefinitions>
      <Border x:Name="ReplySearchBar" Grid.Row="0" Visibility="Collapsed" Margin="28,8,28,0" Background="{DynamicResource Surface}" BorderBrush="{DynamicResource Border}" BorderThickness="1" CornerRadius="8" Padding="8,3"><DockPanel LastChildFill="True"><Button x:Name="CloseReplySearch" DockPanel.Dock="Right" Content="×" Padding="8,0" ToolTip="Close conversation search (Esc)" AutomationProperties.Name="Close conversation search"/><TextBlock x:Name="ReplySearchCount" DockPanel.Dock="Right" Foreground="{DynamicResource Muted}" FontSize="11" Margin="8,0" VerticalAlignment="Center"/><TextBox x:Name="ReplySearch" Background="Transparent" Foreground="{DynamicResource Text}" BorderThickness="0" VerticalContentAlignment="Center" ToolTip="Find in conversation · Enter / Shift+Enter for next / previous section" AutomationProperties.Name="Find in conversation"/></DockPanel></Border>
     <Grid Grid.Row="1" x:Name="EmptyState" VerticalAlignment="Center" HorizontalAlignment="Center">
-     <StackPanel HorizontalAlignment="Center" MaxWidth="680" Margin="24,0">
-      <TextBlock x:Name="Activity" Text="What will you build today?" Foreground="{DynamicResource Text}" FontSize="28" HorizontalAlignment="Center" TextAlignment="Center" TextWrapping="Wrap" FontWeight="SemiBold"/>
-      <TextBlock x:Name="Detail" Text="Explore your workspace, work through an idea, or review your code." Foreground="{DynamicResource Muted}" FontSize="13" HorizontalAlignment="Center" Margin="0,11,0,0" TextAlignment="Center" TextWrapping="Wrap"/>
+     <StackPanel HorizontalAlignment="Center" MaxWidth="700" Margin="24,8">
+      <Border x:Name="WelcomeMark" Width="56" Height="56" CornerRadius="18" Background="{DynamicResource AccentSoft}" HorizontalAlignment="Center" Margin="0,0,0,20"><Path Data="M 12 1 L 15 9 L 23 12 L 15 15 L 12 23 L 9 15 L 1 12 L 9 9 Z" Stroke="{DynamicResource Accent}" StrokeThickness="1.6" StrokeLineJoin="Round" Width="26" Height="26" Stretch="Uniform" HorizontalAlignment="Center" VerticalAlignment="Center"/></Border>
+      <TextBlock x:Name="Activity" Text="What will you build today?" Foreground="{DynamicResource Text}" FontFamily="Segoe UI Variable Display, Segoe UI" FontSize="30" HorizontalAlignment="Center" TextAlignment="Center" TextWrapping="Wrap" FontWeight="SemiBold"/>
+      <TextBlock x:Name="Detail" Text="A thinking partner for your code, ideas, and next big change." Foreground="{DynamicResource Muted}" FontSize="14" HorizontalAlignment="Center" Margin="0,12,0,0" MaxWidth="500" TextAlignment="Center" TextWrapping="Wrap"/>
       <TextBlock x:Name="Timeline" Text="" Foreground="{DynamicResource Dim}" FontSize="11" HorizontalAlignment="Center" Margin="0,10,0,0" TextAlignment="Center" TextWrapping="Wrap"/>
-      <WrapPanel x:Name="ExamplesPanel" HorizontalAlignment="Center" Margin="0,26,0,0">
-       <Button x:Name="ExampleExplore" MinWidth="180" HorizontalContentAlignment="Left" Background="{DynamicResource Surface}" BorderBrush="{DynamicResource Border}" BorderThickness="1" Foreground="{DynamicResource Text}" Padding="14,10" Margin="4" ToolTip="Start with a workspace overview"><StackPanel><TextBlock Text="Explore workspace" FontWeight="SemiBold"/><TextBlock Text="Understand the code and structure" FontSize="11" Foreground="{DynamicResource Muted}" Margin="0,6,0,0" TextWrapping="Wrap" MaxWidth="190"/></StackPanel></Button>
-       <Button x:Name="ExampleReview" MinWidth="180" HorizontalContentAlignment="Left" Background="{DynamicResource Surface}" BorderBrush="{DynamicResource Border}" BorderThickness="1" Foreground="{DynamicResource Text}" Padding="14,10" Margin="4" ToolTip="Ask AlphaCode to review local changes"><StackPanel><TextBlock Text="Review changes" FontWeight="SemiBold"/><TextBlock Text="Find issues in your local changes" FontSize="11" Foreground="{DynamicResource Muted}" Margin="0,6,0,0" TextWrapping="Wrap" MaxWidth="190"/></StackPanel></Button>
-       <Button x:Name="ExampleTest" MinWidth="180" HorizontalContentAlignment="Left" Background="{DynamicResource Surface}" BorderBrush="{DynamicResource Border}" BorderThickness="1" Foreground="{DynamicResource Text}" Padding="14,10" Margin="4" ToolTip="Ask AlphaCode to check the project"><StackPanel><TextBlock Text="Check the project" FontWeight="SemiBold"/><TextBlock Text="Run tests and investigate failures" FontSize="11" Foreground="{DynamicResource Muted}" Margin="0,6,0,0" TextWrapping="Wrap" MaxWidth="190"/></StackPanel></Button>
+      <WrapPanel x:Name="ExamplesPanel" HorizontalAlignment="Center" Margin="0,28,0,0">
+       <Button x:Name="ExampleExplore" Style="{StaticResource SecondaryButton}" Width="190" HorizontalContentAlignment="Left" Padding="16" Margin="5" ToolTip="Start with a workspace overview"><StackPanel><Path Style="{StaticResource Icon}" Width="20" Height="20" HorizontalAlignment="Left" Stroke="{DynamicResource Accent}" Data="M 1 5 L 8 5 L 10 8 L 19 8 L 19 18 L 1 18 Z M 1 8 L 1 3 L 7 3 L 9 5 L 17 5 L 17 8" Margin="0,0,0,16"/><TextBlock Text="Explore workspace" FontWeight="SemiBold"/><TextBlock Text="Find your way through the code." FontSize="12" Foreground="{DynamicResource Muted}" Margin="0,7,0,0" TextWrapping="Wrap"/></StackPanel></Button>
+       <Button x:Name="ExampleReview" Style="{StaticResource SecondaryButton}" Width="190" HorizontalContentAlignment="Left" Padding="16" Margin="5" ToolTip="Ask AlphaCode to review local changes"><StackPanel><Path Style="{StaticResource Icon}" Width="20" Height="20" HorizontalAlignment="Left" Stroke="{DynamicResource Accent}" Data="M 5 1 L 17 1 L 17 19 L 3 19 L 3 1 Z M 7 6 L 13 6 M 7 10 L 13 10 M 7 14 L 11 14" Margin="0,0,0,16"/><TextBlock Text="Review changes" FontWeight="SemiBold"/><TextBlock Text="Spot issues before they ship." FontSize="12" Foreground="{DynamicResource Muted}" Margin="0,7,0,0" TextWrapping="Wrap"/></StackPanel></Button>
+       <Button x:Name="ExampleTest" Style="{StaticResource SecondaryButton}" Width="190" HorizontalContentAlignment="Left" Padding="16" Margin="5" ToolTip="Ask AlphaCode to check the project"><StackPanel><Path Style="{StaticResource Icon}" Width="20" Height="20" HorizontalAlignment="Left" Stroke="{DynamicResource Accent}" Data="M 2 10 L 7 15 L 18 4 M 18 10 L 18 18 L 2 18 L 2 2 L 12 2" Margin="0,0,0,16"/><TextBlock Text="Check the project" FontWeight="SemiBold"/><TextBlock Text="Test, investigate, and improve." FontSize="12" Foreground="{DynamicResource Muted}" Margin="0,7,0,0" TextWrapping="Wrap"/></StackPanel></Button>
       </WrapPanel>
      </StackPanel>
     </Grid>
@@ -374,7 +458,7 @@ try {
      </ScrollViewer>
     </Border></Grid>
     <Border x:Name="ResponseActivity" Grid.Row="3" Visibility="Collapsed" Background="{DynamicResource AccentSoft}" CornerRadius="8" Margin="24,0,24,4" Padding="14,10" MaxWidth="1000" AutomationProperties.LiveSetting="Polite"><Grid><Grid.ColumnDefinitions><ColumnDefinition Width="Auto"/><ColumnDefinition/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions><StackPanel Orientation="Horizontal" VerticalAlignment="Center" Margin="0,0,12,0"><Ellipse x:Name="LoadingDot1" Width="5" Height="5" Fill="{DynamicResource Accent}" Opacity="0.3" Margin="0,0,4,0"/><Ellipse x:Name="LoadingDot2" Width="5" Height="5" Fill="{DynamicResource Accent}" Opacity="0.3" Margin="0,0,4,0"/><Ellipse x:Name="LoadingDot3" Width="5" Height="5" Fill="{DynamicResource Accent}" Opacity="0.3"/></StackPanel><StackPanel Grid.Column="1"><TextBlock x:Name="ResponseStage" Foreground="{DynamicResource Accent}" FontWeight="SemiBold" FontSize="12" Text="AlphaCode is working"/><TextBlock x:Name="ResponseDetail" Foreground="{DynamicResource Muted}" FontSize="11" TextTrimming="CharacterEllipsis" Margin="0,3,0,0"/></StackPanel><StackPanel Grid.Column="2" Orientation="Horizontal" VerticalAlignment="Center" Margin="10,0,0,0"><TextBlock x:Name="ResponseElapsed" Foreground="{DynamicResource Muted}" FontSize="11" VerticalAlignment="Center"/><Button x:Name="ResponseStop" Content="Stop" Foreground="{DynamicResource Danger}" Padding="8,4" Margin="8,0,0,0" ToolTip="Stop the current turn" AutomationProperties.Name="Stop response"/></StackPanel></Grid></Border>
-    <Border x:Name="ComposerSurface" Grid.Row="4" Background="{DynamicResource SurfaceElevated}" BorderBrush="{DynamicResource Border}" BorderThickness="1" CornerRadius="12" Margin="24,8,24,8" Padding="0" MaxWidth="1000">
+    <Border x:Name="ComposerSurface" Grid.Row="4" Background="{DynamicResource SurfaceElevated}" BorderBrush="{DynamicResource Border}" BorderThickness="1" CornerRadius="16" Margin="28,12,28,8" Padding="0" MaxWidth="840">
      <Grid>
       <Grid x:Name="ComposerContent" Margin="16,14">
        <Grid.RowDefinitions><RowDefinition Height="Auto"/><RowDefinition Height="Auto"/><RowDefinition Height="Auto"/></Grid.RowDefinitions>
@@ -393,14 +477,14 @@ try {
           <Popup x:Name="ModelPopup" PlacementTarget="{Binding ElementName=ModelChooser}" Placement="Top" StaysOpen="False" AllowsTransparency="True" PopupAnimation="Fade"><Border x:Name="ModelPopupSurface" Width="400" Background="{DynamicResource SurfaceElevated}" BorderBrush="{DynamicResource Border}" BorderThickness="1" CornerRadius="8" Padding="16" Margin="0,0,0,8"><StackPanel><TextBlock Text="Choose a model" Foreground="{DynamicResource Text}" FontSize="16" FontWeight="SemiBold"/><TextBlock Text="Connected providers only · search to narrow the list" Foreground="{DynamicResource Muted}" FontSize="11" Margin="0,4,0,12"/><Border Background="{DynamicResource Surface}" BorderBrush="{DynamicResource Border}" BorderThickness="1" CornerRadius="8" Padding="10,7"><TextBox x:Name="ModelSearch" Background="Transparent" Foreground="{DynamicResource Text}" BorderThickness="0" Padding="0" ToolTip="Search models" AutomationProperties.Name="Search models"/></Border><TextBlock x:Name="ModelResultCount" Foreground="{DynamicResource Muted}" FontSize="11" Margin="0,8,0,6"/><ListBox x:Name="ModelResults" SelectedValuePath="id" MaxHeight="252" MinHeight="48" ScrollViewer.CanContentScroll="True" VirtualizingPanel.IsVirtualizing="True" VirtualizingPanel.VirtualizationMode="Recycling" AutomationProperties.Name="Connected provider models"><ListBox.ItemTemplate><DataTemplate><Grid Margin="2,4"><Grid.ColumnDefinitions><ColumnDefinition/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions><StackPanel><TextBlock Text="{Binding name}" FontWeight="SemiBold" TextTrimming="CharacterEllipsis" ToolTip="{Binding id}"/><TextBlock Text="{Binding provider}" Foreground="{DynamicResource Muted}" FontSize="11" Margin="0,3,0,0" TextTrimming="CharacterEllipsis"/></StackPanel><TextBlock Grid.Column="1" Text="✓" Foreground="{DynamicResource Accent}" Margin="12,0,4,0" VerticalAlignment="Center"><TextBlock.Style><Style TargetType="TextBlock"><Setter Property="Visibility" Value="Collapsed"/><Style.Triggers><DataTrigger Binding="{Binding RelativeSource={RelativeSource AncestorType=ListBoxItem},Path=IsSelected}" Value="True"><Setter Property="Visibility" Value="Visible"/></DataTrigger></Style.Triggers></Style></TextBlock.Style></TextBlock></Grid></DataTemplate></ListBox.ItemTemplate></ListBox><TextBlock x:Name="ModelEmpty" Text="No matching models. Try another search." Foreground="{DynamicResource Muted}" TextWrapping="Wrap" Visibility="Collapsed" Margin="0,10"/><DockPanel LastChildFill="False" Margin="0,12,0,0"><TextBlock Text="↑ ↓ select · Enter apply · Esc close" Foreground="{DynamicResource Dim}" FontSize="10" VerticalAlignment="Center"/><Button x:Name="ApplyModelChoice" DockPanel.Dock="Right" Content="Use model" Background="{DynamicResource Accent}" Foreground="{DynamicResource AccentText}" Padding="12,6"/></DockPanel></StackPanel></Border></Popup>
          </Grid>
          <ComboBox x:Name="EffortPicker" Width="88" Height="32" Margin="0,0,8,0" SelectedValuePath="Tag" ToolTip="Reasoning effort" AutomationProperties.Name="Reasoning effort"><ComboBoxItem Content="Auto" Tag="none"/><ComboBoxItem Content="Low" Tag="low"/><ComboBoxItem Content="Medium" Tag="medium"/><ComboBoxItem Content="High" Tag="high"/><ComboBoxItem Content="Max" Tag="max"/></ComboBox>
-         <Button x:Name="AddContext" Content="＋" Width="30" Height="32" Padding="0" FontSize="18" Foreground="{DynamicResource Muted}" ToolTip="Choose a workspace folder" AutomationProperties.Name="Choose workspace folder"/>
+         <Button x:Name="AddContext" Style="{StaticResource IconButton}" Width="32" Height="32" MinHeight="32" ToolTip="Choose a workspace folder" AutomationProperties.Name="Choose workspace folder"><Path Style="{StaticResource Icon}" Width="16" Height="16" Data="M 1 5 L 8 5 L 10 8 L 19 8 L 19 18 L 1 18 Z M 5 13 L 15 13 M 10 9 L 10 17"/></Button>
          <TextBlock x:Name="WorkspacePath" Text="Workspace" Foreground="{DynamicResource Muted}" FontSize="11" MaxWidth="120" TextTrimming="CharacterEllipsis" VerticalAlignment="Center" Margin="0,0,6,0"/>
-         <Button x:Name="ComposerSettings" Content="&#x2699;" Width="30" Height="32" Padding="0" Foreground="{DynamicResource Muted}" FontSize="16" ToolTip="Chat options" AutomationProperties.Name="Chat options"/>
+         <Button x:Name="ComposerSettings" Style="{StaticResource IconButton}" Width="32" Height="32" MinHeight="32" ToolTip="Chat options" AutomationProperties.Name="Chat options"><Path Style="{StaticResource Icon}" Width="16" Height="16" Data="M 3 5 L 17 5 M 3 15 L 17 15 M 7 2 L 7 8 M 13 12 L 13 18"/></Button>
         </WrapPanel>
         <StackPanel Grid.Column="1" Orientation="Horizontal" VerticalAlignment="Bottom">
          <Button x:Name="Voice" Content="&#x266B;" Width="30" Padding="0" Visibility="Collapsed" IsEnabled="False" ToolTip="Voice input" AutomationProperties.Name="Voice input"/>
          <Button x:Name="Copy" Content="Copy" Padding="8,4" Foreground="{DynamicResource Muted}" Margin="0,0,8,0" ToolTip="Copy response (Ctrl+Shift+C)" AutomationProperties.Name="Copy response" IsEnabled="False"/>
-         <Button x:Name="Send" Content="↑" Width="36" Height="36" Padding="0" FontSize="21" Background="{DynamicResource Accent}" Foreground="{DynamicResource AccentText}" FontWeight="SemiBold" ToolTip="Send prompt (Enter; Shift+Enter or Alt+Enter for a new line)" AutomationProperties.Name="Send prompt" IsEnabled="False"/>
+         <Button x:Name="Send" Style="{StaticResource PrimaryButton}" Content="↑" Width="40" Height="40" Padding="0" FontSize="22" ToolTip="Send prompt (Enter; Shift+Enter or Alt+Enter for a new line)" AutomationProperties.Name="Send prompt" IsEnabled="False"/>
         </StackPanel>
        </Grid>
        <Grid Grid.Row="2" Margin="0,8,0,0"><Grid.ColumnDefinitions><ColumnDefinition/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
@@ -408,7 +492,7 @@ try {
         <TextBlock x:Name="PromptCount" Grid.Column="1" Foreground="{DynamicResource Dim}" FontSize="10" Text="0 / 16,000" Visibility="Collapsed"/>
        </Grid>
       </Grid>
-      <Border x:Name="ComposerFocusRing" BorderBrush="{DynamicResource Accent}" BorderThickness="1" CornerRadius="12" Opacity="0" IsHitTestVisible="False"/>
+      <Border x:Name="ComposerFocusRing" BorderBrush="{DynamicResource Accent}" BorderThickness="2" CornerRadius="16" Opacity="0" IsHitTestVisible="False"/>
      </Grid>
     </Border>
     <TextBlock x:Name="FooterStatus" Grid.Row="5" Text="Ready  ·  Enter to send  ·  Shift+Enter or Alt+Enter for a new line" Foreground="{DynamicResource Muted}" FontSize="11" Margin="30,0,30,0" VerticalAlignment="Center"/>
@@ -439,11 +523,8 @@ function Get-ExceptionChain([Exception]$exception) {
     return ($parts -join [Environment]::NewLine)
 }
 
-function Write-GuiStartupFailure([string]$details) {
-    try {
-        [IO.Directory]::CreateDirectory($settingsDir) | Out-Null
-        [IO.File]::WriteAllText((Join-Path $settingsDir 'gui-startup.log'), $details)
-    } catch { }
+function Write-GuiStartupFailure($failure) {
+    Write-GuiFailure 'startup' 'Window.Initialize/ShowDialog' $failure
 }
 
 function Load-GuiWindow([xml]$document) {
@@ -467,7 +548,7 @@ function Load-GuiWindow([xml]$document) {
         } catch {
             $fallbackError = Get-ExceptionChain $_.Exception
             $details = "AlphaCode GUI could not load its WPF window.$([Environment]::NewLine)$([Environment]::NewLine)Original XAML load:$([Environment]::NewLine)$originalError$([Environment]::NewLine)$([Environment]::NewLine)Compatibility retry:$([Environment]::NewLine)$fallbackError"
-            Write-GuiStartupFailure $details
+            Write-GuiStartupFailure $_
             throw $details
         }
     }
@@ -475,25 +556,24 @@ function Load-GuiWindow([xml]$document) {
 
 $window = Load-GuiWindow $xaml
 
-try {
-    $window.Dispatcher.add_UnhandledException({
-        param($sender, $args)
+$dispatcherExceptionHandler = [Windows.Threading.DispatcherUnhandledExceptionEventHandler]{
+        # $args is PowerShell's automatic remaining-argument array, even when
+        # named in param(). It is NOT the Dispatcher event and has no Handled.
+        param($sender, [Windows.Threading.DispatcherUnhandledExceptionEventArgs]$eventArgs)
+        if ($null -eq $eventArgs) { return }
+        $recoverable = -not [AlphaCode.Desktop.GuiDiagnostics]::IsFatal($eventArgs.Exception)
         try {
-            $log = Join-Path $env:LOCALAPPDATA 'AlphaCode\gui-dispatcher.log'
-            New-Item -ItemType Directory -Force -Path (Split-Path $log) | Out-Null
-            Add-Content -Path $log -Value ("[{0}] Dispatcher: {1}`n{2}" -f (Get-Date -Format o), $args.Exception.Message, $args.Exception.StackTrace)
-            if ($script:controls -and $script:controls.FooterStatus) {
-                $script:controls.FooterStatus.Text = "Recovered: $($args.Exception.Message)"
-            }
-            $args.Handled = $true
-        } catch { $args.Handled = $true }
-    })
-} catch {}
+            Write-GuiFailure 'dispatcher' 'Dispatcher.UnhandledException' $eventArgs.Exception
+            if ($recoverable) { Show-GuiFailureNotice }
+        } finally { $eventArgs.Handled = $recoverable }
+}
+$window.Dispatcher.add_UnhandledException($dispatcherExceptionHandler)
 
 $controls = @{}
 foreach ($name in @('CommandOverlay','CommandPaletteSurface','CommandSearch','CommandResults','CommandEmpty','CloseCommands','FocusMode','CommandMenu','ResponseActivity','ResponseStage','ResponseDetail','ResponseElapsed','ResponseStop','LoadingDot1','LoadingDot2','LoadingDot3','ModelChooser','ModelChoiceLabel','ModelPopup','ModelPopupSurface','ModelSearch','ModelResults','ModelResultCount','ModelEmpty','ApplyModelChoice','ClearChatSearch','FilterAll','FilterLive','FilterSaved','ChatsHeading','ReplySearchBar','ReplySearch','ReplySearchCount','CloseReplySearch','FindReply','ConversationCards','WorkflowResize','WorkDividerColumn','WorkflowScroll','WorkToggle','WorkColumn','ConversationColumn','WorkflowSurface','WorkflowSummary','WorkflowTodos','WorkflowPlan','WorkflowSwarm','ExamplesPanel','NoticeBanner','NoticeText','ChatSurface','ComposerSurface','ComposerContent','ComposerFocusRing','ComposerHint','PromptCount','ThemeToggle','JumpLatest','Panel','TitleBar','Back','Forward','SidebarToggle','SidebarColumn','SidebarDivider','SidebarSurface','Minimize','Maximize','Close','Cancel','Rename','Archive','Sessions','SessionsEmpty','ProjectsList','SessionSearch','SearchPlaceholder','ModelPicker','EffortPicker','WorkspacePath','OpenTerminal','ExampleExplore','ExampleReview','ExampleTest','Activity','Detail','Timeline','Reply','ReplyScroll','Prompt','CommandInput','SecretInput','Placeholder','EmptyState','Send','Copy','Refresh','AddContext','Voice','NewChat','NavHome','NavRecents','NavProjects','NavArchive','NavCompanion','More','Search','ComposerSettings','SidebarHint','SidebarStatus','SessionCount','StatePill','StateText','FooterStatus','WorkspaceTitle','WorkspaceSubtitle')) {
     $controls[$name] = $window.FindName($name)
 }
+foreach ($name in @('OpenSettings','ChatHeader','WelcomeMark')) { $controls[$name] = $window.FindName($name) }
 
 
 function Toggle-FocusMode {
@@ -651,7 +731,7 @@ function New-ReadableText([string]$text) {
     $document = New-Object Windows.Documents.FlowDocument
     $document.PagePadding = [Windows.Thickness]::new(0)
     $document.FontSize = $controls.Reply.FontSize
-    $document.FontFamily = [Windows.Media.FontFamily]::new('Segoe UI')
+    $document.FontFamily = [Windows.Media.FontFamily]::new('Segoe UI Variable Text, Segoe UI')
     if ($text -match '[\u0600-\u06FF\u0750-\u077F\u08A0-\u08FF]') { $document.FlowDirection = 'RightToLeft'; $document.TextAlignment = 'Right' }
     $paragraph = New-Object Windows.Documents.Paragraph
     $paragraph.Margin = [Windows.Thickness]::new(0); $paragraph.LineHeight = $controls.Reply.FontSize * 1.6
@@ -674,9 +754,9 @@ function New-ConversationBlock($block) {
     $surface.Tag = @{ kind=$block.Kind; body=$block.Body }
     if ($block.Kind -eq 'code') {
         $isPlan = $block.Language -eq 'plan'
-        $surface.SetResourceReference([Windows.Controls.Border]::BackgroundProperty, $(if ($isPlan) { 'AccentSoft' } else { 'Surface' }))
+        $surface.SetResourceReference([Windows.Controls.Border]::BackgroundProperty, $(if ($isPlan) { 'AccentSoft' } else { 'CodeSurface' }))
         $surface.SetResourceReference([Windows.Controls.Border]::BorderBrushProperty, 'Border')
-        $surface.BorderThickness = [Windows.Thickness]::new(1); $surface.Padding = [Windows.Thickness]::new(14,10,14,12)
+        $surface.BorderThickness = [Windows.Thickness]::new(1); $surface.Padding = [Windows.Thickness]::new(18,12,18,16)
         $stack = New-Object Windows.Controls.StackPanel
         $header = New-Object Windows.Controls.DockPanel
         $copy = New-Object Windows.Controls.Button
@@ -709,13 +789,27 @@ function New-ConversationBlock($block) {
         $label.SetResourceReference([Windows.Controls.TextBlock]::ForegroundProperty, $(if ($block.Kind -eq 'role' -and $block.Role -ne 'You') { 'Accent' } else { 'Text' }))
         $label.Margin = [Windows.Thickness]::new(0,8,0,0)
         if ($block.Kind -eq 'role') {
-            $surface.Margin = [Windows.Thickness]::new(0,18,0,10)
-            $surface.BorderThickness = [Windows.Thickness]::new(3,0,0,0)
-            $surface.SetResourceReference([Windows.Controls.Border]::BorderBrushProperty, $(if ($block.Role -eq 'You') { 'Muted' } else { 'Accent' }))
-            $surface.Padding = [Windows.Thickness]::new(10,0,0,0)
+            $surface.Margin = [Windows.Thickness]::new(0,24,0,12)
+            $surface.Padding = [Windows.Thickness]::new(0)
             $label.Margin = [Windows.Thickness]::new(0)
+            $label.FontSize = 12; $label.VerticalAlignment = 'Center'
+            $roleHeader = New-Object Windows.Controls.StackPanel
+            $roleHeader.Orientation = 'Horizontal'
+            $avatar = New-Object Windows.Controls.Border
+            $avatar.Width = 28; $avatar.Height = 28; $avatar.CornerRadius = [Windows.CornerRadius]::new(9)
+            $avatar.Margin = [Windows.Thickness]::new(0,0,10,0)
+            $avatar.SetResourceReference([Windows.Controls.Border]::BackgroundProperty, $(if ($block.Role -eq 'You') { 'UserMessage' } else { 'AccentSoft' }))
+            $initial = New-Object Windows.Controls.TextBlock
+            $initial.Text = if ($block.Role -eq 'You') { 'Y' } else { 'A' }
+            $initial.FontWeight = [Windows.FontWeights]::SemiBold; $initial.FontSize = 12
+            $initial.HorizontalAlignment = 'Center'; $initial.VerticalAlignment = 'Center'
+            $initial.SetResourceReference([Windows.Controls.TextBlock]::ForegroundProperty, $(if ($block.Role -eq 'You') { 'Muted' } else { 'Accent' }))
+            $avatar.Child = $initial
+            [void]$roleHeader.Children.Add($avatar); [void]$roleHeader.Children.Add($label)
+            $surface.Child = $roleHeader
+        } else {
+            $surface.Child = $label
         }
-        $surface.Child = $label
     } elseif ($block.Kind -eq 'tools') {
         $stack = New-Object Windows.Controls.StackPanel
         $details = New-ReadableText $block.Body; $details.Visibility = 'Collapsed'
@@ -726,7 +820,7 @@ function New-ConversationBlock($block) {
         [void]$stack.Children.Add($toggle); [void]$stack.Children.Add($details); $surface.Child = $stack; $surface.Tag.toggle = $toggle
     } else {
         $surface.Child = New-ReadableText $block.Body
-        if ($block.Role -eq 'You') { $surface.SetResourceReference([Windows.Controls.Border]::BackgroundProperty, 'Surface'); $surface.Padding = [Windows.Thickness]::new(14,10,14,10) }
+        if ($block.Role -eq 'You') { $surface.SetResourceReference([Windows.Controls.Border]::BackgroundProperty, 'UserMessage'); $surface.Padding = [Windows.Thickness]::new(18,14,18,14); $surface.Margin = [Windows.Thickness]::new(38,0,0,12) }
     }
     return $surface
 }
@@ -781,7 +875,11 @@ function Close-ConversationSearch {
 function Set-GuiTheme([string]$theme, [bool]$persist = $true) {
     if ($theme -notin @('dark','light')) { $theme = 'dark' }
     $script:theme = $theme
-    $palette = if ($theme -eq 'light') { @{WindowBg='#F5F8FC'; RailBg='#E9EFF5'; SidebarBg='#EEF3F8'; Surface='#E7EEF5'; SurfaceElevated='#FFFFFF'; SurfaceHover='#DCE8F0'; Border='#BCCAD7'; Text='#172B3D'; Muted='#435D73'; Dim='#536E83'; Accent='#806515'; AccentSoft='#F3E7C5'; AccentText='#FFFFFF'; Success='#17694F'; SuccessSoft='#DAEEE4'; Warning='#855214'; WarningSoft='#FBEACD'; Danger='#A22F48'; DangerSoft='#F8E0E5'} } else { @{WindowBg='#11161D'; RailBg='#0D1218'; SidebarBg='#161D26'; Surface='#1C2632'; SurfaceElevated='#202C39'; SurfaceHover='#2A3A4B'; Border='#34475A'; Text='#EDF3F9'; Muted='#AFBFD0'; Dim='#8C9FB3'; Accent='#D4AF37'; AccentSoft='#3B321E'; AccentText='#1B160B'; Success='#8CE0BD'; SuccessSoft='#183D34'; Warning='#F3C777'; WarningSoft='#49371F'; Danger='#F4A4AD'; DangerSoft='#482B35'} }
+    $palette = if ($theme -eq 'light') {
+        @{WindowBg='#E9EDF3'; RailBg='#E9EDF3'; SidebarBg='#F3F5F8'; Canvas='#FAFBFD'; Surface='#EDF0F5'; SurfaceElevated='#FFFFFF'; SurfaceHover='#E2E7EF'; CodeSurface='#F0F3F8'; UserMessage='#EDF1F7'; Border='#C9D1DE'; Text='#202632'; Muted='#525F73'; Dim='#657287'; Accent='#806116'; AccentSoft='#F5ECD7'; AccentText='#FFFFFF'; Success='#176B50'; SuccessSoft='#E1F2E9'; Warning='#845115'; WarningSoft='#FCEDD5'; Danger='#AA2948'; DangerSoft='#FBE5EB'}
+    } else {
+        @{WindowBg='#0C0E14'; RailBg='#0C0E14'; SidebarBg='#12151D'; Canvas='#181B24'; Surface='#202530'; SurfaceElevated='#252B37'; SurfaceHover='#303747'; CodeSurface='#10131B'; UserMessage='#232A38'; Border='#3B4455'; Text='#F3F4F7'; Muted='#BEC5D2'; Dim='#98A4B7'; Accent='#F1C86A'; AccentSoft='#393124'; AccentText='#211909'; Success='#7EE2B8'; SuccessSoft='#183B31'; Warning='#F5CC84'; WarningSoft='#443522'; Danger='#FFACB7'; DangerSoft='#44252E'}
+    }
     foreach ($key in $palette.Keys) {
         $brush = [Windows.Media.BrushConverter]::new().ConvertFromString($palette[$key])
         $window.Resources[$key] = $brush
@@ -833,11 +931,14 @@ function Update-GuiLayout {
     $short = $window.ActualHeight -lt 680
     $controls.ExamplesPanel.Visibility = if ($short) { 'Collapsed' } else { 'Visible' }
     $controls.Timeline.Visibility = if ($short) { 'Collapsed' } else { 'Visible' }
-    $controls.Activity.FontSize = if ($short) { 22 } else { 28 }
+    $controls.WelcomeMark.Visibility = if ($short) { 'Collapsed' } else { 'Visible' }
+    $controls.Activity.FontSize = if ($short) { 22 } else { 30 }
     # Keep the composer aligned with the reading column at every window size.
     $compactChat = $controls.ChatSurface.ActualWidth -lt 620
-    $gutter = if ($compactChat) { 12 } else { 24 }
-    $controls.ComposerSurface.Margin = [Windows.Thickness]::new($gutter,8,$gutter,8)
+    $gutter = if ($compactChat) { 16 } else { 28 }
+    $controls.ChatHeader.Margin = [Windows.Thickness]::new($gutter, $(if ($short) { 12 } else { 20 }), $gutter, 12)
+    $controls.CommandMenu.Visibility = if ($window.ActualWidth -lt 780) { 'Collapsed' } else { 'Visible' }
+    $controls.ComposerSurface.Margin = [Windows.Thickness]::new($gutter,12,$gutter,8)
     $controls.ReplyScroll.Margin = [Windows.Thickness]::new($gutter + 4,20,$gutter + 4,16)
     $controls.ComposerContent.Margin = if ($compactChat) { [Windows.Thickness]::new(12,12,12,12) } else { [Windows.Thickness]::new(16,14,16,14) }
     $available = [Math]::Max(260, $controls.ChatSurface.ActualWidth - 80)
@@ -933,7 +1034,7 @@ function Apply-ModelChoice {
 }
 
 function Update-ResponseElapsed {
-    if (-not $script:responseSession -or -not $script:responseStarted.ContainsKey($script:responseSession)) { return }
+    if ($script:closed -or -not $controls.ResponseElapsed -or -not $script:responseSession -or -not $script:responseStarted.ContainsKey($script:responseSession)) { return }
     $seconds = [Math]::Max(0,[int]([DateTime]::UtcNow - $script:responseStarted[$script:responseSession]).TotalSeconds)
     $controls.ResponseElapsed.Text = if ($seconds -ge 60) { '{0}m {1:00}s' -f [Math]::Floor($seconds/60),($seconds%60) } else { "${seconds}s" }
 }
@@ -1021,7 +1122,7 @@ function Start-Bridge {
     if ($Preview) { return }
     $start = New-Object Diagnostics.ProcessStartInfo
     $start.FileName = $Executable
-    $start.Arguments = '--no-update --quiet --no-selfdev gui --bridge'
+    $start.Arguments = '--quiet --no-selfdev gui --bridge'
     $start.UseShellExecute = $false
     $start.CreateNoWindow = $true
     $start.RedirectStandardInput = $true
@@ -1090,9 +1191,15 @@ function Update-ProjectsList {
 
 function Initialize-ProviderSettings($dialog) {
     $nav = New-Object Windows.Controls.Button
-    $nav.Content = 'Providers'; $nav.Tag = 'Providers'
-    $nav.HorizontalContentAlignment = 'Left'; $nav.Padding = [Windows.Thickness]::new(12,10,12,10)
-    $nav.Margin = [Windows.Thickness]::new(0,0,0,4)
+    $nav.Tag = 'Providers'
+    $nav.HorizontalContentAlignment = 'Left'; $nav.Padding = [Windows.Thickness]::new(12)
+    $nav.Margin = [Windows.Thickness]::new(0,0,0,6)
+    $content = New-Object Windows.Controls.StackPanel
+    $title = New-Object Windows.Controls.TextBlock; $title.Text = 'Providers'; $title.FontWeight = [Windows.FontWeights]::SemiBold
+    $description = New-Object Windows.Controls.TextBlock; $description.Text = 'Accounts and connections'; $description.FontSize = 11
+    $description.SetResourceReference([Windows.Controls.TextBlock]::ForegroundProperty,'Muted'); $description.Margin = [Windows.Thickness]::new(0,5,0,0)
+    [void]$content.Children.Add($title); [void]$content.Children.Add($description); $nav.Content = $content
+    $nav.SetValue([Windows.Automation.AutomationProperties]::NameProperty,'Provider settings')
     $script:settingsControls.ModelsNav.Parent.Children.Insert(2,$nav)
     $script:settingsControls.ProvidersNav = $nav
     [xml]$pageXaml = @'
@@ -1104,7 +1211,7 @@ function Initialize-ProviderSettings($dialog) {
  <TextBlock x:Name="ProviderState" Text="Loading connections…" Foreground="{DynamicResource Muted}" TextWrapping="Wrap" Margin="0,0,0,16"/>
  <StackPanel x:Name="ProviderEndpointGroup" Visibility="Collapsed"><TextBlock Text="API endpoint (optional)" Foreground="{DynamicResource Muted}" FontSize="11" Margin="0,0,0,6"/><Border Background="{DynamicResource Surface}" BorderBrush="{DynamicResource Border}" BorderThickness="1" CornerRadius="8" Padding="12,10" Margin="0,0,0,12"><TextBox x:Name="ProviderEndpoint" Background="Transparent" Foreground="{DynamicResource Text}" BorderThickness="0" Padding="0" AutomationProperties.Name="Provider API endpoint"/></Border></StackPanel>
  <StackPanel x:Name="ProviderSetupGroup" Visibility="Collapsed"><TextBlock x:Name="ProviderSetupLabel" Foreground="{DynamicResource Muted}" FontSize="11" Margin="0,0,0,6"/><TextBox x:Name="ProviderSetup" Background="{DynamicResource Surface}" Foreground="{DynamicResource Text}" BorderBrush="{DynamicResource Border}" Padding="12,10" Margin="0,0,0,12" AutomationProperties.Name="Provider configuration"/></StackPanel>
- <Button x:Name="ProviderBrowser" Content="Sign in with browser" Background="{DynamicResource Accent}" Foreground="{DynamicResource AccentText}" HorizontalAlignment="Left" Padding="16,9" Margin="0,0,0,12"/>
+ <Button x:Name="ProviderBrowser" Style="{DynamicResource PrimaryButton}" Content="Sign in with browser" HorizontalAlignment="Left" Padding="16,9" Margin="0,0,0,12"/>
  <StackPanel x:Name="ProviderKeyGroup"><TextBlock Text="API key" Foreground="{DynamicResource Muted}" FontSize="11" Margin="0,0,0,6"/><Border Background="{DynamicResource Surface}" BorderBrush="{DynamicResource Border}" BorderThickness="1" CornerRadius="8" Padding="12,10"><PasswordBox x:Name="ProviderKey" Background="Transparent" Foreground="{DynamicResource Text}" CaretBrush="{DynamicResource Accent}" BorderThickness="0" MaxLength="16000" AutomationProperties.Name="Provider API key"/></Border><Button x:Name="ProviderConnectKey" Content="Connect API key" HorizontalAlignment="Left" Padding="16,9" Margin="0,8,0,14"/></StackPanel>
  <Button x:Name="ProviderLocal" Content="Connect endpoint" HorizontalAlignment="Left" Padding="16,9" Margin="0,0,0,12" Visibility="Collapsed"/>
  <Border x:Name="ProviderProgress" Background="{DynamicResource Surface}" BorderBrush="{DynamicResource Border}" BorderThickness="1" CornerRadius="8" Padding="12" Visibility="Collapsed" Margin="0,4,0,12"><StackPanel><TextBlock x:Name="ProviderProgressTitle" Foreground="{DynamicResource Accent}" FontWeight="SemiBold"/><TextBox x:Name="ProviderProgressText" IsReadOnly="True" AcceptsReturn="True" TextWrapping="Wrap" MaxHeight="150" VerticalScrollBarVisibility="Auto" Background="Transparent" Foreground="{DynamicResource Muted}" BorderThickness="0" Padding="0,8,0,0"/>
@@ -1262,16 +1369,20 @@ function Update-SettingsForm {
 
 function New-SettingsWindow {
     [xml]$definition = @'
-<Window xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation" xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml" Title="AlphaCode Settings" Width="820" Height="700" MinWidth="640" MinHeight="500" WindowStyle="None" ResizeMode="CanResize" WindowStartupLocation="CenterOwner" ShowInTaskbar="False" FontFamily="Segoe UI Variable Text, Segoe UI" FontSize="13" Foreground="{DynamicResource Text}" Background="{DynamicResource WindowBg}" UseLayoutRounding="True">
+<Window xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation" xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml" Title="AlphaCode Settings" Width="900" Height="740" MinWidth="640" MinHeight="500" WindowStyle="None" ResizeMode="CanResize" WindowStartupLocation="CenterOwner" ShowInTaskbar="False" FontFamily="Segoe UI Variable Text, Segoe UI" FontSize="13" Foreground="{DynamicResource Text}" Background="{DynamicResource Canvas}" UseLayoutRounding="True">
  <WindowChrome.WindowChrome><WindowChrome CaptionHeight="0" ResizeBorderThickness="6" GlassFrameThickness="0" CornerRadius="0" UseAeroCaptionButtons="False"/></WindowChrome.WindowChrome>
  <Window.Resources><Style x:Key="SettingsSwitch" TargetType="ToggleButton"><Setter Property="Width" Value="44"/><Setter Property="Height" Value="26"/><Setter Property="Cursor" Value="Hand"/><Setter Property="Template"><Setter.Value><ControlTemplate TargetType="ToggleButton"><Border x:Name="Track" Background="{DynamicResource SurfaceHover}" BorderBrush="{DynamicResource Border}" BorderThickness="1" CornerRadius="13"><Ellipse x:Name="Knob" Width="18" Height="18" Margin="3" HorizontalAlignment="Left" Fill="{DynamicResource Muted}"/></Border><ControlTemplate.Triggers><Trigger Property="IsChecked" Value="True"><Setter TargetName="Track" Property="Background" Value="{DynamicResource Accent}"/><Setter TargetName="Knob" Property="HorizontalAlignment" Value="Right"/><Setter TargetName="Knob" Property="Fill" Value="{DynamicResource AccentText}"/></Trigger><Trigger Property="IsKeyboardFocused" Value="True"><Setter TargetName="Track" Property="BorderBrush" Value="{DynamicResource Text}"/><Setter TargetName="Track" Property="BorderThickness" Value="2"/></Trigger></ControlTemplate.Triggers></ControlTemplate></Setter.Value></Setter></Style></Window.Resources>
- <Border BorderBrush="{DynamicResource Border}" BorderThickness="1"><Grid><Grid.RowDefinitions><RowDefinition Height="72"/><RowDefinition/><RowDefinition Height="64"/></Grid.RowDefinitions>
-  <Grid x:Name="TitleBar" Margin="24,12,16,10"><Grid.ColumnDefinitions><ColumnDefinition/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions><StackPanel><TextBlock Text="Settings" FontSize="23" FontWeight="SemiBold"/><TextBlock Text="Make AlphaCode your workspace" Foreground="{DynamicResource Muted}" FontSize="11" Margin="0,4,0,0"/></StackPanel><Button x:Name="Close" Grid.Column="1" Content="×" FontSize="20" Padding="12,0" ToolTip="Close settings" AutomationProperties.Name="Close settings"/></Grid>
-  <Grid Grid.Row="1"><Grid.ColumnDefinitions><ColumnDefinition Width="170"/><ColumnDefinition/></Grid.ColumnDefinitions>
-   <Border Background="{DynamicResource SidebarBg}" Padding="12,16"><StackPanel><Button x:Name="AppearanceNav" Tag="Appearance" HorizontalContentAlignment="Left" Margin="0,0,0,6" Padding="10,12"><StackPanel><TextBlock Text="Appearance" FontWeight="SemiBold"/><TextBlock Text="Theme and typography" Foreground="{DynamicResource Muted}" FontSize="10" Margin="0,5,0,0"/></StackPanel></Button><Button x:Name="ModelsNav" Tag="Models" HorizontalContentAlignment="Left" Margin="0,0,0,6" Padding="10,12"><StackPanel><TextBlock Text="Models" FontWeight="SemiBold"/><TextBlock Text="Model and reasoning" Foreground="{DynamicResource Muted}" FontSize="10" Margin="0,5,0,0"/></StackPanel></Button><Button x:Name="WorkspaceNav" Tag="Workspace" HorizontalContentAlignment="Left" Margin="0,0,0,6" Padding="10,12"><StackPanel><TextBlock Text="Workspace" FontWeight="SemiBold"/><TextBlock Text="Layout and folders" Foreground="{DynamicResource Muted}" FontSize="10" Margin="0,5,0,0"/></StackPanel></Button><Button x:Name="KeyboardNav" Tag="Keyboard" HorizontalContentAlignment="Left" Padding="10,12"><StackPanel><TextBlock Text="Keyboard" FontWeight="SemiBold"/><TextBlock Text="Shortcuts and actions" Foreground="{DynamicResource Muted}" FontSize="10" Margin="0,5,0,0"/></StackPanel></Button></StackPanel></Border>
-   <ScrollViewer Grid.Column="1" VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled" Padding="26,20"><Grid>
-    <StackPanel x:Name="AppearancePage"><TextBlock Text="Appearance" FontSize="21" FontWeight="SemiBold" Margin="0,0,0,6"/><TextBlock Text="Choose a theme and a comfortable reading size." Foreground="{DynamicResource Muted}" TextWrapping="Wrap" Margin="0,0,0,24"/><TextBlock Text="Color theme" FontWeight="SemiBold" Margin="0,0,0,10"/><UniformGrid Rows="1" Columns="2"><Button x:Name="DarkTheme" Content="◐  Dark · Slate" Background="{DynamicResource Surface}" Margin="0,0,8,0" MinHeight="60"/><Button x:Name="LightTheme" Content="◑  Light · Paper" Background="{DynamicResource Surface}" MinHeight="60"/></UniformGrid>
-     <Grid Margin="0,28,0,12"><Grid.ColumnDefinitions><ColumnDefinition/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions><TextBlock Text="Reading size" FontWeight="SemiBold"/><TextBlock x:Name="TextSizeLabel" Grid.Column="1" Foreground="{DynamicResource Accent}"/></Grid><Slider x:Name="TextSize" Minimum="12" Maximum="24" TickFrequency="1" IsSnapToTickEnabled="True" SmallChange="1" LargeChange="2" Foreground="{DynamicResource Accent}" AutomationProperties.Name="Reading size"/><Border Background="{DynamicResource Surface}" CornerRadius="8" Padding="18" Margin="0,18,0,10"><TextBlock x:Name="TypePreview" Text="Read, reason, build.&#10;Your ideas deserve room to breathe." TextWrapping="Wrap"/></Border><Button x:Name="ResetSize" Content="Reset to 14 pt" HorizontalAlignment="Left" Foreground="{DynamicResource Accent}"/>
+ <Border BorderBrush="{DynamicResource Border}" BorderThickness="1"><Grid><Grid.RowDefinitions><RowDefinition Height="88"/><RowDefinition/><RowDefinition Height="64"/></Grid.RowDefinitions>
+  <Grid x:Name="TitleBar" Margin="28,18,20,14"><Grid.ColumnDefinitions><ColumnDefinition/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions><StackPanel><TextBlock Text="Settings" FontSize="24" FontWeight="SemiBold"/><TextBlock Text="A workspace that works your way." Foreground="{DynamicResource Muted}" FontSize="12" Margin="0,5,0,0"/></StackPanel><Button x:Name="Close" Grid.Column="1" Content="×" FontSize="22" Padding="12,0" VerticalAlignment="Top" ToolTip="Close settings" AutomationProperties.Name="Close settings"/></Grid>
+  <Grid Grid.Row="1"><Grid.ColumnDefinitions><ColumnDefinition Width="200"/><ColumnDefinition/></Grid.ColumnDefinitions>
+   <Border Background="{DynamicResource SidebarBg}" Padding="12,16" BorderBrush="{DynamicResource Border}" BorderThickness="0,1,1,0"><StackPanel><Button x:Name="AppearanceNav" Tag="Appearance" HorizontalContentAlignment="Left" Margin="0,0,0,6" Padding="12"><StackPanel><TextBlock Text="Appearance" FontWeight="SemiBold"/><TextBlock Text="Theme and typography" Foreground="{DynamicResource Muted}" FontSize="11" Margin="0,5,0,0"/></StackPanel></Button><Button x:Name="ModelsNav" Tag="Models" HorizontalContentAlignment="Left" Margin="0,0,0,6" Padding="12"><StackPanel><TextBlock Text="Models" FontWeight="SemiBold"/><TextBlock Text="Model and reasoning" Foreground="{DynamicResource Muted}" FontSize="11" Margin="0,5,0,0"/></StackPanel></Button><Button x:Name="WorkspaceNav" Tag="Workspace" HorizontalContentAlignment="Left" Margin="0,0,0,6" Padding="12"><StackPanel><TextBlock Text="Workspace" FontWeight="SemiBold"/><TextBlock Text="Layout and folders" Foreground="{DynamicResource Muted}" FontSize="11" Margin="0,5,0,0"/></StackPanel></Button><Button x:Name="KeyboardNav" Tag="Keyboard" HorizontalContentAlignment="Left" Padding="12"><StackPanel><TextBlock Text="Keyboard" FontWeight="SemiBold"/><TextBlock Text="Shortcuts and actions" Foreground="{DynamicResource Muted}" FontSize="11" Margin="0,5,0,0"/></StackPanel></Button></StackPanel></Border>
+   <ScrollViewer Grid.Column="1" VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled" Padding="28,24" BorderBrush="{DynamicResource Border}" BorderThickness="0,1,0,0"><Grid>
+    <StackPanel x:Name="AppearancePage"><TextBlock Text="Appearance" FontSize="22" FontWeight="SemiBold" Margin="0,0,0,8"/><TextBlock Text="Set the tone for your next idea." Foreground="{DynamicResource Muted}" TextWrapping="Wrap" Margin="0,0,0,24"/><TextBlock Text="Color theme" FontWeight="SemiBold" Margin="0,0,0,12"/>
+     <UniformGrid Rows="1" Columns="2">
+      <Button x:Name="DarkTheme" Style="{DynamicResource SecondaryButton}" HorizontalContentAlignment="Stretch" Padding="12" Margin="0,0,12,0" AutomationProperties.Name="Use dark theme"><StackPanel><Border Background="#181B24" BorderBrush="#3B4455" BorderThickness="1" CornerRadius="8" Height="94" Padding="10"><Grid><Grid.ColumnDefinitions><ColumnDefinition Width="32"/><ColumnDefinition/></Grid.ColumnDefinitions><Border Background="#12151D" CornerRadius="4" Margin="0,0,7,0"><StackPanel Margin="5,8"><Border Height="5" Background="#F1C86A" CornerRadius="2" Margin="0,0,0,6"/><Border Height="4" Background="#3B4455" CornerRadius="2" Margin="0,0,0,5"/><Border Height="4" Background="#3B4455" CornerRadius="2"/></StackPanel></Border><Grid Grid.Column="1"><Grid.RowDefinitions><RowDefinition Height="14"/><RowDefinition/><RowDefinition Height="20"/></Grid.RowDefinitions><Border Background="#BEC5D2" Height="4" Width="46" HorizontalAlignment="Left" CornerRadius="2"/><StackPanel Grid.Row="1" Margin="0,5,0,0"><Border Background="#393124" Height="9" CornerRadius="3" Margin="10,0,0,5"/><Border Background="#3B4455" Height="4" CornerRadius="2" Margin="0,0,12,5"/><Border Background="#3B4455" Height="4" CornerRadius="2" Margin="0,0,24,0"/></StackPanel><Border Grid.Row="2" Background="#252B37" CornerRadius="5" BorderBrush="#3B4455" BorderThickness="1"><Border Width="10" Height="10" Background="#F1C86A" CornerRadius="3" HorizontalAlignment="Right" Margin="4"/></Border></Grid></Grid></Border><TextBlock Text="Dark · Graphite" FontWeight="SemiBold" Margin="0,12,0,0"/><TextBlock Text="Quiet focus, warm highlights" Foreground="{DynamicResource Muted}" FontSize="11" TextWrapping="Wrap" Margin="0,5,0,0"/></StackPanel></Button>
+      <Button x:Name="LightTheme" Style="{DynamicResource SecondaryButton}" HorizontalContentAlignment="Stretch" Padding="12" AutomationProperties.Name="Use light theme"><StackPanel><Border Background="#FAFBFD" BorderBrush="#C9D1DE" BorderThickness="1" CornerRadius="8" Height="94" Padding="10"><Grid><Grid.ColumnDefinitions><ColumnDefinition Width="32"/><ColumnDefinition/></Grid.ColumnDefinitions><Border Background="#EDF0F5" CornerRadius="4" Margin="0,0,7,0"><StackPanel Margin="5,8"><Border Height="5" Background="#806116" CornerRadius="2" Margin="0,0,0,6"/><Border Height="4" Background="#C9D1DE" CornerRadius="2" Margin="0,0,0,5"/><Border Height="4" Background="#C9D1DE" CornerRadius="2"/></StackPanel></Border><Grid Grid.Column="1"><Grid.RowDefinitions><RowDefinition Height="14"/><RowDefinition/><RowDefinition Height="20"/></Grid.RowDefinitions><Border Background="#525F73" Height="4" Width="46" HorizontalAlignment="Left" CornerRadius="2"/><StackPanel Grid.Row="1" Margin="0,5,0,0"><Border Background="#F5ECD7" Height="9" CornerRadius="3" Margin="10,0,0,5"/><Border Background="#C9D1DE" Height="4" CornerRadius="2" Margin="0,0,12,5"/><Border Background="#C9D1DE" Height="4" CornerRadius="2" Margin="0,0,24,0"/></StackPanel><Border Grid.Row="2" Background="#FFFFFF" CornerRadius="5" BorderBrush="#C9D1DE" BorderThickness="1"><Border Width="10" Height="10" Background="#806116" CornerRadius="3" HorizontalAlignment="Right" Margin="4"/></Border></Grid></Grid></Border><TextBlock Text="Light · Paper" FontWeight="SemiBold" Margin="0,12,0,0"/><TextBlock Text="Clear space, crisp contrast" Foreground="{DynamicResource Muted}" FontSize="11" TextWrapping="Wrap" Margin="0,5,0,0"/></StackPanel></Button>
+     </UniformGrid>
+     <Grid Margin="0,28,0,12"><Grid.ColumnDefinitions><ColumnDefinition/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions><TextBlock Text="Reading size" FontWeight="SemiBold"/><TextBlock x:Name="TextSizeLabel" Grid.Column="1" Foreground="{DynamicResource Accent}"/></Grid><Slider x:Name="TextSize" Minimum="12" Maximum="24" TickFrequency="1" IsSnapToTickEnabled="True" SmallChange="1" LargeChange="2" Foreground="{DynamicResource Accent}" AutomationProperties.Name="Reading size"/><Border Background="{DynamicResource SurfaceElevated}" BorderBrush="{DynamicResource Border}" BorderThickness="1" CornerRadius="12" Padding="20" Margin="0,18,0,10"><StackPanel><TextBlock Text="Reading preview" Foreground="{DynamicResource Muted}" FontSize="11" Margin="0,0,0,10"/><TextBlock x:Name="TypePreview" Text="Read, reason, build.&#10;Your ideas deserve room to breathe." TextWrapping="Wrap"/></StackPanel></Border><Button x:Name="ResetSize" Content="Reset to 14 pt" HorizontalAlignment="Left" Foreground="{DynamicResource Accent}"/>
     </StackPanel>
     <StackPanel x:Name="ModelsPage" Visibility="Collapsed"><TextBlock Text="Model &amp; reasoning" FontSize="21" FontWeight="SemiBold"/><TextBlock x:Name="ActiveModel" Foreground="{DynamicResource Muted}" TextWrapping="Wrap" Margin="0,8,0,18"/><Border Background="{DynamicResource Surface}" BorderBrush="{DynamicResource Border}" BorderThickness="1" CornerRadius="8" Padding="10,6"><TextBox x:Name="ModelSearch" Background="Transparent" Foreground="{DynamicResource Text}" BorderThickness="0" ToolTip="Search available models" AutomationProperties.Name="Search available models"/></Border><TextBlock x:Name="ModelMatches" Foreground="{DynamicResource Dim}" FontSize="11" Margin="0,6,0,6"/><ListBox x:Name="ModelList" Height="180" AutomationProperties.Name="Available models"><ListBox.ItemTemplate><DataTemplate><TextBlock Text="{Binding}" TextTrimming="CharacterEllipsis" ToolTip="{Binding}"/></DataTemplate></ListBox.ItemTemplate></ListBox><Button x:Name="UseModel" Content="Use selected model" Background="{DynamicResource Accent}" Foreground="{DynamicResource AccentText}" HorizontalAlignment="Left" Padding="14,8" Margin="0,12,0,22"/><TextBlock Text="Reasoning effort" FontWeight="SemiBold" Margin="0,0,0,10"/><WrapPanel x:Name="Efforts"/><TextBlock Text="Choose the balance between response time and reasoning depth for the open chat." Foreground="{DynamicResource Muted}" TextWrapping="Wrap" FontSize="11" Margin="0,6,0,0"/></StackPanel>
     <StackPanel x:Name="WorkspacePage" Visibility="Collapsed"><TextBlock Text="Workspace" FontSize="21" FontWeight="SemiBold"/><Border Background="{DynamicResource Surface}" CornerRadius="8" Padding="14" Margin="0,18,0,10"><TextBlock x:Name="WorkspacePath" TextWrapping="Wrap"/></Border><WrapPanel Margin="0,0,0,24"><Button x:Name="ChooseFolder" Content="Choose folder…" Background="{DynamicResource AccentSoft}" Foreground="{DynamicResource Accent}" Margin="0,0,8,0"/><Button x:Name="OpenFolder" Content="Open in Explorer"/></WrapPanel><TextBlock Text="Choosing a folder starts a new workspace chat." TextWrapping="Wrap" Foreground="{DynamicResource Muted}" FontSize="11" Margin="0,-12,0,24"/>
@@ -1282,7 +1393,7 @@ function New-SettingsWindow {
     <StackPanel x:Name="KeyboardPage" Visibility="Collapsed"><TextBlock Text="Keyboard shortcuts" FontSize="21" FontWeight="SemiBold" Margin="0,0,0,20"/><StackPanel><Grid Margin="0,0,0,12"><Grid.ColumnDefinitions><ColumnDefinition Width="154"/><ColumnDefinition/></Grid.ColumnDefinitions><Border Background="{DynamicResource Surface}" BorderBrush="{DynamicResource Border}" BorderThickness="1" CornerRadius="8" Padding="8,5" HorizontalAlignment="Left"><TextBlock Text="Ctrl+Shift+P" FontSize="11" Foreground="{DynamicResource Text}"/></Border><TextBlock Grid.Column="1" Text="Command palette" Foreground="{DynamicResource Muted}" VerticalAlignment="Center" TextWrapping="Wrap" Margin="10,0,0,0"/></Grid><Grid Margin="0,0,0,12"><Grid.ColumnDefinitions><ColumnDefinition Width="154"/><ColumnDefinition/></Grid.ColumnDefinitions><Border Background="{DynamicResource Surface}" BorderBrush="{DynamicResource Border}" BorderThickness="1" CornerRadius="8" Padding="8,5" HorizontalAlignment="Left"><TextBlock Text="Ctrl+Shift+F" FontSize="11" Foreground="{DynamicResource Text}"/></Border><TextBlock Grid.Column="1" Text="Focus mode" Foreground="{DynamicResource Muted}" VerticalAlignment="Center" TextWrapping="Wrap" Margin="10,0,0,0"/></Grid><Grid Margin="0,0,0,12"><Grid.ColumnDefinitions><ColumnDefinition Width="154"/><ColumnDefinition/></Grid.ColumnDefinitions><Border Background="{DynamicResource Surface}" BorderBrush="{DynamicResource Border}" BorderThickness="1" CornerRadius="8" Padding="8,5" HorizontalAlignment="Left"><TextBlock Text="Ctrl+K" FontSize="11" Foreground="{DynamicResource Text}"/></Border><TextBlock Grid.Column="1" Text="Search chats" Foreground="{DynamicResource Muted}" VerticalAlignment="Center" TextWrapping="Wrap" Margin="10,0,0,0"/></Grid><Grid Margin="0,0,0,12"><Grid.ColumnDefinitions><ColumnDefinition Width="154"/><ColumnDefinition/></Grid.ColumnDefinitions><Border Background="{DynamicResource Surface}" BorderBrush="{DynamicResource Border}" BorderThickness="1" CornerRadius="8" Padding="8,5" HorizontalAlignment="Left"><TextBlock Text="Ctrl+F" FontSize="11" Foreground="{DynamicResource Text}"/></Border><TextBlock Grid.Column="1" Text="Find in conversation" Foreground="{DynamicResource Muted}" VerticalAlignment="Center" TextWrapping="Wrap" Margin="10,0,0,0"/></Grid><Grid Margin="0,0,0,12"><Grid.ColumnDefinitions><ColumnDefinition Width="154"/><ColumnDefinition/></Grid.ColumnDefinitions><Border Background="{DynamicResource Surface}" BorderBrush="{DynamicResource Border}" BorderThickness="1" CornerRadius="8" Padding="8,5" HorizontalAlignment="Left"><TextBlock Text="Ctrl+J" FontSize="11" Foreground="{DynamicResource Text}"/></Border><TextBlock Grid.Column="1" Text="Show or hide work" Foreground="{DynamicResource Muted}" VerticalAlignment="Center" TextWrapping="Wrap" Margin="10,0,0,0"/></Grid><Grid Margin="0,0,0,12"><Grid.ColumnDefinitions><ColumnDefinition Width="154"/><ColumnDefinition/></Grid.ColumnDefinitions><Border Background="{DynamicResource Surface}" BorderBrush="{DynamicResource Border}" BorderThickness="1" CornerRadius="8" Padding="8,5" HorizontalAlignment="Left"><TextBlock Text="Ctrl+B" FontSize="11" Foreground="{DynamicResource Text}"/></Border><TextBlock Grid.Column="1" Text="Show or hide sidebar" Foreground="{DynamicResource Muted}" VerticalAlignment="Center" TextWrapping="Wrap" Margin="10,0,0,0"/></Grid><Grid Margin="0,0,0,12"><Grid.ColumnDefinitions><ColumnDefinition Width="154"/><ColumnDefinition/></Grid.ColumnDefinitions><Border Background="{DynamicResource Surface}" BorderBrush="{DynamicResource Border}" BorderThickness="1" CornerRadius="8" Padding="8,5" HorizontalAlignment="Left"><TextBlock Text="Ctrl+M" FontSize="11" Foreground="{DynamicResource Text}"/></Border><TextBlock Grid.Column="1" Text="Choose a model" Foreground="{DynamicResource Muted}" VerticalAlignment="Center" TextWrapping="Wrap" Margin="10,0,0,0"/></Grid><Grid Margin="0,0,0,12"><Grid.ColumnDefinitions><ColumnDefinition Width="154"/><ColumnDefinition/></Grid.ColumnDefinitions><Border Background="{DynamicResource Surface}" BorderBrush="{DynamicResource Border}" BorderThickness="1" CornerRadius="8" Padding="8,5" HorizontalAlignment="Left"><TextBlock Text="Ctrl+N" FontSize="11" Foreground="{DynamicResource Text}"/></Border><TextBlock Grid.Column="1" Text="New chat" Foreground="{DynamicResource Muted}" VerticalAlignment="Center" TextWrapping="Wrap" Margin="10,0,0,0"/></Grid><Grid Margin="0,0,0,12"><Grid.ColumnDefinitions><ColumnDefinition Width="154"/><ColumnDefinition/></Grid.ColumnDefinitions><Border Background="{DynamicResource Surface}" BorderBrush="{DynamicResource Border}" BorderThickness="1" CornerRadius="8" Padding="8,5" HorizontalAlignment="Left"><TextBlock Text="Ctrl+L" FontSize="11" Foreground="{DynamicResource Text}"/></Border><TextBlock Grid.Column="1" Text="Focus composer" Foreground="{DynamicResource Muted}" VerticalAlignment="Center" TextWrapping="Wrap" Margin="10,0,0,0"/></Grid><Grid Margin="0,0,0,12"><Grid.ColumnDefinitions><ColumnDefinition Width="154"/><ColumnDefinition/></Grid.ColumnDefinitions><Border Background="{DynamicResource Surface}" BorderBrush="{DynamicResource Border}" BorderThickness="1" CornerRadius="8" Padding="8,5" HorizontalAlignment="Left"><TextBlock Text="Enter" FontSize="11" Foreground="{DynamicResource Text}"/></Border><TextBlock Grid.Column="1" Text="Send message" Foreground="{DynamicResource Muted}" VerticalAlignment="Center" TextWrapping="Wrap" Margin="10,0,0,0"/></Grid><Grid Margin="0,0,0,12"><Grid.ColumnDefinitions><ColumnDefinition Width="154"/><ColumnDefinition/></Grid.ColumnDefinitions><Border Background="{DynamicResource Surface}" BorderBrush="{DynamicResource Border}" BorderThickness="1" CornerRadius="8" Padding="8,5" HorizontalAlignment="Left"><TextBlock Text="Shift+Enter" FontSize="11" Foreground="{DynamicResource Text}"/></Border><TextBlock Grid.Column="1" Text="Insert a new line" Foreground="{DynamicResource Muted}" VerticalAlignment="Center" TextWrapping="Wrap" Margin="10,0,0,0"/></Grid><Grid Margin="0,0,0,12"><Grid.ColumnDefinitions><ColumnDefinition Width="154"/><ColumnDefinition/></Grid.ColumnDefinitions><Border Background="{DynamicResource Surface}" BorderBrush="{DynamicResource Border}" BorderThickness="1" CornerRadius="8" Padding="8,5" HorizontalAlignment="Left"><TextBlock Text="Ctrl+Shift+C" FontSize="11" Foreground="{DynamicResource Text}"/></Border><TextBlock Grid.Column="1" Text="Copy response" Foreground="{DynamicResource Muted}" VerticalAlignment="Center" TextWrapping="Wrap" Margin="10,0,0,0"/></Grid><Grid Margin="0,0,0,12"><Grid.ColumnDefinitions><ColumnDefinition Width="154"/><ColumnDefinition/></Grid.ColumnDefinitions><Border Background="{DynamicResource Surface}" BorderBrush="{DynamicResource Border}" BorderThickness="1" CornerRadius="8" Padding="8,5" HorizontalAlignment="Left"><TextBlock Text="Ctrl+plus / minus" FontSize="11" Foreground="{DynamicResource Text}"/></Border><TextBlock Grid.Column="1" Text="Adjust reading size" Foreground="{DynamicResource Muted}" VerticalAlignment="Center" TextWrapping="Wrap" Margin="10,0,0,0"/></Grid><Grid Margin="0,0,0,12"><Grid.ColumnDefinitions><ColumnDefinition Width="154"/><ColumnDefinition/></Grid.ColumnDefinitions><Border Background="{DynamicResource Surface}" BorderBrush="{DynamicResource Border}" BorderThickness="1" CornerRadius="8" Padding="8,5" HorizontalAlignment="Left"><TextBlock Text="Ctrl+0" FontSize="11" Foreground="{DynamicResource Text}"/></Border><TextBlock Grid.Column="1" Text="Reset reading size" Foreground="{DynamicResource Muted}" VerticalAlignment="Center" TextWrapping="Wrap" Margin="10,0,0,0"/></Grid></StackPanel></StackPanel>
    </Grid></ScrollViewer>
   </Grid>
-  <Border Grid.Row="2" BorderBrush="{DynamicResource Border}" BorderThickness="0,1,0,0" Padding="20,10"><Grid><Grid.ColumnDefinitions><ColumnDefinition/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions><TextBlock x:Name="Feedback" Foreground="{DynamicResource Muted}" FontSize="11" TextWrapping="Wrap" VerticalAlignment="Center" Margin="0,0,20,0"/><Button x:Name="Done" Grid.Column="1" Content="Done" Background="{DynamicResource Accent}" Foreground="{DynamicResource AccentText}" Padding="24,6"/></Grid></Border>
+  <Border Grid.Row="2" Background="{DynamicResource SidebarBg}" BorderBrush="{DynamicResource Border}" BorderThickness="0,1,0,0" Padding="24,10"><Grid><Grid.ColumnDefinitions><ColumnDefinition/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions><TextBlock x:Name="Feedback" Foreground="{DynamicResource Muted}" FontSize="11" TextWrapping="Wrap" VerticalAlignment="Center" Margin="0,0,20,0"/><Button x:Name="Done" Style="{DynamicResource PrimaryButton}" Grid.Column="1" Content="Done" Padding="28,6"/></Grid></Border>
  </Grid></Border>
 </Window>
 '@
@@ -2337,6 +2448,7 @@ $controls.ModelPopup.Add_PreviewKeyDown({ param($sender,$event)
 })
 $controls.ResponseStop.Add_Click({ if ($controls.Cancel.IsEnabled) { $controls.Cancel.RaiseEvent([Windows.RoutedEventArgs]::new([Windows.Controls.Primitives.ButtonBase]::ClickEvent)) } })
 $controls.ComposerSettings.Add_Click({ Show-Settings })
+$controls.OpenSettings.Add_Click({ Show-Settings })
 $controls.NavHome.Add_Click({ Set-SidebarVisibility (-not $script:sidebarVisible) })
 $controls.NavRecents.Add_Click({ Set-SidebarVisibility $true; Set-Navigation 'Live' })
 $controls.NavProjects.Add_Click({ Set-SidebarVisibility $true; Set-Navigation 'Projects' })
@@ -2483,7 +2595,7 @@ $menu.Items.Add($smallerTextMenu) | Out-Null
 $work = [Windows.SystemParameters]::WorkArea
 $responseTimer = New-Object Windows.Threading.DispatcherTimer
 $responseTimer.Interval = [TimeSpan]::FromSeconds(1)
-$responseTimer.Add_Tick({ Update-ResponseElapsed })
+$responseTimer.Add_Tick({ Invoke-GuiCallback 'ResponseTimer.Tick' { Update-ResponseElapsed } $responseTimer })
 $window.MinWidth = [Math]::Min($window.MinWidth, $work.Width)
 $window.MinHeight = [Math]::Min($window.MinHeight, $work.Height)
 $window.Width = [Math]::Max($window.MinWidth, [Math]::Min($window.Width, $work.Width - 32))
@@ -2523,10 +2635,11 @@ Set-Navigation 'Home'
 
 $searchTimer = New-Object Windows.Threading.DispatcherTimer
 $searchTimer.Interval = [TimeSpan]::FromMilliseconds(150)
-$searchTimer.Add_Tick({ $searchTimer.Stop(); Render-Conversation $true; Move-ConversationHit 1 })
+$searchTimer.Add_Tick({ Invoke-GuiCallback 'SearchTimer.Tick' { $searchTimer.Stop(); Render-Conversation $true; Move-ConversationHit 1 } $searchTimer })
 $timer = New-Object Windows.Threading.DispatcherTimer
 $timer.Interval = [TimeSpan]::FromMilliseconds(100)
 $timer.Add_Tick({
+    if ($script:closed) { return }
     try {
         $timer.Interval = [TimeSpan]::FromMilliseconds($(if ($script:working -gt 0) { 100 } else { 400 }))
         if ($Preview) { return }
@@ -2693,9 +2806,12 @@ $timer.Add_Tick({
             $script:requestStarted = [DateTime]::UtcNow
         }
     } catch {
+        $failure = $_
+        Write-GuiFailure 'bridge' 'MainTimer.Tick' $failure
+        if ([AlphaCode.Desktop.GuiDiagnostics]::IsFatal($failure.Exception)) { throw }
         $script:responseDisconnected = $true
         $controls.StateText.Text = 'Reconnecting'
-        $script:deliveryNotice = $_.Exception.Message
+        $script:deliveryNotice = [AlphaCode.Desktop.GuiDiagnostics]::Redact($failure.Exception.Message,$null)
         $script:submittedPrompt = ''
         $script:noticeUntil = [DateTime]::MaxValue
         $controls.Detail.Text = $script:deliveryNotice
@@ -2711,7 +2827,7 @@ $timer.Add_Tick({
         $controls.ModelPicker.IsEnabled = $true
         $controls.EffortPicker.IsEnabled = $true
         $script:pending = $null; $script:pendingKind = ''; $script:queue.Clear()
-        if ($script:inputWriter) { $script:inputWriter.Dispose(); $script:inputWriter = $null }
+        if ($script:inputWriter) { try { $script:inputWriter.Dispose() } catch { Write-GuiFailure 'bridge' 'MainTimer.Reconnect.InputWriter' $_ }; $script:inputWriter = $null }
         if ($script:process) { try { $script:process.Kill() } catch { }; $script:process.Dispose(); $script:process = $null }
         $script:pendingResponseSession = ''
         Update-ResponseActivity
@@ -2726,9 +2842,7 @@ $window.Add_Closing({
     }
 })
 $window.Add_Closed({
-    $timer.Stop(); $searchTimer.Stop(); $responseTimer.Stop(); Save-GuiSettings
-    if ($script:inputWriter) { $script:inputWriter.Dispose(); $script:inputWriter = $null }
-    if ($script:process) { try { $script:process.Kill() } catch { }; $script:process.Dispose() }
+    try { Save-GuiSettings } finally { Stop-GuiResources }
 })
 
 if ($Preview) {
@@ -2739,7 +2853,7 @@ if ($Preview) {
         [pscustomobject]@{ id='__companion__'; title='AlphaCode chat'; state='ready'; detail='Connect AlphaCode to start a live workspace'; saved=$false }
     ) })
 }
-$controls.Reply.Add_TextChanged({ Render-Conversation })
+$controls.Reply.Add_TextChanged({ Invoke-GuiCallback 'Reply.TextChanged' { Render-Conversation } })
 $controls.FindReply.Add_Click({ Open-ConversationSearch })
 $controls.CloseReplySearch.Add_Click({ Close-ConversationSearch })
 $controls.ReplySearch.Add_TextChanged({ $searchTimer.Stop(); $searchTimer.Start() })
@@ -2764,11 +2878,13 @@ $window.Add_ContentRendered({ Update-GuiLayout; $controls.Prompt.Focus() | Out-N
 $timer.Start()
 $window.ShowDialog() | Out-Null
 } catch {
-    $details = $_.Exception.ToString() + [Environment]::NewLine + $_.ScriptStackTrace
-    Write-GuiStartupFailure $details
-    [Console]::Error.WriteLine($details)
-    [Windows.MessageBox]::Show($_.Exception.Message, 'Could not open AlphaCode GUI', 'OK', 'Error') | Out-Null
+    Write-GuiStartupFailure $_
+    [Console]::Error.WriteLine('AlphaCode GUI failed. Redacted diagnostics are saved in LocalAppData/AlphaCode.')
+    [Windows.MessageBox]::Show('The desktop could not continue. Diagnostics were saved in LocalAppData/AlphaCode.', 'Could not open AlphaCode GUI', 'OK', 'Error') | Out-Null
+    throw
 } finally {
+    Stop-GuiResources
+    if ($window -and $dispatcherExceptionHandler) { $window.Dispatcher.remove_UnhandledException($dispatcherExceptionHandler) }
     try { $mutex.ReleaseMutex() } catch { }
     $mutex.Dispose()
 }

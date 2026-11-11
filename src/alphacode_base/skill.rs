@@ -325,16 +325,25 @@ impl SkillRegistry {
         // Load from ~/.alphacode/skills/ (alphacode's own global skills)
         if let Ok(alphacode_dir) = crate::storage::alphacode_dir() {
             let alphacode_skills = alphacode_dir.join("skills");
-            if alphacode_skills.exists() {
-                registry.load_from_dir(&alphacode_skills)?;
+            if alphacode_skills.exists()
+                && let Err(error) = registry.load_from_dir(&alphacode_skills)
+            {
+                crate::alphacode_logging::warn(&format!(
+                    "failed to load global skill directory {}: {error}",
+                    alphacode_skills.display()
+                ));
             }
         }
 
         // Load from ~/.agents/skills/ (shared cross-tool `.agents` convention)
         if let Ok(agents_skills) = crate::storage::user_home_path(".agents/skills")
             && agents_skills.exists()
+            && let Err(error) = registry.load_from_dir(&agents_skills)
         {
-            registry.load_from_dir(&agents_skills)?;
+            crate::alphacode_logging::warn(&format!(
+                "failed to load shared skill directory {}: {error}",
+                agents_skills.display()
+            ));
         }
         // Load skills from installed plugins (~/.alphacode/plugins/*/skills/)
         Self::load_plugin_skills_from_plugins_dir(&mut registry);
@@ -791,6 +800,10 @@ impl SkillRegistry {
             triggers,
             sources: _,
         } = frontmatter;
+        anyhow::ensure!(
+            frontmatter_name == name,
+            "embedded skill '{name}' declares a different name '{frontmatter_name}'"
+        );
         let allowed_tools =
             allowed_tools.map(|s| s.split(',').map(|t| t.trim().to_string()).collect());
         let search_text = build_skill_search_text(&frontmatter_name, &description, &body);
@@ -1755,6 +1768,14 @@ fn normalize_skill_search_text(text: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn embedded_skill_rejects_a_mismatched_declared_name() {
+        let body = "---\nname: recon-ops\ndescription: Test\n---\n\n# Recon";
+        let error = SkillRegistry::parse_embedded_skill("tui-desgin", body, &[]).unwrap_err();
+        assert!(error.to_string().contains("different name"));
+        assert!(SkillRegistry::parse_embedded_skill("recon-ops", body, &[]).is_ok());
+    }
 
     fn test_skill(name: &str, description: &str, content: &str) -> Skill {
         Skill {

@@ -415,19 +415,45 @@ pub fn launcher_dir() -> Result<PathBuf> {
                 .join("bin")
         };
 
-        // If the binary already exists under ~/.local/bin (e.g. installed via
-        // source build or an older installer), prefer that path so the update
-        // mechanism writes to the correct location.  Fall back to the
-        // standard %LOCALAPPDATA% path.
-        let user_bin = local_bin.join(binary_name());
-        if user_bin.exists() {
-            return Ok(local_bin);
-        }
-        Ok(local_data_bin)
+        let installed_bin = if let Ok(local) = std::env::var("LOCALAPPDATA") {
+            PathBuf::from(local)
+                .join("Programs")
+                .join("alphacode")
+                .join("bin")
+        } else {
+            home_dir()?
+                .join("AppData")
+                .join("Local")
+                .join("Programs")
+                .join("alphacode")
+                .join("bin")
+        };
+        Ok(select_windows_launcher_dir(
+            local_bin,
+            installed_bin,
+            local_data_bin,
+        ))
     }
     #[cfg(not(windows))]
     {
         Ok(home_dir()?.join(".local").join("bin"))
+    }
+}
+
+#[cfg(windows)]
+fn select_windows_launcher_dir(
+    local_bin: PathBuf,
+    installed_bin: PathBuf,
+    fallback: PathBuf,
+) -> PathBuf {
+    if local_bin.join(binary_name()).is_file() {
+        local_bin
+    } else if installed_bin.join(binary_name()).is_file() {
+        // Match the Windows installer's default rather than updating a
+        // different, non-PATH copy under LocalAppData\alphacode\bin.
+        installed_bin
+    } else {
+        fallback
     }
 }
 
@@ -442,6 +468,9 @@ fn update_launcher_symlink(target: &Path) -> Result<PathBuf> {
     if let Some(parent) = launcher.parent() {
         storage::ensure_dir(parent)?;
     }
+
+    #[cfg(windows)]
+    super::sync_desktop_host(target, &launcher)?;
 
     let temp = launcher
         .parent()
@@ -735,6 +764,21 @@ pub fn is_alphacode_repo(dir: &Path) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(windows)]
+    #[test]
+    fn windows_launcher_prefers_existing_installer_location() {
+        let temp = tempfile::tempdir().unwrap();
+        let local = temp.path().join("local-bin");
+        let installed = temp.path().join("Programs").join("alphacode").join("bin");
+        let fallback = temp.path().join("fallback");
+        std::fs::create_dir_all(&installed).unwrap();
+        std::fs::write(installed.join(binary_name()), b"fixture").unwrap();
+        assert_eq!(
+            select_windows_launcher_dir(local, installed.clone(), fallback),
+            installed
+        );
+    }
 
     fn repo_fixture(git_file: bool) -> tempfile::TempDir {
         let temp = tempfile::TempDir::new().expect("temp repo");

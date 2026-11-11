@@ -689,7 +689,12 @@ fn abbreviate_home(path: &str) -> String {
             return "~".to_string();
         }
         if let Some(rest) = path.strip_prefix(&home_str) {
-            return format!("~{}", rest);
+            if rest.starts_with('/') || rest.starts_with('\\') {
+                return format!("~{}", rest);
+            }
+            if home_str.ends_with('/') || home_str.ends_with('\\') {
+                return format!("~/{}", rest);
+            }
         }
     }
     path.to_string()

@@ -7,6 +7,16 @@ description: Engagement scope discipline — live IN-SCOPE / OUT-OF-SCOPE docume
 
 **An out-of-scope request is a failed engagement, no matter what you find.**
 
+The named bounty program is the target of a request to hunt that program.
+Its current policy may authorize researchers to test listed assets without
+owning them. Check the actual asset list, exclusions, methods and any invitation
+or account requirements; do not demand personal ownership or a separate letter
+just because the program is third-party. A separately offered user website is
+optional infrastructure, not a replacement for the program. If raw HTML is a
+JavaScript shell, try a rendered browser and official platform interfaces. If
+the authoritative scope remains unavailable, record the precise blocker and
+continue independent permitted work; do not invent assets or test unknown scope.
+
 ---
 
 ## 1. CREATE THE SCOPE FILE FIRST

@@ -28,6 +28,12 @@ $env:CARGO_TARGET_DIR = "C:\Users\or0to\AppData\Local\Temp\alphacode-target"
 
 When working in a shared checkout, inspect diffs before reverting or stashing; preserve other in-flight changes.
 
+## TUI regression checks
+
+- Keep Windows console reads independent of rendering and daemon work. Preserve the bounded event queue and event order. Never make ordinary typing wait for another key or a paste timer.
+- Measure input latency from the console reader through the frame flush so the result includes time waiting in the app's queue. Exercise Windows Terminal while idle, after selecting a model, and during streaming. Check tail latency as well as the median.
+- When changing visible TUI wording, update the buffer-level assertions in the same change and run the affected render tests. Verify CI on the exact tagged revision before publishing.
+
 ## Security and challenge work
 
 Use security tools only within the target and actions authorized by the user, challenge, or program scope. Read supplied challenge files and scope first, keep testing within that boundary, avoid unrelated data, and report evidence and limitations accurately.

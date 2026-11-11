@@ -22,9 +22,8 @@
 //! 3. The turn retries immediately on the new model — no artificial sleep, since
 //!    a different backend is exactly the remedy the backoff was standing in for.
 //!
-//! Once every pool member is quarantined the last resort is the original
-//! behaviour: fall back to sleeping, so a totally-down gateway still gets the
-//! bounded backoff rather than failing fast.
+//! Once every pool member is quarantined, no rejected route is retried until
+//! its cooldown expires.
 //!
 //! # Why it is invisible
 //!
@@ -169,9 +168,6 @@ impl RotationTrigger {
 #[derive(Debug, Clone, Copy)]
 struct Quarantine {
     until: Instant,
-    /// Why the model was quarantined. Retained so an `Unroutable` model can be
-    /// distinguished from a merely-busy one when the pool runs dry.
-    trigger: RotationTrigger,
 }
 
 /// Process-wide model quarantine map, keyed by model id.
@@ -335,7 +331,6 @@ pub fn quarantine_model(model: &str, trigger: RotationTrigger) {
         model.to_string(),
         Quarantine {
             until: Instant::now() + trigger.quarantine(),
-            trigger,
         },
     );
     crate::alphacode_base::logging::info(&format!(
@@ -403,72 +398,15 @@ pub fn should_rotate_for_provider(provider_name: &str, model: &str) -> bool {
 
 /// Pick the next usable model in the pool, given the one that just failed.
 ///
-/// Returns `None` when every alternative is quarantined, which tells the
-/// caller to fall back to plain backoff rather than failing the turn.
+/// Returns `None` when every alternative is quarantined.
 pub fn next_free_model(current: &str) -> Option<String> {
     let current = current.trim();
-    // Prune expired entries while we already hold the lock. Without this the map
-    // would grow for the life of the process and every lookup would scan
-    // tombstones for a long session.
+    let pool = effective_free_pool();
     let now = Instant::now();
-    let healthy: Vec<String> = {
-        let map = quarantine_map().lock().ok()?;
-        let mut map = map;
-        map.retain(|_, q| q.until > now);
-        map.keys()
-            .filter(|k| k.as_str() != current)
-            .cloned()
-            .collect()
-    };
-    let quarantined: Vec<String> = quarantine_map()
-        .lock()
-        .map(|map| {
-            map.iter()
-                .filter(|(_, q)| q.until > now)
-                .map(|(k, _)| k.clone())
-                .collect()
-        })
-        .unwrap_or_default();
-
-    // `healthy` is every currently-quarantined model. A model quarantined as
-    // `Unroutable` is not a candidate no matter how long the others are willing
-    // to wait: the gateway told us it has no endpoint for that id, so falling
-    // back to it just reproduces the same 404. This is the branch that stopped
-    // the reported thrash, where an unroutable id kept winning the
-    // soonest-to-expire race every few minutes and the session never settled on
-    // a working model.
-    let soonest_recoverable = |allow_unroutable: bool| {
-        let Ok(map) = quarantine_map().lock() else {
-            return None;
-        };
-        healthy
-            .iter()
-            .filter(|candidate| allow_unroutable || !is_quarantined_unroutable(candidate, &map))
-            // A missing entry sorts first via `now`; every real quarantine is in
-            // the future, so this picks whoever recovers soonest.
-            .min_by_key(|candidate| map.get(*candidate).map(|q| q.until).unwrap_or(now))
-            .cloned()
-    };
-
-    effective_free_pool()
-        .into_iter()
-        .find(|candidate| candidate != current && !quarantined.contains(candidate))
-        .or_else(|| soonest_recoverable(false))
-        // Genuinely nothing but unroutable ids left: prefer a non-unroutable
-        // pool member, and only then allow one back so the turn is not stalled
-        // forever by a pool the gateway has stopped serving.
-        .or_else(|| {
-            effective_free_pool()
-                .into_iter()
-                .find(|c| c != current && !quarantined.contains(c))
-        })
-        .or_else(|| soonest_recoverable(true))
-}
-
-/// Is this model's current quarantine an `Unroutable` one?
-fn is_quarantined_unroutable(model: &str, map: &HashMap<String, Quarantine>) -> bool {
-    map.get(model)
-        .is_some_and(|q| q.trigger == RotationTrigger::Unroutable)
+    let mut map = quarantine_map().lock().ok()?;
+    map.retain(|_, q| q.until > now);
+    pool.into_iter()
+        .find(|candidate| candidate != current && !map.contains_key(candidate))
 }
 
 /// Provider snapshot describing a rotation, for the UI event.
@@ -769,10 +707,22 @@ mod tests {
         quarantine_model(&alias, RotationTrigger::RateLimited);
         quarantine_model("synthetic/pool-b:free", RotationTrigger::Unroutable);
 
-        let next = next_free_model("synthetic/pool-b:free").expect("pool has members");
-        assert_ne!(
-            next, "synthetic/pool-b:free",
-            "the unroutable model must not be re-selected"
+        assert_eq!(next_free_model("synthetic/pool-b:free"), None);
+    }
+
+    #[test]
+    fn exhausted_pool_does_not_reuse_a_quarantined_route() {
+        let _guard = test_lock();
+        reset();
+        seed_pool(&["synthetic/pool-a:free", "synthetic/pool-b:free"]);
+        for model in effective_free_pool() {
+            quarantine_model(&model, RotationTrigger::RateLimited);
+        }
+        assert_eq!(next_free_model("synthetic/pool-a:free"), None);
+        clear_quarantine("synthetic/pool-b:free");
+        assert_eq!(
+            next_free_model("synthetic/pool-a:free").as_deref(),
+            Some("synthetic/pool-b:free")
         );
     }
 
@@ -797,8 +747,7 @@ mod tests {
         );
     }
 
-    /// A busy model is a legitimate fallback once nothing else is available;
-    /// only the *unroutable* signal suppresses a model.
+    /// A busy model is skipped while another route is available.
     #[test]
     fn a_busy_model_remains_a_valid_last_resort() {
         let _guard = test_lock();
