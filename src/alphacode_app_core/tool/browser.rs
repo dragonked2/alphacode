@@ -3605,7 +3605,7 @@ mod tests {
         assert!(first.unwrap_err().to_string().contains("unconfirmed"));
 
         let result = open_in_firefox(session, params, |action, params| {
-            std::future::ready((|| match action {
+            std::future::ready(match action {
                 "status" => Ok(json!({"nativePortOpenedAt": 10})),
                 "listTabs" => Ok(json!({"tabs":[{"tabId": 88, "url":marker}]})),
                 "navigate" => {
@@ -3614,7 +3614,7 @@ mod tests {
                     Ok(json!({"tab":{"tabId":88, "url":params["url"], "status":"complete"}}))
                 }
                 _ => panic!("Unexpected bridge action {action}"),
-            })())
+            })
         })
         .await
         .unwrap();

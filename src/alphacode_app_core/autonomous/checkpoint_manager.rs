@@ -365,7 +365,7 @@ mod tests {
         fs::write(mgr.checkpoints_dir.join(".tmp-checkpoint"), b"{").unwrap();
         let reopened = CheckpointManager::new(MemoryManager::new(dir.path()).unwrap()).unwrap();
         let indexed = reopened.memory.load_state().unwrap();
-        assert_eq!(indexed.checkpoints, [checkpoint.id.clone()]);
+        assert_eq!(indexed.checkpoints, std::slice::from_ref(&checkpoint.id));
         assert_eq!(indexed.statistics.checkpoints_created, 1);
         assert_eq!(reopened.latest().unwrap().unwrap().id, checkpoint.id);
 

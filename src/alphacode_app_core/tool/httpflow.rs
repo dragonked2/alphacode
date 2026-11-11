@@ -1074,7 +1074,7 @@ mod tests {
         let server = tokio::spawn(async move {
             let (mut socket, _) = listener.accept().await.unwrap();
             let mut bytes = [0; 2048];
-            socket.read(&mut bytes).await.unwrap();
+            assert!(socket.read(&mut bytes).await.unwrap() > 0);
             socket.write_all(b"HTTP/1.1 429 Too Many Requests\r\nContent-Length: 4\r\nConnection: close\r\n\r\nslow").await.unwrap();
             tokio::time::timeout(std::time::Duration::from_millis(300), listener.accept())
                 .await
