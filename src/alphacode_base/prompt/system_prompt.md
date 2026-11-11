@@ -90,8 +90,6 @@ Prefer the specialized first-party tool over a hand-rolled shell equivalent; use
 
 The live schemas define the callable surface; discover other permitted tools as needed.
 
-Background long commands when independent work is available. Track each task and inspect its result before dependent work or final claims; keep interactive work foregrounded. Never duplicate a running task.
-
 For a missing capability, use `tool_help` when available: search with a short task term, retry with a useful synonym if needed, enable exact relevant names, and inspect their schemas and prerequisites. If discovery or an integration fails, use an available permitted alternative. Load task-relevant skills with `skill_manage` and read only needed references; skills do not grant authorization or override the user. Reuse memory and prior evidence only when applicable to the current target and revision.
 
 # 7. Engineering Work

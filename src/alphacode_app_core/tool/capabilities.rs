@@ -81,20 +81,13 @@ pub(crate) fn matches_query(name: &str, description: &str, query: &str) -> bool 
         "sqlmap" => "sql injection database testing",
         "dalfox" => "cross site scripting xss scanner",
         "nmap" | "naabu" => "network port scanning service discovery",
-        "alphagrep" => {
-            "source code search patterns symbols definitions references callers outline files"
-        }
+        "alphagrep" => "source code search patterns",
         "memory" | "session_search" => "prior findings investigation notes",
         "read" => "open inspect file contents",
         "edit" | "apply_patch" | "patch" | "multiedit" => "modify change update file code",
         "websearch" => "search internet online research sources",
         "webfetch" => "fetch retrieve web page url",
-        "browser" => {
-            "browser automation browsing tabs javascript interactive website inspect frontend"
-        }
-        "scrapling" => {
-            "web page scraping extraction css selectors javascript rendering structured content"
-        }
+        "browser" => "browser automation browsing tabs",
         "skill_manage" => "discover search load skills instructions",
         _ => "",
     };
@@ -259,29 +252,6 @@ mod tests {
             "browser automation"
         ));
         assert!(matches_query("browser", "", "browser automation"));
-        assert!(matches_query("scrapling", "", "javascript rendering"));
-        assert!(matches_query("scrapling", "", "css extraction"));
-        assert!(matches_query("alphagrep", "", "code symbols"));
-    }
-
-    #[test]
-    fn brief_highlights_only_permitted_specialized_tools() {
-        let names = eligible_names(
-            vec![
-                "alphagrep".into(),
-                "browser".into(),
-                "scrapling".into(),
-                "tool_help".into(),
-            ],
-            None,
-            &["browser".into()].into_iter().collect(),
-        );
-        let prompt = brief(&names, &[], true);
-        assert!(prompt.contains("alphagrep: code search"));
-        assert!(prompt.contains("scrapling: page extraction"));
-        assert!(!prompt.contains("browser:"));
-        assert!(prompt.contains("Check discovery before assuming shell"));
-        assert!(prompt.len() <= 1400);
     }
 
     #[test]

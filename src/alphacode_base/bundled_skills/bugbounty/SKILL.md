@@ -96,16 +96,6 @@ Choose tools by their actual input, output and limits:
 | Does a known pattern merit investigation? | `nuclei` or a focused scanner | A lead requiring independent controlled validation |
 | What did we already learn? | `memory`, `session_search`, engagement artifacts | Prior context to verify against current scope and state |
 
-For an authorized initial HTTP comparison, `ctf_web_recon` accepts `url` and
-optional evidence-selected `paths` and `headers`; use it only if every default
-request (including its randomized missing path) and selected path is permitted.
-For a multi-step flow use `httpflow` with `action: "request"`, `url`, and a
-distinct `session` label per controlled actor. Preserve labels across requests;
-the tool keeps cookies in memory per agent session and origin, not across daemon
-restarts. On resume verify the existing session before re-authenticating. For a
-different origin or redirect, recheck policy and credentials before proceeding.
-Discover deferred schemas with `tool_help` and inspect actual prerequisites.
-
 Select the smallest useful set, pass only validated in-scope inputs, and keep
 request and concurrency limits shared across tools. Preserve raw output and
 provenance; distinguish partial results, errors and empty results. Prefer a

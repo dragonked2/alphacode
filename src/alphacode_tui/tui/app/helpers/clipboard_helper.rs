@@ -113,7 +113,7 @@ mod tests {
 /// Runtime ordering tests for issue #684. `copy_to_clipboard` itself is
 /// short-circuited under `cfg(test)` (it must never touch the developer's real
 /// clipboard), so these exercise the same fallback chain it runs, using stub
-/// helpers on a temporary PATH. That pins the property that actually matters:
+/// helpers in a temporary directory. That pins the property that actually matters:
 /// the first helper that takes ownership wins, and one that fails fast hands
 /// off to the next instead of reporting a false success.
 #[cfg(all(test, not(any(windows, target_os = "macos"))))]
@@ -124,24 +124,23 @@ mod ordering_tests {
 
     /// Same chain as the Linux arm of `copy_to_clipboard`, reporting which
     /// helper claimed the clipboard.
-    fn first_helper_that_wins() -> Option<&'static str> {
+    fn first_helper_that_wins(stubs: &StubPath) -> Option<&'static str> {
         for (program, args) in [
             ("wl-copy", &[][..]),
             ("xclip", &["-selection", "clipboard"][..]),
             ("xsel", &["--clipboard", "--input"][..]),
         ] {
-            if copy_via_clipboard_helper(program, args, "payload") {
+            let path = stubs.dir.path().join(program);
+            if copy_via_clipboard_helper(&path.to_string_lossy(), args, "payload") {
                 return Some(program);
             }
         }
         None
     }
 
-    /// Puts only the named stubs on PATH, so any helper not listed behaves as
-    /// if it is not installed.
+    /// Only named stubs exist in this directory; missing helpers fail to spawn.
     struct StubPath {
-        _dir: tempfile::TempDir,
-        prev: Option<std::ffi::OsString>,
+        dir: tempfile::TempDir,
     }
 
     impl StubPath {
@@ -156,18 +155,7 @@ mod ordering_tests {
                 std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755))
                     .expect("chmod stub");
             }
-            let prev = std::env::var_os("PATH");
-            crate::alphacode_core::env::set_var("PATH", dir.path());
-            Self { _dir: dir, prev }
-        }
-    }
-
-    impl Drop for StubPath {
-        fn drop(&mut self) {
-            match self.prev.take() {
-                Some(prev) => crate::alphacode_core::env::set_var("PATH", prev),
-                None => crate::alphacode_core::env::remove_var("PATH"),
-            }
+            Self { dir }
         }
     }
 
@@ -175,29 +163,26 @@ mod ordering_tests {
     /// that already worked.
     #[test]
     fn wayland_still_wins_when_wl_copy_works() {
-        let _lock = crate::storage::lock_test_env();
-        let _stubs = StubPath::with(&[("wl-copy", "cat > /dev/null; exit 0"), ("xclip", "exit 0")]);
-        assert_eq!(first_helper_that_wins(), Some("wl-copy"));
+        let stubs = StubPath::with(&[("wl-copy", "cat > /dev/null; exit 0"), ("xclip", "exit 0")]);
+        assert_eq!(first_helper_that_wins(&stubs), Some("wl-copy"));
     }
 
     /// The actual #684 scenario: no Wayland display, so wl-copy fails fast and
     /// xclip must take over instead of falling through to arboard.
     #[test]
     fn xclip_takes_over_when_wl_copy_fails() {
-        let _lock = crate::storage::lock_test_env();
-        let _stubs = StubPath::with(&[
+        let stubs = StubPath::with(&[
             ("wl-copy", "exit 1"),
             ("xclip", "cat > /dev/null; exit 0"),
             ("xsel", "exit 0"),
         ]);
-        assert_eq!(first_helper_that_wins(), Some("xclip"));
+        assert_eq!(first_helper_that_wins(&stubs), Some("xclip"));
     }
 
     #[test]
     fn xsel_takes_over_when_wl_copy_and_xclip_are_missing() {
-        let _lock = crate::storage::lock_test_env();
-        let _stubs = StubPath::with(&[("xsel", "cat > /dev/null; exit 0")]);
-        assert_eq!(first_helper_that_wins(), Some("xsel"));
+        let stubs = StubPath::with(&[("xsel", "cat > /dev/null; exit 0")]);
+        assert_eq!(first_helper_that_wins(&stubs), Some("xsel"));
     }
 
     /// With no working helper the chain must report failure, so the real
@@ -205,12 +190,11 @@ mod ordering_tests {
     /// showing a false "Copied" toast.
     #[test]
     fn no_working_helper_reports_failure_so_later_fallbacks_run() {
-        let _lock = crate::storage::lock_test_env();
-        let _stubs = StubPath::with(&[
+        let stubs = StubPath::with(&[
             ("wl-copy", "exit 1"),
             ("xclip", "exit 1"),
             ("xsel", "exit 1"),
         ]);
-        assert_eq!(first_helper_that_wins(), None);
+        assert_eq!(first_helper_that_wins(&stubs), None);
     }
 }
