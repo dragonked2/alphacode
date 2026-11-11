@@ -82,6 +82,7 @@ struct SearchResult {
 #[derive(Clone, Copy)]
 struct BingSearchOptions<'a> {
     market: &'a str,
+    api_url: &'a str,
     configured_api_key: Option<&'a str>,
     api_key_env: &'a str,
 }
@@ -176,6 +177,7 @@ impl Tool for WebSearchTool {
                     num_results,
                     BingSearchOptions {
                         market,
+                        api_url: &config.websearch.bing_api_url,
                         configured_api_key: config.websearch.bing_api_key.as_deref(),
                         api_key_env: &config.websearch.bing_api_key_env,
                     },
@@ -207,7 +209,8 @@ impl Tool for WebSearchTool {
                  or IP reputation (common on Linux/servers). Workarounds:\n\
                  - Point at a SearXNG instance: set `websearch.searxng_url` (or \
                  ALPHACODE_SEARXNG_URL) and use engine \"searxng\".\n\
-                 - Or provide a Bing Search API key via ALPHACODE_BING_API_KEY.",
+                 - Or configure a Bing-compatible API URL and key with \
+                 ALPHACODE_BING_API_URL and ALPHACODE_BING_API_KEY (Microsoft retired its Bing API).",
                 params.query
             )));
         }
@@ -374,14 +377,20 @@ impl WebSearchTool {
                 .filter(|key| !key.trim().is_empty())
             {
                 return self
-                    .search_bing_api(query, num_results, options.market, api_key)
+                    .search_bing_api(query, num_results, options.market, api_key, options.api_url)
                     .await;
             }
             if let Ok(api_key) = std::env::var(options.api_key_env)
                 && !api_key.trim().is_empty()
             {
                 return self
-                    .search_bing_api(query, num_results, options.market, &api_key)
+                    .search_bing_api(
+                        query,
+                        num_results,
+                        options.market,
+                        &api_key,
+                        options.api_url,
+                    )
                     .await;
             }
         }
@@ -396,10 +405,11 @@ impl WebSearchTool {
         num_results: usize,
         market: &str,
         api_key: &str,
+        api_url: &str,
     ) -> Result<Vec<SearchResult>> {
         let response = self
             .client
-            .get("https://api.bing.microsoft.com/v7.0/search")
+            .get(api_url)
             .query(&[
                 ("q", query),
                 ("count", &num_results.to_string()),
@@ -812,6 +822,18 @@ fn truncate_search_snippet(snippet: &str, max_chars: usize) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn bing_api_url_defaults_and_deserializes() {
+        let default = crate::config::WebSearchConfig::default();
+        assert_eq!(
+            default.bing_api_url,
+            "https://api.bing.microsoft.com/v7.0/search"
+        );
+        let configured: crate::config::WebSearchConfig =
+            toml::from_str("bing_api_url = \"https://example.com/v7.0/search\"").unwrap();
+        assert_eq!(configured.bing_api_url, "https://example.com/v7.0/search");
+    }
 
     #[test]
     fn parses_bing_html_results() {

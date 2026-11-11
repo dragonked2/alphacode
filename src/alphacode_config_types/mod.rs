@@ -1260,6 +1260,8 @@ pub struct WebSearchConfig {
     pub bing_api_key: Option<String>,
     /// Environment variable containing the Bing API key.
     pub bing_api_key_env: String,
+    /// URL of a Bing v7-compatible search API. The original Microsoft API is retired.
+    pub bing_api_url: String,
     /// Bing market, e.g. "en-US" or "zh-CN".
     pub bing_market: String,
     /// Base URL of a SearXNG instance (e.g. "https://searx.example.org"), used
@@ -1277,6 +1279,7 @@ impl Default for WebSearchConfig {
             fallback_engines: vec![WebSearchEngine::Bing],
             bing_api_key: None,
             bing_api_key_env: "ALPHACODE_BING_API_KEY".to_string(),
+            bing_api_url: "https://api.bing.microsoft.com/v7.0/search".to_string(),
             bing_market: "en-US".to_string(),
             searxng_url: None,
             searxng_url_env: "ALPHACODE_SEARXNG_URL".to_string(),

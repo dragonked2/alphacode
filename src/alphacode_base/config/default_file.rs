@@ -326,6 +326,7 @@ fallback_engines = ["bing"]
 # Fallback Bing searches intentionally use keyless HTML search.
 # bing_api_key_env = "ALPHACODE_BING_API_KEY"
 # bing_api_key = ""
+# bing_api_url = "https://bing-compatible.example.com/v7.0/search"
 # Bing market/region, for example "en-US" or "zh-CN".
 bing_market = "en-US"
 # SearXNG instance for the "searxng" engine. On some hosts (commonly Linux),

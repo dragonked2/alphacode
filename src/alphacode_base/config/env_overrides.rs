@@ -494,6 +494,11 @@ impl Config {
         {
             self.websearch.bing_api_key_env = v;
         }
+        if let Ok(v) = std::env::var("ALPHACODE_BING_API_URL")
+            && !v.trim().is_empty()
+        {
+            self.websearch.bing_api_url = v;
+        }
         if let Ok(v) = std::env::var("ALPHACODE_BING_MARKET")
             && !v.trim().is_empty()
         {

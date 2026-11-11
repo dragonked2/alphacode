@@ -4,6 +4,13 @@ All notable changes to Alphacode are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project
 adheres to [Semantic Versioning](https://semver.org/).
 
+## [Unreleased]
+
+### Added
+
+- Configure a Bing-compatible search API with `websearch.bing_api_url` or
+  `ALPHACODE_BING_API_URL`. Microsoft retired its original Bing Search API.
+
 ## [1.0.100] - 2026-11-10
 
 ### Fixed
