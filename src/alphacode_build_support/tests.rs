@@ -254,6 +254,25 @@ fn launcher_dir_uses_sandbox_bin_when_alphacode_home_is_set() {
 }
 
 #[test]
+fn test_launcher_guard_rejects_real_install_paths() {
+    let outside = std::env::temp_dir()
+        .canonicalize()
+        .unwrap()
+        .parent()
+        .unwrap()
+        .join("alphacode-real-install")
+        .join(binary_name());
+    assert!(super::paths::ensure_test_launcher_is_temporary(&outside).is_err());
+    let temp = tempfile::tempdir().unwrap();
+    assert!(
+        super::paths::ensure_test_launcher_is_temporary(
+            &temp.path().join("bin").join(binary_name())
+        )
+        .is_ok()
+    );
+}
+
+#[test]
 fn update_launcher_symlink_stays_inside_sandbox_home() {
     with_temp_alphacode_home(|| {
         let version = "sandbox-current";
