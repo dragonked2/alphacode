@@ -84,6 +84,42 @@ Each row suggests a hypothesis and initial probe. A single anomalous response
 is insufficient: pair it with a valid baseline, a discriminating negative control,
 and an observed security consequence. Apply the program request budget.
 
+For any class, record applicability and define the protected value or state,
+the allowed actor, a benign explanation, a working positive control, and the
+negative control before testing. Reproduce from fresh state or a controlled
+fixture. A test that cannot distinguish the hypotheses stays inconclusive.
+Confirm only the demonstrated effect. If a stronger impact hypothesis is
+relevant and permitted, test the missing prerequisite with the smallest safe
+experiment. Stop once scope, authorization, or necessity ends.
+
+Use the relevant row as a verification starting point. Individual classes can
+require additional checks from their specialized skill.
+
+| Classes | Controls and effect required |
+| --- | --- |
+| Authentication bypass, password policy, MFA bypass, OTP replay, password reset poisoning, account enumeration | Compare valid, invalid, expired, and absent credentials on owned accounts. Demonstrate a protected operation or actual account-state change. For enumeration, use known existing and nonexistent identities with repeated comparisons. |
+| Session fixation, session race, session revocation, cookie scope, token reuse | Establish independent cookie jars. Verify rotation and revocation by replaying the pre-change credential against a protected operation after the change. A cookie or header difference alone establishes configuration. |
+| JWT verification, OAuth code substitution, OAuth redirect binding, SAML signature wrapping, identity federation | Pair a genuine assertion with a deliberately invalid or differently bound assertion. Verify the relying party grants access as the unintended identity. An accepted redirect or parser response is intermediate evidence. |
+| IDOR/BOLA, BFLA, missing authorization, broken access control, privilege escalation, cross-tenant access, GraphQL authorization | Use independent entitled and unentitled actors and owned fixtures. Compare same-object reads or read back settled writes. Check missing-object and public-resource controls before attributing effect. |
+| Paywall bypass, sensitive data exposure, information disclosure, excessive data exposure, insecure storage, secret leakage | Identify the exact private value and establish its classification. Compare complete public and entitled captures. Verify secret validity only through a permitted minimal check. Counts, redaction markers and placeholders cannot prove disclosure. |
+| SQL injection, NoSQL injection, LDAP injection, XPath injection, GraphQL injection, expression injection | Pair true, false and benign cases with one changed input. Recover a harmless known fixture or demonstrate controlled interpreter behavior. Parser errors and timings without controls are leads. |
+| OS command injection, SSTI, template injection, ESI injection, insecure deserialization | Demonstrate evaluation in the intended backend using a harmless result with a known prediction and a literal negative control. Reflection, application errors and unsafe-looking code alone do not establish execution. |
+| Reflected XSS, stored XSS, DOM XSS, HTML injection, DOM clobbering, postMessage misuse, CSP bypass | Verify the browser actually reaches the relevant sink under the target origin and policy, with harmless evidence from a controlled account. Distinguish markup, script execution and an independently meaningful effect. |
+| CSRF, client-side request forgery, clickjacking, CORS misconfiguration, cross-site WebSocket hijacking | Use a real browser and controlled origins. Verify victim credentials and settled mutation, sensitive read, or unintended privileged interaction. An OPTIONS response, frame render or successful handshake is intermediate evidence. |
+| SSRF, blind SSRF, XXE, unsafe URL fetching, DNS rebinding | Correlate a unique nonce with an authorized receiver and negative controls. Establish who fetched it and what response or boundary was reached. Separate DNS resolution, HTTP fetch, response access and internal impact. |
+| Path traversal, LFI, arbitrary file read, unrestricted upload, symlink attacks, filesystem races | Use a known permitted fixture and verify its bytes or a controlled filesystem effect outside the intended boundary. An accepted filename, error path or uploaded MIME type alone is insufficient. |
+| HTTP request smuggling, request desync, response splitting, CRLF injection, host header injection, open redirects | Use an isolated connection or owned receiver. Verify how the relevant downstream component parsed the boundary or actual redirect destination. Compare an inert input and exclude normal proxy rewriting. |
+| Cache poisoning, cache deception, cache key confusion, cross-user caching | Distinguish origin from cache. Verify independent retrieval through the intended cache key with a clean client and owned canary. Verify scope and avoid affecting shared production users. |
+| Business logic, payment manipulation, workflow bypass, coupon abuse, mass assignment, race conditions, idempotency bypass | Record initial and settled state, then compare ordinary and modified workflows on owned fixtures. Separate duplicate responses from duplicate durable effects. Use bounded parallelism and count independent trials. |
+| Rate-limit bypass, API abuse, pagination abuse, filter bypass, encoding bypass, WAF bypass, Unicode normalization | Establish the intended control, its actual key or normalization boundary, and the consequence downstream. Changing a status, passing a filter or seeing no 429 in a small sample is insufficient. |
+| Buffer overflow, integer overflow, format string, use-after-free, double free, uninitialized memory | Reproduce with a minimized local or authorized input, a clean negative run and sanitizer or debugger evidence. Separate crashes, out-of-bounds access, controlled memory effects and exploitability. |
+| Prototype pollution, dependency confusion, supply-chain substitution, vulnerable components, build or artifact tampering | Trace the controlled value to a live consumer in an isolated fixture. A polluted property, package name, manifest version, or scanner signature does not prove code executed or an affected path is reachable. |
+| Subdomain takeover, cloud bucket exposure, IAM privilege escalation, Kubernetes RBAC, container escape, network segmentation | Verify asset binding and current ownership, effective permissions or crossing of the intended isolation boundary with owned resources. A dangling DNS record, configuration banner or advisory is a lead. |
+| Weak cryptography, signature replay, nonce reuse, downgrade, key exposure, hardcoded credentials | Compare valid and tampered controls with the same inputs and environment. Demonstrate actual recovery, forgery, replay, or weaker negotiation. Document prerequisite access and separate algorithm presence from exploitable use. |
+| Logging gaps, insufficient monitoring, security misconfiguration, missing headers, error disclosure | Demonstrate the applicable security requirement and observed consequence with an authorized control. Separate defense-in-depth recommendations and program-eligible findings. |
+| Reentrancy, oracle manipulation, ERC-4626 rounding, accounting desynchronization, proxy initialization, flash-loan paths, smart-contract access control | Use a deterministic local or authorized fork, pinned state and a legitimate control. Assert before/after balances, authority, or invariant failure. Include costs, liquidity and settlement when claiming economic impact. |
+| Prompt injection, tool injection, agent authorization bypass, model data leakage, RAG poisoning | Separate model text from tool execution or actual disclosure. Verify the unauthorized action, protected fixture value, or durable change, and compare trusted and untrusted control inputs. |
+
 ### Authentication
 ```
 Claim "valid session required"   → drop the Authorization header entirely

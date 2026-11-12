@@ -170,7 +170,7 @@ pub fn ensure_browser_session(session_id: &str) -> Option<String> {
 }
 
 fn browser_supports_bind_window(bin: &std::path::Path) -> bool {
-    std::process::Command::new(bin)
+    crate::alphacode_base::platform::helper_command(bin)
         .args(["session", "start", "--help"])
         .stdin(std::process::Stdio::null())
         .output()
@@ -190,7 +190,7 @@ fn spawn_browser_session(
     if bind_window {
         args.push("--bind-window");
     }
-    let result = std::process::Command::new(bin)
+    let result = crate::alphacode_base::platform::helper_command(bin)
         .args(&args)
         .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::piped())
@@ -754,7 +754,7 @@ fn register_windows_native_host_manifest(
     host_name: &str,
 ) -> Result<()> {
     let key = format!(r"HKCU\Software\Mozilla\NativeMessagingHosts\{}", host_name);
-    let output = std::process::Command::new("reg")
+    let output = crate::alphacode_base::platform::helper_command("reg")
         .args([
             "add",
             &key,
@@ -833,6 +833,7 @@ async fn run_browser_cli_capped(
     timeout: std::time::Duration,
 ) -> Result<Option<std::process::Output>> {
     let mut cmd = tokio::process::Command::new(bin);
+    crate::alphacode_base::platform::hide_helper_console(cmd.as_std_mut());
     cmd.args(args).kill_on_drop(true);
 
     match tokio::time::timeout(timeout, cmd.output()).await {

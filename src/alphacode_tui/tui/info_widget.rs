@@ -650,6 +650,8 @@ pub struct InfoWidgetData {
     pub native_compaction_threshold_tokens: Option<usize>,
     pub session_count: Option<usize>,
     pub session_name: Option<String>,
+    /// Running build shown in the pinned Session title.
+    pub session_version: Option<String>,
     /// The user's active goal for this session, shown in the Session card in
     /// place of the raw session identity.
     pub goal: Option<String>,
@@ -1535,12 +1537,23 @@ fn render_single_widget(frame: &mut Frame, placement: &WidgetPlacement, data: &I
     match placement.kind {
         WidgetKind::Overview => {
             block = block.padding(Padding::horizontal(1));
-            // The session widget anchors the panel, so it carries the product
-            // mark: " ◆ AlphaCode · Session ".
-            block = block.title(Span::styled(
-                crate::alphacode_brand::section_title("Session"),
-                title_style(Role::HeaderIcon),
-            ));
+            let available = usize::from(rect.width.saturating_sub(2))
+                .saturating_sub(close_button_rect(rect).map_or(0, |button| button.width as usize));
+            let title = if let Some(version) = &data.session_version {
+                let section = format!("Session · {version}");
+                let branded = crate::alphacode_brand::section_title(&section);
+                let compact = format!(" {section} ");
+                if branded.width() <= available {
+                    branded
+                } else if compact.width() <= available {
+                    compact
+                } else {
+                    truncate_smart(&format!(" {version} "), available)
+                }
+            } else {
+                crate::alphacode_brand::section_title("Session")
+            };
+            block = block.title(Span::styled(title, title_style(Role::HeaderIcon)));
         }
         WidgetKind::WorkspaceMap => {
             block = block.title(Span::styled(
@@ -2677,7 +2690,8 @@ mod pinned_tests {
 
     #[test]
     fn rendered_widget_draws_the_close_button_where_it_is_hit_tested() {
-        let data = session_data();
+        let mut data = session_data();
+        data.session_version = Some("v1.2.3-dev".into());
         let placements = stack_pinned(Rect::new(0, 0, PINNED_COLUMN_WIDTH, 20), &data);
         let first = placements.first().expect("overview placed").rect;
         let button = close_button_rect(first).expect("wide enough for [x]");
@@ -2691,9 +2705,32 @@ mod pinned_tests {
             })
             .unwrap();
         let buffer = terminal.backend().buffer();
+        let title: String = (first.x..button.x)
+            .map(|x| buffer[(x, first.y)].symbol())
+            .collect();
+        assert!(title.contains("Session · v1.2.3-dev"), "{title}");
         let drawn: String = (button.x..button.right())
             .map(|x| buffer[(x, button.y)].symbol().to_string())
             .collect();
         assert_eq!(drawn, CLOSE_BUTTON);
+    }
+
+    #[test]
+    fn narrow_session_widget_preserves_the_version_in_its_title() {
+        let mut data = session_data();
+        data.session_version = Some("v1.2.3-dev".into());
+        let placement = WidgetPlacement {
+            kind: WidgetKind::Overview,
+            rect: Rect::new(0, 0, 20, 8),
+            side: Side::Right,
+        };
+        let mut terminal = Terminal::new(TestBackend::new(20, 8)).unwrap();
+        terminal
+            .draw(|frame| render_single_widget(frame, &placement, &data))
+            .unwrap();
+        let buffer = terminal.backend().buffer();
+        let title: String = (0..20).map(|x| buffer[(x, 0)].symbol()).collect();
+        assert!(title.contains("v1.2.3-dev"), "{title}");
+        assert!(title.contains(CLOSE_BUTTON), "{title}");
     }
 }

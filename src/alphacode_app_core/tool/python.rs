@@ -49,6 +49,7 @@ pub async fn replacement_for_missing_command(name: &str) -> Option<PathBuf> {
 
 async fn interpreter_works(candidate: impl AsRef<std::ffi::OsStr>) -> bool {
     let mut command = tokio::process::Command::new(candidate);
+    crate::alphacode_base::platform::hide_helper_console(command.as_std_mut());
     command
         .arg("--version")
         .kill_on_drop(true)

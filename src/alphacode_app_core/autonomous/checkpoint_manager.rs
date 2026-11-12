@@ -316,7 +316,7 @@ fn trigger_label(t: CheckpointTrigger) -> &'static str {
 }
 
 fn read_git_commit() -> Option<String> {
-    std::process::Command::new("git")
+    crate::alphacode_base::platform::helper_command("git")
         .args(["rev-parse", "HEAD"])
         .output()
         .ok()

@@ -1442,8 +1442,30 @@ pub(crate) fn clear_ambient_info_cache_for_tests() {
 
 #[cfg(test)]
 mod tests {
-    use super::ctrl_bracket_fallback_to_esc;
+    use super::{ctrl_bracket_fallback_to_esc, parse_git_info};
     use crossterm::event::{KeyCode, KeyModifiers};
+
+    #[test]
+    fn git_status_refresh_reads_branch_tracking_and_changes_together() {
+        let info = parse_git_info(
+            "## feature...origin/feature [ahead 2, behind 3]\r\nMM src/main.rs\r\n?? new file\r\n",
+        )
+        .unwrap();
+        assert_eq!(info.branch, "feature");
+        assert_eq!((info.ahead, info.behind), (2, 3));
+        assert_eq!((info.modified, info.staged, info.untracked), (1, 1, 1));
+        assert_eq!(info.dirty_files, ["src/main.rs", "new file"]);
+        assert_eq!(
+            parse_git_info("## HEAD (no branch)\n").unwrap().branch,
+            "HEAD"
+        );
+        assert_eq!(
+            parse_git_info("## No commits yet on main\n")
+                .unwrap()
+                .branch,
+            "main"
+        );
+    }
 
     /// Ctrl+5 is the "jump to the 5th most recent prompt" chord, so the legacy
     /// macOS key-encoding fallback must not rewrite it.
@@ -1505,87 +1527,71 @@ pub(crate) fn format_countdown_until(target: chrono::DateTime<chrono::Utc>) -> S
 }
 
 fn gather_git_info_inner() -> Option<GitInfo> {
-    use std::process::Command;
-
-    let in_repo = Command::new("git")
-        .args(["rev-parse", "--is-inside-work-tree"])
+    let output = crate::alphacode_base::platform::helper_command("git")
+        .args([
+            "--no-optional-locks",
+            "status",
+            "--porcelain=v1",
+            "--branch",
+            "--ahead-behind",
+        ])
+        .env("LC_ALL", "C")
         .output()
-        .ok()
-        .map(|o| o.status.success())
-        .unwrap_or(false);
-
-    if !in_repo {
+        .ok()?;
+    if !output.status.success() {
         return None;
     }
+    parse_git_info(&String::from_utf8_lossy(&output.stdout))
+}
 
-    let branch = Command::new("git")
-        .args(["branch", "--show-current"])
-        .output()
-        .ok()
-        .and_then(|o| {
-            if o.status.success() {
-                let b = String::from_utf8_lossy(&o.stdout).trim().to_string();
-                if b.is_empty() { None } else { Some(b) }
-            } else {
-                None
+fn parse_git_info(status: &str) -> Option<GitInfo> {
+    let mut lines = status.lines();
+    let header = lines.next()?.strip_prefix("## ")?;
+    let (branch, tracking) = header.split_once("...").unwrap_or((header, ""));
+    let branch = branch.strip_prefix("No commits yet on ").unwrap_or(branch);
+    let branch = if branch == "HEAD (no branch)" {
+        "HEAD"
+    } else {
+        branch
+    }
+    .to_string();
+    let mut ahead = 0;
+    let mut behind = 0;
+    if let Some((_, summary)) = tracking.split_once(" [")
+        && let Some(summary) = summary.strip_suffix(']')
+    {
+        for field in summary.split(", ") {
+            if let Some(count) = field.strip_prefix("ahead ") {
+                ahead = count.parse().unwrap_or(0);
+            } else if let Some(count) = field.strip_prefix("behind ") {
+                behind = count.parse().unwrap_or(0);
             }
-        })
-        .unwrap_or_else(|| "HEAD".to_string());
+        }
+    }
 
     let mut modified = 0;
     let mut staged = 0;
     let mut untracked = 0;
     let mut dirty_files = Vec::new();
 
-    if let Ok(output) = Command::new("git").args(["status", "--porcelain"]).output()
-        && output.status.success()
-    {
-        let status = String::from_utf8_lossy(&output.stdout);
-        for line in status.lines() {
-            if line.len() < 3 {
-                continue;
-            }
-            let index_status = line.as_bytes()[0];
-            let worktree_status = line.as_bytes()[1];
-            let file_path = line[3..].to_string();
+    for line in lines {
+        let Some(file_path) = line.get(3..) else {
+            continue;
+        };
+        let [index_status, worktree_status, ..] = line.as_bytes() else {
+            continue;
+        };
+        if *index_status == b'?' {
+            untracked += 1;
+        } else {
+            staged += usize::from(*index_status != b' ');
+            modified += usize::from(*worktree_status != b' ' && *worktree_status != b'?');
+        }
 
-            if index_status == b'?' {
-                untracked += 1;
-            } else {
-                if index_status != b' ' && index_status != b'?' {
-                    staged += 1;
-                }
-                if worktree_status != b' ' && worktree_status != b'?' {
-                    modified += 1;
-                }
-            }
-
-            if dirty_files.len() < 10 {
-                dirty_files.push(file_path);
-            }
+        if dirty_files.len() < 10 {
+            dirty_files.push(file_path.to_string());
         }
     }
-
-    let (ahead, behind) = Command::new("git")
-        .args(["rev-list", "--left-right", "--count", "HEAD...@{upstream}"])
-        .output()
-        .ok()
-        .and_then(|o| {
-            if o.status.success() {
-                let text = String::from_utf8_lossy(&o.stdout).trim().to_string();
-                let parts: Vec<&str> = text.split('\t').collect();
-                if parts.len() == 2 {
-                    let a = parts[0].parse::<usize>().unwrap_or(0);
-                    let b = parts[1].parse::<usize>().unwrap_or(0);
-                    Some((a, b))
-                } else {
-                    None
-                }
-            } else {
-                None
-            }
-        })
-        .unwrap_or((0, 0));
 
     Some(GitInfo {
         branch,

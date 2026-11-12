@@ -1,6 +1,74 @@
 use super::Agent;
 use crate::alphacode_app_core::logging;
 use crate::alphacode_app_core::message::{ContentBlock, Message, Role, ToolDefinition};
+use crate::alphacode_security_core::skill_router::SkillRouter;
+
+fn security_request(text: &str) -> bool {
+    let lower = text.to_ascii_lowercase();
+    [
+        "bug bounty",
+        "bugbounty",
+        "hackerone",
+        "bugcrowd",
+        "intigriti",
+        "security audit",
+        "security review",
+        "security assessment",
+        "vulnerability",
+        "vulnerabilities",
+        "pentest",
+        "penetration test",
+    ]
+    .iter()
+    .any(|term| lower.contains(term))
+}
+
+pub(super) fn adaptive_tool_query(task: &str, observed_node_stack: bool) -> String {
+    let lower = task.to_ascii_lowercase();
+    let ctf = super::challenge_context::is_ctf_request(task);
+    let web = observed_node_stack
+        || SkillRouter::is_nodejs_stack(task)
+        || ["http://", "https://", "web app", "api", "endpoint"]
+            .iter()
+            .any(|term| lower.contains(term));
+    if web && ctf {
+        format!("{task}\nctf_web_recon httpflow")
+    } else if web && security_request(task) {
+        format!("{task}\nhttpflow")
+    } else {
+        task.to_owned()
+    }
+}
+
+fn node_project(path: &std::path::Path) -> bool {
+    use std::io::Read as _;
+
+    const LIMIT: u64 = 64 * 1024;
+    let Ok(file) = std::fs::File::open(path.join("package.json")) else {
+        return false;
+    };
+    if !file
+        .metadata()
+        .is_ok_and(|metadata| metadata.is_file() && metadata.len() <= LIMIT)
+    {
+        return false;
+    }
+    let mut bytes = Vec::new();
+    if file.take(LIMIT + 1).read_to_end(&mut bytes).is_err() {
+        return false;
+    }
+    let Ok(manifest) = serde_json::from_slice::<serde_json::Value>(&bytes) else {
+        return false;
+    };
+    ["dependencies", "devDependencies", "optionalDependencies"]
+        .iter()
+        .filter_map(|key| manifest.get(key).and_then(serde_json::Value::as_object))
+        .any(|dependencies| {
+            ["next", "express", "fastify", "koa", "@nestjs/core"]
+                .iter()
+                .any(|package| dependencies.contains_key(*package))
+        })
+}
 
 /// Free-function for probe-burst detection: `true` when the tool call looks
 /// like an outbound network probe (HTTP request or a recon/attack binary).
@@ -77,11 +145,170 @@ fn probe_burst_reminder(tool_calls: &[(String, String)]) -> Option<String> {
     Some(reminder)
 }
 
+/// Treat headers as routing hints. They never confer target authorization
+/// or establish that a framework or vulnerability is present.
+pub(crate) fn observed_node_stack(
+    messages: &[crate::alphacode_session_types::StoredMessage],
+) -> bool {
+    let mut calls = std::collections::HashMap::new();
+    for message in &messages[messages.len().saturating_sub(24)..] {
+        for block in &message.content {
+            match block {
+                ContentBlock::ToolUse {
+                    id, name, input, ..
+                } if matches!(name.as_str(), "httpflow" | "ctf_web_recon") => {
+                    calls.insert(id.as_str(), (name.as_str(), input));
+                }
+                ContentBlock::ToolResult {
+                    tool_use_id,
+                    content,
+                    is_error,
+                } if !is_error.unwrap_or(false) && content.len() <= 64 * 1024 => {
+                    match calls.remove(tool_use_id.as_str()) {
+                        Some(("httpflow", input)) => {
+                            use crate::alphacode_security_core::proof::HttpExchange;
+                            if HttpExchange::parse_http_transcript("httpflow", input, content)
+                                .is_some_and(|exchange| {
+                                    exchange.response_headers.iter().any(|(key, value)| {
+                                        key.eq_ignore_ascii_case("x-powered-by")
+                                            && SkillRouter::is_nodejs_stack(value)
+                                    })
+                                })
+                            {
+                                return true;
+                            }
+                        }
+                        Some(("ctf_web_recon", _)) => {
+                            if let Ok(report) = serde_json::from_str::<serde_json::Value>(content)
+                                && report["requests"].as_array().is_some_and(|rows| {
+                                    rows.iter().any(|row| {
+                                        row["headers"]["x-powered-by"]
+                                            .as_str()
+                                            .is_some_and(SkillRouter::is_nodejs_stack)
+                                    })
+                                })
+                            {
+                                return true;
+                            }
+                        }
+                        _ => {}
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+    false
+}
+
+/// Resolve guidance from the current task, engagement, and stack evidence.
+pub(crate) fn routed_skill_context(
+    skills: &crate::skill::SkillRegistry,
+    session: &crate::session::Session,
+    active_skill: Option<&str>,
+    observed_node_stack: bool,
+) -> (String, String) {
+    let task = latest_task_text(&session.messages).unwrap_or_default();
+    let selected = active_skill
+        .map(str::to_owned)
+        .or_else(|| skills.find_auto_invoke_match(&task));
+    let mut selected_skills = Vec::new();
+    if let Some(name) = selected.as_deref() {
+        selected_skills.push(name);
+    }
+
+    let ctf_requested = active_skill.is_some_and(|name| matches!(name, "ctf" | "ctf-workflow"))
+        || super::challenge_context::is_ctf_request(&task);
+    let research_dir = crate::tool::research_ledger_relative_dir(&session.id);
+    let ledger_dir = session
+        .working_dir
+        .as_deref()
+        .map(|directory| std::path::Path::new(directory).join(&research_dir));
+    let ledger = ledger_dir
+        .as_deref()
+        .and_then(super::challenge_context::ledger_context);
+    let hunt_ledger = ledger_dir
+        .as_deref()
+        .and_then(super::challenge_context::hunt_ledger_context);
+    let ctf = ctf_requested || ledger.is_some();
+    let security = ctf
+        || hunt_ledger.is_some()
+        || security_request(&task)
+        || selected
+            .as_deref()
+            .is_some_and(|name| matches!(name, "bugbounty" | "vuln-hunter" | "nodejs-security"))
+        || crate::tool::scope::session_scope_policy(&session.id)
+            .is_some_and(|policy| !policy.in_scope.is_empty());
+    if security {
+        let workflow = if ctf { "ctf-workflow" } else { "bugbounty" };
+        if !selected_skills.contains(&workflow) {
+            selected_skills.push(workflow);
+        }
+        if !selected_skills.contains(&"nodejs-security")
+            && (observed_node_stack
+                || SkillRouter::is_nodejs_stack(&task)
+                || session
+                    .working_dir
+                    .as_deref()
+                    .is_some_and(|path| node_project(std::path::Path::new(path))))
+        {
+            selected_skills.push("nodejs-security");
+        }
+    }
+    let mut skill_prompt = selected_skills
+        .into_iter()
+        .filter_map(|name| skills.get(name))
+        .map(|skill| skill.get_prompt())
+        .collect::<Vec<_>>()
+        .join("\n\n");
+
+    // Bundled workflows refer to the legacy project-wide filenames. Bind
+    // those references to this session without rewriting users' files.
+    if security {
+        skill_prompt = crate::tool::bind_research_ledger_paths(&skill_prompt, &session.id);
+        skill_prompt.push_str(
+            "\n\nChoose skills, references, and tools from the task, scope, and observed +             evidence. Consult the relevant class reference via skill_manage when needed. +             Use the available tool inventory to select the smallest useful experiment +             and adapt after each result. Proceed with authorized independent work when +             a prerequisite is missing. A technology hint cannot extend scope.",
+        );
+    }
+
+    let evidence = [ledger, hunt_ledger]
+        .into_iter()
+        .flatten()
+        .collect::<String>();
+    (skill_prompt, evidence)
+}
+
+pub(super) fn latest_task_text(
+    messages: &[crate::alphacode_session_types::StoredMessage],
+) -> Option<String> {
+    messages
+        .iter()
+        .rev()
+        .filter(|message| message.role == Role::User)
+        .find_map(|message| {
+            let task = message
+                .content
+                .iter()
+                .filter_map(|block| match block {
+                    ContentBlock::Text { text, .. } => {
+                        let text = text.trim();
+                        (!text.is_empty()
+                            && !text.starts_with("<system-reminder>")
+                            && !crate::todo::is_auto_poke_message(text))
+                        .then_some(text)
+                    }
+                    _ => None,
+                })
+                .collect::<Vec<_>>()
+                .join("\n");
+            let continuation = task.trim_end_matches(['.', '!']).to_ascii_lowercase();
+            (!task.is_empty() && !matches!(continuation.as_str(), "continue" | "keep going"))
+                .then_some(task)
+        })
+}
+
 impl Agent {
-    /// Log how many tokens the prefix is costing the API this turn.
-    /// `tier` is included so cache misses on a minimal-tier turn can be
-    /// distinguished from cache misses on the full system prompt (different
-    /// blast radius).
+    /// Log how many tokens the request prefix costs this turn by prompt tier.
     pub(super) fn log_prompt_prefix_accounting(
         &self,
         split: &crate::prompt::SplitSystemPrompt,
@@ -324,6 +551,7 @@ impl Agent {
         &self,
         memory_prompt: Option<&str>,
         tier: Option<crate::prompt::PromptTier>,
+        observed_node_stack: bool,
     ) -> (crate::prompt::SplitSystemPrompt, crate::prompt::PromptTier) {
         if let Some(ref override_prompt) = self.system_prompt_override {
             return (
@@ -340,47 +568,12 @@ impl Agent {
         // overlay directories, so calling it twice per prompt build cost two
         // full registry clones plus two disk scans for the same data.
         let skills = self.current_skills_snapshot();
-        let mut skill_prompt = self
-            .active_skill
-            .as_ref()
-            .and_then(|name| skills.get(name).map(|skill| skill.get_prompt().to_string()));
-
-        let ctf_requested = self
-            .active_skill
-            .as_deref()
-            .is_some_and(|name| matches!(name, "ctf" | "ctf-workflow"))
-            || self
-                .latest_user_text()
-                .is_some_and(|text| super::challenge_context::is_ctf_request(&text));
-        let research_dir = crate::tool::research_ledger_relative_dir(&self.session.id);
-        let ledger_dir = self
-            .session
-            .working_dir
-            .as_deref()
-            .map(|directory| std::path::Path::new(directory).join(&research_dir));
-        let ledger = ledger_dir
-            .as_deref()
-            .and_then(super::challenge_context::ledger_context);
-        if (ctf_requested || ledger.is_some())
-            && self.active_skill.as_deref() != Some("ctf-workflow")
-            && let Some(workflow) = skills.get("ctf-workflow")
-        {
-            skill_prompt
-                .get_or_insert_with(String::new)
-                .push_str(&format!("\n\n{}", workflow.get_prompt()));
-        }
-
-        // Bundled workflows refer to the legacy project-wide filenames. Bind
-        // those references to this session without rewriting users' files.
-        if (ctf_requested
-            || self
-                .active_skill
-                .as_deref()
-                .is_some_and(|name| matches!(name, "bugbounty" | "vuln-hunter")))
-            && let Some(prompt) = skill_prompt.as_mut()
-        {
-            *prompt = crate::tool::bind_research_ledger_paths(prompt, &self.session.id);
-        }
+        let (skill_prompt, evidence) = routed_skill_context(
+            &skills,
+            &self.session,
+            self.active_skill.as_deref(),
+            observed_node_stack,
+        );
 
         let available_skills: Vec<crate::prompt::SkillInfo> = skills
             .list()
@@ -401,7 +594,7 @@ impl Agent {
 
         let (mut split, _context_info) = crate::prompt::build_system_prompt_split_with_tier(
             resolved_tier,
-            skill_prompt.as_deref(),
+            (!skill_prompt.is_empty()).then_some(skill_prompt.as_str()),
             &available_skills,
             self.session.is_canary,
             memory_prompt,
@@ -410,15 +603,7 @@ impl Agent {
         );
 
         self.append_current_turn_system_reminder(&mut split);
-        if let Some(ledger) = ledger {
-            split.dynamic_part.push_str(&ledger);
-        }
-        if let Some(ledger) = ledger_dir
-            .as_deref()
-            .and_then(super::challenge_context::hunt_ledger_context)
-        {
-            split.dynamic_part.push_str(&ledger);
-        }
+        split.dynamic_part.push_str(&evidence);
         self.detect_verification_loop(&mut split);
         self.detect_probe_burst(&mut split);
         self.append_prompt_autopilot_briefing(&mut split, resolved_tier);
@@ -624,5 +809,38 @@ mod probe_burst_tests {
         let mut calls = vec![("todo".to_string(), "{}".to_string())];
         calls.extend((0..12).map(|n| bash(&format!("curl https://site/{n}"))));
         assert!(probe_burst_reminder(&calls).is_some());
+    }
+}
+
+#[cfg(test)]
+mod automatic_routing_tests {
+    use super::*;
+
+    #[test]
+    fn observed_stack_is_read_from_a_matching_http_tool_result() {
+        let mut session = crate::session::Session::create(None, None);
+        let result = ContentBlock::ToolResult {
+            tool_use_id: "call".into(),
+            content: "HTTP 200 OK\nURL: https://fixture.test/\nX-Powered-By: Express\n\nfixture"
+                .into(),
+            is_error: Some(false),
+        };
+        session.add_message(Role::User, vec![result.clone()]);
+        assert!(!observed_node_stack(&session.messages));
+        session.add_message(
+            Role::Assistant,
+            vec![ContentBlock::ToolUse {
+                id: "call".into(),
+                name: "httpflow".into(),
+                input: serde_json::json!({"url": "https://fixture.test/"}),
+                thought_signature: None,
+            }],
+        );
+        session.add_message(Role::User, vec![result]);
+        assert!(observed_node_stack(&session.messages));
+        assert!(
+            adaptive_tool_query("Check this API for vulnerabilities", true).contains("httpflow")
+        );
+        assert!(!adaptive_tool_query("Solve this reversing CTF", false).contains("ctf_web_recon"));
     }
 }

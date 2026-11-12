@@ -103,8 +103,20 @@ impl App {
             // Non-blocking memory: uses pending result from last turn, spawns check for next turn
             let memory_pending = self.build_memory_prompt_nonblocking(&provider_messages);
             // Use split prompt for better caching - static content cached, dynamic not
-            let split_prompt =
+            let mut split_prompt =
                 self.build_system_prompt_split(memory_pending.as_ref().map(|p| p.prompt.as_str()));
+            let capability_names = tools
+                .iter()
+                .map(|tool| tool.name.clone())
+                .collect::<Vec<_>>();
+            split_prompt
+                .dynamic_part
+                .push_str(&crate::tool::capabilities::request_brief(
+                    &capability_names,
+                    &tools,
+                    false,
+                    self.provider.handles_tools_internally(),
+                ));
             self.context_info.tool_defs_count = tools.len();
             self.context_info.tool_defs_chars = ToolDefinition::aggregate_prompt_chars(&tools);
             if let Some(pending) = &memory_pending {

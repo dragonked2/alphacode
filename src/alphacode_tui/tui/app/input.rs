@@ -119,8 +119,11 @@ pub(super) fn extract_input_shell_command(input: &str) -> Option<&str> {
 fn build_input_shell_command(command: &str) -> std::process::Command {
     #[cfg(windows)]
     {
-        let mut cmd = std::process::Command::new("cmd.exe");
-        cmd.arg("/C").arg(command);
+        use std::os::windows::process::CommandExt;
+
+        let mut cmd = crate::alphacode_base::platform::helper_command("cmd.exe");
+        cmd.args(["/D", "/S", "/C"])
+            .raw_arg(format!("\"{command}\""));
         cmd
     }
 
@@ -4210,23 +4213,6 @@ impl App {
 
         // Leaving the preview should happen as soon as the user acts on it.
         self.onboarding_preview_mode = false;
-
-        // Auto-invoke: if no skill was explicitly invoked via slash command,
-        // check if any auto_invoke skill matches the user's message content.
-        if self.active_skill.is_none() {
-            let skills_snapshot = self.current_skills_snapshot();
-            if let Some(skill_name) = skills_snapshot.find_auto_invoke_match(&input) {
-                self.active_skill = Some(skill_name.clone());
-                self.push_display_message(DisplayMessage {
-                    role: "system".to_string(),
-                    content: format!("Auto-activated skill: {skill_name}"),
-                    tool_calls: vec![],
-                    duration_secs: None,
-                    title: None,
-                    tool_data: None,
-                });
-            }
-        }
 
         // Add user message to display (show placeholder to user, not full paste)
         // Remember the typed prompt so we can restore it to the input box if this

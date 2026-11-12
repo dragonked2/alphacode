@@ -1,42 +1,8 @@
-//! Detect the "URL with `&` and `=` in a powershell / findstr chain"
-//! trap before a bash tool call fires.
+//! Keep URL query parameters intact when invoking a shell.
 //!
-//! # Why this exists
-//!
-//! During a real security audit, a Windows shell invocation like:
-//!
-//! ```text
-//! curl -A "Mozilla/5.0 (compatible) SecurityAudit" \
-//!   "https://example.com/api?a=1&b=2&c=3" | powershell -NoProfile \
-//!   -Command "Get-Content" | findstr "match"
-//! ```
-//!
-//! was rejected by the shell with a confusing parse error. The actual
-//! failure was that the `&` in the URL was interpreted by `cmd.exe` as
-//! "background this command and run the next one", the `"` after the URL
-//! closed a quote-pair prematurely, and `findstr` ran on an empty stream.
-//!
-//! The two root causes are:
-//!
-//! 1. The `&` and `|` in the URL get consumed by the shell.
-//! 2. The `findstr` + `powershell` chain has subtle quoting rules that
-//!    differ from `grep` / `awk` on Linux.
-//!
-//! # What this does
-//!
-//! Given a command string, detect whether it contains:
-//! - A URL with `&`, `|`, `>`, `<`, `^`, `(`, `)`, `!` in the query string
-//! - A `findstr` invocation (the Windows equivalent of grep that trips
-//!   people up with `|` inside double-quoted strings)
-//! - A `powershell` chain receiving piped content
-//!
-//! When any of these is detected, return a `Warning` with concrete
-//! remediation. The warning is returned to the model before the command
-//! runs, mirroring the destructive-gate pattern.
-//!
-//! This is NOT a hard block. The model may legitimately need `&` in a
-//! command (e.g. `cmd1 & cmd2`). The gate only triggers when the `&` is
-//! inside a URL query string, which is almost always wrong on Windows.
+//! Plain curl commands with ampersand-separated parameters can be quoted
+//! automatically. Other commands with URL query operators require explicit
+//! quoting before the shell runs.
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ShellUrlSafety {
@@ -48,6 +14,69 @@ impl ShellUrlSafety {
     pub fn runs_immediately(&self) -> bool {
         matches!(self, ShellUrlSafety::Clean)
     }
+}
+
+/// Quote a plain curl URL whose ampersands separate query parameters.
+/// Keep ambiguous shell commands on the normal validation path.
+pub fn quote_curl_query_url(command: &str) -> Option<String> {
+    if command
+        .bytes()
+        .any(|byte| byte.is_ascii_control() && byte != b'\t')
+    {
+        return None;
+    }
+    let mut words = command.split([' ', '\t']).filter(|word| !word.is_empty());
+    if !matches!(words.next()?, "curl" | "curl.exe") {
+        return None;
+    }
+
+    let url = words.by_ref().find(|word| {
+        !matches!(
+            *word,
+            "-s" | "-S"
+                | "-sS"
+                | "-f"
+                | "-fsS"
+                | "-L"
+                | "-I"
+                | "-v"
+                | "--silent"
+                | "--show-error"
+                | "--fail"
+                | "--location"
+                | "--head"
+                | "--verbose"
+        )
+    })?;
+    if words.next().is_some()
+        || !(url.starts_with("https://") || url.starts_with("http://"))
+        || !url
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || b":/?&=._~-+@,".contains(&byte))
+    {
+        return None;
+    }
+
+    let (_, query) = url.split_once('?')?;
+    let (_, extra_parameters) = query.split_once('&')?;
+    if !extra_parameters.split('&').all(|parameter| {
+        parameter.split_once('=').is_some_and(|(key, _)| {
+            !key.is_empty()
+                && key
+                    .bytes()
+                    .all(|byte| byte.is_ascii_alphanumeric() || b"._~-".contains(&byte))
+        })
+    }) {
+        return None;
+    }
+
+    let trimmed = command.trim_end_matches([' ', '\t']);
+    let start = trimmed.len() - url.len();
+    Some(format!(
+        "{}\"{url}\"{}",
+        &command[..start],
+        &command[trimmed.len()..]
+    ))
 }
 
 /// Detect Windows-URL-safety issues in a command string. Cheap,
@@ -64,21 +93,19 @@ pub fn scan_for_shell_url_issues(command: &str) -> ShellUrlSafety {
         details.push(detail);
     }
     ShellUrlSafety::Warning(format!(
-        "Command not run: {}. Quote the entire URL, for example `curl \"https://example.test/path?a=1&b=2\"`, or use `webfetch` for HTTP work.",
+        "Command not run: quote the entire URL, for example `curl \"https://example.test/path?a=1&b=2\"`, or use `webfetch`. {}.",
         details.join(". ")
     ))
 }
 
 fn detect_url_with_shell_chars(command: &str) -> Option<String> {
-    // Find any URL that contains &, |, <, >, ^, (, ), ! in the query string
+    // Find any URL that contains &, |, <, >, ^, or ! in the query string
     // (i.e. after the `?`).
     let bytes = command.as_bytes();
     let mut i = 0;
     while i < bytes.len() {
         // Look for `http://` or `https://`
-        if i + 8 <= bytes.len()
-            && (&bytes[i..i + 7] == b"http://" || &bytes[i..i + 8] == b"https://")
-        {
+        if bytes[i..].starts_with(b"http://") || bytes[i..].starts_with(b"https://") {
             let url_start = i;
             // Find end of URL: whitespace, a quote, a closing parenthesis,
             // or end-of-string. Matching surrounding quotes make operators
@@ -92,7 +119,7 @@ fn detect_url_with_shell_chars(command: &str) -> Option<String> {
                 && !bytes[j].is_ascii_whitespace()
                 && bytes[j] != b'"'
                 && bytes[j] != b'\''
-                && bytes[j] != b')'
+                && (quote.is_some() || bytes[j] != b')')
             {
                 j += 1;
             }
@@ -169,6 +196,42 @@ fn contains_url(s: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn plain_curl_query_is_quoted_without_changing_the_url() {
+        let command = "curl -fsS https://example.test/?a=1&b=two&empty= ";
+        let quoted = quote_curl_query_url(command).unwrap();
+        assert_eq!(
+            quoted,
+            "curl -fsS \"https://example.test/?a=1&b=two&empty=\" "
+        );
+        assert!(scan_for_shell_url_issues(&quoted).runs_immediately());
+    }
+
+    #[test]
+    fn ambiguous_curl_commands_are_not_rewritten() {
+        for command in [
+            "curl https://example.test/?a=1&whoami",
+            "curl https://example.test/?a=1&&b=2",
+            "curl https://example.test/?a=1&b=2 | jq .",
+            "curl https://example.test/?a=1&b=2\nwhoami",
+            "curl https://example.test/?a=1&b=$(whoami)",
+            "curl https://example.test/?a=1&b=%PATH%",
+            "echo https://example.test/?a=1&b=2",
+        ] {
+            assert!(quote_curl_query_url(command).is_none(), "{command}");
+            assert!(
+                !scan_for_shell_url_issues(command).runs_immediately(),
+                "{command}"
+            );
+        }
+    }
+
+    #[test]
+    fn quoted_url_with_parentheses_and_query_passes() {
+        let command = "curl \"https://example.test/?a=one&b=(two)\"";
+        assert!(scan_for_shell_url_issues(command).runs_immediately());
+    }
 
     #[test]
     fn clean_linux_command_passes() {

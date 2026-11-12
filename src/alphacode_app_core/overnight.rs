@@ -744,7 +744,7 @@ pub fn gather_git_snapshot(working_dir: Option<&Path>) -> GitSnapshot {
 }
 
 fn run_git(dir: &Path, args: &[&str]) -> std::result::Result<String, String> {
-    let output = std::process::Command::new("git")
+    let output = crate::alphacode_base::platform::helper_command("git")
         .args(args)
         .current_dir(dir)
         .output()

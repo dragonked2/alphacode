@@ -136,8 +136,7 @@ fn short_path(path: &str) -> String {
 /// pre-existing commit is not surfaced as if the agent had just made it.
 pub fn timeline_record_commit_if_changed() {
     std::thread::spawn(|| {
-        use std::process::Command;
-        let output = Command::new("git")
+        let output = crate::alphacode_base::platform::helper_command("git")
             .args(["log", "-1", "--no-color", "--pretty=format:%h\x1f%s"])
             .output()
             .ok();

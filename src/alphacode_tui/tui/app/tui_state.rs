@@ -1748,6 +1748,23 @@ impl crate::alphacode_tui::tui::TuiState for App {
             native_compaction_threshold_tokens,
             session_count,
             session_name,
+            session_version: {
+                let live_server = self
+                    .remote_server_version
+                    .as_deref()
+                    .filter(|_| self.is_remote)
+                    .and_then(|version| version.split_whitespace().next())
+                    .filter(|version| !version.chars().any(char::is_control));
+                let local = crate::alphacode_build_meta::version()
+                    .split_whitespace()
+                    .next()
+                    .unwrap_or(crate::alphacode_build_meta::semver());
+                Some(match live_server {
+                    Some(version) => version.to_owned(),
+                    None if self.is_remote => format!("{local} client"),
+                    None => local.to_owned(),
+                })
+            },
             goal: super::helpers::gather_session_goal(
                 session_id,
                 self.session

@@ -83,6 +83,23 @@ pub struct SkillRoute {
 pub struct SkillRouter;
 
 impl SkillRouter {
+    /// Recognize stack names without matching words such as "nextcloud".
+    pub(crate) fn is_nodejs_stack(text: &str) -> bool {
+        let lower = text.to_ascii_lowercase();
+        let words: Vec<_> = lower
+            .split(|ch: char| !ch.is_ascii_alphanumeric())
+            .filter(|word| !word.is_empty())
+            .collect();
+        words.iter().any(|word| {
+            matches!(
+                *word,
+                "nextjs" | "nodejs" | "express" | "fastify" | "koa" | "nestjs"
+            )
+        }) || words
+            .windows(2)
+            .any(|pair| matches!(pair, ["next" | "node" | "nest", "js"]))
+    }
+
     /// Determine which skills are relevant given the current scope and hypothesis.
     pub fn route(scope: &LiveScope, hypothesis: Option<&Hypothesis>) -> SkillRoute {
         let mut selected = Vec::new();
@@ -216,6 +233,7 @@ impl SkillRouter {
             .filter(|t| !t.is_empty())
             .collect();
         let has_token = |t: &str| tokens.contains(&t);
+        let is_nextjs = has_token("nextjs") || tokens.windows(2).any(|pair| pair == ["next", "js"]);
 
         // API & Protocol skills
         if lower.contains("graphql") {
@@ -249,7 +267,7 @@ impl SkillRouter {
 
         // Frontend skills
         if lower.contains("react")
-            || lower.contains("next")
+            || is_nextjs
             || lower.contains("vue")
             || lower.contains("angular")
             || lower.contains("svelte")
@@ -290,11 +308,7 @@ impl SkillRouter {
         }
 
         // Backend skills
-        if lower.contains("node")
-            || lower.contains("express")
-            || lower.contains("fastify")
-            || lower.contains("koa")
-        {
+        if Self::is_nodejs_stack(tech) || has_token("node") {
             skills.push("javascript-analysis".to_string());
             skills.push("nodejs-security".to_string());
             skills.push("prototype-pollution".to_string());
@@ -646,6 +660,34 @@ impl SkillRouter {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn nextjs_and_nodejs_fingerprints_route_to_the_security_skill() {
+        for technology in [
+            "Next.js 16",
+            "NextJS",
+            "Node.js",
+            "NodeJS",
+            "Express.js",
+            "Fastify",
+            "Koa",
+            "Nest.js",
+        ] {
+            assert!(
+                SkillRouter::skills_for_technology(technology)
+                    .iter()
+                    .any(|skill| skill == "nodejs-security"),
+                "{technology}"
+            );
+        }
+        for technology in ["Nextcloud", "nodepool", "React"] {
+            assert!(
+                !SkillRouter::skills_for_technology(technology)
+                    .iter()
+                    .any(|skill| skill == "nodejs-security")
+            );
+        }
+    }
 
     #[test]
     fn router_selects_recon_for_small_surface() {

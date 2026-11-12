@@ -1891,11 +1891,15 @@ impl Registry {
         // including when the call errors out or is cancelled. Local tools are
         // excluded: a coding session with an engagement scope must not have its
         // file reads paced by the network budget.
-        let _network_permit = if scope::is_network_tool(resolved_name) {
-            scope::acquire_network_permit(&ctx.session_id, resolved_name).await
-        } else {
-            scope::NetworkPermit::none()
-        };
+        let offline_preview_comparison = resolved_name == "httpflow"
+            && input.get("action").and_then(Value::as_str).map(str::trim)
+                == Some("compare_preview");
+        let _network_permit =
+            if scope::is_network_tool(resolved_name) && !offline_preview_comparison {
+                scope::acquire_network_permit(&ctx.session_id, resolved_name).await
+            } else {
+                scope::NetworkPermit::none()
+            };
 
         // User-configured pre_tool gate: external policy hook that can block
         // this call (exit 2). Skipped entirely when not configured.

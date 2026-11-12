@@ -2871,6 +2871,7 @@ async fn firefox_run_bridge_command(
 
     let params_json = serde_json::to_string(&params)?;
     let mut command = tokio::process::Command::new(&bin);
+    crate::alphacode_base::platform::hide_helper_console(command.as_std_mut());
     command.arg(action).arg(&params_json);
     command.stdin(std::process::Stdio::null());
     command.stdout(std::process::Stdio::piped());

@@ -104,6 +104,14 @@ sequentially without following redirects. Verify identities, ownership and
 intended sharing: response differences alone are not a vulnerability. Use
 separate controlled requests for header-token authentication or state changes.
 
+Record the actor, object ownership, workflow state, request fingerprint, and
+observed result with each completed experiment. On resume, reuse that evidence
+when the scope and prerequisites still match. Repeat a probe only to resolve a
+named uncertainty, verify a changed condition, or reproduce a reportable finding.
+When a rate limit or unavailable prerequisite blocks one surface, save its next
+eligible check and continue independent in-scope work. A failed or blocked probe
+does not establish that the surface is secure.
+
 Select the smallest useful set, pass only validated in-scope inputs, and keep
 request and concurrency limits shared across tools. Preserve raw output and
 provenance; distinguish partial results, errors and empty results. Prefer a
@@ -122,6 +130,10 @@ Load `experiment-design` when an observation needs a decisive test, a lead stall
 or several plausible paths compete. It provides invariant-driven experiments,
 bounded creative pivots and capability-compatible chain planning. Keep this
 reference on demand; do not paste the entire technique library into each turn.
+
+When authorized review establishes Next.js or Node.js as the target stack, load
+`nodejs-security` for framework-specific controls. A fingerprint alone only
+selects the next investigation.
 
 For broad or resumed work, load `investigation-control` to connect the asset
 inventory, coverage matrix, clue register and hypothesis graph. Use its
@@ -357,6 +369,11 @@ Use applicable identity, ownership, method, version and lifecycle comparisons
 from `control-verification` and `investigation-control`. Require working controls
 and private owned canaries or settled state. A 200, accepted input, callback or
 timing difference alone does not prove the intended security consequence.
+Apply the class-specific controls in `control-verification` to every candidate
+before promotion. Mark each applicable class and surface with the exact test
+conditions and evidence, including blocked and untested cases. Validate one
+root cause with the smallest decisive experiment before expanding scope. For a
+stronger impact claim, verify each additional prerequisite within authorization.
 Concurrency tests require explicit applicability and a shared bounded budget;
 there is no universal safe parallel-request count.
 
@@ -377,6 +394,27 @@ as an observed program decision.
 Ask: was this resource *meant* to be reachable by this actor? Public content
 served to any authenticated user, documented default behavior, and
 already-public data are not findings. Most rejected findings die here.
+
+For paywalls, archived posts, previews, or redacted API objects, make the
+strongest alternative hypothesis explicit: the API may be returning the
+public preview plus metadata describing withheld content. Obtain the complete
+decoded protected field from the public baseline and the tested response for
+the same object, version, and locale. Compare those fields exactly before
+describing any exposure. Use `httpflow` with `action: compare_preview` for small
+controlled captures, or compare saved captures locally when they are large.
+Inspect media separately. Counts, dimensions, placeholder objects, and
+visibility flags cannot establish disclosure of text, URLs, or media bytes.
+
+To confirm exposure, demonstrate a specific protected value in the tested
+response. Use an entitled view of the same object or an authorized fixture
+with a known private marker as ground truth. Verify that the tested actor
+lacks entitlement and that the disclosed value is absent from the public
+baseline. For anonymous tests use a fresh request without cookies, credentials,
+or a shared authenticated cache. Equal complete fields refute the claimed
+content exposure in those captures. A different field without a verified
+protected value, or a clipped capture, leaves the claim inconclusive. Do not
+draft a confirmed finding, score it, or extrapolate to other post types,
+attachments, or accounts until their specific evidence supports the claim.
 
 **Gate 5 — Impact must be demonstrated, not asserted.**
 "Did", not "could". "This request returns another user's email" is proof;

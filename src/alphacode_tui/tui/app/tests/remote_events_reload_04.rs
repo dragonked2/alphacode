@@ -145,6 +145,19 @@ fn test_remote_error_with_retryable_pending_schedules_retry() {
             .contains(&format!("attempt 1/{}", App::AUTO_RETRY_MAX_ATTEMPTS))
     );
     assert!(retry_notice.content.contains("Remote request failed"));
+
+    let backend = ratatui::backend::TestBackend::new(120, 35);
+    let mut terminal = ratatui::Terminal::new(backend).unwrap();
+    terminal
+        .draw(|frame| crate::alphacode_tui::tui::ui::draw(frame, &app))
+        .unwrap();
+    let buffer = terminal.backend().buffer();
+    let rendered = (0..35)
+        .map(|y| (0..120).map(|x| buffer[(x, y)].symbol()).collect::<String>())
+        .collect::<Vec<_>>()
+        .join("\n");
+    assert!(rendered.contains("Retrying in "), "{rendered}");
+    assert!(!rendered.contains("Rate limited"), "{rendered}");
 }
 
 #[test]
@@ -394,7 +407,7 @@ fn provider_busy_does_not_restart_retry_cycle_or_claim_network_is_offline() {
     assert!(!matches!(app.status, ProcessingStatus::WaitingForNetwork { .. }));
     assert!(app.rate_limit_pending_message.is_none());
     let text = app.display_messages().iter().map(|m| m.content.as_str()).collect::<Vec<_>>().join("\n");
-    assert!(text.contains("Provider is busy or rate-limited"), "{text}");
+    assert!(text.contains("Provider is temporarily busy"), "{text}");
     assert!(!text.contains("Network appears offline"));
     assert!(!text.contains("timeout: 180s"));
     let backend = ratatui::backend::TestBackend::new(120, 35);
@@ -402,7 +415,7 @@ fn provider_busy_does_not_restart_retry_cycle_or_claim_network_is_offline() {
     terminal.draw(|frame| crate::alphacode_tui::tui::ui::draw(frame, &app)).unwrap();
     let buffer = terminal.backend().buffer();
     let rendered = (0..35).map(|y| (0..120).map(|x| buffer[(x, y)].symbol()).collect::<String>()).collect::<Vec<_>>().join("\n");
-    assert!(rendered.contains("Provider is busy or rate-limited"), "{rendered}");
+    assert!(rendered.contains("Provider is temporarily busy"), "{rendered}");
     assert!(!rendered.contains("Network appears offline"));
     assert!(!rendered.contains("Waiting 59s before retry"));
 }
@@ -1338,6 +1351,29 @@ fn test_tui_login_providers_have_real_tui_handlers() {
             );
         }
     }
+}
+
+#[test]
+fn session_widget_version_follows_the_running_build() {
+    use crate::alphacode_tui::tui::TuiState as _;
+
+    let mut app = create_test_app();
+    app.is_remote = false;
+    let local = crate::alphacode_build_meta::version()
+        .split_whitespace()
+        .next()
+        .unwrap();
+    assert_eq!(app.info_widget_data().session_version.as_deref(), Some(local));
+
+    app.set_remote_server_identity_for_tests(None, None, None, None);
+    assert_eq!(
+        app.info_widget_data().session_version.unwrap(),
+        format!("{local} client")
+    );
+    app.set_remote_server_identity_for_tests(None, None, Some("v2.4.1 (abc1234)"), None);
+    assert_eq!(app.info_widget_data().session_version.as_deref(), Some("v2.4.1"));
+    app.set_remote_server_identity_for_tests(None, None, Some("v2.4.2-dev (def5678)"), None);
+    assert_eq!(app.info_widget_data().session_version.as_deref(), Some("v2.4.2-dev"));
 }
 
 #[test]

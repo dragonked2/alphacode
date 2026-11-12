@@ -81,6 +81,7 @@ struct HttpFlowInput {
     missing_url: Option<String>,
     #[serde(default)]
     marker: Option<String>,
+    preview_comparison: Option<PreviewComparison>,
     #[serde(default)]
     url: Option<String>,
     #[serde(default)]
@@ -100,6 +101,50 @@ struct HttpFlowInput {
         deserialize_with = "super::serde_coerce::opt_u64_from_string_or_number"
     )]
     timeout: Option<u64>,
+}
+
+#[derive(Clone, Deserialize)]
+struct PreviewComparison {
+    public: ContentSample,
+    tested: ContentSample,
+    entitled: Option<ContentSample>,
+}
+
+#[derive(Clone, Deserialize)]
+struct ContentSample {
+    object_id: String,
+    text: String,
+}
+
+fn compare_preview(samples: &PreviewComparison) -> Result<ToolOutput> {
+    let public = &samples.public;
+    let tested = &samples.tested;
+    let entitled = samples.entitled.as_ref();
+    anyhow::ensure!(
+        !public.object_id.trim().is_empty()
+            && public.object_id == tested.object_id
+            && entitled.is_none_or(|sample| sample.object_id == public.object_id),
+        "compare_preview requires the same nonempty object ID in every capture"
+    );
+    let verdict = if tested.text == public.text {
+        "same_as_public_preview"
+    } else if entitled.is_some_and(|sample| sample.text == tested.text)
+        && !tested.text.trim().is_empty()
+    {
+        "matches_entitled_control"
+    } else {
+        "inconclusive_difference"
+    };
+    Ok(ToolOutput::new(
+        json!({
+            "comparison": verdict,
+            "public_characters": public.text.chars().count(),
+            "tested_characters": tested.text.chars().count(),
+            "entitled_characters": entitled.map(|sample| sample.text.chars().count()),
+            "interpretation": "Exact comparison of supplied content fields. Verify the captures, actor entitlements and the specific protected bytes before reporting."
+        })
+        .to_string(),
+    ))
 }
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
@@ -126,14 +171,22 @@ impl Tool for HttpFlowTool {
     }
 
     fn parameters_schema(&self) -> Value {
+        let content_sample = json!({
+            "type": "object",
+            "properties": {
+                "object_id": {"type":"string"},
+                "text": {"type":"string", "description":"Complete decoded protected field from the captured response. Exclude metadata, omitted content, and summaries."}
+            },
+            "required": ["object_id", "text"]
+        });
         json!({
             "type": "object",
             "properties": {
                 "intent": super::intent_schema_property(),
                 "action": {
                     "type": "string",
-                    "enum": ["request", "compare_actors", "get_csrf", "clear_session", "show_cookies"],
-                    "description": "request sends HTTP; compare_actors compares two established cookie sessions and a missing-object control; get_csrf extracts a token; clear_session and show_cookies manage a named session."
+                    "enum": ["request", "compare_actors", "compare_preview", "get_csrf", "clear_session", "show_cookies"],
+                    "description": "request sends HTTP; compare_actors uses two cookie sessions and a missing-object control; compare_preview compares already captured content offline; get_csrf extracts a token; clear_session and show_cookies manage a named session."
                 },
                 "session": {
                     "type": "string",
@@ -147,6 +200,12 @@ impl Tool for HttpFlowTool {
                 "actor_b": {"type":"string", "description":"compare_actors: distinct established session label for the resource owner."},
                 "missing_url": {"type":"string", "description":"compare_actors: explicitly authorized missing-object control on the same origin."},
                 "marker": {"type":"string", "description":"compare_actors: optional owned fixture marker to check in each response."},
+                "preview_comparison": {
+                    "type": "object",
+                    "description": "compare_preview: complete same-object content captures from the public baseline, the tested actor and optionally an entitled control. No HTTP requests are sent.",
+                    "properties": {"public": content_sample, "tested": content_sample, "entitled": content_sample},
+                    "required": ["public", "tested"]
+                },
                 "method": {
                     "type": "string",
                     "enum": ["GET", "POST", "PUT", "DELETE", "PATCH", "HEAD", "OPTIONS"],
@@ -196,7 +255,7 @@ impl Tool for HttpFlowTool {
                 "httpflow arguments not understood ({err}). Send an object like \
                  {{\"action\": \"request\", \"url\": \"https://...\", \
                  \"method\": \"GET\"}}. `action` is one of \
-                 request, get_csrf, clear_session, show_cookies (defaults to \
+                 request, compare_actors, compare_preview, get_csrf, clear_session, show_cookies (defaults to \
                  `request` when `url` is given)."
             )
         })?;
@@ -217,7 +276,7 @@ impl Tool for HttpFlowTool {
             return Err(anyhow::anyhow!(
                 "httpflow needs `action` (or `url`). Send an object like \
                  {{\"action\": \"request\", \"url\": \"https://...\", \"method\": \"GET\"}}. \
-                 Valid actions: request, get_csrf, clear_session, show_cookies."
+                 Valid actions: request, compare_actors, compare_preview, get_csrf, clear_session, show_cookies."
             ));
         }
         let session_name = params.session.as_deref().unwrap_or("default");
@@ -225,6 +284,9 @@ impl Tool for HttpFlowTool {
         match action {
             "request" => self.send_request(&params, session_name, &ctx).await,
             "compare_actors" => self.compare_actors(&params, &ctx).await,
+            "compare_preview" => compare_preview(params.preview_comparison.as_ref().context(
+                "compare_preview requires preview_comparison with public and tested captures",
+            )?),
             "get_csrf" => {
                 self.get_csrf_token(&params, session_name, &ctx.session_id)
                     .await
@@ -232,7 +294,7 @@ impl Tool for HttpFlowTool {
             "clear_session" => self.clear_session(session_name, &ctx.session_id).await,
             "show_cookies" => self.show_cookies(session_name, &ctx.session_id).await,
             _ => Err(anyhow::anyhow!(
-                "Unknown action: {}. Use request, get_csrf, clear_session, or show_cookies.",
+                "Unknown action: {}. Use request, compare_actors, compare_preview, get_csrf, clear_session, or show_cookies.",
                 action
             )),
         }
@@ -944,6 +1006,57 @@ fn truncate_body(body: &str, max_chars: usize) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn preview_comparison_distinguishes_withheld_metadata_from_content() {
+        let tool = HttpFlowTool::new();
+        let context = || ToolContext {
+            session_id: "preview-fixture".into(),
+            message_id: "m".into(),
+            tool_call_id: "c".into(),
+            working_dir: None,
+            stdin_request_tx: None,
+            graceful_shutdown_signal: None,
+            execution_mode: super::super::ToolExecutionMode::Direct,
+        };
+        let public = json!({"object_id":"post-1","text":"نص المعاينة"});
+        let tested = json!({
+            "object_id":"post-1",
+            "text":"نص المعاينة",
+            "paywall":{"locked":true,"hiddenCharacters":303,"lockedImages":[{"width":640,"height":480}]}
+        });
+        let entitled = json!({"object_id":"post-1","text":"نص المعاينة. owned-private-marker"});
+        let request = |tested: Value, entitled: Option<Value>| {
+            json!({
+                "action": "compare_preview",
+                "preview_comparison": {"public":public,"tested":tested,"entitled":entitled}
+            })
+        };
+        for (tested, control, expected) in [
+            (tested, Some(entitled.clone()), "same_as_public_preview"),
+            (
+                entitled.clone(),
+                Some(entitled.clone()),
+                "matches_entitled_control",
+            ),
+            (entitled.clone(), None, "inconclusive_difference"),
+            (
+                json!({"object_id":"post-1","text":"نص المعاينة."}),
+                Some(entitled),
+                "inconclusive_difference",
+            ),
+        ] {
+            let output = tool
+                .execute(request(tested, control), context())
+                .await
+                .unwrap();
+            let observation: Value = serde_json::from_str(&output.output).unwrap();
+            assert_eq!(observation["comparison"], expected);
+            assert!(!output.output.contains("owned-private-marker"));
+        }
+        let other = json!({"object_id":"post-2","text":"نص المعاينة"});
+        assert!(tool.execute(request(other, None), context()).await.is_err());
+    }
 
     #[tokio::test]
     async fn actor_comparison_collects_owner_and_missing_controls() {

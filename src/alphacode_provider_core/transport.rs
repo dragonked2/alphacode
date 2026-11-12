@@ -6,11 +6,16 @@
 //! ensures all providers recognize the same fault vocabulary.
 
 use std::borrow::Cow;
-use std::sync::OnceLock;
-use std::time::Duration;
+use std::collections::HashMap;
+use std::sync::{Mutex, OnceLock};
+use std::time::{Duration, Instant};
 
 use anyhow::Result;
 use memchr::memmem;
+
+// Share explicit cooldowns across concurrent sessions using the same endpoint.
+// The origin contains no credentials, paths or query parameters.
+static COOLDOWNS: OnceLock<Mutex<HashMap<url::Origin, Instant>>> = OnceLock::new();
 
 /// Send a request while bounding the wait for response headers.
 ///
@@ -23,12 +28,49 @@ pub async fn send_with_initial_response_timeout(
     request: reqwest::RequestBuilder,
     timeout: Duration,
 ) -> Result<reqwest::Response> {
-    match tokio::time::timeout(timeout, request.send()).await {
-        Ok(response) => Ok(response?),
-        Err(_) => anyhow::bail!(
-            "Initial response timeout: no response headers received within {timeout:?}"
-        ),
+    let (client, request) = request.build_split();
+    let request = request?;
+    let origin = request.url().origin();
+    if let Some(cooldowns) = COOLDOWNS.get() {
+        loop {
+            let deadline = cooldowns
+                .lock()
+                .unwrap_or_else(|err| err.into_inner())
+                .get(&origin)
+                .copied();
+            match deadline {
+                Some(deadline) if deadline > Instant::now() => {
+                    tokio::time::sleep_until(deadline.into()).await;
+                }
+                _ => break,
+            }
+        }
     }
+
+    let response = tokio::time::timeout(timeout, client.execute(request))
+        .await
+        .map_err(|_| {
+            anyhow::anyhow!(
+                "Initial response timeout: no response headers received within {timeout:?}"
+            )
+        })??;
+    if response.status() == reqwest::StatusCode::TOO_MANY_REQUESTS
+        && let Some(hint) = super::retry_after::retry_after(response.headers())
+        && !hint.remaining().is_zero()
+    {
+        let now = Instant::now();
+        let deadline = now + hint.remaining();
+        let mut cooldowns = COOLDOWNS
+            .get_or_init(Mutex::default)
+            .lock()
+            .unwrap_or_else(|err| err.into_inner());
+        cooldowns.retain(|_, existing| *existing > now);
+        if cooldowns.len() < 256 || cooldowns.contains_key(&origin) {
+            let existing = cooldowns.entry(origin).or_insert(deadline);
+            *existing = (*existing).max(deadline);
+        }
+    }
+    Ok(response)
 }
 
 /// Whether an error message describes a transient transport-level fault
@@ -154,11 +196,50 @@ static TRANSIENT_FINDERS: OnceLock<Vec<memmem::Finder<'static>>> = OnceLock::new
 #[cfg(test)]
 mod tests {
     use super::{is_transient_transport_error, send_with_initial_response_timeout};
-    use std::io::Read;
+    use std::io::{Read, Write};
     use std::net::TcpListener;
     use std::sync::mpsc;
     use std::thread;
     use std::time::{Duration, Instant};
+
+    #[tokio::test]
+    async fn retry_after_delays_the_next_request_to_the_same_origin() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = thread::spawn(move || {
+            for response in [
+                "HTTP/1.1 429 Too Many Requests\r\nRetry-After: 1\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
+                "HTTP/1.1 200 OK\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
+            ] {
+                let (mut stream, _) = listener.accept().unwrap();
+                stream
+                    .set_read_timeout(Some(Duration::from_secs(3)))
+                    .unwrap();
+                assert!(stream.read(&mut [0_u8; 4096]).unwrap() > 0);
+                stream.write_all(response.as_bytes()).unwrap();
+            }
+        });
+        let client = reqwest::Client::builder().no_proxy().build().unwrap();
+        let timeout = Duration::from_secs(3);
+        let first = send_with_initial_response_timeout(
+            client.post(format!("http://{address}/chat/completions")),
+            timeout,
+        )
+        .await
+        .unwrap();
+        assert_eq!(first.status(), reqwest::StatusCode::TOO_MANY_REQUESTS);
+
+        let started = Instant::now();
+        let second = send_with_initial_response_timeout(
+            client.post(format!("http://{address}/responses")),
+            timeout,
+        )
+        .await
+        .unwrap();
+        assert_eq!(second.status(), reqwest::StatusCode::OK);
+        assert!(started.elapsed() >= Duration::from_millis(900));
+        server.join().unwrap();
+    }
 
     #[tokio::test]
     async fn accepted_request_without_response_headers_times_out() {

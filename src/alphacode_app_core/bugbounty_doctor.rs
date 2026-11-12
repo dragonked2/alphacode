@@ -30,8 +30,6 @@
 //! Tests in this file cover "every spec has a binary name and an
 //! install hint".
 
-use std::process::Command;
-
 /// The toolchain probed by the doctor. As of v1.0.7 these are the
 /// binaries referenced across the 16 subskills of the bundled
 /// `/bugbounty` skill. Add a new entry here whenever a subskill
@@ -282,7 +280,9 @@ pub fn which(binary: &str) -> ToolStatus {
         &["which"]
     };
     for cmd in candidates {
-        let output = Command::new(cmd).arg(binary).output();
+        let output = crate::alphacode_base::platform::helper_command(cmd)
+            .arg(binary)
+            .output();
         if let Ok(out) = output
             && out.status.success()
         {

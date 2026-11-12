@@ -29,6 +29,13 @@ Proactive vulnerability discovery in source code.
    framework protections, parameterization or other controls may make the
    apparent flow safe. Mark source-only or untested paths accordingly.
 
+For a suspected protected-content disclosure, compare the complete same-object
+public preview and tested content fields. Confirm the tested actor received a
+specific private value established by an entitled control or owned fixture.
+Status codes, lock flags, counts of withheld text, and placeholder dimensions
+do not supply that evidence. Without a demonstrated disclosure, record a lead
+or a refuted hypothesis and withhold severity scoring.
+
 ## PoC Template
 
 For each finding, provide:

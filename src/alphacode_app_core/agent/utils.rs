@@ -1,6 +1,5 @@
 use crate::alphacode_app_core::session::GitState;
 use std::path::Path;
-use std::process::Command;
 
 pub(super) fn trace_enabled() -> bool {
     match std::env::var("ALPHACODE_TRACE") {
@@ -27,7 +26,7 @@ pub(super) fn git_state_for_dir(dir: &Path) -> Option<GitState> {
 }
 
 fn git_output(dir: &Path, args: &[&str]) -> Option<String> {
-    let output = Command::new("git")
+    let output = crate::alphacode_base::platform::helper_command("git")
         .args(args)
         .current_dir(dir)
         .output()

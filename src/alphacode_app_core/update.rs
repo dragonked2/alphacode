@@ -144,7 +144,7 @@ pub fn auto_update_skip_reason_now(throttled: bool) -> Option<AutoUpdateSkipReas
 }
 
 pub fn run_git_pull_ff_only(repo_dir: &Path, quiet: bool) -> Result<()> {
-    let mut cmd = std::process::Command::new("git");
+    let mut cmd = crate::alphacode_base::platform::helper_command("git");
     cmd.arg("pull").arg("--ff-only");
     if quiet {
         cmd.arg("-q");

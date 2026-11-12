@@ -38,6 +38,17 @@ from the report while preserving reproducible request structure. Separate observ
 impact from conditional chain extensions. Group variants by demonstrated root
 cause, and keep independent authorization failures separate when the fix differs.
 
+When supplying a structured HTTP proof, set its `effect` to an exact observable
+from the controlled response pair. Use `{"source":"json_field","pointer":"/data/content","value":"owned-private-marker"}`,
+`{"source":"header","name":"Location","value":"https://owned.example/nonce"}`,
+or `{"source":"body_marker","marker":"owned-private-marker"}` as appropriate.
+The exact value must occur in the tested capture and differ in the control.
+Select the affected field itself. For asynchronous or write effects, use the
+independent read-back, callback record, or settled state as evidence. A
+response difference still requires verification of the protected boundary,
+actor, causality, and actual impact. Keep non-HTTP artifacts and their
+reproduction instructions in the evidence index.
+
 Close the assessment with completed coverage under exact tested conditions,
 failed/skipped/inconclusive work and its retry prerequisites, cleanup status and
 remaining high-value questions. Tool completion and request volume are not proof

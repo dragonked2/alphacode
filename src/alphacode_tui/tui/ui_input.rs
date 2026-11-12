@@ -1476,7 +1476,9 @@ pub(super) fn draw_status(frame: &mut Frame, app: &dyn TuiState, area: Rect, pen
             ),
         ])
     } else if let Some(remaining) = app.rate_limit_remaining() {
-        let secs = remaining.as_secs();
+        let secs = remaining
+            .as_secs()
+            .saturating_add(u64::from(remaining.subsec_nanos() > 0));
         let spinner = super::activity_indicator(elapsed, 4.0);
         let time_str = if secs >= 3600 {
             let hours = secs / 3600;
@@ -1492,10 +1494,7 @@ pub(super) fn draw_status(frame: &mut Frame, app: &dyn TuiState, area: Rect, pen
         Line::from(vec![
             Span::styled(spinner, Style::default().fg(warning_color())),
             Span::styled(
-                format!(
-                    " Rate limited. Auto-retry in {}...{}",
-                    time_str, queued_suffix
-                ),
+                format!(" Retrying in {time_str}{queued_suffix}"),
                 Style::default().fg(warning_color()),
             ),
         ])

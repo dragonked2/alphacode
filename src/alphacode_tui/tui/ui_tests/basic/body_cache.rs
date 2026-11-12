@@ -741,6 +741,12 @@ fn test_full_prep_cache_state_keeps_two_oversized_width_entries_hot() {
     assert!(Arc::ptr_eq(&hit_a, &prepared_a));
     assert!(Arc::ptr_eq(&hit_b, &prepared_b));
     assert_eq!(cache.oversized_entries.len(), 2);
+
+    cache.retain_transcript(key_a.messages_version);
+    assert_eq!(cache.oversized_entries.len(), 2);
+    cache.retain_transcript(key_a.messages_version + 1);
+    assert!(cache.oversized_entries.is_empty());
+    assert!(cache.get_exact(&key_a).is_none());
 }
 
 /// 1x1 transparent PNG used to exercise the real inline-image header parse.

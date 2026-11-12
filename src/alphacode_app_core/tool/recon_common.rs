@@ -147,6 +147,7 @@ fn recon_command(
     // Prefer the Go build over a same-named executable on PATH (notably the
     // Python `httpx` CLI), and find Go tools in the default Go bin directory.
     let mut cmd = tokio::process::Command::new(resolve_program(program));
+    crate::alphacode_base::platform::hide_helper_console(cmd.as_std_mut());
     cmd.args(args)
         // Without this, dropping the `Child` on timeout detaches the process
         // instead of killing it and it keeps running in the background.
@@ -171,6 +172,7 @@ pub async fn run_command_bounded(
     program: &str,
     timeout: Duration,
 ) -> Result<std::process::Output, String> {
+    crate::alphacode_base::platform::hide_helper_console(cmd.as_std_mut());
     cmd.kill_on_drop(true)
         .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::piped())
@@ -197,91 +199,64 @@ pub async fn wait_bounded(
         .stderr
         .take()
         .ok_or_else(|| format!("failed to capture {program} stderr"))?;
-    let (overflow_tx, mut overflow_rx) = tokio::sync::mpsc::unbounded_channel();
-    let mut stdout_task = tokio::spawn(capture_stream(stdout, overflow_tx.clone()));
-    let mut stderr_task = tokio::spawn(capture_stream(stderr, overflow_tx));
-
     let wait_for_output = async {
-        let status = tokio::select! {
-            status = child.wait() => status
-                .map_err(|error| format!("failed waiting for {program}: {error}"))?,
-            Some(()) = overflow_rx.recv() => {
-                return Err(output_limit_error(program));
-            }
+        let wait = async {
+            child
+                .wait()
+                .await
+                .map_err(|error| format!("failed waiting for {program}: {error}"))
         };
-        let stdout = tokio::select! {
-            result = &mut stdout_task => result
-                .map_err(|error| format!("failed reading {program} stdout: {error}"))?
-                .map_err(|error| format!("failed reading {program} stdout: {error}"))?,
-            Some(()) = overflow_rx.recv() => return Err(output_limit_error(program)),
-        };
-        let stderr = tokio::select! {
-            result = &mut stderr_task => result
-                .map_err(|error| format!("failed reading {program} stderr: {error}"))?
-                .map_err(|error| format!("failed reading {program} stderr: {error}"))?,
-            Some(()) = overflow_rx.recv() => return Err(output_limit_error(program)),
-        };
-        Ok::<_, String>((status, stdout, stderr))
+        let (status, stdout, stderr) = tokio::try_join!(
+            wait,
+            capture_stream(stdout, program, "stdout"),
+            capture_stream(stderr, program, "stderr"),
+        )?;
+        Ok::<_, String>(std::process::Output {
+            status,
+            stdout,
+            stderr,
+        })
     };
 
-    let (status, (stdout, stdout_truncated), (stderr, stderr_truncated)) =
-        match tokio::time::timeout(timeout, wait_for_output).await {
-            Err(_) => {
-                // The wait future was cancelled by the timeout. Kill the child
-                // before returning so it cannot outlive the tool.
-                let _ = child.kill().await;
-                stdout_task.abort();
-                stderr_task.abort();
-                return Err(format!(
-                    "{program} timed out after {}s and was terminated. \
-                     Narrow the target or raise the tool's own timeout.",
-                    timeout.as_secs()
-                ));
-            }
-            Ok(Err(error)) => {
-                let _ = child.kill().await;
-                stdout_task.abort();
-                stderr_task.abort();
-                return Err(error);
-            }
-            Ok(Ok(output)) => output,
-        };
-
-    debug_assert!(!stdout_truncated && !stderr_truncated);
-
-    Ok(std::process::Output {
-        status,
-        stdout,
-        stderr,
-    })
+    match tokio::time::timeout(timeout, wait_for_output).await {
+        Ok(Ok(output)) => Ok(output),
+        Ok(Err(error)) => {
+            let _ = child.kill().await;
+            Err(error)
+        }
+        Err(_) => {
+            let _ = child.kill().await;
+            Err(format!(
+                "{program} timed out after {}s and was terminated. \
+                 Narrow the target or raise the tool's own timeout.",
+                timeout.as_secs()
+            ))
+        }
+    }
 }
 
-async fn capture_stream<R>(
-    mut stream: R,
-    overflow_tx: tokio::sync::mpsc::UnboundedSender<()>,
-) -> std::io::Result<(Vec<u8>, bool)>
-where
-    R: tokio::io::AsyncRead + Unpin + Send + 'static,
-{
+async fn capture_stream(
+    mut stream: impl tokio::io::AsyncRead + Unpin,
+    program: &str,
+    stream_name: &str,
+) -> Result<Vec<u8>, String> {
     use tokio::io::AsyncReadExt as _;
 
     let mut captured = Vec::with_capacity(MAX_CAPTURE_BYTES.min(64 * 1024));
-    let mut truncated = false;
     let mut chunk = [0u8; 16 * 1024];
     loop {
-        let read = stream.read(&mut chunk).await?;
+        let read = stream
+            .read(&mut chunk)
+            .await
+            .map_err(|error| format!("failed reading {program} {stream_name}: {error}"))?;
         if read == 0 {
-            break;
+            return Ok(captured);
         }
-        let remaining = MAX_CAPTURE_BYTES.saturating_sub(captured.len());
-        let keep = read.min(remaining);
-        captured.extend_from_slice(&chunk[..keep]);
-        if keep < read && !truncated {
-            truncated = true;
-            let _ = overflow_tx.send(());
+        if read > MAX_CAPTURE_BYTES.saturating_sub(captured.len()) {
+            return Err(output_limit_error(program));
         }
+        captured.extend_from_slice(&chunk[..read]);
     }
-    Ok((captured, truncated))
 }
 
 fn output_limit_error(program: &str) -> String {
@@ -494,6 +469,27 @@ pub fn resolve_program(binary: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn capture_rejects_overflow_and_accepts_the_exact_limit() {
+        use tokio::io::AsyncReadExt as _;
+
+        let exact = tokio::io::repeat(b'x').take(MAX_CAPTURE_BYTES as u64);
+        assert_eq!(
+            capture_stream(exact, "recon", "stdout")
+                .await
+                .unwrap()
+                .len(),
+            MAX_CAPTURE_BYTES
+        );
+        let oversized = tokio::io::repeat(b'x').take(MAX_CAPTURE_BYTES as u64 + 1);
+        assert_eq!(
+            capture_stream(oversized, "recon", "stderr")
+                .await
+                .unwrap_err(),
+            output_limit_error("recon")
+        );
+    }
 
     #[test]
     fn automatic_install_is_limited_to_known_go_security_tools() {

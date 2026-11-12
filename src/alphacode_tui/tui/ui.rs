@@ -1168,12 +1168,13 @@ impl BodyCacheState {
     fn get_exact_with_kind(
         &mut self,
         key: &BodyCacheKey,
-    ) -> Option<(Arc<PreparedMessages>, CacheEntryKind)> {
+    ) -> Option<(Arc<PreparedMessages>, CacheEntryKind, usize)> {
         if let Some(pos) = self.entries.iter().position(|entry| &entry.key == key) {
             let entry = self.entries.remove(pos)?;
             let prepared = entry.prepared.clone();
+            let prepared_bytes = entry.prepared_bytes;
             self.entries.push_front(entry);
-            Some((prepared, CacheEntryKind::Regular))
+            Some((prepared, CacheEntryKind::Regular, prepared_bytes))
         } else {
             let pos = self
                 .oversized_entries
@@ -1181,14 +1182,16 @@ impl BodyCacheState {
                 .position(|entry| &entry.key == key)?;
             let entry = self.oversized_entries.remove(pos)?;
             let prepared = entry.prepared.clone();
+            let prepared_bytes = entry.prepared_bytes;
             self.oversized_entries.push_front(entry);
-            Some((prepared, CacheEntryKind::Oversized))
+            Some((prepared, CacheEntryKind::Oversized, prepared_bytes))
         }
     }
 
     #[cfg(test)]
     fn get_exact(&mut self, key: &BodyCacheKey) -> Option<Arc<PreparedMessages>> {
-        self.get_exact_with_kind(key).map(|(prepared, _)| prepared)
+        self.get_exact_with_kind(key)
+            .map(|(prepared, _, _)| prepared)
     }
 
     #[cfg(test)]
@@ -1441,6 +1444,13 @@ enum CacheEntryKind {
 }
 
 impl FullPrepCacheState {
+    fn retain_transcript(&mut self, messages_version: u64) {
+        self.entries
+            .retain(|entry| entry.key.messages_version == messages_version);
+        self.oversized_entries
+            .retain(|entry| entry.key.messages_version == messages_version);
+    }
+
     fn total_bytes(&self) -> usize {
         self.entries.iter().map(|entry| entry.prepared_bytes).sum()
     }
@@ -1448,12 +1458,13 @@ impl FullPrepCacheState {
     fn get_exact_with_kind(
         &mut self,
         key: &FullPrepCacheKey,
-    ) -> Option<(Arc<PreparedChatFrame>, CacheEntryKind)> {
+    ) -> Option<(Arc<PreparedChatFrame>, CacheEntryKind, usize)> {
         if let Some(pos) = self.entries.iter().position(|entry| &entry.key == key) {
             let entry = self.entries.remove(pos)?;
             let prepared = entry.prepared.clone();
+            let prepared_bytes = entry.prepared_bytes;
             self.entries.push_front(entry);
-            Some((prepared, CacheEntryKind::Regular))
+            Some((prepared, CacheEntryKind::Regular, prepared_bytes))
         } else {
             let pos = self
                 .oversized_entries
@@ -1461,14 +1472,16 @@ impl FullPrepCacheState {
                 .position(|entry| &entry.key == key)?;
             let entry = self.oversized_entries.remove(pos)?;
             let prepared = entry.prepared.clone();
+            let prepared_bytes = entry.prepared_bytes;
             self.oversized_entries.push_front(entry);
-            Some((prepared, CacheEntryKind::Oversized))
+            Some((prepared, CacheEntryKind::Oversized, prepared_bytes))
         }
     }
 
     #[cfg(test)]
     fn get_exact(&mut self, key: &FullPrepCacheKey) -> Option<Arc<PreparedChatFrame>> {
-        self.get_exact_with_kind(key).map(|(prepared, _)| prepared)
+        self.get_exact_with_kind(key)
+            .map(|(prepared, _, _)| prepared)
     }
 
     fn insert(&mut self, key: FullPrepCacheKey, prepared: Arc<PreparedChatFrame>) {

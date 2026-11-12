@@ -839,7 +839,9 @@ static GIT_BASH_PATH: LazyLock<Option<String>> = LazyLock::new(|| {
     // WindowsApps exposes a `bash.exe` alias which launches WSL. Treating
     // that shim as Git Bash makes ordinary commands hang when the WSL
     // registration is broken, so explicitly reject WSL/store shims.
-    if let Ok(output) = std::process::Command::new("where").arg("bash").output()
+    if let Ok(output) = crate::alphacode_base::platform::helper_command("where")
+        .arg("bash")
+        .output()
         && output.status.success()
     {
         for line in String::from_utf8_lossy(&output.stdout).lines() {
@@ -865,13 +867,7 @@ fn is_wsl_bash_shim(path: &str) -> bool {
 
 #[cfg(windows)]
 fn configure_shell_process(command: &mut TokioCommand) {
-    use std::os::windows::process::CommandExt;
-
-    // The shell's stdout/stderr are captured by the tool runner. Avoid letting
-    // Windows create a separate console when AlphaCode itself was launched from
-    // a GUI host or a terminal that does not provide a console handle.
-    const CREATE_NO_WINDOW: u32 = 0x0800_0000;
-    command.as_std_mut().creation_flags(CREATE_NO_WINDOW);
+    crate::alphacode_base::platform::hide_helper_console(command.as_std_mut());
     // Captured Python output must not inherit the Windows ANSI code page.
     // Apply to both Git Bash and cmd.exe, including background commands.
     command
@@ -1734,6 +1730,10 @@ impl Tool for BashTool {
             return Err(anyhow::anyhow!(
                 "bash requires a non-empty `command` string. Provide the shell command to run, e.g. {{\"command\":\"ls -la\"}}."
             ));
+        }
+
+        if let Some(quoted) = crate::alphacode_command_risk::quote_curl_query_url(&params.command) {
+            params.command = quoted;
         }
 
         #[cfg(windows)]

@@ -682,7 +682,18 @@ fn prepare_active_batch_progress(
         super::left_pad_lines_to_block_width(&mut lines, width, block_width);
     }
 
-    wrap_lines_with_map(lines, &[], &[], &[], &[], &[], width, &[], &[], &[])
+    wrap_lines_with_map(
+        lines,
+        Vec::new(),
+        &[],
+        &[],
+        &[],
+        Vec::new(),
+        width,
+        &[],
+        &[],
+        &[],
+    )
 }
 
 pub(super) fn prepare_messages(
@@ -757,7 +768,7 @@ pub(super) fn prepare_messages_with(
             }
         };
         let mut cache = cache;
-        if let Some((prepared, kind)) = cache.get_exact_with_kind(&key) {
+        if let Some((prepared, kind, prepared_bytes)) = cache.get_exact_with_kind(&key) {
             // A completed deferred mermaid render does not bump
             // `messages_version`/`streaming_text_hash`, so an exact hit can
             // still bake in a stale "rendering..." placeholder. Fall through
@@ -767,10 +778,13 @@ pub(super) fn prepare_messages_with(
             });
             if !stale {
                 super::note_full_prep_cache_lookup(cache_lookup_start.elapsed());
-                super::note_full_prep_cache_hit(kind, prepared.as_ref());
+                super::note_full_prep_cache_hit(kind, prepared.as_ref(), prepared_bytes);
                 return prepared;
             }
         }
+        // Old frames keep their body alive and force the incremental append
+        // path to copy it. Release them before taking the reusable body.
+        cache.retain_transcript(key.messages_version);
     }
 
     super::note_full_prep_cache_lookup(cache_lookup_start.elapsed());
@@ -1274,7 +1288,7 @@ fn prepare_body_cached(app: &dyn TuiState, width: u16) -> Arc<PreparedMessages> 
     };
 
     let mut cache = cache;
-    if let Some((prepared, kind)) = cache.get_exact_with_kind(&key) {
+    if let Some((prepared, kind, prepared_bytes)) = cache.get_exact_with_kind(&key) {
         // A deferred mermaid render completing does not bump
         // `messages_version`, so an exact hit can still be stale: it bakes in
         // a "rendering..." placeholder whose background render has since
@@ -1285,7 +1299,7 @@ fn prepare_body_cached(app: &dyn TuiState, width: u16) -> Arc<PreparedMessages> 
         });
         if !stale {
             super::note_body_cache_lookup(cache_lookup_start.elapsed());
-            super::note_body_cache_hit(kind, prepared.as_ref());
+            super::note_body_cache_hit(kind, prepared.as_ref(), prepared_bytes);
             return prepared;
         }
     }
@@ -1932,11 +1946,11 @@ pub(super) fn prepare_body_incremental(
 
     let new_wrapped = wrap_lines_with_map(
         acc.lines,
-        &acc.raw_plain_lines,
+        acc.raw_plain_lines,
         &acc.line_raw_overrides,
         &acc.line_copy_offsets,
         &acc.user_line_indices,
-        &acc.user_prompt_texts,
+        acc.user_prompt_texts,
         width,
         &acc.edit_tool_line_ranges,
         &acc.copy_targets,
@@ -1960,11 +1974,11 @@ pub(super) fn prepare_body_incremental(
 
     prepared.wrapped_lines.extend(new_wrapped.wrapped_lines);
     Arc::make_mut(&mut prepared.wrapped_plain_lines)
-        .extend(new_wrapped.wrapped_plain_lines.iter().cloned());
+        .extend(Arc::unwrap_or_clone(new_wrapped.wrapped_plain_lines));
     Arc::make_mut(&mut prepared.wrapped_copy_offsets)
-        .extend(new_wrapped.wrapped_copy_offsets.iter().copied());
+        .extend(Arc::unwrap_or_clone(new_wrapped.wrapped_copy_offsets));
     Arc::make_mut(&mut prepared.raw_plain_lines)
-        .extend(new_wrapped.raw_plain_lines.iter().cloned());
+        .extend(Arc::unwrap_or_clone(new_wrapped.raw_plain_lines));
 
     {
         let wrapped_line_map = Arc::make_mut(&mut prepared.wrapped_line_map);
@@ -2268,11 +2282,11 @@ pub(super) fn prepare_body_prepended(
 
     let head = wrap_lines_with_map(
         acc.lines,
-        &acc.raw_plain_lines,
+        acc.raw_plain_lines,
         &acc.line_raw_overrides,
         &acc.line_copy_offsets,
         &acc.user_line_indices,
-        &acc.user_prompt_texts,
+        acc.user_prompt_texts,
         width,
         &acc.edit_tool_line_ranges,
         &acc.copy_targets,
@@ -2561,11 +2575,11 @@ pub(super) fn prepare_body(
 
     let mut prepared = wrap_lines_with_map(
         acc.lines,
-        &acc.raw_plain_lines,
+        acc.raw_plain_lines,
         &acc.line_raw_overrides,
         &acc.line_copy_offsets,
         &acc.user_line_indices,
-        &acc.user_prompt_texts,
+        acc.user_prompt_texts,
         width,
         &acc.edit_tool_line_ranges,
         &acc.copy_targets,
@@ -2663,11 +2677,11 @@ fn wrap_lines(
 )]
 fn wrap_lines_with_map(
     lines: Vec<Line<'static>>,
-    seeded_raw_plain_lines: &[String],
+    mut raw_plain_lines: Vec<String>,
     line_raw_overrides: &[Option<WrappedLineMap>],
     line_copy_offsets: &[usize],
     user_line_indices: &[usize],
-    user_prompt_texts: &[String],
+    user_prompt_texts: Vec<String>,
     width: u16,
     edit_ranges: &[(usize, String, usize, usize, bool)],
     copy_ranges: &[RawCopyTarget],
@@ -2678,7 +2692,6 @@ fn wrap_lines_with_map(
     let mut wrapped_user_indices: Vec<usize> = Vec::new();
     let mut wrapped_user_prompt_starts: Vec<usize> = Vec::new();
     let mut wrapped_user_prompt_ends: Vec<usize> = Vec::new();
-    let mut raw_plain_lines: Vec<String> = seeded_raw_plain_lines.to_vec();
     let mut wrapped_line_map: Vec<WrappedLineMap> = Vec::new();
     let mut wrapped_copy_offsets: Vec<usize> = Vec::new();
     let mut user_line_mask = vec![false; lines.len()];
@@ -2811,7 +2824,7 @@ fn wrap_lines_with_map(
         wrapped_user_indices,
         wrapped_user_prompt_starts,
         wrapped_user_prompt_ends,
-        user_prompt_texts: user_prompt_texts.to_vec(),
+        user_prompt_texts,
         image_regions,
         edit_tool_ranges,
         copy_targets,

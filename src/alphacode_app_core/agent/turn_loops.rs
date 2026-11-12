@@ -117,6 +117,7 @@ impl Agent {
         // and decides the next action — the system prompt and tool list never
         // change. Rebuilding them on every iteration wastes ~50ms of CPU and
         // produces identical bytes that the provider's KV cache already ignores.
+        let mut node_stack_observed = false;
         let mut cached_static_prompt: Option<(
             std::sync::Arc<crate::prompt::SplitSystemPrompt>,
             crate::prompt::PromptTier,
@@ -181,10 +182,18 @@ impl Agent {
             if self.locked_tools.is_none() {
                 cached_tools = None;
             }
+            if !node_stack_observed && super::prompting::observed_node_stack(&self.session.messages)
+            {
+                node_stack_observed = true;
+                cached_static_prompt = None;
+                cached_tools = None;
+            }
             if cached_tools.is_none() {
                 let definitions = self.tool_definitions().await;
                 cached_tools = Some(if self.uses_compact_context() {
-                    let query = self.latest_user_text().unwrap_or_default();
+                    let task = super::prompting::latest_task_text(&self.session.messages)
+                        .unwrap_or_default();
+                    let query = super::prompting::adaptive_tool_query(&task, node_stack_observed);
                     super::turn_execution::context_adaptive_tools_with_promotions(
                         &definitions,
                         &query,
@@ -213,7 +222,7 @@ impl Agent {
             let (split_prompt, prompt_tier) = if let Some(ref cached) = cached_static_prompt {
                 (std::sync::Arc::clone(&cached.0), cached.1)
             } else {
-                let (sp, tier) = self.build_system_prompt_split(None, None);
+                let (sp, tier) = self.build_system_prompt_split(None, None, node_stack_observed);
                 let sp = std::sync::Arc::new(sp);
                 cached_static_prompt = Some((std::sync::Arc::clone(&sp), tier));
                 (sp, tier)

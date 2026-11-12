@@ -546,7 +546,7 @@ fn check_vulnerability_claim(
         );
     };
 
-    let verdict = proof.verify_against(&evidence.exchanges);
+    let verdict = proof.verify_report_evidence(Some(&evidence.exchanges));
     // Transcript matching and response differences establish evidence
     // consistency, not the application's intended boundary, causality, or
     // security impact. Do not promote a vulnerability claim on a mechanical
@@ -1287,6 +1287,7 @@ mod tests {
             }],
             "expected_behavior": "400 bad request",
             "observed_behavior": "500 with a SQL syntax error",
+            "effect": {"source": "body_marker", "marker": "SQL syntax error near OR"},
             "baseline": baseline_field
         })
         .to_string()

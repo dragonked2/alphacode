@@ -415,6 +415,7 @@ mod tests {
 
     fn data() -> InfoWidgetData {
         InfoWidgetData {
+            session_version: None,
             todos: Vec::new(),
             todo_goals: Vec::new(),
             todos_are_swarm_plan: false,

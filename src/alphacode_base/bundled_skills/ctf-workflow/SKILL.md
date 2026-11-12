@@ -30,6 +30,8 @@ Checkpoint after every material finding and before changing hypotheses.
 Read server headers first. `X-Powered-By: Express` is evidence to investigate,
 not a conclusive fingerprint; do not assume Flask or any other stack without
 corroboration. Revisit hints before trying increasingly obscure explanations.
+For a corroborated Next.js or Node.js challenge, load `nodejs-security` with
+`skill_manage` and apply the relevant framework controls within challenge scope.
 
 Use `ctf_web_recon` for a bounded initial pass and evidence-selected same-origin
 paths. If its schema is not advertised yet, discover it with `tool_help` first.
@@ -120,6 +122,12 @@ Once a credible path is established:
 6. Verify the challenge's actual terminal state.
 
 Do not claim a solve based on a matching word or intermediate response.
+For protected-content challenges, compare the exact returned field or artifact
+with the public preview and a known challenge control. A lock flag, omitted
+byte count, blurred placeholder, reflected input, or success status does not
+demonstrate access to the hidden payload. Treat unequal or truncated captures
+without a verified challenge marker as inconclusive. Record a solve only when
+the recovered flag or required state satisfies the challenge's success check.
 
 ## Hypothesis kill rules
 

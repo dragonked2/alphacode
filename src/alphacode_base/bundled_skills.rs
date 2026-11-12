@@ -70,6 +70,11 @@ pub(super) const BUNDLED_SKILLS: &[BundledSkill] = &[
         references: &[],
     },
     BundledSkill {
+        name: "nodejs-security",
+        body: include_str!("bundled_skills/nodejs-security/SKILL.md"),
+        references: &[],
+    },
+    BundledSkill {
         name: "ctf-workflow",
         body: include_str!("bundled_skills/ctf-workflow/SKILL.md"),
         references: &[(

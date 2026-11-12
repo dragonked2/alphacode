@@ -337,7 +337,7 @@ impl BugBountyOrchestrator {
         let id = id.into();
         let verdict = {
             let exchanges = self.observed_exchanges.read().await;
-            proof.verify_against(&exchanges)
+            proof.verify_report_evidence(Some(&exchanges))
         };
         if verdict.verified {
             self.verified_findings.write().await.insert(
@@ -1730,6 +1730,11 @@ mod tests {
             }],
             expected_behavior: "400 bad request".into(),
             observed_behavior: "500 with a SQL syntax error".into(),
+            effect: Some(
+                crate::alphacode_security_core::proof::ProofEffect::BodyMarker {
+                    marker: "SQL syntax error".into(),
+                },
+            ),
             baseline: Some(BaselineComparison::new(
                 "unauthenticated",
                 baseline,

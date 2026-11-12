@@ -1,5 +1,22 @@
 use std::path::Path;
 
+/// Keep a captured helper from opening a console when launched by the daemon.
+/// Foreground terminal programs must retain their console attachment.
+pub fn hide_helper_console(command: &mut std::process::Command) -> &mut std::process::Command {
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        command.creation_flags(windows_sys::Win32::System::Threading::CREATE_NO_WINDOW);
+    }
+    command
+}
+
+pub fn helper_command(program: impl AsRef<std::ffi::OsStr>) -> std::process::Command {
+    let mut command = std::process::Command::new(program);
+    hide_helper_console(&mut command);
+    command
+}
+
 #[cfg(target_os = "macos")]
 mod macos_power {
     use std::ffi::CString;

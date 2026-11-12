@@ -1417,8 +1417,7 @@ pub(in crate::alphacode_tui::tui::app) fn handle_server_event(
             app.push_display_message(DisplayMessage {
                 role: "error".to_string(),
                 content: if provider_busy {
-                    "Provider is busy or rate-limited. Try again later or switch model (/model)."
-                        .to_string()
+                    "Provider is temporarily busy. Retry later or use /model to switch.".to_string()
                 } else {
                     message.clone()
                 },

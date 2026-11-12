@@ -15,8 +15,7 @@ impl super::Agent {
         self.active_skill
             .as_deref()
             .is_some_and(|skill| matches!(skill, "ctf" | "ctf-workflow"))
-            || self
-                .latest_user_text()
+            || super::prompting::latest_task_text(&self.session.messages)
                 .as_deref()
                 .is_some_and(is_ctf_request)
     }

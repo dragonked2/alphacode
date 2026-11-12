@@ -14,7 +14,7 @@ mod messages;
 mod pacing;
 mod parallel_tools;
 mod playbook_match;
-mod prompting;
+pub(crate) mod prompting;
 mod provider;
 mod response_recovery;
 pub(crate) use response_recovery::is_content_policy_rejection;

@@ -76,7 +76,7 @@ pub(crate) fn matches_query(name: &str, description: &str, query: &str) -> bool 
         "katana" => "crawl spider endpoints javascript",
         "ffuf" | "feroxbuster" | "gobuster" => "content discovery fuzz paths directories",
         "httpflow" => {
-            "http request response replay headers cookies actor comparison authorization sessions"
+            "http request response replay headers cookies actor comparison authorization sessions paywall preview content comparison"
         }
         "jwt" => "json web token inspect decode",
         "nuclei" => "template vulnerability scanner",

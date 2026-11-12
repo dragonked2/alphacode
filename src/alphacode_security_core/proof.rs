@@ -368,6 +368,10 @@ pub enum ProofDefect {
     BaselineIndistinguishable,
     /// The observed status is not informative on its own (e.g. a bare 200).
     UninformativeStatus,
+    /// The proof supplies no exact value that distinguishes the tested effect.
+    MissingEffectEvidence,
+    /// The claimed value is absent, incomplete, or already present in the control.
+    EffectNotDistinguished,
 }
 
 /// The outcome of checking a proof. `verified` is only ever true when
@@ -393,6 +397,10 @@ impl ProofVerdict {
 impl ProofDefect {
     pub fn as_str(&self) -> &'static str {
         match self {
+            Self::MissingEffectEvidence => "no exact observed effect was specified",
+            Self::EffectNotDistinguished => {
+                "the claimed effect is not distinguishable in the captured treatment and control"
+            }
             Self::MissingTestExchange => "no observed request/response was attached",
             Self::ExchangeNotObserved => {
                 "the attached request/response was not observed in this session"
@@ -426,6 +434,66 @@ pub struct ProofStep {
     pub tool: Option<String>,
 }
 
+/// An exact observable in the paired HTTP captures. Use the affected JSON
+/// field, response header, or literal body marker from a controlled fixture.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "source", rename_all = "snake_case")]
+pub enum ProofEffect {
+    JsonField {
+        pointer: String,
+        value: serde_json::Value,
+    },
+    Header {
+        name: String,
+        value: String,
+    },
+    BodyMarker {
+        marker: String,
+    },
+}
+
+impl ProofEffect {
+    fn is_distinguished(&self, baseline: &HttpExchange, treatment: &HttpExchange) -> bool {
+        match self {
+            Self::JsonField { pointer, value } => {
+                let field = |exchange: &HttpExchange| {
+                    let body: serde_json::Value =
+                        serde_json::from_str(exchange.response_body.as_deref()?).ok()?;
+                    Some(body.pointer(pointer).cloned())
+                };
+                pointer.starts_with('/')
+                    && !value.is_null()
+                    && field(treatment).flatten().as_ref() == Some(value)
+                    && field(baseline).is_some_and(|actual| actual.as_ref() != Some(value))
+            }
+            Self::Header { name, value } => {
+                let contains = |exchange: &HttpExchange| {
+                    exchange
+                        .response_headers
+                        .iter()
+                        .any(|(key, actual)| key.eq_ignore_ascii_case(name) && actual == value)
+                };
+                !name.trim().is_empty()
+                    && !value.trim().is_empty()
+                    && contains(treatment)
+                    && !contains(baseline)
+            }
+            Self::BodyMarker { marker } => {
+                let contains = |exchange: &HttpExchange| {
+                    exchange
+                        .response_body
+                        .as_deref()
+                        .filter(|body| !body.contains("\n\n[truncated, "))
+                        .map(|body| body.contains(marker))
+                };
+                !marker.trim().is_empty()
+                    && contains(treatment) == Some(true)
+                    && contains(baseline) == Some(false)
+            }
+        }
+    }
+}
+
 /// The structured proof attached to a security finding.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct ProofObject {
@@ -441,6 +509,8 @@ pub struct ProofObject {
     /// The comparison point, when one was captured.
     #[serde(default)]
     pub baseline: Option<BaselineComparison>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub effect: Option<ProofEffect>,
 }
 
 impl ProofObject {
@@ -452,6 +522,7 @@ impl ProofObject {
             expected_behavior: String::new(),
             observed_behavior: String::new(),
             baseline: None,
+            effect: None,
         }
     }
 
@@ -475,6 +546,33 @@ impl ProofObject {
     /// nothing observed, nothing can be confirmed.
     pub fn verify_against(&self, observed: &[HttpExchange]) -> ProofVerdict {
         self.evaluate(Some(observed))
+    }
+
+    /// A report also needs an observed consequence that differs from the control.
+    pub fn verify_report_evidence(&self, observed: Option<&[HttpExchange]>) -> ProofVerdict {
+        let mut verdict = self.evaluate(observed);
+        match (&self.effect, &self.baseline) {
+            (None, _) => verdict.defects.push(ProofDefect::MissingEffectEvidence),
+            (Some(effect), Some(pair))
+                if !effect.is_distinguished(&pair.baseline, &pair.treatment) =>
+            {
+                verdict.defects.push(ProofDefect::EffectNotDistinguished);
+            }
+            (Some(_), Some(_)) => {
+                verdict.defects.retain(|defect| {
+                    !matches!(
+                        defect,
+                        ProofDefect::BaselineIndistinguishable | ProofDefect::UninformativeStatus
+                    )
+                });
+                verdict.observations.push(
+                    "The selected observable differs from the control; review boundary, causality and impact independently".to_string(),
+                );
+            }
+            _ => {}
+        }
+        verdict.verified = verdict.defects.is_empty();
+        verdict
     }
 
     fn evaluate(&self, observed: Option<&[HttpExchange]>) -> ProofVerdict {
@@ -809,12 +907,61 @@ mod tests {
             }],
             expected_behavior: "the search rejects the malformed query with 400".into(),
             observed_behavior: "the server returned 500 with a SQL syntax error".into(),
+            effect: None,
             baseline: Some(BaselineComparison::new(
                 "unauthenticated",
                 baseline,
                 treatment,
             )),
         }
+    }
+
+    #[test]
+    fn report_evidence_checks_the_claimed_field_instead_of_http_status_or_body_size() {
+        let url = "https://example.com/api/posts/fixture";
+        let control = exchange("GET", url, 200, r#"{"content":"preview","locked":true}"#);
+        let metadata_only = exchange(
+            "GET",
+            url,
+            200,
+            r#"{"content":"preview","locked":true,"hiddenCharacters":303}"#,
+        );
+        let exposed = exchange("GET", url, 200, r#"{"content":"private","locked":true}"#);
+        let mut proof = complete_proof();
+        proof.expected_behavior = "Return the public preview".into();
+        proof.observed_behavior = "Returned the private fixture value".into();
+        proof.effect = Some(ProofEffect::JsonField {
+            pointer: "/content".into(),
+            value: serde_json::json!("private"),
+        });
+        proof.test_exchange = Some(metadata_only.clone());
+        proof.baseline = Some(BaselineComparison::new(
+            "public fixture",
+            control.clone(),
+            metadata_only.clone(),
+        ));
+        let verdict = proof.verify_report_evidence(Some(&[control.clone(), metadata_only]));
+        assert!(
+            verdict
+                .defects
+                .contains(&ProofDefect::EffectNotDistinguished)
+        );
+
+        proof.test_exchange = Some(exposed.clone());
+        proof.baseline = Some(BaselineComparison::new(
+            "public fixture",
+            control.clone(),
+            exposed.clone(),
+        ));
+        let history = [control, exposed];
+        assert!(proof.verify_report_evidence(Some(&history)).verified);
+        proof.effect = None;
+        assert!(
+            proof
+                .verify_report_evidence(Some(&history))
+                .defects
+                .contains(&ProofDefect::MissingEffectEvidence)
+        );
     }
 
     #[test]
