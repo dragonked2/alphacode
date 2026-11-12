@@ -4,6 +4,28 @@ All notable changes to Alphacode are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project
 adheres to [Semantic Versioning](https://semver.org/).
 
+## [1.1.3]
+
+### Added
+
+- Select skills automatically from the request, engagement, and observed
+  stack in daemon, headless, and local TUI sessions.
+- Add Next.js and Node.js security guidance and verification controls for
+  127 vulnerability classes and variants.
+- Compare public and tested content offline with `httpflow`. Structured HTTP
+  proofs now require an observed effect that differs from a control.
+- Display the running AlphaCode version in the Session widget.
+
+### Fixed
+
+- Keep captured Windows helpers from opening separate console windows.
+- Use one Git subprocess to refresh the Session widget. Reuse cached
+  transcript measurements and release obsolete prepared frames.
+- Share explicit provider cooldowns between concurrent requests to the same
+  origin and show clearer retry status in the composer.
+- Detect recon output overflow reliably and release capture resources on
+  timeout or cancellation.
+
 ## [1.1.2]
 
 ### Added

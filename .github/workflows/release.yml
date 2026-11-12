@@ -490,11 +490,13 @@ jobs:
           fi
           gh run watch "$ci_run" --exit-status --interval 30
 
-      - name: Upload combined SHA256SUMS
-        uses: softprops/action-gh-release@v2
-        with:
-          tag_name: ${{ github.ref_name }}
-          draft: false
-          make_latest: true
-          files: SHA256SUMS
-          fail_on_unmatched_files: false
+      - name: Upload checksums and publish with GitHub CLI
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          gh release upload "$RELEASE_TAG" SHA256SUMS --clobber
+          gh release edit "$RELEASE_TAG" --draft=false --latest
