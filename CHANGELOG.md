@@ -3,6 +3,18 @@
 All notable changes to Alphacode are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project
 adheres to [Semantic Versioning](https://semver.org/).
+## [1.1.4] - 2026-11-13
+
+### Fixed
+
+- Keep the selected **Alphax Free (automatic)** route pinned after provider
+  rate limits instead of silently switching the session to concrete free models.
+- Show the active session title in the Session widget, wrap long titles, and
+  suppress flow widgets when their margin would cover transcript content.
+- Prompt-history Backspace removes one Unicode grapheme cluster at a time.
+- Remote Escape dismisses error toasts before changing the draft and clears
+  inline-preview state consistently with local input.
+
 
 ## [1.1.3]
 
