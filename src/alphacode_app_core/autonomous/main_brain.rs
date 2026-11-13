@@ -870,7 +870,7 @@ mod tests {
         assert!(reopened.active_agents.is_empty());
         drop(reopened);
         let mut restored = MainBrain::new(dir.path()).unwrap();
-        assert_eq!(restored.completed_reports(), &[report.clone()]);
+        assert_eq!(restored.completed_reports(), std::slice::from_ref(&report));
         restored.accept_report(report.clone()).unwrap();
         let mut retried = report.clone();
         retried.created_at += chrono::Duration::seconds(1);

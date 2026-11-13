@@ -1034,6 +1034,19 @@ pub fn update_canary_symlink(hash: &str) -> Result<()> {
     Ok(())
 }
 
+/// Captured build metadata probes must stay invisible when called by a daemon.
+fn captured_command(program: impl AsRef<std::ffi::OsStr>) -> std::process::Command {
+    let command = std::process::Command::new(program);
+    #[cfg(windows)]
+    let command = {
+        use std::os::windows::process::CommandExt;
+        let mut command = command;
+        command.creation_flags(windows_sys::Win32::System::Threading::CREATE_NO_WINDOW);
+        command
+    };
+    command
+}
+
 #[cfg(test)]
 mod tests;
 
@@ -1120,17 +1133,4 @@ mod safe_version_component_tests {
             "whitespace should be trimmed, not treated as path-unsafe"
         );
     }
-}
-
-/// Captured build metadata probes must stay invisible when called by a daemon.
-fn captured_command(program: impl AsRef<std::ffi::OsStr>) -> std::process::Command {
-    let command = std::process::Command::new(program);
-    #[cfg(windows)]
-    let command = {
-        use std::os::windows::process::CommandExt;
-        let mut command = command;
-        command.creation_flags(windows_sys::Win32::System::Threading::CREATE_NO_WINDOW);
-        command
-    };
-    command
 }

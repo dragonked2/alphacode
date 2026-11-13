@@ -1200,7 +1200,8 @@ mod tests {
         let server = tokio::spawn(async move {
             let (mut socket, _) = listener.accept().await.unwrap();
             let mut bytes = [0; 2048];
-            socket.read(&mut bytes).await.unwrap();
+            let read = socket.read(&mut bytes).await.unwrap();
+            assert!(read > 0, "rate-limit fixture expected a request");
             socket.write_all(b"HTTP/1.1 429 Too Many Requests\r\nContent-Length: 4\r\nConnection: close\r\n\r\nslow").await.unwrap();
             tokio::time::timeout(std::time::Duration::from_millis(300), listener.accept())
                 .await
@@ -1571,7 +1572,7 @@ mod forwarded_header_lab_tests {
         });
         let session = "forwarded-header-local-lab";
         let policy = crate::alphacode_security_core::scope_gate::ScopePolicy::from_lists(
-            &[base.clone()],
+            std::slice::from_ref(&base),
             &[],
             true,
             &[],
