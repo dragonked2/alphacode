@@ -3,7 +3,6 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
-use std::process::Command;
 use std::sync::{LazyLock, RwLock};
 
 /// Cached GitHub token resolved from file or subprocess sources, with the
@@ -519,7 +518,10 @@ fn load_token_from_gh_cli() -> Option<String> {
         return None;
     }
 
-    let output = Command::new("gh").args(["auth", "token"]).output().ok()?;
+    let output = crate::alphacode_base::platform::helper_command("gh")
+        .args(["auth", "token"])
+        .output()
+        .ok()?;
     if !output.status.success() {
         return None;
     }

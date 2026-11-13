@@ -38,6 +38,7 @@ fn build_input_shell_command(command: &str) -> Command {
     #[cfg(windows)]
     {
         let mut cmd = Command::new("cmd.exe");
+        crate::alphacode_base::platform::hide_helper_console(cmd.as_std_mut());
         cmd.arg("/C").arg(command);
         cmd
     }
@@ -984,7 +985,9 @@ pub(super) async fn handle_resume_all_sessions(
         let display_name = agent_guard
             .session_short_name()
             .map(str::to_string)
-            .unwrap_or_else(|| session_id[..8.min(session_id.len())].to_string());
+            .unwrap_or_else(|| {
+                crate::alphacode_swarm_core::short_session_id(&session_id).to_string()
+            });
         drop(agent_guard);
 
         // Best-effort: record that the durable recovery intent was delivered.

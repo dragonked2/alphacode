@@ -13,6 +13,7 @@ pub mod evidence;
 pub mod finding;
 pub mod hypothesis;
 pub mod hypothesis_set;
+pub mod investigation;
 pub mod knowledge;
 pub mod learning;
 pub mod noise;

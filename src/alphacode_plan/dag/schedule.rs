@@ -72,9 +72,14 @@ pub fn assemble_input(graph: &TaskGraph, node_id: &str) -> String {
     let mut out = String::new();
     out.push_str(&node.content);
 
+    // Dependency edges are a set semantically, including after legacy snapshot
+    // restore. Keep first-seen order without repeating potentially large
+    // evidence artifacts in the worker context.
+    let mut seen = std::collections::HashSet::new();
     let upstream: Vec<&TaskNode> = node
         .depends_on
         .iter()
+        .filter(|dep| seen.insert(dep.as_str()))
         .filter_map(|dep| graph.get(dep))
         .filter(|dep| dep.is_done())
         .collect();

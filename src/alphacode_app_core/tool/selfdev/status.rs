@@ -12,7 +12,7 @@ pub fn selfdev_status_output() -> Result<ToolOutput> {
     ));
 
     if let Some(repo_dir) = build::get_repo_dir() {
-        let output = std::process::Command::new("git")
+        let output = crate::alphacode_base::platform::helper_command("git")
             .args(["status", "--porcelain"])
             .current_dir(&repo_dir)
             .output()

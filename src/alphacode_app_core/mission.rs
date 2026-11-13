@@ -4,7 +4,9 @@ use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 
 use crate::alphacode_app_core::prompt::MISSION_CONTINUATION_TEMPLATE;
-use crate::alphacode_task_types::goal_contract::{GoalContract, PhaseBudgets};
+use crate::alphacode_task_types::goal_contract::{
+    GoalContract, PhaseBudgets, StopPolicy, SuccessCriterion,
+};
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
@@ -50,6 +52,10 @@ pub struct Mission {
     pub success_criteria: Vec<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub validation_plan: Vec<String>,
+    /// Explicit runtime verification definitions, matched to prose criteria by
+    /// statement. Missing definitions stay unverified rather than being guessed.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub verification_criteria: Vec<SuccessCriterion>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub checkpoints: Vec<MissionCheckpoint>,
     pub created_at: DateTime<Utc>,
@@ -78,6 +84,7 @@ pub fn set(session_id: &str, objective: &str) -> Result<Mission> {
         semantic_expansion: Vec::new(),
         success_criteria: Vec::new(),
         validation_plan: Vec::new(),
+        verification_criteria: Vec::new(),
         checkpoints: Vec::new(),
         created_at: now,
         updated_at: now,
@@ -200,7 +207,10 @@ fn default_long_horizon_intent(objective: &str) -> String {
 /// Create a GoalContract from a Mission's success_criteria and validation_plan.
 /// Returns `None` if the mission has no success criteria to build a contract from.
 pub fn contract_from_mission(mission: &Mission) -> Option<GoalContract> {
-    if mission.success_criteria.is_empty() && mission.validation_plan.is_empty() {
+    if mission.success_criteria.is_empty()
+        && mission.validation_plan.is_empty()
+        && mission.verification_criteria.is_empty()
+    {
         return None;
     }
 
@@ -213,6 +223,74 @@ pub fn contract_from_mission(mission: &Mission) -> Option<GoalContract> {
     }
 
     let mut contract = GoalContract::new(&mission.objective, criteria);
+    for verification in &mission.verification_criteria {
+        if let Some(criterion) = contract
+            .success_criteria
+            .iter_mut()
+            .find(|criterion| criterion.statement == verification.statement)
+        {
+            *criterion = verification.clone();
+        } else {
+            contract.success_criteria.push(verification.clone());
+        }
+    }
+    if !mission.verification_criteria.is_empty() {
+        // A successful build must not bypass a separately required test or
+        // artifact check. Unconfigured prose criteria continue to need review.
+        contract.stop_policy = StopPolicy::AllCriteriaSatisfied;
+    }
     contract.budgets = PhaseBudgets::default();
     Some(contract)
+}
+
+#[cfg(test)]
+mod verification_tests {
+    use super::*;
+    use crate::alphacode_task_types::goal_contract::{CriterionCheck, EvidenceTier};
+    use serde_json::json;
+
+    #[test]
+    fn mission_checks_replace_matching_prose_and_require_all_criteria() {
+        let mut mission = Mission {
+            session_id: "test".into(),
+            objective: "verify".into(),
+            long_horizon_intent: String::new(),
+            status: MissionStatus::Active,
+            semantic_expansion: vec![],
+            success_criteria: vec!["build passes".into()],
+            validation_plan: vec!["review output".into()],
+            verification_criteria: vec![],
+            checkpoints: vec![],
+            created_at: Utc::now(),
+            updated_at: Utc::now(),
+        };
+        let mut saved = serde_json::to_value(&mission).unwrap();
+        saved
+            .as_object_mut()
+            .unwrap()
+            .remove("verification_criteria");
+        let legacy: Mission = serde_json::from_value(saved).unwrap();
+        assert!(legacy.verification_criteria.is_empty());
+        mission.verification_criteria.push(SuccessCriterion {
+            statement: "build passes".into(),
+            tier: EvidenceTier::FirstParty,
+            check: CriterionCheck::ToolMetadata {
+                tool_name: "bash".into(),
+                input: json!({"command": "build"}),
+                metadata_pointer: "/process_exit_code".into(),
+                expected: json!(0),
+            },
+        });
+        let contract = contract_from_mission(&mission).unwrap();
+        assert_eq!(contract.stop_policy, StopPolicy::AllCriteriaSatisfied);
+        assert_eq!(contract.success_criteria.len(), 2);
+        assert_eq!(
+            contract.success_criteria[0],
+            mission.verification_criteria[0]
+        );
+        assert_eq!(
+            contract.success_criteria[1].check,
+            CriterionCheck::ModelAsserted
+        );
+    }
 }

@@ -1701,7 +1701,10 @@ async fn run_stream_with_retries(
                 }
 
                 // Check if this is a transient/retryable error
-                if is_retryable_error(&error_str) && attempt + 1 < MAX_RETRIES {
+                if is_retryable_error(&error_str)
+                    && attempt + 1 < MAX_RETRIES
+                    && !crate::alphacode_provider_core::retry_after::requires_manual_retry(&e)
+                {
                     if saw_output {
                         // The fault hit mid-stream after partial output reached
                         // the consumer. Tell it to discard the partial attempt

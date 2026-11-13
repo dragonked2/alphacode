@@ -24,7 +24,17 @@ Proactive vulnerability discovery in source code.
 2. Identify **sinks** (SQL queries, command execution, template rendering)
 3. Trace data flow from source to sink
 4. Check if sanitization/validation exists between source and sink
-5. If no validation → vulnerability confirmed
+5. Treat a missing check as a lead. Confirm attacker control, a reachable
+   unsafe sink, the relevant trust boundary and a demonstrable consequence;
+   framework protections, parameterization or other controls may make the
+   apparent flow safe. Mark source-only or untested paths accordingly.
+
+For a suspected protected-content disclosure, compare the complete same-object
+public preview and tested content fields. Confirm the tested actor received a
+specific private value established by an entitled control or owned fixture.
+Status codes, lock flags, counts of withheld text, and placeholder dimensions
+do not supply that evidence. Without a demonstrated disclosure, record a lead
+or a refuted hypothesis and withhold severity scoring.
 
 ## PoC Template
 

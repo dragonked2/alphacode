@@ -113,7 +113,7 @@ pub fn has_authenticated_cli_session() -> bool {
         return false;
     }
 
-    let mut status_command = Command::new(&command);
+    let mut status_command = crate::alphacode_base::platform::helper_command(&command);
     status_command.arg("status");
     let Ok(Some(output)) =
         command_output_with_timeout(&mut status_command, CURSOR_EXTERNAL_COMMAND_TIMEOUT)
@@ -264,7 +264,7 @@ fn cursor_vscdb_paths() -> Vec<PathBuf> {
 
 /// Read a key from a vscdb file using the sqlite3 CLI.
 fn read_vscdb_key(db_path: &PathBuf, key: &str) -> Result<String> {
-    let mut command = Command::new("sqlite3");
+    let mut command = crate::alphacode_base::platform::helper_command("sqlite3");
     command.arg(db_path).arg(format!(
         "SELECT value FROM ItemTable WHERE key = '{}';",
         key

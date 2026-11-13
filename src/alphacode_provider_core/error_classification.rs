@@ -11,6 +11,7 @@ fn error_evidence(error: &str) -> String {
             let lower = line.to_ascii_lowercase();
             ![
                 "hint:",
+                "common causes:",
                 "context hint:",
                 "context_estimate:",
                 "context_window:",
@@ -27,6 +28,33 @@ fn error_evidence(error: &str) -> String {
         .collect::<Vec<_>>()
         .join("\n")
         .to_ascii_lowercase()
+}
+
+/// Recognize the redacted Alphax Free HTTP envelope even when a caller has
+/// wrapped it in a user-facing explanation.
+pub fn is_alphax_free_bad_request(error: &str) -> bool {
+    const ENVELOPE: &str = "Alphax Free request failed (status: 400 Bad Request).";
+    error
+        .lines()
+        .map(str::trim)
+        .any(|line| line == ENVELOPE || line.strip_prefix("Upstream says: ") == Some(ENVELOPE))
+}
+
+/// Actual model/endpoint rejection evidence, excluding generated diagnostics.
+pub fn is_model_endpoint_rejection(error: &str) -> bool {
+    let lower = error_evidence(error);
+    [
+        "unsupportedmodel",
+        "unsupported model",
+        "does not support the coding plan",
+        "coding plan feature",
+        "model_not_found",
+        "model_not_supported",
+        "invalid model",
+        "model does not exist",
+    ]
+    .iter()
+    .any(|marker| lower.contains(marker))
 }
 
 /// A Responses history item belongs to another upstream OpenAI resource.
@@ -107,6 +135,17 @@ mod tests {
     use super::*;
 
     const RESOURCE_ERROR: &str = r#"{"error":{"message":"OpenAI Responses bad request: The requested item was created under a different *** OpenAI resource. Use the same resource that created the item to access it.","type":"invalid_request_error","param":"","code":null}}"#;
+
+    #[test]
+    fn generated_bad_request_guidance_does_not_establish_model_mismatch() {
+        let old_error = "HTTP 400 (bad request): the provider rejected the request payload.\nCommon causes: unsupported model/parameter for this endpoint.\n\nUpstream says: Alphax Free request failed (status: 400 Bad Request).";
+        assert!(is_alphax_free_bad_request(old_error));
+        assert!(!is_model_endpoint_rejection(old_error));
+        assert!(!is_alphax_free_bad_request("status: 400 Bad Request"));
+        assert!(is_model_endpoint_rejection(
+            r#"response: {"error":{"code":"UnsupportedModel"}}"#
+        ));
+    }
 
     #[test]
     fn regression_1094_diagnostics_and_generic_hints_are_not_overflows() {

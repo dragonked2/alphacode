@@ -577,6 +577,47 @@ async fn subagent_tool_is_not_registered() {
 
 struct BareSchemaTool;
 
+#[tokio::test]
+async fn schema_preflight_rejects_before_tool_execution_and_allows_correction() {
+    let _env_guard = isolate_process_env();
+    let registry = Registry::new(Arc::new(MockProvider)).await;
+    registry
+        .register("bare_schema".into(), Arc::new(BareSchemaTool))
+        .await;
+    let session = format!("schema-preflight-{}", std::process::id());
+    let ctx = ToolContext {
+        session_id: session.clone(),
+        message_id: "message".into(),
+        tool_call_id: "tool".into(),
+        working_dir: None,
+        stdin_request_tx: None,
+        graceful_shutdown_signal: None,
+        execution_mode: ToolExecutionMode::Direct,
+    };
+    // The fixture's execute always succeeds, even for empty input. Rejection
+    // therefore proves the registry checks the contract before dispatch.
+    let error = registry
+        .execute("bare_schema", json!({}), ctx.clone())
+        .await
+        .expect_err("missing command must not reach execute");
+    assert!(
+        error
+            .to_string()
+            .contains("Missing required arguments at $: command")
+    );
+    assert_eq!(
+        repeat_guard::prior_malformed(&session, "bare_schema", &json!({})),
+        1
+    );
+    assert!(
+        registry
+            .execute("bare_schema", json!({"command": "ok"}), ctx)
+            .await
+            .is_ok()
+    );
+    clear_session_tool_policy(&session);
+}
+
 struct CountingSchemaTool(std::sync::Arc<std::sync::atomic::AtomicUsize>);
 
 #[async_trait]

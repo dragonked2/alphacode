@@ -152,6 +152,18 @@ fn model_picker_favorites_path() -> Option<std::path::PathBuf> {
 mod placeholder_routes;
 use placeholder_routes::route_supports_reasoning_effort;
 
+fn filter_available_model_routes(
+    routes: Vec<crate::provider::ModelRoute>,
+) -> Vec<crate::provider::ModelRoute> {
+    // Provider catalogs intentionally retain unavailable routes for diagnostics
+    // and auth lifecycle reporting. The selection menu is an execution surface,
+    // though: showing a route with no usable credentials implies the model can
+    // be selected now. Login/configuration remains available through /login and
+    // /account, while configured local and anonymous routes are marked available
+    // by their provider and therefore remain visible here.
+    routes.into_iter().filter(|route| route.available).collect()
+}
+
 /// Apply the `provider.model_picker_providers` allowlist (issue #460).
 ///
 /// Each allowlist entry can name a provider label ("openai", "llama.cpp",
@@ -1561,6 +1573,7 @@ impl App {
             }
         }
         let routes = crate::provider::dedupe_model_routes(routes);
+        let routes = filter_available_model_routes(routes);
         let routes = filter_routes_by_provider_allowlist(
             routes,
             config.provider.model_picker_providers.as_deref(),
@@ -4013,12 +4026,13 @@ mod tests {
     use super::{
         ModelPickerPosition, REMOTE_MODEL_CATALOG_CACHE_MAX_AGE_SECS,
         REMOTE_MODEL_CATALOG_CACHE_VERSION, REMOTE_MODEL_CATALOG_MAX_DETAIL_BYTES,
-        RemoteModelCatalogCache, filter_routes_by_provider_allowlist,
-        key_char_eq_ignore_ascii_case, model_picker_effort_matches_default,
-        model_picker_route_is_current, model_picker_route_is_default,
-        model_picker_route_is_recommended, picker_is_runtime_model_picker,
-        remote_model_catalog_cache_is_fresh, remote_model_catalog_cache_origin,
-        remote_model_catalog_snapshot_is_safe, route_supports_reasoning_effort,
+        RemoteModelCatalogCache, filter_available_model_routes,
+        filter_routes_by_provider_allowlist, key_char_eq_ignore_ascii_case,
+        model_picker_effort_matches_default, model_picker_route_is_current,
+        model_picker_route_is_default, model_picker_route_is_recommended,
+        picker_is_runtime_model_picker, remote_model_catalog_cache_is_fresh,
+        remote_model_catalog_cache_origin, remote_model_catalog_snapshot_is_safe,
+        route_supports_reasoning_effort,
     };
     use crate::alphacode_tui::tui::{
         AgentModelTarget, App, InlineInteractiveState, PickerAction, PickerEntry, PickerKind,
@@ -4618,6 +4632,31 @@ mod tests {
         assert!(!route_supports_reasoning_effort("openai-compatible"));
         assert!(!route_supports_reasoning_effort("remote-catalog"));
         assert!(!route_supports_reasoning_effort("current"));
+    }
+
+    #[test]
+    fn model_picker_hides_unavailable_provider_routes() {
+        let mut logged_out_openai = model_route("gpt-5.5", "OpenAI", "openai-oauth");
+        logged_out_openai.available = false;
+        logged_out_openai.detail = "no credentials".to_string();
+        let mut logged_out_anthropic = model_route("claude-fable-5", "Anthropic", "claude-oauth");
+        logged_out_anthropic.available = false;
+        logged_out_anthropic.detail = "no credentials".to_string();
+
+        let routes = filter_available_model_routes(vec![
+            logged_out_openai,
+            logged_out_anthropic,
+            model_route("qwen3-coder", "llama.cpp", "openai-compatible:llamacpp"),
+            model_route(
+                "alphax/free",
+                "Alphax Free",
+                "openai-compatible:alphax-free",
+            ),
+        ]);
+
+        let providers: Vec<&str> = routes.iter().map(|route| route.provider.as_str()).collect();
+        assert_eq!(providers, ["llama.cpp", "Alphax Free"]);
+        assert!(routes.iter().all(|route| route.available));
     }
 
     #[test]

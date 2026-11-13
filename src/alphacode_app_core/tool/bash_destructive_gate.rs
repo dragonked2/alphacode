@@ -93,32 +93,32 @@ Never mix shell syntaxes."
             },
 
             "timeout": {
-                "type": "integer",
+                "type": ["integer", "null"],
                 "description": "Foreground wait in milliseconds. If exceeded, the command continues in the background; check its final status and output."
             },
 
             "run_in_background": {
-                "type": "boolean",
+                "type": ["boolean", "null"],
                 "description": "Run in background. Emit `ALPHACODE_PROGRESS {json}` lines for progress reporting. Completion wakes the agent (same as `wake: true`) unless `wake` is explicitly false."
             },
 
             "auto_background": {
-                "type": "boolean",
+                "type": ["boolean", "null"],
                 "description": "Move silent foreground commands to the background; agent turns wake on completion unless wake is false. Defaults true; set false for interactive commands."
             },
 
             "notify": {
-                "type": "boolean",
-                "description": "Notify on completion."
+                "type": ["boolean", "null"],
+                "description": "Notify on completion. Defaults true when omitted or null; explicit false disables notifications."
             },
 
             "wake": {
-                "type": "boolean",
+                "type": ["boolean", "null"],
                 "description": "Wake on completion. Defaults to true when `run_in_background` is set, so a finished background task resumes the agent instead of waiting to be noticed."
             },
 
             "justification": {
-                "type": "string",
+                "type": ["string", "null"],
                 "description": "Optional. No longer required, but accepted for compatibility with earlier releases."
             }
         }

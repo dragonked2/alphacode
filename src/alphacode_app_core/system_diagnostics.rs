@@ -192,7 +192,7 @@ fn check_rust_toolchain() -> Vec<CheckResult> {
 
     // Check rustc
     let start = Instant::now();
-    let output = std::process::Command::new("rustc")
+    let output = crate::alphacode_base::platform::helper_command("rustc")
         .arg("--version")
         .output();
     match output {
@@ -234,7 +234,7 @@ fn check_rust_toolchain() -> Vec<CheckResult> {
 
     // Check cargo
     let start = Instant::now();
-    let output = std::process::Command::new("cargo")
+    let output = crate::alphacode_base::platform::helper_command("cargo")
         .arg("--version")
         .output();
     match output {
@@ -263,7 +263,7 @@ fn check_rust_toolchain() -> Vec<CheckResult> {
 
     // Check clippy
     let start = Instant::now();
-    let output = std::process::Command::new("cargo")
+    let output = crate::alphacode_base::platform::helper_command("cargo")
         .args(["clippy", "--version"])
         .output();
     match output {
@@ -422,7 +422,7 @@ fn check_optional_tools() -> Vec<CheckResult> {
 
     for (binary, desc, optional) in tools {
         let start = Instant::now();
-        let found = std::process::Command::new(binary)
+        let found = crate::alphacode_base::platform::helper_command(binary)
             .arg("--version")
             .output()
             .map(|o| o.status.success())
@@ -436,7 +436,7 @@ fn check_optional_tools() -> Vec<CheckResult> {
 
         let detail = if found {
             // Try to get version
-            std::process::Command::new(binary)
+            crate::alphacode_base::platform::helper_command(binary)
                 .arg("--version")
                 .output()
                 .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
@@ -521,7 +521,7 @@ fn check_git_status(work_dir: Option<&Path>) -> Vec<CheckResult> {
 
     // Check if in a git repo
     let start = Instant::now();
-    let output = std::process::Command::new("git")
+    let output = crate::alphacode_base::platform::helper_command("git")
         .args(["rev-parse", "--is-inside-work-tree"])
         .current_dir(dir)
         .output();
@@ -541,7 +541,7 @@ fn check_git_status(work_dir: Option<&Path>) -> Vec<CheckResult> {
 
                 // Check for uncommitted changes
                 let start = Instant::now();
-                let status = std::process::Command::new("git")
+                let status = crate::alphacode_base::platform::helper_command("git")
                     .args(["status", "--porcelain"])
                     .current_dir(dir)
                     .output();
@@ -571,7 +571,7 @@ fn check_git_status(work_dir: Option<&Path>) -> Vec<CheckResult> {
 
                 // Check current branch
                 let start = Instant::now();
-                let branch = std::process::Command::new("git")
+                let branch = crate::alphacode_base::platform::helper_command("git")
                     .args(["branch", "--show-current"])
                     .current_dir(dir)
                     .output();

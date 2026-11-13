@@ -280,6 +280,29 @@ fn test_history_search_up_down_moves_selection() {
 }
 
 #[test]
+fn test_history_search_backspace_removes_one_grapheme_cluster() {
+    let mut app = create_test_app();
+    app.persisted_prompt_history = Some(Vec::new());
+    app.open_prompt_history_search();
+    app.prompt_history_search
+        .as_mut()
+        .expect("history search should be open")
+        .query = "👩‍💻🇺🇸a\u{301}".to_string();
+
+    app.handle_key(KeyCode::Backspace, KeyModifiers::empty())
+        .unwrap();
+    assert_eq!(app.prompt_history_search.as_ref().unwrap().query, "👩‍💻🇺🇸");
+
+    app.handle_key(KeyCode::Backspace, KeyModifiers::empty())
+        .unwrap();
+    assert_eq!(app.prompt_history_search.as_ref().unwrap().query, "👩‍💻");
+
+    app.handle_key(KeyCode::Backspace, KeyModifiers::empty())
+        .unwrap();
+    assert_eq!(app.prompt_history_search.as_ref().unwrap().query, "");
+}
+
+#[test]
 fn test_prompt_history_file_roundtrip_dedupes_and_caps() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("prompt-history.jsonl");

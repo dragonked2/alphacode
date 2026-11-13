@@ -1,3 +1,4 @@
+use super::streamed_tool_results::StreamedToolOutcome;
 use super::*;
 
 /// Largest byte index `<= index` that is a UTF-8 char boundary in `text`.
@@ -81,10 +82,8 @@ impl Agent {
         event_tx: mpsc::UnboundedSender<ServerEvent>,
     ) -> Result<()> {
         self.set_log_context();
-        // Reset the per-turn budget counters. `BudgetEnforcer` is a per-`Agent`
-        // field that outlives a single turn, so without this `phase_calls`
-        // accumulated across the whole session and a long conversation would
-        // eventually trip the phase budget and be forced into `Report`.
+        // Reset the advisory checkpoint counters for this turn.
+        self.initialize_goal_contract();
         self.budget_enforcer
             .begin_turn(self.goal_contract.as_ref().map(|c| c.phase));
         // Mark this session as actively streaming for presence UIs (e.g. the
@@ -121,11 +120,14 @@ impl Agent {
         // and decides the next action — the system prompt and tool list never
         // change. Rebuilding them on every iteration wastes CPU and produces
         // identical bytes that the provider's KV cache already ignores.
+        let mut node_stack_observed = false;
         let mut cached_static_prompt: Option<(
             std::sync::Arc<crate::prompt::SplitSystemPrompt>,
             crate::prompt::PromptTier,
         )> = None;
         let mut cached_tools: Option<Vec<ToolDefinition>> = None;
+        let ctf_goal_active = self.ctf_goal_active();
+        let mut ctf_continuations = std::collections::HashSet::new();
         let mut iteration_count: u32 = 0;
         let mut last_save_time = Instant::now();
         'turn: loop {
@@ -191,10 +193,18 @@ impl Agent {
             if self.locked_tools.is_none() {
                 cached_tools = None;
             }
+            if !node_stack_observed && super::prompting::observed_node_stack(&self.session.messages)
+            {
+                node_stack_observed = true;
+                cached_static_prompt = None;
+                cached_tools = None;
+            }
             if cached_tools.is_none() {
                 let definitions = self.tool_definitions().await;
-                cached_tools = Some(if self.uses_compact_local_context() {
-                    let query = self.latest_user_text().unwrap_or_default();
+                cached_tools = Some(if self.uses_compact_context() {
+                    let task = super::prompting::latest_task_text(&self.session.messages)
+                        .unwrap_or_default();
+                    let query = super::prompting::adaptive_tool_query(&task, node_stack_observed);
                     super::turn_execution::context_adaptive_tools_with_promotions(
                         &definitions,
                         &query,
@@ -229,7 +239,7 @@ impl Agent {
             let (split_prompt, prompt_tier) = if let Some(ref cached) = cached_static_prompt {
                 (std::sync::Arc::clone(&cached.0), cached.1)
             } else {
-                let (sp, tier) = self.build_system_prompt_split(None, None);
+                let (sp, tier) = self.build_system_prompt_split(None, None, node_stack_observed);
                 let sp = std::sync::Arc::new(sp);
                 cached_static_prompt = Some((std::sync::Arc::clone(&sp), tier));
                 (sp, tier)
@@ -237,7 +247,7 @@ impl Agent {
             let capability_brief = crate::tool::capabilities::request_brief(
                 &capability_names,
                 tools,
-                self.uses_compact_local_context(),
+                self.uses_compact_context(),
                 self.provider.handles_tools_internally(),
             );
             let request_dynamic_prompt =
@@ -384,14 +394,7 @@ impl Agent {
                                         &mut provider_error_continuations,
                                     )? {
                                         if delay > 0 {
-                                            let _ = event_tx.send(ServerEvent::StatusDetail {
-                                                detail: format!(
-                                                    "Waiting {}s before retry (attempt {}/{})...",
-                                                    delay,
-                                                    provider_error_continuations,
-                                                    Self::MAX_PROVIDER_ERROR_CONTINUATION_ATTEMPTS
-                                                ),
-                                            });
+                                            logging::info(&format!("Provider retry scheduled in {delay}s (attempt {provider_error_continuations}/{})", Self::MAX_PROVIDER_ERROR_CONTINUATION_ATTEMPTS));
                                             tokio::time::sleep(tokio::time::Duration::from_secs(delay)).await;
                                         }
                                         // A zero delay means free-pool rotation
@@ -667,14 +670,10 @@ impl Agent {
                             )?
                         {
                             if delay > 0 {
-                                let _ = event_tx.send(ServerEvent::StatusDetail {
-                                    detail: format!(
-                                        "Waiting {}s before retry (attempt {}/{}).",
-                                        delay,
-                                        provider_error_continuations,
-                                        Self::MAX_PROVIDER_ERROR_CONTINUATION_ATTEMPTS
-                                    ),
-                                });
+                                logging::info(&format!(
+                                    "Provider retry scheduled in {delay}s (attempt {provider_error_continuations}/{})",
+                                    Self::MAX_PROVIDER_ERROR_CONTINUATION_ATTEMPTS
+                                ));
                                 tokio::time::sleep(tokio::time::Duration::from_secs(delay)).await;
                             } else if let Some(detail) = self.last_status_detail.clone() {
                                 let _ = event_tx.send(ServerEvent::StatusDetail { detail });
@@ -1062,27 +1061,9 @@ impl Agent {
                         input,
                     } => {
                         // Execute native tool and send result back to SDK bridge
-                        let ctx = ToolContext {
-                            session_id: self.session.id.clone(),
-                            message_id: self.session.id.clone(),
-                            tool_call_id: request_id.clone(),
-                            working_dir: self.working_dir().map(PathBuf::from),
-                            stdin_request_tx: self.stdin_request_tx.clone(),
-                            graceful_shutdown_signal: Some(self.graceful_shutdown.clone()),
-                            execution_mode: ToolExecutionMode::AgentTurn,
-                        };
-                        crate::telemetry::record_tool_call();
-                        let tool_result = self
-                            .registry
-                            .execute(&tool_name, ToolCall::normalize_input_to_object(input), ctx)
+                        let native_result = self
+                            .execute_native_goal_tool(request_id, tool_name, input)
                             .await;
-                        if tool_result.is_err() {
-                            crate::telemetry::record_tool_failure();
-                        }
-                        let native_result = match tool_result {
-                            Ok(output) => NativeToolResult::success(request_id, output.output),
-                            Err(e) => NativeToolResult::error(request_id, e.to_string()),
-                        };
                         if let Some(sender) = self.provider.native_result_sender() {
                             let _ = sender.send(native_result).await;
                         }
@@ -1167,14 +1148,10 @@ impl Agent {
                             )?
                         {
                             if delay > 0 {
-                                let _ = event_tx.send(ServerEvent::StatusDetail {
-                                    detail: format!(
-                                        "Waiting {}s before retry (attempt {}/{}).",
-                                        delay,
-                                        provider_error_continuations,
-                                        Self::MAX_PROVIDER_ERROR_CONTINUATION_ATTEMPTS
-                                    ),
-                                });
+                                logging::info(&format!(
+                                    "Provider retry scheduled in {delay}s (attempt {provider_error_continuations}/{})",
+                                    Self::MAX_PROVIDER_ERROR_CONTINUATION_ATTEMPTS
+                                ));
                                 tokio::time::sleep(tokio::time::Duration::from_secs(delay)).await;
                             } else if let Some(detail) = self.last_status_detail.clone() {
                                 let _ = event_tx.send(ServerEvent::StatusDetail { detail });
@@ -1583,6 +1560,14 @@ impl Agent {
                     &mut incomplete_continuations,
                 )? {
                     NoToolCallOutcome::Break => {
+                        if ctf_goal_active
+                            && saw_message_end
+                            && !text_content.trim().is_empty()
+                            && !Self::is_guardrail_stop_reason(stop_reason.as_deref())
+                            && self.continue_ctf_goal(&mut ctf_continuations)?
+                        {
+                            continue;
+                        }
                         // Surface silent guardrail/refusal stops: the provider
                         // ended the turn with no visible output (e.g. Anthropic
                         // stop_reason "refusal", or a reasoning-only response).
@@ -1831,11 +1816,24 @@ impl Agent {
                         let mut handles: Vec<(
                             usize,
                             ToolCall,
-                            tokio::task::JoinHandle<
+                            super::parallel_tools::OwnedToolTask<
                                 anyhow::Result<crate::alphacode_tool_types::ToolOutput>,
                             >,
                         )> = Vec::with_capacity(pending.len());
+                        let mut early_outcomes = Vec::new();
+                        let mut execution_timings = std::collections::HashMap::new();
                         for pt in pending {
+                            if let Some(message) = self.goal_tool_rejection(&pt.call.name) {
+                                early_outcomes.push((
+                                    pt.index,
+                                    pt.call.clone(),
+                                    StreamedToolOutcome::Notice {
+                                        content: message,
+                                        is_error: true,
+                                    },
+                                ));
+                                continue;
+                            }
                             let sem = std::sync::Arc::clone(&semaphore);
                             let registry = self.registry.clone();
                             let call = pt.call.clone();
@@ -1850,19 +1848,28 @@ impl Agent {
                             };
                             let tool_name = call.name.clone();
                             let tool_input = call.input.clone();
+                            // Store completion timing in the task, so awaiting
+                            // an earlier slow result does not inflate later ones.
+                            let timing = std::sync::Arc::new(std::sync::OnceLock::new());
+                            execution_timings.insert(pt.index, timing.clone());
+                            let dispatched_at = Instant::now();
                             handles.push((
                                 pt.index,
                                 call,
-                                tokio::spawn(async move {
-                                    let _permit = sem.acquire().await;
-                                    crate::logging::info_throttled_with("tool_starting", || {
-                                        format!("Tool starting (parallel): {}", tool_name)
-                                    });
-                                    let result =
-                                        registry.execute(&tool_name, tool_input, ctx).await;
-                                    crate::telemetry::record_tool_call();
-                                    result
-                                }),
+                                super::parallel_tools::OwnedToolTask::new(tokio::spawn(
+                                    async move {
+                                        let _permit = sem.acquire().await;
+                                        crate::logging::info_throttled_with(
+                                            "tool_starting",
+                                            || format!("Tool starting (parallel): {}", tool_name),
+                                        );
+                                        let result =
+                                            registry.execute(&tool_name, tool_input, ctx).await;
+                                        let _ = timing.set(dispatched_at.elapsed());
+                                        crate::telemetry::record_tool_call();
+                                        result
+                                    },
+                                )),
                             ));
                         }
 
@@ -1875,169 +1882,98 @@ impl Agent {
                         let bg_signal = self.background_tool_signal.clone();
                         let shutdown_signal = self.graceful_shutdown.clone();
                         self.background_tool_signal.reset();
-                        let mut pending = handles;
+                        let mut pending = std::collections::VecDeque::from(handles);
                         let mut interrupted = false;
+                        let mut completed = early_outcomes;
 
-                        // Await every call in the run. The tasks already run
-                        // concurrently, so these awaits only collect their
-                        // results. Results are recorded in the original call
-                        // order, because some providers require the result
-                        // order to match the call order.
-                        let mut completed: Vec<(
-                            usize,
-                            ToolCall,
-                            anyhow::Result<crate::alphacode_tool_types::ToolOutput>,
-                        )> = Vec::with_capacity(pending.len());
-                        let mut detached = false;
-
-                        let mut slot = 0usize;
-                        while slot < pending.len() {
-                            let (index, call) = {
-                                let (index, call, _handle) = &pending[slot];
-                                (*index, call.clone())
-                            };
-                            // Wait for this call, but stay responsive to the
-                            // background (Alt+B) and graceful-shutdown signals.
+                        // Pop each owned handle before awaiting it. Completed
+                        // handles can never enter a later background handoff.
+                        while let Some((index, call, mut handle)) = pending.pop_front() {
                             let mut backgrounded = false;
                             let mut reloaded = false;
-                            let result = {
-                                let handle = &mut pending[slot].2;
-                                tokio::select! {
-                                    biased;
-                                    res = handle => {
-                                        Some(match res {
-                                            Ok(r) => r,
-                                            Err(e) => {
-                                                Err(anyhow::anyhow!("Tool task panicked: {}", e))
-                                            }
-                                        })
+                            let result = tokio::select! {
+                                biased;
+                                result = &mut handle => Some(match result {
+                                    Ok(result) => result,
+                                    Err(error) => Err(anyhow::anyhow!("Tool task panicked: {error}")),
+                                }),
+                                _ = async {
+                                    tokio::select! {
+                                        _ = bg_signal.notified() => {}
+                                        _ = shutdown_signal.notified() => {}
                                     }
-                                    _ = async {
-                                        tokio::select! {
-                                            _ = bg_signal.notified() => {}
-                                            _ = shutdown_signal.notified() => {}
-                                        }
-                                    } => {
-                                        if self.is_graceful_shutdown() {
-                                            reloaded = true;
-                                        } else {
-                                            backgrounded = true;
-                                        }
-                                        None
-                                    }
+                                } => {
+                                    if self.is_graceful_shutdown() { reloaded = true; }
+                                    else { backgrounded = true; }
+                                    None
                                 }
                             };
-                            slot += 1;
-
                             if let Some(result) = result {
-                                completed.push((index, call, result));
+                                completed.push((
+                                    index,
+                                    call,
+                                    StreamedToolOutcome::Executed(result),
+                                ));
                                 continue;
                             }
-
                             if reloaded {
-                                // Server reload: abort the in-flight call and
-                                // record an interrupted result.
-                                pending[slot - 1].2.abort();
-                                let interrupted_msg =
-                                    format!("[Interrupted by server reload] {}", call.name);
-                                let _ = event_tx.send(ServerEvent::ToolDone {
-                                    id: call.id.clone(),
-                                    name: call.name.clone(),
-                                    output: interrupted_msg.clone(),
-                                    error: Some("interrupted by reload".to_string()),
-                                });
-                                self.add_message_with_duration(
-                                    Role::User,
-                                    vec![ContentBlock::ToolResult {
-                                        tool_use_id: call.id.clone(),
-                                        content: interrupted_msg,
-                                        is_error: Some(true),
-                                    }],
-                                    None,
-                                );
-                                // Abort the remaining calls in this run too.
-                                for entry in pending.iter_mut().skip(slot) {
-                                    entry.2.abort();
+                                handle.abort();
+                                for (_, _, task) in &pending {
+                                    task.abort();
                                 }
+                                completed.push((
+                                    index,
+                                    call.clone(),
+                                    StreamedToolOutcome::Notice {
+                                        content: format!(
+                                            "[Interrupted by server reload] {}",
+                                            call.name
+                                        ),
+                                        is_error: true,
+                                    },
+                                ));
                                 interrupted = true;
                                 break;
                             }
-
                             if backgrounded {
-                                // Alt+B: hand the in-flight call to the
-                                // background runner. It keeps running and the
-                                // agent is woken when it completes.
-                                let (_, call, handle) = pending.remove(slot - 1);
-                                let bg_info = crate::background::global()
-                                    .adopt(&call.name, &self.session.id, handle)
-                                    .await;
-                                let bg_msg = format!(
-                                    "Tool '{}' was moved to background by the user (task_id: {}). \
-                                     Continue with other work now. The agent will be woken automatically when \
-                                     the task completes; use the `bg` tool (action 'status'/'output') only if you \
-                                     need its progress earlier.",
-                                    call.name, bg_info.task_id
-                                );
-                                let _ = event_tx.send(ServerEvent::ToolDone {
-                                    id: call.id.clone(),
-                                    name: call.name.clone(),
-                                    output: bg_msg.clone(),
-                                    error: None,
-                                });
-                                self.add_message_with_duration(
-                                    Role::User,
-                                    vec![ContentBlock::ToolResult {
-                                        tool_use_id: call.id.clone(),
-                                        content: bg_msg,
-                                        is_error: None,
-                                    }],
-                                    None,
-                                );
-                                tool_results_dirty = true;
-                                detached = true;
+                                let remaining =
+                                    std::iter::once((index, call, handle)).chain(pending.drain(..));
+                                for (index, call, handle) in remaining {
+                                    let info = crate::background::global()
+                                        .adopt(&call.name, &self.session.id, handle.into_inner())
+                                        .await;
+                                    let content = format!(
+                                        "Tool '{}' was moved to background by the user (task_id: {}). \
+                                         Continue with other work now. The agent will be woken automatically when \
+                                         the task completes; use the `bg` tool (action 'status'/'output') only if you \
+                                         need its progress earlier.",
+                                        call.name, info.task_id,
+                                    );
+                                    completed.push((
+                                        index,
+                                        call,
+                                        StreamedToolOutcome::Notice {
+                                            content,
+                                            is_error: false,
+                                        },
+                                    ));
+                                }
                                 self.background_tool_signal.reset();
                                 break;
-                            }
-                        }
-
-                        if detached {
-                            // The remaining calls in this run keep running in
-                            // the background; they are not awaited here.
-                            for (_i, call, h) in pending.drain(..) {
-                                // Detach: the background runner wakes the agent
-                                // when each of these completes.
-                                drop(h);
-                                let bg_msg = format!(
-                                    "Tool '{}' was moved to background by the user. \
-                                     Continue with other work now. The agent will be woken automatically when \
-                                     the task completes; use the `bg` tool (action 'status'/'output') only if you \
-                                     need its progress earlier.",
-                                    call.name
-                                );
-                                let _ = event_tx.send(ServerEvent::ToolDone {
-                                    id: call.id.clone(),
-                                    name: call.name.clone(),
-                                    output: bg_msg.clone(),
-                                    error: None,
-                                });
-                                self.add_message_with_duration(
-                                    Role::User,
-                                    vec![ContentBlock::ToolResult {
-                                        tool_use_id: call.id.clone(),
-                                        content: bg_msg,
-                                        is_error: None,
-                                    }],
-                                    None,
-                                );
-                                tool_results_dirty = true;
                             }
                         }
 
                         // Record the results in the original call order.
                         completed.sort_by_key(|(index, _call, _result)| *index);
                         for (index, call, result) in completed {
-                            self.record_streamed_tool_result(&call, result, index, &event_tx)
-                                .await;
+                            let elapsed = execution_timings
+                                .get(&index)
+                                .and_then(|timing| timing.get())
+                                .copied();
+                            self.record_streamed_tool_outcome(
+                                &call, result, index, elapsed, &event_tx,
+                            )
+                            .await;
                             tool_results_dirty = true;
                         }
 
@@ -2072,6 +2008,21 @@ impl Agent {
                     }
                     super::parallel_tools::Run::Serial(pending) => {
                         for pt in pending {
+                            if let Some(message) = self.goal_tool_rejection(&pt.call.name) {
+                                self.record_streamed_tool_outcome(
+                                    &pt.call,
+                                    StreamedToolOutcome::Notice {
+                                        content: message,
+                                        is_error: true,
+                                    },
+                                    pt.index,
+                                    None,
+                                    &event_tx,
+                                )
+                                .await;
+                                tool_results_dirty = true;
+                                continue;
+                            }
                             let tc = &pt.call;
                             let ctx = ToolContext {
                                 session_id: self.session.id.clone(),
@@ -2106,11 +2057,13 @@ impl Agent {
                             let registry_clone = self.registry.clone();
                             let tool_name_for_spawn = tc.name.clone();
                             let tool_input_for_spawn = tc.input.clone();
-                            let tool_handle = tokio::spawn(async move {
-                                registry_clone
-                                    .execute(&tool_name_for_spawn, tool_input_for_spawn, ctx)
-                                    .await
-                            });
+                            let tool_handle = super::parallel_tools::OwnedToolTask::new(
+                                tokio::spawn(async move {
+                                    registry_clone
+                                        .execute(&tool_name_for_spawn, tool_input_for_spawn, ctx)
+                                        .await
+                                }),
+                            );
 
                             // Reset background signal before waiting
                             self.background_tool_signal.reset();
@@ -2181,66 +2134,15 @@ impl Agent {
                                     self.publish_inline_tail();
                                 }
 
-                                match result {
-                                    Ok(output) => {
-                                        let output = cap_tool_output_for_history(&tc.name, output);
-                                        let _ = event_tx.send(ServerEvent::ToolDone {
-                                            id: tc.id.clone(),
-                                            name: tc.name.clone(),
-                                            output: output.output.clone(),
-                                            error: None,
-                                        });
-
-                                        let side_pane_images = tool_output_side_pane_images(
-                                            &tc.id, &tc.name, &tc.input, &output,
-                                        );
-                                        if !side_pane_images.is_empty() {
-                                            logging::info(&format!(
-                                                "SidePaneImages: emitting {} image(s) from tool '{}' (session={})",
-                                                side_pane_images.len(),
-                                                tc.name,
-                                                self.session.id
-                                            ));
-                                            let _ = event_tx.send(ServerEvent::SidePaneImages {
-                                                session_id: self.session.id.clone(),
-                                                images: side_pane_images,
-                                            });
-                                        }
-
-                                        let blocks =
-                                            tool_output_to_content_blocks(tc.id.clone(), output);
-                                        self.add_message_with_duration(
-                                            Role::User,
-                                            blocks,
-                                            Some(tool_elapsed.as_millis() as u64),
-                                        );
-                                        tool_results_dirty = true;
-                                    }
-                                    Err(e) => {
-                                        // Wrap with a tool-specific recovery hint before the
-                                        // error enters history, so the model's next attempt
-                                        // targets the fix instead of repeating the call.
-                                        let error_msg =
-                                            crate::tool::agent_facing_error(&tc.name, &e);
-                                        let _ = event_tx.send(ServerEvent::ToolDone {
-                                            id: tc.id.clone(),
-                                            name: tc.name.clone(),
-                                            output: error_msg.clone(),
-                                            error: Some(error_msg.clone()),
-                                        });
-
-                                        self.add_message_with_duration(
-                                            Role::User,
-                                            vec![ContentBlock::ToolResult {
-                                                tool_use_id: tc.id.clone(),
-                                                content: error_msg,
-                                                is_error: Some(true),
-                                            }],
-                                            Some(tool_elapsed.as_millis() as u64),
-                                        );
-                                        tool_results_dirty = true;
-                                    }
-                                }
+                                self.record_streamed_tool_result(
+                                    tc,
+                                    result,
+                                    pt.index,
+                                    Some(tool_elapsed),
+                                    &event_tx,
+                                )
+                                .await;
+                                tool_results_dirty = true;
 
                                 // Decision Plane observation: record tool result for loop detection
                                 if let Some(ref dp) = self.decision_plane {
@@ -2268,26 +2170,17 @@ impl Agent {
                                 let (interrupted_msg, is_error) =
                                     reload_interrupted_tool_result(tc, tool_elapsed.as_secs_f64());
 
-                                let _ = event_tx.send(ServerEvent::ToolDone {
-                                    id: tc.id.clone(),
-                                    name: tc.name.clone(),
-                                    output: interrupted_msg.clone(),
-                                    error: if is_error {
-                                        Some("interrupted by reload".to_string())
-                                    } else {
-                                        None
-                                    },
-                                });
-
-                                self.add_message_with_duration(
-                                    Role::User,
-                                    vec![ContentBlock::ToolResult {
-                                        tool_use_id: tc.id.clone(),
+                                self.record_streamed_tool_outcome(
+                                    tc,
+                                    StreamedToolOutcome::Notice {
                                         content: interrupted_msg,
-                                        is_error: Some(is_error),
-                                    }],
-                                    Some(tool_elapsed.as_millis() as u64),
-                                );
+                                        is_error,
+                                    },
+                                    pt.index,
+                                    Some(tool_elapsed),
+                                    &event_tx,
+                                )
+                                .await;
                                 // This branch returns immediately, so the dirty flag would
                                 // never be read; persist directly. The single save below
                                 // covers this message and the skipped-tool results
@@ -2316,7 +2209,7 @@ impl Agent {
                                 ));
 
                                 let bg_info = crate::background::global()
-                                    .adopt(&tc.name, &self.session.id, tool_handle)
+                                    .adopt(&tc.name, &self.session.id, tool_handle.into_inner())
                                     .await;
 
                                 let bg_msg = format!(
@@ -2327,22 +2220,17 @@ impl Agent {
                                     tc.name, bg_info.task_id
                                 );
 
-                                let _ = event_tx.send(ServerEvent::ToolDone {
-                                    id: tc.id.clone(),
-                                    name: tc.name.clone(),
-                                    output: bg_msg.clone(),
-                                    error: None,
-                                });
-
-                                self.add_message_with_duration(
-                                    Role::User,
-                                    vec![ContentBlock::ToolResult {
-                                        tool_use_id: tc.id.clone(),
+                                self.record_streamed_tool_outcome(
+                                    tc,
+                                    StreamedToolOutcome::Notice {
                                         content: bg_msg,
-                                        is_error: None,
-                                    }],
-                                    Some(tool_elapsed.as_millis() as u64),
-                                );
+                                        is_error: false,
+                                    },
+                                    pt.index,
+                                    Some(tool_elapsed),
+                                    &event_tx,
+                                )
+                                .await;
                                 tool_results_dirty = true;
 
                                 self.background_tool_signal.reset();
@@ -2498,6 +2386,130 @@ mod tests {
         );
     }
 
+    #[test]
+    fn ordinary_provider_rate_limit_stops_after_three_recoveries() {
+        let provider = Arc::new(FailOnceProvider {
+            calls: Arc::new(AtomicUsize::new(0)),
+        });
+        let mut agent = Agent::new(provider, crate::alphacode_app_core::tool::Registry::empty());
+        let mut attempts = 3;
+        assert_eq!(
+            agent
+                .maybe_continue_after_provider_error("status: 429 Too Many Requests", &mut attempts)
+                .unwrap(),
+            None
+        );
+    }
+
+    #[test]
+    fn long_provider_retry_after_is_not_retried_early() {
+        let provider = Arc::new(FailOnceProvider {
+            calls: Arc::new(AtomicUsize::new(0)),
+        });
+        let mut agent = Agent::new(provider, crate::alphacode_app_core::tool::Registry::empty());
+        let mut attempts = 0;
+        assert_eq!(
+            agent
+                .maybe_continue_after_provider_error(
+                    "status: 429 Too Many Requests \"retry_after_seconds\":3541",
+                    &mut attempts
+                )
+                .unwrap(),
+            None
+        );
+    }
+
+    #[derive(Clone)]
+    struct RejectedFreeProvider {
+        model: Arc<std::sync::Mutex<String>>,
+        requests: Arc<std::sync::Mutex<Vec<String>>>,
+        reject_alternate: bool,
+    }
+
+    #[async_trait::async_trait]
+    impl crate::alphacode_app_core::provider::Provider for RejectedFreeProvider {
+        async fn complete(
+            &self,
+            _messages: &[Message],
+            _tools: &[ToolDefinition],
+            _system: &str,
+            _resume_session_id: Option<&str>,
+        ) -> anyhow::Result<crate::alphacode_app_core::provider::EventStream> {
+            let model = self.model();
+            let mut requests = self.requests.lock().unwrap();
+            requests.push(model);
+            if requests.len() == 1 || self.reject_alternate {
+                anyhow::bail!(
+                    "Alphax Free request failed (status: 429 Too Many Requests).\nAlphax Free is rate limited."
+                );
+            }
+            Ok(Box::pin(tokio_stream::iter([
+                Ok(StreamEvent::TextDelta(
+                    "Recovered on the alternate route.".into(),
+                )),
+                Ok(StreamEvent::MessageEnd {
+                    stop_reason: Some("stop".into()),
+                }),
+            ])))
+        }
+
+        fn name(&self) -> &str {
+            "Alphax Free"
+        }
+
+        fn model(&self) -> String {
+            self.model.lock().unwrap().clone()
+        }
+
+        fn set_model(&self, model: &str) -> anyhow::Result<()> {
+            let bare = model
+                .strip_prefix("alphax-free:")
+                .ok_or_else(|| anyhow::anyhow!("recovery left the free profile"))?;
+            anyhow::ensure!(super::super::free_pool_rotation::should_rotate_for_model(
+                bare
+            ));
+            *self.model.lock().unwrap() = bare.to_string();
+            Ok(())
+        }
+
+        fn fork(&self) -> Arc<dyn crate::alphacode_app_core::provider::Provider> {
+            Arc::new(self.clone())
+        }
+    }
+
+    #[tokio::test]
+    async fn alphax_free_automatic_route_stays_pinned_after_rate_limit() {
+        let _pool_lock = super::super::free_pool_rotation::lock_pool_state_for_tests();
+        let _env_lock = crate::storage::lock_test_env();
+        let temp_home = tempfile::tempdir().unwrap();
+        let previous_home = std::env::var_os("ALPHACODE_HOME");
+        crate::alphacode_core::env::set_var("ALPHACODE_HOME", temp_home.path());
+        let _restore_home = RestoreAlphacodeHome(previous_home);
+        super::super::free_pool_rotation::absorb_discovered_free_models(vec![
+            "synthetic/alternate:free".to_string(),
+        ]);
+        let alias = crate::alphacode_provider_metadata::route_cloak::free_route_default_model();
+        let provider = Arc::new(RejectedFreeProvider {
+            model: Arc::new(std::sync::Mutex::new(alias.clone())),
+            requests: Arc::default(),
+            reject_alternate: false,
+        });
+        let mut agent = Agent::new(
+            provider.clone(),
+            crate::alphacode_app_core::tool::Registry::empty(),
+        );
+        let (event_tx, _event_rx) = tokio::sync::mpsc::unbounded_channel();
+        let result = agent
+            .run_once_streaming_mpsc("hello", Vec::new(), None, event_tx)
+            .await;
+        assert!(result.is_err(), "a rate-limited automatic route must stop");
+        let requests = provider.requests.lock().unwrap();
+        assert_eq!(requests.len(), 1);
+        assert_eq!(requests[0], alias);
+        assert_eq!(provider.model(), alias);
+        assert_eq!(agent.session.model.as_deref(), Some(alias.as_str()));
+    }
+
     struct RestoreAlphacodeHome(Option<std::ffi::OsString>);
 
     impl Drop for RestoreAlphacodeHome {
@@ -2532,6 +2544,43 @@ mod tests {
             .await
             .expect("provider retry should recover the turn");
 
+        assert_eq!(provider.calls.load(Ordering::SeqCst), 2);
+    }
+
+    #[tokio::test]
+    async fn ctf_completion_retries_actionable_work_without_looping_on_unchanged_state() {
+        let _env_lock = crate::storage::lock_test_env();
+        let temp_home = tempfile::tempdir().unwrap();
+        let previous_home = std::env::var_os("ALPHACODE_HOME");
+        crate::alphacode_core::env::set_var("ALPHACODE_HOME", temp_home.path());
+        let _restore_home = RestoreAlphacodeHome(previous_home);
+        let provider = Arc::new(GreetingProvider {
+            calls: Arc::new(AtomicUsize::new(0)),
+        });
+        let mut agent = Agent::new(
+            provider.clone(),
+            crate::alphacode_app_core::tool::Registry::empty(),
+        );
+        crate::todo::save_todos(
+            &agent.session.id,
+            &[crate::alphacode_task_types::TodoItem {
+                id: "verify".into(),
+                content: "Verify the challenge objective from local evidence".into(),
+                status: "pending".into(),
+                ..Default::default()
+            }],
+        )
+        .unwrap();
+        let (event_tx, _event_rx) = tokio::sync::mpsc::unbounded_channel();
+        agent
+            .run_once_streaming_mpsc(
+                "Continue the authorized CTF challenge",
+                Vec::new(),
+                None,
+                event_tx,
+            )
+            .await
+            .unwrap();
         assert_eq!(provider.calls.load(Ordering::SeqCst), 2);
     }
 
@@ -2621,6 +2670,93 @@ What would you like to work on today?";
             intent: None,
             thought_signature: None,
         }
+    }
+
+    #[tokio::test]
+    async fn streamed_recorder_preserves_execution_time_and_enforces_verified_completion() {
+        use crate::alphacode_task_types::goal_contract::{
+            CriterionCheck, EvidenceTier, GoalContract, SuccessCriterion,
+        };
+        let _env_lock = crate::storage::lock_test_env();
+        let temp_home = tempfile::tempdir().unwrap();
+        let previous_home = std::env::var_os("ALPHACODE_HOME");
+        crate::alphacode_core::env::set_var("ALPHACODE_HOME", temp_home.path());
+        let _restore_home = RestoreAlphacodeHome(previous_home);
+        let provider = Arc::new(FailOnceProvider {
+            calls: Arc::new(AtomicUsize::new(0)),
+        });
+        let mut agent = Agent::new(provider, crate::alphacode_app_core::tool::Registry::empty());
+        let mut call = tool_call("bash", json!({"command": "verify"}));
+        let mut contract = GoalContract::new("verify", vec![]);
+        contract.success_criteria.push(SuccessCriterion {
+            statement: "verification succeeded".into(),
+            tier: EvidenceTier::Authoritative,
+            check: CriterionCheck::ToolMetadata {
+                tool_name: "bash".into(),
+                input: call.input.clone(),
+                metadata_pointer: "/process_exit_code".into(),
+                expected: json!(0),
+            },
+        });
+        let previous_metadata = json!({"process_exit_code": 0});
+        contract.observe(
+            &crate::alphacode_task_types::goal_contract::ToolObservation {
+                tool_call_id: "earlier-check",
+                tool_name: "bash",
+                input: &call.input,
+                metadata: Some(&previous_metadata),
+                succeeded: true,
+            },
+        );
+        assert!(contract.criterion_verified(0));
+        agent.goal_contract = Some(contract);
+        let (event_tx, mut event_rx) = tokio::sync::mpsc::unbounded_channel();
+        agent
+            .record_streamed_tool_outcome(
+                &call,
+                StreamedToolOutcome::Notice {
+                    content: "Background handoff: process_exit_code=0".into(),
+                    is_error: false,
+                },
+                0,
+                None,
+                &event_tx,
+            )
+            .await;
+        assert!(!agent.goal_contract.as_ref().unwrap().is_terminal());
+        assert!(!agent.goal_contract.as_ref().unwrap().criterion_verified(0));
+        let _notice = event_rx.try_recv().unwrap();
+        call.id = "actual-verification".into();
+        agent
+            .record_streamed_tool_result(
+                &call,
+                Ok(
+                    crate::alphacode_tool_types::ToolOutput::new("unrelated stdout")
+                        .with_metadata(json!({"process_exit_code": 0})),
+                ),
+                0,
+                Some(Duration::from_millis(1234)),
+                &event_tx,
+            )
+            .await;
+        assert!(agent.goal_contract.as_ref().unwrap().is_terminal());
+        assert!(
+            agent
+                .session
+                .messages
+                .iter()
+                .any(|message| message.tool_duration_ms == Some(1234))
+        );
+        assert!(matches!(
+            event_rx.try_recv().unwrap(),
+            ServerEvent::ToolDone { error: None, .. }
+        ));
+        assert!(agent.terminal_goal_rejection("functions.bash").is_some());
+        assert!(agent.terminal_goal_rejection("read").is_none());
+        assert_eq!(
+            agent.goal_contract.as_ref().unwrap().criterion_evidence[0].tool_call_id,
+            call.id
+        );
     }
 
     #[test]

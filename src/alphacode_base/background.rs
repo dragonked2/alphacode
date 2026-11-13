@@ -131,11 +131,7 @@ impl BackgroundTaskManager {
     }
 
     async fn write_status_file(&self, path: &std::path::Path, status: &TaskStatusFile) {
-        if let Ok(json) = serde_json::to_string_pretty(status)
-            && let Err(e) = fs::write(path, json).await
-        {
-            tracing::warn!("Failed to write status file {}: {}", path.display(), e);
-        }
+        persist_status_async(path, status).await;
     }
 
     async fn finalize_detached_status_if_needed(
@@ -262,7 +258,7 @@ impl BackgroundTaskManager {
             return status;
         }
         // Belt and braces: never rewrite a task this process is executing.
-        if self.is_live_task(&status.task_id) {
+        if self.is_live_task_confirmed(&status.task_id).await {
             return status;
         }
 
@@ -432,6 +428,10 @@ impl BackgroundTaskManager {
         F: FnOnce(PathBuf) -> Fut + Send + 'static,
         Fut: std::future::Future<Output = Result<TaskResult>> + Send,
     {
+        // Reserve registration before publishing status or launching work.
+        // Once launched, insertion must not suspend and detach the task if the
+        // caller is cancelled while waiting for this registry.
+        let mut tasks = self.tasks.write().await;
         let (notify, wake) = normalize_delivery(notify, wake);
         let task_id = Self::generate_task_id();
         let output_path = self.output_dir.join(format!("{}.output", task_id));
@@ -459,9 +459,7 @@ impl BackgroundTaskManager {
             progress: None,
             event_history: Vec::new(),
         };
-        if let Ok(json) = serde_json::to_string_pretty(&initial_status) {
-            let _ = std::fs::write(&status_path, json);
-        }
+        persist_status_sync(&status_path, &initial_status);
         Self::publish_task_started_activity(
             &task_id,
             tool_name,
@@ -484,7 +482,11 @@ impl BackgroundTaskManager {
 
         // Spawn the background task
         let handle = tokio::spawn(async move {
-            let result = execute_fn(output_path_clone.clone()).await;
+            let execution_path = output_path_clone.clone();
+            let result =
+                recover_background_execution(async move { execute_fn(execution_path).await })
+                    .await
+                    .map(TaskResult::into_terminal);
 
             let duration_secs = started_at.elapsed().as_secs_f64();
             let (status, exit_code, error) = match &result {
@@ -538,9 +540,7 @@ impl BackgroundTaskManager {
                 &mut final_status,
                 terminal_event_record(status.clone(), exit_code, error.as_deref()),
             );
-            if let Ok(json) = serde_json::to_string_pretty(&final_status) {
-                let _ = tokio::fs::write(&status_path_clone, json).await;
-            }
+            persist_status_async(&status_path_clone, &final_status).await;
 
             // Drop this task from the live map now that its terminal status is
             // persisted. Order matters: pruning only after the status-file
@@ -596,10 +596,8 @@ impl BackgroundTaskManager {
             handle,
         };
 
-        self.tasks
-            .write()
-            .await
-            .insert(task_id.clone(), running_task);
+        tasks.insert(task_id.clone(), running_task);
+        drop(tasks);
         let _ = registered_tx.send(());
 
         BackgroundTaskInfo {
@@ -638,6 +636,19 @@ impl BackgroundTaskManager {
         wake: bool,
         handle: JoinHandle<Result<crate::alphacode_tool_types::ToolOutput>>,
     ) -> BackgroundTaskInfo {
+        // Until registration owns the task, cancelling this future must abort
+        // it rather than detach its raw JoinHandle. Acquire the registry before
+        // publishing or spawning the monitor so registration has no await gap.
+        struct PendingAdoption(Option<tokio::task::AbortHandle>);
+        impl Drop for PendingAdoption {
+            fn drop(&mut self) {
+                if let Some(handle) = self.0.take() {
+                    handle.abort();
+                }
+            }
+        }
+        let pending_adoption = PendingAdoption(Some(handle.abort_handle()));
+        let mut tasks = self.tasks.write().await;
         let (notify, wake) = normalize_delivery(notify, wake);
         let task_id = Self::generate_task_id();
         let output_path = self.output_dir.join(format!("{}.output", task_id));
@@ -663,9 +674,7 @@ impl BackgroundTaskManager {
             progress: None,
             event_history: Vec::new(),
         };
-        if let Ok(json) = serde_json::to_string_pretty(&initial_status) {
-            let _ = std::fs::write(&status_path, json);
-        }
+        persist_status_sync(&status_path, &initial_status);
         Self::publish_task_started_activity(
             &task_id,
             tool_name,
@@ -687,6 +696,9 @@ impl BackgroundTaskManager {
         let (registered_tx, registered_rx) = tokio::sync::oneshot::channel::<()>();
 
         let wrapper_handle = tokio::spawn(async move {
+            // The monitor owns cancellation of the adopted task as well as its
+            // result. Aborting only the monitor must never detach tool work.
+            let _task_ownership = pending_adoption;
             let tool_result = handle.await;
             let duration_secs = started_at.elapsed().as_secs_f64();
 
@@ -783,9 +795,7 @@ impl BackgroundTaskManager {
                 &mut final_status,
                 terminal_event_record(status.clone(), exit_code, error.as_deref()),
             );
-            if let Ok(json) = serde_json::to_string_pretty(&final_status) {
-                let _ = tokio::fs::write(&status_path_clone, json).await;
-            }
+            persist_status_async(&status_path_clone, &final_status).await;
 
             // Prune the live-map entry only after the terminal status file is
             // persisted (and after registration below, so instant completions
@@ -823,7 +833,7 @@ impl BackgroundTaskManager {
         let running_task = RunningTask {
             task_id: task_id.clone(),
             tool_name: tool_name.to_string(),
-            display_name: None,
+            display_name: initial_status.display_name.clone(),
             session_id: session_id.to_string(),
             status_path: status_path.clone(),
             started_at,
@@ -832,10 +842,8 @@ impl BackgroundTaskManager {
             handle: wrapper_handle,
         };
 
-        self.tasks
-            .write()
-            .await
-            .insert(task_id.clone(), running_task);
+        tasks.insert(task_id.clone(), running_task);
+        drop(tasks);
         let _ = registered_tx.send(());
 
         BackgroundTaskInfo {
@@ -883,12 +891,25 @@ impl BackgroundTaskManager {
         )
     }
 
-    /// Best-effort synchronous check for whether a task is still live in this process.
+    /// Nonblocking liveness observation. None means the registry is busy, not
+    /// that the task ended. Only Some(false) proves absence from this registry.
+    pub fn try_is_live_task(&self, task_id: &str) -> Option<bool> {
+        self.tasks
+            .try_read()
+            .ok()
+            .map(|tasks| tasks.contains_key(task_id))
+    }
+
+    /// Conservative admission check for synchronous duplicate-work guards.
+    /// Busy registries count as potentially live so contention cannot authorize
+    /// a replacement driver or prune its current build request.
     pub fn is_live_task(&self, task_id: &str) -> bool {
-        let Ok(tasks) = self.tasks.try_read() else {
-            return false;
-        };
-        tasks.contains_key(task_id)
+        self.try_is_live_task(task_id).unwrap_or(true)
+    }
+
+    /// Observe actual registry membership after any writer has completed.
+    pub async fn is_live_task_confirmed(&self, task_id: &str) -> bool {
+        self.tasks.read().await.contains_key(task_id)
     }
 
     /// Get full output of a task
@@ -987,6 +1008,7 @@ impl BackgroundTaskManager {
                             let task = self
                                 .status(task_id)
                                 .await
+                                .filter(|status| status.status != BackgroundTaskStatus::Running)
                                 .unwrap_or_else(|| terminal_snapshot_from_event(&event));
                             return Some(BackgroundTaskWaitResult {
                                 reason: BackgroundTaskWaitReason::Finished,
@@ -997,20 +1019,13 @@ impl BackgroundTaskManager {
                         }
                         Ok(BusEvent::BackgroundTaskProgress(event)) if event.task_id == task_id => {
                             if return_on_progress {
-                                // A very short task can finish (and be pruned from
-                                // the live map) between this event being published
-                                // and the status read below. `self.status()` then
-                                // returns None and the `?` discarded the progress
-                                // event we already hold — under parallel test load
-                                // this surfaced as a spurious failure in
-                                // `wait_returns_on_progress_checkpoint`. The event
-                                // itself carries the progress and timestamp, so
-                                // reconstruct a terminal snapshot instead of
-                                // dropping the wakeup.
+                                // A progress event proves only an observation,
+                                // never completion. Missing storage must not
+                                // promote unfinished work to a terminal state.
                                 let task = self
                                     .status(task_id)
                                     .await
-                                    .unwrap_or_else(|| completed_snapshot_from_progress(&event));
+                                    .unwrap_or_else(|| running_snapshot_from_progress(&event));
                                 let event_record = task.event_history.last().cloned();
                                 return Some(BackgroundTaskWaitResult {
                                     reason: progress_wait_reason(event_record.as_ref()),
@@ -1092,6 +1107,11 @@ impl BackgroundTaskManager {
         let Some(mut status) = self.read_status_file(&status_path).await else {
             return Ok(None);
         };
+
+        // Late progress is not a state transition and cannot reopen a task.
+        if status.status != BackgroundTaskStatus::Running {
+            return Ok(Some(status));
+        }
 
         let progress = progress.normalize();
         if let Some(existing) = status.progress.as_ref() {
@@ -1216,9 +1236,7 @@ impl BackgroundTaskManager {
                 &mut final_status,
                 terminal_event_record(event_status, event_exit_code, event_error.as_deref()),
             );
-            if let Ok(json) = serde_json::to_string_pretty(&final_status) {
-                let _ = fs::write(&task.status_path, json).await;
-            }
+            persist_status_async(&task.status_path, &final_status).await;
 
             Ok(true)
         } else {
@@ -1544,6 +1562,92 @@ impl Default for BackgroundTaskManager {
     }
 }
 
+/// Publish complete JSON using a same-directory replacement. Readers see the
+/// old or new document, never an in-place truncated or partially written file.
+fn persist_status_bytes(path: &std::path::Path, bytes: &[u8]) -> Result<()> {
+    use std::io::Write;
+    // Serialize publication and its terminal-state fence across all managers in
+    // this process. Atomic rename alone does not prevent stale Running writes.
+    static STATUS_PUBLICATION: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    let _publication = STATUS_PUBLICATION
+        .lock()
+        .map_err(|_| anyhow::anyhow!("Background status publication lock poisoned"))?;
+    let incoming: serde_json::Value = serde_json::from_slice(bytes)?;
+    if incoming.get("status").and_then(serde_json::Value::as_str) == Some("running") {
+        if let Ok(existing) = std::fs::read(path) {
+            if let Ok(existing) = serde_json::from_slice::<serde_json::Value>(&existing) {
+                if matches!(
+                    existing.get("status").and_then(serde_json::Value::as_str),
+                    Some("completed" | "failed" | "superseded")
+                ) {
+                    return Ok(());
+                }
+            }
+        }
+    }
+    let parent = path
+        .parent()
+        .ok_or_else(|| anyhow::anyhow!("Status path has no parent"))?;
+    let mut temporary = tempfile::NamedTempFile::new_in(parent)?;
+    temporary.write_all(bytes)?;
+    temporary.as_file().sync_all()?;
+    temporary.persist(path).map_err(|error| error.error)?;
+    Ok(())
+}
+
+fn persist_status_sync(path: &std::path::Path, status: &TaskStatusFile) {
+    let result = serde_json::to_vec_pretty(status)
+        .map_err(anyhow::Error::from)
+        .and_then(|bytes| persist_status_bytes(path, &bytes));
+    if let Err(error) = result {
+        tracing::warn!("Failed to write status file {}: {}", path.display(), error);
+    }
+}
+
+async fn persist_status_async(path: &std::path::Path, status: &TaskStatusFile) {
+    let bytes = match serde_json::to_vec_pretty(status) {
+        Ok(bytes) => bytes,
+        Err(error) => {
+            tracing::warn!(
+                "Failed to serialize status file {}: {}",
+                path.display(),
+                error
+            );
+            return;
+        }
+    };
+    let owned_path = path.to_path_buf();
+    match tokio::task::spawn_blocking(move || persist_status_bytes(&owned_path, &bytes)).await {
+        Ok(Ok(())) => {}
+        Ok(Err(error)) => {
+            tracing::warn!("Failed to write status file {}: {}", path.display(), error)
+        }
+        Err(error) => tracing::warn!("Status writer failed for {}: {}", path.display(), error),
+    }
+}
+
+/// Catch execution panics without holding a thread-local suppression guard
+/// across await points (Tokio may resume the future on another worker thread).
+async fn recover_background_execution(
+    future: impl std::future::Future<Output = Result<TaskResult>>,
+) -> Result<TaskResult> {
+    let mut future = std::pin::pin!(future);
+    std::future::poll_fn(|cx| {
+        let result = {
+            let _guard = crate::alphacode_core::panic_util::suppress_panic_output();
+            std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| future.as_mut().poll(cx)))
+        };
+        match result {
+            Ok(poll) => poll,
+            Err(payload) => std::task::Poll::Ready(Err(anyhow::anyhow!(
+                "Background task panicked: {}",
+                crate::alphacode_core::panic_util::panic_payload_to_string(payload.as_ref())
+            ))),
+        }
+    })
+    .await
+}
+
 /// Global singleton for background task manager
 static BACKGROUND_MANAGER: std::sync::OnceLock<BackgroundTaskManager> = std::sync::OnceLock::new();
 
@@ -1578,24 +1682,19 @@ fn progress_event_from_record(
     })
 }
 
-/// Minimal terminal snapshot for a task that was already pruned from the live
-/// map by the time `wait()` tried to read its status file.
-///
-/// Only the fields the caller can rely on are filled in: the process is still
-/// holding proof that the task existed (the bus event), and the progress payload
-/// carries the last observed state. Deliberately does not fabricate an exit code
-/// or duration.
-fn completed_snapshot_from_progress(event: &BackgroundTaskProgressEvent) -> TaskStatusFile {
+/// Preserve the last observed running state when its status file is unavailable.
+/// A progress event contains no terminal outcome, exit code, or completion time.
+fn running_snapshot_from_progress(event: &BackgroundTaskProgressEvent) -> TaskStatusFile {
     TaskStatusFile {
         task_id: event.task_id.clone(),
         tool_name: event.tool_name.clone(),
-        display_name: None,
-        session_id: String::new(),
-        status: BackgroundTaskStatus::Completed,
+        display_name: event.display_name.clone(),
+        session_id: event.session_id.clone(),
+        status: BackgroundTaskStatus::Running,
         exit_code: None,
         error: None,
         started_at: event.progress.updated_at.clone(),
-        completed_at: Some(event.progress.updated_at.clone()),
+        completed_at: None,
         duration_secs: None,
         pid: None,
         owner_pid: None,
@@ -1612,7 +1711,7 @@ fn completed_snapshot_from_progress(event: &BackgroundTaskProgressEvent) -> Task
 /// file is already gone.
 ///
 /// The completion event is the authoritative record of how the task ended
-/// (`status`, `exit_code`, `duration_secs`, `error`), so unlike the progress
+/// (`status`, `exit_code`, `duration_secs`), so unlike the progress
 /// variant this one can fill in the real outcome. It deliberately leaves
 /// `progress` empty rather than inventing one.
 fn terminal_snapshot_from_event(event: &BackgroundTaskCompleted) -> TaskStatusFile {

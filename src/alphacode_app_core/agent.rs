@@ -14,9 +14,10 @@ mod messages;
 mod pacing;
 mod parallel_tools;
 mod playbook_match;
-mod prompting;
+pub(crate) mod prompting;
 mod provider;
 mod response_recovery;
+pub(crate) use response_recovery::is_content_policy_rejection;
 mod status;
 mod streamed_tool_results;
 mod streaming;
@@ -42,7 +43,7 @@ use crate::alphacode_app_core::message::{
     ContentBlock, Message, Role, StreamEvent, TOOL_OUTPUT_MISSING_TEXT, ToolCall, ToolDefinition,
 };
 use crate::alphacode_app_core::protocol::{HistoryMessage, ServerEvent};
-use crate::alphacode_app_core::provider::{NativeToolResult, Provider, ProviderRuntimeState};
+use crate::alphacode_app_core::provider::{Provider, ProviderRuntimeState};
 use crate::alphacode_app_core::session::{
     GitState, Session, SessionStatus, StoredDisplayRole, StoredMessage,
 };

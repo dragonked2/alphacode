@@ -455,7 +455,7 @@ impl Finding {
     /// with no proof at all is not reportable.
     pub fn is_reportable(&self, observed: &[super::proof::HttpExchange]) -> bool {
         match self.proof.as_ref() {
-            Some(proof) => proof.verify_against(observed).verified,
+            Some(proof) => proof.verify_report_evidence(Some(observed)).verified,
             None => false,
         }
     }
@@ -493,7 +493,10 @@ impl Finding {
         // sent via `is_reportable` at report time, which is the stricter,
         // history-backed check.
         if next_stage == FindingStage::ConfirmedFinding {
-            let verdict = self.verify_proof();
+            let verdict = self.proof.as_ref().map_or_else(
+                || self.verify_proof(),
+                |proof| proof.verify_report_evidence(None),
+            );
             if !verdict.verified {
                 let reasons: Vec<&str> = verdict.defects.iter().map(|d| d.as_str()).collect();
                 return Err(format!(
@@ -752,6 +755,9 @@ mod tests {
             }],
             expected_behavior: "the search rejects the malformed query with 400".to_string(),
             observed_behavior: "the server returned 500 with a SQL syntax error".to_string(),
+            effect: Some(super::super::proof::ProofEffect::BodyMarker {
+                marker: "SQL syntax error near 'OR'".into(),
+            }),
             baseline: Some(BaselineComparison::new(
                 "unauthenticated",
                 baseline,
@@ -817,6 +823,9 @@ mod tests {
             }],
             expected_behavior: "400".to_string(),
             observed_behavior: "500 with a SQL error".to_string(),
+            effect: Some(super::super::proof::ProofEffect::BodyMarker {
+                marker: "SQL error".into(),
+            }),
             baseline: Some(BaselineComparison::new(
                 "unauthenticated",
                 baseline,

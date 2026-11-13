@@ -121,15 +121,8 @@ fn test_wrap_input_text_positions_cursor_after_combining_and_joined_emoji() {
 
     let input = "a👩🏽‍💻e\u{301}";
     let expected_width = "a".width() + "👩🏽‍💻".width() + "e\u{301}".width();
-    let (_, cursor_line, cursor_col) = input_ui::wrap_input_text(
-        input,
-        input.len(),
-        80,
-        "1",
-        "> ",
-        user_color(),
-        3,
-    );
+    let (_, cursor_line, cursor_col) =
+        input_ui::wrap_input_text(input, input.len(), 80, "1", "> ", user_color(), 3);
 
     assert_eq!(cursor_line, 0);
     assert_eq!(cursor_col, expected_width);
@@ -281,14 +274,7 @@ fn test_copy_badge_reserves_right_margin_for_info_widgets() {
     // Derive it instead of hardcoding.
     let reserved = copy_badge_reserved_width('a', &copy_badge_ui, now);
 
-    reserve_copy_badge_margins(
-        &mut margins,
-        10,
-        13,
-        &[(11, 'a')],
-        &copy_badge_ui,
-        now,
-    );
+    reserve_copy_badge_margins(&mut margins, 10, 13, &[(11, 'a')], &copy_badge_ui, now);
 
     assert_eq!(margins.right_widths[0], 30);
     let expected = u16::try_from(reserved).expect("badge width fits a u16");
@@ -331,10 +317,8 @@ fn test_copy_badge_truncates_full_width_line_before_appending_shortcut() {
     // The Alt badge is platform-dependent (Option keycap on macOS), so build it
     // from the same helper the renderer uses rather than hardcoding "[Alt]".
     line.spans.push(Span::raw(" "));
-    line.spans.push(Span::raw(format!(
-        "{} [⇧] [A]",
-        copy_badge_alt_badge()
-    )));
+    line.spans
+        .push(Span::raw(format!("{} [⇧] [A]", copy_badge_alt_badge())));
 
     assert_eq!(line.width(), viewport_width);
     assert!(line.width() <= viewport_width);
@@ -360,6 +344,10 @@ fn test_copy_badge_line_prefers_row_with_free_width_over_truncation() {
 
 #[test]
 fn test_copy_badge_truncation_marks_cut_content_with_ellipsis() {
+    let mut no_space = Line::from("content");
+    truncate_line_for_copy_badge(&mut no_space, 0);
+    assert_eq!(no_space.width(), 0);
+    assert!(no_space.spans.is_empty());
     // Content wider than the allowance must end in a visible ellipsis.
     let mut line = Line::from("y".repeat(30));
     truncate_line_for_copy_badge(&mut line, 10);

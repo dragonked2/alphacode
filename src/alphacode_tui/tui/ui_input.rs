@@ -1,5 +1,6 @@
 use super::inline_interactive_ui::format_elapsed;
 use super::selection_highlight::highlight_line_selection;
+use super::tools_ui;
 use super::tools_ui::{get_tool_activity_detail, summarize_batch_running_tools_compact};
 use super::visual_debug::{self, FrameCaptureBuilder};
 use super::{
@@ -168,16 +169,7 @@ fn draw_composer_brand_badge(frame: &mut Frame, frame_area: Rect) {
 /// The result also has newlines folded to spaces: notices live on a single
 /// status row, and an embedded `\n` would silently clip the rest of the text.
 fn normalize_repaint_sensitive_notice_text(text: &str) -> String {
-    let stripped = crate::alphacode_base::message::strip_ansi_escape_sequences(text);
-    stripped
-        .chars()
-        .filter_map(|ch| match ch {
-            '\n' | '\r' | '\t' => Some(' '),
-            ch if ch.is_control() => None,
-            ch => Some(ch),
-        })
-        .collect::<String>()
-        .replace("⚠️", "⚠")
+    crate::alphacode_tui_render::single_line_text(text).replace("⚠️", "⚠")
 }
 
 fn command_suggestion_window_start(selected: usize, suggestion_count: usize) -> usize {
@@ -437,13 +429,17 @@ fn command_suggestion_lines(
     if suggestions.len() == 1 {
         let (cmd, desc) = &suggestions[0];
         let mut spans = vec![Span::styled("▸ ", selected_style)];
-        let command = truncate_line_with_ellipsis(
-            Line::from(highlight(cmd, accent_style)),
-            width.saturating_sub(4) / 2,
-        );
+        let command_width = unicode_width::UnicodeWidthStr::width(cmd.as_str());
+        let label_budget = if command_width + 4 <= width {
+            command_width
+        } else {
+            width.saturating_sub(2)
+        };
+        let command =
+            truncate_line_with_ellipsis(Line::from(highlight(cmd, accent_style)), label_budget);
         spans.extend(command.spans);
         spans.push(Span::styled(format!("  {}", desc), desc_selected_style));
-        lines.push(Line::from(spans));
+        lines.push(truncate_line_with_ellipsis(Line::from(spans), width));
     } else if !suggestions.is_empty() {
         let selected = app
             .command_suggestion_selected()
@@ -735,7 +731,8 @@ pub(super) fn pending_queue_preview(app: &dyn TuiState) -> Vec<String> {
 /// collapsing internal newlines to spaces for a single-line preview.
 /// When truncated, appends an ellipsis.
 fn truncate_preview(text: &str, max_width: usize) -> String {
-    let single_line = text.split_whitespace().collect::<Vec<_>>().join(" ");
+    let safe_text = crate::alphacode_tui_render::single_line_text(text);
+    let single_line = safe_text.split_whitespace().collect::<Vec<_>>().join(" ");
     let trimmed = single_line.trim();
     if unicode_width::UnicodeWidthStr::width(trimmed) <= max_width {
         trimmed.to_string()
@@ -1476,7 +1473,9 @@ pub(super) fn draw_status(frame: &mut Frame, app: &dyn TuiState, area: Rect, pen
             ),
         ])
     } else if let Some(remaining) = app.rate_limit_remaining() {
-        let secs = remaining.as_secs();
+        let secs = remaining
+            .as_secs()
+            .saturating_add(u64::from(remaining.subsec_nanos() > 0));
         let spinner = super::activity_indicator(elapsed, 4.0);
         let time_str = if secs >= 3600 {
             let hours = secs / 3600;
@@ -1492,10 +1491,7 @@ pub(super) fn draw_status(frame: &mut Frame, app: &dyn TuiState, area: Rect, pen
         Line::from(vec![
             Span::styled(spinner, Style::default().fg(warning_color())),
             Span::styled(
-                format!(
-                    " Rate limited. Auto-retry in {}...{}",
-                    time_str, queued_suffix
-                ),
+                format!(" Retrying in {time_str}{queued_suffix}"),
                 Style::default().fg(warning_color()),
             ),
         ])
@@ -1508,7 +1504,7 @@ pub(super) fn draw_status(frame: &mut Frame, app: &dyn TuiState, area: Rect, pen
                 let mut spans = vec![
                     Span::styled(spinner, Style::default().fg(ai_color())),
                     Span::styled(
-                        format!(" Working/thinking… {}", format_elapsed(elapsed)),
+                        format!(" Sending… {}", format_elapsed(elapsed)),
                         Style::default().fg(dim_color()),
                     ),
                 ];
@@ -1549,14 +1545,26 @@ pub(super) fn draw_status(frame: &mut Frame, app: &dyn TuiState, area: Rect, pen
                 Line::from(spans)
             }
             ProcessingStatus::Thinking(_start) => {
-                let mut label = format!(" thinking… {}", format_elapsed(elapsed));
-                append_transport_context(&mut label, app);
-                let mut spans = vec![
-                    Span::styled(spinner, Style::default().fg(ai_color())),
-                    Span::styled(label, Style::default().fg(dim_color())),
+                let mut segments = vec![
+                    StatusSegment::new(
+                        2,
+                        format!("Thinking · {}", format_elapsed(elapsed)),
+                        muted_text_color(),
+                    )
+                    .short("Thinking"),
                 ];
-                push_queued_suffix(&mut spans, &queued_suffix);
-                Line::from(spans)
+                if let Some(tps) = app.output_tps() {
+                    segments.push(generation_rate_segment(tps, app.output_tps_is_estimated()));
+                }
+                for label in transport_context_labels(app) {
+                    segments.push(StatusSegment::new(6, label, dim_color()));
+                }
+                Line::from(streaming_status_spans(
+                    spinner,
+                    segments,
+                    queued_suffix_for_segment(&queued_suffix),
+                    area.width as usize,
+                ))
             }
             ProcessingStatus::Streaming => {
                 let time_str = format_elapsed(elapsed);
@@ -1576,17 +1584,21 @@ pub(super) fn draw_status(frame: &mut Frame, app: &dyn TuiState, area: Rect, pen
                         super::accent_color(),
                     ));
                 }
-                segments.push(StatusSegment::new(
-                    2,
-                    streaming_liveness_label(time_str, stale_secs, stream_message_ended),
-                    muted_text_color(),
-                ));
+                let liveness =
+                    streaming_liveness_label(time_str.clone(), stale_secs, stream_message_ended);
+                let label = if liveness == time_str {
+                    let state = if stream_message_ended {
+                        "Finishing"
+                    } else {
+                        "Generating"
+                    };
+                    format!("{state} · {time_str}")
+                } else {
+                    liveness
+                };
+                segments.push(StatusSegment::new(2, label, muted_text_color()).short(time_str));
                 if let Some(tps) = app.output_tps() {
-                    segments.push(StatusSegment::new(
-                        3,
-                        format!("{:.1} tok/s", tps),
-                        muted_text_color(),
-                    ));
+                    segments.push(generation_rate_segment(tps, app.output_tps_is_estimated()));
                 }
                 if let Some(used) = app.current_context_tokens().filter(|used| *used > 0) {
                     let ctx = format!("ctx={}", idle_context_fragment(app, used));
@@ -1702,11 +1714,20 @@ pub(super) fn draw_status(frame: &mut Frame, app: &dyn TuiState, area: Rect, pen
                 } else {
                     None
                 };
+                let running_call = app.streaming_tool_calls().last().cloned();
+                let tool_label = running_call
+                    .as_ref()
+                    .filter(|tool| {
+                        tools_ui::canonical_tool_name(&tool.name)
+                            == tools_ui::canonical_tool_name(name)
+                    })
+                    .map(tools_ui::tool_display_label)
+                    .unwrap_or_else(|| name.to_string());
                 let tool_detail = if is_batch {
                     None // batch always uses progress display
                 } else {
-                    app.streaming_tool_calls()
-                        .last()
+                    running_call
+                        .as_ref()
                         .map(get_tool_activity_detail)
                         .filter(|s| !s.is_empty())
                 };
@@ -1728,7 +1749,7 @@ pub(super) fn draw_status(frame: &mut Frame, app: &dyn TuiState, area: Rect, pen
                 let mut spans: Vec<Span<'static>> = vec![
                     Span::styled(pulse_glyph, Style::default().fg(anim_color)),
                     Span::styled(" ", Style::default()),
-                    Span::styled(name.to_string(), Style::default().fg(anim_color).bold()),
+                    Span::styled(tool_label, Style::default().fg(anim_color).bold()),
                     Span::styled(" ", Style::default()),
                 ];
                 spans.extend(trailing_spans);
@@ -1939,6 +1960,12 @@ fn cache_miss_label(problem: crate::alphacode_tui::tui::KvCacheProblem) -> Strin
         "kv".to_string()
     };
     format!("{} cache miss", miss_str)
+}
+
+fn generation_rate_segment(tps: f32, estimated: bool) -> StatusSegment {
+    let marker = if estimated { "~" } else { "" };
+    StatusSegment::new(1, format!("avg {marker}{tps:.1} tok/s"), muted_text_color())
+        .short(format!("{marker}{tps:.1} t/s"))
 }
 
 /// Assemble the streaming status row: activity spinner, then as many
@@ -3469,46 +3496,38 @@ pub(super) fn draw_overscroll_status(frame: &mut Frame, app: &dyn TuiState, area
 /// Truncate a list of spans to at most `max_width` display columns, appending a
 /// single-cell ellipsis when content is dropped. Preserves per-span styling.
 fn overscroll_truncate_spans(spans: Vec<Span<'static>>, max_width: usize) -> Vec<Span<'static>> {
-    use unicode_width::UnicodeWidthStr;
-    if max_width == 0 {
-        return Vec::new();
+    let line = Line::from(spans);
+    let clipped = line.width() > max_width;
+    let mut truncated =
+        crate::alphacode_tui_render::truncate_line_with_ellipsis_to_width(&line, max_width);
+    if clipped && let Some(ellipsis) = truncated.spans.last_mut() {
+        ellipsis.style = Style::default().fg(dim_color());
     }
-    let total: usize = spans.iter().map(|s| s.content.width()).sum();
-    if total <= max_width {
-        return spans;
+    truncated.spans
+}
+
+#[cfg(test)]
+mod compact_status_regressions {
+    use super::*;
+
+    #[test]
+    fn compact_status_preserves_joined_emoji_and_marks_overflow() {
+        let style = Style::default().fg(Color::Green);
+        let spans = overscroll_truncate_spans(vec![Span::styled("A👩‍💻XY", style)], 4);
+        let line = Line::from(spans);
+        assert_eq!(crate::alphacode_tui_render::line_plain_text(&line), "A👩‍💻…");
+        assert_eq!(line.width(), 4);
+        assert_eq!(line.spans[0].style, style);
     }
-    // Leave room for a trailing ellipsis.
-    let budget = max_width.saturating_sub(1);
-    let mut out: Vec<Span<'static>> = Vec::new();
-    let mut used = 0usize;
-    for span in spans {
-        let w = span.content.width();
-        if used + w <= budget {
-            used += w;
-            out.push(span);
-            continue;
-        }
-        // Partial: take as many chars as fit within the remaining budget.
-        let remaining = budget - used;
-        if remaining > 0 {
-            let mut taken = String::new();
-            let mut tw = 0usize;
-            for ch in span.content.chars() {
-                let cw = UnicodeWidthStr::width(ch.to_string().as_str());
-                if tw + cw > remaining {
-                    break;
-                }
-                tw += cw;
-                taken.push(ch);
-            }
-            if !taken.is_empty() {
-                out.push(Span::styled(taken, span.style));
-            }
-        }
-        break;
+
+    #[test]
+    fn preview_strips_terminal_controls_before_measuring() {
+        assert_eq!(
+            truncate_preview("\x1b[31mready\x1b[0m\nnow", 30),
+            "ready now"
+        );
+        assert_eq!(truncate_preview("anything", 0), "");
     }
-    out.push(Span::styled("…", Style::default().fg(dim_color())));
-    out
 }
 
 /// Format a working dir path home-relative (~/foo/bar), keeping the last 2 segments.
@@ -3521,11 +3540,7 @@ fn overscroll_git_branch(
     if branch.is_empty() {
         return None;
     }
-    let mut label: String = branch.chars().take(24).collect();
-    if branch.chars().count() > 24 {
-        label.push('…');
-    }
-    Some(label)
+    Some(crate::alphacode_tui_render::single_line_label(branch, 24))
 }
 
 fn overscroll_dir_label(path: &str) -> Option<String> {
@@ -4489,14 +4504,15 @@ pub(super) fn draw_input(
         };
         let budget = usize::from(frame_area.width.saturating_sub(6))
             .saturating_sub(composer_brand_reserved_width(frame_area));
-        if label.len() <= budget {
+        let label_width = unicode_width::UnicodeWidthStr::width(label);
+        if label_width <= budget {
             frame.render_widget(
                 Paragraph::new(label).style(
                     Style::default()
                         .fg(caret_color)
                         .add_modifier(Modifier::BOLD),
                 ),
-                Rect::new(frame_area.x + 3, frame_area.y, label.len() as u16, 1),
+                Rect::new(frame_area.x + 3, frame_area.y, label_width as u16, 1),
             );
         }
     }

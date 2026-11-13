@@ -174,6 +174,9 @@ pub fn install_panic_hook() {
     let default_hook = panic::take_hook();
 
     panic::set_hook(Box::new(move |info| {
+        if crate::alphacode_core::panic_util::panic_output_suppressed() {
+            return;
+        }
         restore_terminal_after_failed_init();
         // Flush the buffered log before the default hook prints the panic, so
         // the crash context is on disk even if the process aborts right after.
@@ -322,43 +325,70 @@ fn init_tui_terminal(inherited_terminal: bool) -> Result<ratatui::DefaultTermina
     }
 }
 
+/// Complete every fallible base-mode operation before pushing keyboard state.
+/// This ordering prevents an I/O failure from leaking a keyboard-stack entry.
+fn terminal_modes_after_setup(
+    requested: InheritedTerminalModes,
+    inherited_terminal: bool,
+    setup: impl FnOnce() -> Result<()>,
+    enable_keyboard: impl FnOnce() -> bool,
+) -> Result<InheritedTerminalModes> {
+    setup()?;
+    let keyboard_enhanced =
+        requested.keyboard_enhanced && (inherited_terminal || enable_keyboard());
+    Ok(InheritedTerminalModes {
+        keyboard_enhanced,
+        ..requested
+    })
+}
+
 fn enable_terminal_modes(
     keyboard_enhancement_requested: bool,
     mouse_capture: bool,
     focus_change: bool,
     inherited_terminal: bool,
 ) -> Result<InheritedTerminalModes> {
-    let keyboard_enhanced = if inherited_terminal {
-        keyboard_enhancement_requested
-    } else if keyboard_enhancement_requested {
-        tui::enable_keyboard_enhancement()
-    } else {
-        false
-    };
+    terminal_modes_after_setup(
+        InheritedTerminalModes {
+            mouse_capture,
+            keyboard_enhanced: keyboard_enhancement_requested,
+            focus_change,
+        },
+        inherited_terminal,
+        || {
+            crossterm::execute!(io::stdout(), crossterm::event::EnableBracketedPaste)?;
+            if focus_change {
+                crossterm::execute!(io::stdout(), crossterm::event::EnableFocusChange)?;
+            }
+            if mouse_capture {
+                crossterm::execute!(io::stdout(), crossterm::event::EnableMouseCapture)?;
+                if let Err(error) = sync_windows_vt_mouse_capture(true) {
+                    crate::logging::warn(&format!(
+                        "failed to enable Windows VT mouse tracking: {error}"
+                    ));
+                }
+            }
+            Ok(())
+        },
+        tui::enable_keyboard_enhancement,
+    )
+}
 
-    crossterm::execute!(io::stdout(), crossterm::event::EnableBracketedPaste)?;
-
-    if focus_change {
-        crossterm::execute!(io::stdout(), crossterm::event::EnableFocusChange)?;
+fn restore_failed_runtime_setup(inherited_modes: Option<InheritedTerminalModes>) {
+    if inherited_modes.is_some_and(|modes| modes.keyboard_enhanced) {
+        tui::disable_keyboard_enhancement();
     }
-
-    if mouse_capture {
-        crossterm::execute!(io::stdout(), crossterm::event::EnableMouseCapture)?;
-        if let Err(error) = sync_windows_vt_mouse_capture(true) {
-            crate::logging::warn(&format!(
-                "failed to enable Windows VT mouse tracking: {error}"
-            ));
-        }
-    }
-
-    Ok(InheritedTerminalModes {
-        mouse_capture,
-        keyboard_enhanced,
-        focus_change,
-    })
+    restore_terminal_after_failed_init();
+    // A failed resume has restored ordinary terminal modes. A retry in this
+    // process must initialize normally rather than trusting the old handoff.
+    crate::alphacode_core::env::remove_var(INHERITED_MODES_ENV);
+    crate::alphacode_core::env::remove_var(INHERITED_THEME_ENV);
 }
 
 pub fn init_tui_runtime() -> Result<(ratatui::DefaultTerminal, TuiRuntimeGuard)> {
+    // Reject redirected streams before theme queries or cleanup sequences can
+    // write terminal controls into a pipe or file.
+    ensure_interactive_terminal()?;
     let is_resuming = std::env::var_os("ALPHACODE_RESUMING").is_some();
     let inherited_theme = std::env::var(INHERITED_THEME_ENV).ok();
     let inherited_modes_raw = std::env::var(INHERITED_MODES_ENV).ok();
@@ -375,7 +405,14 @@ pub fn init_tui_runtime() -> Result<(ratatui::DefaultTerminal, TuiRuntimeGuard)>
         crate::alphacode_tui::tui::theme_detect::init_theme_mode();
     }
 
-    let terminal = init_tui_terminal(inherited_terminal)?;
+    let owned_inherited_modes = inherited_terminal.then_some(inherited_modes).flatten();
+    let terminal = match init_tui_terminal(inherited_terminal) {
+        Ok(terminal) => terminal,
+        Err(error) => {
+            restore_failed_runtime_setup(owned_inherited_modes);
+            return Err(error);
+        }
+    };
 
     let runtime_setup = (|| -> Result<InheritedTerminalModes> {
         crate::alphacode_tui::tui::mermaid::install_alphacode_mermaid_hooks();
@@ -426,7 +463,7 @@ pub fn init_tui_runtime() -> Result<(ratatui::DefaultTerminal, TuiRuntimeGuard)>
             }),
         )),
         Err(error) => {
-            restore_terminal_after_failed_init();
+            restore_failed_runtime_setup(owned_inherited_modes);
             Err(error)
         }
     }
@@ -671,6 +708,71 @@ mod tests {
     use std::sync::Mutex;
 
     static TEST_SESSION_LOCK: Mutex<()> = Mutex::new(());
+
+    #[test]
+    fn failed_base_mode_setup_never_pushes_keyboard_state() {
+        let requested = InheritedTerminalModes {
+            mouse_capture: true,
+            keyboard_enhanced: true,
+            focus_change: true,
+        };
+        let keyboard_calls = std::cell::Cell::new(0);
+        let result = terminal_modes_after_setup(
+            requested,
+            false,
+            || Err(anyhow!("terminal write failed")),
+            || {
+                keyboard_calls.set(keyboard_calls.get() + 1);
+                true
+            },
+        );
+        assert!(result.is_err());
+        assert_eq!(keyboard_calls.get(), 0);
+    }
+
+    #[test]
+    fn keyboard_setup_follows_base_modes_and_inherited_state_is_not_pushed_again() {
+        let requested = InheritedTerminalModes {
+            mouse_capture: true,
+            keyboard_enhanced: true,
+            focus_change: false,
+        };
+        let order = std::cell::RefCell::new(Vec::new());
+        let modes = terminal_modes_after_setup(
+            requested,
+            false,
+            || {
+                order.borrow_mut().push("base");
+                Ok(())
+            },
+            || {
+                order.borrow_mut().push("keyboard");
+                true
+            },
+        )
+        .unwrap();
+        assert_eq!(order.into_inner(), ["base", "keyboard"]);
+        assert_eq!(modes, requested);
+        let inherited = terminal_modes_after_setup(
+            requested,
+            true,
+            || Ok(()),
+            || panic!("must not push inherited keyboard state"),
+        )
+        .unwrap();
+        assert_eq!(inherited, requested);
+        let disabled = terminal_modes_after_setup(
+            InheritedTerminalModes {
+                keyboard_enhanced: false,
+                ..requested
+            },
+            false,
+            || Ok(()),
+            || panic!("must not enable a disabled feature"),
+        )
+        .unwrap();
+        assert!(!disabled.keyboard_enhanced);
+    }
 
     fn test_guard() -> TuiRuntimeGuard {
         TuiRuntimeGuard::new(TuiRuntimeState {

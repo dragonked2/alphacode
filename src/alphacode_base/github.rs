@@ -37,7 +37,7 @@ fn gh_cli_token() -> Option<String> {
     if !crate::alphacode_base::auth::command_exists("gh") {
         return None;
     }
-    let output = std::process::Command::new("gh")
+    let output = crate::alphacode_base::platform::helper_command("gh")
         .args(["auth", "token"])
         .output()
         .ok()?;

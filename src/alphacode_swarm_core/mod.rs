@@ -7,6 +7,12 @@ use std::path::PathBuf;
 pub const MAX_SWARM_COMPLETION_REPORT_CHARS: usize = 4000;
 pub const SWARM_COMPLETION_REPORT_MARKER: &str = "SWARM COMPLETION REPORT REQUIRED";
 
+/// Compact opaque identifiers without slicing through a UTF-8 character.
+/// ASCII IDs retain their historical eight-character labels.
+pub fn short_session_id(id: &str) -> &str {
+    id.char_indices().nth(8).map_or(id, |(end, _)| &id[..end])
+}
+
 /// Message/report bodies longer than this require a sender-provided `tldr`
 /// so receiving UIs can render them collapsed to one line with an expand
 /// control instead of dumping the full body into the transcript.
@@ -686,6 +692,14 @@ mod tests {
             blocked_by: Vec::new(),
             assigned_to: None,
         }
+    }
+
+    #[test]
+    fn short_session_ids_do_not_split_utf8() {
+        assert_eq!(short_session_id("abcdefghijk"), "abcdefgh");
+        assert_eq!(short_session_id(""), "");
+        assert_eq!(short_session_id("短编号"), "短编号");
+        assert_eq!(short_session_id("工作者你好世界编号"), "工作者你好世界编");
     }
 
     #[test]

@@ -1,4 +1,4 @@
-use super::info_widget::{InfoWidgetData, is_traceworthy_memory_event};
+use super::info_widget::{InfoWidgetData, is_traceworthy_memory_event, session_identity_height};
 
 pub(crate) const MAX_TODO_LINES: usize = 12;
 
@@ -31,7 +31,8 @@ pub(crate) fn compute_page_layout(
     inner_width: usize,
     inner_height: u16,
 ) -> PageLayout {
-    let compact_height = compact_overview_height(data, compact_todos_width(inner_width));
+    let compact_height =
+        compact_overview_height(data, inner_width, compact_todos_width(inner_width));
     if compact_height == 0 {
         return PageLayout {
             pages: Vec::new(),
@@ -166,19 +167,8 @@ fn todos_progress_bar_renders(todos: &[crate::todo::TodoItem], inner_width: u16)
     todos.iter().any(|todo| todo.status != "cancelled")
 }
 
-fn compact_model_height(data: &InfoWidgetData) -> u16 {
-    u16::from(data.model.is_some()) + u16::from(has_session_identity(data))
-}
-
-/// Whether the Session card renders an identity line under the model row.
-///
-/// The card shows the user's goal when there is one, falling back to the
-/// working directory; the raw session name is intentionally never rendered.
-pub(super) fn has_session_identity(data: &InfoWidgetData) -> bool {
-    [data.goal.as_deref(), data.working_dir.as_deref()]
-        .into_iter()
-        .flatten()
-        .any(|value| !value.trim().is_empty())
+fn compact_model_height(data: &InfoWidgetData, inner_width: usize) -> u16 {
+    u16::from(data.model.is_some()) + session_identity_height(data, inner_width)
 }
 
 fn compact_telemetry_height(data: &InfoWidgetData, include_memory: bool) -> u16 {
@@ -221,8 +211,8 @@ fn compact_git_height(data: &InfoWidgetData) -> u16 {
     0
 }
 
-fn compact_overview_height(data: &InfoWidgetData, todos_width: u16) -> u16 {
-    compact_model_height(data)
+fn compact_overview_height(data: &InfoWidgetData, inner_width: usize, todos_width: u16) -> u16 {
+    compact_model_height(data, inner_width)
         + compact_telemetry_height(data, true)
         + compact_todos_height(data, todos_width)
         + compact_background_height(data)

@@ -869,17 +869,72 @@ pub(crate) fn skill_name_for_tool(tool: &ToolCall) -> Option<&str> {
     }
     tool.input
         .get("name")
-        .or_else(|| tool.input.get("skill"))
         .and_then(|value| value.as_str())
         .map(str::trim)
+        .map(|name| name.trim_start_matches('/'))
         .filter(|name| !name.is_empty())
+        .or_else(|| {
+            tool.input
+                .get("skill")
+                .and_then(|value| value.as_str())
+                .map(str::trim)
+                .map(|name| name.trim_start_matches('/'))
+                .filter(|name| !name.is_empty())
+        })
+}
+
+pub(crate) fn tool_display_label(tool: &ToolCall) -> String {
+    let label = resolve_display_tool_name(&tool.name);
+    match skill_name_for_tool(tool) {
+        Some(name) => format!(
+            "{label} ({})",
+            crate::alphacode_tui_render::single_line_text(name)
+        ),
+        None => label.to_string(),
+    }
+}
+
+pub(super) fn skill_result_summary(tool: &ToolCall, failed: bool) -> String {
+    let action = tool
+        .input
+        .get("action")
+        .and_then(|value| value.as_str())
+        .unwrap_or("load");
+    if failed {
+        return format!("{action} failed");
+    }
+    match action {
+        "load" => "loaded".to_string(),
+        "reload" => "reloaded".to_string(),
+        "reload_all" => "reloaded all".to_string(),
+        "read" => tool
+            .input
+            .get("reference")
+            .and_then(|value| value.as_str())
+            .map(|reference| {
+                format!(
+                    "read {}",
+                    crate::alphacode_tui_render::single_line_text(reference)
+                )
+            })
+            .unwrap_or_else(|| "read".to_string()),
+        _ => action.to_string(),
+    }
 }
 
 /// Detail text for the live activity line while a tool is running. Prefers the
 /// model-provided `intent` (display-only description of why the call is being
 /// made) and appends the technical summary when it adds information.
 pub(crate) fn get_tool_activity_detail(tool: &ToolCall) -> String {
-    let summary = get_tool_summary(tool);
+    let summary = if let Some(name) = skill_name_for_tool(tool) {
+        format!(
+            "{} {}",
+            get_tool_summary(tool),
+            crate::alphacode_tui_render::single_line_text(name)
+        )
+    } else {
+        get_tool_summary(tool)
+    };
     let intent = tool
         .intent
         .as_deref()
@@ -887,6 +942,9 @@ pub(crate) fn get_tool_activity_detail(tool: &ToolCall) -> String {
         .map(str::trim)
         .filter(|intent| !intent.is_empty());
     match intent {
+        Some(intent) if skill_name_for_tool(tool).is_some() && !summary.is_empty() => {
+            format!("{summary} · {intent}")
+        }
         Some(intent) if show_tool_call_details() && !summary.is_empty() && summary != intent => {
             format!("{} · {}", intent, summary)
         }
@@ -1252,7 +1310,7 @@ pub(super) fn get_tool_summary_with_budget(
                 .input
                 .get("action")
                 .and_then(|v| v.as_str())
-                .unwrap_or("list");
+                .unwrap_or("load");
             // The target skill is rendered inline next to the tool name as
             // `skill_manage (tui_design)`, so the summary only carries the
             // action to avoid repeating the name on the same row.
@@ -1582,7 +1640,7 @@ pub(super) fn render_batch_subcall_line(
     max_width: Option<usize>,
     output_content: Option<&str>,
 ) -> Line<'static> {
-    let display_name = resolve_display_tool_name(&tool.name);
+    let display_name = tool_display_label(tool);
     let token_badge = output_content.map(|content| {
         let tokens = crate::util::estimate_tokens(content);
         let color = match crate::util::approx_tool_output_token_severity(tokens) {
@@ -1615,8 +1673,13 @@ pub(super) fn render_batch_subcall_line(
     let summary_budget = max_width.map(|w| w.saturating_sub(reserved));
     let error_summary = output_content.and_then(concise_tool_error_summary);
     let is_error = error_summary.is_some();
-    let summary = error_summary
-        .unwrap_or_else(|| get_tool_summary_with_budget(tool, bash_max_chars, summary_budget));
+    let summary = error_summary.unwrap_or_else(|| {
+        if skill_name_for_tool(tool).is_some() && output_content.is_some() {
+            skill_result_summary(tool, false)
+        } else {
+            get_tool_summary_with_budget(tool, bash_max_chars, summary_budget)
+        }
+    });
 
     // Pre-allocate spans with known capacity
     let mut spans = Vec::with_capacity(10);
@@ -1632,7 +1695,8 @@ pub(super) fn render_batch_subcall_line(
         // Error summaries always render so failures stay diagnosable even
         // when technical details are hidden. Compare against `intent` before
         // moving it into the span so the borrow checker is happy.
-        let show_detail = show_tool_call_details() || is_error;
+        let show_detail =
+            show_tool_call_details() || is_error || skill_name_for_tool(tool).is_some();
         let intent_matches_summary = summary == intent;
         spans.push(Span::styled(" · ", Style::default().fg(dim_color())));
         spans.push(Span::styled(intent, Style::default().fg(tool_color())));
@@ -1687,8 +1751,8 @@ pub(super) fn summarize_batch_running_tools_compact(running: &[ToolCall]) -> Opt
     let tool = first?;
     let extra = running.len().saturating_sub(1);
     let label = match batch_subcall_index(&tool.id) {
-        Some(idx) => format!("#{} {}", idx, tool.name),
-        None => tool.name.clone(),
+        Some(idx) => format!("#{} {}", idx, tool_display_label(tool)),
+        None => tool_display_label(tool),
     };
 
     if extra == 0 {
@@ -1754,8 +1818,8 @@ mod tests {
         );
         assert_eq!(get_tool_summary_with_budget(&load, 50, None), "load");
 
-        // Defaults to `list` when no action is supplied.
+        // Matches SkillInput's default action when no action is supplied.
         let bare = tool("skill_manage", serde_json::json!({"name": "tui_design"}));
-        assert_eq!(get_tool_summary_with_budget(&bare, 50, None), "list");
+        assert_eq!(get_tool_summary_with_budget(&bare, 50, None), "load");
     }
 }

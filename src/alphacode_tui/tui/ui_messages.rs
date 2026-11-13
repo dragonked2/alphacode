@@ -3890,11 +3890,7 @@ pub(crate) fn render_tool_message(
     // is surfaced inline right after the tool name instead of only on the
     // dimmed detail line, so at a glance the row says which skill ran.
     let skill_suffix = tools_ui::skill_name_for_tool(tc)
-        .map(|name| {
-            let label =
-                super::truncate_line_with_ellipsis_to_width(&Line::from(name.to_string()), 32);
-            format!(" ({})", super::line_plain_text(&label))
-        })
+        .map(|name| format!(" ({})", crate::alphacode_tui_render::single_line_text(name)))
         .unwrap_or_default();
     let base_prefix = format!("  {} {}{} ", icon, display_name, skill_suffix);
     let token_suffix_width =
@@ -3934,6 +3930,8 @@ pub(crate) fn render_tool_message(
         }
     } else if let Some(error_summary) = tools_ui::concise_tool_error_summary(&msg.content) {
         error_summary
+    } else if tools_ui::skill_name_for_tool(tc).is_some() {
+        tools_ui::skill_result_summary(tc, is_error)
     } else if tc.name == "subagent" {
         msg.title
             .as_deref()
@@ -3972,7 +3970,21 @@ pub(crate) fn render_tool_message(
             Style::default().fg(crate::alphacode_tui_style::theme::accent_color()),
         ));
     }
-    if let Some(intent) = intent {
+    // On failure, the reason is more useful than an optional intent label.
+    // Put it first so narrow terminals cannot hide it behind long prose.
+    if is_error || is_partial_batch {
+        if !summary.is_empty() {
+            tool_line.push(Span::styled(" · ", Style::default().fg(dim_color())));
+            tool_line.push(Span::styled(summary, Style::default().fg(icon_color)));
+        }
+    } else if tools_ui::skill_name_for_tool(tc).is_some() {
+        if !summary.is_empty() {
+            tool_line.push(Span::styled(
+                format!(" · {summary}"),
+                Style::default().fg(dim_color()),
+            ));
+        }
+    } else if let Some(intent) = intent {
         tool_line.push(Span::styled(" · ", Style::default().fg(dim_color())));
         tool_line.push(Span::styled(
             intent.to_string(),
@@ -4016,6 +4028,41 @@ pub(crate) fn render_tool_message(
     );
     let rendered_tool_line_text = super::line_plain_text(&rendered_tool_line);
     lines.push(rendered_tool_line);
+    // A long name may not fit alongside the tool label and token badge. Keep
+    // the exact target available in cell-width-safe continuation lines.
+    if let Some(name) = tools_ui::skill_name_for_tool(tc) {
+        let name = crate::alphacode_tui_render::single_line_text(name);
+        if !rendered_tool_line_text.contains(&format!("({name})")) && row_width > 4 {
+            for part in split_by_display_width(&format!("Skill: {name}"), row_width - 4) {
+                lines.push(Line::from(vec![
+                    Span::raw("    "),
+                    Span::styled(part, Style::default().fg(super::accent_color())),
+                ]));
+            }
+        }
+    }
+    // Always preserve a readable failure reason, even with technical details
+    // collapsed. This is a bounded preview, not an unbounded raw log dump.
+    if is_error && row_width > 4 {
+        if let Some(reason) = tools_ui::concise_tool_error_summary(&msg.content) {
+            let reason = crate::alphacode_tui_render::single_line_text(&reason);
+            if !rendered_tool_line_text.contains(&reason) {
+                let parts = split_by_display_width(&reason, row_width - 4);
+                for part in parts.iter().take(3) {
+                    lines.push(Line::from(vec![
+                        Span::raw("    "),
+                        Span::styled(part.clone(), Style::default().fg(icon_color)),
+                    ]));
+                }
+                if parts.len() > 3 {
+                    lines.push(super::truncate_line_with_ellipsis_to_width(
+                        &Line::from("    More details: /tool-call-details on"),
+                        row_width,
+                    ));
+                }
+            }
+        }
+    }
     if let Some(draft_lines) = render_gmail_draft_card(tc, &msg.content, is_error, row_width) {
         lines.extend(draft_lines);
     }

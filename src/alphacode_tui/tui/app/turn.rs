@@ -103,8 +103,20 @@ impl App {
             // Non-blocking memory: uses pending result from last turn, spawns check for next turn
             let memory_pending = self.build_memory_prompt_nonblocking(&provider_messages);
             // Use split prompt for better caching - static content cached, dynamic not
-            let split_prompt =
+            let mut split_prompt =
                 self.build_system_prompt_split(memory_pending.as_ref().map(|p| p.prompt.as_str()));
+            let capability_names = tools
+                .iter()
+                .map(|tool| tool.name.clone())
+                .collect::<Vec<_>>();
+            split_prompt
+                .dynamic_part
+                .push_str(&crate::tool::capabilities::request_brief(
+                    &capability_names,
+                    &tools,
+                    false,
+                    self.provider.handles_tools_internally(),
+                ));
             self.context_info.tool_defs_count = tools.len();
             self.context_info.tool_defs_chars = ToolDefinition::aggregate_prompt_chars(&tools);
             if let Some(pending) = &memory_pending {
@@ -261,6 +273,7 @@ impl App {
             let mut generated_image_contexts: Vec<Vec<ContentBlock>> = Vec::new();
             let mut first_event = true;
             let mut saw_message_end = false;
+            self.begin_streaming_tps_request();
             let mut call_output_tokens_seen: u64 = 0;
             // Usage already billed for the in-flight API call (see
             // `accrue_local_usage_delta`). Reset per turn; a new call resets it again.
@@ -529,7 +542,7 @@ impl App {
                                     StreamEvent::TextDelta(text) => {
                                         self.status = ProcessingStatus::Streaming;
                                         text_content.push_str(&text);
-                                        self.resume_streaming_tps();
+                                        self.note_streaming_tps_bytes(text.len());
                                         // The buffer queues a CloseReasoning marker ahead of real
                                         // output so any open reasoning region closes in order as
                                         // the paced stream reveals.
@@ -594,6 +607,7 @@ impl App {
                                         }
                                     }
                                     StreamEvent::ToolInputDelta(delta) => {
+                                        self.note_streaming_tps_bytes(delta.len());
                                         self.broadcast_debug(crate::alphacode_tui::tui::backend::DebugEvent::ToolInput {
                                             delta: delta.clone()
                                         });
@@ -831,7 +845,7 @@ impl App {
                                         }
                                     }
                                     StreamEvent::ThinkingDelta(thinking_text) => {
-                                        self.resume_streaming_tps();
+                                        self.note_streaming_tps_bytes(thinking_text.len());
                                         // Reflect active reasoning in the status line even when the
                                         // provider streams reasoning deltas without an explicit
                                         // ThinkingStart (e.g. OpenRouter, Bedrock) or when the

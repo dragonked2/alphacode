@@ -532,7 +532,11 @@ pub fn load_todos(session_id: &str) -> Result<Vec<TodoItem>> {
     if !path.exists() {
         return Ok(Vec::new());
     }
-    storage::read_json(&path).or_else(|_| Ok(Vec::new()))
+    // A present but unreadable file is not an empty todo list. Propagating the
+    // error lets writers stop before replacing valid-looking state with an
+    // empty array; callers that only need a best-effort display can still opt
+    // into `unwrap_or_default()` at their boundary.
+    storage::read_json(&path)
 }
 
 pub fn todos_exist(session_id: &str) -> Result<bool> {
@@ -557,7 +561,7 @@ pub fn load_goals(session_id: &str) -> Result<Vec<TodoGoal>> {
     if !path.exists() {
         return Ok(Vec::new());
     }
-    storage::read_json(&path).or_else(|_| Ok(Vec::new()))
+    storage::read_json(&path)
 }
 
 /// Derive a concise session-title hint from the todo tool's persisted plan.
@@ -626,7 +630,7 @@ pub fn load_plan(session_id: &str) -> Result<TodoPlan> {
     if !path.exists() {
         return Ok(TodoPlan::default());
     }
-    storage::read_json(&path).or_else(|_| Ok(TodoPlan::default()))
+    storage::read_json(&path)
 }
 
 pub fn save_plan(session_id: &str, plan: &TodoPlan) -> Result<()> {
@@ -649,7 +653,7 @@ pub fn load_gate_observations(session_id: &str) -> Result<Vec<GateObservation>> 
     if !path.exists() {
         return Ok(Vec::new());
     }
-    storage::read_json(&path).or_else(|_| Ok(Vec::new()))
+    storage::read_json(&path)
 }
 
 pub fn save_gate_observations(session_id: &str, observations: &[GateObservation]) -> Result<()> {
@@ -665,7 +669,7 @@ pub fn append_gate_observations(session_id: &str, new: &[GateObservation]) -> Re
     if new.is_empty() {
         return Ok(());
     }
-    let mut observations = load_gate_observations(session_id).unwrap_or_default();
+    let mut observations = load_gate_observations(session_id)?;
     observations.extend(new.iter().cloned());
     if observations.len() > MAX_GATE_OBSERVATIONS {
         let excess = observations.len() - MAX_GATE_OBSERVATIONS;

@@ -70,6 +70,11 @@ pub(super) const BUNDLED_SKILLS: &[BundledSkill] = &[
         references: &[],
     },
     BundledSkill {
+        name: "nodejs-security",
+        body: include_str!("bundled_skills/nodejs-security/SKILL.md"),
+        references: &[],
+    },
+    BundledSkill {
         name: "ctf-workflow",
         body: include_str!("bundled_skills/ctf-workflow/SKILL.md"),
         references: &[(
@@ -1238,6 +1243,20 @@ mod tests {
                 );
             }
         }
+    }
+
+    #[test]
+    fn vulnerability_hunting_skill_does_not_confirm_a_finding_from_missing_validation_alone() {
+        let hunter = BUNDLED_SKILLS
+            .iter()
+            .find(|skill| skill.name == "vuln-hunter")
+            .expect("bundled vulnerability hunter");
+        assert!(
+            !hunter
+                .body
+                .contains("If no validation → vulnerability confirmed")
+        );
+        assert!(hunter.body.contains("Treat a missing check as a lead"));
     }
 
     #[test]

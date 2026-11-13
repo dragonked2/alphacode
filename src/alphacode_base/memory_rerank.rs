@@ -51,7 +51,29 @@ pub(crate) fn failure_backoff_active() -> bool {
 }
 
 pub(crate) fn record_failure_backoff(error: &anyhow::Error) {
-    let error = error.to_string().to_ascii_lowercase();
+    // Admission skips are normal load shedding, not provider failures. They
+    // must not disable other memory work after capacity becomes available.
+    if error
+        .chain()
+        .any(|source| source.to_string().starts_with("sidecar skipped:"))
+    {
+        return;
+    }
+    let duration = failure_backoff_duration(error);
+    if let Ok(mut guard) = FAILURE_BACKOFF_UNTIL.lock() {
+        let candidate = Instant::now() + duration;
+        if match *guard {
+            Some(existing) => existing < candidate,
+            None => true,
+        } {
+            *guard = Some(candidate);
+        }
+    }
+}
+
+fn failure_backoff_duration(error: &anyhow::Error) -> Duration {
+    let hint = crate::alphacode_provider_core::retry_after::retry_after_from_error(error);
+    let error = format!("{error:#}").to_ascii_lowercase();
     let permanent_auth_failure = error.contains("401")
         || error.contains("unauthorized")
         || error.contains("authentication_error")
@@ -68,15 +90,12 @@ pub(crate) fn record_failure_backoff(error: &anyhow::Error) {
     } else {
         TRANSIENT_FAILURE_BACKOFF
     };
-    if let Ok(mut guard) = FAILURE_BACKOFF_UNTIL.lock() {
-        let candidate = Instant::now() + duration;
-        if match *guard {
-            Some(existing) => existing < candidate,
-            None => true,
-        } {
-            *guard = Some(candidate);
-        }
-    }
+    let body_hint =
+        crate::alphacode_provider_core::retry_after::retry_after_seconds_from_text(&error)
+            .map(Duration::from_secs);
+    duration
+        .max(hint.unwrap_or_default())
+        .max(body_hint.unwrap_or_default())
 }
 
 /// Clear the process-wide judge circuit breaker after real auth state changes.
@@ -617,7 +636,13 @@ mod tests {
 
     #[test]
     fn judge_failure_backoff_arms_and_auth_invalidation_clears_it() {
+        let _guard = crate::storage::lock_test_env();
         clear_failure_backoff();
+        assert!(!failure_backoff_active());
+        record_failure_backoff(
+            &anyhow::anyhow!("sidecar skipped: background memory work is already in flight")
+                .context("outer wrapper"),
+        );
         assert!(!failure_backoff_active());
         record_failure_backoff(&anyhow::anyhow!(
             "Claude API error (401 Unauthorized): invalid authentication credentials"
@@ -625,5 +650,22 @@ mod tests {
         assert!(failure_backoff_active());
         clear_failure_backoff();
         assert!(!failure_backoff_active());
+    }
+
+    #[test]
+    fn wrapped_provider_limit_uses_rate_limit_backoff_and_full_hint() {
+        let error = anyhow::anyhow!("status: 429 Too Many Requests")
+            .context("Sidecar completion via active provider failed");
+        assert_eq!(failure_backoff_duration(&error), RATE_LIMIT_FAILURE_BACKOFF);
+        let mut headers = reqwest::header::HeaderMap::new();
+        headers.insert(reqwest::header::RETRY_AFTER, "3541".parse().unwrap());
+        let error = crate::alphacode_provider_core::retry_after::error_with_retry_after(
+            "status: 429".into(),
+            crate::alphacode_provider_core::retry_after::retry_after(&headers),
+        )
+        .context("Sidecar completion via active provider failed");
+        assert!(failure_backoff_duration(&error) > Duration::from_secs(3540));
+        let auth = anyhow::anyhow!("401 Unauthorized").context("outer wrapper");
+        assert_eq!(failure_backoff_duration(&auth), AUTH_FAILURE_BACKOFF);
     }
 }

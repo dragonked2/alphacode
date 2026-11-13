@@ -2,15 +2,33 @@ use crate::alphacode_app_core::protocol::{AwaitedMemberStatus, ServerEvent};
 use crate::alphacode_app_core::server::durable_state::{
     hashed_request_key, load_json_state, now_unix_ms, save_json_state, state_dir,
 };
+use anyhow::Context;
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
-use std::sync::Arc;
+use std::sync::{Arc, LazyLock, Mutex as StdMutex, Weak};
 use std::time::Duration;
 use tokio::sync::{RwLock, mpsc};
 
 const AWAIT_MEMBERS_DIR: &str = "alphacode-await-members";
 const FINAL_STATE_TTL: Duration = Duration::from_secs(6 * 60 * 60);
 const PENDING_STATE_TTL: Duration = Duration::from_secs(24 * 60 * 60);
+
+static STATE_LOCKS: LazyLock<StdMutex<HashMap<std::path::PathBuf, Weak<StdMutex<()>>>>> =
+    LazyLock::new(|| StdMutex::new(HashMap::new()));
+
+fn state_lock(key: &str) -> Arc<StdMutex<()>> {
+    let path = super::durable_state::state_path(AWAIT_MEMBERS_DIR, key);
+    let mut locks = STATE_LOCKS
+        .lock()
+        .unwrap_or_else(|error| error.into_inner());
+    locks.retain(|_, lock| lock.strong_count() > 0);
+    if let Some(lock) = locks.get(&path).and_then(Weak::upgrade) {
+        return lock;
+    }
+    let lock = Arc::new(StdMutex::new(()));
+    locks.insert(path, Arc::downgrade(&lock));
+    lock
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PersistedAwaitMembersResult {
@@ -27,6 +45,10 @@ pub struct PersistedAwaitMembersState {
     pub swarm_id: String,
     pub target_status: Vec<String>,
     pub requested_ids: Vec<String>,
+    /// Persist the observed cohort separately from the request. Empty
+    /// requested_ids still means dynamic whole-swarm watching, including joins.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub observed_members: Vec<AwaitedMemberStatus>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub mode: Option<String>,
     pub created_at_unix_ms: u64,
@@ -162,11 +184,106 @@ pub(super) fn request_key(
 }
 
 pub(super) fn load_state(key: &str) -> Option<PersistedAwaitMembersState> {
+    let lock = state_lock(key);
+    let _guard = lock.lock().unwrap_or_else(|error| error.into_inner());
+    load_state_unlocked(key)
+}
+
+fn load_state_unlocked(key: &str) -> Option<PersistedAwaitMembersState> {
     load_json_state(AWAIT_MEMBERS_DIR, key, is_stale)
 }
 
 pub(super) fn save_state(state: &PersistedAwaitMembersState) {
-    save_json_state(AWAIT_MEMBERS_DIR, &state.key, state, "await_members state")
+    let lock = state_lock(&state.key);
+    let _guard = lock.lock().unwrap_or_else(|error| error.into_inner());
+    let mut next = state.clone();
+    if let Some(current) = load_state_unlocked(&state.key) {
+        if current.created_at_unix_ms != state.created_at_unix_ms {
+            crate::logging::warn("Ignoring stale await-state preference update");
+            return;
+        }
+        // Generic saves update preferences/final response; observation writes
+        // use record_observations, which knows which payload is newest.
+        next.observed_members = merge_observed_members(
+            &state.observed_members,
+            &current.observed_members,
+            &state.target_status,
+        );
+        if current.final_response.is_some() {
+            // A preference update captured before finalization cannot reopen
+            // a request whose outcome has already committed.
+            next.final_response = current.final_response;
+        }
+    }
+    save_state_unlocked(&next);
+}
+
+fn save_state_unlocked(state: &PersistedAwaitMembersState) {
+    save_json_state(AWAIT_MEMBERS_DIR, &state.key, state, "await_members state");
+}
+
+/// Keep every observed member. Missing unfinished work becomes unknown;
+/// previously observed matching outcomes remain historical evidence until a
+/// new live observation supersedes them.
+pub(super) fn merge_observed_members(
+    previous: &[AwaitedMemberStatus],
+    current: &[AwaitedMemberStatus],
+    target: &[String],
+) -> Vec<AwaitedMemberStatus> {
+    let mut members: HashMap<String, AwaitedMemberStatus> = previous
+        .iter()
+        .map(|member| {
+            let mut fallback = member.clone();
+            if !fallback.done {
+                fallback.status = "unknown".into();
+                fallback.done = target.iter().any(|status| status == "unknown");
+            }
+            (fallback.session_id.clone(), fallback)
+        })
+        .collect();
+    for member in current {
+        if member.status == "unknown"
+            && members
+                .get(&member.session_id)
+                .is_some_and(|previous| previous.done)
+        {
+            continue;
+        }
+        members.insert(member.session_id.clone(), member.clone());
+    }
+    let mut members: Vec<_> = members.into_values().collect();
+    members.sort_by(|left, right| left.session_id.cmp(&right.session_id));
+    members
+}
+
+/// Merge observations into the latest pending record, preserving delivery
+/// preferences changed by another request while a watcher was running.
+pub(super) fn record_observations(
+    state: &PersistedAwaitMembersState,
+    observations: &[AwaitedMemberStatus],
+) -> anyhow::Result<PersistedAwaitMembersState> {
+    let lock = state_lock(&state.key);
+    let _guard = lock.lock().unwrap_or_else(|error| error.into_inner());
+    let current = load_state_unlocked(&state.key);
+    if let Some(current) = &current {
+        anyhow::ensure!(
+            current.created_at_unix_ms == state.created_at_unix_ms,
+            "Await request changed while its watcher was running"
+        );
+    }
+    let missing = current.is_none();
+    let mut next = current.unwrap_or_else(|| state.clone());
+    if next.is_pending() {
+        let observed =
+            merge_observed_members(&next.observed_members, observations, &next.target_status);
+        if missing || observed != next.observed_members {
+            next.observed_members = observed;
+            let path = super::durable_state::state_path(AWAIT_MEMBERS_DIR, &next.key);
+            crate::storage::write_json_fast(&path, &next)
+                .context("Unable to persist swarm member observations")?;
+        }
+    }
+    Ok(next)
 }
 
 #[expect(
@@ -185,7 +302,10 @@ pub(super) fn ensure_pending_state(
     notify: bool,
     wake: bool,
 ) -> PersistedAwaitMembersState {
-    if let Some(existing) = load_state(key).filter(PersistedAwaitMembersState::is_pending) {
+    let lock = state_lock(key);
+    let _guard = lock.lock().unwrap_or_else(|error| error.into_inner());
+    if let Some(existing) = load_state_unlocked(key).filter(PersistedAwaitMembersState::is_pending)
+    {
         return existing;
     }
 
@@ -195,6 +315,7 @@ pub(super) fn ensure_pending_state(
         swarm_id: swarm_id.to_string(),
         target_status: target_status.to_vec(),
         requested_ids: requested_ids.to_vec(),
+        observed_members: Vec::new(),
         mode: mode.map(str::to_string),
         created_at_unix_ms: now_unix_ms(),
         deadline_unix_ms,
@@ -203,7 +324,7 @@ pub(super) fn ensure_pending_state(
         wake,
         final_response: None,
     };
-    save_state(&state);
+    save_state_unlocked(&state);
     state
 }
 
@@ -212,16 +333,25 @@ pub(super) fn persist_final_response(
     completed: bool,
     members: Vec<AwaitedMemberStatus>,
     summary: String,
-) -> PersistedAwaitMembersState {
-    let mut next = state.clone();
+) -> (PersistedAwaitMembersState, bool) {
+    let lock = state_lock(&state.key);
+    let _guard = lock.lock().unwrap_or_else(|error| error.into_inner());
+    let mut next = load_state_unlocked(&state.key)
+        .filter(|current| current.created_at_unix_ms == state.created_at_unix_ms)
+        .unwrap_or_else(|| state.clone());
+    if next.final_response.is_some() {
+        return (next, false);
+    }
+    next.observed_members =
+        merge_observed_members(&next.observed_members, &members, &next.target_status);
     next.final_response = Some(PersistedAwaitMembersResult {
         completed,
         members,
         summary,
         resolved_at_unix_ms: now_unix_ms(),
     });
-    save_state(&next);
-    next
+    save_state_unlocked(&next);
+    (next, true)
 }
 
 pub fn pending_await_members_for_session(session_id: &str) -> Vec<PersistedAwaitMembersState> {
@@ -258,13 +388,21 @@ pub(super) fn all_pending_await_members_including_expired() -> Vec<PersistedAwai
     let mut pending = Vec::new();
     for entry in entries.flatten() {
         let path = entry.path();
-        if !path.is_file() {
+        if !path.is_file() || path.extension().is_none_or(|extension| extension != "json") {
             continue;
         }
+        let Some(key) = path.file_stem().and_then(|key| key.to_str()) else {
+            continue;
+        };
+        let lock = state_lock(key);
+        let _guard = lock.lock().unwrap_or_else(|error| error.into_inner());
 
         let Ok(state) = crate::storage::read_json::<PersistedAwaitMembersState>(&path) else {
             continue;
         };
+        if state.key != key {
+            continue;
+        }
         if is_stale(&state) {
             let _ = std::fs::remove_file(path);
             continue;

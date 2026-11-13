@@ -4,10 +4,10 @@
 //! described in the architecture plan: `STATE.json`, `GOALS.md`, `PLAN.md`,
 //! `TODO.md`, `SUMMARY.md`, `DECISIONS.md`, `NOTES.md`, `BUGS.md`, `INDEX.json`.
 //!
-//! Nothing important may exist only inside model context.  This module
-//! serialises and deserialises everything so that a model restart, application
-//! restart, power outage, GPU crash, Windows reboot, network interruption, or
-//! context overflow can all be recovered from without losing project state.
+//! ProjectState and document files persist on disk. The entry store below is
+//! process-local and must not be treated as crash-recoverable storage. State
+//! transactions coordinate cooperating managers through a stable OS file lock;
+//! this is not an execution journal or external-side-effect reconciliation.
 
 use anyhow::{Context, Result};
 use chrono::{DateTime, Utc};
@@ -20,6 +20,10 @@ use std::sync::{Arc, Mutex};
 
 use crate::alphacode_memory_types::MemoryEntry;
 
+mod persistence;
+pub(super) use persistence::atomic_write;
+use persistence::{acquire_state_lock, initialize_file};
+
 // ── persistence types ──────────────────────────────────────────────────────
 
 /// Top-level project state persisted to `STATE.json`.
@@ -31,11 +35,21 @@ use crate::alphacode_memory_types::MemoryEntry;
 pub struct ProjectState {
     pub version: u32,
     pub objective: String,
+    /// Distinguishes successive runs, including repeated identical objectives.
+    #[serde(default)]
+    pub run_id: String,
     pub active_phase: Option<String>,
+    /// Machine-readable plan; PLAN.md is a derived human-readable view.
+    #[serde(default)]
+    pub plan: Vec<crate::alphacode_task_types::project_plan::PlanPhase>,
     #[serde(default)]
     pub completed_phases: Vec<String>,
     #[serde(default)]
     pub active_agents: Vec<String>,
+    #[serde(default)]
+    pub agent_specs: HashMap<String, crate::alphacode_task_types::project_workers::AgentSpec>,
+    #[serde(default)]
+    pub agent_reports: Vec<crate::alphacode_task_types::project_workers::AgentReport>,
     #[serde(default)]
     pub checkpoints: Vec<String>,
     #[serde(default)]
@@ -50,9 +64,13 @@ impl Default for ProjectState {
         Self {
             version: 1,
             objective: String::new(),
+            run_id: String::new(),
             active_phase: None,
+            plan: Vec::new(),
             completed_phases: Vec::new(),
             active_agents: Vec::new(),
+            agent_specs: HashMap::new(),
+            agent_reports: Vec::new(),
             checkpoints: Vec::new(),
             statistics: ProjectStatistics::default(),
             created_at: now,
@@ -148,7 +166,9 @@ impl MemoryManager {
     /// Create a new MemoryManager with the given root directory.
     pub fn new(root: impl AsRef<Path>) -> Result<Self> {
         let root = root.as_ref().to_path_buf();
+        fs::create_dir_all(&root).map_err(io::Error::other)?;
         let root = root.canonicalize().map_err(io::Error::other)?;
+        let _initialization_lock = acquire_state_lock(&root)?;
 
         // Define file paths relative to root.
         let state_path = root.join("STATE.json");
@@ -170,9 +190,7 @@ impl MemoryManager {
             (&state_path, empty_json.as_slice()),
             (&index_path, empty_json.as_slice()),
         ] {
-            if !p.exists() {
-                fs::write(p, init).map_err(io::Error::other)?;
-            }
+            initialize_file(p, init)?;
         }
         for p in [
             &goals_path,
@@ -183,9 +201,7 @@ impl MemoryManager {
             &notes_path,
             &bugs_path,
         ] {
-            if !p.exists() {
-                fs::write(p, b"").map_err(io::Error::other)?;
-            }
+            initialize_file(p, b"")?;
         }
         fs::create_dir_all(&checkpoints_dir).map_err(io::Error::other)?;
 
@@ -275,21 +291,36 @@ impl MemoryManager {
 
     /// Load the project state from `STATE.json`.
     pub fn load_state(&self) -> Result<ProjectState> {
-        if !self.state_path.exists() {
-            return Ok(ProjectState::default());
-        }
-        let data = fs::read_to_string(&self.state_path)
-            .with_context(|| format!("reading {}", self.state_path.display()))?;
-        if data.trim().is_empty() || data.trim() == "{}" {
-            return Ok(ProjectState::default());
-        }
-        serde_json::from_str(&data).with_context(|| "parsing STATE.json")
+        Ok(self.load_state_snapshot()?.unwrap_or_default())
     }
 
-    /// Save the project state to `STATE.json`.
+    pub(super) fn load_state_snapshot(&self) -> Result<Option<ProjectState>> {
+        let data = match fs::read_to_string(&self.state_path) {
+            Ok(data) => data,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+            Err(error) => {
+                return Err(error)
+                    .with_context(|| format!("reading {}", self.state_path.display()));
+            }
+        };
+        if data.trim().is_empty() || data.trim() == "{}" {
+            return Ok(None);
+        }
+        serde_json::from_str(&data)
+            .map(Some)
+            .context("parsing STATE.json")
+    }
+
+    /// Explicitly replace project state. For read-modify-write operations use
+    /// `update_state` so another manager cannot commit between read and write.
     pub fn save_state(&self, state: &ProjectState) -> Result<()> {
+        let _state_lock = acquire_state_lock(&self.root)?;
+        self.save_state_unlocked(state)
+    }
+
+    fn save_state_unlocked(&self, state: &ProjectState) -> Result<()> {
         let json = serde_json::to_string_pretty(state)?;
-        fs::write(&self.state_path, json)
+        atomic_write(&self.state_path, json.as_bytes())
             .with_context(|| format!("writing {}", self.state_path.display()))?;
         Ok(())
     }
@@ -299,10 +330,49 @@ impl MemoryManager {
     where
         F: FnOnce(&mut ProjectState),
     {
+        self.try_update_state(|state| {
+            f(state);
+            Ok(())
+        })
+    }
+
+    /// Fallible transaction. An error from the closure preserves the previous
+    /// committed state. Closures must not re-enter state writes on this root.
+    pub(super) fn try_update_state<F>(&self, f: F) -> Result<ProjectState>
+    where
+        F: FnOnce(&mut ProjectState) -> Result<()>,
+    {
+        let _state_lock = acquire_state_lock(&self.root)?;
         let mut state = self.load_state()?;
-        f(&mut state);
+        f(&mut state)?;
         state.updated_at = Utc::now();
-        self.save_state(&state)?;
+        self.save_state_unlocked(&state)?;
+        Ok(state)
+    }
+
+    /// Recover under the same lock as ordinary updates. Select the fallback
+    /// only after inspecting the current file while owning the transaction.
+    pub(super) fn recover_state<F>(
+        &self,
+        fallback: Option<&ProjectState>,
+        reconcile: F,
+    ) -> Result<ProjectState>
+    where
+        F: FnOnce(&mut ProjectState) -> Result<()>,
+    {
+        let _state_lock = acquire_state_lock(&self.root)?;
+        let mut state = match self.load_state_snapshot() {
+            Ok(Some(state)) => state,
+            Ok(None) => fallback
+                .cloned()
+                .context("Project state is missing and the checkpoint has no snapshot")?,
+            Err(error) => fallback.cloned().with_context(|| {
+                format!("Project state is unreadable and the checkpoint has no snapshot: {error:#}")
+            })?,
+        };
+        reconcile(&mut state)?;
+        state.updated_at = Utc::now();
+        self.save_state_unlocked(&state)?;
         Ok(state)
     }
 
@@ -324,7 +394,7 @@ impl MemoryManager {
     /// Save the project index to `INDEX.json`.
     pub fn save_index(&self, index: &ProjectIndex) -> Result<()> {
         let json = serde_json::to_string_pretty(index)?;
-        fs::write(&self.index_path, json)
+        atomic_write(&self.index_path, json.as_bytes())
             .with_context(|| format!("writing {}", self.index_path.display()))?;
         Ok(())
     }
@@ -341,9 +411,7 @@ impl MemoryManager {
 
     /// Write markdown content to a file.
     fn write_md(&self, path: &Path, content: &str) -> Result<()> {
-        let mut file = fs::File::create(path)?;
-        file.write_all(content.as_bytes())?;
-        Ok(())
+        atomic_write(path, content.as_bytes())
     }
 
     /// Append a line (with trailing newline) to a markdown file.
@@ -368,6 +436,28 @@ impl MemoryManager {
     }
     pub fn save_plan(&self, content: &str) -> Result<()> {
         self.write_md(&self.plan_path, content)
+    }
+
+    /// Publish a derived view only while its source is still current. This
+    /// prevents an older coordinator from overwriting a newer PLAN.md after
+    /// releasing the state transaction lock.
+    pub(super) fn save_plan_projection(
+        &self,
+        expected_plan: &[crate::alphacode_task_types::project_plan::PlanPhase],
+        expected_objective: &str,
+        expected_run_id: &str,
+        content: &str,
+    ) -> Result<bool> {
+        let _state_lock = acquire_state_lock(&self.root)?;
+        let state = self.load_state()?;
+        if state.plan.as_slice() != expected_plan
+            || state.objective != expected_objective
+            || state.run_id != expected_run_id
+        {
+            return Ok(false);
+        }
+        self.write_md(&self.plan_path, content)?;
+        Ok(true)
     }
 
     pub fn load_todo(&self) -> Result<String> {
@@ -476,6 +566,83 @@ mod tests {
         let dir = TempDir::new().unwrap();
         let mgr = MemoryManager::new(dir.path()).unwrap();
         (dir, mgr)
+    }
+
+    #[test]
+    fn independently_opened_managers_do_not_lose_concurrent_updates() {
+        let (dir, mgr) = make_mgr();
+        let barrier = Arc::new(std::sync::Barrier::new(4));
+        // Construct before spawning: an initialization failure must not leave
+        // other threads waiting forever at the start barrier.
+        let managers: Vec<_> = (0..4)
+            .map(|_| MemoryManager::new(dir.path()).unwrap())
+            .collect();
+        let handles: Vec<_> = managers
+            .into_iter()
+            .map(|manager| {
+                let barrier = barrier.clone();
+                std::thread::spawn(move || {
+                    barrier.wait();
+                    for _ in 0..16 {
+                        manager
+                            .update_state(|state| {
+                                std::thread::yield_now();
+                                state.statistics.total_turns += 1;
+                            })
+                            .unwrap();
+                    }
+                })
+            })
+            .collect();
+        for handle in handles {
+            handle.join().unwrap();
+        }
+        assert_eq!(mgr.load_state().unwrap().statistics.total_turns, 64);
+    }
+
+    #[test]
+    fn failed_transaction_preserves_state_and_releases_ownership() {
+        let (_dir, mgr) = make_mgr();
+        mgr.update_state(|state| state.objective = "committed".into())
+            .unwrap();
+        let result = mgr.try_update_state(|state| {
+            state.objective = "must not commit".into();
+            anyhow::bail!("transaction rejected")
+        });
+        assert!(result.is_err());
+        assert_eq!(mgr.load_state().unwrap().objective, "committed");
+        let reopened = MemoryManager::new(mgr.root()).unwrap();
+        reopened
+            .update_state(|state| state.statistics.total_turns += 1)
+            .unwrap();
+        assert_eq!(mgr.load_state().unwrap().statistics.total_turns, 1);
+        assert_eq!(mgr.load_state().unwrap().objective, "committed");
+    }
+
+    #[test]
+    fn recovery_reconciles_the_current_state_without_replaying_old_snapshot() {
+        let (_dir, mgr) = make_mgr();
+        let fallback = ProjectState {
+            objective: "old snapshot".into(),
+            ..ProjectState::default()
+        };
+        mgr.update_state(|state| state.objective = "new committed state".into())
+            .unwrap();
+        let recovered = mgr
+            .recover_state(Some(&fallback), |state| {
+                state.statistics.errors_recovered += 1;
+                Ok(())
+            })
+            .unwrap();
+        assert_eq!(recovered.objective, "new committed state");
+        assert_eq!(recovered.statistics.errors_recovered, 1);
+    }
+
+    #[test]
+    fn creates_missing_memory_root() {
+        let dir = TempDir::new().unwrap();
+        let mgr = MemoryManager::new(dir.path().join("nested").join("memory")).unwrap();
+        assert!(mgr.root().join("STATE.json").exists());
     }
 
     #[test]

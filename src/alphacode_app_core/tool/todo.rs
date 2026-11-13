@@ -886,13 +886,13 @@ impl Tool for TodoTool {
         let operation = if is_write { "write" } else { "read" };
         let result = if is_write {
             // Goals/plan-only writes keep the stored todo list.
-            let previous = load_todos(&ctx.session_id).unwrap_or_default();
+            let previous = load_todos(&ctx.session_id)?;
             let mut todos = params.todos.unwrap_or_else(|| previous.clone());
             validate_todo_items(&mut todos)?;
             merge_confidence_history(&previous, &mut todos);
             (|| {
-                let stored_goals = load_goals(&ctx.session_id).unwrap_or_default();
-                let stored_plan = load_plan(&ctx.session_id).unwrap_or_default();
+                let stored_goals = load_goals(&ctx.session_id)?;
+                let stored_plan = load_plan(&ctx.session_id)?;
                 let goals_sent = params.goals.is_some();
                 let goals = merge_goals(&stored_goals, params.goals);
                 let plan = merge_plan(&stored_plan, params.plan);

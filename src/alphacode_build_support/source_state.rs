@@ -2,7 +2,6 @@ use super::{BuildInfo, SourceState};
 use anyhow::Result;
 use chrono::Utc;
 use std::path::{Path, PathBuf};
-use std::process::Command;
 
 const FNV_OFFSET_BASIS_64: u64 = 0xcbf29ce484222325;
 const FNV_PRIME_64: u64 = 0x100000001b3;
@@ -33,7 +32,7 @@ fn hash_path_scope(path: &Path) -> String {
 }
 
 fn git_output_bytes(repo_dir: &Path, args: &[&str]) -> Result<Vec<u8>> {
-    let output = Command::new("git")
+    let output = super::captured_command("git")
         .args(args)
         .current_dir(repo_dir)
         .output()?;
@@ -155,7 +154,7 @@ pub fn repo_build_version(repo_dir: &Path) -> Result<String> {
 
 /// Get the current git hash
 pub fn current_git_hash(repo_dir: &Path) -> Result<String> {
-    let output = Command::new("git")
+    let output = super::captured_command("git")
         .args(["rev-parse", "--short", "HEAD"])
         .current_dir(repo_dir)
         .output()?;
@@ -169,7 +168,7 @@ pub fn current_git_hash(repo_dir: &Path) -> Result<String> {
 
 /// Get the full git hash
 pub fn current_git_hash_full(repo_dir: &Path) -> Result<String> {
-    let output = Command::new("git")
+    let output = super::captured_command("git")
         .args(["rev-parse", "HEAD"])
         .current_dir(repo_dir)
         .output()?;
@@ -183,7 +182,7 @@ pub fn current_git_hash_full(repo_dir: &Path) -> Result<String> {
 
 /// Get the git diff for uncommitted changes
 pub fn current_git_diff(repo_dir: &Path) -> Result<String> {
-    let output = Command::new("git")
+    let output = super::captured_command("git")
         .args(["diff", "HEAD"])
         .current_dir(repo_dir)
         .output()?;
@@ -193,7 +192,7 @@ pub fn current_git_diff(repo_dir: &Path) -> Result<String> {
 
 /// Check if working tree is dirty
 pub fn is_working_tree_dirty(repo_dir: &Path) -> Result<bool> {
-    let output = Command::new("git")
+    let output = super::captured_command("git")
         .args(["status", "--porcelain"])
         .current_dir(repo_dir)
         .output()?;
@@ -203,7 +202,7 @@ pub fn is_working_tree_dirty(repo_dir: &Path) -> Result<bool> {
 
 /// Get commit message for a hash
 pub fn get_commit_message(repo_dir: &Path, hash: &str) -> Result<String> {
-    let output = Command::new("git")
+    let output = super::captured_command("git")
         .args(["log", "-1", "--format=%s", hash])
         .current_dir(repo_dir)
         .output()?;

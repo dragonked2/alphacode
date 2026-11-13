@@ -108,6 +108,16 @@ pub fn resolve_openai_compatible_profile_with_api_key_hint(
         resolved.setup_url = setup_url;
     }
 
+    if is_lmstudio_api_base(&resolved.api_base) {
+        resolved.display_name = "LM Studio".to_string();
+        resolved.default_model =
+            env_override("ALPHACODE_OPENAI_COMPAT_DEFAULT_MODEL").or_else(|| {
+                newest_released_model_for_resolved_openai_compatible_profile(profile.id, &resolved)
+            });
+        resolved.requires_api_key = false;
+        return resolved;
+    }
+
     if let Some(model) = env_override("ALPHACODE_OPENAI_COMPAT_DEFAULT_MODEL") {
         resolved.default_model = Some(model);
     }
@@ -158,20 +168,9 @@ fn live_catalog_contains_model(resolved: &ResolvedOpenAiCompatibleProfile, model
     if model.is_empty() {
         return true;
     }
-    let Some(cache) =
-        crate::alphacode_provider_openrouter::load_disk_cache_entry_for_namespace(&resolved.id)
-    else {
+    let Some(cache) = cached_catalog_for_resolved_compatible_profile(resolved) else {
         return true;
     };
-    // A catalog written by a different endpoint says nothing about this one.
-    let source_matches = cache
-        .source_api_base
-        .as_deref()
-        .and_then(normalize_api_base)
-        .is_some_and(|source| Some(source) == normalize_api_base(&resolved.api_base));
-    if !source_matches {
-        return true;
-    }
     cache
         .models
         .iter()
@@ -191,16 +190,13 @@ fn newest_released_model_for_resolved_openai_compatible_profile(
     // Validates the id; the resolved profile (not the raw id) carries the
     // endpoint whose cache we are about to read.
     let _ = openai_compatible_profile_by_id(profile_id)?;
-    let cache =
-        crate::alphacode_provider_openrouter::load_disk_cache_entry_for_namespace(&resolved.id)?;
-
-    let source_matches = cache
-        .source_api_base
-        .as_deref()
-        .and_then(normalize_api_base)
-        == normalize_api_base(&resolved.api_base);
-    if !source_matches {
-        return None;
+    let cache = cached_catalog_for_resolved_compatible_profile(resolved)?;
+    if is_lmstudio_api_base(&resolved.api_base) {
+        return cache
+            .models
+            .into_iter()
+            .map(|model| model.id)
+            .find(|id| crate::provider::is_listable_model_name(id));
     }
 
     cache
@@ -340,34 +336,30 @@ pub fn active_openai_compatible_display_name() -> Option<String> {
         }
     }
 
-    if let Ok(namespace) = std::env::var("ALPHACODE_OPENROUTER_CACHE_NAMESPACE") {
-        let trimmed = namespace.trim();
-        if let Some(profile) = openai_compatible_profiles()
-            .iter()
-            .copied()
-            .find(|profile| profile.id == trimmed)
-        {
-            return Some(profile.display_name.to_string());
-        }
-    }
-
     let api_base = std::env::var("ALPHACODE_OPENROUTER_API_BASE")
         .ok()
-        .map(|value| value.trim().to_string())
-        .filter(|value| !value.is_empty())
-        .or_else(|| env_override("ALPHACODE_OPENAI_COMPAT_API_BASE"));
+        .and_then(|value| normalize_api_base(&value))
+        .or_else(|| {
+            env_override("ALPHACODE_OPENAI_COMPAT_API_BASE")
+                .and_then(|value| normalize_api_base(&value))
+        });
 
-    let api_base = api_base.and_then(|value| normalize_api_base(&value))?;
-
-    for profile in openai_compatible_profiles().iter().copied() {
-        if normalize_api_base(
-            &crate::alphacode_provider_metadata::route_cloak::api_base_for(&profile),
-        )
-        .as_deref()
-            == Some(api_base.as_str())
+    if let Ok(namespace) = std::env::var("ALPHACODE_OPENROUTER_CACHE_NAMESPACE")
+        && let Some(profile) = openai_compatible_profile_by_id(&namespace)
+    {
+        if profile.id == OPENAI_COMPAT_PROFILE.id
+            && api_base.as_deref().is_some_and(is_lmstudio_api_base)
         {
-            return Some(profile.display_name.to_string());
+            return Some("LM Studio".to_string());
         }
+        return Some(profile.display_name.to_string());
+    }
+
+    let api_base = api_base?;
+    if let Some(id) = openai_compatible_profile_id_for_api_base(&api_base)
+        && let Some(profile) = openai_compatible_profile_by_id(id)
+    {
+        return Some(profile.display_name.to_string());
     }
 
     if !api_base.contains("openrouter.ai") {
@@ -399,17 +391,63 @@ pub fn openai_compatible_profile_by_id(id: &str) -> Option<OpenAiCompatibleProfi
         .find(|profile| profile.id == normalized)
 }
 
+/// Match equivalent spellings of a loopback server without mixing ports,
+/// protocols, custom path prefixes or unrelated endpoint catalogs.
+pub(crate) fn compatible_catalog_endpoints_match(left: &str, right: &str) -> bool {
+    let (Some(left), Some(right)) = (normalize_api_base(left), normalize_api_base(right)) else {
+        return false;
+    };
+    if left == right {
+        return true;
+    }
+    if !openai_compat_base_is_local(&left) || !openai_compat_base_is_local(&right) {
+        return false;
+    }
+    let (Ok(left), Ok(right)) = (url::Url::parse(&left), url::Url::parse(&right)) else {
+        return false;
+    };
+    let path = |url: &url::Url| match url.path().trim_end_matches('/') {
+        "" => "/v1".to_owned(),
+        path => path.to_owned(),
+    };
+    left.scheme() == right.scheme()
+        && left.port_or_known_default() == right.port_or_known_default()
+        && path(&left) == path(&right)
+}
+
+pub(crate) fn is_lmstudio_api_base(api_base: &str) -> bool {
+    compatible_catalog_endpoints_match(api_base, LMSTUDIO_PROFILE.api_base)
+}
+
+pub(crate) fn cached_catalog_for_resolved_compatible_profile(
+    resolved: &ResolvedOpenAiCompatibleProfile,
+) -> Option<crate::alphacode_provider_openrouter::DiskCache> {
+    let load = |namespace| {
+        let cache =
+            crate::alphacode_provider_openrouter::load_disk_cache_entry_for_namespace(namespace)?;
+        compatible_catalog_endpoints_match(cache.source_api_base.as_deref()?, &resolved.api_base)
+            .then_some(cache)
+    };
+    load(&resolved.id).or_else(|| {
+        if !is_lmstudio_api_base(&resolved.api_base) {
+            return None;
+        }
+        match resolved.id.as_str() {
+            "lmstudio" => load(OPENAI_COMPAT_PROFILE.id),
+            id if id == OPENAI_COMPAT_PROFILE.id => load("lmstudio"),
+            _ => None,
+        }
+    })
+}
+
 pub fn openai_compatible_profile_id_for_api_base(api_base: &str) -> Option<&'static str> {
-    let normalized = normalize_api_base(api_base)?;
     openai_compatible_profiles()
         .iter()
-        .copied()
         .find(|profile| {
-            normalize_api_base(
+            compatible_catalog_endpoints_match(
                 &crate::alphacode_provider_metadata::route_cloak::api_base_for(profile),
+                api_base,
             )
-            .as_deref()
-                == Some(normalized.as_str())
         })
         .map(|profile| profile.id)
 }

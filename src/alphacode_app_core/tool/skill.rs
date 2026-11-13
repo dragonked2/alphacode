@@ -132,6 +132,14 @@ impl Tool for SkillTool {
                 params.action
             ))),
         }
+        .map(|mut output| {
+            if matches!(action_label.as_str(), "load" | "read")
+                && matches!(name_label.as_str(), "ctf" | "ctf-workflow" | "bugbounty" | "vuln-hunter")
+            {
+                output.output = super::bind_research_ledger_paths(&output.output, &ctx.session_id);
+            }
+            output
+        })
         .map_err(|err| {
             crate::logging::warn(&format!(
                 "[tool:skill_manage] action failed action={} skill={} session_id={} error={}",

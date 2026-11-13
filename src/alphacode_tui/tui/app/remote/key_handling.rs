@@ -2619,13 +2619,23 @@ async fn handle_remote_key_internal(
             app.scroll_down(dec);
         }
         KeyCode::Esc => {
-            if app
+            // Match the local escape stack: dismiss the transient toast layer
+            // first, then close inline UI, and only then clear/interrupt the
+            // composer. Otherwise remote sessions either leave an error toast
+            // stuck on screen or discard a draft that local mode preserves.
+            if crate::alphacode_tui::tui::ui_error_toast::count() > 0 {
+                crate::alphacode_tui::tui::ui_error_toast::clear();
+            } else if app
                 .inline_interactive_state
                 .as_ref()
                 .map(|p| p.preview)
                 .unwrap_or(false)
             {
                 app.inline_interactive_state = None;
+                app.inline_view_state = None;
+                input::clear_input_for_escape(app);
+            } else if app.inline_view_state.is_some() {
+                app.inline_view_state = None;
                 input::clear_input_for_escape(app);
             } else if app.is_processing {
                 let disabled_auto_poke = app.auto_poke_incomplete_todos

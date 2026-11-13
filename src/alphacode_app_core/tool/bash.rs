@@ -820,58 +820,12 @@ impl Drop for ProcessGroupKillGuard {
 /// `None` when Git Bash is not installed; falls back to `cmd.exe`.
 #[cfg(windows)]
 static GIT_BASH_PATH: LazyLock<Option<String>> = LazyLock::new(|| {
-    // Check the three standard Git for Windows install locations.
-    let candidates = [
-        r"C:\Program Files\Git\bin\bash.exe",
-        r"C:\Program Files (x86)\Git\bin\bash.exe",
-        // User-level install.
-        &format!(
-            r"{}\AppData\Local\Programs\Git\bin\bash.exe",
-            std::env::var("USERPROFILE").unwrap_or_default()
-        ),
-    ];
-    for path in &candidates {
-        if std::path::Path::new(path).exists() {
-            return Some(path.to_string());
-        }
-    }
-    // Fallback: check if `bash` is on PATH (Git Bash often adds itself).
-    // WindowsApps exposes a `bash.exe` alias which launches WSL. Treating
-    // that shim as Git Bash makes ordinary commands hang when the WSL
-    // registration is broken, so explicitly reject WSL/store shims.
-    if let Ok(output) = std::process::Command::new("where").arg("bash").output()
-        && output.status.success()
-    {
-        for line in String::from_utf8_lossy(&output.stdout).lines() {
-            let candidate = line.trim();
-            if candidate.is_empty() || is_wsl_bash_shim(candidate) {
-                continue;
-            }
-            if std::path::Path::new(candidate).exists() {
-                return Some(candidate.to_string());
-            }
-        }
-    }
-    None
+    crate::alphacode_base::platform::git_bash_path().map(|path| path.to_string_lossy().into_owned())
 });
 
 #[cfg(windows)]
-fn is_wsl_bash_shim(path: &str) -> bool {
-    let lower = path.to_ascii_lowercase().replace('/', "\\");
-    lower.contains("\\windowsapps\\")
-        || lower.ends_with("\\system32\\bash.exe")
-        || lower.ends_with("\\sysnative\\bash.exe")
-}
-
-#[cfg(windows)]
 fn configure_shell_process(command: &mut TokioCommand) {
-    use std::os::windows::process::CommandExt;
-
-    // The shell's stdout/stderr are captured by the tool runner. Avoid letting
-    // Windows create a separate console when AlphaCode itself was launched from
-    // a GUI host or a terminal that does not provide a console handle.
-    const CREATE_NO_WINDOW: u32 = 0x0800_0000;
-    command.as_std_mut().creation_flags(CREATE_NO_WINDOW);
+    crate::alphacode_base::platform::hide_helper_console(command.as_std_mut());
     // Captured Python output must not inherit the Windows ANSI code page.
     // Apply to both Git Bash and cmd.exe, including background commands.
     command
@@ -1174,12 +1128,15 @@ mod utf8_truncation_tests {
     #[cfg(windows)]
     #[test]
     fn windows_store_bash_alias_is_not_treated_as_git_bash() {
-        assert!(super::is_wsl_bash_shim(
-            r"C:\Users\runner\AppData\Local\Microsoft\WindowsApps\bash.exe"
+        use std::path::Path;
+        assert!(crate::alphacode_base::platform::is_wsl_bash_shim(
+            Path::new(r"C:\Users\runner\AppData\Local\Microsoft\WindowsApps\bash.exe")
         ));
-        assert!(super::is_wsl_bash_shim(r"C:\Windows\System32\bash.exe"));
-        assert!(!super::is_wsl_bash_shim(
-            r"C:\Program Files\Git\bin\bash.exe"
+        assert!(crate::alphacode_base::platform::is_wsl_bash_shim(
+            Path::new(r"C:\Windows\System32\bash.exe")
+        ));
+        assert!(!crate::alphacode_base::platform::is_wsl_bash_shim(
+            Path::new(r"C:\Program Files\Git\bin\bash.exe")
         ));
     }
 
@@ -1615,7 +1572,7 @@ struct BashInput {
     /// `false` keeps the command in the foreground until it finishes or its
     /// timeout is reached.
     auto_background: Option<bool>,
-    #[serde(default = "default_true")]
+    #[serde(default = "default_true", deserialize_with = "default_true_if_null")]
     notify: bool,
     #[serde(default)]
     wake: Option<bool>,
@@ -1626,6 +1583,75 @@ struct BashInput {
 
 fn default_true() -> bool {
     true
+}
+
+/// Providers may encode an omitted optional field as explicit JSON null.
+/// Preserve the default without coercing strings or changing explicit false.
+fn default_true_if_null<'de, D>(deserializer: D) -> std::result::Result<bool, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    Ok(Option::<bool>::deserialize(deserializer)?.unwrap_or_else(default_true))
+}
+
+#[cfg(test)]
+mod input_contract_tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn bash_notify_null_uses_the_same_default_as_omission() {
+        for value in [
+            json!({"command": "echo ok"}),
+            json!({"command": "echo ok", "notify": null}),
+        ] {
+            let input: BashInput = serde_json::from_value(value).unwrap();
+            assert!(input.notify);
+        }
+    }
+
+    #[test]
+    fn bash_optional_nulls_match_the_advertised_tool_interface() {
+        let input: BashInput = serde_json::from_value(json!({
+            "command": "echo ok",
+            "intent": null,
+            "timeout": null,
+            "run_in_background": null,
+            "auto_background": null,
+            "notify": null,
+            "wake": null,
+            "justification": null
+        }))
+        .unwrap();
+        assert!(input.notify);
+        assert_eq!(input.run_in_background, None);
+        assert_eq!(input.auto_background, None);
+        assert_eq!(input.wake, None);
+        assert_eq!(input.timeout, None);
+    }
+
+    #[test]
+    fn bash_notify_preserves_explicit_boolean_values() {
+        for notify in [false, true] {
+            let input: BashInput = serde_json::from_value(json!({
+                "command": "echo ok", "notify": notify
+            }))
+            .unwrap();
+            assert_eq!(input.notify, notify);
+        }
+    }
+
+    #[test]
+    fn bash_notify_rejects_invalid_types_instead_of_guessing() {
+        for notify in [json!("false"), json!(0), json!([]), json!({})] {
+            assert!(
+                serde_json::from_value::<BashInput>(json!({
+                    "command": "echo ok", "notify": notify
+                }))
+                .is_err()
+            );
+        }
+    }
 }
 
 /// Whether a background run should wake the agent when it finishes.
@@ -1734,6 +1760,10 @@ impl Tool for BashTool {
             return Err(anyhow::anyhow!(
                 "bash requires a non-empty `command` string. Provide the shell command to run, e.g. {{\"command\":\"ls -la\"}}."
             ));
+        }
+
+        if let Some(quoted) = crate::alphacode_command_risk::quote_curl_query_url(&params.command) {
+            params.command = quoted;
         }
 
         #[cfg(windows)]

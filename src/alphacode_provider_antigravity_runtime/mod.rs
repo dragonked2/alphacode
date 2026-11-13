@@ -386,7 +386,14 @@ impl AntigravityProvider {
                 let body_trimmed = body.trim().to_string();
                 let is_quota =
                     status.as_u16() == 429 || body_trimmed.contains("RESOURCE_EXHAUSTED");
-                if !is_quota || attempt + 1 >= MAX_RETRIES {
+                let long_cooldown = crate::alphacode_provider_core::retry_after::retry_after(
+                    &headers,
+                )
+                .is_some_and(|hint| {
+                    hint.remaining()
+                        > crate::alphacode_provider_core::retry_after::MAX_AUTOMATIC_WAIT
+                });
+                if !is_quota || attempt + 1 >= MAX_RETRIES || long_cooldown {
                     return Err(
                         crate::alphacode_provider_core::retry_after::error_with_retry_after(
                             format!(

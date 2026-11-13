@@ -1071,31 +1071,27 @@ impl MemoryAgent {
                         let contradiction_found =
                             match memory_manager.find_similar(&mem.content, 0.5, 5) {
                                 Ok(candidates) => {
-                                    let mut found = None;
-                                    for (candidate, _) in &candidates {
-                                        if candidate.category == category {
-                                            match sidecar
-                                                .check_contradiction(
-                                                    &mem.content,
-                                                    &candidate.content,
-                                                )
-                                                .await
-                                            {
-                                                Ok(true) => {
-                                                    found = Some(candidate.id.clone());
-                                                    break;
-                                                }
-                                                Ok(false) => {}
-                                                Err(e) => {
-                                                    crate::logging::info(&format!(
-                                                        "Contradiction check failed: {}",
-                                                        e
-                                                    ));
-                                                }
-                                            }
+                                    let candidates: Vec<_> = candidates
+                                        .iter()
+                                        .filter(|(candidate, _)| candidate.category == category)
+                                        .map(|(candidate, _)| candidate)
+                                        .collect();
+                                    let contents: Vec<_> = candidates
+                                        .iter()
+                                        .map(|candidate| candidate.content.clone())
+                                        .collect();
+                                    match sidecar.find_contradiction(&mem.content, &contents).await
+                                    {
+                                        Ok(index) => {
+                                            index.map(|index| candidates[index].id.clone())
+                                        }
+                                        Err(e) => {
+                                            crate::logging::info(&format!(
+                                                "Contradiction check failed: {e}"
+                                            ));
+                                            None
                                         }
                                     }
-                                    found
                                 }
                                 Err(_) => None,
                             };

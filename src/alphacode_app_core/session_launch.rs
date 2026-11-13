@@ -326,7 +326,7 @@ pub fn spawn_selfdev_in_new_terminal_with_context(
 
 #[cfg(not(unix))]
 fn find_wezterm_gui_binary() -> Option<String> {
-    use std::process::{Command, Stdio};
+    use std::process::Stdio;
 
     if let Ok(exe) = std::env::var("WEZTERM_EXECUTABLE") {
         let p = std::path::Path::new(&exe);
@@ -348,7 +348,7 @@ fn find_wezterm_gui_binary() -> Option<String> {
     }
 
     for bin in &["wezterm-gui", "wezterm"] {
-        if let Ok(output) = Command::new("where")
+        if let Ok(output) = crate::alphacode_base::platform::helper_command("where")
             .arg(bin)
             .stdout(Stdio::piped())
             .stderr(Stdio::null())
@@ -448,7 +448,7 @@ pub fn spawn_resume_in_new_terminal_with_context(
     }
 
     let wezterm_gui = find_wezterm_gui_binary();
-    let alacritty_available = Command::new("where")
+    let alacritty_available = crate::alphacode_base::platform::helper_command("where")
         .arg("alacritty")
         .stdout(Stdio::null())
         .stderr(Stdio::null())
@@ -456,7 +456,7 @@ pub fn spawn_resume_in_new_terminal_with_context(
         .map(|s| s.success())
         .unwrap_or(false);
     let wt_available = std::env::var("WT_SESSION").is_ok()
-        || Command::new("where")
+        || crate::alphacode_base::platform::helper_command("where")
             .arg("wt")
             .stdout(Stdio::null())
             .stderr(Stdio::null())
@@ -573,7 +573,7 @@ pub fn spawn_selfdev_in_new_terminal_with_context(
     }
 
     let wezterm_gui = find_wezterm_gui_binary();
-    let alacritty_available = Command::new("where")
+    let alacritty_available = crate::alphacode_base::platform::helper_command("where")
         .arg("alacritty")
         .stdout(Stdio::null())
         .stderr(Stdio::null())
@@ -581,7 +581,7 @@ pub fn spawn_selfdev_in_new_terminal_with_context(
         .map(|s| s.success())
         .unwrap_or(false);
     let wt_available = std::env::var("WT_SESSION").is_ok()
-        || Command::new("where")
+        || crate::alphacode_base::platform::helper_command("where")
             .arg("wt")
             .stdout(Stdio::null())
             .stderr(Stdio::null())

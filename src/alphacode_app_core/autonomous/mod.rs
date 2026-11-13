@@ -19,42 +19,7 @@ use serde::{Deserialize, Serialize};
 
 // ── Plan & Phases ────────────────────────────────────────────────────────
 
-/// A single phase in a master execution plan.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct PlanPhase {
-    pub id: String,
-    pub name: String,
-    pub description: String,
-    pub status: PhaseStatus,
-    #[serde(default)]
-    pub milestones: Vec<Milestone>,
-    #[serde(default)]
-    pub agent_ids: Vec<String>,
-    pub created_at: DateTime<Utc>,
-    pub updated_at: DateTime<Utc>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "snake_case")]
-#[derive(Default)]
-pub enum PhaseStatus {
-    #[default]
-    Pending,
-    Active,
-    Complete,
-    Blocked,
-    Skipped,
-}
-
-/// A milestone within a phase.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct Milestone {
-    pub id: String,
-    pub name: String,
-    pub criteria: Vec<String>,
-    pub status: PhaseStatus,
-    pub created_at: DateTime<Utc>,
-}
+pub use crate::alphacode_task_types::project_plan::{Milestone, PhaseStatus, PlanPhase};
 
 // ── Task Decomposition ────────────────────────────────────────────────────
 
@@ -84,109 +49,7 @@ impl TaskComplexity {
 
 // ── Agent Spec ───────────────────────────────────────────────────────────┐
 
-/// Specification for spawning a child agent.
-///
-/// Each child agent receives an objective, constraints, required files,
-/// relevant summaries, project rules, coding standards, and acceptance
-/// criteria.  Agents work independently and never communicate directly
-/// with each other — only through the Main Brain.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct AgentSpec {
-    /// Unique identifier for this agent spawn.
-    pub id: String,
-    /// Short label for the agent (e.g. "api reviewer").
-    pub label: String,
-    /// What the agent should accomplish.
-    pub objective: String,
-    /// Files the agent is allowed to modify.
-    #[serde(default)]
-    pub required_files: Vec<String>,
-    /// Summaries of relevant project areas.
-    #[serde(default)]
-    pub relevant_summaries: Vec<String>,
-    /// Project-specific rules the agent must follow.
-    #[serde(default)]
-    pub constraints: Vec<String>,
-    /// Coding standards to enforce.
-    #[serde(default)]
-    pub coding_standards: Vec<String>,
-    /// Criteria that define done.
-    #[serde(default)]
-    pub acceptance_criteria: Vec<String>,
-    /// Model hint for this agent (e.g. "claude-api:claude-fable-5").
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub model: Option<String>,
-    /// Maximum depth of child agents this agent may spawn (0 = leaf).
-    #[serde(default = "default_max_depth")]
-    pub max_depth: u32,
-    pub created_at: DateTime<Utc>,
-}
-
-fn default_max_depth() -> u32 {
-    1
-}
-
-// ── Agent Report ──────────────────────────────────────────────────────────
-
-/// Report returned by a child agent after completing its work.
-///
-/// The Main Brain validates every report before accepting it and merges
-/// these reports to detect conflicts.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct AgentReport {
-    /// ID of the agent that produced this report.
-    pub agent_id: String,
-    /// Short human-readable summary.
-    pub summary: String,
-    /// Tasks the agent completed.
-    #[serde(default)]
-    pub completed_tasks: Vec<String>,
-    /// Files the agent modified.
-    #[serde(default)]
-    pub files_modified: Vec<String>,
-    /// Files the agent created.
-    #[serde(default)]
-    pub files_created: Vec<String>,
-    /// Problems encountered.
-    #[serde(default)]
-    pub problems: Vec<String>,
-    /// Work remaining in this agent's scope.
-    #[serde(default)]
-    pub remaining_work: Vec<String>,
-    /// Recommendations for the Main Brain.
-    #[serde(default)]
-    pub recommendations: Vec<String>,
-    /// Self-assessed confidence (0.0–1.0).
-    pub confidence: f32,
-    /// Files or areas that might conflict with other agents.
-    #[serde(default)]
-    pub potential_conflicts: Vec<String>,
-    /// Work the agent thinks needs follow-up.
-    #[serde(default)]
-    pub required_follow_up: Vec<String>,
-    pub created_at: DateTime<Utc>,
-}
-
-impl AgentReport {
-    /// Create a minimal report with just the agent ID and a summary.
-    pub fn new(agent_id: impl Into<String>, summary: impl Into<String>) -> Self {
-        let now = Utc::now();
-        Self {
-            agent_id: agent_id.into(),
-            summary: summary.into(),
-            completed_tasks: Vec::new(),
-            files_modified: Vec::new(),
-            files_created: Vec::new(),
-            problems: Vec::new(),
-            remaining_work: Vec::new(),
-            recommendations: Vec::new(),
-            confidence: 0.5,
-            potential_conflicts: Vec::new(),
-            required_follow_up: Vec::new(),
-            created_at: now,
-        }
-    }
-}
+pub use crate::alphacode_task_types::project_workers::{AgentReport, AgentSpec};
 
 // ── Agent Limits ──────────────────────────────────────────────────────────
 

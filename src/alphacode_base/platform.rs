@@ -1,5 +1,68 @@
 use std::path::Path;
 
+/// Keep a captured helper from opening a console when launched by the daemon.
+/// Foreground terminal programs must retain their console attachment.
+pub fn hide_helper_console(command: &mut std::process::Command) -> &mut std::process::Command {
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        command.creation_flags(windows_sys::Win32::System::Threading::CREATE_NO_WINDOW);
+    }
+    command
+}
+
+pub fn helper_command(program: impl AsRef<std::ffi::OsStr>) -> std::process::Command {
+    let mut command = std::process::Command::new(program);
+    hide_helper_console(&mut command);
+    command
+}
+
+/// Resolve Git for Windows' real Bash executable without ever selecting the
+/// WindowsApps/System32 WSL compatibility shim. The latter prints an encoded
+/// "no distributions installed" message (or opens setup) on machines without
+/// WSL, which is never a valid shell for Alphacode's POSIX command contract.
+#[cfg(windows)]
+pub fn git_bash_path() -> Option<std::path::PathBuf> {
+    let mut candidates = vec![
+        std::path::PathBuf::from(r"C:\Program Files\Git\bin\bash.exe"),
+        std::path::PathBuf::from(r"C:\Program Files\Git\usr\bin\bash.exe"),
+        std::path::PathBuf::from(r"C:\Program Files (x86)\Git\bin\bash.exe"),
+    ];
+    if let Some(profile) = std::env::var_os("USERPROFILE") {
+        candidates.push(
+            std::path::PathBuf::from(profile).join("AppData/Local/Programs/Git/bin/bash.exe"),
+        );
+    }
+    if let Some(path) = candidates
+        .into_iter()
+        .find(|path| path.is_file() && !is_wsl_bash_shim(path))
+    {
+        return Some(path);
+    }
+
+    let output = helper_command("where.exe").arg("bash.exe").output().ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    String::from_utf8_lossy(&output.stdout)
+        .lines()
+        .map(str::trim)
+        .filter(|path| !path.is_empty())
+        .map(std::path::PathBuf::from)
+        .find(|path| path.is_file() && !is_wsl_bash_shim(path))
+}
+
+#[cfg(windows)]
+pub fn is_wsl_bash_shim(path: &Path) -> bool {
+    let lower = path
+        .to_string_lossy()
+        .to_ascii_lowercase()
+        .replace('/', "\\");
+    lower.contains("\\windowsapps\\")
+        || lower.ends_with("\\system32\\bash.exe")
+        || lower.ends_with("\\sysnative\\bash.exe")
+}
+
 #[cfg(target_os = "macos")]
 mod macos_power {
     use std::ffi::CString;
@@ -675,6 +738,52 @@ mod process_id_tests {
                     std::io::ErrorKind::InvalidInput
                 );
             }
+        }
+    }
+}
+
+#[cfg(all(test, windows))]
+mod hidden_helper_tests {
+    #[test]
+    fn captured_helper_has_no_console_window() {
+        const CHILD: &str = "ALPHACODE_HIDDEN_HELPER_TEST_CHILD";
+        if std::env::var_os(CHILD).is_some() {
+            assert!(unsafe { windows_sys::Win32::System::Console::GetConsoleWindow() }.is_null());
+            return;
+        }
+        let output = super::helper_command(std::env::current_exe().unwrap())
+            .args(["--exact", "alphacode_base::platform::hidden_helper_tests::captured_helper_has_no_console_window", "--nocapture"])
+            .env(CHILD, "1").output().unwrap();
+        assert!(
+            output.status.success(),
+            "child console check failed: {}",
+            String::from_utf8_lossy(&output.stdout)
+        );
+    }
+
+    #[test]
+    fn git_bash_resolution_rejects_wsl_and_store_aliases() {
+        use std::path::Path;
+        assert!(super::is_wsl_bash_shim(Path::new(
+            r"C:\Users\runner\AppData\Local\Microsoft\WindowsApps\bash.exe"
+        )));
+        assert!(super::is_wsl_bash_shim(Path::new(
+            r"C:\Windows\System32\bash.exe"
+        )));
+        assert!(!super::is_wsl_bash_shim(Path::new(
+            r"C:\Program Files\Git\bin\bash.exe"
+        )));
+        if let Some(path) = super::git_bash_path() {
+            assert!(
+                path.is_file(),
+                "resolved missing Git Bash: {}",
+                path.display()
+            );
+            assert!(
+                !super::is_wsl_bash_shim(&path),
+                "resolved WSL shim: {}",
+                path.display()
+            );
         }
     }
 }

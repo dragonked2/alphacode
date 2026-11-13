@@ -616,7 +616,7 @@ impl Tool for BgTool {
                         //     on.
                         //   - Task is genuinely unknown: surface the original
                         //     "task may not exist" message.
-                        if manager.is_live_task(&task_id) {
+                        if manager.is_live_task_confirmed(&task_id).await {
                             return Err(anyhow::anyhow!(
                                 "Output for task {task_id} is not yet on disk: the \
                                  task is still running in this process. Use \

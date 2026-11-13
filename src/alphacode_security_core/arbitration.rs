@@ -124,8 +124,13 @@ impl VerifierVerdict {
         // `InsufficientEvidence` arm unreachable — a flaky test or a rate
         // limit was recorded as a hard refutation, and downstream consumers
         // treat `Contradicted` as proof the finding is bogus.
-        let disproof_successful =
-            reproduced && (!alternative_explanations.is_empty() || disproof_attempts.len() > 2);
+        // The number of unsuccessful attempts says nothing about whether a
+        // reproduction was disproven. Only a recorded explanatory result can
+        // contradict it; timeouts and missing prerequisites remain attempts.
+        let disproof_successful = reproduced
+            && alternative_explanations
+                .iter()
+                .any(|explanation| !explanation.trim().is_empty());
         let final_verdict = if reproduced && !disproof_successful {
             ArbitrationVerdict::Supported
         } else if reproduced {
@@ -150,6 +155,24 @@ impl VerifierVerdict {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn failed_disproof_attempts_never_contradict_a_reproduction() {
+        let verdict = VerifierVerdict::decide(
+            "f1".into(),
+            "independent-verifier".into(),
+            true,
+            vec![],
+            vec![
+                "timeout".into(),
+                "expired session".into(),
+                "missing route".into(),
+                "no change under a working control".into(),
+            ],
+        );
+        assert!(!verdict.disproof_successful);
+        assert_eq!(verdict.final_verdict, ArbitrationVerdict::Supported);
+    }
 
     #[test]
     fn arbitration_supports_strong_evidence() {
@@ -218,10 +241,8 @@ mod tests {
         assert_eq!(explained.final_verdict, ArbitrationVerdict::Contradicted);
     }
 
-    /// A reproduced finding survives a *light* disprobe campaign: a couple of
-    /// attempts with no alternative explanation found is still `Supported`.
-    /// Once the verifier has genuinely tried hard (>2 attempts) or found a
-    /// rival explanation, the finding is refuted.
+    /// Reproduced findings survive unsuccessful disproof attempts regardless
+    /// of their count. Attempt volume is not evidence of a refutation.
     #[test]
     fn reproduced_and_lightly_attacked_is_still_supported() {
         let light = VerifierVerdict::decide(
@@ -234,7 +255,7 @@ mod tests {
         assert!(!light.disproof_successful);
         assert_eq!(light.final_verdict, ArbitrationVerdict::Supported);
 
-        // A thorough, unexplained disproof campaign counts as a refutation.
+        // More attempts without an explanatory result still do not refute it.
         let thorough = VerifierVerdict::decide(
             "f1".into(),
             "v1".into(),
@@ -242,7 +263,7 @@ mod tests {
             vec![],
             vec!["a".into(), "b".into(), "c".into(), "d".into()],
         );
-        assert!(thorough.disproof_successful);
-        assert_eq!(thorough.final_verdict, ArbitrationVerdict::Contradicted);
+        assert!(!thorough.disproof_successful);
+        assert_eq!(thorough.final_verdict, ArbitrationVerdict::Supported);
     }
 }

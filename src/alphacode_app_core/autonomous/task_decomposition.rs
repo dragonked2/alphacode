@@ -334,9 +334,7 @@ fn has_security_signal(objective: &str) -> bool {
         "privilege",
         "firewall",
     ];
-    SECURITY_KEYWORDS
-        .iter()
-        .any(|kw| objective.to_lowercase().contains(kw))
+    SECURITY_KEYWORDS.iter().any(|kw| objective.contains(kw))
 }
 
 /// Detect if the objective involves external service integrations.
@@ -364,9 +362,7 @@ fn has_external_integration(objective: &str) -> bool {
         "microservice",
         "service",
     ];
-    INTEGRATION_KEYWORDS
-        .iter()
-        .any(|kw| objective.to_lowercase().contains(kw))
+    INTEGRATION_KEYWORDS.iter().any(|kw| objective.contains(kw))
 }
 
 /// Detect if the objective involves data migration.
@@ -386,9 +382,7 @@ fn has_data_migration(objective: &str) -> bool {
         "etl",
         "data pipeline",
     ];
-    MIGRATION_KEYWORDS
-        .iter()
-        .any(|kw| objective.to_lowercase().contains(kw))
+    MIGRATION_KEYWORDS.iter().any(|kw| objective.contains(kw))
 }
 
 /// Compute a penalty factor based on file count.
@@ -601,14 +595,13 @@ pub fn estimate_complexity(objective: &str, file_count: usize) -> TaskComplexity
 /// `.` would count dots inside file names (`README.md`) and versions
 /// (`v1.2.3`) as extra sentences and over-classify trivial tasks.
 fn count_sentences(text: &str) -> usize {
-    let chars: Vec<char> = text.chars().collect();
     let mut count = 0usize;
-    for (i, ch) in chars.iter().enumerate() {
+    let mut chars = text.chars().peekable();
+    while let Some(ch) = chars.next() {
         if !matches!(ch, '.' | ';' | '!' | '?') {
             continue;
         }
-        let next = chars.get(i + 1);
-        if next.is_none() || next.is_some_and(|c| c.is_whitespace()) {
+        if chars.peek().is_none_or(|ch| ch.is_whitespace()) {
             count += 1;
         }
     }

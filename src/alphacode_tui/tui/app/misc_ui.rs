@@ -132,6 +132,34 @@ impl App {
         self.streaming.streaming_tps_observed_elapsed = self.current_streaming_tps_elapsed();
     }
 
+    pub(super) fn note_streaming_tps_bytes(&mut self, bytes: usize) {
+        if bytes == 0 {
+            return;
+        }
+        self.resume_streaming_tps();
+        self.streaming.streaming_tps_pending_bytes = self
+            .streaming
+            .streaming_tps_pending_bytes
+            .saturating_add(bytes);
+        self.streaming.streaming_tps_observed_elapsed = self.current_streaming_tps_elapsed();
+    }
+
+    fn pending_streaming_token_estimate(&self) -> f32 {
+        self.streaming.streaming_tps_pending_bytes as f32
+            / crate::util::APPROX_CHARS_PER_TOKEN as f32
+    }
+
+    pub(super) fn begin_streaming_tps_request(&mut self) {
+        self.pause_streaming_tps(false);
+        self.streaming.streaming_tps_prior_estimate += self.pending_streaming_token_estimate();
+        self.streaming.streaming_tps_pending_bytes = 0;
+    }
+
+    pub(super) fn streaming_tps_is_estimated(&self) -> bool {
+        self.streaming.streaming_tps_pending_bytes > 0
+            || self.streaming.streaming_tps_prior_estimate > 0.0
+    }
+
     pub(super) fn resume_streaming_tps(&mut self) {
         self.streaming.streaming_tps_collect_output = true;
         if self.streaming.streaming_tps_start.is_none() {
@@ -153,6 +181,8 @@ impl App {
         self.streaming.streaming_total_output_tokens = 0;
         self.streaming.streaming_tps_observed_output_tokens = 0;
         self.streaming.streaming_tps_observed_elapsed = Duration::ZERO;
+        self.streaming.streaming_tps_pending_bytes = 0;
+        self.streaming.streaming_tps_prior_estimate = 0.0;
     }
 
     pub(super) fn open_usage_inline_loading(&mut self) {
@@ -538,9 +568,11 @@ impl App {
 
     pub(super) fn compute_streaming_tps(&self) -> Option<f32> {
         let elapsed_secs = self.streaming.streaming_tps_observed_elapsed.as_secs_f32();
-        let total_tokens = self.streaming.streaming_tps_observed_output_tokens;
-        if elapsed_secs > 0.1 && total_tokens > 0 {
-            Some(total_tokens as f32 / elapsed_secs)
+        let total_tokens = self.streaming.streaming_tps_observed_output_tokens as f32
+            + self.streaming.streaming_tps_prior_estimate
+            + self.pending_streaming_token_estimate();
+        if elapsed_secs > 0.1 && total_tokens > 0.0 {
+            Some(total_tokens / elapsed_secs)
         } else {
             None
         }

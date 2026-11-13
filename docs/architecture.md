@@ -1,142 +1,67 @@
-# Architecture
+# Architecture and contributor map
 
-A high-level map of the codebase so a new contributor can find their way
-around quickly.
+This document describes the checked-in Rust structure and the runtime composition visible in source. It is a contributor map, not a claim that every module is exercised by every invocation. Build features, platform gates, CLI command selection, configuration, runtime registration, and external integrations all affect reachability.
 
 ## Workspace shape
 
-The crate is a single Cargo workspace with one binary (`alphacode`) and many
-library crates. The library crates live in `src/`. Each one is small and
-single-purpose; the binary just wires them together.
+The root `Cargo.toml` defines the `alphacode` package (both library and binary) and the workspace also includes the `alphagrep` package. The many `src/alphacode_*` names are Rust modules in the `alphacode` crate, not separate Cargo packages. The `src/lib.rs` comments explain that earlier crate layers were consolidated into this crate while preserving nested module names and public re-exports.
 
-```
-src/
-├── alphacode_core           # provider-agnostic trait types and shared state
-├── alphacode_app_core       # the agent loop, prompts, tools, autonomy, server
-│   ├── agent/               # turn execution, streaming, compaction, recovery
-│   ├── autonomous/          # Main Brain, plan/phase, quality gate, checkpoints
-│   ├── ambient/             # background directives (cron, schedules, watchdog)
-│   ├── memory_manager/      # STATE.json, GOALS.md, PLAN.md, project index
-│   ├── server/              # client/session protocol, swarm task DAG
-│   └── tool/                # 40+ tools: edit, bash, grep, web, browser, …
-├── alphacode_base           # the system prompt, prompt builder, capability enum
-├── alphacode_tui            # the terminal UI (ratatui-based)
-│   └── tui/                 # widgets, render passes, input handling, onboarding
-├── alphacode_modules        # orchestrator glue: startup, shutdown, wiring
-├── alphacode_cli            # the `alphacode` CLI entrypoint and arg parsing
-├── alphacode_harness_api    # the harness API the agent exposes to itself
-├── alphacode_auth_*         # per-provider OAuth flows (OpenAI, Anthropic, …)
-├── alphacode_logging        # structured logging
-├── alphacode_pdf            # PDF text extraction
-├── alphacode_plan           # the master execution plan persisted to PLAN.md
-└── alphacode_* (many more)  # small, focused utility crates
+```mermaid
+flowchart LR
+    BIN["src/main.rs<br/>alphacode binary"] --> LIB["src/lib.rs<br/>alphacode library crate"]
+    LIB --> CLI["src/cli/*<br/>arguments, startup, dispatch"]
+    LIB --> APP["Application/runtime modules<br/>providers, agent, tools, server, sessions"]
+    LIB --> TUI["TUI modules<br/>rendering, messages, styles, pickers"]
+    LIB --> BASE["Foundation and shared types<br/>auth, config, protocol, storage"]
+    LIB --> GREP["alphagrep workspace package<br/>code search dependency"]
 ```
 
-The naming convention is intentional: every crate is `alphacode_*`. A new
-contributor can find what they're looking for by file path without learning
-the layout first.
+The diagram is intentionally at package/module level. It does not mean each dependency arrow is a direct Rust import or that every feature is compiled into every build.
 
-## The agent loop
+## Process and request flow
 
-A single turn of the agent lives in
-[`src/alphacode_app_core/agent/`](../src/alphacode_app_core/agent/mod.rs):
+`src/main.rs` sets up platform-specific process/runtime details and calls `alphacode::run()`. The library delegates to `cli::startup::run()`, which initializes cross-cutting services, registers implementations and callbacks whose concrete types live in higher-level modules, parses the CLI arguments, then calls `cli::dispatch::run_main()`.
 
-```
-                ┌──────────────────────────────┐
-                │  build_system_prompt_split  │  static + dynamic parts, cached
-                └──────────────┬───────────────┘
-                               │
-                ┌──────────────▼───────────────┐
-                │   Provider::stream_chat      │  any model: Claude, GPT, …
-                └──────────────┬───────────────┘
-                               │
-            tool_call ◄────────┴────────► text / reasoning blocks
-                │
-                ▼
-   ┌────────────────────────────┐
-   │  Tool::execute(input, ctx) │  edit, bash, grep, webfetch, …
-   └──────────────┬─────────────┘
-                  │ ToolOutput
-                  ▼
-   ┌────────────────────────────┐
-   │  cap_tool_output_for_…      │  head/tail truncation, prompt-cache-safe
-   └──────────────┬─────────────┘
-                  │
-                  ▼
-   back into the conversation as a tool_result message
+```mermaid
+flowchart TD
+    M["main.rs: process/runtime setup"] --> R["lib.rs: run()"]
+    R --> S["cli/startup.rs: initialize + compose"]
+    S --> A["Parse CLI arguments"]
+    A --> D["cli/dispatch.rs: choose command"]
+    D -->|interactive default / connect| C["cli/tui_launch.rs"]
+    D -->|run / repl / serve / acp| H["Headless or protocol command"]
+    C -->|connect or start shared server as needed| SRV["Server and provider/tool runtime"]
+    H --> SRV
+    SRV --> AG["Agent, provider, registry, session services"]
+    AG --> OUT["TUI / CLI / protocol response"]
 ```
 
-Loop invariants:
-- The static part of the system prompt is **stable across turns** so the
-  provider's prompt cache hits.
-- Every tool call carries an `intent` parameter — the UI uses it as a
-  short label so the user sees *why* the agent did each thing.
-- Every tool call is **persisted before it runs**, so killing the process
-  never loses a step.
+The interactive client and non-interactive commands share application services, but they are not one identical UI path. `dispatch.rs` routes `run`, `repl`, `serve`, `acp`, `connect`, and the no-subcommand default separately. Follow the selected command and its configuration before assuming a module is reachable.
 
-## The system prompt
+Startup is also a composition root: `startup.rs` registers provider runtimes and connects callbacks across otherwise separate modules (for example, config reload, permission notification, memory/skill metadata, session-list invalidation, and server spawning). These runtime registrations are meaningful edges that a static import-only graph may not represent.
 
-The prompt that drives the agent is plain Markdown, kept at
-[`src/alphacode_base/prompt/system_prompt.md`](../src/alphacode_base/prompt/system_prompt.md).
-It is `include_str!`-ed into the binary at compile time so there is no
-runtime fetch, no template engine, and no place for drift.
+## Where to make a change
 
-The prompt is split into two halves for cache-friendliness:
+| Concern | Start here | Notes |
+|---|---|---|
+| Binary entrypoint and process setup | `src/main.rs` | Platform-specific main-thread and runtime setup live here. |
+| Public library entrypoint and module exports | `src/lib.rs` | Declares the consolidated crate's modules and re-exports. |
+| CLI argument definitions | `src/cli/args.rs` | Commands and options; verify command handling in dispatch too. |
+| Startup and cross-module wiring | `src/cli/startup.rs` | Initialization order, callback registration, provider runtime composition. |
+| CLI command routing | `src/cli/dispatch.rs` | Headless commands, default interactive path, server/client launch. |
+| TUI client launch | `src/cli/tui_launch.rs` | Client-side connection and terminal launch behavior. |
+| Provider and tool registration | `src/cli/provider_init.rs`, `src/alphacode_app_core/tool/` | Inspect build/feature gates and runtime tool filters as well as registration. |
+| Agent, protocol, server, sessions | `src/alphacode_agent_runtime/`, `src/alphacode_protocol/`, `src/server.rs`, `src/session.rs` | Shared runtime areas; trace callers for the specific command. |
+| TUI rendering and interaction | `src/alphacode_tui/`, `src/alphacode_tui_*/` | Rendering, widgets and presentation modules; the source of truth is the concrete module and its callers. |
+| Security/investigation workflows | `src/alphacode_security_core/` | Typed domain state and validation; check how CLI/TUI/session layers call it. |
+| Code-search package | `alphagrep/` | Separate workspace package used by the main crate. |
 
-| Part | Lives in | Cacheable? |
-| --- | --- | --- |
-| Static | `system_prompt.md` (always present) | Yes — same across turns |
-| Dynamic | per-turn memory, AGENTS.md, current task, system reminder | No |
+Some paths may be gated by Cargo features or target platform. When documentation and implementation diverge, treat `Cargo.toml`, `src/lib.rs`, and the selected call path as authoritative and update this map with the change.
 
-## The autonomous layer
+## Reading architecture graphs responsibly
 
-Long-horizon work goes through a separate orchestrator in
-[`src/alphacode_app_core/autonomous/`](../src/alphacode_app_core/autonomous/mod.rs):
+Repository graph tools are useful navigation aids, not a proof of reachability or malware. A sampled or import-derived graph can omit runtime registries, trait objects, callbacks, generated/conditional code, platform gates, plugin/MCP discovery, and IPC boundaries. It can also flag tests, examples, fixtures, configuration, dead code, or unreachable helpers. Confirm an apparent disconnected node by tracing its definitions, registration sites, callers, features, and command/runtime entrypoints. Likewise, a graph-level risk score is a lead for review, not a security finding.
 
-- **Main Brain** owns the plan, the phases, and the merge.
-- **Child agents** are spawned as fresh sessions with their own context.
-- Each child reports back via an `AgentReport` (with `files_modified`,
-  `files_created`, `problems`, `confidence`, `potential_conflicts`).
-- The Main Brain detects file conflicts (`detect_file_conflicts`) and
-  refuses to advance a phase until the **quality gate** passes.
-- Every phase completion creates a **checkpoint** so the project can roll
-  back without losing state.
+## Validation expectations
 
-## The TUI
-
-The terminal UI is built on [ratatui](https://ratatui.rs). The renderer is
-event-driven and lazy: widgets compute their layout on every frame and only
-redraw dirty regions. The session transcript is persisted to disk, not held
-in memory, so a week-long session does not bloat the process.
-
-The onboarding screen lives at
-[`src/alphacode_tui/tui/ui_onboarding.rs`](../src/alphacode_tui/tui/ui_onboarding.rs).
-Every guided phase has an `Esc to skip` escape so a first-run user is never
-trapped.
-
-## Tools
-
-Tools implement a single trait
-([`src/alphacode_tool_core/mod.rs`](../src/alphacode_tool_core/mod.rs)).
-The trait is intentionally tiny (`name`, `description`, `parameters_schema`,
-`execute`) so adding a new tool is mostly a matter of describing its input
-schema. Every tool's input schema is rewritten at registration time to
-inject the shared `intent` parameter — that is why every tool call carries
-a human-readable label.
-
-## Coding-quality contract
-
-The system prompt encodes the contract a user can hold Alphacode to:
-
-1. **Smallest change** — never bundle unrelated edits into the same call.
-2. **Anti-regression** — every change must leave previously-passing tests
-   in a passing state.
-3. **Self-critique** — before reporting done, the agent runs a 5-point
-   checklist (objective covered, evidence-backed, no regressions, scoped
-   diff, edge cases considered).
-4. **Structured output** — every state-changing turn ends with
-   *What changed / What was verified / What remains*.
-
-If you are tuning the agent's behavior, edit the prompt. If you are
-adding capability, add a tool. If you are changing orchestration, touch
-the autonomous layer. The boundaries are intentional.
+For code changes, run the narrowest relevant test first, then formatting and workspace checks. Changes to command dispatch, provider/tool registry, session protocol, or TUI behavior should include focused regression tests where feasible. A successful compile is not evidence that terminal rendering, keyboard interaction, platform-specific branches, or a release package behaves correctly; validate those separately when they are in scope.

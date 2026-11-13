@@ -49,6 +49,30 @@ pub struct Hypothesis {
     /// User interaction required (e.g., "none", "required").
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub user_interaction: Option<String>,
+    /// Optional prediction that must be observed for this hypothesis to hold.
+    /// When set, a refutation requires contradicting *this* observation, not
+    /// merely a negative probe — which is what distinguishes "refuted" from
+    /// "inconclusive".
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub prediction: Option<String>,
+    /// Evidence that would invalidate a refutation and reopen the hypothesis.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reopen_condition: Option<String>,
+    /// How many consecutive equivalent negative results have been observed.
+    #[serde(default)]
+    pub equivalent_negative_count: u32,
+    /// The discriminating observation that refuted this hypothesis, if any.
+    /// Negative probes and tool failures must never populate this field.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub kill_condition: Option<String>,
+    /// Dimension last changed when this hypothesis was re-probed, so a
+    /// re-plan can pick a genuinely different dimension instead of repeating
+    /// the same probe with different wording.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_dimension_changed: Option<String>,
+    /// What is blocking this hypothesis from being tested, if anything.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub blocker: Option<String>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -175,6 +199,12 @@ impl Hypothesis {
             attack_complexity: None,
             privileges_required: None,
             user_interaction: None,
+            prediction: None,
+            reopen_condition: None,
+            equivalent_negative_count: 0,
+            kill_condition: None,
+            last_dimension_changed: None,
+            blocker: None,
         }
     }
 
@@ -287,6 +317,62 @@ impl Hypothesis {
                 .collect::<HashSet<_>>()
                 .len()
                 >= 2
+    }
+
+    /// Record an equivalent negative result without treating absence as proof.
+    ///
+    /// Three equivalent negatives do not by themselves refute a hypothesis:
+    /// reachability and the oracle may both be broken. What *does* kill it is
+    /// a discriminating control that contradicts the prediction. Until that
+    /// happens the hypothesis stays open and the caller is told to change a
+    /// dimension — which is a re-plan instruction, not a surrender.
+    ///
+    /// The return type is retained for callers of the original API, but this
+    /// method never returns a kill condition. After three negatives it marks
+    /// the investigation inconclusive and requests a different experiment.
+    pub fn record_negative(&mut self, observation: &str, dimension: &str) -> Option<String> {
+        self.equivalent_negative_count = self.equivalent_negative_count.saturating_add(1);
+        self.last_dimension_changed = Some(dimension.to_string());
+
+        if let Some(prediction) = self.prediction.as_deref()
+            && !prediction.is_empty()
+            && observation
+                .to_ascii_lowercase()
+                .contains(&prediction.to_ascii_lowercase())
+        {
+            // The prediction was observed: this is not a negative result.
+            self.equivalent_negative_count = 0;
+            return None;
+        }
+
+        if self.needs_reassessment() {
+            self.status = HypothesisStatus::InsufficientData;
+            self.blocker.get_or_insert_with(|| {
+                format!(
+                    "{} equivalent negative probes; validate reachability and the oracle, \
+                     then change a test dimension. No discriminating control refuted the prediction.",
+                    self.equivalent_negative_count,
+                )
+            });
+        }
+        None
+    }
+
+    /// Whether this hypothesis is dead and the reason, if any.
+    pub fn is_killed(&self) -> Option<&str> {
+        self.kill_condition.as_deref()
+    }
+
+    /// Whether the caller should change a dimension rather than repeat the
+    /// same probe. True once equivalent negatives have stacked up without a
+    /// discriminating control killing the claim.
+    pub fn needs_dimension_change(&self) -> bool {
+        self.equivalent_negative_count > 0 && self.kill_condition.is_none()
+    }
+
+    /// Repeated absence is a reason to reassess prerequisites, not to refute.
+    pub fn needs_reassessment(&self) -> bool {
+        self.equivalent_negative_count >= 3 && self.kill_condition.is_none()
     }
 }
 
@@ -430,5 +516,137 @@ mod tests {
             h.add_evidence(evidence.clone());
         }
         assert_eq!(h.confidence, Confidence::Low);
+    }
+
+    #[test]
+    fn three_equivalent_negatives_require_reassessment_not_refutation() {
+        let mut h = Hypothesis::new(
+            "h".into(),
+            "test".into(),
+            VulnerabilityClass::Xss,
+            "/test".into(),
+            "clue".into(),
+        );
+        h.prediction = Some("payload reflected unencoded".into());
+        h.reopen_condition = Some("a control that changes the oracle".into());
+
+        // Two negatives are not enough: reachability and the oracle may both
+        // be broken, so the hypothesis stays open and asks for a dimension
+        // change rather than surrendering.
+        assert!(h.record_negative("no reflection seen", "actor").is_none());
+        assert!(h.record_negative("no reflection seen", "method").is_none());
+        assert_eq!(h.equivalent_negative_count, 2);
+        assert!(h.needs_dimension_change());
+        assert!(h.is_killed().is_none());
+
+        assert!(!h.needs_reassessment());
+        assert!(
+            h.record_negative("no reflection seen", "representation")
+                .is_none()
+        );
+        assert_eq!(h.status, HypothesisStatus::InsufficientData);
+        assert!(h.is_killed().is_none());
+        assert!(h.needs_dimension_change());
+        assert!(h.needs_reassessment());
+        assert_eq!(h.last_dimension_changed.as_deref(), Some("representation"));
+        assert!(
+            h.blocker
+                .as_deref()
+                .unwrap()
+                .contains("3 equivalent negative probes")
+        );
+        assert_eq!(
+            h.reopen_condition.as_deref(),
+            Some("a control that changes the oracle")
+        );
+    }
+
+    #[test]
+    fn observing_the_prediction_is_not_a_negative() {
+        let mut h = Hypothesis::new(
+            "h".into(),
+            "test".into(),
+            VulnerabilityClass::Xss,
+            "/test".into(),
+            "clue".into(),
+        );
+        h.prediction = Some("payload reflected unencoded".into());
+
+        // The prediction was observed, so this is a positive — the counter
+        // must not advance and the hypothesis must not be killed.
+        assert!(
+            h.record_negative("response contains payload reflected unencoded", "actor")
+                .is_none()
+        );
+        assert_eq!(h.equivalent_negative_count, 0);
+        assert!(h.is_killed().is_none());
+        assert!(!h.needs_dimension_change());
+    }
+
+    #[test]
+    fn hypotheses_without_a_prediction_never_kill_on_negatives_alone() {
+        let mut h = Hypothesis::new(
+            "h".into(),
+            "test".into(),
+            VulnerabilityClass::Xss,
+            "/test".into(),
+            "clue".into(),
+        );
+        // No prediction: negatives are inconclusive, never refutation.
+        for _ in 0..10 {
+            assert!(h.record_negative("nothing observed", "actor").is_none());
+        }
+        assert_eq!(h.equivalent_negative_count, 10);
+        assert_eq!(h.status, HypothesisStatus::InsufficientData);
+        assert!(h.is_killed().is_none());
+        assert!(h.needs_dimension_change());
+        assert!(h.needs_reassessment());
+    }
+
+    #[test]
+    fn negative_request_failures_never_refute_or_overwrite_a_prerequisite_blocker() {
+        for observation in [
+            "timeout",
+            "connection refused",
+            "401 expired session",
+            "404 not found",
+        ] {
+            let mut h = Hypothesis::new(
+                "h".into(),
+                "test".into(),
+                VulnerabilityClass::Xss,
+                "/test".into(),
+                "clue".into(),
+            );
+            h.prediction = Some("payload executes".into());
+            h.blocker = Some("second controlled account required".into());
+            for _ in 0..5 {
+                assert!(h.record_negative(observation, "actor").is_none());
+                assert_ne!(h.status, HypothesisStatus::Refuted);
+                assert!(h.kill_condition.is_none());
+            }
+            assert_eq!(
+                h.blocker.as_deref(),
+                Some("second controlled account required")
+            );
+        }
+    }
+
+    #[test]
+    fn negative_probe_counter_saturates_and_survives_reload() {
+        let mut h = Hypothesis::new(
+            "h".into(),
+            "test".into(),
+            VulnerabilityClass::Xss,
+            "/test".into(),
+            "clue".into(),
+        );
+        h.equivalent_negative_count = u32::MAX;
+        assert!(h.record_negative("timeout", "transport").is_none());
+        let loaded: Hypothesis = serde_json::from_str(&serde_json::to_string(&h).unwrap()).unwrap();
+        assert_eq!(loaded.equivalent_negative_count, u32::MAX);
+        assert_eq!(loaded.status, HypothesisStatus::InsufficientData);
+        assert!(loaded.kill_condition.is_none());
+        assert!(loaded.needs_reassessment());
     }
 }

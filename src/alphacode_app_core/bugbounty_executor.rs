@@ -222,6 +222,8 @@ pub const PARAM_WORDLIST: &[&str] = &[
 /// recreate proof. Fresh observations must pass the normal evidence gate.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct OrchestratorSnapshot {
+    #[serde(default)]
+    pub intelligence: crate::alphacode_security_core::investigation::InvestigationIntelligence,
     pub target: String,
     pub current_phase: BountyPhase,
     pub tasks: BTreeMap<String, BountyTask>,
@@ -262,6 +264,7 @@ fn atomic_write(path: &Path, bytes: &[u8]) -> Result<()> {
 /// Serialize the orchestrator's accumulators and task graph to `dir/state.json`.
 pub async fn save_state(orchestrator: &BugBountyOrchestrator, dir: &Path) -> Result<()> {
     let snapshot = OrchestratorSnapshot {
+        intelligence: orchestrator.intelligence.read().await.clone(),
         target: orchestrator.target.clone(),
         current_phase: orchestrator.get_current_phase().await,
         tasks: orchestrator
@@ -322,6 +325,11 @@ pub async fn load_state(orchestrator: &BugBountyOrchestrator, dir: &Path) -> Res
         ));
     }
 
+    snapshot
+        .intelligence
+        .check_integrity()
+        .map_err(|err| anyhow!("invalid investigation snapshot: {err}"))?;
+    *orchestrator.intelligence.write().await = snapshot.intelligence;
     *orchestrator.current_phase.write().await = snapshot.current_phase;
     *orchestrator.tasks.write().await = snapshot.tasks.into_iter().collect();
     *orchestrator.subdomains.write().await = snapshot.subdomains.into_iter().collect();
@@ -1271,6 +1279,26 @@ async fn write_report(
         &dir.join("coverage.json"),
         &serde_json::to_vec_pretty(&coverage)?,
     )?;
+    {
+        let intelligence = orchestrator.intelligence.read().await;
+        md.push_str("\n## Investigation intelligence\n\n");
+        md.push_str(&format!(
+            "{} canonical assets; {} investigation leads; {} assets without a validated investigation; {} chain experiments passing evidence checks.\n\n",
+            intelligence.assets().len(), intelligence.leads().len(),
+            intelligence.coverage_gaps().len(), intelligence.chain_transitions().len(),
+        ));
+        md.push_str("Scanner leads remain unverified until a controlled experiment passes the observed-exchange proof gate. Evidence checks establish the recorded differential; vulnerability impact and chain causality require independent review. A validated experiment does not imply complete coverage of an asset. Historical investigation state is retained on resume; current-process finding counts still require fresh proof.\n\n");
+        for lead in intelligence.leads().values() {
+            md.push_str(&format!(
+                "- `{}`: {:?}; supporting artifacts: {}; contradictions: {}; blocker: {}.\n",
+                lead.id,
+                lead.status,
+                lead.supporting.len(),
+                lead.contradicting.len(),
+                lead.blocker.as_deref().unwrap_or("none")
+            ));
+        }
+    }
     md.push_str("\n## Task outcomes\n\n");
     for outcome in outcomes {
         let mark = if outcome.ok { "ok" } else { "failed" };
@@ -1489,5 +1517,33 @@ mod tests {
         );
         assert_eq!(clean_url_line("[INF] starting"), None);
         assert_eq!(clean_url_line(""), None);
+    }
+    #[tokio::test]
+    async fn investigation_state_round_trips_and_legacy_snapshots_default() {
+        let dir = tempfile::tempdir().unwrap();
+        let original = BugBountyOrchestrator::new("lab.example");
+        original
+            .ingest_tool_output("katana", "https://lab.example/api/object")
+            .await;
+        original
+            .ingest_tool_output(
+                "nuclei",
+                "[medium] [template] https://lab.example/api/object vulnerability",
+            )
+            .await;
+        assert_eq!(original.intelligence.read().await.leads().len(), 1);
+        save_state(&original, dir.path()).await.unwrap();
+        let restored = BugBountyOrchestrator::new("lab.example");
+        assert!(load_state(&restored, dir.path()).await.unwrap());
+        assert_eq!(restored.intelligence.read().await.leads().len(), 1);
+        assert_eq!(restored.verified_finding_count().await, 0);
+        let snapshot_path = dir.path().join(STATE_FILE);
+        let mut legacy: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(&snapshot_path).unwrap()).unwrap();
+        legacy.as_object_mut().unwrap().remove("intelligence");
+        std::fs::write(&snapshot_path, serde_json::to_vec(&legacy).unwrap()).unwrap();
+        let legacy_runtime = BugBountyOrchestrator::new("lab.example");
+        assert!(load_state(&legacy_runtime, dir.path()).await.unwrap());
+        assert!(legacy_runtime.intelligence.read().await.leads().is_empty());
     }
 }

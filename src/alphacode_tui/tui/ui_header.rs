@@ -702,31 +702,7 @@ fn abbreviate_home(path: &str) -> String {
 
 /// Keep one-line header details inside their allotted terminal columns.
 fn truncate_header_text(text: &str, max_width: usize) -> String {
-    use unicode_width::UnicodeWidthStr;
-
-    if UnicodeWidthStr::width(text) <= max_width {
-        return text.to_string();
-    }
-    if max_width == 0 {
-        return String::new();
-    }
-    if max_width == 1 {
-        return "…".to_string();
-    }
-
-    let target_width = max_width - 1;
-    let mut used_width = 0;
-    let mut truncated = String::new();
-    for grapheme in unicode_segmentation::UnicodeSegmentation::graphemes(text, true) {
-        let grapheme_width = UnicodeWidthStr::width(grapheme);
-        if used_width + grapheme_width > target_width {
-            break;
-        }
-        truncated.push_str(grapheme);
-        used_width += grapheme_width;
-    }
-    truncated.push('…');
-    truncated
+    crate::alphacode_tui_render::single_line_label(text, max_width)
 }
 
 #[cfg(test)]
@@ -1317,6 +1293,8 @@ fn build_mcp_line(app: &dyn TuiState, w: usize, align: Alignment) -> Option<Line
 fn compact_workspace_path(path: &str, width: usize) -> String {
     use unicode_segmentation::UnicodeSegmentation;
     use unicode_width::UnicodeWidthStr;
+    let path = crate::alphacode_tui_render::single_line_text(path);
+    let path = path.as_str();
     if path.width() <= width {
         return path.to_string();
     }

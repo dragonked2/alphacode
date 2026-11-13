@@ -1191,7 +1191,7 @@ fn test_render_tool_message_shows_skill_name_inline() {
     // the dimmed detail line: `skill_manage (tui_design)`.
     let msg = DisplayMessage {
         role: "tool".to_string(),
-        content: "".to_string(),
+        content: "## Skill: tui_design\n\nLoaded instructions".to_string(),
         tool_calls: vec![],
         duration_secs: None,
         title: None,
@@ -1199,7 +1199,7 @@ fn test_render_tool_message_shows_skill_name_inline() {
             id: "call_skill".to_string(),
             name: "skill_manage".to_string(),
             input: serde_json::json!({ "action": "load", "name": "tui_design" }),
-            intent: None,
+            intent: Some("Load TUI design guidance".to_string()),
             thought_signature: None,
         }),
     };
@@ -1214,6 +1214,70 @@ fn test_render_tool_message_shows_skill_name_inline() {
     assert!(
         row.contains("(tui_design)"),
         "tool row should show the skill name inline: {rendered:?}"
+    );
+    assert!(
+        row.contains("loaded"),
+        "successful skill load should state its outcome: {rendered:?}"
+    );
+}
+
+#[test]
+fn test_render_tool_message_preserves_exact_long_skill_name_on_narrow_rows() {
+    let name = "terminal-ui-accessibility-and-error-recovery";
+    let msg = DisplayMessage {
+        role: "tool".to_string(),
+        content: "loaded".to_string(),
+        tool_calls: vec![],
+        duration_secs: None,
+        title: None,
+        tool_data: Some(ToolCall {
+            id: "call_skill_long".to_string(),
+            name: "skill_manage".to_string(),
+            input: serde_json::json!({ "action": "load", "name": name }),
+            intent: Some("Load the selected skill".to_string()),
+            thought_signature: None,
+        }),
+    };
+
+    let text = render_tool_message(&msg, 32, crate::config::DiffDisplayMode::Off)
+        .iter()
+        .map(extract_line_text)
+        .collect::<Vec<_>>()
+        .join("");
+    assert!(text.contains(name), "exact skill name was lost: {text:?}");
+}
+
+#[test]
+fn test_tool_error_reason_outranks_long_intent_and_stays_visible() {
+    let msg = DisplayMessage {
+        role: "tool".to_string(),
+        content: "Error: invalid type: null, expected a boolean".to_string(),
+        tool_calls: vec![],
+        duration_secs: None,
+        title: None,
+        tool_data: Some(ToolCall {
+            id: "call_error".to_string(),
+            name: "bash".to_string(),
+            input: serde_json::json!({ "command": "echo ok" }),
+            intent: Some(
+                "Inspect shared checkout changes and available build environment".to_string(),
+            ),
+            thought_signature: None,
+        }),
+    };
+
+    let text = render_tool_message(&msg, 48, crate::config::DiffDisplayMode::Off)
+        .iter()
+        .map(extract_line_text)
+        .collect::<Vec<_>>()
+        .join("\n");
+    assert!(
+        text.contains("invalid type: null"),
+        "error reason hidden: {text}"
+    );
+    assert!(
+        !text.contains("Inspect shared checkout"),
+        "intent displaced the error: {text}"
     );
 }
 

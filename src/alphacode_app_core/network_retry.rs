@@ -33,12 +33,12 @@ fn classify_text(text: &str) -> Option<String> {
     // line (the request budget) and a `status: 4xx` line, and the `timeout`
     // needle below would misread a permanent 400 as a dropped connection —
     // sending recovery into a "network is offline" reconnect-probe loop even
-    // though connectivity never broke. Mirror the retry classifier's
-    // accounting: any 4xx except the timeout-shaped 408, the resolvable
-    // conflict 409, and the rate-limit 429 is not network evidence.
+    // though connectivity never broke. A rate-limit 429 is a provider
+    // response, not an offline signal. Preserve the existing handling for
+    // timeout-shaped 408 and conflict 409 responses.
     if let Some(status) = crate::alphacode_provider_core::retry::embedded_http_status(text)
         && (400..500).contains(&status)
-        && !matches!(status, 408 | 409 | 429)
+        && !matches!(status, 408 | 409)
     {
         return None;
     }
@@ -197,6 +197,12 @@ async fn wait_for_command_output(command: &str, args: &[&str]) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn provider_rate_limit_with_timeout_metadata_is_not_offline() {
+        let message = "OpenAI-compatible chat request failed\n  timeout: 180s\n  status: 429 Too Many Requests\n  response: {\"error\":{\"code\":\"server_busy\"}}";
+        assert!(classify_message(message).is_none());
+    }
 
     #[test]
     fn classifies_common_network_errors() {

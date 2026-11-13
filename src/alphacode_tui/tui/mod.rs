@@ -360,6 +360,9 @@ pub trait TuiState {
     fn streaming_cache_tokens(&self) -> (Option<u64>, Option<u64>);
     /// Output tokens per second during streaming (for status bar)
     fn output_tps(&self) -> Option<f32>;
+    fn output_tps_is_estimated(&self) -> bool {
+        false
+    }
     fn streaming_tool_calls(&self) -> Vec<ToolCall>;
     fn elapsed(&self) -> Option<Duration>;
     /// Time since the current connection phase (authenticating/connecting/
@@ -737,12 +740,6 @@ pub trait TuiState {
     /// Suggestion prompts for new users (shown in initial empty state).
     /// Returns (label, prompt_text) pairs. Empty if user is experienced or not authenticated.
     fn suggestion_prompts(&self) -> Vec<(String, String)>;
-    /// Short, reusable prompts shown in the ordinary empty chat to help a new
-    /// user get started. Kept separate from onboarding suggestions because
-    /// that flow may intentionally suppress prompt cards until setup is done.
-    fn starter_prompts(&self) -> Vec<(String, String)> {
-        Vec::new()
-    }
     /// Cache TTL status - shows whether the prompt cache is warm/cold based on idle time
     fn cache_ttl_status(&self) -> Option<CacheTtlInfo>;
     /// Whether the notification line has content to show

@@ -175,8 +175,12 @@ pub fn transcript_preferred_aspect_ratio(
 /// for the inline-fit pipeline: prepare-time placeholders and the draw-time
 /// scale use the same math so borders and labels hug the rendered pixels.
 pub fn inline_fit_geometry(width: u32, height: u32, chat_width: u16, cap_rows: u16) -> (u16, u16) {
+    if chat_width <= 2 || cap_rows == 0 {
+        return (0, 0);
+    }
+    let min_rows = INLINE_FIT_MIN_ROWS.min(cap_rows);
     if width == 0 || height == 0 {
-        return (INLINE_FIT_MIN_ROWS, chat_width.min(2));
+        return (min_rows, chat_width.min(2));
     }
     let (cell_w, cell_h) = get_font_size().unwrap_or((8, 16));
     let cell_w = cell_w.max(1) as u32;
@@ -187,31 +191,32 @@ pub fn inline_fit_geometry(width: u32, height: u32, chat_width: u16, cap_rows: u
     let avail_cells = chat_width.saturating_sub(2).max(1) as u32;
     let avail_px = avail_cells * cell_w;
 
-    let cap_rows_u32 = (cap_rows as u32).max(INLINE_FIT_MIN_ROWS as u32);
+    let cap_rows_u32 = cap_rows as u32;
     let cap_px = cap_rows_u32 * cell_h;
 
     // Scale to fit *both* the width and the row cap, preserving aspect ratio,
     // exactly like the draw-time fit does.
     let scale_num_w = avail_px.min(width);
-    let scaled_h_by_w = height.saturating_mul(scale_num_w) / width.max(1);
-    let (final_w_px, final_h_px) = if scaled_h_by_w <= cap_px {
-        (scale_num_w, scaled_h_by_w)
+    let scaled_h_by_w = u64::from(height) * u64::from(scale_num_w) / u64::from(width);
+    let (final_w_px, final_h_px) = if scaled_h_by_w <= u64::from(cap_px) {
+        (scale_num_w, scaled_h_by_w as u32)
     } else {
         // Height-bound: shrink further so the height fits the cap.
-        let w = width.saturating_mul(cap_px) / height.max(1);
+        let w = (u64::from(width) * u64::from(cap_px) / u64::from(height))
+            .min(u64::from(avail_px)) as u32;
         (w.min(avail_px).max(1), cap_px)
     };
 
     let rows = final_h_px
         .max(1)
         .div_ceil(cell_h)
-        .max(INLINE_FIT_MIN_ROWS as u32) as u16;
+        .max(min_rows as u32) as u16;
     let cols = (final_w_px.max(1).div_ceil(cell_w) as u16)
         .saturating_add(2)
         .min(chat_width);
     (
         rows.min(cap_rows_u32.min(u16::MAX as u32) as u16)
-            .max(INLINE_FIT_MIN_ROWS),
+            .max(min_rows),
         cols,
     )
 }

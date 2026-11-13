@@ -64,7 +64,7 @@ impl HttpFlowTool {
     }
 }
 
-#[derive(Deserialize)]
+#[derive(Clone, Deserialize)]
 struct HttpFlowInput {
     // `action` is optional on purpose: models frequently call httpflow with
     // just `{"url": "..."}`. Defaulting to `request` lets those calls succeed
@@ -73,6 +73,15 @@ struct HttpFlowInput {
     action: Option<String>,
     #[serde(default)]
     session: Option<String>,
+    #[serde(default)]
+    actor_a: Option<String>,
+    #[serde(default)]
+    actor_b: Option<String>,
+    #[serde(default)]
+    missing_url: Option<String>,
+    #[serde(default)]
+    marker: Option<String>,
+    preview_comparison: Option<PreviewComparison>,
     #[serde(default)]
     url: Option<String>,
     #[serde(default)]
@@ -92,6 +101,50 @@ struct HttpFlowInput {
         deserialize_with = "super::serde_coerce::opt_u64_from_string_or_number"
     )]
     timeout: Option<u64>,
+}
+
+#[derive(Clone, Deserialize)]
+struct PreviewComparison {
+    public: ContentSample,
+    tested: ContentSample,
+    entitled: Option<ContentSample>,
+}
+
+#[derive(Clone, Deserialize)]
+struct ContentSample {
+    object_id: String,
+    text: String,
+}
+
+fn compare_preview(samples: &PreviewComparison) -> Result<ToolOutput> {
+    let public = &samples.public;
+    let tested = &samples.tested;
+    let entitled = samples.entitled.as_ref();
+    anyhow::ensure!(
+        !public.object_id.trim().is_empty()
+            && public.object_id == tested.object_id
+            && entitled.is_none_or(|sample| sample.object_id == public.object_id),
+        "compare_preview requires the same nonempty object ID in every capture"
+    );
+    let verdict = if tested.text == public.text {
+        "same_as_public_preview"
+    } else if entitled.is_some_and(|sample| sample.text == tested.text)
+        && !tested.text.trim().is_empty()
+    {
+        "matches_entitled_control"
+    } else {
+        "inconclusive_difference"
+    };
+    Ok(ToolOutput::new(
+        json!({
+            "comparison": verdict,
+            "public_characters": public.text.chars().count(),
+            "tested_characters": tested.text.chars().count(),
+            "entitled_characters": entitled.map(|sample| sample.text.chars().count()),
+            "interpretation": "Exact comparison of supplied content fields. Verify the captures, actor entitlements and the specific protected bytes before reporting."
+        })
+        .to_string(),
+    ))
 }
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
@@ -118,14 +171,22 @@ impl Tool for HttpFlowTool {
     }
 
     fn parameters_schema(&self) -> Value {
+        let content_sample = json!({
+            "type": "object",
+            "properties": {
+                "object_id": {"type":"string"},
+                "text": {"type":"string", "description":"Complete decoded protected field from the captured response. Exclude metadata, omitted content, and summaries."}
+            },
+            "required": ["object_id", "text"]
+        });
         json!({
             "type": "object",
             "properties": {
                 "intent": super::intent_schema_property(),
                 "action": {
                     "type": "string",
-                    "enum": ["request", "get_csrf", "clear_session", "show_cookies"],
-                    "description": "Action: request=send HTTP request with session (default when url is given), get_csrf=extract CSRF token from page, clear_session=delete session cookies, show_cookies=view current cookies."
+                    "enum": ["request", "compare_actors", "compare_preview", "get_csrf", "clear_session", "show_cookies"],
+                    "description": "request sends HTTP; compare_actors uses two cookie sessions and a missing-object control; compare_preview compares already captured content offline; get_csrf extracts a token; clear_session and show_cookies manage a named session."
                 },
                 "session": {
                     "type": "string",
@@ -134,6 +195,16 @@ impl Tool for HttpFlowTool {
                 "url": {
                     "type": "string",
                     "description": "Target URL. Required for request and get_csrf."
+                },
+                "actor_a": {"type":"string", "description":"compare_actors: established session label for the test actor."},
+                "actor_b": {"type":"string", "description":"compare_actors: distinct established session label for the resource owner."},
+                "missing_url": {"type":"string", "description":"compare_actors: explicitly authorized missing-object control on the same origin."},
+                "marker": {"type":"string", "description":"compare_actors: optional owned fixture marker to check in each response."},
+                "preview_comparison": {
+                    "type": "object",
+                    "description": "compare_preview: complete same-object content captures from the public baseline, the tested actor and optionally an entitled control. No HTTP requests are sent.",
+                    "properties": {"public": content_sample, "tested": content_sample, "entitled": content_sample},
+                    "required": ["public", "tested"]
                 },
                 "method": {
                     "type": "string",
@@ -184,7 +255,7 @@ impl Tool for HttpFlowTool {
                 "httpflow arguments not understood ({err}). Send an object like \
                  {{\"action\": \"request\", \"url\": \"https://...\", \
                  \"method\": \"GET\"}}. `action` is one of \
-                 request, get_csrf, clear_session, show_cookies (defaults to \
+                 request, compare_actors, compare_preview, get_csrf, clear_session, show_cookies (defaults to \
                  `request` when `url` is given)."
             )
         })?;
@@ -205,13 +276,17 @@ impl Tool for HttpFlowTool {
             return Err(anyhow::anyhow!(
                 "httpflow needs `action` (or `url`). Send an object like \
                  {{\"action\": \"request\", \"url\": \"https://...\", \"method\": \"GET\"}}. \
-                 Valid actions: request, get_csrf, clear_session, show_cookies."
+                 Valid actions: request, compare_actors, compare_preview, get_csrf, clear_session, show_cookies."
             ));
         }
         let session_name = params.session.as_deref().unwrap_or("default");
 
         match action {
             "request" => self.send_request(&params, session_name, &ctx).await,
+            "compare_actors" => self.compare_actors(&params, &ctx).await,
+            "compare_preview" => compare_preview(params.preview_comparison.as_ref().context(
+                "compare_preview requires preview_comparison with public and tested captures",
+            )?),
             "get_csrf" => {
                 self.get_csrf_token(&params, session_name, &ctx.session_id)
                     .await
@@ -219,7 +294,7 @@ impl Tool for HttpFlowTool {
             "clear_session" => self.clear_session(session_name, &ctx.session_id).await,
             "show_cookies" => self.show_cookies(session_name, &ctx.session_id).await,
             _ => Err(anyhow::anyhow!(
-                "Unknown action: {}. Use request, get_csrf, clear_session, or show_cookies.",
+                "Unknown action: {}. Use request, compare_actors, compare_preview, get_csrf, clear_session, or show_cookies.",
                 action
             )),
         }
@@ -277,6 +352,149 @@ fn normalize_httpflow_input(input: Value) -> Value {
 }
 
 impl HttpFlowTool {
+    async fn compare_actors(
+        &self,
+        params: &HttpFlowInput,
+        ctx: &ToolContext,
+    ) -> Result<ToolOutput> {
+        use sha2::{Digest, Sha256};
+        let actor_a = params
+            .actor_a
+            .as_deref()
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .ok_or_else(|| anyhow::anyhow!("compare_actors requires actor_a"))?;
+        let actor_b = params
+            .actor_b
+            .as_deref()
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .ok_or_else(|| anyhow::anyhow!("compare_actors requires actor_b"))?;
+        anyhow::ensure!(
+            actor_a != actor_b,
+            "compare_actors requires distinct actor session labels"
+        );
+        anyhow::ensure!(
+            params
+                .method
+                .as_deref()
+                .is_none_or(|m| m.eq_ignore_ascii_case("GET"))
+                && params.body.is_none()
+                && params.headers.is_none(),
+            "compare_actors accepts only GET without custom headers or a body; establish each actor session separately"
+        );
+        anyhow::ensure!(
+            params
+                .marker
+                .as_ref()
+                .is_none_or(|m| !m.is_empty() && m.len() <= 256),
+            "marker must contain 1–256 bytes"
+        );
+        let target = params
+            .url
+            .as_deref()
+            .ok_or_else(|| anyhow::anyhow!("compare_actors requires url"))?;
+        let missing = params
+            .missing_url
+            .as_deref()
+            .ok_or_else(|| anyhow::anyhow!("compare_actors requires missing_url"))?;
+        let target_url = Url::parse(target)?;
+        let missing_url = Url::parse(missing)?;
+        anyhow::ensure!(
+            matches!(target_url.scheme(), "http" | "https")
+                && target_url.host_str().is_some()
+                && target_url.username().is_empty()
+                && target_url.password().is_none()
+                && target_url.fragment().is_none()
+                && missing_url.username().is_empty()
+                && missing_url.password().is_none()
+                && missing_url.fragment().is_none()
+                && target_url.origin() == missing_url.origin()
+                && target_url != missing_url,
+            "url and missing_url must be distinct HTTP(S) URLs on the same origin without credentials or fragments"
+        );
+        for url in [target, missing] {
+            super::scope::enforce_call(ctx, self.name(), &json!({"url":url}))
+                .map_err(anyhow::Error::msg)?;
+        }
+        let origin = target_url.origin().ascii_serialization();
+        let sessions = self.sessions.read().await;
+        let key = |actor: &str| (ctx.session_id.clone(), actor.to_string(), origin.clone());
+        let a = sessions.get(&key(actor_a)).cloned().ok_or_else(|| {
+            anyhow::anyhow!("actor_a has no established cookie session for this origin")
+        })?;
+        let b = sessions.get(&key(actor_b)).cloned().ok_or_else(|| {
+            anyhow::anyhow!("actor_b has no established cookie session for this origin")
+        })?;
+        drop(sessions);
+        let a_cookies = a.read().await.clone();
+        let b_cookies = b.read().await.clone();
+        anyhow::ensure!(
+            !a_cookies.is_empty() && !b_cookies.is_empty() && a_cookies != b_cookies,
+            "actor cookie jars must be nonempty and distinct; session validity and ownership still require independent verification"
+        );
+
+        let rate = super::scope::session_scope_policy(&ctx.session_id)
+            .map(|p| p.max_rate_rps)
+            .filter(|r| *r > 0)
+            .unwrap_or(1)
+            .min(10);
+        let pacing = std::time::Duration::from_secs_f64(1.0 / f64::from(rate));
+        let mut rows = Vec::new();
+        let mut rate_limited = false;
+        for (index, (role, actor, url)) in [
+            ("test_actor", actor_a, target),
+            ("owner_control", actor_b, target),
+            ("missing_control", actor_a, missing),
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            if index > 0 {
+                tokio::time::sleep(pacing).await;
+            }
+            let mut request = params.clone();
+            request.url = Some(url.to_string());
+            request.method = Some("GET".to_string());
+            request.follow_redirects = Some(false);
+            request.extract_csrf = Some(false);
+            let output = self
+                .send_request(&request, actor, ctx)
+                .await
+                .map_err(|error| anyhow::anyhow!("compare_actors stopped at {role}: {error}"))?;
+            let status: u16 = output
+                .output
+                .lines()
+                .next()
+                .and_then(|line| line.split_whitespace().nth(1))
+                .and_then(|value| value.parse().ok())
+                .ok_or_else(|| anyhow::anyhow!("compare_actors could not parse {role} response"))?;
+            let body = output
+                .output
+                .split_once("\n\n")
+                .map(|(_, body)| body)
+                .unwrap_or("");
+            let truncated = body.contains("\n\n[truncated, ");
+            let marker_present = params.marker.as_ref().and_then(|marker| {
+                if body.contains(marker) {
+                    Some(true)
+                } else if truncated {
+                    None
+                } else {
+                    Some(false)
+                }
+            });
+            rows.push(json!({"role":role,"session":actor,"url":url,"status":status,"sample_bytes":body.len(),"sample_sha256":format!("{:x}",Sha256::digest(body.as_bytes())),"body_truncated":truncated,"marker_present":marker_present}));
+            if status == 429 {
+                rate_limited = true;
+                break;
+            }
+        }
+        Ok(ToolOutput::new(serde_json::to_string_pretty(
+            &json!({"complete":rows.len() == 3 && !rate_limited,"rate_limited":rate_limited,"observations":rows,"interpretation":"Signals only: confirm session validity, owned fixtures, intended policy, response semantics and independent reproduction before claiming a vulnerability. Redirects were not followed; bodies may be truncated by the request output limit."}),
+        )?))
+    }
+
     async fn get_session_cookies(
         &self,
         owner: &str,
@@ -790,6 +1008,221 @@ mod tests {
     use super::*;
 
     #[tokio::test]
+    async fn preview_comparison_distinguishes_withheld_metadata_from_content() {
+        let tool = HttpFlowTool::new();
+        let context = || ToolContext {
+            session_id: "preview-fixture".into(),
+            message_id: "m".into(),
+            tool_call_id: "c".into(),
+            working_dir: None,
+            stdin_request_tx: None,
+            graceful_shutdown_signal: None,
+            execution_mode: super::super::ToolExecutionMode::Direct,
+        };
+        let public = json!({"object_id":"post-1","text":"نص المعاينة"});
+        let tested = json!({
+            "object_id":"post-1",
+            "text":"نص المعاينة",
+            "paywall":{"locked":true,"hiddenCharacters":303,"lockedImages":[{"width":640,"height":480}]}
+        });
+        let entitled = json!({"object_id":"post-1","text":"نص المعاينة. owned-private-marker"});
+        let request = |tested: Value, entitled: Option<Value>| {
+            json!({
+                "action": "compare_preview",
+                "preview_comparison": {"public":public,"tested":tested,"entitled":entitled}
+            })
+        };
+        for (tested, control, expected) in [
+            (tested, Some(entitled.clone()), "same_as_public_preview"),
+            (
+                entitled.clone(),
+                Some(entitled.clone()),
+                "matches_entitled_control",
+            ),
+            (entitled.clone(), None, "inconclusive_difference"),
+            (
+                json!({"object_id":"post-1","text":"نص المعاينة."}),
+                Some(entitled),
+                "inconclusive_difference",
+            ),
+        ] {
+            let output = tool
+                .execute(request(tested, control), context())
+                .await
+                .unwrap();
+            let observation: Value = serde_json::from_str(&output.output).unwrap();
+            assert_eq!(observation["comparison"], expected);
+            assert!(!output.output.contains("owned-private-marker"));
+        }
+        let other = json!({"object_id":"post-2","text":"نص المعاينة"});
+        assert!(tool.execute(request(other, None), context()).await.is_err());
+    }
+
+    #[tokio::test]
+    async fn actor_comparison_collects_owner_and_missing_controls() {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let base = format!("http://{}", listener.local_addr().unwrap());
+        let server = tokio::spawn(async move {
+            for _ in 0..3 {
+                let (mut socket, _) = listener.accept().await.unwrap();
+                let mut bytes = [0; 4096];
+                let n = socket.read(&mut bytes).await.unwrap();
+                let request = String::from_utf8_lossy(&bytes[..n]).to_ascii_lowercase();
+                let (status, body) = if request.starts_with("get /missing ") {
+                    ("404 Not Found", "missing")
+                } else if request.contains("cookie: sid=owner") {
+                    ("200 OK", "owned-fixture-marker")
+                } else {
+                    ("403 Forbidden", "denied")
+                };
+                let response = format!(
+                    "HTTP/1.1 {status}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                    body.len()
+                );
+                socket.write_all(response.as_bytes()).await.unwrap();
+            }
+        });
+        let tool = HttpFlowTool::new();
+        for (actor, cookie) in [("actor-a", "tester"), ("actor-b", "owner")] {
+            tool.get_session_cookies("comparison-fixture", actor, &base)
+                .await
+                .unwrap()
+                .write()
+                .await
+                .insert("sid".into(), cookie.into());
+        }
+        let ctx = ToolContext {
+            session_id: "comparison-fixture".into(),
+            message_id: "m".into(),
+            tool_call_id: "c".into(),
+            working_dir: None,
+            stdin_request_tx: None,
+            graceful_shutdown_signal: None,
+            execution_mode: super::super::ToolExecutionMode::Direct,
+        };
+        let result = tool.execute(json!({"action":"compare_actors", "url":format!("{base}/object"), "missing_url":format!("{base}/missing"), "actor_a":"actor-a", "actor_b":"actor-b", "marker":"owned-fixture-marker"}), ctx).await.unwrap();
+        let data: Value = serde_json::from_str(&result.output).unwrap();
+        assert_eq!(data["complete"], true);
+        assert_eq!(data["observations"][0]["status"], 403);
+        assert_eq!(data["observations"][1]["status"], 200);
+        assert_eq!(data["observations"][1]["marker_present"], true);
+        assert_eq!(data["observations"][2]["status"], 404);
+        assert!(!result.output.contains("sid=owner"));
+        server.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn actor_comparison_rejects_unestablished_and_cross_origin_controls() {
+        let tool = HttpFlowTool::new();
+        let context = || ToolContext {
+            session_id: "comparison-invalid".into(),
+            message_id: "m".into(),
+            tool_call_id: "c".into(),
+            working_dir: None,
+            stdin_request_tx: None,
+            graceful_shutdown_signal: None,
+            execution_mode: super::super::ToolExecutionMode::Direct,
+        };
+        let base = json!({"action":"compare_actors", "url":"https://one.example/object", "missing_url":"https://one.example/missing", "actor_a":"a", "actor_b":"b"});
+        assert!(
+            tool.execute(base.clone(), context())
+                .await
+                .unwrap_err()
+                .to_string()
+                .contains("no established")
+        );
+        let mut cross = base.clone();
+        cross["missing_url"] = json!("https://other.example/missing");
+        assert!(
+            tool.execute(cross, context())
+                .await
+                .unwrap_err()
+                .to_string()
+                .contains("same origin")
+        );
+        let mut duplicate = base;
+        duplicate["actor_b"] = json!("a");
+        assert!(
+            tool.execute(duplicate, context())
+                .await
+                .unwrap_err()
+                .to_string()
+                .contains("distinct")
+        );
+    }
+
+    #[tokio::test]
+    async fn actor_comparison_checks_missing_control_scope_before_sending() {
+        let session = "comparison-scope-fixture";
+        let policy = crate::alphacode_security_core::scope_gate::ScopePolicy::from_lists(
+            &["https://fixture.example/allowed".to_string()],
+            &[],
+            true,
+            &[],
+            1,
+            1,
+        );
+        super::super::scope::set_session_scope(session, Some(policy));
+        let ctx = ToolContext {
+            session_id: session.into(),
+            message_id: "m".into(),
+            tool_call_id: "c".into(),
+            working_dir: None,
+            stdin_request_tx: None,
+            graceful_shutdown_signal: None,
+            execution_mode: super::super::ToolExecutionMode::Direct,
+        };
+        let result = HttpFlowTool::new().execute(json!({"action":"compare_actors", "url":"https://fixture.example/allowed/object", "missing_url":"https://fixture.example/excluded/missing", "actor_a":"a", "actor_b":"b"}), ctx).await;
+        super::super::scope::set_session_scope(session, None);
+        let error = result.unwrap_err().to_string();
+        assert!(error.contains("scope"), "{error}");
+    }
+
+    #[tokio::test]
+    async fn actor_comparison_stops_when_rate_limited() {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let base = format!("http://{}", listener.local_addr().unwrap());
+        let server = tokio::spawn(async move {
+            let (mut socket, _) = listener.accept().await.unwrap();
+            let mut bytes = [0; 2048];
+            socket.read(&mut bytes).await.unwrap();
+            socket.write_all(b"HTTP/1.1 429 Too Many Requests\r\nContent-Length: 4\r\nConnection: close\r\n\r\nslow").await.unwrap();
+            tokio::time::timeout(std::time::Duration::from_millis(300), listener.accept())
+                .await
+                .is_err()
+        });
+        let tool = HttpFlowTool::new();
+        for (actor, cookie) in [("a", "one"), ("b", "two")] {
+            tool.get_session_cookies("rate-fixture", actor, &base)
+                .await
+                .unwrap()
+                .write()
+                .await
+                .insert("sid".into(), cookie.into());
+        }
+        let ctx = ToolContext {
+            session_id: "rate-fixture".into(),
+            message_id: "m".into(),
+            tool_call_id: "c".into(),
+            working_dir: None,
+            stdin_request_tx: None,
+            graceful_shutdown_signal: None,
+            execution_mode: super::super::ToolExecutionMode::Direct,
+        };
+        let output = tool.execute(json!({"action":"compare_actors", "url":format!("{base}/object"), "missing_url":format!("{base}/missing"), "actor_a":"a", "actor_b":"b"}), ctx).await.unwrap();
+        let result: Value = serde_json::from_str(&output.output).unwrap();
+        assert_eq!(result["complete"], false);
+        assert_eq!(result["rate_limited"], true);
+        assert_eq!(result["observations"].as_array().unwrap().len(), 1);
+        assert!(
+            server.await.unwrap(),
+            "no further request should follow a 429"
+        );
+    }
+
+    #[tokio::test]
     async fn cookie_jars_are_isolated_by_agent_session_and_origin() {
         let tool = HttpFlowTool::new();
         let first = tool
@@ -1061,5 +1494,105 @@ mod tests {
         </head><body></body></html>"#;
         let token = tool.extract_csrf_token(html, None);
         assert_eq!(token.as_deref(), Some("meta_token_456"));
+    }
+}
+
+#[cfg(test)]
+mod forwarded_header_lab_tests {
+    use super::{HttpFlowTool, Tool, ToolContext};
+    use serde_json::json;
+    use std::collections::HashMap;
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+    #[tokio::test]
+    async fn forwarded_header_variation_changes_only_a_trusting_lab_identity() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let base = format!("http://{}", listener.local_addr().unwrap());
+        let server = tokio::spawn(async move {
+            let mut counts = HashMap::new();
+            let mut peers = Vec::new();
+            for _ in 0..4 {
+                let (mut socket, peer) = listener.accept().await.unwrap();
+                peers.push(peer.ip());
+                let mut request = Vec::new();
+                while !request.windows(4).any(|part| part == b"\r\n\r\n") {
+                    let mut bytes = [0; 1024];
+                    let n = socket.read(&mut bytes).await.unwrap();
+                    assert!(n > 0);
+                    request.extend_from_slice(&bytes[..n]);
+                    assert!(request.len() < 4096);
+                }
+                let request = String::from_utf8(request).unwrap().to_ascii_lowercase();
+                let path = request.split_whitespace().nth(1).unwrap();
+                let forwarded = request
+                    .lines()
+                    .find_map(|line| line.strip_prefix("x-forwarded-for:"))
+                    .unwrap()
+                    .trim();
+                // Intentionally vulnerable fixture: only this route trusts an
+                // unvalidated client-supplied forwarding header.
+                let identity = if path == "/trusting" {
+                    forwarded.to_string()
+                } else {
+                    peer.ip().to_string()
+                };
+                let count = counts.entry((path.to_string(), identity)).or_insert(0);
+                *count += 1;
+                let status = if *count == 1 {
+                    "200 OK"
+                } else {
+                    "429 Too Many Requests"
+                };
+                socket
+                    .write_all(
+                        format!(
+                            "HTTP/1.1 {status}\r\nContent-Length: 2\r\nConnection: close\r\n\r\nok"
+                        )
+                        .as_bytes(),
+                    )
+                    .await
+                    .unwrap();
+            }
+            assert!(peers.iter().all(|ip| *ip == peers[0]));
+            assert!(peers[0].is_loopback());
+        });
+        let session = "forwarded-header-local-lab";
+        let policy = crate::alphacode_security_core::scope_gate::ScopePolicy::from_lists(
+            &[base.clone()],
+            &[],
+            true,
+            &[],
+            1,
+            1,
+        );
+        super::super::scope::set_session_scope(session, Some(policy));
+        let tool = HttpFlowTool::new();
+        for (path, header, status) in [
+            ("safe", "198.51.100.1", 200),
+            ("safe", "198.51.100.2", 429),
+            ("trusting", "198.51.100.1", 200),
+            ("trusting", "198.51.100.2", 200),
+        ] {
+            let context = ToolContext {
+                session_id: session.into(),
+                message_id: "m".into(),
+                tool_call_id: "lab".into(),
+                working_dir: None,
+                stdin_request_tx: None,
+                graceful_shutdown_signal: None,
+                execution_mode: super::super::ToolExecutionMode::Direct,
+            };
+            let output = tool.execute(json!({"url": format!("{base}/{path}"), "headers": {"X-Forwarded-For": header}}), context).await.unwrap();
+            assert!(
+                output.output.starts_with(&format!("HTTP {status}")),
+                "{}",
+                output.output
+            );
+        }
+        super::super::scope::set_session_scope(session, None);
+        tokio::time::timeout(std::time::Duration::from_secs(5), server)
+            .await
+            .unwrap()
+            .unwrap();
     }
 }

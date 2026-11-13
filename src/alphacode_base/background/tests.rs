@@ -630,3 +630,291 @@ async fn abort_live_tasks_for_reload_keeps_naturally_finished_status() -> Result
     );
     Ok(())
 }
+
+#[tokio::test]
+async fn cancelled_adoption_aborts_unregistered_task() -> Result<()> {
+    let tmp = tempdir()?;
+    let manager = BackgroundTaskManager::with_output_dir(tmp.path().to_path_buf());
+    let (started_tx, started_rx) = tokio::sync::oneshot::channel();
+    let (dropped_tx, dropped_rx) = tokio::sync::oneshot::channel();
+    struct SignalDrop(Option<tokio::sync::oneshot::Sender<()>>);
+    impl Drop for SignalDrop {
+        fn drop(&mut self) {
+            if let Some(sender) = self.0.take() {
+                let _ = sender.send(());
+            }
+        }
+    }
+    let handle = tokio::spawn(async move {
+        let _signal = SignalDrop(Some(dropped_tx));
+        let _ = started_tx.send(());
+        std::future::pending::<Result<crate::alphacode_tool_types::ToolOutput>>().await
+    });
+    started_rx.await?;
+    let registry = manager.tasks.write().await;
+    let mut adoption = Box::pin(manager.adopt("read", "cancelled-adoption", handle));
+    // Poll registration while the registry is locked, then cancel the future.
+    assert!(matches!(
+        futures::poll!(adoption.as_mut()),
+        std::task::Poll::Pending
+    ));
+    drop(adoption);
+    drop(registry);
+    tokio::time::timeout(Duration::from_secs(1), dropped_rx).await??;
+    assert!(manager.tasks.read().await.is_empty());
+    assert!(manager.list().await.is_empty());
+    Ok(())
+}
+
+#[tokio::test]
+async fn cancelling_adopted_monitor_aborts_underlying_tool() -> Result<()> {
+    let tmp = tempdir()?;
+    let manager = BackgroundTaskManager::with_output_dir(tmp.path().to_path_buf());
+    let (started_tx, started_rx) = tokio::sync::oneshot::channel();
+    let (dropped_tx, dropped_rx) = tokio::sync::oneshot::channel();
+    struct SignalDrop(Option<tokio::sync::oneshot::Sender<()>>);
+    impl Drop for SignalDrop {
+        fn drop(&mut self) {
+            if let Some(sender) = self.0.take() {
+                let _ = sender.send(());
+            }
+        }
+    }
+    let handle = tokio::spawn(async move {
+        let _signal = SignalDrop(Some(dropped_tx));
+        let _ = started_tx.send(());
+        std::future::pending::<Result<crate::alphacode_tool_types::ToolOutput>>().await
+    });
+    started_rx.await?;
+    let info = manager
+        .adopt("read", "cancel-adopted-monitor", handle)
+        .await;
+    assert!(manager.cancel(&info.task_id).await?);
+    tokio::time::timeout(Duration::from_secs(1), dropped_rx).await??;
+    assert!(manager.tasks.read().await.is_empty());
+    let status = manager
+        .status(&info.task_id)
+        .await
+        .expect("cancelled status");
+    assert_eq!(status.status, BackgroundTaskStatus::Failed);
+    assert_eq!(status.error.as_deref(), Some("Cancelled by user"));
+    Ok(())
+}
+
+#[test]
+fn missing_status_progress_fallback_never_claims_completion() {
+    let event = BackgroundTaskProgressEvent {
+        task_id: "missing-status".into(),
+        tool_name: "bash".into(),
+        display_name: Some("Building project".into()),
+        session_id: "progress-session".into(),
+        progress: BackgroundTaskProgress {
+            kind: BackgroundTaskProgressKind::Determinate,
+            percent: Some(100.0),
+            message: Some("progress is not an exit result".into()),
+            current: Some(4),
+            total: Some(4),
+            unit: Some("steps".into()),
+            eta_seconds: None,
+            updated_at: Utc::now().to_rfc3339(),
+            source: BackgroundTaskProgressSource::Reported,
+        },
+    };
+    let status = running_snapshot_from_progress(&event);
+    assert_eq!(status.status, BackgroundTaskStatus::Running);
+    assert_eq!(status.completed_at, None);
+    assert_eq!(status.exit_code, None);
+    assert_eq!(status.duration_secs, None);
+    assert_eq!(status.display_name, event.display_name);
+    assert_eq!(status.session_id, event.session_id);
+    assert_eq!(status.progress, Some(event.progress));
+}
+
+#[tokio::test]
+async fn cancelled_spawn_registration_never_launches_work() -> Result<()> {
+    let tmp = tempdir()?;
+    let manager = BackgroundTaskManager::with_output_dir(tmp.path().to_path_buf());
+    let executed = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let observed = Arc::clone(&executed);
+    let registry = manager.tasks.write().await;
+    let mut spawning = Box::pin(manager.spawn("read", "cancel-spawn", move |_| async move {
+        observed.store(true, std::sync::atomic::Ordering::SeqCst);
+        Ok(TaskResult::completed(Some(0)))
+    }));
+    assert!(matches!(
+        futures::poll!(spawning.as_mut()),
+        std::task::Poll::Pending
+    ));
+    drop(spawning);
+    drop(registry);
+    tokio::task::yield_now().await;
+    assert!(!executed.load(std::sync::atomic::Ordering::SeqCst));
+    assert!(manager.tasks.read().await.is_empty());
+    assert!(manager.list().await.is_empty());
+    Ok(())
+}
+
+#[tokio::test]
+async fn background_execution_panic_publishes_failure_and_releases_registry() -> Result<()> {
+    let tmp = tempdir()?;
+    let manager = BackgroundTaskManager::with_output_dir(tmp.path().to_path_buf());
+    let info = manager
+        .spawn("read", "panic-execution", |_| async {
+            tokio::task::yield_now().await;
+            panic!("execution failed after yield");
+            #[allow(unreachable_code)]
+            Ok(TaskResult::completed(Some(0)))
+        })
+        .await;
+    let waited = manager
+        .wait(&info.task_id, Duration::from_secs(1), false)
+        .await
+        .expect("task status should survive panic");
+    assert_ne!(waited.reason, BackgroundTaskWaitReason::Timeout);
+    assert_eq!(waited.task.status, BackgroundTaskStatus::Failed);
+    assert_eq!(waited.task.exit_code, None);
+    assert!(
+        waited
+            .task
+            .error
+            .as_deref()
+            .unwrap_or_default()
+            .contains("execution failed after yield")
+    );
+    assert!(waited.task.completed_at.is_some());
+    // The monitor writes status before pruning; yield until the finalizer has
+    // finished rather than treating the status write alone as registry cleanup.
+    tokio::time::timeout(Duration::from_secs(1), async {
+        while manager.tasks.read().await.contains_key(&info.task_id) {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await?;
+    Ok(())
+}
+
+#[tokio::test]
+async fn background_recovery_restores_panic_scope_between_polls() -> Result<()> {
+    let mut polled_once = false;
+    let execution = std::future::poll_fn(|cx| {
+        assert!(crate::alphacode_core::panic_util::panic_output_suppressed());
+        if !polled_once {
+            polled_once = true;
+            cx.waker().wake_by_ref();
+            std::task::Poll::Pending
+        } else {
+            std::task::Poll::Ready(Ok(TaskResult::completed(Some(0))))
+        }
+    });
+    let mut recovery = Box::pin(recover_background_execution(execution));
+    assert!(matches!(
+        futures::poll!(recovery.as_mut()),
+        std::task::Poll::Pending
+    ));
+    assert!(!crate::alphacode_core::panic_util::panic_output_suppressed());
+    recovery.await?;
+    assert!(!crate::alphacode_core::panic_util::panic_output_suppressed());
+    Ok(())
+}
+
+#[test]
+fn returned_background_outcomes_cannot_claim_contradictory_success() {
+    let nonzero = TaskResult::completed(Some(7)).into_terminal();
+    assert_eq!(nonzero.status, Some(BackgroundTaskStatus::Failed));
+    assert_eq!(nonzero.exit_code, Some(7));
+    assert_eq!(nonzero.error.as_deref(), Some("Command exited with code 7"));
+    let running = TaskResult {
+        status: Some(BackgroundTaskStatus::Running),
+        exit_code: None,
+        error: None,
+    }
+    .into_terminal();
+    assert_eq!(running.status, Some(BackgroundTaskStatus::Failed));
+    assert!(running.error.is_some());
+    let contradictory = TaskResult {
+        status: Some(BackgroundTaskStatus::Completed),
+        exit_code: Some(0),
+        error: Some("verification failed".into()),
+    }
+    .into_terminal();
+    assert_eq!(contradictory.status, Some(BackgroundTaskStatus::Failed));
+    assert_eq!(contradictory.error.as_deref(), Some("verification failed"));
+    let superseded = TaskResult::superseded(Some(1), "newer task owns work").into_terminal();
+    assert_eq!(superseded.status, Some(BackgroundTaskStatus::Superseded));
+    let success = TaskResult::completed(Some(0)).into_terminal();
+    assert_eq!(success.status, Some(BackgroundTaskStatus::Completed));
+    assert!(success.error.is_none());
+}
+
+#[tokio::test]
+async fn spawned_nonzero_exit_is_persisted_as_failed() -> Result<()> {
+    let tmp = tempdir()?;
+    let manager = BackgroundTaskManager::with_output_dir(tmp.path().to_path_buf());
+    let info = manager
+        .spawn("bash", "nonzero-spawn", |_| async {
+            Ok(TaskResult::completed(Some(9)))
+        })
+        .await;
+    let waited = manager
+        .wait(&info.task_id, Duration::from_secs(1), false)
+        .await
+        .expect("persisted outcome");
+    assert_ne!(waited.reason, BackgroundTaskWaitReason::Timeout);
+    assert_eq!(waited.task.status, BackgroundTaskStatus::Failed);
+    assert_eq!(waited.task.exit_code, Some(9));
+    assert_eq!(
+        waited.task.error.as_deref(),
+        Some("Command exited with code 9")
+    );
+    Ok(())
+}
+
+#[test]
+fn atomic_status_replacement_publishes_json_and_cleans_failed_scratch() -> Result<()> {
+    let tmp = tempdir()?;
+    let status_path = tmp.path().join("task.status.json");
+    persist_status_bytes(&status_path, br#"{"status":"running"}"#)?;
+    persist_status_bytes(&status_path, br#"{"status":"completed"}"#)?;
+    let value: serde_json::Value = serde_json::from_slice(&std::fs::read(&status_path)?)?;
+    assert_eq!(value["status"], "completed");
+    // Replacing a directory is rejected; scratch files must still be removed.
+    let blocked = tmp.path().join("blocked.status.json");
+    std::fs::create_dir(&blocked)?;
+    assert!(persist_status_bytes(&blocked, br#"{"status":"failed"}"#).is_err());
+    assert!(blocked.is_dir());
+    assert_eq!(std::fs::read(&status_path)?, br#"{"status":"completed"}"#);
+    assert_eq!(std::fs::read_dir(tmp.path())?.count(), 2);
+    Ok(())
+}
+
+#[test]
+fn stale_running_publication_cannot_reopen_terminal_status() -> Result<()> {
+    let tmp = tempdir()?;
+    let path = tmp.path().join("terminal.status.json");
+    for outcome in ["completed", "failed", "superseded"] {
+        let terminal = serde_json::to_vec(&serde_json::json!({"status":outcome}))?;
+        persist_status_bytes(&path, &terminal)?;
+        persist_status_bytes(&path, br#"{"status":"running","progress":25}"#)?;
+        assert_eq!(std::fs::read(&path)?, terminal);
+    }
+    Ok(())
+}
+
+#[tokio::test]
+async fn registry_contention_is_unknown_and_never_authorizes_duplicate_work() {
+    let tmp = tempdir().expect("temporary output directory");
+    let manager = BackgroundTaskManager::with_output_dir(tmp.path().to_path_buf());
+    assert_eq!(manager.try_is_live_task("unregistered"), Some(false));
+    let registry = manager.tasks.write().await;
+    assert_eq!(manager.try_is_live_task("unregistered"), None);
+    assert!(manager.is_live_task("unregistered"));
+    let mut confirmed = Box::pin(manager.is_live_task_confirmed("unregistered"));
+    assert!(matches!(
+        futures::poll!(confirmed.as_mut()),
+        std::task::Poll::Pending
+    ));
+    drop(registry);
+    assert!(!confirmed.await);
+    assert_eq!(manager.try_is_live_task("unregistered"), Some(false));
+    assert!(!manager.is_live_task("unregistered"));
+}

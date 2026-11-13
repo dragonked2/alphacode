@@ -24,6 +24,10 @@ pub struct GoalContract {
     pub created_at: DateTime<Utc>,
     /// Highest-tier evidence that arrived, if any.
     pub terminal_evidence: Option<TerminalEvidence>,
+    /// Provenance for individually verified criteria. Old snapshots start with
+    /// no observations; a prose claim never upgrades itself during restore.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub criterion_evidence: Vec<CriterionEvidence>,
 }
 
 /// A single success criterion with a machine-checkable predicate where possible.
@@ -42,14 +46,72 @@ pub struct SuccessCriterion {
 pub enum CriterionCheck {
     /// Weakest: the model asserts it's done. No runtime verification.
     ModelAsserted,
-    /// The model describes a detectable predicate (e.g. "lab status shows solved",
-    /// "cargo test exits 0"). The evaluator matches against known patterns.
+    /// Legacy prose predicate. Retained for serialization compatibility;
+    /// text matches alone cannot establish runtime completion.
     RuntimeDetectable(String),
-    /// A specific file must exist (and optionally contain a pattern).
+    /// Legacy artifact request. A separate path-bound verifier must establish
+    /// its result; arbitrary output mentioning the pattern is insufficient.
     ExternalArtifact {
         path: PathBuf,
         pattern: Option<String>,
     },
+    /// Match metadata emitted by a completed tool, bound to its exact inputs.
+    /// Text printed by the command is deliberately excluded from this check.
+    ToolMetadata {
+        tool_name: String,
+        input: serde_json::Value,
+        metadata_pointer: String,
+        expected: serde_json::Value,
+    },
+}
+
+/// Runtime-owned provenance for one tool result. Construct this from the
+/// executed call and native result, never by parsing model-authored prose.
+pub struct ToolObservation<'a> {
+    pub tool_call_id: &'a str,
+    pub tool_name: &'a str,
+    pub input: &'a serde_json::Value,
+    pub metadata: Option<&'a serde_json::Value>,
+    pub succeeded: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct CriterionEvidence {
+    pub criterion_index: usize,
+    pub criterion: SuccessCriterion,
+    pub tool_call_id: String,
+    pub tool_name: String,
+    pub observed_at: DateTime<Utc>,
+}
+
+impl SuccessCriterion {
+    pub fn matches_observation(&self, observation: &ToolObservation<'_>) -> bool {
+        if !observation.succeeded || observation.tool_call_id.trim().is_empty() {
+            return false;
+        }
+        match &self.check {
+            CriterionCheck::ToolMetadata {
+                tool_name,
+                input,
+                metadata_pointer,
+                expected,
+            } => {
+                !tool_name.trim().is_empty()
+                    && observation.tool_name == tool_name
+                    && observation.input == input
+                    && metadata_pointer.starts_with('/')
+                    && !expected.is_null()
+                    && observation
+                        .metadata
+                        .and_then(|metadata| metadata.pointer(metadata_pointer))
+                        == Some(expected)
+            }
+            // Legacy prose checks remain readable in saved contracts but
+            // cannot prove completion. Artifact verification needs provenance
+            // for the actual path/content, not a mention in unrelated output.
+            _ => false,
+        }
+    }
 }
 
 /// Evidence tiers: Authoritative > FirstParty > Inferred.
@@ -181,6 +243,7 @@ impl GoalContract {
             phase: ContractPhase::Recon,
             created_at: Utc::now(),
             terminal_evidence: None,
+            criterion_evidence: Vec::new(),
         }
     }
 
@@ -200,22 +263,55 @@ impl GoalContract {
         self.phase = self.phase.next();
     }
 
-    /// Check if a specific criterion is satisfied based on its check type.
-    pub fn check_criterion(&self, index: usize, tool_output: &str) -> Option<bool> {
-        let criterion = self.success_criteria.get(index)?;
-        match &criterion.check {
-            CriterionCheck::ModelAsserted => None, // can't auto-check
-            CriterionCheck::RuntimeDetectable(predicate) => {
-                Some(tool_output.contains(predicate.as_str()))
+    /// Reconcile the latest result for each matching verification call. This
+    /// lets independent criteria complete in separate calls, and revokes an
+    /// earlier pass when the same verification is rerun unsuccessfully.
+    pub fn observe(&mut self, observation: &ToolObservation<'_>) {
+        if self.is_terminal() {
+            return;
+        }
+        // Drop stale observations after a caller changes or reorders criteria.
+        self.criterion_evidence.retain(|evidence| {
+            self.success_criteria.get(evidence.criterion_index) == Some(&evidence.criterion)
+        });
+        for (index, criterion) in self.success_criteria.iter().enumerate() {
+            let same_source = match &criterion.check {
+                CriterionCheck::ToolMetadata {
+                    tool_name, input, ..
+                } => tool_name == observation.tool_name && input == observation.input,
+                _ => false,
+            };
+            if !same_source {
+                continue;
             }
-            CriterionCheck::ExternalArtifact { pattern, .. } => {
-                if let Some(pattern) = pattern {
-                    Some(tool_output.contains(pattern.as_str()))
-                } else {
-                    Some(true) // file existence is checked externally
-                }
+            self.criterion_evidence
+                .retain(|evidence| evidence.criterion_index != index);
+            if criterion.matches_observation(observation) {
+                self.criterion_evidence.push(CriterionEvidence {
+                    criterion_index: index,
+                    criterion: criterion.clone(),
+                    tool_call_id: observation.tool_call_id.to_string(),
+                    tool_name: observation.tool_name.to_string(),
+                    observed_at: Utc::now(),
+                });
             }
         }
+    }
+
+    pub fn criterion_verified(&self, index: usize) -> bool {
+        self.criterion_evidence.iter().any(|evidence| {
+            evidence.criterion_index == index
+                && self.success_criteria.get(index) == Some(&evidence.criterion)
+                && !evidence.tool_call_id.trim().is_empty()
+        })
+    }
+
+    /// Compatibility entrypoint for text-only callers. No completion check can
+    /// be established without runtime provenance; use `observe` instead.
+    pub fn check_criterion(&self, index: usize, _tool_output: &str) -> Option<bool> {
+        self.success_criteria.get(index)?;
+        // Text alone carries neither tool identity nor execution status.
+        None
     }
 
     /// Evaluate all criteria against tool output. Returns the index of the
@@ -235,6 +331,73 @@ mod tests {
     use super::*;
 
     #[test]
+    fn metadata_criteria_bind_input_and_reject_missing_provenance() {
+        use serde_json::json;
+        let criterion = SuccessCriterion {
+            statement: "the requested test command passed".into(),
+            tier: EvidenceTier::FirstParty,
+            check: CriterionCheck::ToolMetadata {
+                tool_name: "bash".into(),
+                input: json!({"command": "cargo test --lib"}),
+                metadata_pointer: "/process_exit_code".into(),
+                expected: json!(0),
+            },
+        };
+        let input = json!({"command": "cargo test --lib"});
+        let metadata = json!({"process_exit_code": 0});
+        let mut observation = ToolObservation {
+            tool_call_id: "call-1",
+            tool_name: "bash",
+            input: &input,
+            metadata: Some(&metadata),
+            succeeded: true,
+        };
+        assert!(criterion.matches_observation(&observation));
+        let unrelated_input = json!({"command": "echo success"});
+        observation.input = &unrelated_input;
+        assert!(!criterion.matches_observation(&observation));
+        observation.input = &input;
+        observation.tool_call_id = "";
+        assert!(!criterion.matches_observation(&observation));
+        observation.tool_call_id = "call-1";
+        let null_metadata = json!({"process_exit_code": null});
+        observation.metadata = Some(&null_metadata);
+        assert!(!criterion.matches_observation(&observation));
+    }
+
+    #[test]
+    fn evidence_roundtrip_preserves_provenance_and_old_snapshots_start_empty() {
+        use serde_json::json;
+        let mut contract = GoalContract::new("verify", vec![]);
+        contract.success_criteria.push(SuccessCriterion {
+            statement: "verification passed".into(),
+            tier: EvidenceTier::FirstParty,
+            check: CriterionCheck::ToolMetadata {
+                tool_name: "bash".into(),
+                input: json!({"command": "verify"}),
+                metadata_pointer: "/process_exit_code".into(),
+                expected: json!(0),
+            },
+        });
+        let input = json!({"command": "verify"});
+        let metadata = json!({"process_exit_code": 0});
+        contract.observe(&ToolObservation {
+            tool_call_id: "call-1",
+            tool_name: "bash",
+            input: &input,
+            metadata: Some(&metadata),
+            succeeded: true,
+        });
+        let mut saved = serde_json::to_value(&contract).unwrap();
+        let restored: GoalContract = serde_json::from_value(saved.clone()).unwrap();
+        assert!(restored.criterion_verified(0));
+        assert_eq!(restored.criterion_evidence[0].tool_call_id, "call-1");
+        saved.as_object_mut().unwrap().remove("criterion_evidence");
+        let legacy: GoalContract = serde_json::from_value(saved).unwrap();
+        assert!(!legacy.criterion_verified(0));
+    }
+
+    #[test]
     fn new_contract_defaults() {
         let contract = GoalContract::new("fix the bug", vec!["test passes".into()]);
         assert_eq!(contract.objective, "fix the bug");
@@ -252,7 +415,7 @@ mod tests {
     }
 
     #[test]
-    fn runtime_detectable_check() {
+    fn legacy_runtime_text_is_not_completion_evidence() {
         let contract = GoalContract::new("solve lab", vec![]);
         // manually add a detectable criterion
         let mut contract = contract;
@@ -262,12 +425,12 @@ mod tests {
             tier: EvidenceTier::Authoritative,
         });
 
-        assert_eq!(contract.check_criterion(0, "status: is-solved"), Some(true));
-        assert_eq!(contract.check_criterion(0, "status: pending"), Some(false));
+        assert_eq!(contract.check_criterion(0, "status: is-solved"), None);
+        assert_eq!(contract.check_criterion(0, "status: pending"), None);
     }
 
     #[test]
-    fn evaluate_tool_output_finds_match() {
+    fn arbitrary_text_cannot_verify_runtime_or_artifact_criteria() {
         let mut contract = GoalContract::new("test", vec![]);
         contract.success_criteria.push(SuccessCriterion {
             statement: "exit 0".into(),
@@ -285,9 +448,9 @@ mod tests {
 
         assert_eq!(
             contract.evaluate_tool_output("running tests...\nexit code: 0"),
-            Some(0)
+            None
         );
-        assert_eq!(contract.evaluate_tool_output("output:\ndone"), Some(1));
+        assert_eq!(contract.evaluate_tool_output("output:\ndone"), None);
         assert_eq!(contract.evaluate_tool_output("nothing here"), None);
     }
 

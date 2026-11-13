@@ -247,7 +247,7 @@ fn build_hook_process(
     let (program, args) = parts
         .split_first()
         .expect("parse_hook_command guarantees at least one part");
-    let mut cmd = std::process::Command::new(expand_home(program));
+    let mut cmd = crate::alphacode_base::platform::helper_command(expand_home(program));
     cmd.args(args);
     if let Some(cwd) = event.cwd.as_deref().filter(|cwd| !cwd.is_empty())
         && std::path::Path::new(cwd).is_dir()

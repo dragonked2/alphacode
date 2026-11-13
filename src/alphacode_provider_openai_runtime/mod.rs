@@ -421,6 +421,26 @@ fn persistent_ws_incremental_items(input: &[Value], start_index: usize) -> (Vec<
     (incremental_items, skipped_reasoning_items)
 }
 
+/// A persistent Responses API chain is reusable only when the consumer received
+/// the terminal event. A dropped consumer may have missed a function call, even
+/// when the server completed the response.
+fn persistent_ws_response_is_reusable(consumer_dropped: bool, response_completed: bool) -> bool {
+    response_completed && !consumer_dropped
+}
+
+#[cfg(test)]
+mod persistent_ws_reuse_tests {
+    use super::persistent_ws_response_is_reusable;
+
+    #[test]
+    fn response_chain_requires_completion_and_a_live_consumer() {
+        assert!(!persistent_ws_response_is_reusable(false, false));
+        assert!(!persistent_ws_response_is_reusable(true, false));
+        assert!(!persistent_ws_response_is_reusable(true, true));
+        assert!(persistent_ws_response_is_reusable(false, true));
+    }
+}
+
 fn persistent_ws_idle_needs_healthcheck(idle_for: Duration) -> bool {
     idle_for >= Duration::from_secs(WEBSOCKET_PERSISTENT_HEALTHCHECK_IDLE_SECS)
 }

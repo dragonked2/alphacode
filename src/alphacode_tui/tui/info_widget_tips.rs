@@ -97,7 +97,7 @@ pub(crate) fn occasional_status_tip(max_width: usize, elapsed_secs: u64) -> Opti
     ))
 }
 
-fn wrap_tip_text(text: &str, width: usize) -> Vec<String> {
+pub(super) fn wrap_tip_text(text: &str, width: usize) -> Vec<String> {
     use unicode_segmentation::UnicodeSegmentation;
 
     if width == 0 {

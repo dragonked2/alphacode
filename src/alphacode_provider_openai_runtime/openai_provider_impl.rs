@@ -579,7 +579,9 @@ impl Provider for OpenAIProvider {
                             // request to OpenAI API")` (e.g. TLS BadRecordMac) is
                             // visible to the retry classifier.
                             let error_str = format!("{error:#}").to_lowercase();
-                            if is_retryable_error(&error_str) && attempt + 1 < MAX_RETRIES {
+                            if is_retryable_error(&error_str) && attempt + 1 < MAX_RETRIES
+                                && !crate::alphacode_provider_core::retry_after::requires_manual_retry(&error)
+                            {
                                 if saw_output {
                                     // Partial output already reached the
                                     // consumer; roll it back so the retried
@@ -1135,13 +1137,16 @@ impl Provider for OpenAIProvider {
             }
         }
 
-        let response = builder
-            .json(&serde_json::json!({
-                "model": self.model_id().await,
-                "input": input,
-                "store": false,
-            }))
-            .send()
+        let request = builder.json(&serde_json::json!({
+            "model": self.model_id().await,
+            "input": input,
+            "store": false,
+        }));
+        let response =
+            crate::alphacode_provider_core::transport::send_with_initial_response_timeout(
+                request,
+                std::time::Duration::from_secs(30),
+            )
             .await
             .context("Failed to send OpenAI compact request")?;
 

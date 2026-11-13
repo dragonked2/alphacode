@@ -2,16 +2,47 @@
 //!
 //! Provider runtimes keep their own retry classification and request logic, but
 //! parsing an untrusted server delay and carrying it through an `anyhow::Error`
-//! should be consistent. Delays are capped so a malformed or hostile upstream
-//! cannot stall a turn indefinitely.
+//! should be consistent. Preserve long cooldowns: an automatic wait limit is
+//! a reason to stop retrying, never permission to send before the deadline.
 
 use anyhow::Error;
 use reqwest::header::{HeaderMap, RETRY_AFTER};
 use std::fmt;
 use std::time::{Duration, Instant, SystemTime};
 
-/// Longest server-requested delay a provider retry loop will honor.
-pub const MAX_RETRY_AFTER: Duration = Duration::from_secs(60);
+/// Tracking horizon for malformed/overflowing hints (100 years).
+/// Real provider cooldowns are preserved; automatic waits are bounded separately.
+pub const MAX_RETRY_AFTER: Duration = Duration::from_secs(100 * 365 * 24 * 60 * 60);
+pub const MAX_AUTOMATIC_WAIT: Duration = Duration::from_secs(180);
+
+/// Whether a retry would park a turn too long. Return the error to the user
+/// while retaining the cooldown for subsequent requests and background work.
+pub fn requires_manual_retry(error: &Error) -> bool {
+    retry_after_from_error(error)
+        .or_else(|| retry_after_seconds_from_text(&format!("{error:#}")).map(Duration::from_secs))
+        .is_some_and(|hint| hint > MAX_AUTOMATIC_WAIT)
+}
+
+/// Read body hints without dropping long or overflowing positive values.
+pub fn retry_after_seconds_from_text(error: &str) -> Option<u64> {
+    for needle in ["retry_after_seconds_raw\":", "retry_after_seconds\":"] {
+        for (position, _) in error.match_indices(needle) {
+            let after = error[position + needle.len()..]
+                .trim_start()
+                .trim_start_matches('"');
+            let digits = after.bytes().take_while(u8::is_ascii_digit);
+            let seconds = digits.fold(0_u64, |seconds, byte| {
+                seconds
+                    .saturating_mul(10)
+                    .saturating_add(u64::from(byte - b'0'))
+            });
+            if seconds > 0 {
+                return Some(seconds.min(MAX_RETRY_AFTER.as_secs()));
+            }
+        }
+    }
+    None
+}
 
 /// Parse a `Retry-After` header as delta-seconds or an HTTP date.
 ///
@@ -55,9 +86,9 @@ pub struct RetryAfter {
 }
 
 impl RetryAfter {
-    fn new(delay: Duration) -> Self {
+    pub(crate) fn new(delay: Duration) -> Self {
         Self {
-            deadline: Instant::now() + delay,
+            deadline: Instant::now() + delay.min(MAX_RETRY_AFTER),
         }
     }
 
@@ -87,6 +118,12 @@ impl std::error::Error for RetryAfterError {}
 /// Build an error with an optional server retry hint without changing its
 /// display text.
 pub fn error_with_retry_after(message: String, retry_after: Option<RetryAfter>) -> Error {
+    let body_hint = retry_after_seconds_from_text(&message).map(Duration::from_secs);
+    let retry_after = match (retry_after, body_hint) {
+        (Some(header), Some(body)) if body > header.remaining() => Some(RetryAfter::new(body)),
+        (None, Some(body)) => Some(RetryAfter::new(body)),
+        (header, _) => header,
+    };
     match retry_after {
         Some(retry_after) => Error::new(RetryAfterError {
             message,
@@ -158,14 +195,14 @@ mod tests {
     }
 
     #[test]
-    fn far_future_http_date_is_capped() {
+    fn hour_long_http_date_is_preserved() {
         let now = SystemTime::UNIX_EPOCH + Duration::from_secs(1_000_000);
         let value =
             HeaderValue::from_str(&httpdate::fmt_http_date(now + Duration::from_secs(3_600)))
                 .unwrap();
         assert_eq!(
             retry_after_delay_at(&headers(value), now),
-            Some(MAX_RETRY_AFTER)
+            Some(Duration::from_secs(3_600))
         );
     }
 
@@ -177,6 +214,26 @@ mod tests {
                 SystemTime::UNIX_EPOCH,
             ),
             None
+        );
+    }
+
+    #[test]
+    fn tokenharbor_cooldown_survives_context_and_requires_manual_retry() {
+        let hint = retry_after(&headers(HeaderValue::from_static("3541")));
+        let error =
+            error_with_retry_after("HTTP 429 rate limit".into(), hint).context("provider failed");
+        let remaining = retry_after_from_error(&error).unwrap();
+        assert!(remaining > Duration::from_secs(3540));
+        assert!(requires_manual_retry(&error));
+        assert_eq!(
+            retry_after_seconds_from_text("\"retry_after_seconds\":3541"),
+            Some(3541)
+        );
+        assert_eq!(
+            retry_after_seconds_from_text(
+                "\"retry_after_seconds_raw\":\"999999999999999999999999\""
+            ),
+            Some(MAX_RETRY_AFTER.as_secs())
         );
     }
 

@@ -131,6 +131,20 @@ pub(super) fn widget_overlaps_content(
     false
 }
 
+/// Keep flow/margin widgets only when every covered transcript row has enough
+/// measured free space. A stale or inconsistent margin must hide the widget,
+/// never assistant output.
+pub(super) fn retain_margin_safe_widgets(
+    placements: Vec<info_widget::WidgetPlacement>,
+    messages_area: Rect,
+    margins: &info_widget::Margins,
+) -> Vec<info_widget::WidgetPlacement> {
+    placements
+        .into_iter()
+        .filter(|placement| !widget_overlaps_content(placement, messages_area, margins))
+        .collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -185,5 +199,23 @@ mod tests {
         // Rows 2..5 have no recorded slack, so coverage there is intrusion.
         let p = placement(Side::Right, 50, 0, 30, 5);
         assert!(widget_overlaps_content(&p, area, &margins));
+    }
+
+    #[test]
+    fn unsafe_flow_widget_is_dropped_instead_of_covering_transcript_text() {
+        let area = Rect::new(0, 0, 80, 5);
+        let margins = Margins {
+            right_widths: vec![30, 30, 12, 30, 30],
+            left_widths: vec![0; 5],
+            centered: false,
+            ..Default::default()
+        };
+        let safe = placement(Side::Right, 50, 0, 30, 2);
+        let overlapping = placement(Side::Right, 50, 0, 30, 5);
+
+        let retained = retain_margin_safe_widgets(vec![safe.clone(), overlapping], area, &margins);
+
+        assert_eq!(retained.len(), 1);
+        assert_eq!(retained[0].rect, safe.rect);
     }
 }

@@ -16,7 +16,7 @@ fn test_build_turn_footer_combines_compact_duration_with_streaming_stats() {
         footer.starts_with("5m 16s · "),
         "unexpected footer: {footer}"
     );
-    assert!(footer.contains(" tps"), "unexpected footer: {footer}");
+    assert!(footer.contains("avg 2.0 tok/s"), "unexpected footer: {footer}");
     assert!(
         footer.ends_with("↑210k ↓440"),
         "unexpected footer: {footer}"
@@ -1255,4 +1255,30 @@ fn test_new_for_remote_restored_interleave_triggers_dispatch_state() {
             message.role == "user" && message.content == "interrupt after reload"
         }));
     });
+}
+#[test]
+fn ordinary_security_request_routes_skills_without_a_slash_command() {
+    let mut app = create_test_app();
+    app.active_skill = None;
+    app.session.add_message(
+        Role::User,
+        vec![ContentBlock::Text {
+            text: "Review this Next.js app for authorization vulnerabilities".into(),
+            cache_control: None,
+        }],
+    );
+    let prompt = app.build_system_prompt_split(None).dynamic_part;
+    assert!(prompt.contains("Next.js and Node.js security review"));
+    assert!(prompt.contains("EVIDENCE OVER IMPACT CHASING"));
+    assert!(app.active_skill.is_none());
+
+    app.session.add_message(
+        Role::User,
+        vec![ContentBlock::Text {
+            text: "Write a hello-world example in Rust".into(),
+            cache_control: None,
+        }],
+    );
+    let prompt = app.build_system_prompt_split(None).dynamic_part;
+    assert!(!prompt.contains("Next.js and Node.js security review"));
 }

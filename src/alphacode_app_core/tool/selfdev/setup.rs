@@ -1,7 +1,5 @@
 use super::*;
 
-use std::process::Command;
-
 /// A single dependency check performed by `selfdev setup`.
 struct SetupCheck {
     name: &'static str,
@@ -37,7 +35,10 @@ impl SetupCheck {
 
 /// Run a command and capture trimmed stdout if it succeeds.
 fn command_version(program: &str, args: &[&str]) -> Option<String> {
-    let output = Command::new(program).args(args).output().ok()?;
+    let output = crate::alphacode_base::platform::helper_command(program)
+        .args(args)
+        .output()
+        .ok()?;
     if !output.status.success() {
         return None;
     }
@@ -336,7 +337,7 @@ impl SelfDevTool {
             std::fs::create_dir_all(parent)?;
         }
 
-        let status = Command::new("git")
+        let status = crate::alphacode_base::platform::helper_command("git")
             .arg("clone")
             .arg(super::ALPHACODE_REPO_URL)
             .arg(&repo_dir)

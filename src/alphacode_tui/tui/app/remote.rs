@@ -35,13 +35,13 @@ use queue_recovery::{
 };
 // Re-export for sibling modules and tests that access reconnect state and helpers
 // through `super::remote::*` without reaching into private submodules directly.
+use reconnect::format_disconnect_reason;
 #[allow(unused_imports)]
 pub(super) use reconnect::{
     ConnectOutcome, PostConnectOutcome, ReloadReconnectHints, RemoteRunState, connect_with_retry,
-    finalize_reload_reconnect, handle_post_connect, reload_handoff_active,
-    should_allow_reconnect_takeover, should_use_same_session_fast_path,
+    finalize_reload_reconnect, handle_post_connect, reconnect_status_message,
+    reload_handoff_active, should_allow_reconnect_takeover, should_use_same_session_fast_path,
 };
-use reconnect::{format_disconnect_reason, reconnect_status_message};
 use session_persistence::{
     persist_remote_session_metadata, persist_replay_display_message, persist_swarm_plan_snapshot,
     persist_swarm_status_snapshot,

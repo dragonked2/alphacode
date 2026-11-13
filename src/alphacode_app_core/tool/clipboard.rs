@@ -4,7 +4,7 @@ use anyhow::Result;
 use async_trait::async_trait;
 use serde_json::{Value, json};
 use std::io::Read as _;
-use std::process::{Command, Stdio};
+use std::process::Stdio;
 use std::time::{Duration, Instant};
 
 const MAX_CLIPBOARD_BYTES: usize = 1024 * 1024;
@@ -142,9 +142,7 @@ fn copy_to_clipboard(text: &str) -> Result<()> {
     {
         // Windows: use clip command
         use std::io::Write;
-        use std::process::Command;
-        let mut child = Command::new("cmd")
-            .args(["/c", "clip"])
+        let mut child = crate::alphacode_base::platform::helper_command("clip.exe")
             .stdin(std::process::Stdio::piped())
             .spawn()?;
         if let Some(ref mut stdin) = child.stdin {
@@ -153,7 +151,8 @@ fn copy_to_clipboard(text: &str) -> Result<()> {
             let bytes: Vec<u8> = utf16.iter().flat_map(|w| w.to_le_bytes()).collect();
             stdin.write_all(&bytes)?;
         }
-        child.wait()?;
+        let status = child.wait()?;
+        anyhow::ensure!(status.success(), "clip.exe exited with {status}");
         Ok(())
     }
 }
@@ -185,7 +184,7 @@ fn paste_from_clipboard() -> Result<(String, bool)> {
             }
             Err(error) => return Err(error.into()),
         };
-        let mut bytes = Vec::with_capacity(MAX_CLIPBOARD_BYTES + 1);
+        let mut bytes = Vec::new();
         file.take((MAX_CLIPBOARD_BYTES + 1) as u64)
             .read_to_end(&mut bytes)?;
         let truncated = bytes.len() > MAX_CLIPBOARD_BYTES;
@@ -211,7 +210,7 @@ fn paste_from_clipboard() -> Result<(String, bool)> {
 /// Capture clipboard output with a hard byte cap and timeout. Readers continue
 /// draining after the cap so a large paste cannot deadlock its producer.
 fn run_clipboard_reader(program: &str, args: &[&str]) -> Result<(String, bool)> {
-    let mut child = Command::new(program)
+    let mut child = crate::alphacode_base::platform::helper_command(program)
         .args(args)
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
@@ -222,7 +221,7 @@ fn run_clipboard_reader(program: &str, args: &[&str]) -> Result<(String, bool)> 
         .take()
         .ok_or_else(|| anyhow::anyhow!("failed to capture {program} output"))?;
     let reader = std::thread::spawn(move || {
-        let mut bytes = Vec::with_capacity(MAX_CLIPBOARD_BYTES + 1);
+        let mut bytes = Vec::new();
         let mut buffer = [0u8; 16 * 1024];
         let mut truncated = false;
         loop {

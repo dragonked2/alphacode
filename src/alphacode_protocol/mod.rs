@@ -551,7 +551,7 @@ pub struct SwarmToolProgress {
 }
 
 /// Status of a member being awaited by comm_await_members
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct AwaitedMemberStatus {
     pub session_id: String,
     #[serde(skip_serializing_if = "Option::is_none")]

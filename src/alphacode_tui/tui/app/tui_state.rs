@@ -809,10 +809,18 @@ impl crate::alphacode_tui::tui::TuiState for App {
     }
 
     fn output_tps(&self) -> Option<f32> {
-        if !self.is_processing || !matches!(self.status, ProcessingStatus::Streaming) {
+        if !self.is_processing
+            || !(matches!(self.status, ProcessingStatus::Streaming)
+                || (matches!(self.status, ProcessingStatus::Thinking(_))
+                    && self.streaming.streaming_tps_start.is_some()))
+        {
             return None;
         }
         self.compute_streaming_tps()
+    }
+
+    fn output_tps_is_estimated(&self) -> bool {
+        self.streaming_tps_is_estimated()
     }
 
     fn streaming_tool_calls(&self) -> Vec<ToolCall> {
@@ -1679,11 +1687,7 @@ impl crate::alphacode_tui::tui::TuiState for App {
         let auth_method = self.widget_auth_method(route);
         let usage_info = self.widget_usage_info(route, auth_method);
 
-        let tokens_per_second = if matches!(self.status, ProcessingStatus::Streaming) {
-            self.compute_streaming_tps()
-        } else {
-            None
-        };
+        let tokens_per_second = self.output_tps();
 
         // The KV-cache widget is no longer surfaced (its hit ratios read as
         // opaque noise), so this per-frame telemetry snapshot — which cloned every
@@ -1744,6 +1748,24 @@ impl crate::alphacode_tui::tui::TuiState for App {
             native_compaction_threshold_tokens,
             session_count,
             session_name,
+            session_title: self.session.display_title().map(str::to_owned),
+            session_version: {
+                let live_server = self
+                    .remote_server_version
+                    .as_deref()
+                    .filter(|_| self.is_remote)
+                    .and_then(|version| version.split_whitespace().next())
+                    .filter(|version| !version.chars().any(char::is_control));
+                let local = crate::alphacode_build_meta::version()
+                    .split_whitespace()
+                    .next()
+                    .unwrap_or(crate::alphacode_build_meta::semver());
+                Some(match live_server {
+                    Some(version) => version.to_owned(),
+                    None if self.is_remote => format!("{local} client"),
+                    None => local.to_owned(),
+                })
+            },
             goal: super::helpers::gather_session_goal(
                 session_id,
                 self.session
@@ -1758,6 +1780,7 @@ impl crate::alphacode_tui::tui::TuiState for App {
             background_info,
             usage_info,
             tokens_per_second,
+            tokens_per_second_estimated: self.streaming_tps_is_estimated(),
             provider_name: if uses_remote_widget_metadata {
                 self.remote_provider_name
                     .clone()
@@ -2184,10 +2207,6 @@ impl crate::alphacode_tui::tui::TuiState for App {
 
     fn suggestion_prompts(&self) -> Vec<(String, String)> {
         App::suggestion_prompts(self)
-    }
-
-    fn starter_prompts(&self) -> Vec<(String, String)> {
-        App::starter_prompts(self)
     }
 
     fn cache_ttl_status(&self) -> Option<crate::alphacode_tui::tui::CacheTtlInfo> {

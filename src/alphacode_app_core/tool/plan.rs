@@ -200,6 +200,7 @@ impl Tool for PlanModeTool {
                 }
 
                 let mut command = tokio::process::Command::new("rg");
+                crate::alphacode_base::platform::hide_helper_console(command.as_std_mut());
                 command.args([
                     "--line-number",
                     "--no-heading",

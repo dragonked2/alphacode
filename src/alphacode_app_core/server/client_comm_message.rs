@@ -277,9 +277,9 @@ pub(super) async fn handle_comm_message(
                 continue;
             }
             if known_member_ids.contains(session_id) {
-                let from_label = friendly_name
-                    .clone()
-                    .unwrap_or_else(|| from_session[..8.min(from_session.len())].to_string());
+                let from_label = friendly_name.clone().unwrap_or_else(|| {
+                    crate::alphacode_swarm_core::short_session_id(&from_session).to_string()
+                });
                 let scope_label = match (scope, channel.as_deref()) {
                     ("channel", Some(channel_name)) => format!("#{}", channel_name),
                     ("dm", _) => "DM".to_string(),

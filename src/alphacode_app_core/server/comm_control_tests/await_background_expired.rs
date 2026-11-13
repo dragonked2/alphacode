@@ -25,6 +25,7 @@ async fn await_members_background_already_expired_answers_tool_call() {
             swarm_id: swarm_id.to_string(),
             target_status: vec!["completed".to_string()],
             requested_ids: vec![],
+            observed_members: vec![],
             mode: None,
             created_at_unix_ms: now_ms.saturating_sub(120_000),
             deadline_unix_ms: now_ms.saturating_sub(1_000),

@@ -31,10 +31,12 @@
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
+use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use super::finding::Finding;
+use super::investigation::InvestigationIntelligence;
 
 /// Schema version of the on-disk record. Bump when a change would make old
 /// records unreadable; loaders reject newer versions rather than guess.
@@ -265,6 +267,10 @@ pub struct ResearchSession {
     pub tool_failures: Vec<ToolFailureRecord>,
     /// Outstanding tasks / next actions.
     pub next_actions: Vec<String>,
+    /// The existing live investigation authority, including failed experiments.
+    /// Older source-review checkpoints load without inventing prior research.
+    #[serde(default)]
+    pub investigation: InvestigationIntelligence,
     /// Cumulative time spent per workflow phase (Phase 12: know where a
     /// session's budget actually goes instead of guessing). Defaults when
     /// loading records written before it existed.
@@ -340,6 +346,7 @@ impl ResearchSession {
             coverage: CoverageLedger::new(),
             tool_failures: Vec::new(),
             next_actions: Vec::new(),
+            investigation: InvestigationIntelligence::default(),
             timing: PhaseTiming::default(),
             updated_at: Utc::now(),
         }
@@ -367,29 +374,43 @@ impl ResearchSession {
     /// the destination. A crash mid-write leaves either the old file or the
     /// new one — never a truncated mix.
     pub fn checkpoint(&mut self, root: &Path) -> std::io::Result<PathBuf> {
-        self.updated_at = Utc::now();
         let path = Self::checkpoint_path(root);
-        if let Some(parent) = path.parent() {
-            std::fs::create_dir_all(parent)?;
-        }
-        let tmp = path.with_extension("json.tmp");
+        self.checkpoint_at(&path)?;
+        Ok(path)
+    }
+
+    /// Commit to an engagement-owned path. Runtime callers serialize mutations
+    /// before calling this method; unique temporary files are not a writer lock.
+    pub fn checkpoint_at(&mut self, path: &Path) -> std::io::Result<()> {
+        self.investigation
+            .check_integrity()
+            .map_err(std::io::Error::other)?;
+        let previous_time = self.updated_at;
+        self.updated_at = Utc::now();
         let serialized =
             serde_json::to_vec_pretty(self).map_err(|e| std::io::Error::other(e.to_string()))?;
-        std::fs::write(&tmp, serialized)?;
-        // Also verify the temp file round-trips before renaming: a corrupted
-        // serialization must not be allowed to replace a good record.
-        let readback = std::fs::read(&tmp)?;
-        if readback.is_empty() {
-            return Err(std::io::Error::other("checkpoint temp file wrote empty"));
+        // Check a real round trip, not just whether a temporary file is nonempty.
+        if let Err(error) = serde_json::from_slice::<Self>(&serialized) {
+            self.updated_at = previous_time;
+            return Err(std::io::Error::other(error));
         }
-        std::fs::rename(&tmp, &path)?;
-        Ok(path)
+        if let Err(error) = write_private_atomic(path, &serialized) {
+            self.updated_at = previous_time;
+            return Err(error);
+        }
+        Ok(())
     }
 
     /// Load a checkpoint. Fails loudly on unreadable or newer-schema records
     /// rather than silently starting fresh and losing prior conclusions.
     pub fn load(root: &Path) -> Result<Self, SessionLoadError> {
-        let path = Self::checkpoint_path(root);
+        Self::load_path(&Self::checkpoint_path(root))
+    }
+
+    /// Load exactly the requested engagement. A corrupt or newer checkpoint
+    /// must never silently become a fresh investigation.
+    pub fn load_path(path: &Path) -> Result<Self, SessionLoadError> {
+        let path = path.to_path_buf();
         let bytes = std::fs::read(&path).map_err(|source| SessionLoadError::Io {
             path: path.clone(),
             source,
@@ -405,6 +426,10 @@ impl ResearchSession {
                 supported: CHECKPOINT_SCHEMA_VERSION,
             });
         }
+        session
+            .investigation
+            .check_integrity()
+            .map_err(|message| SessionLoadError::Deserialize { path, message })?;
         Ok(session)
     }
 
@@ -481,7 +506,7 @@ impl ResearchSession {
             .iter_mut()
             .find(|f| f.tool == tool && f.operation == operation)
         {
-            existing.count += 1;
+            existing.count = existing.count.saturating_add(1);
             existing.error = truncated;
             existing.last_seen = at;
         } else {
@@ -554,6 +579,7 @@ impl ResearchSession {
             ));
         }
         out.push_str(&format!("Time by phase: {}\n", self.timing.render()));
+        out.push_str(&self.investigation.research_summary());
         out.push_str(&format!(
             "Last checkpoint: {}\n",
             self.updated_at.to_rfc3339()
@@ -653,14 +679,28 @@ impl ResearchSession {
     /// checkpoint itself.
     pub fn export_findings_ledger(&self, root: &Path) -> std::io::Result<PathBuf> {
         let path = Self::ledger_path(root);
-        if let Some(parent) = path.parent() {
-            std::fs::create_dir_all(parent)?;
-        }
-        let tmp = path.with_extension("md.tmp");
-        std::fs::write(&tmp, self.render_findings_ledger())?;
-        std::fs::rename(&tmp, &path)?;
+        write_private_atomic(&path, self.render_findings_ledger().as_bytes())?;
         Ok(path)
     }
+}
+
+/// Publish either the complete old artifact or the complete new one, including
+/// on Windows. Do not rename the old file away before replacing it. Permissions
+/// are established before writing any engagement data and failures are fatal.
+pub(crate) fn write_private_atomic(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
+    let parent = path.parent().ok_or_else(|| {
+        std::io::Error::new(std::io::ErrorKind::InvalidInput, "artifact has no parent")
+    })?;
+    std::fs::create_dir_all(parent)?;
+    crate::alphacode_core::fs::set_directory_permissions_owner_only(parent)?;
+    let mut temporary = tempfile::NamedTempFile::new_in(parent)?;
+    crate::alphacode_core::fs::set_permissions_owner_only(temporary.path())?;
+    temporary.write_all(bytes)?;
+    temporary.as_file().sync_all()?;
+    temporary.persist(path).map_err(|error| error.error)?;
+    #[cfg(unix)]
+    std::fs::File::open(parent)?.sync_all()?;
+    Ok(())
 }
 
 /// Why loading a checkpoint failed.
@@ -763,6 +803,68 @@ mod tests {
         std::fs::write(path.with_extension("json.tmp"), b"{\"tr").unwrap();
         let loaded = ResearchSession::load(&root).expect("original survives");
         assert_eq!(loaded.findings.len(), 1);
+    }
+
+    #[test]
+    fn checkpoint_replacement_ignores_an_interrupted_fixed_name_temp() {
+        let root = tempfile::tempdir().unwrap();
+        let mut session = ResearchSession::new("s1", "first objective");
+        let path = session.checkpoint(root.path()).unwrap();
+        std::fs::write(path.with_extension("json.tmp"), b"{partial").unwrap();
+        session.objective = "updated objective".into();
+        session.checkpoint_at(&path).unwrap();
+        let loaded = ResearchSession::load_path(&path).unwrap();
+        assert_eq!(loaded.objective, "updated objective");
+        assert_eq!(
+            std::fs::read(path.with_extension("json.tmp")).unwrap(),
+            b"{partial"
+        );
+    }
+
+    #[test]
+    fn failed_checkpoint_preserves_last_committed_timestamp_and_state() {
+        let root = tempfile::tempdir().unwrap();
+        let mut session = ResearchSession::new("s1", "committed objective");
+        let path = session.checkpoint(root.path()).unwrap();
+        let timestamp = session.updated_at;
+        let bad_parent = root.path().join("not-a-directory");
+        std::fs::write(&bad_parent, b"file").unwrap();
+        session.objective = "uncommitted objective".into();
+        assert!(
+            session
+                .checkpoint_at(&bad_parent.join("session.json"))
+                .is_err()
+        );
+        assert_eq!(session.updated_at, timestamp);
+        assert_eq!(
+            ResearchSession::load_path(&path).unwrap().objective,
+            "committed objective"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn checkpoint_and_export_are_owner_restricted() {
+        use std::os::unix::fs::PermissionsExt;
+        let root = tempfile::tempdir().unwrap();
+        let mut session = ResearchSession::new("s1", "objective");
+        for path in [
+            session.checkpoint(root.path()).unwrap(),
+            session.export_findings_ledger(root.path()).unwrap(),
+        ] {
+            assert_eq!(
+                std::fs::metadata(&path).unwrap().permissions().mode() & 0o777,
+                0o600
+            );
+            assert_eq!(
+                std::fs::metadata(path.parent().unwrap())
+                    .unwrap()
+                    .permissions()
+                    .mode()
+                    & 0o777,
+                0o700
+            );
+        }
     }
 
     /// A checkpoint written by a newer schema is refused, not guessed at.

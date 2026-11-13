@@ -686,7 +686,7 @@ pub fn parse_tailscale_dns_name(status_json: &[u8]) -> Option<String> {
 
 /// Best-effort MagicDNS name for this machine, if Tailscale is installed.
 pub fn detect_tailscale_dns_name() -> Option<String> {
-    let output = std::process::Command::new("tailscale")
+    let output = crate::alphacode_base::platform::helper_command("tailscale")
         .args(["status", "--json"])
         .output()
         .ok()?;
@@ -736,7 +736,7 @@ fn system_hostname() -> Option<String> {
         return Some(host);
     }
 
-    match std::process::Command::new("hostname").output() {
+    match crate::alphacode_base::platform::helper_command("hostname").output() {
         Ok(output) if output.status.success() => {
             let host = String::from_utf8_lossy(&output.stdout).trim().to_string();
             if host.is_empty() { None } else { Some(host) }

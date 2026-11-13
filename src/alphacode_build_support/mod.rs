@@ -33,6 +33,7 @@ use serde::{Deserialize, Serialize};
 #[cfg(unix)]
 use std::io::{BufRead, BufReader, Write};
 use std::path::{Path, PathBuf};
+#[cfg(unix)]
 use std::process::Command;
 #[cfg(unix)]
 use std::time::{Duration, Instant};
@@ -362,7 +363,7 @@ pub fn write_current_dev_binary_source_metadata(
 }
 
 fn read_binary_version_report(binary: &Path) -> Result<BinaryVersionReport> {
-    let output = Command::new(binary)
+    let output = captured_command(binary)
         .args(["version", "--json"])
         .env("ALPHACODE_NON_INTERACTIVE", "1")
         .output()?;
@@ -422,7 +423,7 @@ fn validate_binary_version_matches_source_report(
 }
 
 fn dirty_status_paths(repo_dir: &Path) -> Result<Vec<(PathBuf, bool)>> {
-    let output = Command::new("git")
+    let output = captured_command("git")
         .args(["status", "--porcelain=v1", "-z", "--untracked-files=all"])
         .current_dir(repo_dir)
         .output()?;
@@ -1119,4 +1120,17 @@ mod safe_version_component_tests {
             "whitespace should be trimmed, not treated as path-unsafe"
         );
     }
+}
+
+/// Captured build metadata probes must stay invisible when called by a daemon.
+fn captured_command(program: impl AsRef<std::ffi::OsStr>) -> std::process::Command {
+    let command = std::process::Command::new(program);
+    #[cfg(windows)]
+    let command = {
+        use std::os::windows::process::CommandExt;
+        let mut command = command;
+        command.creation_flags(windows_sys::Win32::System::Threading::CREATE_NO_WINDOW);
+        command
+    };
+    command
 }

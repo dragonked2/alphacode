@@ -10,7 +10,20 @@ impl App {
         // the user then has to clean out by hand (#540).
         let sanitized = super::input::strip_terminal_control_sequences(&restored.input);
         self.input = sanitized.into_owned();
-        self.cursor_pos = restored.cursor;
+        // Sanitizing can remove bytes before the caret. Map through the same
+        // sanitizer, then snap to a complete grapheme in the resulting draft.
+        let source_cursor = super::input::floor_char_boundary(&restored.input, restored.cursor);
+        let clean_prefix =
+            super::input::strip_terminal_control_sequences(&restored.input[..source_cursor]);
+        let clean_cursor = clean_prefix.len().min(self.input.len());
+        let grapheme_index = crate::alphacode_tui::tui::core::byte_offset_to_grapheme_index(
+            &self.input,
+            clean_cursor,
+        );
+        self.cursor_pos = crate::alphacode_tui::tui::core::grapheme_index_to_byte_offset(
+            &self.input,
+            grapheme_index,
+        );
         self.pending_images = restored.pending_images;
         // A staged startup submission (`submit_on_restore`) is honoured only for remote
         // sessions, where it is safe: `process_remote_followups` waits for the
@@ -89,16 +102,6 @@ impl App {
         self.set_todos_view_enabled(restored.todos_view_enabled, restored.todos_view_enabled);
         self.todo_confidence_spike_challenged = restored.todo_confidence_spike_challenged;
 
-        // Make sure the input is in a known-good editable state. If the
-        // restored cursor ended up past the end of the input (truncated
-        // payload, for example) clamp it; otherwise the next keystroke can
-        // be silently dropped. `cursor_pos` is a byte offset, so it must be
-        // clamped to the byte length — comparing against the char count would
-        // mis-clamp any non-ASCII input to a mid-grapheme offset, which then
-        // makes Backspace delete the wrong cluster (or panic on `drain`).
-        if self.cursor_pos > self.input.len() {
-            self.cursor_pos = self.input.len();
-        }
         // Always reset these on a fresh restore so the user is not stuck in
         // a phantom "still processing" frame from the previous process.
         self.is_processing = false;

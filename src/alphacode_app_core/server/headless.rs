@@ -196,7 +196,9 @@ pub(super) async fn create_headless_session(
     };
     let friendly_name = crate::id::extract_session_name(&client_session_id)
         .map(|s| s.to_string())
-        .unwrap_or_else(|| client_session_id[..8.min(client_session_id.len())].to_string());
+        .unwrap_or_else(|| {
+            crate::alphacode_swarm_core::short_session_id(&client_session_id).to_string()
+        });
 
     let (event_tx, mut event_rx) = tokio::sync::mpsc::unbounded_channel::<ServerEvent>();
     tokio::spawn(async move {

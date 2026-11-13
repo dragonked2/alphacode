@@ -608,6 +608,7 @@ pub mod tests {
     include!("onboarding_golden.rs");
     include!("onboarding_sim.rs");
     include!("prompt_history_cross_session.rs");
+    include!("quick_start_input.rs");
     include!("reasoning_region.rs");
     include!("remote_events_reload_04.rs");
     include!("remote_events_reload_05.rs");

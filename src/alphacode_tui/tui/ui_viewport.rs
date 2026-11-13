@@ -150,6 +150,10 @@ pub(crate) fn trim_line_trailing_spaces(line: &mut Line<'static>) {
 /// must be cut, end it with a dim ellipsis so the truncation is visible
 /// instead of silently swallowing words.
 pub(crate) fn truncate_line_for_copy_badge(line: &mut Line<'static>, max_content_width: usize) {
+    if max_content_width == 0 {
+        line.spans.clear();
+        return;
+    }
     if line.width() <= max_content_width {
         trim_line_trailing_spaces(line);
         return;

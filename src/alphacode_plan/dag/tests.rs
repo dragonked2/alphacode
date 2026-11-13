@@ -17,6 +17,24 @@ fn dag(mode: Mode, specs: Vec<NodeSpec>) -> TaskGraph {
 // ----- seed validation -----
 
 #[test]
+fn dependency_handoff_includes_each_completed_source_once() {
+    let mut graph = dag(
+        Mode::Light,
+        vec![
+            spec("source", NodeKind::Explore),
+            spec("join", NodeKind::Synthesize).depends_on(["source", "source"]),
+        ],
+    );
+    graph.get_mut("source").unwrap().status = NodeStatus::Done;
+    let input = assemble_input(&graph, "join");
+    assert_eq!(input.matches("## source (explore)").count(), 1);
+    assert!(input.starts_with("task join"));
+    graph.get_mut("source").unwrap().status = NodeStatus::Failed;
+    assert_eq!(assemble_input(&graph, "join"), "task join");
+    assert!(ready_nodes(&graph).is_empty());
+}
+
+#[test]
 fn seed_rejects_duplicate_ids_with_conflicting_definitions() {
     let mut g = TaskGraph::new(Mode::Light);
     let mut conflicting = spec("a", NodeKind::Explore);

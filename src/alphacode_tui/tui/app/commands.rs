@@ -126,6 +126,9 @@ pub(super) use auto_poke_errors::is_non_retryable_auto_poke_error;
 /// [`is_non_retryable_auto_poke_error`] precisely so a transient disconnect is
 /// never treated as a permanent failure.
 pub(super) fn is_auto_poke_connectivity_error(error: &str) -> bool {
+    if crate::alphacode_provider_core::retry::embedded_http_status(error) == Some(429) {
+        return false;
+    }
     // Delegate to the shared connectivity classifier (alphacode-app-core's
     // network_retry) so this list can never drift out of sync with the wait-
     // for-network path, then add wrappers specific to this call site.
@@ -156,23 +159,7 @@ pub(super) fn is_auto_poke_connectivity_error(error: &str) -> bool {
 /// auto-poke* during reconnect/recovery continuation instead of burning the
 /// retry budget on a request that is structurally guaranteed to 4xx. See #387.
 pub(super) fn is_fatal_model_endpoint_error(error: &str) -> bool {
-    let lower = error.to_ascii_lowercase();
-
-    let model_endpoint_markers = [
-        "unsupportedmodel",
-        "unsupported model",
-        "does not support the coding plan",
-        "coding plan feature",
-        "model_not_found",
-        "model_not_supported",
-        "invalid model",
-        "the model does not exist",
-        "model does not exist",
-    ];
-
-    model_endpoint_markers
-        .iter()
-        .any(|marker| lower.contains(marker))
+    crate::alphacode_provider_core::error_classification::is_model_endpoint_rejection(error)
 }
 
 pub(super) fn stop_auto_poke_for_non_retryable_error(app: &mut App, error: &str) -> bool {
@@ -311,12 +298,7 @@ pub(super) fn activate_auto_poke_local(app: &mut App) {
             app.kv_cache.current_api_usage_recorded = false;
             app.upstream_provider = None;
             app.status_detail = None;
-            app.streaming.streaming_tps_start = None;
-            app.streaming.streaming_tps_elapsed = std::time::Duration::ZERO;
-            app.streaming.streaming_tps_collect_output = false;
-            app.streaming.streaming_total_output_tokens = 0;
-            app.streaming.streaming_tps_observed_output_tokens = 0;
-            app.streaming.streaming_tps_observed_elapsed = std::time::Duration::ZERO;
+            app.reset_streaming_tps();
             app.processing_started = Some(Instant::now());
             app.visible_turn_started = Some(Instant::now());
             app.pending_turn = true;

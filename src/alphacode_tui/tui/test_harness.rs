@@ -58,8 +58,12 @@ impl TestClock {
 
     /// Advance the clock by the given duration.
     pub fn advance(&self, duration: Duration) {
-        let ms = duration.as_millis() as u64;
-        self.current_ms.fetch_add(ms, Ordering::SeqCst);
+        let ms = duration.as_millis().min(u128::from(u64::MAX)) as u64;
+        self.current_ms
+            .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |current| {
+                Some(current.saturating_add(ms))
+            })
+            .ok();
     }
 
     /// Set the clock to a specific time.
@@ -140,7 +144,8 @@ pub fn now_ms() -> u64 {
         std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap_or_default()
-            .as_millis() as u64
+            .as_millis()
+            .min(u128::from(u64::MAX)) as u64
     }
 }
 
@@ -390,9 +395,18 @@ impl TestBundle {
 
     /// Mark the test as complete.
     pub fn complete(&mut self, passed: bool) {
-        self.ended_at = Some(chrono_now());
+        let ended_at = chrono_now();
+        self.duration_ms = ended_at
+            .strip_suffix("ms")
+            .and_then(|value| value.parse::<u64>().ok())
+            .zip(
+                self.started_at
+                    .strip_suffix("ms")
+                    .and_then(|value| value.parse::<u64>().ok()),
+            )
+            .map(|(end, start)| end.saturating_sub(start));
+        self.ended_at = Some(ended_at);
         self.passed = Some(passed);
-        // Duration would be calculated from timestamps
     }
 
     /// Add an event.
@@ -473,12 +487,7 @@ impl TestBundle {
 }
 
 fn chrono_now() -> String {
-    // Simple ISO 8601 timestamp
-    let now = std::time::SystemTime::now();
-    let duration = now
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap_or_default();
-    format!("{}ms", duration.as_millis())
+    format!("{}ms", now_ms())
 }
 
 fn sanitize_filename(name: &str) -> String {
@@ -577,9 +586,9 @@ impl HeadlessBuffer {
     /// Get text from a rectangular region.
     pub fn get_region_text(&self, x: u16, y: u16, width: u16, height: u16) -> String {
         let mut lines = Vec::new();
-        for row in y..(y + height).min(self.height) {
+        for row in y..y.saturating_add(height).min(self.height) {
             let mut line = String::new();
-            for col in x..(x + width).min(self.width) {
+            for col in x..x.saturating_add(width).min(self.width) {
                 if let Some(cell) = self.get(col, row) {
                     line.push(if cell.char == '\0' { ' ' } else { cell.char });
                 }

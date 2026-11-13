@@ -11,14 +11,24 @@ fn with_temp_alphacode_home<T>(f: impl FnOnce() -> T) -> T {
     let _guard = test_env_lock();
     let temp_home = tempfile::tempdir().expect("tempdir");
     let prev_home = std::env::var_os("ALPHACODE_HOME");
+    let prev_install_dir = std::env::var_os("ALPHACODE_INSTALL_DIR");
     crate::alphacode_core::env::set_var("ALPHACODE_HOME", temp_home.path());
-    let result = f();
+    crate::alphacode_core::env::remove_var("ALPHACODE_INSTALL_DIR");
+    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(f));
     if let Some(prev_home) = prev_home {
         crate::alphacode_core::env::set_var("ALPHACODE_HOME", prev_home);
     } else {
         crate::alphacode_core::env::remove_var("ALPHACODE_HOME");
     }
-    result
+    if let Some(prev_install_dir) = prev_install_dir {
+        crate::alphacode_core::env::set_var("ALPHACODE_INSTALL_DIR", prev_install_dir);
+    } else {
+        crate::alphacode_core::env::remove_var("ALPHACODE_INSTALL_DIR");
+    }
+    match result {
+        Ok(result) => result,
+        Err(payload) => std::panic::resume_unwind(payload),
+    }
 }
 
 fn git_available() -> bool {
@@ -251,6 +261,25 @@ fn launcher_dir_uses_sandbox_bin_when_alphacode_home_is_set() {
         let expected = storage::alphacode_dir().expect("alphacode dir").join("bin");
         assert_eq!(launcher_dir, expected);
     });
+}
+
+#[test]
+fn test_launcher_guard_rejects_real_install_paths() {
+    let outside = std::env::temp_dir()
+        .canonicalize()
+        .unwrap()
+        .parent()
+        .unwrap()
+        .join("alphacode-real-install")
+        .join(binary_name());
+    assert!(super::paths::ensure_test_launcher_is_temporary(&outside).is_err());
+    let temp = tempfile::tempdir().unwrap();
+    assert!(
+        super::paths::ensure_test_launcher_is_temporary(
+            &temp.path().join("bin").join(binary_name())
+        )
+        .is_ok()
+    );
 }
 
 #[test]

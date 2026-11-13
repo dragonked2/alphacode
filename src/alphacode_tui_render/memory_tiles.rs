@@ -119,21 +119,28 @@ where
 }
 
 /// Split a string into chunks that each fit within `max_width` display columns,
-/// respecting multi-column characters (CJK characters take 2 columns, etc.).
+/// keeping extended grapheme clusters intact. A single cluster wider than the
+/// budget remains atomic for the renderer to clip. Zero width returns the
+/// unchanged text as one chunk: there is no valid wrap, and callers use these
+/// exact source prefixes to determine how much input was consumed.
 pub fn split_by_display_width(s: &str, max_width: usize) -> Vec<String> {
-    use unicode_width::UnicodeWidthChar;
+    use unicode_segmentation::UnicodeSegmentation;
+    use unicode_width::UnicodeWidthStr;
+    if max_width == 0 {
+        return vec![s.to_string()];
+    }
     let mut chunks = Vec::new();
     let mut current = String::new();
     let mut current_width = 0usize;
 
-    for ch in s.chars() {
-        let cw = UnicodeWidthChar::width(ch).unwrap_or(0);
-        if current_width + cw > max_width && !current.is_empty() {
+    for grapheme in s.graphemes(true) {
+        let cw = UnicodeWidthStr::width(grapheme);
+        if current_width.saturating_add(cw) > max_width && !current.is_empty() {
             chunks.push(std::mem::take(&mut current));
             current_width = 0;
         }
-        current.push(ch);
-        current_width += cw;
+        current.push_str(grapheme);
+        current_width = current_width.saturating_add(cw);
     }
     if !current.is_empty() {
         chunks.push(current);
@@ -590,4 +597,34 @@ pub fn render_memory_tiles(
     }
 
     all_lines
+}
+
+#[cfg(test)]
+mod unicode_wrapping_tests {
+    use super::split_by_display_width;
+    use unicode_segmentation::UnicodeSegmentation;
+    use unicode_width::UnicodeWidthStr;
+
+    #[test]
+    fn memory_wraps_whole_graphemes_and_preserves_source_prefixes() {
+        assert_eq!(split_by_display_width("A👩‍💻B", 3), ["A👩‍💻", "B"]);
+        assert_eq!(split_by_display_width("A👩‍💻B", 2), ["A", "👩‍💻", "B"]);
+        for source in ["", "e\u{301}🇪🇬👩‍💻中文x", "ASCII text"] {
+            for width in 0..8 {
+                let chunks = split_by_display_width(source, width);
+                assert_eq!(chunks.concat(), source);
+                assert!(source.starts_with(&chunks[0]));
+                if width > 0 {
+                    assert!(
+                        chunks
+                            .iter()
+                            .all(|chunk| chunk.width() <= width
+                                || chunk.graphemes(true).count() == 1)
+                    );
+                } else {
+                    assert_eq!(chunks, [source]);
+                }
+            }
+        }
+    }
 }

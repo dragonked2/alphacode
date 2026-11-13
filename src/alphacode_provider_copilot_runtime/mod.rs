@@ -518,7 +518,7 @@ impl CopilotApiProvider {
                 crate::alphacode_provider_core::fresh_transport_client()
             };
 
-            let resp = attempt_client
+            let request = attempt_client
                 .post(format!(
                     "{}/chat/completions",
                     copilot_auth::COPILOT_API_BASE
@@ -538,8 +538,12 @@ impl CopilotApiProvider {
                 .header("X-GitHub-Api-Version", COPILOT_API_VERSION)
                 .header("Vscode-Sessionid", &self.session_id)
                 .header("Vscode-Machineid", &self.machine_id)
-                .json(&body)
-                .send()
+                .json(&body);
+            let resp =
+                crate::alphacode_provider_core::transport::send_with_initial_response_timeout(
+                    request,
+                    std::time::Duration::from_secs(30),
+                )
                 .await;
 
             let resp = match resp {

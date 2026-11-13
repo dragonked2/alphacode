@@ -40,8 +40,8 @@
 //! | 4       | 32–48 s     | 6.4–9.6 s             |
 //! | 5       | 64–96 s     | 12.8–19.2 s           |
 //!
-//! Server hints are honored but capped at 180 s so a misbehaving upstream
-//! can't park a turn indefinitely.
+//! Server hints are preserved. Hints beyond 180 s stop automatic retries;
+//! they must never be shortened to the automatic wait limit.
 //!
 //! # Idempotency
 //!
@@ -367,7 +367,7 @@ pub fn server_hint_from_error(error: &Error) -> Option<Duration> {
 /// Compute the backoff for the next attempt.
 pub fn backoff_for(reason: RetryReason, attempt: u32, server_hint: Option<Duration>) -> Duration {
     if let Some(hint) = server_hint {
-        return hint.min(MAX_RETRY_DELAY);
+        return hint;
     }
     let base_ms = match reason {
         RetryReason::RateLimited | RetryReason::ServerHint => BASE_DELAY_RATE_LIMIT_MS,
@@ -528,6 +528,10 @@ pub async fn send_with_retry(
                     .unwrap_or_else(|_| String::from("<unreadable body>"));
                 let combined = format!("HTTP {status}: {body_text}");
 
+                if next_delay.is_some_and(|hint| hint > super::retry_after::MAX_AUTOMATIC_WAIT) {
+                    return Err(error_with_retry_after(combined, parsed_hint));
+                }
+
                 let Some(reason) = reason else {
                     return Err(
                         anyhow!(combined.clone()).context(format!("request to {url} failed"))
@@ -561,6 +565,9 @@ pub async fn send_with_retry(
                 continue;
             }
             Err(send_err) => {
+                if super::retry_after::requires_manual_retry(&send_err) {
+                    return Err(send_err);
+                }
                 let message = format!("{send_err:#}");
                 state.last_message = message.clone();
                 state.last_status = None;

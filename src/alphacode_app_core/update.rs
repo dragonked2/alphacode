@@ -144,7 +144,7 @@ pub fn auto_update_skip_reason_now(throttled: bool) -> Option<AutoUpdateSkipReas
 }
 
 pub fn run_git_pull_ff_only(repo_dir: &Path, quiet: bool) -> Result<()> {
-    let mut cmd = std::process::Command::new("git");
+    let mut cmd = crate::alphacode_base::platform::helper_command("git");
     cmd.arg("pull").arg("--ff-only");
     if quiet {
         cmd.arg("-q");
@@ -803,7 +803,7 @@ fn check_for_main_update_blocking() -> Result<Option<GitHubRelease>> {
 
 /// Check if cargo is available on the system
 fn has_cargo() -> bool {
-    std::process::Command::new("cargo")
+    crate::alphacode_base::platform::helper_command("cargo")
         .arg("--version")
         .output()
         .map(|o| o.status.success())
@@ -842,7 +842,7 @@ fn build_from_source_with_progress(mut on_phase: impl FnMut(SourceBuildPhase)) -
     if repo_dir.join(".git").exists() {
         on_phase(SourceBuildPhase::Pulling);
         crate::logging::info("Main channel: pulling latest from main...");
-        let output = std::process::Command::new("git")
+        let output = crate::alphacode_base::platform::helper_command("git")
             .args(["pull", "--ff-only", "origin", "main"])
             .current_dir(&repo_dir)
             .output()
@@ -851,7 +851,7 @@ fn build_from_source_with_progress(mut on_phase: impl FnMut(SourceBuildPhase)) -
         if !output.status.success() {
             let summary = summarize_git_pull_failure(&output.stderr);
             crate::logging::warn(&format!("{}, trying reset", summary));
-            let output = std::process::Command::new("git")
+            let output = crate::alphacode_base::platform::helper_command("git")
                 .args(["fetch", "origin", "main"])
                 .current_dir(&repo_dir)
                 .output()
@@ -862,7 +862,7 @@ fn build_from_source_with_progress(mut on_phase: impl FnMut(SourceBuildPhase)) -
                     String::from_utf8_lossy(&output.stderr)
                 );
             }
-            let output = std::process::Command::new("git")
+            let output = crate::alphacode_base::platform::helper_command("git")
                 .args(["reset", "--hard", "origin/main"])
                 .current_dir(&repo_dir)
                 .output()
@@ -878,7 +878,7 @@ fn build_from_source_with_progress(mut on_phase: impl FnMut(SourceBuildPhase)) -
         on_phase(SourceBuildPhase::Cloning);
         crate::logging::info("Main channel: cloning repository...");
         let clone_url = format!("https://github.com/{}.git", GITHUB_REPO);
-        let output = std::process::Command::new("git")
+        let output = crate::alphacode_base::platform::helper_command("git")
             .args([
                 "clone",
                 "--depth",
@@ -902,7 +902,7 @@ fn build_from_source_with_progress(mut on_phase: impl FnMut(SourceBuildPhase)) -
 
     on_phase(SourceBuildPhase::Building);
     crate::logging::info("Main channel: building with cargo...");
-    let output = std::process::Command::new("cargo")
+    let output = crate::alphacode_base::platform::helper_command("cargo")
         .args(["build", "--release"])
         .current_dir(&repo_dir)
         .env("ALPHACODE_RELEASE_BUILD", "1")

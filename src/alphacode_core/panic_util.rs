@@ -48,6 +48,12 @@ thread_local! {
 /// Installed exactly once per process; see the module docs.
 static PANIC_HOOK_INSTALLED: OnceLock<()> = OnceLock::new();
 
+/// Let application crash hooks honor an explicitly recoverable panic scope,
+/// regardless of which process-wide hook was installed first.
+pub fn panic_output_suppressed() -> bool {
+    PANIC_OUTPUT_SUPPRESSED.with(Cell::get)
+}
+
 /// Install the process-wide hook that honours [`suppress_panic_output`].
 ///
 /// Safe to call repeatedly: the hook is installed only on the first call, and

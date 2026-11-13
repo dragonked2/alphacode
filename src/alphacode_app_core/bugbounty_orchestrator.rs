@@ -9,6 +9,7 @@ use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use tokio::sync::RwLock;
 
+use crate::alphacode_security_core::coverage::{self, CoverageDashboard, CoverageTracker};
 use crate::alphacode_security_core::proof::{HttpExchange, ProofObject, ProofVerdict};
 
 /// The current phase of the bug bounty workflow.
@@ -263,6 +264,9 @@ pub struct VerifiedFinding {
 /// The bug bounty orchestrator — manages the complete workflow.
 #[derive(Debug, Clone)]
 pub struct BugBountyOrchestrator {
+    /// Shared asset, evidence and hypothesis state, retained across resume.
+    pub intelligence:
+        Arc<RwLock<crate::alphacode_security_core::investigation::InvestigationIntelligence>>,
     /// The target domain or URL
     pub target: String,
     /// Current phase
@@ -297,6 +301,7 @@ impl BugBountyOrchestrator {
     pub fn new(target: impl Into<String>) -> Self {
         Self {
             target: target.into(),
+            intelligence: Arc::new(RwLock::new(Default::default())),
             current_phase: Arc::new(RwLock::new(BountyPhase::Reconnaissance)),
             tasks: Arc::new(RwLock::new(HashMap::new())),
             subdomains: Arc::new(RwLock::new(HashSet::new())),
@@ -337,7 +342,7 @@ impl BugBountyOrchestrator {
         let id = id.into();
         let verdict = {
             let exchanges = self.observed_exchanges.read().await;
-            proof.verify_against(&exchanges)
+            proof.verify_report_evidence(Some(&exchanges))
         };
         if verdict.verified {
             self.verified_findings.write().await.insert(
@@ -890,6 +895,10 @@ impl BugBountyOrchestrator {
         if subdomain.is_empty() {
             return false;
         }
+        self.intelligence
+            .write()
+            .await
+            .discover(&subdomain, "inventory");
         self.subdomains.write().await.insert(subdomain)
     }
 
@@ -899,6 +908,7 @@ impl BugBountyOrchestrator {
         if url.is_empty() {
             return false;
         }
+        self.intelligence.write().await.discover(&url, "inventory");
         self.urls.write().await.insert(url)
     }
 
@@ -952,6 +962,13 @@ impl BugBountyOrchestrator {
             if line.starts_with('[') && line.contains("INF]") {
                 continue;
             }
+            let candidate = line.split_whitespace().next().unwrap_or_default();
+            if is_hostname(candidate)
+                || candidate.starts_with("http://")
+                || candidate.starts_with("https://")
+            {
+                self.intelligence.write().await.discover(candidate, &tool);
+            }
             match tool.as_str() {
                 "subfinder" => {
                     if is_hostname(line) {
@@ -1000,6 +1017,21 @@ impl BugBountyOrchestrator {
                         // Content identity is stable across retries and parallel
                         // completions; a collection length is neither.
                         let digest = format!("{:x}", Sha256::digest(line.as_bytes()));
+                        // Scanner signals become discovered leads, never validated findings.
+                        if let Some(target) = line.split_whitespace().find(|part| {
+                            part.starts_with("https://") || part.starts_with("http://")
+                        }) {
+                            let mut intelligence = self.intelligence.write().await;
+                            if let Some(asset) = intelligence.discover(target, &tool) {
+                                let _ = intelligence.propose(
+                                    &asset,
+                                    "scanner_signal",
+                                    &format!(
+                                        "Independent verification required for {tool}:{digest}"
+                                    ),
+                                );
+                            }
+                        }
                         self.record_vulnerability(
                             format!("{tool}:{digest}"),
                             crate::alphacode_core::util::truncate_str(line, 300).to_string(),
@@ -1136,6 +1168,31 @@ impl BugBountyOrchestrator {
             tasks.values().filter(|t| !t.completed).count()
         };
         if pending == 0 {
+            // An exhausted scanner queue cannot silently close unresolved
+            // investigations. Preserve an explicit disposition for the operator.
+            {
+                use crate::alphacode_security_core::investigation::InvestigationStatus;
+                let intelligence = self.intelligence.read().await;
+                let mut has_blocked = false;
+                for lead in intelligence.leads().values() {
+                    match lead.status {
+                        InvestigationStatus::Discovered
+                        | InvestigationStatus::Hypothesized
+                        | InvestigationStatus::Investigating
+                        | InvestigationStatus::Supported
+                        | InvestigationStatus::Inconclusive => {
+                            return StopReason::CoverageIncomplete;
+                        }
+                        InvestigationStatus::Blocked | InvestigationStatus::Paused => {
+                            has_blocked = true;
+                        }
+                        InvestigationStatus::Validated | InvestigationStatus::Rejected => {}
+                    }
+                }
+                if has_blocked {
+                    return StopReason::Blocked;
+                }
+            }
             if self
                 .execution_coverage
                 .read()
@@ -1157,6 +1214,54 @@ impl BugBountyOrchestrator {
         }
         // There is runnable surface: keep going while it exists.
         StopReason::Continue
+    }
+
+    /// A coverage dashboard for the operator.
+    ///
+    /// This is the single place "untested" is distinguished from "secure".
+    /// The task graph bounds *execution*; it does not establish that every
+    /// discovered surface was exercised. Surfaces that were never reached are
+    /// reported as gaps, never as a clean result.
+    pub async fn coverage_dashboard(&self) -> CoverageDashboard {
+        let (subdomains, urls) = tokio::join!(self.subdomains.read(), self.urls.read());
+        let attempts = self.execution_coverage.read().await;
+
+        let mut tracker = CoverageTracker::new();
+        tracker.set_discovered_endpoints(subdomains.len() + urls.len());
+
+        // Each executor attempt is one "test" of the surface it was given.
+        // A failed or partial attempt stays incomplete so the dashboard can
+        // surface it rather than quietly counting it as done.
+        for attempt in attempts.iter() {
+            let result = if attempt.is_partial() {
+                coverage::TestResult::Error
+            } else {
+                coverage::TestResult::NoVulnerability
+            };
+            tracker.record_test(coverage::TestRecord {
+                endpoint: attempt.target.clone(),
+                method: attempt.tool.clone(),
+                vuln_class: attempt.task_id.clone(),
+                result,
+                confidence: if attempt.is_partial() { 0.0 } else { 0.8 },
+                agent: None,
+                skill_used: Some(attempt.tool.clone()),
+                timestamp: String::new(),
+                notes: if attempt.is_partial() {
+                    Some(format!(
+                        "stop_reason={}; deferred={}; failed={}",
+                        attempt.stop_reason,
+                        attempt.deferred_input_indices.len(),
+                        attempt.failed_input_indices.len()
+                    ))
+                } else {
+                    None
+                },
+            });
+        }
+
+        let all_classes: Vec<String> = attempts.iter().map(|a| a.task_id.clone()).collect();
+        CoverageDashboard::from_tracker(&tracker, &all_classes)
     }
 
     /// Get all tasks that are ready to execute (all dependencies completed).
@@ -1730,6 +1835,11 @@ mod tests {
             }],
             expected_behavior: "400 bad request".into(),
             observed_behavior: "500 with a SQL syntax error".into(),
+            effect: Some(
+                crate::alphacode_security_core::proof::ProofEffect::BodyMarker {
+                    marker: "SQL syntax error".into(),
+                },
+            ),
             baseline: Some(BaselineComparison::new(
                 "unauthenticated",
                 baseline,
@@ -1911,5 +2021,106 @@ mod tests {
         assert_eq!(StopReason::SurfaceExhausted.as_str(), "surface_exhausted");
         assert!(StopReason::Blocked.is_terminal());
         assert!(!StopReason::Continue.is_terminal());
+    }
+
+    /// The dashboard must never report a surface that was never reached as
+    /// "secure". A partial attempt stays incomplete; an unreached endpoint is
+    /// a gap. This is the assertion that keeps "untested" distinct from
+    /// "clean".
+    #[tokio::test]
+    async fn coverage_dashboard_distinguishes_untested_from_refuted() {
+        let orchestrator = BugBountyOrchestrator::new("example.com");
+        orchestrator.initialize().await.unwrap();
+        orchestrator.record_subdomain("a.example.com").await;
+        orchestrator.record_subdomain("b.example.com").await;
+
+        // One completed attempt and one partial attempt.
+        orchestrator
+            .execution_coverage
+            .write()
+            .await
+            .push(TaskCoverage {
+                target: "a.example.com".to_string(),
+                task_id: "recon_subfinder".to_string(),
+                tool: "subfinder".to_string(),
+                inputs_planned: 1,
+                inputs_attempted: 1,
+                successful_calls: 1,
+                in_flight_input_index: None,
+                failed_input_indices: Vec::new(),
+                deferred_input_indices: Vec::new(),
+                omitted_observation_lines: 0,
+                aggregate_output_truncated: false,
+                stop_reason: StopReason::SurfaceExhausted.as_str().to_string(),
+                input_manifest: String::new(),
+                raw_artifacts: Vec::new(),
+            });
+        orchestrator
+            .execution_coverage
+            .write()
+            .await
+            .push(TaskCoverage {
+                target: "b.example.com".to_string(),
+                task_id: "recon_assetfinder".to_string(),
+                tool: "assetfinder".to_string(),
+                inputs_planned: 2,
+                inputs_attempted: 1,
+                successful_calls: 1,
+                in_flight_input_index: Some(1),
+                failed_input_indices: Vec::new(),
+                deferred_input_indices: Vec::new(),
+                omitted_observation_lines: 0,
+                aggregate_output_truncated: false,
+                stop_reason: "incomplete".to_string(),
+                input_manifest: String::new(),
+                raw_artifacts: Vec::new(),
+            });
+
+        let dashboard = orchestrator.coverage_dashboard().await;
+
+        // Two discovered endpoints, one exercised.
+        assert_eq!(dashboard.stats.total_endpoints_discovered, 2);
+        assert_eq!(dashboard.stats.endpoints_tested, 1);
+        assert!(!dashboard.is_exhaustive());
+        assert_eq!(dashboard.incomplete_tests.len(), 1);
+        assert_eq!(
+            dashboard.incomplete_tests[0].vuln_class,
+            "recon_assetfinder"
+        );
+        // The completed attempt is refuted, not untested.
+        assert!(
+            dashboard
+                .refuted_classes
+                .contains(&"recon_subfinder".to_string())
+        );
+        assert!(
+            !dashboard
+                .refuted_classes
+                .contains(&"recon_assetfinder".to_string())
+        );
+        assert!(
+            dashboard
+                .untested_classes
+                .contains(&"recon_assetfinder".to_string())
+        );
+    }
+    #[tokio::test]
+    async fn unresolved_investigation_prevents_claiming_surface_exhaustion() {
+        let orchestrator = BugBountyOrchestrator::new("lab.example");
+        orchestrator
+            .ingest_tool_output(
+                "nuclei",
+                "[medium] https://lab.example/api/object vulnerability",
+            )
+            .await;
+        assert_eq!(
+            orchestrator.stop_decision(0).await,
+            StopReason::CoverageIncomplete
+        );
+        assert_eq!(
+            orchestrator.stop_decision(100).await,
+            StopReason::CoverageIncomplete
+        );
+        assert_eq!(orchestrator.verified_finding_count().await, 0);
     }
 }

@@ -57,7 +57,7 @@ use model::render_model_widget;
 use swarm_background::{render_background_compact, render_background_widget, render_swarm_widget};
 use text::{truncate_smart, truncate_with_ellipsis};
 pub(crate) use tips::occasional_status_tip;
-use tips::{render_tips_widget, tips_widget_height};
+use tips::{render_tips_widget, tips_widget_height, wrap_tip_text};
 pub(crate) use todos_render::swarm_plan_todos;
 use todos_render::{render_todos_compact, render_todos_expanded, render_todos_widget};
 use usage_render::{render_context_usage_line, render_usage_widget};
@@ -650,8 +650,11 @@ pub struct InfoWidgetData {
     pub native_compaction_threshold_tokens: Option<usize>,
     pub session_count: Option<usize>,
     pub session_name: Option<String>,
-    /// The user's active goal for this session, shown in the Session card in
-    /// place of the raw session identity.
+    /// User-facing title of the current conversation/session.
+    pub session_title: Option<String>,
+    /// Running build shown in the pinned Session title.
+    pub session_version: Option<String>,
+    /// The user's active goal, used when the current session has no title.
     pub goal: Option<String>,
     /// Current working directory for this session.
     pub working_dir: Option<String>,
@@ -666,6 +669,7 @@ pub struct InfoWidgetData {
     pub usage_info: Option<UsageInfo>,
     /// Streaming output tokens per second (approximate)
     pub tokens_per_second: Option<f32>,
+    pub tokens_per_second_estimated: bool,
     /// Active provider name (openrouter/openai/anthropic/...)
     pub provider_name: Option<String>,
     /// Authentication method used to access the model
@@ -1534,12 +1538,23 @@ fn render_single_widget(frame: &mut Frame, placement: &WidgetPlacement, data: &I
     match placement.kind {
         WidgetKind::Overview => {
             block = block.padding(Padding::horizontal(1));
-            // The session widget anchors the panel, so it carries the product
-            // mark: " ◆ AlphaCode · Session ".
-            block = block.title(Span::styled(
-                crate::alphacode_brand::section_title("Session"),
-                title_style(Role::HeaderIcon),
-            ));
+            let available = usize::from(rect.width.saturating_sub(2))
+                .saturating_sub(close_button_rect(rect).map_or(0, |button| button.width as usize));
+            let title = if let Some(version) = &data.session_version {
+                let section = format!("Session · {version}");
+                let branded = crate::alphacode_brand::section_title(&section);
+                let compact = format!(" {section} ");
+                if branded.width() <= available {
+                    branded
+                } else if compact.width() <= available {
+                    compact
+                } else {
+                    truncate_smart(&format!(" {version} "), available)
+                }
+            } else {
+                crate::alphacode_brand::section_title("Session")
+            };
+            block = block.title(Span::styled(title, title_style(Role::HeaderIcon)));
         }
         WidgetKind::WorkspaceMap => {
             block = block.title(Span::styled(
@@ -2163,6 +2178,84 @@ fn render_page(kind: InfoPageKind, data: &InfoWidgetData, inner: Rect) -> Vec<Li
     }
 }
 
+pub(super) fn session_identity_height(data: &InfoWidgetData, inner_width: usize) -> u16 {
+    let title = data
+        .session_title
+        .as_deref()
+        .map(str::trim)
+        .filter(|title| !title.is_empty());
+    let goal = data
+        .goal
+        .as_deref()
+        .map(str::trim)
+        .filter(|goal| !goal.is_empty());
+    let (label, text) = if let Some(title) = title {
+        ("Session ", title)
+    } else if let Some(goal) = goal {
+        ("Goal ", goal)
+    } else if data
+        .working_dir
+        .as_deref()
+        .is_some_and(|dir| !dir.trim().is_empty())
+    {
+        return 1;
+    } else {
+        return 0;
+    };
+
+    let text_width = inner_width.saturating_sub(UnicodeWidthStr::width(label));
+    if text_width == 0 {
+        1
+    } else {
+        wrap_tip_text(text, text_width).len().max(1) as u16
+    }
+}
+
+fn push_wrapped_identity(
+    lines: &mut Vec<Line<'static>>,
+    label: &'static str,
+    text: &str,
+    width: usize,
+) {
+    let label_width = UnicodeWidthStr::width(label);
+    let text_width = width.saturating_sub(label_width);
+    if text_width == 0 {
+        lines.push(Line::from(Span::styled(
+            truncate_smart(&format!("{label}{text}"), width),
+            Style::default().fg(crate::alphacode_tui_style::theme::accent_color()),
+        )));
+        return;
+    }
+
+    let wrapped = wrap_tip_text(text, text_width);
+    for (index, part) in wrapped.iter().enumerate() {
+        if index == 0 {
+            lines.push(Line::from(vec![
+                Span::styled(
+                    label,
+                    Style::default().fg(crate::alphacode_tui_style::theme::muted_text_color()),
+                ),
+                Span::styled(
+                    part.clone(),
+                    Style::default()
+                        .fg(crate::alphacode_tui_style::theme::accent_color())
+                        .bold(),
+                ),
+            ]));
+        } else {
+            lines.push(Line::from(vec![
+                Span::raw(" ".repeat(label_width)),
+                Span::styled(
+                    part.clone(),
+                    Style::default()
+                        .fg(crate::alphacode_tui_style::theme::accent_color())
+                        .bold(),
+                ),
+            ]));
+        }
+    }
+}
+
 fn render_sections(
     data: &InfoWidgetData,
     inner: Rect,
@@ -2170,8 +2263,8 @@ fn render_sections(
 ) -> Vec<Line<'static>> {
     let mut lines: Vec<Line<'static>> = Vec::new();
 
-    // Keep the compact dashboard predictable: one model row, one combined
-    // context/usage/memory row, then optional details below it.
+    // Keep the compact dashboard predictable: model, current session identity,
+    // one combined context/usage/memory row, then optional details.
     if let Some(model) = &data.model {
         let mut label = crate::alphacode_tui::tui::session_facts::pretty_model(model);
         if let Some(provider) = data
@@ -2191,36 +2284,22 @@ fn render_sections(
         )));
     }
 
-    if let Some(telemetry) = render_overview_telemetry(
-        data,
-        !matches!(focus, Some(InfoPageKind::MemoryExpanded)),
-        inner.width,
-    ) {
-        lines.push(telemetry);
-    }
-
-    // The Session card leads with the user's goal (what this session is here
-    // to achieve) instead of the opaque session identity, which carried no
-    // meaning for the user. The working directory still anchors the card when
-    // it is the only identity we have.
+    // Prefer the current session title so the user can recognize the active
+    // work at a glance. Fall back to the active goal and then the directory.
+    let session_title = data
+        .session_title
+        .as_deref()
+        .map(str::trim)
+        .filter(|title| !title.is_empty());
     let goal = data
         .goal
         .as_deref()
         .map(str::trim)
         .filter(|goal| !goal.is_empty());
-    if let Some(goal) = goal {
-        lines.push(Line::from(vec![
-            Span::styled(
-                "Goal ",
-                Style::default().fg(crate::alphacode_tui_style::theme::muted_text_color()),
-            ),
-            Span::styled(
-                truncate_smart(goal, usize::from(inner.width).saturating_sub(5)),
-                Style::default()
-                    .fg(crate::alphacode_tui_style::theme::accent_color())
-                    .bold(),
-            ),
-        ]));
+    if let Some(title) = session_title {
+        push_wrapped_identity(&mut lines, "Session ", title, usize::from(inner.width));
+    } else if let Some(goal) = goal {
+        push_wrapped_identity(&mut lines, "Goal ", goal, usize::from(inner.width));
     } else if let Some(dir) = data
         .working_dir
         .as_deref()
@@ -2231,6 +2310,14 @@ fn render_sections(
             truncate_smart(dir, usize::from(inner.width)),
             Style::default().fg(crate::alphacode_tui_style::theme::muted_text_color()),
         )));
+    }
+
+    if let Some(telemetry) = render_overview_telemetry(
+        data,
+        !matches!(focus, Some(InfoPageKind::MemoryExpanded)),
+        inner.width,
+    ) {
+        lines.push(telemetry);
     }
 
     if !data.todos.is_empty() {
@@ -2309,6 +2396,74 @@ mod session_todo_visibility_tests {
         assert!(
             !text.iter().any(|line| line.contains("session_fox")),
             "session identity must not render: {text:?}"
+        );
+    }
+
+    #[test]
+    fn session_overview_prefers_the_live_session_title_over_the_goal() {
+        let data = InfoWidgetData {
+            model: Some("example".into()),
+            session_name: Some("session_fox_1705012345678".into()),
+            session_title: Some("Fix the login timeout".into()),
+            goal: Some("Ship the billing refactor".into()),
+            working_dir: Some("/home/dev/alphacode".into()),
+            ..Default::default()
+        };
+        let lines = render_sections(&data, Rect::new(0, 0, 40, 5), None);
+        let text: Vec<String> = lines
+            .iter()
+            .map(|line| {
+                line.spans
+                    .iter()
+                    .map(|span| span.content.as_ref())
+                    .collect()
+            })
+            .collect();
+        assert!(
+            text.iter()
+                .any(|line| line.contains("Session") && line.contains("login timeout")),
+            "session title line missing: {text:?}"
+        );
+        assert!(
+            !text.iter().any(|line| line.contains("billing refactor")),
+            "the fallback goal should not replace the live title: {text:?}"
+        );
+        assert!(
+            !text.iter().any(|line| line.contains("session_fox")),
+            "opaque session id must remain hidden: {text:?}"
+        );
+    }
+
+    #[test]
+    fn long_session_title_wraps_without_dropping_words() {
+        let title = "Investigate transcript wrapping without hiding model output";
+        let data = InfoWidgetData {
+            model: Some("example".into()),
+            session_title: Some(title.into()),
+            ..Default::default()
+        };
+        let width = 22;
+        let lines = render_sections(&data, Rect::new(0, 0, width, 12), None);
+        let rendered = lines
+            .iter()
+            .map(|line| {
+                line.spans
+                    .iter()
+                    .map(|span| span.content.as_ref())
+                    .collect::<String>()
+            })
+            .collect::<Vec<_>>()
+            .join(" ");
+
+        for word in title.split_whitespace() {
+            assert!(rendered.contains(word), "missing {word:?} in {rendered:?}");
+        }
+        let identity_height = session_identity_height(&data, width as usize);
+        assert!(identity_height > 1);
+        assert_eq!(
+            compute_page_layout(&data, width as usize, 12).max_page_height,
+            1 + identity_height,
+            "the overview should reserve a row for every wrapped title line"
         );
     }
 
@@ -2676,7 +2831,8 @@ mod pinned_tests {
 
     #[test]
     fn rendered_widget_draws_the_close_button_where_it_is_hit_tested() {
-        let data = session_data();
+        let mut data = session_data();
+        data.session_version = Some("v1.2.3-dev".into());
         let placements = stack_pinned(Rect::new(0, 0, PINNED_COLUMN_WIDTH, 20), &data);
         let first = placements.first().expect("overview placed").rect;
         let button = close_button_rect(first).expect("wide enough for [x]");
@@ -2690,9 +2846,32 @@ mod pinned_tests {
             })
             .unwrap();
         let buffer = terminal.backend().buffer();
+        let title: String = (first.x..button.x)
+            .map(|x| buffer[(x, first.y)].symbol())
+            .collect();
+        assert!(title.contains("Session · v1.2.3-dev"), "{title}");
         let drawn: String = (button.x..button.right())
             .map(|x| buffer[(x, button.y)].symbol().to_string())
             .collect();
         assert_eq!(drawn, CLOSE_BUTTON);
+    }
+
+    #[test]
+    fn narrow_session_widget_preserves_the_version_in_its_title() {
+        let mut data = session_data();
+        data.session_version = Some("v1.2.3-dev".into());
+        let placement = WidgetPlacement {
+            kind: WidgetKind::Overview,
+            rect: Rect::new(0, 0, 20, 8),
+            side: Side::Right,
+        };
+        let mut terminal = Terminal::new(TestBackend::new(20, 8)).unwrap();
+        terminal
+            .draw(|frame| render_single_widget(frame, &placement, &data))
+            .unwrap();
+        let buffer = terminal.backend().buffer();
+        let title: String = (0..20).map(|x| buffer[(x, 0)].symbol()).collect();
+        assert!(title.contains("v1.2.3-dev"), "{title}");
+        assert!(title.contains(CLOSE_BUTTON), "{title}");
     }
 }

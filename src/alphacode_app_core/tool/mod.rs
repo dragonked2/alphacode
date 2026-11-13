@@ -64,6 +64,7 @@ mod qsreplace;
 mod read;
 pub mod recon_common;
 mod repeat_guard;
+mod schema_preflight;
 pub mod scope;
 mod scrapling;
 mod self_improve;
@@ -195,6 +196,34 @@ pub(crate) fn set_session_tool_policy(
             disabled_tools,
         },
     );
+}
+
+/// Research files are scoped to a conversation, even when sessions share a
+/// working directory. Encoding the ID keeps arbitrary IDs inside this root.
+pub(crate) fn research_ledger_relative_dir(session_id: &str) -> std::path::PathBuf {
+    use std::fmt::Write as _;
+    let mut encoded = String::with_capacity(session_id.len() * 2 + 1);
+    encoded.push('s');
+    for byte in session_id.as_bytes() {
+        let _ = write!(encoded, "{byte:02x}");
+    }
+    std::path::Path::new(".alphacode")
+        .join("research-sessions")
+        .join(encoded)
+}
+
+pub(crate) fn bind_research_ledger_paths(text: &str, session_id: &str) -> String {
+    let directory = research_ledger_relative_dir(session_id);
+    let challenge = directory
+        .join("challenge.md")
+        .to_string_lossy()
+        .replace('\\', "/");
+    let hunt = directory
+        .join("hunt.md")
+        .to_string_lossy()
+        .replace('\\', "/");
+    text.replace("challenge.md", &challenge)
+        .replace("hunt.md", &hunt)
 }
 
 pub(crate) fn clear_session_tool_policy(session_id: &str) {
@@ -1828,6 +1857,20 @@ impl Registry {
                 .or_insert(Value::String(action.to_string()));
         }
 
+        if let Err(reason) =
+            schema_preflight::validate_call(resolved_name, &tool.parameters_schema(), &input)
+        {
+            repeat_guard::record_malformed_with_error(
+                &ctx.session_id,
+                resolved_name,
+                &input,
+                Some(&reason),
+            );
+            return Err(anyhow::anyhow!(
+                "Invalid arguments for `{resolved_name}`: {reason}"
+            ));
+        }
+
         // Engagement scope: the centralized gate in front of every tool call.
         //
         // This sits here, before the tool is resolved into a concrete call and
@@ -1848,29 +1891,30 @@ impl Registry {
             );
             return Err(anyhow::anyhow!("{reason}"));
         }
-        if matches!(
+        let checkpoint_due = matches!(
             ctx.execution_mode,
             crate::alphacode_tool_core::ToolExecutionMode::AgentTurn
-        ) {
-            ctf_progress_guard::check(
-                &ctx.session_id,
-                ctx.working_dir.as_deref(),
-                resolved_name,
-                &input,
-            )
-            .map_err(anyhow::Error::msg)?;
-        }
+        ) && ctf_progress_guard::check(
+            &ctx.session_id,
+            ctx.working_dir.as_deref(),
+            resolved_name,
+            &input,
+        );
 
         // Rate/concurrency budget for network work. Held across the call so the
         // permit covers the tool's actual runtime and is returned on drop,
         // including when the call errors out or is cancelled. Local tools are
         // excluded: a coding session with an engagement scope must not have its
         // file reads paced by the network budget.
-        let _network_permit = if scope::is_network_tool(resolved_name) {
-            scope::acquire_network_permit(&ctx.session_id, resolved_name).await
-        } else {
-            scope::NetworkPermit::none()
-        };
+        let offline_preview_comparison = resolved_name == "httpflow"
+            && input.get("action").and_then(Value::as_str).map(str::trim)
+                == Some("compare_preview");
+        let _network_permit =
+            if scope::is_network_tool(resolved_name) && !offline_preview_comparison {
+                scope::acquire_network_permit(&ctx.session_id, resolved_name).await
+            } else {
+                scope::NetworkPermit::none()
+            };
 
         // User-configured pre_tool gate: external policy hook that can block
         // this call (exit 2). Skipped entirely when not configured.
@@ -1965,6 +2009,12 @@ impl Registry {
                 return Err(error);
             }
         };
+
+        if checkpoint_due {
+            crate::logging::info(
+                "CTF evidence checkpoint due; authorized probing remains available",
+            );
+        }
 
         // Keep a hard ceiling even when a provider advertises a very large
         // context window, then apply the tighter session-specific budget.

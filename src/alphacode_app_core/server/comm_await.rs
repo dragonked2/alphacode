@@ -1,6 +1,7 @@
 use super::await_members_state::{
     PersistedAwaitMembersState, all_pending_await_members_including_expired, ensure_pending_state,
-    load_state, persist_final_response, request_key, save_state,
+    load_state, merge_observed_members, persist_final_response, record_observations, request_key,
+    save_state,
 };
 use super::{AwaitMembersRuntime, SwarmEvent, SwarmMember};
 use crate::alphacode_app_core::bus::{Bus, BusEvent, SwarmAwaitCompleted, UiActivity};
@@ -54,10 +55,9 @@ pub(super) async fn awaited_member_statuses(
                     )
                 })
                 .unwrap_or((None, "unknown".to_string(), None));
-            let done = target_status.contains(&status)
-                || (status == "unknown"
-                    && (target_status.contains(&"stopped".to_string())
-                        || target_status.contains(&"completed".to_string())));
+            // Absence is an observation gap, not evidence of completion or
+            // cancellation. A caller may explicitly wait for `unknown`.
+            let done = target_status.contains(&status);
             AwaitedMemberStatus {
                 session_id: session_id.clone(),
                 friendly_name: name,
@@ -70,10 +70,9 @@ pub(super) async fn awaited_member_statuses(
 }
 
 fn short_member_name(member: &AwaitedMemberStatus) -> String {
-    member
-        .friendly_name
-        .clone()
-        .unwrap_or_else(|| member.session_id[..8.min(member.session_id.len())].to_string())
+    member.friendly_name.clone().unwrap_or_else(|| {
+        crate::alphacode_swarm_core::short_session_id(&member.session_id).to_string()
+    })
 }
 
 pub(super) fn timeout_summary(member_statuses: &[AwaitedMemberStatus]) -> String {
@@ -190,10 +189,15 @@ async fn finalize_await(
 ) {
     // Deliver with the latest persisted prefs: a duplicate request may have
     // changed background/notify/wake after the caller captured this copy.
-    let state = refresh_pending_state(state).unwrap_or_else(|| state.clone());
-    let _ = persist_final_response(&state, completed, members.clone(), summary.clone());
+    let (state, newly_finalized) = persist_final_response(state, completed, members, summary);
+    let Some(result) = &state.final_response else {
+        return;
+    };
+    let completed = result.completed;
+    let members = result.members.clone();
+    let summary = result.summary.clone();
 
-    if state.background && (state.notify || state.wake) {
+    if newly_finalized && state.background && (state.notify || state.wake) {
         let notification = background_completion_notification(completed, &summary, &members);
         Bus::global().publish(BusEvent::SwarmAwaitCompleted(SwarmAwaitCompleted {
             session_id: state.session_id.clone(),
@@ -223,6 +227,7 @@ pub(super) async fn spawn_or_resume_await_members(
     let mode = state.mode.clone();
 
     tokio::spawn(async move {
+        let mut state = state;
         let mut event_rx = swarm_event_tx.subscribe();
         let deadline = deadline_to_instant(state.deadline_unix_ms);
 
@@ -236,6 +241,35 @@ pub(super) async fn spawn_or_resume_await_members(
                 &swarms_by_id,
             )
             .await;
+
+            state = match record_observations(&state, &member_statuses) {
+                Ok(state) => state,
+                Err(error) => {
+                    let summary =
+                        format!("Swarm wait could not retain its observations: {error:#}");
+                    finalize_await(
+                        &await_members_runtime,
+                        &state,
+                        false,
+                        member_statuses,
+                        summary,
+                    )
+                    .await;
+                    return;
+                }
+            };
+            if let Some(result) = &state.final_response {
+                respond_to_waiters(
+                    &await_members_runtime,
+                    &state.key,
+                    result.completed,
+                    result.members.clone(),
+                    result.summary.clone(),
+                )
+                .await;
+                return;
+            }
+            let member_statuses = state.observed_members.clone();
 
             if member_statuses.is_empty() {
                 let summary = "No other members in swarm to wait for.".to_string();
@@ -354,6 +388,12 @@ pub(super) async fn handle_comm_await_members(
             ctx.swarms_by_id,
         )
         .await;
+        let historical = persisted
+            .as_ref()
+            .map(|state| state.observed_members.as_slice())
+            .unwrap_or_default();
+        let initial_statuses =
+            merge_observed_members(historical, &initial_statuses, &target_status);
 
         if let Some(final_response) = persisted
             .as_ref()
@@ -426,6 +466,33 @@ pub(super) async fn handle_comm_await_members(
                 wake,
             )
         });
+        state = match record_observations(&state, &initial_statuses) {
+            Ok(state) => state,
+            Err(error) => {
+                let _ = ctx
+                    .client_event_tx
+                    .send(ServerEvent::CommAwaitMembersResponse {
+                        id,
+                        completed: false,
+                        members: initial_statuses,
+                        summary: format!("Swarm wait could not retain its observations: {error:#}"),
+                        background_started: false,
+                    });
+                return;
+            }
+        };
+        if let Some(result) = &state.final_response {
+            let _ = ctx
+                .client_event_tx
+                .send(ServerEvent::CommAwaitMembersResponse {
+                    id,
+                    completed: result.completed,
+                    members: result.members.clone(),
+                    summary: result.summary.clone(),
+                    background_started: false,
+                });
+            return;
+        }
 
         // When reusing a persisted pending state (e.g. a resumed call after
         // reload, or a duplicate request), let the latest call's delivery prefs
@@ -507,11 +574,9 @@ pub(super) async fn handle_comm_await_members(
 
         if already_expired {
             let summary = timeout_summary(&initial_statuses);
-            let _ =
-                persist_final_response(&state, false, initial_statuses.clone(), summary.clone());
-            respond_to_waiters(
+            finalize_await(
                 ctx.await_members_runtime,
-                &key,
+                &state,
                 false,
                 initial_statuses,
                 summary,
@@ -638,6 +703,11 @@ pub(super) async fn resume_background_awaits(
                 swarms_by_id,
             )
             .await;
+            let member_statuses = merge_observed_members(
+                &state.observed_members,
+                &member_statuses,
+                &state.target_status,
+            );
             let (completed, summary) = if member_statuses.is_empty() {
                 (true, "No other members in swarm to wait for.".to_string())
             } else if mode_satisfied(&member_statuses, state.mode.as_deref()) {
@@ -678,5 +748,31 @@ pub(super) async fn resume_background_awaits(
             "Resumed {} background swarm await watcher(s) after startup ({} finalized as expired)",
             resumed, expired
         ));
+    }
+}
+
+#[cfg(test)]
+mod observation_tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn missing_explicit_member_is_not_completion_or_cancellation() {
+        let members = Arc::new(RwLock::new(HashMap::new()));
+        let swarms = Arc::new(RwLock::new(HashMap::new()));
+        for target in ["completed", "stopped", "unknown"] {
+            let statuses = awaited_member_statuses(
+                "requester",
+                "swarm",
+                &["missing".into()],
+                &[target.into()],
+                &members,
+                &swarms,
+            )
+            .await;
+            assert_eq!(statuses.len(), 1);
+            assert_eq!(statuses[0].status, "unknown");
+            assert_eq!(statuses[0].done, target == "unknown");
+            assert_eq!(mode_satisfied(&statuses, Some("all")), target == "unknown");
+        }
     }
 }

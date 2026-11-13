@@ -499,6 +499,7 @@ pub async fn ensure_go_installed() -> bool {
     let result = if cfg!(windows) {
         // Try winget first
         let mut cmd = tokio::process::Command::new("winget");
+        crate::alphacode_base::platform::hide_helper_console(cmd.as_std_mut());
         cmd.args([
             "install",
             "--id",
@@ -565,6 +566,7 @@ pub async fn ensure_go_installed() -> bool {
 /// that blocks would otherwise wedge the calling worker thread with no way out.
 async fn command_available(program: &str) -> bool {
     let mut cmd = tokio::process::Command::new(program);
+    crate::alphacode_base::platform::hide_helper_console(cmd.as_std_mut());
     cmd.arg("--version")
         .kill_on_drop(true)
         .stdout(std::process::Stdio::null())
@@ -632,6 +634,7 @@ pub async fn install_one(step: &InstallStep) -> InstallOutcome {
         PathBuf::from(&step.program)
     };
     let mut cmd = tokio::process::Command::new(program);
+    crate::alphacode_base::platform::hide_helper_console(cmd.as_std_mut());
     cmd.args(&step.args)
         .kill_on_drop(true)
         // `go install` writes progress and the occasional "downloading" noise to

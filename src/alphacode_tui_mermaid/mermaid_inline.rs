@@ -72,8 +72,9 @@ fn dims_cache_put(id: u64, dims: InlineDims) {
 /// Cheap dimensions for an inline image: `(id, width, height)`.
 ///
 /// Tries a header-only parse of a decoded prefix first (so a multi-megabyte
-/// screenshot only touches its first few KB), and falls back to a full decode
-/// only if the header could not be understood. Results are cached by id.
+/// screenshot only touches its first few KB). Long headers fall back to reading
+/// container dimensions from the full encoded file without decompressing pixels.
+/// Results are cached by id.
 pub fn inline_image_dims(media_type: &str, data_b64: &str) -> Option<(u64, u32, u32)> {
     let id = inline_image_id(media_type, data_b64);
     if let Some(dims) = dims_cache_get(id) {
@@ -90,12 +91,16 @@ pub fn inline_image_dims(media_type: &str, data_b64: &str) -> Option<(u64, u32, 
         return Some((id, w, h));
     }
 
-    // Fallback: full decode (only happens once per image, then cached).
+    // Fallback for long container headers: decode the base64 container, but
+    // inspect dimensions without decompressing its raster pixels.
     let bytes = base64::engine::general_purpose::STANDARD
         .decode(data_b64)
         .ok()?;
-    let image = image::load_from_memory(&bytes).ok()?;
-    let (w, h) = image.dimensions();
+    let (w, h) = image::ImageReader::new(std::io::Cursor::new(bytes))
+        .with_guessed_format()
+        .ok()?
+        .into_dimensions()
+        .ok()?;
     let dims = InlineDims {
         width: w,
         height: h,
@@ -244,8 +249,9 @@ pub fn rediscover_inline_image(id: u64) -> Option<(u64, u32, u32)> {
 /// Decode a bounded prefix of the base64 payload and try to read image
 /// dimensions straight from the container header (PNG/JPEG/GIF/BMP/WEBP).
 fn dims_from_b64_prefix(data_b64: &str) -> Option<(u32, u32)> {
-    // 16 KB of base64 -> 12 KB of header bytes, plenty for every supported
-    // container's dimension fields while staying far cheaper than a full decode.
+    // 16 KB of base64 -> 12 KB of header bytes handles ordinary screenshots.
+    // JPEG metadata can push SOF past this prefix; the caller has a header-only
+    // fallback for that case.
     const PREFIX_B64_CHARS: usize = 16 * 1024;
     let take = data_b64.len().min(PREFIX_B64_CHARS);
     // base64 decodes in 4-char groups; trim to a group boundary so the prefix
@@ -350,6 +356,32 @@ mod tests {
     fn tiny_png_b64() -> String {
         // 1x1 transparent PNG.
         "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAAC0lEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==".to_string()
+    }
+
+    #[test]
+    fn long_jpeg_header_dimensions_do_not_require_raster_decode() {
+        let mut encoded = std::io::Cursor::new(Vec::new());
+        image::DynamicImage::new_rgb8(2, 3)
+            .write_to(&mut encoded, image::ImageFormat::Jpeg)
+            .unwrap();
+        let jpeg = encoded.into_inner();
+        let mut header = vec![0xff, 0xd8, 0xff, 0xe1];
+        header.extend_from_slice(&20_002u16.to_be_bytes());
+        header.resize(header.len() + 20_000, 0);
+        header.extend_from_slice(&jpeg[2..]);
+        let scan = header
+            .windows(2)
+            .position(|bytes| bytes == [0xff, 0xda])
+            .unwrap();
+        let scan_header_len = u16::from_be_bytes([header[scan + 2], header[scan + 3]]) as usize;
+        header.truncate(scan + 2 + scan_header_len);
+        // No encoded raster remains. Metadata is sufficient for layout.
+        header.extend_from_slice(&[0xff, 0xd9]);
+        let b64 = base64::engine::general_purpose::STANDARD.encode(&header);
+        assert!(dims_from_b64_prefix(&b64).is_none());
+        let (_, width, height) = inline_image_dims("image/jpeg", &b64).unwrap();
+        assert_eq!((width, height), (2, 3));
+        assert!(image::load_from_memory(&header).is_err());
     }
 
     #[test]

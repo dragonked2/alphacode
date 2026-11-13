@@ -95,9 +95,7 @@ fn alphax_free_http_error(status: reqwest::StatusCode, context_overflow: bool) -
         400 if context_overflow => {
             "The prompt is too long for this model's context window. Compact the session with /compact, then retry."
         }
-        400 => {
-            "Alphax Free could not accept this request. Check the provider setup with /doctor or switch model with /model."
-        }
+        400 => "Alphax Free rejected this request. Switch routes with /model to try again.",
         404 => {
             "Alphax Free could not find an available route. Try again shortly or switch model with /model."
         }
@@ -258,7 +256,10 @@ pub(super) async fn run_stream_with_retries(
                 // Full anyhow chain ({:#}) so a `.context(...)`-wrapped transport
                 // cause (e.g. TLS BadRecordMac) is visible to the classifier.
                 let error_str = format!("{e:#}").to_lowercase();
-                if is_retryable_error(&error_str) && attempt + 1 < MAX_RETRIES {
+                if is_retryable_error(&error_str)
+                    && attempt + 1 < MAX_RETRIES
+                    && !crate::alphacode_provider_core::retry_after::requires_manual_retry(&e)
+                {
                     if saw_output {
                         // Partial output already reached the consumer; tell it
                         // to discard the partial attempt so the retried

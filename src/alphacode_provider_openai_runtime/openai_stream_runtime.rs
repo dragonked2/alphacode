@@ -954,23 +954,28 @@ pub(super) async fn try_persistent_ws_continuation(
 
     // A soft interrupt drops the stream consumer while OpenAI may already have
     // created a response containing tool calls. That response cannot safely be
-    // used as `previous_response_id`: any unseen tool call would remain open on
-    // the server, and the next continuation would fail with "No tool output
-    // found for function call ...". Only completed responses are reusable.
-    if !saw_response_completed {
-        crate::alphacode_base::logging::info(
-            "Persistent WS consumer dropped before response.completed; clearing response chain",
-        );
+    // used as `previous_response_id`: local history may not contain every
+    // function call, leaving one open on the server and causing the next request
+    // to fail with "No tool output found for function call ...". A completed
+    // response is reusable only if its consumer received the completion event.
+    if !persistent_ws_response_is_reusable(consumer_dropped, saw_response_completed) {
+        let reason = if consumer_dropped {
+            "consumer_dropped_before_response_completed"
+        } else {
+            "response_incomplete"
+        };
+        crate::alphacode_base::logging::info(&format!(
+            "Persistent WS response is not reusable (consumer_dropped={}, response_completed={}); clearing response chain",
+            consumer_dropped, saw_response_completed
+        ));
         log_openai_stream_lifecycle(
             crate::alphacode_base::logging::LogLevel::Info,
             "persistent_state_reset",
             vec![
                 ("model", request_model),
-                (
-                    "reason",
-                    "consumer_dropped_before_response_completed".to_string(),
-                ),
+                ("reason", reason.to_string()),
                 ("consumer_dropped", consumer_dropped.to_string()),
+                ("response_completed", saw_response_completed.to_string()),
             ],
         );
         *guard = None;

@@ -15,10 +15,15 @@ impl App {
         }
 
         let skills = self.current_skills_snapshot();
-        let skill_prompt = self
-            .active_skill
-            .as_ref()
-            .and_then(|name| skills.get(name).map(|s| s.get_prompt().to_string()));
+        let (skill_prompt, evidence) =
+            crate::alphacode_app_core::agent::prompting::routed_skill_context(
+                &skills,
+                &self.session,
+                self.active_skill.as_deref(),
+                crate::alphacode_app_core::agent::prompting::observed_node_stack(
+                    &self.session.messages,
+                ),
+            );
         let available_skills: Vec<crate::prompt::SkillInfo> = skills
             .list()
             .iter()
@@ -28,13 +33,14 @@ impl App {
             })
             .collect();
         let (mut split, context_info) = crate::prompt::build_system_prompt_split(
-            skill_prompt.as_deref(),
+            (!skill_prompt.is_empty()).then_some(skill_prompt.as_str()),
             &available_skills,
             self.session.is_canary,
             memory_prompt,
             None,
         );
         self.append_current_turn_system_reminder(&mut split);
+        split.dynamic_part.push_str(&evidence);
         crate::prompt::append_swarm_effort_directive(
             &mut split,
             self.provider.reasoning_effort().as_deref(),

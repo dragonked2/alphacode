@@ -30,6 +30,8 @@ Checkpoint after every material finding and before changing hypotheses.
 Read server headers first. `X-Powered-By: Express` is evidence to investigate,
 not a conclusive fingerprint; do not assume Flask or any other stack without
 corroboration. Revisit hints before trying increasingly obscure explanations.
+For a corroborated Next.js or Node.js challenge, load `nodejs-security` with
+`skill_manage` and apply the relevant framework controls within challenge scope.
 
 Use `ctf_web_recon` for a bounded initial pass and evidence-selected same-origin
 paths. If its schema is not advertised yet, discover it with `tool_help` first.
@@ -47,13 +49,12 @@ into unbounded password loops: use only credentials supported by challenge
 artifacts or hints, unless a finite search space is explicitly the challenge's
 intended task. Record its bound, scope, stop condition, and time budget first.
 
-When `challenge.md` exists, the agent tool dispatcher stops further recognized
-network-probing calls after twelve calls without a ledger change. This counts
-varied commands, not only identical retries. Local analysis and checkpoint
-writes remain available. This is a tool-call budget, not a count of requests
-inside a script and not proof that a checkpoint represents new evidence.
+The checkpoint reminder prompts a ledger update and a change of hypothesis
+when the evidence warrants it. Continue with the next authorized experiment
+until the objective is verified or a concrete blocker prevents progress.
+A per-pass timeout leaves partial observations available for the next pass.
 
-Browser work starts in a new background tab owned by this session. After tab
+Browser work uses a background tab owned by this session. After tab
 death or a timeout, inspect state before repeating an action. Never retarget
 the user's active tab, and never blindly replay eval, clicks, or submissions.
 
@@ -121,6 +122,12 @@ Once a credible path is established:
 6. Verify the challenge's actual terminal state.
 
 Do not claim a solve based on a matching word or intermediate response.
+For protected-content challenges, compare the exact returned field or artifact
+with the public preview and a known challenge control. A lock flag, omitted
+byte count, blurred placeholder, reflected input, or success status does not
+demonstrate access to the hidden payload. Treat unequal or truncated captures
+without a verified challenge marker as inconclusive. Record a solve only when
+the recovered flag or required state satisfies the challenge's success check.
 
 ## Hypothesis kill rules
 

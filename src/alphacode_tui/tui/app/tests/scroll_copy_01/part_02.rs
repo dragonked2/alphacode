@@ -317,6 +317,27 @@ fn test_remote_escape_interrupt_disables_auto_poke_while_processing() {
 }
 
 #[test]
+fn test_remote_escape_dismisses_toast_before_touching_draft() {
+    let mut app = create_test_app();
+    let rt = tokio::runtime::Runtime::new().unwrap();
+    let _guard = rt.enter();
+    let mut remote = crate::alphacode_tui::tui::backend::RemoteConnection::dummy();
+
+    crate::alphacode_tui::tui::ui_error_toast::clear();
+    crate::alphacode_tui::tui::ui_error_toast::push_error("temporary remote failure");
+    app.input = "keep this draft".to_string();
+    app.cursor_pos = app.input.len();
+    assert_eq!(crate::alphacode_tui::tui::ui_error_toast::count(), 1);
+
+    rt.block_on(app.handle_remote_key(KeyCode::Esc, KeyModifiers::empty(), &mut remote))
+        .unwrap();
+
+    assert_eq!(crate::alphacode_tui::tui::ui_error_toast::count(), 0);
+    assert_eq!(app.input, "keep this draft");
+    crate::alphacode_tui::tui::ui_error_toast::clear();
+}
+
+#[test]
 fn test_remote_ctrl_digit_side_panel_preset() {
     let mut app = create_test_app();
     let rt = tokio::runtime::Runtime::new().unwrap();

@@ -266,6 +266,28 @@ pub(super) fn member_status_is_dead(status: &str) -> bool {
     matches!(status, "failed" | "stopped" | "crashed")
 }
 
+fn should_notify_member_outcome(
+    previous: &str,
+    status: &str,
+    status_changed: bool,
+    report_changed: bool,
+    has_owner: bool,
+) -> bool {
+    let completed = matches!(status, "completed" | "done");
+    let owned_outcome = has_owner && matches!(status, "ready" | "failed" | "crashed" | "stopped");
+    if report_changed && (completed || owned_outcome) {
+        // A status event can arrive before the final report. Publish the new
+        // payload even if the member is already ready/terminal.
+        return true;
+    }
+    status_changed
+        && (completed
+            || (matches!(
+                previous,
+                "running" | "running_stale" | "streaming" | "thinking" | "queued"
+            ) && (owned_outcome || status == "crashed")))
+}
+
 /// How long a finished spawned worker may sit idle before the server reaps it
 /// (closes its client and removes the member). `0` disables reaping.
 ///
@@ -482,7 +504,7 @@ async fn notify_coordinator_of_salvage(
             .get(session_id)
             .and_then(|member| member.friendly_name.clone())
     }
-    .unwrap_or_else(|| session_id[..8.min(session_id.len())].to_string());
+    .unwrap_or_else(|| crate::alphacode_swarm_core::short_session_id(&session_id).to_string());
     let _ = fanout_session_event(
         swarm_members,
         &coordinator_id,
@@ -1403,6 +1425,7 @@ pub(super) async fn update_member_status_with_report_tldr(
         agent_name,
         member_changed,
         status_changed,
+        report_changed,
         old_status,
         _is_headless,
         report_back_to_session_id,
@@ -1448,12 +1471,13 @@ pub(super) async fn update_member_status_with_report_tldr(
                 name,
                 member_changed,
                 status_changed,
+                report_changed,
                 previous_status,
                 is_headless,
                 report_back_to_session_id,
             )
         } else {
-            (None, None, false, false, String::new(), false, None)
+            (None, None, false, false, false, String::new(), false, None)
         }
     };
     if let Some(ref id) = swarm_id {
@@ -1504,20 +1528,13 @@ pub(super) async fn update_member_status_with_report_tldr(
 
         broadcast_swarm_status(id, swarm_members, swarms_by_id).await;
 
-        let should_notify_coordinator = status_changed
-            && ((status == "completed")
-                || (report_back_to_session_id.is_some()
-                    && old_status == "running"
-                    && matches!(status, "ready" | "failed" | "stopped"))
-                // A crash is never routine: notify whoever is responsible
-                // (owner, else coordinator) whenever a member dies while it
-                // was doing or holding work, so worker deaths cannot pass
-                // silently.
-                || (status == "crashed"
-                    && matches!(
-                        old_status.as_str(),
-                        "running" | "running_stale" | "queued"
-                    )));
+        let should_notify_coordinator = should_notify_member_outcome(
+            &old_status,
+            status,
+            status_changed,
+            report_changed,
+            report_back_to_session_id.is_some(),
+        );
         if should_notify_coordinator {
             let fallback_coordinator_id =
                 if report_back_to_session_id.as_deref() == Some(session_id) {
@@ -1540,7 +1557,7 @@ pub(super) async fn update_member_status_with_report_tldr(
             if let Some(recipient_session_id) = recipient_session_id {
                 let name = agent_name
                     .as_deref()
-                    .unwrap_or(&session_id[..8.min(session_id.len())]);
+                    .unwrap_or(crate::alphacode_swarm_core::short_session_id(session_id));
                 let msg =
                     completion_notification_message(name, status, completion_report.as_deref());
                 let _ = fanout_session_event(
@@ -1781,6 +1798,80 @@ mod tests {
     use std::sync::Arc;
     use std::time::{Duration, Instant};
     use tokio::sync::{RwLock, mpsc};
+
+    #[test]
+    fn worker_outcome_notifications_cover_stale_streaming_and_late_reports() {
+        for previous in [
+            "running",
+            "running_stale",
+            "streaming",
+            "thinking",
+            "queued",
+        ] {
+            for outcome in ["ready", "failed", "stopped", "crashed"] {
+                assert!(super::should_notify_member_outcome(
+                    previous, outcome, true, false, true
+                ));
+            }
+        }
+        assert!(super::should_notify_member_outcome(
+            "ready", "ready", false, true, true
+        ));
+        assert!(super::should_notify_member_outcome(
+            "completed",
+            "completed",
+            false,
+            true,
+            false
+        ));
+        assert!(!super::should_notify_member_outcome(
+            "ready", "ready", false, false, true
+        ));
+        assert!(!super::should_notify_member_outcome(
+            "running", "ready", true, false, false
+        ));
+        assert!(!super::should_notify_member_outcome(
+            "running", "running", false, true, true
+        ));
+    }
+
+    #[tokio::test]
+    async fn late_report_notifies_owner_once_without_another_status_transition() {
+        let worker_id = "工作者你好世界编号";
+        let (coord, mut coord_rx) = swarm_member("coord", "coordinator", false);
+        let (mut worker, _worker_rx) = swarm_member(worker_id, "agent", true);
+        worker.friendly_name = None;
+        worker.report_back_to_session_id = Some("coord".into());
+        let members = Arc::new(RwLock::new(HashMap::from([
+            ("coord".into(), coord),
+            (worker_id.into(), worker),
+        ])));
+        let swarms = Arc::new(RwLock::new(HashMap::from([(
+            "swarm-1".into(),
+            HashSet::from(["coord".into(), worker_id.into()]),
+        )])));
+        for _ in 0..2 {
+            update_member_status_with_report(
+                worker_id,
+                "ready",
+                None,
+                Some("Late worker result".into()),
+                &members,
+                &swarms,
+                None,
+                None,
+                None,
+            )
+            .await;
+        }
+        let notifications: Vec<_> = std::iter::from_fn(|| coord_rx.try_recv().ok())
+            .filter(|event| {
+                matches!(event, ServerEvent::Notification { message, .. }
+                if message.contains("Late worker result"))
+            })
+            .collect();
+        assert_eq!(notifications.len(), 1);
+    }
 
     fn plan_item(id: &str, content: &str) -> PlanItem {
         PlanItem {

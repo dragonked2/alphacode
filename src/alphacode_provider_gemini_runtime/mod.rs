@@ -368,7 +368,12 @@ impl GeminiProvider {
         let mut last_error: Option<anyhow::Error> = None;
         for attempt in 0..MAX_ATTEMPTS {
             let client = self.client.clone();
-            let response_result = make(client).send().await;
+            let response_result =
+                crate::alphacode_provider_core::transport::send_with_initial_response_timeout(
+                    make(client),
+                    Duration::from_secs(30),
+                )
+                .await;
             match response_result {
                 Ok(response) => {
                     let status = response.status();
@@ -376,15 +381,30 @@ impl GeminiProvider {
                         return Ok(response);
                     }
                     // Non-2xx: drain the body, decide retry, possibly sleep.
-                    let hint = crate::alphacode_provider_core::retry_after::retry_after(
+                    let parsed_hint = crate::alphacode_provider_core::retry_after::retry_after(
                         response.headers(),
-                    )
-                    .map(|h| h.remaining());
+                    );
+                    let hint = parsed_hint.as_ref().map(|h| h.remaining());
                     let body = response
                         .text()
                         .await
                         .unwrap_or_else(|_| String::from("<unreadable body>"));
                     let combined = format!("HTTP {status}: {body}");
+                    // The agent owns the bounded account-level rate-limit
+                    // retry budget; nesting five retries here multiplies it.
+                    if status.as_u16() == 429
+                        || hint.is_some_and(|hint| {
+                            hint > crate::alphacode_provider_core::retry_after::MAX_AUTOMATIC_WAIT
+                        })
+                    {
+                        return Err(
+                            crate::alphacode_provider_core::retry_after::error_with_retry_after(
+                                format!("Gemini request to {url} failed: {combined}"),
+                                parsed_hint,
+                            ),
+                        );
+                    }
+
                     let retryable = if status.as_u16() == 429 {
                         is_retryable_message(&combined)
                     } else {
@@ -406,8 +426,20 @@ impl GeminiProvider {
                     ));
                     tokio::time::sleep(delay).await;
                 }
-                Err(err) if is_transient_gemini_transport_error(&err) => {
-                    last_error = Some(err.into());
+                Err(err)
+                    if crate::alphacode_provider_core::retry_after::requires_manual_retry(&err) =>
+                {
+                    return Err(err);
+                }
+                Err(err)
+                    if err
+                        .downcast_ref::<reqwest::Error>()
+                        .is_some_and(is_transient_gemini_transport_error)
+                        || crate::alphacode_provider_core::is_transient_transport_error(
+                            &format!("{err:#}"),
+                        ) =>
+                {
+                    last_error = Some(err);
                     if attempt + 1 >= MAX_ATTEMPTS {
                         break;
                     }
@@ -1192,4 +1224,40 @@ fn is_gemini_model_not_found_error(err: &anyhow::Error) -> bool {
 fn is_gemini_code_assist_unsupported_error(err: &anyhow::Error) -> bool {
     let lower = format!("{err:#}").to_ascii_lowercase();
     lower.contains("no longer supported") && lower.contains("gemini code assist")
+}
+
+#[cfg(test)]
+mod request_pressure_tests {
+    use super::*;
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+    #[tokio::test]
+    async fn rate_limit_returns_to_the_agent_without_nested_retries() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let url = format!("http://{}/generate", listener.local_addr().unwrap());
+        let server = tokio::spawn(async move {
+            let (mut socket, _) = listener.accept().await.unwrap();
+            let mut bytes = [0; 4096];
+            assert!(socket.read(&mut bytes).await.unwrap() > 0);
+            socket.write_all(b"HTTP/1.1 429 Too Many Requests\r\nRetry-After: 30\r\nContent-Length: 19\r\nConnection: close\r\n\r\nrate limit exceeded").await.unwrap();
+        });
+        let provider = GeminiProvider {
+            client: reqwest::Client::builder().no_proxy().build().unwrap(),
+            model: Arc::new(RwLock::new("lab".into())),
+            state: Arc::new(Mutex::new(None)),
+            fetched_models: Arc::new(RwLock::new(Vec::new())),
+        };
+        let error = tokio::time::timeout(
+            Duration::from_secs(2),
+            provider.send_with_retry(|client| client.post(&url), &url),
+        )
+        .await
+        .expect("provider must return the first 429 instead of sleeping in an inner retry loop")
+        .unwrap_err();
+        assert!(error.to_string().contains("429"));
+        let hint =
+            crate::alphacode_provider_core::retry_after::retry_after_from_error(&error).unwrap();
+        assert!(hint >= Duration::from_secs(25));
+        server.await.unwrap();
+    }
 }

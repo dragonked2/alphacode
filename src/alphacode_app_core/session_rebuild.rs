@@ -60,7 +60,7 @@ fn run_release_tests(repo_dir: &Path) -> Result<()> {
 }
 
 fn run_cargo_release_step(repo_dir: &Path, args: &[&str]) -> Result<ExitStatus> {
-    Ok(ProcessCommand::new("cargo")
+    Ok(crate::alphacode_base::platform::helper_command("cargo")
         .args(args)
         .current_dir(repo_dir)
         .status()?)

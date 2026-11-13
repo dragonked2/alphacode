@@ -3,10 +3,14 @@ use super::*;
 /// Preserve a parsed server retry hint when converting a provider error into
 /// the string consumed by the turn recovery classifier.
 pub(crate) fn provider_error_text_for_recovery(error: &anyhow::Error) -> String {
-    let message = error.to_string();
+    let message = format!("{error:#}");
     let retry_after_secs =
         crate::alphacode_provider_core::retry_after::retry_after_from_error(error)
-            .map(|delay| delay.as_secs())
+            .map(|delay| {
+                delay
+                    .as_secs()
+                    .saturating_add(u64::from(delay.subsec_nanos() > 0))
+            })
             .filter(|seconds| *seconds > 0);
     error_text_with_retry_after(&message, retry_after_secs)
 }
@@ -301,6 +305,15 @@ impl Agent {
             return false;
         }
 
+        // An HTTP 429 is also used by some gateways for content-policy
+        // rejections. A diagnostic timeout is not evidence that retrying the
+        // same rejected request will help.
+        if crate::alphacode_provider_core::retry::embedded_http_status(&lower) == Some(429)
+            && is_content_policy_rejection(&lower)
+        {
+            return false;
+        }
+
         // The pre-flight context guard fails fast before the
         // request is sent; the identical request can never
         // succeed until the prompt shrinks or the server context
@@ -427,6 +440,24 @@ impl Agent {
         error: &str,
         attempts: &mut u32,
     ) -> Result<Option<u64>> {
+        use crate::alphacode_provider_core::error_classification::{
+            is_alphax_free_bad_request, is_context_limit_error,
+        };
+
+        if is_alphax_free_bad_request(error) && !is_context_limit_error(error) {
+            // The gateway redacts its upstream reason. Try a different free
+            // route once before giving up. Keep the same rejected route out of
+            // recovery and let explicit context errors reach compaction.
+            if *attempts == 0
+                && let Some(delay) = self.try_free_pool_rotation(
+                    super::free_pool_rotation::RotationTrigger::RejectedRequest,
+                )
+            {
+                *attempts += 1;
+                return Ok(Some(delay));
+            }
+            return Ok(None);
+        }
         if !Self::is_transient_provider_error(error) {
             // A hard 4xx is normally the end of the turn. One class deserves a
             // bounded rescue: rejection text that reads as *model-side policy*
@@ -481,6 +512,18 @@ impl Agent {
             || lower.contains("rate-limited")
             || lower.contains("too many requests")
             || lower.contains("throttl");
+        // A 429 is account/provider pressure; repeatedly replaying the full
+        // context can prolong it. Bound this separately from transport errors.
+        if is_rate_limit && attempt > 3 {
+            logging::warn("Provider rate-limit retry budget exhausted");
+            return Ok(None);
+        }
+        if extract_retry_after_secs(error).is_some_and(|seconds| seconds > 180) {
+            logging::warn(
+                "Provider retry-after exceeds the automatic wait limit; stopping instead of retrying early",
+            );
+            return Ok(None);
+        }
         let is_free_pool_model = super::free_pool_rotation::should_rotate_for_provider(
             &self.provider.display_name(),
             &self.provider.model(),
@@ -564,8 +607,9 @@ impl Agent {
         Ok(Some(delay))
     }
 
-    /// Quarantine the current model and switch to another free one, if this
-    /// session is running on the Alphax Free pool and the failure justifies it.
+    /// Quarantine the current concrete free-pool model and switch to another
+    /// free one when recovery allows it. The automatic Alphax Free alias is
+    /// intentionally pinned so an error cannot rewrite the user's selection.
     ///
     /// Returns `Some(0)` when a model switch happened, so the caller retries
     /// immediately. Returns `None` when rotation does not apply, leaving the
@@ -619,10 +663,19 @@ impl Agent {
         trigger: super::free_pool_rotation::RotationTrigger,
     ) -> Option<u64> {
         let current = self.provider.model();
-        if !super::free_pool_rotation::should_rotate_for_provider(
+        if !super::free_pool_rotation::should_implicitly_rotate_for_provider(
             &self.provider.display_name(),
             &current,
         ) {
+            if super::free_pool_rotation::should_rotate_for_provider(
+                &self.provider.display_name(),
+                &current,
+            ) && super::free_pool_rotation::is_automatic_free_route(&current)
+            {
+                logging::info(
+                    "Alphax Free automatic route is pinned; leaving the selected model unchanged",
+                );
+            }
             return None;
         }
 
@@ -632,7 +685,10 @@ impl Agent {
             return None;
         }
 
-        if let Err(err) = self.set_model_from_auth(&next) {
+        let profile = crate::alphacode_provider_metadata::free_pool::ALPHAX_FREE_PROFILE_ID;
+        // A bare slash-separated model ID can route through generic OpenRouter.
+        // Keep automatic recovery on the same configured free profile.
+        if let Err(err) = self.set_model_from_auth(&format!("{profile}:{next}")) {
             // A refused switch is not the user's problem to solve right now.
             // Undo the quarantine so the original model can be retried on the
             // normal backoff schedule instead of being written off.
@@ -868,25 +924,7 @@ fn contains_429_with_rate_limit(lower: &str) -> bool {
 /// Returns `None` when no explicit retry-after is found (caller should
 /// use exponential backoff as a fallback).
 pub(crate) fn extract_retry_after_secs(error: &str) -> Option<u64> {
-    // Look for `"retry_after_seconds":N` or `"retry_after_seconds_raw":N`.
-    // The value may appear as a bare integer or a quoted string.
-    for needle in ["retry_after_seconds_raw\":", "retry_after_seconds\":"] {
-        if let Some(pos) = error.find(needle) {
-            let after = &error[pos + needle.len()..];
-            // Skip optional whitespace and optional quote
-            let after = after.trim_start();
-            let after = after.trim_start_matches('"');
-            // Parse the digits
-            let digits: String = after.chars().take_while(|c| c.is_ascii_digit()).collect();
-            if let Ok(secs) = digits.parse::<u64>()
-                && secs > 0
-                && secs <= 300
-            {
-                return Some(secs);
-            }
-        }
-    }
-    None
+    crate::alphacode_provider_core::retry_after::retry_after_seconds_from_text(error)
 }
 
 /// Classify a failure for free-pool quarantine purposes.
@@ -1026,13 +1064,12 @@ pub(crate) fn explain_hard_provider_error(error: &str) -> Option<String> {
         400 => {
             if is_content_policy_rejection(error) {
                 "The upstream model refused this request under its content policy (HTTP 400).\nAlphacode has already tried the other upstreams available to this session.\nWhat helps: switch to a different model (Ctrl+O or `/model`), or rephrase the request. Diagnostic detail logged above.".to_string()
-            } else if lower.contains("exceeds context")
-                || lower.contains("context length")
-                || lower.contains("too many tokens")
-            {
+            } else if crate::alphacode_provider_core::error_classification::is_context_limit_error(error) {
                 "HTTP 400: this payload is larger than the model's context window.\nRun `/compact` to shrink the session history, or /doctor to check the model's context size.".to_string()
+            } else if crate::alphacode_provider_core::error_classification::is_alphax_free_bad_request(error) {
+                "Alphax Free rejected this request (HTTP 400). Use the offered fallback or /model to resend on a different route.".to_string()
             } else {
-                "HTTP 400 (bad request): the provider rejected the request payload.\nCommon causes: unsupported model/parameter for this endpoint, or a malformed argument from a cut-off stream. Run `/doctor` to check endpoint configuration; retrying the same request will not help.".to_string()
+                "HTTP 400: the provider rejected the request. Review the provider response below and check the endpoint with /doctor.".to_string()
             }
         }
         401 => explain_unauthorized(error, &lower),
@@ -1111,10 +1148,9 @@ fn is_unroutable_model_error(lower: &str) -> bool {
 /// - Other transient:  5s, 10s, 20s, 40s, 80s, 160s (capped at 180s)
 pub(crate) fn retry_delay_for_error(error: &str, attempt: u32) -> u64 {
     if let Some(secs) = extract_retry_after_secs(error) {
-        // Provider told us how long to wait. Respect it but cap at 180s so a
-        // single misbehaving provider can't park the agent for several
-        // minutes per retry.
-        return secs.min(180);
+        // The caller stops automatic recovery for long hints. Never shorten
+        // an explicit deadline here, including non-429 service cooldowns.
+        return secs;
     }
     use rand::Rng;
     let is_rate_limit = {
@@ -1135,6 +1171,12 @@ pub(crate) fn retry_delay_for_error(error: &str, attempt: u32) -> u64 {
 #[cfg(test)]
 mod provider_error_tests {
     use super::*;
+
+    #[test]
+    fn moderation_429_with_timeout_metadata_is_not_retried() {
+        let error = "OpenAI-compatible chat request failed\n timeout: 180s\n status: 429 Too Many Requests\n response: data policy moderation";
+        assert!(!Agent::is_transient_provider_error(error));
+    }
 
     #[test]
     fn recognises_5xx_as_transient() {
@@ -1292,9 +1334,13 @@ mod provider_error_tests {
     }
 
     #[test]
-    fn retry_delay_caps_at_180s() {
+    fn retry_delay_does_not_shorten_explicit_cooldown() {
         let error = r#"retry_after_seconds":300"#;
-        assert_eq!(retry_delay_for_error(error, 1), 180);
+        assert_eq!(retry_delay_for_error(error, 1), 300);
+        assert_eq!(
+            extract_retry_after_secs(r#"retry_after_seconds":3541"#),
+            Some(3541)
+        );
     }
 
     #[test]

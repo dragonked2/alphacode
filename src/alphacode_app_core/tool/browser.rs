@@ -43,7 +43,7 @@
 //! active tab** whenever a request carries no `tabId`, and the bridge's
 //! internal tab cache only lives ~900 ms. Left alone, the agent's
 //! click/type/eval calls silently land in whatever tab the user is looking
-//! at. So: `open` defaults to a new background tab, every session pins the
+//! at. So: `open` uses an owned background tab, and every session pins the
 //! tab it opened or selected and that id is injected into follow-up
 //! actions, an untargeted mutating action refuses instead of guessing, and
 //! tab-loss recovery never repoints a targeted request at the active tab.
@@ -143,6 +143,10 @@ static READ_ONLY_COUNTER: Mutex<Option<HashMap<String, u32>>> = Mutex::new(None)
 
 /// Maximum consecutive read-only actions before suggesting a different approach.
 const MAX_READ_ONLY_ACTIONS: u32 = 3;
+/// Session IDs are supplied by callers and may outlive the browser operation.
+/// Keep abandoned sessions from retaining memory for the lifetime of the
+/// process. This is deliberately generous for a single Alphacode process.
+const MAX_TRACKED_READ_ONLY_SESSIONS: usize = 256;
 
 /// Check if the current action is read-only and should be counted.
 fn is_read_only_action(action: &str) -> bool {
@@ -165,6 +169,8 @@ fn is_state_changing_action(action: &str) -> bool {
     matches!(
         action,
         "open"
+            | "new_tab"
+            | "select_tab"
             | "click"
             | "hover"
             | "type"
@@ -180,6 +186,7 @@ fn is_state_changing_action(action: &str) -> bool {
             | "reload"
             | "go_back"
             | "go_forward"
+            | "screenshot"
     )
 }
 
@@ -187,16 +194,26 @@ fn is_state_changing_action(action: &str) -> bool {
 ///
 /// Returns true if the agent should be warned about a verification loop.
 fn increment_read_only_counter(session: &str) -> bool {
-    let mut counter = READ_ONLY_COUNTER.lock().unwrap();
+    let mut counter = READ_ONLY_COUNTER
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
     let map = counter.get_or_insert_with(HashMap::new);
+    if !map.contains_key(session)
+        && map.len() >= MAX_TRACKED_READ_ONLY_SESSIONS
+        && let Some(evicted) = map.keys().next().cloned()
+    {
+        map.remove(&evicted);
+    }
     let count = map.entry(session.to_string()).or_insert(0);
-    *count += 1;
+    *count = count.saturating_add(1);
     *count >= MAX_READ_ONLY_ACTIONS
 }
 
 /// Reset the read-only counter for a session.
 fn reset_read_only_counter(session: &str) {
-    let mut counter = READ_ONLY_COUNTER.lock().unwrap();
+    let mut counter = READ_ONLY_COUNTER
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
     if let Some(map) = counter.as_mut() {
         map.remove(session);
     }
@@ -204,7 +221,9 @@ fn reset_read_only_counter(session: &str) {
 
 /// Get a warning message if the agent is in a verification loop.
 fn get_verification_loop_warning(session: &str) -> Option<String> {
-    let mut counter = READ_ONLY_COUNTER.lock().unwrap();
+    let mut counter = READ_ONLY_COUNTER
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
     if let Some(map) = counter.as_mut()
         && let Some(count) = map.get(session)
         && *count >= MAX_READ_ONLY_ACTIONS
@@ -582,12 +601,17 @@ const MAX_PAGE_WAIT_TIMEOUT_MS: u64 = 90_000;
 /// state until the caller's timeout budget expired. SPAs (Discord, YouTube,
 /// Gmail) keep `document.readyState` in `loading` while the session can
 /// actually be used, so agents hit this on pages they could proceed with.
-const NAV_TIMEOUT_NEEDLE: &str = "timed out waiting for tab to load";
-
-/// Pure matcher for [`NAV_TIMEOUT_NEEDLE`] so tests can cover it without a
-/// bridge round-trip.
 fn is_navigation_timeout(message: &str) -> bool {
-    message.to_ascii_lowercase().contains(NAV_TIMEOUT_NEEDLE)
+    let message = message.to_ascii_lowercase();
+    message
+        .split("timed out waiting for tab ")
+        .skip(1)
+        .any(|suffix| {
+            suffix.starts_with("to load")
+                || suffix.split_once(" to load").is_some_and(|(id, _)| {
+                    !id.is_empty() && id.bytes().all(|byte| byte.is_ascii_digit())
+                })
+        })
 }
 
 /// Actions that change page/tab state and are scoped to whichever tab the
@@ -706,7 +730,7 @@ impl Tool for BrowserTool {
                     "scroll", "upload", "press", "get_cookies", "set_cookies", "delete_cookie",
                     "list_cookies", "provider_command"
                 ],
-                "description": "Action. 'open' creates an agent-owned background tab; follow with 'snapshot'. 'fill_form' sets multiple fields in one call; include submit=true to submit in that same call. 'wait' with only timeout_ms is a plain delay. 'press' sends a real key; 'type' with submit=true submits. 'upload' takes a local file path. Aliases: navigate/goto=open, evaluate=eval, set_files=upload."
+                "description": "Action. 'open' reuses an agent-owned working tab or creates a background tab; follow with 'snapshot'. 'fill_form' sets multiple fields in one call; include submit=true to submit in that same call. 'wait' with only timeout_ms is a plain delay. 'press' sends a real key; 'type' with submit=true submits. 'upload' takes a local file path. Aliases: navigate/goto=open, evaluate=eval, set_files=upload."
             }),
         );
         properties.insert(
@@ -778,7 +802,7 @@ impl Tool for BrowserTool {
             ("wait", json!({"type": "boolean"})),
             (
                 "new_tab",
-                json!({"type": "boolean", "description": "For open: true (default) opens the url in a new background tab; false navigates the agent's own current tab instead. Never used to target the user's active tab."}),
+                json!({"type": "boolean", "description": "For open: true allocates a separate background tab. By default, open reuses the session's working tab or allocates one on first use."}),
             ),
             (
                 "focus",
@@ -1179,9 +1203,276 @@ async fn run_auto_browser_setup() -> String {
     }
 }
 
-fn ensure_open_target(action: &str, params: &mut Value) {
-    if action == "open" && params.get("tabId").and_then(Value::as_i64).is_none() {
-        params["newTab"] = json!(true);
+#[derive(Clone)]
+struct WorkingTab {
+    id: i64,
+    window: Option<i64>,
+    container: Option<String>,
+    connection: Option<u64>,
+}
+
+impl WorkingTab {
+    fn matches(&self, tab: &Value, params: &Value) -> bool {
+        tab_id_from_value(tab) == Some(self.id)
+            && tab["windowId"].as_i64() == self.window
+            && tab["cookieStoreId"].as_str() == self.container.as_deref()
+            && params["windowId"]
+                .as_i64()
+                .is_none_or(|id| Some(id) == self.window)
+            && params["cookieStoreId"]
+                .as_str()
+                .is_none_or(|id| Some(id) == self.container.as_deref())
+    }
+}
+
+#[derive(Default)]
+struct OpenState {
+    owned: Vec<WorkingTab>,
+    pending: Option<String>,
+}
+
+// Serialize allocation and navigation for each session. Sharing a stripe only
+// affects concurrency, while each session keeps its own working tab.
+static OPEN_LOCKS: [tokio::sync::Mutex<()>; 64] = [const { tokio::sync::Mutex::const_new(()) }; 64];
+const DEFAULT_MANAGED_OPEN_TABS: usize = 4;
+
+fn managed_open_limit() -> usize {
+    std::env::var("ALPHACODE_BROWSER_MANAGED_TAB_LIMIT")
+        .ok()
+        .and_then(|value| value.parse::<usize>().ok())
+        .filter(|limit| *limit > 0)
+        .unwrap_or(DEFAULT_MANAGED_OPEN_TABS)
+}
+
+static OPEN_STATES: Mutex<Option<HashMap<String, OpenState>>> = Mutex::new(None);
+
+fn open_states() -> MutexGuard<'static, Option<HashMap<String, OpenState>>> {
+    OPEN_STATES.lock().unwrap_or_else(|err| err.into_inner())
+}
+
+fn forget_open_tab(session: &str, tab_id: i64) {
+    if let Some(states) = open_states().as_mut()
+        && let Some(state) = states.get_mut(session)
+    {
+        state.owned.retain(|tab| tab.id != tab_id);
+        if state.owned.is_empty() && state.pending.is_none() {
+            states.remove(session);
+        }
+    }
+}
+
+async fn open_in_firefox<F>(
+    session: &str,
+    mut params: Value,
+    mut bridge: impl FnMut(&'static str, Value) -> F,
+) -> Result<(Value, bool)>
+where
+    F: std::future::Future<Output = Result<Value>> + Send,
+{
+    use std::hash::{DefaultHasher, Hash, Hasher};
+    let mut hash = DefaultHasher::new();
+    session.hash(&mut hash);
+    let _guard = OPEN_LOCKS[hash.finish() as usize % OPEN_LOCKS.len()]
+        .lock()
+        .await;
+
+    let explicit_target = params["tabId"].as_i64().is_some() && params["newTab"] != true;
+    let mut reused = false;
+    let mut previous_url = None;
+    if !explicit_target {
+        let (owned, pending) = {
+            let mut states = open_states();
+            let states = states.get_or_insert_with(HashMap::new);
+            if !states.contains_key(session) && states.len() >= MAX_TRACKED_SESSION_TABS {
+                anyhow::bail!(
+                    "Browser working-tab registry is full. Close an existing working tab or pass an explicit tab_id."
+                );
+            }
+            let state = states.entry(session.to_owned()).or_default();
+            (state.owned.clone(), state.pending.clone())
+        };
+        let connection = bridge("status", json!({})).await?["nativePortOpenedAt"].as_u64();
+        let mut target = None;
+        if let Some(marker) = pending {
+            let tabs = bridge("listTabs", json!({})).await?;
+            let matches: Vec<_> = tabs["tabs"]
+                .as_array()
+                .into_iter()
+                .flatten()
+                .filter(|tab| tab["url"].as_str() == Some(&marker))
+                .collect();
+            if let [tab] = matches.as_slice() {
+                target = Some((*tab).clone());
+            } else {
+                anyhow::bail!(
+                    "Previous Firefox allocation is unconfirmed. Check list_tabs for {marker} and pass its tab_id to continue."
+                );
+            }
+        } else if params["newTab"] != true && connection.is_some() {
+            for tab in owned.iter().rev().filter(|tab| {
+                connection == tab.connection
+                    && params["windowId"]
+                        .as_i64()
+                        .is_none_or(|id| Some(id) == tab.window)
+                    && params["cookieStoreId"]
+                        .as_str()
+                        .is_none_or(|id| Some(id) == tab.container.as_deref())
+            }) {
+                match bridge("getTab", json!({"tabId": tab.id})).await {
+                    Ok(current) if tab.matches(&current, &params) => {
+                        target = Some(current);
+                        reused = true;
+                        break;
+                    }
+                    Ok(_) => {}
+                    Err(error) if missing_tab_error(&error.to_string()) => {
+                        if let Some(state) = open_states()
+                            .as_mut()
+                            .and_then(|states| states.get_mut(session))
+                        {
+                            state.owned.retain(|owned| {
+                                owned.id != tab.id || owned.connection != connection
+                            });
+                        }
+                        forget_session_tab(session, tab.id);
+                    }
+                    Err(error) => return Err(error),
+                }
+            }
+        }
+        let tab = match target {
+            Some(tab) => tab,
+            None => {
+                let limit = managed_open_limit();
+                let at_capacity = open_states()
+                    .as_ref()
+                    .and_then(|states| states.get(session))
+                    .is_some_and(|state| state.owned.len() >= limit);
+                if at_capacity {
+                    let inventory = bridge("listTabs", json!({})).await?;
+                    let tabs = inventory["tabs"]
+                        .as_array()
+                        .context("Firefox returned no tab inventory")?;
+                    let live_ids: std::collections::HashSet<_> = tabs
+                        .iter()
+                        .map(|tab| tab_id_from_value(tab).context("Firefox tab has no ID"))
+                        .collect::<Result<_>>()?;
+                    if let Some(state) = open_states()
+                        .as_mut()
+                        .and_then(|states| states.get_mut(session))
+                    {
+                        state.owned.retain(|tab| live_ids.contains(&tab.id));
+                        anyhow::ensure!(
+                            state.owned.len() < limit,
+                            "This session has reached its {limit}-tab limit. Close an owned tab or reuse a tab by passing its tab_id."
+                        );
+                    }
+                    if let Some(id) = session_tab_pin(session)
+                        && !live_ids.contains(&id)
+                    {
+                        forget_session_tab(session, id);
+                    }
+                }
+                let marker = format!("about:blank#alphacode-{}", uuid::Uuid::new_v4());
+                if let Some(state) = open_states()
+                    .as_mut()
+                    .and_then(|states| states.get_mut(session))
+                {
+                    state.pending = Some(marker.clone());
+                }
+                let mut allocation = json!({"url": marker, "focus": false, "wait": false});
+                for key in ["windowId", "cookieStoreId"] {
+                    if let Some(value) = params.get(key) {
+                        allocation[key] = value.clone();
+                    }
+                }
+                bridge("newSession", allocation).await.with_context(|| {
+                    format!("Firefox allocation outcome is unconfirmed. Check list_tabs for {marker} before retrying.")
+                })?
+            }
+        };
+        let id = tab_id_from_value(&tab).context("Firefox allocation returned no tab ID")?;
+        let working = WorkingTab {
+            id,
+            window: tab["windowId"].as_i64(),
+            container: tab["cookieStoreId"].as_str().map(str::to_owned),
+            connection,
+        };
+        if let Some(state) = open_states()
+            .as_mut()
+            .and_then(|states| states.get_mut(session))
+        {
+            state.pending = None;
+            state
+                .owned
+                .retain(|tab| tab.id != id || tab.connection != connection);
+            state.owned.push(working.clone());
+        }
+        if !working.matches(&tab, &params) {
+            anyhow::bail!(
+                "Firefox tab {id} belongs to a different window or container. Select the intended tab explicitly."
+            );
+        }
+        previous_url = tab["url"].as_str().map(str::to_owned);
+        remember_session_tab(session, id);
+        params["tabId"] = json!(id);
+    }
+
+    params["newTab"] = json!(false);
+    let id = params["tabId"].clone();
+    let wait = params["wait"] != false;
+    let requested_url = params["url"].as_str().map(str::to_owned);
+    let timeout_ms = params["timeoutMs"]
+        .as_u64()
+        .unwrap_or(DEFAULT_PAGE_WAIT_TIMEOUT_MS)
+        .clamp(1_000, MAX_PAGE_WAIT_TIMEOUT_MS);
+    let deadline = tokio::time::Instant::now() + std::time::Duration::from_millis(timeout_ms);
+    match bridge("navigate", params).await {
+        Ok(mut result) => {
+            // Older extensions can observe the completed previous document
+            // immediately after tabs.update, before the new load has started.
+            let stale_url =
+                previous_url.filter(|previous| requested_url.as_deref() != Some(previous));
+            let awaiting_first_page = stale_url
+                .as_deref()
+                .is_some_and(|url| url.starts_with("about:blank"))
+                && requested_url
+                    .as_deref()
+                    .is_some_and(|url| !url.starts_with("about:blank"));
+            let is_new_document = |url: &str| {
+                !url.is_empty()
+                    && Some(url) != stale_url.as_deref()
+                    && !(awaiting_first_page && url.starts_with("about:blank"))
+            };
+            let still_loading = result["tab"]["status"] == "loading";
+            let previous_document =
+                stale_url.is_some() && !result["tab"]["url"].as_str().is_some_and(is_new_document);
+            if wait && (still_loading || previous_document) {
+                while let Ok(current) = tokio::time::timeout_at(deadline, async {
+                    tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+                    bridge("getTab", json!({"tabId": id})).await
+                })
+                .await
+                {
+                    let current = current?;
+                    let ready = current["status"] == "complete"
+                        && current["url"].as_str().is_some_and(is_new_document);
+                    result["tab"] = current;
+                    if ready {
+                        return Ok((result, reused));
+                    }
+                }
+                result["readinessTimedOut"] = json!(true);
+            }
+            Ok((result, reused))
+        }
+        Err(error) if is_navigation_timeout(&error.to_string()) => {
+            let tab = bridge("getTab", json!({"tabId": id}))
+                .await
+                .with_context(|| format!("Navigation readiness timed out for Firefox tab {id}"))?;
+            Ok((json!({"tab": tab, "readinessTimedOut": true}), reused))
+        }
+        Err(error) => Err(error),
     }
 }
 
@@ -1207,6 +1498,26 @@ async fn execute_firefox_action(
         bridge_params = Value::Object(upload);
     }
 
+    if action == "open" {
+        // The wire mapping defaults to newTab for older bridge callers. Here
+        // the default is reuse, with allocation handled before navigation.
+        bridge_params["newTab"] = json!(input.new_tab.unwrap_or(false));
+        let (result, reused) = open_in_firefox(&ctx.session_id, bridge_params, |action, params| {
+            firefox_run_bridge_command(action, params, ctx)
+        })
+        .await
+        .map_err(|error| enrich_browser_error(action, error))?;
+        if let Some(tab_id) = tab_id_from_value(&result) {
+            remember_session_tab(&ctx.session_id, tab_id);
+        }
+        let result = if reused {
+            annotate_pinned_targeting(result)
+        } else {
+            result
+        };
+        return Ok(render_browser_output(action, title, result));
+    }
+
     // `provider_command` is a raw passthrough: the caller owns the whole wire
     // payload, so the pin must not inject a `tabId` it never asked for.
     let pinned = if action == "provider_command" {
@@ -1215,33 +1526,12 @@ async fn execute_firefox_action(
         apply_session_tab_pin(&mut bridge_params, &ctx.session_id)
     };
 
-    // Opening a URL is safe in a fresh tab when no session/explicit target
-    // exists, even if the model requested in-place navigation. Never redirect
-    // the user's active tab, and preserve reuse when a target is known.
-    ensure_open_target(action, &mut bridge_params);
-
-    // Isolation guard: a mutating action with no explicit target and no
-    // session pin would land on the user's currently active tab. Refuse and
-    // tell the agent how to get its own tab instead.
-    //
-    // `open` is only tab-scoped for an *in-place* navigation. With
-    // `new_tab: false` and no `tabId`, the extension takes the
-    // `resolveTabId({})` branch and navigates whatever tab the user is
-    // looking at — exactly the hijack this guard exists to stop. The default
-    // (`newTab: true`) creates its own tab, so it stays allowed.
-    let in_place_navigation =
-        action == "open" && bridge_params.get("newTab") == Some(&json!(false));
     if !pinned
         && bridge_params.get("tabId").and_then(Value::as_i64).is_none()
-        && (TAB_SCOPED_MUTATING_ACTIONS.contains(&action) || in_place_navigation)
+        && TAB_SCOPED_MUTATING_ACTIONS.contains(&action)
     {
-        let remedy = if in_place_navigation {
-            "action='open' with new_tab=true (the default) creates a new tab, or pass the tab_id you mean to reuse"
-        } else {
-            "Open your own tab first with action='open' (creates a new tab by default), or pick one explicitly via action='list_tabs' + tab_id"
-        };
         anyhow::bail!(
-            "browser action '{action}' has no target tab and would act on the user's currently active tab. {remedy}. Never act on the user's tab unless they asked for it."
+            "Browser action '{action}' requires a target. Open a working tab first or pass an explicit tab_id."
         );
     }
 
@@ -1342,7 +1632,7 @@ async fn execute_firefox_action(
     // Learn/maintain the session tab pin from the actions that create or
     // retarget the session's tab, and drop it when that tab is closed.
     match action {
-        "new_tab" | "open" | "select_tab" => {
+        "new_tab" | "select_tab" => {
             if let Some(tab_id) = tab_id_from_value(&result) {
                 remember_session_tab(&ctx.session_id, tab_id);
             }
@@ -1352,6 +1642,7 @@ async fn execute_firefox_action(
                 .or(input.tab_id)
                 .or_else(|| session_tab_pin(&ctx.session_id));
             if let Some(tab_id) = closed {
+                forget_open_tab(&ctx.session_id, tab_id);
                 forget_session_tab(&ctx.session_id, tab_id);
             }
         }
@@ -1758,14 +2049,7 @@ fn bridge_request(action: &str, input: &BrowserInput) -> Result<(String, Value, 
                 .ok_or_else(|| anyhow::anyhow!("url is required for open"))?;
             params.insert("url".into(), json!(url));
             params.insert("wait".into(), json!(input.wait.unwrap_or(true)));
-            // Bug fix #13: default to a new background tab. Without this the
-            // bridge resolved the *user's currently active tab* and navigated
-            // it, hijacking whatever the user was doing. The agent's own tab
-            // pin (apply_session_tab_pin) still routes follow-up actions to
-            // the tab it owns; an explicit `new_tab: false` re-navigates the
-            // pinned agent tab, not the user's tab. An explicit `tab_id`
-            // still navigates that tab (the bridge checks newTab before
-            // resolving tabId).
+            // The executor resolves the working tab before issuing navigate.
             let explicit_target = params.contains_key("tabId");
             params.insert(
                 "newTab".into(),
@@ -2441,7 +2725,7 @@ async fn recover_active_tab(params: &mut Value, ctx: &ToolContext) -> bool {
 }
 
 async fn run_bridge_with_tab_recovery(
-    _logical_action: &str,
+    logical_action: &str,
     bridge_action: &str,
     params: Value,
     ctx: &ToolContext,
@@ -2468,27 +2752,6 @@ async fn run_bridge_with_tab_recovery(
         if pin_is_stale {
             forget_session_tab(&ctx.session_id, dead_tab_id);
         }
-        // Even a read must not silently inspect the user's unrelated tab.
-        // Recover our workspace with a fresh background tab; never replay the
-        // failed eval/click or assume the old authentication state survived.
-        if pin_is_stale
-            && let Ok(created) = firefox_run_bridge_command(
-                "newSession",
-                json!({"url":"about:blank", "focus":false, "wait":false}),
-                ctx,
-            )
-            .await
-            && let Some(tab_id) = tab_id_from_value(&created)
-        {
-            remember_session_tab(&ctx.session_id, tab_id);
-            return Err(anyhow::anyhow!(
-                "{err}\n\nRecovered an isolated background tab: {tab_id}. The failed action was not replayed. Open the authorized challenge URL in this tab, inspect current state, then continue. The user's active tab was not selected."
-            ));
-        }
-        // Everything else stays fail-closed (bug fix #13), but the failure is
-        // now one-shot recoverable: the live tab inventory is appended so the
-        // agent can immediately `select_tab` with a real id (or `open` fresh)
-        // instead of discovering it through another failed round trip.
         let hint = live_session_tabs_hint(ctx).await;
         if hint.is_empty() {
             return Err(err);
@@ -2496,6 +2759,9 @@ async fn run_bridge_with_tab_recovery(
         return Err(anyhow::anyhow!("{}\n\n{}", err, hint));
     }
 
+    if !RETRYABLE_ACTIONS.contains(&logical_action) {
+        return Err(err);
+    }
     let mut recovered_params = params;
     if !recover_active_tab(&mut recovered_params, ctx).await {
         return Err(err);
@@ -2563,61 +2829,7 @@ async fn live_session_tabs_hint(ctx: &ToolContext) -> String {
     lines.join("\n")
 }
 
-/// When a navigate-family bridge call dies with the extension's "Timed out
-/// waiting for tab to load" failure, retry the same request once with
-/// `wait: false` and return whatever content the bridge has mid-load.
-///
-/// The wait already consumed its full budget: the navigation is in flight (or
-/// the page is stuck in an SPA's perpetual `loading` state while perfectly
-/// usable). Failing the whole action forced the agent to retry manually with
-/// `wait:false`; doing it automatically keeps usable content flowing. No
-/// semantic risk: `wait` only injects an *extra* readiness delay — navigation
-/// itself is already underway, and a `wait: false` retry cannot duplicate it
-/// (the same URL in the same tab).
-async fn retry_navigation_without_wait(
-    first_result: Result<Value>,
-    logical_action: &str,
-    bridge_action: &str,
-    params: Value,
-    ctx: &ToolContext,
-) -> Result<Value> {
-    let err = match first_result {
-        Ok(value) => return Ok(value),
-        Err(err) => err,
-    };
-    if params.get("wait") == Some(&json!(false)) || !is_navigation_timeout(&err.to_string()) {
-        return Err(err);
-    }
-    let mut fallback_params = params;
-    if let Some(object) = fallback_params.as_object_mut() {
-        object.insert("wait".into(), json!(false));
-    }
-    crate::alphacode_base::logging::info(&format!(
-        "Page wait timed out after the full navigation budget; retrying '{logical_action}' once with wait=false to return mid-load content"
-    ));
-    match run_bridge_with_tab_recovery(logical_action, bridge_action, fallback_params, ctx).await {
-        // The retry succeeded: prefer it. The caller (or a follow-up snapshot)
-        // decides whether the mid-load content is good enough.
-        Ok(value) => Ok(value),
-        // The retry failed differently — that error is usually the sharper
-        // diagnosis (a dead tab, a bad URL). Surface it unless it is just the
-        // same timeout again.
-        Err(fallback_error) => {
-            if is_navigation_timeout(&fallback_error.to_string()) {
-                Err(err)
-            } else {
-                Err(fallback_error)
-            }
-        }
-    }
-}
-
-/// Bug fix #4: bounded retry with backoff for idempotent read-only bridge
-/// calls. Mutating actions are never retried — see `RETRYABLE_ACTIONS`.
-///
-/// Navigation-family actions additionally get a single `wait: false` fallback
-/// (see [`retry_navigation_without_wait`]) so a fully-consumed load budget on
-/// an SPA page returns mid-load content instead of dead-ending the action.
+/// Retry only idempotent bridge reads. Writes may already have taken effect.
 async fn firefox_run_bridge_command_with_retry(
     logical_action: &str,
     bridge_action: &str,
@@ -2625,10 +2837,7 @@ async fn firefox_run_bridge_command_with_retry(
     ctx: &ToolContext,
 ) -> Result<Value> {
     if !RETRYABLE_ACTIONS.contains(&logical_action) {
-        let first =
-            run_bridge_with_tab_recovery(logical_action, bridge_action, params.clone(), ctx).await;
-        return retry_navigation_without_wait(first, logical_action, bridge_action, params, ctx)
-            .await;
+        return run_bridge_with_tab_recovery(logical_action, bridge_action, params, ctx).await;
     }
 
     let mut last_err = None;
@@ -2681,6 +2890,7 @@ async fn firefox_run_bridge_command(
 
     let params_json = serde_json::to_string(&params)?;
     let mut command = tokio::process::Command::new(&bin);
+    crate::alphacode_base::platform::hide_helper_console(command.as_std_mut());
     command.arg(action).arg(&params_json);
     command.stdin(std::process::Stdio::null());
     command.stdout(std::process::Stdio::piped());
@@ -3012,6 +3222,9 @@ fn format_navigate_result(result: &Value) -> String {
     if let Some(status) = tab.get("status").and_then(Value::as_str) {
         lines.push(format!("status: {status}"));
     }
+    if result["readinessTimedOut"] == true {
+        lines.push("Readiness timed out. Inspect this tab before continuing.".into());
+    }
     if lines.is_empty() {
         return serde_json::to_string_pretty(result).unwrap_or_default();
     }
@@ -3227,6 +3440,324 @@ fn format_interactables_result(result: &Value) -> String {
 
 #[cfg(test)]
 mod tests {
+    #[tokio::test]
+    async fn repeated_opens_reuse_owned_tab_without_replaying_timed_out_navigation() {
+        let session = "fake-bridge-repeated-open";
+        remember_session_tab(session, 42); // Borrowed user tab.
+        let mut allocations = 0;
+        let mut navigations = 0;
+        let tab = json!({"tabId": 81, "windowId": 2, "cookieStoreId": "firefox-default"});
+        for index in 0..100 {
+            let (result, reused) = open_in_firefox(
+                session,
+                json!({"url":format!("https://example.test/{index}"), "newTab":false}),
+                |action, params| {
+                    std::future::ready((|| match action {
+                        "status" => Ok(json!({"nativePortOpenedAt": 10})),
+                        "newSession" => {
+                            assert_eq!(params["wait"], false);
+                            assert_eq!(params["focus"], false);
+                            allocations += 1;
+                            Ok(tab.clone())
+                        }
+                        "navigate" => {
+                            assert_eq!(params["newTab"], false);
+                            assert_eq!(params["tabId"], 81);
+                            navigations += 1;
+                            if index == 0 {
+                                anyhow::bail!("Timed out waiting for tab 81 to load");
+                            }
+                            Ok(json!({"tab":tab}))
+                        }
+                        "getTab" => {
+                            assert_eq!(params["tabId"], 81);
+                            Ok(tab.clone())
+                        }
+                        _ => panic!("Unexpected bridge action {action}"),
+                    })())
+                },
+            )
+            .await
+            .unwrap();
+            assert_eq!(tab_id_from_value(&result), Some(81));
+            assert_eq!(reused, index > 0);
+            if index == 0 {
+                assert_eq!(result["readinessTimedOut"], true);
+            }
+        }
+        assert_eq!(allocations, 1);
+        assert_eq!(navigations, 100);
+        open_states().as_mut().unwrap().remove(session);
+        forget_session_tab(session, 81);
+    }
+
+    #[tokio::test]
+    async fn implicit_open_reuses_surviving_tab_after_manual_closure() {
+        let session = "fake-bridge-manually-closed-working-tab";
+        open_states().get_or_insert_with(HashMap::new).insert(
+            session.to_owned(),
+            OpenState {
+                owned: [81, 82]
+                    .into_iter()
+                    .map(|id| WorkingTab {
+                        id,
+                        window: None,
+                        container: None,
+                        connection: Some(10),
+                    })
+                    .collect(),
+                pending: None,
+            },
+        );
+        remember_session_tab(session, 82);
+
+        let (result, reused) = open_in_firefox(
+            session,
+            json!({"url":"https://example.test"}),
+            |action, params| {
+                std::future::ready(match action {
+                    "status" => Ok(json!({"nativePortOpenedAt": 10})),
+                    "getTab" if params["tabId"] == 82 => Err(anyhow::anyhow!("Invalid tab ID: 82")),
+                    "getTab" | "navigate" => {
+                        assert_eq!(params["tabId"], 81);
+                        Ok(json!({"tabId":81}))
+                    }
+                    _ => panic!("Unexpected bridge action {action}"),
+                })
+            },
+        )
+        .await
+        .unwrap();
+
+        assert!(reused);
+        assert_eq!(tab_id_from_value(&result), Some(81));
+        assert_eq!(session_tab_pin(session), Some(81));
+        forget_open_tab(session, 81);
+        forget_session_tab(session, 81);
+    }
+
+    #[tokio::test]
+    async fn explicit_open_recovers_capacity_after_manual_closure() {
+        let session = "fake-bridge-tab-capacity";
+        let limit = managed_open_limit() as i64;
+        open_states().get_or_insert_with(HashMap::new).insert(
+            session.to_owned(),
+            OpenState {
+                owned: (1..=limit)
+                    .map(|id| WorkingTab {
+                        id,
+                        window: None,
+                        container: None,
+                        connection: Some(10),
+                    })
+                    .collect(),
+                pending: None,
+            },
+        );
+
+        let params = json!({"url":"https://example.test", "newTab":true});
+        for closed_tab in [false, true] {
+            let result = open_in_firefox(session, params.clone(), |action, params| {
+                std::future::ready(match action {
+                    "status" => Ok(json!({"nativePortOpenedAt": 10})),
+                    "listTabs" => {
+                        let first_live_id = if closed_tab { 2 } else { 1 };
+                        let tabs: Vec<_> =
+                            (first_live_id..=limit).map(|id| json!({"id":id})).collect();
+                        Ok(json!({"tabs":tabs}))
+                    }
+                    "newSession" if closed_tab => Ok(json!({"tabId":limit + 1})),
+                    "navigate" if closed_tab => {
+                        assert_eq!(params["tabId"], limit + 1);
+                        Ok(json!({"tabId":limit + 1}))
+                    }
+                    _ => panic!("Unexpected bridge action {action}"),
+                })
+            })
+            .await;
+            if closed_tab {
+                assert_eq!(tab_id_from_value(&result.unwrap().0), Some(limit + 1));
+            } else {
+                assert!(result.unwrap_err().to_string().contains("tab limit"));
+            }
+        }
+        open_states().as_mut().unwrap().remove(session);
+        forget_session_tab(session, limit + 1);
+    }
+
+    #[tokio::test]
+    async fn a_completed_allocation_marker_does_not_count_as_page_readiness() {
+        let session = "fake-bridge-allocation-marker";
+        let url = "https://example.test/new";
+        let (result, _) = open_in_firefox(session, json!({"url":url}), |action, params| {
+            std::future::ready(match action {
+                "status" => Ok(json!({"nativePortOpenedAt": 10})),
+                "newSession" => Ok(json!({"tabId":89, "url":"about:blank"})),
+                "navigate" => Ok(json!({"tab":{"tabId":89, "url":"about:blank#alphacode-fixture", "status":"complete"}})),
+                "getTab" => {
+                    assert_eq!(params["tabId"], 89);
+                    Ok(json!({"tabId":89, "url":url, "status":"complete"}))
+                }
+                _ => panic!("Unexpected bridge action {action}"),
+            })
+        }).await.unwrap();
+        assert_eq!(result["tab"]["url"], url);
+        open_states().as_mut().unwrap().remove(session);
+        forget_session_tab(session, 89);
+    }
+
+    #[tokio::test]
+    async fn lost_allocation_reply_is_reconciled_without_creating_another_tab() {
+        let session = "fake-bridge-lost-allocation";
+        let mut marker = Value::Null;
+        let params = json!({"url":"https://example.test", "newTab":false});
+        let first = open_in_firefox(session, params.clone(), |action, params| {
+            std::future::ready((|| match action {
+                "status" => Ok(json!({"nativePortOpenedAt": 10})),
+                "newSession" => {
+                    marker = params["url"].clone();
+                    anyhow::bail!("Lost response");
+                }
+                _ => panic!("Unexpected bridge action {action}"),
+            })())
+        })
+        .await;
+        assert!(first.unwrap_err().to_string().contains("unconfirmed"));
+
+        let result = open_in_firefox(session, params, |action, params| {
+            std::future::ready((|| match action {
+                "status" => Ok(json!({"nativePortOpenedAt": 10})),
+                "listTabs" => Ok(json!({"tabs":[{"tabId": 88, "url":marker}]})),
+                "navigate" => {
+                    assert_eq!(params["tabId"], 88);
+                    assert_eq!(params["newTab"], false);
+                    Ok(json!({"tab":{"tabId":88, "url":params["url"], "status":"complete"}}))
+                }
+                _ => panic!("Unexpected bridge action {action}"),
+            })())
+        })
+        .await
+        .unwrap();
+        assert_eq!(tab_id_from_value(&result.0), Some(88));
+        open_states().as_mut().unwrap().remove(session);
+        forget_session_tab(session, 88);
+    }
+
+    #[tokio::test]
+    #[ignore = "requires a running Firefox and an installed native bridge"]
+    async fn firefox_working_tabs_stay_isolated_across_sessions() -> Result<()> {
+        use crate::alphacode_tool_core::ToolExecutionMode;
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+        anyhow::ensure!(
+            crate::browser::browser_binary_path().is_file(),
+            "Install the Firefox bridge first"
+        );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
+        let root = format!("http://{}/{}", listener.local_addr()?, uuid::Uuid::new_v4());
+        let server = tokio::spawn(async move {
+            while let Ok((mut stream, _)) = listener.accept().await {
+                tokio::spawn(async move {
+                    let mut request = [0u8; 4096];
+                    if let Ok(bytes) = stream.read(&mut request).await {
+                        if String::from_utf8_lossy(&request[..bytes]).contains("/slow HTTP/") {
+                            tokio::time::sleep(std::time::Duration::from_secs(3)).await;
+                        }
+                        let _ = stream.write_all(
+                            b"HTTP/1.1 200 OK\r\nContent-Type: text/html\r\nContent-Length: 22\r\nConnection: close\r\n\r\n<title>Fixture</title>",
+                        ).await;
+                    }
+                });
+            }
+        });
+        let session = |suffix| ToolContext {
+            session_id: format!("firefox-regression-{suffix}-{}", uuid::Uuid::new_v4()),
+            message_id: String::new(),
+            tool_call_id: String::new(),
+            working_dir: None,
+            stdin_request_tx: None,
+            graceful_shutdown_signal: None,
+            execution_mode: ToolExecutionMode::Direct,
+        };
+        let a = session("a");
+        let b = session("b");
+        let fingerprint = |tabs: Value| -> std::collections::BTreeMap<i64, (Value, Value)> {
+            tabs["tabs"]
+                .as_array()
+                .into_iter()
+                .flatten()
+                .filter_map(|tab| {
+                    Some((
+                        tab_id_from_value(tab)?,
+                        (tab["url"].clone(), tab["active"].clone()),
+                    ))
+                })
+                .collect()
+        };
+        let before = fingerprint(firefox_run_bridge_command("listTabs", json!({}), &a).await?);
+        let fixture: Result<()> = async {
+            let (first, _) = open_in_firefox(
+                &a.session_id,
+                json!({"url":format!("{root}/slow"), "timeoutMs": 1000, "returnContent":false}),
+                |action, params| firefox_run_bridge_command(action, params, &a),
+            )
+            .await?;
+            anyhow::ensure!(
+                first["readinessTimedOut"] == true,
+                "Slow page did not trigger the readiness timeout: {first}"
+            );
+            let (second, _) = open_in_firefox(
+                &b.session_id,
+                json!({"url":format!("{root}/second"), "returnContent":false}),
+                |action, params| firefox_run_bridge_command(action, params, &b),
+            )
+            .await?;
+            anyhow::ensure!(
+                tab_id_from_value(&first) != tab_id_from_value(&second),
+                "Sessions shared a working tab"
+            );
+            for index in 0..3 {
+                let (next, reused) = open_in_firefox(
+                    &a.session_id,
+                    json!({"url":format!("{root}/{index}"), "returnContent":false}),
+                    |action, params| firefox_run_bridge_command(action, params, &a),
+                )
+                .await?;
+                anyhow::ensure!(
+                    reused && tab_id_from_value(&first) == tab_id_from_value(&next),
+                    "Sequential open allocated a new tab"
+                );
+            }
+            Ok(())
+        }
+        .await;
+
+        // Close only IDs recorded by this fixture and absent from its baseline.
+        let mut cleanup = Ok(());
+        for ctx in [&a, &b] {
+            let state = open_states()
+                .as_mut()
+                .and_then(|states| states.remove(&ctx.session_id));
+            for tab in state.into_iter().flat_map(|state| state.owned) {
+                if !before.contains_key(&tab.id)
+                    && let Err(error) =
+                        firefox_run_bridge_command("closeTab", json!({"tabId":tab.id}), ctx).await
+                {
+                    cleanup = Err(error);
+                }
+                forget_session_tab(&ctx.session_id, tab.id);
+            }
+        }
+        server.abort();
+        cleanup?;
+        let after = fingerprint(firefox_run_bridge_command("listTabs", json!({}), &a).await?);
+        anyhow::ensure!(
+            before == after,
+            "Firefox tab inventory changed outside the fixture"
+        );
+        fixture
+    }
+
     use super::*;
 
     fn browser_input(value: Value) -> BrowserInput {
@@ -4435,23 +4966,6 @@ awaitAll(items)
     #[test]
     fn screenshot_is_tab_scoped_because_it_can_raise_the_users_tab() {
         assert!(TAB_SCOPED_MUTATING_ACTIONS.contains(&"screenshot"));
-    }
-
-    /// `open` with `new_tab: false` and no tab target reaches the extension's
-    /// `resolveTabId({})` branch and navigates the user's active tab, so the
-    /// guard in `execute_firefox_action` has to cover that case even though
-    /// `open` is not in the list above.
-    #[test]
-    fn untargeted_open_recovers_in_own_tab_and_preserves_explicit_target() {
-        let mut params = json!({"url":"https://example.test", "newTab":false});
-        super::ensure_open_target("open", &mut params);
-        assert_eq!(params["newTab"], true);
-        let mut targeted = json!({"tabId":3,"newTab":false});
-        super::ensure_open_target("open", &mut targeted);
-        assert_eq!(targeted["newTab"], false);
-        let mut click = json!({});
-        super::ensure_open_target("click", &mut click);
-        assert_eq!(click, json!({}));
     }
 
     #[test]

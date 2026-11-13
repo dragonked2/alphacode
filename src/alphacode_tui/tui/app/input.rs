@@ -119,8 +119,11 @@ pub(super) fn extract_input_shell_command(input: &str) -> Option<&str> {
 fn build_input_shell_command(command: &str) -> std::process::Command {
     #[cfg(windows)]
     {
-        let mut cmd = std::process::Command::new("cmd.exe");
-        cmd.arg("/C").arg(command);
+        use std::os::windows::process::CommandExt;
+
+        let mut cmd = crate::alphacode_base::platform::helper_command("cmd.exe");
+        cmd.args(["/D", "/S", "/C"])
+            .raw_arg(format!("\"{command}\""));
         cmd
     }
 
@@ -1368,19 +1371,12 @@ pub(super) fn handle_text_input(app: &mut App, text: &str) -> bool {
         app.onboarding_phase(),
         Some(crate::alphacode_tui::tui::app::onboarding_flow::OnboardingPhase::Suggestions)
     );
-    if app.input.is_empty()
-        && !app.is_processing
-        && (app.display_messages.is_empty() || onboarding_suggestions)
-    {
+    if app.input.is_empty() && !app.is_processing && onboarding_suggestions {
         let mut chars = text.chars();
         if let (Some(c), None) = (chars.next(), chars.next())
             && let Some(digit) = c.to_digit(10)
         {
-            let suggestions = if onboarding_suggestions {
-                app.suggestion_prompts()
-            } else {
-                app.starter_prompts()
-            };
+            let suggestions = app.suggestion_prompts();
             let idx = digit as usize;
             if idx >= 1 && idx <= suggestions.len() {
                 let (_label, prompt) = &suggestions[idx - 1];
@@ -4034,8 +4030,12 @@ impl App {
             output_tokens
         };
         if self.streaming.streaming_tps_collect_output {
-            self.streaming.streaming_total_output_tokens += delta;
+            self.streaming.streaming_total_output_tokens = self
+                .streaming
+                .streaming_total_output_tokens
+                .saturating_add(delta);
             if delta > 0 {
+                self.streaming.streaming_tps_pending_bytes = 0;
                 self.snapshot_streaming_tps();
             }
         }
@@ -4207,23 +4207,6 @@ impl App {
         // Leaving the preview should happen as soon as the user acts on it.
         self.onboarding_preview_mode = false;
 
-        // Auto-invoke: if no skill was explicitly invoked via slash command,
-        // check if any auto_invoke skill matches the user's message content.
-        if self.active_skill.is_none() {
-            let skills_snapshot = self.current_skills_snapshot();
-            if let Some(skill_name) = skills_snapshot.find_auto_invoke_match(&input) {
-                self.active_skill = Some(skill_name.clone());
-                self.push_display_message(DisplayMessage {
-                    role: "system".to_string(),
-                    content: format!("Auto-activated skill: {skill_name}"),
-                    tool_calls: vec![],
-                    duration_secs: None,
-                    title: None,
-                    tool_data: None,
-                });
-            }
-        }
-
         // Add user message to display (show placeholder to user, not full paste)
         // Remember the typed prompt so we can restore it to the input box if this
         // turn fails (e.g. "token refresh needed"), instead of dropping it.
@@ -4308,12 +4291,7 @@ impl App {
         self.kv_cache.current_api_usage_recorded = false;
         self.upstream_provider = None;
         self.status_detail = None;
-        self.streaming.streaming_tps_start = None;
-        self.streaming.streaming_tps_elapsed = Duration::ZERO;
-        self.streaming.streaming_tps_collect_output = false;
-        self.streaming.streaming_total_output_tokens = 0;
-        self.streaming.streaming_tps_observed_output_tokens = 0;
-        self.streaming.streaming_tps_observed_elapsed = Duration::ZERO;
+        self.reset_streaming_tps();
         self.processing_started = Some(Instant::now());
         self.visible_turn_started = Some(Instant::now());
         self.pending_turn = true;
@@ -4376,12 +4354,7 @@ impl App {
             self.kv_cache.current_api_usage_recorded = false;
             self.upstream_provider = None;
             self.status_detail = None;
-            self.streaming.streaming_tps_start = None;
-            self.streaming.streaming_tps_elapsed = Duration::ZERO;
-            self.streaming.streaming_tps_collect_output = false;
-            self.streaming.streaming_total_output_tokens = 0;
-            self.streaming.streaming_tps_observed_output_tokens = 0;
-            self.streaming.streaming_tps_observed_elapsed = Duration::ZERO;
+            self.reset_streaming_tps();
             self.processing_started = Some(Instant::now());
             if has_combined {
                 if preserve_visible_turn {

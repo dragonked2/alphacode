@@ -1,6 +1,47 @@
 use super::*;
 
 #[test]
+fn empty_chat_renders_the_setup_guide_without_generic_starters() {
+    let _lock = viewport_snapshot_test_lock();
+    for (width, height) in [(64, 18), (80, 24), (120, 32)] {
+        crate::alphacode_tui::tui::ui::clear_test_render_state_for_tests();
+        let state = TestState {
+            suppress_info_widgets: true,
+            ..Default::default()
+        };
+        let backend = ratatui::backend::TestBackend::new(width, height);
+        let mut terminal = ratatui::Terminal::new(backend).expect("terminal");
+        terminal
+            .draw(|frame| draw_inner(frame, &state))
+            .expect("empty chat render");
+        let buffer = terminal.backend().buffer();
+        let text = (0..height)
+            .map(|y| {
+                (0..width)
+                    .map(|x| buffer[(x, y)].symbol())
+                    .collect::<String>()
+            })
+            .collect::<Vec<_>>()
+            .join("\n");
+        for command in [
+            "/login",
+            "/model",
+            "/refresh-model-list",
+            "/thinking-display",
+            "/effort",
+        ] {
+            assert!(
+                text.contains(command),
+                "missing {command} at {width}x{height}:\n{text}"
+            );
+        }
+        assert!(text.contains("Quick start"), "{text}");
+        assert!(!text.contains("A few ways to get started"), "{text}");
+        assert!(!text.contains("Press 1-"), "{text}");
+    }
+}
+
+#[test]
 fn banner_transcript_and_composer_render_in_separate_areas() {
     let _lock = viewport_snapshot_test_lock();
     for count in [1, 80] {

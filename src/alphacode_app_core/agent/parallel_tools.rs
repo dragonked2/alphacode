@@ -23,6 +23,58 @@ use crate::alphacode_tool_core::ToolExecutionClass;
 /// fan-out at 4 (`MAX_CONCURRENT_READ_ONLY` in `tool/batch.rs`).
 pub const PARALLEL_READ_ONLY_CAP: usize = 4;
 
+/// A tool task belongs to its awaiting turn until ownership is explicitly
+/// transferred to the background runner. Dropping a plain JoinHandle would
+/// detach it, allowing cancelled turns to leave untracked tool work behind.
+pub(super) struct OwnedToolTask<T> {
+    handle: Option<tokio::task::JoinHandle<T>>,
+}
+
+impl<T> OwnedToolTask<T> {
+    pub(super) fn new(handle: tokio::task::JoinHandle<T>) -> Self {
+        Self {
+            handle: Some(handle),
+        }
+    }
+
+    pub(super) fn abort(&self) {
+        if let Some(handle) = &self.handle {
+            handle.abort();
+        }
+    }
+
+    pub(super) fn into_inner(mut self) -> tokio::task::JoinHandle<T> {
+        self.handle
+            .take()
+            .expect("tool task ownership transfers once")
+    }
+}
+
+impl<T> std::future::Future for OwnedToolTask<T> {
+    type Output = Result<T, tokio::task::JoinError>;
+
+    fn poll(
+        self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<Self::Output> {
+        std::future::Future::poll(
+            std::pin::Pin::new(
+                self.get_mut()
+                    .handle
+                    .as_mut()
+                    .expect("transferred tool task cannot be polled"),
+            ),
+            cx,
+        )
+    }
+}
+
+impl<T> Drop for OwnedToolTask<T> {
+    fn drop(&mut self) {
+        self.abort();
+    }
+}
+
 /// A single tool call awaiting execution, with its original position in the
 /// batch preserved so results can be reassembled in order.
 #[derive(Clone, Debug)]
@@ -120,6 +172,53 @@ impl ExecutionPlan {
 mod tests {
     use super::*;
     use crate::alphacode_message_types::ToolCall;
+
+    struct DroppedTask(Option<tokio::sync::oneshot::Sender<()>>);
+
+    impl Drop for DroppedTask {
+        fn drop(&mut self) {
+            if let Some(sender) = self.0.take() {
+                let _ = sender.send(());
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn dropping_turn_owned_task_aborts_its_future() {
+        let (started_tx, started_rx) = tokio::sync::oneshot::channel();
+        let (dropped_tx, dropped_rx) = tokio::sync::oneshot::channel();
+        let task = OwnedToolTask::new(tokio::spawn(async move {
+            let _guard = DroppedTask(Some(dropped_tx));
+            let _ = started_tx.send(());
+            std::future::pending::<()>().await;
+        }));
+        started_rx.await.unwrap();
+        drop(task);
+        tokio::time::timeout(std::time::Duration::from_secs(1), dropped_rx)
+            .await
+            .expect("cancelled turn must not detach its owned task")
+            .unwrap();
+    }
+
+    #[tokio::test]
+    async fn explicit_background_transfer_preserves_task_until_new_owner_cancels() {
+        let (started_tx, started_rx) = tokio::sync::oneshot::channel();
+        let (dropped_tx, mut dropped_rx) = tokio::sync::oneshot::channel();
+        let task = OwnedToolTask::new(tokio::spawn(async move {
+            let _guard = DroppedTask(Some(dropped_tx));
+            let _ = started_tx.send(());
+            std::future::pending::<()>().await;
+        }));
+        let handle = task.into_inner();
+        started_rx.await.unwrap();
+        assert!(matches!(
+            dropped_rx.try_recv(),
+            Err(tokio::sync::oneshot::error::TryRecvError::Empty)
+        ));
+        handle.abort();
+        assert!(handle.await.unwrap_err().is_cancelled());
+        dropped_rx.await.unwrap();
+    }
 
     fn make_call(name: &str, id: &str) -> ToolCall {
         ToolCall {

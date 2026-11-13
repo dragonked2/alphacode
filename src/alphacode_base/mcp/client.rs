@@ -148,6 +148,7 @@ impl McpClient {
         env.extend(config.env.clone());
 
         let mut command = Command::new(&config.command);
+        crate::alphacode_base::platform::hide_helper_console(command.as_std_mut());
         command
             .args(&config.args)
             .envs(&env)

@@ -13,7 +13,8 @@
 //!
 //! # The mechanism
 //!
-//! When the active profile is `alphax-free` and a retryable failure occurs:
+//! When the active profile is `alphax-free`, a concrete pool member is selected,
+//! and a retryable failure occurs:
 //!
 //! 1. The current model is quarantined in a shared cooldown map for a window
 //!    derived from the failure class (a daily-limit 429 gets a long quarantine;
@@ -27,7 +28,10 @@
 //!
 //! # Why it is invisible
 //!
-//! Every model in the pool is presented to the user as "Alphax Free"
+//! The automatic routing alias is deliberately pinned: selecting
+//! "Alphax Free (automatic)" means the user's model choice is not rewritten by
+//! recovery. Every concrete model in the pool is presented to the user as
+//! "Alphax Free"
 //! ([`free_model_display_name`]). Rotation is a gateway implementation detail;
 //! surfacing a concrete pool id in the header would be both alarming and
 //! meaningless. The switch still emits a `ModelChanged` event so the header,
@@ -134,6 +138,8 @@ pub(crate) enum RotationTrigger {
     Transient,
     /// The model responded but produced nothing usable.
     EmptyResponse,
+    /// Opaque HTTP 400 from the Alphax Free gateway.
+    RejectedRequest,
     /// The model served the request but stopped it with a guardrail/refusal
     /// stop (e.g. Anthropic `stop_reason: "refusal"`).
     ///
@@ -157,7 +163,7 @@ impl RotationTrigger {
         match self {
             Self::RateLimited => RATE_LIMIT_QUARANTINE,
             Self::Transient => TRANSIENT_QUARANTINE,
-            Self::EmptyResponse => EMPTY_RESPONSE_QUARANTINE,
+            Self::EmptyResponse | Self::RejectedRequest => EMPTY_RESPONSE_QUARANTINE,
             Self::Refusal => REFUSAL_QUARANTINE,
             Self::Unroutable => UNROUTABLE_QUARANTINE,
         }
@@ -396,6 +402,23 @@ pub fn should_rotate_for_provider(provider_name: &str, model: &str) -> bool {
         && should_rotate_for_model(model)
 }
 
+/// Whether recovery may silently move this Alphax Free selection to another
+/// pool member.
+///
+/// The automatic alias is a user-visible selection in its own right. Changing
+/// it to a concrete upstream model after a 429 makes the next request appear
+/// to switch models repeatedly, persists the implementation detail into the
+/// session, and makes the picker no longer represent what the user chose.
+/// Concrete free models remain eligible for the existing bounded rotation.
+pub fn should_implicitly_rotate_for_provider(provider_name: &str, model: &str) -> bool {
+    should_rotate_for_provider(provider_name, model) && !is_automatic_free_route(model)
+}
+
+/// Whether `model` is the canonical "Alphax Free (automatic)" selection.
+pub fn is_automatic_free_route(model: &str) -> bool {
+    model.trim() == route_cloak::leaked_free_route_default_model()
+}
+
 /// Pick the next usable model in the pool, given the one that just failed.
 ///
 /// Returns `None` when every alternative is quarantined.
@@ -428,6 +451,7 @@ impl RotationNotice {
             RotationTrigger::RateLimited => "rate limited",
             RotationTrigger::Transient => "temporarily unavailable",
             RotationTrigger::EmptyResponse => "returned no output",
+            RotationTrigger::RejectedRequest => "recovering from a rejected request",
             // A refusal is the model's content policy, not an outage. Phrase it
             // as a hold so "switching to another free model" is the fix.
             RotationTrigger::Refusal => "on hold after a refusal",
@@ -681,6 +705,25 @@ mod tests {
             "rotating a paid model would silently change the user's billing"
         );
         assert!(!should_rotate_for_model("claude-sonnet-5"));
+    }
+
+    #[test]
+    fn automatic_free_route_stays_pinned_during_implicit_recovery() {
+        let _guard = test_lock();
+        let alias = route_cloak::free_route_default_model();
+        assert!(is_automatic_free_route(&alias));
+        assert!(!should_implicitly_rotate_for_provider(
+            ALPHAX_FREE_DISPLAY_NAME,
+            &alias
+        ));
+        assert!(should_implicitly_rotate_for_provider(
+            ALPHAX_FREE_DISPLAY_NAME,
+            "synthetic/pool-a:free"
+        ));
+        assert!(!should_implicitly_rotate_for_provider(
+            "OpenRouter",
+            "synthetic/pool-a:free"
+        ));
     }
 
     #[test]

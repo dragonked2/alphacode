@@ -487,7 +487,18 @@ impl App {
             KeyCode::Down => self.step_prompt_history_search(-1),
             KeyCode::Backspace => {
                 if let Some(state) = self.prompt_history_search.as_mut() {
-                    state.query.pop();
+                    // Delete one user-perceived character, not merely the last
+                    // Unicode scalar. A scalar-only pop splits emoji ZWJ
+                    // sequences and combining-mark clusters, leaving a query
+                    // that can no longer be rendered or matched consistently.
+                    let previous_boundary = state
+                        .query
+                        .grapheme_indices(true)
+                        .next_back()
+                        .map(|(start, _)| start);
+                    if let Some(start) = previous_boundary {
+                        state.query.truncate(start);
+                    }
                 }
                 self.refresh_prompt_history_search_matches();
             }

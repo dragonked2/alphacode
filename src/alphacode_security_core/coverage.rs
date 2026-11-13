@@ -284,6 +284,104 @@ impl CoverageTracker {
     }
 }
 
+/// A read-only snapshot of coverage, surfaced to the operator so that
+/// "untested" is never conflated with "secure".
+///
+/// The tracker records *attempted* work. A surface that was never reached is
+/// `NotTested` here, which is a coverage gap — not a clean bill of health.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct CoverageDashboard {
+    pub stats: CoverageStats,
+    /// Endpoints with at least one completed test, sorted by last activity.
+    pub tested_endpoints: Vec<EndpointCoverage>,
+    /// Endpoints that produced a signal but have unresolved candidates.
+    pub signal_endpoints: Vec<EndpointCoverage>,
+    /// Vuln classes with no completed test anywhere in the run.
+    pub untested_classes: Vec<String>,
+    /// Vuln classes that have been tested and produced no signal.
+    pub refuted_classes: Vec<String>,
+    /// Tests that errored or were skipped and remain eligible for retry.
+    pub incomplete_tests: Vec<TestRecord>,
+}
+
+impl CoverageDashboard {
+    /// Build the dashboard from the current tracker state.
+    pub fn from_tracker(tracker: &CoverageTracker, all_classes: &[String]) -> Self {
+        let mut tested: Vec<&EndpointCoverage> = tracker
+            .endpoint_coverage
+            .values()
+            .filter(|c| !c.methods_tested.is_empty())
+            .collect();
+        tested.sort_by(|a, b| {
+            b.last_tested
+                .cmp(&a.last_tested)
+                .then_with(|| a.endpoint.cmp(&b.endpoint))
+        });
+
+        let signal: Vec<&EndpointCoverage> = tracker
+            .endpoint_coverage
+            .values()
+            .filter(|c| !c.vuln_classes_with_signal.is_empty())
+            .collect();
+
+        let tested_classes: HashSet<String> = tracker
+            .test_results
+            .values()
+            .filter(|r| r.result.is_completed())
+            .map(|r| r.vuln_class.to_lowercase())
+            .collect();
+
+        let refuted: Vec<String> = tested_classes
+            .iter()
+            .filter(|class| {
+                !tracker
+                    .endpoint_coverage
+                    .values()
+                    .any(|c| c.vuln_classes_with_signal.contains(*class))
+            })
+            .cloned()
+            .collect();
+
+        let incomplete: Vec<TestRecord> = tracker
+            .test_results
+            .values()
+            .filter(|r| {
+                matches!(
+                    r.result,
+                    TestResult::Error | TestResult::Skipped | TestResult::NotTested
+                )
+            })
+            .cloned()
+            .collect();
+
+        CoverageDashboard {
+            stats: tracker.stats.clone(),
+            tested_endpoints: tested.into_iter().cloned().collect(),
+            signal_endpoints: signal.into_iter().cloned().collect(),
+            untested_classes: tracker.untested_vuln_classes(all_classes),
+            refuted_classes: refuted,
+            incomplete_tests: incomplete,
+        }
+    }
+
+    /// Coverage completeness as a percentage of discovered endpoints that have
+    /// at least one completed test. This is *attempt* coverage, not proof that
+    /// the surface is secure.
+    pub fn endpoint_coverage_pct(&self) -> f64 {
+        let total = self.stats.total_endpoints_discovered.max(1);
+        (self.stats.endpoints_tested as f64 / total as f64) * 100.0
+    }
+
+    /// True when every discovered endpoint has been tested and no test is
+    /// left in an incomplete state. Absence here means "not yet exercised",
+    /// never "verified clean".
+    pub fn is_exhaustive(&self) -> bool {
+        self.stats.total_endpoints_discovered > 0
+            && self.stats.endpoints_tested >= self.stats.total_endpoints_discovered
+            && self.incomplete_tests.is_empty()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -462,5 +560,50 @@ mod tests {
         let all = vec!["xss".to_string(), "sqli".to_string(), "ssrf".to_string()];
         let untested = tracker.untested_vuln_classes(&all);
         assert_eq!(untested, vec!["sqli".to_string(), "ssrf".to_string()]);
+    }
+
+    #[test]
+    fn dashboard_separates_untested_from_refuted() {
+        let mut tracker = CoverageTracker::new();
+        tracker.set_discovered_endpoints(2);
+        tracker.record_test(record("/a", "GET", "xss", TestResult::NoVulnerability));
+        tracker.record_test(record("/b", "GET", "sqli", TestResult::Error));
+
+        let dashboard = CoverageDashboard::from_tracker(
+            &tracker,
+            &["xss".to_string(), "sqli".to_string(), "ssrf".to_string()],
+        );
+
+        // `xss` was exercised and produced no signal: refuted, not untested.
+        assert!(
+            dashboard.refuted_classes.contains(&"xss".to_string()),
+            "a completed negative test is refuted, not untested"
+        );
+        assert!(!dashboard.refuted_classes.contains(&"sqli".to_string()));
+        // `sqli` errored and `ssrf` was never reached: both are gaps.
+        assert!(
+            dashboard.untested_classes.contains(&"sqli".to_string())
+                && dashboard.untested_classes.contains(&"ssrf".to_string()),
+            "an errored test and an unreached class are both untested"
+        );
+        assert_eq!(dashboard.incomplete_tests.len(), 1);
+        assert_eq!(dashboard.incomplete_tests[0].vuln_class, "sqli");
+        // One of two discovered endpoints was actually exercised.
+        assert_eq!(dashboard.stats.endpoints_tested, 1);
+        assert!((dashboard.endpoint_coverage_pct() - 50.0).abs() < f64::EPSILON);
+        // Coverage is incomplete: an errored test remains.
+        assert!(!dashboard.is_exhaustive());
+    }
+
+    #[test]
+    fn dashboard_reports_exhaustive_when_everything_completed() {
+        let mut tracker = CoverageTracker::new();
+        tracker.set_discovered_endpoints(1);
+        tracker.record_test(record("/a", "GET", "xss", TestResult::NoVulnerability));
+
+        let dashboard = CoverageDashboard::from_tracker(&tracker, &["xss".to_string()]);
+        assert!(dashboard.is_exhaustive());
+        assert!(dashboard.untested_classes.is_empty());
+        assert!(dashboard.refuted_classes.contains(&"xss".to_string()));
     }
 }

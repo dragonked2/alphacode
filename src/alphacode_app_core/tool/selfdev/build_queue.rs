@@ -91,13 +91,17 @@ export -f cargo
         output_path: PathBuf,
     ) -> Result<TaskResult> {
         let mut cmd = tokio::process::Command::new(&command.program);
-        cmd.args(&command.args)
-            .current_dir(&repo_dir)
-            .env(
-                "ALPHACODE_DEV_CARGO_SCRIPT",
-                repo_dir.join("scripts").join("dev_cargo.sh"),
-            )
-            .kill_on_drop(true)
+        crate::alphacode_base::platform::hide_helper_console(cmd.as_std_mut());
+        cmd.args(&command.args).current_dir(&repo_dir);
+        let cargo_wrapper = repo_dir.join("scripts").join("dev_cargo.sh");
+        if cargo_wrapper.is_file() {
+            cmd.env("ALPHACODE_DEV_CARGO_SCRIPT", cargo_wrapper);
+        } else {
+            // Never point the shell function at a missing executable. Falling
+            // back to `command cargo` is slower but valid and diagnosable.
+            cmd.env_remove("ALPHACODE_DEV_CARGO_SCRIPT");
+        }
+        cmd.kill_on_drop(true)
             .stdout(Stdio::piped())
             .stderr(Stdio::piped());
 
@@ -952,8 +956,18 @@ export -f cargo
                 )
             })?;
         let requested_source = SelfDevTool::requested_source_state(&repo_dir)?;
+        #[cfg(windows)]
+        let shell_program = crate::alphacode_base::platform::git_bash_path()
+            .map(|path| path.to_string_lossy().into_owned())
+            .ok_or_else(|| {
+                anyhow::anyhow!(
+                    "`selfdev test` requires Git Bash on Windows. The WindowsApps/System32 `bash.exe` is a WSL shim and is not used. Install Git for Windows, then retry."
+                )
+            })?;
+        #[cfg(not(windows))]
+        let shell_program = "bash".to_string();
         let shell_command = SelfDevBuildCommand {
-            program: "bash".to_string(),
+            program: shell_program,
             args: vec![
                 "-lc".to_string(),
                 SelfDevTool::optimized_test_shell_command(&command),

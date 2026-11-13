@@ -10,6 +10,31 @@
 // reload snapshot must therefore fold it back into the queue.
 
 #[test]
+fn reload_maps_sanitized_cursor_to_a_grapheme_boundary() {
+    with_temp_alphacode_home(|| {
+        for (input, cursor, expected_input, expected_cursor) in [
+            ("\x1b[31m中文x", 8, "中文x", 3),
+            ("中文x", 1, "中文x", 0),
+            ("e\u{301}x", 1, "e\u{301}x", 0),
+            ("中文x", usize::MAX, "中文x", 7),
+        ] {
+            let mut app = create_test_app();
+            app.input = input.to_string();
+            app.cursor_pos = cursor;
+            let session_id = format!("test-unicode-cursor-{}", std::process::id());
+            app.save_input_for_reload(&session_id);
+            let mut restored = App::restore_input_for_reload(&session_id).unwrap();
+            // Exercise malformed offsets even if snapshot writing normalizes them.
+            restored.input = input.to_string();
+            restored.cursor = cursor;
+            app.apply_restored_reload_input(restored);
+            assert_eq!(app.input, expected_input);
+            assert_eq!(app.cursor_pos, expected_cursor);
+        }
+    });
+}
+
+#[test]
 fn test_disconnect_recovers_inflight_queued_continuation_to_queue() {
     let mut app = create_test_app();
     let rt = tokio::runtime::Runtime::new().unwrap();

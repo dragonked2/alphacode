@@ -8,7 +8,7 @@ use crate::{terminal_eprintln as eprintln, terminal_print as print, terminal_pri
 type SpawnedToolCall = (
     usize,
     ToolCall,
-    tokio::task::JoinHandle<(Result<ToolOutput>, std::time::Duration)>,
+    super::parallel_tools::OwnedToolTask<(Result<ToolOutput>, std::time::Duration)>,
 );
 
 /// One finished parallel tool execution, sorted back into original call order
@@ -69,6 +69,7 @@ impl Agent {
     pub(super) async fn run_turn(&mut self, print_output: bool) -> Result<String> {
         self.set_log_context();
         crate::session_metrics::record_turn(&self.session.id);
+        self.initialize_goal_contract();
         // Reset the per-turn budget counters; see `run_turn_streaming_mpsc`.
         self.budget_enforcer
             .begin_turn(self.goal_contract.as_ref().map(|c| c.phase));
@@ -81,22 +82,6 @@ impl Agent {
             &self.session.id,
             self.graceful_shutdown.clone(),
         );
-
-        // Goal contract initialization: create a GoalContract from the active
-        // mission's success_criteria if one exists and no contract is active yet.
-        if self.goal_contract.is_none()
-            && let Ok(Some(mission)) = crate::mission::load(&self.session.id)
-            && let Some(contract) = crate::mission::contract_from_mission(&mission)
-        {
-            logging::info(&format!(
-                "Goal contract created from mission: {} criteria",
-                contract.success_criteria.len()
-            ));
-            self.goal_contract = Some(contract);
-            // Reset per-contract waste tracking so metrics describe exactly
-            // the contract being executed, not leftovers from a previous one.
-            crate::telemetry::waste_metrics::begin_contract();
-        }
 
         let mut final_text = String::new();
         let trace = trace_enabled();
@@ -117,11 +102,14 @@ impl Agent {
         // and decides the next action — the system prompt and tool list never
         // change. Rebuilding them on every iteration wastes ~50ms of CPU and
         // produces identical bytes that the provider's KV cache already ignores.
+        let mut node_stack_observed = false;
         let mut cached_static_prompt: Option<(
             std::sync::Arc<crate::prompt::SplitSystemPrompt>,
             crate::prompt::PromptTier,
         )> = None;
         let mut cached_tools: Option<Vec<ToolDefinition>> = None;
+        let ctf_goal_active = self.ctf_goal_active();
+        let mut ctf_continuations = std::collections::HashSet::new();
         let mut iteration_count: u32 = 0;
         let mut last_save_time = Instant::now();
         loop {
@@ -179,10 +167,18 @@ impl Agent {
             if self.locked_tools.is_none() {
                 cached_tools = None;
             }
+            if !node_stack_observed && super::prompting::observed_node_stack(&self.session.messages)
+            {
+                node_stack_observed = true;
+                cached_static_prompt = None;
+                cached_tools = None;
+            }
             if cached_tools.is_none() {
                 let definitions = self.tool_definitions().await;
-                cached_tools = Some(if self.uses_compact_local_context() {
-                    let query = self.latest_user_text().unwrap_or_default();
+                cached_tools = Some(if self.uses_compact_context() {
+                    let task = super::prompting::latest_task_text(&self.session.messages)
+                        .unwrap_or_default();
+                    let query = super::prompting::adaptive_tool_query(&task, node_stack_observed);
                     super::turn_execution::context_adaptive_tools_with_promotions(
                         &definitions,
                         &query,
@@ -211,7 +207,7 @@ impl Agent {
             let (split_prompt, prompt_tier) = if let Some(ref cached) = cached_static_prompt {
                 (std::sync::Arc::clone(&cached.0), cached.1)
             } else {
-                let (sp, tier) = self.build_system_prompt_split(None, None);
+                let (sp, tier) = self.build_system_prompt_split(None, None, node_stack_observed);
                 let sp = std::sync::Arc::new(sp);
                 cached_static_prompt = Some((std::sync::Arc::clone(&sp), tier));
                 (sp, tier)
@@ -219,7 +215,7 @@ impl Agent {
             let capability_brief = crate::tool::capabilities::request_brief(
                 &capability_names,
                 tools,
-                self.uses_compact_local_context(),
+                self.uses_compact_context(),
                 self.provider.handles_tools_internally(),
             );
             let request_dynamic_prompt =
@@ -310,12 +306,10 @@ impl Agent {
                         &mut provider_error_continuations,
                     )? {
                         if delay > 0 {
-                            crate::terminal_println!(
-                                "\nWaiting {}s before retry (attempt {}/{})...",
-                                delay,
-                                provider_error_continuations,
+                            logging::info(&format!(
+                                "Provider retry scheduled in {delay}s (attempt {provider_error_continuations}/{})",
                                 Self::MAX_PROVIDER_ERROR_CONTINUATION_ATTEMPTS
-                            );
+                            ));
                             tokio::time::sleep(tokio::time::Duration::from_secs(delay)).await;
                         }
                         continue;
@@ -510,12 +504,10 @@ impl Agent {
                             )?
                         {
                             if delay > 0 {
-                                crate::terminal_println!(
-                                    "\nWaiting {}s before retry (attempt {}/{}).",
-                                    delay,
-                                    provider_error_continuations,
+                                logging::info(&format!(
+                                    "Provider retry scheduled in {delay}s (attempt {provider_error_continuations}/{})",
                                     Self::MAX_PROVIDER_ERROR_CONTINUATION_ATTEMPTS
-                                );
+                                ));
                                 tokio::time::sleep(tokio::time::Duration::from_secs(delay)).await;
                             }
                             retry_after_provider_error = true;
@@ -878,28 +870,9 @@ impl Agent {
                                 request_id, tool_name
                             );
                         }
-                        let ctx = ToolContext {
-                            session_id: self.session.id.clone(),
-                            message_id: self.session.id.clone(),
-                            tool_call_id: request_id.clone(),
-                            working_dir: self.working_dir().map(PathBuf::from),
-                            stdin_request_tx: self.stdin_request_tx.clone(),
-                            graceful_shutdown_signal: Some(self.graceful_shutdown.clone()),
-                            execution_mode: ToolExecutionMode::AgentTurn,
-                        };
-                        crate::telemetry::record_tool_call();
-                        let tool_result = self
-                            .registry
-                            .execute(&tool_name, ToolCall::normalize_input_to_object(input), ctx)
+                        let native_result = self
+                            .execute_native_goal_tool(request_id, tool_name, input)
                             .await;
-                        if tool_result.is_err() {
-                            crate::telemetry::record_tool_failure();
-                        }
-                        let native_result = match tool_result {
-                            Ok(output) => NativeToolResult::success(request_id, output.output),
-                            Err(e) => NativeToolResult::error(request_id, e.to_string()),
-                        };
-                        // Send result back to SDK bridge
                         if let Some(sender) = self.provider.native_result_sender() {
                             let _ = sender.send(native_result).await;
                         }
@@ -976,12 +949,10 @@ impl Agent {
                             )?
                         {
                             if delay > 0 {
-                                crate::terminal_println!(
-                                    "\nWaiting {}s before retry (attempt {}/{}).",
-                                    delay,
-                                    provider_error_continuations,
+                                logging::info(&format!(
+                                    "Provider retry scheduled in {delay}s (attempt {provider_error_continuations}/{})",
                                     Self::MAX_PROVIDER_ERROR_CONTINUATION_ATTEMPTS
-                                );
+                                ));
                                 tokio::time::sleep(tokio::time::Duration::from_secs(delay)).await;
                             }
                             retry_after_provider_error = true;
@@ -1224,6 +1195,13 @@ impl Agent {
                     logging::warn("Refusal stop: rotated to an alternate free route for this turn");
                     continue;
                 }
+                if ctf_goal_active
+                    && !visible_text_is_empty
+                    && !Self::is_guardrail_stop_reason(stop_reason.as_deref())
+                    && self.continue_ctf_goal(&mut ctf_continuations)?
+                {
+                    continue;
+                }
                 // Surface silent guardrail/refusal stops instead of returning
                 // an empty final answer with no explanation.
                 if let Some(notice) = Self::provider_guardrail_notice(
@@ -1353,48 +1331,57 @@ impl Agent {
                                     let gs = graceful_shutdown.clone();
                                     let stx = stdin_tx.clone();
                                     let call = pt.call.clone();
+                                    let rejection = self.terminal_goal_rejection(&call.name);
                                     (
                                         pt.index,
                                         call.clone(),
-                                        tokio::spawn(async move {
-                                            let _permit = sem.acquire().await;
-                                            let tool_start = std::time::Instant::now();
-                                            crate::logging::info_throttled_with(
-                                                "tool_starting",
-                                                || {
-                                                    format!(
-                                                        "Tool starting (parallel): {}",
-                                                        call.name
-                                                    )
-                                                },
-                                            );
-                                            if trace {
-                                                eprintln!(
-                                                    "[trace] tool_exec_start name={} id={}",
-                                                    call.name, call.id
+                                        super::parallel_tools::OwnedToolTask::new(tokio::spawn(
+                                            async move {
+                                                if let Some(message) = rejection {
+                                                    return (
+                                                        Err(anyhow::anyhow!(message)),
+                                                        Duration::ZERO,
+                                                    );
+                                                }
+                                                let _permit = sem.acquire().await;
+                                                let tool_start = std::time::Instant::now();
+                                                crate::logging::info_throttled_with(
+                                                    "tool_starting",
+                                                    || {
+                                                        format!(
+                                                            "Tool starting (parallel): {}",
+                                                            call.name
+                                                        )
+                                                    },
                                                 );
-                                            }
-                                            let ctx = ToolContext {
-                                                session_id: sid.clone(),
-                                                message_id: sid,
-                                                tool_call_id: call.id.clone(),
-                                                working_dir: wd,
-                                                stdin_request_tx: stx,
-                                                graceful_shutdown_signal: Some(gs),
-                                                execution_mode: ToolExecutionMode::AgentTurn,
-                                            };
-                                            let result = reg
-                                                .execute(&call.name, call.input.clone(), ctx)
-                                                .await;
-                                            crate::telemetry::record_tool_call();
-                                            let elapsed = tool_start.elapsed();
-                                            crate::logging::info(&format!(
-                                                "Tool finished: {} in {:.2}s",
-                                                call.name,
-                                                elapsed.as_secs_f64()
-                                            ));
-                                            (result, elapsed)
-                                        }),
+                                                if trace {
+                                                    eprintln!(
+                                                        "[trace] tool_exec_start name={} id={}",
+                                                        call.name, call.id
+                                                    );
+                                                }
+                                                let ctx = ToolContext {
+                                                    session_id: sid.clone(),
+                                                    message_id: sid,
+                                                    tool_call_id: call.id.clone(),
+                                                    working_dir: wd,
+                                                    stdin_request_tx: stx,
+                                                    graceful_shutdown_signal: Some(gs),
+                                                    execution_mode: ToolExecutionMode::AgentTurn,
+                                                };
+                                                let result = reg
+                                                    .execute(&call.name, call.input.clone(), ctx)
+                                                    .await;
+                                                crate::telemetry::record_tool_call();
+                                                let elapsed = tool_start.elapsed();
+                                                crate::logging::info(&format!(
+                                                    "Tool finished: {} in {:.2}s",
+                                                    call.name,
+                                                    elapsed.as_secs_f64()
+                                                ));
+                                                (result, elapsed)
+                                            },
+                                        )),
                                     )
                                 })
                                 .collect();
@@ -1604,16 +1591,7 @@ impl Agent {
             io::stdout().flush()?;
         }
 
-        // Goal contract enforcement: reject non-report tool calls
-        // when the contract has reached terminal state.
-        if let Some(ref contract) = self.goal_contract
-            && super::goal_evaluator::GoalEvaluator::should_reject_tool_call(contract, &tc.name)
-        {
-            logging::info(&format!(
-                "Goal contract terminal - rejecting tool call: {}",
-                tc.name
-            ));
-            let rejection_msg = "This tool call is rejected: the goal contract has been satisfied by authoritative evidence. Produce the final report now.".to_string();
+        if let Some(rejection_msg) = self.goal_tool_rejection(&tc.name) {
             Bus::global().publish(BusEvent::ToolUpdated(ToolEvent {
                 session_id: self.session.id.clone(),
                 message_id: message_id.to_string(),
@@ -1635,67 +1613,6 @@ impl Agent {
             return Ok(false);
         }
 
-        // Budget enforcement: check phase budgets and degraded tools
-        if let Some(ref contract) = self.goal_contract {
-            let verdict = self.budget_enforcer.record_call(&tc.name, contract);
-            if let super::budget_enforcer::BudgetVerdict::OverBudget(msg) = verdict {
-                logging::info(&format!("Budget overrun: {}", msg));
-                // Force transition to report phase
-                if let Some(ref mut c) = self.goal_contract {
-                    c.phase = crate::alphacode_task_types::goal_contract::ContractPhase::Report;
-                }
-                self.budget_enforcer.transition_phase(
-                    crate::alphacode_task_types::goal_contract::ContractPhase::Report,
-                );
-                let budget_msg = format!(
-                    "Budget overrun: {}. Transitioning to report phase. Produce the final report now.",
-                    msg
-                );
-                Bus::global().publish(BusEvent::ToolUpdated(ToolEvent {
-                    session_id: self.session.id.clone(),
-                    message_id: message_id.to_string(),
-                    tool_call_id: tc.id.clone(),
-                    tool_name: tc.name.clone(),
-                    status: ToolStatus::Error,
-                    intent: tc.intent.clone(),
-                    title: None,
-                }));
-                self.add_message(
-                    Role::User,
-                    vec![ContentBlock::ToolResult {
-                        tool_use_id: tc.id.clone(),
-                        content: budget_msg,
-                        is_error: Some(true),
-                    }],
-                );
-                *tool_results_dirty = true;
-                return Ok(false);
-            } else if let super::budget_enforcer::BudgetVerdict::Rejected(msg) = verdict {
-                logging::info(&format!("Tool rejected: {}", msg));
-                let rejection_msg =
-                    format!("Tool call rejected: {}. Use an alternative approach.", msg);
-                Bus::global().publish(BusEvent::ToolUpdated(ToolEvent {
-                    session_id: self.session.id.clone(),
-                    message_id: message_id.to_string(),
-                    tool_call_id: tc.id.clone(),
-                    tool_name: tc.name.clone(),
-                    status: ToolStatus::Error,
-                    intent: tc.intent.clone(),
-                    title: None,
-                }));
-                self.add_message(
-                    Role::User,
-                    vec![ContentBlock::ToolResult {
-                        tool_use_id: tc.id.clone(),
-                        content: rejection_msg,
-                        is_error: Some(true),
-                    }],
-                );
-                *tool_results_dirty = true;
-                return Ok(false);
-            }
-        }
-
         Ok(true)
     }
 
@@ -1711,6 +1628,21 @@ impl Agent {
         trace: bool,
         tool_results_dirty: &mut bool,
     ) -> Result<()> {
+        // Preflight covers the whole batch. An earlier serial result may
+        // have completed the goal since then, so recheck before execution.
+        if let Some(message) = self.terminal_goal_rejection(&tc.name) {
+            return self
+                .record_tool_result(ToolResultRecording {
+                    tc,
+                    result: Err(anyhow::anyhow!(message)),
+                    message_id,
+                    print_output,
+                    trace,
+                    tool_results_dirty,
+                    tool_elapsed: Duration::ZERO,
+                })
+                .await;
+        }
         let tool_start = Instant::now();
         let ctx = ToolContext {
             session_id: self.session.id.clone(),
@@ -1818,7 +1750,8 @@ impl Agent {
                     println!("{}", format_tool_output_preview(&output.output));
                 }
 
-                let blocks = tool_output_to_content_blocks(tc.id.clone(), output.clone());
+                let reminder = self.evaluate_goal_tool_result(tc, Some(&output));
+                let blocks = tool_output_to_content_blocks(tc.id.clone(), output);
                 self.add_message_with_duration(
                     Role::User,
                     blocks,
@@ -1826,46 +1759,12 @@ impl Agent {
                 );
                 *tool_results_dirty = true;
 
-                // Goal contract evaluation: check if this tool output
-                // satisfies any terminal success criterion.
-                if let Some(ref contract) = self.goal_contract
-                    && let Some(evidence) = super::goal_evaluator::GoalEvaluator::evaluate(
-                        contract,
-                        &tc.name,
-                        &output.output,
-                    )
-                {
-                    logging::info(&format!(
-                        "Goal contract terminal evidence: criterion #{} ({})",
-                        evidence.criterion_index + 1,
-                        evidence.description
-                    ));
-                    // Mark the contract as terminal and inject the
-                    // termination reminder so the model knows to
-                    // produce a final report.
-                    if let Some(ref mut c) = self.goal_contract {
-                        c.mark_terminal(evidence.clone());
-                    }
-                    // Record goal achievement in budget enforcer
-                    self.budget_enforcer.mark_goal_achieved();
-                    crate::telemetry::waste_metrics::mark_goal_achieved(
-                        self.budget_enforcer.total_calls(),
-                    );
-                    let reminder =
-                        super::goal_evaluator::GoalEvaluator::terminal_reminder(&evidence);
-                    self.add_message(
-                        Role::User,
-                        vec![ContentBlock::Text {
-                            text: reminder,
-                            cache_control: None,
-                        }],
-                    );
-                    *tool_results_dirty = true;
-                }
+                self.append_goal_reminder(reminder);
             }
             Err(e) => {
                 // Record failure in budget enforcer
                 self.budget_enforcer.record_result(&tc.name, false);
+                self.observe_goal_tool_result(tc, None);
 
                 crate::telemetry::record_tool_failure();
                 Bus::global().publish(BusEvent::ToolUpdated(ToolEvent {

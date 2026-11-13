@@ -23,6 +23,7 @@ async fn resume_background_awaits_finalizes_states_expired_while_down() {
             swarm_id: swarm_id.to_string(),
             target_status: vec!["completed".to_string()],
             requested_ids: vec![],
+            observed_members: vec![],
             mode: None,
             created_at_unix_ms: now_ms.saturating_sub(120_000),
             deadline_unix_ms: now_ms.saturating_sub(60_000),
@@ -76,7 +77,11 @@ async fn resume_background_awaits_finalizes_states_expired_while_down() {
     .expect("expired background await should publish SwarmAwaitCompleted on resume");
 
     assert!(!event.completed, "expired await should finalize as timeout");
-    assert!(event.summary.contains("Timed out"), "summary: {}", event.summary);
+    assert!(
+        event.summary.contains("Timed out"),
+        "summary: {}",
+        event.summary
+    );
     assert!(event.notify);
     assert!(event.wake);
 

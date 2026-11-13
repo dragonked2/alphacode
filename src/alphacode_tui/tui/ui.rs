@@ -81,6 +81,8 @@ pub(crate) use overlays::help_max_scroll;
 mod pinned_ui;
 #[path = "ui_prepare.rs"]
 pub(crate) mod prepare;
+#[path = "ui_quick_start.rs"]
+mod quick_start;
 #[path = "ui_smoothness.rs"]
 mod smoothness;
 #[path = "ui_todo_changes.rs"]
@@ -109,7 +111,7 @@ use changelog::get_grouped_changelog;
 use changelog::{ChangelogEntry, group_changelog_entries, parse_changelog_from};
 use debug_capture::{
     build_info_widget_summary, capture_widget_placements, rect_within_bounds, rects_overlap,
-    widget_overlaps_content,
+    retain_margin_safe_widgets,
 };
 pub use diagram_pane::{
     PinnedDiagramLiveDebugSnapshot, PinnedDiagramProbeRect, debug_probe_pinned_diagram,
@@ -1168,12 +1170,13 @@ impl BodyCacheState {
     fn get_exact_with_kind(
         &mut self,
         key: &BodyCacheKey,
-    ) -> Option<(Arc<PreparedMessages>, CacheEntryKind)> {
+    ) -> Option<(Arc<PreparedMessages>, CacheEntryKind, usize)> {
         if let Some(pos) = self.entries.iter().position(|entry| &entry.key == key) {
             let entry = self.entries.remove(pos)?;
             let prepared = entry.prepared.clone();
+            let prepared_bytes = entry.prepared_bytes;
             self.entries.push_front(entry);
-            Some((prepared, CacheEntryKind::Regular))
+            Some((prepared, CacheEntryKind::Regular, prepared_bytes))
         } else {
             let pos = self
                 .oversized_entries
@@ -1181,14 +1184,16 @@ impl BodyCacheState {
                 .position(|entry| &entry.key == key)?;
             let entry = self.oversized_entries.remove(pos)?;
             let prepared = entry.prepared.clone();
+            let prepared_bytes = entry.prepared_bytes;
             self.oversized_entries.push_front(entry);
-            Some((prepared, CacheEntryKind::Oversized))
+            Some((prepared, CacheEntryKind::Oversized, prepared_bytes))
         }
     }
 
     #[cfg(test)]
     fn get_exact(&mut self, key: &BodyCacheKey) -> Option<Arc<PreparedMessages>> {
-        self.get_exact_with_kind(key).map(|(prepared, _)| prepared)
+        self.get_exact_with_kind(key)
+            .map(|(prepared, _, _)| prepared)
     }
 
     #[cfg(test)]
@@ -1441,6 +1446,13 @@ enum CacheEntryKind {
 }
 
 impl FullPrepCacheState {
+    fn retain_transcript(&mut self, messages_version: u64) {
+        self.entries
+            .retain(|entry| entry.key.messages_version == messages_version);
+        self.oversized_entries
+            .retain(|entry| entry.key.messages_version == messages_version);
+    }
+
     fn total_bytes(&self) -> usize {
         self.entries.iter().map(|entry| entry.prepared_bytes).sum()
     }
@@ -1448,12 +1460,13 @@ impl FullPrepCacheState {
     fn get_exact_with_kind(
         &mut self,
         key: &FullPrepCacheKey,
-    ) -> Option<(Arc<PreparedChatFrame>, CacheEntryKind)> {
+    ) -> Option<(Arc<PreparedChatFrame>, CacheEntryKind, usize)> {
         if let Some(pos) = self.entries.iter().position(|entry| &entry.key == key) {
             let entry = self.entries.remove(pos)?;
             let prepared = entry.prepared.clone();
+            let prepared_bytes = entry.prepared_bytes;
             self.entries.push_front(entry);
-            Some((prepared, CacheEntryKind::Regular))
+            Some((prepared, CacheEntryKind::Regular, prepared_bytes))
         } else {
             let pos = self
                 .oversized_entries
@@ -1461,14 +1474,16 @@ impl FullPrepCacheState {
                 .position(|entry| &entry.key == key)?;
             let entry = self.oversized_entries.remove(pos)?;
             let prepared = entry.prepared.clone();
+            let prepared_bytes = entry.prepared_bytes;
             self.oversized_entries.push_front(entry);
-            Some((prepared, CacheEntryKind::Oversized))
+            Some((prepared, CacheEntryKind::Oversized, prepared_bytes))
         }
     }
 
     #[cfg(test)]
     fn get_exact(&mut self, key: &FullPrepCacheKey) -> Option<Arc<PreparedChatFrame>> {
-        self.get_exact_with_kind(key).map(|(prepared, _)| prepared)
+        self.get_exact_with_kind(key)
+            .map(|(prepared, _, _)| prepared)
     }
 
     fn insert(&mut self, key: FullPrepCacheKey, prepared: Arc<PreparedChatFrame>) {
@@ -3407,9 +3422,21 @@ fn draw_inner(frame: &mut Frame, app: &dyn TuiState) {
     }
 
     let show_donut = !onboarding_welcome && super::idle_donut_active(app);
+    // Setup instructions outrank decorative idle animation. Reserve their
+    // rows before assigning the donut so fresh users never see only a tail
+    // of the guide on a normal-height terminal.
+    let guide_reserve = if !app.onboarding_preview_mode()
+        && app.display_messages().is_empty()
+        && !app.is_processing()
+        && app.streaming_text().is_empty()
+    {
+        quick_start::GUIDE_HEIGHT.saturating_sub(transcript_reserve)
+    } else {
+        0
+    };
     let donut_height: u16 =
         idle_donut_reserved_height(show_donut, input_height.saturating_sub(frame_rows))
-            .min(remaining);
+            .min(remaining.saturating_sub(guide_reserve));
     // Elastic overscroll status line revealed when the user scrolls past the
     // bottom of the transcript. Rendered directly below the input line.
     let fixed_height = 1
@@ -3909,6 +3936,22 @@ fn draw_inner(frame: &mut Frame, app: &dyn TuiState) {
             None => info_widget::calculate_placements(widget_bounds, &margins, &widget_data),
         };
 
+        // Flow widgets share the transcript rectangle, so a stale or otherwise
+        // inconsistent free-space profile must favor readable model output.
+        // Pinned widgets own a dedicated column and do not need this guard.
+        if pinned_info_column.is_none() {
+            let candidate_count = placements.len();
+            placements = retain_margin_safe_widgets(placements, widget_bounds, &margins);
+            let suppressed = candidate_count.saturating_sub(placements.len());
+            if suppressed > 0
+                && let Some(ref mut capture) = debug_capture
+            {
+                capture.anomaly(format!(
+                    "Suppressed {suppressed} info widget(s) that would overlap transcript content"
+                ));
+            }
+        }
+
         if let Some(ref mut capture) = debug_capture {
             let placement_captures = capture_widget_placements(&placements);
             capture.layout.widget_placements = placement_captures.clone();
@@ -3922,16 +3965,6 @@ fn draw_inner(frame: &mut Frame, app: &dyn TuiState) {
             // always true and useless; instead verify each placement still fits
             // within the free margin the layout reported for the rows it covers.
             for placement in &placements {
-                // Pinned widgets own their column; only margin-docked ones can
-                // intrude into transcript content.
-                if pinned_info_column.is_none()
-                    && widget_overlaps_content(placement, widget_bounds, &margins)
-                {
-                    capture.anomaly(format!(
-                        "Info widget {:?} intrudes into content (rect {:?})",
-                        placement.kind, placement.rect
-                    ));
-                }
                 if !rect_within_bounds(placement.rect, area) {
                     capture.anomaly(format!(
                         "Info widget {:?} out of bounds {:?}",

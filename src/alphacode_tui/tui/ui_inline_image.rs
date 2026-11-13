@@ -7,7 +7,7 @@
 //!
 //! Design goals:
 //! * **Lazy.** Prepare only needs each image's `(id, width, height)`, obtained
-//!   from a cheap header parse (no full decode, no disk write, no retained
+//!   from a header parse (no pixel decode, no disk write, no retained
 //!   bytes). The full decode + terminal transmit happens at draw time, and only
 //!   for images currently on screen.
 //! * **Single source of pixels.** The base64 payloads stay in their existing
@@ -22,7 +22,8 @@ use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 use std::collections::{HashMap, HashSet};
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{LazyLock, Mutex, OnceLock, mpsc};
+use std::sync::{LazyLock, Mutex, mpsc};
+use std::time::{Duration, Instant};
 
 /// One image to render inline, resolved from a `RenderedImage`.
 #[derive(Clone)]
@@ -368,7 +369,49 @@ struct PrewarmRequest {
 }
 
 const PREWARM_QUEUE_CAPACITY: usize = 32;
-static PREWARM_TX: OnceLock<mpsc::SyncSender<PrewarmRequest>> = OnceLock::new();
+const PREWARM_WORKER_RETRY: Duration = Duration::from_secs(2);
+static PREWARM_WORKER: LazyLock<Mutex<PrewarmWorker>> =
+    LazyLock::new(|| Mutex::new(PrewarmWorker::default()));
+
+#[derive(Default)]
+struct PrewarmWorker {
+    sender: Option<mpsc::SyncSender<PrewarmRequest>>,
+    generation: u64,
+    retry_after: Option<Instant>,
+}
+
+impl PrewarmWorker {
+    fn sender_with(
+        &mut self,
+        now: Instant,
+        spawn: impl FnOnce(mpsc::Receiver<PrewarmRequest>) -> std::io::Result<()>,
+    ) -> std::io::Result<Option<(u64, mpsc::SyncSender<PrewarmRequest>)>> {
+        if let Some(sender) = &self.sender {
+            return Ok(Some((self.generation, sender.clone())));
+        }
+        if self.retry_after.is_some_and(|deadline| now < deadline) {
+            return Ok(None);
+        }
+        let (sender, receiver) = mpsc::sync_channel(PREWARM_QUEUE_CAPACITY);
+        if let Err(error) = spawn(receiver) {
+            self.retry_after = Some(now + PREWARM_WORKER_RETRY);
+            return Err(error);
+        }
+        self.retry_after = None;
+        self.generation = self.generation.wrapping_add(1);
+        self.sender = Some(sender.clone());
+        Ok(Some((self.generation, sender)))
+    }
+
+    fn invalidate(&mut self, generation: u64) -> bool {
+        if self.generation != generation || self.sender.is_none() {
+            return false;
+        }
+        self.sender = None;
+        self.retry_after = None;
+        true
+    }
+}
 /// Requests queued or in flight, so a 60fps scroll doesn't enqueue the same
 /// image dozens of times before the worker finishes it. Dedup by image id, not
 /// exact geometry: during a live resize only one request per image may consume
@@ -444,20 +487,54 @@ fn record_fit_failure(req: PrewarmRequest) {
     }
 }
 
-fn prewarm_sender() -> &'static mpsc::SyncSender<PrewarmRequest> {
-    PREWARM_TX.get_or_init(|| {
-        let (tx, rx) = mpsc::sync_channel::<PrewarmRequest>(PREWARM_QUEUE_CAPACITY);
-        if let Err(err) = std::thread::Builder::new()
-            .name("alphacode-inline-image-prewarm".to_string())
-            .spawn(move || prewarm_worker(rx))
-        {
+fn prewarm_sender() -> Option<(u64, mpsc::SyncSender<PrewarmRequest>)> {
+    // Never wait for another producer on the render path.
+    let mut worker = match PREWARM_WORKER.try_lock() {
+        Ok(worker) => worker,
+        Err(std::sync::TryLockError::WouldBlock) => return None,
+        Err(std::sync::TryLockError::Poisoned(error)) => error.into_inner(),
+    };
+    match worker.sender_with(Instant::now(), |receiver| {
+        std::thread::Builder::new()
+            .name("alphacode-inline-image-prewarm".into())
+            .spawn(move || prewarm_worker(receiver))
+            .map(|_| ())
+    }) {
+        Ok(sender) => sender,
+        Err(error) => {
             crate::logging::warn(&format!(
-                "Failed to spawn inline-image prewarm worker; first view will decode on the UI thread: {}",
-                err
+                "Inline image worker unavailable; retrying without blocking rendering: {error}"
             ));
+            if let Ok(runtime) = tokio::runtime::Handle::try_current() {
+                runtime.spawn(async {
+                    tokio::time::sleep(PREWARM_WORKER_RETRY).await;
+                    crate::bus::Bus::global().publish(crate::bus::BusEvent::MermaidRenderCompleted);
+                });
+            }
+            None
         }
-        tx
-    })
+    }
+}
+
+fn invalidate_prewarm_worker(generation: u64) {
+    {
+        let mut worker = match PREWARM_WORKER.try_lock() {
+            Ok(worker) => worker,
+            Err(std::sync::TryLockError::WouldBlock) => return,
+            Err(std::sync::TryLockError::Poisoned(error)) => error.into_inner(),
+        };
+        if !worker.invalidate(generation) {
+            return;
+        }
+        // The disconnected receiver cannot finish its old queued requests.
+        if let Ok(mut inflight) = PREWARM_INFLIGHT.lock() {
+            inflight.clear();
+        }
+        if let Ok(mut overflow) = PREWARM_OVERFLOW.lock() {
+            *overflow = None;
+        }
+    }
+    crate::bus::Bus::global().publish(crate::bus::BusEvent::MermaidRenderCompleted);
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -498,8 +575,28 @@ fn prepare_prewarm_request(req: PrewarmRequest) -> PrewarmOutcome {
     }
 }
 
+fn guarded_prewarm_request(
+    req: PrewarmRequest,
+    prepare: impl FnOnce() -> PrewarmOutcome,
+) -> PrewarmOutcome {
+    let result = {
+        let _guard = crate::alphacode_core::panic_util::suppress_panic_output();
+        std::panic::catch_unwind(std::panic::AssertUnwindSafe(prepare))
+    };
+    match result {
+        Ok(outcome) => outcome,
+        Err(_) => {
+            crate::logging::warn(&format!(
+                "Inline image preparation panicked for {:#018x}; worker remains available",
+                req.id
+            ));
+            PrewarmOutcome::MaterializeFailed
+        }
+    }
+}
+
 fn finish_prewarm_request(req: PrewarmRequest) {
-    let outcome = prepare_prewarm_request(req);
+    let outcome = guarded_prewarm_request(req, || prepare_prewarm_request(req));
     match outcome {
         PrewarmOutcome::Prepared => {
             if let Ok(mut failures) = PREWARM_MATERIALIZE_FAILURES.lock() {
@@ -606,7 +703,13 @@ fn schedule_prewarm(id: u64, target_cols: u16, target_rows: u16) {
     {
         return;
     }
-    match prewarm_sender().try_send(req) {
+    let Some((generation, sender)) = prewarm_sender() else {
+        if let Ok(mut inflight) = PREWARM_INFLIGHT.lock() {
+            inflight.remove(&id);
+        }
+        return;
+    };
+    match sender.try_send(req) {
         Ok(()) => {}
         Err(mpsc::TrySendError::Full(req)) => {
             // Keep the UI thread non-blocking without dropping the newest
@@ -614,21 +717,13 @@ fn schedule_prewarm(id: u64, target_cols: u16, target_rows: u16) {
             // channel job, including failed ones that do not publish a repaint.
             coalesce_overflow(req);
         }
-        Err(mpsc::TrySendError::Disconnected(req)) => {
+        Err(mpsc::TrySendError::Disconnected(_)) => {
             if let Ok(mut inflight) = PREWARM_INFLIGHT.lock() {
                 inflight.remove(&id);
             }
-            // Thread creation failure is rare; preserve correctness by doing the
-            // complete preparation synchronously instead of leaving Kitty images
-            // permanently blank after materialization alone.
-            match prepare_prewarm_request(req) {
-                PrewarmOutcome::Prepared => {
-                    crate::bus::Bus::global().publish(crate::bus::BusEvent::MermaidRenderCompleted);
-                }
-                PrewarmOutcome::SourceMissing => {}
-                PrewarmOutcome::MaterializeFailed => record_materialize_failure(req.id),
-                PrewarmOutcome::FitFailed => record_fit_failure(req),
-            }
+            // Recreate the bounded worker on the next prepare pass. Raster
+            // decoding, cache writes, and scaling stay off rendering.
+            invalidate_prewarm_worker(generation);
         }
     }
 }
@@ -832,8 +927,14 @@ fn fit_geometry_with_cap(width: u32, height: u32, chat_width: u16, cap_rows: u16
 /// Compute `(rows, cols)` for an inline image at `chat_width`, given a viewport
 /// height to cap against.
 fn fit_geometry(width: u32, height: u32, chat_width: u16, viewport_height: u16) -> (u16, u16) {
+    if chat_width <= 2 || viewport_height == 0 {
+        return (0, 0);
+    }
     let cap_rows = ((viewport_height as u32 * MAX_VIEWPORT_FRACTION_PERCENT as u32) / 100)
         .clamp(MIN_IMAGE_ROWS as u32, u16::MAX as u32) as u16;
+    // The preferred minimum is soft: a one-row pane cannot reserve three
+    // rows without displacing its transcript and invalidating hit targets.
+    let cap_rows = cap_rows.min(viewport_height);
     fit_geometry_with_cap(width, height, chat_width, cap_rows)
 }
 
@@ -870,13 +971,8 @@ pub(crate) fn image_label_line(
     images_visible: bool,
     _level: ImageExpandLevel,
 ) -> Line<'static> {
-    let dims = format!("{}×{}", item.width, item.height);
-    let label = if item.label.is_empty() {
-        dims
-    } else {
-        format!("{}  {}", item.label, dims)
-    };
     let dim = Style::default().add_modifier(Modifier::DIM);
+    let label = crate::alphacode_tui_render::single_line_text(&item.label);
     let prefix = Line::from(vec![Span::styled("  ", dim), Span::styled(label, dim)]);
     let mut suffix = vec![
         Span::raw("  "),
@@ -890,6 +986,15 @@ pub(crate) fn image_label_line(
             "show image",
             Style::default().add_modifier(Modifier::DIM | Modifier::ITALIC),
         ));
+    }
+    // Keep dimensions and the toggle visible beside long filenames.
+    // Narrow splits prioritize the action over metadata.
+    let toggle = Line::from(suffix.clone());
+    let dims = format!("  {}×{}", item.width, item.height);
+    if toggle.width() + unicode_width::UnicodeWidthStr::width(dims.as_str()) + 4
+        <= usize::from(width)
+    {
+        suffix.insert(0, Span::styled(dims, dim));
     }
     crate::alphacode_tui_render::truncate_line_preserving_suffix_to_width(
         &prefix,
@@ -951,7 +1056,7 @@ pub(crate) fn build_section(
     let mut lines: Vec<Line<'static>> = Vec::new();
     let mut image_regions: Vec<ImageRegion> = Vec::new();
 
-    if items.is_empty() {
+    if items.is_empty() || width == 0 || viewport_height == 0 {
         return empty();
     }
 
@@ -971,10 +1076,17 @@ pub(crate) fn build_section(
                 ImageExpandLevel::Fit => {
                     fit_geometry(item.width, item.height, width, viewport_height)
                 }
-                _ => {
-                    fit_geometry_with_cap(item.width, item.height, width, level.anchored_cap_rows())
-                }
+                _ => fit_geometry_with_cap(
+                    item.width,
+                    item.height,
+                    width,
+                    level.anchored_cap_rows().min(viewport_height),
+                ),
             };
+            if rows == 0 || cols == 0 {
+                lines.push(Line::from(""));
+                continue;
+            }
             let region_start = lines.len();
             for _ in 0..rows {
                 lines.push(Line::from(""));
@@ -1042,6 +1154,69 @@ fn empty() -> PreparedMessages {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn prewarm_worker_retries_spawn_failure_without_synchronous_preparation() {
+        let mut worker = PrewarmWorker::default();
+        let now = Instant::now();
+        assert!(
+            worker
+                .sender_with(now, |_| Err(std::io::Error::other("spawn failed")))
+                .is_err()
+        );
+        assert!(
+            worker
+                .sender_with(now + Duration::from_secs(1), |_| {
+                    panic!("spawn must not run during backoff")
+                })
+                .unwrap()
+                .is_none()
+        );
+        let mut receiver = None;
+        let (generation, sender) = worker
+            .sender_with(now + PREWARM_WORKER_RETRY, |rx| {
+                receiver = Some(rx);
+                Ok(())
+            })
+            .unwrap()
+            .unwrap();
+        let request = PrewarmRequest {
+            id: 1,
+            target_cols: 10,
+            target_rows: 3,
+        };
+        for _ in 0..PREWARM_QUEUE_CAPACITY {
+            sender.try_send(request).unwrap();
+        }
+        assert!(matches!(
+            sender.try_send(request),
+            Err(mpsc::TrySendError::Full(_))
+        ));
+        assert!(!worker.invalidate(generation.wrapping_sub(1)));
+        assert!(worker.invalidate(generation));
+        assert_eq!(receiver.unwrap().try_recv().unwrap(), request);
+    }
+
+    #[test]
+    fn recoverable_image_panic_does_not_prevent_the_next_preparation() {
+        let request = PrewarmRequest {
+            id: 2,
+            target_cols: 10,
+            target_rows: 3,
+        };
+        assert_eq!(
+            guarded_prewarm_request(request, || {
+                assert!(crate::alphacode_core::panic_util::panic_output_suppressed());
+                panic!("image decoder failed")
+            }),
+            PrewarmOutcome::MaterializeFailed
+        );
+        assert!(!crate::alphacode_core::panic_util::panic_output_suppressed());
+        assert_eq!(
+            guarded_prewarm_request(request, || PrewarmOutcome::Prepared),
+            PrewarmOutcome::Prepared
+        );
+    }
 
     fn item(width: u32, height: u32) -> InlineImageItem {
         InlineImageItem {
@@ -1139,7 +1314,10 @@ mod tests {
                     cols <= chat_width.max(2),
                     "cols {cols} > width {chat_width}"
                 );
-                assert!(rows >= MIN_IMAGE_ROWS);
+                assert!(rows <= viewport_height);
+                if chat_width <= 2 {
+                    assert_eq!((rows, cols), (0, 0));
+                }
             }
         }
     }
@@ -1149,6 +1327,12 @@ mod tests {
         let (rows, cols) = fit_geometry(0, 0, 80, 40);
         assert!(rows >= MIN_IMAGE_ROWS);
         assert!(cols <= 80);
+    }
+
+    #[test]
+    fn narrow_image_section_does_not_create_empty_hit_regions() {
+        let section = build_section(&[item(1920, 1080)], 2, 1, false, true, &AllFit);
+        assert!(section.image_regions.is_empty());
     }
 
     #[test]

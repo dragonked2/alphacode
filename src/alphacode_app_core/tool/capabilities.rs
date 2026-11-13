@@ -75,7 +75,9 @@ pub(crate) fn matches_query(name: &str, description: &str, query: &str) -> bool 
         "gau" | "waybackurls" => "historical archived urls endpoints",
         "katana" => "crawl spider endpoints javascript",
         "ffuf" | "feroxbuster" | "gobuster" => "content discovery fuzz paths directories",
-        "httpflow" => "http request response replay headers cookies",
+        "httpflow" => {
+            "http request response replay headers cookies actor comparison authorization sessions paywall preview content comparison"
+        }
         "jwt" => "json web token inspect decode",
         "nuclei" => "template vulnerability scanner",
         "sqlmap" => "sql injection database testing",
@@ -236,6 +238,7 @@ mod tests {
         assert!(!matches_query("read", "Read a file", "   "));
         assert!(matches_query("gau", "", "historical endpoints"));
         assert!(matches_query("httpflow", "", "request replay"));
+        assert!(matches_query("httpflow", "", "actor comparison"));
         assert!(matches_query("dalfox", "", "cross site scripting"));
         assert!(!matches_query("dnsx", "", "historical endpoints"));
         assert!(matches_query("browser", "", "use my browser!"));

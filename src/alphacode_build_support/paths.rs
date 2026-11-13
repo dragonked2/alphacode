@@ -288,7 +288,7 @@ fn display_build_command(program: &str, specs: &[(&str, &str)]) -> String {
 }
 
 fn infer_selfdev_build_target(repo_dir: &Path) -> SelfDevBuildTarget {
-    let output = Command::new("git")
+    let output = super::captured_command("git")
         .args(["status", "--porcelain=v1", "--untracked-files=all"])
         .current_dir(repo_dir)
         .output();
@@ -465,6 +465,11 @@ pub fn launcher_binary_path() -> Result<PathBuf> {
 fn update_launcher_symlink(target: &Path) -> Result<PathBuf> {
     let launcher = launcher_binary_path()?;
 
+    // Tests mutate process-wide environment variables. Even if another test
+    // clears the sandbox override concurrently, never replace a real install.
+    #[cfg(test)]
+    ensure_test_launcher_is_temporary(&launcher)?;
+
     if let Some(parent) = launcher.parent() {
         storage::ensure_dir(parent)?;
     }
@@ -485,6 +490,34 @@ fn update_launcher_symlink(target: &Path) -> Result<PathBuf> {
         target, &launcher, &temp,
     )?;
     Ok(launcher)
+}
+
+#[cfg(test)]
+pub(super) fn ensure_test_launcher_is_temporary(launcher: &Path) -> Result<()> {
+    use std::path::Component;
+
+    let temp = std::env::temp_dir().canonicalize()?;
+    let parent = launcher
+        .parent()
+        .ok_or_else(|| anyhow::anyhow!("launcher has no parent"))?;
+    anyhow::ensure!(
+        parent.is_absolute()
+            && !parent
+                .components()
+                .any(|c| matches!(c, Component::ParentDir)),
+        "test launcher must use an absolute path without parent traversal"
+    );
+    let existing = parent
+        .ancestors()
+        .find(|path| path.exists())
+        .ok_or_else(|| anyhow::anyhow!("launcher has no existing ancestor"))?;
+    let resolved = existing.canonicalize()?;
+    anyhow::ensure!(
+        resolved.starts_with(&temp),
+        "refusing to write test launcher outside temporary directory: {}",
+        launcher.display()
+    );
+    Ok(())
 }
 
 /// Update launcher path to point at the current channel binary.

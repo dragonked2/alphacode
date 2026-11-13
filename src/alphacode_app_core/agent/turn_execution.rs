@@ -2,6 +2,7 @@ use super::*;
 use crate::{terminal_eprintln as eprintln, terminal_println as println};
 
 const LOCAL_ADAPTIVE_CONTEXT_LIMIT: usize = 32_768;
+const HOSTED_ADAPTIVE_CONTEXT_LIMIT: usize = 8_192;
 
 fn strip_schema_annotations(schema: &mut serde_json::Value) {
     match schema {
@@ -265,9 +266,13 @@ pub(super) fn context_adaptive_tools_with_promotions(
 }
 
 impl Agent {
-    pub(super) fn uses_compact_local_context(&self) -> bool {
-        self.provider.is_local_endpoint()
-            && self.provider.context_window() <= LOCAL_ADAPTIVE_CONTEXT_LIMIT
+    pub(super) fn uses_compact_context(&self) -> bool {
+        let limit = if self.provider.is_local_endpoint() {
+            LOCAL_ADAPTIVE_CONTEXT_LIMIT
+        } else {
+            HOSTED_ADAPTIVE_CONTEXT_LIMIT
+        };
+        self.provider.context_window() <= limit
     }
 
     /// Run a single turn with the given user message

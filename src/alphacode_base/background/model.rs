@@ -242,6 +242,34 @@ pub struct TaskResult {
 }
 
 impl TaskResult {
+    /// A returned execution result is terminal. Reject contradictory success
+    /// claims while preserving the distinct superseded outcome.
+    pub(super) fn into_terminal(mut self) -> Self {
+        if self.status == Some(BackgroundTaskStatus::Superseded) {
+            return self;
+        }
+        if self.status == Some(BackgroundTaskStatus::Running) {
+            self.status = Some(BackgroundTaskStatus::Failed);
+            self.error.get_or_insert_with(|| {
+                "Background execution returned a nonterminal Running result".to_string()
+            });
+        } else if self.error.is_some()
+            || self.exit_code.is_some_and(|code| code != 0)
+            || self.status == Some(BackgroundTaskStatus::Failed)
+        {
+            self.status = Some(BackgroundTaskStatus::Failed);
+            if self.error.is_none() {
+                self.error = Some(match self.exit_code {
+                    Some(code) if code != 0 => format!("Command exited with code {code}"),
+                    _ => "Background execution failed".to_string(),
+                });
+            }
+        } else {
+            self.status = Some(BackgroundTaskStatus::Completed);
+        }
+        self
+    }
+
     pub fn completed(exit_code: Option<i32>) -> Self {
         Self {
             exit_code,

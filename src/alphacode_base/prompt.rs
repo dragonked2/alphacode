@@ -1,7 +1,6 @@
 //! System prompt management
 
 use std::path::{Path, PathBuf};
-use std::process::Command;
 
 /// Default system prompt for alphacode (embedded at compile time)
 pub const DEFAULT_SYSTEM_PROMPT: &str = include_str!("prompt/system_prompt.md");
@@ -861,7 +860,7 @@ pub fn build_session_context(working_dir: Option<&Path>) -> String {
 
 /// Get git branch and status summary
 fn get_git_info(working_dir: Option<&Path>) -> Option<String> {
-    let mut command = Command::new("git");
+    let mut command = crate::alphacode_base::platform::helper_command("git");
     if let Some(dir) = working_dir {
         command.current_dir(dir);
     }
@@ -880,7 +879,7 @@ fn get_git_info(working_dir: Option<&Path>) -> Option<String> {
     let mut info = vec!["Git:".to_string()];
 
     // Current branch
-    let mut branch_command = Command::new("git");
+    let mut branch_command = crate::alphacode_base::platform::helper_command("git");
     if let Some(dir) = working_dir {
         branch_command.current_dir(dir);
     }
@@ -894,7 +893,7 @@ fn get_git_info(working_dir: Option<&Path>) -> Option<String> {
     }
 
     // Short status (modified files count)
-    let mut status_command = Command::new("git");
+    let mut status_command = crate::alphacode_base::platform::helper_command("git");
     if let Some(dir) = working_dir {
         status_command.current_dir(dir);
     }
@@ -1003,7 +1002,9 @@ fn memory_summary() -> Option<String> {
 }
 
 fn gpu_summary() -> Option<String> {
-    let output = Command::new("lspci").output().ok()?;
+    let output = crate::alphacode_base::platform::helper_command("lspci")
+        .output()
+        .ok()?;
     if !output.status.success() {
         return None;
     }
