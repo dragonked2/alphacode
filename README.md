@@ -179,6 +179,15 @@ AlphaCode runs in a terminal, so it works alongside any editor. Open a terminal 
 
 **How a request flows through the brain.** Every request, from "explain this repo" to "fix this bug and prove it", follows the same loop. The model decides what to do next, a tool does it, and the result feeds back in until the work is verified.
 
+<p align="center">
+  <img src="assets/brain-flow.svg" alt="Animated diagram: a request travels clockwise through seven stages (gather context, plan, use a tool, safety check, observe, verify, report) while the model at the center reasons and decides at every step. The loop repeats until the work is verified." width="900">
+</p>
+
+<details>
+<summary><b>Prefer a static diagram? Open the Mermaid version</b></summary>
+
+<br>
+
 ```mermaid
 flowchart TD
     YOU(["You describe a goal"]) --> CTX["1. Gather context<br/>project files, saved session, memory"]
@@ -210,7 +219,9 @@ flowchart TD
     class YOU,REPORT goal
 ```
 
-If the diagram does not render in your viewer, here is the same flow in words:
+</details>
+
+The same flow in words:
 
 | Step | What happens                                                                                                  |
 |-----:|---------------------------------------------------------------------------------------------------------------|
