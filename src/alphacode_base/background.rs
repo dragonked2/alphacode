@@ -1573,17 +1573,15 @@ fn persist_status_bytes(path: &std::path::Path, bytes: &[u8]) -> Result<()> {
         .lock()
         .map_err(|_| anyhow::anyhow!("Background status publication lock poisoned"))?;
     let incoming: serde_json::Value = serde_json::from_slice(bytes)?;
-    if incoming.get("status").and_then(serde_json::Value::as_str) == Some("running") {
-        if let Ok(existing) = std::fs::read(path) {
-            if let Ok(existing) = serde_json::from_slice::<serde_json::Value>(&existing) {
-                if matches!(
-                    existing.get("status").and_then(serde_json::Value::as_str),
-                    Some("completed" | "failed" | "superseded")
-                ) {
-                    return Ok(());
-                }
-            }
-        }
+    if incoming.get("status").and_then(serde_json::Value::as_str) == Some("running")
+        && let Ok(existing) = std::fs::read(path)
+        && let Ok(existing) = serde_json::from_slice::<serde_json::Value>(&existing)
+        && matches!(
+            existing.get("status").and_then(serde_json::Value::as_str),
+            Some("completed" | "failed" | "superseded")
+        )
+    {
+        return Ok(());
     }
     let parent = path
         .parent()

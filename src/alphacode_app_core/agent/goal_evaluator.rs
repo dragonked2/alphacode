@@ -217,13 +217,10 @@ impl super::Agent {
             metadata: output.and_then(|output| output.metadata.as_ref()),
             succeeded: output.is_some(),
         };
-        let Some(evidence) = self
+        let evidence = self
             .goal_contract
             .as_mut()
-            .and_then(|contract| GoalEvaluator::evaluate(contract, &observation))
-        else {
-            return None;
-        };
+            .and_then(|contract| GoalEvaluator::evaluate(contract, &observation))?;
         if let Some(contract) = &mut self.goal_contract {
             contract.mark_terminal(evidence.clone());
         }

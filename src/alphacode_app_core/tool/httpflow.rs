@@ -1067,7 +1067,7 @@ mod tests {
             for _ in 0..3 {
                 let (mut socket, _) = listener.accept().await.unwrap();
                 let mut bytes = [0; 4096];
-                let n = socket.read(&mut bytes).await.unwrap();
+                let n = socket.read_exact(&mut bytes).await.unwrap();
                 let request = String::from_utf8_lossy(&bytes[..n]).to_ascii_lowercase();
                 let (status, body) = if request.starts_with("get /missing ") {
                     ("404 Not Found", "missing")

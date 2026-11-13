@@ -504,7 +504,7 @@ async fn notify_coordinator_of_salvage(
             .get(session_id)
             .and_then(|member| member.friendly_name.clone())
     }
-    .unwrap_or_else(|| crate::alphacode_swarm_core::short_session_id(&session_id).to_string());
+    .unwrap_or_else(|| crate::alphacode_swarm_core::short_session_id(session_id).to_string());
     let _ = fanout_session_event(
         swarm_members,
         &coordinator_id,
