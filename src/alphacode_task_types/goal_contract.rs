@@ -275,17 +275,25 @@ impl GoalContract {
             self.success_criteria.get(evidence.criterion_index) == Some(&evidence.criterion)
         });
         for (index, criterion) in self.success_criteria.iter().enumerate() {
-            let same_source = match &criterion.check {
+            let (same_input, same_source) = match &criterion.check {
                 CriterionCheck::ToolMetadata {
                     tool_name, input, ..
-                } => tool_name == observation.tool_name && input == observation.input,
-                _ => false,
+                } => (
+                    input == observation.input,
+                    tool_name == observation.tool_name && input == observation.input,
+                ),
+                _ => (false, false),
             };
+            if same_input {
+                // A rerun with the same verification input is authoritative for
+                // that criterion, including when it came from the wrong tool or
+                // failed before producing valid metadata.
+                self.criterion_evidence
+                    .retain(|evidence| evidence.criterion_index != index);
+            }
             if !same_source {
                 continue;
             }
-            self.criterion_evidence
-                .retain(|evidence| evidence.criterion_index != index);
             if criterion.matches_observation(observation) {
                 self.criterion_evidence.push(CriterionEvidence {
                     criterion_index: index,
