@@ -252,12 +252,10 @@ pub fn expand(raw: &str, ctx: &RiskContext) -> PathBuf {
             let mapped = format!("{drive}:/{}", &rest[drive.len_utf8() + 1..]);
             return normalize(&PathBuf::from(mapped));
         }
-        // Any other rooted path is treated as absolute at the filesystem root.
-        return normalize(&PathBuf::from(if cfg!(windows) {
-            format!("\\{text}")
-        } else {
-            text.clone()
-        }));
+        // Keep a single root separator. Prepending a backslash to `/etc/...`
+        // on Windows creates a UNC prefix (`\\/etc/...`), changing the path's
+        // components and bypassing the protected POSIX-root comparisons.
+        return normalize(&path);
     }
     match &ctx.working_dir {
         Some(cwd) => normalize(&cwd.join(path)),

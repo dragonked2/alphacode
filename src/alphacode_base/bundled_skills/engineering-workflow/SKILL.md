@@ -352,3 +352,14 @@ For scripts that perform several related steps, use a clear, rerunnable script w
 Do not parallelize destructive operations or operations that share mutable state.
 
 ---
+
+
+## Architecture, documentation, and acceptance
+
+- Establish the existing system before proposing changes: locate module boundaries, entry points, shared services, schema/migrations, and relevant requirements. A module missing from one directory or search result is **NOT FOUND IN REVIEWED SCOPE**, not proof that it does not exist. State the paths, revision, and limits of the inspection; use **NOT VERIFIED** when evidence is unavailable. Reserve **PROVEN ABSENT** for a bounded, exhaustive check.
+- Preserve explicit architectural constraints and ownership. Extend the existing host application when required; do not invent a separate application, duplicate a shared registry, or silently resolve conflicting requirements. Track unresolved decisions and their consequences.
+- For multi-document work, maintain one canonical inventory of requirement IDs, entities/tables, roles, ownership, and relationships. Derive counts and indexes from that inventory and reconcile every deliverable against it. Compare documentation with source and database/migration state where available; document conflicts instead of guessing.
+- Keep decisions distinct: PROPOSAL, RECOMMENDATION, USER APPROVAL, IMPLEMENTED, TESTED, VERIFIED, CLOSED. A recommendation, silence, or another agent's conclusion is not user approval. Cite the user's actual approval before closing a decision that requires it.
+- Respect explicit writable paths and exclusions for every generated file, report copy, rename, and cleanup. Inspect the starting worktree and final diff, attribute only your own changes, and do not copy reports outside the allowed paths.
+- Before delivery, review requirements against the actual artifacts and record evidence and unresolved gaps. Distinguish documents created, internal consistency checked, independently verified, implementation ready, implemented, and behavior tested. Never call a package GREEN or implementation ready while required checks or decisions remain unresolved. Do not label self-review independent verification.
+- Security readiness requires relevant server-side permission checks and controlled cross-role/cross-tenant tests; a role list or passing build is insufficient. Keep tenant isolation and IDOR status NOT VERIFIED when those tests were not performed. For financial rules, preserve explicit precision, rounding, currency, tax, history, immutability, and rollback requirements; unresolved rules remain open.

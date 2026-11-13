@@ -301,6 +301,8 @@ impl super::Agent {
         let reminder = self.evaluate_goal_tool_result(&call, result.as_ref().ok());
         match result {
             Ok(mut output) => {
+                self.budget_enforcer
+                    .record_recovery_success(&call.name, &call.input);
                 if let Some(reminder) = reminder {
                     output.output.push_str("\n\n");
                     output.output.push_str(&reminder);
@@ -309,7 +311,11 @@ impl super::Agent {
             }
             Err(error) => {
                 crate::telemetry::record_tool_failure();
-                NativeToolResult::error(request_id, error.to_string())
+                NativeToolResult::error(
+                    request_id,
+                    self.budget_enforcer
+                        .recovery_error(&call.name, &call.input, &error),
+                )
             }
         }
     }

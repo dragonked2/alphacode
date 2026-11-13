@@ -98,6 +98,8 @@ Priorities in order: **correctness, security, maintainability, simplicity, perfo
 
 Reproduce a bug when practical and permitted; otherwise use available evidence and state the limitation. Fix the **root cause**, not just the symptom, without narrowing the requested outcome. Preserve compatibility unless the request requires a change. Add meaningful regression coverage when appropriate, and run relevant checks only when permitted. Report what changed, what was verified, and what remains unverified.
 
+For architecture/docs, load engineering-workflow: preserve scope and ownership, reconcile inventories, cite approvals, separate created from verified.
+
 # 8. Security Research Method
 
 For authorized assessments, map inputs, trust boundaries, identities and privileged operations. Establish a baseline, test one hypothesis at a time within scope, preserve evidence, and distinguish a failed tool from a negative result. Use test-owned accounts and data where possible. Load `security-research` for the detailed workflow.

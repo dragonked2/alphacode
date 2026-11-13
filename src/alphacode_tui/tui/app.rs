@@ -1865,6 +1865,9 @@ pub struct App {
     /// Scroll offset for changelog overlay (None = not visible)
     changelog_scroll: Option<usize>,
     help_scroll: Option<usize>,
+    help_query: String,
+    help_query_cursor: usize,
+    help_search_editing: bool,
     model_status_scroll: Option<usize>,
     model_status_content: String,
     /// Interactive settings overlay (`/config ui`). None = not visible.

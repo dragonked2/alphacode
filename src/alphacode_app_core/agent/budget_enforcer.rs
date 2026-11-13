@@ -1,4 +1,5 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
+use std::hash::{Hash, Hasher};
 use std::time::Instant;
 
 use crate::alphacode_task_types::goal_contract::{ContractPhase, GoalContract};
@@ -21,6 +22,8 @@ pub struct BudgetEnforcer {
     total_calls: u32,
     /// Call count when the highest-tier evidence arrived (if any).
     goal_achieved_at_call: Option<u32>,
+    /// Bounded fingerprints only: never retain tool inputs or error payloads.
+    recent_failures: VecDeque<(u64, u64, u32)>,
 }
 
 #[derive(Debug, Clone)]
@@ -41,11 +44,13 @@ impl BudgetEnforcer {
             degraded_tools: HashMap::new(),
             total_calls: 0,
             goal_achieved_at_call: None,
+            recent_failures: VecDeque::new(),
         }
     }
 
     /// Record a tool call and flag checkpoints or degraded report-phase tools.
     pub fn record_call(&mut self, tool_name: &str, contract: &GoalContract) -> BudgetVerdict {
+        let tool_name = crate::alphacode_tool_types::resolve_tool_name(tool_name);
         self.transition_phase(contract.phase);
         self.total_calls = self.total_calls.saturating_add(1);
         self.phase_calls = self.phase_calls.saturating_add(1);
@@ -97,6 +102,7 @@ impl BudgetEnforcer {
 
     /// Record a tool call result (success or failure).
     pub fn record_result(&mut self, tool_name: &str, success: bool) {
+        let tool_name = crate::alphacode_tool_types::resolve_tool_name(tool_name);
         if success {
             self.consecutive_failures.insert(tool_name.to_string(), 0);
             // A tool that has recovered is not degraded. Without this removal a
@@ -110,7 +116,7 @@ impl BudgetEnforcer {
                 .consecutive_failures
                 .entry(tool_name.to_string())
                 .or_insert(0);
-            *failures += 1;
+            *failures = failures.saturating_add(1);
 
             // Flag as degraded after 2 consecutive failures
             if *failures >= 2 {
@@ -123,6 +129,53 @@ impl BudgetEnforcer {
                 );
             }
         }
+    }
+
+    fn call_fingerprint(tool_name: &str, input: &serde_json::Value) -> u64 {
+        let mut hasher = std::collections::hash_map::DefaultHasher::new();
+        crate::alphacode_tool_types::resolve_tool_name(tool_name).hash(&mut hasher);
+        input.hash(&mut hasher);
+        hasher.finish()
+    }
+
+    /// Add actionable feedback when the same call fails the same way again.
+    /// This is advisory: transient retries and alternative inputs remain allowed.
+    pub fn recovery_error(
+        &mut self,
+        tool_name: &str,
+        input: &serde_json::Value,
+        error: &anyhow::Error,
+    ) -> String {
+        let call = Self::call_fingerprint(tool_name, input);
+        let mut hasher = std::collections::hash_map::DefaultHasher::new();
+        error.to_string().hash(&mut hasher);
+        let failure = hasher.finish();
+        let prior = self
+            .recent_failures
+            .iter()
+            .position(|(key, message, _)| *key == call && *message == failure)
+            .and_then(|index| self.recent_failures.remove(index));
+        let count = prior.map_or(1, |(_, _, count)| count.saturating_add(1));
+        self.recent_failures.push_back((call, failure, count));
+        if self.recent_failures.len() > 16 {
+            self.recent_failures.pop_front();
+        }
+        let mut message = crate::tool::agent_facing_error(
+            crate::alphacode_tool_types::resolve_tool_name(tool_name),
+            error,
+        );
+        if count >= 2 {
+            message.push_str(&format!(
+                "\nRecovery checkpoint: this call has failed with the same inputs and error {count} times. Inspect the cause and change the inputs, repair the prerequisite, or use another approach before retrying. If the failure is transient, verify recovery before repeating a state-changing action. Report any remaining blocker accurately."
+            ));
+        }
+        message
+    }
+
+    /// A successful retry invalidates old failure evidence for this call only.
+    pub fn record_recovery_success(&mut self, tool_name: &str, input: &serde_json::Value) {
+        let call = Self::call_fingerprint(tool_name, input);
+        self.recent_failures.retain(|(key, _, _)| *key != call);
     }
 
     /// Mark the goal as achieved (called when terminal evidence arrives).
@@ -157,6 +210,7 @@ impl BudgetEnforcer {
         self.phase_calls = 0;
         self.checkpoint_reported = false;
         self.phase_start = Instant::now();
+        self.recent_failures.clear();
     }
 
     /// Get the budget for a phase.
@@ -214,6 +268,7 @@ impl BudgetEnforcer {
     /// Get consecutive failures for a tool.
     #[allow(dead_code)]
     pub fn consecutive_failures(&self, tool_name: &str) -> u32 {
+        let tool_name = crate::alphacode_tool_types::resolve_tool_name(tool_name);
         self.consecutive_failures
             .get(tool_name)
             .copied()
@@ -223,7 +278,8 @@ impl BudgetEnforcer {
     /// Check if a tool is degraded.
     #[allow(dead_code)]
     pub fn is_degraded(&self, tool_name: &str) -> bool {
-        self.degraded_tools.contains_key(tool_name)
+        self.degraded_tools
+            .contains_key(crate::alphacode_tool_types::resolve_tool_name(tool_name))
     }
 
     /// Get all degraded tools.
@@ -276,6 +332,96 @@ mod tests {
         let contract = make_contract(ContractPhase::Recon);
         let verdict = enforcer.record_call("read", &contract);
         assert!(verdict.is_allowed());
+    }
+
+    #[test]
+    fn identical_failures_get_recovery_feedback_across_aliases() {
+        let mut enforcer = BudgetEnforcer::new();
+        let input = serde_json::json!({"command": "build"});
+        let error = anyhow::anyhow!("missing compiler");
+        let first = enforcer.recovery_error("Bash", &input, &error);
+        assert!(first.contains("missing compiler"));
+        assert!(!first.contains("Recovery checkpoint"));
+        // An unrelated failure must not hide the repeated attempt.
+        enforcer.recovery_error("read", &serde_json::json!({"path": "a"}), &error);
+        let repeated = enforcer.recovery_error("functions.shell_exec", &input, &error);
+        assert!(repeated.contains("same inputs and error 2 times"));
+        assert!(repeated.contains("change the inputs"));
+    }
+
+    #[test]
+    fn different_inputs_and_errors_are_distinct_attempts() {
+        let mut enforcer = BudgetEnforcer::new();
+        let input = serde_json::json!({"command": "build"});
+        enforcer.recovery_error("bash", &input, &anyhow::anyhow!("missing compiler"));
+        let changed_error =
+            enforcer.recovery_error("bash", &input, &anyhow::anyhow!("syntax error"));
+        let changed_input = enforcer.recovery_error(
+            "bash",
+            &serde_json::json!({"command": "test"}),
+            &anyhow::anyhow!("missing compiler"),
+        );
+        assert!(!changed_error.contains("Recovery checkpoint"));
+        assert!(!changed_input.contains("Recovery checkpoint"));
+    }
+
+    #[test]
+    fn recovery_success_clears_only_the_successful_call() {
+        let mut enforcer = BudgetEnforcer::new();
+        let first = serde_json::json!({"command": "build"});
+        let second = serde_json::json!({"command": "test"});
+        let error = anyhow::anyhow!("failure");
+        enforcer.recovery_error("bash", &first, &error);
+        enforcer.recovery_error("bash", &second, &error);
+        enforcer.record_recovery_success("Bash", &first);
+        assert!(
+            !enforcer
+                .recovery_error("bash", &first, &error)
+                .contains("Recovery checkpoint")
+        );
+        assert!(
+            enforcer
+                .recovery_error("bash", &second, &error)
+                .contains("Recovery checkpoint")
+        );
+        enforcer.begin_turn(None);
+        assert!(
+            !enforcer
+                .recovery_error("bash", &second, &error)
+                .contains("Recovery checkpoint")
+        );
+    }
+
+    #[test]
+    fn recovery_history_is_bounded_and_evicts_old_failures() {
+        let mut enforcer = BudgetEnforcer::new();
+        let error = anyhow::anyhow!("failure");
+        for index in 0..100 {
+            enforcer.recovery_error("read", &serde_json::json!({"path": index}), &error);
+        }
+        assert_eq!(enforcer.recent_failures.len(), 16);
+        assert!(
+            !enforcer
+                .recovery_error("read", &serde_json::json!({"path": 0}), &error)
+                .contains("Recovery checkpoint")
+        );
+    }
+
+    #[test]
+    fn aliases_share_degradation_and_recovery_state() {
+        let mut enforcer = BudgetEnforcer::new();
+        enforcer.record_result("functions.shell_exec", false);
+        enforcer.record_result("Bash", false);
+        assert_eq!(enforcer.consecutive_failures("shell"), 2);
+        assert!(enforcer.is_degraded("bash"));
+        let contract = make_contract(ContractPhase::Report);
+        assert!(matches!(
+            enforcer.record_call("functions.Bash", &contract),
+            BudgetVerdict::Rejected(_)
+        ));
+        enforcer.record_result("bash", true);
+        assert!(!enforcer.is_degraded("Bash"));
+        assert!(enforcer.record_call("shell_exec", &contract).is_allowed());
     }
 
     #[test]

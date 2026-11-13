@@ -84,6 +84,7 @@ async fn spawn_with_notify_emits_started_ui_activity() -> Result<()> {
 async fn update_delivery_applies_to_running_task_completion() -> Result<()> {
     let tmp = tempdir()?;
     let manager = BackgroundTaskManager::with_output_dir(tmp.path().to_path_buf());
+    let (finish_tx, finish_rx) = tokio::sync::oneshot::channel();
 
     let info = manager
         .spawn_with_notify(
@@ -93,7 +94,9 @@ async fn update_delivery_applies_to_running_task_completion() -> Result<()> {
             false,
             false,
             |output_path| async move {
-                sleep(Duration::from_millis(25)).await;
+                // Keep the task running until the delivery update is applied;
+                // correctness must not depend on winning a 25 ms timer race.
+                finish_rx.await?;
                 tokio::fs::write(&output_path, "hello").await?;
                 Ok(TaskResult::completed(Some(0)))
             },
@@ -108,21 +111,18 @@ async fn update_delivery_applies_to_running_task_completion() -> Result<()> {
     assert!(updated.notify);
     assert!(updated.wake);
 
-    for _ in 0..40 {
-        let status = manager
-            .status(&info.task_id)
-            .await
-            .ok_or_else(|| anyhow!("status should exist"))?;
-        if status.status != BackgroundTaskStatus::Running {
-            assert!(status.notify);
-            assert!(status.wake);
-            assert_eq!(status.status, BackgroundTaskStatus::Completed);
-            return Ok(());
-        }
-        sleep(Duration::from_millis(10)).await;
-    }
-
-    Err(anyhow!("background task did not complete in time"))
+    finish_tx
+        .send(())
+        .map_err(|_| anyhow!("task should be waiting"))?;
+    let completed = manager
+        .wait(&info.task_id, Duration::from_secs(5), false)
+        .await
+        .ok_or_else(|| anyhow!("status should exist"))?;
+    assert_eq!(completed.reason, BackgroundTaskWaitReason::Finished);
+    assert!(completed.task.notify);
+    assert!(completed.task.wake);
+    assert_eq!(completed.task.status, BackgroundTaskStatus::Completed);
+    Ok(())
 }
 
 #[tokio::test]

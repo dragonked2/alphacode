@@ -383,12 +383,12 @@ pub(super) fn build_registry(inputs: &RegistryInputs<'_>) -> Vec<KnownHotkey> {
     out.push(KnownHotkey::new(
         key(KeyCode::Enter, KeyModifiers::CONTROL),
         "alternate_enter",
-        "send now, bypassing queue mode",
+        "send prompt; guidance while working",
     ));
     out.push(KnownHotkey::new(
         key(KeyCode::Enter, KeyModifiers::SUPER),
         "alternate_enter",
-        "send now, bypassing queue mode",
+        "send prompt; guidance while working",
     ));
     out.push(KnownHotkey::quiet(
         key(KeyCode::Enter, KeyModifiers::SHIFT),

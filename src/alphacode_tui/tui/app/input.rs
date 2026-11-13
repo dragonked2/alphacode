@@ -739,6 +739,11 @@ pub(super) fn consume_paste_trailing_enter() -> bool {
 }
 
 pub(super) fn handle_paste(app: &mut App, text: String) {
+    if app.help_scroll.is_some() {
+        paste_guard::note_paste();
+        app.paste_help_query(&text);
+        return;
+    }
     // Some Windows terminals deliver both Ctrl+V and the clipboard text. The
     // explicit clipboard read can finish before a coalesced native echo. Match
     // that echo once (including chunked delivery), never an unrelated draft.
@@ -2779,7 +2784,7 @@ pub(super) fn handle_modal_key(
     }
 
     if app.help_scroll.is_some() {
-        app.handle_help_key(code)?;
+        app.handle_help_key(code, modifiers)?;
         return Ok(true);
     }
 
@@ -3274,7 +3279,7 @@ impl App {
         // check above gives an open overlay first refusal, so the same key
         // closes help instead of stacking another overlay over it.
         if code == KeyCode::F(1) && modifiers.is_empty() {
-            self.help_scroll = Some(0);
+            self.open_help();
             return Ok(());
         }
 

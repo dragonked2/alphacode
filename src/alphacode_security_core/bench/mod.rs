@@ -234,6 +234,9 @@ pub struct FixtureOutcome {
     pub predicted_class: Option<VulnerabilityClass>,
     pub supporting_exchanges: usize,
     pub unmet_requirements: usize,
+    /// Deduplication is not vulnerability discovery. Scored separately.
+    #[serde(default)]
+    pub dedup_merges: Option<usize>,
     pub scope_violated: bool,
     pub correct: bool,
     /// Set when the engine claimed a vulnerability that is not one. Tracked
@@ -277,10 +280,12 @@ impl BenchMetrics {
         (actual > 0).then(|| self.true_positives as f64 / actual as f64)
     }
 
-    /// Fraction of all decisions that were right.
+    /// Fraction of vulnerability decisions that were right; dedup is separate.
     pub fn accuracy(&self) -> Option<f64> {
-        (self.total > 0)
-            .then(|| (self.true_positives + self.true_negatives) as f64 / self.total as f64)
+        let decisions =
+            self.true_positives + self.false_positives + self.false_negatives + self.true_negatives;
+        (decisions > 0)
+            .then(|| (self.true_positives + self.true_negatives) as f64 / decisions as f64)
     }
 
     pub fn false_positive_rate(&self) -> Option<f64> {
@@ -353,6 +358,7 @@ impl BenchReport {
         self.all.scope_violations == 0
             && self.all.reportable_overclaims == 0
             && self.evaluation.false_positives == 0
+            && self.all.merge_violations == 0
     }
 
     /// One-line result suitable for a CI log or a release note.
@@ -407,7 +413,8 @@ pub fn compare(baseline: &BenchReport, candidate: &BenchReport) -> BenchComparis
         && recall_delta.is_some_and(|d| d >= 0.0)
         && false_positive_delta <= 0
         && scope_violation_delta <= 0
-        && reportable_overclaim_delta <= 0;
+        && reportable_overclaim_delta <= 0
+        && candidate.all.merge_violations <= baseline.all.merge_violations;
     let strictly_better = non_regressing
         && (precision_delta.is_some_and(|d| d > 0.0)
             || recall_delta.is_some_and(|d| d > 0.0)
@@ -458,6 +465,8 @@ pub fn run(corpus: &[BenchFixture]) -> BenchReport {
             decide(&policy, fixture.scope_target),
             ScopeDecision::Allowed { .. }
         );
+        let dedup_merges =
+            (!fixture.inputs.dedup_candidates.is_empty()).then(|| dedup_actual_merges(fixture));
 
         let (
             predicted_verdict,
@@ -478,34 +487,8 @@ pub fn run(corpus: &[BenchFixture]) -> BenchReport {
                 assessment.unmet_requirements.len(),
             )
         } else if !fixture.inputs.dedup_candidates.is_empty() {
-            let mut deduplicator = Deduplicator::new();
-            let mut last_class = None;
-            let mut last_reportable = false;
-            for candidate in &fixture.inputs.dedup_candidates {
-                deduplicator.submit(candidate.clone());
-                last_class = Some(candidate.vuln_class.clone());
-                last_reportable = true;
-            }
-            // The dedup "verdict" is whether the engine produced the expected
-            // number of distinct root causes.
-            let expected = fixture
-                .oracle
-                .root_cause
-                .as_ref()
-                .map(|_| 1usize)
-                .unwrap_or(0);
-            let produced = deduplicator.root_cause_count();
-            (
-                if produced == expected {
-                    AuthorizationVerdict::GenuineUnauthorizedAccess
-                } else {
-                    AuthorizationVerdict::Inconclusive
-                },
-                last_reportable,
-                last_class,
-                produced,
-                deduplicator.merged_count(),
-            )
+            // Deduplicating supplied candidates establishes no vulnerability.
+            (AuthorizationVerdict::Inconclusive, false, None, 0, 0)
         } else {
             let assessment = analyze_access_with_operation(
                 &fixture.inputs.case,
@@ -527,7 +510,9 @@ pub fn run(corpus: &[BenchFixture]) -> BenchReport {
 
         let predicted_vuln = predicted_verdict.is_vulnerability();
         let expected_vuln = fixture.oracle.is_true_positive;
-        let correct = predicted_vuln == expected_vuln;
+        let correct = dedup_merges.map_or(predicted_vuln == expected_vuln, |actual| {
+            actual == fixture.oracle.merges_into.is_some() as usize
+        });
 
         outcomes.push(FixtureOutcome {
             fixture_id: fixture.id.to_string(),
@@ -538,10 +523,11 @@ pub fn run(corpus: &[BenchFixture]) -> BenchReport {
             predicted_class,
             supporting_exchanges,
             unmet_requirements,
+            dedup_merges,
             scope_violated,
             correct,
-            overclaimed: predicted_vuln && !expected_vuln,
-            missed: expected_vuln && !predicted_vuln,
+            overclaimed: dedup_merges.is_none() && predicted_vuln && !expected_vuln,
+            missed: dedup_merges.is_none() && expected_vuln && !predicted_vuln,
         });
     }
 
@@ -564,41 +550,7 @@ pub fn run(corpus: &[BenchFixture]) -> BenchReport {
             .filter(|o| o.family == family)
             .cloned()
             .collect();
-        let fixtures_for_family: Vec<&BenchFixture> =
-            corpus.iter().filter(|f| f.family == family).collect();
-        // `score` needs owned fixtures; only the counts matter, so rebuild a
-        // minimal view from the already-computed outcomes.
-        let _ = fixtures_for_family;
-        let mut metrics = BenchMetrics {
-            split: None,
-            total: family_outcomes.len(),
-            scope_violations: family_outcomes
-                .iter()
-                .filter(|o| o.scope_violated && o.predicted_verdict.is_vulnerability())
-                .count(),
-            inconclusive: family_outcomes
-                .iter()
-                .filter(|o| o.predicted_verdict == AuthorizationVerdict::Inconclusive)
-                .count(),
-            ..Default::default()
-        };
-        for outcome in &family_outcomes {
-            let expected = corpus
-                .iter()
-                .find(|f| f.id == outcome.fixture_id)
-                .map(|f| f.oracle.is_true_positive)
-                .unwrap_or(false);
-            let predicted = outcome.predicted_verdict.is_vulnerability();
-            match (predicted, expected) {
-                (true, true) => metrics.true_positives += 1,
-                (true, false) => metrics.false_positives += 1,
-                (false, true) => metrics.false_negatives += 1,
-                (false, false) => metrics.true_negatives += 1,
-            }
-            if outcome.overclaimed && outcome.predicted_reportable {
-                metrics.reportable_overclaims += 1;
-            }
-        }
+        let metrics = score(corpus, &family_outcomes, None);
         report.by_family.insert(family.to_string(), metrics);
     }
 
@@ -622,6 +574,14 @@ fn score(
             continue;
         };
         metrics.total += 1;
+        if let Some(actual_merges) = outcome.dedup_merges {
+            if actual_merges == fixture.oracle.merges_into.is_some() as usize {
+                metrics.merged_correctly += 1;
+            } else {
+                metrics.merge_violations += 1;
+            }
+            continue;
+        }
         let predicted = outcome.predicted_verdict.is_vulnerability();
         match (predicted, fixture.oracle.is_true_positive) {
             (true, true) => metrics.true_positives += 1,
@@ -646,34 +606,6 @@ fn score(
             metrics.confirmed_root_causes += 1;
         }
         metrics.expected_root_causes += fixture.oracle.is_true_positive as usize;
-    }
-
-    // Merge scoring is family-specific: a dedup fixture is correct when the
-    // engine merged exactly the findings the oracle says share a root cause.
-    let dedup_outcomes: Vec<&FixtureOutcome> = outcomes
-        .iter()
-        .filter(|o| {
-            split.is_none_or(|s| s == o.split)
-                && corpus
-                    .iter()
-                    .find(|f| f.id == o.fixture_id)
-                    .is_some_and(|f| f.family == "dedup")
-        })
-        .collect();
-    for outcome in dedup_outcomes {
-        let Some(fixture) = corpus.iter().find(|f| f.id == outcome.fixture_id) else {
-            continue;
-        };
-        let expected_merges = fixture.oracle.merges_into.is_some() as usize;
-        // The engine reports the number of merges through `unmet_requirements`
-        // only as a count of *unmet* items, so merges are re-derived here from
-        // the inputs to keep the metric honest.
-        let actual_merges = dedup_actual_merges(fixture);
-        if actual_merges == expected_merges {
-            metrics.merged_correctly += 1;
-        } else {
-            metrics.merge_violations += 1;
-        }
     }
 
     metrics
@@ -708,6 +640,39 @@ mod tests {
     use crate::alphacode_security_core::authz::{
         AccessObservation, ObservedOutcome, ResourceRef, Role, TestIdentity,
     };
+
+    #[test]
+    fn changing_dedup_answers_cannot_change_engine_predictions() {
+        let mut corpus: Vec<_> = fixtures::corpus()
+            .into_iter()
+            .filter(|fixture| !fixture.inputs.dedup_candidates.is_empty())
+            .collect();
+        assert!(!corpus.is_empty());
+        let before = run(&corpus);
+        for fixture in &mut corpus {
+            fixture.oracle.root_cause = None;
+            fixture.oracle.is_true_positive = !fixture.oracle.is_true_positive;
+            fixture.oracle.merges_into = if fixture.oracle.merges_into.is_some() {
+                None
+            } else {
+                Some("deliberately-wrong-answer")
+            };
+        }
+        let after = run(&corpus);
+        for (before, after) in before.outcomes.iter().zip(&after.outcomes) {
+            assert_eq!(before.predicted_verdict, after.predicted_verdict);
+            assert_eq!(before.dedup_merges, after.dedup_merges);
+            assert!(!after.predicted_reportable);
+            assert_ne!(before.correct, after.correct);
+        }
+        assert_eq!(after.all.true_positives, 0);
+        assert_eq!(after.all.false_negatives, 0);
+        assert_eq!(after.all.precision(), None);
+        assert_eq!(after.all.accuracy(), None);
+        assert!(before.passes());
+        assert!(!after.passes());
+        assert_eq!(after.by_family["dedup"].merge_violations, corpus.len());
+    }
 
     fn oracle(
         expected_verdict: AuthorizationVerdict,

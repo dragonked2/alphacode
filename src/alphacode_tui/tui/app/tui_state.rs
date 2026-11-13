@@ -2104,6 +2104,15 @@ impl crate::alphacode_tui::tui::TuiState for App {
     fn help_scroll(&self) -> Option<usize> {
         self.help_scroll
     }
+    fn help_query(&self) -> &str {
+        &self.help_query
+    }
+    fn help_query_cursor(&self) -> usize {
+        self.help_query_cursor
+    }
+    fn help_search_editing(&self) -> bool {
+        self.help_search_editing
+    }
 
     fn model_status_overlay(&self) -> Option<(usize, &str)> {
         self.model_status_scroll

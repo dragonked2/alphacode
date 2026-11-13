@@ -281,20 +281,6 @@ async fn handle_remote_key_internal(
         return Ok(());
     }
 
-    // F1 is the standard, terminal-friendly way to reach help, and the composer
-    // advertises it in every mode. Toggle it explicitly before overlay routing
-    // so a second F1 closes the existing help without touching the draft.
-    // This arm was missing from the remote path entirely: clients connected to a
-    // server could only reach help by typing `/help`.
-    if code == KeyCode::F(1) && modifiers.is_empty() {
-        app.help_scroll = if app.help_scroll.is_some() {
-            None
-        } else {
-            Some(0)
-        };
-        return Ok(());
-    }
-
     // The transcript find-in-page overlay claims every key while it is open,
     // so it is checked before the other modals: it is the most recently
     // opened surface and the user is typing into it.
@@ -313,7 +299,7 @@ async fn handle_remote_key_internal(
     }
 
     if app.help_scroll.is_some() {
-        return app.handle_help_key(code);
+        return app.handle_help_key(code, modifiers);
     }
 
     if app.session_picker_overlay.is_some() {
@@ -348,6 +334,14 @@ async fn handle_remote_key_internal(
     // can claim them. This mirrors the local path in `input.rs`
     // `handle_key_core`.
     if app.model_picker_preview_hotkey(code, modifiers)? {
+        return Ok(());
+    }
+
+    // Match local focus ownership: an existing modal claims its keys before
+    // F1 can open help. Otherwise help can cover a search while keystrokes
+    // still go to the search hidden beneath it.
+    if code == KeyCode::F(1) && modifiers.is_empty() {
+        app.open_help();
         return Ok(());
     }
 
@@ -910,7 +904,7 @@ async fn handle_remote_key_internal(
                 }
 
                 if trimmed == "/help" || trimmed == "/?" || trimmed == "/commands" {
-                    app.help_scroll = Some(0);
+                    app.open_help();
                     return Ok(());
                 }
 

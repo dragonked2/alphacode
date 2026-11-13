@@ -16,12 +16,49 @@ use ratatui::{
 use super::selection_highlight::highlight_line_selection;
 
 use super::config_overlay::{self, ConfigSetting};
+#[cfg(not(test))]
 use std::sync::atomic::{AtomicUsize, Ordering};
 
+#[cfg(not(test))]
 static HELP_MAX_SCROLL: AtomicUsize = AtomicUsize::new(0);
+#[cfg(not(test))]
+static HELP_PAGE_HEIGHT: AtomicUsize = AtomicUsize::new(20);
+
+#[cfg(test)]
+thread_local! {
+    static HELP_VIEWPORT: std::cell::Cell<(usize, usize)> = const { std::cell::Cell::new((0, 20)) };
+}
 
 pub(crate) fn help_max_scroll() -> usize {
-    HELP_MAX_SCROLL.load(Ordering::Relaxed)
+    #[cfg(not(test))]
+    {
+        HELP_MAX_SCROLL.load(Ordering::Relaxed)
+    }
+    #[cfg(test)]
+    {
+        HELP_VIEWPORT.with(|state| state.get().0)
+    }
+}
+
+pub(crate) fn help_page_height() -> usize {
+    #[cfg(not(test))]
+    {
+        HELP_PAGE_HEIGHT.load(Ordering::Relaxed)
+    }
+    #[cfg(test)]
+    {
+        HELP_VIEWPORT.with(|state| state.get().1)
+    }
+}
+
+fn set_help_viewport(max_scroll: usize, page_height: usize) {
+    #[cfg(not(test))]
+    {
+        HELP_MAX_SCROLL.store(max_scroll, Ordering::Relaxed);
+        HELP_PAGE_HEIGHT.store(page_height, Ordering::Relaxed);
+    }
+    #[cfg(test)]
+    HELP_VIEWPORT.with(|state| state.set((max_scroll, page_height)));
 }
 
 /// Render the interactive settings overlay (`/config ui`).
@@ -275,6 +312,48 @@ pub(super) fn draw_changelog_overlay(
     frame.render_widget(Paragraph::new(visible_lines), inner);
 }
 
+/// Keep an editable query's caret visible without splitting terminal cells.
+pub(super) fn help_search_display(query: &str, cursor: usize, width: usize) -> (String, usize) {
+    use unicode_segmentation::UnicodeSegmentation;
+    use unicode_width::UnicodeWidthStr;
+    if width == 0 {
+        return (String::new(), 0);
+    }
+    let prefix = if width >= 12 { "Search: " } else { "/" };
+    let budget = width.saturating_sub(prefix.width() + 1);
+    let cursor = crate::alphacode_tui::tui::core::ceil_char_boundary(query, cursor);
+    let mut start = cursor;
+    let mut used = 0;
+    for (index, grapheme) in query[..cursor].grapheme_indices(true).rev() {
+        if used + grapheme.width() > budget {
+            break;
+        }
+        used += grapheme.width();
+        start = index;
+    }
+    let elided = start > 0 && budget > 0;
+    if elided {
+        while used + 1 > budget && start < cursor {
+            let next =
+                crate::alphacode_tui::tui::core::next_grapheme_boundary(query, start).min(cursor);
+            used = used.saturating_sub(query[start..next].width());
+            start = next;
+        }
+    }
+    let marker = if elided { "…" } else { "" };
+    let caret = prefix.width() + marker.width() + used;
+    let mut text = format!("{prefix}{marker}{}", &query[start..cursor]);
+    let mut remaining = width.saturating_sub(caret + 1);
+    for grapheme in query[cursor..].graphemes(true) {
+        if grapheme.width() > remaining {
+            break;
+        }
+        text.push_str(grapheme);
+        remaining -= grapheme.width();
+    }
+    (text, caret.min(width - 1))
+}
+
 pub(super) fn draw_help_overlay(frame: &mut Frame, area: Rect, scroll: usize, app: &dyn TuiState) {
     clear_area(frame, area);
 
@@ -313,6 +392,19 @@ pub(super) fn draw_help_overlay(frame: &mut Frame, area: Rect, scroll: usize, ap
         ])
     };
 
+    lines.push(Line::from(""));
+
+    lines.push(Line::from(Span::styled("  Start here", section_style)));
+    lines.push(Line::from(
+        "  Choose a model: /model    Resume a chat: /resume",
+    ));
+    lines.push(Line::from(
+        "  Type a task and press Enter. Shift+Enter adds a line.",
+    ));
+    lines.push(Line::from(
+        "  While working, Enter sends guidance to the running turn.",
+    ));
+    lines.push(Line::from("  Search this reference with / or Ctrl+F."));
     lines.push(Line::from(""));
 
     lines.push(Line::from(Span::styled("  Commands", section_style)));
@@ -669,11 +761,7 @@ pub(super) fn draw_help_overlay(frame: &mut Frame, area: Rect, scroll: usize, ap
     lines.push(Line::from(Span::styled("  Input & Editing", section_style)));
     lines.push(Line::from(""));
     lines.push(key_entry("F1", "Open or close this help overlay"));
-    lines.push(key_entry(
-        "Ctrl+C / Ctrl+D",
-        "Quit (press twice to confirm)",
-    ));
-    lines.push(key_entry("Ctrl+X", "Cut entire input line to clipboard"));
+    lines.push(key_entry("Ctrl+D", "Quit (press twice to confirm)"));
     lines.push(key_entry(
         "Shift+Left / Shift+Right",
         "Select text in the composer (Ctrl/Alt+Shift extends by word)",
@@ -684,7 +772,7 @@ pub(super) fn draw_help_overlay(frame: &mut Frame, area: Rect, scroll: usize, ap
     ));
     lines.push(key_entry(
         "Ctrl+C",
-        "Copy the composer selection (no selection: interrupt the turn)",
+        "Copy selection; otherwise interrupt (idle: quit confirmation)",
     ));
     lines.push(key_entry(
         "Ctrl+X",
@@ -695,10 +783,7 @@ pub(super) fn draw_help_overlay(frame: &mut Frame, area: Rect, scroll: usize, ap
         "Dismiss the command palette (keeps the draft); press again to clear it",
     ));
     lines.push(key_entry("@", "Complete a file path from the project tree"));
-    lines.push(key_entry(
-        "Ctrl+A",
-        "Copy visible chat viewport plus nearby context",
-    ));
+    lines.push(key_entry("Ctrl+A", "Move to start of input"));
     lines.push(key_entry("Ctrl+U", "Clear input line"));
     lines.push(key_entry("Ctrl+K", "Delete to end of input"));
     lines.push(key_entry(
@@ -739,10 +824,9 @@ pub(super) fn draw_help_overlay(frame: &mut Frame, area: Rect, scroll: usize, ap
     ));
     lines.push(key_entry(
         "Ctrl+Enter / Cmd+Enter",
-        "Use opposite send mode while processing",
+        "Send prompt; guidance while working (also Enter)",
     ));
     lines.push(key_entry("Ctrl+Up", "Retrieve pending message for editing"));
-    lines.push(key_entry("Ctrl+Tab / Ctrl+T", "Toggle queue mode"));
     lines.push(key_entry(
         "Ctrl+R",
         "Search prompt history (across sessions)",
@@ -788,12 +872,41 @@ pub(super) fn draw_help_overlay(frame: &mut Frame, area: Rect, scroll: usize, ap
     // Pre-wrap so the scroll range counts the same visible rows that the
     // terminal renders. Otherwise descriptions are silently clipped on narrow
     // screens and scrolling cannot reach the missing text.
-    let width = area.width.saturating_sub(2).max(1) as usize;
+    let query = app.help_query().trim();
+    let matching = if query.is_empty() {
+        None
+    } else {
+        let terms: Vec<String> = query.split_whitespace().map(str::to_lowercase).collect();
+        lines.retain(|line| {
+            let text = line.to_string();
+            let searchable = text.to_lowercase();
+            text.starts_with("    ") && terms.iter().all(|term| searchable.contains(term))
+        });
+        let count = lines.len();
+        if count == 0 {
+            lines.push(Line::from(Span::styled(
+                "No matches. Try model, copy, files, or theme.",
+                desc_style,
+            )));
+        }
+        Some(count)
+    };
+    let inner = area.inner(Margin {
+        horizontal: 1,
+        vertical: 1,
+    });
+    let search_height = u16::from(inner.height >= 2);
+    let content_area = Rect {
+        y: inner.y.saturating_add(search_height),
+        height: inner.height.saturating_sub(search_height),
+        ..inner
+    };
+    let width = inner.width.max(1) as usize;
     let lines = super::markdown::wrap_lines(lines, width);
     let total_lines = lines.len();
-    let visible_height = area.height.saturating_sub(2) as usize;
+    let visible_height = content_area.height as usize;
     let max_scroll = total_lines.saturating_sub(visible_height);
-    HELP_MAX_SCROLL.store(max_scroll, Ordering::Relaxed);
+    set_help_viewport(max_scroll, visible_height.max(1));
     let scroll = scroll.min(max_scroll);
 
     let scroll_info = if total_lines > visible_height {
@@ -807,11 +920,31 @@ pub(super) fn draw_help_overlay(frame: &mut Frame, area: Rect, scroll: usize, ap
         String::new()
     };
 
-    let title = format!(" Help {} ", scroll_info);
-    let footer = if area.width < 60 {
-        " Esc close · ↑↓ scroll "
+    let title = match matching {
+        Some(count) => format!(
+            " Help · {count} {} {scroll_info}",
+            if count == 1 { "match" } else { "matches" }
+        ),
+        None => format!(" Help {scroll_info}"),
+    };
+    let footer = if area.width < 12 {
+        " Esc "
+    } else if area.width < 24 {
+        if app.help_search_editing() || !query.is_empty() {
+            " Esc clear "
+        } else {
+            " Esc close "
+        }
+    } else if app.help_search_editing() && area.width < 44 {
+        " Enter browse · Esc clear "
+    } else if app.help_search_editing() {
+        " Type to filter · Enter browse · Esc clear "
+    } else if !query.is_empty() {
+        " / edit search · Esc clear · F1 close "
+    } else if area.width < 60 {
+        " / search · Esc close · ↑↓ scroll "
     } else {
-        " F1/Esc/q close · mouse/j/k scroll · PgUp/PgDn/Space page · /help <cmd> details "
+        " / or Ctrl+F search · F1/Esc/q close · ↑↓ scroll · PgUp/PgDn page "
     };
     let block = Block::default()
         .title(Span::styled(
@@ -826,11 +959,35 @@ pub(super) fn draw_help_overlay(frame: &mut Frame, area: Rect, scroll: usize, ap
         .border_type(ratatui::widgets::BorderType::Rounded)
         .border_style(Style::default().fg(border_color()));
 
-    let paragraph = Paragraph::new(lines)
-        .block(block)
-        .scroll((scroll.min(u16::MAX as usize) as u16, 0));
+    frame.render_widget(block, area);
+    if search_height > 0 {
+        let (search_text, caret) = if app.help_search_editing() || !query.is_empty() {
+            help_search_display(
+                app.help_query(),
+                app.help_query_cursor(),
+                inner.width as usize,
+            )
+        } else {
+            let hint = if inner.width >= 30 {
+                "/ Search commands and shortcuts"
+            } else if inner.width >= 8 {
+                "/ Search"
+            } else {
+                "/"
+            };
+            (hint.to_string(), 0)
+        };
+        frame.render_widget(
+            Paragraph::new(Line::from(Span::styled(search_text, key_style))),
+            Rect { height: 1, ..inner },
+        );
+        if app.help_search_editing() && inner.width > 0 {
+            frame.set_cursor_position((inner.x + caret as u16, inner.y));
+        }
+    }
+    let paragraph = Paragraph::new(lines).scroll((scroll.min(u16::MAX as usize) as u16, 0));
 
-    frame.render_widget(paragraph, area);
+    frame.render_widget(paragraph, content_area);
 }
 
 pub(super) fn draw_model_status_overlay(

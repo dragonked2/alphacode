@@ -42,6 +42,7 @@
 //! ui_error_toast::clear();   // dismiss all toasts immediately
 //! ```
 
+#[cfg(not(test))]
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
@@ -155,7 +156,30 @@ const MAX_TOAST_DETAIL_CHARS: usize = 8_000;
 /// to user-driven actions + 60Hz render. If profiling ever shows this is
 /// hot, swap for a `crossbeam` channel — but the current shape keeps the
 /// API a one-liner from any call site.
+#[cfg(not(test))]
 static TOASTS: Mutex<Vec<Toast>> = Mutex::new(Vec::new());
+
+#[cfg(test)]
+thread_local! {
+    // Each libtest case runs on its own thread. A process-global queue lets
+    // unrelated fixtures clear or inject toasts between count() and Esc,
+    // changing which keyboard action the test exercises.
+    static TEST_TOASTS: std::cell::RefCell<Vec<Toast>> = const { std::cell::RefCell::new(Vec::new()) };
+}
+
+fn with_toasts<T>(f: impl FnOnce(&mut Vec<Toast>) -> T) -> T {
+    #[cfg(not(test))]
+    {
+        let mut guard = TOASTS
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        f(&mut guard)
+    }
+    #[cfg(test)]
+    {
+        TEST_TOASTS.with(|toasts| f(&mut toasts.borrow_mut()))
+    }
+}
 
 /// Push an error toast with the default TTL.
 pub fn push_error(message: impl Into<String>) {
@@ -353,42 +377,41 @@ pub fn push_with_ttl_and_recovery(
         (hint, None) => hint,
     };
 
-    let mut guard = TOASTS
-        .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner());
-    let now = Instant::now();
-    guard.retain(|toast| !toast.is_expired(now));
-    if let Some(previous) = guard.last_mut().filter(|toast| {
-        toast.severity == severity
-            && toast.message == message
-            && toast.hint == hint
-            && toast.recovery == recovery
-    }) {
-        previous.occurrences = previous.occurrences.saturating_add(1);
-        // Extend readability without restarting the slide-in animation or
-        // collapsing diagnostics the user is currently inspecting.
-        previous.ttl = now
-            .saturating_duration_since(previous.created_at)
-            .saturating_add(ttl);
-        return;
-    }
-    guard.push(Toast {
-        severity,
-        message,
-        hint,
-        recovery,
-        created_at: Instant::now(),
-        ttl,
-        expanded: false,
-        occurrences: 1,
+    with_toasts(|guard| {
+        let now = Instant::now();
+        guard.retain(|toast| !toast.is_expired(now));
+        if let Some(previous) = guard.last_mut().filter(|toast| {
+            toast.severity == severity
+                && toast.message == message
+                && toast.hint == hint
+                && toast.recovery == recovery
+        }) {
+            previous.occurrences = previous.occurrences.saturating_add(1);
+            // Extend readability without restarting the slide-in animation or
+            // collapsing diagnostics the user is currently inspecting.
+            previous.ttl = now
+                .saturating_duration_since(previous.created_at)
+                .saturating_add(ttl);
+            return;
+        }
+        guard.push(Toast {
+            severity,
+            message,
+            hint,
+            recovery,
+            created_at: Instant::now(),
+            ttl,
+            expanded: false,
+            occurrences: 1,
+        });
+        // Keep only the most-recent `MAX_VISIBLE_TOASTS` to bound the screen
+        // real estate. The oldest in the queue is evicted first.
+        let len = guard.len();
+        if len > MAX_VISIBLE_TOASTS {
+            let drop = len - MAX_VISIBLE_TOASTS;
+            guard.drain(0..drop);
+        }
     });
-    // Keep only the most-recent `MAX_VISIBLE_TOASTS` to bound the screen
-    // real estate. The oldest in the queue is evicted first.
-    let len = guard.len();
-    if len > MAX_VISIBLE_TOASTS {
-        let drop = len - MAX_VISIBLE_TOASTS;
-        guard.drain(0..drop);
-    }
 }
 
 /// Notifications are plain terminal cells, never terminal control sequences.
@@ -498,56 +521,49 @@ fn push(severity: Severity, message: impl Into<String>, hint: Option<String>) {
 
 /// Clear all currently-visible toasts. Used by the `Esc` dismissal hook.
 pub fn clear() {
-    TOASTS
-        .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner())
-        .clear();
+    with_toasts(|toasts| toasts.clear());
 }
 
 /// Dismiss a single toast by index (used when the user clicks an "x" on
 /// a specific toast). Out-of-range indices are ignored.
 pub fn dismiss(index: usize) {
-    let mut guard = TOASTS
-        .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner());
-    if index < guard.len() {
-        guard.remove(index);
-    }
+    with_toasts(|guard| {
+        if index < guard.len() {
+            guard.remove(index);
+        }
+    });
 }
 
 /// Toggle the expanded state of a toast by index. When expanded, the full
 /// message and hint are shown at wider width. Out-of-range indices are
 /// ignored. Returns whether the toast was expanded after toggling.
 pub fn toggle_expand(index: usize) -> bool {
-    let mut guard = TOASTS
-        .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner());
-    if let Some(toast) = guard.get_mut(index) {
-        toast.expanded = !toast.expanded;
-        toast.expanded
-    } else {
-        false
-    }
+    with_toasts(|guard| {
+        if let Some(toast) = guard.get_mut(index) {
+            toast.expanded = !toast.expanded;
+            toast.expanded
+        } else {
+            false
+        }
+    })
 }
 
 /// Expand a specific toast by index. Out-of-range indices are ignored.
 pub fn expand(index: usize) {
-    let mut guard = TOASTS
-        .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner());
-    if let Some(toast) = guard.get_mut(index) {
-        toast.expanded = true;
-    }
+    with_toasts(|guard| {
+        if let Some(toast) = guard.get_mut(index) {
+            toast.expanded = true;
+        }
+    });
 }
 
 /// Collapse a specific toast by index. Out-of-range indices are ignored.
 pub fn collapse(index: usize) {
-    let mut guard = TOASTS
-        .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner());
-    if let Some(toast) = guard.get_mut(index) {
-        toast.expanded = false;
-    }
+    with_toasts(|guard| {
+        if let Some(toast) = guard.get_mut(index) {
+            toast.expanded = false;
+        }
+    });
 }
 
 /// Snapshot of the current toast queue, after pruning expired entries.
@@ -555,11 +571,10 @@ pub fn collapse(index: usize) {
 /// mutex during ratatui calls.
 pub fn snapshot() -> Vec<Toast> {
     let now = Instant::now();
-    let mut guard = TOASTS
-        .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner());
-    guard.retain(|t| !t.is_expired(now));
-    guard.clone()
+    with_toasts(|guard| {
+        guard.retain(|t| !t.is_expired(now));
+        guard.clone()
+    })
 }
 
 /// Number of currently-visible toasts. Used by tests and the `/help`
@@ -753,28 +768,30 @@ pub fn draw(frame: &mut ratatui::Frame, area: Rect) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::sync::{Mutex, MutexGuard};
 
-    // The production queue is intentionally process-global, so tests must
-    // serialize all queue access. Clearing before/after a test alone is not
-    // sufficient when Rust's test runner executes two of these tests at once.
-    static TOAST_TEST_LOCK: Mutex<()> = Mutex::new(());
-
-    fn test_guard() -> MutexGuard<'static, ()> {
-        TOAST_TEST_LOCK
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner())
-    }
-
-    /// Tests share the process-global queue. The guard makes the reset
-    /// deterministic even under the default parallel test runner.
     fn reset() {
         clear();
     }
 
     #[test]
+    fn parallel_fixtures_cannot_dismiss_or_inject_each_others_toasts() {
+        reset();
+        push_error("parent notification");
+        std::thread::spawn(|| {
+            assert_eq!(count(), 0);
+            clear();
+            push_warning("other fixture");
+            assert_eq!(snapshot()[0].message, "other fixture");
+        })
+        .join()
+        .unwrap();
+        assert_eq!(count(), 1);
+        assert_eq!(snapshot()[0].message, "parent notification");
+        reset();
+    }
+
+    #[test]
     fn repeated_notifications_keep_one_readable_card() {
-        let _guard = test_guard();
         reset();
         push_error_with_hint("Connection lost", "Retrying");
         expand(0);
@@ -806,7 +823,6 @@ mod tests {
 
     #[test]
     fn push_and_count() {
-        let _guard = test_guard();
         reset();
         assert_eq!(count(), 0);
         push_error("first");
@@ -818,7 +834,6 @@ mod tests {
 
     #[test]
     fn max_visible_caps_queue() {
-        let _guard = test_guard();
         reset();
         for i in 0..10 {
             push_error(format!("toast {i}"));
@@ -830,7 +845,6 @@ mod tests {
 
     #[test]
     fn ttl_expires_toast() {
-        let _guard = test_guard();
         reset();
         push_with_ttl(Severity::Error, "instant", None, Duration::from_millis(0));
         // After 0ms TTL, the toast is already expired at snapshot time.
@@ -841,7 +855,6 @@ mod tests {
 
     #[test]
     fn expanded_toast_stays_visible_past_its_ttl_until_dismissed() {
-        let _guard = test_guard();
         reset();
         push_with_ttl(
             Severity::Error,
@@ -859,7 +872,6 @@ mod tests {
 
     #[test]
     fn clear_removes_all() {
-        let _guard = test_guard();
         reset();
         push_error("a");
         push_warning("b");
@@ -870,7 +882,6 @@ mod tests {
 
     #[test]
     fn severity_icon_role_mapping_is_distinct() {
-        let _guard = test_guard();
         // Each severity picks a distinct role. If two ever collapse to
         // the same role, the toast colors will be indistinguishable and
         // this test fails.
@@ -886,7 +897,6 @@ mod tests {
 
     #[test]
     fn long_errors_collapse_to_a_short_preview_and_keep_details() {
-        let _guard = test_guard();
         let raw = format!(
             "Error: provider request failed after retries\nCaused by: {}",
             "upstream diagnostic details ".repeat(30)
@@ -902,7 +912,6 @@ mod tests {
 
     #[test]
     fn short_errors_stay_unchanged() {
-        let _guard = test_guard();
         let (preview, details) = compact_toast_message("Could not connect");
         assert_eq!(preview, "Could not connect");
         assert!(details.is_none());
@@ -910,7 +919,6 @@ mod tests {
 
     #[test]
     fn dismiss_removes_one() {
-        let _guard = test_guard();
         reset();
         push_error("a");
         push_error("b");
@@ -927,7 +935,6 @@ mod tests {
 
     #[test]
     fn toast_preview_preserves_graphemes_and_terminal_width() {
-        let _guard = test_guard();
         assert_eq!(
             truncate_to_width("e\u{301}👩\u{200d}💻x", 3),
             "e\u{301}👩\u{200d}💻"

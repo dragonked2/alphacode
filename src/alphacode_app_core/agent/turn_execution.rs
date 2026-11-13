@@ -391,6 +391,15 @@ impl Agent {
         started_at: Instant,
         start_message_index: usize,
     ) {
+        // Report auditing is independent of optional observer hooks. The early
+        // return below used to silently disable it in ordinary sessions.
+        if result.is_ok()
+            && self.goal_contract.as_ref().is_some_and(|contract| {
+                contract.phase == crate::alphacode_task_types::goal_contract::ContractPhase::Report
+            })
+        {
+            self.run_quality_gate_on_report();
+        }
         if !crate::hooks::hook_configured("turn_end") {
             return;
         }
@@ -438,14 +447,6 @@ impl Agent {
         }
 
         crate::hooks::dispatch_observer(event);
-
-        // Quality gate: when the contract reaches Report phase, run the
-        // quality gate to verify the final report.
-        if let Some(ref contract) = self.goal_contract
-            && contract.phase == crate::alphacode_task_types::goal_contract::ContractPhase::Report
-        {
-            self.run_quality_gate_on_report();
-        }
     }
 
     /// Run the quality gate on the final report when the goal contract
@@ -477,7 +478,11 @@ impl Agent {
             crate::agent::claim_checker::check_all_claims(&report, &working_dir, &evidence);
         let summary = crate::agent::claim_checker::verification_report(&results);
 
-        if !results.iter().all(|r| r.verified) {
+        if results.is_empty() {
+            logging::info(
+                "Quality gate: no mechanically checkable claims; completeness is not established",
+            );
+        } else if !results.iter().all(|r| r.verified) {
             logging::warn(&format!(
                 "Quality gate: claim verification found issues:\n{}",
                 summary

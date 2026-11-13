@@ -22,6 +22,9 @@ pub struct VerificationQuality {
 
 impl VerificationQuality {
     pub fn verification_state(&self) -> VerificationState {
+        if !self.has_valid_dimensions() {
+            return VerificationState::InsufficientEvidence;
+        }
         if self.contradiction_level > 0.5 {
             return VerificationState::Disputed;
         }
@@ -29,7 +32,17 @@ impl VerificationQuality {
             return VerificationState::AssumptionHeavy;
         }
         let score = self.score();
-        if score >= 0.85 && self.reproducibility >= 0.7 && self.independence > 0.0 {
+        // Ranking signals must not compensate for an absent proof dimension.
+        // These are necessary quality gates, not proof of program eligibility.
+        if score >= 0.85
+            && self.reproducibility >= 0.7
+            && self.evidence_strength >= 0.7
+            && self.impact_demonstration >= 0.7
+            && self.exploitability_evidence >= 0.7
+            && self.independence >= 0.7
+            && self.contradiction_level == 0.0
+            && self.assumption_count == 0
+        {
             VerificationState::VerifiedReportable
         } else if score >= 0.6 {
             VerificationState::StrongCandidate
@@ -41,6 +54,9 @@ impl VerificationQuality {
     }
 
     pub fn score(&self) -> f32 {
+        if !self.has_valid_dimensions() {
+            return 0.0;
+        }
         let positive = self.reproducibility * 0.25
             + self.evidence_strength * 0.25
             + self.impact_demonstration * 0.2
@@ -49,6 +65,19 @@ impl VerificationQuality {
         let penalty =
             self.contradiction_level * 0.3 + (self.assumption_count as f32 * 0.05).min(0.3);
         (positive - penalty).clamp(0.0, 1.0)
+    }
+
+    fn has_valid_dimensions(&self) -> bool {
+        [
+            self.reproducibility,
+            self.evidence_strength,
+            self.impact_demonstration,
+            self.exploitability_evidence,
+            self.independence,
+            self.contradiction_level,
+        ]
+        .iter()
+        .all(|value| value.is_finite() && (0.0..=1.0).contains(value))
     }
 }
 
@@ -876,7 +905,7 @@ impl FalsePositiveDefense {
     /// that were tried and did *not* kill the finding. A defense that only
     /// recorded refutations has proven the opposite of what it claims.
     pub fn was_exercised(&self) -> bool {
-        !self.survived.is_empty()
+        self.is_still_viable() && self.survived.iter().any(|h| self.tested.contains(h))
     }
 
     /// Whether any negative hypothesis actively killed the finding.
@@ -899,6 +928,86 @@ impl FalsePositiveDefense {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn complete_quality() -> VerificationQuality {
+        VerificationQuality {
+            reproducibility: 1.0,
+            evidence_strength: 1.0,
+            impact_demonstration: 1.0,
+            exploitability_evidence: 1.0,
+            independence: 1.0,
+            contradiction_level: 0.0,
+            assumption_count: 0,
+        }
+    }
+
+    #[test]
+    fn strong_dimensions_cannot_compensate_for_missing_proof() {
+        for dimension in 0..5 {
+            let mut q = complete_quality();
+            let field = match dimension {
+                0 => &mut q.reproducibility,
+                1 => &mut q.evidence_strength,
+                2 => &mut q.impact_demonstration,
+                3 => &mut q.exploitability_evidence,
+                _ => &mut q.independence,
+            };
+            *field = 0.69;
+            assert_ne!(
+                q.verification_state(),
+                VerificationState::VerifiedReportable
+            );
+        }
+        let mut q = complete_quality();
+        q.assumption_count = 1;
+        assert_ne!(
+            q.verification_state(),
+            VerificationState::VerifiedReportable
+        );
+        q.assumption_count = 0;
+        q.contradiction_level = 0.01;
+        assert_ne!(
+            q.verification_state(),
+            VerificationState::VerifiedReportable
+        );
+    }
+
+    #[test]
+    fn invalid_serialized_scores_fail_closed() {
+        for invalid in [f32::NAN, f32::INFINITY, f32::NEG_INFINITY, -0.1, 1.1] {
+            for dimension in 0..6 {
+                let mut q = complete_quality();
+                let field = match dimension {
+                    0 => &mut q.reproducibility,
+                    1 => &mut q.evidence_strength,
+                    2 => &mut q.impact_demonstration,
+                    3 => &mut q.exploitability_evidence,
+                    4 => &mut q.independence,
+                    _ => &mut q.contradiction_level,
+                };
+                *field = invalid;
+                assert_eq!(
+                    q.verification_state(),
+                    VerificationState::InsufficientEvidence
+                );
+                assert_eq!(q.score(), 0.0);
+            }
+        }
+    }
+
+    #[test]
+    fn deserialized_survival_requires_a_recorded_test() {
+        let d: FalsePositiveDefense = serde_json::from_value(serde_json::json!({
+            "tested": [], "survived": ["public_by_design"], "refuted_by": []
+        }))
+        .unwrap();
+        assert!(!d.was_exercised());
+        let mut d = FalsePositiveDefense::new();
+        d.record_survived(NegativeHypothesis::PublicByDesign);
+        assert!(d.was_exercised());
+        d.record_refuted(NegativeHypothesis::PublicByDesign);
+        assert!(!d.was_exercised());
+    }
 
     #[test]
     fn quality_score_derives_state() {

@@ -76,7 +76,7 @@ mod onboarding;
 mod output_style;
 #[path = "ui_overlays.rs"]
 mod overlays;
-pub(crate) use overlays::help_max_scroll;
+pub(crate) use overlays::{help_max_scroll, help_page_height};
 #[path = "ui_pinned.rs"]
 mod pinned_ui;
 #[path = "ui_prepare.rs"]

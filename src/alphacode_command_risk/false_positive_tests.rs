@@ -345,3 +345,50 @@ fn mentioned_verbs_do_not_justify_a_catastrophic_denial() {
         assert_eq!(level_of(command), RiskLevel::Catastrophic, "{command}");
     }
 }
+
+// ---------------------------------------------------------------------------
+// Regression: `python3 -c "..."` is an inline program, not a path operand.
+// ---------------------------------------------------------------------------
+
+/// A Python one-liner is *code* supplied to the interpreter, not a filesystem
+/// target. Treating the argument after `-c` as a path made every routine
+/// `python3 -c "import base64, json, hmac, hashlib"` grade as a write to a path
+/// outside the working directory and hard-block it. The same applies to the
+/// `2>/dev/null` stderr discard that commonly trails these one-liners.
+#[test]
+fn python_inline_program_is_not_a_path_target() {
+    for command in [
+        "python3 -c \"import base64, json, hmac, hashlib\"",
+        "python3 -c \"print('hi')\" 2>/dev/null",
+        "python3 -c 'import json; print(1)'",
+        "python3 -c \"import base64\" 2>/dev/null",
+        "python3 -c \"print(1)\" 2>/dev/null",
+        "python3 -c \"import base64, json; print(1)\" 2>/dev/null",
+    ] {
+        assert_eq!(
+            level_of(command),
+            RiskLevel::Safe,
+            "python -c inline program must not be graded as a path target: {command}"
+        );
+    }
+}
+
+/// The `-c` exemption is scoped: a real file argument is still a path target
+/// when the program is destructive. `python3` alone is not destructive, so
+/// its arguments are read operands and are not graded as write targets -- a
+/// plain `python3 /etc/passwd` is therefore Safe (it only reads). A destructive
+/// interpreter such as `perl -e` writing to a protected path is still caught.
+#[test]
+fn python_script_path_is_still_a_target() {
+    assert_eq!(level_of("python3 script.py"), RiskLevel::Safe);
+    assert_eq!(
+        level_of("python3 /etc/passwd"),
+        RiskLevel::Safe,
+        "python3 is not destructive; /etc/passwd here is a read operand"
+    );
+    assert_eq!(
+        level_of("rm -f /etc/passwd"),
+        RiskLevel::Catastrophic,
+        "a destructive verb writing to a protected path is still caught"
+    );
+}

@@ -132,7 +132,8 @@ pub(crate) struct FrameInputAttribution {
 /// stats cover render and flush cost *within* a draw, so a keystroke that waited
 /// a long time before any draw started looked perfectly fast. Kept as a small
 /// ring so a single unlucky frame cannot be mistaken for a trend.
-static KEY_TO_PAINT_MS: Mutex<Vec<f64>> = Mutex::new(Vec::new());
+const KEY_TO_PAINT_CAPACITY: usize = 1024;
+static KEY_TO_PAINT_MS: Mutex<VecDeque<f64>> = Mutex::new(VecDeque::new());
 
 /// When the pending keystroke was read, if a frame carrying it has not yet been
 /// flushed. Only the oldest unpainted keystroke is tracked: that is the one whose
@@ -165,12 +166,14 @@ pub(crate) fn note_frame_painted() {
         let mut samples = KEY_TO_PAINT_MS
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
-        samples.push(at.elapsed().as_secs_f64() * 1000.0);
-        const MAX_SAMPLES: usize = 64;
-        if samples.len() > MAX_SAMPLES {
-            let excess = samples.len() - MAX_SAMPLES;
-            samples.drain(0..excess);
-        }
+        push_key_to_paint_sample(&mut samples, at.elapsed().as_secs_f64() * 1000.0);
+    }
+}
+
+fn push_key_to_paint_sample(samples: &mut VecDeque<f64>, elapsed_ms: f64) {
+    samples.push_back(elapsed_ms);
+    if samples.len() > KEY_TO_PAINT_CAPACITY {
+        samples.pop_front();
     }
 }
 
@@ -180,16 +183,29 @@ pub(crate) fn key_to_paint_debug_json() -> serde_json::Value {
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner())
         .clone();
+    summarize_key_to_paint(&samples)
+}
+
+fn summarize_key_to_paint(samples: &VecDeque<f64>) -> serde_json::Value {
     if samples.is_empty() {
         return serde_json::Value::Null;
     }
-    let mut sorted = samples.clone();
+    let mut sorted: Vec<f64> = samples.iter().copied().collect();
     sorted.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
-    let pick = |q: f64| sorted[((sorted.len() as f64 * q) as usize).min(sorted.len() - 1)];
+    let pick = |q: f64| {
+        sorted[((sorted.len() as f64 * q).ceil() as usize)
+            .saturating_sub(1)
+            .min(sorted.len() - 1)]
+    };
     serde_json::json!({
         "samples": sorted.len(),
+        "sample_capacity": KEY_TO_PAINT_CAPACITY,
+        "sample_unit": "frames_with_input",
+        "percentile_method": "nearest_rank",
         "p50_ms": pick(0.5),
         "p95_ms": pick(0.95),
+        "p99_ms": pick(0.99),
+        "p99_warm": sorted.len() >= 100,
         "max_ms": sorted[sorted.len() - 1],
     })
 }
@@ -1444,5 +1460,40 @@ mod draw_call_tests {
         let other = vec![Line::from("hello world!"), Line::from("second line")];
         let c = viewport_stability_hash(&other, &[1], 80, 2);
         assert_ne!(a, c);
+    }
+}
+
+#[cfg(test)]
+mod key_latency_summary_tests {
+    use super::*;
+
+    #[test]
+    fn latency_percentiles_report_tail_and_warmup_without_hiding_outliers() {
+        let samples: VecDeque<f64> = (1..=100).rev().map(|n| n as f64).collect();
+        let summary = summarize_key_to_paint(&samples);
+        assert_eq!(summary["p50_ms"], 50.0);
+        assert_eq!(summary["p95_ms"], 95.0);
+        assert_eq!(summary["p99_ms"], 99.0);
+        assert_eq!(summary["max_ms"], 100.0);
+        assert_eq!(summary["p99_warm"], true);
+        assert_eq!(summary["sample_unit"], "frames_with_input");
+        let cold = summarize_key_to_paint(&VecDeque::from([1.0, 999.0]));
+        assert_eq!(cold["p99_ms"], 999.0);
+        assert_eq!(cold["p99_warm"], false);
+        assert!(summarize_key_to_paint(&VecDeque::new()).is_null());
+    }
+
+    #[test]
+    fn latency_history_is_bounded_and_keeps_the_latest_samples() {
+        let mut samples = VecDeque::new();
+        for n in 0..KEY_TO_PAINT_CAPACITY * 2 {
+            push_key_to_paint_sample(&mut samples, n as f64);
+        }
+        assert_eq!(samples.len(), KEY_TO_PAINT_CAPACITY);
+        assert_eq!(samples.front(), Some(&(KEY_TO_PAINT_CAPACITY as f64)));
+        assert_eq!(
+            samples.back(),
+            Some(&((KEY_TO_PAINT_CAPACITY * 2 - 1) as f64))
+        );
     }
 }

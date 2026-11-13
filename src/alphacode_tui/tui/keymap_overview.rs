@@ -157,7 +157,7 @@ pub const OVERVIEW: &[KeymapSection] = &[
     KeymapSection::new(
         Category::InputAndHistory,
         &[
-            KeymapRow::new("Enter", "Submit prompt"),
+            KeymapRow::new("Enter", "Send prompt; while working, send guidance"),
             KeymapRow::new(
                 "Shift+Enter",
                 "Insert newline (requires kitty keyboard protocol)",
@@ -186,7 +186,6 @@ pub const OVERVIEW: &[KeymapSection] = &[
                 "Dismiss the palette (keeps the draft); press again to clear it",
             ),
             KeymapRow::new("@", "Complete a file path from the project tree"),
-            KeymapRow::new("Ctrl+Tab / Ctrl+T", "Toggle queue mode"),
         ],
     ),
     KeymapSection::new(

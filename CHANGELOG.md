@@ -4,6 +4,29 @@ All notable changes to Alphacode are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project
 adheres to [Semantic Versioning](https://semver.org/).
 
+## [1.1.5] - 2026-11-13
+
+### Added
+
+- Improve mission continuation with persisted success criteria, validation
+  plans, checkpoints, and changed-file scope reminders.
+- Add evidence-quality guidance and a repeatable, loopback-only bounty
+  evaluation harness with controlled fixtures and independent verification.
+- Add searchable help, clearer TUI orientation, expanded overlays, and input
+  latency diagnostics with p50/p95/p99 reporting.
+
+### Fixed
+
+- Revoke stale completion evidence after edits, failed writes, interrupted
+  reruns, or mismatched verification arguments.
+- Improve repeated tool-failure recovery and provider/tool alias handling.
+- Preserve rooted POSIX paths during command-risk assessment, including
+  destructive-target protection for paths such as `/etc/passwd`.
+- Keep Windows input ordering and queue timing independent from rendering and
+  background work while improving remote key and error-toast behavior.
+- Extend TUI regression coverage for help search, overlays, input behavior,
+  frame metrics, and transport diagnostics.
+
 ## [1.1.4] - 2026-11-13
 
 ### Fixed

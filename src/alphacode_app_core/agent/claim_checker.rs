@@ -147,6 +147,7 @@ impl SessionEvidence {
         let mut inputs: HashMap<String, (String, serde_json::Value)> = HashMap::new();
         let mut evidence = SessionEvidence::default();
         let mut call_counts: HashMap<String, usize> = HashMap::new();
+        let mut latest_tests = std::collections::BTreeMap::<String, Vec<String>>::new();
 
         for message in messages {
             for block in &message.content {
@@ -154,7 +155,22 @@ impl SessionEvidence {
                     id, name, input, ..
                 } = block
                 {
-                    inputs.insert(id.clone(), (name.clone(), input.clone()));
+                    let name = crate::alphacode_tool_types::resolve_tool_name(name);
+                    if matches!(name, "write" | "edit" | "multiedit" | "apply_patch") {
+                        // A partial or interrupted edit can change the artifacts.
+                        // Earlier checks establish only the previous state.
+                        evidence.succeeded_commands.clear();
+                        latest_tests.clear();
+                    }
+                    if name == "bash"
+                        && let Some(cmd) = input.get("command").and_then(|v| v.as_str())
+                    {
+                        // Revoke even when the latest attempt is interrupted
+                        // and never produces a matching result.
+                        evidence.succeeded_commands.retain(|prior| prior != cmd);
+                        latest_tests.remove(cmd);
+                    }
+                    inputs.insert(id.clone(), (name.to_string(), input.clone()));
                     continue;
                 }
                 let ContentBlock::ToolResult {
@@ -179,19 +195,17 @@ impl SessionEvidence {
                     evidence.modified_files.push(path.to_string());
                 }
 
-                if !is_error.unwrap_or(false)
-                    && tool_name.eq_ignore_ascii_case("bash")
+                if tool_name == "bash"
                     && let Some(cmd) = input.get("command").and_then(|v| v.as_str())
-                    && indicates_success(content)
                 {
-                    evidence.succeeded_commands.push(cmd.to_string());
-                }
-
-                if !is_error.unwrap_or(false)
-                    && tool_name.eq_ignore_ascii_case("bash")
-                    && input.get("command").and_then(|v| v.as_str()).is_some()
-                {
-                    evidence.passed_tests.extend(passed_tests(content));
+                    evidence.succeeded_commands.retain(|prior| prior != cmd);
+                    latest_tests.remove(cmd);
+                    if !is_error.unwrap_or(false) {
+                        if indicates_success(content) {
+                            evidence.succeeded_commands.push(cmd.to_string());
+                        }
+                        latest_tests.insert(cmd.to_string(), passed_tests(content));
+                    }
                 }
 
                 if HTTP_EVIDENCE_TOOLS
@@ -207,6 +221,9 @@ impl SessionEvidence {
 
         evidence.tool_calls = call_counts.into_iter().collect();
         evidence.tool_calls.sort();
+        evidence.passed_tests = latest_tests.into_values().flatten().collect();
+        evidence.passed_tests.sort();
+        evidence.passed_tests.dedup();
         evidence
     }
 
@@ -889,6 +906,76 @@ mod tests {
                 token_usage: None,
             },
         ]
+    }
+
+    #[test]
+    fn a_failed_or_interrupted_rerun_revokes_prior_command_and_test_evidence() {
+        let input = serde_json::json!({"command": "cargo test --lib"});
+        for interrupted in [false, true] {
+            let mut messages = transcript_of_tool(
+                "functions.Bash",
+                input.clone(),
+                "test test_login ... ok\nExit code: 0",
+            );
+            let mut retry = transcript_of_tool("bash", input.clone(), "Exit code: 1");
+            if interrupted {
+                retry.truncate(1);
+            }
+            messages.extend(retry);
+            let evidence = SessionEvidence::from_messages(&messages);
+            assert!(evidence.succeeded_commands.is_empty());
+            assert!(evidence.passed_tests.is_empty());
+        }
+    }
+
+    #[test]
+    fn edits_revoke_previous_checks_but_reads_preserve_them() {
+        for tool in ["read", "write", "Edit", "multiedit", "apply_patch"] {
+            let mut messages = transcript_of_tool(
+                "bash",
+                serde_json::json!({"command": "test"}),
+                "test test_login ... ok\nExit code: 0",
+            );
+            messages.extend(transcript_of_tool(
+                tool,
+                serde_json::json!({"file_path": "src/lib.rs"}),
+                "done",
+            ));
+            let evidence = SessionEvidence::from_messages(&messages);
+            assert_eq!(evidence.succeeded_commands.is_empty(), tool != "read");
+            assert_eq!(evidence.passed_tests.is_empty(), tool != "read");
+        }
+    }
+
+    #[test]
+    fn a_rerun_replaces_only_its_own_test_evidence_and_can_recover() {
+        let mut messages = transcript_of_tool(
+            "bash",
+            serde_json::json!({"command": "test first"}),
+            "test first ... ok\nExit code: 0",
+        );
+        messages.extend(transcript_of_tool(
+            "bash",
+            serde_json::json!({"command": "test second"}),
+            "test second ... ok\nExit code: 0",
+        ));
+        messages.extend(transcript_of_tool(
+            "bash",
+            serde_json::json!({"command": "test first"}),
+            "Exit code: 1",
+        ));
+        let evidence = SessionEvidence::from_messages(&messages);
+        assert_eq!(evidence.passed_tests, vec!["second"]);
+        assert_eq!(evidence.succeeded_commands, vec!["test second"]);
+        messages.extend(transcript_of_tool(
+            "bash",
+            serde_json::json!({"command": "test first"}),
+            "test first ... ok\nExit code: 0",
+        ));
+        assert_eq!(
+            SessionEvidence::from_messages(&messages).passed_tests,
+            vec!["first", "second"]
+        );
     }
 
     // --- the regression: stubs that used to return true --------------------

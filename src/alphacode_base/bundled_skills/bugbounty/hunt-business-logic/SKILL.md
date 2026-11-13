@@ -1,13 +1,14 @@
 ---
 name: hunt-business-logic
-description: Business logic flaws — payment and price manipulation, coupon and credit abuse, referral and reward stacking, refund and chargeback paths, inventory and quantity limits, currency rounding, entitlement bypass. Highest severity per finding, entirely missed by scanners because no payload triggers them.
+description: Business logic flaws — payment and price manipulation, coupon and credit abuse, referral and reward stacking, refund and chargeback paths, inventory and quantity limits, currency rounding, entitlement bypass. Model intended rules and verify persisted consequences with controlled fixtures.
 ---
 
 # BUSINESS LOGIC HUNTING
 
-**Core:** every request you send is *valid*. There is no payload. The bug is
-in what the application **believes** about the sequence of valid requests.
-Scanners find nothing here; humans find everything here.
+**Core:** individually valid requests can violate security rules when combined,
+reordered, replayed or processed concurrently. Malformed values may also expose
+logic flaws. Generic scanners often lack the product model needed to recognize
+these failures; targeted automation can test a defined invariant and oracle.
 
 ---
 
@@ -91,9 +92,11 @@ Rate/usage quota     is the counter server-side, and does it reset correctly?
 Concurrent session   is "1 device" enforced server-side?
 ```
 
-The trial and entitlement checks are the highest-yield: a client-side gate with
-no server-side check is a paid-tier bypass and almost always a valid,
-high-severity, easy-to-prove finding.
+An absent server-side entitlement check is a candidate only after establishing
+the intended restriction and demonstrating unauthorized protected capability.
+Check documented grace periods, free allowances and sharing rules. Severity and
+program eligibility depend on demonstrated consequence and the actual policy;
+a hidden UI control or successful HTTP response alone proves neither.
 
 ---
 

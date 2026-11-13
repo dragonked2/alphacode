@@ -139,3 +139,102 @@ fn short_topics_produce_no_suggestions() {
     let app = create_test_app();
     assert!(app.command_help_suggestions("/x").is_empty());
 }
+
+#[test]
+fn help_search_edits_unicode_without_touching_the_composer_and_esc_has_two_levels() {
+    let mut app = create_test_app();
+    app.input = "preserve this draft".into();
+    app.cursor_pos = 8;
+    app.handle_key(KeyCode::F(1), KeyModifiers::NONE).unwrap();
+    app.handle_key(KeyCode::Char('/'), KeyModifiers::NONE).unwrap();
+    for ch in "model 👩‍💻".chars() {
+        app.handle_key(KeyCode::Char(ch), KeyModifiers::NONE).unwrap();
+    }
+    app.handle_key(KeyCode::Backspace, KeyModifiers::NONE).unwrap();
+    assert_eq!(app.help_query, "model ");
+    app.handle_key(KeyCode::Home, KeyModifiers::NONE).unwrap();
+    app.handle_key(KeyCode::Delete, KeyModifiers::NONE).unwrap();
+    app.handle_key(KeyCode::Char('M'), KeyModifiers::SHIFT).unwrap();
+    assert_eq!(app.help_query, "Model ");
+    app.handle_key(KeyCode::Enter, KeyModifiers::NONE).unwrap();
+    assert!(!app.help_search_editing);
+    assert!(app.help_scroll.is_some());
+    app.handle_key(KeyCode::Esc, KeyModifiers::NONE).unwrap();
+    assert!(app.help_query.is_empty());
+    assert!(app.help_scroll.is_some(), "first Esc clears the filter");
+    app.handle_key(KeyCode::Esc, KeyModifiers::NONE).unwrap();
+    assert!(app.help_scroll.is_none(), "second Esc closes help");
+    assert_eq!(app.input, "preserve this draft");
+    assert_eq!(app.cursor_pos, 8);
+    app.handle_key(KeyCode::F(1), KeyModifiers::NONE).unwrap();
+    assert!(app.help_query.is_empty());
+    assert!(!app.help_search_editing);
+}
+
+#[test]
+fn help_native_paste_is_bounded_sanitized_and_never_becomes_a_draft_attachment() {
+    let mut app = create_test_app();
+    app.input = "draft".into();
+    app.cursor_pos = 5;
+    app.open_help();
+    app.handle_paste("model\n\x1b[31msearch\x1b[0m".into());
+    assert_eq!(app.help_query, "model search");
+    assert_eq!(app.help_query_cursor, "model search".len());
+    app.handle_paste("x".repeat(1000));
+    assert_eq!(app.help_query.chars().count(), 256);
+    assert_eq!(app.input, "draft");
+    assert_eq!(app.cursor_pos, 5);
+    assert!(app.pasted_contents.is_empty());
+    app.close_help();
+    assert!(app.help_query.is_empty());
+}
+
+#[test]
+fn help_paging_uses_the_rendered_viewport_after_a_resize() {
+    let _lock = crate::alphacode_tui::tui::ui::render_state_test_lock();
+    let mut app = create_test_app();
+    app.open_help();
+    for height in [12, 24] {
+        app.help_scroll = Some(0);
+        let mut terminal = ratatui::Terminal::new(ratatui::backend::TestBackend::new(80, height)).unwrap();
+        terminal.draw(|frame| crate::alphacode_tui::tui::ui::draw(frame, &app)).unwrap();
+        let page = (height as usize).saturating_sub(4);
+        app.handle_key(KeyCode::PageDown, KeyModifiers::NONE).unwrap();
+        assert_eq!(app.help_scroll, Some(page));
+        app.handle_key(KeyCode::PageUp, KeyModifiers::NONE).unwrap();
+        assert_eq!(app.help_scroll, Some(0));
+    }
+}
+
+#[test]
+fn remote_help_search_owns_its_keys_and_keeps_the_draft() {
+    let mut app = create_test_app();
+    app.input = "remote draft".into();
+    app.cursor_pos = app.input.len();
+    let rt = tokio::runtime::Runtime::new().unwrap();
+    let _guard = rt.enter();
+    let mut remote = crate::alphacode_tui::tui::backend::RemoteConnection::dummy();
+    rt.block_on(async {
+        app.handle_remote_key(KeyCode::F(1), KeyModifiers::NONE, &mut remote).await.unwrap();
+        app.handle_remote_key(KeyCode::Char('f'), KeyModifiers::CONTROL, &mut remote).await.unwrap();
+        for ch in "query".chars() {
+            app.handle_remote_key(KeyCode::Char(ch), KeyModifiers::NONE, &mut remote).await.unwrap();
+        }
+        assert_eq!(app.help_query, "query", "q must edit the query, not close help");
+        app.handle_remote_key(KeyCode::F(1), KeyModifiers::NONE, &mut remote).await.unwrap();
+    });
+    assert!(app.help_scroll.is_none());
+    assert_eq!(app.input, "remote draft");
+}
+
+#[test]
+fn remote_f1_does_not_cover_an_existing_search_with_an_unfocused_help_overlay() {
+    let mut app = create_test_app();
+    app.open_transcript_search();
+    let rt = tokio::runtime::Runtime::new().unwrap();
+    let _guard = rt.enter();
+    let mut remote = crate::alphacode_tui::tui::backend::RemoteConnection::dummy();
+    rt.block_on(app.handle_remote_key(KeyCode::F(1), KeyModifiers::NONE, &mut remote)).unwrap();
+    assert!(app.help_scroll.is_none());
+    assert!(app.transcript_search_is_open());
+}

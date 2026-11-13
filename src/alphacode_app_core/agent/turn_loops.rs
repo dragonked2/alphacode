@@ -1725,6 +1725,8 @@ impl Agent {
             Ok(output) => {
                 // Record success in budget enforcer
                 self.budget_enforcer.record_result(&tc.name, true);
+                self.budget_enforcer
+                    .record_recovery_success(&tc.name, &tc.input);
                 crate::telemetry::waste_metrics::record_tool_call();
 
                 let output = cap_tool_output_for_history(&tc.name, output);
@@ -1779,7 +1781,7 @@ impl Agent {
 
                 // Wrap with a tool-specific recovery hint before the
                 // error enters history (see agent_facing_error).
-                let error_msg = crate::tool::agent_facing_error(&tc.name, &e);
+                let error_msg = self.budget_enforcer.recovery_error(&tc.name, &tc.input, &e);
                 if trace {
                     eprintln!(
                         "[trace] tool_exec_error name={} id={} {}",

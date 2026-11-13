@@ -299,6 +299,16 @@ impl GoalContract {
         if self.is_terminal() {
             return;
         }
+        // A verification of the previous artifacts cannot establish the state
+        // after an edit. Even an unsuccessful multi-edit can have partial
+        // effects, so conservatively require fresh verification. Shell/MCP
+        // mutations are not classified here and still require explicit review.
+        if matches!(
+            crate::alphacode_tool_types::resolve_tool_name(observation.tool_name),
+            "write" | "edit" | "multiedit" | "apply_patch"
+        ) {
+            self.criterion_evidence.clear();
+        }
         // Drop stale observations after a caller changes or reorders criteria.
         self.criterion_evidence.retain(|evidence| {
             self.success_criteria.get(evidence.criterion_index) == Some(&evidence.criterion)
@@ -432,6 +442,62 @@ mod tests {
         });
         assert!(!contract.criterion_verified(0));
         assert!(contract.criterion_evidence.is_empty());
+    }
+
+    #[test]
+    fn artifact_mutations_require_fresh_verification_even_after_partial_failure() {
+        use serde_json::json;
+        for tool in [
+            "write",
+            "edit",
+            "multiedit",
+            "apply_patch",
+            "functions.Edit",
+        ] {
+            for succeeded in [true, false] {
+                let mut contract = GoalContract::new("verify artifacts", vec![]);
+                contract.success_criteria.push(SuccessCriterion {
+                    statement: "tests pass".into(),
+                    tier: EvidenceTier::FirstParty,
+                    check: CriterionCheck::ToolMetadata {
+                        tool_name: "bash".into(),
+                        input: json!({"command": "test"}),
+                        metadata_pointer: "/process_exit_code".into(),
+                        expected: json!(0),
+                    },
+                });
+                let input = json!({"command": "test"});
+                let metadata = json!({"process_exit_code": 0});
+                let verification = ToolObservation {
+                    tool_call_id: "check",
+                    tool_name: "bash",
+                    input: &input,
+                    metadata: Some(&metadata),
+                    succeeded: true,
+                };
+                contract.observe(&verification);
+                assert!(contract.criterion_verified(0));
+                let read_input = json!({"path": "src/lib.rs"});
+                contract.observe(&ToolObservation {
+                    tool_call_id: "inspect",
+                    tool_name: "read",
+                    input: &read_input,
+                    metadata: None,
+                    succeeded: true,
+                });
+                assert!(contract.criterion_verified(0));
+                contract.observe(&ToolObservation {
+                    tool_call_id: "mutate",
+                    tool_name: tool,
+                    input: &read_input,
+                    metadata: None,
+                    succeeded,
+                });
+                assert!(!contract.criterion_verified(0), "{tool}: {succeeded}");
+                contract.observe(&verification);
+                assert!(contract.criterion_verified(0));
+            }
+        }
     }
 
     #[test]

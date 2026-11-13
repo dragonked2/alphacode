@@ -74,6 +74,8 @@ impl Agent {
         match result {
             Ok(output) => {
                 self.budget_enforcer.record_result(&call.name, true);
+                self.budget_enforcer
+                    .record_recovery_success(&call.name, &call.input);
                 let output = cap_tool_output_for_history(&call.name, output);
                 let _ = event_tx.send(ServerEvent::ToolDone {
                     id: call.id.clone(),
@@ -112,7 +114,9 @@ impl Agent {
                 // Wrap with a tool-specific recovery hint before the error
                 // enters history, so the model's next attempt targets the fix
                 // instead of repeating the call.
-                let error_msg = crate::tool::agent_facing_error(&call.name, &e);
+                let error_msg = self
+                    .budget_enforcer
+                    .recovery_error(&call.name, &call.input, &e);
                 let _ = event_tx.send(ServerEvent::ToolDone {
                     id: call.id.clone(),
                     name: call.name.clone(),

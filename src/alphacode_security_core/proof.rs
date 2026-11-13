@@ -33,6 +33,18 @@ use serde::{Deserialize, Serialize};
 /// every downstream report and checkpoint.
 const MAX_BODY_CHARS: usize = 8_192;
 
+// Never let an omitted suffix masquerade as an observed absence. In particular,
+// a canary missing from a retained prefix is not a negative control.
+fn retain_body(body: &str) -> String {
+    let mut chars = body.chars();
+    let prefix: String = chars.by_ref().take(MAX_BODY_CHARS).collect();
+    if chars.next().is_some() {
+        format!("{prefix}\n\n[truncated, retained first {MAX_BODY_CHARS} characters]")
+    } else {
+        prefix
+    }
+}
+
 /// A single observed HTTP exchange, reconstructed from real tool output.
 ///
 /// Parsed tool output can supply this evidence, but this public, deserializable
@@ -121,12 +133,7 @@ impl HttpExchange {
         let url = url.or_else(|| input.get("url").and_then(|v| v.as_str()).map(String::from))?;
 
         let body = body_lines.join("\n");
-        let request_body = input
-            .get("body")
-            .and_then(|v| v.as_str())
-            .map(str::trim)
-            .filter(|b| !b.is_empty())
-            .map(|b| b.chars().take(MAX_BODY_CHARS).collect());
+        let request_body = input.get("body").and_then(|v| v.as_str()).map(retain_body);
 
         Some(Self {
             method: input
@@ -142,7 +149,7 @@ impl HttpExchange {
             response_body: if body.trim().is_empty() {
                 None
             } else {
-                Some(body.chars().take(MAX_BODY_CHARS).collect())
+                Some(retain_body(&body))
             },
             source_tool: source_tool.to_string(),
         })
@@ -694,6 +701,50 @@ pub fn describe_verdict(subject: &str, verdict: &ProofVerdict) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_truncated_control_cannot_prove_a_marker_was_absent() {
+        let input = serde_json::json!({"url": "https://example.test/object"});
+        let raw = format!("HTTP 200\n\n{}private-canary", "a".repeat(MAX_BODY_CHARS));
+        let control = HttpExchange::parse_http_transcript("httpflow", &input, &raw).unwrap();
+        assert!(
+            control
+                .response_body
+                .as_deref()
+                .unwrap()
+                .contains("[truncated, ")
+        );
+        let treatment = exchange("GET", "https://example.test/object", 200, "private-canary");
+        assert!(
+            !ProofEffect::BodyMarker {
+                marker: "private-canary".into()
+            }
+            .is_distinguished(&control, &treatment)
+        );
+    }
+
+    #[test]
+    fn request_whitespace_is_part_of_the_observed_evidence() {
+        let input = serde_json::json!({
+            "url": "https://example.test/object", "method": "POST", "body": "  signed bytes\n"
+        });
+        let captured =
+            HttpExchange::parse_http_transcript("httpflow", &input, "HTTP 200\n\nok").unwrap();
+        assert_eq!(captured.request_body.as_deref(), Some("  signed bytes\n"));
+        let mut normalized = captured.clone();
+        normalized.request_body = Some("signed bytes".into());
+        assert!(!captured.matches_observed(&normalized));
+    }
+
+    #[test]
+    fn body_retention_marks_only_actual_truncation_and_respects_unicode() {
+        let exact = "界".repeat(MAX_BODY_CHARS);
+        assert_eq!(retain_body(&exact), exact);
+        let longer = format!("{exact}x");
+        let retained = retain_body(&longer);
+        assert!(retained.starts_with(&exact));
+        assert!(retained.contains("[truncated, "));
+    }
 
     fn exchange(method: &str, url: &str, status: u16, body: &str) -> HttpExchange {
         HttpExchange {

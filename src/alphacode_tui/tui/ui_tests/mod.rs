@@ -248,6 +248,8 @@ struct TestState {
     inline_interactive_state: Option<crate::alphacode_tui::tui::InlineInteractiveState>,
     changelog_scroll: Option<usize>,
     help_scroll: Option<usize>,
+    help_query: String,
+    help_search_editing: bool,
     chat_native_scrollbar: bool,
     onboarding_preview: bool,
     suggestions: Vec<(String, String)>,
@@ -570,6 +572,12 @@ impl crate::alphacode_tui::tui::TuiState for TestState {
     }
     fn help_scroll(&self) -> Option<usize> {
         self.help_scroll
+    }
+    fn help_query(&self) -> &str {
+        &self.help_query
+    }
+    fn help_search_editing(&self) -> bool {
+        self.help_search_editing
     }
     fn model_status_overlay(&self) -> Option<(usize, &str)> {
         None

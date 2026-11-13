@@ -41,7 +41,7 @@ impl BgTool {
 
 #[derive(Deserialize)]
 struct BgInput {
-    /// Action to perform: list, status, output, tail, cancel, cleanup, watch, delivery, subscribe, wait
+    /// Action to perform; kill is a compatibility alias for cancel.
     #[serde(default)]
     action: Option<String>,
     /// Short display label describing why this tool call is being made.
@@ -129,7 +129,11 @@ fn resolve_action(params: &BgInput) -> Result<String> {
         .map(str::trim)
         .filter(|action| !action.is_empty())
     {
-        return Ok(action.to_ascii_lowercase());
+        let action = action.to_ascii_lowercase();
+        return Ok(match action.as_str() {
+            "kill" => "cancel".to_string(),
+            _ => action,
+        });
     }
 
     if let Some(action) = infer_action_from_intent(params.intent.as_deref()) {
@@ -137,7 +141,7 @@ fn resolve_action(params: &BgInput) -> Result<String> {
     }
 
     Err(anyhow::anyhow!(
-        "Missing required bg action. Use one of: list, status, output, tail, cancel, cleanup, delivery, subscribe, wait. For example: bg action=\"wait\"."
+        "Missing required bg action. Use one of: list, status, output, tail, cancel (alias: kill), cleanup, delivery, subscribe, wait. For example: bg action=\"wait\"."
     ))
 }
 
@@ -473,8 +477,8 @@ impl Tool for BgTool {
                 "intent": super::intent_schema_property(),
                 "action": {
                     "type": "string",
-                    "enum": ["list", "status", "output", "tail", "cancel", "cleanup", "watch", "delivery", "subscribe", "wait"],
-                    "description": "Action. Prefer wait over polling; watch is an alias for delivery."
+                    "enum": ["list", "status", "output", "tail", "cancel", "kill", "cleanup", "watch", "delivery", "subscribe", "wait"],
+                    "description": "Prefer wait. kill aliases cancel; watch aliases delivery."
                 },
                 "task_id": { "type": "string", "description": "Task ID." },
                 "task_ids": { "type": "array", "items": {"type":"string"}, "description": "Task IDs for multi-task wait/status." },
@@ -881,7 +885,7 @@ impl Tool for BgTool {
             }
 
             _ => Err(anyhow::anyhow!(
-                "Unknown action: {}. Valid actions: list, status, output, tail, cancel, cleanup, watch, delivery, subscribe, wait",
+                "Unknown action: {}. Valid actions: list, status, output, tail, cancel (alias: kill), cleanup, watch, delivery, subscribe, wait",
                 action
             )),
         }
@@ -892,6 +896,30 @@ impl Tool for BgTool {
 mod tests {
     use super::*;
     use anyhow::{Result, anyhow};
+
+    #[test]
+    fn kill_is_advertised_and_resolves_to_the_existing_cancel_action() -> Result<()> {
+        let schema = BgTool::new().parameters_schema();
+        assert!(
+            schema["properties"]["action"]["enum"]
+                .as_array()
+                .unwrap()
+                .contains(&json!("kill"))
+        );
+        for action in ["kill", " KILL ", "cancel"] {
+            let params: BgInput =
+                serde_json::from_value(json!({"action": action, "task_id": "task-123"}))?;
+            assert_eq!(resolve_action(&params)?, "cancel");
+            assert_eq!(params.task_id.as_deref(), Some("task-123"));
+        }
+        let params: BgInput = serde_json::from_value(json!({"action": "pkill"}))?;
+        assert_eq!(
+            resolve_action(&params)?,
+            "pkill",
+            "only the explicit compatibility alias is accepted"
+        );
+        Ok(())
+    }
 
     #[test]
     fn status_filter_schema_any_of_branches_have_types() -> Result<()> {

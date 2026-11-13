@@ -46,6 +46,27 @@ fn ctx() -> RiskContext {
     }
 }
 
+#[test]
+fn posix_rooted_targets_keep_their_components_on_windows() {
+    let context = ctx();
+    for raw in [
+        "/etc/passwd",
+        "/etc/ssh/sshd_config",
+        "/usr/bin/env",
+        "/dev/sda",
+    ] {
+        let resolved = expand(raw, &context);
+        assert!(
+            is_catastrophic_target(&resolved, &context),
+            "{raw}: {resolved:?}"
+        );
+    }
+    let ordinary = expand("/tmp/alphacode-review.txt", &context);
+    assert!(!is_catastrophic_target(&ordinary, &context));
+    let sink = expand("/dev/null", &context);
+    assert!(classify_target(&sink, "/dev/null", false, &context).is_none());
+}
+
 // ---------------------------------------------------------------------------
 // is_catastrophic_target
 // ---------------------------------------------------------------------------

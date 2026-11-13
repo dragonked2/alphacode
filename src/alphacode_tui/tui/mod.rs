@@ -685,6 +685,15 @@ pub trait TuiState {
     fn changelog_scroll(&self) -> Option<usize>;
     /// Help overlay scroll offset (None = not showing)
     fn help_scroll(&self) -> Option<usize>;
+    fn help_query(&self) -> &str {
+        ""
+    }
+    fn help_query_cursor(&self) -> usize {
+        self.help_query().len()
+    }
+    fn help_search_editing(&self) -> bool {
+        false
+    }
     /// Model status overlay scroll offset and markdown content (None = not showing)
     fn model_status_overlay(&self) -> Option<(usize, &str)> {
         None

@@ -223,14 +223,13 @@ pub fn help_reference() -> Vec<Line<'static>> {
     lines.push(Line::from(""));
 
     let shortcuts: &[(&str, &str)] = &[
-        ("Enter", "Submit prompt"),
+        ("Enter", "Send prompt; while working, send guidance"),
         ("Shift/Alt+Enter", "New line in input"),
         ("\\ then Enter", "New line on any terminal"),
-        ("F1", "Open help; Esc closes it"),
+        ("F1", "Open or close help; / searches inside help"),
         ("/ [Tab]", "Show command suggestions"),
         ("Up / Down", "Message history"),
         ("Ctrl+B", "Move back one word"),
-        ("Ctrl+T", "Toggle queue mode"),
         ("/model", "Open the model picker"),
         ("Ctrl+K", "Kill to end of line"),
         ("Ctrl+U", "Kill to beginning of line"),
@@ -559,7 +558,8 @@ mod tests {
         assert!(text.contains("Enter"));
         assert!(text.contains("/model"));
         assert!(text.contains("Ctrl+B"));
-        assert!(text.contains("Toggle queue mode"));
+        assert!(text.contains("while working, send guidance"));
+        assert!(!text.contains("Toggle queue mode"));
     }
 
     #[test]

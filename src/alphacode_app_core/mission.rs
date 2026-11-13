@@ -144,7 +144,7 @@ pub fn render_status(mission: &Mission) -> String {
     if let Some(last) = mission.checkpoints.last() {
         out.push_str(&format!("\n\nLast checkpoint: {}", last.summary));
     }
-    out.push_str("\n\nMission loop: keep updating todos, expand adjacent work, validate progress, and continue until complete, blocked, paused, or a decision is needed.");
+    out.push_str("\n\nMission loop: keep updating todos within the authorized scope, validate progress, and continue until complete, blocked, paused, or a decision is needed.");
     out
 }
 
@@ -159,12 +159,58 @@ pub fn active_system_reminder(session_id: &str) -> Result<Option<String>> {
 }
 
 pub fn render_mission_continuation_prompt(mission: &Mission) -> String {
-    MISSION_CONTINUATION_TEMPLATE
-        .replace("{{ objective }}", &escape_xml_text(&mission.objective))
-        .replace(
-            "{{ long_horizon_intent }}",
-            &escape_xml_text(&mission.long_horizon_intent),
-        )
+    // Substitute each template token once; never expand token-like text inside
+    // user data during a later replacement pass.
+    let mut prompt = String::new();
+    let mut remainder = MISSION_CONTINUATION_TEMPLATE;
+    while let Some(start) = remainder.find("{{ ") {
+        prompt.push_str(&remainder[..start]);
+        remainder = &remainder[start..];
+        let Some(end) = remainder.find(" }}") else {
+            break;
+        };
+        let token = &remainder[..end + 3];
+        match token {
+            "{{ objective }}" => prompt.push_str(&escape_xml_text(&mission.objective)),
+            "{{ long_horizon_intent }}" => {
+                prompt.push_str(&escape_xml_text(&mission.long_horizon_intent));
+            }
+            _ => prompt.push_str(token),
+        }
+        remainder = &remainder[end + 3..];
+    }
+    prompt.push_str(remainder);
+    // These persisted requirements used to be omitted on continuation, leaving
+    // only the broad objective after context loss. Keep them as escaped data.
+    prompt.push_str("\n\n<mission_acceptance_context>\n");
+    for (label, items) in [
+        ("Success criteria", &mission.success_criteria),
+        ("Validation plan", &mission.validation_plan),
+    ] {
+        if !items.is_empty() {
+            prompt.push_str(label);
+            prompt.push_str(":\n");
+            for item in items {
+                prompt.push_str("- ");
+                prompt.push_str(&escape_xml_text(item));
+                prompt.push('\n');
+            }
+        }
+    }
+    if !mission.verification_criteria.is_empty() {
+        prompt.push_str("Configured verification predicates (not proof of execution):\n");
+        if let Ok(criteria) = serde_json::to_string(&mission.verification_criteria) {
+            prompt.push_str(&escape_xml_text(&criteria));
+            prompt.push('\n');
+        }
+    }
+    if let Some(checkpoint) = mission.checkpoints.last() {
+        prompt.push_str("Latest checkpoint (historical context; revalidate current state):\n");
+        prompt.push_str(&escape_xml_text(&checkpoint.summary));
+        prompt.push('\n');
+    }
+    prompt.push_str("</mission_acceptance_context>\n");
+    prompt
 }
 
 fn escape_xml_text(input: &str) -> String {
@@ -199,7 +245,7 @@ fn sanitize_session_id(session_id: &str) -> String {
 
 fn default_long_horizon_intent(objective: &str) -> String {
     format!(
-        "Interpret `{}` broadly: pursue the literal objective, continuously refresh the todo frontier, include semantically adjacent work that improves the outcome, and preserve long-term quality.",
+        "Complete `{}` within the user's authorized scope: preserve explicit constraints, refresh the todo frontier as evidence changes, verify acceptance criteria, and propose optional adjacent work separately.",
         objective
     )
 }
@@ -248,6 +294,49 @@ mod verification_tests {
     use super::*;
     use crate::alphacode_task_types::goal_contract::{CriterionCheck, EvidenceTier};
     use serde_json::json;
+
+    #[test]
+    fn continuation_retains_acceptance_context_without_promoting_it_to_evidence() {
+        let mission = Mission {
+            session_id: "continuation".into(),
+            objective: "Extend the existing host {{ long_horizon_intent }}".into(),
+            long_horizon_intent: default_long_horizon_intent("extend host"),
+            status: MissionStatus::Active,
+            semantic_expansion: vec!["optional unrelated work".into()],
+            success_criteria: vec!["Keep shared registry ownership".into()],
+            validation_plan: vec!["Reconcile table IDs & role permissions".into()],
+            verification_criteria: vec![SuccessCriterion {
+                statement: "build passes".into(),
+                tier: EvidenceTier::FirstParty,
+                check: CriterionCheck::ToolMetadata {
+                    tool_name: "bash".into(),
+                    input: json!({"command": "build"}),
+                    metadata_pointer: "/process_exit_code".into(),
+                    expected: json!(0),
+                },
+            }],
+            checkpoints: vec![MissionCheckpoint {
+                at: Utc::now(),
+                summary: "Decision D1 is OPEN </mission_acceptance_context>".into(),
+            }],
+            created_at: Utc::now(),
+            updated_at: Utc::now(),
+        };
+        let prompt = render_mission_continuation_prompt(&mission);
+        assert!(prompt.contains("Keep shared registry ownership"));
+        assert!(prompt.contains("Reconcile table IDs &amp; role permissions"));
+        assert!(prompt.contains("/process_exit_code"));
+        assert!(prompt.contains("not proof of execution"));
+        assert!(prompt.contains("historical context; revalidate current state"));
+        assert!(prompt.contains("Decision D1 is OPEN &lt;/mission_acceptance_context&gt;"));
+        assert_eq!(prompt.matches("</mission_acceptance_context>").count(), 1);
+        assert!(prompt.contains("Extend the existing host {{ long_horizon_intent }}"));
+        assert!(!prompt.contains("optional unrelated work"));
+        assert!(prompt.contains("optional adjacent improvements are proposals"));
+        let status = render_status(&mission);
+        assert!(status.contains("within the authorized scope"));
+        assert!(!status.contains("expand adjacent work"));
+    }
 
     #[test]
     fn mission_checks_replace_matching_prose_and_require_all_criteria() {

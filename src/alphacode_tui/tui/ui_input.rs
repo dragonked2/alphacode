@@ -3004,6 +3004,18 @@ mod tests {
         assert!(empty_composer_placeholder(0, "> ").is_empty());
     }
 
+    #[test]
+    fn running_composer_hint_keeps_stop_visible_without_overflow() {
+        for width in 0..=160 {
+            let hint = running_composer_hint(width);
+            assert!(unicode_width::UnicodeWidthStr::width(hint) <= width);
+            if width >= 11 {
+                assert!(hint.contains("Esc stops"));
+            }
+        }
+        assert!(running_composer_hint(80).contains("running turn"));
+    }
+
     /// The placeholder is the composer's invitation text and must not depend
     /// on the prompt glyph. The ellipsis prompt was retired (the composer
     /// stays an editor while keystrokes queue), so both prompt glyphs must
@@ -4266,7 +4278,7 @@ pub(super) fn draw_input(
         )));
     } else if area.height > 1 && app.is_processing() && !input_text.is_empty() {
         hint_shown = true;
-        let hint = "  Enter interleaves into the running turn \u{00b7} Esc stops";
+        let hint = running_composer_hint(area.width as usize);
         hint_line = Some(hint.trim().to_string());
         lines.push(Line::from(Span::styled(
             hint,
@@ -5034,14 +5046,21 @@ fn input_segment_line(
     }
 }
 
-/// Return the most useful empty-composer prompt that fits the available text
-/// columns. The full hint teaches the command palette and direct help shortcut;
-// narrower terminals progressively keep the prompt readable.
-///
-/// Keystrokes legitimately queue while a turn is running, so the invitation
-/// list no longer repaints itself into status copy depending on the prompt
-/// glyph: the busy state is carried by the warm prompt color, the queue hint
-/// line, and the status bar instead.
+/// Keep the stop action visible when the busy-composer hint must shrink.
+fn running_composer_hint(max_width: usize) -> &'static str {
+    [
+        "  Enter sends guidance to the running turn · Esc stops",
+        "  Enter sends guidance · Esc stops",
+        "  Enter sends · Esc stops",
+        "  Esc stops",
+        "Esc",
+    ]
+    .into_iter()
+    .find(|hint| unicode_width::UnicodeWidthStr::width(*hint) <= max_width)
+    .unwrap_or("")
+}
+
+/// Teach the available controls without changing the invitation while busy.
 fn empty_composer_placeholder(max_width: usize, _prompt_char: &str) -> String {
     let candidates: &[&str] = &[
         "Ask Alphacode anything · @ files · / commands · F1 help",

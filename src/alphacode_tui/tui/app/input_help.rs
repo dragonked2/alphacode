@@ -5,7 +5,7 @@ impl App {
         let topic = topic.trim().trim_start_matches('/').to_lowercase();
         let help = match topic.as_str() {
             "help" | "commands" => {
-                "/help\nShow general command list and keyboard shortcuts.\n\n/help <command>\nShow detailed help for one command."
+                "/help\nOpen the command and keyboard reference. Press / or Ctrl+F inside help to filter it. Enter browses results; Esc clears the filter, then closes help. F1 closes help directly.\n\n/help <command>\nShow detailed help for one command."
             }
             "find" | "search" => {
                 "/find [text]\nFind text in the transcript and jump to each match.\n\nOpens a search bar above the composer. The query filters the transcript live, Enter and the arrow keys step through the matches (scrolling the viewport to each one), Alt+C toggles case-sensitivity, and Esc closes the bar.\n\n/find\nOpen the search with an empty query.\n\n/find needle\nOpen the search with 'needle' already filled in.\n\nCtrl+F does the same thing with the keyboard."

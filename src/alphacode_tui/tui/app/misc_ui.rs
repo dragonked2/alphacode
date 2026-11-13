@@ -607,24 +607,138 @@ impl App {
         Ok(())
     }
 
-    pub(super) fn handle_help_key(&mut self, code: KeyCode) -> Result<()> {
+    pub(super) fn open_help(&mut self) {
+        self.help_scroll = Some(0);
+        self.help_query.clear();
+        self.help_query_cursor = 0;
+        self.help_search_editing = false;
+        self.request_full_repaint();
+    }
+
+    pub(super) fn close_help(&mut self) {
+        self.help_scroll = None;
+        self.help_query.clear();
+        self.help_query_cursor = 0;
+        self.help_search_editing = false;
+        self.request_full_repaint();
+    }
+
+    pub(super) fn handle_help_key(&mut self, code: KeyCode, modifiers: KeyModifiers) -> Result<()> {
+        self.request_full_repaint();
+        if code == KeyCode::F(1)
+            || (code == KeyCode::Char('c') && modifiers.contains(KeyModifiers::CONTROL))
+        {
+            self.close_help();
+            return Ok(());
+        }
+        if code == KeyCode::Char('f') && modifiers.contains(KeyModifiers::CONTROL) {
+            self.help_search_editing = true;
+            self.help_scroll = Some(0);
+            return Ok(());
+        }
+        if code == KeyCode::Esc && (self.help_search_editing || !self.help_query.is_empty()) {
+            self.help_query.clear();
+            self.help_query_cursor = 0;
+            self.help_search_editing = false;
+            self.help_scroll = Some(0);
+            return Ok(());
+        }
+        if self.help_search_editing {
+            match code {
+                KeyCode::Char('u') if modifiers.contains(KeyModifiers::CONTROL) => {
+                    self.help_query.clear();
+                    self.help_query_cursor = 0;
+                    self.help_scroll = Some(0);
+                    return Ok(());
+                }
+                KeyCode::Left => {
+                    self.help_query_cursor =
+                        crate::alphacode_tui::tui::core::prev_grapheme_boundary(
+                            &self.help_query,
+                            self.help_query_cursor,
+                        );
+                    return Ok(());
+                }
+                KeyCode::Right => {
+                    self.help_query_cursor =
+                        crate::alphacode_tui::tui::core::next_grapheme_boundary(
+                            &self.help_query,
+                            self.help_query_cursor,
+                        );
+                    return Ok(());
+                }
+                KeyCode::Home => {
+                    self.help_query_cursor = 0;
+                    return Ok(());
+                }
+                KeyCode::End => {
+                    self.help_query_cursor = self.help_query.len();
+                    return Ok(());
+                }
+                KeyCode::Enter => {
+                    self.help_search_editing = false;
+                    return Ok(());
+                }
+                KeyCode::Backspace => {
+                    let previous = crate::alphacode_tui::tui::core::prev_grapheme_boundary(
+                        &self.help_query,
+                        self.help_query_cursor,
+                    );
+                    self.help_query
+                        .replace_range(previous..self.help_query_cursor, "");
+                    self.help_query_cursor = previous;
+                    self.help_scroll = Some(0);
+                    return Ok(());
+                }
+                KeyCode::Delete => {
+                    let next = crate::alphacode_tui::tui::core::next_grapheme_boundary(
+                        &self.help_query,
+                        self.help_query_cursor,
+                    );
+                    self.help_query
+                        .replace_range(self.help_query_cursor..next, "");
+                    self.help_scroll = Some(0);
+                    return Ok(());
+                }
+                KeyCode::Char(ch)
+                    if !ch.is_control()
+                        && !modifiers.intersects(KeyModifiers::CONTROL | KeyModifiers::ALT) =>
+                {
+                    if self.help_query.chars().count() < 256 {
+                        self.help_query.insert(self.help_query_cursor, ch);
+                        self.help_query_cursor += ch.len_utf8();
+                    }
+                    self.help_scroll = Some(0);
+                    return Ok(());
+                }
+                _ => {}
+            }
+        }
         let max_scroll = crate::alphacode_tui::tui::ui::help_max_scroll();
         let scroll = self.help_scroll.unwrap_or(0).min(max_scroll);
+        let page = crate::alphacode_tui::tui::ui::help_page_height()
+            .saturating_sub(1)
+            .max(1);
         match code {
             KeyCode::Esc | KeyCode::F(1) | KeyCode::Char('q') => {
-                self.help_scroll = None;
+                self.close_help();
+            }
+            KeyCode::Char('/') => {
+                self.help_search_editing = true;
+                self.help_query_cursor = self.help_query.len();
+                self.help_scroll = Some(0);
             }
             KeyCode::Down | KeyCode::Char('j') => {
-                self.help_scroll = Some(scroll.saturating_add(1));
+                self.help_scroll = Some(scroll.saturating_add(1).min(max_scroll));
             }
             KeyCode::Up | KeyCode::Char('k') => {
                 self.help_scroll = Some(scroll.saturating_sub(1));
             }
             KeyCode::PageDown | KeyCode::Char(' ') => {
-                self.help_scroll = Some(scroll.saturating_add(20));
+                self.help_scroll = Some(scroll.saturating_add(page).min(max_scroll));
             }
             KeyCode::PageUp => {
-                self.help_scroll = Some(scroll.saturating_sub(20));
+                self.help_scroll = Some(scroll.saturating_sub(page));
             }
             KeyCode::Home | KeyCode::Char('g') => {
                 self.help_scroll = Some(0);
@@ -635,6 +749,22 @@ impl App {
             _ => {}
         }
         Ok(())
+    }
+
+    pub(super) fn paste_help_query(&mut self, text: &str) {
+        self.help_search_editing = true;
+        let remaining = 256usize.saturating_sub(self.help_query.chars().count());
+        let sanitized = super::input::strip_terminal_control_sequences(text);
+        let text: String = sanitized
+            .chars()
+            .map(|ch| if ch.is_whitespace() { ' ' } else { ch })
+            .filter(|ch| !ch.is_control())
+            .take(remaining)
+            .collect();
+        self.help_query.insert_str(self.help_query_cursor, &text);
+        self.help_query_cursor += text.len();
+        self.help_scroll = Some(0);
+        self.request_full_repaint();
     }
 
     pub(super) fn handle_model_status_key(&mut self, code: KeyCode) -> Result<()> {

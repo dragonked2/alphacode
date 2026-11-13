@@ -822,7 +822,7 @@ pub(super) fn handle_help_command(app: &mut App, trimmed: &str) -> bool {
     }
 
     if trimmed == "/help" || trimmed == "/?" || trimmed == "/commands" {
-        app.help_scroll = Some(0);
+        app.open_help();
         return true;
     }
 
