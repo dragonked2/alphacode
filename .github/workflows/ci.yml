@@ -32,7 +32,7 @@ jobs:
             profile: release
     runs-on: ${{ matrix.os }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       - name: Install Linux system deps
         if: runner.os == 'Linux'
@@ -52,7 +52,7 @@ jobs:
           targets: ${{ matrix.target }}
 
       - name: Cache cargo registry & target
-        uses: actions/cache@v4
+        uses: actions/cache@v5
         with:
           path: |
             ~/.cargo/registry
@@ -81,11 +81,11 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, macos-15-intel, windows-latest]
+        os: [ubuntu-24.04, macos-15-intel, windows-latest]
     runs-on: ${{ matrix.os }}
     timeout-minutes: 60
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - name: Install Linux system deps
         if: runner.os == 'Linux'
         run: |
@@ -96,7 +96,7 @@ jobs:
         with:
           toolchain: 1.94.1
           components: clippy
-      - uses: actions/cache@v4
+      - uses: actions/cache@v5
         with:
           path: |
             ~/.cargo/registry
@@ -113,10 +113,10 @@ jobs:
 
   perf-gates:
     name: perf gates
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 20
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - name: Install Linux system deps
         run: |
           sudo apt-get update
@@ -126,7 +126,7 @@ jobs:
         with:
           toolchain: 1.94.1
           components: clippy
-      - uses: actions/cache@v4
+      - uses: actions/cache@v5
         with:
           path: |
             ~/.cargo/registry
@@ -150,9 +150,9 @@ jobs:
 
   lint:
     name: clippy
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - name: Install Linux system deps
         run: |
           sudo apt-get update
@@ -162,7 +162,7 @@ jobs:
         with:
           toolchain: 1.94.1
           components: clippy
-      - uses: actions/cache@v4
+      - uses: actions/cache@v5
         with:
           path: |
             ~/.cargo/registry
@@ -178,12 +178,12 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, windows-latest]
+        os: [ubuntu-24.04, windows-latest]
     runs-on: ${{ matrix.os }}
     timeout-minutes: 5
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
         with:
           python-version: '3.12'
       - name: Verify task isolation, verifiers, and process cleanup
@@ -194,7 +194,7 @@ jobs:
     runs-on: windows-latest
     timeout-minutes: 5
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       # The shipped WPF host uses .NET Framework and Windows PowerShell 5.1,
       # including System.Web.Extensions. PowerShell 7 cannot compile this host.
       - name: Verify callback recovery and diagnostic privacy
@@ -203,11 +203,11 @@ jobs:
 
   installer-smoke:
     name: installer smoke
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
       # Sanity-check the install scripts' syntax without actually
       # downloading a release (we don't have one in CI).
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - name: bash -n scripts/install.sh
         run: bash -n scripts/install.sh
       - name: bash -n scripts/uninstall.sh

@@ -28,12 +28,12 @@ permissions:
 jobs:
   create-release:
     name: create github release
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     # The build jobs below attach their archives + checksums to the release
     # this job creates. Doing it here (instead of in each parallel build job)
     # avoids a race where all six jobs try to create the same release at once.
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
         with:
@@ -60,7 +60,7 @@ jobs:
             os: ubuntu-22.04
             archive: alphacode-linux-x86_64
           # Build arm64 natively on GitHub's arm64 runner. It used to run on
-          # ubuntu-latest, where `upload-rust-binary-action` silently switched
+          # ubuntu-24.04, where `upload-rust-binary-action` silently switched
           # to `cross` for this target — i.e. the build happened inside
           # ghcr.io/cross-rs/aarch64-unknown-linux-gnu:0.2.5, an Ubuntu 16.04
           # container that has no libxkbcommon (the same hard link-time dep
@@ -89,7 +89,7 @@ jobs:
             archive: alphacode-windows-arm64
     runs-on: ${{ matrix.os }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
         with:
           fetch-depth: 0
 
@@ -118,7 +118,7 @@ jobs:
           targets: ${{ matrix.target }}
 
       - name: Cache cargo
-        uses: actions/cache@v4
+        uses: actions/cache@v5
         with:
           path: |
               ~/.cargo/registry
@@ -447,7 +447,7 @@ jobs:
   release:
     name: publish release
     needs: [build, alpine]
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     # The build job already uploaded the archive assets directly to the
     # release. Here we only need to merge the per-asset .sha256 files into
     # one combined SHA256SUMS so `sha256sum -c SHA256SUMS` works after
