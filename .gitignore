@@ -62,3 +62,10 @@ google*.html
 
 # Container Cargo cache (release workflow)
 .alpine-cargo/
+
+# Profiling artifacts (perf gates, benchmarks, flamegraphs)
+*.profraw
+*.profdata
+perf.data
+perf.data.old
+flamegraph.svg
